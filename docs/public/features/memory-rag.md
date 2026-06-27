@@ -33,6 +33,12 @@ embedding cache — and restarts the daemon during an idle window.
 
 ### Prerequisites
 
+Semantic (vector) search requires a **PostgreSQL backend with the
+[pgvector](https://github.com/pgvector/pgvector) extension** — the
+`pgvector/pgvector` image ships it and vornik enables it on first boot. On a
+SQLite backend there is no vector index, so recall degrades to keyword
+(full-text / substring) search only.
+
 The doctor checks that the embedding model is actually reachable. When
 `memory.embedding_endpoint` is set, it probes that endpoint directly (the
 endpoint embeddings really use — typically a local Ollama / TEI server),

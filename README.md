@@ -16,6 +16,27 @@ open-weight models.
 
 ## Quick start
 
+**One command** brings up the full stack — PostgreSQL + pgvector and the Vornik
+daemon, in containers via Podman Compose. It installs Podman Compose if needed,
+configures the host so the daemon can spawn agent containers, starts everything,
+and prints the URL to open when it's ready:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/grinco/vornik/main/deployments/podman/quickstart.sh | bash
+```
+
+The daemon creates and migrates its own schema on first boot, so all you supply
+is an empty database — which the script provisions for you. When it finishes,
+open <http://localhost:8080/ui>; add an LLM key to `deployments/podman/.env` and
+re-run `podman compose up -d vornik` to start running tasks. Details and tunables:
+[deployments/podman/README.md](deployments/podman/README.md).
+
+> PostgreSQL + pgvector is the recommended backend — the memory/RAG vector
+> search needs it. For a quick dependency-free look at the core, the daemon also
+> runs on SQLite; see [Getting started](docs/public/getting-started.md).
+
+### From source
+
 ```sh
 git clone https://github.com/grinco/vornik
 cd vornik

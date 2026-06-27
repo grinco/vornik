@@ -1,6 +1,6 @@
 ---
 description: Refute a wrong/stale fact in vornik RAG (and optionally store the correction)
-argument-hint: [--chunk-id ID]... [--max N] [--scope TOKEN] [<wrong claim>] [||| <correction>]
+argument-hint: "[--chunk-id ID]... [--max N] [--scope TOKEN] [<wrong claim>] [||| <correction>]"
 ---
 
 # Memory-correct (soft-refute stale RAG facts via vornik)

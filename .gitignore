@@ -64,7 +64,13 @@ __pycache__/
 
 # Superpowers brainstorming visual companion (local mockups)
 .superpowers/
-.claude/worktrees/
+
+# Local Claude Code config + worktrees (per-machine settings, permissions, agent state)
+.claude/
 
 # Phase 2b public-CE export output (scripts/export-public-ce.sh)
 .vornik-export/
+
+# Local working clones used by the CE-export + site-publish scripts
+.vornik-public-clone/
+.vornik-site/

@@ -147,6 +147,12 @@ func (s *Server) CompanionMCPHandler(w http.ResponseWriter, r *http.Request) {
 		// pasted in the bearer. AuthMiddleware still gates the
 		// route on a valid key shape (sk-vornik-*); we just don't
 		// look up the row yet.
+		//
+		// Streamable HTTP clients such as Codex expect a session id
+		// on initialize and echo it on subsequent requests. The
+		// companion endpoint is stateless today, so a stable logical
+		// session token is sufficient.
+		w.Header().Set("Mcp-Session-Id", "vornik-companion")
 		writeJSONRPCResult(w, req.ID, map[string]any{
 			"protocolVersion": companionMCPProtocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
@@ -158,7 +164,7 @@ func (s *Server) CompanionMCPHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	case "notifications/initialized":
 		// Fire-and-forget; no response body per spec.
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusAccepted)
 		return
 	case "tools/list":
 		if _, err := s.resolveCompanionKey(r); err != nil {

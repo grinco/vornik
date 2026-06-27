@@ -982,6 +982,8 @@ type AgentIngestAuditEvent struct {
 	RepoScope         string
 }
 
+const maxCompanionNoteTTLDays = 3650
+
 // IngestCompanionNote ingests inline content deposited via the
 // `remember` MCP tool (LLD 22). Thin wrapper over IngestArtifact
 // that synthesises the companion-shaped provenance:
@@ -1022,6 +1024,9 @@ func (p *Pipeline) IngestCompanionNote(
 	}
 	if sourceName == "" {
 		sourceName = "companion:" + clientKind + ":note"
+	}
+	if ttlDays > maxCompanionNoteTTLDays {
+		return CompanionIngestResult{}, fmt.Errorf("IngestCompanionNote: ttl_days must be <= %d", maxCompanionNoteTTLDays)
 	}
 
 	artifactID := persistence.GenerateID("companion")

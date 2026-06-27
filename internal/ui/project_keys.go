@@ -158,6 +158,10 @@ func (s *Server) handleProjectKeysAction(r *http.Request, data *ProjectKeysData,
 			data.Error = "name is required"
 			return
 		}
+		if _, reserved := persistence.TaskIDFromKeyName(name); reserved {
+			data.Error = "name must not use the reserved \"" + persistence.TaskKeyNamePrefix + "\" prefix"
+			return
+		}
 		secret, err := apikey.Generate(projectID)
 		if err != nil {
 			data.Error = "could not mint key for project: " + err.Error()

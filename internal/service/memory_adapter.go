@@ -137,9 +137,15 @@ func (a *memoryCompanionAdapter) Recall(ctx context.Context, projectID, query st
 // presence + content_class: "ready" when both are present;
 // "pending_embedding" when no embedding yet; "pending_classification"
 // when embedding present but class is empty / "unclassified".
-func (a *memoryCompanionAdapter) RecentMemory(ctx context.Context, projectID string, limit int, repoScope string, strictScope, onlyUntagged bool) ([]api.RecentMemoryEntry, error) {
+func (a *memoryCompanionAdapter) RecentMemory(ctx context.Context, projectID string, limit int, repoScope string, strictScope, onlyUntagged bool, actorKind, actorID string) ([]api.RecentMemoryEntry, error) {
 	if a == nil || a.s == nil {
 		return nil, nil
+	}
+	if actorKind != "" || actorID != "" {
+		ctx = memory.WithRetrievalContext(ctx, &memory.RetrievalContext{
+			ActorKind: actorKind,
+			ActorID:   actorID,
+		})
 	}
 	// SECURITY: route the digest through the firewall, mirroring
 	// Recall. Calling ListRecentChunksWithOptions directly was a
@@ -260,6 +266,12 @@ func (a *memoryCompanionAdapter) Remember(ctx context.Context, in api.RememberIn
 func (a *memoryCompanionAdapter) Correct(ctx context.Context, in api.CorrectInput) (api.CorrectResult, error) {
 	if a == nil || a.repo == nil || a.s == nil {
 		return api.CorrectResult{}, nil
+	}
+	if in.ActorKind != "" || in.ActorID != "" {
+		ctx = memory.WithRetrievalContext(ctx, &memory.RetrievalContext{
+			ActorKind: in.ActorKind,
+			ActorID:   in.ActorID,
+		})
 	}
 	corrector := memory.NewCorrector(a.repo, a.s)
 	var out api.CorrectResult

@@ -114,6 +114,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # SELinux (enforcing) blocks a container from reading the host's
+    # podman socket bind-mounted below. Disabling the label for THIS
+    # container is the safe fix — relabeling the socket itself (:Z)
+    # would change the live socket's context and break the host's own
+    # podman (and any other consumer). This mirrors how vornik already
+    # spawns agents (--security-opt label=disable, see
+    # internal/runtime/manager.go). No-op on non-SELinux hosts.
+    security_opt:
+      - label=disable
     # Port 8080 is the main HTTP API + UI + /metrics. Exposing it on
     # the host at the SAME port matters: agents spawned on the host's
     # podman reach vornik via host.containers.internal:8080 (see
@@ -135,6 +144,12 @@ services:
       # Secrets and env-driven config values expanded into config.yaml
       # via ${VAR} placeholders. vornik's loader runs os.ExpandEnv on
       # every string before parsing — see internal/config/loader.go.
+      # POSTGRES_DB/USER must be passed through too: config/vornik.yaml's
+      # database.name/user are ${POSTGRES_DB}/${POSTGRES_USER}, and
+      # os.ExpandEnv resolves them against THIS container's env — without
+      # these the daemon dies on boot with "database name is required".
+      POSTGRES_DB:              ${POSTGRES_DB:-vornik}
+      POSTGRES_USER:            ${POSTGRES_USER:-vornik}
       VORNIK_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-vornik_dev_password}
       VORNIK_CHAT_API_KEY:      ${VORNIK_CHAT_API_KEY:-}
       VORNIK_AGENT_LLM_API_KEY: ${VORNIK_AGENT_LLM_API_KEY:-}
@@ -165,8 +180,13 @@ services:
       # Persistent data (artifacts, tasks, workspaces). Named volume so
       # `podman-compose down` keeps state; use `down -v` to wipe.
       - vornik-data:/var/lib/vornik
-      # Host podman socket. Rootless path shown; override via
-      # PODMAN_SOCK in .env for rootful setups (/run/podman/podman.sock).
+      # Host podman socket — this is what lets vornik (in a container)
+      # spawn agent containers as siblings on the host's podman.
+      # The literal default below assumes rootless uid 1000; if your uid
+      # differs (check `id -u`), pass the right path via PODMAN_SOCK —
+      # the quickstart one-liner does this for you with
+      # PODMAN_SOCK="$XDG_RUNTIME_DIR/podman/podman.sock". Rootful setups
+      # use PODMAN_SOCK=/run/podman/podman.sock.
       - ${PODMAN_SOCK:-/run/user/1000/podman/podman.sock}:/var/run/podman/podman.sock
     healthcheck:
       test: ["CMD", "/usr/local/bin/vornikctl", "doctor"]

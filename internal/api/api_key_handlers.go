@@ -359,6 +359,37 @@ type updateAllowedWorkflowsRequest struct {
 	AllowedWorkflows []string `json:"allowed_workflows"`
 }
 
+const (
+	maxAPIKeyAllowedWorkflows    = 64
+	maxAPIKeyAllowedWorkflowName = 128
+)
+
+func normalizeAPIKeyAllowedWorkflows(in []string) ([]string, string) {
+	if len(in) == 0 {
+		return []string{}, ""
+	}
+	if len(in) > maxAPIKeyAllowedWorkflows {
+		return nil, "allowed_workflows must contain at most 64 entries"
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, raw := range in {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			return nil, "allowed_workflows entries must be non-empty"
+		}
+		if len(name) > maxAPIKeyAllowedWorkflowName {
+			return nil, "allowed_workflows entries must be ≤ 128 characters"
+		}
+		if _, dup := seen[name]; dup {
+			return nil, "allowed_workflows entries must be unique"
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out, ""
+}
+
 // UpdateAPIKeyAllowedWorkflows handles PUT /api/v1/projects/{id}/keys/{kid}/workflows.
 // Replaces the key's allowed_workflows list wholesale. Add / remove
 // semantics live in the CLI (`vornikctl key update --add-workflow`
@@ -408,12 +439,15 @@ func (s *Server) UpdateAPIKeyAllowedWorkflows(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusNotFound, "NOT_FOUND", "api key not found in this project")
 		return
 	}
-	// Defensive: nil → empty slice so the encoder doesn't write
-	// JSON "null" into the column. Both forms round-trip cleanly
-	// today but the slice form is the documented neutral state.
-	allowed := req.AllowedWorkflows
-	if allowed == nil {
-		allowed = []string{}
+	if current.RevokedAt != nil {
+		respondError(w, http.StatusConflict, "ALREADY_REVOKED",
+			"cannot update workflows for a revoked key")
+		return
+	}
+	allowed, validationErr := normalizeAPIKeyAllowedWorkflows(req.AllowedWorkflows)
+	if validationErr != "" {
+		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", validationErr)
+		return
 	}
 	if err := s.apiKeyRepo.UpdateAllowedWorkflows(r.Context(), keyID, allowed); err != nil {
 		s.logger.Warn().Err(err).Str("project", projectID).Str("key", keyID).
@@ -496,6 +530,11 @@ func (s *Server) UpdateAllowPushHandler(w http.ResponseWriter, r *http.Request, 
 	}
 	if current == nil {
 		respondError(w, http.StatusNotFound, "NOT_FOUND", "api key not found in this project")
+		return
+	}
+	if current.RevokedAt != nil {
+		respondError(w, http.StatusConflict, "ALREADY_REVOKED",
+			"cannot update allow_push for a revoked key")
 		return
 	}
 	if err := s.apiKeyRepo.UpdateAllowPush(r.Context(), keyID, req.AllowPush); err != nil {

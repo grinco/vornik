@@ -82,6 +82,29 @@ func TestServer_CallMCPTool_RejectsTaskHeaderMismatch(t *testing.T) {
 	assert.Empty(t, f.lastTool)
 }
 
+func TestServer_CallMCPTool_RejectsExecutionHeaderMismatch(t *testing.T) {
+	f := &fakeMCPExecutor{executeRet: "must not run"}
+	execRepo := &mocks.MockExecutionRepository{
+		GetFunc: func(_ context.Context, id string) (*persistence.Execution, error) {
+			return &persistence.Execution{ID: id, TaskID: "task-other", ProjectID: "p"}, nil
+		},
+	}
+	server := NewServer(WithLogger(zerolog.Nop()), WithMCPExecutor(f), WithExecutionRepository(execRepo))
+	row := &persistence.APIKey{Name: persistence.TaskKeyNamePrefix + "task-bound"}
+	id := &auth.Identity{Extra: map[string]any{auth.ExtraDBKeyRow: row}}
+	ctx := context.WithValue(context.Background(), identityKey, id)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/p/mcp/tools/call",
+		strings.NewReader(`{"name":"mcp__broker__place_order"}`)).WithContext(ctx)
+	req.Header.Set("X-Task-ID", "task-bound")
+	req.Header.Set("X-Execution-ID", "exec-other")
+	rec := httptest.NewRecorder()
+
+	server.CallMCPTool(rec, req)
+
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Empty(t, f.lastTool)
+}
+
 func TestServer_CallMCPTool_GateFailureBlocksDispatch(t *testing.T) {
 	f := &fakeMCPExecutor{executeRet: "must not run"}
 	repo := &mocks.MockTaskRepository{

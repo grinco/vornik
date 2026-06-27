@@ -118,7 +118,7 @@ type MemoryCompanionAdapter interface {
 	// `OR repo_scope IS NULL` clause). When true AND repoScope is
 	// non-empty, NULL-scoped chunks are excluded — operators get a
 	// real strict-scope view without retagging the leak surface.
-	RecentMemory(ctx context.Context, projectID string, limit int, repoScope string, strictScope, onlyUntagged bool) ([]RecentMemoryEntry, error)
+	RecentMemory(ctx context.Context, projectID string, limit int, repoScope string, strictScope, onlyUntagged bool, actorKind, actorID string) ([]RecentMemoryEntry, error)
 
 	// ListRepoScopes returns the distinct repo_scope values in the
 	// project with chunk counts per scope. Powers the companion
@@ -505,7 +505,16 @@ func (s *Server) companionToolRecentMemory(ctx context.Context, key *persistence
 		args.Limit = 20
 	}
 
-	entries, err := s.memoryCompanion.RecentMemory(ctx, key.ProjectID, args.Limit, strings.TrimSpace(args.RepoScope), args.StrictScope, args.OnlyUntagged)
+	entries, err := s.memoryCompanion.RecentMemory(
+		ctx,
+		key.ProjectID,
+		args.Limit,
+		strings.TrimSpace(args.RepoScope),
+		args.StrictScope,
+		args.OnlyUntagged,
+		companionActorKind(key),
+		key.ID,
+	)
 	if err != nil {
 		return "", fmt.Errorf("recent_memory failed: %w", err)
 	}
@@ -580,6 +589,7 @@ func (s *Server) companionToolListScopes(ctx context.Context, key *persistence.A
 // ---- tool: remember --------------------------------------------------
 
 const rememberMaxContentBytes = 64 * 1024 // see LLD 22 §Rate limits
+const memoryCorrectMaxChunkIDs = 20
 
 type rememberArgs struct {
 	Content    string `json:"content"`
@@ -612,8 +622,12 @@ type rememberArgs struct {
 // at the first rememberMaxTags entries. Bounding here keeps the
 // source_name suffix small.
 const (
-	rememberMaxTags   = 10
-	rememberMaxTagLen = 32
+	rememberMaxTags            = 10
+	rememberMaxTagLen          = 32
+	rememberMaxTTLDays         = 3650
+	rememberMaxSourceNameBytes = 512
+	rememberMaxRepoScopeBytes  = 512
+	rememberMaxClassBytes      = 128
 )
 
 // normalizeTags trims, drops empties, truncates each entry to
@@ -717,6 +731,20 @@ func (s *Server) companionToolRemember(ctx context.Context, key *persistence.API
 	}
 
 	sourceName := strings.TrimSpace(args.SourceName)
+	className := strings.TrimSpace(args.Class)
+	repoScope := strings.TrimSpace(args.RepoScope)
+	if args.TTLDays > rememberMaxTTLDays {
+		return "", fmt.Errorf("ttl_days must be <= %d", rememberMaxTTLDays)
+	}
+	if len(sourceName) > rememberMaxSourceNameBytes {
+		return "", fmt.Errorf("source_name must be <= %d bytes", rememberMaxSourceNameBytes)
+	}
+	if len(className) > rememberMaxClassBytes {
+		return "", fmt.Errorf("class must be <= %d bytes", rememberMaxClassBytes)
+	}
+	if len(repoScope) > rememberMaxRepoScopeBytes {
+		return "", fmt.Errorf("repo_scope must be <= %d bytes", rememberMaxRepoScopeBytes)
+	}
 
 	// LLD-22 `tags`: encode as a `;tags=a,b` suffix on source_name so
 	// they're observable + LIKE-queryable without a migration. When
@@ -731,6 +759,9 @@ func (s *Server) companionToolRemember(ctx context.Context, key *persistence.API
 		}
 		sourceName = applyTagsToSourceName(sourceName, tags)
 	}
+	if len(sourceName) > rememberMaxSourceNameBytes {
+		return "", fmt.Errorf("source_name with tags must be <= %d bytes", rememberMaxSourceNameBytes)
+	}
 
 	res, err := s.memoryCompanion.Remember(ctx, RememberInput{
 		ProjectID:  key.ProjectID,
@@ -738,9 +769,9 @@ func (s *Server) companionToolRemember(ctx context.Context, key *persistence.API
 		KeyID:      key.ID,
 		SourceName: sourceName,
 		Content:    args.Content,
-		Class:      strings.TrimSpace(args.Class),
+		Class:      className,
 		TTLDays:    args.TTLDays,
-		RepoScope:  strings.TrimSpace(args.RepoScope),
+		RepoScope:  repoScope,
 	})
 	if err != nil {
 		return "", fmt.Errorf("remember failed: %w", err)
@@ -765,6 +796,8 @@ type CorrectInput struct {
 	Correction string
 	RepoScope  string
 	MaxRefutes int
+	ActorKind  string
+	ActorID    string
 	// ChunkIDs, when non-empty, switches Correct to surgical by-ID
 	// refute: exactly these chunks are flipped to refuted (via
 	// MarkRefutedByIDs), bypassing the claim search. Use when the
@@ -850,6 +883,8 @@ func (s *Server) companionToolMemoryCorrect(ctx context.Context, key *persistenc
 		Correction: args.Correction,
 		RepoScope:  strings.TrimSpace(args.RepoScope),
 		MaxRefutes: args.MaxRefutes,
+		ActorKind:  companionActorKind(key),
+		ActorID:    key.ID,
 		ChunkIDs:   chunkIDs,
 	})
 	if err != nil {
@@ -894,6 +929,9 @@ func normalizeChunkIDs(in []string) []string {
 		}
 		seen[id] = true
 		out = append(out, id)
+		if len(out) >= memoryCorrectMaxChunkIDs {
+			break
+		}
 	}
 	return out
 }

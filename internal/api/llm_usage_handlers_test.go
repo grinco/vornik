@@ -40,6 +40,38 @@ func TestIngestLLMUsage_RejectsTaskKeyWritingOtherTask(t *testing.T) {
 	}
 }
 
+func TestIngestLLMUsage_RejectsExecutionFromOtherTask(t *testing.T) {
+	repo := &capturingLLMUsageRepo{}
+	taskRepo := &mocks.MockTaskRepository{
+		GetFunc: func(_ context.Context, id string) (*persistence.Task, error) {
+			return &persistence.Task{ID: id, ProjectID: "proj-a"}, nil
+		},
+	}
+	execRepo := &mocks.MockExecutionRepository{
+		GetFunc: func(_ context.Context, id string) (*persistence.Execution, error) {
+			return &persistence.Execution{ID: id, TaskID: "task-other", ProjectID: "proj-a"}, nil
+		},
+	}
+	server := NewServer(
+		WithLogger(zerolog.Nop()),
+		WithLLMUsageRepository(repo),
+		WithTaskRepository(taskRepo),
+		WithExecutionRepository(execRepo),
+	)
+
+	body := `{"usage_id":"u1","project_id":"proj-a","task_id":"task-X","execution_id":"exec-other","role":"coder"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/llm-usage", bytes.NewBufferString(body))
+	req = req.WithContext(taskScopedKeyCtx(req.Context(), "task-X", "proj-a"))
+	rec := httptest.NewRecorder()
+	server.IngestLLMUsage(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s, want 403", rec.Code, rec.Body.String())
+	}
+	if repo.row != nil {
+		t.Fatalf("Upsert called despite execution/task mismatch: %#v", repo.row)
+	}
+}
+
 // TestIngestLLMUsage_AcceptsTaskKeyWritingOwnTask — the same per-task key
 // writing its OWN task's usage row succeeds (B3).
 func TestIngestLLMUsage_AcceptsTaskKeyWritingOwnTask(t *testing.T) {

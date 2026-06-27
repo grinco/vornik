@@ -132,6 +132,38 @@ func TestIngestToolAudit_RejectsTaskKeyWritingOtherTask(t *testing.T) {
 	}
 }
 
+func TestIngestToolAudit_RejectsExecutionFromOtherTask(t *testing.T) {
+	repo := &capturingToolAuditRepo{}
+	taskRepo := &mocks.MockTaskRepository{
+		GetFunc: func(_ context.Context, id string) (*persistence.Task, error) {
+			return &persistence.Task{ID: id, ProjectID: "proj-a"}, nil
+		},
+	}
+	execRepo := &mocks.MockExecutionRepository{
+		GetFunc: func(_ context.Context, id string) (*persistence.Execution, error) {
+			return &persistence.Execution{ID: id, TaskID: "task-other", ProjectID: "proj-a"}, nil
+		},
+	}
+	server := NewServer(
+		WithLogger(zerolog.Nop()),
+		WithToolAuditRepository(repo),
+		WithTaskRepository(taskRepo),
+		WithExecutionRepository(execRepo),
+	)
+
+	body := `{"audit_id":"a1","project_id":"proj-a","task_id":"task-X","execution_id":"exec-other","tool_name":"file_read"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/tool-audit", bytes.NewBufferString(body))
+	req = req.WithContext(taskScopedKeyCtx(req.Context(), "task-X", "proj-a"))
+	rec := httptest.NewRecorder()
+	server.IngestToolAudit(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d body=%s, want 403", rec.Code, rec.Body.String())
+	}
+	if repo.logged != nil {
+		t.Fatalf("Log called despite execution/task mismatch: %#v", repo.logged)
+	}
+}
+
 // TestIngestToolAudit_AcceptsTaskKeyWritingOwnTask — the same per-task
 // key writing its OWN task's row succeeds (B3).
 func TestIngestToolAudit_AcceptsTaskKeyWritingOwnTask(t *testing.T) {

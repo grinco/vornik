@@ -136,12 +136,15 @@ func TestCompanionMCP_Initialize(t *testing.T) {
 // with the exact tool names the LLD pins. Renaming any of these is
 // a contract break for every shipped plugin manifest.
 func TestCompanionMCP_ToolsList(t *testing.T) {
-	srv, _, _ := newCompanionMCPServer(t)
+	srv, keyRepo, _ := newCompanionMCPServer(t)
+	raw, _ := seedCompanionKey(t, keyRepo, "alpha", []string{"wf-alpha"})
 	req := mcpRequest(t, "tools/list", nil)
+	req = withCompanionBearer(req, raw)
 	rec := httptest.NewRecorder()
 	srv.CompanionMCPHandler(rec, req)
 
 	resp := decodeJSONRPC(t, rec.Body.Bytes())
+	require.Nil(t, resp.Error)
 	result, _ := resp.Result.(map[string]any)
 	tools, _ := result["tools"].([]any)
 	got := make(map[string]bool)
@@ -153,6 +156,25 @@ func TestCompanionMCP_ToolsList(t *testing.T) {
 	for _, expected := range []string{"delegate", "status", "result", "cancel", "list", "catalog"} {
 		assert.Truef(t, got[expected], "tools/list missing tool %q", expected)
 	}
+}
+
+func TestCompanionMCP_ToolsList_NonCompanionKeyAuthFails(t *testing.T) {
+	srv, keyRepo, _ := newCompanionMCPServer(t)
+	raw, err := apikey.Generate("alpha")
+	require.NoError(t, err)
+	require.NoError(t, keyRepo.Create(context.Background(), &persistence.APIKey{
+		ID: "akey-legacy", ProjectID: "alpha", Name: "legacy",
+		KeyHash: apikey.Hash(raw), KeyPrefix: apikey.DisplayPrefix(raw),
+	}))
+
+	req := mcpRequest(t, "tools/list", nil)
+	req = withCompanionBearer(req, raw)
+	rec := httptest.NewRecorder()
+	srv.CompanionMCPHandler(rec, req)
+
+	resp := decodeJSONRPC(t, rec.Body.Bytes())
+	require.NotNil(t, resp.Error)
+	assert.Contains(t, resp.Error.Message, "not a companion-scoped key")
 }
 
 func TestCompanionMCP_UnknownMethod_ReturnsJSONRPCError(t *testing.T) {
@@ -999,6 +1021,8 @@ type fakeMemoryCompanion struct {
 		RepoScope    string
 		StrictScope  bool
 		OnlyUntagged bool
+		ActorKind    string
+		ActorID      string
 	}
 	recentMemoryReturn []RecentMemoryEntry
 	recentMemoryErr    error
@@ -1032,14 +1056,16 @@ func (f *fakeMemoryCompanion) Remember(_ context.Context, in RememberInput) (Rem
 	return f.rememberOut, nil
 }
 
-func (f *fakeMemoryCompanion) RecentMemory(_ context.Context, projectID string, limit int, repoScope string, strictScope, onlyUntagged bool) ([]RecentMemoryEntry, error) {
+func (f *fakeMemoryCompanion) RecentMemory(_ context.Context, projectID string, limit int, repoScope string, strictScope, onlyUntagged bool, actorKind, actorID string) ([]RecentMemoryEntry, error) {
 	f.recentMemoryCalls = append(f.recentMemoryCalls, struct {
 		ProjectID    string
 		Limit        int
 		RepoScope    string
 		StrictScope  bool
 		OnlyUntagged bool
-	}{projectID, limit, repoScope, strictScope, onlyUntagged})
+		ActorKind    string
+		ActorID      string
+	}{projectID, limit, repoScope, strictScope, onlyUntagged, actorKind, actorID})
 	if f.recentMemoryErr != nil {
 		return nil, f.recentMemoryErr
 	}
@@ -1435,6 +1461,90 @@ func TestCompanionMCP_Remember_ContentCap(t *testing.T) {
 	assert.Contains(t, text, "exceeds")
 }
 
+func TestCompanionMCP_Remember_RejectsOversizedTTL(t *testing.T) {
+	srv, keyRepo, _ := newCompanionMCPServer(t)
+	fake := &fakeMemoryCompanion{}
+	srv.memoryCompanion = fake
+	raw, _ := seedCompanionKeyWithCaps(t, keyRepo, "alpha", nil, true, true)
+
+	req := mcpRequest(t, "tools/call", map[string]any{
+		"name": "remember",
+		"arguments": map[string]any{
+			"content":  "retention test",
+			"ttl_days": rememberMaxTTLDays + 1,
+		},
+	})
+	req = withCompanionBearer(req, raw)
+	rec := httptest.NewRecorder()
+	srv.CompanionMCPHandler(rec, req)
+
+	text, isErr := decodeToolText(t, decodeJSONRPC(t, rec.Body.Bytes()))
+	require.True(t, isErr)
+	assert.Contains(t, text, "ttl_days")
+	assert.Empty(t, fake.rememberCalls)
+}
+
+func TestCompanionMCP_Remember_RejectsOversizedMetadata(t *testing.T) {
+	cases := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{
+			name: "source_name",
+			args: map[string]any{
+				"source_name": strings.Repeat("s", rememberMaxSourceNameBytes+1),
+			},
+			want: "source_name",
+		},
+		{
+			name: "source_name_with_tags",
+			args: map[string]any{
+				"source_name": strings.Repeat("s", rememberMaxSourceNameBytes-6),
+				"tags":        []string{"tag"},
+			},
+			want: "source_name with tags",
+		},
+		{
+			name: "class",
+			args: map[string]any{
+				"class": strings.Repeat("c", rememberMaxClassBytes+1),
+			},
+			want: "class",
+		},
+		{
+			name: "repo_scope",
+			args: map[string]any{
+				"repo_scope": strings.Repeat("r", rememberMaxRepoScopeBytes+1),
+			},
+			want: "repo_scope",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, keyRepo, _ := newCompanionMCPServer(t)
+			fake := &fakeMemoryCompanion{}
+			srv.memoryCompanion = fake
+			raw, _ := seedCompanionKeyWithCaps(t, keyRepo, "alpha", nil, true, true)
+			tc.args["content"] = "metadata bounds test"
+
+			req := mcpRequest(t, "tools/call", map[string]any{
+				"name":      "remember",
+				"arguments": tc.args,
+			})
+			req = withCompanionBearer(req, raw)
+			rec := httptest.NewRecorder()
+			srv.CompanionMCPHandler(rec, req)
+
+			text, isErr := decodeToolText(t, decodeJSONRPC(t, rec.Body.Bytes()))
+			require.True(t, isErr, "oversized metadata should fail: %s", text)
+			assert.Contains(t, text, tc.want)
+			assert.Empty(t, fake.rememberCalls)
+		})
+	}
+}
+
 // TestCompanionMCP_RecentMemory_DeniedWithoutMemoryRead — gate at
 // the tool boundary, same shape as recall.
 func TestCompanionMCP_RecentMemory_DeniedWithoutMemoryRead(t *testing.T) {
@@ -1503,6 +1613,8 @@ func TestCompanionMCP_RecentMemory_HappyPath(t *testing.T) {
 	require.Len(t, fake.recentMemoryCalls, 1)
 	assert.Equal(t, "alpha", fake.recentMemoryCalls[0].ProjectID)
 	assert.Equal(t, 5, fake.recentMemoryCalls[0].Limit)
+	assert.Equal(t, "companion:claude-code", fake.recentMemoryCalls[0].ActorKind)
+	assert.NotEmpty(t, fake.recentMemoryCalls[0].ActorID)
 }
 
 // TestCompanionMCP_RecentMemory_LimitClamp — limits above the tool
@@ -1805,6 +1917,8 @@ func TestCompanionMCP_MemoryCorrect_HappyPath_RefuteAndCorrect(t *testing.T) {
 	assert.Equal(t, "legacy_db IS prod and must never be dropped", got.Correction)
 	assert.Equal(t, 2, got.MaxRefutes)
 	assert.Equal(t, "github.com/grinco/vornik", got.RepoScope)
+	assert.Equal(t, "companion:claude-code", got.ActorKind)
+	assert.NotEmpty(t, got.ActorID)
 }
 
 func TestCompanionMCP_MemoryCorrect_RefuteOnly(t *testing.T) {
@@ -1906,6 +2020,31 @@ func TestCompanionMCP_MemoryCorrect_ByID(t *testing.T) {
 	assert.Equal(t, "alpha", got.ProjectID)
 	assert.Equal(t, []string{"chunk_a", "chunk_b"}, got.ChunkIDs, "dups + blanks must be normalised")
 	assert.Empty(t, got.WrongClaim, "by-id mode does not require a claim")
+}
+
+func TestCompanionMCP_MemoryCorrect_ByID_CapsChunkIDs(t *testing.T) {
+	srv, keyRepo, _ := newCompanionMCPServer(t)
+	fake := &fakeMemoryCompanion{correctReturn: CorrectResult{ByID: true, RefutedCount: memoryCorrectMaxChunkIDs}}
+	srv.memoryCompanion = fake
+	raw, _ := seedCompanionKeyWithCaps(t, keyRepo, "alpha", nil, true, true)
+
+	ids := make([]any, 0, memoryCorrectMaxChunkIDs+5)
+	for i := 0; i < memoryCorrectMaxChunkIDs+5; i++ {
+		ids = append(ids, fmt.Sprintf("chunk_%02d", i))
+	}
+	req := mcpRequest(t, "tools/call", map[string]any{
+		"name":      "memory_correct",
+		"arguments": map[string]any{"chunk_ids": ids},
+	})
+	req = withCompanionBearer(req, raw)
+	rec := httptest.NewRecorder()
+	srv.CompanionMCPHandler(rec, req)
+
+	text, isErr := decodeToolText(t, decodeJSONRPC(t, rec.Body.Bytes()))
+	require.False(t, isErr, "by-id cap: %s", text)
+	require.Len(t, fake.correctCalls, 1)
+	assert.Len(t, fake.correctCalls[0].ChunkIDs, memoryCorrectMaxChunkIDs)
+	assert.Equal(t, "chunk_19", fake.correctCalls[0].ChunkIDs[memoryCorrectMaxChunkIDs-1])
 }
 
 func TestCompanionMCP_MemoryCorrect_ByID_PartialFlipNote(t *testing.T) {

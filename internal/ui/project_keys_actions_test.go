@@ -35,6 +35,19 @@ func TestHandleProjectKeysAction_CreateMissingNameErrors(t *testing.T) {
 	assert.Empty(t, repo.rows, "no key should have been minted")
 }
 
+func TestHandleProjectKeysAction_CreateRejectsReservedTaskKeyPrefix(t *testing.T) {
+	repo := &uiMemAPIKeyRepo{}
+	srv := NewServer(WithAPIKeyRepository(repo))
+	req := newKeysActionRequest(t, url.Values{
+		"action": {"create"},
+		"name":   {persistence.TaskKeyNamePrefix + "task_20260627120000_deadbeef"},
+	})
+	data := &ProjectKeysData{}
+	srv.handleProjectKeysAction(req, data, "p1")
+	assert.Contains(t, data.Error, "reserved")
+	assert.Empty(t, repo.rows, "reserved task-key-shaped names must not mint long-lived UI keys")
+}
+
 // TestHandleProjectKeysAction_RotateMissingKeyIDErrors — the form
 // must carry key_id.
 func TestHandleProjectKeysAction_RotateMissingKeyIDErrors(t *testing.T) {

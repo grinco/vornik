@@ -115,6 +115,11 @@ func (s *Server) IngestLLMUsage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := s.validateExecutionTaskBinding(r.Context(), req.TaskID, req.ExecutionID); err != nil {
+		respondError(w, http.StatusForbidden, "FORBIDDEN",
+			"execution_id does not belong to task_id")
+		return
+	}
 
 	// taskID / executionID can be optional (dispatcher path doesn't
 	// have an execution row), but for streaming from a step they're

@@ -75,7 +75,10 @@ The full documentation site is published at <https://docs.vornik.io>.
 
 - **Go** — see [`go.mod`](go.mod) for the minimum version
 - **Podman** — agents run in isolated containers
-- **PostgreSQL** — durable task and project state
+- **PostgreSQL with [pgvector](https://github.com/pgvector/pgvector)** — durable
+  task and project state; pgvector backs the memory/RAG vector search (the
+  `pgvector/pgvector` image ships it). SQLite runs the core but cannot do vector
+  search.
 - **An LLM provider** — a self-hosted open-weight endpoint, or a cloud API
 
 ## Build & test

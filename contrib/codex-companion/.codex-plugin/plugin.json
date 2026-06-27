@@ -1,0 +1,36 @@
+{
+  "name": "codex-companion",
+  "version": "0.7.0+codex.20260627202752",
+  "description": "Vornik async-offload companion for Codex. Delegate reviews, audits, validations, research, summarization, and project RAG memory work to a vornik daemon over MCP.",
+  "author": {
+    "name": "vornik"
+  },
+  "homepage": "https://vornik.io",
+  "repository": "https://github.com/grinco/vornik",
+  "license": "Apache-2.0",
+  "keywords": [
+    "vornik",
+    "codex",
+    "async",
+    "delegation",
+    "code-review",
+    "agents",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Vornik Companion for Codex",
+    "shortDescription": "Delegate async agent work from Codex to vornik.",
+    "longDescription": "Connects Codex to the vornik companion MCP endpoint so Codex can queue long-running reviews, audits, validation, research, summarization, and RAG memory operations without doing all work inline.",
+    "developerName": "vornik",
+    "category": "Development",
+    "capabilities": [
+      "mcp",
+      "skills",
+      "async-delegation",
+      "project-memory"
+    ],
+    "defaultPrompt": "Use the vornik companion MCP tools when work is large, async-friendly, or should be preserved in project memory. Recall before delegating research or review work."
+  },
+  "mcpServers": "./.mcp.json"
+}

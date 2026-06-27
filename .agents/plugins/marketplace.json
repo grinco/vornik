@@ -1,0 +1,20 @@
+{
+  "name": "vornik",
+  "interface": {
+    "displayName": "Vornik"
+  },
+  "plugins": [
+    {
+      "name": "codex-companion",
+      "source": {
+        "source": "local",
+        "path": "./contrib/codex-companion"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Development"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 ---
 description: Bulk-ingest local files into vornik's project RAG memory via the companion-rag-ingest workflow, without burning client tokens on file content
 allowed-tools: Bash
-argument-hint: [--scope <token>] [--tag <label>] [--max-file-bytes <n>] <path1> [path2 ...]
+argument-hint: "[--scope <token>] [--tag <label>] [--max-file-bytes <n>] <path1> [path2 ...]"
 ---
 
 # Bulk-ingest local files into vornik RAG memory

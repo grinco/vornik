@@ -123,6 +123,7 @@ func TestCompanionMCP_Initialize(t *testing.T) {
 	srv.CompanionMCPHandler(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "vornik-companion", rec.Header().Get("Mcp-Session-Id"))
 	resp := decodeJSONRPC(t, rec.Body.Bytes())
 	require.Nil(t, resp.Error)
 	result, ok := resp.Result.(map[string]any)
@@ -130,6 +131,17 @@ func TestCompanionMCP_Initialize(t *testing.T) {
 	assert.Equal(t, companionMCPProtocolVersion, result["protocolVersion"])
 	srvInfo, _ := result["serverInfo"].(map[string]any)
 	assert.Equal(t, companionMCPServerName, srvInfo["name"])
+}
+
+func TestCompanionMCP_InitializedNotificationAccepted(t *testing.T) {
+	srv, _, _ := newCompanionMCPServer(t)
+	req := mcpRequest(t, "notifications/initialized", nil)
+	req.Header.Set("Mcp-Session-Id", "vornik-companion")
+	rec := httptest.NewRecorder()
+	srv.CompanionMCPHandler(rec, req)
+
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Empty(t, rec.Body.String())
 }
 
 // TestCompanionMCP_ToolsList — the 6-tool palette must be present

@@ -1,6 +1,6 @@
 ---
 description: Deposit a note into this project's RAG memory via vornik
-argument-hint: [--scope TOKEN] [--class C] [--ttl DAYS] <free-form note body>
+argument-hint: "[--scope TOKEN] [--class C] [--ttl DAYS] <free-form note body>"
 ---
 
 # Remember (deposit into vornik RAG)

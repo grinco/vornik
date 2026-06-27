@@ -1460,7 +1460,7 @@ func TestProposedLongOpenSymbols_OnlyBuyOpens(t *testing.T) {
 // a CV artifact that names an employer absent from the authoritative resume
 // must return a violation naming the fabricated token.
 func TestVerify_CVClaimsGrounded_FlagsFabricatedEmployer(t *testing.T) {
-	resume := "Janka Grinco. EaseIT s.r.o. (2023-present). Scrum Alliance CSP-SM."
+	resume := "Jane Mitchell. Initech s.r.o. (2023-present). Scrum Alliance CSP-SM."
 	cv := "Senior Delivery Lead at Globex Corp (2019-2022)." // Globex not in resume
 	v := evalCVClaims(cv, resume)
 	require.NotNil(t, v, "expected violation for fabricated employer")
@@ -1470,8 +1470,8 @@ func TestVerify_CVClaimsGrounded_FlagsFabricatedEmployer(t *testing.T) {
 // TestVerify_CVClaimsGrounded_GroundedCVPasses — when all extracted
 // employer/org tokens appear in the resume the check must return nil.
 func TestVerify_CVClaimsGrounded_GroundedCVPasses(t *testing.T) {
-	resume := "Janka Grinco. EaseIT s.r.o. (2023-present). Scrum Alliance CSP-SM."
-	cv := "CV for Janka Grinco. Employment: EaseIT s.r.o. (2023-present). Scrum Alliance."
+	resume := "Jane Mitchell. Initech s.r.o. (2023-present). Scrum Alliance CSP-SM."
+	cv := "CV for Jane Mitchell. Employment: Initech s.r.o. (2023-present). Scrum Alliance."
 	v := evalCVClaims(cv, resume)
 	require.Nil(t, v, "grounded CV must not produce a violation")
 }
@@ -1480,7 +1480,7 @@ func TestVerify_CVClaimsGrounded_GroundedCVPasses(t *testing.T) {
 // (case "cv_claims_grounded") fires when an artifact body contains
 // ungrounded hard facts. The check is warn-tier by default.
 func TestVerify_CVClaimsGrounded_RunDispatch(t *testing.T) {
-	resume := "Janka Grinco. EaseIT s.r.o. (2023-present). Scrum Alliance CSP-SM."
+	resume := "Jane Mitchell. Initech s.r.o. (2023-present). Scrum Alliance CSP-SM."
 	cv := "Senior Delivery Lead at Globex Corp (2019-2022)."
 
 	withBodyReader(t, func(a *persistence.Artifact) ([]byte, error) {

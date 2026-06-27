@@ -1612,7 +1612,7 @@ func resolveResumeFromFile(params map[string]any, projectDir string) string {
 //
 // Hard-fact classes (conservative to avoid false positives):
 //   - Capitalised multi-word organisation tokens (≥2 consecutive Title-case
-//     words), e.g. "Globex Corp", "EaseIT s.r.o." — captures employers,
+//     words), e.g. "Globex Corp", "Initech s.r.o." — captures employers,
 //     universities, certifying bodies.
 //   - Known certification tokens: PMP, CSM, CSP-SM, CSPO, ACP, PMI, PRINCE2,
 //     SAFe, AWS, GCP, Azure (standalone uppercase tokens near "cert" context).

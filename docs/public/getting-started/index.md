@@ -1,7 +1,7 @@
 ---
 sources:
     - path: README.md
-      sha256: 44587176fb112be9051a86ca50f4cd4ad539cd6afca1407cf67c6691ba2f4917
+      sha256: ccc2ddd7f6723367d1dc68223cab138015ab78ecb205d53a39515a2e7fe01130
 ---
 # Getting Started
 
@@ -33,13 +33,41 @@ defaults are safe and local-first.
 - **Go 1.25+** — to build the daemon and CLI from source.
 - **Podman** (rootless recommended) — vornik runs every agent in its own
   Podman container for isolation. Docker is not used.
-- **PostgreSQL** — vornik keeps all durable state (queues, tasks,
-  executions, artifacts, memory) in PostgreSQL so work survives restarts.
+- **PostgreSQL with the [pgvector](https://github.com/pgvector/pgvector)
+  extension** — vornik keeps all durable state (queues, tasks, executions,
+  artifacts, memory) in PostgreSQL so work survives restarts. pgvector backs
+  the memory/RAG semantic search — the recommended `pgvector/pgvector` image
+  ships it, and vornik enables the extension on first boot. SQLite is
+  supported for the orchestration core, but it **cannot do vector search**, so
+  memory/RAG falls back to keyword search only (see [Memory &
+  RAG](../features/memory-rag.md)).
 - **Make** — convenience build targets.
 
 !!! note
     vornik is **local-first**: the daemon and all agent containers run on
     the same host. There is no cloud service to sign up for.
+
+## A 60-second playground
+
+If you just want to kick the tyres, skip the manual build below — one command
+stands up a complete playground (PostgreSQL + pgvector **and** the daemon) in
+containers via Podman Compose. It installs Podman Compose if it is missing,
+configures the host so the daemon can spawn agent containers, brings everything
+up, and prints the URL to open when it is ready:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/grinco/vornik/main/deployments/podman/quickstart.sh | bash
+```
+
+The daemon creates and migrates its own schema on first boot, so all you supply
+is an empty database — the script provisions it. When it finishes, open
+<http://localhost:8080/ui>. To run real tasks, add an LLM key to
+`deployments/podman/.env` and re-run `podman compose up -d vornik`. See the
+[Podman Compose deployment notes](https://github.com/grinco/vornik/tree/main/deployments/podman)
+for tunables and the runtime model.
+
+This is the fastest way to get a working instance; the rest of this page builds
+the same thing by hand so you understand each piece.
 
 ## Install
 
@@ -88,8 +116,12 @@ export VORNIK_DATABASE_PASSWORD=vornik
 ```
 
 vornik creates and migrates its schema on first start, so an empty
-database is all you need. For a full list of settings and the YAML
-equivalent, see the [Configuration reference](../reference/configuration.md).
+database is all you need — point it at a fresh database and let it migrate;
+do not pre-load a schema dump. Use a PostgreSQL image with **pgvector**
+(e.g. `pgvector/pgvector`) so the memory/RAG vector search works; vornik
+enables the extension during that first-boot migration. For a full list of
+settings and the YAML equivalent, see the
+[Configuration reference](../reference/configuration.md).
 
 ## Start the daemon
 

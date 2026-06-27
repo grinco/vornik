@@ -161,6 +161,10 @@ func (s *Server) CompanionMCPHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	case "tools/list":
+		if _, err := s.resolveCompanionKey(r); err != nil {
+			writeJSONRPCError(w, req.ID, -32000, "auth: "+err.Error())
+			return
+		}
 		writeJSONRPCResult(w, req.ID, map[string]any{"tools": companionToolDefs()})
 		return
 	case "tools/call":
@@ -443,8 +447,13 @@ func (s *Server) handleCompanionToolCall(w http.ResponseWriter, r *http.Request,
 	if v := r.Header.Get("X-Task-ID"); v != "" {
 		ctx = context.WithValue(ctx, mcp.TaskIDHeaderKey{}, v)
 	}
-	if v := r.Header.Get("X-Execution-ID"); v != "" {
-		ctx = context.WithValue(ctx, mcp.ExecutionIDHeaderKey{}, v)
+	executionID := r.Header.Get("X-Execution-ID")
+	if err := s.validateExecutionTaskBinding(ctx, r.Header.Get("X-Task-ID"), executionID); err != nil {
+		writeJSONRPCError(w, id, -32000, "auth: X-Execution-ID does not belong to X-Task-ID")
+		return
+	}
+	if executionID != "" {
+		ctx = context.WithValue(ctx, mcp.ExecutionIDHeaderKey{}, executionID)
 	}
 	var (
 		result  string

@@ -238,14 +238,22 @@ type SearchOptions struct {
 // default policies that allows everything but writes an
 // audit row per result so operators see what the firewall
 // would block under stricter policies. Callers that have
-// operator metadata to attach should use RecallWithContext
-// directly.
+// operator metadata can attach RetrievalContext to ctx; the
+// firewall pass below will pick it up.
 func (s *Searcher) SearchWithOptions(ctx context.Context, projectID, query string, opts SearchOptions) ([]SearchResult, error) {
 	results, err := s.searchInternal(ctx, projectID, query, opts)
 	if err != nil {
 		return nil, err
 	}
-	return s.applyFirewall(ctx, projectID, results, memoryfirewall.RequestContext{}), nil
+	reqCtx := memoryfirewall.RequestContext{Purpose: memoryfirewall.PurposeOperational}
+	if rc := RetrievalContextFromContext(ctx); rc.ActorKind != "" || rc.ActorID != "" || rc.Role != "" {
+		reqCtx.Role = rc.ActorKind
+		if reqCtx.Role == "" {
+			reqCtx.Role = rc.Role
+		}
+		reqCtx.OperatorID = rc.ActorID
+	}
+	return s.applyFirewall(ctx, projectID, results, reqCtx), nil
 }
 
 // Search executes a hybrid (or FTS-only) search for the given query scoped

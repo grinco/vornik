@@ -153,7 +153,7 @@ func TestMemoryCompanionAdapter_NilGuardsReturnEmpty(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, recall)
 
-	recent, err := a.RecentMemory(ctx, "proj", 10, "", false, false)
+	recent, err := a.RecentMemory(ctx, "proj", 10, "", false, false, "", "")
 	require.NoError(t, err)
 	assert.Nil(t, recent)
 

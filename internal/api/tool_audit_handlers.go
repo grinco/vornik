@@ -138,6 +138,11 @@ func (s *Server) IngestToolAudit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := s.validateExecutionTaskBinding(r.Context(), req.TaskID, req.ExecutionID); err != nil {
+		respondError(w, http.StatusForbidden, "FORBIDDEN",
+			"execution_id does not belong to task_id")
+		return
+	}
 
 	// Truncate output to keep DB rows bounded — the agent's
 	// entrypoint already trims to ~4096 chars but we apply a

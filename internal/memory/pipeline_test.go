@@ -674,6 +674,35 @@ func TestIngestCompanionNote_Rejected_EmptyContent(t *testing.T) {
 	}
 }
 
+func TestIngestCompanionNote_RejectsOversizedTTLBeforeArtifact(t *testing.T) {
+	p, _, _, _, cleanup := newPipelineTestRig(t)
+	defer cleanup()
+
+	hookCalls := 0
+	p.cfg.CreateCompanionArtifact = func(context.Context, string, string, string, int64) error {
+		hookCalls++
+		return nil
+	}
+
+	_, err := p.IngestCompanionNote(
+		context.Background(),
+		"companion-example",
+		"claude-code",
+		"akey-mem",
+		"companion:claude-code:note",
+		strings.Repeat("word ", 30),
+		"",
+		maxCompanionNoteTTLDays+1,
+		"",
+	)
+	if err == nil {
+		t.Fatal("expected oversized ttl_days to fail")
+	}
+	if hookCalls != 0 {
+		t.Fatalf("CreateCompanionArtifact calls = %d, want 0", hookCalls)
+	}
+}
+
 // TestIngestCompanionNote_ArtifactRowPrecedesChunks — regression for
 // the FK bug where project_memory_chunks.artifact_id pointed at an
 // artifacts row that was never inserted. The wrapper must invoke

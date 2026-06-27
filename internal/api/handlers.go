@@ -1577,8 +1577,13 @@ func (s *Server) CallMCPTool(w http.ResponseWriter, r *http.Request) {
 	if taskID != "" {
 		ctx = context.WithValue(ctx, mcp.TaskIDHeaderKey{}, taskID)
 	}
-	if v := r.Header.Get("X-Execution-ID"); v != "" {
-		ctx = context.WithValue(ctx, mcp.ExecutionIDHeaderKey{}, v)
+	executionID := r.Header.Get("X-Execution-ID")
+	if err := s.validateExecutionTaskBinding(ctx, taskID, executionID); err != nil {
+		respondError(w, http.StatusForbidden, "FORBIDDEN", "X-Execution-ID does not belong to X-Task-ID")
+		return
+	}
+	if executionID != "" {
+		ctx = context.WithValue(ctx, mcp.ExecutionIDHeaderKey{}, executionID)
 	}
 
 	// Finding B2: enforce the calling role's allowedTools SERVER-SIDE.

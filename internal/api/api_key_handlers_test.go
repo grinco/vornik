@@ -591,6 +591,71 @@ func TestUpdateAPIKeyAllowedWorkflows_HappyPath(t *testing.T) {
 	}
 }
 
+func TestUpdateAPIKeyAllowedWorkflows_NormalizesEntries(t *testing.T) {
+	repo := &memAPIKeyRepo{}
+	secret, _ := apikey.Generate("assistant")
+	_ = repo.Create(context.Background(), &persistence.APIKey{
+		ID: "akey-1", ProjectID: "assistant", Name: "x",
+		KeyHash: apikey.Hash(secret), KeyPrefix: apikey.DisplayPrefix(secret),
+		AllowedWorkflows: []string{"original"},
+		CreatedAt:        time.Now().UTC(),
+	})
+	s := newAPIKeyServer(repo)
+
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/v1/projects/assistant/keys/akey-1/workflows",
+		strings.NewReader(`{"allowed_workflows":[" companion-doc-review ","companion-rag-ingest"]}`))
+	rec := httptest.NewRecorder()
+	s.UpdateAPIKeyAllowedWorkflows(rec, req, "akey-1")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if got, want := strings.Join(repo.rows[0].AllowedWorkflows, ","),
+		"companion-doc-review,companion-rag-ingest"; got != want {
+		t.Errorf("repo row allowed_workflows = %q, want %q", got, want)
+	}
+}
+
+func TestUpdateAPIKeyAllowedWorkflows_RejectsMalformedEntries(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"empty", `{"allowed_workflows":["companion-doc-review","  "]}`},
+		{"duplicate_after_trim", `{"allowed_workflows":["companion-doc-review"," companion-doc-review "]}`},
+		{"too_long", `{"allowed_workflows":["` + strings.Repeat("x", maxAPIKeyAllowedWorkflowName+1) + `"]}`},
+		{"too_many", `{"allowed_workflows":[` + strings.TrimSuffix(strings.Repeat(`"wf",`, maxAPIKeyAllowedWorkflows+1), ",") + `]}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &memAPIKeyRepo{}
+			secret, _ := apikey.Generate("assistant")
+			_ = repo.Create(context.Background(), &persistence.APIKey{
+				ID: "akey-1", ProjectID: "assistant", Name: "x",
+				KeyHash: apikey.Hash(secret), KeyPrefix: apikey.DisplayPrefix(secret),
+				AllowedWorkflows: []string{"original"},
+				CreatedAt:        time.Now().UTC(),
+			})
+			s := newAPIKeyServer(repo)
+
+			req := httptest.NewRequest(http.MethodPut,
+				"/api/v1/projects/assistant/keys/akey-1/workflows",
+				strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			s.UpdateAPIKeyAllowedWorkflows(rec, req, "akey-1")
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+			}
+			if got := strings.Join(repo.rows[0].AllowedWorkflows, ","); got != "original" {
+				t.Errorf("invalid workflow list mutated row: %v", repo.rows[0].AllowedWorkflows)
+			}
+		})
+	}
+}
+
 // TestUpdateAPIKeyAllowedWorkflows_RejectsCrossProject — IDOR guard
 // parallel to revoke/rotate: project A's auth can't rewrite project
 // B's key's allowlist given just the keyID.
@@ -614,6 +679,34 @@ func TestUpdateAPIKeyAllowedWorkflows_RejectsCrossProject(t *testing.T) {
 	}
 	if strings.Join(repo.rows[0].AllowedWorkflows, ",") != "original" {
 		t.Errorf("cross-project update leaked through; row = %v", repo.rows[0].AllowedWorkflows)
+	}
+}
+
+func TestUpdateAPIKeyAllowedWorkflows_RejectsRevokedKey(t *testing.T) {
+	repo := &memAPIKeyRepo{}
+	secret, _ := apikey.Generate("assistant")
+	_ = repo.Create(context.Background(), &persistence.APIKey{
+		ID: "akey-1", ProjectID: "assistant", Name: "x",
+		KeyHash: apikey.Hash(secret), KeyPrefix: apikey.DisplayPrefix(secret),
+		AllowedWorkflows: []string{"original"},
+		CreatedAt:        time.Now().UTC(),
+	})
+	if err := repo.Revoke(context.Background(), "akey-1"); err != nil {
+		t.Fatal(err)
+	}
+	s := newAPIKeyServer(repo)
+
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/v1/projects/assistant/keys/akey-1/workflows",
+		strings.NewReader(`{"allowed_workflows":["hijacked"]}`))
+	rec := httptest.NewRecorder()
+	s.UpdateAPIKeyAllowedWorkflows(rec, req, "akey-1")
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Join(repo.rows[0].AllowedWorkflows, ",") != "original" {
+		t.Errorf("revoked key workflow update mutated row: %v", repo.rows[0].AllowedWorkflows)
 	}
 }
 
@@ -757,6 +850,33 @@ func TestUpdateAllowPush_RejectsCrossProject(t *testing.T) {
 	// Row must not have been mutated.
 	if repo.rows[0].AllowPush {
 		t.Errorf("cross-project update leaked through and flipped allow_push")
+	}
+}
+
+func TestUpdateAllowPush_RejectsRevokedKey(t *testing.T) {
+	repo := &memAPIKeyRepo{}
+	secret, _ := apikey.Generate("assistant")
+	_ = repo.Create(context.Background(), &persistence.APIKey{
+		ID: "akey-1", ProjectID: "assistant", Name: "push-key",
+		KeyHash: apikey.Hash(secret), KeyPrefix: apikey.DisplayPrefix(secret),
+		CreatedAt: time.Now().UTC(), AllowPush: false,
+	})
+	if err := repo.Revoke(context.Background(), "akey-1"); err != nil {
+		t.Fatal(err)
+	}
+	s := newAPIKeyServer(repo)
+
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/v1/projects/assistant/keys/akey-1/allow-push",
+		strings.NewReader(`{"allow_push":true}`))
+	rec := httptest.NewRecorder()
+	s.UpdateAllowPushHandler(rec, req, "akey-1")
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.rows[0].AllowPush {
+		t.Errorf("revoked key allow_push update mutated row")
 	}
 }
 

@@ -1,0 +1,97 @@
+{{define "admin_landing.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6V3m0 18v-3M6 12H3m18 0h-3M5.6 5.6l2.1 2.1m8.6 8.6l2.1 2.1m0-12.8l-2.1 2.1M7.7 16.3l-2.1 2.1M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">Admin</h1>
+            </div>
+
+            {{if and .UsersWired (gt .AwaitingUsers 0)}}
+            <a href="/ui/admin/users" class="block glass rounded-xl border border-amber-700/60 bg-amber-900/20 px-4 py-3 hover:bg-amber-900/30 transition-colors">
+                <div class="flex items-center gap-3">
+                    <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-800/70 text-amber-100">{{.AwaitingUsers}}</span>
+                    <span class="text-sm text-amber-100">login{{if ne .AwaitingUsers 1}}s{{end}} awaiting approval</span>
+                    <span class="text-xs text-amber-300/80 ml-auto">Review &amp; approve →</span>
+                </div>
+            </a>
+            {{end}}
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {{/* Daemon health tile — re-uses /readyz checks in-process */}}
+                <div class="glass rounded-xl border border-dark-700 p-5">
+                    <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Daemon health</h2>
+                    {{if .Readiness}}
+                    <ul class="space-y-1 text-sm">
+                        {{range .Readiness}}
+                        <li class="flex items-center gap-2">
+                            <span class="inline-block w-2 h-2 rounded-full {{if eq .Status "ok"}}bg-emerald-400{{else}}bg-red-400{{end}}"></span>
+                            <span class="text-gray-200 font-mono">{{.Name}}</span>
+                            {{if .Error}}<span class="text-rose-400 text-xs ml-auto">{{.Error}}</span>{{end}}
+                        </li>
+                        {{end}}
+                    </ul>
+                    {{else}}
+                    <p class="text-gray-500 text-sm">No readiness probes wired.</p>
+                    {{end}}
+                </div>
+
+                {{/* Recent audit tile */}}
+                <div class="glass rounded-xl border border-dark-700 p-5">
+                    <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Recent admin actions</h2>
+                    {{if .RecentAudit}}
+                    <ul class="space-y-2 text-sm">
+                        {{range .RecentAudit}}
+                        <li class="flex items-center gap-2">
+                            <span class="text-xs text-gray-500 font-mono">{{.Timestamp.Format "01-02 15:04"}}</span>
+                            <span class="text-gray-200 font-mono">{{.Action}}</span>
+                            {{if .Target}}<span class="text-gray-400 truncate">{{.Target}}</span>{{end}}
+                        </li>
+                        {{end}}
+                    </ul>
+                    <div class="mt-3"><a class="text-brand-400 hover:text-brand-300 text-xs" href="/ui/admin/audit">View all →</a></div>
+                    {{else if not .AuditAvailable}}
+                    <p class="text-gray-500 text-sm">Audit repository not wired.</p>
+                    {{else}}
+                    <p class="text-gray-500 text-sm">No admin actions yet.</p>
+                    {{end}}
+                </div>
+
+                {{/* Quick links tile */}}
+                <div class="glass rounded-xl border border-dark-700 p-5">
+                    <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Quick links</h2>
+                    <ul class="space-y-2 text-sm">
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/users">Users <span class="text-[10px] text-gray-500">— approve logins, roles, project access</span>{{if and .UsersWired (gt .AwaitingUsers 0)}} <span class="px-1.5 py-0.5 text-[10px] font-mono rounded bg-amber-900/60 text-amber-200">{{.AwaitingUsers}} awaiting</span>{{end}}</a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/audit">Audit log <span class="text-[10px] text-gray-500">— admin-initiated mutations</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/chat-audit">Chat audit <span class="text-[10px] text-gray-500">— dispatcher turn ledger</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/memory-audit">Memory audit <span class="text-[10px] text-gray-500">— retrieval + ingest</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/memory/firewall">Memory firewall <span class="text-[10px] text-gray-500">— policy evaluations + per-chunk edit</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/health/">Health <span class="text-[10px] text-gray-500">— daemon + subsystem status</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/health/leases">Lease audit <span class="text-[10px] text-gray-500">— leader-election state</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/health/watchdog">Watchdog <span class="text-[10px] text-gray-500">— stuck-execution scanner</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/health/mcp">MCP health <span class="text-[10px] text-gray-500">— broker MCP connectivity</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/integrations/mcp">MCP integrations <span class="text-[10px] text-gray-500">— per-project MCP servers</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/integrations/email">Email channels <span class="text-[10px] text-gray-500">— per-project IMAP/SMTP</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/integrations/dispatcher-tools">Dispatcher tools <span class="text-[10px] text-gray-500">— per-key tool allowlist</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/cpc">Cross-project calls <span class="text-[10px] text-gray-500">— inter-project ledger</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/blackbox">Black Box <span class="text-[10px] text-gray-500">— per-task trace + workflow-healing triggers</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/blackbox/overrides">Trigger overrides <span class="text-[10px] text-gray-500">— per-workflow detector thresholds + mute</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/blackbox/candidates">Healing candidates <span class="text-[10px] text-gray-500">— candidate diff + trial scorecard + promote/reject</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/keys">API keys <span class="text-[10px] text-gray-500">— per-project key registry</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/workflow-proposals">Workflow proposals <span class="text-[10px] text-gray-500">— memetic-architect drafts</span></a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/instincts">Instincts <span class="text-[10px] text-gray-500">— learned-pattern browser</span></a></li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

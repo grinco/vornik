@@ -1,0 +1,15 @@
+{
+  "description": "vornik-companion SessionStart hook — fetches a digest of recent delegations + project memory chunks and emits a per-session directive teaching Claude to pass repo_scope (auto-detected from the cwd's git remote) on every recall/remember/delegate call. Without this wiring the digest never fires and Claude starts every session ignorant of in-flight work.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

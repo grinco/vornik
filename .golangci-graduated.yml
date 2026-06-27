@@ -1,0 +1,51 @@
+# GRADUATED-PACKAGE complexity gate — run via `make lint-graduated`.
+#
+# The complement to .golangci-strict.yml. The strict config grandfathers
+# ALL legacy code (new-from-merge-base) and only holds NEW/CHANGED lines to
+# the complexity bar. This config has NO new-from: it enforces the
+# complexity/size/dup linters FULL-CODEBASE — but only over the explicit
+# package allowlist in the Makefile's `lint-graduated` target.
+#
+# A package "graduates" once its complexity debt reaches zero: it moves
+# onto the allowlist and is thereafter held to the full bar, so a future
+# edit can never re-introduce a god-function / deep-nest / clone there.
+# This turns the one-way new-code ratchet into a burn-down — cleaned
+# packages stay clean.
+#
+# Scope is deliberately the complexity/size/dup subset (funlen, gocognit,
+# nestif, dupl) — NOT the style linters (revive, gocritic) the strict
+# config also carries. Those have large legacy backlogs unrelated to the
+# decomposition work; gating them full-codebase would block graduation for
+# almost every package. The new-code strict ratchet still covers style on
+# changed lines everywhere.
+#
+# To graduate a package: confirm `golangci-lint run -c .golangci-graduated.yml
+# ./internal/<pkg>/...` is clean, then add ./internal/<pkg>/... to
+# GRADUATED_PKGS in the Makefile.
+version: "2"
+linters:
+  default: none
+  enable:
+    - funlen
+    - gocognit
+    - nestif
+    - dupl
+  settings:
+    funlen:
+      lines: 80
+      statements: 60
+    gocognit:
+      min-complexity: 30
+    nestif:
+      min-complexity: 8
+    dupl:
+      threshold: 150
+  exclusions:
+    rules:
+      # Tests may legitimately be long / repetitive (table cases, fixtures).
+      - path: _test\.go
+        linters:
+          - funlen
+          - gocognit
+          - dupl
+          - nestif

@@ -1,0 +1,70 @@
+# vornik config — node.profile: webhook
+#
+# This node lives in the DMZ. It receives public webhook callbacks from
+# external providers (GitHub, Slack, Stripe, …), verifies the provider HMAC
+# signature locally (no DB needed — secrets are statically configured), and
+# relays verified events over mTLS to the worker tier at :8443.
+#
+# IMPORTANT: No database credentials are configured here. The webhook node
+# has intentionally no DB access — the DMZ trust boundary requires it.
+# Any accidental addition of database.password will trigger a loud startup
+# warning from the vornik config validator (least-privilege intent from §1.1
+# of the cluster-topology-and-roles-design.md).
+#
+# The relay section configures the mTLS outbound connection to vornik-worker.
+# Cert paths below correspond to the volume mounts in cluster.compose.yaml.
+# Run gen-cluster-certs.sh before bring-up to populate them.
+#
+# Values vary between environments via ${VAR} expansion — the daemon's
+# loader runs os.ExpandEnv on every string before parsing
+# (see internal/config/loader.go).
+#
+# Used by: cluster.compose.yaml → vornik-webhook service.
+# Mount at: /etc/vornik/config.yaml
+
+node:
+  profile: webhook
+  # Preset webhook expands to:
+  #   serve_ui:       false
+  #   serve_api:      false  (no data-plane/control; no DB)
+  #   serve_webhooks: true   (public webhook ingress — verify HMAC + relay)
+  #   run_workers:    false  (no scheduler, no executor, no lease contention)
+
+  # mTLS relay client: used to forward verified webhook events to the worker.
+  # upstream is the worker's relay-ingress address — resolvable on the dmz
+  # bridge network (vornik-worker is attached to both trusted and dmz).
+  relay:
+    upstream:    "https://vornik-worker:8443"
+    client_cert: "/etc/vornik/tls/client.crt"
+    client_key:  "/etc/vornik/tls/client.key"
+    ca:          "/etc/vornik/tls/ca.crt"
+    max_retries: 3
+    timeout:     "5s"
+
+server:
+  address: "0.0.0.0:8080"
+  read_timeout: 30s
+  write_timeout: 30s
+
+# No database section — webhook nodes have no DB access.
+# Omitting it entirely is the correct configuration for profile: webhook.
+
+storage:
+  artifacts_path: /var/lib/vornik/artifacts
+
+logging:
+  level: info
+  format: json
+
+api:
+  auth_enabled: false
+
+metrics:
+  enabled: false
+  addr: ":9090"
+
+chat:
+  provider: "http"
+  endpoint: "${CHAT_ENDPOINT}"
+  model: "${CHAT_MODEL}"
+  api_key: "${VORNIK_CHAT_API_KEY}"

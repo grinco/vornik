@@ -1,0 +1,453 @@
+{{define "replay.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+
+            <!-- Header -->
+            <div class="flex items-start justify-between flex-wrap gap-y-3">
+                <div>
+                    <div class="flex items-center gap-2 mb-1">
+                        {{template "executionStatusBadge" .Timeline.Execution.Status}}
+                        <span class="text-xs text-gray-500">Replay</span>
+                    </div>
+                    <h1 class="text-xl font-semibold text-gray-100">Failure forensics</h1>
+                    <p class="text-gray-500 text-xs font-mono mt-0.5">
+                        <a href="/ui/executions/{{.Timeline.Execution.ID}}" class="hover:text-gray-300">{{.Timeline.Execution.ID}}</a>
+                        <span class="text-gray-700 mx-1">·</span>
+                        <a href="/ui/tasks/{{.Timeline.Task.ID}}" class="hover:text-gray-300">{{.Timeline.Task.ID}}</a>
+                    </p>
+                    {{/* Lineage breadcrumb — older forks left-to-right.
+                         Empty when this execution isn't a fork. */}}
+                    {{if .Timeline.Lineage}}
+                    <p class="text-[11px] text-gray-500 mt-1.5 flex items-center gap-1 flex-wrap">
+                        <span class="uppercase tracking-wider text-[9px] text-gray-600">lineage</span>
+                        {{range .Timeline.Lineage}}
+                        <a href="{{.URL}}" class="font-mono hover:text-gray-300" title="forked from step {{.ForkedFromStep}}">{{.ExecutionID}}</a>
+                        <span class="text-gray-700">→</span>
+                        {{end}}
+                        <span class="font-mono text-gray-300">you</span>
+                    </p>
+                    {{end}}
+                    {{/* Inter-project orchestration Phase C — incoming
+                         cross-project call breadcrumb. Renders only
+                         when THIS task was issued by a `call_project`
+                         step in another project. CalleeProject (the
+                         field name) on the incoming hop carries the
+                         OTHER end of the edge — i.e. the caller
+                         project's name. */}}
+                    {{with .Timeline.IncomingCrossProjectCall}}
+                    <p class="text-[11px] text-gray-500 mt-1.5 flex items-center gap-1 flex-wrap">
+                        <span class="uppercase tracking-wider text-[9px] text-violet-400">called from</span>
+                        {{if .CalleeURL}}
+                        <a href="{{.CalleeURL}}" class="font-mono text-violet-300 hover:text-violet-200" title="step {{.StepID}} in {{.CalleeProject}}">{{.CalleeProject}}</a>
+                        {{else}}
+                        <span class="font-mono text-violet-300">{{.CalleeProject}}</span>
+                        {{end}}
+                        <span class="text-gray-600">·</span>
+                        <span class="text-[10px] text-gray-500">cpc {{.CPCId}} · {{.CallStatus}}</span>
+                    </p>
+                    {{end}}
+                </div>
+                <div class="flex items-center gap-2">
+                    <a href="/ui/executions/{{.Timeline.Execution.ID}}" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 transition-colors">
+                        ← Back to execution
+                    </a>
+                </div>
+            </div>
+
+            <!-- Post-mortem diagnosis (cached LLM). Skipped when no
+                 row exists for the task — operator clicks "Generate
+                 post-mortem" on the execution detail page first. -->
+            {{if .Timeline.PostMortem}}
+            <div class="glass rounded-xl border border-amber-700/40 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-baseline justify-between gap-2 flex-wrap">
+                    <h2 class="text-sm font-semibold text-gray-200 flex items-center gap-2">
+                        <svg class="h-4 w-4 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.008v.008H12v-.008z"/></svg>
+                        Post-mortem
+                    </h2>
+                    <span class="text-xs text-gray-500">cached LLM diagnosis</span>
+                </div>
+                <div class="px-5 py-4 text-sm text-gray-200 whitespace-pre-wrap">{{.Timeline.PostMortem.Summary}}</div>
+            </div>
+            {{end}}
+
+            <!-- Totals strip -->
+            <div class="grid grid-cols-2 gap-4 sm:grid-cols-5">
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3">
+                    <dt class="text-gray-500 uppercase tracking-wider text-[10px]">Steps</dt>
+                    <dd class="text-2xl font-semibold text-gray-100 tabular-nums">{{.Timeline.Totals.StepCount}}</dd>
+                    <dd class="text-[10px] text-gray-500 mt-0.5">{{.Timeline.Totals.OkSteps}} ok / {{.Timeline.Totals.FailSteps}} fail</dd>
+                </div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3">
+                    <dt class="text-gray-500 uppercase tracking-wider text-[10px]">Iterations</dt>
+                    <dd class="text-2xl font-semibold text-gray-100 tabular-nums">{{.Timeline.Totals.Iterations}}</dd>
+                </div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3">
+                    <dt class="text-gray-500 uppercase tracking-wider text-[10px]">Tool calls</dt>
+                    <dd class="text-2xl font-semibold text-gray-100 tabular-nums">{{.Timeline.Totals.ToolCalls}}</dd>
+                </div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3">
+                    <dt class="text-gray-500 uppercase tracking-wider text-[10px]">Artifacts</dt>
+                    <dd class="text-2xl font-semibold text-gray-100 tabular-nums">{{.Timeline.Totals.Artifacts}}</dd>
+                </div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3">
+                    <dt class="text-gray-500 uppercase tracking-wider text-[10px]">Cost</dt>
+                    <dd class="text-2xl font-semibold text-accent-300 tabular-nums">{{fmtUSD .Timeline.Totals.CostUSD}}</dd>
+                </div>
+            </div>
+
+            {{/* Inter-project orchestration Phase C — outbound
+                 cross-project edges. One card per call_project +
+                 spawn_project this task issued. Empty when the
+                 task didn't fire any (the common case). Renders
+                 above the step timeline so an operator sees the
+                 multi-project DAG before drilling into local
+                 steps. */}}
+            {{if .Timeline.CrossProjectHops}}
+            <div class="glass rounded-xl border border-violet-700/40 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-baseline justify-between gap-2">
+                    <h2 class="text-sm font-semibold text-gray-200 flex items-center gap-2">
+                        <svg class="h-4 w-4 text-violet-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                        Cross-project edges
+                    </h2>
+                    <span class="text-[11px] text-gray-500">{{len .Timeline.CrossProjectHops}} outbound</span>
+                </div>
+                <ul class="divide-y divide-dark-700/60">
+                    {{range .Timeline.CrossProjectHops}}
+                    <li class="px-5 py-3 flex items-start gap-3">
+                        {{if eq .Kind "call"}}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-violet-900/40 text-violet-300 ring-1 ring-violet-700/40" title="call_project — synchronous wait">call</span>
+                        {{else}}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-emerald-900/40 text-emerald-300 ring-1 ring-emerald-700/40" title="spawn_project — fire-and-forget materialise">spawn</span>
+                        {{end}}
+                        <div class="flex-1 min-w-0 text-xs">
+                            <div class="flex items-center gap-2 flex-wrap">
+                                <span class="font-mono text-gray-500">step {{.StepID}}</span>
+                                <span class="text-gray-600">→</span>
+                                {{if eq .Kind "call"}}
+                                {{if .CalleeURL}}
+                                <a href="{{.CalleeURL}}" class="text-violet-300 hover:text-violet-200 font-mono">{{.CalleeProject}} / {{.CalleeWorkflow}}</a>
+                                {{else}}
+                                <span class="text-violet-300 font-mono">{{.CalleeProject}} / {{.CalleeWorkflow}}</span>
+                                {{end}}
+                                <span class="text-[10px] text-gray-500">schema {{.ExpectedSchema}}</span>
+                                <span class="text-[10px] {{if eq .CallStatus "completed"}}text-emerald-400{{else if eq .CallStatus "failed"}}text-rose-400{{else if eq .CallStatus "rejected"}}text-amber-400{{else}}text-gray-500{{end}}">{{.CallStatus}}</span>
+                                {{else}}
+                                {{if .CalleeURL}}
+                                <a href="{{.CalleeURL}}" class="text-emerald-300 hover:text-emerald-200 font-mono">{{.SpawnedProject}}</a>
+                                {{else}}
+                                <span class="text-emerald-300 font-mono">{{.SpawnedProject}}</span>
+                                {{end}}
+                                <span class="text-[10px] text-gray-500">template {{.TemplateSlug}}</span>
+                                {{if .InitialTaskID}}<span class="text-[10px] text-gray-500">+ initial_task</span>{{end}}
+                                {{end}}
+                            </div>
+                            {{if .ErrorMessage}}
+                            <div class="text-[11px] text-rose-300 mt-1 break-words">{{.ErrorMessage}}</div>
+                            {{end}}
+                        </div>
+                    </li>
+                    {{end}}
+                </ul>
+            </div>
+            {{end}}
+
+            <!-- Step timeline -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60">
+                    <h2 class="text-sm font-semibold text-gray-200">Step timeline</h2>
+                </div>
+                {{if .Timeline.Steps}}
+                <ol class="divide-y divide-dark-700/60">
+                    {{range $i, $step := .Timeline.Steps}}
+                    <li class="px-5 py-4">
+                        <details class="group">
+                            <summary class="cursor-pointer list-none flex items-start justify-between gap-3">
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex items-center gap-2 mb-1 flex-wrap">
+                                        <span class="text-[10px] font-mono text-gray-600">#{{$i}}</span>
+                                        <span class="text-sm font-medium text-gray-100">{{$step.StepID}}</span>
+                                        <span class="text-xs text-gray-500">{{$step.Role}} on {{$step.Model}}</span>
+                                        {{if eq $step.Outcome "ok"}}
+                                            <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-900/40 text-emerald-300">ok</span>
+                                        {{else if $step.Outcome}}
+                                            <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-rose-900/40 text-rose-300">{{$step.Outcome}}</span>
+                                        {{end}}
+                                    </div>
+                                    <div class="text-[11px] text-gray-500 tabular-nums">
+                                        {{$step.RecordedAt.Format "15:04:05"}}
+                                        {{if gt $step.DurationMs 0}}<span class="text-gray-700 mx-1">·</span>{{$step.DurationMs}}ms{{end}}
+                                        {{if gt $step.CostUSD 0.0}}<span class="text-gray-700 mx-1">·</span>{{fmtUSD $step.CostUSD}}{{end}}
+                                        {{if gt $step.Iterations 1}}<span class="text-gray-700 mx-1">·</span>{{$step.Iterations}}× iterations{{end}}
+                                        {{if $step.ToolCalls}}<span class="text-gray-700 mx-1">·</span>{{len $step.ToolCalls}} tool{{if ne (len $step.ToolCalls) 1}}s{{end}}{{end}}
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <button type="button"
+                                            class="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded bg-dark-700 hover:bg-amber-700/40 text-gray-300 transition-colors"
+                                            onclick="event.preventDefault(); event.stopPropagation(); openForkModal('{{$step.StepID}}')"
+                                            title="Spawn a new task starting at this step">
+                                        <svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"/></svg>
+                                        Fork
+                                    </button>
+                                    <svg class="h-4 w-4 text-gray-500 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+                                </div>
+                            </summary>
+
+                            <div class="mt-3 pt-3 border-t border-dark-700/60 space-y-3 text-xs">
+                                {{/* Failure card — when outcome != ok, show the
+                                     classified failure with operator-visible
+                                     detail. */}}
+                                {{if and $step.Outcome (ne $step.Outcome "ok") (ne $step.Outcome "pending_validation")}}
+                                <div class="bg-rose-950/30 border border-rose-900/40 rounded-lg px-3 py-2">
+                                    <div class="text-rose-300 font-medium">{{$step.ErrorClass}}</div>
+                                    {{if $step.ErrorDetail}}<div class="text-rose-200/80 mt-1 whitespace-pre-wrap">{{$step.ErrorDetail}}</div>{{end}}
+                                    {{if $step.AttributedToStepID}}<div class="text-rose-400/60 mt-1">flipped by step <code>{{$step.AttributedToStepID}}</code></div>{{end}}
+                                </div>
+                                {{end}}
+
+                                {{/* LLM call summary (one row per (model, role)).
+                                     The prompt body isn't persisted; we show
+                                     the call metadata only. */}}
+                                {{if $step.LLMCalls}}
+                                <div>
+                                    <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">LLM calls</div>
+                                    <table class="w-full text-[11px] tabular-nums">
+                                        <thead class="text-gray-500">
+                                            <tr>
+                                                <th class="text-left font-normal">Model</th>
+                                                <th class="text-left font-normal">Role</th>
+                                                <th class="text-right font-normal">Prompt</th>
+                                                <th class="text-right font-normal">Compl.</th>
+                                                <th class="text-right font-normal">Iter.</th>
+                                                <th class="text-right font-normal">$</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody class="text-gray-300">
+                                            {{range $step.LLMCalls}}
+                                            <tr>
+                                                <td>{{.Model}}</td>
+                                                <td>{{.Role}}</td>
+                                                <td class="text-right">{{.PromptTokens}}</td>
+                                                <td class="text-right">{{.CompletionTokens}}</td>
+                                                <td class="text-right">{{.Iterations}}</td>
+                                                <td class="text-right">{{fmtUSD .CostUSD}}</td>
+                                            </tr>
+                                            {{end}}
+                                        </tbody>
+                                    </table>
+                                </div>
+                                {{end}}
+
+                                {{/* Tool calls — input + output expandable. */}}
+                                {{if $step.ToolCalls}}
+                                <div>
+                                    <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Tool calls</div>
+                                    <ol class="space-y-2">
+                                        {{range $step.ToolCalls}}
+                                        <li class="bg-dark-900/40 rounded px-3 py-2">
+                                            <div class="flex items-baseline gap-2 mb-1">
+                                                <span class="font-mono text-gray-200">{{.ToolName}}</span>
+                                                {{if gt .DurationMs 0}}<span class="text-[10px] text-gray-500 tabular-nums">{{.DurationMs}}ms</span>{{end}}
+                                            </div>
+                                            {{if .Input}}
+                                            <details>
+                                                <summary class="cursor-pointer text-[10px] text-gray-500 hover:text-gray-300">input{{if .InputTruncated}} (truncated){{end}}</summary>
+                                                <pre class="mt-1 text-[11px] text-gray-300 whitespace-pre-wrap break-words">{{.Input}}</pre>
+                                            </details>
+                                            {{end}}
+                                            {{if .Output}}
+                                            <details class="mt-1">
+                                                <summary class="cursor-pointer text-[10px] text-gray-500 hover:text-gray-300">output{{if .OutputTruncated}} (truncated){{end}}</summary>
+                                                <pre class="mt-1 text-[11px] text-gray-300 whitespace-pre-wrap break-words">{{.Output}}</pre>
+                                            </details>
+                                            {{end}}
+                                        </li>
+                                        {{end}}
+                                    </ol>
+                                </div>
+                                {{end}}
+
+                                {{/* Operator-visible messages scoped to this step. */}}
+                                {{if $step.Messages}}
+                                <div>
+                                    <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Messages</div>
+                                    <ul class="space-y-1.5">
+                                        {{range $step.Messages}}
+                                        <li class="text-[11px]">
+                                            <span class="text-gray-500">[{{.Kind}}]</span>
+                                            <span class="text-gray-400">{{.AuthorKind}}{{if .AuthorID}}/{{.AuthorID}}{{end}}:</span>
+                                            <span class="text-gray-200 whitespace-pre-wrap">{{.Content}}</span>
+                                            {{if .Truncated}}<span class="text-gray-600">[truncated]</span>{{end}}
+                                        </li>
+                                        {{end}}
+                                    </ul>
+                                </div>
+                                {{end}}
+                            </div>
+                        </details>
+                    </li>
+                    {{end}}
+                </ol>
+                {{else}}
+                <div class="px-5 py-8 text-center text-sm text-gray-500">No step outcomes recorded for this execution.</div>
+                {{end}}
+            </div>
+
+            <!-- Artifacts (timeline level — v1 doesn't attribute per-step). -->
+            {{if .Timeline.Artifacts}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60">
+                    <h2 class="text-sm font-semibold text-gray-200">Artifacts</h2>
+                </div>
+                <ul class="divide-y divide-dark-700/60">
+                    {{range .Timeline.Artifacts}}
+                    <li class="px-5 py-2.5 flex items-center justify-between gap-3 text-xs">
+                        <a href="{{.URL}}" class="font-mono text-accent-300 hover:text-accent-200 truncate">{{.Filename}}</a>
+                        <div class="flex items-center gap-3 text-gray-500 tabular-nums whitespace-nowrap">
+                            {{if gt .SizeBytes 0}}<span>{{fmtBytes .SizeBytes}}</span>{{end}}
+                            {{if .Hash}}<span class="font-mono text-[10px]" title="{{.Hash}}">{{slice .Hash 0 12}}…</span>{{end}}
+                        </div>
+                    </li>
+                    {{end}}
+                </ul>
+            </div>
+            {{end}}
+
+        </div>
+    </main>
+
+    {{/* Fork-from-step modal. Hidden by default; openForkModal()
+         shows it with the chosen step pre-filled, submit POSTs to
+         the API and redirects to the new task. */}}
+    <div id="fork-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60" onclick="if (event.target === this) closeForkModal()">
+        <div class="glass border border-dark-600 rounded-xl shadow-2xl max-w-lg w-full mx-4 overflow-hidden">
+            <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between">
+                <h3 class="text-sm font-semibold text-gray-100">Fork from step <span id="fork-modal-step" class="font-mono text-amber-300"></span></h3>
+                <button type="button" onclick="closeForkModal()" class="text-gray-500 hover:text-gray-300">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="px-5 py-4 space-y-3">
+                <p class="text-xs text-gray-400">Spawns a new task that starts a fresh execution at this step. The source execution stays intact — fork is the "branch", not a replacement for retry.</p>
+                <label class="block text-xs">
+                    <span class="text-gray-500 uppercase tracking-wider text-[10px]">Prompt override (optional)</span>
+                    <textarea id="fork-modal-prompt" rows="5" class="mt-1 w-full px-3 py-2 text-sm font-mono rounded-lg bg-dark-900 border border-dark-700 text-gray-100 focus:border-amber-500/60 focus:outline-none" placeholder="Prepended to the step's original prompt on the first iteration."></textarea>
+                </label>
+                <div id="fork-modal-error" class="hidden text-xs text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-3 py-2"></div>
+            </div>
+            <div class="px-5 py-3 border-t border-dark-700/60 flex items-center justify-end gap-2 bg-dark-900/40">
+                <button type="button" onclick="closeForkModal()" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 transition-colors">Cancel</button>
+                <button id="fork-modal-submit" type="button" onclick="submitFork()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-700 hover:bg-amber-600 text-white transition-colors">
+                    <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"/></svg>
+                    Create fork
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        // Execution + project ID captured once on page load so the
+        // modal can construct the POST URL + the API key header.
+        // Drop the printf "%q" — html/template's <script>-context
+        // autoescape already produces a JS string literal; %q would
+        // double-quote the value and break URL construction.
+        const executionID = {{.Timeline.Execution.ID}};
+        let currentStep = "";
+
+        // safeForkRedirect: see task_live.html for full rationale.
+        // Accepts only same-origin /ui/ paths to defend against
+        // javascript: / off-site / protocol-relative URLs returned
+        // by a hostile or compromised upstream response.
+        function safeForkRedirect(body) {
+            if (!body || typeof body !== 'object') return null;
+            var raw = (typeof body.url === 'string' && body.url) ||
+                (typeof body.task_id === 'string' && body.task_id ? '/ui/tasks/' + body.task_id : null);
+            if (!raw) return null;
+            if (raw.length < 2) return null;
+            if (raw.charAt(0) !== '/') return null;
+            if (raw.charAt(1) === '/') return null;
+            if (raw.indexOf(':') !== -1 && raw.indexOf(':') < (raw.indexOf('/', 1) === -1 ? raw.length : raw.indexOf('/', 1))) {
+                return null;
+            }
+            if (raw.indexOf('/ui/') !== 0) return null;
+            return raw;
+        }
+
+        window.openForkModal = function (stepID) {
+            currentStep = stepID;
+            document.getElementById('fork-modal-step').textContent = stepID;
+            document.getElementById('fork-modal-prompt').value = "";
+            const err = document.getElementById('fork-modal-error');
+            err.classList.add('hidden');
+            err.textContent = "";
+            document.getElementById('fork-modal').classList.remove('hidden');
+        };
+
+        window.closeForkModal = function () {
+            document.getElementById('fork-modal').classList.add('hidden');
+        };
+
+        window.submitFork = async function () {
+            const submitBtn = document.getElementById('fork-modal-submit');
+            const errBox = document.getElementById('fork-modal-error');
+            const prompt = document.getElementById('fork-modal-prompt').value;
+            errBox.classList.add('hidden');
+            submitBtn.disabled = true;
+            try {
+                const resp = await fetch('/api/v1/executions/' + encodeURIComponent(executionID) + '/fork-from-step', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        step_id: currentStep,
+                        prompt_override: prompt,
+                    }),
+                });
+                if (!resp.ok) {
+                    let detail = '';
+                    try {
+                        const body = await resp.json();
+                        detail = body.message || body.error || resp.statusText;
+                    } catch (e) {
+                        detail = resp.statusText;
+                    }
+                    errBox.textContent = 'Fork failed (' + resp.status + '): ' + detail;
+                    errBox.classList.remove('hidden');
+                    submitBtn.disabled = false;
+                    return;
+                }
+                const body = await resp.json();
+                // See task_live.html for the rationale — only
+                // accept same-origin /ui/ destinations.
+                const dest = safeForkRedirect(body);
+                if (!dest) {
+                    errBox.textContent = 'Fork succeeded but server returned an invalid redirect; refresh to see the new task.';
+                    errBox.classList.remove('hidden');
+                    submitBtn.disabled = false;
+                    return;
+                }
+                window.location.href = dest;
+            } catch (e) {
+                errBox.textContent = 'Network error: ' + e.message;
+                errBox.classList.remove('hidden');
+                submitBtn.disabled = false;
+            }
+        };
+
+        // ESC closes the modal.
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') closeForkModal();
+        });
+    })();
+    </script>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

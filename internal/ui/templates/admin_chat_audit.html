@@ -1,0 +1,190 @@
+{{define "admin_chat_audit.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">Chat Audit</h1>
+                <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
+            </div>
+
+            <p class="text-sm text-gray-500">
+                One row per dispatcher turn. Each row captures the system prompt
+                (content-addressed by SHA-256, click into a row to read the body), the
+                LLM model used, every tool call the dispatcher made, and the final
+                response excerpt. Use this to answer
+                "why did the bot do (or not do) X this turn?"
+            </p>
+
+            <form method="get" action="/ui/admin/chat-audit"
+                  class="glass rounded-xl border border-dark-700 px-4 py-3 flex flex-wrap items-end gap-3 text-sm">
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Chat ID</span>
+                    <input type="text" name="chat" value="{{.FilterChat}}" placeholder="559741208" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-44">
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Project</span>
+                    <input type="text" name="project" value="{{.FilterProject}}" placeholder="janka" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-44">
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Since (YYYY-MM-DD)</span>
+                    <input type="text" name="since" value="{{.FilterSince}}" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-44">
+                </label>
+                {{/* Page-size limit lives in its own form below — see
+                     the shared pageSizeSelector partial. Hidden input
+                     here preserves the current Show value when the
+                     operator re-submits the filter form. */}}
+                <input type="hidden" name="limit" value="{{.Limit}}">
+                <button class="bg-brand-500 hover:bg-brand-400 text-white text-xs font-medium px-3 py-1.5 rounded-md">Filter</button>
+            </form>
+
+            <div class="flex justify-end">
+                {{template "pageSizeSelector" (dict
+                    "Action" "/ui/admin/chat-audit"
+                    "Current" .Limit
+                    "Options" .LimitOptions
+                    "Hidden" (dict
+                        "chat" .FilterChat
+                        "project" .FilterProject
+                        "since" .FilterSince))}}
+            </div>
+
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                {{if not .Available}}
+                <div class="px-5 py-12 text-center text-gray-500 text-sm">Chat-audit repository not wired.</div>
+                {{else if .Entries}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Chat</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Model</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Iter</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User msg</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Response</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ms</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">$</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" title="Hallucination detector signals fired on this turn's reply. Drill into the row to see severity + claim + sentence per signal.">Sig</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Entries}}
+                            <tr class="hover:bg-dark-700/40 transition-colors">
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500 font-mono">
+                                    <a href="/ui/admin/chat-audit?id={{.ID}}{{if $.FilterChat}}&chat={{$.FilterChat}}{{end}}{{if $.FilterProject}}&project={{$.FilterProject}}{{end}}" class="text-brand-400 hover:text-brand-300">{{.Timestamp.Format "01-02 15:04:05"}}</a>
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-300 font-mono">{{.ChatID}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-300 font-mono">{{.ProjectID}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400">{{.RoleUsed}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-300 font-mono">{{.Model}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono text-right">{{.Iterations}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-300 max-w-xs truncate" title="{{.UserMessage}}">{{.UserMessage}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-400 max-w-md truncate" title="{{.Response}}">{{.Response}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500 font-mono text-right">{{.DurationMs}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500 font-mono text-right">{{printf "%.4f" .CostUSD}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs">
+                                    {{if .HallucinationSignalsJSON}}
+                                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-rose-900/30 text-rose-300 ring-1 ring-inset ring-rose-500/30" title="Hallucination signals fired on this turn — drill in for details">⚠</span>
+                                    {{else}}
+                                        <span class="text-gray-700">—</span>
+                                    {{end}}
+                                </td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-5 py-12 text-center text-gray-500 text-sm">No chat-audit entries match the filter.</div>
+                {{end}}
+            </div>
+
+            {{if .SelectedDetail}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-3">
+                <div class="flex items-baseline justify-between gap-3">
+                    <h2 class="text-sm font-semibold text-gray-100">Turn detail — <span class="font-mono text-gray-400">{{.SelectedDetail.ID}}</span></h2>
+                    <a href="{{.CloseURL}}" class="text-xs text-gray-500 hover:text-gray-300">close ×</a>
+                </div>
+
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                    <div><div class="text-gray-500 uppercase tracking-wider">Time</div><div class="text-gray-300 font-mono">{{.SelectedDetail.Timestamp.Format "2006-01-02 15:04:05"}}</div></div>
+                    <div><div class="text-gray-500 uppercase tracking-wider">Model</div><div class="text-gray-300 font-mono break-all">{{.SelectedDetail.Model}}</div></div>
+                    <div><div class="text-gray-500 uppercase tracking-wider">Iterations</div><div class="text-gray-300 font-mono">{{.SelectedDetail.Iterations}}</div></div>
+                    <div><div class="text-gray-500 uppercase tracking-wider">Cost USD</div><div class="text-gray-300 font-mono">{{printf "$%.4f" .SelectedDetail.CostUSD}}</div></div>
+                </div>
+
+                <div>
+                    <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">User message</div>
+                    <pre class="text-xs text-gray-200 font-mono whitespace-pre-wrap bg-dark-900 rounded-md border border-dark-700 px-3 py-2">{{.SelectedDetail.UserMessage}}</pre>
+                </div>
+
+                <div>
+                    <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Tool calls</div>
+                    <pre class="text-xs text-gray-300 font-mono whitespace-pre-wrap bg-dark-900 rounded-md border border-dark-700 px-3 py-2 max-h-64 overflow-y-auto">{{.SelectedDetail.ToolCallsJSON}}</pre>
+                </div>
+
+                <div>
+                    <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Response</div>
+                    <pre class="text-xs text-gray-200 font-mono whitespace-pre-wrap bg-dark-900 rounded-md border border-dark-700 px-3 py-2">{{.SelectedDetail.Response}}</pre>
+                </div>
+
+                {{if .SelectedHallucinations}}
+                <div>
+                    <div class="flex items-baseline justify-between mb-2">
+                        <div class="text-xs text-gray-500 uppercase tracking-wider">Hallucination signals · {{len .SelectedHallucinations}}</div>
+                        <a href="https://example.invalid" class="text-[10px] text-gray-600 italic" title="From buildChatGroundingContext + the hallucination detector running in dispatcher/agent_process.go on this reply.">detector trace</a>
+                    </div>
+                    <div class="space-y-2">
+                        {{range .SelectedHallucinations}}
+                        <div class="bg-dark-900 rounded-md border {{if eq .SeverityClass "rose"}}border-rose-700/50{{else if eq .SeverityClass "amber"}}border-amber-700/40{{else}}border-dark-700{{end}} px-3 py-2.5 text-xs">
+                            <div class="flex items-center gap-2 mb-1 flex-wrap">
+                                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium {{if eq .SeverityClass "rose"}}bg-rose-900/40 text-rose-300 ring-1 ring-inset ring-rose-500/30{{else if eq .SeverityClass "amber"}}bg-amber-900/40 text-amber-300 ring-1 ring-inset ring-amber-500/30{{else}}bg-gray-700/40 text-gray-300{{end}}">{{.Severity}}</span>
+                                <span class="text-gray-500">·</span>
+                                <span class="font-mono text-gray-300">{{.Detector}}</span>
+                                {{if .ClaimType}}
+                                    <span class="text-gray-500">·</span>
+                                    <span class="font-mono text-gray-400">{{.ClaimType}}</span>
+                                {{end}}
+                                {{if .RecordedAt}}
+                                    <span class="ml-auto font-mono text-gray-600 text-[10px]">{{.RecordedAt}}</span>
+                                {{end}}
+                            </div>
+                            <div class="text-gray-200">{{.Detail}}</div>
+                            {{if .ClaimValue}}
+                            <div class="mt-1.5 text-gray-500"><span class="text-[10px] uppercase tracking-wider">claim:</span> <span class="font-mono text-gray-300 break-all">{{.ClaimValue}}</span></div>
+                            {{end}}
+                            {{if .Sentence}}
+                            <div class="mt-1.5 text-gray-500"><span class="text-[10px] uppercase tracking-wider">sentence:</span> <span class="text-gray-400 italic">{{.Sentence}}</span></div>
+                            {{end}}
+                            {{if .EvidenceSearched}}
+                            <div class="mt-1.5 text-gray-500"><span class="text-[10px] uppercase tracking-wider">evidence:</span> <span class="font-mono text-gray-500">{{.EvidenceSearched}}</span></div>
+                            {{end}}
+                        </div>
+                        {{end}}
+                    </div>
+                </div>
+                {{end}}
+
+                <div>
+                    <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">System prompt (hash <span class="font-mono text-gray-600">{{.SelectedDetail.SystemPromptHash}}</span>)</div>
+                    {{if .SelectedPrompt}}
+                    <pre class="text-xs text-gray-300 font-mono whitespace-pre-wrap bg-dark-900 rounded-md border border-dark-700 px-3 py-2 max-h-96 overflow-y-auto">{{.SelectedPrompt}}</pre>
+                    {{else}}
+                    <div class="text-xs text-gray-500 italic">Prompt body not stored.</div>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

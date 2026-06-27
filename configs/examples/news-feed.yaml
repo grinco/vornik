@@ -1,0 +1,141 @@
+# Operator example — drop into ~/.config/vornik/projects/<name>.yaml
+# and tweak the marked TODO sections.
+#
+# News-feed project: autonomous scraper that ingests articles from a
+# scraper MCP server, consolidates them into per-project memory, and
+# posts status updates to a GitHub issue via the GitHub App channel.
+# No voice, no trading.
+#
+# Assumes the news-feed swarm exists. Bootstrap with:
+#   vornikctl init project --template news-feed
+#
+# References:
+#   docs/operator/conversation-channels.md
+#   docs/operator/cost-and-caching.md
+
+projectId: "news-feed"
+displayName: "News Feed"
+description: |
+  Scrapes a fixed feed list every hour, summarises new items into the
+  project's memory, and posts a digest to the configured GitHub issue
+  on a daily cadence.
+swarmId: "news-feed-swarm"
+defaultWorkflowId: "research"
+
+defaultPriority: 30
+maxConcurrentTasks: 1
+
+# ---------------------------------------------------------------
+# Autonomy — cron mode, fires every 60 min during waking hours.
+# Goal is a verbatim worker prompt (no LLM evaluation step).
+# ---------------------------------------------------------------
+autonomy:
+  enabled: true
+  mode: "cron"
+  pollInterval: "60m"
+  duplicateWindow: "0s"      # cron prompts are intentionally identical
+  cronTaskType: "ingest"
+  allowedTaskTypes:
+    - "ingest"
+    - "digest"
+  goal: |
+    Fetch any feed items published since the last tick from the
+    configured scraper MCP, summarise each into a single memory
+    chunk under content_class='news', and append the summary to
+    today's running digest file at digests/<YYYY-MM-DD>.md.
+  maxTasksPerHour: 2
+  requireApproval: false
+
+permissions:
+  secrets: []
+  allowedTools:
+    - "file_read"
+    - "file_write"
+    - "file_edit"
+    - "memory_search"
+    - "current_time"
+
+# ---------------------------------------------------------------
+# Budget — cheap LLM model + few items per tick = low daily spend.
+# ---------------------------------------------------------------
+budget:
+  daily_soft_usd: 1.00
+  daily_hard_usd: 5.00
+  monthly_soft_usd: 20.00
+  monthly_hard_usd: 60.00
+  timezone: "UTC"
+
+# ---------------------------------------------------------------
+# Retention — news content rotates fast. Trim tool audit + chat
+# history aggressively; keep cost rows the standard 90 days.
+# ---------------------------------------------------------------
+retention:
+  task_llm_usage_days: 90
+  tool_audit_days: 14
+  tasks_days: 30
+  executions_days: 30
+  artifacts_days: 60
+  task_messages_days: 14
+
+# ---------------------------------------------------------------
+# Rate limit — autonomy fires once an hour at most; this just
+# defends against operator-side runaway loops.
+# ---------------------------------------------------------------
+rate_limit:
+  tasks_per_minute: 3
+  tasks_per_hour: 30
+
+# ---------------------------------------------------------------
+# MCP — wire a scraper server. The example below assumes a stdio
+# transport script that the daemon launches as a subprocess.
+# ---------------------------------------------------------------
+mcp:
+  servers:
+    - name: "scraper"
+      transport: "stdio"
+      command: "/usr/local/bin/vornik-scraper"
+      args: ["--feeds", "/etc/vornik/news-feeds.yaml"]
+      env:
+        VORNIK_SCRAPER_LOG_LEVEL: "info"
+      allowed_tools:
+        - "web_fetch"
+        - "feed_list"
+  toolRateLimits:
+    # Defensive ceiling — keeps the scraper from hammering a slow
+    # upstream when the model retries.
+    scraper.web_fetch:
+      rps: 2
+      burst: 5
+
+# ---------------------------------------------------------------
+# GitHub App — posts the daily digest to an issue and replies to
+# @vornik mentions. App + installation must be created upstream.
+# Webhook URL: https://<your-daemon>/api/v1/github-app/webhook
+# ---------------------------------------------------------------
+github_app:
+  app_id: 1234567                         # TODO: your App ID
+  private_key_path: "/etc/vornik/secrets/news-feed-github.pem"
+  installation_id: 89012345               # TODO: your installation ID
+  webhook_secret_env: "VORNIK_NEWS_FEED_GH_WEBHOOK"
+  repo_allowlist:
+    - "grinco/news-feed-tracker"       # TODO: your repo
+  task_labels:
+    - "vornik-ingest"
+  pr_review_labels: []                     # PR reviews not used here
+  sender_allowlist:
+    - "vadim-grinco"                      # TODO: your GitHub login
+
+# ---------------------------------------------------------------
+# Hallucination detection — Phase 2 verifiers. The scraper output
+# should always be a valid feed item shape; verify per-step.
+# ---------------------------------------------------------------
+verifiers:
+  - name: ingest_produces_chunks
+    type: artifact_min_entries
+    whenTaskType: ingest
+    whenStep: ingest
+    params:
+      min_entries: 1
+
+hallucinationJudge:
+  enabled: false

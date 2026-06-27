@@ -1,0 +1,188 @@
+{{- /*
+NOTES.txt prints after `helm install` / `helm upgrade`. Keep it
+actionable — operators should be able to verify the install without
+hunting through docs.
+*/ -}}
+vornik {{ .Chart.AppVersion }} deployed into namespace {{ .Release.Namespace }}.
+{{- if .Values.cluster.enabled }}
+Mode: CLUSTER (per-role: ui / worker / webhook)
+{{- else }}
+Mode: single all-in-one
+{{- end }}
+
+{{- if not .Values.cluster.enabled }}
+
+1. Wait for pods to become ready:
+
+     kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "vornik.fullname" . }}
+     {{- if .Values.postgres.enabled }}
+     kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "vornik.postgresFullname" . }}
+     {{- end }}
+
+2. Verify migrations ran:
+
+     kubectl -n {{ .Release.Namespace }} logs statefulset/{{ include "vornik.fullname" . }} | grep -i "migrations\|applied"
+
+{{- if eq .Values.service.type "ClusterIP" }}
+
+3. Access the API / UI locally:
+
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "vornik.fullname" . }} 8080:{{ .Values.service.port }}
+     open http://localhost:8080/ui
+{{- else if eq .Values.service.type "NodePort" }}
+
+3. Find the NodePort:
+
+     kubectl -n {{ .Release.Namespace }} get svc {{ include "vornik.fullname" . }} -o jsonpath='{.spec.ports[0].nodePort}'
+{{- else if eq .Values.service.type "LoadBalancer" }}
+
+3. Wait for the LoadBalancer IP:
+
+     kubectl -n {{ .Release.Namespace }} get svc {{ include "vornik.fullname" . }} -w
+{{- end }}
+
+{{- if .Values.ingress.enabled }}
+
+   Ingress hosts:
+{{- range .Values.ingress.hosts }}
+     - {{ .host }}
+{{- end }}
+{{- end }}
+
+4. Agent image: vornik spawns {{ include "vornik.agentImage" . }} at task time.
+   Make sure this image is pullable from every node in the cluster.
+   Build with:
+
+     make build-agent
+     podman push {{ include "vornik.agentImage" . }}
+
+{{- if eq .Values.runtimeMode "privileged" }}
+
+5. Runtime mode: privileged (podman-in-pod).
+   The vornik pod has securityContext.privileged: true. If your cluster
+   enforces PodSecurityAdmission in `restricted` mode, label the namespace
+   `pod-security.kubernetes.io/enforce: privileged` or move vornik to a
+   namespace that permits it.
+{{- else if eq .Values.runtimeMode "host-socket" }}
+
+5. Runtime mode: host-socket.
+   The pod mounts {{ .Values.podmanHostSocket }} from its node.
+   Constrain scheduling to nodes that run podman.service via nodeSelector
+   or tolerations — otherwise new pods will CrashLoopBackOff on the
+   entrypoint's socket probe.
+{{- end }}
+
+Troubleshoot:
+
+  kubectl -n {{ .Release.Namespace }} logs -f statefulset/{{ include "vornik.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} exec -it {{ include "vornik.fullname" . }}-0 -- vornikctl doctor
+
+{{- else }}
+
+{{/* ------------------------------------------------------------------ */}}
+{{/* CLUSTER MODE                                                         */}}
+{{/* ------------------------------------------------------------------ */}}
+
+1. Wait for all tiers to become ready:
+{{- if .Values.cluster.worker.enabled }}
+
+     # Worker (full image, podman, scheduler + executor + singleton leases)
+     kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "vornik.workerFullname" . }}
+{{- end }}
+{{- if .Values.cluster.ui.enabled }}
+
+     # UI (thin image, read-heavy, DB access)
+     kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "vornik.uiFullname" . }}
+{{- end }}
+{{- if .Values.cluster.webhook.enabled }}
+
+     # Webhook / DMZ (thin image, no DB, relays to worker over mTLS)
+     kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "vornik.webhookFullname" . }}
+{{- end }}
+{{- if .Values.postgres.enabled }}
+
+     kubectl -n {{ .Release.Namespace }} rollout status statefulset/{{ include "vornik.postgresFullname" . }}
+{{- end }}
+
+2. Verify migrations ran (worker tier runs migrations on startup):
+{{- if .Values.cluster.worker.enabled }}
+
+     kubectl -n {{ .Release.Namespace }} logs statefulset/{{ include "vornik.workerFullname" . }} | grep -i "migrations\|applied"
+{{- end }}
+
+3. Access the UI:
+{{- if .Values.cluster.ui.enabled }}
+{{- if eq .Values.service.type "ClusterIP" }}
+
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "vornik.uiFullname" . }} 8080:{{ .Values.service.port }}
+     open http://localhost:8080/ui
+{{- end }}
+{{- end }}
+
+4. mTLS relay seam:
+   The chart references Secret "{{ .Values.cluster.mtls.secretName }}" for the DMZ relay mTLS.
+   This Secret must exist before pods start. Expected keys:
+     ca.crt        — internal CA certificate
+     server.crt    — worker relay-ingress server certificate
+     server.key    — worker relay-ingress server private key
+     client.crt    — webhook relay client certificate
+     client.key    — webhook relay client private key
+
+   Step 1 — generate the cert files (the script writes to deployments/podman/certs/):
+
+     VORNIK_WORKER_DNS="{{ include "vornik.workerFullname" . }}" \
+       bash deployments/podman/gen-cluster-certs.sh
+
+   Step 2 — load the cert files into a Kubernetes Secret:
+
+     kubectl create secret generic {{ .Values.cluster.mtls.secretName }} \
+       -n {{ .Release.Namespace }} \
+       --from-file=ca.crt=deployments/podman/certs/ca.crt \
+       --from-file=server.crt=deployments/podman/certs/worker-server.crt \
+       --from-file=server.key=deployments/podman/certs/worker-server.key \
+       --from-file=client.crt=deployments/podman/certs/webhook-client.crt \
+       --from-file=client.key=deployments/podman/certs/webhook-client.key
+
+   Remove the local cert files after loading (never commit keys to the repo):
+
+     rm -rf deployments/podman/certs/
+
+5. Images:
+   Full image (worker):   {{ include "vornik.image" . }}
+   Thin image (ui+webhook): {{ include "vornik.thinImage" . }}
+   Agent image:           {{ include "vornik.agentImage" . }}
+
+   Build and push both daemon images before installing:
+     make docker-build-full docker-build-thin DOCKER_REGISTRY=<your-registry>
+
+6. Fleet status (after all pods are ready):
+
+     kubectl -n {{ .Release.Namespace }} exec -it {{ include "vornik.workerFullname" . }}-0 -- vornikctl cluster status
+
+{{- if eq .Values.runtimeMode "privileged" }}
+
+7. Runtime mode: privileged (podman-in-pod) applies to worker pods only.
+   Label the worker namespace to permit privileged pods if your cluster
+   enforces PodSecurityAdmission restricted mode.
+{{- else if eq .Values.runtimeMode "host-socket" }}
+
+7. Runtime mode: host-socket applies to worker pods only.
+   Ensure nodeSelector / tolerations constrain workers to nodes running
+   podman.service with an accessible socket at {{ .Values.podmanHostSocket }}.
+{{- end }}
+
+Troubleshoot:
+
+  # Worker logs (scheduler, executor, relay ingress, migrations)
+  kubectl -n {{ .Release.Namespace }} logs -f statefulset/{{ include "vornik.workerFullname" . }}
+
+  # UI logs
+  kubectl -n {{ .Release.Namespace }} logs -f deployment/{{ include "vornik.uiFullname" . }}
+
+  # Webhook logs (relay client, HMAC verify)
+  kubectl -n {{ .Release.Namespace }} logs -f deployment/{{ include "vornik.webhookFullname" . }}
+
+  # In-pod doctor (run on the worker tier)
+  kubectl -n {{ .Release.Namespace }} exec -it {{ include "vornik.workerFullname" . }}-0 -- vornikctl doctor
+
+{{- end }}{{/* cluster mode branch */}}

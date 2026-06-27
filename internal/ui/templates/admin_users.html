@@ -1,0 +1,126 @@
+{{define "admin_users.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                {{template "navIconAdmin"}}
+                <h1 class="text-xl font-semibold text-gray-100">Users</h1>
+                {{if gt .AwaitingCount 0}}
+                <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-900/60 text-amber-200" title="logins awaiting approval">{{.AwaitingCount}} awaiting</span>
+                {{end}}
+                <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
+            </div>
+
+            <p class="text-xs text-gray-500">
+                People who log in via a configured provider appear here. A new login starts as <strong>awaiting access</strong> with no permissions until you approve it. Approve as <code class="font-mono">user</code> scoped to one or more projects, or as instance-wide <code class="font-mono">admin</code>. Every change is recorded in the <a href="/ui/admin/audit" class="text-brand-400 hover:text-brand-300">admin audit log</a>.
+            </p>
+
+            {{if .Notice}}
+            <div class="glass rounded-xl border border-brand-700/50 bg-brand-900/20 px-4 py-2.5 text-sm text-brand-200">{{.Notice}}</div>
+            {{end}}
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-12 text-center text-gray-500 text-sm">
+                User management requires the identity core (PostgreSQL). This deployment has no identity repository wired, so logins cannot be approved here.
+            </div>
+            {{else if not .Users}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-12 text-center text-gray-500 text-sm">No users yet. The first login appears here as awaiting access.</div>
+            {{else}}
+            <div class="space-y-3">
+                {{range $row := .Users}}
+                <div class="glass rounded-xl border {{if $row.Awaiting}}border-amber-700/50{{else}}border-dark-700{{end}} overflow-hidden">
+                    <div class="px-4 py-3 flex flex-wrap items-center gap-3 border-b border-dark-700/50">
+                        <div class="min-w-0">
+                            <div class="text-sm font-medium text-gray-100 truncate">{{$row.DisplayName}}</div>
+                            <div class="text-xs text-gray-500 font-mono truncate">{{$row.UserID}}</div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            {{if $row.Awaiting}}
+                            <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-900/50 text-amber-300">awaiting access</span>
+                            {{else if eq $row.Role "admin"}}
+                            <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-emerald-900/50 text-emerald-300">admin</span>
+                            {{else}}
+                            <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-blue-900/50 text-blue-300">user</span>
+                            {{end}}
+                            {{if $row.Disabled}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-red-900/50 text-red-300">disabled</span>{{end}}
+                        </div>
+                        <div class="text-xs text-gray-400 ml-auto">
+                            {{if not $row.Awaiting}}
+                                {{if $row.AllProjects}}all projects{{else if $row.Projects}}{{range $i, $p := $row.Projects}}{{if $i}}, {{end}}<span class="font-mono">{{$p}}</span>{{end}}{{else}}—{{end}}
+                            {{end}}
+                            · {{if gt $row.ActiveSessions 0}}<a href="/ui/admin/users/{{$row.UserID}}/sessions" class="text-brand-400 hover:text-brand-300">{{$row.ActiveSessions}} session{{if ne $row.ActiveSessions 1}}s{{end}} →</a>{{else}}0 sessions{{end}}
+                        </div>
+                    </div>
+
+                    <div class="px-4 py-3 space-y-3">
+                        <div class="text-xs text-gray-500">
+                            Linked identities:
+                            {{range $row.Identities}}
+                                <span class="font-mono text-gray-300">{{.Channel}}:{{if .Display}}{{.Display}}{{else}}{{.ExternalID}}{{end}}</span>
+                                <form method="post" action="/ui/admin/users/{{$row.UserID}}/revoke-identity" class="inline">
+                                    <input type="hidden" name="channel" value="{{.Channel}}">
+                                    <input type="hidden" name="external_id" value="{{.ExternalID}}">
+                                    <button class="text-red-400 hover:text-red-300 text-xs" title="unlink this identity" onclick="return confirm('Unlink {{.Channel}}:{{.ExternalID}}? They will provision fresh on next login.')">unlink</button>
+                                </form>
+                            {{else}}<span class="text-gray-600">none</span>{{end}}
+                        </div>
+
+                        <form method="post" action="/ui/admin/users/{{$row.UserID}}/grant" class="flex flex-wrap items-start gap-4 border-t border-dark-700/40 pt-3">
+                            <fieldset class="flex items-center gap-3">
+                                <legend class="sr-only">Role</legend>
+                                <label class="inline-flex items-center gap-1 text-xs text-gray-300">
+                                    <input type="radio" name="role" value="user" {{if ne $row.Role "admin"}}checked{{end}}> user
+                                </label>
+                                <label class="inline-flex items-center gap-1 text-xs text-gray-300">
+                                    <input type="radio" name="role" value="admin" {{if eq $row.Role "admin"}}checked{{end}}> admin
+                                </label>
+                            </fieldset>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <span class="text-xs text-gray-500 uppercase tracking-wider">Projects</span>
+                                <label class="inline-flex items-center gap-1 text-xs text-gray-300">
+                                    <input type="checkbox" name="projects" value="*" {{if $row.AllProjects}}checked{{end}}> all
+                                </label>
+                                {{range $row.ProjectChoices}}
+                                <label class="inline-flex items-center gap-1 text-xs text-gray-300">
+                                    <input type="checkbox" name="projects" value="{{.ID}}" {{if .Checked}}checked{{end}}> <span class="font-mono">{{.ID}}</span>
+                                </label>
+                                {{end}}
+                            </div>
+                            <button class="bg-brand-500 hover:bg-brand-400 text-white text-xs font-medium px-3 py-1.5 rounded-md">
+                                {{if $row.Awaiting}}Approve{{else}}Update access{{end}}
+                            </button>
+                        </form>
+
+                        <div class="flex flex-wrap items-center gap-2 border-t border-dark-700/40 pt-3">
+                            {{if not $row.Awaiting}}
+                            <form method="post" action="/ui/admin/users/{{$row.UserID}}/revoke-access" class="inline">
+                                <button class="text-xs text-gray-400 hover:text-gray-200 px-2 py-1 rounded-md border border-dark-600" onclick="return confirm('Revoke all access for {{$row.DisplayName}}? They return to awaiting access.')">Revoke access</button>
+                            </form>
+                            {{end}}
+                            {{if $row.Disabled}}
+                            <form method="post" action="/ui/admin/users/{{$row.UserID}}/enable" class="inline">
+                                <button class="text-xs text-emerald-400 hover:text-emerald-300 px-2 py-1 rounded-md border border-dark-600">Enable</button>
+                            </form>
+                            {{else}}
+                            <form method="post" action="/ui/admin/users/{{$row.UserID}}/disable" class="inline">
+                                <button class="text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded-md border border-dark-600" onclick="return confirm('Disable {{$row.DisplayName}}? Active sessions are revoked immediately.')">Disable</button>
+                            </form>
+                            {{end}}
+                        </div>
+                    </div>
+                </div>
+                {{end}}
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

@@ -1,0 +1,257 @@
+{{define "workflow_edit.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col" data-assist-project="{{.AssistProjectID}}">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-5xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">Edit workflow</h1>
+                    <p class="text-xs text-gray-500 font-mono mt-1">{{.WorkflowID}}{{if .WorkflowPath}} · {{.WorkflowPath}}{{end}}</p>
+                    <a href="/ui/workflows/{{.WorkflowID}}/schema{{if .AssistProjectID}}?projectId={{.AssistProjectID}}{{end}}" class="text-[11px] text-brand-300 hover:text-brand-200 underline-offset-2 hover:underline">All parameters (steps + advanced) →</a>
+                </div>
+                {{if .AssistProjectID}}
+                <a href="/ui/projects/{{.AssistProjectID}}" class="flex items-center gap-1 text-gray-500 hover:text-gray-300 text-sm transition-colors">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                    Project
+                </a>
+                {{else}}
+                <a href="/ui/workflows" class="flex items-center gap-1 text-gray-500 hover:text-gray-300 text-sm transition-colors">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                    Workflows
+                </a>
+                {{end}}
+            </div>
+
+            {{if .Success}}
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{{.Success}}</div>
+            {{end}}
+            {{if .Error}}
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            {{end}}
+
+            <p class="text-sm text-gray-400 leading-relaxed">
+                Workflow-level scalars and per-step prompts are editable here. Per-step
+                frontmatter fields (type, role, on_success / on_fail, timeouts, retries,
+                gates) are read-only in this view — edit them on disk for now. Comments and
+                unmodified fields in <code class="text-gray-300">WORKFLOW.md</code> survive a
+                form save.
+            </p>
+
+            <form method="POST" action="/ui/workflows/{{.WorkflowID}}/edit" class="space-y-6">
+
+                <!-- Identity -->
+                <section class="glass rounded-lg border border-dark-700 p-5 space-y-4">
+                    <header>
+                        <h2 class="text-sm font-semibold text-gray-200 uppercase tracking-wide">Identity</h2>
+                    </header>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-300 mb-1.5" for="displayName">Display name</label>
+                            <input type="text" name="displayName" id="displayName" value="{{.DisplayName}}"
+                                   class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-300 mb-1.5" for="version">Version</label>
+                            <input type="text" name="version" id="version" value="{{.Version}}" placeholder="1.0.0"
+                                   class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-300 mb-1.5" for="entrypoint">Entrypoint</label>
+                            <select name="entrypoint" id="entrypoint"
+                                    class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                                <option value="" {{if eq .Entrypoint ""}}selected{{end}}>(unset)</option>
+                                {{$current := .Entrypoint}}
+                                {{range .EntrypointOptions}}
+                                <option value="{{.}}" {{if eq . $current}}selected{{end}}>{{.}}</option>
+                                {{end}}
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="description">Description</label>
+                        <textarea name="description" id="description" rows="3" maxlength="1024"
+                                  placeholder="One-paragraph summary surfaced in dashboards and the workflow picker (≤1024 chars)."
+                                  class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 leading-6">{{.Description}}</textarea>
+                        <p class="text-[11px] text-gray-500 mt-1">Required by the <code class="text-gray-300">workflow_md_shape</code> doctor check. Keep it short — long prose belongs in the Markdown body.</p>
+                    </div>
+                </section>
+
+                <!-- Limits -->
+                <section class="glass rounded-lg border border-dark-700 p-5 space-y-4">
+                    <header>
+                        <h2 class="text-sm font-semibold text-gray-200 uppercase tracking-wide">Limits</h2>
+                        <p class="text-[11px] text-gray-500 mt-1">Watchdog caps. Empty / 0 inherits the defaults (maxStepVisits=3, maxIterations=20, no wall-clock cap).</p>
+                    </header>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-300 mb-1.5" for="maxStepVisits">Max step visits</label>
+                            <input type="number" min="0" name="maxStepVisits" id="maxStepVisits" value="{{if .MaxStepVisits}}{{.MaxStepVisits}}{{end}}" placeholder="3"
+                                   class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-300 mb-1.5" for="maxIterations">Max iterations</label>
+                            <input type="number" min="0" name="maxIterations" id="maxIterations" value="{{if .MaxIterations}}{{.MaxIterations}}{{end}}" placeholder="20"
+                                   class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-300 mb-1.5" for="maxWallClock">Max wall clock</label>
+                            <input type="text" name="maxWallClock" id="maxWallClock" value="{{.MaxWallClock}}" placeholder="1h"
+                                   class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Cleanup -->
+                <section class="glass rounded-lg border border-dark-700 p-5 space-y-4">
+                    <header>
+                        <h2 class="text-sm font-semibold text-gray-200 uppercase tracking-wide">Cleanup</h2>
+                        <p class="text-[11px] text-gray-500 mt-1">Artifact paths deleted before the workflow's first step runs, one per line. Use to prevent prior outputs from leaking into a new run (e.g. <code class="text-gray-300">research.md</code>, <code class="text-gray-300">deliverable.md</code>). Empty = no cleanup.</p>
+                    </header>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="cleanupArtifacts">Artifact paths to remove pre-run</label>
+                        <textarea name="cleanupArtifacts" id="cleanupArtifacts" rows="4"
+                                  placeholder="research.md&#10;deliverable.md&#10;summary.txt"
+                                  class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono leading-6">{{.CleanupArtifactsRaw}}</textarea>
+                    </div>
+                </section>
+
+                <!-- Steps -->
+                <section class="glass rounded-lg border border-dark-700 p-5 space-y-5">
+                    <header>
+                        <h2 class="text-sm font-semibold text-gray-200 uppercase tracking-wide">Steps</h2>
+                        <p class="text-[11px] text-gray-500 mt-1">Agent-step prompts are editable here. Other per-step fields stay read-only.</p>
+                    </header>
+
+                    {{range .StepViews}}
+                    <article class="rounded-md border border-dark-700/70 bg-dark-900/40 p-4 space-y-3">
+                        <header class="flex items-start justify-between gap-3">
+                            <div class="min-w-0">
+                                <div class="flex items-center gap-2 flex-wrap">
+                                    <span class="text-sm font-medium text-gray-100 font-mono">{{.ID}}</span>
+                                    <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-dark-700/60 text-gray-300 border border-dark-700">{{.Type}}</span>
+                                </div>
+                                <div class="text-[11px] text-gray-500 mt-1 space-x-3 font-mono">
+                                    {{if .RetryMaxRetries}}<span>retries: {{.RetryMaxRetries}}{{if .RetryBackoff}}/{{.RetryBackoff}}{{end}}</span>{{end}}
+                                    {{if .GatesCount}}<span>gates: {{.GatesCount}}</span>{{end}}
+                                </div>
+                            </div>
+                        </header>
+                        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            <div>
+                                <label class="block text-[11px] font-medium text-gray-400 mb-1" for="stepRole_{{.ID}}">Role</label>
+                                <input type="text" name="stepRole_{{.ID}}" id="stepRole_{{.ID}}" value="{{.Role}}"
+                                       class="w-full px-2 py-1.5 text-xs rounded bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                            </div>
+                            <div>
+                                <label class="block text-[11px] font-medium text-gray-400 mb-1" for="stepOnSuccess_{{.ID}}">on_success</label>
+                                <input type="text" name="stepOnSuccess_{{.ID}}" id="stepOnSuccess_{{.ID}}" value="{{.OnSuccess}}"
+                                       list="workflowTargets" placeholder="(none)"
+                                       class="w-full px-2 py-1.5 text-xs rounded bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                            </div>
+                            <div>
+                                <label class="block text-[11px] font-medium text-gray-400 mb-1" for="stepOnFail_{{.ID}}">on_fail</label>
+                                <input type="text" name="stepOnFail_{{.ID}}" id="stepOnFail_{{.ID}}" value="{{.OnFail}}"
+                                       list="workflowTargets" placeholder="(execution fail)"
+                                       class="w-full px-2 py-1.5 text-xs rounded bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                            </div>
+                            <div>
+                                <label class="block text-[11px] font-medium text-gray-400 mb-1" for="stepTimeout_{{.ID}}">timeout</label>
+                                <input type="text" name="stepTimeout_{{.ID}}" id="stepTimeout_{{.ID}}" value="{{.Timeout}}"
+                                       placeholder="30m"
+                                       class="w-full px-2 py-1.5 text-xs rounded bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                            </div>
+                        </div>
+                        {{if .IsAgent}}
+                        <div>
+                            <label class="block text-xs font-medium text-gray-300 mb-1.5" for="{{.PromptFieldName}}">Prompt</label>
+                            <textarea name="{{.PromptFieldName}}" id="{{.PromptFieldName}}" rows="8"
+                                      class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono leading-6">{{.SystemPrompt}}</textarea>
+                        </div>
+                        {{template "assistPanel" (dict
+                            "Kind" "workflow_step"
+                            "TargetID" $.WorkflowID
+                            "SubjectID" .ID
+                            "PromptFieldID" .PromptFieldName
+                            "PanelID" (printf "assist-wf-%s" .ID)
+                        )}}
+                        {{else}}
+                        <p class="text-[11px] text-gray-500 italic">Non-agent step — no prompt to edit.</p>
+                        {{end}}
+                    </article>
+                    {{end}}
+                </section>
+
+                <!-- Terminals -->
+                {{if .TerminalViews}}
+                <section class="glass rounded-lg border border-dark-700 p-5 space-y-3">
+                    <header>
+                        <h2 class="text-sm font-semibold text-gray-200 uppercase tracking-wide">Terminals</h2>
+                        <p class="text-[11px] text-gray-500 mt-1">End states the workflow can transition to. Read-only in this view.</p>
+                    </header>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                            <thead>
+                                <tr class="text-gray-400 text-left">
+                                    <th scope="col" class="py-1 pr-3 font-medium">ID</th>
+                                    <th scope="col" class="py-1 pr-3 font-medium">Status</th>
+                                    <th scope="col" class="py-1 font-medium">Message</th>
+                                </tr>
+                            </thead>
+                            <tbody class="font-mono text-gray-200">
+                                {{range .TerminalViews}}
+                                <tr class="border-t border-dark-700/60">
+                                    <td class="py-1.5 pr-3">{{.ID}}</td>
+                                    <td class="py-1.5 pr-3">{{.Status}}</td>
+                                    <td class="py-1.5 text-gray-400">{{.Message}}</td>
+                                </tr>
+                                {{end}}
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+                {{end}}
+
+                {{/* Shared datalist for on_success / on_fail autocomplete.
+                     Holds every step id + terminal id so transition
+                     targets get type-ahead while still allowing
+                     free-text for forward references. */}}
+                <datalist id="workflowTargets">
+                    {{range .EntrypointOptions}}<option value="{{.}}"></option>{{end}}
+                </datalist>
+
+                <div class="flex items-center justify-end gap-3">
+                    <a href="/ui/projects" class="px-4 py-2 rounded-md bg-dark-700 text-gray-300 hover:bg-dark-600 text-sm font-medium">Cancel</a>
+                    <button type="submit" class="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-brand-600 text-white hover:bg-brand-500 text-sm font-medium">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>
+                        Save workflow
+                    </button>
+                </div>
+            </form>
+
+            <!-- Danger zone: delete the workflow. Separate form +
+                 client-side confirm() so the save button doesn't
+                 accidentally trigger deletion. The server refuses
+                 the delete when any project still references this
+                 workflow via defaultWorkflowId. -->
+            <section class="rounded-lg border border-red-500/30 bg-red-500/5 p-5 space-y-3" data-testid="workflow-delete-section">
+                <header>
+                    <h2 class="text-sm font-semibold text-red-300 uppercase tracking-wide">Danger zone</h2>
+                    <p class="text-[11px] text-gray-500 mt-1">Removes <code class="text-gray-300">{{.WorkflowID}}.md</code> from disk. Projects still pointing at this workflow will block the delete.</p>
+                </header>
+                <form method="POST" action="/ui/workflows/{{.WorkflowID}}/delete" onsubmit="return confirm('Delete workflow {{.WorkflowID}}? This removes the .md from disk and cannot be undone.');">
+                    <button type="submit" class="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-red-600 text-white hover:bg-red-500 text-sm font-medium" data-testid="workflow-delete-button">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/></svg>
+                        Delete workflow
+                    </button>
+                </form>
+            </section>
+        </div>
+    </main>
+    {{template "assistScript" .}}
+</body>
+</html>
+{{end}}

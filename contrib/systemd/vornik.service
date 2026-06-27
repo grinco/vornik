@@ -1,0 +1,91 @@
+# vornik.service - Systemd user service for vornik daemon
+#
+# Install:
+#   make install
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now vornik
+#
+# Logs:
+#   journalctl --user -u vornik -f
+#
+# Config:
+#   ~/.config/vornik/config.yaml
+
+[Unit]
+Description=vornik - Distributed task execution daemon
+Documentation=https://github.com/grinco/vornik
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=%h/.local/bin/vornik
+Restart=on-failure
+RestartSec=5
+
+# Environment
+Environment=VORNIK_CONFIG=%h/.config/vornik/config.yaml
+Environment=VORNIK_DATA_DIR=%h/.local/share/vornik
+# Set VORNIK_CONFIGS_DIR to override registry config discovery (projects/swarms/workflows).
+# Uncomment and adjust if your configs live outside the default location next to config.yaml.
+#Environment=VORNIK_CONFIGS_DIR=%h/.config/vornik/configs
+
+# Secrets — API keys and tokens referenced from config.yaml via ${VAR}
+# placeholders. Each file is a plain KEY=VALUE list (no `export`, no
+# shell quoting beyond what systemd's parser accepts). Files should be
+# mode 0600 / owned by the daemon user. systemd does not glob, so each
+# expected category gets its own optional line below; the leading `-`
+# means a missing file is silently skipped (so operators can populate
+# only the categories they need without editing this unit).
+#
+# Conventional layout:
+#   ~/.config/vornik/secrets/env        — catchall for one-offs
+#   ~/.config/vornik/secrets/chat.env   — CHAT_API_KEY, OAuth bearers, etc.
+#   ~/.config/vornik/secrets/vertex.env — GCP_API_KEY for chat.router.vertex
+#   ~/.config/vornik/secrets/telegram.env — TELEGRAM_BOT_TOKEN
+#   ~/.config/vornik/secrets/database.env — DB password if not in config.yaml
+#   ~/.config/vornik/secrets/aws.env    — AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
+#                                         (+ optional AWS_SESSION_TOKEN) for
+#                                         chat.router.bedrock (native Converse).
+#                                         The aws-sdk-go-v2 default credential
+#                                         chain reads these env vars first;
+#                                         falls back to ~/.aws/credentials and
+#                                         then to instance profile / IAM role.
+#
+# After adding a new file, run `systemctl --user daemon-reload` and then
+# `systemctl --user restart vornik` so the env block is re-read.
+EnvironmentFile=-%h/.config/vornik/secrets/env
+EnvironmentFile=-%h/.config/vornik/secrets/chat.env
+EnvironmentFile=-%h/.config/vornik/secrets/vertex.env
+EnvironmentFile=-%h/.config/vornik/secrets/telegram.env
+EnvironmentFile=-%h/.config/vornik/secrets/database.env
+EnvironmentFile=-%h/.config/vornik/secrets/aws.env
+
+# Sandbox hardening — intentionally minimal for Podman rootless runtime.
+#
+# ProtectHome, PrivateTmp, and similar mount-namespace directives are NOT
+# used here. When systemd applies them to a non-root user service, it may
+# create a user namespace to obtain CAP_SYS_ADMIN for the mount
+# namespace. That wrapping user namespace breaks rootless Podman: Podman's
+# pause-process setup calls /usr/bin/newuidmap, which needs to write to
+# /proc/<pid>/uid_map from the *initial* user namespace. Inside systemd's
+# wrapping namespace the write is denied ("Operation not permitted"),
+# causing every container start to fail — even with --userns=host — while
+# the same command succeeds from an interactive shell.
+#
+# NoNewPrivileges is also intentionally omitted. Rootless Podman relies
+# on the file-capability helpers /usr/bin/newuidmap and /usr/bin/newgidmap
+# (cap_setuid+ep / cap_setgid+ep). NoNewPrivileges=yes strips file
+# capabilities from executed binaries, preventing the helpers from
+# gaining the privileges they need.
+#
+# Podman already provides its own container isolation, so the systemd
+# sandboxing is redundant for the workloads vornik manages.
+Delegate=yes
+
+# Limits
+LimitNOFILE=65536
+TimeoutStopSec=90
+
+[Install]
+WantedBy=default.target

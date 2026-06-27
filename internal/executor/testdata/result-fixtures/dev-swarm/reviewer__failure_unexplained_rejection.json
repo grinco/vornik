@@ -1,0 +1,13 @@
+{
+  "swarm": "dev-swarm",
+  "role": "reviewer",
+  "reason": "approved:false without feedback — rejected_explained plausibility rule must reject. The coder retry needs concrete feedback to act on.",
+  "expect": "fail",
+  "payload": {
+    "review": {
+      "approved": false,
+      "all_done": false,
+      "checked_commit": "abc1234"
+    }
+  }
+}

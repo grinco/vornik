@@ -1,0 +1,1422 @@
+{{define "task_live.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+{{/* Live-page animation styles (Upgrade #2 — 2026-05-26).
+     Inline because they're scoped to this page and avoid a Tailwind
+     custom-config round-trip. Keyframes are minimal — a brief
+     accent-coloured border flash on the active step card whenever a
+     live event arrives, plus a subtle dot pulse on the now-doing
+     line so the operator always has a moving target on the page. */}}
+<style>
+  @keyframes vornik-pulse-border {
+    0%   { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.55); }
+    50%  { box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.25); }
+    100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.0); }
+  }
+  .pulse-active {
+    animation: vornik-pulse-border 250ms ease-out;
+    border-radius: 0.375rem;
+  }
+  @keyframes vornik-dot-pulse {
+    0%, 100% { opacity: 0.35; }
+    50%      { opacity: 1; }
+  }
+  .nowdoing-dot {
+    animation: vornik-dot-pulse 1200ms ease-in-out infinite;
+  }
+  /* Scope-chip toggle (Upgrade #3 — 2026-05-26).
+     Inactive: gray ring. Active: accent fill. CSS lives here rather
+     than as a Tailwind utility so the active-state colour stays in
+     sync with the Send button's accent treatment. */
+  .scope-chip {
+    color: rgb(156 163 175);              /* gray-400 */
+    background-color: rgb(15 23 42 / 0);  /* transparent */
+    border-color: rgb(55 65 81);          /* gray-700 */
+    cursor: pointer;
+  }
+  .scope-chip:hover {
+    color: rgb(209 213 219);              /* gray-300 */
+    border-color: rgb(75 85 99);          /* gray-600 */
+  }
+  .scope-chip.active {
+    color: white;
+    background-color: rgb(2 132 199 / 0.30);  /* sky-600 / accent */
+    border-color: rgb(2 132 199 / 0.60);
+  }
+</style>
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+
+        {{/* Reconnect banner — initially hidden. The JS layer flips
+             it visible on socket drop and tracks the backoff schedule
+             (1s → 2s → 4s → 8s → 16s → 30s cap). */}}
+        <div id="reconnect-banner" class="hidden mb-3 px-4 py-2 rounded-lg bg-amber-900/40 border border-amber-700/40 text-amber-200 text-xs flex items-center justify-between gap-3">
+            <span>Reconnecting <span id="reconnect-detail">…</span></span>
+            <button type="button" id="reconnect-now" class="px-2 py-1 rounded bg-amber-800/60 hover:bg-amber-700/60 text-amber-100">Reconnect now</button>
+        </div>
+
+        {{/* Replay-gap banner — shown when the server emits a
+             replay_gap event (cursor older than the ring buffer).
+             A page refresh re-issues last_seq=0 and reseeds the
+             timeline with the live view. */}}
+        <div id="gap-banner" class="hidden mb-3 px-4 py-2 rounded-lg bg-rose-950/40 border border-rose-900/40 text-rose-200 text-xs flex items-center justify-between gap-3">
+            <span>The live stream skipped ahead beyond the server's replay buffer.</span>
+            <button type="button" onclick="window.location.reload()" class="px-2 py-1 rounded bg-rose-800/60 hover:bg-rose-700/60 text-rose-100">Refresh for full state</button>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-[1fr,18rem] gap-4">
+
+            {{/* Left column: header + timeline. */}}
+            <div class="space-y-5">
+
+                <!-- Header -->
+                <div class="glass rounded-xl border border-dark-700 px-5 py-4">
+                    <div class="flex items-start justify-between flex-wrap gap-y-3 gap-x-4">
+                        <div>
+                            <div class="flex items-center gap-2 mb-1 flex-wrap">
+                                <span id="header-status">
+                                    {{if .Execution}}{{template "executionStatusBadge" .Execution.Status}}{{end}}
+                                </span>
+                                <span class="text-xs text-gray-500">Live observation</span>
+                            </div>
+                            <h1 class="text-xl font-semibold text-gray-100">
+                                {{if .Task}}
+                                    Task <span class="font-mono text-brand-300" title="{{.Task.ID}}">{{shortID .Task.ID}}</span>
+                                {{else}}
+                                    Live execution
+                                {{end}}
+                            </h1>
+                            {{/* Sub-line carries the full IDs for ops
+                                 who copy-paste IDs into other tools.
+                                 Header H1 stays compact + memorable. */}}
+                            <p class="text-gray-500 text-xs font-mono mt-0.5 flex items-center gap-1 flex-wrap">
+                                {{if .Execution}}
+                                <a href="/ui/executions/{{.Execution.ID}}" class="hover:text-gray-300" title="{{.Execution.ID}}">{{shortID .Execution.ID}}</a>
+                                {{end}}
+                                {{if .Task}}
+                                <span class="text-gray-700 mx-1">·</span>
+                                <a href="/ui/tasks/{{.Task.ID}}" class="hover:text-gray-300" title="{{.Task.ID}}">{{.Task.ID}}</a>
+                                {{end}}
+                            </p>
+                            <p class="text-[11px] text-gray-500 mt-2 flex items-center gap-3 flex-wrap tabular-nums">
+                                <span>Current step: <span id="header-step" class="text-gray-200 font-mono">{{if .CurrentStep}}{{.CurrentStep}}{{else}}—{{end}}</span></span>
+                                <span class="text-gray-700">·</span>
+                                <span>Elapsed: <span id="header-elapsed" class="text-gray-200">00:00</span></span>
+                                {{/* Heartbeat (Upgrade #2 — 2026-05-26).
+                                     "Last event Xs ago" auto-ticks
+                                     client-side from the most recent
+                                     live event. Amber after 10s
+                                     silence, rose after 30s — visual
+                                     cue that the stream is alive or
+                                     stalled even when CONNECTED. */}}
+                                <span class="text-gray-700">·</span>
+                                <span>Last event: <span id="header-last-event" class="text-gray-500" title="Time since the most recent live event arrived. Amber = 10s+, rose = 30s+.">—</span></span>
+                            </p>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-[10px] uppercase tracking-wider text-gray-600">Tokens</div>
+                            <div class="tabular-nums text-sm text-gray-200">
+                                <span id="header-tokens-in">0</span> in /
+                                <span id="header-tokens-out">0</span> out
+                            </div>
+                            <div class="text-[10px] uppercase tracking-wider text-gray-600 mt-2">Cost</div>
+                            <div class="tabular-nums text-sm text-accent-300" id="header-cost">$0.00</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Step timeline. JS layer materialises step cards
+                     here as step_started events arrive; the current
+                     step expands by default into the streaming card. -->
+                <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                    <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-2">
+                        <h2 class="text-sm font-semibold text-gray-200">Step timeline</h2>
+                        <span id="timeline-status" class="text-[10px] text-gray-500">connecting…</span>
+                    </div>
+                    <ol id="timeline" class="divide-y divide-dark-700/60">
+                        {{/* Completed steps from the execution snapshot
+                             — collapsed by default. The JS layer takes
+                             over once the WebSocket connects. */}}
+                        {{range $i, $step := .CompletedSteps}}
+                        <li class="px-5 py-3" data-step="{{$step}}" data-completed="1">
+                            <details>
+                                <summary class="cursor-pointer list-none flex items-center gap-2 text-sm">
+                                    <span class="text-[10px] font-mono text-gray-600">#{{$i}}</span>
+                                    <span class="font-medium text-gray-100">{{$step}}</span>
+                                    <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-900/40 text-emerald-300">completed</span>
+                                </summary>
+                                <div class="mt-2 text-[11px] text-gray-500">Step completed before this page loaded — refresh later or open the replay page for full detail.</div>
+                            </details>
+                        </li>
+                        {{end}}
+                    </ol>
+                    <div id="timeline-empty" class="px-5 py-8 text-center text-sm text-gray-500 {{if .CompletedSteps}}hidden{{end}}">
+                        Waiting for the first step…
+                    </div>
+                </div>
+            </div>
+
+            {{/* Right rail: steering compose + hint history.
+                 Upgrade #3 (2026-05-26): the "Inject hint" modal
+                 is gone — the compose is inline, always-visible,
+                 and carries a scope chip toggle so operators can
+                 pick per-step / per-task / per-execution without
+                 leaving the page. Press `/` to focus. */}}
+            <aside class="space-y-3">
+                <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                    <div class="px-4 py-3 border-b border-dark-700/60 flex items-center justify-between">
+                        <h2 class="text-sm font-semibold text-gray-200">Steering</h2>
+                        <span class="text-[10px] text-gray-500" title="Press / to focus the compose box">Press <kbd class="px-1 py-0.5 rounded bg-dark-700 text-gray-300 font-mono text-[9px]">/</kbd></span>
+                    </div>
+                    <div class="px-4 py-3 space-y-2">
+                        {{/* Inline compose. Hints land via:
+                             - scope=step  → POST /executions/{id}/hints with step_id
+                             - scope=task  → POST /projects/{p}/tasks/{id}/hints (survives retries)
+                             - scope=exec  → POST /executions/{id}/hints (no step_id) */}}
+                        <textarea id="steer-input" rows="3"
+                                  placeholder="Course-correct the next step…"
+                                  class="w-full px-3 py-2 text-sm rounded-lg bg-dark-900 border border-dark-700 text-gray-100 focus:border-accent-500/60 focus:outline-none resize-none"></textarea>
+                        <div class="flex items-center justify-between gap-2 flex-wrap">
+                            <div class="flex items-center gap-1 text-[10px]" role="radiogroup" aria-label="Hint scope">
+                                <span class="text-gray-500 mr-1">when:</span>
+                                <button type="button" data-scope="step" class="scope-chip px-2 py-0.5 rounded-full border text-[10px] transition-colors" title="Targets the specific step the agent is on now (or starts next). One-shot.">this step</button>
+                                <button type="button" data-scope="execution" class="scope-chip px-2 py-0.5 rounded-full border text-[10px] transition-colors" title="Any next step in this execution — applies even if the current step finishes before the hint lands.">any step</button>
+                                <button type="button" data-scope="task" class="scope-chip px-2 py-0.5 rounded-full border text-[10px] transition-colors" title="Task-scoped: if the task fails and retries, the hint still applies to the next attempt's first step.">across retries</button>
+                            </div>
+                            <button id="steer-send" type="button" onclick="submitInlineHint()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                                <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+                                Send
+                            </button>
+                        </div>
+                        {{/* Visible explainer beneath the chips —
+                             tooltips alone don't land on mobile and
+                             aren't discoverable on desktop. The text
+                             reacts to the chosen chip so the operator
+                             sees exactly what their hint will do. */}}
+                        <p id="steer-scope-explain" class="text-[10px] text-gray-500 leading-snug"></p>
+                        <p id="steer-error" class="hidden text-[11px] text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-2 py-1.5"></p>
+                    </div>
+                    {{/* Pause / Resume — non-hint steering actions
+                         in a compact row. Fork moved into an inline
+                         <details> below (2026-05-26 refactor D —
+                         modal removed, same inline pattern as the
+                         steering compose). */}}
+                    <div class="px-4 py-3 border-t border-dark-700/60 flex items-center gap-2 flex-wrap">
+                        <button type="button" id="btn-pause" class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Pause after the current step completes">
+                            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            <span id="btn-pause-label">Pause</span>
+                        </button>
+                        <button type="button" id="btn-resume" class="hidden inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Resume from PAUSED">
+                            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            Resume
+                        </button>
+                        <span id="hint-pending-badge" class="hidden ml-auto inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded-full bg-amber-700/60 text-amber-100" title="Hints queued, awaiting consumption by the next step"></span>
+                        <p id="steering-error" class="hidden w-full text-[11px] text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-2 py-1.5"></p>
+                    </div>
+                    {{/* Inline fork (refactor D, 2026-05-26).
+                         Replaces the modal — same step picker +
+                         optional prompt override, but always
+                         discoverable without an extra click. */}}
+                    <div class="px-4 py-3 border-t border-dark-700/60">
+                        <details id="fork-section" class="group">
+                            <summary class="cursor-pointer list-none flex items-center gap-1.5 text-xs font-medium text-amber-300 hover:text-amber-200">
+                                <svg class="h-3.5 w-3.5 transform transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+                                Fork from a step
+                                <span class="text-[10px] text-gray-500 font-normal ml-1">(branch — current execution keeps running)</span>
+                            </summary>
+                            <div class="mt-3 space-y-2">
+                                <label class="block text-[11px]">
+                                    <span class="text-gray-500 uppercase tracking-wider text-[10px]">Step</span>
+                                    <select id="fork-inline-step" class="mt-1 w-full px-3 py-2 text-sm font-mono rounded-lg bg-dark-900 border border-dark-700 text-gray-100 focus:border-amber-500/60 focus:outline-none"></select>
+                                </label>
+                                <label class="block text-[11px]">
+                                    <span class="text-gray-500 uppercase tracking-wider text-[10px]">Prompt override <span class="text-gray-600 normal-case font-normal">(optional)</span></span>
+                                    <textarea id="fork-inline-prompt" rows="3" class="mt-1 w-full px-3 py-2 text-sm font-mono rounded-lg bg-dark-900 border border-dark-700 text-gray-100 focus:border-amber-500/60 focus:outline-none" placeholder="Prepended to the step's prompt on iteration 1 of the fork."></textarea>
+                                </label>
+                                <div class="flex items-center justify-end">
+                                    <button id="fork-inline-submit" type="button" onclick="submitFork()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-700 hover:bg-amber-600 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                                        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"/></svg>
+                                        Create fork
+                                    </button>
+                                </div>
+                                <p id="fork-inline-error" class="hidden text-[11px] text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-2 py-1.5"></p>
+                            </div>
+                        </details>
+                    </div>
+                </div>
+
+                <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                    <div class="px-4 py-3 border-b border-dark-700/60 flex items-center justify-between">
+                        <h2 class="text-sm font-semibold text-gray-200">Hint history</h2>
+                        <span id="hint-history-count" class="text-[10px] text-gray-500"></span>
+                    </div>
+                    <ul id="hint-history" class="divide-y divide-dark-700/60 max-h-96 overflow-y-auto">
+                        <li id="hint-history-empty" class="px-4 py-4 text-[11px] text-gray-500 text-center">No hints yet.</li>
+                    </ul>
+                </div>
+            </aside>
+        </div>
+    </main>
+
+    {{/* Hint modal removed 2026-05-26 — replaced by the inline
+         steering compose box in the right rail above (Upgrade #3).
+         The previous modal flow (button → modal → step-id input →
+         textarea → submit) required four clicks and operator
+         knowledge that the feature existed. The inline compose is
+         always visible, focuses on `/`, and carries scope chips for
+         per-step / per-task / per-execution. */}}
+
+    {{/* Fork modal removed 2026-05-26 (refactor D) — replaced by
+         the inline <details id="fork-section"> in the right rail
+         above. Same step picker + optional prompt override, no
+         click-to-open. Pre-refactor the modal was the only
+         remaining modal on this page after the hint modal was
+         deleted in refactor #3; killing it lets us delete the
+         modal-Cmd/Ctrl+Enter handler too. */}}
+
+    <script>
+    (function () {
+        // Page state captured once. The JS layer drives the rest
+        // from WebSocket events; no HTMX/polling is involved.
+        //
+        // NOTE: do NOT use `printf "%q"` here. Inside a <script>
+        // block html/template's JS-context autoescape already
+        // wraps string values in proper JS string literals. The
+        // %q filter prepends/appends literal `"` chars BEFORE the
+        // escape pass, so the value ends up embedded with quotes
+        // ("\"exec_...\"" instead of "exec_..."). That broke
+        // every URL built from these IDs — WS upgrade, hint POST,
+        // /hints fetch — surfacing as a "Reconnecting" loop and
+        // 400 errors in the daemon log (2026-05-26 incident).
+        const executionID = {{if .Execution}}{{.Execution.ID}}{{else}}""{{end}};
+        const taskID = {{if .Task}}{{.Task.ID}}{{else}}""{{end}};
+        const projectID = {{if .Task}}{{.Task.ProjectID}}{{else}}""{{end}};
+        const initialStatus = {{if .Execution}}{{.Execution.Status}}{{else}}""{{end}};
+        const initialStartedAtMs = {{if and .Execution .Execution.StartedAt}}{{.Execution.StartedAt.UnixMilli}}{{else}}0{{end}};
+        const initialCurrentStep = {{.CurrentStep}};
+        const seededSteps = {{/* completed-step IDs pre-rendered */}}[
+            {{- range $i, $s := .CompletedSteps -}}
+                {{- if $i -}},{{- end -}}{{$s}}
+            {{- end -}}
+        ];
+
+        // Reactive state. lastSeq is the server-side cursor we
+        // replay from on reconnect; status flips on paused / resumed.
+        let lastSeq = 0;
+        let status = initialStatus;
+        let currentStep = initialCurrentStep;
+        let socket = null;
+        let backoffIdx = 0;
+        let reconnectTimer = null;
+        let reconnectDeadline = 0;
+        let countdownTimer = null;
+        let stoppedByServer = false;
+        const stepCards = {}; // step_id -> {<li>, toolCalls, fileEdits}
+        const toolRows = {};  // call_id -> <li>
+        let totalTokensIn = 0;
+        let totalTokensOut = 0;
+        let totalCostUSD = 0;
+        let elapsedTimer = null;
+        let pendingHintCount = 0;
+        const backoffSchedule = [1000, 2000, 4000, 8000, 16000, 30000];
+
+        // Steering compose state (Upgrade #3 — 2026-05-26). The
+        // scope chip toggle picks one of "step" (default, per-next-
+        // step, current execution), "task" (task-scope, survives
+        // retries), or "execution" (current execution, any step).
+        let steerScope = 'step';
+
+        // Heartbeat state (Upgrade #2 — 2026-05-26). lastEventAt is
+        // the local-clock timestamp of the most recent live event;
+        // updated by every handleEventFrame call. heartbeatTimer
+        // re-renders the "Last event" label 4× per second so the
+        // operator gets a real-time signal of stream liveness even
+        // between actual events.
+        let lastEventAt = 0;
+        let heartbeatTimer = null;
+
+        // Seed cards for completed steps from the server-side render.
+        for (const sid of seededSteps) {
+            ensureStepCard(sid, {completed: true});
+        }
+        if (initialCurrentStep) {
+            ensureStepCard(initialCurrentStep, {active: true});
+        }
+
+        // Pause/Resume button wiring. Buttons are nullable when the
+        // current status doesn't permit them; the JS keeps the
+        // labels in sync after every paused/resumed event.
+        const btnPause = document.getElementById('btn-pause');
+        const btnResume = document.getElementById('btn-resume');
+        btnPause.addEventListener('click', () => steeringPost('pause'));
+        btnResume.addEventListener('click', () => steeringPost('resume'));
+        document.getElementById('reconnect-now').addEventListener('click', () => {
+            cancelReconnect();
+            connect();
+        });
+
+        refreshSteeringButtons();
+        startElapsedTimer();
+        startHeartbeat();
+        loadHintHistory();
+        initSteeringCompose();
+        connect();
+
+        // initSteeringCompose (Upgrade #3 — 2026-05-26) wires:
+        //   - scope chip toggle (visual + state)
+        //   - default scope selection
+        //   - Cmd/Ctrl+Enter submit shortcut
+        //   - "/" global focus keystroke
+        //   - ?steer=open query param auto-focus (e.g. from the
+        //     failure recovery card's "Steer + retry" action)
+        function initSteeringCompose() {
+            const chips = document.querySelectorAll('.scope-chip');
+            chips.forEach((chip) => {
+                chip.addEventListener('click', () => {
+                    steerScope = chip.dataset.scope || 'step';
+                    chips.forEach((c) => c.classList.toggle('active', c === chip));
+                    updateSteerScopeExplain();
+                });
+            });
+            // Default to "this step" — the most common case.
+            const defaultChip = document.querySelector('.scope-chip[data-scope="step"]');
+            if (defaultChip) defaultChip.classList.add('active');
+            updateSteerScopeExplain();
+
+            const input = document.getElementById('steer-input');
+            if (input) {
+                input.addEventListener('keydown', (e) => {
+                    // Cmd/Ctrl+Enter submits — matches chat-app
+                    // convention. Plain Enter inserts a newline so
+                    // multi-line hints work.
+                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                        e.preventDefault();
+                        submitInlineHint();
+                    }
+                });
+            }
+
+            // "/" global focus keystroke — only when the user isn't
+            // already typing in a form field. Standard pattern from
+            // GitHub / Linear / Slack.
+            document.addEventListener('keydown', (e) => {
+                if (e.key !== '/') return;
+                const tag = (e.target && e.target.tagName) || '';
+                if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+                if (e.target && e.target.isContentEditable) return;
+                e.preventDefault();
+                if (input) input.focus();
+            });
+
+            // ?steer=open auto-focus — used by recovery-actions card
+            // (Upgrade #1) so a "Steer + retry" click lands the
+            // operator with the compose box ready to type.
+            try {
+                const params = new URLSearchParams(window.location.search);
+                if (params.get('steer') === 'open' && input) {
+                    setTimeout(() => input.focus(), 100);
+                }
+            } catch (e) { /* URLSearchParams missing — old browser */ }
+        }
+
+        // updateSteerScopeExplain renders the explainer line below the
+        // chip toggle so the operator sees exactly what their hint will
+        // do. Tooltips alone don't land on mobile + aren't
+        // discoverable; the inline text closes that gap.
+        function updateSteerScopeExplain() {
+            const el = document.getElementById('steer-scope-explain');
+            if (!el) return;
+            let text;
+            switch (steerScope) {
+                case 'task':
+                    text = 'Survives a retry — if this task fails and re-runs, the hint applies to the next attempt\'s first step.';
+                    break;
+                case 'execution':
+                    text = 'Applies to the next step in this execution. Discarded if the task fails and retries.';
+                    break;
+                case 'step':
+                default:
+                    text = currentStep
+                        ? 'Targets the "' + currentStep + '" step specifically. Consumed once when that step (re)starts.'
+                        : 'Targets the next step when it starts. Consumed once.';
+                    break;
+            }
+            el.textContent = text;
+        }
+
+        // submitInlineHint (Upgrade #3 — 2026-05-26) routes to the
+        // right endpoint based on the active scope chip. Both POST
+        // shapes accept {content, step_id?}; only the URL changes.
+        window.submitInlineHint = async function () {
+            const input = document.getElementById('steer-input');
+            const errBox = document.getElementById('steer-error');
+            const sendBtn = document.getElementById('steer-send');
+            const content = (input && input.value || '').trim();
+            errBox.classList.add('hidden');
+            errBox.textContent = '';
+            if (!content) {
+                errBox.textContent = 'Hint content is required.';
+                errBox.classList.remove('hidden');
+                return;
+            }
+            let url, body;
+            if (steerScope === 'task') {
+                if (!taskID || !projectID) {
+                    errBox.textContent = 'Task scope needs both projectID and taskID — page state missing.';
+                    errBox.classList.remove('hidden');
+                    return;
+                }
+                url = '/api/v1/projects/' + encodeURIComponent(projectID) +
+                      '/tasks/' + encodeURIComponent(taskID) + '/hints';
+                body = { content };
+            } else if (steerScope === 'execution') {
+                url = '/api/v1/executions/' + encodeURIComponent(executionID) + '/hints';
+                body = { content };
+            } else {
+                // 'step' — default. Targets the current step; if no
+                // current step yet (between steps), step_id falls
+                // back to empty which the API treats as "next step".
+                url = '/api/v1/executions/' + encodeURIComponent(executionID) + '/hints';
+                body = { step_id: currentStep || '', content };
+            }
+            sendBtn.disabled = true;
+            try {
+                const resp = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                if (!resp.ok) {
+                    let detail = '';
+                    try {
+                        const b = await resp.json();
+                        detail = b.message || b.error || resp.statusText;
+                    } catch (e) { detail = resp.statusText; }
+                    errBox.textContent = 'Hint failed (' + resp.status + '): ' + detail;
+                    errBox.classList.remove('hidden');
+                    return;
+                }
+                input.value = '';
+                pendingHintCount++;
+                refreshHintBadge();
+                loadHintHistory();
+            } catch (e) {
+                errBox.textContent = 'Network error: ' + e.message;
+                errBox.classList.remove('hidden');
+            } finally {
+                sendBtn.disabled = false;
+            }
+        };
+
+        // safeForkRedirect validates a fork-from-step response
+        // body before we navigate. Accepts only same-origin /ui/
+        // paths to defend against:
+        //   * `javascript:` URLs from a hostile / compromised
+        //     upstream — would otherwise execute attacker code.
+        //   * `//evil.example.com/foo` protocol-relative URLs —
+        //     would silently navigate off-site.
+        //   * Absolute URLs of any scheme — same risk.
+        // Returns the validated path string or null on rejection.
+        function safeForkRedirect(body) {
+            if (!body || typeof body !== 'object') return null;
+            var raw = (typeof body.url === 'string' && body.url) ||
+                (typeof body.task_id === 'string' && body.task_id ? '/ui/tasks/' + body.task_id : null);
+            if (!raw) return null;
+            // Must start with a single forward slash, must NOT be
+            // protocol-relative (//), must NOT carry a scheme.
+            if (raw.length < 2) return null;
+            if (raw.charAt(0) !== '/') return null;
+            if (raw.charAt(1) === '/') return null;
+            if (raw.indexOf(':') !== -1 && raw.indexOf(':') < (raw.indexOf('/', 1) === -1 ? raw.length : raw.indexOf('/', 1))) {
+                // Reject anything that looks scheme-prefixed before
+                // the first internal slash boundary.
+                return null;
+            }
+            if (raw.indexOf('/ui/') !== 0) return null;
+            return raw;
+        }
+
+        function refreshSteeringButtons() {
+            // Pause: only when RUNNING. Resume: only when PAUSED.
+            // Both buttons remain in the DOM so the JS can flip
+            // labels without re-creating elements.
+            const isRunning = status === 'RUNNING';
+            const isPaused = status === 'PAUSED';
+            btnPause.disabled = !isRunning;
+            btnPause.classList.toggle('hidden', isPaused);
+            btnResume.disabled = !isPaused;
+            btnResume.classList.toggle('hidden', !isPaused);
+        }
+
+        function startElapsedTimer() {
+            const headerElapsed = document.getElementById('header-elapsed');
+            if (!initialStartedAtMs) {
+                headerElapsed.textContent = '—';
+                return;
+            }
+            const update = () => {
+                const ms = Date.now() - initialStartedAtMs;
+                if (ms < 0) {
+                    headerElapsed.textContent = '00:00';
+                    return;
+                }
+                const totalSec = Math.floor(ms / 1000);
+                const h = Math.floor(totalSec / 3600);
+                const m = Math.floor((totalSec % 3600) / 60);
+                const s = totalSec % 60;
+                const pad = (n) => (n < 10 ? '0' + n : '' + n);
+                headerElapsed.textContent = h > 0
+                    ? `${h}:${pad(m)}:${pad(s)}`
+                    : `${pad(m)}:${pad(s)}`;
+            };
+            update();
+            elapsedTimer = setInterval(update, 1000);
+        }
+
+        // startHeartbeat (Upgrade #2 — 2026-05-26) drives the
+        // "Last event Xs ago" label. The handleEventFrame stamp
+        // lives at 4 Hz; the colour ladder is:
+        //   < 10s   text-gray-400  (calm — events flowing)
+        //   10-30s  text-amber-300 (warming — stream slowing)
+        //   > 30s   text-rose-300  (cold — likely stalled)
+        // Until the first event lands, the label shows "—" and
+        // doesn't claim "0s ago" — that would be misleading.
+        function startHeartbeat() {
+            const el = document.getElementById('header-last-event');
+            if (!el) return;
+            const tick = () => {
+                if (lastEventAt === 0) {
+                    el.textContent = '—';
+                    el.className = 'text-gray-500';
+                    return;
+                }
+                const ageMs = Date.now() - lastEventAt;
+                el.textContent = formatAge(ageMs);
+                if (ageMs >= 30000) {
+                    el.className = 'text-rose-300 font-medium';
+                } else if (ageMs >= 10000) {
+                    el.className = 'text-amber-300';
+                } else {
+                    el.className = 'text-gray-300';
+                }
+            };
+            tick();
+            heartbeatTimer = setInterval(tick, 250);
+        }
+
+        // formatAge renders a duration in ms as a compact human
+        // string. Sub-second values say "now" so the heartbeat
+        // doesn't flicker through "0s, 0s, 0s" on a fast event
+        // stream.
+        function formatAge(ms) {
+            if (ms < 500) return 'now';
+            if (ms < 60_000) return Math.round(ms / 1000) + 's ago';
+            const m = Math.floor(ms / 60_000);
+            const s = Math.round((ms % 60_000) / 1000);
+            if (m < 60) return `${m}m ${s}s ago`;
+            return `${Math.floor(m / 60)}h ${m % 60}m ago`;
+        }
+
+        // pulseActiveStep (Upgrade #2 — 2026-05-26) flashes the
+        // accent border on the active step card for 250ms whenever
+        // any live event arrives. Silent visual confirmation that
+        // the agent is doing SOMETHING — without this, "no-render"
+        // events (llm_token, heartbeat-style) look like silence.
+        function pulseActiveStep() {
+            if (!currentStep) return;
+            const card = stepCards[currentStep];
+            if (!card || !card.li) return;
+            card.li.classList.add('pulse-active');
+            // Remove the class after the CSS animation completes so
+            // the next event can re-trigger. ~280ms gives the 250ms
+            // transition time to play out plus a sliver of safety.
+            window.setTimeout(() => {
+                card.li.classList.remove('pulse-active');
+            }, 280);
+        }
+
+        function connect() {
+            if (!executionID) {
+                document.getElementById('timeline-status').textContent = 'no execution';
+                return;
+            }
+            stoppedByServer = false;
+            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const url = proto + '//' + window.location.host +
+                '/api/v1/executions/' + encodeURIComponent(executionID) + '/live' +
+                '?last_seq=' + encodeURIComponent(lastSeq);
+            try {
+                socket = new WebSocket(url);
+            } catch (e) {
+                scheduleReconnect();
+                return;
+            }
+            socket.addEventListener('open', () => {
+                backoffIdx = 0;
+                hideBanner();
+                document.getElementById('timeline-status').textContent = 'live';
+                // Send the hello frame as soon as the socket opens.
+                // ?last_seq= already covers it, but the server's
+                // preferred path is a hello frame — both are honoured.
+                try {
+                    socket.send(JSON.stringify({last_seq: lastSeq}));
+                } catch (e) { /* socket closing — caller will reconnect */ }
+            });
+            socket.addEventListener('message', (evt) => {
+                handleEventFrame(evt.data);
+            });
+            socket.addEventListener('close', () => {
+                if (stoppedByServer) {
+                    document.getElementById('timeline-status').textContent = 'stream closed';
+                    return;
+                }
+                scheduleReconnect();
+            });
+            socket.addEventListener('error', () => {
+                // The close handler runs on its own; we don't
+                // double-schedule. error fires before close on most
+                // browsers.
+            });
+        }
+
+        function scheduleReconnect() {
+            document.getElementById('timeline-status').textContent = 'disconnected';
+            const delay = backoffSchedule[Math.min(backoffIdx, backoffSchedule.length - 1)];
+            backoffIdx++;
+            reconnectDeadline = Date.now() + delay;
+            showBanner(delay, backoffIdx);
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                connect();
+            }, delay);
+        }
+
+        function cancelReconnect() {
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+            if (countdownTimer) {
+                clearInterval(countdownTimer);
+                countdownTimer = null;
+            }
+            hideBanner();
+        }
+
+        function showBanner(delayMs, attempt) {
+            const banner = document.getElementById('reconnect-banner');
+            const detail = document.getElementById('reconnect-detail');
+            banner.classList.remove('hidden');
+            const update = () => {
+                const remainingMs = Math.max(0, reconnectDeadline - Date.now());
+                const remainingSec = Math.ceil(remainingMs / 1000);
+                detail.textContent = `in ${remainingSec}s (attempt ${attempt})`;
+            };
+            update();
+            if (countdownTimer) clearInterval(countdownTimer);
+            countdownTimer = setInterval(update, 250);
+        }
+
+        function hideBanner() {
+            document.getElementById('reconnect-banner').classList.add('hidden');
+            if (countdownTimer) {
+                clearInterval(countdownTimer);
+                countdownTimer = null;
+            }
+        }
+
+        function handleEventFrame(raw) {
+            let evt;
+            try { evt = JSON.parse(raw); } catch (e) { return; }
+            if (typeof evt.seq === 'number' && evt.seq > lastSeq) {
+                lastSeq = evt.seq;
+            }
+            // Heartbeat + active-step pulse (Upgrade #2 — 2026-05-26).
+            // Every real event stamps the last-event clock and fires
+            // a brief accent pulse on the active step card so the
+            // operator gets a visceral "something just happened"
+            // signal even when the event itself is a no-render kind.
+            lastEventAt = Date.now();
+            pulseActiveStep();
+            const kind = evt.kind || '';
+            const payload = evt.payload || {};
+            switch (kind) {
+                case 'step_started':       onStepStarted(payload); break;
+                case 'step_completed':     onStepCompleted(payload); break;
+                case 'llm_call_started':   onLLMCallStarted(payload); break;
+                case 'llm_call_finished':  onLLMCallFinished(payload); break;
+                case 'llm_token':          onLLMToken(payload); break;
+                case 'tool_call_started':  onToolCallStarted(payload); break;
+                case 'tool_call_finished': onToolCallFinished(payload); break;
+                case 'file_edit':          onFileEdit(payload); break;
+                case 'outcome_recorded':   onOutcomeRecorded(payload); break;
+                case 'hint_applied':       onHintApplied(payload); break;
+                case 'paused':             onPaused(payload); break;
+                case 'resumed':            onResumed(payload); break;
+                case 'forked':             /* no-op — fork redirects via the button flow */ break;
+                case 'closed':             onClosed(payload); break;
+                case 'replay_gap':         onReplayGap(payload); break;
+                default: break;
+            }
+        }
+
+        function ensureStepCard(stepID, opts) {
+            opts = opts || {};
+            if (stepCards[stepID]) return stepCards[stepID];
+            document.getElementById('timeline-empty').classList.add('hidden');
+            const li = document.createElement('li');
+            li.className = 'px-5 py-3';
+            li.dataset.step = stepID;
+
+            const details = document.createElement('details');
+            if (opts.active) details.open = true;
+
+            const summary = document.createElement('summary');
+            summary.className = 'cursor-pointer list-none flex items-center gap-2 text-sm';
+            const idx = document.createElement('span');
+            idx.className = 'text-[10px] font-mono text-gray-600';
+            idx.textContent = '#' + Object.keys(stepCards).length;
+            const name = document.createElement('span');
+            name.className = 'font-medium text-gray-100';
+            name.textContent = stepID;
+            const badge = document.createElement('span');
+            badge.className = 'inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded ' +
+                (opts.completed ? 'bg-emerald-900/40 text-emerald-300' : 'bg-accent-900/40 text-accent-300');
+            badge.textContent = opts.completed ? 'completed' : 'running';
+            summary.append(idx, name, badge);
+            details.appendChild(summary);
+
+            const body = document.createElement('div');
+            body.className = 'mt-3 pt-3 border-t border-dark-700/60 space-y-3 text-xs';
+
+            const llmSection = document.createElement('div');
+            llmSection.dataset.section = 'llm';
+            const llmHead = document.createElement('div');
+            llmHead.className = 'text-gray-500 uppercase tracking-wider text-[10px] mb-1';
+            llmHead.textContent = 'LLM activity';
+            const llmStatus = document.createElement('div');
+            llmStatus.className = 'text-[11px] text-gray-400';
+            llmStatus.dataset.role = 'llm-status';
+            llmStatus.textContent = opts.completed ? '—' : 'waiting…';
+            llmSection.append(llmHead, llmStatus);
+            body.appendChild(llmSection);
+
+            const toolSection = document.createElement('div');
+            toolSection.dataset.section = 'tools';
+            toolSection.classList.add('hidden');
+            const toolHead = document.createElement('div');
+            toolHead.className = 'text-gray-500 uppercase tracking-wider text-[10px] mb-1';
+            toolHead.textContent = 'Tool calls';
+            const toolList = document.createElement('ol');
+            toolList.className = 'space-y-2';
+            toolList.dataset.role = 'tool-list';
+            toolSection.append(toolHead, toolList);
+            body.appendChild(toolSection);
+
+            const fileSection = document.createElement('div');
+            fileSection.dataset.section = 'files';
+            fileSection.classList.add('hidden');
+            const fileHead = document.createElement('div');
+            fileHead.className = 'text-gray-500 uppercase tracking-wider text-[10px] mb-1';
+            fileHead.textContent = 'File edits';
+            const fileList = document.createElement('ul');
+            fileList.className = 'space-y-1 font-mono text-[11px] text-gray-300';
+            fileList.dataset.role = 'file-list';
+            fileSection.append(fileHead, fileList);
+            body.appendChild(fileSection);
+
+            // Now-doing line (Upgrade #2 — 2026-05-26): sits OUTSIDE
+            // the collapsible <details> so the operator always sees
+            // the in-flight tool call, even when the step body is
+            // collapsed. Hidden until the first tool_call_started
+            // for this step lands; cleared on the matching finish.
+            const nowDoing = document.createElement('div');
+            nowDoing.dataset.role = 'now-doing';
+            nowDoing.className = 'hidden mt-1 ml-7 text-[11px] text-accent-300 flex items-center gap-1.5 truncate';
+            const nowDoingDot = document.createElement('span');
+            nowDoingDot.className = 'nowdoing-dot inline-block h-1.5 w-1.5 rounded-full bg-accent-400 flex-shrink-0';
+            const nowDoingText = document.createElement('span');
+            nowDoingText.dataset.role = 'now-doing-text';
+            nowDoingText.className = 'truncate';
+            nowDoing.append(nowDoingDot, nowDoingText);
+
+            details.appendChild(body);
+            li.appendChild(details);
+            li.appendChild(nowDoing);
+            document.getElementById('timeline').appendChild(li);
+            const card = {
+                li, details, badge, llmStatus,
+                toolSection, toolList,
+                fileSection, fileList,
+                nowDoing, nowDoingText,
+            };
+            stepCards[stepID] = card;
+            return card;
+        }
+
+        function setActiveStep(stepID) {
+            // Collapse the previous active step so the timeline
+            // stays scannable; open the new one by default.
+            if (currentStep && currentStep !== stepID && stepCards[currentStep]) {
+                stepCards[currentStep].details.open = false;
+            }
+            currentStep = stepID;
+            document.getElementById('header-step').textContent = stepID || '—';
+            const card = stepCards[stepID];
+            if (card) card.details.open = true;
+            // Refresh the steering scope explainer — "this step"
+            // names the current step ID, so a step transition
+            // should re-render the line.
+            if (typeof updateSteerScopeExplain === 'function') {
+                updateSteerScopeExplain();
+            }
+        }
+
+        function onStepStarted(p) {
+            const sid = p.step_id || '';
+            if (!sid) return;
+            const card = ensureStepCard(sid, {active: true});
+            card.badge.textContent = 'running';
+            card.badge.className = 'inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-accent-900/40 text-accent-300';
+            setActiveStep(sid);
+        }
+
+        function onStepCompleted(p) {
+            const sid = p.step_id || '';
+            const card = stepCards[sid];
+            if (!card) return;
+            card.badge.textContent = p.outcome ? p.outcome : 'completed';
+            card.badge.className = 'inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded ' +
+                ((p.outcome && p.outcome !== 'ok') ? 'bg-rose-900/40 text-rose-300' : 'bg-emerald-900/40 text-emerald-300');
+            card.details.open = false;
+        }
+
+        function onLLMCallStarted(p) {
+            const sid = currentStep;
+            if (!sid) return;
+            const card = stepCards[sid];
+            if (!card) return;
+            const model = p.model ? p.model : 'agent';
+            card.llmStatus.textContent = model + ' is thinking…';
+            card.llmStatus.classList.remove('text-gray-400');
+            card.llmStatus.classList.add('text-accent-300');
+        }
+
+        function onLLMCallFinished(p) {
+            const sid = currentStep;
+            const card = sid ? stepCards[sid] : null;
+            if (card) {
+                if (p.err) {
+                    card.llmStatus.textContent = 'LLM error: ' + (p.err || 'unknown');
+                    card.llmStatus.classList.remove('text-accent-300', 'text-gray-400');
+                    card.llmStatus.classList.add('text-rose-300');
+                } else {
+                    const parts = [];
+                    if (p.model) parts.push(p.model);
+                    if (typeof p.prompt_tokens === 'number') parts.push(p.prompt_tokens + ' in');
+                    if (typeof p.completion_tokens === 'number') parts.push(p.completion_tokens + ' out');
+                    if (typeof p.duration_ms === 'number') parts.push(p.duration_ms + 'ms');
+                    card.llmStatus.textContent = parts.join(' · ') || 'idle';
+                    card.llmStatus.classList.remove('text-accent-300', 'text-rose-300');
+                    card.llmStatus.classList.add('text-gray-400');
+                }
+            }
+            if (typeof p.prompt_tokens === 'number') {
+                totalTokensIn += p.prompt_tokens;
+                document.getElementById('header-tokens-in').textContent = formatInt(totalTokensIn);
+            }
+            if (typeof p.completion_tokens === 'number') {
+                totalTokensOut += p.completion_tokens;
+                document.getElementById('header-tokens-out').textContent = formatInt(totalTokensOut);
+            }
+            // Cost (2026-05-26 fix): the chat proxy now emits
+            // per-call cost_usd in this payload. Accumulate into the
+            // header counter so the operator's running spend matches
+            // the task page's reconciled number. Pre-fix the header
+            // sat at $0.00 forever — the cost only landed in
+            // task_llm_usage, which the live page never queried.
+            if (typeof p.cost_usd === 'number' && p.cost_usd > 0) {
+                totalCostUSD += p.cost_usd;
+                document.getElementById('header-cost').textContent =
+                    '$' + (totalCostUSD < 1
+                        ? totalCostUSD.toFixed(4)
+                        : totalCostUSD.toFixed(2));
+            }
+        }
+
+        function onLLMToken(p) {
+            // Per-delta streaming is deferred (per the design doc's
+            // open question on coalescing). We still surface a small
+            // heartbeat so the operator sees the agent is producing
+            // output even when llm_call_finished hasn't landed yet.
+            const sid = p.step_id || currentStep;
+            const card = sid ? stepCards[sid] : null;
+            if (!card) return;
+            if (card.llmStatus.textContent.indexOf('thinking') === -1) {
+                card.llmStatus.textContent = 'streaming…';
+            }
+        }
+
+        function onToolCallStarted(p) {
+            const sid = p.step_id || currentStep;
+            if (!sid) return;
+            const card = ensureStepCard(sid, {});
+            card.toolSection.classList.remove('hidden');
+            // Now-doing line (Upgrade #2 — 2026-05-26): surface the
+            // in-flight tool name + input snippet on the summary row
+            // so the operator sees activity without expanding the
+            // step body.
+            if (card.nowDoing && card.nowDoingText) {
+                const tool = p.tool || 'tool';
+                let snippet = '';
+                if (p.input_json) {
+                    const oneLine = String(p.input_json).replace(/\s+/g, ' ').trim();
+                    if (oneLine.length > 60) {
+                        snippet = ' · ' + oneLine.slice(0, 57) + '…';
+                    } else if (oneLine.length > 0) {
+                        snippet = ' · ' + oneLine;
+                    }
+                }
+                card.nowDoingText.textContent = '🔧 ' + tool + snippet;
+                card.nowDoing.classList.remove('hidden');
+            }
+            const li = document.createElement('li');
+            li.className = 'bg-dark-900/40 rounded px-3 py-2';
+            const head = document.createElement('div');
+            head.className = 'flex items-baseline gap-2 mb-1';
+            const name = document.createElement('span');
+            name.className = 'font-mono text-gray-200';
+            name.textContent = p.tool || '(tool)';
+            const statusDot = document.createElement('span');
+            statusDot.className = 'text-[10px] text-accent-300';
+            statusDot.textContent = 'running…';
+            statusDot.dataset.role = 'status';
+            head.append(name, statusDot);
+            li.appendChild(head);
+            if (p.input_json) {
+                const det = document.createElement('details');
+                const sum = document.createElement('summary');
+                sum.className = 'cursor-pointer text-[10px] text-gray-500 hover:text-gray-300';
+                sum.textContent = 'input';
+                det.appendChild(sum);
+                const pre = document.createElement('pre');
+                pre.className = 'mt-1 text-[11px] text-gray-300 whitespace-pre-wrap break-words';
+                pre.textContent = formatJSON(p.input_json);
+                det.appendChild(pre);
+                li.appendChild(det);
+            }
+            const outSlot = document.createElement('div');
+            outSlot.dataset.role = 'output-slot';
+            li.appendChild(outSlot);
+            card.toolList.appendChild(li);
+            if (p.call_id) toolRows[p.call_id] = li;
+        }
+
+        function onToolCallFinished(p) {
+            // Clear the now-doing line on the step that owned the
+            // call. We look up by step_id when present; fallback to
+            // currentStep mirrors onToolCallStarted's resolution.
+            const sid = p.step_id || currentStep;
+            const card = sid ? stepCards[sid] : null;
+            if (card && card.nowDoing) {
+                card.nowDoing.classList.add('hidden');
+                if (card.nowDoingText) {
+                    card.nowDoingText.textContent = '';
+                }
+            }
+            const li = p.call_id ? toolRows[p.call_id] : null;
+            if (!li) return;
+            const statusEl = li.querySelector('[data-role="status"]');
+            if (statusEl) {
+                if (p.err) {
+                    statusEl.textContent = 'error';
+                    statusEl.className = 'text-[10px] text-rose-300';
+                } else {
+                    statusEl.textContent = (typeof p.duration_ms === 'number' ? p.duration_ms + 'ms' : 'done');
+                    statusEl.className = 'text-[10px] text-gray-500';
+                }
+            }
+            const slot = li.querySelector('[data-role="output-slot"]');
+            if (slot) {
+                slot.replaceChildren();
+                if (p.err) {
+                    const errDiv = document.createElement('div');
+                    errDiv.className = 'mt-1 text-[11px] text-rose-300 whitespace-pre-wrap';
+                    errDiv.textContent = p.err;
+                    slot.appendChild(errDiv);
+                }
+                if (p.output_json) {
+                    const det = document.createElement('details');
+                    det.className = 'mt-1';
+                    const sum = document.createElement('summary');
+                    sum.className = 'cursor-pointer text-[10px] text-gray-500 hover:text-gray-300';
+                    sum.textContent = 'output';
+                    det.appendChild(sum);
+                    const pre = document.createElement('pre');
+                    pre.className = 'mt-1 text-[11px] text-gray-300 whitespace-pre-wrap break-words';
+                    pre.textContent = formatJSON(p.output_json);
+                    det.appendChild(pre);
+                    slot.appendChild(det);
+                }
+            }
+        }
+
+        function onFileEdit(p) {
+            const sid = p.step_id || currentStep;
+            if (!sid) return;
+            const card = ensureStepCard(sid, {});
+            card.fileSection.classList.remove('hidden');
+            const li = document.createElement('li');
+            li.className = 'flex items-baseline gap-2';
+            const op = document.createElement('span');
+            const opLabel = (p.op || 'modify');
+            op.className = 'inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded ' +
+                (opLabel === 'delete' ? 'bg-rose-900/40 text-rose-300'
+                : opLabel === 'create' ? 'bg-emerald-900/40 text-emerald-300'
+                : 'bg-dark-700 text-gray-400');
+            op.textContent = opLabel;
+            const path = document.createElement('span');
+            path.className = 'text-gray-200';
+            path.textContent = p.path || '(unknown)';
+            li.append(op, path);
+            if (typeof p.size_bytes === 'number' && p.size_bytes > 0) {
+                const sz = document.createElement('span');
+                sz.className = 'text-[10px] text-gray-500 tabular-nums';
+                sz.textContent = formatBytes(p.size_bytes);
+                li.appendChild(sz);
+            }
+            card.fileList.appendChild(li);
+        }
+
+        function onOutcomeRecorded(p) {
+            const sid = p.step_id;
+            const card = sid ? stepCards[sid] : null;
+            if (!card) return;
+            if (p.class) {
+                card.badge.textContent = p.class;
+                card.badge.className = 'inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded ' +
+                    (p.class === 'ok' ? 'bg-emerald-900/40 text-emerald-300' : 'bg-rose-900/40 text-rose-300');
+            }
+        }
+
+        function onHintApplied(p) {
+            pendingHintCount = Math.max(0, pendingHintCount - 1);
+            refreshHintBadge();
+            // Refresh hint history so applied_at flips visually.
+            loadHintHistory();
+        }
+
+        function onPaused(p) {
+            status = 'PAUSED';
+            updateHeaderStatus(status);
+            refreshSteeringButtons();
+        }
+
+        function onResumed(p) {
+            status = 'RUNNING';
+            updateHeaderStatus(status);
+            refreshSteeringButtons();
+        }
+
+        function onClosed(p) {
+            stoppedByServer = true;
+            document.getElementById('timeline-status').textContent = 'stream closed';
+            // The execution reached a terminal status — replay is
+            // the right surface from here. Give the operator a moment
+            // to read the last frames before redirecting.
+            setTimeout(() => {
+                window.location.href = '/ui/executions/' + encodeURIComponent(executionID) + '/replay';
+            }, 1500);
+        }
+
+        function onReplayGap(p) {
+            document.getElementById('gap-banner').classList.remove('hidden');
+        }
+
+        function updateHeaderStatus(s) {
+            // Status badges are static markup elsewhere; here we
+            // rebuild the badge node directly to avoid pulling the
+            // partial through innerHTML.
+            const slot = document.getElementById('header-status');
+            slot.replaceChildren(buildStatusBadge(s));
+        }
+
+        function buildStatusBadge(s) {
+            const span = document.createElement('span');
+            span.className = 'inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full ring-1 ring-inset';
+            let label = s;
+            if (s === 'RUNNING') {
+                span.classList.add('bg-accent-900/40', 'text-accent-300', 'ring-accent-600/40');
+                label = 'Running';
+            } else if (s === 'PAUSED') {
+                span.classList.add('bg-amber-900/40', 'text-amber-300', 'ring-amber-600/40');
+                label = 'Paused';
+            } else if (s === 'COMPLETED') {
+                span.classList.add('bg-emerald-900/40', 'text-emerald-300', 'ring-emerald-600/40');
+                label = 'Completed';
+            } else if (s === 'FAILED') {
+                span.classList.add('bg-rose-900/40', 'text-rose-300', 'ring-rose-600/40');
+                label = 'Failed';
+            } else if (s === 'CANCELLED') {
+                span.classList.add('bg-gray-700/60', 'text-gray-400', 'ring-gray-600/50');
+                label = 'Cancelled';
+            } else {
+                span.classList.add('bg-gray-700/60', 'text-gray-300', 'ring-gray-600/50');
+            }
+            span.textContent = label;
+            return span;
+        }
+
+        async function steeringPost(action) {
+            if (!executionID) return;
+            const errBox = document.getElementById('steering-error');
+            errBox.classList.add('hidden');
+            const target = action === 'pause' ? btnPause : btnResume;
+            target.disabled = true;
+            try {
+                const resp = await fetch('/api/v1/executions/' + encodeURIComponent(executionID) + '/' + action, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: '{}',
+                });
+                if (!resp.ok) {
+                    let detail = '';
+                    try {
+                        const body = await resp.json();
+                        detail = body.message || body.error || resp.statusText;
+                    } catch (e) { detail = resp.statusText; }
+                    errBox.textContent = action + ' failed (' + resp.status + '): ' + detail;
+                    errBox.classList.remove('hidden');
+                }
+            } catch (e) {
+                errBox.textContent = 'Network error: ' + e.message;
+                errBox.classList.remove('hidden');
+            } finally {
+                target.disabled = false;
+                refreshSteeringButtons();
+            }
+        }
+
+        // openHintModal / closeHintModal / submitHint removed
+        // 2026-05-26 — replaced by submitInlineHint above (Upgrade
+        // #3). The inline compose is always visible, supports the
+        // scope chip toggle (step / task / execution), and routes
+        // to the correct endpoint without a modal.
+
+        // populateForkSteps fills the inline step picker from the
+        // current snapshot (seeded + live). Runs on first <details>
+        // open so an operator typing in a step right after page
+        // load doesn't see a stale list. Refactor D — 2026-05-26.
+        function populateForkSteps() {
+            const sel = document.getElementById('fork-inline-step');
+            if (!sel) return;
+            sel.replaceChildren();
+            const optsList = [];
+            for (const sid of seededSteps) optsList.push(sid);
+            if (currentStep && !optsList.includes(currentStep)) optsList.push(currentStep);
+            for (const sid of Object.keys(stepCards)) {
+                if (!optsList.includes(sid)) optsList.push(sid);
+            }
+            for (const sid of optsList) {
+                const o = document.createElement('option');
+                o.value = sid;
+                o.textContent = sid;
+                if (sid === currentStep) o.selected = true;
+                sel.appendChild(o);
+            }
+        }
+        // Lazy-populate the picker the first time the operator
+        // expands the section; re-populate every open in case new
+        // steps started since.
+        (function() {
+            const det = document.getElementById('fork-section');
+            if (!det) return;
+            det.addEventListener('toggle', function() {
+                if (det.open) populateForkSteps();
+            });
+        })();
+        window.submitFork = async function () {
+            const submitBtn = document.getElementById('fork-inline-submit');
+            const errBox = document.getElementById('fork-inline-error');
+            const stepID = document.getElementById('fork-inline-step').value;
+            const prompt = document.getElementById('fork-inline-prompt').value;
+            errBox.classList.add('hidden');
+            if (!stepID) {
+                errBox.textContent = 'Pick a step to fork from.';
+                errBox.classList.remove('hidden');
+                return;
+            }
+            submitBtn.disabled = true;
+            try {
+                const resp = await fetch('/api/v1/executions/' + encodeURIComponent(executionID) + '/fork-from-step', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ step_id: stepID, prompt_override: prompt }),
+                });
+                if (!resp.ok) {
+                    let detail = '';
+                    try {
+                        const body = await resp.json();
+                        detail = body.message || body.error || resp.statusText;
+                    } catch (e) { detail = resp.statusText; }
+                    errBox.textContent = 'Fork failed (' + resp.status + '): ' + detail;
+                    errBox.classList.remove('hidden');
+                    submitBtn.disabled = false;
+                    return;
+                }
+                const body = await resp.json();
+                // Validate the destination is a same-origin /ui/
+                // path before navigating. The server returns this
+                // field but we don't trust the wire shape to be
+                // safe — a future upstream bug or response-injection
+                // attack could otherwise pivot to javascript: or an
+                // off-site redirect.
+                const dest = safeForkRedirect(body);
+                if (!dest) {
+                    errBox.textContent = 'Fork succeeded but server returned an invalid redirect; refresh to see the new task.';
+                    errBox.classList.remove('hidden');
+                    submitBtn.disabled = false;
+                    return;
+                }
+                window.location.href = dest;
+            } catch (e) {
+                errBox.textContent = 'Network error: ' + e.message;
+                errBox.classList.remove('hidden');
+                submitBtn.disabled = false;
+            }
+        };
+
+        async function loadHintHistory() {
+            if (!executionID) return;
+            try {
+                const resp = await fetch('/api/v1/executions/' + encodeURIComponent(executionID) + '/hints', {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' },
+                });
+                if (!resp.ok) return;
+                const body = await resp.json();
+                const hints = (body && body.hints) || [];
+                renderHintHistory(hints);
+                pendingHintCount = hints.filter(h => !h.applied_at).length;
+                refreshHintBadge();
+            } catch (e) { /* offline — banner already shows */ }
+        }
+
+        function renderHintHistory(hints) {
+            const list = document.getElementById('hint-history');
+            const count = document.getElementById('hint-history-count');
+            list.replaceChildren();
+            if (!hints.length) {
+                const empty = document.createElement('li');
+                empty.id = 'hint-history-empty';
+                empty.className = 'px-4 py-4 text-[11px] text-gray-500 text-center';
+                empty.textContent = 'No hints yet.';
+                list.appendChild(empty);
+                count.textContent = '';
+                return;
+            }
+            count.textContent = hints.length + ' total';
+            // Show the most recent 5 (the server already returns
+            // newest first; preserve that order).
+            for (const h of hints.slice(0, 5)) {
+                const li = document.createElement('li');
+                li.className = 'px-4 py-2.5';
+                const head = document.createElement('div');
+                head.className = 'flex items-center justify-between gap-2 mb-0.5';
+                const left = document.createElement('div');
+                left.className = 'flex items-center gap-1.5 text-[10px] text-gray-500';
+                const stepLabel = document.createElement('span');
+                stepLabel.className = 'font-mono text-gray-400';
+                stepLabel.textContent = h.step_id ? h.step_id : '(any)';
+                left.appendChild(stepLabel);
+                const badge = document.createElement('span');
+                if (h.applied_at) {
+                    badge.className = 'inline-flex items-center px-1.5 py-0 text-[9px] font-medium rounded bg-emerald-900/40 text-emerald-300';
+                    badge.textContent = 'applied';
+                } else {
+                    badge.className = 'inline-flex items-center px-1.5 py-0 text-[9px] font-medium rounded bg-amber-900/40 text-amber-200';
+                    badge.textContent = 'pending';
+                }
+                head.append(left, badge);
+                li.appendChild(head);
+                const details = document.createElement('details');
+                const sum = document.createElement('summary');
+                sum.className = 'cursor-pointer text-[11px] text-gray-300 truncate';
+                sum.textContent = h.content || '';
+                details.appendChild(sum);
+                const full = document.createElement('div');
+                full.className = 'mt-1 text-[11px] text-gray-400 whitespace-pre-wrap';
+                full.textContent = h.content || '';
+                details.appendChild(full);
+                li.appendChild(details);
+                list.appendChild(li);
+            }
+        }
+
+        function refreshHintBadge() {
+            const badge = document.getElementById('hint-pending-badge');
+            if (pendingHintCount > 0) {
+                badge.textContent = pendingHintCount + ' pending';
+                badge.classList.remove('hidden');
+            } else {
+                badge.textContent = '';
+                badge.classList.add('hidden');
+            }
+        }
+
+        function formatJSON(v) {
+            if (v === null || v === undefined) return '';
+            if (typeof v === 'string') {
+                // Server marshals json.RawMessage as a JSON value
+                // already; if it round-trips as a string we still
+                // accept it for display.
+                try { return JSON.stringify(JSON.parse(v), null, 2); }
+                catch (e) { return v; }
+            }
+            try { return JSON.stringify(v, null, 2); }
+            catch (e) { return String(v); }
+        }
+
+        function formatInt(n) {
+            return n.toLocaleString();
+        }
+
+        function formatBytes(n) {
+            if (n < 1024) return n + ' B';
+            if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+            if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+            return (n / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+        }
+
+        // Cmd/Ctrl+Enter submits the fork form when the inline
+        // section is open and focus is inside it; ESC collapses
+        // the section. All modal-keydown handlers removed
+        // 2026-05-26 (refactors #3 + D) — the inline steering
+        // compose has its own Cmd/Ctrl+Enter handler in
+        // initSteeringCompose, and the fork section uses the
+        // <details>-native disclosure behaviour.
+        document.addEventListener('keydown', function (e) {
+            const forkSec = document.getElementById('fork-section');
+            if (!forkSec || !forkSec.open) return;
+            // Only act when focus is inside the fork section, so
+            // typing in the steering compose still works unaffected.
+            if (!forkSec.contains(document.activeElement)) return;
+            if (e.key === 'Escape') {
+                forkSec.open = false;
+                return;
+            }
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                e.preventDefault();
+                submitFork();
+            }
+        });
+    })();
+    </script>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

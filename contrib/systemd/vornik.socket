@@ -1,0 +1,21 @@
+# vornik.socket - Socket activation for vornik
+#
+# This allows vornik to be started on-demand when the API port is accessed.
+# Use either socket activation OR the service directly, not both.
+#
+# Install:
+#   systemctl --user enable --now vornik.socket
+#
+# Note: Socket activation requires the daemon to support LISTEN_PID/LISTEN_FDS.
+#       Current implementation uses Type=notify; socket activation is optional.
+
+[Unit]
+Description=vornik API socket
+Documentation=https://github.com/grinco/vornik
+
+[Socket]
+ListenStream=8080
+BindToDevice=lo
+
+[Install]
+WantedBy=sockets.target

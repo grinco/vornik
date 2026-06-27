@@ -1,0 +1,399 @@
+{{define "trading_dashboard.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">Trading</h1>
+                    <p class="text-xs text-gray-500 mt-0.5">End-to-end trading overview — broker account, recent trades, and safety events per project.</p>
+                </div>
+                {{if .HasTradingProjects}}
+                <form method="get" action="/ui/trading" class="flex items-center gap-2">
+                    <select name="window" class="text-sm bg-dark-800 border border-dark-700 text-gray-200 rounded-md px-2 py-1.5">
+                        <option value="24h" {{if eq .WindowDays 1}}selected{{end}}>Last 24 hours</option>
+                        <option value="7d"  {{if eq .WindowDays 7}}selected{{end}}>Last 7 days</option>
+                        <option value="30d" {{if eq .WindowDays 30}}selected{{end}}>Last 30 days</option>
+                    </select>
+                    <select name="project" class="text-sm bg-dark-800 border border-dark-700 text-gray-200 rounded-md px-2 py-1.5">
+                        {{range .ProjectsList}}
+                        <option value="{{.}}" {{if eq . $.ProjectID}}selected{{end}}>{{.}}</option>
+                        {{end}}
+                    </select>
+                    <button type="submit" class="text-xs px-3 py-1.5 rounded-md bg-brand-600/80 hover:bg-brand-500 text-white">Apply</button>
+                </form>
+                {{end}}
+            </div>
+
+            {{if not .HasTradingProjects}}
+            {{/* Empty state — distinguish an access-scope gap from a config gap. */}}
+            <div class="glass rounded-xl border border-dark-700 px-6 py-10 text-center">
+                {{if .NoAccessibleTrading}}
+                <p class="text-sm text-gray-300 font-medium">No trading-enabled projects you can access</p>
+                <p class="text-xs text-gray-500 mt-1.5">This deployment has trading-enabled projects, but your access scope doesn&#39;t include any of them. Ask an operator to grant access if you need to see them.</p>
+                {{else}}
+                <p class="text-sm text-gray-300 font-medium">No projects have trading enabled</p>
+                <p class="text-xs text-gray-500 mt-1.5">Trading detail appears here once a project is configured with a <code class="text-gray-400">broker</code> MCP server.</p>
+                {{end}}
+            </div>
+            {{else}}
+
+            {{/* Status banner: mode + kill-switch + broker reachability + freshness. */}}
+            <div class="flex items-center gap-2 flex-wrap text-xs">
+                {{if .Panel.Mode}}
+                <span class="px-2 py-0.5 rounded {{if eq .Panel.Mode "live"}}bg-rose-900/40 text-rose-300{{else}}bg-accent-900/40 text-accent-300{{end}} font-mono uppercase tracking-wider">{{.Panel.Mode}}</span>
+                {{end}}
+                {{if .Panel.KillSwitch}}
+                <span class="px-2 py-0.5 rounded bg-rose-900/40 text-rose-300 font-mono uppercase tracking-wider">kill-switch on</span>
+                {{end}}
+                {{if .Panel.BrokerReachable}}
+                <span class="px-2 py-0.5 rounded bg-emerald-900/30 text-emerald-300">broker online</span>
+                {{else}}
+                <span class="px-2 py-0.5 rounded bg-amber-900/40 text-amber-300" title="{{.Panel.BrokerError}}">broker offline</span>
+                {{end}}
+                {{if not .Panel.FetchedAt.IsZero}}
+                <span class="text-gray-600">as of {{.Panel.FetchedAt.Format "15:04:05 UTC"}}</span>
+                {{end}}
+            </div>
+
+            {{/* ─── Trading Performance panel ───────────────────────────────── */}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <h2 class="text-sm font-medium text-gray-200">Trading Performance <span class="text-gray-600 font-normal">· {{.WindowLabel}}</span></h2>
+                </div>
+
+                {{if eq .Perf.Trades 0}}
+                {{/* Empty state — no closed round-trips in the window. */}}
+                <div class="px-5 py-4 text-xs text-gray-500 {{if .PerfChart.HasEquity}}border-b border-dark-700/40{{end}}">No closed trades in the last {{.WindowLabel}}.</div>
+                {{else}}
+
+                {{/* Stat strip — headline metrics. */}}
+                <div class="px-5 py-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 text-sm border-b border-dark-700/40">
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Net realized</p>
+                        <p class="mt-1 text-lg font-bold tabular-nums {{if lt .Perf.NetRealizedUSD 0.0}}text-rose-400{{else if gt .Perf.NetRealizedUSD 0.0}}text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .Perf.NetRealizedUSD}}</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Win rate</p>
+                        <p class="mt-1 text-lg font-semibold text-gray-100 tabular-nums">{{printf "%.2f" .Perf.WinRatePct}}%
+                            <span class="text-xs text-gray-500 font-normal">{{.Perf.Wins}}W / {{.Perf.Losses}}L</span></p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Profit factor</p>
+                        <p class="mt-1 text-lg font-semibold tabular-nums {{if .Perf.ProfitFactor}}text-gray-100{{else}}text-gray-500{{end}}">{{.PerfProfitFactor}}</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Gross won</p>
+                        <p class="mt-1 text-lg font-semibold text-emerald-400 tabular-nums">{{fmtUSD .Perf.GrossWonUSD}}</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Gross lost</p>
+                        <p class="mt-1 text-lg font-semibold text-rose-400 tabular-nums">{{fmtUSD .Perf.GrossLostUSD}}</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Avg win / loss</p>
+                        <p class="mt-1 text-base font-semibold text-gray-200 tabular-nums">
+                            <span class="text-emerald-400">{{fmtUSD .Perf.AvgWinUSD}}</span>
+                            <span class="text-gray-600"> / </span>
+                            <span class="text-rose-400">{{fmtUSD .Perf.AvgLossUSD}}</span>
+                        </p>
+                    </div>
+                </div>
+                {{end}}{{/* Perf.Trades != 0 */}}
+
+                {{/* Daily P&L chart — realized bars + equity line (server-rendered SVG).
+                     Renders unconditionally when chart data exists so the equity line is
+                     shown even when there are no closed trades (broker-offline path). */}}
+                {{if or .PerfChart.HasBars .PerfChart.HasEquity}}
+                <div class="px-5 py-4 border-b border-dark-700/40 overflow-x-auto">
+                    <p class="text-xs text-gray-500 uppercase tracking-wider mb-2">Daily P&amp;L</p>
+                    <svg width="{{.PerfChart.SVGWidth}}" height="{{.PerfChart.SVGHeight}}"
+                         viewBox="0 0 {{.PerfChart.SVGWidth}} {{.PerfChart.SVGHeight}}"
+                         aria-label="Daily P&amp;L chart" role="img"
+                         class="overflow-visible">
+
+                        {{/* Zero baseline at mid-canvas. */}}
+                        <line x1="0" y1="{{.PerfChartBaseline}}"
+                              x2="{{.PerfChart.SVGWidth}}"
+                              y2="{{.PerfChartBaseline}}"
+                              stroke="#374151" stroke-width="1"/>
+
+                        {{/* Realized P&L bars. */}}
+                        {{range .PerfChart.Points}}
+                        {{if gt .BarH 0}}
+                        <rect x="{{.X}}" y="{{.BarY}}" width="26" height="{{.BarH}}"
+                              rx="2"
+                              fill="{{if .BarAboveBaseline}}#34d399{{else}}#f87171{{end}}"
+                              opacity="0.8">
+                            <title>{{.Date}}: realized</title>
+                        </rect>
+                        {{end}}
+                        {{end}}
+
+                        {{/* Equity curve — polyline connecting last-of-day equity values. */}}
+                        {{if and .PerfChart.HasEquity .PerfChart.PolylinePoints}}
+                        <polyline
+                            points="{{.PerfChart.PolylinePoints}}"
+                            fill="none" stroke="#818cf8" stroke-width="1.5"
+                            stroke-linejoin="round" stroke-linecap="round"/>
+                        {{range .PerfChart.Points}}
+                        {{if .HasEquity}}
+                        <circle cx="{{.EX}}" cy="{{.EY}}" r="2.5" fill="#818cf8">
+                            <title>{{.Date}}: equity {{.ELabel}}</title>
+                        </circle>
+                        {{end}}
+                        {{end}}
+                        {{end}}
+
+                        {{/* X-axis day labels. ShowLabel is pre-computed (every-other) in Go. */}}
+                        {{range .PerfChart.Points}}
+                        {{if .ShowLabel}}
+                        <text x="{{add .X 13}}" y="{{.LabelY}}"
+                              font-size="8" fill="#6b7280" text-anchor="middle"
+                              font-family="ui-monospace,monospace">{{.DateShort}}</text>
+                        {{end}}
+                        {{end}}
+                    </svg>
+                </div>
+                {{end}}
+
+                {{/* Per-symbol breakdown table, sorted by net realized desc. */}}
+                {{if .Perf.BySymbol}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead class="text-xs text-gray-500 uppercase tracking-wider border-b border-dark-700/60">
+                            <tr>
+                                <th class="px-5 py-2 text-left">Symbol</th>
+                                <th class="px-3 py-2 text-right">Trades</th>
+                                <th class="px-3 py-2 text-right">Win rate</th>
+                                <th class="px-3 py-2 text-right">Net realized</th>
+                                <th class="px-3 py-2 text-right">Gross won</th>
+                                <th class="px-3 py-2 text-right">Gross lost</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-dark-700/30">
+                            {{range .Perf.BySymbol}}
+                            <tr>
+                                <td class="px-5 py-2 text-gray-200 font-mono">{{.Symbol}}</td>
+                                <td class="px-3 py-2 text-gray-300 tabular-nums text-right">{{.Trades}}</td>
+                                <td class="px-3 py-2 text-gray-300 tabular-nums text-right">{{printf "%.1f" .WinRatePct}}%</td>
+                                <td class="px-3 py-2 font-mono tabular-nums text-right {{if lt .NetRealizedUSD 0.0}}text-rose-400{{else if gt .NetRealizedUSD 0.0}}text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .NetRealizedUSD}}</td>
+                                <td class="px-3 py-2 text-emerald-400 font-mono tabular-nums text-right">{{fmtUSD .GrossWonUSD}}</td>
+                                <td class="px-3 py-2 text-rose-400 font-mono tabular-nums text-right">{{fmtUSD .GrossLostUSD}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{end}}
+            </div>
+
+            {{/* Account snapshot — live, with a persisted-snapshot fallback. */}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60 flex items-center justify-between">
+                    <h2 class="text-sm font-medium text-gray-200">Account snapshot</h2>
+                    {{/* Structured provenance: distinguish live / fresh-fallback /
+                         stale-fallback / no-data so the operator knows how much to
+                         trust the figures, not just "snapshot". */}}
+                    {{if eq .AccountStatus "snapshot_expired"}}
+                    <span class="px-2 py-0.5 rounded bg-rose-900/50 text-rose-200 font-semibold uppercase tracking-wider" title="Broker portfolio unavailable and the latest snapshot is over 24h old — DO NOT act on these figures; they are almost certainly out of date.">⚠ expired snapshot · {{.SnapshotAsOf.Format "Jan 2 15:04 UTC"}}</span>
+                    {{else if eq .AccountStatus "snapshot_stale"}}
+                    <span class="text-xs text-rose-300" title="Broker portfolio unavailable and the latest snapshot is stale (the equity sampler hasn't refreshed it) — figures may be well out of date.">⚠ stale snapshot · as of {{.SnapshotAsOf.Format "15:04 UTC on Jan 2"}}</span>
+                    {{else if eq .AccountStatus "snapshot_fresh"}}
+                    <span class="text-xs text-amber-300" title="Live broker portfolio momentarily unavailable; showing a recent persisted snapshot.">snapshot · as of {{.SnapshotAsOf.Format "15:04 UTC on Jan 2"}}</span>
+                    {{else if eq .AccountStatus "no_snapshot"}}
+                    <span class="text-xs text-rose-400" title="Broker unreachable and no persisted snapshot exists in the retention window.">no data · broker offline</span>
+                    {{else if eq .AccountStatus "snapshot_unavailable"}}
+                    <span class="text-xs text-rose-400" title="Broker unreachable AND the snapshot store could not be read — this is a vornik storage problem, not just a broker outage.">no data · snapshot store unavailable</span>
+                    {{else if .Panel.PortfolioReachable}}
+                    <span class="text-xs text-emerald-400">live</span>
+                    {{end}}
+                </div>
+                {{if or .Panel.PortfolioReachable .AccountFromSnapshot}}
+                <div class="px-5 py-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 text-sm">
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Equity</p>
+                        <p class="mt-1 text-lg font-bold text-accent-300 tabular-nums">{{fmtUSD .Panel.EquityUSD}}</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Cash</p>
+                        <p class="mt-1 text-lg font-semibold text-gray-100 tabular-nums">{{fmtUSD .Panel.CashUSD}}</p>
+                    </div>
+                    {{if not .AccountFromSnapshot}}
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Buying power</p>
+                        <p class="mt-1 text-lg font-semibold text-gray-100 tabular-nums">{{fmtUSD .Panel.BuyingPowerUSD}}</p>
+                    </div>
+                    {{end}}
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Unrealised P&amp;L</p>
+                        <p class="mt-1 text-lg font-semibold tabular-nums {{if lt .Panel.UnrealisedPLUSD 0.0}}text-rose-400{{else if gt .Panel.UnrealisedPLUSD 0.0}}text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .Panel.UnrealisedPLUSD}}</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Realised P&amp;L (day)</p>
+                        <p class="mt-1 text-lg font-semibold tabular-nums {{if lt .Panel.RealisedPLDayUSD 0.0}}text-rose-400{{else if gt .Panel.RealisedPLDayUSD 0.0}}text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .Panel.RealisedPLDayUSD}}</p>
+                    </div>
+                    {{if not .AccountFromSnapshot}}
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Open positions</p>
+                        <p class="mt-1 text-lg font-semibold text-gray-100 tabular-nums">{{.Panel.OpenPositions}}</p>
+                    </div>
+                    {{end}}
+                </div>
+                {{else}}
+                <div class="px-5 py-4 text-xs text-amber-300">
+                    Account snapshot unavailable: {{if .Panel.PortfolioError}}{{.Panel.PortfolioError}}{{else if .Panel.BrokerError}}{{.Panel.BrokerError}}{{else}}broker offline and no persisted snapshot in the last 30 days{{end}}
+                </div>
+                {{end}}
+            </div>
+
+            {{/* Caps & current usage. */}}
+            {{if .Panel.BrokerReachable}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <h2 class="text-sm font-medium text-gray-200">Caps &amp; current usage</h2>
+                </div>
+                <div class="px-5 py-4 grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2 text-sm">
+                    <div class="flex justify-between"><span class="text-gray-400">Daily turnover (UTC {{.Panel.TodayUTC}})</span><span class="text-gray-200 font-mono tabular-nums">{{fmtUSD .Panel.TodayTurnoverUSD}}{{if gt .Panel.MaxDailyTurnoverUSD 0.0}} <span class="text-gray-600">/ {{fmtUSD .Panel.MaxDailyTurnoverUSD}}</span>{{else}} <span class="text-gray-600">/ unlimited</span>{{end}}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-400">Max position</span><span class="text-gray-200 font-mono tabular-nums">{{if gt .Panel.MaxPositionUSD 0.0}}{{fmtUSD .Panel.MaxPositionUSD}}{{else}}unlimited{{end}}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-400">Orders / hour</span><span class="text-gray-200 font-mono tabular-nums">{{.Panel.OrdersInLastHour}}{{if gt .Panel.MaxOrdersPerHour 0}} <span class="text-gray-600">/ {{.Panel.MaxOrdersPerHour}}</span>{{else}} <span class="text-gray-600">/ unlimited</span>{{end}}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-400">Orders / minute</span><span class="text-gray-200 font-mono tabular-nums">{{.Panel.OrdersInLastMinute}}{{if gt .Panel.MaxOrdersPerMinute 0}} <span class="text-gray-600">/ {{.Panel.MaxOrdersPerMinute}}</span>{{else}} <span class="text-gray-600">/ unlimited</span>{{end}}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-400">Drawdown breaker</span><span class="text-gray-200 font-mono tabular-nums">{{if gt .Panel.DrawdownCircuitBreakerPct 0.0}}{{printf "%.1f" .Panel.DrawdownCircuitBreakerPct}}%{{else}}<span class="text-gray-600">disabled</span>{{end}}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-400">Stop-loss</span><span class="text-gray-200 font-mono tabular-nums">{{if .Panel.RequireStopLoss}}<span class="text-emerald-400">required</span>{{else}}<span class="text-gray-500">optional</span>{{end}}{{if gt .Panel.DefaultStopLossPct 0.0}} · {{printf "%.1f" .Panel.DefaultStopLossPct}}%{{end}}</span></div>
+                </div>
+            </div>
+            {{end}}
+
+            {{/* Soak rollup — fixed-period health metrics (not window-scoped). */}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <h2 class="text-sm font-medium text-gray-200">Soak metrics</h2>
+                </div>
+                <div class="px-5 py-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 text-sm">
+                    {{if .Panel.Soak.SoakReady}}
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Sharpe (ann.)</p>
+                        <p class="mt-1 text-lg font-semibold tabular-nums {{if lt .Panel.Soak.SharpeAnnualized 0.0}}text-rose-400{{else if gt .Panel.Soak.SharpeAnnualized 1.0}}text-emerald-400{{else}}text-gray-200{{end}}">{{printf "%.2f" .Panel.Soak.SharpeAnnualized}}</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Max drawdown</p>
+                        <p class="mt-1 text-lg font-semibold text-amber-400 tabular-nums">{{printf "%.2f" .Panel.Soak.MaxDrawdownPct}}%</p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Equity 24h</p>
+                        <p class="mt-1 text-lg font-semibold tabular-nums {{if lt .Panel.Soak.Equity24hChangeUSD 0.0}}text-rose-400{{else if gt .Panel.Soak.Equity24hChangeUSD 0.0}}text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .Panel.Soak.Equity24hChangeUSD}} <span class="text-gray-600">({{printf "%.2f" .Panel.Soak.Equity24hChangePct}}%)</span></p>
+                    </div>
+                    {{else}}
+                    <div class="col-span-2 sm:col-span-3 lg:col-span-6 text-xs text-gray-500">Soak warming up — {{.Panel.Soak.WindowDays}} day(s) of data ({{.Panel.Soak.SampleCount}} snapshots); Sharpe needs ≥5 days.</div>
+                    {{end}}
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Orders today / 7d</p>
+                        <p class="mt-1 text-lg font-semibold text-gray-100 tabular-nums">{{.Panel.Soak.OrdersToday}} <span class="text-gray-600">/ {{.Panel.Soak.Orders7d}}</span></p>
+                    </div>
+                    <div>
+                        <p class="text-xs text-gray-500 uppercase tracking-wider">Volume today / 7d</p>
+                        <p class="mt-1 text-lg font-semibold text-gray-100 tabular-nums">{{fmtUSD .Panel.Soak.VolumeTodayUSD}} <span class="text-gray-600">/ {{fmtUSD .Panel.Soak.Volume7dUSD}}</span></p>
+                    </div>
+                </div>
+            </div>
+
+            {{/* Recent orders — window-scoped. */}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <h2 class="text-sm font-medium text-gray-200">Recent orders <span class="text-gray-600 font-normal">· {{.WindowLabel}}</span></h2>
+                </div>
+                {{if .Panel.RecentOrders}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead class="text-xs text-gray-500 uppercase tracking-wider border-b border-dark-700/60">
+                            <tr><th class="px-5 py-2 text-left">Submitted</th><th class="px-3 py-2 text-left">Symbol</th><th class="px-3 py-2 text-left">Side</th><th class="px-3 py-2 text-left">Type</th><th class="px-3 py-2 text-right">Qty</th><th class="px-3 py-2 text-right">Limit</th><th class="px-3 py-2 text-left">Status</th></tr>
+                        </thead>
+                        <tbody class="divide-y divide-dark-700/30">
+                            {{range .Panel.RecentOrders}}
+                            <tr>
+                                <td class="px-5 py-2 text-gray-400 font-mono whitespace-nowrap">{{.SubmittedAt.Format "Jan 2 15:04"}}</td>
+                                <td class="px-3 py-2 text-gray-200 font-mono">{{.Symbol}}</td>
+                                <td class="px-3 py-2 font-mono {{.ActionClass}}">{{.Action}}</td>
+                                <td class="px-3 py-2 text-gray-400 font-mono">{{.OrderType}}</td>
+                                <td class="px-3 py-2 text-gray-200 font-mono tabular-nums text-right">{{printf "%.0f" .Qty}}</td>
+                                <td class="px-3 py-2 text-gray-300 font-mono tabular-nums text-right">{{if gt .LimitPrice 0.0}}{{fmtUSD .LimitPrice}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-3 py-2"><span class="{{.StatusClass}} font-mono text-xs" title="{{.StatusReason}}">{{.Status}}</span></td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-5 py-4 text-xs text-gray-500">No orders in the last {{.WindowLabel}}.</div>
+                {{end}}
+            </div>
+
+            {{/* Recent fills — window-scoped. */}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <h2 class="text-sm font-medium text-gray-200">Recent fills <span class="text-gray-600 font-normal">· {{.WindowLabel}}</span></h2>
+                </div>
+                {{if .Panel.RecentFills}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead class="text-xs text-gray-500 uppercase tracking-wider border-b border-dark-700/60">
+                            <tr><th class="px-5 py-2 text-left">Filled</th><th class="px-3 py-2 text-left">Symbol</th><th class="px-3 py-2 text-right">Qty</th><th class="px-3 py-2 text-right">Price</th><th class="px-3 py-2 text-right">Notional</th><th class="px-3 py-2 text-right">Commission</th></tr>
+                        </thead>
+                        <tbody class="divide-y divide-dark-700/30">
+                            {{range .Panel.RecentFills}}
+                            <tr>
+                                <td class="px-5 py-2 text-gray-400 font-mono whitespace-nowrap">{{.FilledAt.Format "Jan 2 15:04"}}</td>
+                                <td class="px-3 py-2 text-gray-200 font-mono">{{.Symbol}}</td>
+                                <td class="px-3 py-2 text-gray-200 font-mono tabular-nums text-right">{{printf "%.0f" .Qty}}</td>
+                                <td class="px-3 py-2 text-gray-300 font-mono tabular-nums text-right">{{fmtUSD .Price}}</td>
+                                <td class="px-3 py-2 text-gray-200 font-mono tabular-nums text-right">{{fmtUSD .Notional}}</td>
+                                <td class="px-3 py-2 text-gray-400 font-mono tabular-nums text-right">{{if gt .CommissionUSD 0.0}}{{fmtUSD .CommissionUSD}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-5 py-4 text-xs text-gray-500">No fills in the last {{.WindowLabel}}.</div>
+                {{end}}
+            </div>
+
+            {{/* Security (safety) events — window-scoped. */}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60 flex items-center justify-between">
+                    <h2 class="text-sm font-medium text-gray-200">Security events <span class="text-gray-600 font-normal">· {{.WindowLabel}}</span></h2>
+                    <span class="text-xs text-gray-500">{{.Panel.SafetyEvents24hCount}} in {{.WindowLabel}}</span>
+                </div>
+                {{if .Panel.SafetyEvents}}
+                <ul class="divide-y divide-dark-700/30">
+                    {{range .Panel.SafetyEvents}}
+                    <li class="px-5 py-2.5 flex items-start gap-3 text-sm">
+                        <span class="{{.SeverityClass}} font-mono text-xs mt-0.5 whitespace-nowrap">{{.Severity}}</span>
+                        <div class="min-w-0">
+                            <p class="text-gray-200 font-mono">{{.Kind}}{{if .Symbol}} · <span class="text-gray-400">{{.Symbol}}</span>{{end}}</p>
+                            <p class="text-xs text-gray-500 font-mono">{{.RecordedAt.Format "Jan 2 15:04:05 UTC"}}</p>
+                            {{if .Detail}}
+                            <div class="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                                {{range $k, $v := .Detail}}
+                                <span class="text-xs font-mono text-gray-400 break-all"><span class="text-gray-600">{{$k}}:</span> {{$v}}</span>
+                                {{end}}
+                            </div>
+                            {{end}}
+                        </div>
+                    </li>
+                    {{end}}
+                </ul>
+                {{else}}
+                <div class="px-5 py-4 text-xs text-gray-500">No safety events in the last {{.WindowLabel}}.</div>
+                {{end}}
+            </div>
+            {{end}}{{/* HasTradingProjects */}}
+        </div>
+    </main>
+</body>
+</html>
+{{end}}

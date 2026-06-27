@@ -1,0 +1,818 @@
+# vornik Configuration
+# Example configuration for local development
+# All fields are shown; optional ones are commented out or set to their zero/default value.
+# ${VAR} placeholders are expanded from the daemon environment at load time.
+
+# ---------------------------------------------------------------------------
+# HTTP server
+# ---------------------------------------------------------------------------
+server:
+  address: ":8080"
+  # unix_socket: also serve the HTTP API on this unix socket. REQUIRED
+  # when runtime.default_network (or any role) is "daemon-only": the
+  # socket is bind-mounted into --network=none agent containers so they
+  # reach the daemon (MCP + LLM) with zero internet egress. /run/user/<uid>
+  # is the systemd user runtime dir (tmpfs; the daemon recreates it on
+  # start). Empty = TCP only (and daemon-only roles then fail closed).
+  unix_socket: "/run/user/1000/vornik/vornik.sock"
+  read_timeout: 30s
+  # Must exceed chat.timeout because /api/v1/chat/completions holds the
+  # connection open until a model turn finishes.
+  write_timeout: 360s
+  # real_ip: trust a reverse proxy (e.g. a Cloudflare Zero Trust tunnel
+  # connector) to supply the real client IP via the header below. Only
+  # requests whose SOURCE address is in trusted_proxies may set it; every
+  # other source keys on RemoteAddr (a forged header from an untrusted
+  # source is ignored). REQUIRED behind a proxy — otherwise all clients
+  # collapse to the proxy IP and one bad actor trips the shared per-IP
+  # lockout for everyone. NOTE: trusting the private ranges below lets ANY
+  # host on those networks set the client-IP header; tighten to just the
+  # proxy host for a stricter posture.
+  # See https://docs.vornik.io
+  real_ip:
+    enabled: true
+    header: "CF-Connecting-IP"
+    trusted_proxies:
+      - "127.0.0.0/8"     # IPv4 loopback
+      - "::1/128"         # IPv6 loopback
+      - "10.0.0.0/8"      # RFC1918 private
+      - "172.16.0.0/12"   # RFC1918 private
+      - "192.168.0.0/16"  # RFC1918 private
+      - "fc00::/7"        # IPv6 unique-local (private)
+
+# ---------------------------------------------------------------------------
+# PostgreSQL database
+# ---------------------------------------------------------------------------
+database:
+  host: localhost
+  port: 5432
+  name: vornik
+  user: vornik
+  # password: the Enterprise package AUTO-GENERATES a strong random password
+  # here on FIRST install (its postinstall runs `vornik-enterprise gen-config`,
+  # which replaces this weak `vornik` default). You do NOT edit this example for
+  # the packaged path. For a MANUAL copy of this file, set your own strong
+  # password below, then provision the Postgres role + database + pgvector with:
+  #   vornik-enterprise db-bootstrap --print | sudo -u postgres psql   # local
+  #   vornik-enterprise db-bootstrap --admin-password <pw>             # remote
+  password: vornik
+  sslmode: disable   # disable | require | verify-ca | verify-full
+
+# ---------------------------------------------------------------------------
+# Storage paths
+# ---------------------------------------------------------------------------
+
+# storage: base path for task input/output artifacts (mounted into containers).
+storage:
+  artifacts_path: /var/lib/vornik/artifacts
+
+# artifacts: separate path for long-term artifact retention (e.g. build outputs).
+# Defaults to the same value as storage.artifacts_path when not set.
+artifacts:
+  artifacts_path: /var/lib/vornik/artifacts
+
+# ---------------------------------------------------------------------------
+# Scheduler
+# ---------------------------------------------------------------------------
+scheduler:
+  max_concurrent_tasks: 4
+  lease_timeout: 5m   # how long a leased task can run before it is reclaimed
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging:
+  level: info    # debug | info | warn | error
+  format: json   # json | text
+  # forward: centralised log shipping to remote sinks (HTTP webhook and/or
+  # syslog), filtered by scope. DISABLED by default — to enable: set
+  # enabled: true, turn on the sink(s) you want, point them at your
+  # collector, and export the bearer-token env var. Best-effort async
+  # (never blocks the daemon). See
+  # https://docs.vornik.io
+  forward:
+    enabled: false
+    # Allowlist of scopes to ship (zerolog `component` values + audit.admin /
+    # audit.tool). Empty while enabled = ship every scope.
+    scopes: ["http", "llm", "memory", "executor", "audit.admin", "audit.tool"]
+    queue_size: 10000
+    batch_size: 100
+    flush_interval: 5s
+    http:
+      enabled: false
+      url: "https://logs.example.com/ingest"        # example collector endpoint
+      bearer_token_env: "VORNIK_LOGSHIP_TOKEN"      # env-var NAME, never the token itself
+      timeout: 5s
+      max_retries: 3
+    syslog:
+      enabled: false
+      address: "logs.example.com:6514"              # example collector host:port
+      protocol: "tls"                                # udp | tcp | tls
+      ca_file: ""                                    # PEM CA to PIN tls trust (empty = system roots)
+
+# ---------------------------------------------------------------------------
+# API
+# ---------------------------------------------------------------------------
+api:
+  # auth_enabled: flip to true once you have verified no legitimate client
+  # is blocked. Use the dry-run procedure below before flipping:
+  #   1. Set auth_dry_run: true (cannot combine with auth_enabled: true).
+  #   2. Watch vornik_auth_dryrun_denials_total{verdict} and the dedup WARN
+  #      logs (component auth-dryrun) — one WARN per distinct
+  #      (method, route-shape, verdict) per AuthMiddleware instance (up to 2/process).
+  #   3. Fix stragglers (misconfigured clients, stale sessions, agent keys).
+  #   4. Flip auth_enabled: true and remove auth_dry_run.
+  auth_enabled: true
+  # auth_dry_run: evaluation mode — serves every request regardless of
+  # credential validity, but records would-be denials via
+  # vornik_auth_dryrun_denials_total{verdict} and deduplicated WARN logs.
+  # Cannot be combined with auth_enabled: true (startup rejects the pairing).
+  # Remove this line when flipping auth_enabled: true.
+  auth_dry_run: false
+  # api_keys: at least one entry is REQUIRED while auth_enabled is true
+  # (an empty list refuses to start). The Enterprise package auto-generates
+  # a fresh admin key on FIRST install by running, in its postinstall:
+  #     vornik-enterprise gen-config --out /etc/vornik/vornik.yaml
+  # which mints an `sk-vornik-…` key and injects it here — you do NOT edit
+  # this example for the packaged path. For a MANUAL copy of this file,
+  # replace the placeholder below with at least one real key, OR set
+  # auth_dry_run: true above (and auth_enabled: false) to evaluate first.
+  api_keys:
+    - "replace-with-a-real-api-key"
+
+# ---------------------------------------------------------------------------
+# Auth — daemon-wide authentication settings
+# ---------------------------------------------------------------------------
+auth:
+  # AuthMiddleware always validates credentials through the pluggable
+  # backend chain (session → hmac-webhook → db-keys → static-keys). The
+  # former use_chain migration flag has been retired — the chain is
+  # unconditional and the legacy inline path is gone.
+
+  # Public origin of this daemon as browsers reach it
+  # (scheme://host[:port], no trailing slash, no path). OAuth callbacks
+  # are external_base_url + "/auth/<provider>/callback" and must
+  # byte-match the URL registered with the provider. Required when any
+  # provider below is configured.
+  external_base_url: "http://192.0.2.10:8080"   # adjust per deployment
+
+  # Browser session policy (oidc-identity-permissions-design.md §4.3).
+  session:
+    lifetime: "168h"      # fixed expiry from creation (default 168h = 7d)
+    idle_timeout: "24h"   # cut sessions idle longer than this; empty/0 disables
+
+  # Browser login providers. Absent block = no provider button on
+  # /ui/login; no providers at all = only the break-glass API-key path.
+  # Identity core requires Postgres — on sqlite, login is disabled with
+  # a startup warning. Uncomment and adjust to enable:
+  #
+  # providers:
+  #   github:
+  #     client_id: "Ov23liLcQOOiRb4XQvU4"        # your GitHub OAuth App's client id
+  #     # Exactly one of client_secret / client_secret_file. The file
+  #     # path is read verbatim (no ~ expansion) — use an absolute path.
+  #     client_secret_file: "/home/you/.config/vornik/secrets/oidc-github"
+  #     # Org-membership signal (adds read:org scope). SOFT gate:
+  #     # non-members still provision as awaiting-access; membership is
+  #     # surfaced at login, not blocking. Empty = no check.
+  #     org: "grinco"
+
+# ---------------------------------------------------------------------------
+# Metrics (Prometheus)
+# ---------------------------------------------------------------------------
+metrics:
+  enabled: false
+  addr: ":9090"   # dedicated metrics server; /metrics is also served on the main port
+
+# ---------------------------------------------------------------------------
+# Distributed tracing (OpenTelemetry OTLP gRPC)
+# ---------------------------------------------------------------------------
+tracing:
+  enabled: false
+  endpoint: "localhost:4317"
+
+# ---------------------------------------------------------------------------
+# Runtime — container execution
+# ---------------------------------------------------------------------------
+runtime:
+  # userns_mode: Podman user namespace mode for agent containers.
+  # Leave empty for the Podman default.
+  # "host" is useful for rootless Podman under systemd.
+  userns_mode: ""
+
+  # run_as_user: forces a non-root identity on every agent container via
+  # `podman --user`. Accepts "uid", "uid:gid", or "user:group". Leave empty
+  # to trust the image's own USER directive. Recommended for defense in
+  # depth if your agent image ever regresses to USER root.
+  # Example: run_as_user: "1000:1000"
+  run_as_user: ""
+
+  # default_network: network policy for agent roles that don't set
+  # runtime.network explicitly. "daemon-only" gives every role zero
+  # internet egress: the container runs --network=none and reaches the
+  # daemon (MCP tools + LLM, both daemon-proxied) over the daemon's unix
+  # socket — so it REQUIRES server.unix_socket to be set. Roles that need
+  # real egress (e.g. build/coder roles that fetch dependencies) opt out
+  # per-role with `network: host`. Empty preserves the legacy permissive
+  # default (rootless slirp4netns egress). New installs default to
+  # daemon-only. Values: "" | host | none | daemon-only.
+  default_network: "daemon-only"
+
+  # project_workspace_path: base directory for per-project persistent workspaces.
+  # Each project gets {path}/{projectID}/ mounted at /app/workspace/project/ inside
+  # the container. Agents access it via the "project/" prefix from their workdir.
+  # Defaults to $VORNIK_DATA_DIR/workspaces when empty.
+  project_workspace_path: ""
+
+  # agent_llm: LLM endpoint injected into agent containers as environment
+  # variables. Every field falls back to the corresponding chat.* value
+  # when empty/zero, so a single chat: section is sufficient when agents
+  # share the same endpoint.
+  #
+  # Two useful topologies:
+  #
+  #   1. Agents hit the same upstream the daemon does (gateway / Ollama /
+  #      etc.). Leave agent_llm.* empty so fallback to chat.* applies.
+  #
+  #   2. Agents route through the daemon itself — vornik exposes an
+  #      OpenAI-compatible proxy at POST /api/v1/chat/completions that
+  #      forwards to whatever chat.Provider is wired (HTTP, Claude CLI,
+  #      anything future). Point agents at it so they inherit the
+  #      dispatcher's auth without needing their own API key:
+  #
+  #        agent_llm:
+  #          endpoint: "http://host.containers.internal:8080/api/v1"
+  #          model: "claude-sonnet-4-6"   # per-role overrides honored
+  #          api_key: "local"             # only checked if api.auth_enabled
+  #
+  #      This is the path to take when provider=="claude-cli" below —
+  #      agents don't know how to shell out to `claude`, but the proxy
+  #      does. Per-role model: overrides in your swarm YAML flow
+  #      through via the OpenAI request's `model` field and the proxy
+  #      routes each call to the requested Claude tier.
+  agent_llm:
+    endpoint: ""     # OpenAI-compatible base URL; see topologies above
+    model: ""        # e.g. "minimax.minimax-m2" or "claude-sonnet-4-6"
+    api_key: ""      # bearer token; "local" / "none" work when auth is off
+
+    # context_size: how many tokens the model can READ per call (the input window).
+    # Drives the automatic compaction threshold in agent containers (triggers at 80%).
+    # Sent as options.num_ctx for Ollama; cloud gateways with fixed windows ignore it.
+    # 0 = use provider default.
+    context_size: 32768   # smaller local models: 16384-32768 is usually safer than huge windows
+
+    # max_tokens: how many tokens the model can WRITE per call (the output cap).
+    # Always set this when using a gateway with a low default (bedrock-access-gateway
+    # defaults to 2048, which truncates file_write and JSON responses).
+    # 0 = use provider default.
+    max_tokens: 8192
+
+    # model_limits: per-model overrides for context_size and max_tokens.
+    # Applied automatically when a swarm role selects that model via its `model:` field,
+    # regardless of whether the model was set via role.model, runtime.envVars, or the
+    # global agent_llm.model. Individual role fields (maxTokens, contextSize) win over these.
+    # Priority: global agent_llm → model_limits[effective model] → role.maxTokens
+    # model_limits:
+    #   "qwen3.5:9b":                           # planner/research/writer/editor
+    #     max_tokens: 6144
+    #     context_size: 24576
+    #   "devstral-small-2:24b":                 # coder
+    #     max_tokens: 8192
+    #     context_size: 24576
+    #   "glm-4.7-flash:latest":                 # reviewer
+    #     max_tokens: 4096
+    #     context_size: 16384
+
+  # warm_pool: reuse idle agent containers across tasks for roles with runtimePolicy=warm.
+  # Reduces cold-start latency at the cost of keeping containers alive between tasks.
+  warm_pool:
+    enabled: false
+    idle_timeout: "10m"   # evict containers idle longer than this
+    max_per_role: 2        # maximum warm containers kept per project+role combination
+
+# ---------------------------------------------------------------------------
+# Chat (LLM client)
+# Used by: Telegram bot, natural language task dispatcher, autonomous loop.
+# ---------------------------------------------------------------------------
+chat:
+  enabled: false
+
+  # provider: backend to use for chat completions.
+  #   "" / "http" / "openai"  → OpenAI-compatible HTTP client (default).
+  #                             Needs endpoint + api_key + model.
+  #   "claude-subscription"   → direct api.anthropic.com/v1/messages call
+  #                             using the OAuth tokens written by
+  #                             `claude login`. Native tool_use blocks,
+  #                             per-delta streaming, no subprocess.
+  #   "claude-cli"            → deprecated; shells out to the `claude` CLI
+  #                             (Claude Code) and reuses its auth.
+  #                             `endpoint`/`api_key` ignored; `model` →
+  #                             `--model`. Prefer claude-subscription.
+  #   "codex-cli"             → deprecated; shells out to `codex exec`
+  #                             (OpenAI Codex) and reuses its auth. Under
+  #                             ChatGPT-account auth the CLI ignores `-m`,
+  #                             so leave model empty. Prefer
+  #                             codex-subscription.
+  #   "codex-subscription"    → router sub-provider only; talks directly
+  #                             to the ChatGPT-subscription Codex Responses
+  #                             API using auth from `codex login`.
+  #   "vertex"                → router sub-provider only; Google Vertex AI
+  #                             (Gemini) via API key against Vertex's
+  #                             OpenAI-compat endpoint. Requires GCP
+  #                             project_id + location + api_key.
+  #   "router"                → multi-provider mode: dispatch each request
+  #                             to one of the above by matching the model
+  #                             prefix. See the chat.router block below.
+  #
+  # When a CLI provider is in use, pair it with
+  # runtime.agent_llm.endpoint=http://host.containers.internal:8080/api/v1
+  # so agent containers route through the daemon's internal chat
+  # proxy and share the dispatcher's auth.
+  provider: "http"
+
+  # cli_binary: override the CLI binary path when provider is a *-cli
+  # backend. Empty resolves via PATH — fine for interactive shells,
+  # but systemd user services inherit a minimal PATH and will fail
+  # with "executable file not found". Set the absolute path in that
+  # case:
+  #   cli_binary: "/home/<you>/.local/bin/claude"
+  # For provider=="router", each sub-provider has its own binary field
+  # (router.claude_cli.binary / router.codex_cli.binary); this field
+  # is ignored in router mode.
+  cli_binary: ""
+
+  # router: multi-provider config, used only when provider=="router".
+  # Lets you run Claude + Codex + Vertex (+ HTTP) side-by-side and have
+  # each incoming request's `model` field pick the backend. Combined
+  # with the internal chat proxy at /api/v1/chat/completions, this lets
+  # swarm role `model:` fields like "claude-sonnet-4-6",
+  # "gpt-5.4-mini", or "google/gemini-2.5-pro" route to the right
+  # backend automatically.
+  # router:
+  #   default: claude-subscription   # fallback kind: claude-cli | claude-subscription | codex-cli | codex-subscription | http | vertex
+  #
+  #   claude_subscription:
+  #     enabled: true
+  #     auth_path: ""                 # empty = ~/.claude/.credentials.json
+  #     model: "claude-sonnet-4-6"
+  #     max_tokens: 8192              # 0 = package default (8192)
+  #     thinking_budget: 0            # 0 = disabled; Opus 4.7 always thinks
+  #
+  #   # claude_cli is deprecated — claude_subscription is ~200ms faster
+  #   # per call, uses native tool_use blocks, and streams per-delta.
+  #   # Keep this block only if you need CLI-specific behaviour.
+  #   claude_cli:
+  #     enabled: false
+  #     binary: "/home/you/.local/bin/claude"
+  #     model: "claude-sonnet-4-6"
+  #
+  #   codex_cli:
+  #     enabled: true
+  #     binary: "/home/linuxbrew/.linuxbrew/bin/codex"
+  #     model: ""                    # empty = ChatGPT-account default
+  #
+  #   codex_subscription:
+  #     enabled: true
+  #     auth_path: ""                 # empty = ~/.codex/auth.json
+  #     model: "gpt-5.4-mini"
+  #     effort_level: "low"           # low | medium | high
+  #
+  #   http:
+  #     enabled: false
+  #     endpoint: "https://openrouter.ai/api/v1"
+  #     api_key: "${CHAT_API_KEY}"
+  #     model: "minimax.minimax-m2"
+  #
+  #   # Google Vertex AI (Gemini) via API key. Uses Vertex's OpenAI-compat
+  #   # endpoint so the wire shape matches `http`; the difference is the
+  #   # auth header (X-Goog-Api-Key instead of Authorization: Bearer)
+  #   # and the URL, which is built from project_id + location.
+  #   # API keys with Vertex access are created in the GCP console under
+  #   # "APIs & Services → Credentials" with the Vertex AI API enabled.
+  #   vertex:
+  #     enabled: false
+  #     api_key: "${GCP_API_KEY}"
+  #     project_id: "my-gcp-project"
+  #     location: "us-central1"       # or "global"
+  #     model: "google/gemini-2.5-pro"
+  #     max_tokens: 8192              # 0 = provider default
+  #     # endpoint: ""                # override; leave empty for the
+  #                                   # standard aiplatform.googleapis.com URL
+  #
+  #   # OpenRouter (OpenAI-compat) — aimed at the FREE tier (model IDs
+  #   # ending in ":free", billed at $0). Route free models here with a
+  #   # SUFFIX route (see routes below): ":free" suffix matches take
+  #   # precedence over vendor-prefix routes, so google/...:free reaches
+  #   # OpenRouter while paid google/... still reaches vertex.
+  #   openrouter:
+  #     enabled: false
+  #     api_key: "${OPENROUTER_API_KEY}"
+  #     model: "deepseek/deepseek-r1:free"   # default; use a ":free" variant
+  #     free_only: false             # true = reject any non-":free" model
+  #                                  # before it bills (hard spend guard)
+  #     # endpoint: ""               # override; default https://openrouter.ai/api/v1
+  #     # referer: ""                # HTTP-Referer; default "vornik/<version>"
+  #     # title: ""                  # X-Title; default "vornik"
+  #     max_tokens: 0                # 0 = inherit chat.max_tokens
+  #
+  #   # AWS Bedrock native (Converse API + SigV4). NOT
+  #   # OpenAI-compat — the provider handles the wire-format
+  #   # translation internally so callers pass OpenAI-shaped
+  #   # messages and get OpenAI-shaped responses back. Auth is
+  #   # delegated to the AWS SDK default credential chain
+  #   # (env vars / shared credentials / IAM role / instance
+  #   # profile); no api_key field on the config so creds don't
+  #   # leak into operator YAML. Wire credentials via the systemd
+  #   # unit's EnvironmentFile pointing at e.g.
+  #   # ~/.config/vornik/secrets/aws.env.
+  #   bedrock:
+  #     enabled: false
+  #     region: "us-east-1"           # region pins available marketplace models
+  #     model: "zai.glm-4.7-flash"    # default when no per-request override
+  #     max_tokens: 8192              # 0 = chat.max_tokens; if both unset, the
+  #                                   # model's hard max applies (often 128k+)
+  #
+  #   # When routes is empty or absent, vornik installs a sensible
+  #   # default table that picks the first enabled provider per prefix:
+  #   # claude-* prefers claude_subscription, falls back to claude_cli;
+  #   # gpt-* / o3- / o4- / codex prefer codex_subscription, fall back
+  #   # to codex_cli; gemini- and google/ route to vertex when enabled;
+  #   # ":free" (suffix) and openrouter/ route to openrouter when enabled.
+  #   # List explicit routes below to override.
+  #   #
+  #   # SUFFIX routes (e.g. {suffix: ":free"}) take precedence over prefix
+  #   # routes regardless of order — put them first for readability.
+  #   routes:
+  #     - { suffix: ":free",     kind: "openrouter" }   # all free models → OpenRouter
+  #     - { prefix: "openrouter/", kind: "openrouter" } # openrouter/auto etc.
+  #     - { prefix: "claude-",   kind: "claude-subscription" }
+  #     - { prefix: "gpt-",      kind: "codex-subscription" }
+  #     - { prefix: "o3-",       kind: "codex-subscription" }
+  #     - { prefix: "o4-",       kind: "codex-subscription" }
+  #     - { prefix: "codex",     kind: "codex-subscription" }
+  #     - { prefix: "gemini-",   kind: "vertex" }
+  #     - { prefix: "google/",   kind: "vertex" }
+  #     # Bedrock-native marketplace prefixes — point these at
+  #     # `kind: "bedrock"` once the provider is enabled.
+  #     - { prefix: "anthropic.", kind: "bedrock" }
+  #     - { prefix: "amazon.",    kind: "bedrock" }
+  #     - { prefix: "cohere.",    kind: "bedrock" }
+  #     - { prefix: "deepseek.",  kind: "bedrock" }
+  #     - { prefix: "meta.",      kind: "bedrock" }
+  #     - { prefix: "minimax.",   kind: "bedrock" }
+  #     - { prefix: "mistral.",   kind: "bedrock" }
+  #     - { prefix: "moonshotai.", kind: "bedrock" }
+  #     - { prefix: "nvidia.",    kind: "bedrock" }
+  #     - { prefix: "qwen.",      kind: "bedrock" }
+  #     - { prefix: "zai.",       kind: "bedrock" }
+
+  # OpenAI-compatible endpoint (OpenRouter, LiteLLM, Ollama, bedrock-access-gateway, etc.)
+  # Note: under provider=="router" `endpoint` and `api_key` are ignored
+  # (each sub-provider has its own block above). `model`, however, IS
+  # honored — it's promoted to the router's fallback sub-provider as
+  # the effective default for non-pinned calls (autonomy lead, telegram
+  # free-form chat, dispatcher). Set router.<sub>.model to override per
+  # sub-provider; leave it empty to inherit chat.model.
+  endpoint: "https://openrouter.ai/api/v1"
+  api_key: "${CHAT_API_KEY}"
+  model: "qwen3.5:9b"
+
+  # wizard_model: model for the conversational project-setup wizard
+  # (/ui/projects/new/wizard). Empty inherits `model` above. The wizard
+  # sends the full transcript + template-gallery priors + the envelope
+  # JSON-schema every turn, so if your default `model` is small-context
+  # or rate-limited/quota-capped on this deployment (e.g. a Vertex
+  # preview), pin a large-context / unthrottled model here. Routed
+  # through the same prefix-routing as any model, so "google/..." or
+  # "anthropic..." prefixes resolve to the right sub-provider.
+  wizard_model: ""
+
+  # timeout: per-request HTTP timeout. Increase for slow or large models.
+  timeout: "600s"
+
+  # context_size: input window hint sent to the provider (see runtime.agent_llm.context_size).
+  # Does NOT automatically trim conversation history — use max_history for that.
+  # 0 = use provider default.
+  context_size: 32768
+
+  # max_tokens: max output tokens per chat response.
+  # Also used as the fallback for agent containers when runtime.agent_llm.max_tokens is 0.
+  # 0 = use provider default.
+  max_tokens: 8192
+
+  # max_history: maximum number of messages kept per Telegram conversation session.
+  # Older messages are dropped once this limit is reached. Blunt count-based guard;
+  # set relative to context_size (rule of thumb: context_tokens / avg_msg_tokens).
+  # Example: context_size=32768, ~500 tokens/message → max_history ~45.
+  # Default: 50.
+  max_history: 40
+
+  # max_concurrent_requests: max in-flight calls to the configured chat backend.
+  # Extra requests wait in a priority queue. Lower project defaultPriority values
+  # run first for agent-container traffic through /api/v1/chat/completions.
+  # Default raised from 1 → 8 on 2026-05-18 after the chat-concurrency audit;
+  # the previous value funneled every LLM-consuming surface (dispatcher,
+  # memory pipeline, chat-proxy, Telegram, post-mortem) through a single
+  # worker. See https://docs.vornik.io for the
+  # measurement table that backs the new default.
+  max_concurrent_requests: 8
+
+  # max_history_tokens: soft token budget for conversation trimming. When the
+  # estimated token count (chars/4) of stored history plus pinned messages
+  # exceeds this, whole turns are dropped from the front until the budget
+  # fits. The most recent turn is never dropped. Complements max_history:
+  # the count cap protects against many small messages, the token cap
+  # protects against few large tool results (memory_search returns can be
+  # ~16KB each).
+  # 0 or unset → derived automatically as 70% of context_size at startup.
+  # -1 → disable token-aware trimming (message count only).
+  max_history_tokens: 20000
+
+  # max_tool_iterations: cap on the dispatcher's internal tool-call loop per user message.
+  # The dispatcher may call tools (e.g. list_tasks, create_task) multiple times before
+  # returning a final reply. This prevents runaway loops.
+  # 0 = use default (30).
+  max_tool_iterations: 30
+
+  # system_prompt: override the default dispatcher system prompt.
+  # system_prompt: |
+  #   You are a task scheduling assistant for vornik.
+
+  # thinking_enabled: enable extended thinking / reasoning (Claude and compatible models).
+  # Sends both the Anthropic-native 'thinking' field and the bedrock-access-gateway
+  # 'reasoning_effort' field so it works regardless of which gateway is in use.
+  # Increases latency and token usage; useful for complex multi-step scheduling decisions.
+  thinking_enabled: false
+
+  # thinking_budget: maximum tokens the model may spend on internal reasoning.
+  # Ignored when thinking_enabled is false. 0 = default (8192).
+  thinking_budget: 8192
+
+# ---------------------------------------------------------------------------
+# Autonomy (Autonomous evaluation manager)
+# ---------------------------------------------------------------------------
+autonomy:
+  # default_evaluate_timeout: per-tick LLM+DB budget when a project doesn't
+  # specify its own autonomy.evaluate_timeout. Increase for slow local
+  # models (e.g. 15m).
+  # Default: 5m.
+  default_evaluate_timeout: 5m
+
+# ---------------------------------------------------------------------------
+# Telegram bot (requires chat.enabled: true)
+# ---------------------------------------------------------------------------
+telegram:
+  enabled: false
+  bot_token: "${TELEGRAM_BOT_TOKEN}"
+
+  # allowed_users: map of Telegram numeric user IDs to their project scope.
+  # Leave empty to allow all authenticated users (not recommended for production).
+  #
+  # Value shapes (polymorphic for YAML ergonomics):
+  #
+  #   "<id>": true                  legacy shape; wildcard over every project
+  #   "<id>": false                 explicit deny (same as not listed)
+  #   "<id>": []                    may chat with the dispatcher but cannot
+  #                                 /project into any project (no project-
+  #                                 scoped tools available)
+  #   "<id>": ["*"]                 wildcard over every project
+  #   "<id>": ["snake", "janka"]    scoped — user may only /project into
+  #                                 the listed projects, and project-scoped
+  #                                 tools (memory_search, read_artifact,
+  #                                 mcp__*) refuse cross-project calls
+  #
+  # Scoping is enforced both on /project <id> and on every dispatcher
+  # tool that accepts a project_id or task_id argument — a scoped user
+  # cannot read another project's memory or cancel another project's
+  # task by passing IDs around the LLM.
+  allowed_users:
+    # "123456789": true                     # admin: all projects
+    # "987654321": ["snake", "headmatch"]   # developer: two projects
+    # "555555555": ["snake"]                # collaborator: one project
+    # "444444444": []                       # dispatcher-only: chat, no project tools
+
+  # rate_limit: maximum requests per minute per user. 0 = no limit.
+  rate_limit: 10
+
+  # session_path: file path for persisting conversation history across daemon restarts.
+  # Leave empty to disable persistence (sessions are lost on restart).
+  # session_path: /var/lib/vornik/sessions.json
+
+  # session_ttl: auto-expire idle Telegram sessions. When a session has had no
+  # activity for this duration, it is reset the next time the user sends a message.
+  # Accepted values: Go duration strings (e.g. "24h", "7d", "168h"). Empty = disabled.
+  # session_ttl: 24h
+
+# ---------------------------------------------------------------------------
+# Memory / RAG subsystem
+# ---------------------------------------------------------------------------
+# Vector search over project artifacts. Disabled by default — enable only
+# when you have an embedding endpoint configured. The pgvector column is
+# created with vector(1024) (see deployments/postgres/schema), so the
+# embedding_dimension MUST match 1024 unless you've migrated.
+memory:
+  enabled: false
+
+  # Embedding endpoint. Any OpenAI-compatible /v1/embeddings server works
+  # (Ollama, vLLM, hosted OpenAI, etc.). For a local CPU-friendly setup,
+  # bge-m3 via Ollama is what the assistant project uses in production.
+  # embedding_endpoint: "http://127.0.0.1:11434"
+  # embedding_model: "bge-m3:latest"
+  # embedding_dimension: 1024
+  # embedding_api_key: "${VORNIK_EMBEDDING_API_KEY}"
+
+  # Per-chunk topic labeller. Runs at ingest AND on a background backfill
+  # loop so chunks the inline call missed (LLM timeout, empty response)
+  # get a title eventually. Without this, the UI falls back to H1 / source
+  # name, which is strictly worse for the operator's eyeballs.
+  titler:
+    enabled: false
+    # model: any chat-router-known ID. 120b for quality, 20b for cost.
+    # model: "openai.gpt-oss-120b-1:0"
+    timeout_seconds: 30
+    max_preview_bytes: 2048
+    # Background loop that fills in titles missed by the inline call.
+    # 0 → 5-minute default (the loop runs unconditionally for the titler
+    # because display titles aren't load-bearing — re-trying is free).
+    auto_backfill_interval_seconds: 300
+    auto_backfill_batch_size: 25
+
+  # LLM-driven content-class classifier. Picks one of
+  # {research, spec, decision, commit_msg, diagnostic, external_fetch,
+  #  summary, unclassified} per chunk after the deterministic role-map
+  # leaves it as `unclassified`. Closed-vocabulary task — gpt-oss-20b
+  # is plenty.
+  classifier:
+    enabled: false
+    # model: "openai.gpt-oss-20b-1:0"
+    timeout_seconds: 30
+    max_preview_bytes: 2048
+
+    # Auto-backfill loop (2026.5.6 — Measure 1). Mirrors the titler's
+    # loop above. 0 disables (default — operator drives via
+    # `vornikctl memory reclassify --use-llm`). Set to ≥300s to keep
+    # the chat router's prompt cache warm between ticks. Each tick
+    # walks up to batch_size oldest unclassified chunks across all
+    # projects. Prometheus surfaces:
+    #   vornik_memory_classify_backfill_ticks_total{outcome}
+    #   vornik_memory_classify_backfill_chunks_total{status}
+    #   vornik_memory_classify_backfill_remaining_chunks
+    auto_backfill_interval_seconds: 0
+    auto_backfill_batch_size: 25
+
+    # Inline LLM fallback at ingest (2026.5.6 — Measure 3). When the
+    # role-map can't resolve a class (producer_role empty or not in
+    # roleClassMap), call the classifier from inside the ingest hot
+    # path so the chunk lands with a real class at write time.
+    # Trades ingest latency for fresher class labels. Disabled by
+    # default — let the auto-backfill loop catch them async first;
+    # flip on only if your retrieval workload depends on fresh labels.
+    inline_fallback_enabled: false
+
+  # Knowledge-graph extraction worker. Drains project_memory_chunks
+  # rows where needs_graph_extraction = TRUE through the four-stage
+  # extractor → resolver → relationship → validator pipeline. See
+  # https://docs.vornik.io
+  graph:
+    enabled: false
+    # extractor_model:    "openai.gpt-oss-20b-1:0"
+    # resolver_model:     "openai.gpt-oss-20b-1:0"
+    # validator_model:    "openai.gpt-oss-20b-1:0"
+    # relationship_model: "openai.gpt-oss-120b-1:0"
+    poll_interval_seconds: 30
+    batch_size: 10
+    max_parallel: 1
+
+# ---------------------------------------------------------------------------
+# Continuous-learning instinct layer (2026 — slices 1–6)
+# ---------------------------------------------------------------------------
+# Mines confidence-scored learned patterns ("instincts") from the audit
+# spine (execution_step_outcomes ⋈ tool_audit_log ⋈ memory_retrieval_audit)
+# via a leader-elected background worker, and feeds three advisory,
+# operator-gated consumers (failure-class playbooks, architect priors,
+# memory hygiene). enabled:true with all consumers false is PURE
+# OBSERVATION — deterministic extraction (recovery / contradiction /
+# tool-swap / retrieval) plus the optional cheap-model distillation pass
+# populate the instincts table read-only; nothing changes daemon behaviour.
+# Turning a consumer on surfaces learned patterns as evidence/priors, but a
+# pattern still flows through the existing operator/architect approval gates
+# — nothing auto-mutates a prompt/model/workflow. Inspect at
+# /ui/admin/instincts or via `vornikctl instinct`. Needs migrations 85/86.
+# See https://docs.vornik.io
+instinct:
+  enabled: false
+  # Extraction worker cadence. 0 → 1800 (30m).
+  cadence_seconds: 1800
+  # How far back each tick scans. 0 → 2×cadence. The upsert is
+  # idempotent, so overlapping windows are free.
+  # lookback_seconds: 3600
+  # Cap on step-outcome rows pulled per tick. 0 → 2000.
+  # max_outcomes_per_tick: 2000
+
+  # Confidence model (Wilson lower bound × recency decay). 0 → the
+  # design defaults shown here.
+  min_support: 3            # corroborations before candidate→active
+  active_confidence: 0.6
+  promote_confidence: 0.8
+  promote_projects: 2
+  retire_floor: 0.2
+  decay_halflife_days: 30
+
+  # Cheap distill model for the LLM generalisation pass over the ambiguous
+  # clusters the deterministic extractors can't classify (runs every 6th
+  # tick, response-cached; distilled instincts stay advisory — status capped
+  # at candidate). Empty → falls back to chat.model (paid). Point at a
+  # router-prefixed local/open model to keep distillation ~free, e.g. an
+  # Ollama model via the `qwen3.` http route:
+  # model: "qwen3.6:35b"
+  # Retrieval prune-candidate threshold for the memory-hygiene consumer.
+  # dead_days: 60
+
+  # Behaviour-affecting consumers. All default false → pure observation.
+  # When enabled, a surfaced pattern is advisory and still flows through the
+  # existing operator/architect approval gates (no auto-pivot, no silent
+  # prompt/model/workflow mutation).
+  consumers:
+    failure_playbooks: false
+    architect_priors: false
+    memory_hygiene: false
+
+# ---------------------------------------------------------------------------
+# Dynamic per-role tool-use limits (2026-06-08)
+# ---------------------------------------------------------------------------
+# A planner (the lead, or the dev-pipeline analyst) emits a coarse complexity
+# tier and the daemon scales each role's static VORNIK_MAX_TOOL_ITERATIONS by a
+# capped factor — higher ceilings for deep work, tighter for quick edits.
+# Off by default: disabled, every role runs on its configured static budget
+# exactly as before. Applies to ephemeral roles only (warm-pool roles run on
+# their static budget). See https://docs.vornik.io
+tool_budget:
+  enabled: false
+  # Multiplier per complexity tier (omitted tiers keep these defaults).
+  # These factors scale BOTH the role's iteration budget AND its step
+  # timeout (the two are coupled), so a step's wall-clock tracks its work.
+  # The role's configured budget is the COMPLEX (1.0x) reference: most
+  # tasks are small, so standard halves it and trivial quarters it, while
+  # open_ended scales up to 2x for genuinely large work.
+  factors:
+    trivial: 0.25
+    standard: 0.5
+    complex: 1.0
+    open_ended: 2.0
+  # Hard ceiling on any factor regardless of tier. 0 → 2.0.
+  max_factor: 2.0
+  # Tighter ceiling for unattended (autonomy / delegation / checkpoint)
+  # tasks — an over-eager planner can't inflate a runaway loop's budget
+  # when no operator is watching. 0 → 1.5.
+  autonomy_max_factor: 1.5
+  # Floor (seconds) for the coupled step-timeout downscale, so an
+  # aggressively-downscaled small task still gets enough wall-clock for
+  # container startup + a few iterations. The floor never raises a step
+  # above its native configured timeout. 0 → 300 (5m).
+  min_step_timeout_seconds: 300
+
+# ---------------------------------------------------------------------------
+# MCP server registry — daemon-level (2026-05-18)
+# ---------------------------------------------------------------------------
+# List every MCP server the daemon should discover. The registry powers:
+#   - GET /api/v1/mcp/servers      (discovery API)
+#   - /ui/mcp                       (operator inventory page)
+#   - The "MCP servers" section on /ui/projects/<id>/config/form
+#     (per-project subscribe checkboxes — projects opt in to which
+#     of these servers their agents can call)
+#
+# IMPORTANT: listing a server here is INFORMATIONAL ONLY. It does
+# NOT auto-grant access — each project's own `mcp.servers:` block
+# still decides what its agents can see. The daemon registry just
+# tells the UI which servers exist so operators don't have to
+# remember names + URLs when wiring a project.
+#
+# Same struct shape as the per-project mcp.servers entries. Copy-paste
+# friendly: write a server ONCE here, then subscribe projects via the
+# config form.
+#
+# mcp:
+#   servers:
+#     - name: scraper
+#       transport: sse
+#       url: http://127.0.0.1:8787
+#       allowed_tools:
+#         - web_fetch
+#         - ical_events
+#     - name: broker
+#       transport: sse
+#       url: http://127.0.0.1:8788
+#       allowed_tools:
+#         - get_account_summary
+#         - get_quote
+#         - get_historical_bars
+#         - place_order
+#         - cancel_order
+#     - name: linter
+#       transport: stdio
+#       command: /usr/bin/python3
+#       args: [-m, mcp_server_linter]
+#       env:
+#         LINTER_CONFIG: /etc/linter.yaml
+mcp:
+  servers: []

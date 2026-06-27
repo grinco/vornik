@@ -1,0 +1,112 @@
+# vornik config for the podman-compose demo.
+#
+# Values that vary between environments come from env vars via ${VAR}
+# expansion — the daemon's loader runs os.ExpandEnv on every string
+# before parsing (see internal/config/loader.go). That lets this file
+# stay the same across VMs while the .env file changes per host.
+#
+# Kept intentionally minimal: anything commented out uses its compiled-
+# in default. For a walkthrough of every knob, see
+# configs/vornik.yaml.example at the repo root.
+
+server:
+  # Binding on 0.0.0.0 is important: the daemon uses this address to
+  # derive the VORNIK_API_URL it injects into agent containers
+  # (internal/service/container.go:agentCallbackURL). When the bind
+  # address contains 0.0.0.0, it's rewritten to host.containers.internal
+  # for the agent side, which is what lets agents spawned via the host
+  # podman socket call back to vornik running in this compose pod.
+  address: "0.0.0.0:8080"
+  read_timeout: 30s
+  write_timeout: 30s
+
+database:
+  host: postgres          # compose service name — resolves on vornik-infra bridge
+  port: 5432
+  name: "${POSTGRES_DB}"
+  user: "${POSTGRES_USER}"
+  password: "${VORNIK_DATABASE_PASSWORD}"
+  sslmode: disable
+
+storage:
+  artifacts_path: /var/lib/vornik/artifacts
+artifacts:
+  artifacts_path: /var/lib/vornik/artifacts
+
+scheduler:
+  max_concurrent_tasks: 4
+  lease_timeout: 5m
+
+logging:
+  level: info
+  format: json
+
+api:
+  # Demo default: no auth. Flip to true + populate api_keys below when
+  # you expose the UI beyond the VM (or even inside a shared dev VM).
+  auth_enabled: false
+  # api_keys:
+  #   - "${VORNIK_API_KEY}"
+
+metrics:
+  # /metrics is always on the main port; set enabled:true to also open
+  # a dedicated metrics listener on :9090.
+  enabled: false
+  addr: ":9090"
+
+runtime:
+  # Force non-root agents even if their image regresses to USER root.
+  # 1000:1000 matches the default `make build-agent` uid/gid.
+  run_as_user: "1000:1000"
+  project_workspace_path: /var/lib/vornik/workspaces
+
+  agent_llm:
+    endpoint: "${AGENT_LLM_ENDPOINT}"
+    model: "${AGENT_LLM_MODEL}"
+    api_key: "${VORNIK_AGENT_LLM_API_KEY}"
+
+chat:
+  # provider picks the backend: "http" (OpenAI-compatible endpoint,
+  # default) or "claude-cli" (shells out to the local `claude` binary
+  # inside the container and reuses its auth). Packaging an
+  # authenticated Claude CLI into a compose container is bespoke work
+  # and out of scope here; the compose fleet defaults to http.
+  provider: "http"
+  endpoint: "${CHAT_ENDPOINT}"
+  model: "${CHAT_MODEL}"
+  api_key: "${VORNIK_CHAT_API_KEY}"
+
+telegram:
+  # The bot token comes from the env; when it's empty the bot stays
+  # dormant. Set VORNIK_TELEGRAM_BOT_TOKEN in .env to enable.
+  enabled: false
+  bot_token: "${VORNIK_TELEGRAM_BOT_TOKEN}"
+
+memory:
+  # Memory/RAG needs pgvector (bundled) and an embedding endpoint.
+  # Disabled by default — enable when you have an embedding key.
+  enabled: false
+  # embedding_endpoint: "${CHAT_ENDPOINT}"
+  # embedding_model: "text-embedding-3-small"
+  # embedding_dimension: 1024
+  # embedding_api_key: "${VORNIK_EMBEDDING_API_KEY}"
+
+  # Per-chunk topic labeller. Inline pass at ingest + 5-min background
+  # backfill loop. Display titles only — not load-bearing.
+  # titler:
+  #   enabled: true
+  #   model: "openai.gpt-oss-120b-1:0"
+
+  # LLM content-class classifier. Promotes chunks the deterministic
+  # role-map left unclassified. See docs/release-notes/2026.5.6.md
+  # for the auto_backfill_* and inline_fallback_enabled knobs.
+  # classifier:
+  #   enabled: true
+  #   model: "openai.gpt-oss-20b-1:0"
+  #   # 0 = manual-only (vornikctl memory reclassify --use-llm).
+  #   # Set ≥300s for an auto-backfill cadence.
+  #   auto_backfill_interval_seconds: 0
+  #   auto_backfill_batch_size: 25
+  #   # Run classifier from inside the ingest hot path when the
+  #   # role-map can't resolve a class. Adds LLM latency per write.
+  #   inline_fallback_enabled: false

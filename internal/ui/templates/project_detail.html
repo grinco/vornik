@@ -1,0 +1,1548 @@
+{{define "project_detail.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-surface-900 text-ink-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <!-- Project Header -->
+            <div class="flex items-start justify-between flex-wrap gap-y-3">
+                <div class="flex items-center gap-3">
+                    <div class="p-2 rounded-xl bg-brand-500/10 border border-brand-500/20">
+                        <svg class="h-5 w-5 text-brand-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2 8.5A2.5 2.5 0 014.5 6H9l2 2h8.5A2.5 2.5 0 0122 10.5V17a2.5 2.5 0 01-2.5 2.5h-15A2.5 2.5 0 012 17V8.5z"/></svg>
+                    </div>
+                    <div>
+                        <h1 class="text-xl font-semibold text-ink-100">{{if .Project.DisplayName}}{{.Project.DisplayName}}{{else}}{{.Project.ID}}{{end}}</h1>
+                        <p class="text-ink-500 text-xs font-mono mt-0.5">{{.Project.ID}}</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-3">
+                    <a href="/ui/projects/{{.Project.ID}}/chat" class="flex items-center gap-1 text-brand-400 hover:text-brand-300 text-sm transition-colors">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+                        Chat
+                    </a>
+                    <a href="/ui/projects/{{.Project.ID}}/config/form" class="flex items-center gap-1 text-brand-400 hover:text-brand-300 text-sm transition-colors">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z"/><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 7.125L16.875 4.5"/></svg>
+                        Config
+                    </a>
+                    {{if .Project.SwarmID}}
+                    <a href="/ui/swarms/{{.Project.SwarmID}}/edit?projectId={{.Project.ID}}" class="flex items-center gap-1 text-brand-400 hover:text-brand-300 text-sm transition-colors">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                        Swarm
+                    </a>
+                    {{end}}
+                    {{if .Project.DefaultWorkflowID}}
+                    <a href="/ui/workflows/{{.Project.DefaultWorkflowID}}/edit?projectId={{.Project.ID}}" class="flex items-center gap-1 text-brand-400 hover:text-brand-300 text-sm transition-colors">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h7"/></svg>
+                        Workflow
+                    </a>
+                    {{end}}
+                    <a href="/ui/projects/{{.Project.ID}}/keys" class="flex items-center gap-1 text-brand-400 hover:text-brand-300 text-sm transition-colors">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 7v-3.586a1 1 0 00-.293-.707l-7-7a1 1 0 00-1.414 0L8 6.586V10a3 3 0 003 3h7zm-7 6l3-3m0 0l3 3m-3-3v8"/></svg>
+                        Keys
+                    </a>
+                    <a href="/ui/projects/{{.Project.ID}}/artifacts" class="flex items-center gap-1 text-brand-400 hover:text-brand-300 text-sm transition-colors">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                        Artifacts
+                    </a>
+                    <a href="/ui/projects/{{.Project.ID}}/documents" class="flex items-center gap-1 text-brand-400 hover:text-brand-300 text-sm transition-colors">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+                        Documents
+                    </a>
+                    <a href="/ui/projects" class="flex items-center gap-1 text-ink-500 hover:text-ink-300 text-sm transition-colors">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                        Projects
+                    </a>
+                </div>
+            </div>
+
+            <!-- Archive flash banners — one-shot success toasts
+                 after the archive / unarchive POST redirects. -->
+            {{if .FlashArchived}}
+            <div class="rounded-xl border px-4 py-3 bg-amber-900/30 border-amber-700/40 text-amber-100 text-sm flex items-center gap-2">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/></svg>
+                Project archived. Scheduled for deletion <span class="font-mono">{{.Lifecycle.Countdown}}</span>.
+            </div>
+            {{end}}
+            {{if .FlashUnarchived}}
+            <div class="rounded-xl border px-4 py-3 bg-emerald-900/30 border-emerald-700/40 text-emerald-100 text-sm flex items-center gap-2">
+                <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                Project restored to active.
+            </div>
+            {{end}}
+
+            <!-- Archived banner — high-visibility red bar with
+                 countdown, reason, and unarchive/delete-now buttons.
+                 Renders only while Project.Lifecycle.IsArchived.
+                 Overdue (sweeper running late or unwired) shows the
+                 same banner with a stronger "due now" countdown. -->
+            {{if .Lifecycle.IsArchived}}
+            <div class="rounded-xl px-4 py-3 panel-primary {{if .Lifecycle.Overdue}}bg-rose-900/40 text-rose-100{{else}}bg-amber-900/30 text-amber-100{{end}}" data-tone="{{if .Lifecycle.Overdue}}rose{{else}}amber{{end}}">
+                <div class="flex items-start gap-3">
+                    <svg class="h-5 w-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3l-7.07-12a2 2 0 00-3.48 0l-7.07 12a2 2 0 001.74 3z"/></svg>
+                    <div class="flex-1 min-w-0">
+                        <p class="text-sm font-medium">Project archived — scheduled for deletion {{.Lifecycle.Countdown}}.</p>
+                        <p class="text-xs mt-1 opacity-90">
+                            Archived: <span class="font-mono">{{.Lifecycle.ArchivedAt}}</span>
+                            <span class="opacity-60">·</span> Delete at: <span class="font-mono">{{.Lifecycle.ScheduledDeleteAt}}</span>
+                            {{if .Lifecycle.ArchivedBy}}<span class="opacity-60">·</span> by <span class="font-mono">{{.Lifecycle.ArchivedBy}}</span>{{end}}
+                        </p>
+                        {{if .Lifecycle.Reason}}
+                        <p class="text-xs mt-1 opacity-90 italic">"{{.Lifecycle.Reason}}"</p>
+                        {{end}}
+                        <p class="text-[11px] mt-2 opacity-70">
+                            On deletion the sweeper removes the project YAML + PROJECT.md, every project-scoped DB row, and every artifact blob on disk. Once gone, this can't be undone.
+                        </p>
+                    </div>
+                    <div class="flex flex-col items-stretch gap-2 min-w-[140px]">
+                        <form method="post" action="/ui/projects/{{.Project.ID}}/unarchive" onsubmit="return confirm('Restore {{.Project.ID}} to active? The grace period and reason will be cleared.');">
+                            <button type="submit" class="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-emerald-700/60 hover:bg-emerald-600/70 text-emerald-50 ring-1 ring-emerald-600/40">Unarchive</button>
+                        </form>
+                        <form method="post" action="/ui/projects/{{.Project.ID}}/delete-now" onsubmit="return confirm('Delete {{.Project.ID}} now? This wipes config, DB rows, and artifact blobs immediately. Cannot be undone.');">
+                            <button type="submit" class="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-rose-700/70 hover:bg-rose-600/80 text-rose-50 ring-1 ring-rose-600/40">Delete now</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Rate-limit warning banner (hardening sub-item 6).
+                 Surfaces "approaching limit" / "limit hit" so the
+                 operator sees degradation without scraping
+                 /metrics. Pre-rendered RecentBlocks > 0 promotes
+                 the banner colour from amber (warn-only) to red.
+                 Hidden when no events landed in the trailing window. -->
+            {{if .RateLimitWarning.Active}}
+            <div class="rounded-xl px-4 py-3 flex items-start gap-3 panel-primary {{if gt .RateLimitWarning.RecentBlocks 0}}bg-red-500/10 text-red-200{{else}}bg-amber-500/10 text-amber-200{{end}}" data-tone="amber">
+                <svg class="h-5 w-5 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3l-7.07-12a2 2 0 00-3.48 0l-7.07 12a2 2 0 001.74 3z"/></svg>
+                <div class="flex-1">
+                    <p class="text-sm font-medium">
+                        {{if gt .RateLimitWarning.RecentBlocks 0}}Rate limit hit{{else}}Approaching rate limit{{end}}
+                    </p>
+                    <p class="text-xs mt-0.5 opacity-80">
+                        {{.RateLimitWarning.RecentWarns}} warning{{if ne .RateLimitWarning.RecentWarns 1}}s{{end}}
+                        {{if gt .RateLimitWarning.RecentBlocks 0}}+ {{.RateLimitWarning.RecentBlocks}} block{{if ne .RateLimitWarning.RecentBlocks 1}}s{{end}}{{end}}
+                        in the last {{.RateLimitWarning.WindowLabel}}{{if .RateLimitWarning.LastBlockAt}} — last 429 {{.RateLimitWarning.LastBlockAt}}{{end}}.
+                    </p>
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Per-project homepage hero (2026.6.0 F4). Surfaces
+                 the operator-facing context block: human description
+                 + autonomy summary (goal + meta + countdown) when
+                 the project has autonomy enabled. Both halves are
+                 independently optional so a brand-new project with
+                 neither still renders the page cleanly without a
+                 sad-empty card. The Tasks panel below keeps a tiny
+                 "autonomy on" pill + live countdown for the
+                 "when does something next happen" question — that
+                 belongs with the task list — but the goal text
+                 lives here so it's visible without unfolding. -->
+            {{/* Configuration wizard CTA. Always rendered (action block — never
+                 folded into a panel-ref since it holds a POST form) so operators
+                 can discover it; branches on which prereqs are met. Customer-pain:
+                 the tile was previously invisible until brief + autonomy.Enabled +
+                 !RequireApproval all held, making the wizard impossible to find. */}}
+            {{if and .Project.Brief .Project.Autonomy.Enabled (not .Project.Autonomy.RequireApproval)}}
+            <div class="rounded-xl border border-brand-500/30 bg-brand-600/10 p-4 flex items-center justify-between gap-4">
+                <div>
+                    <h3 class="text-sm font-semibold text-brand-200">Configuration wizard — generate swarm + workflow from brief</h3>
+                    <p class="text-[11px] text-ink-400 mt-1">Builds a fresh SWARM.md + WORKFLOW.md draft from this project's brief and replaces the current swarmId / defaultWorkflowId. Review the result in the swarm / workflow editors before running tasks.</p>
+                </div>
+                <form method="POST" action="/ui/projects/{{.Project.ID}}/wizard"
+                      onsubmit="return confirm('Generate fresh swarm + workflow from the brief? Existing swarmId / defaultWorkflowId on this project will be replaced.');">
+                    <button type="submit" class="px-4 py-2 rounded-md bg-brand-600 text-white hover:bg-brand-500 text-sm font-medium">Generate</button>
+                </form>
+            </div>
+            {{else}}
+            <div class="rounded-xl border border-surface-600 bg-surface-800/60 p-4">
+                <h3 class="text-sm font-semibold text-ink-200">Configuration wizard</h3>
+                <p class="text-[11px] text-ink-400 mt-1">Once the prerequisites below are met, the wizard will generate a SWARM.md + WORKFLOW.md draft tailored to this project's brief.</p>
+                <ul class="mt-3 space-y-1.5 text-xs">
+                    {{if not .Project.Brief}}
+                    <li class="flex items-center gap-2">
+                        <span class="text-amber-400">○</span>
+                        <span class="text-ink-300">Project brief is missing.</span>
+                        <a href="/ui/projects/{{.Project.ID}}/brief" class="text-brand-300 hover:text-brand-200 underline">Add a brief</a>
+                    </li>
+                    {{else}}
+                    <li class="flex items-center gap-2"><span class="text-emerald-400">●</span><span class="text-ink-400">Project brief is set.</span></li>
+                    {{end}}
+                    {{if not .Project.Autonomy.Enabled}}
+                    <li class="flex items-center gap-2">
+                        <span class="text-amber-400">○</span>
+                        <span class="text-ink-300">Autonomy is disabled.</span>
+                        <a href="/ui/projects/{{.Project.ID}}/config/form#autonomy" class="text-brand-300 hover:text-brand-200 underline">Enable autonomy</a>
+                    </li>
+                    {{else}}
+                    <li class="flex items-center gap-2"><span class="text-emerald-400">●</span><span class="text-ink-400">Autonomy is enabled.</span></li>
+                    {{end}}
+                    {{if .Project.Autonomy.RequireApproval}}
+                    <li class="flex items-center gap-2">
+                        <span class="text-amber-400">○</span>
+                        <span class="text-ink-300"><code class="text-[11px] bg-surface-900 px-1 rounded">requireApproval</code> is on — the wizard needs it off.</span>
+                        <a href="/ui/projects/{{.Project.ID}}/config/form#autonomy" class="text-brand-300 hover:text-brand-200 underline">Update config</a>
+                    </li>
+                    {{end}}
+                </ul>
+            </div>
+            {{end}}
+
+            {{/* Autonomy hero — panel-primary so it draws the eye.
+                 Goal body is NEVER wrapped in <details> — regression guard
+                 (2026-05-15 cleanup had collapsed it). */}}
+            {{if or .Project.Description .Project.Autonomy.Enabled}}
+            <div class="glass rounded-xl panel-primary overflow-hidden">
+                {{if .Project.Description}}
+                <div class="px-5 py-4 {{if .Project.Autonomy.Enabled}}border-b border-surface-600/60{{end}}">
+                    <p class="text-sm text-ink-300 leading-relaxed whitespace-pre-wrap">{{.Project.Description}}</p>
+                </div>
+                {{end}}
+                {{if .Project.Autonomy.Enabled}}
+                <div class="px-5 py-4">
+                    <div class="flex flex-wrap items-center gap-2 mb-3">
+                        <span class="flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium bg-violet-500/15 text-violet-300 ring-1 ring-inset ring-violet-500/30">
+                            <span class="h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse inline-block"></span>
+                            Autonomy enabled
+                        </span>
+                        {{if .NextAutonomyTickETA}}
+                        <span class="text-xs text-ink-400">next tick</span>
+                        <span data-next-eval-at="{{.NextAutonomyTickISO}}" class="text-xs font-mono tabular-nums text-violet-300">{{.NextAutonomyTickETA}}</span>
+                        {{end}}
+                        {{if .LastAutonomyOutcome}}
+                        <span class="text-ink-600">·</span>
+                        <span class="text-xs text-ink-400">last</span>
+                        <span class="text-xs text-ink-300">{{.LastAutonomyOutcome}}</span>
+                        <span class="text-xs text-ink-500 font-mono tabular-nums">{{.LastAutonomyAgoLabel}}</span>
+                        {{end}}
+                    </div>
+                    {{if .Project.Autonomy.Goal}}
+                    <div class="mb-3">
+                        <dt class="text-xs text-ink-500 mb-1">Goal</dt>
+                        <dd class="text-sm text-ink-200 bg-surface-900 rounded-lg p-3 border border-surface-600/60 whitespace-pre-wrap leading-relaxed max-h-80 overflow-auto font-mono text-xs">{{.Project.Autonomy.Goal}}</dd>
+                    </div>
+                    {{end}}
+                    {{$requireApproval := "No"}}{{if .Project.Autonomy.RequireApproval}}{{$requireApproval = "Yes"}}{{end}}
+                    {{template "statStrip" (dict "Items" (slice
+                        (dict "Label" "Poll Interval"    "Value" (or .Project.Autonomy.PollInterval "5m"))
+                        (dict "Label" "Max Tasks/Hour"   "Value" .Project.Autonomy.MaxTasksPerHour)
+                        (dict "Label" "Require Approval" "Value" $requireApproval)
+                    ))}}
+
+                </div>
+                {{end}}
+            </div>
+            {{end}}
+
+            <!-- Configuration — sectionHeader title bar + statStrip k/v grid -->
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                {{template "sectionHeader" (dict "Title" "Configuration" "Href" (printf "/ui/projects/%s/config/form" .Project.ID) "HrefLabel" "edit →")}}
+                {{template "statStrip" (dict "Items" (slice
+                    (dict "Label" "Swarm"          "Value" .Project.SwarmID          "Mono" true)
+                    (dict "Label" "Workflow"        "Value" .Project.DefaultWorkflowID "Mono" true)
+                    (dict "Label" "Priority"        "Value" .Project.DefaultPriority)
+                    (dict "Label" "Max Concurrent"  "Value" .Project.MaxConcurrentTasks)
+                ))}}
+
+                {{/* Autonomy sub-section was relocated to the Tasks
+                     panel header (see below). The operator question
+                     "when does something next happen + what fires
+                     it" belongs with the task list, not the project
+                     metadata grid. */}}
+
+                {{/* Project-level `permissions.allowedTools` is operator
+                     intent documentation only — the executor doesn't
+                     enforce it (see issue: display vs enforcement drift).
+                     Actual tool gating happens per role in the swarm
+                     panel below. Leaving this block out keeps the UI
+                     honest about what's enforced. */}}
+            </div>
+
+            {{/* Trading caps + portfolio panel — only when the
+                 project has a `broker` MCP server configured.
+                 Combines configured caps with current state from
+                 the broker MCP's /caps endpoint plus a fresh
+                 portfolio snapshot. Renders gracefully when the
+                 broker is offline: header shows "broker offline"
+                 hint, configured caps still visible (from
+                 process env), state + portfolio sections show
+                 explanatory placeholders. */}}
+            {{if .Trading.Enabled}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between flex-wrap gap-y-2">
+                    <h2 class="text-sm font-semibold text-ink-200 flex items-center gap-2">
+                        <svg class="h-4 w-4 text-accent-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3v18h18M7 14l4-4 4 4 6-6"/></svg>
+                        Trading caps &amp; portfolio
+                    </h2>
+                    <div class="flex items-center gap-2 text-xs">
+                        {{if .Trading.Mode}}
+                        <span class="px-2 py-0.5 rounded {{if eq .Trading.Mode "live"}}bg-rose-100 text-rose-800 ring-1 ring-rose-300 dark:bg-rose-900/40 dark:text-rose-300 dark:ring-0{{else}}bg-accent-100 text-accent-800 ring-1 ring-accent-300 dark:bg-accent-900/40 dark:text-accent-300 dark:ring-0{{end}} font-mono uppercase tracking-wider">{{.Trading.Mode}}</span>
+                        {{end}}
+                        {{if .Trading.KillSwitch}}
+                        <span class="px-2 py-0.5 rounded bg-rose-600 text-white dark:bg-rose-900/60 dark:text-rose-200 font-semibold">KILL SWITCH ACTIVE</span>
+                        {{end}}
+                        {{if not .Trading.BrokerReachable}}
+                        <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 ring-1 ring-amber-300 dark:bg-amber-900/40 dark:text-amber-300 dark:ring-0" title="{{.Trading.BrokerError}}">broker offline</span>
+                        {{end}}
+                        {{if not .Trading.FetchedAt.IsZero}}
+                        <span class="text-ink-600">as of {{.Trading.FetchedAt.Format "15:04:05 UTC"}}</span>
+                        {{end}}
+                    </div>
+                </div>
+                {{/* Trading Performance — realized round-trip P&L over the
+                     trailing window, computed from trading_fills (independent
+                     of broker reachability). Leads the panel, mirroring the
+                     dedicated /ui/trading page. */}}
+                {{if gt .Trading.PerfWindowDays 0}}
+                <div class="px-5 py-4 border-b border-surface-600/60">
+                    <h3 class="text-xs font-medium text-ink-400 uppercase tracking-wider mb-3">Performance <span class="text-ink-600 normal-case font-normal">· last {{.Trading.PerfWindowDays}}d</span></h3>
+                    {{if eq .Trading.Perf.Trades 0}}
+                    <p class="text-xs text-ink-500">No closed round-trips in the last {{.Trading.PerfWindowDays}} days.</p>
+                    {{else}}
+                    <dl class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+                        <div>
+                            <dt class="text-ink-400">Net realized</dt>
+                            <dd class="mt-1 text-lg font-bold tabular-nums {{if lt .Trading.Perf.NetRealizedUSD 0.0}}text-rose-400{{else if gt .Trading.Perf.NetRealizedUSD 0.0}}text-emerald-400{{else}}text-ink-200{{end}}">{{fmtUSD .Trading.Perf.NetRealizedUSD}}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-ink-400">Win rate</dt>
+                            <dd class="mt-1 text-lg font-semibold text-ink-200 tabular-nums">{{printf "%.0f" .Trading.Perf.WinRatePct}}% <span class="text-ink-500 text-xs font-normal">{{.Trading.Perf.Wins}}W / {{.Trading.Perf.Losses}}L</span></dd>
+                        </div>
+                        <div>
+                            <dt class="text-ink-400">Profit factor</dt>
+                            <dd class="mt-1 text-lg font-semibold tabular-nums {{if .Trading.Perf.ProfitFactor}}text-ink-200{{else}}text-ink-500{{end}}">{{.Trading.PerfProfitFactor}}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-ink-400">Closed trades</dt>
+                            <dd class="mt-1 text-lg font-semibold text-ink-200 tabular-nums">{{.Trading.Perf.Trades}}</dd>
+                        </div>
+                    </dl>
+                    {{end}}
+                </div>
+                {{end}}
+                {{if .Trading.BrokerReachable}}
+                <div class="px-5 py-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {{/* CAPS column. "0" caps mean unlimited so we render — / unlimited; non-zero caps render configured value + current usage. Order-rate rows show usage as N / cap with a small bar. */}}
+                    <div>
+                        <h3 class="text-xs font-medium text-ink-400 uppercase tracking-wider mb-3">Caps &amp; current usage</h3>
+                        <dl class="space-y-2 text-xs">
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">Daily turnover (UTC {{.Trading.TodayUTC}})</dt>
+                                <dd class="text-ink-200 font-mono tabular-nums">
+                                    {{fmtUSD .Trading.TodayTurnoverUSD}}
+                                    {{if gt .Trading.MaxDailyTurnoverUSD 0.0}}<span class="text-ink-600"> / {{fmtUSD .Trading.MaxDailyTurnoverUSD}}</span>{{else}}<span class="text-ink-600"> / unlimited</span>{{end}}
+                                </dd>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">Orders / hour</dt>
+                                <dd class="text-ink-200 font-mono tabular-nums">
+                                    {{.Trading.OrdersInLastHour}}
+                                    {{if gt .Trading.MaxOrdersPerHour 0}}<span class="text-ink-600"> / {{.Trading.MaxOrdersPerHour}}</span>{{else}}<span class="text-ink-600"> / unlimited</span>{{end}}
+                                </dd>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">Orders / minute</dt>
+                                <dd class="text-ink-200 font-mono tabular-nums">
+                                    {{.Trading.OrdersInLastMinute}}
+                                    {{if gt .Trading.MaxOrdersPerMinute 0}}<span class="text-ink-600"> / {{.Trading.MaxOrdersPerMinute}}</span>{{else}}<span class="text-ink-600"> / unlimited</span>{{end}}
+                                </dd>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">Per-symbol cap</dt>
+                                <dd class="text-ink-200 font-mono tabular-nums">{{if gt .Trading.MaxPositionUSD 0.0}}{{fmtUSD .Trading.MaxPositionUSD}}{{else}}unlimited{{end}}</dd>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">Drawdown breaker</dt>
+                                <dd class="text-ink-200 font-mono tabular-nums">{{if gt .Trading.DrawdownCircuitBreakerPct 0.0}}{{printf "%.1f" .Trading.DrawdownCircuitBreakerPct}}%{{else}}<span class="text-ink-600">disabled</span>{{end}}</dd>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">Stop-loss policy</dt>
+                                <dd class="text-ink-200 font-mono tabular-nums">
+                                    {{if .Trading.RequireStopLoss}}<span class="text-emerald-400">required</span>{{else}}<span class="text-ink-500">optional</span>{{end}}
+                                    {{if gt .Trading.DefaultStopLossPct 0.0}} · {{printf "%.1f" .Trading.DefaultStopLossPct}}% default{{end}}
+                                </dd>
+                            </div>
+                        </dl>
+                    </div>
+
+                    {{/* PORTFOLIO column. Rendered when /caps returned a portfolio block; otherwise an explanatory note. */}}
+                    <div>
+                        <h3 class="text-xs font-medium text-ink-400 uppercase tracking-wider mb-3">Portfolio</h3>
+                        {{if .Trading.PortfolioReachable}}
+                        <dl class="space-y-2 text-xs">
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">Account</dt>
+                                <dd class="text-ink-300 font-mono">{{.Trading.Account}}</dd>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">Equity</dt>
+                                <dd class="text-accent-300 font-mono tabular-nums font-semibold">{{fmtUSD .Trading.EquityUSD}}</dd>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">Cash</dt>
+                                <dd class="text-ink-200 font-mono tabular-nums">{{fmtUSD .Trading.CashUSD}}</dd>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">Buying power</dt>
+                                <dd class="text-ink-200 font-mono tabular-nums">{{fmtUSD .Trading.BuyingPowerUSD}}</dd>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">P&amp;L (unrealised / day)</dt>
+                                <dd class="text-ink-200 font-mono tabular-nums">
+                                    <span class="{{if lt .Trading.UnrealisedPLUSD 0.0}}text-rose-400{{else if gt .Trading.UnrealisedPLUSD 0.0}}text-emerald-400{{else}}text-ink-400{{end}}">{{fmtUSD .Trading.UnrealisedPLUSD}}</span>
+                                    <span class="text-ink-600"> / </span>
+                                    <span class="{{if lt .Trading.RealisedPLDayUSD 0.0}}text-rose-400{{else if gt .Trading.RealisedPLDayUSD 0.0}}text-emerald-400{{else}}text-ink-400{{end}}">{{fmtUSD .Trading.RealisedPLDayUSD}}</span>
+                                </dd>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">Open positions</dt>
+                                <dd class="text-ink-200 font-mono tabular-nums">{{.Trading.OpenPositions}}</dd>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">High-water-mark equity</dt>
+                                <dd class="text-ink-200 font-mono tabular-nums">{{if gt .Trading.HWMUSD 0.0}}{{fmtUSD .Trading.HWMUSD}}{{else}}<span class="text-ink-600">not yet sampled</span>{{end}}</dd>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <dt class="text-ink-400">Drawdown from HWM</dt>
+                                <dd class="font-mono tabular-nums {{if gt .Trading.DrawdownPct 0.0}}text-amber-400{{else}}text-emerald-400{{end}}">{{printf "%.2f" .Trading.DrawdownPct}}%</dd>
+                            </div>
+                        </dl>
+                        {{else}}
+                        <p class="text-xs text-ink-500">
+                            Portfolio snapshot unavailable: {{if .Trading.PortfolioError}}{{.Trading.PortfolioError}}{{else}}broker offline{{end}}
+                        </p>
+                        {{end}}
+                    </div>
+                </div>
+
+                {{/* SOAK METRICS — panel-ref so it collapses by default (data-dense).
+                     Sourced from the daemon-side equity sampler that polls the broker
+                     every 5 min and writes a trading_positions_snapshots row. Distinct
+                     from the live Portfolio block above — this surfaces long-window
+                     quality signals: Sharpe, max drawdown, equity 24h change. */}}
+                <details class="panel-ref mt-3">
+                    <summary>
+                        {{template "sectionHeader" (dict "Title" "Soak metrics")}}
+                    </summary>
+                <div class="px-5 py-4">
+                    {{if .Trading.Soak.SoakReady}}
+                    <dl class="grid grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+                        <div>
+                            <dt class="text-ink-500 mb-1">Sharpe (annualized)</dt>
+                            <dd class="font-mono tabular-nums {{if lt .Trading.Soak.SharpeAnnualized 0.0}}text-rose-400{{else if gt .Trading.Soak.SharpeAnnualized 1.0}}text-emerald-400{{else}}text-ink-200{{end}}">{{printf "%.2f" .Trading.Soak.SharpeAnnualized}}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-ink-500 mb-1">Max drawdown (window)</dt>
+                            <dd class="font-mono tabular-nums {{if gt .Trading.Soak.MaxDrawdownPct 5.0}}text-rose-400{{else if gt .Trading.Soak.MaxDrawdownPct 2.0}}text-amber-400{{else}}text-ink-200{{end}}">{{printf "%.2f" .Trading.Soak.MaxDrawdownPct}}%</dd>
+                        </div>
+                        <div>
+                            <dt class="text-ink-500 mb-1">Equity 24h change</dt>
+                            <dd class="font-mono tabular-nums {{if lt .Trading.Soak.Equity24hChangePct 0.0}}text-rose-400{{else if gt .Trading.Soak.Equity24hChangePct 0.0}}text-emerald-400{{else}}text-ink-400{{end}}">{{printf "%+.2f" .Trading.Soak.Equity24hChangePct}}% <span class="text-ink-500">({{printf "%+.2f" .Trading.Soak.Equity24hChangeUSD}} USD)</span></dd>
+                        </div>
+                        <div>
+                            <dt class="text-ink-500 mb-1">Soak window</dt>
+                            <dd class="font-mono tabular-nums text-ink-200">{{.Trading.Soak.WindowDays}} days · {{.Trading.Soak.SampleCount}} samples</dd>
+                        </div>
+                    </dl>
+                    {{else if gt .Trading.Soak.SampleCount 0}}
+                    <p class="text-xs text-ink-500 italic">
+                        Soak warming up — {{.Trading.Soak.SampleCount}} sample{{if ne .Trading.Soak.SampleCount 1}}s{{end}}
+                        across {{.Trading.Soak.WindowDays}} day{{if ne .Trading.Soak.WindowDays 1}}s{{end}}.
+                        Sharpe + drawdown surface once the series spans 5+ days
+                        (sampler runs every 5 min, populates here automatically).
+                        Max drawdown so far: <span class="font-mono not-italic text-ink-400">{{printf "%.2f" .Trading.Soak.MaxDrawdownPct}}%</span>.
+                    </p>
+                    {{else}}
+                    <p class="text-xs text-ink-500 italic">
+                        No equity snapshots yet. The daemon's sampler writes one row
+                        every 5 min while a broker MCP is reachable; metrics populate
+                        once the first sample lands.
+                    </p>
+                    {{end}}
+
+                    {{/* Safety event headline. Phase 2 of the
+                         broker→daemon audit channel — every refusal,
+                         replay hit, and (future) kill / breaker
+                         decision lands in trading_safety_events. The
+                         24h count is the headline; the inline list
+                         below shows the most recent 20. */}}
+                    {{if gt .Trading.SafetyEvents24hCount 0}}
+                    <div class="mt-4 text-xs border-t border-surface-600/40 pt-4">
+                        <span class="text-ink-500">Safety events 24h:</span>
+                        <span class="ml-2 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 ring-1 ring-amber-400 dark:bg-amber-500/15 dark:text-amber-300 dark:ring-amber-700/40 font-mono tabular-nums">{{.Trading.SafetyEvents24hCount}}</span>
+                        <span class="ml-2 text-ink-500 italic">refusals + replays + breaker trips logged by the broker</span>
+                    </div>
+                    {{end}}
+
+                    {{/* Order-flow tiles. Populated by the broker→daemon
+                         audit channel (Phase 1) — every place_order call
+                         shows up in trading_orders within ~milliseconds.
+                         Volume USD is an estimate from limit / stop prices;
+                         precise post-trade volume waits for Phase 3 fills.
+                         Hidden when no orders have flowed at all (zeroed
+                         tiles add no signal). */}}
+                    {{if or (gt .Trading.Soak.Orders7d 0) (gt .Trading.Soak.OrdersToday 0)}}
+                    <dl class="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-4 text-xs border-t border-surface-600/40 pt-4">
+                        <div>
+                            <dt class="text-ink-500 mb-1">Orders today</dt>
+                            <dd class="font-mono tabular-nums text-accent-300">{{.Trading.Soak.OrdersToday}}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-ink-500 mb-1">Orders 7d</dt>
+                            <dd class="font-mono tabular-nums text-ink-200">{{.Trading.Soak.Orders7d}}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-ink-500 mb-1" title="Estimated turnover from limit/stop prices on submitted + filled orders. Precise post-trade volume arrives once fill ingestion lands.">Volume today (est)</dt>
+                            <dd class="font-mono tabular-nums text-ink-200">{{fmtUSD .Trading.Soak.VolumeTodayUSD}}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-ink-500 mb-1">Volume 7d (est)</dt>
+                            <dd class="font-mono tabular-nums text-ink-200">{{fmtUSD .Trading.Soak.Volume7dUSD}}</dd>
+                        </div>
+                    </dl>
+                    {{end}}
+
+                    {{/* Safety event timeline. Phase 2 of the
+                         broker→daemon audit channel. Recent
+                         broker-side decisions — refusals (cap
+                         breach, kill switch, missing stop),
+                         idempotency replay hits. Cross-reference
+                         with the agent's view (tool_audit_log on
+                         the task detail page) when an order
+                         didn't behave as expected. Capped at 20
+                         rows; full history in a future
+                         /ui/projects/{id}/safety page. */}}
+                    {{if .Trading.SafetyEvents}}
+                    <div class="mt-4 border-t border-surface-600/40 pt-4">
+                        <h4 class="text-xs font-medium text-ink-400 uppercase tracking-wider mb-2">Recent safety events</h4>
+                        <div class="overflow-x-auto">
+                            <table class="min-w-full text-xs">
+                                <thead><tr class="border-b border-surface-600/60">
+                                    <th scope="col" class="px-3 py-1.5 text-left text-[10px] font-medium text-ink-500 uppercase tracking-wider">When</th>
+                                    <th scope="col" class="px-3 py-1.5 text-left text-[10px] font-medium text-ink-500 uppercase tracking-wider">Kind</th>
+                                    <th scope="col" class="px-3 py-1.5 text-left text-[10px] font-medium text-ink-500 uppercase tracking-wider">Symbol</th>
+                                    <th scope="col" class="px-3 py-1.5 text-left text-[10px] font-medium text-ink-500 uppercase tracking-wider">Detail</th>
+                                </tr></thead>
+                                <tbody class="divide-y divide-surface-600/30">
+                                    {{range .Trading.SafetyEvents}}
+                                    <tr class="hover:bg-surface-700/40">
+                                        <td class="px-3 py-1 text-[11px] text-ink-500 whitespace-nowrap">{{.RecordedAt.Format "Jan 2 15:04:05"}}</td>
+                                        <td class="px-3 py-1">
+                                            {{if eq .SeverityClass "outcome-bad"}}
+                                            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-rose-900/40 text-rose-300 ring-1 ring-rose-800/50 font-mono">{{.Kind}}</span>
+                                            {{else if eq .SeverityClass "outcome-warn"}}
+                                            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-900/40 text-amber-300 ring-1 ring-amber-800/50 font-mono">{{.Kind}}</span>
+                                            {{else}}
+                                            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-surface-700 text-ink-300 ring-1 ring-surface-600 font-mono">{{.Kind}}</span>
+                                            {{end}}
+                                        </td>
+                                        <td class="px-3 py-1 font-mono text-ink-300">{{if .Symbol}}{{.Symbol}}{{else}}<span class="text-ink-600">—</span>{{end}}</td>
+                                        <td class="px-3 py-1 text-ink-400 font-mono text-[10px]">
+                                            {{range $k, $v := .Detail}}<span class="mr-2">{{$k}}=<span class="text-ink-300">{{$v}}</span></span>{{end}}
+                                        </td>
+                                    </tr>
+                                    {{end}}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    {{end}}
+
+                    {{/* Recent orders — what the broker actually
+                         submitted on this project's behalf. Mirrors
+                         the safety-events styling so the two history
+                         tables read as siblings. Capped at the
+                         constant from trading_panel.go. */}}
+                    {{if .Trading.RecentOrders}}
+                    <div class="mt-4 border-t border-surface-600/40 pt-4">
+                        <h4 class="text-xs font-medium text-ink-400 uppercase tracking-wider mb-2">Recent orders</h4>
+                        <div class="overflow-x-auto">
+                            <table class="min-w-full text-xs">
+                                <thead><tr class="border-b border-surface-600/60">
+                                    <th scope="col" class="px-3 py-1.5 text-left text-[10px] font-medium text-ink-500 uppercase tracking-wider">Submitted</th>
+                                    <th scope="col" class="px-3 py-1.5 text-left text-[10px] font-medium text-ink-500 uppercase tracking-wider">Symbol</th>
+                                    <th scope="col" class="px-3 py-1.5 text-left text-[10px] font-medium text-ink-500 uppercase tracking-wider">Side</th>
+                                    <th scope="col" class="px-3 py-1.5 text-left text-[10px] font-medium text-ink-500 uppercase tracking-wider">Type</th>
+                                    <th scope="col" class="px-3 py-1.5 text-right text-[10px] font-medium text-ink-500 uppercase tracking-wider">Qty</th>
+                                    <th scope="col" class="px-3 py-1.5 text-right text-[10px] font-medium text-ink-500 uppercase tracking-wider">Limit</th>
+                                    <th scope="col" class="px-3 py-1.5 text-right text-[10px] font-medium text-ink-500 uppercase tracking-wider">Stop</th>
+                                    <th scope="col" class="px-3 py-1.5 text-left text-[10px] font-medium text-ink-500 uppercase tracking-wider">Status</th>
+                                    <th scope="col" class="px-3 py-1.5 text-left text-[10px] font-medium text-ink-500 uppercase tracking-wider">Broker ID</th>
+                                </tr></thead>
+                                <tbody class="divide-y divide-surface-600/30">
+                                    {{range .Trading.RecentOrders}}
+                                    <tr class="hover:bg-surface-700/40">
+                                        <td class="px-3 py-1 text-[11px] text-ink-500 whitespace-nowrap">{{.SubmittedAt.Format "Jan 2 15:04:05"}}</td>
+                                        <td class="px-3 py-1 font-mono text-ink-200">{{.Symbol}}</td>
+                                        <td class="px-3 py-1 font-mono font-semibold {{.ActionClass}}">{{.Action}}</td>
+                                        <td class="px-3 py-1 font-mono text-ink-400">{{.OrderType}}</td>
+                                        <td class="px-3 py-1 font-mono tabular-nums text-ink-200 text-right">{{printf "%.4g" .Qty}}</td>
+                                        <td class="px-3 py-1 font-mono tabular-nums text-ink-300 text-right">{{if gt .LimitPrice 0.0}}{{fmtUSD .LimitPrice}}{{else}}<span class="text-ink-600">—</span>{{end}}</td>
+                                        <td class="px-3 py-1 font-mono tabular-nums text-ink-300 text-right">{{if gt .StopPrice 0.0}}{{fmtUSD .StopPrice}}{{else}}<span class="text-ink-600">—</span>{{end}}</td>
+                                        <td class="px-3 py-1">
+                                            {{if eq .StatusClass "outcome-good"}}
+                                            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-900/40 text-emerald-300 ring-1 ring-emerald-800/50 font-mono" title="{{.StatusReason}}">{{.Status}}</span>
+                                            {{else if eq .StatusClass "outcome-bad"}}
+                                            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-rose-900/40 text-rose-300 ring-1 ring-rose-800/50 font-mono" title="{{.StatusReason}}">{{.Status}}</span>
+                                            {{else if eq .StatusClass "outcome-warn"}}
+                                            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-900/40 text-amber-300 ring-1 ring-amber-800/50 font-mono" title="{{.StatusReason}}">{{.Status}}</span>
+                                            {{else}}
+                                            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-surface-700 text-ink-300 ring-1 ring-surface-600 font-mono" title="{{.StatusReason}}">{{.Status}}</span>
+                                            {{end}}
+                                        </td>
+                                        <td class="px-3 py-1 font-mono text-[10px] text-ink-500">{{if .BrokerOrderID}}{{.BrokerOrderID}}{{else}}<span class="text-ink-700">—</span>{{end}}</td>
+                                    </tr>
+                                    {{end}}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    {{end}}
+
+                    {{/* Recent fills — actual market executions.
+                         Distinct table from orders because a single
+                         order can have N partial fills, and the
+                         operator cares about real notional + price
+                         here rather than the submitted limit. */}}
+                    {{if .Trading.RecentFills}}
+                    <div class="mt-4 border-t border-surface-600/40 pt-4">
+                        <h4 class="text-xs font-medium text-ink-400 uppercase tracking-wider mb-2">Recent fills</h4>
+                        <div class="overflow-x-auto">
+                            <table class="min-w-full text-xs">
+                                <thead><tr class="border-b border-surface-600/60">
+                                    <th scope="col" class="px-3 py-1.5 text-left text-[10px] font-medium text-ink-500 uppercase tracking-wider">Filled</th>
+                                    <th scope="col" class="px-3 py-1.5 text-left text-[10px] font-medium text-ink-500 uppercase tracking-wider">Symbol</th>
+                                    <th scope="col" class="px-3 py-1.5 text-right text-[10px] font-medium text-ink-500 uppercase tracking-wider">Qty</th>
+                                    <th scope="col" class="px-3 py-1.5 text-right text-[10px] font-medium text-ink-500 uppercase tracking-wider">Price</th>
+                                    <th scope="col" class="px-3 py-1.5 text-right text-[10px] font-medium text-ink-500 uppercase tracking-wider">Notional</th>
+                                    <th scope="col" class="px-3 py-1.5 text-right text-[10px] font-medium text-ink-500 uppercase tracking-wider">Commission</th>
+                                    <th scope="col" class="px-3 py-1.5 text-left text-[10px] font-medium text-ink-500 uppercase tracking-wider">Order</th>
+                                </tr></thead>
+                                <tbody class="divide-y divide-surface-600/30">
+                                    {{range .Trading.RecentFills}}
+                                    <tr class="hover:bg-surface-700/40">
+                                        <td class="px-3 py-1 text-[11px] text-ink-500 whitespace-nowrap">{{.FilledAt.Format "Jan 2 15:04:05"}}</td>
+                                        <td class="px-3 py-1 font-mono text-ink-200">{{.Symbol}}</td>
+                                        <td class="px-3 py-1 font-mono tabular-nums text-ink-200 text-right">{{printf "%.4g" .Qty}}</td>
+                                        <td class="px-3 py-1 font-mono tabular-nums text-ink-300 text-right">{{fmtUSD .Price}}</td>
+                                        <td class="px-3 py-1 font-mono tabular-nums text-accent-300 text-right">{{fmtUSD .Notional}}</td>
+                                        <td class="px-3 py-1 font-mono tabular-nums text-ink-400 text-right">{{if gt .CommissionUSD 0.0}}{{fmtUSD .CommissionUSD}}{{else}}<span class="text-ink-600">—</span>{{end}}</td>
+                                        <td class="px-3 py-1 font-mono text-[10px] text-ink-500">{{.OrderID}}</td>
+                                    </tr>
+                                    {{end}}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    {{end}}
+                </div>
+                </details>
+
+                {{else}}
+                <div class="px-5 py-4 text-xs text-ink-500">
+                    Broker MCP unreachable at this URL. Caps + portfolio cannot be displayed until the broker comes back up. Detail: {{if .Trading.BrokerError}}{{.Trading.BrokerError}}{{else}}unknown{{end}}
+                </div>
+                {{end}}
+            </div>
+            {{end}}
+
+            {{/* 2026.5.8 / 2026.6.9 re-tier — Stack section decomposed into three
+                 independent panel-ref <details> (MCP Servers · Swarm Details ·
+                 Workflow Diagram). Each is read-only + collapsed by default.
+                 <summary> wraps sectionHeader for the title affordance. */}}
+
+            <!-- MCP Servers — panel-ref, closed by default -->
+            {{if .Project.MCP.Servers}}
+            <details class="panel-ref overflow-hidden">
+                <summary>
+                    {{template "sectionHeader" (dict "Title" (printf "MCP Servers (%d)" (len .Project.MCP.Servers)) "MetaText" "project-scoped tool servers")}}
+                </summary>
+                <div class="px-5 py-4 grid grid-cols-1 md:grid-cols-2 gap-3 border-t border-surface-600/60">
+                    {{range .Project.MCP.Servers}}
+                    <div class="bg-surface-900 rounded-lg p-3.5 border border-surface-600">
+                        <div class="flex items-center justify-between mb-2">
+                            <h3 class="text-sm font-semibold text-ink-100 font-mono">{{.Name}}</h3>
+                            <span class="text-xs px-1.5 py-0.5 rounded-full bg-brand-900/40 text-brand-300 ring-1 ring-brand-700/30">{{.Transport}}</span>
+                        </div>
+                        {{if eq .Transport "stdio"}}
+                            {{if .Command}}<div class="text-xs text-ink-500 font-mono mb-1 truncate" title="{{.Command}} {{range .Args}}{{.}} {{end}}">{{.Command}}{{range .Args}} {{.}}{{end}}</div>{{end}}
+                        {{else if eq .Transport "sse"}}
+                            {{if .URL}}<div class="text-xs text-ink-500 font-mono mb-1 truncate">{{.URL}}</div>{{end}}
+                        {{end}}
+                        <div class="mt-2">
+                            <div class="text-xs text-ink-500 uppercase tracking-wider mb-1">Allowed Tools</div>
+                            {{if .AllowedTools}}
+                                <div class="flex flex-wrap gap-1">
+                                    {{range .AllowedTools}}<code class="px-2 py-0.5 text-xs rounded bg-surface-700 text-emerald-300 font-mono ring-1 ring-inset ring-emerald-700/30">{{.}}</code>{{end}}
+                                </div>
+                                <div class="text-xs text-ink-600 mt-1.5">{{len .AllowedTools}} allowed · other tools from this server are filtered out</div>
+                            {{else}}
+                                <span class="text-xs text-amber-400 italic">All tools the server advertises (no allowlist configured)</span>
+                            {{end}}
+                        </div>
+                    </div>
+                    {{end}}
+                </div>
+            </details>
+            {{end}}
+
+            <!-- Swarm Details — panel-ref, closed by default -->
+            {{if .Swarm}}
+            <details class="panel-ref overflow-hidden">
+                <summary>
+                    {{template "sectionHeader" (dict "Title" (printf "Swarm — %s" (or .Swarm.DisplayName .Swarm.ID)) "MetaText" (printf "%d role(s)" (len .Swarm.Roles)))}}
+                </summary>
+                <div class="px-5 py-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 border-t border-surface-600/60">
+                    {{range .Swarm.Roles}}
+                    <div class="bg-surface-900 rounded-lg p-3.5 border {{if eq .Name $.Swarm.LeadRole}}border-amber-700/50 ring-1 ring-amber-700/20{{else}}border-surface-600{{end}}">
+                        <div class="flex items-center justify-between mb-2">
+                            <div class="flex items-center gap-2">
+                                {{if eq .Name $.Swarm.LeadRole}}<svg class="h-3.5 w-3.5 text-amber-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>{{end}}
+                                <h3 class="text-sm font-semibold text-ink-100">{{.Name}}</h3>
+                            </div>
+                            <div class="flex items-center gap-1.5">
+                                <span class="text-xs px-1.5 py-0.5 rounded-full {{if eq .RuntimePolicy "warm"}}bg-orange-900/50 text-orange-300 ring-1 ring-orange-700/30{{else}}bg-surface-700 text-ink-400{{end}}">{{if .RuntimePolicy}}{{.RuntimePolicy}}{{else}}ephemeral{{end}}</span>
+                                <span class="text-xs text-ink-500">×{{.Count}}</span>
+                            </div>
+                        </div>
+                        {{if .Model}}<div class="text-xs text-purple-400 mb-1.5">{{.Model}}</div>{{end}}
+                        <div class="text-xs text-ink-500 font-mono mb-1.5">{{.Runtime.Image}}</div>
+                        {{if .Description}}<div class="text-xs text-ink-400 line-clamp-2">{{.Description}}</div>{{end}}
+                        <div class="mt-2 flex flex-wrap gap-1">
+                            {{if .Runtime.CPU}}<span class="text-xs text-ink-500 bg-surface-800 px-1.5 py-0.5 rounded">CPU: {{.Runtime.CPU}}</span>{{end}}
+                            {{if .Runtime.Memory}}<span class="text-xs text-ink-500 bg-surface-800 px-1.5 py-0.5 rounded">Mem: {{.Runtime.Memory}}</span>{{end}}
+                            {{if .Permissions.DelegationAllowed}}<span class="text-xs text-blue-400 bg-blue-900/20 px-1.5 py-0.5 rounded ring-1 ring-blue-800/30">delegates</span>{{end}}
+                        </div>
+                        {{/* Tools enforced for this role — sourced from the
+                             swarm YAML's permissions.allowedTools and
+                             checked by the agent container at dispatch time.
+                             This is the authoritative list; the project
+                             block above is operator intent only. */}}
+                        {{if .Permissions.AllowedTools}}
+                        <div class="mt-2 pt-2 border-t border-surface-600/60">
+                            <div class="text-xs text-ink-500 mb-1">Tools ({{len .Permissions.AllowedTools}})</div>
+                            <div class="flex flex-wrap gap-1">
+                                {{range .Permissions.AllowedTools}}<code class="text-[10px] px-1.5 py-0.5 rounded bg-surface-700 text-ink-300 font-mono ring-1 ring-inset ring-surface-600/50">{{.}}</code>{{end}}
+                            </div>
+                        </div>
+                        {{else}}
+                        <div class="mt-2 pt-2 border-t border-surface-600/60">
+                            <div class="text-xs text-ink-600">No tools configured — agent will see the default catalog</div>
+                        </div>
+                        {{end}}
+                        {{/* Model quality badge — success rate + run count + avg duration
+                             over the last 30 days. Keyed by role name; missing → no data. */}}
+                        {{$q := roleQuality $.RoleQuality .Name}}
+                        <div class="mt-2 pt-2 border-t border-surface-600/60 flex items-center gap-1.5 text-xs" title="Execution quality over the last 30 days">
+                            {{if $q}}
+                            <span class="px-1.5 py-0.5 rounded
+                                {{if ge $q.SuccessRatePct 90.0}}bg-emerald-900/40 text-emerald-300 ring-1 ring-emerald-800/40
+                                {{else if ge $q.SuccessRatePct 70.0}}bg-amber-900/40 text-amber-300 ring-1 ring-amber-800/40
+                                {{else}}bg-rose-900/40 text-rose-300 ring-1 ring-rose-800/40{{end}}">
+                                {{printf "%.0f" $q.SuccessRatePct}}% ok
+                            </span>
+                            <span class="text-ink-500">· {{$q.Executions}} run{{if ne $q.Executions 1}}s{{end}}</span>
+                            {{if gt $q.AvgDurationSec 0.0}}<span class="text-ink-500">· avg {{printf "%.0f" $q.AvgDurationSec}}s</span>{{end}}
+                            {{if gt $q.Failed 0}}<span class="text-rose-400 ml-auto">{{$q.Failed}} fail{{if ne $q.Failed 1}}s{{end}}</span>{{end}}
+                            {{else}}
+                            <span class="text-ink-600">no runs in last 30d</span>
+                            {{end}}
+                        </div>
+                    </div>
+                    {{end}}
+                </div>
+            </details>
+            {{end}}
+
+            <!-- Workflow Diagram — panel-ref, closed by default -->
+            {{if .Workflow}}
+            <details class="panel-ref overflow-hidden">
+                <summary>
+                    {{template "sectionHeader" (dict "Title" (printf "Workflow — %s" (or .Workflow.DisplayName .Workflow.ID)))}}
+                </summary>
+                {{/* Workflow metadata strip — Version / MaxStepVisits / MaxIterations.
+                     These fields existed pre-b7b253f8 and were accidentally dropped in
+                     the re-tier. Restored here as a small metadata line at the top of
+                     the panel body, guarded by the same {{if}} checks as before. */}}
+                {{if or .Workflow.Version .Workflow.MaxStepVisits .Workflow.MaxIterations}}
+                <div class="px-5 py-2 border-t border-surface-600/60 flex flex-wrap items-center gap-3 text-xs text-ink-500">
+                    {{if .Workflow.Version}}<span class="font-mono">v{{.Workflow.Version}}</span>{{end}}
+                    {{if .Workflow.MaxStepVisits}}<span>max visits/step: <span class="font-mono text-ink-300">{{.Workflow.MaxStepVisits}}</span></span>{{end}}
+                    {{if .Workflow.MaxIterations}}<span>max iter: <span class="font-mono text-ink-300">{{.Workflow.MaxIterations}}</span></span>{{end}}
+                </div>
+                {{end}}
+                <div class="border-t border-surface-600/60">
+                <div id="workflow-canvas" class="relative overflow-x-auto bg-surface-900 rounded-b-xl" style="min-height:200px"></div>
+                </div>
+            <script>
+            (function(){
+                var wf = {{toJSON .Workflow}};
+                var canvas = document.getElementById('workflow-canvas');
+                if (!wf || !wf.Steps) return;
+                var nodes = {};
+                var order = [];
+                var visited = {};
+                var queue = [wf.Entrypoint];
+                visited[wf.Entrypoint] = true;
+                while (queue.length) {
+                    var id = queue.shift();
+                    order.push(id);
+                    var step = (wf.Steps||{})[id];
+                    if (!step) continue;
+                    var targets = [];
+                    if (step.OnSuccess) targets.push(step.OnSuccess);
+                    if (step.OnFail) targets.push(step.OnFail);
+                    (step.Gates||[]).forEach(function(g){ targets.push(g.Target); });
+                    targets.forEach(function(t){
+                        if (!visited[t]) { visited[t] = true; queue.push(t); }
+                    });
+                }
+                Object.keys(wf.Terminals||{}).forEach(function(id){
+                    if (!visited[id]) { order.push(id); visited[id] = true; }
+                });
+                Object.keys(wf.Steps||{}).forEach(function(id){
+                    if (!visited[id]) order.push(id);
+                });
+                var NW = 150, NH = 68, GAP_X = 80, GAP_Y = 90, PAD = 30;
+                var col = {};
+                col[wf.Entrypoint] = 0;
+                var bfsQ = [wf.Entrypoint];
+                while (bfsQ.length) {
+                    var nid = bfsQ.shift();
+                    var st = (wf.Steps||{})[nid];
+                    if (!st) continue;
+                    var tgts = [];
+                    if (st.OnSuccess) tgts.push(st.OnSuccess);
+                    if (st.OnFail) tgts.push(st.OnFail);
+                    (st.Gates||[]).forEach(function(g){ tgts.push(g.Target); });
+                    tgts.forEach(function(t){
+                        if (col[t] === undefined) { col[t] = col[nid] + 1; bfsQ.push(t); }
+                    });
+                }
+                var maxCol = 0;
+                Object.values(col).forEach(function(c){ if (c > maxCol) maxCol = c; });
+                Object.keys(wf.Terminals||{}).forEach(function(id){
+                    if (col[id] === undefined) col[id] = maxCol + 1;
+                });
+                var colGroups = {};
+                order.forEach(function(id){
+                    var c = col[id] !== undefined ? col[id] : 0;
+                    if (!colGroups[c]) colGroups[c] = [];
+                    colGroups[c].push(id);
+                });
+                var maxRows = 0;
+                Object.values(colGroups).forEach(function(g){ if (g.length > maxRows) maxRows = g.length; });
+                var pos = {};
+                Object.keys(colGroups).forEach(function(c){
+                    var group = colGroups[c];
+                    var totalH = group.length * NH + (group.length - 1) * GAP_Y;
+                    var startY = (maxRows * (NH + GAP_Y) - GAP_Y) / 2 - totalH / 2 + PAD;
+                    group.forEach(function(id, i){
+                        pos[id] = { x: PAD + parseInt(c) * (NW + GAP_X), y: startY + i * (NH + GAP_Y) };
+                    });
+                });
+                var totalW = (maxCol + 2) * (NW + GAP_X) + PAD;
+                var totalH = maxRows * (NH + GAP_Y) + PAD * 2;
+                canvas.style.minHeight = totalH + 'px';
+                var typeColors = {
+                    agent:    {bg:'#164e63', border:'#22d3ee', text:'#a5f3fc'},
+                    gate:     {bg:'#581c87', border:'#a855f7', text:'#d8b4fe'},
+                    approval: {bg:'#713f12', border:'#eab308', text:'#fef08a'}
+                };
+                var termColors = {
+                    COMPLETED: {bg:'#14532d', border:'#22c55e', text:'#86efac'},
+                    FAILED:    {bg:'#7f1d1d', border:'#ef4444', text:'#fca5a5'},
+                    CANCELLED: {bg:'#1e293b', border:'#64748b', text:'#94a3b8'}
+                };
+                var svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
+                svg.setAttribute('width', totalW);
+                svg.setAttribute('height', totalH);
+                svg.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;';
+                svg.innerHTML = '<defs><marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#475569"/></marker>' +
+                    '<marker id="ah-green" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#22c55e"/></marker>' +
+                    '<marker id="ah-red" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#ef4444"/></marker>' +
+                    '<marker id="ah-purple" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#a855f7"/></marker></defs>';
+                canvas.appendChild(svg);
+                function drawEdge(fromId, toId, label, color) {
+                    var f = pos[fromId], t = pos[toId];
+                    if (!f || !t) return;
+                    var marker = 'url(#ah)', strokeColor = '#475569';
+                    if (color === 'green')  { strokeColor = '#22c55e'; marker = 'url(#ah-green)'; }
+                    if (color === 'red')    { strokeColor = '#ef4444'; marker = 'url(#ah-red)'; }
+                    if (color === 'purple') { strokeColor = '#a855f7'; marker = 'url(#ah-purple)'; }
+                    var x1 = f.x + NW, y1 = f.y + NH/2, x2 = t.x, y2 = t.y + NH/2;
+                    var path = document.createElementNS('http://www.w3.org/2000/svg','path');
+                    if (t.x <= f.x) {
+                        var loopY = Math.max(f.y, t.y) + NH + 35;
+                        path.setAttribute('d', 'M'+x1+','+y1+' C'+(x1+40)+','+y1+' '+(x1+40)+','+loopY+' '+((x1+x2)/2)+','+loopY+' S'+(x2-40)+','+y2+' '+x2+','+y2);
+                    } else {
+                        var mx = (x1 + x2) / 2;
+                        path.setAttribute('d', 'M'+x1+','+y1+' C'+mx+','+y1+' '+mx+','+y2+' '+x2+','+y2);
+                    }
+                    path.setAttribute('fill','none'); path.setAttribute('stroke', strokeColor);
+                    path.setAttribute('stroke-width','2'); path.setAttribute('marker-end', marker);
+                    svg.appendChild(path);
+                    if (label) {
+                        var lx = (x1 + x2) / 2, ly = (y1 + y2) / 2 - 8;
+                        if (t.x <= f.x) { lx = (x1 + x2) / 2; ly = Math.max(f.y, t.y) + NH + 32; }
+                        var txt = document.createElementNS('http://www.w3.org/2000/svg','text');
+                        txt.setAttribute('x', lx); txt.setAttribute('y', ly);
+                        txt.setAttribute('text-anchor','middle'); txt.setAttribute('fill', strokeColor);
+                        txt.setAttribute('font-size','10'); txt.setAttribute('font-family','ui-monospace, monospace');
+                        txt.textContent = label; svg.appendChild(txt);
+                    }
+                }
+                Object.keys(wf.Steps||{}).forEach(function(id){
+                    var step = wf.Steps[id];
+                    if (step.OnSuccess) drawEdge(id, step.OnSuccess, '', '');
+                    if (step.OnFail) drawEdge(id, step.OnFail, 'fail', 'red');
+                    (step.Gates||[]).forEach(function(g){
+                        var isPositive = /true/.test(g.Condition);
+                        drawEdge(id, g.Target, g.Condition.replace(/\s*==\s*/,'=').replace(/.*\./,''), isPositive ? 'green' : 'red');
+                    });
+                });
+                order.forEach(function(id){
+                    var p = pos[id]; if (!p) return;
+                    var step = (wf.Steps||{})[id], term = (wf.Terminals||{})[id];
+                    var colors, typeName, subtitle;
+                    if (step) { colors = typeColors[step.Type] || typeColors.agent; typeName = step.Type; subtitle = step.Role || ''; }
+                    else if (term) { colors = termColors[term.Status] || termColors.CANCELLED; typeName = 'terminal'; subtitle = term.Status; }
+                    else return;
+                    var isEntry = (id === wf.Entrypoint);
+                    var node = document.createElement('div');
+                    node.style.cssText = 'position:absolute;left:'+p.x+'px;top:'+p.y+'px;width:'+NW+'px;height:'+NH+'px;' +
+                        'background:'+colors.bg+';border:2px solid '+colors.border+';border-radius:8px;padding:8px 10px;' +
+                        'display:flex;flex-direction:column;justify-content:center;cursor:default;' +
+                        (isEntry ? 'box-shadow:0 0 12px '+colors.border+'40;' : '');
+                    // SECURITY: workflow step IDs, types, and roles
+                    // are user-supplied at project creation time. Using
+                    // string concatenation + innerHTML would let an
+                    // operator with project-write access plant
+                    // `<img src=x onerror=alert(1)>` in a step name and
+                    // XSS every other operator who opens the project
+                    // detail page. Build the DOM with createElement +
+                    // textContent so the values can't escape into HTML.
+                    var titleDiv = document.createElement('div');
+                    titleDiv.style.cssText = 'font-size:13px;font-weight:600;color:'+colors.text+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+                    titleDiv.textContent = id;
+                    node.appendChild(titleDiv);
+
+                    var metaDiv = document.createElement('div');
+                    metaDiv.style.cssText = 'font-size:10px;color:#94a3b8;margin-top:2px;display:flex;align-items:center;gap:4px';
+                    var typeSpan = document.createElement('span');
+                    typeSpan.style.cssText = 'background:'+colors.border+'30;padding:1px 5px;border-radius:3px;font-size:9px;color:'+colors.text;
+                    typeSpan.textContent = typeName;
+                    metaDiv.appendChild(typeSpan);
+                    if (subtitle) {
+                        var subSpan = document.createElement('span');
+                        subSpan.textContent = subtitle;
+                        metaDiv.appendChild(subSpan);
+                    }
+                    node.appendChild(metaDiv);
+
+                    if (isEntry) {
+                        var entryBadge = document.createElement('div');
+                        entryBadge.style.cssText = 'position:absolute;top:-9px;left:10px;font-size:9px;color:'+colors.border+';background:#0f172a;padding:0 4px';
+                        entryBadge.textContent = 'entry';
+                        node.appendChild(entryBadge);
+                    }
+                    canvas.appendChild(node);
+                });
+            })();
+            </script>
+            </details>
+            {{end}}
+
+            {{/* Task Status Overview — refactor E (2026-05-26).
+                 Pre-refactor this section rendered once on page load
+                 and never updated; operators distrusted the counts
+                 ("are these actually current?"). Two changes:
+                   1. HTMX poll every 10s — matches tasks.html cadence.
+                   2. Each tile is now a clickable link to the
+                      filtered task list, so the operator can drill
+                      from "5 RUNNING" → /ui/tasks?project_id=X&status=RUNNING. */}}
+            {{$projID := .Project.ID}}
+            <div id="project-status-overview"
+                 class="glass rounded-xl border border-surface-600"
+                 hx-get="/ui/projects/{{$projID}}"
+                 hx-trigger="every 10s"
+                 hx-select="#project-status-overview"
+                 hx-target="this"
+                 hx-swap="outerHTML">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between gap-2">
+                    <h2 class="text-sm font-semibold text-ink-200 flex items-center gap-2">
+                        <svg class="h-4 w-4 text-ink-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/></svg>
+                        Task Status Overview
+                    </h2>
+                    <span class="text-[10px] text-ink-500">refreshes every 10s · tap a tile to filter</span>
+                </div>
+                <div class="px-5 py-4 grid grid-cols-2 sm:grid-cols-4 md:grid-cols-8 gap-4">
+                    <a href="/ui/tasks?project_id={{$projID}}&status=PENDING"   class="tap text-center hover:bg-surface-700/40 rounded-lg p-2 transition-colors"><div class="text-xl font-bold text-ink-400">{{index .TaskCounts "PENDING"}}</div><div class="text-xs text-ink-500 mt-0.5">Pending</div></a>
+                    <a href="/ui/tasks?project_id={{$projID}}&status=QUEUED"    class="tap text-center hover:bg-surface-700/40 rounded-lg p-2 transition-colors"><div class="text-xl font-bold text-amber-400">{{index .TaskCounts "QUEUED"}}</div><div class="text-xs text-ink-500 mt-0.5">Queued</div></a>
+                    <a href="/ui/tasks?project_id={{$projID}}&status=RUNNING"   class="tap text-center hover:bg-surface-700/40 rounded-lg p-2 transition-colors"><div class="text-xl font-bold text-accent-400">{{index .TaskCounts "RUNNING"}}</div><div class="text-xs text-ink-500 mt-0.5">Running</div></a>
+                    <a href="/ui/tasks?project_id={{$projID}}&status=COMPLETED" class="tap text-center hover:bg-surface-700/40 rounded-lg p-2 transition-colors"><div class="text-xl font-bold text-emerald-400">{{index .TaskCounts "COMPLETED"}}</div><div class="text-xs text-ink-500 mt-0.5">Completed</div></a>
+                    <a href="/ui/tasks?project_id={{$projID}}&status=FAILED"    class="tap text-center hover:bg-surface-700/40 rounded-lg p-2 transition-colors"><div class="text-xl font-bold text-rose-400">{{index .TaskCounts "FAILED"}}</div><div class="text-xs text-ink-500 mt-0.5">Failed</div></a>
+                    <a href="/ui/tasks?project_id={{$projID}}&status=LEASED"    class="tap text-center hover:bg-surface-700/40 rounded-lg p-2 transition-colors"><div class="text-xl font-bold text-blue-400">{{index .TaskCounts "LEASED"}}</div><div class="text-xs text-ink-500 mt-0.5">Leased</div></a>
+                    <a href="/ui/tasks?project_id={{$projID}}&status=WAITING_FOR_CHILDREN" class="tap text-center hover:bg-surface-700/40 rounded-lg p-2 transition-colors"><div class="text-xl font-bold text-purple-400">{{index .TaskCounts "WAITING_FOR_CHILDREN"}}</div><div class="text-xs text-ink-500 mt-0.5">Waiting</div></a>
+                    <a href="/ui/tasks?project_id={{$projID}}&status=CANCELLED" class="tap text-center hover:bg-surface-700/40 rounded-lg p-2 transition-colors"><div class="text-xl font-bold text-ink-500">{{index .TaskCounts "CANCELLED"}}</div><div class="text-xs text-ink-500 mt-0.5">Cancelled</div></a>
+                </div>
+            </div>
+
+            {{/* LLM Spend — compact strip (2026.5.8 dedupe). The
+                 by-role+model table and 4-up USD card grid live on
+                 /ui/spend?project={{.Project.ID}}; this page now just
+                 surfaces the headline numbers + the dispatcher-share
+                 warning (which is project-scoped policy advice, not
+                 raw spend data so it stays here). */}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div class="px-5 py-3 flex items-center justify-between flex-wrap gap-y-2">
+                    <h2 class="text-sm font-semibold text-ink-200 flex items-center gap-2">
+                        <svg class="h-4 w-4 text-ink-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        LLM Spend
+                    </h2>
+                    <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                        <span class="text-ink-500">24h <span class="text-accent-300 font-mono tabular-nums">{{fmtUSD2 .Spend.Day24hUSD}}</span></span>
+                        <span class="text-ink-500">7d <span class="text-accent-300 font-mono tabular-nums">{{fmtUSD2 .Spend.Day7USD}}</span></span>
+                        <span class="text-ink-500">30d <span class="text-accent-300 font-mono tabular-nums">{{fmtUSD2 .Spend.Day30USD}}</span></span>
+                        <span class="text-ink-500">MTD <span class="text-purple-300 font-mono tabular-nums">{{fmtUSD2 .Spend.MonthToDateUSD}}</span></span>
+                        <a href="/ui/spend?project={{.Project.ID}}" class="text-xs text-brand-400 hover:text-brand-300">View in Spend →</a>
+                    </div>
+                </div>
+                {{/* Dispatcher-share warning stays here (not on /ui/spend)
+                     because it's policy advice scoped to THIS project —
+                     "your chat dispatcher is pinned wrong, pin it
+                     elsewhere". The number itself is also on /ui/spend
+                     but the actionable banner is project-local. */}}
+                {{if gt .Spend.DispatcherShareOfTotal 0.5}}
+                <div class="px-5 py-2 border-t border-surface-600/40 text-xs text-rose-400" title="Most of this project's recent LLM cost is chat overhead, not task work. Pin the dispatcher to a dedicated assistant project via telegram.dispatcher_project_id.">
+                    ⚠ chat dispatcher = {{printf "%.0f" (mul .Spend.DispatcherShareOfTotal 100.0)}}% of 24h spend — consider pinning to an assistant project
+                </div>
+                {{end}}
+            </div>
+
+            <!-- Hallucination Panel: Phase 1 signal counts +
+                 Phase 3 verdict distribution + the configured
+                 layer state. Always renders so an operator
+                 sees "judge model X is configured, no verdicts
+                 yet" rather than wondering whether the layer
+                 is wired at all. The headline numbers reflect a
+                 7-day rolling window — same as the drift panel
+                 below, so an operator scanning both reads them
+                 against the same time axis. -->
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between gap-2 flex-wrap">
+                    <h2 class="text-sm font-semibold text-ink-200 flex items-center gap-2">
+                        <svg class="h-4 w-4 text-ink-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                        Hallucination detection · 7d
+                    </h2>
+                    <div class="flex items-center gap-2 text-xs">
+                        {{if gt .Hallucination.SignalsHigh 0}}<span class="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 ring-1 ring-rose-700/40">{{.Hallucination.SignalsHigh}} high</span>{{end}}
+                        {{if gt .Hallucination.SignalsWarn 0}}<span class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 ring-1 ring-amber-700/40">{{.Hallucination.SignalsWarn}} warn</span>{{end}}
+                        {{if gt .Hallucination.VerdictsFail 0}}<span class="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 ring-1 ring-rose-700/40">{{.Hallucination.VerdictsFail}} judge fail</span>{{end}}
+                        {{if gt .Hallucination.VerdictsPass 0}}<span class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-700/40">{{.Hallucination.VerdictsPass}} pass</span>{{end}}
+                        {{if gt .Hallucination.VerdictsAbstain 0}}<span class="px-1.5 py-0.5 rounded bg-ink-500/15 text-ink-300 ring-1 ring-surface-600/40">{{.Hallucination.VerdictsAbstain}} abstain</span>{{end}}
+                    </div>
+                </div>
+
+                <!-- Layer config row: shows wiring state at a glance. -->
+                <div class="px-5 py-3 border-b border-surface-600/40 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                    <div>
+                        <div class="text-ink-500 mb-1">Claim grounding</div>
+                        <div class="text-emerald-300">always on</div>
+                        <div class="text-ink-400">5 rules · {{.Hallucination.SignalsHigh}}H · {{.Hallucination.SignalsWarn}}W · {{.Hallucination.SignalsInfo}}I</div>
+                    </div>
+                    <div>
+                        <div class="text-ink-500 mb-1">Outcome verifiers</div>
+                        {{if gt .Hallucination.VerifierCount 0}}
+                        <div class="text-emerald-300">{{.Hallucination.VerifierCount}} configured</div>
+                        {{else}}
+                        <div class="text-ink-500">none configured</div>
+                        {{end}}
+                        <div class="text-ink-400">declarative outcome checks</div>
+                    </div>
+                    <div>
+                        <div class="text-ink-500 mb-1">LLM-as-judge</div>
+                        {{if .Hallucination.JudgeEnabled}}
+                        <div class="text-emerald-300">enabled</div>
+                        <div class="text-ink-400 font-mono break-all">{{if .Hallucination.JudgeModel}}{{.Hallucination.JudgeModel}}{{else}}<span class="text-ink-500">(default)</span>{{end}}</div>
+                        {{if gt .Hallucination.VerdictTotalCostUSD 0.0}}
+                        <div class="text-ink-500 mt-0.5">spent: ${{printf "%.4f" .Hallucination.VerdictTotalCostUSD}}</div>
+                        {{end}}
+                        {{else}}
+                        <div class="text-ink-500">not enabled</div>
+                        <div class="text-ink-400">opt-in via project YAML</div>
+                        {{end}}
+                    </div>
+                </div>
+
+                <!-- Claim-grounding signal breakdown by detector — only if any fired. -->
+                {{if .Hallucination.SignalsByDetector}}
+                <div class="px-5 py-3 border-b border-surface-600/40">
+                    <div class="text-xs text-ink-500 mb-2">Signals by rule</div>
+                    <div class="flex flex-wrap gap-2 text-xs">
+                        {{range $rule, $count := .Hallucination.SignalsByDetector}}
+                        <span class="px-2 py-0.5 rounded bg-surface-700 text-ink-300 ring-1 ring-surface-600">
+                            <span class="font-mono">{{$rule}}</span>
+                            <span class="text-ink-500">·</span>
+                            <span class="text-ink-200">{{$count}}</span>
+                        </span>
+                        {{end}}
+                    </div>
+                </div>
+                {{end}}
+
+                <!-- Latest Phase 3 verdicts — inline rows so the operator sees recent shape without leaving the page. -->
+                {{if .Hallucination.LatestVerdicts}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-surface-600/60">
+                        <thead class="bg-surface-900/60">
+                            <tr>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">Task</th>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">Verdict</th>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">Conf.</th>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">Summary</th>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">When</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-surface-600/40">
+                            {{range .Hallucination.LatestVerdicts}}
+                            <tr class="hover:bg-surface-700/30">
+                                <td class="px-4 py-2 font-mono text-xs"><a href="/ui/tasks/{{.TaskID}}" class="text-accent-400 hover:underline" title="{{.TaskID}}">{{shortID .TaskID}}</a></td>
+                                <td class="px-4 py-2 align-top">
+                                    {{if eq .VerdictClass "outcome-ok"}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-900/40 text-emerald-300 ring-1 ring-emerald-800/50">{{.Verdict}}</span>
+                                    {{else if eq .VerdictClass "outcome-bad"}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-900/40 text-rose-300 ring-1 ring-rose-800/50">{{.Verdict}}</span>
+                                    {{else}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-900/40 text-amber-300 ring-1 ring-amber-800/50">{{.Verdict}}</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 font-mono text-xs text-ink-300">{{printf "%.2f" .Confidence}}</td>
+                                <td class="px-4 py-2 text-xs text-ink-400 max-w-md" title="{{.Summary}}">{{if .Summary}}{{.Summary}}{{else}}<span class="text-ink-600">—</span>{{end}}</td>
+                                <td class="px-4 py-2 text-[11px] text-ink-500 whitespace-nowrap">{{.RecordedAt.Format "Jan 2 15:04"}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else if .Hallucination.JudgeEnabled}}
+                <div class="px-5 py-4 text-xs text-ink-500 italic">
+                    {{if .Hallucination.HasRecentOutcomes}}
+                    Tasks have run in this window but no judge verdicts were recorded.
+                    The judge fires on every terminal task (success or failure) — if
+                    nothing shows up here, check the daemon log for <span class="font-mono not-italic text-ink-400">judge:</span>
+                    warnings (LLM error, parse failure, missing model config, or pricing miss).
+                    {{else}}
+                    No verdicts yet in this window. Verdicts arrive after each task
+                    terminates; allow up to a minute after task completion.
+                    {{end}}
+                </div>
+                {{end}}
+            </div>
+
+            <!-- Effective-cost Drift Panel.
+                 Replaces the Telegram alert that used to fire when a
+                 (role, model) combo's $/success crossed 2× the 7d
+                 baseline. The same signal lives here as a table:
+                 regressions float to the top, no-baseline rows fall
+                 to the bottom. Each row carries a one-line insight
+                 the operator can act on without re-running the math. -->
+            {{if .Drift}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between gap-2 flex-wrap">
+                    <h2 class="text-sm font-semibold text-ink-200 flex items-center gap-2">
+                        <svg class="h-4 w-4 text-ink-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg>
+                        Effective-cost drift · 24h vs 7d baseline
+                    </h2>
+                    <div class="flex items-center gap-2 text-xs">
+                        {{if gt .DriftRegressionCount 0}}<span class="px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300 ring-1 ring-rose-700/40">{{.DriftRegressionCount}} regression{{if gt .DriftRegressionCount 1}}s{{end}}</span>{{end}}
+                        {{if gt .DriftImprovementCount 0}}<span class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-700/40">{{.DriftImprovementCount}} improvement{{if gt .DriftImprovementCount 1}}s{{end}}</span>{{end}}
+                        <span class="text-ink-500">{{len .Drift}} active combo{{if ne (len .Drift) 1}}s{{end}}</span>
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead><tr class="border-b border-surface-600/60">
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">Role</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">Model</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-ink-500 uppercase tracking-wider">$/success now</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-ink-500 uppercase tracking-wider">$/success 7d</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-ink-500 uppercase tracking-wider">Drift</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">Insight</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-surface-600/30">
+                            {{range .Drift}}
+                            <tr class="hover:bg-surface-700/40
+                                {{if and .HasBaseline (gt .Ratio 2.0)}}bg-rose-900/10
+                                {{else if and .HasBaseline (lt .Ratio 0.7)}}bg-emerald-900/10{{end}}">
+                                <td class="px-4 py-1.5 text-ink-300">{{.Role}}</td>
+                                <td class="px-4 py-1.5 text-ink-500 font-mono text-xs">{{.Model}}</td>
+                                <td class="px-4 py-1.5 text-right text-ink-300 tabular-nums" title="{{fmtUSD2 .CurrentSpendUSD}} over {{.CurrentOks}} successes">{{fmtUSD .CurrentUSDPerOk}}</td>
+                                <td class="px-4 py-1.5 text-right text-ink-500 tabular-nums">
+                                    {{if .HasBaseline}}{{fmtUSD .BaselineUSDPerOk}}{{else}}<span class="text-ink-600">no baseline yet</span>{{end}}
+                                </td>
+                                <td class="px-4 py-1.5 text-right tabular-nums">
+                                    {{if not .HasBaseline}}<span class="text-ink-600">—</span>
+                                    {{else if gt .Ratio 2.0}}<span class="px-1.5 py-0.5 rounded text-xs bg-rose-500/15 text-rose-300 ring-1 ring-rose-700/40">{{printf "%.2f" .Ratio}}×</span>
+                                    {{else if gt .Ratio 1.5}}<span class="px-1.5 py-0.5 rounded text-xs bg-amber-500/15 text-amber-300 ring-1 ring-amber-700/40">{{printf "%.2f" .Ratio}}×</span>
+                                    {{else if lt .Ratio 0.7}}<span class="px-1.5 py-0.5 rounded text-xs bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-700/40">{{printf "%.2f" .Ratio}}×</span>
+                                    {{else}}<span class="text-ink-400">{{printf "%.2f" .Ratio}}×</span>{{end}}
+                                </td>
+                                <td class="px-4 py-1.5 text-ink-400 text-xs">{{.Insight}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Retention panel (2026.7.0 F9). Shows the effective
+                 pruning window per data class plus an "override"
+                 badge when the project YAML overrides the daemon
+                 default. Memory chunks are NEVER pruned — that's
+                 the product. Surfaced here so operators don't have
+                 to read YAML to answer "how long do I keep this?". -->
+            <!-- Rate limits panel: per-API-key nominal throttle.
+                 Empty when the project has no active keys with
+                 rate limits configured. Live decision outcomes
+                 (allow / warn / block counts) live in Prometheus
+                 under vornik_ratelimit_decisions_total. -->
+            {{if .RateLimits}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                {{template "sectionHeader" (dict "Title" "Rate limits" "MetaText" "per active API key")}}
+                <div class="px-5 py-4">
+                    <table class="min-w-full text-sm">
+                        <thead><tr class="border-b border-surface-600/60">
+                            <th scope="col" class="px-2 py-1 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">Key</th>
+                            <th scope="col" class="px-2 py-1 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">Prefix</th>
+                            <th scope="col" class="px-2 py-1 text-right text-xs font-medium text-ink-500 uppercase tracking-wider" title="Sustained requests/sec the bucket refills at">RPS</th>
+                            <th scope="col" class="px-2 py-1 text-right text-xs font-medium text-ink-500 uppercase tracking-wider" title="Max instantaneous concurrent requests (bucket capacity)">Burst</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-surface-600/30">
+                            {{range .RateLimits}}
+                            <tr class="hover:bg-surface-700/40">
+                                <td class="px-2 py-1.5 text-ink-300">{{if .Name}}{{.Name}}{{else}}<span class="text-ink-600">(unnamed)</span>{{end}}</td>
+                                <td class="px-2 py-1.5 text-ink-500 font-mono text-xs">{{.KeyPrefix}}</td>
+                                <td class="px-2 py-1.5 text-right tabular-nums {{if eq .RateLimitRPS 0}}text-ink-600{{else}}text-ink-200 font-mono{{end}}">{{if eq .RateLimitRPS 0}}—{{else}}{{.RateLimitRPS}}{{end}}</td>
+                                <td class="px-2 py-1.5 text-right tabular-nums {{if eq .RateLimitBurst 0}}text-ink-600{{else}}text-ink-200 font-mono{{end}}">{{if eq .RateLimitBurst 0}}unlimited{{else}}{{.RateLimitBurst}}{{end}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}
+
+            {{if .Retention.TaskLLMUsageDays}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                {{template "sectionHeader" (dict "Title" "Retention" "MetaText" "memory chunks are never pruned")}}
+                <div class="px-5 py-4 grid grid-cols-2 sm:grid-cols-5 gap-4 text-xs">
+                    <div>
+                        <dt class="text-ink-500 uppercase tracking-wider mb-1">LLM cost</dt>
+                        <dd class="text-sm text-ink-200 font-mono tabular-nums">{{.Retention.TaskLLMUsageDays}}d</dd>
+                        {{if .Retention.TaskLLMUsageIsOverride}}<span class="inline-flex items-center px-1 py-0 rounded text-[10px] font-medium bg-violet-500/15 text-violet-300 ring-1 ring-inset ring-violet-500/30 mt-1">override</span>{{end}}
+                    </div>
+                    <div>
+                        <dt class="text-ink-500 uppercase tracking-wider mb-1">Tool audit</dt>
+                        <dd class="text-sm text-ink-200 font-mono tabular-nums">{{.Retention.ToolAuditDays}}d</dd>
+                        {{if .Retention.ToolAuditIsOverride}}<span class="inline-flex items-center px-1 py-0 rounded text-[10px] font-medium bg-violet-500/15 text-violet-300 ring-1 ring-inset ring-violet-500/30 mt-1">override</span>{{end}}
+                    </div>
+                    <div>
+                        <dt class="text-ink-500 uppercase tracking-wider mb-1">Tasks</dt>
+                        <dd class="text-sm text-ink-200 font-mono tabular-nums">{{.Retention.TasksDays}}d</dd>
+                        {{if .Retention.TasksIsOverride}}<span class="inline-flex items-center px-1 py-0 rounded text-[10px] font-medium bg-violet-500/15 text-violet-300 ring-1 ring-inset ring-violet-500/30 mt-1">override</span>{{end}}
+                    </div>
+                    <div>
+                        <dt class="text-ink-500 uppercase tracking-wider mb-1">Executions</dt>
+                        <dd class="text-sm text-ink-200 font-mono tabular-nums">{{.Retention.ExecutionsDays}}d</dd>
+                        {{if .Retention.ExecutionsIsOverride}}<span class="inline-flex items-center px-1 py-0 rounded text-[10px] font-medium bg-violet-500/15 text-violet-300 ring-1 ring-inset ring-violet-500/30 mt-1">override</span>{{end}}
+                    </div>
+                    <div>
+                        <dt class="text-ink-500 uppercase tracking-wider mb-1">Artifacts</dt>
+                        <dd class="text-sm text-ink-200 font-mono tabular-nums">{{.Retention.ArtifactsDays}}d</dd>
+                        {{if .Retention.ArtifactsIsOverride}}<span class="inline-flex items-center px-1 py-0 rounded text-[10px] font-medium bg-violet-500/15 text-violet-300 ring-1 ring-inset ring-violet-500/30 mt-1">override</span>{{end}}
+                    </div>
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Retention preview (P1 UI batch). Sits next to the
+                 Retention panel so operators can see "windows
+                 above tune what's pruned below" at a glance. -->
+            {{if .RetentionPreviewAvailable}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                {{template "sectionHeader" (dict "Title" "Retention preview" "MetaText" "dry-run · what the next sweep would prune")}}
+                <div class="px-5 py-4">
+                    <div class="flex items-baseline gap-2 mb-3">
+                        <span class="text-2xl font-semibold {{if gt .RetentionPreview.Total 0}}text-amber-300{{else}}text-ink-500{{end}} tabular-nums">{{.RetentionPreview.Total}}</span>
+                        <span class="text-xs text-ink-500">rows pruned next sweep</span>
+                    </div>
+                    <dl class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                        <div>
+                            <dt class="text-ink-500 uppercase tracking-wider text-[10px]">task_llm_usage</dt>
+                            <dd class="text-ink-200 font-mono tabular-nums">{{.RetentionPreview.TaskLLMUsage}}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-ink-500 uppercase tracking-wider text-[10px]">tool_audit</dt>
+                            <dd class="text-ink-200 font-mono tabular-nums">{{.RetentionPreview.ToolAudit}}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-ink-500 uppercase tracking-wider text-[10px]">tasks (terminal)</dt>
+                            <dd class="text-ink-200 font-mono tabular-nums">{{.RetentionPreview.Tasks}}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-ink-500 uppercase tracking-wider text-[10px]">executions</dt>
+                            <dd class="text-ink-200 font-mono tabular-nums">{{.RetentionPreview.Executions}}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-ink-500 uppercase tracking-wider text-[10px]">artifacts</dt>
+                            <dd class="text-ink-200 font-mono tabular-nums">{{.RetentionPreview.Artifacts}}{{if gt .RetentionPreview.ArtifactFiles 0}} <span class="text-ink-500">({{.RetentionPreview.ArtifactFiles}} files)</span>{{end}}</dd>
+                        </div>
+                        {{if gt .RetentionPreview.TaskMessages 0}}
+                        <div>
+                            <dt class="text-ink-500 uppercase tracking-wider text-[10px]">task_messages</dt>
+                            <dd class="text-ink-200 font-mono tabular-nums">{{.RetentionPreview.TaskMessages}}</dd>
+                        </div>
+                        {{end}}
+                        {{if gt .RetentionPreview.MemoryChunks 0}}
+                        <div>
+                            <dt class="text-ink-500 uppercase tracking-wider text-[10px]">memory_chunks</dt>
+                            <dd class="text-amber-300 font-mono tabular-nums" title="Only populated when memory_chunks_days is non-zero in the project's retention block — opt-in.">{{.RetentionPreview.MemoryChunks}}</dd>
+                        </div>
+                        {{end}}
+                    </dl>
+                    <p class="mt-3 text-[11px] text-ink-500">
+                        Sweep runs on the daemon's interval. To trigger immediately, run
+                        <code class="text-ink-400">vornikctl retention --project {{.Project.ID}} --apply</code>.
+                    </p>
+                </div>
+            </div>
+            {{else if .RetentionPreviewError}}
+            <div class="glass rounded-xl border border-amber-700/30 overflow-hidden">
+                <div class="px-5 py-3 text-xs text-amber-300">
+                    Retention preview failed: <code class="font-mono">{{.RetentionPreviewError}}</code>
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Git access panel — always rendered when .GitAccess.Show so the
+                 feature is discoverable in both states. Enabled arm shows the
+                 derived clone URL (never stored) + a Disable control; disabled
+                 arm shows a muted hint + an Enable control. Forge + auth-off
+                 caveats render in the enabled arm. -->
+            {{if .GitAccess.Show}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                {{template "sectionHeader" (dict "Title" "Git access" "MetaText" "git-over-HTTPS workspace")}}
+                <div class="px-5 py-4 space-y-4">
+                    {{if .GitAccess.Enabled}}
+                    <!-- Clone URL -->
+                    <div>
+                        <p class="text-xs font-medium text-ink-400 uppercase tracking-wider mb-2">Clone URL</p>
+                        {{if .GitAccess.BaseURLMissing}}
+                        <code class="block bg-surface-900 border border-surface-700 rounded px-3 py-2 text-xs font-mono break-all text-ink-300">git clone https://&lt;key-name&gt;@&lt;host&gt;{{.GitAccess.RelativePath}}</code>
+                        <p class="mt-1.5 text-xs text-amber-300">Set <code class="font-mono">server.public_base_url</code> to render the full clone URL.</p>
+                        {{else}}
+                        <code class="block bg-surface-900 border border-surface-700 rounded px-3 py-2 text-xs font-mono break-all text-ink-200">git clone {{.GitAccess.CloneURL}}</code>
+                        <p class="mt-1 text-xs text-ink-500">Replace <code class="font-mono">&lt;key-name&gt;</code> with the API key name. Use the key secret as the HTTP password.</p>
+                        {{end}}
+                    </div>
+
+                    <!-- Key management link -->
+                    <div class="text-xs text-ink-400">
+                        <a href="/ui/projects/{{.Project.ID}}/keys" class="text-brand-300 hover:text-brand-200 underline">Manage API keys</a>
+                        — enable "Git push" on a key to allow pushes from that credential.
+                        The key secret is shown once at creation and cannot be recovered.
+                    </div>
+
+                    <!-- Caveats -->
+                    <div class="space-y-2">
+                        <p class="text-xs font-medium text-ink-400 uppercase tracking-wider">Caveats</p>
+                        <ul class="space-y-1.5 text-xs text-ink-400">
+                            <li class="flex items-start gap-2">
+                                <span class="text-amber-400 mt-0.5 flex-shrink-0">●</span>
+                                <span>Pushes are refused while a task is running — retry in a moment.</span>
+                            </li>
+                            {{if .GitAccess.IsForgeBacked}}
+                            <li class="flex items-start gap-2">
+                                <span class="text-amber-400 mt-0.5 flex-shrink-0">●</span>
+                                <span>This project syncs from its forge. Push your changes to the forge remote — a push to this workspace URL is not preserved across task runs (the pre-task rebase resets local changes).</span>
+                            </li>
+                            {{end}}
+                            {{if .GitAccess.AuthDisabled}}
+                            <li class="flex items-start gap-2">
+                                <span class="text-red-400 mt-0.5 flex-shrink-0">●</span>
+                                <span><strong class="text-red-300">Auth is disabled</strong> — anyone who can reach this endpoint can clone AND push.</span>
+                            </li>
+                            {{end}}
+                        </ul>
+                    </div>
+
+                    <!-- Disable control -->
+                    <form method="post" action="/ui/projects/{{.Project.ID}}/git/toggle">
+                        <input type="hidden" name="enabled" value="false">
+                        <button type="submit" class="text-xs text-ink-400 hover:text-red-300 underline">Disable git access</button>
+                    </form>
+                    {{else}}
+                    <!-- Disabled arm — discoverability + Enable control -->
+                    <p class="text-xs text-ink-400">Git access is off. This project's workspace can't be cloned or pushed over HTTPS.</p>
+                    <p class="text-xs text-ink-500">Enabling exposes the workspace over git-over-HTTPS, authenticated with per-project API keys.</p>
+                    <form method="post" action="/ui/projects/{{.Project.ID}}/git/toggle">
+                        <input type="hidden" name="enabled" value="true">
+                        <button type="submit" class="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium transition-colors">Enable git access</button>
+                    </form>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Tasks List -->
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between gap-2 flex-wrap">
+                    <h2 class="text-sm font-semibold text-ink-200 flex items-center gap-2">
+                        <svg class="h-4 w-4 text-ink-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                        Tasks
+                    </h2>
+                    <div class="flex items-center gap-3 text-xs text-ink-500">
+                        <a href="/ui/projects/{{.Project.ID}}/tasks/new" class="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium transition-colors">
+                            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
+                            New task
+                        </a>
+                        <span>showing {{len .Tasks}} of {{.TaskTotal}}</span>
+                        {{if .Project.Autonomy.Enabled}}
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium bg-violet-500/15 text-violet-300 ring-1 ring-inset ring-violet-500/30">
+                            <span class="h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse inline-block"></span>
+                            autonomy on
+                        </span>
+                        {{end}}
+                        {{/* Shared page-size selector — matches /ui/audit
+                             chrome. The Hidden dict is empty because the
+                             project detail page has no other query params
+                             today, but the form-based partial means adding
+                             one later is a one-line dict change rather than
+                             a string-concat refactor. */}}
+                        {{template "pageSizeSelector" (dict
+                            "Action" (printf "/ui/projects/%s" .Project.ID)
+                            "Current" .TaskLimit
+                            "Options" .TaskLimitOptions
+                            "Hidden" (dict))}}
+                    </div>
+                </div>
+                {{if .Tasks}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead><tr class="border-b border-surface-600/60">
+                            <th scope="col" class="px-5 py-2.5 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">ID</th>
+                            <th scope="col" class="px-5 py-2.5 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">Status</th>
+                            <th scope="col" class="px-5 py-2.5 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">Origin</th>
+                            <th scope="col" class="px-5 py-2.5 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">Priority</th>
+                            <th scope="col" class="px-5 py-2.5 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">Attempt</th>
+                            <th scope="col" class="px-5 py-2.5 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">Created</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-surface-600/40">
+                            {{range .Tasks}}
+                            <tr class="hover:bg-surface-700/40 transition-colors">
+                                <td class="px-5 py-3 whitespace-nowrap"><a href="/ui/tasks/{{.ID}}" class="text-brand-400 hover:text-brand-300 font-mono text-sm" title="{{.ID}}">{{shortID .ID}}</a></td>
+                                <td class="px-5 py-3 whitespace-nowrap">{{template "taskStatusBadge" .Status}}</td>
+                                <td class="px-5 py-3 whitespace-nowrap">{{template "taskOriginBadge" .CreationSource}}</td>
+                                <td class="px-5 py-3 whitespace-nowrap text-sm text-ink-400 tabular-nums">{{.Priority}}</td>
+                                <td class="px-5 py-3 whitespace-nowrap text-sm text-ink-400 tabular-nums">{{.Attempt}}/{{.MaxAttempts}}</td>
+                                <td class="px-5 py-3 whitespace-nowrap text-sm text-ink-500">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-5 py-8 text-center text-ink-500 text-sm">No tasks found for this project.</div>
+                {{end}}
+            </div>
+
+            <!-- Upcoming reminders — pending dispatcher_reminders
+                 rows scoped to this project. Pure read+cancel; new
+                 reminders flow through the dispatcher's set_reminder
+                 tool (operator asks the bot in chat). -->
+            {{if .Reminders}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div class="px-5 py-3 border-b border-surface-600 flex items-center gap-2">
+                    <svg class="h-4 w-4 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    <h2 class="text-sm font-semibold text-ink-200">Upcoming reminders</h2>
+                    <span class="text-[11px] text-ink-500">{{len .Reminders}}</span>
+                </div>
+                <ul class="divide-y divide-surface-600/40">
+                    {{range .Reminders}}
+                    <li class="px-5 py-3 flex items-start gap-4">
+                        <div class="flex-1 min-w-0">
+                            <p class="text-sm text-ink-200 truncate" title="{{.Content}}">{{.Content}}</p>
+                            <p class="text-[11px] text-ink-500 mt-0.5 font-mono">
+                                {{.FireAt}}
+                                <span class="text-ink-600">·</span>
+                                <span class="text-amber-300">{{.Countdown}}</span>
+                                <span class="text-ink-600">·</span>
+                                {{.OperatorID}}
+                            </p>
+                        </div>
+                        <form method="post" action="/ui/reminders/{{.ID}}/cancel"
+                              onsubmit="return confirm('Cancel reminder {{.ID}}?');">
+                            <button type="submit" class="text-[11px] font-medium px-2.5 py-1 rounded-md bg-surface-700 hover:bg-surface-600 text-ink-200">Cancel</button>
+                        </form>
+                    </li>
+                    {{end}}
+                </ul>
+            </div>
+            {{end}}
+
+            <!-- Danger zone — archive button + grace selector.
+                 Hidden on already-archived projects (the banner above
+                 carries the matching Unarchive / Delete-now actions).
+                 Sits at the bottom of the page so an operator scrolling
+                 the project detail hits it last — same convention as
+                 GitHub's repository settings. -->
+            {{if not .Lifecycle.IsArchived}}
+            <div class="glass rounded-xl border border-rose-900/30 overflow-hidden">
+                <div class="px-5 py-3 border-b border-rose-900/30 flex items-center gap-2">
+                    <svg class="h-4 w-4 text-rose-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14a2 2 0 001.74-3l-7.07-12a2 2 0 00-3.48 0l-7.07 12a2 2 0 001.74 3z"/></svg>
+                    <h2 class="text-sm font-semibold text-rose-200">Danger zone</h2>
+                </div>
+                <div class="px-5 py-4">
+                    <div class="flex items-start justify-between gap-6 flex-wrap">
+                        <div class="flex-1 min-w-[280px]">
+                            <p class="text-sm text-ink-200">Archive this project</p>
+                            <p class="text-xs text-ink-500 mt-1 max-w-xl">
+                                Archiving stops new task dispatch immediately. After the grace period the daemon's archive-sweeper hard-deletes the project YAML, every project-scoped DB row, and every artifact blob on disk. You can <span class="text-ink-300">unarchive</span> at any point during the grace window to restore the project.
+                            </p>
+                        </div>
+                        <form method="post" action="/ui/projects/{{.Project.ID}}/archive"
+                              onsubmit="return confirm('Archive {{.Project.ID}}? New tasks will be blocked immediately and the project will be hard-deleted after the grace period.');"
+                              class="flex flex-col gap-2 min-w-[260px]">
+                            <label class="block">
+                                <span class="block text-[11px] text-ink-500 uppercase tracking-wider mb-1">Grace period</span>
+                                <select name="grace" class="w-full bg-surface-900 border border-surface-600 text-ink-200 text-xs rounded-md px-2 py-1.5">
+                                    {{range .Lifecycle.GracePresets}}
+                                    <option value="{{.Value}}" {{if eq .Value "7d"}}selected{{end}}>{{.Label}}</option>
+                                    {{end}}
+                                </select>
+                            </label>
+                            <label class="block">
+                                <span class="block text-[11px] text-ink-500 uppercase tracking-wider mb-1">Reason (optional)</span>
+                                <input type="text" name="reason" placeholder="e.g. End of contract" class="w-full bg-surface-900 border border-surface-600 text-ink-200 text-xs rounded-md px-2 py-1.5">
+                            </label>
+                            <button type="submit" class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-md bg-rose-700/70 hover:bg-rose-600/80 text-rose-50 ring-1 ring-rose-700/50">
+                                <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22"/></svg>
+                                Archive project
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

@@ -1,0 +1,321 @@
+# vornik Role-Specialized Cluster — single-host dev/demo via podman-compose.
+#
+# Demonstrates the 6-node topology from https://docs.vornik.io
+# scaled to ONE replica per role. The topology is:
+#
+#   postgres       — persistence, trusted network only
+#   vornik-ui      — node.profile: ui,      thin image, trusted network, serves /ui
+#   vornik-worker  — node.profile: worker,  full image, trusted + dmz networks,
+#                    runs scheduler/executor/singletons + mTLS relay-ingress on :8443
+#   vornik-webhook — node.profile: webhook, thin image, dmz network only,
+#                    verifies provider HMACs then relays over mTLS to vornik-worker:8443
+#
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │  NETWORK SEGMENTATION — single-host compose vs. production VLANs           │
+# │                                                                             │
+# │  This file creates two named bridge networks:                               │
+# │    trusted — analogous to the "trusted subnet" in production.               │
+# │    dmz     — analogous to the isolated DMZ VLAN in production.              │
+# │                                                                             │
+# │  In production these are physically (or logically) separated VLANs with a  │
+# │  firewall between them. On a single host the isolation is network-         │
+# │  namespace only — containers on different bridge networks cannot route to   │
+# │  each other by default in podman, mirroring the VLAN segmentation for      │
+# │  development purposes, but not providing a hard security boundary.          │
+# │                                                                             │
+# │  The ONLY cross-boundary path (in both this compose and in production) is: │
+# │    vornik-webhook (dmz) → vornik-worker:8443 (trusted) over mTLS           │
+# │  vornik-worker is attached to BOTH networks so it can receive from the dmz │
+# │  while also reaching postgres on the trusted network. This mirrors the      │
+# │  production "job tier straddles the VLAN boundary via a single firewall    │
+# │  rule: DMZ webhook subnet → job-tier hosts :8443/tcp."                     │
+# │                                                                             │
+# │  vornik-webhook has NO access to the trusted network — it is on dmz only.  │
+# │  postgres is on trusted only — it is provably unreachable from the dmz.    │
+# └─────────────────────────────────────────────────────────────────────────────┘
+#
+# Prerequisites:
+#   1. Generate mTLS certs: bash deployments/podman/gen-cluster-certs.sh
+#   2. Copy and configure: cp deployments/podman/.env.example deployments/podman/.env
+#   3. Bring up: podman-compose -f deployments/podman/cluster.compose.yaml up -d
+#
+# Full docs: deployments/podman/README.md (Role-specialized cluster section)
+
+version: "3.8"
+
+networks:
+  # "Trusted" network: postgres + UI + worker nodes. In production this
+  # is your internal subnet / trusted VLAN. Only nodes that are allowed
+  # to reach the DB are connected here.
+  trusted:
+    driver: bridge
+    name: vornik-cluster-trusted
+
+  # "DMZ" network: webhook nodes only (+ worker straddles both).
+  # In production this is an isolated VLAN that receives public internet
+  # traffic. The ONLY egress allowed is to the worker relay port :8443.
+  dmz:
+    driver: bridge
+    name: vornik-cluster-dmz
+
+volumes:
+  cluster-postgres-data:
+    name: vornik-cluster-postgres-data
+  cluster-worker-data:
+    name: vornik-cluster-worker-data
+  cluster-ui-data:
+    name: vornik-cluster-ui-data
+
+services:
+
+  # -------------------------------------------------------------------------
+  # PostgreSQL + pgvector.
+  # trusted network ONLY — never exposed to the dmz (i.e. not to webhook nodes).
+  # -------------------------------------------------------------------------
+  postgres:
+    container_name: vornik-cluster-postgres
+    image: docker.io/pgvector/pgvector:pg16
+    networks:
+      - trusted
+    labels:
+      vornik.managed: "true"
+      vornik.component: postgres
+      vornik.layer: persistence
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-vornik}
+      POSTGRES_USER:     ${POSTGRES_USER:-vornik}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vornik_dev_password}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - cluster-postgres-data:/var/lib/postgresql/data
+    ports:
+      # Bound to loopback by default (local debugging only, off the LAN).
+      # Set CLUSTER_POSTGRES_BIND=0.0.0.0 only if off-host access is needed.
+      - "${CLUSTER_POSTGRES_BIND:-127.0.0.1}:${CLUSTER_POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vornik} -d ${POSTGRES_DB:-vornik}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    restart: always
+
+  # -------------------------------------------------------------------------
+  # vornik-ui — node.profile: ui
+  #
+  # Built with --target thin (Debian 12-slim, no podman, minimal attack surface).
+  # Serves /ui + serves the data-plane/control API for the UI.
+  # On the trusted network only — has DB access, no public ingress for webhooks.
+  # -------------------------------------------------------------------------
+  vornik-ui:
+    container_name: vornik-cluster-ui
+    image: localhost/vornik:thin
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+      target: thin
+      args:
+        VERSION: ${VORNIK_VERSION:-dev}
+        BUILD_DATE: ${VORNIK_BUILD_DATE:-unknown}
+    networks:
+      - trusted
+    labels:
+      vornik.managed: "true"
+      vornik.component: ui
+      vornik.layer: application
+      vornik.profile: ui
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Public UI + API ingress. In production this would be behind an
+      # HTTPS reverse proxy.
+      - "${CLUSTER_UI_PORT:-8081}:8080"
+    environment:
+      VORNIK_CONFIG:      /etc/vornik/config.yaml
+      VORNIK_CONFIGS_DIR: /etc/vornik/configs
+      VORNIK_DATA_DIR:    /var/lib/vornik
+
+      VORNIK_DATABASE_PASSWORD:  ${POSTGRES_PASSWORD:-vornik_dev_password}
+      VORNIK_CHAT_API_KEY:       ${VORNIK_CHAT_API_KEY:-}
+      VORNIK_AGENT_LLM_API_KEY:  ${VORNIK_AGENT_LLM_API_KEY:-}
+      VORNIK_EMBEDDING_API_KEY:  ${VORNIK_EMBEDDING_API_KEY:-}
+      VORNIK_TELEGRAM_BOT_TOKEN: ${VORNIK_TELEGRAM_BOT_TOKEN:-}
+
+      CHAT_ENDPOINT:      ${CHAT_ENDPOINT:-}
+      CHAT_MODEL:         ${CHAT_MODEL:-}
+      AGENT_LLM_ENDPOINT: ${AGENT_LLM_ENDPOINT:-}
+      AGENT_LLM_MODEL:    ${AGENT_LLM_MODEL:-}
+    volumes:
+      - ./config/ui.yaml:/etc/vornik/config.yaml:ro,Z
+      - ../../configs:/etc/vornik/configs:ro,Z
+      - cluster-ui-data:/var/lib/vornik
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/livez"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # vornik-worker — node.profile: worker
+  #
+  # Built with --target full (Ubuntu 24.04 + podman). Runs the scheduler,
+  # executor, and all leader-elected singletons. Also runs the mTLS
+  # relay-ingress listener on :8443 so DMZ webhook nodes can forward
+  # verified webhook events to it.
+  #
+  # Connected to BOTH networks:
+  #   trusted — reaches postgres and the UI node
+  #   dmz     — reachable by webhook nodes on their relay upstream :8443
+  #
+  # The host podman socket is mounted so agent containers spawn on the host,
+  # exactly as in the single-node compose.
+  # -------------------------------------------------------------------------
+  vornik-worker:
+    container_name: vornik-cluster-worker
+    image: localhost/vornik:full
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+      target: full
+      args:
+        VERSION: ${VORNIK_VERSION:-dev}
+        BUILD_DATE: ${VORNIK_BUILD_DATE:-unknown}
+    networks:
+      - trusted
+      - dmz
+    labels:
+      vornik.managed: "true"
+      vornik.component: worker
+      vornik.layer: application
+      vornik.profile: worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Internal API port (data-plane, health). In production this is
+      # not publicly exposed — only the UI node's reverse proxy serves users.
+      - "${CLUSTER_WORKER_API_PORT:-8082}:8080"
+      # mTLS relay-ingress for DMZ webhook nodes. In production this is
+      # the ONE firewall hole: DMZ webhook subnet → worker :8443.
+      - "${CLUSTER_WORKER_RELAY_PORT:-8443}:8443"
+    environment:
+      VORNIK_CONFIG:      /etc/vornik/config.yaml
+      VORNIK_CONFIGS_DIR: /etc/vornik/configs
+      VORNIK_DATA_DIR:    /var/lib/vornik
+
+      # Host-socket runtime: worker spawns agent containers via host podman.
+      CONTAINER_HOST: unix:///var/run/podman/podman.sock
+
+      VORNIK_DATABASE_PASSWORD:  ${POSTGRES_PASSWORD:-vornik_dev_password}
+      VORNIK_CHAT_API_KEY:       ${VORNIK_CHAT_API_KEY:-}
+      VORNIK_AGENT_LLM_API_KEY:  ${VORNIK_AGENT_LLM_API_KEY:-}
+      VORNIK_EMBEDDING_API_KEY:  ${VORNIK_EMBEDDING_API_KEY:-}
+      VORNIK_TELEGRAM_BOT_TOKEN: ${VORNIK_TELEGRAM_BOT_TOKEN:-}
+
+      CHAT_ENDPOINT:      ${CHAT_ENDPOINT:-}
+      CHAT_MODEL:         ${CHAT_MODEL:-}
+      AGENT_LLM_ENDPOINT: ${AGENT_LLM_ENDPOINT:-}
+      AGENT_LLM_MODEL:    ${AGENT_LLM_MODEL:-}
+
+      AGENT_IMAGE: ${AGENT_IMAGE:-localhost/vornik-agent:latest}
+    volumes:
+      - ./config/worker.yaml:/etc/vornik/config.yaml:ro,Z
+      - ../../configs:/etc/vornik/configs:ro,Z
+      - cluster-worker-data:/var/lib/vornik
+      - ${PODMAN_SOCK:-/run/user/1000/podman/podman.sock}:/var/run/podman/podman.sock
+      # mTLS server cert + key for the relay-ingress listener.
+      # Generated by gen-cluster-certs.sh; never committed.
+      - ./certs/worker-server.crt:/etc/vornik/tls/server.crt:ro,Z
+      - ./certs/worker-server.key:/etc/vornik/tls/server.key:ro,Z
+      # CA cert used to verify incoming client certs (webhook nodes).
+      - ./certs/ca.crt:/etc/vornik/tls/client-ca.crt:ro,Z
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/vornikctl", "doctor"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+    restart: unless-stopped
+
+  # -------------------------------------------------------------------------
+  # vornik-webhook — node.profile: webhook
+  #
+  # Built with --target thin (Debian 12-slim, no podman, minimal attack surface).
+  # Runs in the DMZ: receives public webhook callbacks, verifies the provider
+  # HMAC signature, then relays the verified event over mTLS to vornik-worker:8443.
+  #
+  # DMZ network ONLY — provably cannot reach postgres or the trusted segment.
+  # No DB credentials are passed to this service.
+  # -------------------------------------------------------------------------
+  vornik-webhook:
+    container_name: vornik-cluster-webhook
+    image: localhost/vornik:thin
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+      target: thin
+      args:
+        VERSION: ${VORNIK_VERSION:-dev}
+        BUILD_DATE: ${VORNIK_BUILD_DATE:-unknown}
+    networks:
+      - dmz
+    labels:
+      vornik.managed: "true"
+      vornik.component: webhook
+      vornik.layer: application
+      vornik.profile: webhook
+    # No depends_on postgres — webhook nodes have no DB access.
+    # They're ready once the relay upstream (worker) is healthy enough
+    # to accept mTLS connections; the relay client's readiness probe
+    # handles that at the application layer.
+    ports:
+      # Public webhook ingress. In production this sits behind an
+      # HTTPS reverse proxy (Caddy, nginx) that terminates public TLS.
+      - "${CLUSTER_WEBHOOK_PORT:-8083}:8080"
+    environment:
+      VORNIK_CONFIG:      /etc/vornik/config.yaml
+      VORNIK_CONFIGS_DIR: /etc/vornik/configs
+      VORNIK_DATA_DIR:    /var/lib/vornik
+
+      # NOTE: No VORNIK_DATABASE_PASSWORD — webhook nodes have no DB access.
+      # Only the webhook signing secrets and mTLS identity are needed.
+      VORNIK_CHAT_API_KEY:       ${VORNIK_CHAT_API_KEY:-}
+    volumes:
+      - ./config/webhook.yaml:/etc/vornik/config.yaml:ro,Z
+      - ../../configs:/etc/vornik/configs:ro,Z
+      # mTLS client cert + key for outbound relay calls to vornik-worker:8443.
+      # Generated by gen-cluster-certs.sh; never committed.
+      - ./certs/webhook-client.crt:/etc/vornik/tls/client.crt:ro,Z
+      - ./certs/webhook-client.key:/etc/vornik/tls/client.key:ro,Z
+      # CA cert used to verify the worker's server cert.
+      - ./certs/ca.crt:/etc/vornik/tls/ca.crt:ro,Z
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/livez"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+    restart: unless-stopped

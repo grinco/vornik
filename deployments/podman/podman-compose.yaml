@@ -1,0 +1,232 @@
+# vornik Demo / Testing Fleet — single-VM deployment via podman-compose.
+#
+# Brings up:
+#   - postgres  (pgvector/pgvector:pg16)  — DB with vector extension
+#   - vornik    (built from deployments/docker/Dockerfile) — daemon + UI
+#
+# Agent containers are NOT defined here — they're spawned on-demand by
+# vornik via the host's podman socket (mounted into the vornik pod).
+# This mirrors the single-VM "bare metal + host podman" topology we use
+# in development, but packages everything via compose for one-command
+# bringup.
+#
+# Quick start:
+#   cp .env.example .env
+#   edit .env  (set VORNIK_CHAT_API_KEY and CHAT_MODEL at minimum)
+#   podman-compose up -d
+#   open http://localhost:8080/ui
+#
+# Full docs: deployments/podman/README.md
+
+version: "3.8"
+
+networks:
+  # Single bridge network for compose-managed services. Agents spawned
+  # through the host podman socket land on the HOST's podman network,
+  # not this one — they reach vornik via host.containers.internal:8080
+  # (which vornik injects into agent containers as VORNIK_API_URL;
+  # see internal/service/container.go:agentCallbackURL).
+  vornik-infra:
+    driver: bridge
+    name: vornik-infra
+
+volumes:
+  vornik-postgres-data:
+    name: vornik-postgres-data
+  vornik-data:
+    name: vornik-data
+  # Browser profile persistence for the scraper service. Per-project
+  # subdirs ({projectId}/{profileName}/) are created on first login.
+  # Named volume so podman-compose down preserves session cookies
+  # across restarts — matches the vornik-data convention.
+  vornik-scraper-profiles:
+    name: vornik-scraper-profiles
+
+services:
+
+  # ---------------------------------------------------------------------
+  # PostgreSQL + pgvector. vornik's migrations create the vector
+  # extension on first boot — this image has the binary pre-built so
+  # CREATE EXTENSION vector succeeds for any user with the privilege.
+  # ---------------------------------------------------------------------
+  postgres:
+    container_name: vornik-postgres
+    image: docker.io/pgvector/pgvector:pg16
+    networks:
+      - vornik-infra
+    labels:
+      vornik.managed: "true"
+      vornik.component: postgres
+      vornik.layer: persistence
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-vornik}
+      POSTGRES_USER:     ${POSTGRES_USER:-vornik}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vornik_dev_password}
+      # PGDATA under a subdir avoids lost+found collisions on some
+      # filesystems and mirrors what the Helm chart does.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - vornik-postgres-data:/var/lib/postgresql/data
+    ports:
+      # Bound to loopback by default so Postgres is reachable for local
+      # debugging (psql, pgAdmin) WITHOUT being exposed to the LAN. Set
+      # POSTGRES_BIND=0.0.0.0 only on a deployment that genuinely needs
+      # off-host access (and front it with a firewall / strong password).
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vornik} -d ${POSTGRES_DB:-vornik}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+    restart: always
+
+  # ---------------------------------------------------------------------
+  # vornik daemon. Uses the Dockerfile at deployments/docker/Dockerfile.
+  # Runs in host-socket mode for the demo: mounts the host's podman
+  # socket so agent containers spawn on the host's podman rather than
+  # inside the vornik container. Simpler than podman-in-podman for a
+  # single VM, and agents appear next to manual `podman ps` output.
+  # ---------------------------------------------------------------------
+  vornik:
+    container_name: vornik
+    # Build auto-runs if the image isn't present locally. After first
+    # successful build, `podman-compose build vornik` or `--build` on
+    # up/run rebuilds.
+    image: localhost/vornik:latest
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+      args:
+        VERSION: ${VORNIK_VERSION:-dev}
+        BUILD_DATE: ${VORNIK_BUILD_DATE:-unknown}
+    networks:
+      - vornik-infra
+    labels:
+      vornik.managed: "true"
+      vornik.component: daemon
+      vornik.layer: application
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Port 8080 is the main HTTP API + UI + /metrics. Exposing it on
+    # the host at the SAME port matters: agents spawned on the host's
+    # podman reach vornik via host.containers.internal:8080 (see
+    # agentCallbackURL in internal/service/container.go), and that
+    # resolver hits whatever is on the host at port 8080.
+    ports:
+      - "${VORNIK_HTTP_PORT:-8080}:8080"
+    environment:
+      # Config resolution — everything vornik loads at startup.
+      VORNIK_CONFIG:      /etc/vornik/config.yaml
+      VORNIK_CONFIGS_DIR: /etc/vornik/configs
+      VORNIK_DATA_DIR:    /var/lib/vornik
+
+      # Host-socket runtime: entrypoint.sh probes this at startup and
+      # the bundled podman CLI uses it for --remote operations against
+      # the host podman service.
+      CONTAINER_HOST: unix:///var/run/podman/podman.sock
+
+      # Secrets and env-driven config values expanded into config.yaml
+      # via ${VAR} placeholders. vornik's loader runs os.ExpandEnv on
+      # every string before parsing — see internal/config/loader.go.
+      VORNIK_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-vornik_dev_password}
+      VORNIK_CHAT_API_KEY:      ${VORNIK_CHAT_API_KEY:-}
+      VORNIK_AGENT_LLM_API_KEY: ${VORNIK_AGENT_LLM_API_KEY:-}
+      VORNIK_EMBEDDING_API_KEY: ${VORNIK_EMBEDDING_API_KEY:-}
+      VORNIK_TELEGRAM_BOT_TOKEN: ${VORNIK_TELEGRAM_BOT_TOKEN:-}
+
+      # LLM endpoint / model — populated into config.yaml via placeholders.
+      CHAT_ENDPOINT:     ${CHAT_ENDPOINT:-}
+      CHAT_MODEL:        ${CHAT_MODEL:-}
+      AGENT_LLM_ENDPOINT: ${AGENT_LLM_ENDPOINT:-}
+      AGENT_LLM_MODEL:   ${AGENT_LLM_MODEL:-}
+
+      # Agent image reference. vornik reads this via the swarm role
+      # configs' `${AGENT_IMAGE}` placeholder. The referenced image must
+      # be pullable by the HOST's podman (since that's who spawns
+      # agents), so either build it locally (`make build-agent`) or
+      # push to a registry and use the fully-qualified ref.
+      AGENT_IMAGE: ${AGENT_IMAGE:-localhost/vornik-agent:latest}
+    volumes:
+      # vornik config.yaml — rendered from the template in this
+      # directory. Read-only: the entrypoint copies it to the data dir
+      # for any in-place rewrites vornikctl might do.
+      - ./config/vornik.yaml:/etc/vornik/config.yaml:ro,Z
+      # Registry (projects/swarms/workflows/pricing) — re-use the
+      # repo-root configs/ tree so edits in the IDE flow through to
+      # the demo without rebuilds.
+      - ../../configs:/etc/vornik/configs:ro,Z
+      # Persistent data (artifacts, tasks, workspaces). Named volume so
+      # `podman-compose down` keeps state; use `down -v` to wipe.
+      - vornik-data:/var/lib/vornik
+      # Host podman socket. Rootless path shown; override via
+      # PODMAN_SOCK in .env for rootful setups (/run/podman/podman.sock).
+      - ${PODMAN_SOCK:-/run/user/1000/podman/podman.sock}:/var/run/podman/podman.sock
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/vornikctl", "doctor"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      # Allow a long startup window for first-boot DB migrations.
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------
+  # scraper — headless Chromium MCP server.
+  # Replaces researcher roles' curl-based URL fetching. Agents call it
+  # via mcp-bridge → daemon proxy → this container's /mcp endpoint, so
+  # credentials and browser state stay out of agent images.
+  #
+  # Egress routing: intentionally no proxy config here. The host's VPN
+  # (configured operator-side) routes all vornik-infra traffic through
+  # a residential endpoint via podman's default NAT. Every URL this
+  # service fetches inherits that path — nothing app-side to configure.
+  # ---------------------------------------------------------------------
+  scraper:
+    container_name: vornik-scraper
+    image: localhost/vornik-scraper:latest
+    build:
+      context: ../..
+      dockerfile: services/scraper/Containerfile
+    networks:
+      - vornik-infra
+    labels:
+      vornik.managed: "true"
+      vornik.component: scraper
+      vornik.layer: application
+    environment:
+      SCRAPER_LISTEN_ADDR: "0.0.0.0:8787"
+      SCRAPER_PROFILE_ROOT: /profiles
+      SCRAPER_GLOBAL_CONCURRENCY: "${SCRAPER_GLOBAL_CONCURRENCY:-3}"
+      SCRAPER_REQUEST_TIMEOUT_MS: "${SCRAPER_REQUEST_TIMEOUT_MS:-30000}"
+    volumes:
+      - vornik-scraper-profiles:/profiles
+    # Not exposed on the host by default — only vornik (same network)
+    # talks to it. Uncomment to reach it directly for smoke tests:
+    # ports:
+    #   - "127.0.0.1:8787:8787"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          # 1.5G covers 3 concurrent Chromium tabs with headroom. Each
+          # tab averages ~300-500MB depending on the page.
+          memory: 1536M
+          cpus: "1.5"
+    restart: unless-stopped

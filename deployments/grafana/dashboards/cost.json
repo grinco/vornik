@@ -1,0 +1,234 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "Per-project LLM spend, rate of vornik_executor_llm_cost_usd_total. This is the billing view \u2014 what each project is actually paying.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 201,
+      "targets": [
+        {
+          "expr": "sum by (project_id) (rate(vornik_executor_llm_cost_usd_total{project_id=~\"$project_id\"}[5m]) * 3600)",
+          "legendFormat": "{{project_id}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Spend Rate by Project (USD/hour)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "Effective cost per successful step by role+model. Factors in failure rate: a cheap-but-flaky model costs more per useful outcome than its list price suggests.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 202,
+      "targets": [
+        {
+          "expr": "sum by (role, model) (rate(vornik_executor_model_cost_usd_total[1h])) / clamp_min(sum by (role, model) (rate(vornik_executor_agent_step_outcomes_total{outcome=\"ok\"}[1h])), 1e-12)",
+          "legendFormat": "{{role}} / {{model}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Effective $/Success by Role+Model",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "Token usage stacked by direction (prompt vs completion). Flattening periods indicate the model's steady-state draw; spikes trace expensive tool-loop tasks.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 203,
+      "targets": [
+        {
+          "expr": "sum by (direction) (rate(vornik_executor_llm_tokens_total{project_id=~\"$project_id\"}[5m]))",
+          "legendFormat": "{{direction}}",
+          "refId": "A"
+        }
+      ],
+      "title": "LLM Tokens Rate (by direction)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "Agent step outcomes. Sustained failure or timeout rates point at a flaky role+model combo to review on the Effective $/Success panel.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 204,
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(vornik_executor_agent_step_outcomes_total[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Agent Step Outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "description": "Tool-calling iterations per agent step. Spikes here often indicate runaway loops driving up cost before the budget cap trips.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "id": 205,
+      "targets": [
+        {
+          "expr": "sum by (role, model) (rate(vornik_executor_llm_iterations_total{project_id=~\"$project_id\"}[5m]))",
+          "legendFormat": "{{role}} / {{model}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Iterations Rate by Role+Model",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": [
+    "vornik",
+    "deep-dive"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "Prometheus",
+          "value": "prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Data source",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$datasource"
+        },
+        "definition": "label_values(vornik_tasks_count, project_id)",
+        "includeAll": true,
+        "multi": true,
+        "name": "project_id",
+        "query": {
+          "query": "label_values(vornik_tasks_count, project_id)"
+        },
+        "refresh": 2,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "vornik \u2014 Cost & Observability",
+  "uid": "vornik-cost",
+  "version": 1,
+  "weekStart": ""
+}

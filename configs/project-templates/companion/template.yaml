@@ -1,0 +1,59 @@
+# Companion project template — the vornik side of the vornik-companion
+# plugin contract (LLD 21). Designed for the async-offload pattern: a
+# host LLM client (Claude Code today; Codex / Gemini CLI / opencode
+# tomorrow) calls vornik to delegate work it doesn't want to spend its
+# own context on (reviews, audits, validations, research, summarization).
+#
+# Kept deliberately client-generic — the template name and the
+# generated role/workflow names do not reference any specific LLM
+# client. The plugin layer is where Claude-Code-specific behaviour
+# (slash commands, hooks, marketplace manifest) lives.
+displayName: "Companion (host-LLM async offload)"
+description: |
+  Async-offload companion for host LLM clients (Claude Code today,
+  others tomorrow). Materialises a per-user project that exposes six
+  read-only-by-default workflows the client delegates work to:
+  architectural-review, test-coverage-audit, doc-review,
+  data-validation, research-gather, report-summarize.
+
+  After materialisation: mint a per-session key with
+  `vornikctl companion grant --user <name> --project <projectId>`
+  (coming in phase-0 wiring), then point the plugin at
+  /api/v1/capabilities and /mcp/companion.
+domain: "tooling"
+
+parameters:
+  - name: projectId
+    type: string
+    label: "Project ID"
+    description: "Lowercase letters, numbers, and hyphens only. Becomes the URL slug + config filename. Convention: companion-<username>."
+    pattern: "[a-z0-9][a-z0-9-]{1,30}[a-z0-9]"
+    required: true
+  - name: displayName
+    type: string
+    label: "Display name"
+    description: "Human-readable name shown in the UI."
+    default: "Companion"
+    required: true
+  - name: defaultModel
+    type: enum
+    label: "Default LLM model"
+    description: "Model used by every companion role. OSS-first defaults so async offload is cheap; the plugin can override per-call when a workflow needs a frontier model."
+    options:
+      - "openai.gpt-oss-120b-1:0"
+      - "moonshotai.kimi-k2.5"
+      - "zai.glm-4.7"
+    default: "openai.gpt-oss-120b-1:0"
+    required: true
+  - name: fallbackModel
+    type: string
+    label: "Fallback LLM model"
+    description: "Model the executor auto-switches to when the primary's calls keep failing/timing out (model-down auto-fallback). Pick a model on a DIFFERENT provider/gateway than the primary so a single gateway outage can't take out both — e.g. gpt-5.4 (codex) when the primary is on Bedrock. Requires that provider to be configured in the chat router."
+    default: "gpt-5.4"
+    required: false
+
+files:
+  - source: project.yaml.tmpl
+    target: "projects/{{.projectId}}.yaml"
+  - source: swarm.md.tmpl
+    target: "swarms/{{.projectId}}-swarm.md"

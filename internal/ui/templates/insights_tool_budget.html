@@ -1,0 +1,98 @@
+{{define "insights_tool_budget.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+                <h1 class="text-xl font-semibold text-gray-100">Tool usage vs budget</h1>
+                {{if .AllowedProjects}}
+                <form method="get" action="/ui/insights/tool-budget" class="flex items-center gap-2">
+                    <select name="projectId" onchange="this.form.submit()" class="text-sm bg-dark-800 border border-dark-700 text-gray-200 rounded-md px-2 py-1.5">
+                        <option value="">{{if .AllAccess}}All projects{{else}}All my projects{{end}}</option>
+                        {{range .AllowedProjects}}
+                        <option value="{{.}}" {{if eq . $.ProjectID}}selected{{end}}>{{.}}</option>
+                        {{end}}
+                    </select>
+                    <noscript><button type="submit" class="text-xs px-2 py-1 rounded bg-brand-600/80 text-white">Apply</button></noscript>
+                </form>
+                {{end}}
+            </div>
+            <p class="text-[11px] text-gray-500">Actual tool-calls per execution, from the most recent {{.Stats.Sample}} tool-call audit records. The per-execution complexity tier isn't recorded, so this is actual usage against the tier budget reference below — use it to spot over/under-provisioning.</p>
+
+            {{if .Notice}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-8 text-center text-gray-500 text-sm">{{.Notice}}</div>
+            {{else}}
+
+            <!-- Stat tiles -->
+            <div class="grid gap-3 grid-cols-2 sm:grid-cols-5">
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.Executions}}</div><div class="text-[11px] text-gray-500 mt-0.5">Executions</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.TotalCalls}}</div><div class="text-[11px] text-gray-500 mt-0.5">Tool calls</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.P50}}</div><div class="text-[11px] text-gray-500 mt-0.5">Median / exec</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.P95}}</div><div class="text-[11px] text-gray-500 mt-0.5">p95 / exec</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.Max}}</div><div class="text-[11px] text-gray-500 mt-0.5">Max / exec</div></div>
+            </div>
+
+            <!-- Histogram: tool-calls per execution -->
+            <div class="glass rounded-xl border border-dark-700 p-4">
+                <h2 class="text-sm font-medium text-gray-300 mb-3">Tool-calls per execution</h2>
+                <svg viewBox="0 0 420 {{.Stats.SVGHeight}}" width="100%" role="img" aria-label="Tool-calls-per-execution histogram">
+                    {{range .Stats.Buckets}}
+                    <text x="0" y="{{add .Y 16}}" fill="#94a3b8" font-size="11">{{.Label}}</text>
+                    <rect x="70" y="{{add .Y 4}}" width="{{.BarW}}" height="16" rx="3" fill="#60a5fa" opacity="0.8" />
+                    <text x="{{.CountX}}" y="{{add .Y 16}}" fill="#e5e7eb" font-size="11">{{.Count}}</text>
+                    {{end}}
+                </svg>
+            </div>
+
+            <!-- Tier budget reference -->
+            <div class="glass rounded-xl border border-dark-700 p-4">
+                <h2 class="text-sm font-medium text-gray-300 mb-3">Complexity-tier budget reference</h2>
+                <table class="w-full text-sm">
+                    <thead><tr class="text-left text-gray-500 text-xs">
+                        <th class="py-1 pr-4">Tier</th><th class="py-1 pr-4">Factor</th><th class="py-1">Notes</th>
+                    </tr></thead>
+                    <tbody>
+                    {{range .Tiers}}
+                        <tr class="border-t border-dark-700/60">
+                            <td class="py-1.5 pr-4 font-mono text-gray-200">{{.Tier}}</td>
+                            <td class="py-1.5 pr-4 text-gray-300">{{.Factor}}</td>
+                            <td class="py-1.5 text-gray-400">{{.Note}}</td>
+                        </tr>
+                    {{end}}
+                    </tbody>
+                </table>
+                <p class="text-[11px] text-gray-500 mt-2">Factors scale the role's configured tool-iteration baseline. Live per-deployment factor values are a follow-on.</p>
+            </div>
+            {{end}}
+
+            {{if .Advisory}}
+            <!-- Learned provisioning flags (budget-domain instincts) -->
+            <div class="glass rounded-xl border border-dark-700 p-4">
+                <h2 class="text-sm font-medium text-gray-300 mb-3">Learned provisioning flags</h2>
+                <p class="text-[11px] text-gray-500 mb-3">Per-role over/under-provisioning signals mined by the instinct layer from historical step outcomes.</p>
+                <table class="w-full text-sm">
+                    <thead><tr class="text-left text-gray-500 text-xs">
+                        <th class="py-1 pr-4">Role</th><th class="py-1 pr-4">Direction</th><th class="py-1 pr-4">Confidence</th><th class="py-1">Evidence</th>
+                    </tr></thead>
+                    <tbody>
+                    {{range .Advisory.Rows}}
+                        <tr class="border-t border-dark-700/60">
+                            <td class="py-1.5 pr-4 font-mono text-gray-200">{{.Role}}</td>
+                            <td class="py-1.5 pr-4 text-gray-300">{{.Label}}</td>
+                            <td class="py-1.5 pr-4 text-gray-300">{{.Confidence}}</td>
+                            <td class="py-1.5 text-gray-400">{{.SupportCount}} tasks</td>
+                        </tr>
+                    {{end}}
+                    </tbody>
+                </table>
+            </div>
+            {{end}}
+        </div>
+    </main>
+</body>
+</html>
+{{end}}

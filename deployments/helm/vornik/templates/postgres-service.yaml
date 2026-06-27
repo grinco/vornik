@@ -1,0 +1,19 @@
+{{- if .Values.postgres.enabled -}}
+# Headless-capable service for the bundled Postgres. vornik connects to
+# {{ include "vornik.postgresFullname" . }}:5432.
+# Using a regular ClusterIP (not headless) so the client hits the service
+# VIP; with only one replica the distinction doesn't matter, but VIPs
+# give better reconciliation semantics during pod restarts.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vornik.postgresFullname" . }}
+  labels: {{- include "vornik.postgresLabels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgres
+      port: {{ .Values.postgres.service.port }}
+      targetPort: 5432
+  selector: {{- include "vornik.postgresSelectorLabels" . | nindent 4 }}
+{{- end }}

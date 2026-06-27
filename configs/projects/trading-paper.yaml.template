@@ -1,0 +1,186 @@
+# Trading: paper-mode template.
+#
+# Copy to ~/.config/vornik/configs/projects/trading-paper.yaml
+# and edit the watchlist + caps to taste. The deployed file is
+# operator state and lives outside the source tree.
+#
+# Live promotion: after ≥14 days of paper soak with judge pass
+# rate >85% and zero verifier failures, change `trading.mode`
+# to "live" + set `trading.live_enabled: true` in the daemon
+# config.yaml. Both flags must be true; either alone keeps the
+# project on paper port. See https://docs.vornik.io
+# broker-design.md §Phasing for the live-promotion checklist.
+
+projectId: "trading-paper"
+displayName: "Paper Trading — Autonomous (Momentum v1)"
+swarmId: "trading-swarm"
+defaultWorkflowId: "trading"
+defaultPriority: 30
+
+# Never two trading runs in flight simultaneously. A second
+# tick landing while the first is still running would race
+# on idempotency keys and could double-place orders.
+maxConcurrentTasks: 1
+
+# Trading-specific knobs. Read by the broker MCP at order time.
+# The shape of this block is documented in
+# https://docs.vornik.io
+trading:
+  mode: "paper"               # "paper" | "live" — see live-promotion docs
+  watchlist:
+    # Mix of broad ETFs (low risk, slow signals) and large-cap
+    # tech (more volatile signals, easier to hit RSI thresholds).
+    - "SPY"
+    - "QQQ"
+    - "VTI"
+    - "AAPL"
+    - "MSFT"
+    - "GOOGL"
+  caps:
+    max_position_usd: 500          # per symbol, per side
+    max_daily_turnover_usd: 2000   # all symbols combined
+    max_orders_per_hour: 10
+    max_orders_per_minute: 3
+    drawdown_circuit_breaker_pct: 5
+  killSwitch: false                 # flip via vornikctl trading kill or YAML edit
+
+budget:
+  # LLM-only budget (separate from trading P&L).  The strategist
+  # + risk officer LLM cost is ~$0.05 per tick at glm-5 prices;
+  # 96 ticks/day × $0.05 = ~$5/day max. Soft at $3, hard at $10.
+  daily_soft_usd: 3.00
+  daily_hard_usd: 10.00
+  monthly_soft_usd: 60.00
+  monthly_hard_usd: 200.00
+  timezone: "America/New_York"
+
+# Autonomy: fire the trading workflow every 15 minutes during
+# US Eastern market hours. Off-hours and weekends idle.
+# The autonomy goal is the strategy spec — the strategist reads
+# it via project/.autonomy/PROJECT_CONTEXT.md, which the daemon stages
+# from a project_context.md file in the project workspace.
+autonomy:
+  enabled: true
+  interval: "15m"
+  duplicateWindow: "0s"
+  allowedTaskTypes:
+    - "trading"
+  # Autonomy mode = cron. The trading project has a fixed worker
+  # prompt that fires every tick during RTH; no LLM evaluation
+  # needed. preCheck=trading-rth gates the window. The strategist
+  # role reads the full strategy from project/.autonomy/PROJECT_CONTEXT.md
+  # via its workflow step prompt.
+  # See https://docs.vornik.io
+  mode: cron
+  cronTaskType: trading
+  preCheck: "trading-rth"
+  goal: "Run one trading tick per the strategy in project/.autonomy/PROJECT_CONTEXT.md."
+
+# Hallucination detection.
+#
+# Phase 1 rules apply unchanged. The strategist might cite an
+# RSI of 32 that the indicator output doesn't support — Phase 1
+# numeric_claim_mismatch (warn) catches that.
+#
+# Phase 2 verifiers below — narrow + targeted to trading's
+# specific failure modes. The current `must_contain_url`
+# verifier is reused as a stand-in for "must contain symbol";
+# a proper `must_contain_symbol` verifier is on the backlog.
+verifiers:
+  # The executor's audit must show a place_order call when the
+  # risk officer approved orders. Catches an executor that
+  # claims placement but never actually called the broker MCP.
+  - name: order_placed_when_approved
+    type: must_contain_url
+    whenTaskType: trading
+    # Scope to the executor step. The strategist + risk-officer
+    # steps don't call place_order — only the executor does, and
+    # only after the maybe_execute gate confirms has_approvals.
+    # When the gate routes to "done" (NO_ACTION tick), the execute
+    # step never runs and this verifier naturally skips.
+    whenStep: execute
+    params:
+      urls: ["mcp__broker__place_order"]
+
+# Phase 3 LLM-as-judge. The judge sees the strategist's
+# rationale + risk officer's decisions + the actual orders
+# placed and grades whether they're consistent. Critical
+# for trading because the executor's prose is the only
+# audit trail of what the agent THOUGHT it was doing — fills
+# come from the broker, but the reasoning lives only in the
+# agent's response text.
+hallucinationJudge:
+  enabled: true
+  model: "openai.gpt-oss-120b-1:0"
+  # Custom judge prompt tuned for trading: extends the default
+  # to specifically check (a) tickers cited exist in the
+  # watchlist, (b) indicator values cited match what the TA
+  # tools returned, (c) the risk officer's rationale matches
+  # what was actually placed.
+  prompt: |
+    You are a hallucination auditor for an autonomous trading
+    pipeline. You will see the task input, the agent's prose
+    output, the artifact list, and the tool-call audit.
+
+    For trading tasks specifically, check:
+      - Every ticker proposed/placed must be in the watchlist
+        from project/.autonomy/PROJECT_CONTEXT.md.
+      - Indicator values cited in rationale must appear in the
+        TA tool output for that symbol+window.
+      - Approved orders in the risk-officer step must match
+        the orders placed by the executor (no extras, no
+        substitutions, no missing).
+      - Rationale referencing "uptrend" / "oversold" must
+        align with the actual indicator readings.
+
+    Reply with ONLY a JSON object:
+      {
+        "decision": "pass" | "fail" | "abstain",
+        "confidence": 0.0..1.0,
+        "summary": "one or two sentences",
+        "signals": [
+          {"detector":"judge","severity":"warn"|"high",
+           "claim_type":"ticker"|"indicator"|"order_mismatch"|"other",
+           "claim_value":"<the literal claim>",
+           "detail":"<why it's unsupported>"}
+        ]
+      }
+
+# MCP servers used by the trading swarm. The broker MCP is the
+# load-bearing one; ta is helpful but not strictly required
+# for v1 (strategist could compute SMA/RSI in-prompt, just
+# noisier). Leave news + screener for Phase 3 of the plan.
+mcp:
+  servers:
+    - name: "broker"
+      transport: "sse"
+      # Broker MCP runs as a separate podman container.
+      # See deployments/podman/trading.compose.yaml for the
+      # broker + ib-gateway + sidecar bundle.
+      url: "http://127.0.0.1:8788"
+      allowed_tools:
+        - "get_account_summary"
+        - "get_positions"
+        - "get_quote"
+        - "get_historical_bars"
+        - "get_orders"
+        - "place_order"
+        - "cancel_order"
+
+    - name: "ta"
+      transport: "sse"
+      url: "http://127.0.0.1:8790"
+      allowed_tools:
+        - "sma"
+        - "ema"
+        - "rsi"
+        - "macd"
+        - "bbands"
+
+permissions:
+  secrets: []
+  allowedTools:
+    - "current_time"
+    - "file_read"
+    - "file_write"
+    - "memory_search"

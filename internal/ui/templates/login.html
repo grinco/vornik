@@ -1,0 +1,91 @@
+{{define "login.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    <main id="main" tabindex="-1" class="flex-1 flex items-center justify-center w-full py-16 px-4">
+        <div class="w-full max-w-sm">
+            <div class="flex flex-col items-center gap-1 mb-8">
+                <div class="flex items-center gap-2">
+                    {{template "navLogo" .}}
+                    <span class="text-2xl font-semibold tracking-tight text-gray-100">vornik</span>
+                </div>
+                <p class="text-sm text-gray-500 tracking-wide">orchestrate the chaos</p>
+            </div>
+
+            {{/* Awaiting-access banner — the user authenticated but has
+                 no project access yet (zero groups). */}}
+            {{if .Awaiting}}
+            <div class="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/25 text-sm">
+                <p class="font-medium text-amber-300 mb-1">Awaiting access</p>
+                <p class="text-amber-200/80">
+                    Your account is recognised but not yet assigned to any project.
+                    An administrator must grant you access before you can sign in.
+                </p>
+                {{if eq .Member "yes"}}
+                <p class="mt-2 text-amber-200/60 text-xs">Organisation membership: verified.</p>
+                {{else if eq .Member "no"}}
+                <p class="mt-2 text-amber-200/60 text-xs">Organisation membership: not a member of the configured org.</p>
+                {{else}}
+                <p class="mt-2 text-amber-200/60 text-xs">Organisation membership: not checked.</p>
+                {{end}}
+            </div>
+            {{end}}
+
+            {{/* Error banner — coarse code only; detail stays in logs. */}}
+            {{if .Error}}
+            <div class="mb-6 p-4 rounded-xl bg-rose-500/10 border border-rose-500/25 text-sm">
+                <p class="font-medium text-rose-300 mb-1">Sign-in failed</p>
+                <p class="text-rose-200/80">
+                    {{if eq .Error "exchange"}}
+                        The provider rejected the sign-in. Please try again.
+                    {{else if eq .Error "state"}}
+                        The sign-in request expired or could not be verified. Please try again.
+                    {{else}}
+                        Something went wrong during sign-in. Please try again.
+                    {{end}}
+                </p>
+            </div>
+            {{end}}
+
+            <div class="p-6 rounded-2xl glass border border-dark-700 shadow-lg">
+                <h1 class="text-xl font-bold text-gray-100 mb-1 text-center">Sign in</h1>
+                <p class="text-gray-500 text-sm mb-6 text-center">Continue to the vornik dashboard</p>
+
+                {{if .Providers}}
+                <div class="space-y-2">
+                    {{range .Providers}}
+                    <a href="{{.StartURL}}"
+                       class="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium transition-colors">
+                        Sign in with {{.Label}}
+                    </a>
+                    {{end}}
+                </div>
+                <div class="my-5 flex items-center gap-3 text-gray-600">
+                    <span class="flex-1 h-px bg-dark-700"></span>
+                    <span class="text-[11px] uppercase tracking-wide">or</span>
+                    <span class="flex-1 h-px bg-dark-700"></span>
+                </div>
+                {{else}}
+                <p class="text-gray-500 text-sm mb-4 text-center">
+                    No login providers are configured on this deployment.
+                </p>
+                {{end}}
+
+                {{/* Break-glass: API-key access via the native Basic
+                     dialog. method=key triggers the 401+WWW-Authenticate
+                     from the Login handler. */}}
+                <a href="/ui/login?method=key"
+                   class="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-sm font-medium transition-colors border border-dark-600">
+                    Sign in with an API key
+                </a>
+            </div>
+
+            <p class="mt-6 text-center text-[11px] text-gray-600">
+                vornik &middot; <a href="https://docs.vornik.io" class="hover:text-gray-400">docs</a>
+            </p>
+        </div>
+    </main>
+</body>
+</html>
+{{end}}

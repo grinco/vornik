@@ -1,0 +1,90 @@
+---
+swarmId: "{{.projectId}}-swarm"
+displayName: "{{.displayName}} swarm"
+
+roles:
+  - name: "lead"
+    description: "Plans the autonomy tick and routes to the candidate workflows."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "20"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "read_many_files"
+        - "memory_search"
+
+  - name: "researcher"
+    description: "Researches the configured topic and writes findings to artifacts/out/research.md."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "60"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "file_write"
+        - "file_edit"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+        - "memory_search"
+
+  - name: "writer"
+    description: "Turns research notes into a scannable digest at artifacts/out/digest.md."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "30"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "file_write"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+---
+
+# {{.displayName}} swarm
+
+A three-role news-feed starter (lead → researcher → writer) sized
+to run both shipped workflows (`adaptive`, `research`) out of the
+box. Topic: **{{.topic}}**. Edit roles + prompts in the swarm
+editor at `/ui/swarms/{{.projectId}}-swarm/edit`.
+
+## Role prompts
+
+### lead
+
+You are the planner for a news-feed project tracking
+**{{.topic}}**. Each autonomy tick: check project memory for the
+most recent digest; if newer than the configured cadence, route
+to NO_ACTION; otherwise pick the `research` workflow.
+
+### researcher
+
+You are a news-feed researcher. Your job is to keep project
+memory up to date on **{{.topic}}**.
+
+Always:
+- Use memory_search FIRST to see what's already in memory — don't
+  repeat coverage of stories already digested.
+- Produce findings dated and source-tagged. Bullet points over
+  prose. Cite sources by URL.
+- When in doubt about whether something is news, prefer omission
+  over noise — the operator wants signal, not every press
+  release.
+
+### writer
+
+Turn the researcher's findings into a scannable digest at
+`artifacts/out/digest.md`. Lead with a one-line "what's new
+today" summary, then grouped bullets per theme. Keep the entire
+digest under ~40 lines unless the operator asked for depth.

@@ -1,0 +1,135 @@
+{{define "project_brief.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col" data-assist-project="{{.ProjectID}}">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-3xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">
+                        {{if .HasExisting}}Edit project brief{{else}}Create project brief{{end}}
+                    </h1>
+                    <p class="text-xs text-gray-500 font-mono mt-1">{{.ProjectID}}{{if .BriefPath}} · {{.BriefPath}}{{end}}</p>
+                </div>
+                <a href="/ui/projects/{{.ProjectID}}/config/form" class="flex items-center gap-1 text-gray-500 hover:text-gray-300 text-sm transition-colors">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                    Config
+                </a>
+            </div>
+
+            {{if .Success}}
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{{.Success}}</div>
+            {{end}}
+            {{if .Error}}
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            {{end}}
+
+            <p class="text-sm text-gray-400 leading-relaxed">
+                The brief grounds the prompt-writing assistant and the upcoming swarm wizard. Goal,
+                Audience, and Success criteria are required; Out of scope and Risk &amp; cadence are
+                optional. Markdown bullets and bold are welcome — the file is plain Markdown.
+            </p>
+
+            <form method="POST" action="/ui/projects/{{.ProjectID}}/brief" class="space-y-6">
+
+                <!-- Frontmatter + preamble -->
+                <section class="rounded-lg border border-dark-700 bg-dark-800/40 p-5 space-y-4">
+                    <header>
+                        <h2 class="text-sm font-semibold text-gray-200 uppercase tracking-wide">Identity</h2>
+                    </header>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="displayName">Display name (optional)</label>
+                        <input type="text" name="displayName" id="displayName" value="{{.DisplayName}}"
+                               class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200">
+                        <p class="text-[11px] text-gray-500 mt-1">Overrides the project.yaml displayName when set. Empty means "inherit".</p>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="description">Hero description (optional)</label>
+                        <textarea name="description" id="description" rows="3"
+                                  class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 leading-relaxed">{{.Description}}</textarea>
+                        <p class="text-[11px] text-gray-500 mt-1">Free-form intro that surfaces on the project homepage.</p>
+                    </div>
+                </section>
+
+                <!-- Required brief sections -->
+                <section class="rounded-lg border border-dark-700 bg-dark-800/40 p-5 space-y-4">
+                    <header>
+                        <h2 class="text-sm font-semibold text-gray-200 uppercase tracking-wide">Required</h2>
+                        <p class="text-[11px] text-gray-500 mt-1">All three are required; the parser rejects the brief if any is empty.</p>
+                    </header>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="goal">Goal <span class="text-rose-400">*</span></label>
+                        <textarea name="goal" id="goal" rows="5" required
+                                  class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 leading-relaxed">{{.Goal}}</textarea>
+                        <p class="text-[11px] text-gray-500 mt-1">The high-level objective the swarm works toward.</p>
+                        {{template "assistPanel" (dict
+                            "Kind" "brief_section"
+                            "TargetID" $.ProjectID
+                            "SubjectID" "Goal"
+                            "PromptFieldID" "goal"
+                            "PanelID" "assist-brief-goal"
+                        )}}
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="audience">Audience <span class="text-rose-400">*</span></label>
+                        <textarea name="audience" id="audience" rows="3" required
+                                  class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 leading-relaxed">{{.Audience}}</textarea>
+                        <p class="text-[11px] text-gray-500 mt-1">Who uses this project and how — drives audience-specific phrasing in prompt suggestions.</p>
+                        {{template "assistPanel" (dict
+                            "Kind" "brief_section"
+                            "TargetID" $.ProjectID
+                            "SubjectID" "Audience"
+                            "PromptFieldID" "audience"
+                            "PanelID" "assist-brief-audience"
+                        )}}
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="successCriteria">Success criteria <span class="text-rose-400">*</span></label>
+                        <textarea name="successCriteria" id="successCriteria" rows="5" required
+                                  class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 leading-relaxed">{{.SuccessCriteria}}</textarea>
+                        <p class="text-[11px] text-gray-500 mt-1">Bulleted list works well. What does "this project worked" look like?</p>
+                        {{template "assistPanel" (dict
+                            "Kind" "brief_section"
+                            "TargetID" $.ProjectID
+                            "SubjectID" "Success criteria"
+                            "PromptFieldID" "successCriteria"
+                            "PanelID" "assist-brief-success"
+                        )}}
+                    </div>
+                </section>
+
+                <!-- Optional brief sections -->
+                <section class="rounded-lg border border-dark-700 bg-dark-800/40 p-5 space-y-4">
+                    <header>
+                        <h2 class="text-sm font-semibold text-gray-200 uppercase tracking-wide">Optional</h2>
+                        <p class="text-[11px] text-gray-500 mt-1">Strongly recommended — exclusions sharpen prompt generation more than inclusions.</p>
+                    </header>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="outOfScope">Out of scope</label>
+                        <textarea name="outOfScope" id="outOfScope" rows="3"
+                                  class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 leading-relaxed">{{.OutOfScope}}</textarea>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="riskCadence">Risk &amp; cadence</label>
+                        <textarea name="riskCadence" id="riskCadence" rows="3"
+                                  class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 leading-relaxed">{{.RiskCadence}}</textarea>
+                    </div>
+                </section>
+
+                <div class="flex items-center justify-end gap-3">
+                    <a href="/ui/projects/{{.ProjectID}}/config/form" class="px-4 py-2 rounded-md bg-dark-700 text-gray-300 hover:bg-dark-600 text-sm font-medium">Cancel</a>
+                    <button type="submit" class="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-brand-600 text-white hover:bg-brand-500 text-sm font-medium">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>
+                        {{if .HasExisting}}Save brief{{else}}Create brief{{end}}
+                    </button>
+                </div>
+            </form>
+        </div>
+    </main>
+    {{template "assistScript" .}}
+</body>
+</html>
+{{end}}

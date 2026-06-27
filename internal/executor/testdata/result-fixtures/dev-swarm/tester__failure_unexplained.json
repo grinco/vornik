@@ -1,0 +1,12 @@
+{
+  "swarm": "dev-swarm",
+  "role": "tester",
+  "reason": "passed:false without populating testing.failures — failure_explained plausibility rule must reject. Without this, the coder retry has no signal to act on.",
+  "expect": "fail",
+  "payload": {
+    "testing": {
+      "passed": false,
+      "ran": "go test ./..."
+    }
+  }
+}

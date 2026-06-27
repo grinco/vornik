@@ -1,0 +1,221 @@
+{{define "admin_workflow_proposal.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <a href="/ui/admin/workflow-proposals" class="text-xs text-brand-400 hover:text-brand-300">← Proposals</a>
+                <h1 class="text-xl font-semibold text-gray-100">{{if .Proposal}}{{.Proposal.WorkflowID}}{{else}}Proposal{{end}}</h1>
+                {{if .Proposal}}
+                <span class="px-2 py-0.5 text-xs font-mono rounded-md
+                    {{if eq (printf "%s" .Proposal.Status) "pending"}}bg-amber-900/50 text-amber-300
+                    {{else if eq (printf "%s" .Proposal.Status) "approved"}}bg-emerald-900/50 text-emerald-300
+                    {{else if eq (printf "%s" .Proposal.Status) "rejected"}}bg-red-900/50 text-red-300
+                    {{else if eq (printf "%s" .Proposal.Status) "applied"}}bg-blue-900/50 text-blue-300
+                    {{else if eq (printf "%s" .Proposal.Status) "rolled_back"}}bg-purple-900/50 text-purple-300
+                    {{else}}bg-dark-700 text-gray-300{{end}}">{{.Proposal.Status}}</span>
+                {{end}}
+            </div>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-12 text-center text-gray-500 text-sm">
+                Workflow-proposals repository not wired on this deployment.
+            </div>
+            {{else if .Proposal}}
+
+            {{if .DecideError}}
+            <div class="bg-red-900/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-200">
+                <span class="font-medium">Decide failed:</span> {{.DecideError}}
+            </div>
+            {{end}}
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-2">
+                    <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Metadata</h2>
+                    <dl class="grid grid-cols-3 gap-y-1.5 text-xs">
+                        <dt class="text-gray-500 col-span-1">ID</dt><dd class="text-gray-200 font-mono col-span-2 break-all">{{.Proposal.ID}}</dd>
+                        <dt class="text-gray-500">Kind</dt><dd class="text-gray-200 font-mono col-span-2">{{.Proposal.Kind}}</dd>
+                        <dt class="text-gray-500">Architect</dt><dd class="text-gray-200 font-mono col-span-2">{{.Proposal.ArchitectModel}}</dd>
+                        <dt class="text-gray-500">Confidence</dt><dd class="text-gray-200 font-mono col-span-2">{{printf "%.2f" .Proposal.Confidence}}</dd>
+                        <dt class="text-gray-500">Created</dt><dd class="text-gray-200 font-mono col-span-2">{{.Proposal.CreatedAt.Format "2006-01-02 15:04:05 UTC"}}</dd>
+                        {{if .Proposal.DecidedAt}}
+                        <dt class="text-gray-500">Decided</dt><dd class="text-gray-200 font-mono col-span-2">{{.Proposal.DecidedAt.Format "2006-01-02 15:04:05 UTC"}} by {{.Proposal.DecidedBy}}</dd>
+                        {{end}}
+                        {{if .Proposal.AppliedAt}}
+                        <dt class="text-gray-500">Applied</dt><dd class="text-gray-200 font-mono col-span-2">{{.Proposal.AppliedAt.Format "2006-01-02 15:04:05 UTC"}} (commit {{.Proposal.AppliedCommit}})</dd>
+                        {{end}}
+                        {{if .Proposal.RollbackCommit}}
+                        <dt class="text-gray-500">Rollback</dt><dd class="text-gray-200 font-mono col-span-2">commit {{.Proposal.RollbackCommit}}</dd>
+                        {{end}}
+                        {{if .Proposal.Notes}}
+                        <dt class="text-gray-500">Notes</dt><dd class="text-gray-200 col-span-2">{{.Proposal.Notes}}</dd>
+                        {{end}}
+                    </dl>
+                </div>
+
+                <div class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-2">
+                    <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Motivation</h2>
+                    <p class="text-sm text-gray-200 whitespace-pre-line">{{.Proposal.Motivation}}</p>
+                    <h3 class="text-xs font-medium text-gray-400 uppercase tracking-wider pt-2">Evidence ({{len .Proposal.EvidenceRunIDs}} runs)</h3>
+                    <ul class="space-y-0.5 text-xs font-mono text-gray-300">
+                        {{range .Proposal.EvidenceRunIDs}}
+                        <li class="flex items-center gap-2">
+                            <span class="text-gray-500">•</span>
+                            <a href="/ui/executions/{{.}}" class="text-brand-400 hover:text-brand-300 truncate">{{.}}</a>
+                        </li>
+                        {{end}}
+                    </ul>
+                </div>
+            </div>
+
+            {{if or .PredictedImpact .Baseline}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-3 space-y-3">
+                <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-1">Predicted impact</h2>
+                {{if .Baseline}}
+                <div class="rounded-lg border border-dark-700/70 bg-dark-900/40 px-4 py-3">
+                    <h3 class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Current baseline (last {{.Baseline.WindowDays}}d)</h3>
+                    {{if .Baseline.HasRuns}}
+                    <dl class="grid grid-cols-3 gap-3 text-sm">
+                        <div>
+                            <dt class="text-[11px] text-gray-500 uppercase tracking-wider">Runs</dt>
+                            <dd class="text-gray-100 font-mono">{{.Baseline.RunCount}}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-[11px] text-gray-500 uppercase tracking-wider">Failure rate</dt>
+                            <dd class="text-gray-100 font-mono">{{printf "%.1f%%" .Baseline.FailureRatePct}} <span class="text-gray-500">({{.Baseline.FailureCount}}/{{.Baseline.RunCount}})</span></dd>
+                        </div>
+                        <div>
+                            <dt class="text-[11px] text-gray-500 uppercase tracking-wider">Avg cost / run</dt>
+                            <dd class="text-gray-100 font-mono">${{printf "%.4f" .Baseline.AvgCostUSD}}</dd>
+                        </div>
+                    </dl>
+                    {{if .Baseline.TopFailureClasses}}
+                    <div class="mt-2">
+                        <p class="text-[11px] text-gray-500 uppercase tracking-wider mb-1">Top failure classes</p>
+                        <ul class="flex flex-wrap gap-1.5 text-xs">
+                            {{range .Baseline.TopFailureClasses}}
+                            <li class="rounded bg-dark-700/60 px-2 py-0.5 font-mono text-rose-200">{{.ErrorClass}} <span class="text-gray-500">×{{.Count}}</span></li>
+                            {{end}}
+                        </ul>
+                    </div>
+                    {{end}}
+                    {{if .Baseline.DirectionHint}}
+                    <p class="text-[11px] text-gray-500 mt-2">Heuristic, not a forecast: this proposal {{.Baseline.DirectionHint}}.</p>
+                    {{end}}
+                    {{else}}
+                    <p class="text-sm text-gray-400">No runs in window — no baseline cost / failure profile to show yet.</p>
+                    {{end}}
+                    <p class="text-[11px] text-gray-500 mt-2">This is the workflow's <span class="text-gray-400">current</span> profile from execution telemetry (the baseline the proposal targets), not a simulated forecast of the change.</p>
+                </div>
+                {{end}}
+                {{if .PredictedImpact}}
+                <div>
+                    <p class="text-sm text-gray-200">{{.PredictedImpact}}</p>
+                    <p class="text-[11px] text-gray-500 mt-1">Summary derived from the proposal's kind, confidence, evidence, and diff size.</p>
+                </div>
+                {{end}}
+            </div>
+            {{end}}
+
+            {{if .HasDiff}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3 border-b border-dark-700/60 flex items-center justify-between">
+                    <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Diff — current vs proposed</h2>
+                    <span class="text-xs font-mono"><span class="text-emerald-400">+{{.DiffAdded}}</span> <span class="text-rose-400">−{{.DiffRemoved}}</span></span>
+                </div>
+                <pre class="px-0 py-0 text-xs font-mono overflow-auto max-h-[480px]">{{range .Diff}}<div class="px-5 {{if eq (printf "%s" .Op) "add"}}bg-emerald-900/20 text-emerald-200{{else if eq (printf "%s" .Op) "remove"}}bg-rose-900/20 text-rose-200{{else}}text-gray-400{{end}}">{{if eq (printf "%s" .Op) "add"}}+ {{else if eq (printf "%s" .Op) "remove"}}- {{else}}  {{end}}{{.Text}}</div>{{end}}</pre>
+            </div>
+            {{end}}
+
+            {{if .CanModify}}
+            <details class="glass rounded-xl border border-dark-700 overflow-hidden group">
+                <summary class="cursor-pointer list-none px-5 py-3 border-b border-dark-700/0 group-open:border-dark-700/60 flex items-center gap-2 text-sm font-semibold text-gray-300 uppercase tracking-wider">
+                    <svg class="h-3.5 w-3.5 transform transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+                    Modify before approving
+                </summary>
+                <form method="post" action="/ui/admin/workflow-proposals/{{.Proposal.ID}}/modify" class="px-5 py-4 space-y-3">
+                    <p class="text-xs text-gray-500">Edit the architect's YAML, then save. The revised YAML replaces the proposal's content (pending only) so you can approve a tweaked version. Saving does NOT apply to disk.</p>
+                    <textarea name="proposal_yaml" rows="18" class="w-full bg-dark-900 border border-dark-600 text-gray-200 text-xs rounded-md px-3 py-2 font-mono">{{.Proposal.ProposalYAML}}</textarea>
+                    <button type="submit" class="bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium px-4 py-2 rounded-md">Save modified YAML</button>
+                </form>
+            </details>
+            {{end}}
+
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3 border-b border-dark-700/60 flex items-center justify-between">
+                    <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Proposed WORKFLOW.md</h2>
+                    <span class="text-xs text-gray-500">
+                        {{if eq (printf "%s" .Proposal.Status) "applied"}}This is what was written to disk on apply.
+                        {{else if eq (printf "%s" .Proposal.Status) "rolled_back"}}This was on disk between apply and rollback.
+                        {{else}}Proposed content. The WORKFLOW.md on disk is unchanged until Apply runs.{{end}}
+                    </span>
+                </div>
+                <pre class="px-5 py-4 text-xs font-mono text-gray-200 whitespace-pre-wrap overflow-auto max-h-[480px]">{{.Proposal.ProposalYAML}}</pre>
+            </div>
+
+            {{if .CanDecide}}
+            <form method="post" action="/ui/admin/workflow-proposals/{{.Proposal.ID}}/decide"
+                  class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-3">
+                <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Decide</h2>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Notes (optional, recorded in audit)</span>
+                    <textarea name="notes" rows="3" class="w-full bg-dark-700 border border-dark-600 text-gray-200 text-sm rounded-md px-2 py-1.5 font-mono" placeholder="Why are you approving or rejecting?"></textarea>
+                </label>
+                <div class="flex gap-3">
+                    <button type="submit" name="status" value="approved"
+                            class="bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-4 py-2 rounded-md">
+                        Approve
+                    </button>
+                    <button type="submit" name="status" value="rejected"
+                            class="bg-red-700 hover:bg-red-600 text-white text-sm font-medium px-4 py-2 rounded-md">
+                        Reject
+                    </button>
+                </div>
+            </form>
+            {{else if .CanApply}}
+            <form method="post" action="/ui/admin/workflow-proposals/{{.Proposal.ID}}/apply"
+                  class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-3"
+                  onsubmit="return confirm('Apply this proposal? This writes the new WORKFLOW.md to disk and git-commits the change.');">
+                <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Apply</h2>
+                <p class="text-xs text-gray-500">
+                    Writes the proposed WORKFLOW.md to the source + deployed config trees, git-commits the change, and broadcasts a config-reload to all replicas. Reversible via the Rollback button once applied.
+                </p>
+                <button type="submit"
+                        class="bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium px-4 py-2 rounded-md">
+                    Apply
+                </button>
+            </form>
+            {{else if .CanRollback}}
+            <form method="post" action="/ui/admin/workflow-proposals/{{.Proposal.ID}}/rollback"
+                  class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-3"
+                  onsubmit="return confirm('Roll back this applied proposal? Runs git revert and broadcasts config-reload.');">
+                <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Rollback</h2>
+                <p class="text-xs text-gray-500">
+                    Runs git revert against commit <code class="font-mono text-gray-400">{{.Proposal.AppliedCommit}}</code> in the source tree and reverts the WORKFLOW.md change.
+                </p>
+                <button type="submit"
+                        class="bg-purple-700 hover:bg-purple-600 text-white text-sm font-medium px-4 py-2 rounded-md">
+                    Roll back
+                </button>
+            </form>
+            {{else}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-3 text-xs text-gray-500">
+                {{if eq (printf "%s" .Proposal.Status) "rejected"}}Rejected proposals cannot be re-decided. The architect may re-propose later if evidence changes.
+                {{else if eq (printf "%s" .Proposal.Status) "rolled_back"}}This proposal has been rolled back. Re-propose to apply a similar change.
+                {{else if eq (printf "%s" .Proposal.Status) "regressed"}}This proposal was auto-flagged as regressed. Roll back via the API if needed.
+                {{else}}No further action available on this proposal.{{end}}
+            </div>
+            {{end}}
+
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

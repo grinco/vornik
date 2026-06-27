@@ -1,0 +1,145 @@
+{{define "admin_cpc.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">Cross-project calls</h1>
+                <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
+            </div>
+
+            <p class="text-xs text-gray-500 max-w-3xl">
+                Inter-project orchestration ledger. Each row is one
+                <code class="font-mono text-gray-400">call_project</code> step
+                — a synchronous wait for another project's workflow to
+                resolve. Stuck rows (pending/running past their timeout)
+                can be force-cancelled here; the cancel writes
+                <code class="font-mono text-gray-400">interproject.cpc.admincancel</code>
+                to the admin audit log.
+            </p>
+
+            {{if .FlashCancel}}
+            <div class="bg-emerald-900/30 border border-emerald-700/40 text-emerald-200 text-xs px-3 py-2 rounded-md">
+                Cross-project call <code class="font-mono">{{.FlashCancel}}</code> cancelled.
+            </div>
+            {{end}}
+
+            {{if .Error}}
+            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-200 text-xs px-3 py-2 rounded-md">{{.Error}}</div>
+            {{end}}
+
+            <form method="get" action="/ui/admin/cpc"
+                  class="glass rounded-xl border border-dark-700 px-4 py-3 flex flex-wrap items-end gap-3 text-sm">
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Status</span>
+                    <select name="status" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-36">
+                        {{range .StatusOptions}}
+                        <option value="{{.}}" {{if eq . $.FilterStatus}}selected{{end}}>{{if .}}{{.}}{{else}}any{{end}}</option>
+                        {{end}}
+                    </select>
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Caller project</span>
+                    <input type="text" name="caller" value="{{.FilterCaller}}" placeholder="e.g. assistant" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-44">
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Callee project</span>
+                    <input type="text" name="callee" value="{{.FilterCallee}}" placeholder="e.g. news-feed" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-44">
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Since (YYYY-MM-DD)</span>
+                    <input type="text" name="since" value="{{.FilterSince}}" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-44">
+                </label>
+                <input type="hidden" name="limit" value="{{.Limit}}">
+                <button class="bg-brand-500 hover:bg-brand-400 text-white text-xs font-medium px-3 py-1.5 rounded-md">Filter</button>
+            </form>
+
+            <div class="flex justify-end">
+                {{template "pageSizeSelector" (dict
+                    "Action" "/ui/admin/cpc"
+                    "Current" .Limit
+                    "Options" .LimitOptions
+                    "Hidden" (dict
+                        "status" .FilterStatus
+                        "caller" .FilterCaller
+                        "callee" .FilterCallee
+                        "since" .FilterSince))}}
+            </div>
+
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                {{if not .Available}}
+                <div class="px-5 py-12 text-center text-gray-500 text-sm">
+                    Cross-project call repository not wired on this deployment.
+                    Set <code class="font-mono text-gray-400">VORNIK_INTER_PROJECT_ENABLED=true</code> and restart the daemon.
+                </div>
+                {{else if .Rows}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full" data-keynav>
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Caller → Callee</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Workflow</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Error</th>
+                            <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Rows}}
+                            <tr class="hover:bg-dark-700/40 transition-colors align-top">
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono" title="{{.CreatedAt}}">
+                                    <div>{{.CreatedAt}}</div>
+                                    <div class="text-[10px] text-gray-600">{{.CreatedAgo}}</div>
+                                </td>
+                                <td class="px-4 py-2 text-xs text-gray-300 font-mono">
+                                    <div>{{.CallerProject}} <span class="text-gray-600">→</span> {{.CalleeProject}}</div>
+                                    <div class="text-[10px] text-gray-500 mt-0.5">
+                                        {{if .CallerTaskID}}<a href="/ui/tasks/{{.CallerTaskID}}" class="hover:text-brand-300">{{.CallerTaskID}}</a>{{end}}
+                                        {{if .CallerStepID}}<span class="text-gray-600">·</span> step <span class="text-gray-400">{{.CallerStepID}}</span>{{end}}
+                                    </div>
+                                    {{if .CalleeTaskID}}
+                                    <div class="text-[10px] text-gray-500 mt-0.5">callee: <a href="/ui/tasks/{{.CalleeTaskID}}" class="text-violet-300 hover:text-violet-200">{{.CalleeTaskID}}</a></div>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 text-xs text-gray-300 font-mono">
+                                    {{.CalleeWorkflow}}
+                                    {{if .ExpectedSchema}}<div class="text-[10px] text-gray-500">schema: {{.ExpectedSchema}}</div>{{end}}
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap">
+                                    <span class="font-mono {{.StatusBadge}}">{{.Status}}</span>
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap text-[11px] text-gray-400 font-mono" title="{{if .ResolvedAt}}Resolved at {{.ResolvedAt}}{{else if .TimeoutAt}}Timeout at {{.TimeoutAt}}{{end}}">{{.DurationLabel}}</td>
+                                <td class="px-4 py-2 text-[11px] text-rose-300 max-w-sm truncate font-mono" title="{{.ErrorMessage}}">{{.ErrorMessage}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-right">
+                                    {{if not .IsTerminal}}
+                                    <form method="post" action="/ui/admin/cpc/{{.ID}}/cancel" onsubmit="return confirm('Force-cancel cross-project call {{.ID}}? The caller\'s on_fail branch will fire.');" class="inline-flex items-center gap-1">
+                                        <input type="hidden" name="filter_status" value="{{$.FilterStatus}}">
+                                        <input type="hidden" name="filter_caller" value="{{$.FilterCaller}}">
+                                        <input type="hidden" name="filter_callee" value="{{$.FilterCallee}}">
+                                        <button type="submit" class="text-[11px] font-medium px-2.5 py-1 rounded-md bg-rose-700/40 hover:bg-rose-700/60 text-rose-200 ring-1 ring-rose-700/40">Cancel</button>
+                                    </form>
+                                    {{else}}
+                                    <span class="text-[11px] text-gray-600 italic">terminal</span>
+                                    {{end}}
+                                </td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-5 py-12 text-center text-gray-500 text-sm">No cross-project calls match the filter.</div>
+                {{end}}
+            </div>
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

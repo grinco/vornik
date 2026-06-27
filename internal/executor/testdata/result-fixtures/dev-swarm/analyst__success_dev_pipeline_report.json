@@ -1,0 +1,13 @@
+{
+  "swarm": "dev-swarm",
+  "role": "analyst",
+  "reason": "Same role, totally different shape: dev-pipeline's `report` step asks for analysis.{changelog, patches, feature_done}. The loose schema accepts both — exactly the workflow-step-pinned case.",
+  "expect": "pass",
+  "payload": {
+    "analysis": {
+      "changelog": "artifacts/out/CHANGELOG.md",
+      "patches": 3,
+      "feature_done": true
+    }
+  }
+}

@@ -1,0 +1,25 @@
+# Customer-facing top-level vornikctl commands published to docs.vornik.io.
+# Deny-by-default: only groups listed here (and all their subcommands) appear
+# in the generated CLI reference (docs/public/reference/vornikctl.md). Internal
+# and admin commands (admin, blackbox, operator, scraper, cpc, eval, …) are
+# intentionally absent. Add a line to publish a command group; remove to hide.
+init
+project
+swarm
+workflow
+task
+execution
+tail
+key
+config
+doctor
+memory
+instinct
+models
+mcp
+skill
+retention
+backup
+restore
+reminders
+version

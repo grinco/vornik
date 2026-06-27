@@ -1,0 +1,70 @@
+# If you prefer the allow list template instead of the deny list, see community template:
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+#
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+# Anchor the binary-name ignores so they don't also hide directories
+# named "vornik" elsewhere in the tree (e.g. deployments/helm/vornik/).
+/vornik
+/vornikctl
+
+# Build output directory
+/bin/
+
+# Packaging artifacts — rpm/deb/checksums live only in dist/ (ignored below) or
+# as release assets; they are NEVER committed. scripts/check-no-binaries.sh
+# guards this in CI.
+*.rpm
+*.deb
+# Generated FULL_ARCH goreleaser config (scripts/package-enterprise.sh)
+/.goreleaser.enterprise.full.*.yaml
+
+# Test binary, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Node.js
+node_modules/
+package-lock.json
+package.json
+
+# .env file
+.env
+
+# Editor/IDE
+# .idea/
+# .vscode/
+.codex
+
+# Python service build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+/skills-site
+
+# Local dev runtime state (make dev → configs/vornik.io.yaml)
+/.dev/
+/dist/
+
+# Superpowers brainstorming visual companion (local mockups)
+.superpowers/
+.claude/worktrees/
+
+# Phase 2b public-CE export output (scripts/export-public-ce.sh)
+.vornik-export/

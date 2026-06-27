@@ -1,0 +1,15 @@
+{
+  "swarm": "assistant-swarm",
+  "role": "writer",
+  "reason": "Happy path: writer wrote one file, populated message + writing.summary.",
+  "expect": "pass",
+  "payload": {
+    "writing": {
+      "written": true,
+      "path": "artifacts/out/europe-trip-itinerary.md",
+      "summary": "5-day Lisbon-Porto itinerary with rail-pass schedule + booking refs"
+    },
+    "produced_files": ["artifacts/out/europe-trip-itinerary.md"],
+    "message": "Wrote a 5-day Lisbon-Porto itinerary covering rail passes, three boutique hotels with refundable bookings, and a half-day food tour in Alfama. Costs estimated in EUR with current FX."
+  }
+}

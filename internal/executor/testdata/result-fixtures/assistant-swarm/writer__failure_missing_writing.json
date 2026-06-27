@@ -1,0 +1,9 @@
+{
+  "swarm": "assistant-swarm",
+  "role": "writer",
+  "reason": "Pre-migration regression: model emitted only {message} (literal-minded reading of the workflow's old `Respond with: {message: ...}` instruction). Should fail because writing + produced_files are required.",
+  "expect": "fail",
+  "payload": {
+    "message": "Wrote the document; details elided."
+  }
+}

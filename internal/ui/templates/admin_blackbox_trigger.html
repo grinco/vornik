@@ -1,0 +1,205 @@
+{{define "admin_blackbox_trigger.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <a href="/ui/admin/blackbox" class="text-xs text-brand-400 hover:text-brand-300">← Black Box</a>
+                <h1 class="text-xl font-semibold text-gray-100">Workflow-healing trigger</h1>
+                {{if .Available}}
+                <a href="/ui/admin/blackbox/overrides?project={{.Trigger.ProjectID}}&workflow={{.Trigger.WorkflowID}}&class={{.Trigger.Class}}" class="text-xs text-gray-400 hover:text-gray-200 ml-auto">Override settings →</a>
+                {{end}}
+                {{if .Available}}
+                {{if .Trigger.IsOpen}}
+                <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-900/50 text-amber-200 ring-1 ring-amber-700/50">{{.Trigger.Status}}</span>
+                {{else if eq .Trigger.Status "dismissed"}}
+                <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-dark-700 text-gray-400 ring-1 ring-dark-600">{{.Trigger.Status}}</span>
+                {{else}}
+                <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-emerald-900/30 text-emerald-200 ring-1 ring-emerald-700/40">{{.Trigger.Status}}</span>
+                {{end}}
+                {{end}}
+            </div>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-12 text-center text-gray-500 text-sm">
+                Workflow-healing trigger repository not wired on this deployment.
+            </div>
+            {{else}}
+
+            {{if .ActionError}}
+            <div class="bg-red-900/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-200">
+                <span class="font-medium">Action failed:</span> {{.ActionError}}
+            </div>
+            {{end}}
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-2">
+                    <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Metadata</h2>
+                    <dl class="grid grid-cols-3 gap-y-1.5 text-xs">
+                        <dt class="text-gray-500">ID</dt><dd class="text-gray-200 font-mono col-span-2 break-all">{{.Trigger.ID}}</dd>
+                        <dt class="text-gray-500">Project</dt>
+                        <dd class="text-gray-200 font-mono col-span-2">
+                            <a href="/ui/projects/{{.Trigger.ProjectID}}" class="text-brand-300 hover:text-brand-200">{{.Trigger.ProjectID}}</a>
+                        </dd>
+                        <dt class="text-gray-500">Workflow</dt><dd class="text-gray-200 font-mono col-span-2">{{.Trigger.WorkflowID}}</dd>
+                        <dt class="text-gray-500">Class</dt>
+                        <dd class="col-span-2">
+                            <span class="px-1.5 py-0.5 text-xs font-mono rounded ring-1 ring-violet-700/40 bg-violet-900/20 text-violet-200">{{.Trigger.Class}}</span>
+                        </dd>
+                        <dt class="text-gray-500">Opened</dt><dd class="text-gray-200 font-mono col-span-2">{{.Trigger.CreatedAt}}</dd>
+                        {{if .ResolvedAt}}
+                        <dt class="text-gray-500">Resolved</dt><dd class="text-gray-200 font-mono col-span-2">{{.ResolvedAt}}</dd>
+                        {{end}}
+                        {{if .ProposalID}}
+                        <dt class="text-gray-500">Proposal</dt>
+                        <dd class="text-gray-200 font-mono col-span-2">
+                            <a href="/ui/admin/workflow-proposals/{{.ProposalID}}" class="text-brand-300 hover:text-brand-200">{{.ProposalID}}</a>
+                        </dd>
+                        {{end}}
+                    </dl>
+                </div>
+
+                <div class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-2">
+                    <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Regression</h2>
+                    <dl class="grid grid-cols-3 gap-y-1.5 text-xs">
+                        <dt class="text-gray-500">Metric</dt><dd class="text-gray-200 font-mono col-span-2">{{.Trigger.MetricName}}</dd>
+                        <dt class="text-gray-500">Baseline</dt>
+                        <dd class="text-gray-200 font-mono col-span-2">
+                            {{printf "%.4f" .Trigger.BaselineValue}} <span class="text-gray-500">({{.BaselineWindow}})</span>
+                        </dd>
+                        <dt class="text-gray-500">Comparison</dt>
+                        <dd class="text-gray-200 font-mono col-span-2">
+                            {{printf "%.4f" .Trigger.ComparisonValue}} <span class="text-gray-500">({{.ComparisonWindow}})</span>
+                        </dd>
+                        <dt class="text-gray-500">Threshold</dt><dd class="text-gray-200 font-mono col-span-2">{{printf "%.2f%%" .Trigger.ThresholdValue}}</dd>
+                        <dt class="text-gray-500">Delta</dt>
+                        <dd class="font-mono col-span-2">
+                            {{if gt .Trigger.DeltaPct 0.0}}
+                            <span class="text-rose-300">+{{printf "%.1f" .Trigger.DeltaPct}}%</span>
+                            {{else}}
+                            <span class="text-emerald-300">{{printf "%.1f" .Trigger.DeltaPct}}%</span>
+                            {{end}}
+                        </dd>
+                    </dl>
+                </div>
+            </div>
+
+            <div class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-2">
+                <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Evidence ({{len .Evidence}} executions)</h2>
+                {{if .Evidence}}
+                <p class="text-xs text-gray-500">Bottom-N runs the detector captured. The architect re-fetches its own evidence from workflow telemetry — these IDs are for operator triage.</p>
+                <ul class="space-y-0.5 text-xs font-mono text-gray-300">
+                    {{range .Evidence}}
+                    <li class="flex items-center gap-2">
+                        <span class="text-gray-500">•</span>
+                        <a href="/ui/executions/{{.}}" class="text-brand-400 hover:text-brand-300 truncate">{{.}}</a>
+                    </li>
+                    {{end}}
+                </ul>
+                {{else}}
+                <p class="text-xs text-gray-500">No evidence runs were attached to this trigger.</p>
+                {{end}}
+            </div>
+
+            {{if .History}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-4 py-2.5 border-b border-dark-700/60 flex items-center gap-3">
+                    <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Firing history</h2>
+                    <span class="text-[10px] text-gray-500">past triggers for {{.Trigger.ProjectID}} / {{.Trigger.WorkflowID}} — newest first</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2 text-left text-[10px] font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th scope="col" class="px-4 py-2 text-left text-[10px] font-medium text-gray-500 uppercase tracking-wider">Class</th>
+                            <th scope="col" class="px-4 py-2 text-right text-[10px] font-medium text-gray-500 uppercase tracking-wider">Δ</th>
+                            <th scope="col" class="px-4 py-2 text-right text-[10px] font-medium text-gray-500 uppercase tracking-wider">Opened</th>
+                            <th scope="col" class="px-4 py-2 text-right text-[10px] font-medium text-gray-500 uppercase tracking-wider"><span class="sr-only">Detail</span></th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .History}}
+                            <tr class="hover:bg-dark-700/40 transition-colors">
+                                <td class="px-4 py-2 whitespace-nowrap">
+                                    {{if .IsOpen}}
+                                    <span class="px-1.5 py-0.5 text-[10px] font-mono rounded ring-1 ring-amber-700/50 bg-amber-900/30 text-amber-200">{{.Status}}</span>
+                                    {{else}}
+                                    <span class="px-1.5 py-0.5 text-[10px] font-mono rounded ring-1 ring-dark-600 bg-dark-700 text-gray-400">{{.Status}}</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 text-xs">
+                                    <span class="px-1.5 py-0.5 font-mono rounded ring-1 ring-violet-700/40 bg-violet-900/20 text-violet-200">{{.Class}}</span>
+                                </td>
+                                <td class="px-4 py-2 text-xs font-mono text-right">
+                                    {{if gt .DeltaPct 0.0}}
+                                    <span class="text-rose-300">+{{printf "%.1f" .DeltaPct}}%</span>
+                                    {{else}}
+                                    <span class="text-emerald-300">{{printf "%.1f" .DeltaPct}}%</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 text-[10px] font-mono text-right text-gray-500">{{.CreatedAt}}</td>
+                                <td class="px-4 py-2 text-right">
+                                    <a href="/ui/admin/blackbox/triggers/{{.ID}}" class="text-xs text-brand-400 hover:text-brand-300">Open →</a>
+                                </td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}
+
+            {{if .CanDismiss}}
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <form method="post" action="/ui/admin/blackbox/triggers/{{.Trigger.ID}}/dismiss"
+                      class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-3"
+                      onsubmit="return confirm('Dismiss this trigger? The detector will re-open a new row if the regression persists.');">
+                    <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Dismiss</h2>
+                    <p class="text-xs text-gray-500">
+                        Mark the regression as expected (deploy under load, A/B test, intentional cost lift). The row transitions to <code class="font-mono text-gray-400">dismissed</code> and the detector becomes free to fire a new trigger for the same workflow.
+                    </p>
+                    <button type="submit"
+                            class="bg-dark-700 hover:bg-dark-600 border border-dark-600 text-gray-200 text-sm font-medium px-4 py-2 rounded-md">
+                        Dismiss
+                    </button>
+                </form>
+
+                {{if .CanGenerate}}
+                <form method="post" action="/ui/admin/blackbox/triggers/{{.Trigger.ID}}/generate-candidate"
+                      class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-3"
+                      onsubmit="return confirm('Generate a workflow candidate? Calls the architect synchronously — this can take 10-30s while the LLM runs.');">
+                    <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Generate candidate</h2>
+                    <p class="text-xs text-gray-500">
+                        Hands the workflow ID off to the memetic architect. On success the trigger transitions to <code class="font-mono text-gray-400">generated_candidate</code> with the proposal ID stamped, and you're redirected to the proposal page to approve / reject.
+                    </p>
+                    <button type="submit"
+                            class="bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium px-4 py-2 rounded-md">
+                        Generate candidate
+                    </button>
+                </form>
+                {{else if not .HasArchitect}}
+                <div class="glass rounded-xl border border-dark-700 px-5 py-4 text-xs text-gray-500 space-y-1">
+                    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Generate candidate</h2>
+                    <p>Workflow architect not wired on this deployment. Dismiss the trigger or pipe the evidence into <code class="font-mono">/api/v1/admin/workflow-architect/propose</code> manually.</p>
+                </div>
+                {{end}}
+            </div>
+            {{else}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-3 text-xs text-gray-500">
+                {{if eq .Trigger.Status "dismissed"}}This trigger was dismissed{{if .ResolvedAt}} at {{.ResolvedAt}}{{end}}. The detector may re-open a fresh row if the regression persists.
+                {{else if eq .Trigger.Status "generated_candidate"}}A candidate proposal was generated{{if .ResolvedAt}} at {{.ResolvedAt}}{{end}}. Review it on the proposal page above.
+                {{else}}No further action available on this trigger.{{end}}
+            </div>
+            {{end}}
+
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

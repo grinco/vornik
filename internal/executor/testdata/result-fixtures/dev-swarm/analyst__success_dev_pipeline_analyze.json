@@ -1,0 +1,13 @@
+{
+  "swarm": "dev-swarm",
+  "role": "analyst",
+  "reason": "Workflow-step-pinned: dev-pipeline's `analyze` step asks for analysis.{feature, subtask, ready}. Schema is loose at the analysis level so this passes.",
+  "expect": "pass",
+  "payload": {
+    "analysis": {
+      "feature": "outputSchema-validator",
+      "subtask": "draft the JSON Schema converter",
+      "ready": true
+    }
+  }
+}

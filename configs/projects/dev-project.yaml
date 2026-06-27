@@ -1,0 +1,145 @@
+projectId: "dev-project"
+displayName: "Autonomous Development Project"
+swarmId: "dev-swarm"
+defaultWorkflowId: "adaptive"
+# Strict adaptive routing (commit 28e9566): the route step's lead
+# must pick one workflow from this list. Empty/missing → the
+# selected_workflow is ignored and the route terminates as
+# COMPLETED without delegating to a child task.
+adaptiveCandidateWorkflows:
+  - dev-pipeline
+  - simple-workflow
+defaultPriority: 50 # 0-100; lower numbers run first
+maxConcurrentTasks: 1   # serial execution — prevents workspace clashes (see BACKLOG.md for git worktree parallelism)
+
+autonomy:
+  enabled: true
+  # Autonomy mode (one of: llm | cron | backlog).
+  # `llm` (default) — lead evaluates state each tick and picks the
+  # next task via tool-use. Best for state-driven projects like
+  # this scout/BACKLOG ladder.
+  # `cron`  — fires `goal` verbatim every tick. Best for fixed
+  # worker prompts (trading, scheduled refresh).
+  # `backlog` — reads top `- [ ]` line from BACKLOG.md and
+  # dispatches it. Best for operator-curated FIFO of feature work;
+  # the natural migration target for THIS template once the
+  # operator pre-bakes each backlog item as a full worker prompt.
+  # See https://docs.vornik.io
+  mode: llm
+  # Prescriptive, numbered procedure. Freeform English goals caused the
+  # lead to schedule meta-tasks ("Examine BACKLOG.md to identify the
+  # next feature") that coders read literally and returned zero
+  # commits for. This template gives the lead exactly three prompt
+  # shapes and forbids the verbs that caused that drift.
+  goal: |
+    Drive the codebase in project/ forward by scheduling ONE specific
+    task per tick. Never improvise a prompt outside the three templates.
+
+    PROCEDURE (top-to-bottom; stop at the first action)
+
+    1. BOOTSTRAP. If .autonomy/PROJECT_CONTEXT.md is NOT FOUND, schedule exactly:
+         "scout: Explore project/ and write project/.autonomy/PROJECT_CONTEXT.md
+          with Overview, Tech Stack, Project Structure, Build & Test,
+          Conventions, Key Files, Current State, Roadmap, and a
+          prioritised Backlog (each item a single line starting with
+          '- [ ] <feature name>:'). Commit the file."
+
+    2. PARSE THE BACKLOG. Lines matching '- [ ] <feature name>:' in
+       .autonomy/PROJECT_CONTEXT.md, in order. These are candidates.
+
+    3. DEDUP. A candidate is DONE when a past task's prompt starts
+       with "Implement <feature name>:" AND status = COMPLETED.
+       IN-FLIGHT when such a prompt has status QUEUED/LEASED/RUNNING/
+       WAITING_FOR_CHILDREN. Skip both.
+
+    4. IMPLEMENT. Schedule one task whose prompt BEGINS WITH
+       "Implement <feature name>:" using:
+         "Implement <feature name>: <one-sentence description of what
+          to build and which file(s) in project/ it belongs in>.
+          Read or write project/.autonomy/CURRENT_TASK.md with acceptance
+          criteria. Modify the relevant file(s). Run the test command
+          from .autonomy/PROJECT_CONTEXT.md if one exists. Commit the changes
+          with a meaningful message. The task is only complete once
+          the code is committed — do not stop at analysis or planning."
+       FORBIDDEN leading verbs: examine, explore, identify, analyse,
+       plan, evaluate, investigate. They produce zero-commit tasks.
+
+    5. ROADMAP REVISION. After every 4 recent "Implement ..." tasks,
+       schedule instead:
+         "architect: Run `git log --oneline -20` in project/. Compare
+          with project/BACKLOG.md and project/ROADMAP.md. Tick off
+          every backlog item with a corresponding commit. Append at
+          least one new feature idea suggested by recent work. Commit
+          the updated files."
+
+    6. IDLE. If no candidate remains, respond NO_ACTION.
+  maxTasksPerHour: 6
+  pollInterval: "5m"
+  allowedTaskTypes:
+    - "feature"
+    - "bug-fix"
+    - "refactor"
+    - "test-coverage"
+    - "roadmap-revision"
+  requireApproval: false
+
+permissions:
+  secrets: []
+  allowedTools:
+    - "current_time"
+    - "file_read"
+    - "file_write"
+    - "run_shell"
+    - "file_edit"
+    - "read_many_files"
+    - "grep"
+    - "glob"
+    - "git_status"
+    - "git_diff"
+    - "git_log"
+    - "git_show"
+    - "test_run"
+    - "lint_run"
+    - "typecheck_run"
+
+# mcp:
+#   # Each server's tools are namespaced mcp__{name}__{tool} and visible
+#   # to both the dispatcher and agent containers (via the daemon-proxy
+#   # path in mcp-bridge). The optional `allowed_tools` list shrinks the
+#   # advertised catalog to avoid overwhelming the LLM with write tools
+#   # that a read-only credential couldn't use anyway.
+#   servers:
+#     - name: "github"
+#       transport: "stdio"
+#       command: "/usr/local/bin/npx"          # absolute — systemd PATH is narrow
+#       args: ["-y", "@modelcontextprotocol/server-github"]
+#       env:
+#         PATH: "/usr/local/bin:/usr/bin:/bin"  # ensure node is reachable
+#         GITHUB_TOKEN: "${GITHUB_TOKEN}"       # ${VAR} expansion is safe here;
+#                                               # VORNIK_* vars are refused to
+#                                               # prevent daemon-secret leakage.
+#       allowed_tools: ["search_issues", "get_issue", "list_repositories"]
+#
+#     - name: "workspace"
+#       transport: "stdio"
+#       command: "/usr/local/bin/uvx"
+#       args:
+#         - "workspace-mcp"
+#         - "--single-user"
+#         - "--transport"
+#         - "stdio"
+#         - "--permissions"
+#         - "gmail:drafts"
+#         - "calendar:readonly"
+#       env:
+#         PATH: "/usr/local/bin:/usr/bin:/bin"
+#         # Per-project credentials dir keeps each project's OAuth tokens
+#         # isolated. When a second operator is added to the deployment,
+#         # their credentials live at secrets/<their-project>/workspace/.
+#         WORKSPACE_MCP_CREDENTIALS_DIR: "${HOME}/.config/vornik/secrets/dev-project/workspace"
+#         GOOGLE_CLIENT_SECRET_PATH:     "${HOME}/.config/vornik/secrets/google/credentials.json"
+#         USER_GOOGLE_EMAIL: "operator@example.com"
+#
+#     - name: "linear"
+#       transport: "sse"
+#       url: "http://localhost:3001/sse"

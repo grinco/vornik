@@ -1,0 +1,165 @@
+# Operator example — drop into ~/.config/vornik/projects/<name>.yaml
+# and tweak the marked TODO sections.
+#
+# Personal-assistant project: a chat-driven research/writing helper
+# wired for email + Telegram + voice messages with per-project API
+# keys for any external HA-loop callers, retention sweeping on, and
+# the LLM-tier memory narrative enabled.
+#
+# Assumes the personal-assistant swarm exists. Bootstrap with:
+#   vornikctl init project --template personal-assistant
+#
+# References:
+#   docs/operator/conversation-channels.md
+#   docs/operator/cost-and-caching.md
+#   docs/operator/storage-and-retention.md
+
+projectId: "personal-assistant"
+displayName: "Personal Assistant"
+description: |
+  General-purpose research/writing/planning helper. Inbound goes
+  through email + Telegram + voice; outbound replies on whichever
+  channel started the conversation.
+swarmId: "personal-assistant-swarm"
+defaultWorkflowId: "adaptive"
+adaptiveCandidateWorkflows:
+  - "research"
+  - "plan-and-write"
+
+defaultPriority: 50
+maxConcurrentTasks: 2
+
+# ---------------------------------------------------------------
+# Autonomy — disabled by default. Flip enabled: true once a goal
+# is set; the chat-driven path works without autonomy.
+# ---------------------------------------------------------------
+autonomy:
+  enabled: false
+  mode: "llm"
+  pollInterval: "30m"
+  maxTasksPerHour: 4
+  allowedTaskTypes:
+    - "research"
+    - "summary"
+    - "comparison"
+    - "writing"
+
+permissions:
+  secrets: []
+  allowedTools:
+    - "current_time"
+    - "file_read"
+    - "file_write"
+    - "file_edit"
+    - "read_many_files"
+    - "grep"
+    - "glob"
+    - "memory_search"
+    - "memory_correct"
+    - "send_artifact"
+
+# ---------------------------------------------------------------
+# Budget — soft caps log warnings; hard caps block new work. All
+# USD per project. Adjust to your monthly spend tolerance.
+# ---------------------------------------------------------------
+budget:
+  daily_soft_usd: 2.00
+  daily_hard_usd: 10.00
+  monthly_soft_usd: 30.00
+  monthly_hard_usd: 100.00
+  timezone: "Europe/Prague"  # TODO: set to your IANA tz
+
+# ---------------------------------------------------------------
+# Retention — sweeper runs at the daemon-wide cadence; per-project
+# fields override the daemon defaults. Chat history pruned in 30
+# days; memory chunks live forever (the product, not state).
+# ---------------------------------------------------------------
+retention:
+  task_llm_usage_days: 90
+  tool_audit_days: 30
+  tasks_days: 60
+  executions_days: 60
+  artifacts_days: 60
+  task_messages_days: 30   # 2026.7.0 knob
+  memory_chunks_days: 0    # forever; class TTL handles ordinary churn
+
+# ---------------------------------------------------------------
+# Rate limit — task-creation frequency cap. Pair with per-API-key
+# limits set via `vornikctl key create … --rate-limit-rps 5`.
+# ---------------------------------------------------------------
+rate_limit:
+  tasks_per_minute: 5
+  tasks_per_hour: 60
+
+# ---------------------------------------------------------------
+# Chat — per-project dispatcher prefix. Useful for house rules
+# without forking the default prompt.
+# ---------------------------------------------------------------
+chat:
+  system_prefix: |
+    HOUSE RULE: reply in the same language the user wrote in. When
+    asked for a CV, planning doc, or article, ALWAYS use
+    send_artifact to deliver the file; do not paste the body into
+    the chat.
+
+# ---------------------------------------------------------------
+# Email — IMAP polling for inbound, SMTP for outbound. Secrets ride
+# in env vars (export them before starting the daemon).
+# ---------------------------------------------------------------
+email:
+  imap_host: "imap.gmail.com"           # TODO: your IMAP host
+  imap_port: 993
+  imap_username: "assistant@example.com" # TODO: your address
+  imap_password_env: "VORNIK_PA_IMAP_PASSWORD"
+  imap_mailbox: "INBOX"
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  smtp_username: "assistant@example.com"
+  smtp_password_env: "VORNIK_PA_SMTP_PASSWORD"
+  from_address: "Assistant <assistant@example.com>"
+  sender_allowlist:
+    - "you@example.com"            # TODO: replace with your sender list
+    - "example.com"                       # bare domain allowlist also works
+  poll_interval: "60s"
+  attachment_size_cap_bytes: 26214400   # 25 MiB; Gmail's per-message cap
+  attachment_store_dir: "/var/lib/vornik/email-attachments/personal-assistant"
+  verify_inbound_auth: true
+  auth_policy: "relaxed"
+
+# ---------------------------------------------------------------
+# Voice — async transcription on inbound voice messages + speech
+# synthesis on outbound replies. Telegram and Slack channels pick
+# this up automatically. Whisper + Piper binaries must be installed
+# on the daemon host.
+# ---------------------------------------------------------------
+voice:
+  stt:
+    provider: "whisper-local"
+    model: "/var/lib/vornik/voice/ggml-base.en.bin"  # TODO: path to your ggml model
+    binary_path: "/usr/local/bin/whisper-cpp"
+    ffmpeg_path: "/usr/bin/ffmpeg"
+    language_hint: "en"
+  tts:
+    provider: "piper"
+    voice: "/var/lib/vornik/voice/en_US-amy-medium.onnx"  # TODO: voice file
+    binary_path: "/usr/local/bin/piper"
+    ffmpeg_path: "/usr/bin/ffmpeg"
+    speed: 1.0
+    max_text_runes: 1500   # ~90 s of audio at conversational pace
+
+# ---------------------------------------------------------------
+# MCP — per-project tool servers. Empty unless you wire a scraper,
+# email-rules helper, or other MCP server. The dispatcher's
+# built-ins (file_*, memory_*, send_artifact, tool_search) are
+# always available regardless of this block.
+# ---------------------------------------------------------------
+mcp:
+  servers: []
+
+# ---------------------------------------------------------------
+# Hallucination judge — Phase 3 LLM-as-judge. Off by default; flip
+# on once you've watched a week of task verdicts to tune the model.
+# ---------------------------------------------------------------
+hallucinationJudge:
+  enabled: false
+  # model: "openai.gpt-oss-20b-1:0"

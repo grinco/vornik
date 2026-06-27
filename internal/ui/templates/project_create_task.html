@@ -1,0 +1,81 @@
+{{define "project_create_task.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-3xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">New task</h1>
+                    <p class="text-xs text-gray-500 font-mono mt-1">{{.ProjectID}}</p>
+                </div>
+                <a href="/ui/projects/{{.ProjectID}}" class="flex items-center gap-1 text-gray-500 hover:text-gray-300 text-sm transition-colors">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                    Back to project
+                </a>
+            </div>
+
+            {{if .Error}}
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            {{end}}
+
+            <form method="POST" action="/ui/projects/{{.ProjectID}}/tasks/new" class="space-y-5">
+                <div>
+                    <label class="block text-xs font-medium text-gray-300 mb-1.5" for="prompt">
+                        Prompt <span class="text-rose-400">*</span>
+                    </label>
+                    <textarea name="prompt" id="prompt" rows="10" required autofocus
+                              class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 leading-relaxed font-mono">{{.Prompt}}</textarea>
+                    <p class="text-[11px] text-gray-500 mt-1">What you want the swarm to do. Becomes <code class="text-gray-400">context.prompt</code> in the task payload.</p>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="workflowId">
+                            Workflow <span class="text-rose-400">*</span>
+                        </label>
+                        <select name="workflowId" id="workflowId" required
+                                class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                            {{if not .CompatibleWorkflows}}
+                            <option value="">(no compatible workflows found)</option>
+                            {{end}}
+                            {{$current := .WorkflowID}}
+                            {{range .CompatibleWorkflows}}
+                            <option value="{{.}}" {{if eq . $current}}selected{{end}}>{{.}}</option>
+                            {{end}}
+                        </select>
+                        <p class="text-[11px] text-gray-500 mt-1">Only workflows runnable by this project's swarm are listed.</p>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="taskType">Task type</label>
+                        <input type="text" name="taskType" id="taskType" value="{{.TaskType}}"
+                               class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                        <p class="text-[11px] text-gray-500 mt-1">Surfaces on the task row. Defaults to <code class="text-gray-400">research</code>.</p>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-medium text-gray-300 mb-1.5" for="priority">Priority</label>
+                    <input type="number" name="priority" id="priority" min="0" max="100" value="{{.Priority}}"
+                           class="w-full sm:w-32 px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono tabular-nums">
+                    <p class="text-[11px] text-gray-500 mt-1">0–100; lower runs first. Project default: <span class="font-mono text-gray-400">{{.DefaultPriority}}</span>.</p>
+                </div>
+
+                <div class="flex items-center justify-end gap-3 pt-2">
+                    <a href="/ui/projects/{{.ProjectID}}" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200">Cancel</a>
+                    <button type="submit"
+                            class="px-5 py-2 text-sm font-medium rounded-lg bg-brand-600 hover:bg-brand-500 text-white">
+                        Enqueue task
+                    </button>
+                </div>
+            </form>
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

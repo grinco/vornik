@@ -1,0 +1,90 @@
+{{define "swarms.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center justify-between gap-3">
+                <div class="flex items-center gap-3 text-gray-400">
+                    {{template "navIconSwarms"}}
+                    <h1 class="text-xl font-semibold text-gray-100">Swarms</h1>
+                    <span class="text-xs text-gray-500">{{len .Rows}}</span>
+                </div>
+                <a href="/ui/swarms/new" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors">New swarm</a>
+            </div>
+
+            {{if .Rows}}
+            <div class="glass rounded-xl border border-dark-700 px-4 py-2.5 flex items-center gap-3">
+                <svg class="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                <input id="ia-filter" type="text" placeholder="Filter swarms by name, role, runtime, or project…"
+                       oninput="filterIARows(this.value)"
+                       class="flex-1 bg-transparent border-none text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-0">
+            </div>
+
+            {{/* Phone: card stack */}}
+            <div class="md:hidden space-y-2">
+                {{range .Rows}}
+                <a href="/ui/swarms/{{.ID}}/edit" class="tap block glass rounded-xl border border-dark-700 px-4 py-3 hover:border-dark-600 transition-colors">
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="text-sm font-medium text-gray-100">{{.Label}}</span>
+                        <span class="text-[11px] px-2 py-0.5 rounded-full bg-dark-700 text-gray-300">{{.Runtime}}</span>
+                    </div>
+                    <div class="text-[11px] text-gray-500 mt-1 font-mono">{{.ID}}</div>
+                    <div class="text-xs text-gray-400 mt-1">{{.RoleCount}} role{{if ne .RoleCount 1}}s{{end}}{{if .LeadRole}} · lead: {{.LeadRole}}{{end}}</div>
+                    <div class="text-[11px] text-gray-500 mt-1">used by: {{if .UsedBy}}{{range $i, $p := .UsedBy}}{{if $i}}, {{end}}{{$p}}{{end}}{{else}}—{{end}}</div>
+                </a>
+                {{end}}
+            </div>
+
+            {{/* Desktop: table */}}
+            <div class="hidden md:block glass rounded-xl border border-dark-700 overflow-hidden">
+                <table class="min-w-full divide-y divide-dark-700">
+                    <thead class="bg-dark-800/60">
+                        <tr class="text-left text-[11px] uppercase tracking-wider text-gray-500">
+                            <th class="px-5 py-2.5 font-medium">Swarm</th>
+                            <th class="px-5 py-2.5 font-medium">Roles</th>
+                            <th class="px-5 py-2.5 font-medium">Lead</th>
+                            <th class="px-5 py-2.5 font-medium">Runtime</th>
+                            <th class="px-5 py-2.5 font-medium">Used by</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-dark-800">
+                        {{range .Rows}}
+                        <tr class="hover:bg-dark-800/50 transition-colors cursor-pointer" onclick="location.href='/ui/swarms/{{.ID}}/edit'">
+                            <td class="px-5 py-3">
+                                <div class="text-sm font-medium text-gray-100">{{.Label}}</div>
+                                <div class="text-[11px] text-gray-500 font-mono">{{.ID}}</div>
+                            </td>
+                            <td class="px-5 py-3 text-sm text-gray-300">{{.RoleCount}}</td>
+                            <td class="px-5 py-3 text-sm text-gray-400">{{if .LeadRole}}{{.LeadRole}}{{else}}—{{end}}</td>
+                            <td class="px-5 py-3"><span class="text-[11px] px-2 py-0.5 rounded-full bg-dark-700 text-gray-300">{{.Runtime}}</span></td>
+                            <td class="px-5 py-3 text-sm text-gray-400">
+                                {{if .UsedBy}}{{range $i, $p := .UsedBy}}{{if $i}}, {{end}}{{$p}}{{end}}{{else}}<span class="text-gray-600">—</span>{{end}}
+                            </td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+            {{else}}
+            {{template "emptyState" (dict "Icon" "swarms" "Title" "No swarms defined" "Hint" "A swarm groups the agent roles a project runs. Create one to get started." "CTAHref" "/ui/swarms/new" "CTALabel" "New swarm")}}
+            {{end}}
+        </div>
+    </main>
+
+    <script>
+        // Client-side substring filter shared by the IA list pages.
+        function filterIARows(query) {
+            var q = (query || '').toLowerCase().trim();
+            document.querySelectorAll('tbody tr, .md\\:hidden a.tap').forEach(function (row) {
+                var t = row.textContent.toLowerCase();
+                row.style.display = (!q || t.indexOf(q) !== -1) ? '' : 'none';
+            });
+        }
+    </script>
+</body>
+</html>
+{{end}}

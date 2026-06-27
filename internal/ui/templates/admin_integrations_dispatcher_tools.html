@@ -1,0 +1,57 @@
+{{define "admin_integrations_dispatcher_tools.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <h1 class="text-xl font-semibold text-gray-100">Dispatcher tools</h1>
+                <span class="px-2 py-0.5 text-[10px] uppercase tracking-wider font-mono rounded-md bg-amber-900/40 text-amber-300 ring-1 ring-amber-700/40">read-only</span>
+                <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
+            </div>
+            <p class="text-xs text-gray-500">Every tool the chat LLM can call. <span class="text-emerald-400 font-medium">available</span> = backing service wired; <span class="text-gray-500 font-medium">disabled</span> = service not configured (the tool exists in the catalogue but calls will return "not configured"). Edit project YAML + restart to flip a row from disabled to available.</p>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-10 text-center text-gray-500 text-sm">Dispatcher tool inventory not wired.</div>
+            {{else if .Tools}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <table class="min-w-full divide-y divide-dark-700/40">
+                    <thead class="bg-dark-700/30">
+                        <tr>
+                            <th scope="col" class="px-4 py-2 text-left text-[11px] font-medium text-gray-400 uppercase tracking-wider">Tool</th>
+                            <th scope="col" class="px-4 py-2 text-left text-[11px] font-medium text-gray-400 uppercase tracking-wider">Backing service</th>
+                            <th scope="col" class="px-4 py-2 text-left text-[11px] font-medium text-gray-400 uppercase tracking-wider">Status</th>
+                            <th scope="col" class="px-4 py-2 text-left text-[11px] font-medium text-gray-400 uppercase tracking-wider">Description</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-dark-700/40 text-xs">
+                        {{range .Tools}}
+                        <tr class="hover:bg-dark-700/20">
+                            <td class="px-4 py-2 font-mono text-gray-100 whitespace-nowrap align-top">{{.Name}}</td>
+                            <td class="px-4 py-2 font-mono text-gray-400 whitespace-nowrap align-top">{{if .BackingService}}{{.BackingService}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                            <td class="px-4 py-2 whitespace-nowrap align-top">
+                                {{if .Available}}
+                                <span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded-md bg-emerald-900/40 text-emerald-300 ring-1 ring-emerald-700/40">available</span>
+                                {{else}}
+                                <span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded-md bg-gray-800 text-gray-400 ring-1 ring-gray-700">disabled</span>
+                                {{end}}
+                            </td>
+                            <td class="px-4 py-2 text-gray-300 align-top">{{.Description}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+            {{else}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-10 text-center text-gray-500 text-sm">No dispatcher tools registered.</div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

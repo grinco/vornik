@@ -1,0 +1,174 @@
+{{define "admin_memory_audit.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">Memory Audit</h1>
+                <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
+            </div>
+
+            <p class="text-sm text-gray-500">
+                Per-call audit trail for memory-search retrievals and ingest
+                deposits. Each row is stamped with the actor that initiated the
+                call: <span class="font-mono text-gray-400">companion:&lt;client&gt;</span>
+                for host-LLM-plugin calls,
+                <span class="font-mono text-gray-400">agent</span> for in-workflow
+                searches, <span class="font-mono text-gray-400">rest_api</span> /
+                <span class="font-mono text-gray-400">ui</span> for operator-direct
+                requests. Use this to answer "who pulled X out of memory?" and
+                "where did this chunk come from?"
+            </p>
+
+            {{/* Tab strip — query-string driven so the browser back button
+                 returns to the previous tab cleanly. */}}
+            <div class="flex gap-2 text-sm border-b border-dark-700">
+                <a href="/ui/admin/memory-audit?tab=retrieval{{if .FilterProject}}&project={{.FilterProject}}{{end}}{{if .FilterActorKind}}&actor_kind={{.FilterActorKind}}{{end}}{{if .FilterRepoScope}}&repo_scope={{.FilterRepoScope}}{{end}}{{if .FilterSince}}&since={{.FilterSince}}{{end}}"
+                   class="px-3 py-2 -mb-px border-b-2 {{if eq .Tab "retrieval"}}border-brand-400 text-brand-300{{else}}border-transparent text-gray-400 hover:text-gray-200{{end}}">Retrieval</a>
+                <a href="/ui/admin/memory-audit?tab=ingest{{if .FilterProject}}&project={{.FilterProject}}{{end}}{{if .FilterActorKind}}&actor_kind={{.FilterActorKind}}{{end}}{{if .FilterRepoScope}}&repo_scope={{.FilterRepoScope}}{{end}}{{if .FilterDecision}}&decision={{.FilterDecision}}{{end}}{{if .FilterSince}}&since={{.FilterSince}}{{end}}"
+                   class="px-3 py-2 -mb-px border-b-2 {{if eq .Tab "ingest"}}border-brand-400 text-brand-300{{else}}border-transparent text-gray-400 hover:text-gray-200{{end}}">Ingest</a>
+            </div>
+
+            <form method="get" action="/ui/admin/memory-audit"
+                  class="glass rounded-xl border border-dark-700 px-4 py-3 flex flex-wrap items-end gap-3 text-sm">
+                <input type="hidden" name="tab" value="{{.Tab}}">
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Project</span>
+                    <input type="text" name="project" value="{{.FilterProject}}" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-44">
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Actor kind</span>
+                    <input type="text" name="actor_kind" value="{{.FilterActorKind}}" placeholder="companion:claude-code" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-52">
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Repo scope</span>
+                    <input type="text" name="repo_scope" value="{{.FilterRepoScope}}" placeholder="github.com/owner/repo" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-52">
+                </label>
+                {{if eq .Tab "ingest"}}
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Decision</span>
+                    <input type="text" name="decision" value="{{.FilterDecision}}" placeholder="admitted" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-32">
+                </label>
+                {{end}}
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Since (YYYY-MM-DD)</span>
+                    <input type="text" name="since" value="{{.FilterSince}}" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-40">
+                </label>
+                <input type="hidden" name="limit" value="{{.Limit}}">
+                <button class="bg-brand-500 hover:bg-brand-400 text-white text-xs font-medium px-3 py-1.5 rounded-md">Filter</button>
+            </form>
+
+            <div class="flex justify-end">
+                {{template "pageSizeSelector" (dict
+                    "Action" "/ui/admin/memory-audit"
+                    "Current" .Limit
+                    "Options" .LimitOptions
+                    "Hidden" (dict
+                        "tab" .Tab
+                        "project" .FilterProject
+                        "actor_kind" .FilterActorKind
+                        "repo_scope" .FilterRepoScope
+                        "decision" .FilterDecision
+                        "since" .FilterSince))}}
+            </div>
+
+            {{if .Error}}
+            <div class="bg-rose-900/30 border border-rose-700/60 rounded-md px-4 py-2 text-sm text-rose-300">
+                {{.Error}}
+            </div>
+            {{end}}
+
+            {{if eq .Tab "ingest"}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                {{if not .AvailableIngest}}
+                <div class="px-5 py-12 text-center text-gray-500 text-sm">Ingest-audit repository not wired.</div>
+                {{else if .Ingest}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actor</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Decision</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Class</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Bytes</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Chunks</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scope</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Gate</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Ingest}}
+                            <tr class="hover:bg-dark-700/40 transition-colors">
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500 font-mono">{{.IngestedAt.Format "01-02 15:04:05"}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-300 font-mono">{{.ProjectID}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-300 font-mono">{{with .ActorKind}}{{.}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-300 max-w-sm truncate font-mono" title="{{.SourceName}}">{{.SourceName}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs">
+                                    {{if eq .Decision "admitted"}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-emerald-900/40 text-emerald-300">{{.Decision}}</span>
+                                    {{else if eq .Decision "quarantined"}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-900/40 text-amber-300">{{.Decision}}</span>
+                                    {{else if eq .Decision "rejected"}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-rose-900/40 text-rose-300">{{.Decision}}</span>
+                                    {{else}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-dark-700 text-gray-300">{{.Decision}}</span>{{end}}
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono">{{with .ProposedClass}}{{.}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono text-right">{{.ContentBytes}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono text-right">{{.ChunksAdmitted}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono">{{with .RepoScope}}{{.}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono">{{with .GateFailed}}{{.}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-5 py-12 text-center text-gray-500 text-sm">No ingest-audit entries match the filter.</div>
+                {{end}}
+            </div>
+            {{else}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                {{if not .AvailableRetrieval}}
+                <div class="px-5 py-12 text-center text-gray-500 text-sm">Retrieval-audit repository not wired.</div>
+                {{else if .Retrieval}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actor</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scope</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Query</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Hits</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Task</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Retrieval}}
+                            <tr class="hover:bg-dark-700/40 transition-colors">
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500 font-mono">{{.RetrievedAt.Format "01-02 15:04:05"}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-300 font-mono">{{.ProjectID}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-300 font-mono">{{with .ActorKind}}{{.}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono">{{with .RepoScope}}{{.}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-300 max-w-md truncate" title="{{.Query}}">{{.Query}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono text-right">{{len .ChunkIDs}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500 font-mono">{{with .TaskID}}{{.}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-5 py-12 text-center text-gray-500 text-sm">No retrieval-audit entries match the filter.</div>
+                {{end}}
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

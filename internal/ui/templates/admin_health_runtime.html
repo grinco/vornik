@@ -1,0 +1,173 @@
+{{define "admin_health_runtime.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <h1 class="text-xl font-semibold text-gray-100">Runtime readiness</h1>
+                <a href="/ui/admin/health" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Health</a>
+            </div>
+            <p class="text-sm text-gray-500 -mt-3">
+                Voice (STT / TTS) provider health + artifact storage backend status, probed at request time.
+                Mirrors the WARN-log surface in <code class="text-gray-400">container_voice.go</code> + the
+                FileBackend wiring in <code class="text-gray-400">internal/storage/artifactbackend.go</code>.
+            </p>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-amber-700/30 px-5 py-4">
+                <p class="text-sm text-amber-200">Runtime readiness source not wired — the page is alive but no data
+                is being collected. Set <code class="text-amber-300">ui.WithRuntimeReadinessSource(...)</code> at
+                container boot to enable.</p>
+            </div>
+            {{else}}
+
+            <!-- Voice -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60 flex items-center justify-between flex-wrap gap-2">
+                    <div>
+                        <h2 class="text-sm font-medium text-gray-200">Voice providers</h2>
+                        <p class="mt-1 text-xs text-gray-500">
+                            STT (Whisper) + TTS (Piper) + ffmpeg. A row's <span class="text-rose-300">red</span> status
+                            means the first voice message will fail with that exact missing binary / model.
+                        </p>
+                    </div>
+                    <div class="text-xs text-gray-400 flex items-center gap-3">
+                        <span>STT: <span class="{{if .Voice.STTProvider}}text-emerald-300{{else}}text-gray-500{{end}} font-mono">{{if .Voice.STTProvider}}{{.Voice.STTProvider}}{{else}}disabled{{end}}</span></span>
+                        <span>·</span>
+                        <span>TTS: <span class="{{if .Voice.TTSProvider}}text-emerald-300{{else}}text-gray-500{{end}} font-mono">{{if .Voice.TTSProvider}}{{.Voice.TTSProvider}}{{else}}disabled{{end}}</span></span>
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-dark-700/60 text-xs">
+                        <thead class="bg-dark-800/60">
+                            <tr>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Probe</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Configured</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Path</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Detail</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Voice.Probes}}
+                            <tr class="hover:bg-dark-700/30">
+                                <td class="px-3 py-2 text-gray-300 font-mono whitespace-nowrap">{{.Label}}</td>
+                                <td class="px-3 py-2 {{if .Configured}}text-gray-300{{else}}text-gray-600{{end}}">{{if .Configured}}yes{{else}}—{{end}}</td>
+                                <td class="px-3 py-2 text-gray-400 font-mono max-w-md truncate" title="{{.Path}}">{{if .Path}}{{.Path}}{{else}}<span class="text-gray-600 italic">not resolved</span>{{end}}</td>
+                                <td class="px-3 py-2">
+                                    {{if not .Configured}}
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-gray-700/40 text-gray-400">disabled</span>
+                                    {{else if .OK}}
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-900/40 text-emerald-300">ok</span>
+                                    {{else}}
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-rose-900/40 text-rose-300">missing</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-3 py-2 text-gray-400 max-w-md truncate" title="{{.Error}}">{{if .Error}}{{.Error}}{{else}}—{{end}}</td>
+                            </tr>
+                            {{else}}
+                            <tr>
+                                <td class="px-3 py-6 text-center text-gray-500" colspan="5">No voice provider configured — voice messages are disabled.</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Storage -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <h2 class="text-sm font-medium text-gray-200">Artifact storage backend</h2>
+                    <p class="mt-1 text-xs text-gray-500">
+                        Active <code class="text-gray-400">FileBackend</code> for artifact blob I/O — picked by
+                        <code class="text-gray-400">storage.OpenArtifactBackend</code> from
+                        <code class="text-gray-400">Config.Storage.Backend</code>. Filesystem probes a touch+remove
+                        on the artifacts directory; S3 probes a HeadBucket call.
+                    </p>
+                </div>
+                <div class="px-5 py-4 space-y-3">
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs uppercase tracking-wider text-gray-500">Backend:</span>
+                        <span class="text-sm font-mono text-gray-200">{{if .Storage.Backend}}{{.Storage.Backend}}{{else}}unknown{{end}}</span>
+                    </div>
+
+                    {{if eq .Storage.Backend "filesystem"}}
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                        <div class="bg-dark-900/50 rounded p-3 border border-dark-700/60">
+                            <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Path</div>
+                            <div class="font-mono text-gray-200 break-all">{{.Storage.FilesystemPath}}</div>
+                        </div>
+                        <div class="bg-dark-900/50 rounded p-3 border border-dark-700/60">
+                            <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Writable</div>
+                            <div>
+                                {{if .Storage.FilesystemWritable}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-900/40 text-emerald-300">yes</span>
+                                {{else}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-rose-900/40 text-rose-300">no</span>
+                                {{end}}
+                            </div>
+                        </div>
+                        {{if .Storage.FilesystemError}}
+                        <div class="bg-rose-900/20 rounded p-3 border border-rose-900/40 md:col-span-3">
+                            <div class="text-rose-400 uppercase tracking-wider text-[10px] mb-1">Error</div>
+                            <div class="font-mono text-rose-200 text-xs">{{.Storage.FilesystemError}}</div>
+                        </div>
+                        {{end}}
+                    </div>
+                    {{end}}
+
+                    {{if eq .Storage.Backend "s3"}}
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                        <div class="bg-dark-900/50 rounded p-3 border border-dark-700/60">
+                            <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Region</div>
+                            <div class="font-mono text-gray-200">{{if .Storage.S3Region}}{{.Storage.S3Region}}{{else}}—{{end}}</div>
+                        </div>
+                        <div class="bg-dark-900/50 rounded p-3 border border-dark-700/60">
+                            <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Bucket</div>
+                            <div class="font-mono text-gray-200">{{if .Storage.S3Bucket}}{{.Storage.S3Bucket}}{{else}}—{{end}}</div>
+                        </div>
+                        <div class="bg-dark-900/50 rounded p-3 border border-dark-700/60">
+                            <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Prefix</div>
+                            <div class="font-mono text-gray-200">{{if .Storage.S3Prefix}}{{.Storage.S3Prefix}}{{else}}(root){{end}}</div>
+                        </div>
+                        <div class="bg-dark-900/50 rounded p-3 border border-dark-700/60">
+                            <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Endpoint</div>
+                            <div class="font-mono text-gray-200 break-all">{{if .Storage.S3Endpoint}}{{.Storage.S3Endpoint}}{{else}}<span class="text-gray-500 italic">aws default</span>{{end}}</div>
+                        </div>
+                        <div class="bg-dark-900/50 rounded p-3 border border-dark-700/60">
+                            <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Path style</div>
+                            <div class="text-gray-200">{{if .Storage.S3UsePathStyle}}yes{{else}}no (virtual host){{end}}</div>
+                        </div>
+                        <div class="bg-dark-900/50 rounded p-3 border border-dark-700/60">
+                            <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Reachable</div>
+                            <div>
+                                {{if .Storage.S3Reachable}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-900/40 text-emerald-300">yes</span>
+                                {{else}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-rose-900/40 text-rose-300">no</span>
+                                {{end}}
+                            </div>
+                        </div>
+                        {{if .Storage.S3Error}}
+                        <div class="bg-rose-900/20 rounded p-3 border border-rose-900/40 md:col-span-3">
+                            <div class="text-rose-400 uppercase tracking-wider text-[10px] mb-1">Error</div>
+                            <div class="font-mono text-rose-200 text-xs">{{.Storage.S3Error}}</div>
+                        </div>
+                        {{end}}
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}{{/* end Available */}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

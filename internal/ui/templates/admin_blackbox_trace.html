@@ -1,0 +1,111 @@
+{{define "admin_blackbox_trace.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">Trace · <code class="font-mono text-sm">{{.TaskID}}</code></h1>
+                <a href="/ui/admin/blackbox" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Black Box</a>
+                <a href="/ui/tasks/{{.TaskID}}" class="text-xs text-brand-400 hover:text-brand-300">Task page →</a>
+            </div>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 p-10 text-center text-gray-500 text-sm">
+                Black Box trace service not configured on this deployment.
+            </div>
+            {{else if .NotFound}}
+            <div class="glass rounded-xl border border-dark-700 p-10 text-center text-gray-500 text-sm">
+                No audit data for task <code class="font-mono">{{.TaskID}}</code>. Check the task ID — retention may have swept the rows, or the task never ran.
+            </div>
+            {{else if .Error}}
+            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-200 text-xs px-3 py-2 rounded-md">
+                Trace assembly failed: {{.Error}}
+            </div>
+            {{else if .Trace}}
+            <!-- Header card -->
+            <div class="glass rounded-xl border border-dark-700 px-4 py-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                <div>
+                    <div class="text-gray-500 uppercase tracking-wider mb-0.5">Project</div>
+                    <div class="font-mono text-gray-200"><a href="/ui/projects/{{.Trace.Header.ProjectID}}" class="hover:text-brand-300">{{.Trace.Header.ProjectID}}</a></div>
+                </div>
+                <div>
+                    <div class="text-gray-500 uppercase tracking-wider mb-0.5">Status</div>
+                    <div class="font-mono text-gray-200">{{.Trace.Header.Status}}</div>
+                </div>
+                <div>
+                    <div class="text-gray-500 uppercase tracking-wider mb-0.5">Workflow</div>
+                    <div class="font-mono text-gray-300">{{.Trace.Header.WorkflowID}}{{if .Trace.Header.WorkflowRevision}}<span class="text-gray-500">@{{.Trace.Header.WorkflowRevision}}</span>{{end}}</div>
+                </div>
+                <div>
+                    <div class="text-gray-500 uppercase tracking-wider mb-0.5">Total cost</div>
+                    <div class="font-mono text-emerald-300">${{printf "%.4f" .Trace.Header.TotalCostUSD}}</div>
+                </div>
+                <div class="col-span-2 md:col-span-4">
+                    <div class="text-gray-500 uppercase tracking-wider mb-0.5">Digest <span class="text-[10px] text-gray-600">(schema v{{.Trace.Header.SchemaVersion}}) — cite this to identify the trace</span></div>
+                    <div class="font-mono text-[10px] text-gray-400 break-all">{{.Trace.Header.TraceDigest}}</div>
+                </div>
+            </div>
+
+            <!-- Counts -->
+            <div class="glass rounded-xl border border-dark-700 px-4 py-3 grid grid-cols-3 md:grid-cols-7 gap-3 text-center text-xs">
+                <div><div class="text-2xl font-semibold text-gray-100">{{.Trace.Counts.Events}}</div><div class="text-gray-500">events</div></div>
+                <div><div class="text-2xl font-semibold text-gray-100">{{.Trace.Counts.Executions}}</div><div class="text-gray-500">executions</div></div>
+                <div><div class="text-2xl font-semibold text-gray-100">{{.Trace.Counts.Steps}}</div><div class="text-gray-500">steps</div></div>
+                <div><div class="text-2xl font-semibold text-gray-100">{{.Trace.Counts.LLMCalls}}</div><div class="text-gray-500">llm calls</div></div>
+                <div><div class="text-2xl font-semibold text-gray-100">{{.Trace.Counts.ToolCalls}}</div><div class="text-gray-500">tool calls</div></div>
+                <div><div class="text-2xl font-semibold text-gray-100">{{.Trace.Counts.MemoryReads}}</div><div class="text-gray-500">memory reads</div></div>
+                <div><div class="text-2xl font-semibold text-gray-100">{{.Trace.Counts.JudgeVerdicts}}</div><div class="text-gray-500">verdicts</div></div>
+            </div>
+
+            {{if .Trace.Warnings}}
+            <div class="bg-amber-900/30 border border-amber-700/40 text-amber-200 text-xs px-3 py-2 rounded-md space-y-1">
+                <div class="font-medium">Partial trace — some sources failed:</div>
+                <ul class="list-disc list-inside ml-2">
+                    {{range .Trace.Warnings}}<li>{{.}}</li>{{end}}
+                </ul>
+            </div>
+            {{end}}
+
+            <!-- Event log -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-4 py-2.5 border-b border-dark-700/60 text-xs uppercase tracking-wider text-gray-500">Chronological event log</div>
+                {{if .Trace.Events}}
+                <div class="divide-y divide-dark-700/40">
+                    {{range .Trace.Events}}
+                    <div class="px-4 py-2 flex items-start gap-3 hover:bg-dark-700/30 transition-colors">
+                        <div class="text-[10px] text-gray-500 font-mono whitespace-nowrap pt-1 w-24">{{.Timestamp.Format "15:04:05.000"}}</div>
+                        <div class="flex-shrink-0">
+                            <span class="px-1.5 py-0.5 text-[10px] font-mono rounded ring-1 ring-dark-600 bg-dark-700 text-gray-300">{{.Kind}}</span>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="text-sm text-gray-200 truncate" title="{{.Title}}">{{.Title}}</div>
+                            {{if .Summary}}<div class="text-[11px] text-gray-500 truncate" title="{{.Summary}}">{{.Summary}}</div>{{end}}
+                            <div class="text-[10px] text-gray-600 font-mono mt-0.5">
+                                {{if .Role}}<span class="text-violet-400">{{.Role}}</span>{{end}}
+                                {{if .Model}} · {{.Model}}{{end}}
+                                {{if .StepID}} · step={{.StepID}}{{end}}
+                                {{if .ExecutionID}} · exec={{.ExecutionID}}{{end}}
+                                · {{.Source}}{{if .SourceID}}/{{.SourceID}}{{end}}
+                            </div>
+                        </div>
+                        {{if gt .CostUSD 0.0}}<div class="text-[11px] font-mono text-emerald-300 whitespace-nowrap pt-1">${{printf "%.4f" .CostUSD}}</div>{{end}}
+                    </div>
+                    {{end}}
+                </div>
+                {{else}}
+                <div class="px-4 py-10 text-center text-sm text-gray-500">No events recorded for this task.</div>
+                {{end}}
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

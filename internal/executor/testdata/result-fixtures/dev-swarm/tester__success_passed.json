@@ -1,0 +1,21 @@
+{
+  "swarm": "dev-swarm",
+  "role": "tester",
+  "reason": "Gate-driven: dev-pipeline branches on testing.passed. Happy path emits passed:true.",
+  "expect": "pass",
+  "payload": {
+    "testing": {
+      "passed": true,
+      "pinned_cases_validated": true,
+      "cases": [
+        {
+          "id": "case-1",
+          "status": "passed",
+          "evidence": "go test ./..."
+        }
+      ],
+      "ran": "go test ./...",
+      "summary": "all packages pass"
+    }
+  }
+}

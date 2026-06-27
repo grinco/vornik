@@ -1,0 +1,14 @@
+# Full-codebase lint — runs on every file via `make lint`.
+#
+# Keeps golangci-lint's standard set (errcheck, govet, ineffassign,
+# staticcheck, unused) enforced everywhere, plus misspell which the whole
+# tree already passes. The complexity/size/quality linters (funlen,
+# gocognit, nestif, dupl, gocritic, revive, unparam, unconvert) are NOT
+# here — legacy code has many findings; they run as a NEW-CODE-ONLY
+# ratchet via .golangci-strict.yml so only new/changed code is held to the
+# higher bar. See `make lint` / `make lint-strict`.
+version: "2"
+linters:
+  default: standard
+  enable:
+    - misspell

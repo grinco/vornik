@@ -1,0 +1,200 @@
+{{/*
+cluster mode — ui Deployment (profile: ui).
+
+Uses the thin image (podman-free). Serves /ui routes and the read-only
+data-plane endpoints. Has direct DB access (R/W allowed by the profile;
+effectively read-heavy in practice). No podman, no privileged context,
+no data PVC, no singleton leases.
+
+ui pods are stateless read-replicas — a Deployment with multiple replicas
+is the correct workload kind. Sticky sessions at the LB are recommended
+for SSE/HTMX live-update routes (/ui), but the pods themselves are
+interchangeable.
+*/}}
+{{- if and .Values.cluster.enabled .Values.cluster.ui.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vornik.uiFullname" . }}
+  labels: {{- include "vornik.uiLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.cluster.ui.replicas }}
+  selector:
+    matchLabels: {{- include "vornik.uiSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "vornik.uiLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/cluster-configmaps.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "vornik.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cluster.ui.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cluster.ui.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cluster.ui.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: vornik
+          image: {{ include "vornik.thinImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            {{- end }}
+          # /livez is ungated on all nodes (pure process liveness).
+          # /readyz on a ui node checks DB reachability — role-aware.
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # ui nodes use the thin image — no podman, no privileged context.
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+          env:
+            - name: VORNIK_CONFIG
+              value: /etc/vornik/config.yaml
+            - name: VORNIK_CONFIGS_DIR
+              value: /etc/vornik/configs
+            - name: VORNIK_DATA_DIR
+              value: /var/lib/vornik
+            - name: VORNIK_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vornik.secretName" . }}
+                  key: dbPassword
+            - name: VORNIK_CHAT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vornik.secretName" . }}
+                  key: chatApiKey
+                  optional: true
+            # VORNIK_AGENT_LLM_API_KEY is intentionally NOT injected here:
+            # ui pods run profile=ui (no executor), so the agent LLM key is
+            # unnecessary credential exposure (least-privilege).
+            - name: VORNIK_EMBEDDING_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vornik.secretName" . }}
+                  key: embeddingApiKey
+                  optional: true
+            {{- if .Values.telegram.enabled }}
+            - name: VORNIK_TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vornik.secretName" . }}
+                  key: telegramBotToken
+            {{- end }}
+          resources:
+            {{- if .Values.cluster.ui.resources }}
+            {{- toYaml .Values.cluster.ui.resources | nindent 12 }}
+            {{- else }}
+            {{- toYaml .Values.resources | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vornik/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            {{- if .Values.registry.existingProjectsConfigMap }}
+            - name: projects
+              mountPath: /etc/vornik/configs/projects
+              readOnly: true
+            {{- else if .Values.registry.projects }}
+            - name: projects
+              mountPath: /etc/vornik/configs/projects
+              readOnly: true
+            {{- end }}
+            {{- if .Values.registry.existingSwarmsConfigMap }}
+            - name: swarms
+              mountPath: /etc/vornik/configs/swarms
+              readOnly: true
+            {{- else if .Values.registry.swarms }}
+            - name: swarms
+              mountPath: /etc/vornik/configs/swarms
+              readOnly: true
+            {{- end }}
+            {{- if .Values.registry.existingWorkflowsConfigMap }}
+            - name: workflows
+              mountPath: /etc/vornik/configs/workflows
+              readOnly: true
+            {{- else if .Values.registry.workflows }}
+            - name: workflows
+              mountPath: /etc/vornik/configs/workflows
+              readOnly: true
+            {{- end }}
+            {{- if .Values.pricing.override }}
+            - name: pricing
+              mountPath: /etc/vornik/configs/pricing.yaml
+              subPath: pricing.yaml
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "vornik.uiFullname" . }}-config
+        {{- if .Values.registry.existingProjectsConfigMap }}
+        - name: projects
+          configMap:
+            name: {{ .Values.registry.existingProjectsConfigMap }}
+        {{- else if .Values.registry.projects }}
+        - name: projects
+          configMap:
+            name: {{ include "vornik.fullname" . }}-projects
+        {{- end }}
+        {{- if .Values.registry.existingSwarmsConfigMap }}
+        - name: swarms
+          configMap:
+            name: {{ .Values.registry.existingSwarmsConfigMap }}
+        {{- else if .Values.registry.swarms }}
+        - name: swarms
+          configMap:
+            name: {{ include "vornik.fullname" . }}-swarms
+        {{- end }}
+        {{- if .Values.registry.existingWorkflowsConfigMap }}
+        - name: workflows
+          configMap:
+            name: {{ .Values.registry.existingWorkflowsConfigMap }}
+        {{- else if .Values.registry.workflows }}
+        - name: workflows
+          configMap:
+            name: {{ include "vornik.fullname" . }}-workflows
+        {{- end }}
+        {{- if .Values.pricing.override }}
+        - name: pricing
+          configMap:
+            name: {{ include "vornik.fullname" . }}-pricing
+        {{- end }}
+{{- end }}{{/* cluster.enabled + ui.enabled */}}

@@ -1,0 +1,41 @@
+apiVersion: v2
+name: vornik
+description: |
+  vornik — Multi-agent task orchestration daemon.
+  Bundles the vornik daemon and a pgvector-enabled PostgreSQL as a
+  StatefulSet pair. The vornik pod runs podman-in-pod so it can spawn
+  agent containers; Postgres uses the pgvector image so the memory/RAG
+  subsystem's vector extension is available.
+
+# "application" = the chart deploys a running workload (vs "library").
+type: application
+
+# version = Chart version. Bump on any template / values change.
+# appVersion = vornik daemon version the chart was designed against.
+# Keep these tracked: `helm show chart` surfaces both.
+version: 0.1.0
+appVersion: "2026.4.20"
+
+keywords:
+  - vornik
+  - ai-agents
+  - orchestration
+  - postgresql
+  - pgvector
+
+home: https://github.com/grinco/vornik
+sources:
+  - https://github.com/grinco/vornik
+
+maintainers:
+  - name: vornik maintainers
+
+# kubeVersion is a soft requirement. We lean on apps/v1 StatefulSet,
+# probes with httpGet, and ephemeral-containers behaviors that stabilised
+# by 1.24. RKE2 ships 1.26+, so a minimum of 1.24 is safe.
+kubeVersion: ">=1.24.0-0"
+
+# No declared sub-chart dependencies: we ship the pgvector StatefulSet
+# inline to keep the chart self-contained. Users who want the bitnami
+# postgresql chart instead can disable the bundled one (postgres.enabled:
+# false) and point vornik at their external DB via database.host.

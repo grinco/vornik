@@ -1,0 +1,46 @@
+{{define "admin_health_mcp.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <h1 class="text-xl font-semibold text-gray-100">MCP health</h1>
+                <span class="px-2 py-0.5 text-[10px] uppercase tracking-wider font-mono rounded-md bg-amber-900/40 text-amber-300 ring-1 ring-amber-700/40">admin context</span>
+                <a href="/ui/admin/health/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Health</a>
+            </div>
+
+            {{if .Refreshed}}
+            <div class="bg-emerald-900/30 border border-emerald-700/50 rounded-xl p-3 text-emerald-200 text-sm" role="status">MCP servers refreshed.</div>
+            {{end}}
+            {{if .Error}}
+            <div class="bg-rose-900/30 border border-rose-700/50 rounded-xl p-3 text-rose-200 text-sm" role="alert">{{.Error}}</div>
+            {{end}}
+
+            <div class="glass rounded-xl border border-dark-700 p-5">
+                <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Snapshot</h2>
+                {{if .Available}}
+                <ul class="flex flex-wrap gap-3 text-sm">
+                    <li class="px-3 py-1 rounded-md bg-dark-700 text-gray-200 font-mono">projects: {{.Snapshot.ProjectCount}}</li>
+                    <li class="px-3 py-1 rounded-md bg-dark-700 text-gray-200 font-mono">servers: {{.Snapshot.ServerCount}}</li>
+                </ul>
+                {{else}}
+                <p class="text-gray-500 text-sm">MCP inventory not wired.</p>
+                {{end}}
+            </div>
+
+            <form method="post" action="/ui/admin/health/mcp" class="glass rounded-xl border border-dark-700 p-5">
+                <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Force refresh</h2>
+                <p class="text-xs text-gray-500 mb-3">Re-dials every configured MCP server across every project. Idempotent; an audit row is written before this returns.</p>
+                <button class="bg-brand-500 hover:bg-brand-400 text-white text-xs font-medium px-3 py-1.5 rounded-md">Refresh now</button>
+            </form>
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

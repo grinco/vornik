@@ -1,0 +1,154 @@
+{{define "executions.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3 text-gray-400">
+                {{template "navIconExecutions"}}
+                <h1 class="text-xl font-semibold text-gray-100">Executions</h1>
+                <span class="text-xs text-gray-500">{{.TotalCount}}</span>
+            </div>
+
+            {{/* Status filter palette — clickable pills, hidden when 0. */}}
+            <div class="flex flex-wrap items-center gap-2">
+                {{$root := .}}
+                <a href="?{{if .Limit}}limit={{.Limit}}{{end}}"
+                   class="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-full transition-colors {{if eq .Status ""}}bg-accent-600/30 ring-1 ring-accent-400 text-gray-100{{else}}bg-dark-700 text-gray-400 hover:bg-dark-600 hover:text-gray-200{{end}}">All</a>
+                {{range .Palette}}
+                <a href="?status={{.Status}}{{if $root.Limit}}&limit={{$root.Limit}}{{end}}"
+                   class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-full transition-colors {{if eq $root.Status (printf "%s" .Status)}}bg-accent-600/30 ring-1 ring-accent-400{{else}}bg-dark-700 hover:bg-dark-600{{end}}">
+                    {{template "taskStatusBadge" .Status}}<span class="text-gray-400">{{.Count}}</span>
+                </a>
+                {{end}}
+            </div>
+
+            <div id="exec-content" class="space-y-4"
+                 {{if .HasLiveRows}}
+                 hx-ext="sse"
+                 sse-connect="/api/v1/live/fleet"
+                 hx-get="{{.BaseURL}}"
+                 hx-trigger="sse:fleet-changed, every 30s"
+                 hx-target="#exec-content"
+                 hx-select="#exec-content"
+                 hx-swap="outerHTML"
+                 {{end}}>
+                 {{/* Event-driven (UI F2): refresh on fleet activity; 30s
+                      backstop. Was a fixed every-10s poll. Auto-refresh runs
+                      only while the page lists at least one live execution
+                      (HasLiveRows): once a poll returns an all-terminal page
+                      the re-rendered #exec-content carries no trigger, so
+                      polling stops by itself. */}}
+            {{if .Executions}}
+                {{/* Bulk action toolbar (desktop). Hidden until a row checkbox
+                     is ticked. retry-from-step isn't bulkable (per-step), so
+                     Cancel is the only bulk execution action. */}}
+                <form id="exec-bulk-form" method="POST" action="/ui/executions-bulk/cancel"
+                      class="hidden md:flex glass rounded-xl border border-dark-700 px-4 py-2 items-center gap-2"
+                      style="display:none"
+                      onsubmit="return confirm('Cancel selected executions?')">
+                    <span id="exec-bulk-count" class="text-xs text-gray-400 mr-2" aria-live="polite" aria-atomic="true">0 selected</span>
+                    <button type="submit" class="px-3 py-1 text-xs font-medium rounded-md bg-rose-700 hover:bg-rose-600 text-white">Cancel selected</button>
+                    <button type="button" onclick="execBulkClear()" class="ml-auto px-3 py-1 text-xs font-medium rounded-md bg-dark-700 hover:bg-dark-600 text-gray-300">Clear</button>
+                </form>
+
+                {{/* Phone: card stack */}}
+                <div class="md:hidden space-y-2">
+                    {{range .Executions}}
+                    <a href="/ui/executions/{{.ID}}" class="tap block glass rounded-xl border border-dark-700 px-4 py-3 hover:border-dark-600 transition-colors">
+                        <div class="flex items-center justify-between gap-2">
+                            <span class="text-[11px] font-mono text-gray-300" title="{{.ID}}">{{shortID .ID}}</span>
+                            {{template "taskStatusBadge" .Status}}
+                        </div>
+                        <div class="text-xs text-gray-400 mt-1">{{.ProjectID}} · {{.WorkflowID}}{{if ne .CurrentStep "—"}} · step: {{.CurrentStep}}{{end}}</div>
+                        <div class="text-[11px] text-gray-500 mt-1">task <span title="{{.TaskID}}">{{shortID .TaskID}}</span>{{if .StartedAgo}} · started {{.StartedAgo}}{{end}}{{if .Duration}} · {{.Duration}}{{end}}</div>
+                    </a>
+                    {{end}}
+                </div>
+
+                {{/* Desktop: table */}}
+                <div class="hidden md:block glass rounded-xl border border-dark-700 overflow-hidden">
+                    <table class="min-w-full divide-y divide-dark-700">
+                        <thead class="bg-dark-800/60">
+                            <tr class="text-left text-[11px] uppercase tracking-wider text-gray-500">
+                                <th class="px-3 py-2.5 font-medium">
+                                    <input type="checkbox" id="exec-bulk-toggle-all" onchange="execBulkToggleAll(this.checked)"
+                                           class="form-checkbox h-3.5 w-3.5 rounded border-dark-600 bg-dark-700 text-brand-500" aria-label="Select all">
+                                </th>
+                                <th class="px-5 py-2.5 font-medium">Execution</th>
+                                <th class="px-5 py-2.5 font-medium">Task</th>
+                                <th class="px-5 py-2.5 font-medium">Project</th>
+                                <th class="px-5 py-2.5 font-medium">Workflow</th>
+                                <th class="px-5 py-2.5 font-medium">Step</th>
+                                <th class="px-5 py-2.5 font-medium">Status</th>
+                                <th class="px-5 py-2.5 font-medium">Started</th>
+                                <th class="px-5 py-2.5 font-medium">Duration</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-dark-800">
+                            {{range .Executions}}
+                            <tr class="hover:bg-dark-800/50 transition-colors cursor-pointer" onclick="location.href='/ui/executions/{{.ID}}'">
+                                <td class="px-3 py-3">
+                                    <input type="checkbox" form="exec-bulk-form" name="exec_ids" value="{{.ID}}"
+                                           onclick="event.stopPropagation()" onchange="execBulkUpdateCount()"
+                                           class="form-checkbox h-3.5 w-3.5 rounded border-dark-600 bg-dark-700 text-brand-500" aria-label="Select execution">
+                                </td>
+                                <td class="px-5 py-3 text-[11px] font-mono text-gray-300" title="{{.ID}}">{{shortID .ID}}</td>
+                                <td class="px-5 py-3 text-[11px] font-mono text-gray-400">
+                                    <a href="/ui/tasks/{{.TaskID}}" onclick="event.stopPropagation()" class="hover:text-accent-300" title="{{.TaskID}}">{{shortID .TaskID}}</a>
+                                </td>
+                                <td class="px-5 py-3 text-sm text-gray-300">{{.ProjectID}}</td>
+                                <td class="px-5 py-3 text-sm text-gray-400">{{.WorkflowID}}</td>
+                                <td class="px-5 py-3 text-sm text-gray-400">{{.CurrentStep}}</td>
+                                <td class="px-5 py-3">{{template "taskStatusBadge" .Status}}</td>
+                                <td class="px-5 py-3 text-xs text-gray-500">{{if .StartedAgo}}{{.StartedAgo}}{{else}}—{{end}}</td>
+                                <td class="px-5 py-3 text-xs text-gray-400">{{if .Duration}}{{.Duration}}{{else}}—{{end}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            {{else}}
+                {{template "emptyState" (dict "Icon" "executions" "Title" "No executions" "Hint" "Workflow runs appear here as tasks execute. Try a different status filter or run a task.")}}
+            {{end}}
+            </div>
+
+            <div class="flex justify-end">
+                {{template "pageSizeSelector" (dict "Action" "/ui/executions" "Current" .Limit "Options" .LimitOptions "Hidden" (dict "status" .Status "project_id" .ProjectID))}}
+            </div>
+        </div>
+    </main>
+    <script>
+        // Bulk-selection wiring for the executions table. Row checkboxes use
+        // form="exec-bulk-form" so their values submit regardless of DOM
+        // position; we keep the count current and toggle the toolbar.
+        function execBulkBoxes() {
+            return document.querySelectorAll('input[name="exec_ids"]:checked');
+        }
+        function execBulkUpdateCount() {
+            var n = execBulkBoxes().length;
+            var bar = document.getElementById('exec-bulk-form');
+            if (bar) bar.style.display = n > 0 ? 'flex' : 'none';
+            var label = document.getElementById('exec-bulk-count');
+            if (label) label.textContent = n + ' selected';
+            var all = document.getElementById('exec-bulk-toggle-all');
+            var total = document.querySelectorAll('input[name="exec_ids"]').length;
+            if (all) all.checked = (n > 0 && n === total);
+        }
+        function execBulkToggleAll(on) {
+            document.querySelectorAll('input[name="exec_ids"]').forEach(function (c) { c.checked = on; });
+            execBulkUpdateCount();
+        }
+        function execBulkClear() {
+            document.querySelectorAll('input[name="exec_ids"]').forEach(function (c) { c.checked = false; });
+            var all = document.getElementById('exec-bulk-toggle-all');
+            if (all) all.checked = false;
+            execBulkUpdateCount();
+        }
+    </script>
+</body>
+</html>
+{{end}}

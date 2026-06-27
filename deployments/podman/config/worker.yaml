@@ -1,0 +1,95 @@
+# vornik config — node.profile: worker
+#
+# This node runs the scheduler, executor (Podman), and all leader-elected
+# singletons (autonomy, consolidation, retention, kg_extract, …). It also
+# listens on a second mTLS server at :8443 for the relay-ingress endpoint
+# used by DMZ webhook nodes (/internal/v1/webhook-relay and
+# /internal/v1/node-heartbeat).
+#
+# The worker node is on BOTH the trusted and dmz networks in the compose
+# cluster: it reaches postgres on the trusted side, while webhook nodes
+# on the dmz side can reach its :8443 relay-ingress port.
+#
+# Values vary between environments via ${VAR} expansion — the daemon's
+# loader runs os.ExpandEnv on every string before parsing
+# (see internal/config/loader.go).
+#
+# Cert paths below correspond to the volume mounts in cluster.compose.yaml.
+# Run gen-cluster-certs.sh before bring-up to populate them.
+#
+# Used by: cluster.compose.yaml → vornik-worker service.
+# Mount at: /etc/vornik/config.yaml
+
+node:
+  profile: worker
+  # Preset worker expands to:
+  #   serve_ui:       false
+  #   serve_api:      true   (data-plane / control endpoints + relay-ingress)
+  #   serve_webhooks: false  (worker does NOT receive raw webhook traffic)
+  #   run_workers:    true   (scheduler + executor + all singletons)
+
+  # mTLS relay-ingress: the second HTTP server that DMZ webhook nodes POST to.
+  # A dedicated listener with tls.RequireAndVerifyClientCert so client-cert
+  # enforcement is fully isolated from the public API listener.
+  relay_ingress:
+    addr: ":8443"
+    server_cert: "/etc/vornik/tls/server.crt"
+    server_key:  "/etc/vornik/tls/server.key"
+    client_ca:   "/etc/vornik/tls/client-ca.crt"
+
+server:
+  address: "0.0.0.0:8080"
+  read_timeout: 30s
+  write_timeout: 30s
+
+database:
+  host: postgres          # compose service name — resolves on the trusted bridge
+  port: 5432
+  name: "${POSTGRES_DB}"
+  user: "${POSTGRES_USER}"
+  password: "${VORNIK_DATABASE_PASSWORD}"
+  sslmode: disable
+
+storage:
+  artifacts_path: /var/lib/vornik/artifacts
+artifacts:
+  artifacts_path: /var/lib/vornik/artifacts
+
+scheduler:
+  max_concurrent_tasks: 4
+  lease_timeout: 5m
+
+logging:
+  level: info
+  format: json
+
+api:
+  auth_enabled: false
+  # api_keys:
+  #   - "${VORNIK_API_KEY}"
+
+metrics:
+  enabled: false
+  addr: ":9090"
+
+runtime:
+  run_as_user: "1000:1000"
+  project_workspace_path: /var/lib/vornik/workspaces
+
+  agent_llm:
+    endpoint: "${AGENT_LLM_ENDPOINT}"
+    model: "${AGENT_LLM_MODEL}"
+    api_key: "${VORNIK_AGENT_LLM_API_KEY}"
+
+chat:
+  provider: "http"
+  endpoint: "${CHAT_ENDPOINT}"
+  model: "${CHAT_MODEL}"
+  api_key: "${VORNIK_CHAT_API_KEY}"
+
+telegram:
+  enabled: false
+  bot_token: "${VORNIK_TELEGRAM_BOT_TOKEN}"
+
+memory:
+  enabled: false

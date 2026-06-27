@@ -1,0 +1,79 @@
+{{define "projects_new_form.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-3xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-center justify-between gap-3">
+                <div>
+                    <a href="/ui/projects/new" class="text-xs text-gray-500 hover:text-gray-300">← Back to gallery</a>
+                    <h1 class="text-xl font-semibold text-gray-100 mt-1">{{.SelectedManifest.DisplayName}}</h1>
+                </div>
+                <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-dark-800 text-gray-400 border border-dark-700">{{.SelectedManifest.Domain}}</span>
+            </div>
+
+            <p class="text-sm text-gray-400 leading-relaxed">{{.SelectedManifest.Description}}</p>
+
+            {{if .Error}}
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            {{end}}
+
+            {{if .MaterialisationDisabled}}
+            <div class="bg-amber-500/10 border border-amber-500/40 rounded-lg px-4 py-3 text-sm text-amber-200">
+                The daemon has no writable configs directory; this form is read-only.
+            </div>
+            {{end}}
+
+            <form method="POST" action="/ui/projects/new" class="space-y-5">
+                <input type="hidden" name="slug" value="{{.SelectedManifest.Slug}}">
+
+                {{range .SelectedManifest.Parameters}}
+                {{$current := or (formValue $.FormValues .Name) .Default}}
+                <div>
+                    <label class="block text-xs font-medium text-gray-300 mb-1.5" for="p_{{.Name}}">
+                        {{.Label}}
+                        {{if .Required}}<span class="text-rose-400">*</span>{{end}}
+                    </label>
+                    {{if eq .Type "enum"}}
+                    <select name="p_{{.Name}}" id="p_{{.Name}}"
+                            class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200">
+                        {{range .Options}}
+                        <option value="{{.}}" {{if eq . $current}}selected{{end}}>{{.}}</option>
+                        {{end}}
+                    </select>
+                    {{else if eq .Type "bool"}}
+                    <select name="p_{{.Name}}" id="p_{{.Name}}"
+                            class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200">
+                        <option value="false" {{if ne $current "true"}}selected{{end}}>false</option>
+                        <option value="true" {{if eq $current "true"}}selected{{end}}>true</option>
+                    </select>
+                    {{else}}
+                    <input type="text" name="p_{{.Name}}" id="p_{{.Name}}" value="{{$current}}"
+                           {{if .Pattern}}pattern="{{.Pattern}}"{{end}}
+                           {{if .Required}}required{{end}}
+                           class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                    {{end}}
+                    {{if .Description}}
+                    <p class="text-[11px] text-gray-500 mt-1">{{.Description}}</p>
+                    {{end}}
+                </div>
+                {{end}}
+
+                <div class="flex items-center justify-end gap-3 pt-2">
+                    <a href="/ui/projects/new" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200">Cancel</a>
+                    <button type="submit" {{if .MaterialisationDisabled}}disabled{{end}}
+                            class="px-5 py-2 text-sm font-medium rounded-lg bg-brand-600 hover:bg-brand-500 text-white disabled:opacity-40 disabled:cursor-not-allowed">
+                        Create project
+                    </button>
+                </div>
+            </form>
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

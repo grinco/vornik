@@ -1,0 +1,1639 @@
+{{define "memory_project.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-center justify-between">
+                <div>
+                    <div class="flex items-center gap-2 text-xs text-gray-500">
+                        <a href="/ui/memory" class="hover:text-gray-300">Memory</a>
+                        <span>/</span>
+                        <span>{{.ProjectID}}</span>
+                    </div>
+                    <h1 class="text-xl font-semibold text-gray-100 mt-1">{{.ProjectName}}</h1>
+                </div>
+                <div class="flex items-center gap-3 text-xs text-gray-500">
+                    <span>Queue depth: <span class="tabular-nums {{if gt .QueueDepth 0}}text-amber-300{{else}}text-gray-300{{end}}">{{.QueueDepth}}</span></span>
+                    <span>Quarantine pending: <span class="tabular-nums {{if .QuarantinePending}}text-rose-300{{else}}text-gray-300{{end}}">{{len .QuarantinePending}}</span></span>
+                </div>
+            </div>
+
+            {{if not .Enabled}}
+            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-300 text-sm">
+                Memory hardening repos not wired for this deployment.
+            </div>
+            {{end}}
+
+            {{/* 2026.5.8 reorg: nine sibling panels became three tabs
+                 so the actionable Operate views (quarantine, rollback,
+                 epochs) no longer sit at the bottom of a long scroll.
+                 Default tab is computed in resolveMemoryProjectTab:
+                 "operate" when something needs attention
+                 (QueueDepth > 0 || QuarantinePending > 0),
+                 "health" otherwise. Each tab anchor adds a single
+                 ?tab=… query param so the URL is shareable. */}}
+            {{$tab := .Tab}}
+            <div class="flex items-center gap-1 border-b border-dark-700/60">
+                <a href="?tab=health"
+                   class="px-4 py-2.5 text-sm font-medium transition-colors {{if eq $tab "health"}}text-gray-100 border-b-2 border-brand-500{{else}}text-gray-400 border-b-2 border-transparent hover:text-gray-200 hover:border-dark-600{{end}}"
+                   aria-current="{{if eq $tab "health"}}page{{else}}false{{end}}">Health</a>
+                <a href="?tab=search"
+                   class="px-4 py-2.5 text-sm font-medium transition-colors {{if eq $tab "search"}}text-gray-100 border-b-2 border-brand-500{{else}}text-gray-400 border-b-2 border-transparent hover:text-gray-200 hover:border-dark-600{{end}}"
+                   aria-current="{{if eq $tab "search"}}page{{else}}false{{end}}">Search &amp; Inspect</a>
+                <a href="?tab=operate"
+                   class="px-4 py-2.5 text-sm font-medium transition-colors {{if eq $tab "operate"}}text-gray-100 border-b-2 border-brand-500{{else}}text-gray-400 border-b-2 border-transparent hover:text-gray-200 hover:border-dark-600{{end}}"
+                   aria-current="{{if eq $tab "operate"}}page{{else}}false{{end}}">Operate</a>
+                {{if or (gt .QueueDepth 0) (gt (len .QuarantinePending) 0)}}
+                <span class="ml-auto text-[11px] text-amber-300/80 self-center pr-2">
+                    {{if gt (len .QuarantinePending) 0}}{{len .QuarantinePending}} quarantined{{end}}{{if and (gt .QueueDepth 0) (gt (len .QuarantinePending) 0)}} · {{end}}{{if gt .QueueDepth 0}}{{.QueueDepth}} queued{{end}}
+                </span>
+                {{end}}
+            </div>
+
+            {{if eq $tab "search"}}
+            <!-- ============================================================
+                 PIPELINE INSPECTOR — operator-facing dry-run + flow
+                 diagram. Paste content, pick a producer role, see what
+                 every gate would decide. The flow diagram below shows
+                 the canonical order with per-gate trip counts so the
+                 operator can see at a glance which gates are doing the
+                 most rejecting on this project.
+                 ============================================================ -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <h2 class="text-sm font-medium text-gray-300">Pipeline inspector</h2>
+                    <p class="mt-1 text-xs text-gray-500">Paste any text, pick a producer role, run the gate stack against it without writing anything to memory. The trail below the form shows each gate's decision so you can see exactly why content would be admitted, redacted, or quarantined.</p>
+                </div>
+
+                <!-- Flow diagram (canonical pipeline). Already wraps
+                     in overflow-x-auto so phone users horizontally
+                     scroll the 900px SVG. Un-gated 2026-05-10 — the
+                     "memory ingestion pipeline graph is gone" report
+                     was about this visualisation; gating it was
+                     overzealous when the scroll wrapper already
+                     handles small viewports. -->
+                <div class="px-5 py-3 border-b border-dark-700/60">
+                    <p class="text-[11px] uppercase tracking-wider text-gray-500 mb-2">Canonical pipeline · numbers below each gate are project quarantine trips</p>
+                    <div class="overflow-x-auto">
+                        <svg id="pipe-flow" viewBox="0 0 900 130" preserveAspectRatio="xMinYMid meet" style="width: 100%; min-width: 900px; max-height: 160px;">
+                            <!-- Stage labels -->
+                            <text x="60" y="18" font-size="9" fill="#6b7280" text-anchor="start">RECEIVE</text>
+                            <text x="280" y="18" font-size="9" fill="#6b7280" text-anchor="start">CHUNK</text>
+                            <text x="580" y="18" font-size="9" fill="#6b7280" text-anchor="start">CLASSIFY</text>
+                            <text x="700" y="18" font-size="9" fill="#6b7280" text-anchor="start">PUBLISH</text>
+
+                            <!-- Stage divider lines -->
+                            <line x1="240" y1="30" x2="240" y2="100" stroke="#1f2937" stroke-width="0.5" stroke-dasharray="2,3"/>
+                            <line x1="540" y1="30" x2="540" y2="100" stroke="#1f2937" stroke-width="0.5" stroke-dasharray="2,3"/>
+                            <line x1="660" y1="30" x2="660" y2="100" stroke="#1f2937" stroke-width="0.5" stroke-dasharray="2,3"/>
+
+                            <!-- Edges between adjacent gates -->
+                            {{$prev := 0}}
+                            {{range $i, $g := .FlowGates}}
+                            {{if gt $i 0}}
+                            <line x1="{{add $prev 26}}" y1="60" x2="{{sub $g.X 26}}" y2="60" stroke="#374151" stroke-width="1"/>
+                            {{end}}
+                            {{$prev = $g.X}}
+                            {{end}}
+
+                            <!-- Gate nodes -->
+                            {{range $g := .FlowGates}}
+                            <g class="pipe-gate" data-gate="{{$g.Name}}">
+                                <title>{{$g.Name}} · {{$g.Description}} · {{$g.Trips}} trips</title>
+                                <rect x="{{sub $g.X 26}}" y="48" width="52" height="24" rx="6" ry="6"
+                                    fill="{{if gt $g.Trips 0}}#7f1d1d{{else}}#1f2937{{end}}"
+                                    fill-opacity="{{if gt $g.Trips 0}}0.7{{else}}0.5{{end}}"
+                                    stroke="{{if gt $g.Trips 0}}#f87171{{else}}#374151{{end}}"
+                                    stroke-width="1"/>
+                                <text x="{{$g.X}}" y="63" font-size="9" fill="#e5e7eb" text-anchor="middle">{{$g.Name}}</text>
+                                {{if gt $g.Trips 0}}
+                                <text x="{{$g.X}}" y="92" font-size="9" fill="#fca5a5" text-anchor="middle" font-weight="bold">{{$g.Trips}}</text>
+                                {{else}}
+                                <text x="{{$g.X}}" y="92" font-size="9" fill="#4b5563" text-anchor="middle">·</text>
+                                {{end}}
+                            </g>
+                            {{end}}
+
+                            <!-- Halo overlay for inspector-result highlighting -->
+                            <rect id="pipe-halo" x="0" y="0" width="0" height="0" rx="6" ry="6" fill="none" stroke="#fbbf24" stroke-width="2" opacity="0" pointer-events="none"/>
+                        </svg>
+                    </div>
+                </div>
+
+                <!-- Inspector form -->
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    {{if .HasDryRun}}
+                    <form id="pipe-form" class="space-y-2">
+                        <div class="flex flex-wrap items-center gap-3">
+                            <label class="text-xs text-gray-400 flex items-center gap-2">
+                                Producer role:
+                                <select id="pipe-role" name="producer_role" class="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-gray-200">
+                                    {{range .ProducerRoles}}
+                                    <option value="{{.}}">{{.}}</option>
+                                    {{end}}
+                                </select>
+                            </label>
+                            <label class="text-xs text-gray-400 flex items-center gap-2">
+                                Source name:
+                                <input type="text" id="pipe-source" name="source_name" value="inspect.md" class="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-gray-200 w-40"/>
+                            </label>
+                            <button type="submit" class="ml-auto px-3 py-1 bg-brand-600 hover:bg-brand-500 rounded text-xs text-white">Run gates ▶</button>
+                        </div>
+                        <textarea id="pipe-content" name="content" rows="6" placeholder="Paste a chunk's content here…" class="w-full bg-dark-900 border border-dark-700 rounded p-2 text-xs text-gray-200 font-mono"></textarea>
+                    </form>
+                    {{else}}
+                    <p class="text-sm text-gray-500">Pipeline dry-runner not configured for this deployment.</p>
+                    {{end}}
+                </div>
+
+                <!-- Result placeholder -->
+                <div id="pipe-result" class="px-5 py-4 text-xs text-gray-500 italic">
+                    No dry-run yet. Paste content above and click <span class="font-medium text-gray-400">Run gates</span> to see how the pipeline would handle it.
+                </div>
+
+                <!-- Inspector + flow-diagram interaction script -->
+                <script>
+                (function() {
+                    var form = document.getElementById('pipe-form');
+                    if (!form) return;
+                    var resultDiv = document.getElementById('pipe-result');
+                    var halo = document.getElementById('pipe-halo');
+                    var flowSvg = document.getElementById('pipe-flow');
+
+                    // Map gate-name → bounding box of its node (for the
+                    // halo overlay). Computed once at script init from
+                    // the rendered <rect> attributes.
+                    var gateBoxes = {};
+                    Array.prototype.forEach.call(
+                        flowSvg.querySelectorAll('g.pipe-gate'),
+                        function(g) {
+                            var rect = g.querySelector('rect');
+                            if (!rect) return;
+                            gateBoxes[g.getAttribute('data-gate')] = {
+                                x: parseFloat(rect.getAttribute('x')),
+                                y: parseFloat(rect.getAttribute('y')),
+                                w: parseFloat(rect.getAttribute('width')),
+                                h: parseFloat(rect.getAttribute('height'))
+                            };
+                        }
+                    );
+
+                    function highlightGate(name) {
+                        var b = gateBoxes[name];
+                        if (!b) {
+                            halo.setAttribute('opacity', '0');
+                            return;
+                        }
+                        halo.setAttribute('x', (b.x - 3).toFixed(1));
+                        halo.setAttribute('y', (b.y - 3).toFixed(1));
+                        halo.setAttribute('width', (b.w + 6).toFixed(1));
+                        halo.setAttribute('height', (b.h + 6).toFixed(1));
+                        halo.setAttribute('opacity', '1');
+                    }
+
+                    function actionToColour(action) {
+                        switch (action) {
+                            case 'allow':      return { bg: '#064e3b', fg: '#34d399', label: '✓ allow' };
+                            case 'redact':     return { bg: '#78350f', fg: '#fbbf24', label: '✎ redact' };
+                            case 'quarantine': return { bg: '#7f1d1d', fg: '#fca5a5', label: '⊘ quarantine' };
+                            case 'reject':     return { bg: '#450a0a', fg: '#f87171', label: '✕ reject' };
+                        }
+                        return { bg: '#1f2937', fg: '#9ca3af', label: action };
+                    }
+
+                    function removeAllChildren(el) {
+                        while (el.firstChild) el.removeChild(el.firstChild);
+                    }
+
+                    function renderTrail(data) {
+                        removeAllChildren(resultDiv);
+
+                        if (data.error) {
+                            var err = document.createElement('p');
+                            err.className = 'text-rose-300';
+                            err.textContent = 'Error: ' + data.error;
+                            resultDiv.appendChild(err);
+                            return;
+                        }
+
+                        // Final-action banner.
+                        var final = data.final || {};
+                        var c = actionToColour(final.action);
+                        var banner = document.createElement('div');
+                        banner.className = 'mb-3 rounded-lg p-3 border';
+                        banner.style.backgroundColor = c.bg;
+                        banner.style.borderColor = c.fg;
+                        banner.style.color = c.fg;
+                        var bannerLabel = document.createElement('div');
+                        bannerLabel.className = 'text-sm font-medium';
+                        bannerLabel.textContent = 'Final: ' + c.label;
+                        banner.appendChild(bannerLabel);
+                        if (final.gate) {
+                            var gateLine = document.createElement('div');
+                            gateLine.className = 'text-xs mt-1 opacity-90';
+                            gateLine.textContent = 'Decided at: ' + final.gate;
+                            banner.appendChild(gateLine);
+                        }
+                        if (final.detail) {
+                            var det = document.createElement('div');
+                            det.className = 'text-xs mt-1 opacity-90';
+                            det.textContent = final.detail;
+                            banner.appendChild(det);
+                        }
+                        resultDiv.appendChild(banner);
+
+                        // Class + policy line.
+                        var meta = document.createElement('div');
+                        meta.className = 'mb-3 text-xs text-gray-400';
+                        var ttl = data.ttlDays > 0 ? (data.ttlDays + ' days') : 'never';
+                        var ror = data.roleOfRecordEligible
+                            ? ' · role-of-record → would land verified'
+                            : '';
+                        meta.textContent =
+                            'Classified as: ' + (data.class || 'unclassified') +
+                            ' · default confidence ' + (data.defaultConfidence || 0).toFixed(2) +
+                            ' · TTL ' + ttl + ror;
+                        resultDiv.appendChild(meta);
+
+                        // Per-gate trail.
+                        var ul = document.createElement('ul');
+                        ul.className = 'space-y-1 text-xs';
+                        var trail = data.trail || [];
+                        trail.forEach(function(t) {
+                            var li = document.createElement('li');
+                            li.className = 'flex items-baseline gap-2 cursor-pointer hover:bg-dark-700/40 rounded px-1';
+                            li.addEventListener('click', function() { highlightGate(t.gate); });
+                            var col = actionToColour(t.action);
+                            var icon = document.createElement('span');
+                            icon.className = 'inline-block w-4 text-center';
+                            icon.style.color = col.fg;
+                            icon.textContent = col.label.charAt(0);
+                            var name = document.createElement('span');
+                            name.className = 'font-mono text-gray-300';
+                            name.textContent = t.gate;
+                            var detail = document.createElement('span');
+                            detail.className = 'text-gray-500';
+                            detail.textContent = t.detail || '';
+                            li.appendChild(icon);
+                            li.appendChild(name);
+                            li.appendChild(detail);
+                            ul.appendChild(li);
+                        });
+                        resultDiv.appendChild(ul);
+
+                        // Highlight the failing gate (or last gate if all allow).
+                        if (final.gate) {
+                            highlightGate(final.gate);
+                        }
+
+                        // If secret-redact happened, surface the post-
+                        // redact content so the operator sees what'd
+                        // actually be stored.
+                        if (data.postRedactContent) {
+                            var postLabel = document.createElement('p');
+                            postLabel.className = 'mt-3 text-[10px] uppercase tracking-wider text-gray-500';
+                            postLabel.textContent = 'Post-redaction content (what would land in memory)';
+                            var box = document.createElement('pre');
+                            box.className = 'mt-1 p-2 bg-dark-900 border border-dark-700 rounded text-[11px] text-gray-300 whitespace-pre-wrap font-mono max-h-40 overflow-auto';
+                            box.textContent = data.postRedactContent;
+                            resultDiv.appendChild(postLabel);
+                            resultDiv.appendChild(box);
+                        }
+                    }
+
+                    form.addEventListener('submit', function(ev) {
+                        ev.preventDefault();
+                        var btn = form.querySelector('button[type="submit"]');
+                        if (btn) btn.disabled = true;
+                        removeAllChildren(resultDiv);
+                        var spinner = document.createElement('p');
+                        spinner.className = 'text-xs text-gray-500 italic';
+                        spinner.textContent = 'Running gates…';
+                        resultDiv.appendChild(spinner);
+
+                        var body = new URLSearchParams();
+                        body.set('producer_role', document.getElementById('pipe-role').value);
+                        body.set('source_name', document.getElementById('pipe-source').value);
+                        body.set('content', document.getElementById('pipe-content').value);
+
+                        fetch(window.location.pathname + '/inspect', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            body: body.toString()
+                        })
+                        .then(function(r) { return r.json(); })
+                        .then(function(data) {
+                            if (btn) btn.disabled = false;
+                            renderTrail(data);
+                        })
+                        .catch(function(err) {
+                            if (btn) btn.disabled = false;
+                            removeAllChildren(resultDiv);
+                            var p = document.createElement('p');
+                            p.className = 'text-rose-300 text-xs';
+                            p.textContent = 'Request failed: ' + err.message;
+                            resultDiv.appendChild(p);
+                        });
+                    });
+
+                    // Quarantine table → highlight failing gate when an
+                    // operator clicks a quarantine row's failed-gate cell.
+                    Array.prototype.forEach.call(
+                        document.querySelectorAll('[data-quar-gate]'),
+                        function(el) {
+                            el.style.cursor = 'pointer';
+                            el.addEventListener('click', function() {
+                                highlightGate(el.getAttribute('data-quar-gate'));
+                                flowSvg.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                            });
+                        }
+                    );
+                })();
+                </script>
+            </div>
+            {{end}}{{/* end search-tab: Pipeline inspector */}}
+
+            {{/* Phone-only summary card (always visible regardless of
+                 tab — acts as the at-a-glance header so an operator
+                 lands on numbers before the tab content). */}}
+            <div class="md:hidden grid grid-cols-3 gap-2">
+                <div class="glass rounded-xl border border-dark-700 px-3 py-3 text-center">
+                    <div class="text-2xl font-bold text-brand-300 tabular-nums">{{.Pipeline.Admitted}}</div>
+                    <div class="text-[10px] text-gray-500 uppercase tracking-wider mt-0.5">Admitted</div>
+                </div>
+                <div class="glass rounded-xl border border-dark-700 px-3 py-3 text-center">
+                    <div class="text-2xl font-bold text-emerald-300 tabular-nums">{{.Pipeline.Verified}}</div>
+                    <div class="text-[10px] text-gray-500 uppercase tracking-wider mt-0.5">Verified</div>
+                </div>
+                <div class="glass rounded-xl border border-dark-700 px-3 py-3 text-center">
+                    <div class="text-2xl font-bold {{if .Pipeline.QuarantinePending}}text-rose-300{{else}}text-gray-500{{end}} tabular-nums">{{.Pipeline.QuarantinePending}}</div>
+                    <div class="text-[10px] text-gray-500 uppercase tracking-wider mt-0.5">Quarantine</div>
+                </div>
+            </div>
+
+            {{if eq $tab "health"}}
+            <!-- ============================================================
+                 PIPELINE FUNNEL — total enqueued → admitted, with
+                 quarantine + pending breakouts. Bars scaled to the
+                 largest stage. Helps the operator see "where does
+                 volume drop off in the pipeline".
+                 Phase 40 mis-categorised this as a heavy SVG and
+                 gated it to md:+; it's actually CSS bar widths
+                 (h-3 divs with width %) that adapt fine to a phone
+                 viewport. Un-gated 2026-05-10 so phone operators
+                 see the funnel alongside the summary card.
+                 ============================================================ -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <h2 class="text-sm font-medium text-gray-300">Pipeline funnel</h2>
+                    <p class="mt-1 text-xs text-gray-500">Cumulative volume by stage across the recent epochs. The bar widths are relative to the largest stage so the funnel is readable regardless of absolute counts.</p>
+                </div>
+                <div class="px-5 py-4 space-y-3">
+                    {{$max := .Pipeline.BarMax}}
+                    <div class="space-y-1">
+                        <div class="flex items-baseline justify-between text-xs">
+                            <span class="text-gray-400">Enqueued (total)</span>
+                            <span class="tabular-nums text-gray-300">{{.Pipeline.Enqueued}}</span>
+                        </div>
+                        <div class="h-3 bg-dark-700 rounded-full overflow-hidden">
+                            <div class="h-full bg-brand-500/70 rounded-full" style="width: {{pctOf .Pipeline.Enqueued $max}}%"></div>
+                        </div>
+                    </div>
+                    <div class="space-y-1">
+                        <div class="flex items-baseline justify-between text-xs">
+                            <span class="text-gray-400">Pending (queued + processing)</span>
+                            <span class="tabular-nums {{if gt .Pipeline.Pending 0}}text-amber-300{{else}}text-gray-500{{end}}">{{.Pipeline.Pending}}</span>
+                        </div>
+                        <div class="h-3 bg-dark-700 rounded-full overflow-hidden">
+                            <div class="h-full bg-amber-500/70 rounded-full" style="width: {{pctOf .Pipeline.Pending $max}}%"></div>
+                        </div>
+                    </div>
+                    <div class="space-y-1">
+                        <div class="flex items-baseline justify-between text-xs">
+                            <span class="text-gray-400">Admitted to memory</span>
+                            <span class="tabular-nums text-emerald-300">{{.Pipeline.Admitted}}</span>
+                        </div>
+                        <div class="h-3 bg-dark-700 rounded-full overflow-hidden">
+                            <div class="h-full bg-emerald-500/70 rounded-full" style="width: {{pctOf .Pipeline.Admitted $max}}%"></div>
+                        </div>
+                    </div>
+                    <div class="space-y-1">
+                        <div class="flex items-baseline justify-between text-xs">
+                            <span class="text-gray-400">Quarantined <span class="text-gray-600">(cumulative across epochs)</span></span>
+                            <span class="tabular-nums text-gray-300">{{.Pipeline.Quarantined}}{{if and (gt .Pipeline.Quarantined 0) (ne .Pipeline.QuarantinePending .Pipeline.Quarantined)}} <span class="text-rose-300">· {{.Pipeline.QuarantinePending}} pending</span>{{end}}</span>
+                        </div>
+                        <div class="h-3 bg-dark-700 rounded-full overflow-hidden">
+                            <div class="h-full bg-rose-500/40 rounded-full" style="width: {{pctOf .Pipeline.Quarantined $max}}%"></div>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4 pt-3 border-t border-dark-700/60">
+                        <div class="text-xs">
+                            <span class="text-gray-500">Verified (role-of-record):</span>
+                            <span class="ml-1 text-emerald-300 tabular-nums">{{.Pipeline.Verified}}</span>
+                        </div>
+                        <div class="text-xs">
+                            <span class="text-gray-500">Superseded (newer wins):</span>
+                            <span class="ml-1 text-amber-300 tabular-nums">{{.Pipeline.Superseded}}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============================================================
+                 EPOCH TIMELINE — stacked-bar SVG, oldest left → newest
+                 right. Each bar 18px wide; the SVG already lives
+                 inside an overflow-x-auto wrapper so a 30-epoch view
+                 horizontally scrolls cleanly on phone. Un-gated
+                 2026-05-10 alongside the funnel.
+                 ============================================================ -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <h2 class="text-sm font-medium text-gray-300">Epoch timeline</h2>
+                    <p class="mt-1 text-xs text-gray-500">One stacked bar per ingest epoch (oldest left). Green = admitted, amber = superseded, rose = quarantined, emerald-bright = verified. Hover for the epoch ID.</p>
+                </div>
+                <div class="px-5 py-4 overflow-x-auto">
+                    {{if .Timeline}}
+                    <svg viewBox="0 0 {{muli (len .Timeline) 18}} 90" preserveAspectRatio="xMinYMid meet" style="height: 100px; min-width: 100%;">
+                        <!-- Baseline -->
+                        <line x1="0" y1="65" x2="{{muli (len .Timeline) 18}}" y2="65" stroke="#374151" stroke-width="0.5" />
+                        {{range .Timeline}}
+                        <g>
+                            <title>{{.ID}} · created {{.CreatedAt.Format "2006-01-02 15:04"}} · {{.Total}} chunks{{if not .IsActive}} · ROLLED BACK{{end}}</title>
+                            {{$y := 65}}
+                            <!-- Admitted (base) -->
+                            {{if gt .AdmittedHeight 0}}
+                            <rect x="{{.XOffset}}" y="{{sub 65 .AdmittedHeight}}" width="14" height="{{.AdmittedHeight}}" fill="{{if .IsActive}}#10b981{{else}}#475569{{end}}" opacity="{{if .IsActive}}0.85{{else}}0.4{{end}}" />
+                            {{end}}
+                            <!-- Verified ring on top of admit -->
+                            {{if gt .VerifiedHeight 0}}
+                            <rect x="{{.XOffset}}" y="{{sub (sub 65 .AdmittedHeight) 0}}" width="14" height="2" fill="#34d399" />
+                            {{end}}
+                            <!-- Quarantined (above baseline, growing up to indicate "rejected") -->
+                            {{if gt .QuarantinedHeight 0}}
+                            <rect x="{{.XOffset}}" y="68" width="14" height="{{.QuarantinedHeight}}" fill="#f43f5e" opacity="0.85" />
+                            {{end}}
+                            <!-- Superseded marker -->
+                            {{if gt .SupersededHeight 0}}
+                            <rect x="{{.XOffset}}" y="63" width="14" height="2" fill="#f59e0b" />
+                            {{end}}
+                        </g>
+                        {{end}}
+                    </svg>
+                    <div class="mt-2 flex items-center gap-4 text-xs text-gray-500">
+                        <span class="flex items-center gap-1"><span class="h-2 w-3 inline-block bg-emerald-500/85 rounded-sm"></span>admitted (active)</span>
+                        <span class="flex items-center gap-1"><span class="h-2 w-3 inline-block bg-slate-500/40 rounded-sm"></span>admitted (rolled back)</span>
+                        <span class="flex items-center gap-1"><span class="h-1 w-3 inline-block bg-emerald-300 rounded-sm"></span>verified</span>
+                        <span class="flex items-center gap-1"><span class="h-1 w-3 inline-block bg-amber-500 rounded-sm"></span>superseded</span>
+                        <span class="flex items-center gap-1"><span class="h-2 w-3 inline-block bg-rose-500/85 rounded-sm"></span>quarantined</span>
+                    </div>
+                    {{else}}
+                    <p class="text-sm text-gray-500">No epochs yet.</p>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}{{/* end health-tab: Pipeline funnel + Epoch timeline */}}
+
+            {{if eq $tab "search"}}
+            <!-- ============================================================
+                 VECTOR SEARCH — operator-facing hybrid (RRF) search
+                 over project memory. Each hit shows source, task, score,
+                 and a content snippet. "Show in scatter" pivots the
+                 scatter below to the matching chunk and draws its
+                 nearest-neighbor edges so the operator can trace
+                 connections from a specific artifact.
+                 ============================================================ -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <h2 class="text-sm font-medium text-gray-300">Memory search</h2>
+                    <p class="mt-1 text-xs text-gray-500">Hybrid search (RRF: semantic embedding + full-text). Type a query and pick a result to highlight the chunk in the scatter below and trace its nearest neighbors.</p>
+                </div>
+                {{if .HasSearch}}
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <form id="mem-search-form" class="flex flex-wrap items-center gap-2">
+                        <input type="search" id="mem-search-q" placeholder="e.g. &quot;World News&quot;, &quot;Alfie the Dog&quot;, or &quot;The Prague Castle&quot;"
+                            class="flex-1 min-w-[260px] bg-dark-900 border border-dark-700 rounded px-3 py-1.5 text-sm text-gray-200"
+                            autocomplete="off" />
+                        {{if .RepoScopes}}
+                        <!-- B-6 scope picker. Pinned uncategorized at top (operators
+                             expect "everything outside a repo scope" to be the
+                             one-key-press default), then by chunk count desc.
+                             Empty <option value=""> means project-wide ("no scope
+                             filter"); the searcher treats empty repo_scope as
+                             "match every chunk regardless of scope". -->
+                        <label class="text-xs text-gray-400 flex items-center gap-2">
+                            Scope:
+                            <select id="mem-search-scope" class="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-gray-200 max-w-[260px]">
+                                <option value="">All scopes</option>
+                                {{range .RepoScopes}}
+                                <option value="{{.Scope}}">{{if .Scope}}{{.Scope}}{{else}}&lt;uncategorized&gt;{{end}} ({{.Chunks}})</option>
+                                {{end}}
+                            </select>
+                        </label>
+                        {{end}}
+                        <label class="text-xs text-gray-400 flex items-center gap-2">
+                            Limit:
+                            <select id="mem-search-limit" class="bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-gray-200">
+                                <option value="10">10</option>
+                                <option value="20" selected>20</option>
+                                <option value="30">30</option>
+                                <option value="50">50</option>
+                            </select>
+                        </label>
+                        <button type="submit" class="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 rounded text-xs text-white">Search</button>
+                    </form>
+                </div>
+                <div id="mem-search-results" class="px-5 py-4 text-xs text-gray-500 italic">
+                    No search yet. Type a query above and press <span class="font-medium text-gray-400">Search</span>.
+                </div>
+                {{else}}
+                <div class="px-5 py-4 text-sm text-gray-500">Memory searcher not configured for this deployment.</div>
+                {{end}}
+            </div>
+
+            <!-- ============================================================
+                 VECTOR SCATTER — PCA-projected sample of up to 500
+                 chunks with embeddings. 3D-rotatable on desktop.
+                 Un-gated 2026-05-10 — touch-rotate is imperfect on
+                 phone but operators still want to see the cluster
+                 shape. The SVG is already responsive (width:100%);
+                 only the drag-to-rotate UX degrades on touch.
+                 ============================================================ -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <h2 class="text-sm font-medium text-gray-300">Vector scatter (PCA → 2D)</h2>
+                    <p class="mt-1 text-xs text-gray-500">Sample of up to 500 embedded chunks projected to 2D via top-2 principal components. Colour = content class; ring = validation status. Look for: clusters per source (good), one giant blob (over-similar), or distant outliers (potential noise).</p>
+                </div>
+                {{if .Scatter.HasEmbeddings}}
+                <div class="px-5 py-4 space-y-3">
+                    <p class="text-xs text-gray-500">
+                        <span class="text-gray-400">Drag</span> to rotate · <span class="text-gray-400">scroll</span> to zoom · <span class="text-gray-400">click</span> a node to inspect. Node radius is log-scaled to chunk byte size — small dots = short notes, large dots = long dossiers. Back-facing nodes fade with depth fog.
+                    </p>
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                        <!-- Scatter SVG (2 cols on desktop) -->
+                        <div class="lg:col-span-2 bg-dark-900/60 rounded-lg p-2 border border-dark-700/60 relative">
+                            <div class="absolute top-3 right-3 z-10 flex gap-1">
+                                <button id="vec-reset" class="text-[10px] text-gray-400 hover:text-gray-200 bg-dark-700/60 hover:bg-dark-700 rounded px-2 py-0.5 border border-dark-600/40" title="Reset rotation + zoom">⟲ reset</button>
+                                <button id="vec-spin" class="text-[10px] text-gray-400 hover:text-gray-200 bg-dark-700/60 hover:bg-dark-700 rounded px-2 py-0.5 border border-dark-600/40" title="Toggle auto-spin">↻ spin</button>
+                            </div>
+                            <svg id="vec-scatter" viewBox="0 0 600 400" preserveAspectRatio="xMidYMid meet" style="width: 100%; max-height: 520px; cursor: grab; touch-action: none;">
+                                <!-- Axes (faint, drawn at viewBox center; rotation reuses the same SVG so axes stay put) -->
+                                <line id="vec-axis-x" x1="20" y1="200" x2="580" y2="200" stroke="#1f2937" stroke-width="0.5" />
+                                <line id="vec-axis-y" x1="300" y1="20" x2="300" y2="380" stroke="#1f2937" stroke-width="0.5" />
+                                <!-- Edges layer (populated on selection) -->
+                                <g id="vec-edges"></g>
+                                <!-- Nodes — initial cx/cy filled by JS on first paint. Raw 3D coords + log-scaled radius live as data-* attrs. -->
+                                {{range $i, $p := .Scatter.Points}}
+                                <circle id="vec-n-{{$i}}" cx="300" cy="200" r="{{printf "%.2f" $p.R}}"
+                                    fill="{{classColour $p.ContentClass}}" fill-opacity="0.7"
+                                    stroke="{{statusStrokeColour $p.Status}}" stroke-width="1"
+                                    style="cursor: pointer;"
+                                    data-idx="{{$i}}"
+                                    data-id="{{$p.ChunkID}}"
+                                    data-source="{{$p.SourceName}}"
+                                    data-class="{{$p.ContentClass}}"
+                                    data-status="{{$p.Status}}"
+                                    data-role="{{$p.ProducerRole}}"
+                                    data-preview="{{$p.Preview}}"
+                                    data-x="{{printf "%.4f" $p.X}}"
+                                    data-y="{{printf "%.4f" $p.Y}}"
+                                    data-z="{{printf "%.4f" $p.Z}}"
+                                    data-r="{{printf "%.2f" $p.R}}"
+                                    data-neighbors='{{$p.NeighborsJSON}}'>
+                                    <title>{{$p.Tooltip}}</title>
+                                </circle>
+                                {{end}}
+                                <!-- Selection halo (one ring, repositioned on click) -->
+                                <circle id="vec-halo" r="9" fill="none" stroke="#fbbf24" stroke-width="1.5" opacity="0" pointer-events="none">
+                                    <animate attributeName="r" values="9;12;9" dur="1.6s" repeatCount="indefinite"/>
+                                    <animate attributeName="opacity" values="1;0.4;1" dur="1.6s" repeatCount="indefinite"/>
+                                </circle>
+                            </svg>
+                        </div>
+                        <!-- Detail sidebar (1 col on desktop) -->
+                        <div id="vec-detail" class="bg-dark-900/60 rounded-lg p-3 border border-dark-700/60 text-xs space-y-2 min-h-[180px]">
+                            <p class="text-gray-500 italic">Click a node to inspect.</p>
+                        </div>
+                    </div>
+                    <!-- Class legend -->
+                    <div class="flex flex-wrap gap-3 text-xs">
+                        {{range $class, $count := .Scatter.ClassLegend}}
+                        <span class="flex items-center gap-1.5 text-gray-400">
+                            <span class="h-3 w-3 rounded-full inline-block" style="background-color: {{classColour $class}}"></span>
+                            <span class="font-mono">{{$class}}</span>
+                            <span class="tabular-nums text-gray-500">({{$count}})</span>
+                        </span>
+                        {{end}}
+                    </div>
+                    <!-- Status ring legend -->
+                    <div class="flex flex-wrap gap-3 text-xs pt-2 border-t border-dark-700/60">
+                        <span class="text-gray-500">Ring:</span>
+                        <span class="flex items-center gap-1.5 text-gray-400">
+                            <span class="h-3 w-3 rounded-full inline-block bg-gray-700 border-2" style="border-color: #10b981"></span>verified
+                        </span>
+                        <span class="flex items-center gap-1.5 text-gray-400">
+                            <span class="h-3 w-3 rounded-full inline-block bg-gray-700 border-2" style="border-color: #f59e0b"></span>superseded
+                        </span>
+                        <span class="flex items-center gap-1.5 text-gray-400">
+                            <span class="h-3 w-3 rounded-full inline-block bg-gray-700"></span>unverified (no ring)
+                        </span>
+                        <span class="flex items-center gap-1.5 text-gray-400">
+                            <span class="h-3 w-3 rounded-full inline-block bg-gray-700 border-2" style="border-color: #64748b"></span>legacy
+                        </span>
+                    </div>
+                </div>
+                {{else}}
+                <div class="px-5 py-6 text-sm text-gray-500">
+                    No embedded chunks to visualise yet. Either the embedder hasn't run on any chunks, or the project doesn't have published chunks in the active epoch set.
+                </div>
+                {{end}}
+            </div>
+            <!-- end visualisation panels -->
+
+            <!-- ============================================================
+                 Inline JS: 3D-rotatable scatter with selection, edges,
+                 sidebar, drag-rotate, wheel-zoom, depth fog. No JS
+                 framework — single IIFE, ~250 lines. All dynamic strings
+                 flow through textContent / DOM createElement; we
+                 deliberately avoid innerHTML so an attacker who poisons
+                 a chunk's content (somehow) can't inject HTML through
+                 the sidebar render.
+
+                 Coord system:
+                   data-x/y/z   — PCA output in [-1, 1], world coords
+                   yaw, pitch   — rotation angles (radians)
+                   scale, panX/Y — viewport transform
+                   project(x,y,z) → (sx, sy, depth) screen-space
+                 ============================================================ -->
+            <script>
+            (function() {
+                var SVG_NS = 'http://www.w3.org/2000/svg';
+                var svg = document.getElementById('vec-scatter');
+                if (!svg) return;
+                var edges = document.getElementById('vec-edges');
+                var halo = document.getElementById('vec-halo');
+                var detail = document.getElementById('vec-detail');
+                var resetBtn = document.getElementById('vec-reset');
+                var spinBtn = document.getElementById('vec-spin');
+
+                // SVG viewBox is 600x400; drawing area is centered on
+                // (centerX, centerY) and scales by `scale` (1.0 = the
+                // unit world fits within the viewport with margin).
+                var centerX = 300, centerY = 200;
+                var radius = 170; // world-unit-1.0 maps to this many SVG px
+
+                // Rotation + zoom state.
+                var yaw = 0.4;     // initial Y-axis tilt so 3D pops at first paint
+                var pitch = -0.25; // initial X-axis tilt
+                var scale = 1.0;
+                var spinning = false;
+                var spinHandle = null;
+
+                // Build an id → circle-element index + a pre-parsed point
+                // array (numeric) for the hot rotation loop.
+                var nodes = [];
+                var byId = {};
+                Array.prototype.forEach.call(
+                    svg.querySelectorAll('circle[data-id]'),
+                    function(c) {
+                        var n = {
+                            el: c,
+                            id: c.getAttribute('data-id'),
+                            x: parseFloat(c.getAttribute('data-x')) || 0,
+                            y: parseFloat(c.getAttribute('data-y')) || 0,
+                            z: parseFloat(c.getAttribute('data-z')) || 0,
+                            r: parseFloat(c.getAttribute('data-r')) || 3.5
+                        };
+                        nodes.push(n);
+                        byId[n.id] = c;
+                    }
+                );
+
+                // project applies yaw (Y-axis) then pitch (X-axis) and
+                // returns screen coords + depth (post-rotation Z, which
+                // depth-fog uses for alpha). Keeping math inline rather
+                // than a Vector3 class for hot-loop speed.
+                function project(x, y, z) {
+                    var cy = Math.cos(yaw), sy = Math.sin(yaw);
+                    var cx = Math.cos(pitch), sx = Math.sin(pitch);
+                    // Yaw: rotate around Y-axis.
+                    var x1 = x*cy + z*sy;
+                    var z1 = -x*sy + z*cy;
+                    // Pitch: rotate around X-axis.
+                    var y1 = y*cx - z1*sx;
+                    var z2 = y*sx + z1*cx;
+                    return {
+                        sx: centerX + scale * radius * x1,
+                        sy: centerY - scale * radius * y1, // flip Y for screen
+                        depth: z2  // [-1, 1] roughly
+                    };
+                }
+
+                // repaint walks every node and writes new cx/cy + alpha.
+                // ~500 nodes × ~20 multiplies = 10K ops per frame; well
+                // under one millisecond on any laptop.
+                function repaint() {
+                    // Sort by depth so back-facing nodes draw first
+                    // (correct z-order without a real renderer). We
+                    // don't reorder DOM each frame — that's slow —
+                    // instead we just compute each node's screen pos
+                    // and apply alpha by depth.
+                    for (var i = 0; i < nodes.length; i++) {
+                        var n = nodes[i];
+                        var p = project(n.x, n.y, n.z);
+                        n.el.setAttribute('cx', p.sx.toFixed(1));
+                        n.el.setAttribute('cy', p.sy.toFixed(1));
+                        // Depth fog: depth -1 (near) → alpha 1.0,
+                        // depth +1 (far)  → alpha 0.35. Don't override
+                        // the selection-dim case where opacity has
+                        // already been pushed to 0.18.
+                        if (!isSelectionActive) {
+                            var alpha = 0.45 + (1 - (p.depth + 1) * 0.5) * 0.55;
+                            if (alpha < 0.25) alpha = 0.25;
+                            if (alpha > 1.0) alpha = 1.0;
+                            n.el.setAttribute('fill-opacity', alpha.toFixed(2));
+                        }
+                        // Per-node depth-aware radius (closer = bigger).
+                        // Subtle — multiplier ranges 0.85..1.15. Keeps
+                        // size signal (content length) primary.
+                        var depthScale = 1.0 - p.depth * 0.15;
+                        n.el.setAttribute('r', (n.r * depthScale).toFixed(2));
+                        n.el._lastSX = p.sx;
+                        n.el._lastSY = p.sy;
+                    }
+                    // Edges follow the node positions — recompute every
+                    // frame so the relationship lines stay anchored
+                    // through rotation.
+                    repaintEdges();
+                    // Halo follows the selected node.
+                    if (selectedNode) {
+                        halo.setAttribute('cx', selectedNode._lastSX.toFixed(1));
+                        halo.setAttribute('cy', selectedNode._lastSY.toFixed(1));
+                    }
+                }
+
+                var isSelectionActive = false;
+                var selectedNode = null;
+                var lastEdges = []; // [{from, to_id, sim}]
+
+                function repaintEdges() {
+                    if (lastEdges.length === 0) return;
+                    var lines = edges.querySelectorAll('line');
+                    lines.forEach(function(line, i) {
+                        var e = lastEdges[i];
+                        if (!e) return;
+                        var src = e.fromEl;
+                        var tgt = byId[e.toID];
+                        if (!src || !tgt) return;
+                        line.setAttribute('x1', src._lastSX || src.getAttribute('cx'));
+                        line.setAttribute('y1', src._lastSY || src.getAttribute('cy'));
+                        line.setAttribute('x2', tgt._lastSX || tgt.getAttribute('cx'));
+                        line.setAttribute('y2', tgt._lastSY || tgt.getAttribute('cy'));
+                    });
+                }
+
+                function removeAllChildren(el) {
+                    while (el.firstChild) el.removeChild(el.firstChild);
+                }
+
+                function clearSelection() {
+                    removeAllChildren(edges);
+                    halo.setAttribute('opacity', '0');
+                    removeAllChildren(detail);
+                    var p = document.createElement('p');
+                    p.className = 'text-gray-500 italic';
+                    p.textContent = 'Click a node to inspect.';
+                    detail.appendChild(p);
+                    isSelectionActive = false;
+                    selectedNode = null;
+                    lastEdges = [];
+                    repaint(); // restore depth-fog alphas
+                }
+
+                // classColourCSS mirrors the server-side classColour
+                // helper so the sidebar's class chip matches the
+                // scatter's fill colour.
+                function classColourCSS(cls) {
+                    switch (cls) {
+                        case 'research':       return '#60a5fa';
+                        case 'spec':           return '#34d399';
+                        case 'decision':       return '#a78bfa';
+                        case 'commit_msg':     return '#fbbf24';
+                        case 'diagnostic':     return '#f87171';
+                        case 'external_fetch': return '#22d3ee';
+                        case 'summary':        return '#fb923c';
+                        case 'unclassified':   return '#94a3b8';
+                    }
+                    return '#6b7280';
+                }
+
+                // mkChip builds a small rounded badge for the sidebar.
+                function mkChip(label, opts) {
+                    opts = opts || {};
+                    var span = document.createElement('span');
+                    span.className = 'inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-dark-700/60 text-[10px]';
+                    if (opts.dotColour) {
+                        var dot = document.createElement('span');
+                        dot.className = 'h-2 w-2 rounded-full';
+                        dot.style.backgroundColor = opts.dotColour;
+                        span.appendChild(dot);
+                    }
+                    span.appendChild(document.createTextNode(label));
+                    if (opts.title) span.title = opts.title;
+                    return span;
+                }
+
+                function selectNode(circle) {
+                    selectedNode = circle;
+                    isSelectionActive = true;
+                    halo.setAttribute('opacity', '1');
+
+                    var nbrsRaw = circle.getAttribute('data-neighbors') || '[]';
+                    var nbrs = [];
+                    try { nbrs = JSON.parse(nbrsRaw); } catch (e) { nbrs = []; }
+
+                    var relatedSet = {};
+                    relatedSet[circle.getAttribute('data-id')] = true;
+                    nbrs.forEach(function(n) { relatedSet[n.id] = true; });
+                    Array.prototype.forEach.call(
+                        svg.querySelectorAll('circle[data-id]'),
+                        function(c) {
+                            c.setAttribute('fill-opacity',
+                                relatedSet[c.getAttribute('data-id')] ? '1' : '0.18');
+                        }
+                    );
+
+                    // Draw edges from selected to each neighbour. Lines'
+                    // x/y get rewritten on every rotation frame via
+                    // repaintEdges so the graph stays anchored as the
+                    // viewport spins.
+                    removeAllChildren(edges);
+                    lastEdges = [];
+                    nbrs.forEach(function(n) {
+                        var tgt = byId[n.id];
+                        if (!tgt) return;
+                        var line = document.createElementNS(SVG_NS, 'line');
+                        line.setAttribute('x1', circle.getAttribute('cx'));
+                        line.setAttribute('y1', circle.getAttribute('cy'));
+                        line.setAttribute('x2', tgt.getAttribute('cx'));
+                        line.setAttribute('y2', tgt.getAttribute('cy'));
+                        line.setAttribute('stroke', '#fbbf24');
+                        var w = 0.4 + (n.sim - 0.6) / 0.4 * 1.1;
+                        if (w < 0.4) w = 0.4;
+                        if (w > 2.0) w = 2.0;
+                        line.setAttribute('stroke-width', w.toFixed(2));
+                        line.setAttribute('stroke-opacity', '0.65');
+                        line.setAttribute('stroke-linecap', 'round');
+                        edges.appendChild(line);
+                        lastEdges.push({ fromEl: circle, toID: n.id, sim: n.sim });
+                    });
+                    // Refresh halo position from the latest projection.
+                    halo.setAttribute('cx', circle._lastSX || circle.getAttribute('cx'));
+                    halo.setAttribute('cy', circle._lastSY || circle.getAttribute('cy'));
+
+                    // Build sidebar via DOM methods only — every dynamic
+                    // string flows through textContent or attribute
+                    // setters, never innerHTML.
+                    removeAllChildren(detail);
+
+                    var id = circle.getAttribute('data-id') || '';
+                    var src = circle.getAttribute('data-source') || '';
+                    var cls = circle.getAttribute('data-class') || '';
+                    var status = circle.getAttribute('data-status') || '';
+                    var role = circle.getAttribute('data-role') || '';
+                    var preview = circle.getAttribute('data-preview') || '';
+
+                    var header = document.createElement('div');
+                    header.className = 'flex items-baseline justify-between gap-2';
+                    var h3 = document.createElement('h3');
+                    h3.className = 'text-sm font-medium text-gray-200 truncate';
+                    h3.title = src;
+                    h3.textContent = src;
+                    var closeBtn = document.createElement('button');
+                    closeBtn.id = 'vec-deselect';
+                    closeBtn.className = 'text-gray-500 hover:text-gray-300 text-[10px]';
+                    closeBtn.textContent = '× close';
+                    closeBtn.addEventListener('click', clearSelection);
+                    header.appendChild(h3);
+                    header.appendChild(closeBtn);
+                    detail.appendChild(header);
+
+                    var chips = document.createElement('div');
+                    chips.className = 'flex flex-wrap gap-1';
+                    chips.appendChild(mkChip(cls, { dotColour: classColourCSS(cls) }));
+                    chips.appendChild(mkChip(status, { title: 'validation status' }));
+                    if (role) chips.appendChild(mkChip(role));
+                    detail.appendChild(chips);
+
+                    var idLine = document.createElement('div');
+                    idLine.className = 'text-[10px] text-gray-500 font-mono break-all';
+                    idLine.title = 'chunk id';
+                    idLine.textContent = id;
+                    detail.appendChild(idLine);
+
+                    var previewBox = document.createElement('div');
+                    previewBox.className = 'text-gray-300 leading-snug border-l-2 border-dark-700 pl-2 mt-2';
+                    previewBox.textContent = preview;
+                    detail.appendChild(previewBox);
+
+                    var nbrSection = document.createElement('div');
+                    nbrSection.className = 'pt-2 border-t border-dark-700/60';
+                    var nbrLabel = document.createElement('p');
+                    nbrLabel.className = 'text-[10px] uppercase text-gray-500 tracking-wider mb-1';
+                    nbrLabel.textContent = 'Top neighbours';
+                    nbrSection.appendChild(nbrLabel);
+                    if (nbrs.length === 0) {
+                        var none = document.createElement('p');
+                        none.className = 'text-gray-500 italic';
+                        none.textContent = 'No close neighbours (above 0.6 similarity).';
+                        nbrSection.appendChild(none);
+                    } else {
+                        var ul = document.createElement('ul');
+                        ul.className = 'space-y-1';
+                        nbrs.forEach(function(n) {
+                            var li = document.createElement('li');
+                            li.className = 'flex items-baseline justify-between gap-2';
+                            var btn = document.createElement('button');
+                            btn.className = 'text-left text-brand-300 hover:text-brand-200 truncate';
+                            var tgt = byId[n.id];
+                            var label = tgt ? (tgt.getAttribute('data-source') || n.id) : n.id;
+                            var nbrCls = tgt ? (tgt.getAttribute('data-class') || '') : '';
+                            btn.title = label;
+                            // Compose label as: <class-mono> <source>
+                            var clsSpan = document.createElement('span');
+                            clsSpan.className = 'font-mono text-[10px] text-gray-500';
+                            clsSpan.textContent = nbrCls;
+                            btn.appendChild(clsSpan);
+                            btn.appendChild(document.createTextNode(' ' + label));
+                            btn.addEventListener('click', function() {
+                                if (tgt) selectNode(tgt);
+                            });
+                            var simSpan = document.createElement('span');
+                            simSpan.className = 'tabular-nums text-amber-300';
+                            simSpan.textContent = (n.sim * 100).toFixed(1) + '%';
+                            li.appendChild(btn);
+                            li.appendChild(simSpan);
+                            ul.appendChild(li);
+                        });
+                        nbrSection.appendChild(ul);
+                    }
+                    detail.appendChild(nbrSection);
+                }
+
+                // ============================================================
+                // Gestures: drag-to-rotate, wheel-to-zoom, reset, auto-spin.
+                // We discriminate "click on node" from "drag" by tracking
+                // whether the pointer moved more than ~3px between
+                // pointerdown and pointerup. A clean click triggers
+                // selection; a drag rotates without selecting.
+                // ============================================================
+                var dragging = false;
+                var dragMoved = false;
+                var lastPX = 0, lastPY = 0;
+                var pointerDownTarget = null;
+
+                function onPointerDown(ev) {
+                    dragging = true;
+                    dragMoved = false;
+                    lastPX = ev.clientX;
+                    lastPY = ev.clientY;
+                    pointerDownTarget = ev.target.closest('circle[data-id]');
+                    svg.style.cursor = 'grabbing';
+                    // Stop auto-spin once the operator starts dragging.
+                    if (spinning) toggleSpin();
+                    if (svg.setPointerCapture && ev.pointerId !== undefined) {
+                        try { svg.setPointerCapture(ev.pointerId); } catch (e) {}
+                    }
+                }
+                function onPointerMove(ev) {
+                    if (!dragging) return;
+                    var dx = ev.clientX - lastPX;
+                    var dy = ev.clientY - lastPY;
+                    if (Math.abs(dx) + Math.abs(dy) > 3) dragMoved = true;
+                    // Convert pixel delta to angular delta. SVG width
+                    // is roughly the page width; 1 viewport-width drag
+                    // ≈ one full π rotation.
+                    var rect = svg.getBoundingClientRect();
+                    var angX = dx / Math.max(rect.width, 1) * Math.PI * 1.4;
+                    var angY = dy / Math.max(rect.height, 1) * Math.PI * 1.4;
+                    yaw += angX;
+                    pitch += angY;
+                    // Clamp pitch so the scatter doesn't flip
+                    // upside-down (operators expect a stable "up").
+                    var max = Math.PI * 0.49;
+                    if (pitch > max) pitch = max;
+                    if (pitch < -max) pitch = -max;
+                    lastPX = ev.clientX;
+                    lastPY = ev.clientY;
+                    repaint();
+                }
+                function onPointerUp(ev) {
+                    if (!dragging) return;
+                    dragging = false;
+                    svg.style.cursor = 'grab';
+                    // Treat as click-on-node only if the pointer didn't
+                    // move materially between down + up.
+                    if (!dragMoved && pointerDownTarget) {
+                        selectNode(pointerDownTarget);
+                    } else if (!dragMoved && !pointerDownTarget) {
+                        clearSelection();
+                    }
+                    pointerDownTarget = null;
+                }
+                svg.addEventListener('pointerdown', onPointerDown);
+                svg.addEventListener('pointermove', onPointerMove);
+                svg.addEventListener('pointerup', onPointerUp);
+                svg.addEventListener('pointerleave', onPointerUp);
+
+                // Wheel = zoom. Multiplicative so the gesture feels the
+                // same at every scale level.
+                svg.addEventListener('wheel', function(ev) {
+                    ev.preventDefault();
+                    var factor = ev.deltaY < 0 ? 1.1 : (1 / 1.1);
+                    scale *= factor;
+                    if (scale < 0.3) scale = 0.3;
+                    if (scale > 6.0) scale = 6.0;
+                    repaint();
+                }, { passive: false });
+
+                if (resetBtn) {
+                    resetBtn.addEventListener('click', function() {
+                        yaw = 0.4; pitch = -0.25; scale = 1.0;
+                        repaint();
+                    });
+                }
+
+                function toggleSpin() {
+                    spinning = !spinning;
+                    if (spinning) {
+                        spinBtn.textContent = '■ stop';
+                        var last = performance.now();
+                        var step = function(t) {
+                            if (!spinning) return;
+                            var dt = (t - last) / 1000;
+                            last = t;
+                            yaw += dt * 0.4; // ~radians/sec
+                            repaint();
+                            spinHandle = requestAnimationFrame(step);
+                        };
+                        spinHandle = requestAnimationFrame(step);
+                    } else {
+                        spinBtn.textContent = '↻ spin';
+                        if (spinHandle) cancelAnimationFrame(spinHandle);
+                    }
+                }
+                if (spinBtn) spinBtn.addEventListener('click', toggleSpin);
+
+                // Initial paint with the seeded yaw+pitch so the 3D
+                // depth is visible even before the operator interacts.
+                repaint();
+
+                // Expose a tiny API so the search panel above can
+                // pivot the scatter to a chunk by ID. Used by "show
+                // in scatter" buttons in the search results list.
+                window.__memoryViz = {
+                    selectChunkID: function(id) {
+                        var c = byId[id];
+                        if (!c) return false;
+                        selectNode(c);
+                        // Scroll the scatter into view if the operator
+                        // clicked from the search results above it.
+                        try {
+                            svg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        } catch (_) {}
+                        return true;
+                    },
+                    hasChunkID: function(id) { return !!byId[id]; }
+                };
+            })();
+            </script>
+
+            <!-- ============================================================
+                 Search panel client: posts to /search, renders the
+                 results list, wires "show in scatter" to window.__memoryViz.
+                 Uses textContent everywhere — never innerHTML — so a
+                 poisoned chunk snippet can't inject markup.
+                 ============================================================ -->
+            <script>
+            (function() {
+                var form = document.getElementById('mem-search-form');
+                if (!form) return;
+                var input = document.getElementById('mem-search-q');
+                var limitSel = document.getElementById('mem-search-limit');
+                // B-6: optional — only present when the project has any
+                // chunks tagged with repo_scope. Tolerate the null so
+                // legacy renders without the dropdown still submit.
+                var scopeSel = document.getElementById('mem-search-scope');
+                var resultsDiv = document.getElementById('mem-search-results');
+
+                function removeAllChildren(el) {
+                    while (el.firstChild) el.removeChild(el.firstChild);
+                }
+
+                function makeBadge(text, opts) {
+                    opts = opts || {};
+                    var span = document.createElement('span');
+                    span.className = 'inline-block px-1.5 py-0.5 rounded text-[10px] font-mono';
+                    span.style.backgroundColor = opts.bg || '#1f2937';
+                    span.style.color = opts.fg || '#d1d5db';
+                    span.textContent = text;
+                    if (opts.title) span.title = opts.title;
+                    return span;
+                }
+
+                function renderResults(data) {
+                    removeAllChildren(resultsDiv);
+                    resultsDiv.classList.remove('italic');
+
+                    if (data.error) {
+                        var err = document.createElement('p');
+                        err.className = 'text-rose-300';
+                        err.textContent = 'Error: ' + data.error;
+                        resultsDiv.appendChild(err);
+                        return;
+                    }
+
+                    var header = document.createElement('p');
+                    header.className = 'text-[11px] uppercase tracking-wider text-gray-500 mb-2';
+                    header.textContent =
+                        (data.count || 0) + ' result' + (data.count === 1 ? '' : 's') +
+                        ' for "' + (data.query || '') + '"';
+                    resultsDiv.appendChild(header);
+
+                    var list = data.results || [];
+                    if (list.length === 0) {
+                        var empty = document.createElement('p');
+                        empty.className = 'text-gray-500';
+                        empty.textContent = 'No matches. Try a different phrasing or check that the relevant artifact has been ingested.';
+                        resultsDiv.appendChild(empty);
+                        return;
+                    }
+
+                    var ul = document.createElement('ul');
+                    ul.className = 'space-y-2';
+
+                    list.forEach(function(r, i) {
+                        var li = document.createElement('li');
+                        li.className = 'bg-dark-900/60 border border-dark-700/60 rounded p-3 space-y-1.5';
+
+                        // Header row: rank, source, badges, score, "show in scatter" button.
+                        var head = document.createElement('div');
+                        head.className = 'flex items-center gap-2 flex-wrap';
+
+                        var rank = document.createElement('span');
+                        rank.className = 'text-[10px] tabular-nums text-gray-500';
+                        rank.textContent = '#' + (i + 1);
+                        head.appendChild(rank);
+
+                        var src = document.createElement('span');
+                        src.className = 'text-sm font-medium text-gray-200 font-mono break-all';
+                        src.textContent = r.source_name || '(unnamed)';
+                        head.appendChild(src);
+
+                        head.appendChild(makeBadge('score ' + (r.score || 0).toFixed(4),
+                            { bg: '#0c4a6e', fg: '#7dd3fc', title: 'Reciprocal Rank Fusion combined score' }));
+
+                        if (r.task_id) {
+                            var taskBadge = makeBadge('task ' + r.task_id.slice(0, 12),
+                                { bg: '#1e293b', fg: '#94a3b8', title: 'task_id: ' + r.task_id });
+                            head.appendChild(taskBadge);
+                        }
+
+                        // Scope badge — what repo_scope is this chunk
+                        // tagged with? Three visually-distinct colours:
+                        //   "*"            → emerald (cross-cutting; always
+                        //                    visible to every scope filter)
+                        //   <empty/NULL>   → amber  (uncategorized; only
+                        //                    visible because lenient mode is on)
+                        //   any other     → indigo (scope-tagged; matches
+                        //                    the filter exactly OR is the
+                        //                    scope you picked)
+                        var scope = r.repo_scope || "";
+                        var scopeBadge;
+                        if (scope === "*") {
+                            scopeBadge = makeBadge("scope *",
+                                { bg: "#064e3b", fg: "#6ee7b7", title: "cross-cutting (visible to every scope filter)" });
+                        } else if (scope === "") {
+                            scopeBadge = makeBadge("uncategorized",
+                                { bg: "#78350f", fg: "#fcd34d", title: "repo_scope IS NULL — only surfaced when the search is in lenient mode (pre-B-6 default). Retag via `vornikctl memory scope retag` to promote." });
+                        } else {
+                            scopeBadge = makeBadge("scope " + scope,
+                                { bg: "#312e81", fg: "#a5b4fc", title: "repo_scope: " + scope });
+                        }
+                        head.appendChild(scopeBadge);
+
+                        // "Show in scatter" — only when the chunk is in the
+                        // 500-sample. window.__memoryViz.hasChunkID lets us
+                        // grey out the button when the chunk wasn't sampled,
+                        // rather than failing silently after a click.
+                        var inScatter = !!(window.__memoryViz && window.__memoryViz.hasChunkID(r.chunk_id));
+                        var showBtn = document.createElement('button');
+                        showBtn.type = 'button';
+                        showBtn.className = 'ml-auto text-[10px] px-2 py-0.5 rounded ' +
+                            (inScatter
+                                ? 'bg-amber-600/80 hover:bg-amber-500 text-amber-50 cursor-pointer'
+                                : 'bg-dark-700/60 text-gray-500 cursor-not-allowed');
+                        showBtn.textContent = inScatter ? '↓ trace in scatter' : '· not in scatter sample';
+                        showBtn.disabled = !inScatter;
+                        if (inScatter) {
+                            showBtn.addEventListener('click', function() {
+                                window.__memoryViz.selectChunkID(r.chunk_id);
+                            });
+                        }
+                        head.appendChild(showBtn);
+
+                        li.appendChild(head);
+
+                        // Chunk-id (small, monospaced).
+                        var idLine = document.createElement('div');
+                        idLine.className = 'text-[10px] text-gray-600 font-mono break-all';
+                        idLine.textContent = r.chunk_id;
+                        li.appendChild(idLine);
+
+                        // Content snippet.
+                        var snippet = document.createElement('pre');
+                        snippet.className = 'text-xs text-gray-300 whitespace-pre-wrap font-mono leading-snug max-h-40 overflow-auto bg-dark-900 border border-dark-700/40 rounded p-2';
+                        snippet.textContent = r.content || '';
+                        li.appendChild(snippet);
+
+                        ul.appendChild(li);
+                    });
+                    resultsDiv.appendChild(ul);
+                }
+
+                function runSearch(q) {
+                    removeAllChildren(resultsDiv);
+                    resultsDiv.classList.add('italic');
+                    var spinner = document.createElement('p');
+                    spinner.className = 'text-gray-500';
+                    spinner.textContent = 'Searching…';
+                    resultsDiv.appendChild(spinner);
+
+                    var params = new URLSearchParams();
+                    params.set('q', q);
+                    params.set('limit', limitSel.value || '20');
+                    if (scopeSel && scopeSel.value) {
+                        // Empty value = "All scopes" — omit the param so the
+                        // searcher takes the legacy project-wide path.
+                        params.set('repo_scope', scopeSel.value);
+                    }
+
+                    fetch(window.location.pathname + '/search?' + params.toString(), {
+                        method: 'GET',
+                        headers: { 'Accept': 'application/json' }
+                    })
+                    .then(function(r) { return r.json(); })
+                    .then(renderResults)
+                    .catch(function(err) {
+                        removeAllChildren(resultsDiv);
+                        var p = document.createElement('p');
+                        p.className = 'text-rose-300';
+                        p.textContent = 'Request failed: ' + err.message;
+                        resultsDiv.appendChild(p);
+                    });
+                }
+
+                form.addEventListener('submit', function(ev) {
+                    ev.preventDefault();
+                    var q = (input.value || '').trim();
+                    if (!q) return;
+                    runSearch(q);
+                });
+
+                // Allow deep-linking: ?q=... pre-fills and runs.
+                var url = new URL(window.location.href);
+                var initial = url.searchParams.get('q');
+                if (initial) {
+                    input.value = initial;
+                    runSearch(initial);
+                }
+            })();
+            </script>
+            {{end}}{{/* end search-tab: Memory search + Vector scatter + inline JS */}}
+
+            {{if eq $tab "operate"}}
+            <!-- Quarantine by gate -->
+            {{if .QuarantineByGate}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <h2 class="text-sm font-medium text-gray-300">Quarantine by gate</h2>
+                    <p class="mt-1 text-xs text-gray-500">Which quality gate is rejecting most for this project. Pending only — released and dropped rows are excluded.</p>
+                </div>
+                <div class="px-5 py-3 flex flex-wrap gap-2">
+                    {{range $gate, $count := .QuarantineByGate}}
+                    <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-dark-700/60 text-xs text-gray-300">
+                        <span class="font-mono">{{$gate}}</span>
+                        <span class="text-rose-300 font-medium tabular-nums">{{$count}}</span>
+                    </span>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Epochs -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60 flex items-start gap-4">
+                    <div class="flex-1 min-w-0">
+                        <h2 class="text-sm font-medium text-gray-300">Epochs (snapshots)</h2>
+                        <p class="mt-1 text-xs text-gray-500">One row per ingest pipeline run. Active epochs are visible to default search; rolled-back ones are not. The rollback action targets older epochs — newer epochs become inactive, reverting the corpus to the chosen point.</p>
+                    </div>
+                    <div class="flex-shrink-0 pt-1">
+                        {{template "pageSizeSelector" (dict
+                            "Action" (printf "/ui/memory/%s" .ProjectID)
+                            "Current" .EpochsLimit
+                            "Options" .LimitOptions
+                            "ParamName" "epochs_limit"
+                            "Hidden" (dict
+                                "quarantine_limit" (printf "%d" .QuarantineLimit)
+                                "rollbacks_limit" (printf "%d" .RollbacksLimit)
+                                "eviction_limit" (printf "%d" .EvictionLimit)
+                                "tab" .Tab))}}
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-dark-700/60 text-xs">
+                        <thead class="bg-dark-800/60">
+                            <tr>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Epoch</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Closed</th>
+                                <th scope="col" class="px-3 py-2 text-right font-medium text-gray-500 uppercase tracking-wider">Adm</th>
+                                <th scope="col" class="px-3 py-2 text-right font-medium text-gray-500 uppercase tracking-wider">Quar</th>
+                                <th scope="col" class="px-3 py-2 text-right font-medium text-gray-500 uppercase tracking-wider">Verif</th>
+                                <th scope="col" class="px-3 py-2 text-right font-medium text-gray-500 uppercase tracking-wider">Supers</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Epochs}}
+                            <tr class="hover:bg-dark-700/30">
+                                <td class="px-3 py-2 font-mono text-gray-400" title="{{.ID}}">{{shortID .ID}}</td>
+                                <td class="px-3 py-2 text-gray-400">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+                                <td class="px-3 py-2 text-gray-500">{{if .ClosedAt}}{{.ClosedAt.Format "15:04:05"}}{{else}}<span class="text-amber-400">open</span>{{end}}</td>
+                                <td class="px-3 py-2 text-right tabular-nums text-gray-300">{{.ChunksAdmitted}}</td>
+                                <td class="px-3 py-2 text-right tabular-nums {{if .ChunksQuarantined}}text-rose-300{{else}}text-gray-500{{end}}">{{.ChunksQuarantined}}</td>
+                                <td class="px-3 py-2 text-right tabular-nums {{if .ChunksVerified}}text-emerald-300{{else}}text-gray-500{{end}}">{{.ChunksVerified}}</td>
+                                <td class="px-3 py-2 text-right tabular-nums {{if .ChunksSuperseded}}text-amber-300{{else}}text-gray-500{{end}}">{{.ChunksSuperseded}}</td>
+                                <td class="px-3 py-2">
+                                    {{if .IsActive}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-900/40 text-emerald-300 ring-1 ring-inset ring-emerald-600/40 text-xs">active</span>
+                                    {{else}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-700/60 text-gray-400 ring-1 ring-inset ring-gray-600/40 text-xs">rolled back</span>{{end}}
+                                </td>
+                                <td class="px-3 py-2">
+                                    {{if .IsTargetForRollback}}
+                                    <form method="POST" action="/ui/memory/{{$.ProjectID}}/rollback" class="inline" onsubmit="return confirm('Roll back to epoch {{.ID}}? Newer active epochs will become invisible to default search.');">
+                                        <input type="hidden" name="to" value="{{.ID}}">
+                                        <input type="hidden" name="reason" value="UI rollback">
+                                        <button class="text-amber-400 hover:text-amber-300 text-xs underline">Roll back to here</button>
+                                    </form>
+                                    {{else}}
+                                    <span class="text-gray-600 text-xs">—</span>
+                                    {{end}}
+                                </td>
+                            </tr>
+                            {{else}}
+                            <tr>
+                                <td class="px-3 py-6 text-center text-gray-500" colspan="9">No epochs yet — pipeline hasn't published any snapshots.</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Quarantine list -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60 flex items-start gap-4">
+                    <div class="flex-1 min-w-0">
+                        <h2 class="text-sm font-medium text-gray-300">Quarantine — pending</h2>
+                        <p class="mt-1 text-xs text-gray-500">Chunks the gates refused. <strong>Drop</strong> = "stay out permanently". <strong>Release</strong> = mark as reviewed (the chunk doesn't re-enter memory — use the corrector's <code class="text-gray-400">memory_correct</code> tool to re-insert content explicitly).</p>
+                    </div>
+                    <div class="flex-shrink-0 pt-1">
+                        {{template "pageSizeSelector" (dict
+                            "Action" (printf "/ui/memory/%s" .ProjectID)
+                            "Current" .QuarantineLimit
+                            "Options" .LimitOptions
+                            "ParamName" "quarantine_limit"
+                            "Hidden" (dict
+                                "epochs_limit" (printf "%d" .EpochsLimit)
+                                "rollbacks_limit" (printf "%d" .RollbacksLimit)
+                                "eviction_limit" (printf "%d" .EvictionLimit)
+                                "tab" .Tab))}}
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-dark-700/60 text-xs">
+                        <thead class="bg-dark-800/60">
+                            <tr>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">When</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Producer</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Class</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Failed gate</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Detail</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Preview</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .QuarantinePending}}
+                            <tr class="hover:bg-dark-700/30 align-top">
+                                <td class="px-3 py-2 text-gray-400 whitespace-nowrap">{{.QuarantinedAt.Format "2006-01-02 15:04"}}</td>
+                                <td class="px-3 py-2 text-gray-300">{{if .ProducerRole}}{{.ProducerRole}}{{else}}—{{end}}</td>
+                                <td class="px-3 py-2 text-gray-300 font-mono">{{if .ProposedClass}}{{.ProposedClass}}{{else}}—{{end}}</td>
+                                <td class="px-3 py-2 font-mono text-rose-300" data-quar-gate="{{.FailedGate}}" title="Click to highlight this gate in the pipeline diagram">{{.FailedGate}}</td>
+                                <td class="px-3 py-2 text-gray-400">{{.FailureDetail}}</td>
+                                <td class="px-3 py-2 text-gray-500 max-w-md truncate" title="{{.Preview}}">{{.Preview}}</td>
+                                <td class="px-3 py-2 whitespace-nowrap">
+                                    <form method="POST" action="/ui/memory/{{$.ProjectID}}/quarantine" class="inline" onsubmit="return confirm('Drop quarantine row {{.ID}}? This is permanent — the chunk will never reach memory.');">
+                                        <input type="hidden" name="id" value="{{.ID}}">
+                                        <input type="hidden" name="action" value="drop">
+                                        <button class="text-rose-400 hover:text-rose-300 text-xs underline">Drop</button>
+                                    </form>
+                                    <span class="text-gray-700 mx-1">·</span>
+                                    <form method="POST" action="/ui/memory/{{$.ProjectID}}/quarantine" class="inline" onsubmit="return confirm('Release quarantine row {{.ID}}? This clears it from the pending list without re-inserting the chunk into memory.');">
+                                        <input type="hidden" name="id" value="{{.ID}}">
+                                        <input type="hidden" name="action" value="release">
+                                        <button class="text-emerald-400 hover:text-emerald-300 text-xs underline">Release</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {{else}}
+                            <tr>
+                                <td class="px-3 py-6 text-center text-gray-500" colspan="7">No pending quarantine items.</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Hard eviction (GDPR Art 17) -->
+            {{if .EvictEnabled}}
+            <div class="glass rounded-xl border border-rose-900/40 overflow-hidden">
+                <div class="px-5 py-4 border-b border-rose-900/40 bg-rose-900/10">
+                    <h2 class="text-sm font-medium text-rose-200 flex items-center gap-2">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
+                        Erase chunks (hard delete)
+                    </h2>
+                    <p class="mt-1 text-xs text-gray-400">
+                        Permanently delete chunks from <code class="text-rose-300">project_memory_chunks</code> with a
+                        <code class="text-rose-300">memory_eviction_audit</code> tombstone. Cascades through embed-queue, dlq, and entity-mentions
+                        automatically. <strong>Irreversible.</strong>
+                        Use for GDPR Art 17 erasure requests or cleanup of confirmed-bad records that the soft-refute path
+                        (<a href="https://example.invalid" class="text-brand-300 underline-offset-2 hover:underline">memory_correct</a> tool) leaves cluttering search.
+                    </p>
+                </div>
+                <form method="POST" action="/ui/memory/{{.ProjectID}}/evict" class="px-5 py-4 space-y-3"
+                      onsubmit="return confirm('Permanently delete the listed chunks?\nThis cascades + writes audit tombstones.\nIrreversible.');">
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="evict-chunks">Chunk IDs</label>
+                        <textarea id="evict-chunks" name="chunks" rows="3" required
+                                  placeholder="mc_abc123, mc_def456&#10;or one per line"
+                                  class="w-full px-3 py-2 text-xs font-mono rounded-lg bg-dark-900 border border-dark-700 focus:border-rose-500 focus:outline-none text-gray-200"></textarea>
+                        <p class="text-[11px] text-gray-500 mt-1">Comma- or newline-separated. Paste from the search panel or <code class="text-gray-400">vornikctl memory search</code>.</p>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="evict-reason">Reason (audit row)</label>
+                        <input type="text" id="evict-reason" name="reason"
+                               placeholder='GDPR DSAR 2026-05-20-12 / "operator: confirmed wrong ticker"'
+                               class="w-full px-3 py-2 text-xs rounded-lg bg-dark-900 border border-dark-700 focus:border-rose-500 focus:outline-none text-gray-200">
+                        <p class="text-[11px] text-gray-500 mt-1">Recorded verbatim on every <code class="text-gray-400">memory_eviction_audit</code> row. GDPR Art 30 ROPA hook.</p>
+                    </div>
+                    <div class="flex items-center justify-between gap-3 pt-2 border-t border-dark-700/40">
+                        <label class="inline-flex items-center gap-2 text-xs text-gray-300">
+                            <input type="checkbox" name="confirm" value="yes" required
+                                   class="form-checkbox h-3.5 w-3.5 rounded border-dark-600 bg-dark-700 text-rose-500 focus:ring-rose-500">
+                            I understand this is destructive and irreversible.
+                        </label>
+                        <button type="submit"
+                                class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-rose-700 hover:bg-rose-600 text-white transition-colors">
+                            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>
+                            Erase chunks
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Eviction audit log -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60 flex items-start gap-4">
+                    <div class="flex-1 min-w-0">
+                        <h2 class="text-sm font-medium text-gray-300">Eviction audit</h2>
+                        <p class="mt-1 text-xs text-gray-500">
+                            Tombstones from <code class="text-gray-400">memory_eviction_audit</code> — every hard-delete records the chunk's
+                            denormalised snapshot (content_hash, source, class, role) plus operator-supplied reason. Newest first.
+                            This table is the GDPR Art 30 ROPA hook for memory-side processing.
+                        </p>
+                    </div>
+                    <div class="flex-shrink-0 pt-1">
+                        {{template "pageSizeSelector" (dict
+                            "Action" (printf "/ui/memory/%s" .ProjectID)
+                            "Current" .EvictionLimit
+                            "Options" .LimitOptions
+                            "ParamName" "eviction_limit"
+                            "Hidden" (dict
+                                "quarantine_limit" (printf "%d" .QuarantineLimit)
+                                "epochs_limit" (printf "%d" .EpochsLimit)
+                                "rollbacks_limit" (printf "%d" .RollbacksLimit)
+                                "tab" .Tab))}}
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-dark-700/60 text-xs">
+                        <thead class="bg-dark-800/60">
+                            <tr>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">When</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Chunk</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Source</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Class</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Hash</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">By</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Reason</th>
+                                <th scope="col" class="px-3 py-2 text-right font-medium text-gray-500 uppercase tracking-wider" title="Previously-superseded chunks whose prior version this rollback restored">Restored</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .EvictionAudits}}
+                            <tr class="hover:bg-dark-700/30 align-top">
+                                <td class="px-3 py-2 text-gray-400 whitespace-nowrap font-mono">{{.EvictedAt}}</td>
+                                <td class="px-3 py-2 font-mono text-gray-300" title="{{.ChunkID}}">{{shortID .ChunkID}}</td>
+                                <td class="px-3 py-2 text-gray-400 max-w-xs truncate" title="{{.SourceName}}">{{if .SourceName}}{{.SourceName}}{{else}}—{{end}}</td>
+                                <td class="px-3 py-2 text-gray-300 font-mono">{{if .ContentClass}}{{.ContentClass}}{{else}}—{{end}}</td>
+                                <td class="px-3 py-2 text-gray-300">{{if .ProducerRole}}{{.ProducerRole}}{{else}}—{{end}}</td>
+                                <td class="px-3 py-2 font-mono text-gray-500" title="{{.ContentHash}}">{{shortID .ContentHash}}</td>
+                                <td class="px-3 py-2 text-gray-300">{{if .EvictedBy}}{{.EvictedBy}}{{else}}—{{end}}</td>
+                                <td class="px-3 py-2 text-gray-400 max-w-md truncate" title="{{.Reason}}">{{if .Reason}}{{.Reason}}{{else}}<span class="text-gray-600 italic">no reason given</span>{{end}}</td>
+                            </tr>
+                            {{else}}
+                            <tr>
+                                <td class="px-3 py-6 text-center text-gray-500" colspan="8">No evictions recorded for this project.</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}{{/* end EvictEnabled */}}
+
+            <!-- Rollback history -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60 flex items-start gap-4">
+                    <div class="flex-1 min-w-0">
+                        <h2 class="text-sm font-medium text-gray-300">Rollback history</h2>
+                        <p class="mt-1 text-xs text-gray-500">Audit trail for corpus_epochs_active mutations. Includes manual operator rollbacks, automatic circuit-breaker rollbacks, and scheduled canary failures.</p>
+                    </div>
+                    <div class="flex-shrink-0 pt-1">
+                        {{template "pageSizeSelector" (dict
+                            "Action" (printf "/ui/memory/%s" .ProjectID)
+                            "Current" .RollbacksLimit
+                            "Options" .LimitOptions
+                            "ParamName" "rollbacks_limit"
+                            "Hidden" (dict
+                                "quarantine_limit" (printf "%d" .QuarantineLimit)
+                                "epochs_limit" (printf "%d" .EpochsLimit)
+                                "eviction_limit" (printf "%d" .EvictionLimit)
+                                "tab" .Tab))}}
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-dark-700/60 text-xs">
+                        <thead class="bg-dark-800/60">
+                            <tr>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">When</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">From</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">To</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Triggered by</th>
+                                <th scope="col" class="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wider">Reason</th>
+                                <th scope="col" class="px-3 py-2 text-right font-medium text-gray-500 uppercase tracking-wider" title="Previously-superseded chunks whose prior version this rollback restored">Restored</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Rollbacks}}
+                            <tr class="hover:bg-dark-700/30">
+                                <td class="px-3 py-2 text-gray-400">{{.AppliedAt.Format "2006-01-02 15:04"}}</td>
+                                <td class="px-3 py-2 font-mono text-gray-500" {{if .FromEpochID}}title="{{.FromEpochID}}"{{end}}>{{if .FromEpochID}}{{shortID .FromEpochID}}{{else}}—{{end}}</td>
+                                <td class="px-3 py-2 font-mono text-gray-300" title="{{.ToEpochID}}">{{shortID .ToEpochID}}</td>
+                                <td class="px-3 py-2 text-gray-300">{{.TriggeredBy}}</td>
+                                <td class="px-3 py-2 text-gray-400">{{.Reason}}</td>
+                                <td class="px-3 py-2 text-right text-gray-300">{{if .ChunksRestored}}{{.ChunksRestored}}{{else}}—{{end}}</td>
+                            </tr>
+                            {{else}}
+                            <tr>
+                                <td class="px-3 py-6 text-center text-gray-500" colspan="6">No rollbacks recorded.</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}{{/* end operate-tab: quarantine + epochs + rollback */}}
+        </div>
+    </main>
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

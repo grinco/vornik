@@ -1,0 +1,75 @@
+# vornik — local development config (committed, zero-setup).
+#
+# Used by `make dev` (the default for VORNIK_DEV_CONFIG). Designed to boot
+# a working daemon with NO external dependencies: SQLite on a local file,
+# loopback-only bind, auth off, and every optional subsystem (chat,
+# memory, telegram, metrics, tracing) disabled. Enable what you need as
+# you go — see configs/vornik.yaml.example for the full annotated surface.
+#
+# Safe-by-construction notes:
+#   - Binds 127.0.0.1 ONLY, so `auth_enabled: false` is acceptable here
+#     (it would NOT be on a 0.0.0.0 bind — keep auth on for any shared
+#     deployment).
+#   - Uses SQLite at ./.dev/vornik.db — it does NOT touch the production
+#     PostgreSQL database (named `vornik_test`). Never point dev at that.
+#   - Runtime state lives under ./.dev/ which is gitignored.
+#
+# Note: a couple of subsystems (inter-project "cross_project_calls" and
+# dispatcher reminders) are Postgres-only in v1 and log a harmless
+# "SQLite backend not supported" warning every tick on this config —
+# expected, not a failure. Switch to a Postgres config if you need them.
+
+server:
+  address: "127.0.0.1:8080"   # loopback only — see auth note above
+  read_timeout: 30s
+  write_timeout: 360s
+
+# SQLite backend — no Postgres/container required for local dev. All 28
+# repos run on SQLite (modernc.org/sqlite, pure-Go, no cgo). The file is
+# created on first boot.
+database:
+  driver: sqlite
+  path: ./.dev/vornik.db
+
+storage:
+  artifacts_path: ./.dev/artifacts
+artifacts:
+  artifacts_path: ./.dev/artifacts
+
+scheduler:
+  max_concurrent_tasks: 2
+  lease_timeout: 5m
+
+logging:
+  level: debug   # chattier than prod; flip to info to quiet down
+  format: text   # human-readable console output for dev
+
+# Loopback bind + auth off = friction-free local API/UI. Do NOT copy this
+# combination to any non-loopback deployment.
+api:
+  auth_enabled: false
+
+metrics:
+  enabled: false
+tracing:
+  enabled: false
+
+# All LLM-consuming subsystems off by default — enable + point at your
+# local endpoint (Ollama, a gateway, claude-subscription, …) when needed.
+# See configs/vornik.yaml.example for the full chat/router/memory surface.
+chat:
+  enabled: false
+memory:
+  enabled: false
+telegram:
+  enabled: false
+
+autonomy:
+  default_evaluate_timeout: 5m
+
+runtime:
+  userns_mode: ""
+  run_as_user: ""
+
+mcp:
+  servers: []

@@ -1,0 +1,55 @@
+projectId: "{{.projectId}}"
+displayName: "{{.displayName}}"
+swarmId: "{{.projectId}}-swarm"
+defaultWorkflowId: "adaptive"
+adaptiveCandidateWorkflows:
+  - research
+
+defaultPriority: 50
+maxConcurrentTasks: 1
+
+autonomy:
+  enabled: false
+  goal: |
+    (Set a goal when you enable autonomy. The personal-assistant
+    template ships with autonomy disabled — chat-driven by default.)
+  mode: llm
+  pollInterval: "30m"
+  maxTasksPerHour: 2
+  allowedTaskTypes:
+    - "research"
+    - "summary"
+    - "comparison"
+
+permissions:
+  secrets: []
+  allowedTools:
+    - "current_time"
+    - "file_read"
+    - "file_write"
+    - "file_edit"
+    - "read_many_files"
+    - "grep"
+    - "glob"
+    - "memory_search"
+
+# Policy-Aware Memory Firewall (2026.5.9+). Inherits the daemon
+# default (advisory) when this block is empty or absent. The
+# personal-assistant template handles ad-hoc operator queries
+# without compliance constraints, so advisory is the right
+# default — operators see PolicyWarning strings on recall hits
+# that would be blocked under stricter policies, without
+# breaking any workflow.
+#
+# Flip to enforce when this project stores personal data
+# (e.g. health records, financial documents, employee data)
+# and you want chunks tagged Restricted to be hard-blocked
+# from agent recall:
+#
+#   firewall:
+#     mode: enforce
+#
+# Other accepted values: off (audit only, no warnings) /
+# advisory (default) / enforce (block restricted chunks).
+firewall:
+  mode: ""  # inherit daemon default

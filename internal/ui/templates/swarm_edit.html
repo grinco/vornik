@@ -1,0 +1,185 @@
+{{define "swarm_edit.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col" data-assist-project="{{.AssistProjectID}}">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-5xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">Edit swarm</h1>
+                    <p class="text-xs text-gray-500 font-mono mt-1">{{.SwarmID}}{{if .SwarmPath}} · {{.SwarmPath}}{{end}}</p>
+                    <a href="/ui/swarms/{{.SwarmID}}/schema{{if .AssistProjectID}}?projectId={{.AssistProjectID}}{{end}}" class="text-[11px] text-brand-300 hover:text-brand-200 underline-offset-2 hover:underline">All parameters (roles + advanced) →</a>
+                </div>
+                {{if .AssistProjectID}}
+                <a href="/ui/projects/{{.AssistProjectID}}" class="flex items-center gap-1 text-gray-500 hover:text-gray-300 text-sm transition-colors">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                    Project
+                </a>
+                {{else}}
+                <a href="/ui/swarms" class="flex items-center gap-1 text-gray-500 hover:text-gray-300 text-sm transition-colors">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                    Swarms
+                </a>
+                {{end}}
+            </div>
+
+            {{if .Success}}
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{{.Success}}</div>
+            {{end}}
+            {{if .Error}}
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            {{end}}
+
+            <p class="text-sm text-gray-400 leading-relaxed">
+                Swarm-level scalars, per-role system prompts, description, model, fallback
+                model, and allowed tools are editable here. Remaining per-role frontmatter
+                (runtime, permissions beyond allowed tools) is read-only — edit it on disk
+                for now. Comments and unmodified fields in
+                <code class="text-gray-300">SWARM.md</code> survive a form save.
+            </p>
+
+            <form method="POST" action="/ui/swarms/{{.SwarmID}}/edit" class="space-y-6">
+
+                <!-- Identity -->
+                <section class="glass rounded-lg border border-dark-700 p-5 space-y-4">
+                    <header>
+                        <h2 class="text-sm font-semibold text-gray-200 uppercase tracking-wide">Identity</h2>
+                    </header>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-medium text-gray-300 mb-1.5" for="displayName">Display name</label>
+                            <input type="text" name="displayName" id="displayName" value="{{.DisplayName}}"
+                                   class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-300 mb-1.5" for="leadRole">Lead role</label>
+                            <select name="leadRole" id="leadRole"
+                                    class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                                <option value="" {{if eq .LeadRole ""}}selected{{end}}>(unset)</option>
+                                {{$current := .LeadRole}}
+                                {{range .RoleViews}}
+                                <option value="{{.Name}}" {{if eq .Name $current}}selected{{end}}>{{.Name}}</option>
+                                {{end}}
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="rolePrelude">Role prelude</label>
+                        <textarea name="rolePrelude" id="rolePrelude" rows="4"
+                                  class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 leading-relaxed">{{.RolePrelude}}</textarea>
+                        <p class="text-[11px] text-gray-500 mt-1">Prepended to every role's system prompt at runtime. Sits between the daemon's built-in safety prelude and the role body.</p>
+                    </div>
+                </section>
+
+                <!-- Roles -->
+                <section class="glass rounded-lg border border-dark-700 p-5 space-y-5">
+                    <header>
+                        <h2 class="text-sm font-semibold text-gray-200 uppercase tracking-wide">Roles</h2>
+                        <p class="text-[11px] text-gray-500 mt-1">Each role's system prompt is editable here. Other per-role fields stay read-only for now.</p>
+                    </header>
+
+                    {{range .RoleViews}}
+                    <article class="rounded-md border border-dark-700/70 bg-dark-900/40 p-4 space-y-3">
+                        <header>
+                            <div class="flex items-center gap-2 flex-wrap">
+                                <span class="text-sm font-medium text-gray-100 font-mono">{{.Name}}</span>
+                            </div>
+                        </header>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                                <label class="block text-[11px] font-medium text-gray-400 mb-1" for="{{.DescFieldName}}">Description</label>
+                                <input type="text" name="{{.DescFieldName}}" id="{{.DescFieldName}}" value="{{.Description}}"
+                                       class="w-full px-2 py-1.5 text-xs rounded bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200">
+                            </div>
+                            <div>
+                                <label class="block text-[11px] font-medium text-gray-400 mb-1" for="{{.ModelFieldName}}">Model</label>
+                                {{if $.ModelOptions}}
+                                <select name="{{.ModelFieldName}}" id="{{.ModelFieldName}}"
+                                        class="w-full px-2 py-1.5 text-xs rounded bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                                    <option value="" {{if eq .Model ""}}selected{{end}}>(daemon default)</option>
+                                    {{$mc := .Model}}
+                                    {{range $.ModelOptions}}
+                                    <option value="{{.}}" {{if eq . $mc}}selected{{end}}>{{.}}</option>
+                                    {{end}}
+                                </select>
+                                {{else}}
+                                <input type="text" name="{{.ModelFieldName}}" id="{{.ModelFieldName}}" value="{{.Model}}"
+                                       placeholder="(daemon default)"
+                                       class="w-full px-2 py-1.5 text-xs rounded bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                                {{end}}
+                            </div>
+                            <div>
+                                <label class="block text-[11px] font-medium text-gray-400 mb-1" for="{{.ModelFallbackFieldName}}">Fallback model</label>
+                                {{if $.ModelOptions}}
+                                <select name="{{.ModelFallbackFieldName}}" id="{{.ModelFallbackFieldName}}"
+                                        class="w-full px-2 py-1.5 text-xs rounded bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                                    <option value="" {{if eq .ModelFallback ""}}selected{{end}}>(none)</option>
+                                    {{$fb := .ModelFallback}}
+                                    {{range $.ModelOptions}}
+                                    <option value="{{.}}" {{if eq . $fb}}selected{{end}}>{{.}}</option>
+                                    {{end}}
+                                </select>
+                                {{else}}
+                                <input type="text" name="{{.ModelFallbackFieldName}}" id="{{.ModelFallbackFieldName}}" value="{{.ModelFallback}}"
+                                       placeholder="(none)"
+                                       class="w-full px-2 py-1.5 text-xs rounded bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">
+                                {{end}}
+                                <p class="text-[11px] text-gray-500 mt-1">Used when a step fails on the primary model with a model-shaped error (one retry).</p>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-gray-400 mb-1" for="{{.ToolsFieldName}}">Allowed tools (one per line)</label>
+                            <textarea name="{{.ToolsFieldName}}" id="{{.ToolsFieldName}}" rows="3"
+                                      class="w-full px-2 py-1.5 text-xs rounded bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">{{.AllowedTools}}</textarea>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-medium text-gray-300 mb-1.5" for="{{.PromptFieldName}}">System prompt</label>
+                            <textarea name="{{.PromptFieldName}}" id="{{.PromptFieldName}}" rows="10"
+                                      class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono leading-6">{{.SystemPrompt}}</textarea>
+                        </div>
+                        {{template "assistPanel" (dict
+                            "Kind" "swarm_role"
+                            "TargetID" $.SwarmID
+                            "SubjectID" .Name
+                            "PromptFieldID" .PromptFieldName
+                            "PanelID" (printf "assist-swarm-%s" .Name)
+                        )}}
+                    </article>
+                    {{end}}
+                </section>
+
+                <div class="flex items-center justify-end gap-3">
+                    <a href="/ui/projects" class="px-4 py-2 rounded-md bg-dark-700 text-gray-300 hover:bg-dark-600 text-sm font-medium">Cancel</a>
+                    <button type="submit" class="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-brand-600 text-white hover:bg-brand-500 text-sm font-medium">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 12.75l6 6 9-13.5"/></svg>
+                        Save swarm
+                    </button>
+                </div>
+            </form>
+
+            <!-- Danger zone: delete the swarm. Separate form so the
+                 save form's submit button doesn't accidentally hit
+                 it. The confirm() prompt is client-side; the
+                 server-side guard refuses deletes when any project
+                 still references this swarm. -->
+            <section class="rounded-lg border border-red-500/30 bg-red-500/5 p-5 space-y-3" data-testid="swarm-delete-section">
+                <header>
+                    <h2 class="text-sm font-semibold text-red-300 uppercase tracking-wide">Danger zone</h2>
+                    <p class="text-[11px] text-gray-500 mt-1">Removes <code class="text-gray-300">{{.SwarmID}}.md</code> from disk. Projects still pointing at this swarm will block the delete.</p>
+                </header>
+                <form method="POST" action="/ui/swarms/{{.SwarmID}}/delete" onsubmit="return confirm('Delete swarm {{.SwarmID}}? This removes the .md from disk and cannot be undone.');">
+                    <button type="submit" class="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-red-600 text-white hover:bg-red-500 text-sm font-medium" data-testid="swarm-delete-button">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"/></svg>
+                        Delete swarm
+                    </button>
+                </form>
+            </section>
+        </div>
+    </main>
+    {{template "assistScript" .}}
+</body>
+</html>
+{{end}}

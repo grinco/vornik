@@ -1,0 +1,49 @@
+# Personal Assistant project template — adaptive workflow + a single
+# swarm. Ships with the 2026.6.0 SaaS-readiness arc as the canonical
+# starter for chat-driven projects. Customize by editing the
+# generated YAML after `vornikctl init project --template
+# personal-assistant`.
+displayName: "Personal Assistant"
+description: |
+  A general-purpose assistant project with the adaptive workflow.
+  Best fit for chat-driven workflows where the user asks the
+  assistant questions and the assistant routes to the right tool
+  (memory search, web fetch, file read) per turn.
+
+  After materialisation: enable Telegram in your daemon config to
+  start chatting, or POST to /api/v1/projects/{id}/tasks for
+  programmatic access.
+domain: "general"
+
+parameters:
+  - name: projectId
+    type: string
+    label: "Project ID"
+    description: "Lowercase letters, numbers, and hyphens only. Becomes the URL slug + config filename."
+    pattern: "[a-z0-9][a-z0-9-]{1,30}[a-z0-9]"
+    required: true
+  - name: displayName
+    type: string
+    label: "Display name"
+    description: "Human-readable name shown in the UI."
+    default: "Personal Assistant"
+    required: true
+  - name: llmModel
+    type: enum
+    label: "Default LLM model"
+    description: "Model used by the assistant role. Pick a model that's already configured in your daemon's chat router."
+    options:
+      - "openai.gpt-oss-120b-1:0"
+      - "moonshotai.kimi-k2.5"
+      - "zai.glm-4.7"
+    default: "openai.gpt-oss-120b-1:0"
+    required: true
+
+files:
+  - source: project.yaml.tmpl
+    target: "projects/{{.projectId}}.yaml"
+  # Registry loads swarms only from .md files (SWARM.md format —
+  # YAML frontmatter + Markdown body) since the 2026-05-17
+  # migration; the old swarm.yaml.tmpl was silently ignored.
+  - source: swarm.md.tmpl
+    target: "swarms/{{.projectId}}-swarm.md"

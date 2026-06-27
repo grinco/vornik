@@ -1,0 +1,189 @@
+{{/*
+cluster mode — webhook Deployment (profile: webhook).
+
+Uses the thin image (podman-free). Runs in the DMZ VLAN. Receives public
+webhook traffic, verifies provider HMAC signatures, and relays verified
+events to the worker tier over mTLS.
+
+Explicit DMZ security properties enforced here:
+  - NO database environment variables (no DB block in config, no
+    VORNIK_DATABASE_PASSWORD — that key is not injected).
+  - NO podman, NO privileged context, NO data PVC.
+  - NO AGENT_IMAGE env var.
+  - ONLY webhook signing secrets + mTLS client materials are mounted.
+  - The mTLS client cert/key + CA are mounted from the operator-provided
+    mTLS Secret (cluster.mtls.secretName).
+
+Multiple replicas are safe — webhook nodes are stateless (no DB writes,
+no leader election). A Deployment is the correct workload kind.
+*/}}
+{{- if and .Values.cluster.enabled .Values.cluster.webhook.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vornik.webhookFullname" . }}
+  labels: {{- include "vornik.webhookLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.cluster.webhook.replicas }}
+  selector:
+    matchLabels: {{- include "vornik.webhookSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "vornik.webhookLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/cluster-configmaps.yaml") . | sha256sum }}
+        # Webhook nodes do NOT use the main vornik secret (no DB/LLM keys).
+        # The checksum still covers it so a secret rotation triggers a rollout
+        # (webhook signing keys are expected to share the same Secret or a
+        # derivative managed by the operator).
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "vornik.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cluster.webhook.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cluster.webhook.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cluster.webhook.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: vornik
+          image: {{ include "vornik.thinImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            {{- end }}
+          # /livez is ungated on all nodes (pure process liveness).
+          # /readyz on a webhook node probes relay_upstream reachability
+          # (mTLS handshake to the worker). Drops the node from rotation
+          # when the job tier is unreachable.
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # webhook nodes use the thin image — no podman, no privileged context.
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+          env:
+            - name: VORNIK_CONFIG
+              value: /etc/vornik/config.yaml
+            - name: VORNIK_CONFIGS_DIR
+              value: /etc/vornik/configs
+            # VORNIK_DATA_DIR is set for compatibility; webhook nodes do not
+            # write to it (no artifacts, no workspaces). The directory need
+            # not exist in practice (the process only reads the path from
+            # config and does not create it at startup in DMZ mode).
+            - name: VORNIK_DATA_DIR
+              value: /var/lib/vornik
+            # NOTE: VORNIK_DATABASE_PASSWORD is intentionally NOT injected
+            # here — webhook (DMZ) nodes must not have DB credentials.
+            # api.authEnabled applies to the inbound webhook routes if needed.
+            - name: VORNIK_CHAT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vornik.secretName" . }}
+                  key: chatApiKey
+                  optional: true
+          resources:
+            {{- if .Values.cluster.webhook.resources }}
+            {{- toYaml .Values.cluster.webhook.resources | nindent 12 }}
+            {{- else }}
+            {{- toYaml .Values.resources | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vornik/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            {{- if .Values.registry.existingProjectsConfigMap }}
+            - name: projects
+              mountPath: /etc/vornik/configs/projects
+              readOnly: true
+            {{- else if .Values.registry.projects }}
+            - name: projects
+              mountPath: /etc/vornik/configs/projects
+              readOnly: true
+            {{- end }}
+            {{- if .Values.registry.existingWorkflowsConfigMap }}
+            - name: workflows
+              mountPath: /etc/vornik/configs/workflows
+              readOnly: true
+            {{- else if .Values.registry.workflows }}
+            - name: workflows
+              mountPath: /etc/vornik/configs/workflows
+              readOnly: true
+            {{- end }}
+            # mTLS client credentials: client cert/key + CA for the relay seam.
+            # Mounted from the operator-provided mTLS Secret.
+            - name: mtls
+              mountPath: /etc/vornik/mtls
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "vornik.webhookFullname" . }}-config
+        {{- if .Values.registry.existingProjectsConfigMap }}
+        - name: projects
+          configMap:
+            name: {{ .Values.registry.existingProjectsConfigMap }}
+        {{- else if .Values.registry.projects }}
+        - name: projects
+          configMap:
+            name: {{ include "vornik.fullname" . }}-projects
+        {{- end }}
+        {{- if .Values.registry.existingWorkflowsConfigMap }}
+        - name: workflows
+          configMap:
+            name: {{ .Values.registry.existingWorkflowsConfigMap }}
+        {{- else if .Values.registry.workflows }}
+        - name: workflows
+          configMap:
+            name: {{ include "vornik.fullname" . }}-workflows
+        {{- end }}
+        # mTLS Secret: client.crt + client.key (relay client auth)
+        # + ca.crt (verify the worker's server cert).
+        # The Secret is created and managed by the operator — the chart
+        # does NOT generate certificates.
+        - name: mtls
+          secret:
+            secretName: {{ .Values.cluster.mtls.secretName | quote }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+              - key: client.crt
+                path: client.crt
+              - key: client.key
+                path: client.key
+            defaultMode: 0400
+{{- end }}{{/* cluster.enabled + webhook.enabled */}}

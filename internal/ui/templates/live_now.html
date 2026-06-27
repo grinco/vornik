@@ -1,0 +1,60 @@
+{{define "live_now.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3 text-gray-400">
+                {{template "navIconLive"}}
+                <h1 class="text-xl font-semibold text-gray-100">Now Running</h1>
+                <span class="text-xs text-gray-500">{{.Count}}</span>
+                <span class="ml-auto text-[11px] text-gray-500 flex items-center gap-1">
+                    <span class="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    live fleet · refreshing
+                </span>
+            </div>
+
+            {{/* Event-driven (F2): subscribe to the fleet SSE feed and
+                 re-fetch the grid on each `fleet-changed` event — plus a slow
+                 30s poll as a backstop for missed events / dropped sockets.
+                 hx-select swaps just this block. */}}
+            <div id="live-grid"
+                 hx-ext="sse"
+                 sse-connect="/api/v1/live/fleet"
+                 hx-get="/ui/live"
+                 hx-trigger="sse:fleet-changed, every 30s"
+                 hx-select="#live-grid"
+                 hx-target="#live-grid"
+                 hx-swap="outerHTML">
+            {{if .Cards}}
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {{range .Cards}}
+                    <a href="/ui/tasks/{{.TaskID}}/live"
+                       class="block rounded-xl border border-dark-600 bg-dark-800 hover:bg-dark-700 hover:border-accent-500/50 transition-colors p-4 space-y-2">
+                        <div class="flex items-center gap-2">
+                            <span class="inline-block w-2 h-2 rounded-full {{if .Stale}}bg-amber-500{{else}}bg-emerald-500 animate-pulse{{end}}"></span>
+                            <span class="text-xs font-medium uppercase tracking-wide {{if eq .Status "PAUSED"}}text-amber-400{{else if eq .Status "RUNNING"}}text-emerald-400{{else}}text-gray-400{{end}}">{{.Status}}</span>
+                            <span class="ml-auto text-[11px] text-gray-500">{{.ProjectID}}</span>
+                        </div>
+                        <div class="text-sm text-gray-200 truncate" title="{{.CurrentStep}}">
+                            {{if .CurrentStep}}step: <span class="font-mono text-gray-300">{{.CurrentStep}}</span>{{else}}<span class="text-gray-500">no step yet</span>{{end}}
+                        </div>
+                        <div class="flex items-center justify-between text-[11px] text-gray-500">
+                            <span>{{.Elapsed}}</span>
+                            <span class="{{if .Stale}}text-amber-400{{end}}">last event {{.UpdatedAgo}}</span>
+                        </div>
+                    </a>
+                    {{end}}
+                </div>
+            {{else}}
+                {{template "emptyState" (dict "Icon" "executions" "Title" "Nothing running" "Hint" "No executions are active right now — the swarm is idle. Running, paused, and pending executions appear here as tasks pick up.")}}
+            {{end}}
+            </div>
+        </div>
+    </main>
+</body>
+</html>
+{{end}}

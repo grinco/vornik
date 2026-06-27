@@ -1,0 +1,139 @@
+projectId: "assistant-project"
+displayName: "General-Purpose Assistant with Memory"
+swarmId: "assistant-swarm"
+defaultWorkflowId: "adaptive"
+# Strict adaptive routing: the route step's lead must pick one
+# workflow from this list. Empty/missing list → the selected_workflow
+# value is silently ignored and the workflow terminates at
+# `delegated` without spawning a child task. assistant-swarm ships
+# researcher / planner / writer / vision, so `research` and
+# `plan-and-write` are both runnable; dev-pipeline still requires
+# analyst/coder/tester roles that this swarm does not provide.
+#
+# 2026.5.6 (Measure C of the strict-adaptive route loop fix):
+# out-of-list picks no longer silently fall back to
+# defaultWorkflowId. The route step re-runs once with a corrective
+# hint listing the candidates here, then fails the parent with
+# `route_invalid_pick` on a second bad pick. Combined with the
+# `route_fallback_loop` (same-workflow) guard and the
+# `route_depth_exceeded` (depth cap = 3) guard, the worst-case
+# blast radius of any future router misconfiguration is two LLM
+# calls. Watch the daemon log for
+# `strict adaptive: lead picked workflow not in candidate list`
+# if persistent bad picks become an issue — usually means the
+# lead's prompt needs widening here.
+adaptiveCandidateWorkflows:
+  - research
+  - plan-and-write
+defaultPriority: 50 # 0-100; lower numbers run first
+maxConcurrentTasks: 3   # independent tasks can run in parallel
+
+autonomy:
+  enabled: false
+  # Autonomy mode (llm | cron | backlog). Generic assistants tend
+  # to need state-aware picking across per-feed/per-portal
+  # cadences — keep `llm` here. Flip to `cron` if you have a
+  # single fixed worker prompt; flip to `backlog` if you maintain
+  # an operator-curated BACKLOG.md. See
+  # https://docs.vornik.io
+  mode: llm
+  goal: |
+    Process incoming requests across a wide range of domains: research, planning,
+    writing, comparisons, and recommendations.
+
+    For each request, use the adaptive workflow — the coordinator will decide
+    which roles to involve (researcher, planner, writer) based on the task.
+
+    Typical patterns:
+    - Research question → researcher → writer
+    - Travel itinerary → researcher → planner → writer
+    - Comparison/analysis → researcher → writer
+    - Project proposal → researcher → planner → writer
+
+    Never create duplicate tasks for requests already in-progress or recently
+    completed. Check the recent task list before scheduling new work.
+  maxTasksPerHour: 10
+  pollInterval: "10m"
+  allowedTaskTypes:
+    - "research"
+    - "planning"
+    - "writing"
+    - "comparison"
+    - "summary"
+
+permissions:
+  secrets: []
+  allowedTools:
+    - "current_time"
+    - "file_read"
+    - "file_write"
+    - "run_shell"
+    - "file_edit"
+    - "read_many_files"
+    - "grep"
+    - "glob"
+
+# ============================================================================
+# Budget — caps LLM spend for this project. All values USD, per project.
+# Any field set to 0 or omitted disables that dimension (unlimited).
+# ============================================================================
+#
+# Soft caps log a warning when breached; the work still runs.
+# Hard caps block new work at three gates:
+#   1. Autonomy tick: evaluate() returns without creating a task.
+#   2. Dispatcher create_task tool: refuses with a user-facing reason.
+#   3. API POST /tasks: returns HTTP 429 "BUDGET_EXCEEDED".
+#
+# `timezone` is an IANA name (e.g. "Europe/Prague", "America/New_York").
+# Empty = UTC. Controls when daily/monthly windows reset.
+#
+# `vornikctl doctor` checks: `budget_utilisation` WARNs ≥80%/ERRs ≥100% of
+# hard cap; `autonomy_budget_guard` flags autonomy-enabled projects with
+# no hard cap configured.
+#
+# Uncomment and tune to match expected spend. Start conservative and raise
+# if the budget check fires; easier than recovering from a surprise bill.
+#
+# budget:
+#   daily_soft_usd:    5.00
+#   daily_hard_usd:   20.00
+#   monthly_soft_usd:  50.00
+#   monthly_hard_usd: 200.00
+#   timezone: "UTC"
+
+# ============================================================================
+# Rate limit — caps task-creation FREQUENCY (complements $ budget).
+# ============================================================================
+#
+# Enforced at the same three gates as budgets; in-memory sliding window,
+# so counters reset on daemon restart. Zero disables that dimension.
+#
+# rate_limit:
+#   tasks_per_minute: 10
+#   tasks_per_hour:  100
+
+# ============================================================================
+# Retention — per-project overrides for the daemon-wide retention sweeper.
+# ============================================================================
+#
+# Zero/unset inherits daemon defaults. Minimum floor 1 day regardless of
+# config. project_memory_chunks is NEVER pruned (it's the product).
+#
+# retention:
+#   task_llm_usage_days: 90
+#   tool_audit_days:     30
+#   tasks_days:          60
+#   executions_days:     60
+#   artifacts_days:      60
+
+# ============================================================================
+# Chat — per-project dispatcher customisation.
+# ============================================================================
+#
+# system_prefix is prepended to the dispatcher system prompt for any
+# Telegram session started on this project. Good for house rules without
+# forking the default prompt.
+#
+# chat:
+#   system_prefix: |
+#     HOUSE RULE: reply in the same language the user wrote in.

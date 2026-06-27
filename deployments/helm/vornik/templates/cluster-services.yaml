@@ -1,0 +1,106 @@
+{{/*
+Per-role Services for cluster mode (cluster.enabled=true).
+
+ui Service: exposes :8080 (HTTP API + /ui). Clients are browser traffic
+and internal tooling (vornikctl, monitoring). Sticky sessions recommended
+at the LB for SSE/HTMX live-update routes.
+
+worker Service: exposes :8080 (data-plane API used by ui and other internal
+callers) AND :8443 (mTLS relay ingress for DMZ webhook nodes). The relay
+port uses ClusterIP only — it must NOT be exposed externally; the firewall
+rule allows DMZ→:8443 intra-cluster.
+
+webhook Service: exposes :8080 (public webhook ingress, sits behind the
+reverse proxy in the DMZ VLAN).
+*/}}
+{{- if .Values.cluster.enabled }}
+
+{{- if .Values.cluster.ui.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vornik.uiFullname" . }}
+  labels: {{- include "vornik.uiLabels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.service.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
+  selector: {{- include "vornik.uiSelectorLabels" . | nindent 4 }}
+{{- end }}{{/* ui.enabled */}}
+
+{{- if .Values.cluster.worker.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vornik.workerFullname" . }}
+  labels: {{- include "vornik.workerLabels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # Worker service is always ClusterIP: the relay port (:8443) must not
+  # be exposed beyond the cluster. The data-plane API (:8080) is
+  # accessed by ui pods and internal tooling, not by external clients
+  # directly (the ui tier fronts external traffic).
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+    # mTLS relay ingress — DMZ webhook nodes reach this port over the
+    # single permitted firewall rule (DMZ → worker :8443).
+    - name: relay
+      port: 8443
+      targetPort: relay
+      protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.service.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
+  selector: {{- include "vornik.workerSelectorLabels" . | nindent 4 }}
+{{- end }}{{/* worker.enabled */}}
+
+{{- if .Values.cluster.webhook.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vornik.webhookFullname" . }}
+  labels: {{- include "vornik.webhookLabels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.service.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
+  selector: {{- include "vornik.webhookSelectorLabels" . | nindent 4 }}
+{{- end }}{{/* webhook.enabled */}}
+
+{{- end }}{{/* cluster.enabled */}}

@@ -1,0 +1,80 @@
+{{define "memory_operators.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <h1 class="text-xl font-semibold text-gray-100">Operator profiles</h1>
+                <span class="text-xs text-gray-500 font-mono">{{.GeneratedAt.Format "15:04:05 UTC"}}</span>
+                <a href="/ui/memory" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Memory</a>
+            </div>
+            <p class="text-sm text-gray-400">
+                Per-operator preferences + accumulated notes the dispatcher injects into the system prompt on every chat turn. Memory is additive — per-project memory still drives swarm context; operator memory follows the user across projects and channels.
+            </p>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 p-5 text-gray-400 text-sm">
+                <p>Operator profile repository not wired.</p>
+                <p class="mt-2 text-gray-500">SQLite single-process deployments + Postgres deployments pre-migration-60 leave this surface dormant. Once migration 60 (<code class="font-mono text-brand-300">operator_profile</code>) runs and the dispatcher's <code class="font-mono text-brand-300">update_operator_profile</code> tool starts populating, rows appear here automatically.</p>
+            </div>
+            {{else}}
+
+            {{if .Error}}
+            <div class="bg-rose-900/30 border border-rose-700/50 rounded-xl p-3 text-rose-200 text-sm" role="alert">
+                {{.Error}}
+            </div>
+            {{end}}
+
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                {{if .Rows}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Operator</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Channel</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Structured</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Notes</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Updated</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Rows}}
+                            <tr class="hover:bg-dark-700/40 transition-colors">
+                                <td class="px-4 py-2 text-xs font-mono whitespace-nowrap">
+                                    <a class="text-brand-400 hover:text-brand-300" href="/ui/memory/operators/{{.OperatorID}}">{{.OperatorID}}</a>
+                                </td>
+                                <td class="px-4 py-2 text-xs text-gray-300 font-mono whitespace-nowrap">{{.Channel}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-300">
+                                    {{if .StructuredKeys}}
+                                    <div class="flex flex-wrap gap-1">
+                                        {{range .StructuredKeys}}
+                                        <span class="px-1.5 py-0.5 rounded bg-dark-700 text-gray-300 font-mono"><span class="text-gray-500">{{.Key}}:</span> {{.Value}}</span>
+                                        {{end}}
+                                    </div>
+                                    {{else}}
+                                    <span class="text-gray-600">—</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 text-xs text-gray-400 truncate max-w-md" title="{{.Notes}}">
+                                    {{if .Notes}}{{.Notes}}{{else}}<span class="text-gray-600">—</span>{{end}}
+                                </td>
+                                <td class="px-4 py-2 text-xs text-gray-500 font-mono whitespace-nowrap" title="{{.UpdatedAt.Format "2006-01-02 15:04:05 MST"}}">{{.UpdatedAgo}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-5 py-10 text-center text-gray-500 text-sm">No operator profiles yet.<br><span class="text-xs text-gray-600 mt-1 block">A row appears the first time the dispatcher records a durable preference an operator stated in chat (e.g. &ldquo;I prefer concise replies&rdquo; &rarr; the agent calls <code class="font-mono">update_operator_profile</code> and a row materialises here).</span></div>
+                {{end}}
+            </div>
+
+            {{end}}
+        </div>
+    </main>
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

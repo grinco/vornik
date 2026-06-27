@@ -1,0 +1,150 @@
+{{define "admin_blackbox.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">Black Box</h1>
+                <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
+            </div>
+
+            <p class="text-xs text-gray-500 max-w-3xl">
+                Unified per-task trace assembled from the nine audit tables
+                (<code class="font-mono text-gray-400">task_messages</code>,
+                <code class="font-mono text-gray-400">tool_audit_log</code>,
+                <code class="font-mono text-gray-400">task_llm_usage</code>,
+                <code class="font-mono text-gray-400">executions</code>,
+                <code class="font-mono text-gray-400">execution_step_outcomes</code>,
+                <code class="font-mono text-gray-400">task_judge_verdicts</code>,
+                <code class="font-mono text-gray-400">memory_retrieval_audit</code>,
+                <code class="font-mono text-gray-400">profile_use_audit</code>,
+                <code class="font-mono text-gray-400">admin_audit</code>).
+                Each trace carries a sha256 digest you can cite in tickets —
+                two operators reading the same trace get the same hash.
+            </p>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 p-10 text-center text-gray-500 text-sm">
+                Black Box trace service is not configured on this deployment.
+                The service requires Postgres; SQLite deployments don't get
+                the assembled-trace surface.
+            </div>
+            {{else}}
+            <form method="get" action="/ui/admin/blackbox/{{.PrefilledTask}}"
+                  class="glass rounded-xl border border-dark-700 px-4 py-3 flex items-end gap-3 text-sm"
+                  onsubmit="event.preventDefault(); var v = this.task_id.value.trim(); if (v) window.location.href = '/ui/admin/blackbox/' + encodeURIComponent(v);">
+                <label class="block flex-1 max-w-xl">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Task ID</span>
+                    <input type="text" name="task_id" value="{{.PrefilledTask}}" placeholder="e.g. T-20260524abc123" class="w-full bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 font-mono" autofocus>
+                </label>
+                <button class="bg-brand-500 hover:bg-brand-400 text-white text-xs font-medium px-3 py-1.5 rounded-md">Open trace</button>
+            </form>
+
+            <div class="glass rounded-xl border border-dark-700 p-4 text-xs text-gray-400 space-y-2">
+                <div class="font-medium text-gray-300">Where to get a task ID:</div>
+                <ul class="list-disc list-inside space-y-1 ml-2">
+                    <li>Any task row in <a href="/ui/tasks" class="text-brand-400 hover:text-brand-300">/ui/tasks</a> — the ID column.</li>
+                    <li>Telegram replies — the assistant cites task IDs when delegating.</li>
+                    <li><code class="font-mono">vornikctl tasks list</code> on the CLI.</li>
+                </ul>
+            </div>
+            {{end}}
+
+            {{if .TriggersAvailable}}
+            {{if .TriggersActionError}}
+            <div class="bg-red-900/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-200">
+                <span class="font-medium">Bulk action:</span> {{.TriggersActionError}}
+            </div>
+            {{end}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-4 py-2.5 border-b border-dark-700/60 flex items-center gap-3">
+                    <div class="text-xs uppercase tracking-wider text-gray-500">Workflow-healing triggers</div>
+                    <span class="text-[10px] text-gray-600">Phase B — hourly regression detector</span>
+                    <a href="/ui/admin/blackbox/overrides" class="text-xs text-gray-400 hover:text-gray-200 ml-auto">Overrides →</a>
+                </div>
+                {{if .Triggers}}
+                <form method="post" action="/ui/admin/blackbox/triggers/bulk-dismiss"
+                      onsubmit="return confirm('Dismiss the selected triggers? The detector will re-open new rows if the regressions persist.');">
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2 text-left text-[10px] font-medium text-gray-500 uppercase tracking-wider"><input type="checkbox" onclick="document.querySelectorAll('input[name=ids]').forEach(c=>c.checked=this.checked);" aria-label="Select all"></th>
+                            <th scope="col" class="px-4 py-2 text-left text-[10px] font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th scope="col" class="px-4 py-2 text-left text-[10px] font-medium text-gray-500 uppercase tracking-wider">Project / Workflow</th>
+                            <th scope="col" class="px-4 py-2 text-left text-[10px] font-medium text-gray-500 uppercase tracking-wider">Class</th>
+                            <th scope="col" class="px-4 py-2 text-right text-[10px] font-medium text-gray-500 uppercase tracking-wider">Baseline → Comparison</th>
+                            <th scope="col" class="px-4 py-2 text-right text-[10px] font-medium text-gray-500 uppercase tracking-wider">Δ</th>
+                            <th scope="col" class="px-4 py-2 text-right text-[10px] font-medium text-gray-500 uppercase tracking-wider">Opened</th>
+                            <th scope="col" class="px-4 py-2 text-right text-[10px] font-medium text-gray-500 uppercase tracking-wider"><span class="sr-only">Detail</span></th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Triggers}}
+                            <tr class="hover:bg-dark-700/40 transition-colors">
+                                <td class="px-4 py-2 whitespace-nowrap">
+                                    {{if .IsOpen}}
+                                    <input type="checkbox" name="ids" value="{{.ID}}" aria-label="Select {{.ID}}">
+                                    {{else}}
+                                    <span class="inline-block w-4"></span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap">
+                                    <a href="/ui/admin/blackbox/triggers/{{.ID}}" class="inline-block hover:opacity-80">
+                                    {{if .IsOpen}}
+                                    <span class="px-1.5 py-0.5 text-[10px] font-mono rounded ring-1 ring-amber-700/50 bg-amber-900/30 text-amber-200">{{.Status}}</span>
+                                    {{else}}
+                                    <span class="px-1.5 py-0.5 text-[10px] font-mono rounded ring-1 ring-dark-600 bg-dark-700 text-gray-400">{{.Status}}</span>
+                                    {{end}}
+                                    </a>
+                                </td>
+                                <td class="px-4 py-2 text-xs font-mono">
+                                    <a href="/ui/projects/{{.ProjectID}}" class="text-brand-300 hover:text-brand-200">{{.ProjectID}}</a>
+                                    <span class="text-gray-500"> / </span>
+                                    <a href="/ui/admin/blackbox/triggers/{{.ID}}" class="text-gray-200 hover:text-brand-200">{{.WorkflowID}}</a>
+                                </td>
+                                <td class="px-4 py-2 text-xs">
+                                    <span class="px-1.5 py-0.5 font-mono rounded ring-1 ring-violet-700/40 bg-violet-900/20 text-violet-200">{{.Class}}</span>
+                                </td>
+                                <td class="px-4 py-2 text-xs font-mono text-right text-gray-300">{{printf "%.4f" .BaselineValue}} → {{printf "%.4f" .ComparisonValue}}</td>
+                                <td class="px-4 py-2 text-xs font-mono text-right">
+                                    {{if gt .DeltaPct 0.0}}
+                                    <span class="text-rose-300">+{{printf "%.1f" .DeltaPct}}%</span>
+                                    {{else}}
+                                    <span class="text-emerald-300">{{printf "%.1f" .DeltaPct}}%</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 text-[10px] font-mono text-right text-gray-500">{{.CreatedAt}}</td>
+                                <td class="px-4 py-2 text-right">
+                                    <a href="/ui/admin/blackbox/triggers/{{.ID}}" class="text-xs text-brand-400 hover:text-brand-300">Open →</a>
+                                </td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="px-4 py-2.5 border-t border-dark-700/60 flex items-center justify-end">
+                    <button type="submit"
+                            class="bg-dark-700 hover:bg-dark-600 border border-dark-600 text-gray-200 text-xs font-medium px-3 py-1.5 rounded-md">
+                        Dismiss selected
+                    </button>
+                </div>
+                </form>
+                {{else}}
+                <div class="px-4 py-8 text-center text-xs text-gray-500">
+                    No triggers yet. The hourly sweeper writes a row when a workflow's
+                    last-24h failure-rate or cost regresses against the 7-day baseline.
+                </div>
+                {{end}}
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

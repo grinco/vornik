@@ -1,0 +1,112 @@
+name: Bug report
+description: Report a defect in vornik
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. To speed up triage, please include as much as
+        you can from the sections below — exact version, config, and journal
+        logs tell us more than prose descriptions. Redact secrets (API keys,
+        tokens, personal data) from any logs or config you paste.
+
+  - type: input
+    id: version
+    attributes:
+      label: vornik version
+      description: Output of `vornik --version` on the affected host.
+      placeholder: "e.g. 2026.4.9-34-gabc1234"
+    validations:
+      required: true
+
+  - type: input
+    id: host
+    attributes:
+      label: Host / OS
+      description: OS name + version, and whether vornik runs as a systemd user unit, rootful podman, in a container, etc.
+      placeholder: "e.g. Fedora 43 Silverblue, systemd --user, rootless podman"
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: Actual observed behaviour. Be specific — name the task ID, project ID, or execution ID involved if you have them.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal sequence that triggers the bug. Paste the exact commands or API calls used.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config
+      description: |
+        Paste the minimum project / swarm / workflow YAML involved.
+        Redact bot tokens, API keys, passwords, and any personal data.
+      render: yaml
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Journal excerpt covering the failure window. Structured JSON lines
+        are most useful.
+        `journalctl --user -u vornik --since "10 minutes ago" --no-pager`
+      render: text
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: vornikctl doctor output
+      description: |
+        If the bug involves stuck tasks, blocked config reload, orphaned
+        worktrees, or stale leases, run `vornikctl doctor` (without `--fix`)
+        and paste the full output.
+      render: text
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Component (best guess — we adjust in triage)
+      options:
+        - executor / worktree
+        - scheduler / queue / leasing
+        - autonomy manager
+        - dispatcher / chat client
+        - telegram bot
+        - MCP integration
+        - persistence / migrations
+        - config / registry / reload
+        - UI / API
+        - agent runtime (container, entrypoint, mcp-bridge)
+        - observability / metrics / tracing
+        - docs / examples
+        - other / not sure
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Pre-submit checks
+      options:
+        - label: I searched existing issues and this is not a duplicate
+          required: true
+        - label: I removed secrets (API keys, tokens, personal data) from the logs and config above
+          required: true

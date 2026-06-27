@@ -1,0 +1,99 @@
+{{define "project_documents.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">Documents</h1>
+                    <p class="text-xs text-gray-500 font-mono mt-1">{{.ProjectID}}</p>
+                </div>
+                <a href="/ui/projects/{{.ProjectID}}" class="flex items-center gap-1 text-gray-500 hover:text-gray-300 text-sm transition-colors">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                    Project
+                </a>
+            </div>
+
+            <p class="text-sm text-gray-400 max-w-3xl">
+                Binary attachments (EPUB, PDF, HTML, markdown, plain text, …) that
+                have been extracted into structured text + indexed into project memory.
+                Send a supported file via any channel (email, Telegram, webchat, or
+                <span class="font-mono">vornikctl task submit --attach</span>) and it
+                shows up here automatically.
+            </p>
+
+            {{if .Success}}
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{{.Success}}</div>
+            {{end}}
+            {{if .Error}}
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            {{end}}
+
+            <section class="rounded-lg border border-dark-700 bg-dark-800/40">
+                <header class="px-4 py-3 border-b border-dark-700 flex items-center justify-between gap-4">
+                    <div class="flex items-baseline gap-3">
+                        <h2 class="text-sm font-semibold text-gray-200">Extracted documents</h2>
+                        <span class="text-xs text-gray-500">showing {{len .Documents}} of {{.TotalDocuments}}</span>
+                    </div>
+                    {{template "pageSizeSelector" (dict
+                        "Action" (printf "/ui/projects/%s/documents" .ProjectID)
+                        "Current" .Limit
+                        "Options" .LimitOptions
+                        "Hidden" (dict))}}
+                </header>
+                {{if .Documents}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-xs">
+                        <thead class="text-left text-gray-400 border-b border-dark-700">
+                            <tr>
+                                <th scope="col" class="px-4 py-2 font-medium">Title</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Author</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Sections</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Size</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Extractor</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Status</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Extracted</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {{range .Documents}}
+                            <tr class="border-b border-dark-700/50 text-gray-200 hover:bg-dark-700/30 transition-colors">
+                                <td class="px-4 py-2">
+                                    <a href="{{.DetailURL}}" class="text-brand-300 hover:text-brand-200">{{if .Title}}{{.Title}}{{else}}<span class="text-gray-500 italic">untitled</span>{{end}}</a>
+                                    <div class="text-[10px] text-gray-500 font-mono mt-0.5" title="{{.SourceArtifactID}}">{{shortID .SourceArtifactID}}</div>
+                                </td>
+                                <td class="px-4 py-2 text-gray-300">{{if .Author}}{{.Author}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-2 tabular-nums">{{.SectionCount}}</td>
+                                <td class="px-4 py-2 tabular-nums text-gray-400">{{humanizeSize .TotalTextBytes}}</td>
+                                <td class="px-4 py-2 text-gray-400 font-mono text-[10px]">
+                                    {{.ExtractorName}}<br>
+                                    <span class="text-gray-600">v{{.ExtractorVersion}}</span>
+                                </td>
+                                <td class="px-4 py-2">
+                                    {{if eq .Status "OK"}}<span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-emerald-900/40 text-emerald-300 ring-1 ring-inset ring-emerald-600/40">OK</span>
+                                    {{else if eq .Status "PARTIAL"}}<span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-amber-900/40 text-amber-300 ring-1 ring-inset ring-amber-600/40">PARTIAL</span>
+                                    {{else if eq .Status "FAILED"}}<span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-rose-900/40 text-rose-300 ring-1 ring-inset ring-rose-600/40">FAILED</span>
+                                    {{else}}<span class="text-gray-500">{{.Status}}</span>{{end}}
+                                </td>
+                                <td class="px-4 py-2 text-gray-400 whitespace-nowrap" title="{{.ExtractedAtAbsolute}}">{{.ExtractedAtDisplay}}</td>
+                            </tr>
+                        {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-4 py-6 text-sm text-gray-500">
+                    No documents extracted yet. Send an EPUB / PDF / HTML / markdown file via email, Telegram, webchat, or
+                    <span class="font-mono">vornikctl task submit --attach &lt;file&gt;</span> to get started.
+                </div>
+                {{end}}
+            </section>
+        </div>
+    </main>
+</body>
+</html>
+{{end}}

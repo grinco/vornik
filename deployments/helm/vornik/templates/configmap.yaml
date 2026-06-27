@@ -1,0 +1,182 @@
+{{/*
+config.yaml — the daemon's main config file. Rendered from values so
+overrides flow naturally. Secrets are not written here; the entrypoint
+expands ${VORNIK_*} placeholders from env vars at start time (vornik's
+loader honours ${VAR} in YAML values — see internal/config/loader.go).
+
+Only rendered when cluster.enabled=false (the default). In cluster mode
+the per-role ConfigMaps in cluster-configmaps.yaml are used instead —
+each role gets its own config.yaml with the correct node: block.
+*/}}
+{{- if not .Values.cluster.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vornik.fullname" . }}-config
+  labels: {{- include "vornik.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    server:
+      address: {{ .Values.server.address | quote }}
+      read_timeout: {{ .Values.server.readTimeout }}
+      write_timeout: {{ .Values.server.writeTimeout }}
+
+    database:
+      host: {{ include "vornik.databaseHost" . | quote }}
+      port: {{ if .Values.postgres.enabled }}{{ .Values.postgres.service.port }}{{ else }}{{ .Values.database.port }}{{ end }}
+      name: {{ if .Values.postgres.enabled }}{{ .Values.postgres.auth.database | quote }}{{ else }}{{ .Values.database.name | quote }}{{ end }}
+      user: {{ if .Values.postgres.enabled }}{{ .Values.postgres.auth.username | quote }}{{ else }}{{ .Values.database.user | quote }}{{ end }}
+      # Password comes from VORNIK_DATABASE_PASSWORD env var, not this
+      # file — so the ConfigMap can live in git without leaking creds.
+      password: "${VORNIK_DATABASE_PASSWORD}"
+      sslmode: {{ if .Values.postgres.enabled }}disable{{ else }}{{ .Values.database.sslmode | quote }}{{ end }}
+
+    storage:
+      artifacts_path: /var/lib/vornik/artifacts
+    artifacts:
+      artifacts_path: /var/lib/vornik/artifacts
+
+    scheduler:
+      max_concurrent_tasks: {{ .Values.scheduler.maxConcurrentTasks }}
+      lease_timeout: {{ .Values.scheduler.leaseTimeout }}
+
+    logging:
+      level: {{ .Values.logging.level | quote }}
+      format: {{ .Values.logging.format | quote }}
+
+    api:
+      auth_enabled: {{ .Values.api.authEnabled }}
+
+    metrics:
+      enabled: {{ .Values.metrics.enabled }}
+      addr: {{ .Values.metrics.addr | quote }}
+
+    runtime:
+      # run_as_user forces non-root agent execution regardless of what
+      # the image's USER directive says. 1000:1000 matches the default
+      # `make build-agent` uid/gid.
+      run_as_user: "1000:1000"
+      project_workspace_path: /var/lib/vornik/workspaces
+      agent_llm:
+        endpoint: {{ .Values.agentLLM.endpoint | quote }}
+        model: {{ .Values.agentLLM.model | quote }}
+        api_key: "${VORNIK_AGENT_LLM_API_KEY}"
+        context_size: {{ .Values.agentLLM.contextSize }}
+        max_tokens: {{ .Values.agentLLM.maxTokens }}
+
+    chat:
+      {{- if .Values.chat.provider }}
+      provider: {{ .Values.chat.provider | quote }}
+      {{- end }}
+      endpoint: {{ .Values.chat.endpoint | quote }}
+      model: {{ .Values.chat.model | quote }}
+      api_key: "${VORNIK_CHAT_API_KEY}"
+      {{- if .Values.chat.cliBinary }}
+      cli_binary: {{ .Values.chat.cliBinary | quote }}
+      {{- end }}
+
+    {{- if .Values.telegram.enabled }}
+    telegram:
+      enabled: true
+      bot_token: "${VORNIK_TELEGRAM_BOT_TOKEN}"
+    {{- end }}
+
+    {{- if .Values.memory.enabled }}
+    memory:
+      enabled: true
+      embedding_endpoint: {{ .Values.memory.embeddingEndpoint | quote }}
+      embedding_model: {{ .Values.memory.embeddingModel | quote }}
+      embedding_dimension: {{ .Values.memory.embeddingDimension }}
+      embedding_api_key: "${VORNIK_EMBEDDING_API_KEY}"
+      {{- if .Values.memory.titler }}
+      titler:
+        enabled: {{ .Values.memory.titler.enabled | default false }}
+        {{- with .Values.memory.titler.model }}
+        model: {{ . | quote }}
+        {{- end }}
+        timeout_seconds: {{ .Values.memory.titler.timeoutSeconds | default 30 }}
+        max_preview_bytes: {{ .Values.memory.titler.maxPreviewBytes | default 2048 }}
+        auto_backfill_interval_seconds: {{ .Values.memory.titler.autoBackfillIntervalSeconds | default 0 }}
+        auto_backfill_batch_size: {{ .Values.memory.titler.autoBackfillBatchSize | default 25 }}
+      {{- end }}
+      {{- if .Values.memory.classifier }}
+      classifier:
+        enabled: {{ .Values.memory.classifier.enabled | default false }}
+        {{- with .Values.memory.classifier.model }}
+        model: {{ . | quote }}
+        {{- end }}
+        timeout_seconds: {{ .Values.memory.classifier.timeoutSeconds | default 30 }}
+        max_preview_bytes: {{ .Values.memory.classifier.maxPreviewBytes | default 2048 }}
+        # 0 → loop disabled (operator-triggered backfill only).
+        auto_backfill_interval_seconds: {{ .Values.memory.classifier.autoBackfillIntervalSeconds | default 0 }}
+        auto_backfill_batch_size: {{ .Values.memory.classifier.autoBackfillBatchSize | default 25 }}
+        inline_fallback_enabled: {{ .Values.memory.classifier.inlineFallbackEnabled | default false }}
+      {{- end }}
+    {{- end }}
+
+    {{- with .Values.extraConfig }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+
+{{/*
+Registry subdirectories — three ConfigMaps (projects, swarms, workflows),
+only created when an existing one isn't referenced and at least one
+entry is defined. Each map key becomes a file named "<key>.yaml" under
+/etc/vornik/configs/<subdir>/.
+*/}}
+
+{{- if and (not .Values.registry.existingProjectsConfigMap) .Values.registry.projects }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vornik.fullname" . }}-projects
+  labels: {{- include "vornik.labels" . | nindent 4 }}
+data:
+{{- range $name, $body := .Values.registry.projects }}
+  {{ $name }}.yaml: |
+{{ $body | indent 4 }}
+{{- end }}
+{{- end }}
+
+{{- if and (not .Values.registry.existingSwarmsConfigMap) .Values.registry.swarms }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vornik.fullname" . }}-swarms
+  labels: {{- include "vornik.labels" . | nindent 4 }}
+data:
+{{- range $name, $body := .Values.registry.swarms }}
+  {{ $name }}.yaml: |
+{{ $body | indent 4 }}
+{{- end }}
+{{- end }}
+
+{{- if and (not .Values.registry.existingWorkflowsConfigMap) .Values.registry.workflows }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vornik.fullname" . }}-workflows
+  labels: {{- include "vornik.labels" . | nindent 4 }}
+data:
+{{- range $name, $body := .Values.registry.workflows }}
+  {{ $name }}.yaml: |
+{{ $body | indent 4 }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.pricing.override }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vornik.fullname" . }}-pricing
+  labels: {{- include "vornik.labels" . | nindent 4 }}
+data:
+  pricing.yaml: |
+{{ .Values.pricing.override | indent 4 }}
+{{- end }}
+
+{{- end }}{{/* cluster.enabled=false guard */}}

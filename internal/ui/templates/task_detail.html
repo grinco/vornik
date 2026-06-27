@@ -1,0 +1,1292 @@
+{{define "task_detail.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+{{/* data-with-action-bar opts in to the extra 56px bottom padding so
+     the conversation thread's last message clears the sticky action
+     bar (Compose / Pause / Close) on phone. Desktop ignores the
+     attribute (the action bar is hidden md:+). */}}
+<body class="bg-surface-900 text-ink-100 min-h-screen flex flex-col" data-with-action-bar>
+    {{template "nav" .}}
+
+    {{/* Phase 36 — phone-first sticky context bar.
+
+         < md:  fixed sticky bar with back-button, short-ID, and
+                status pill — gives the operator one-glance "what
+                am I looking at" without scrolling, and a thumb-
+                reachable back nav.
+         md:+   bar collapses; the existing wide header below
+                renders as before.
+    */}}
+    <header class="md:hidden sticky top-0 z-40 bg-surface-900/95 backdrop-blur border-b border-surface-600/60 px-3 py-2 flex items-center gap-2">
+        <a href="{{if .Project}}/ui/projects/{{.Project.ID}}{{else}}/ui/tasks{{end}}"
+           class="tap -ml-1 p-2 text-ink-400" aria-label="Back">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>
+        </a>
+        <div class="flex-1 min-w-0">
+            <div class="text-sm font-mono text-brand-300 truncate" title="{{.Task.ID}}">{{shortID .Task.ID}}</div>
+            {{if .Project}}<div class="text-xs text-ink-500 truncate">{{.Project.ID}}</div>{{end}}
+        </div>
+        {{/* Phase 79 — sibling nav. Arrows are 36×44 (matches the
+             other tap targets); empty (no neighbour) renders a
+             dimmed disabled state to keep the layout stable. */}}
+        {{if .PrevTaskID}}
+        <a href="/ui/tasks/{{.PrevTaskID}}" class="tap p-1.5 text-ink-400" aria-label="Previous task" title="Newer task in this project">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
+        </a>
+        {{else}}
+        <span class="tap p-1.5 text-ink-600" aria-hidden="true">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
+        </span>
+        {{end}}
+        {{if .NextTaskID}}
+        <a href="/ui/tasks/{{.NextTaskID}}" class="tap p-1.5 text-ink-400" aria-label="Next task" title="Older task in this project">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+        </a>
+        {{else}}
+        <span class="tap p-1.5 text-ink-600" aria-hidden="true">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+        </span>
+        {{end}}
+        {{/* Phase 80 — SSE-driven status pill. The server pushes
+             a "status" event on every transition; htmx-ext-sse
+             swaps the pill in place without polling. Falls back
+             to the previous 5s poll only when the SSE channel
+             isn't established (older browser / proxy without
+             text/event-stream). */}}
+        {{/* Open the SSE stream + polling only for non-terminal
+             statuses. Terminal tasks (FAILED / COMPLETED /
+             CANCELLED / CLOSED) never change again — keeping a live
+             EventSource open just consumes one of Chrome's ~6
+             HTTP/1.1 slots per origin and starves new tabs. The
+             render-time check covers the common case; the JS in
+             _partials.html closes the stream if the task transitions
+             terminal mid-session. */}}
+        {{if or (eq .Task.Status "QUEUED") (eq .Task.Status "PENDING") (eq .Task.Status "LEASED") (eq .Task.Status "RUNNING") (eq .Task.Status "WAITING_FOR_CHILDREN") (eq .Task.Status "AWAITING_INPUT") (eq .Task.Status "AWAITING_EXTERNAL")}}
+        <div id="task-status-pill-mobile"
+             hx-ext="sse"
+             sse-connect="/ui/tasks/{{.Task.ID}}/events"
+             hx-get="/ui/tasks/{{.Task.ID}}/status"
+             hx-trigger="sse:status, every 30s [!document.body.classList.contains('poll-stopped')]"
+             hx-swap="innerHTML"
+             hx-target="#task-status-pill-mobile">
+            {{statusPill (printf "%s" .Task.Status)}}
+        </div>
+        {{else}}
+        <div id="task-status-pill-mobile">
+            {{statusPill (printf "%s" .Task.Status)}}
+        </div>
+        {{end}}
+    </header>
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-4 px-3 sm:py-6 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <!-- Task Header (md:+ desktop layout — phone uses the sticky context bar above). -->
+            <div class="hidden md:flex items-start justify-between flex-wrap gap-y-3">
+                <div>
+                    <div id="task-status-pill" class="flex items-center gap-2 mb-1"
+                         {{if or (eq .Task.Status "QUEUED") (eq .Task.Status "PENDING") (eq .Task.Status "LEASED") (eq .Task.Status "RUNNING") (eq .Task.Status "WAITING_FOR_CHILDREN")}}
+                         hx-get="/ui/tasks/{{.Task.ID}}/status"
+                         hx-trigger="every 5s [!document.body.classList.contains('poll-stopped')]"
+                         hx-swap="innerHTML"
+                         hx-target="#task-status-pill"
+                         {{end}}>
+                        {{template "taskStatusBadge" .Task.Status}}
+                    </div>
+                    <h1 class="text-xl font-semibold text-ink-100">Task <span class="font-mono text-brand-300 text-base">{{shortID .Task.ID}}</span></h1>
+                    <p class="text-ink-500 text-xs font-mono mt-0.5" title="{{.Task.ID}}">{{.Task.ID}}</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    {{/* Retry is offered for terminal statuses AND for
+                         PENDING (stuck-waiting) so an operator can
+                         unstick a task that was paused but never got
+                         resumed — see incident 2026-05-16 on
+                         task_20260516015931_*. Server-side
+                         RequeueTerminalTask gates the WRITE on the
+                         live status so a stale UI click doesn't race
+                         a concurrent scheduler pickup. */}}
+                    {{if or (eq .Task.Status "FAILED") (eq .Task.Status "CANCELLED") (eq .Task.Status "COMPLETED") (eq .Task.Status "PENDING")}}
+                    {{/* 2026-05-26 refactor B: "Retry" renamed to
+                         "Requeue" to disambiguate task-level requeue
+                         from execution-level "Rerun from step". URL
+                         unchanged (/retry endpoint), only the label
+                         and confirm copy update. */}}
+                    <form method="POST" action="/ui/tasks/{{.Task.ID}}/retry" onsubmit="return confirm('Requeue this task? Resets the attempt counter and starts a fresh execution from step 1.')">
+                        <button type="submit" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors" title="Reset and run from step 1. For per-step replay, use the execution detail's Rerun from step.">
+                            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+                            Requeue
+                        </button>
+                    </form>
+                    {{/* Requeue but force each role with a configured
+                         modelFallback onto that fallback for the next
+                         run (fallback_model=1). Same effect as the
+                         "model: fallback" steer keyword. */}}
+                    <form method="POST" action="/ui/tasks/{{.Task.ID}}/retry" onsubmit="return confirm('Requeue on the fallback model? Every role with a configured modelFallback runs on its fallback for this attempt.')">
+                        <input type="hidden" name="fallback_model" value="1">
+                        <button type="submit" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-surface-700 hover:bg-surface-600 text-ink-100 ring-1 ring-surface-600 transition-colors" title="Re-run with each role on its configured fallback model">
+                            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+                            Fallback model
+                        </button>
+                    </form>
+                    {{end}}
+                    {{if or (eq .Task.Status "QUEUED") (eq .Task.Status "PENDING") (eq .Task.Status "LEASED") (eq .Task.Status "RUNNING")}}
+                    <a href="/ui/tasks/{{.Task.ID}}/live" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white transition-colors" title="Watch the live execution stream">
+                        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="9"/></svg>
+                        Watch live
+                    </a>
+                    <form method="POST" action="/ui/tasks/{{.Task.ID}}/cancel" onsubmit="return confirm('Cancel this task?')">
+                        <button type="submit" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-rose-700 hover:bg-rose-600 text-white transition-colors">
+                            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                            Cancel
+                        </button>
+                    </form>
+                    {{end}}
+                    {{if .Project}}
+                    <a href="/ui/projects/{{.Project.ID}}" class="flex items-center gap-1 text-ink-500 hover:text-ink-300 text-sm transition-colors">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                        Project
+                    </a>
+                    {{else}}
+                    <a href="/ui/tasks" class="flex items-center gap-1 text-ink-500 hover:text-ink-300 text-sm transition-colors">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                        Tasks
+                    </a>
+                    {{end}}
+                </div>
+            </div>
+
+            {{if .Notice}}
+            <div class="bg-brand-500/10 border border-brand-500/30 rounded-xl px-4 py-2 text-sm text-brand-200">
+                {{.Notice}}
+            </div>
+            {{end}}
+
+            {{if .Conversation.Enabled}}
+            {{/* Phase 26+27 — conversational task lifecycle.
+                 Open-checkpoint card → conversation thread → compose box → meta actions.
+                 The whole block is gated on .Conversation.Enabled so legacy deployments
+                 (no taskMessageRepo wired) keep the original page shape. */}}
+
+            {{if .Conversation.OpenCheckpoint}}
+            <div class="bg-amber-500/10 rounded-xl panel-primary overflow-hidden" data-tone="amber">
+                <div class="px-5 py-3.5 border-b border-amber-500/30 flex items-center gap-2">
+                    <svg class="h-4 w-4 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                    <h2 class="text-sm font-semibold text-amber-200">Open checkpoint
+                        {{with .Conversation.CheckpointPayload}} — {{.Kind}}{{end}}</h2>
+                </div>
+                <div class="px-5 py-4 space-y-3">
+                    {{with .Conversation.CheckpointPayload}}
+                        {{if .Question}}<p class="text-sm text-ink-200">{{.Question}}</p>{{end}}
+                        {{if .TaskForHuman}}<p class="text-sm text-ink-200"><span class="text-amber-400">action:</span> {{.TaskForHuman}}</p>{{end}}
+                        {{if .Draft}}<pre class="text-xs text-ink-300 bg-surface-900 rounded p-3 whitespace-pre-wrap">{{.Draft}}</pre>{{end}}
+                        {{if .ExpectedBy}}<p class="text-xs text-ink-500">expected by: {{.ExpectedBy}}</p>{{end}}
+                    {{end}}
+                    <form method="POST" action="/ui/tasks/{{.Task.ID}}/answer" class="space-y-2">
+                        <input type="hidden" name="checkpoint_id" value="{{.Conversation.OpenCheckpoint.ID}}">
+                        {{with .Conversation.CheckpointPayload}}
+                            {{if eq .Kind "decision"}}
+                                {{range .Options}}
+                                <label class="flex items-center gap-2 text-sm text-ink-200">
+                                    <input type="radio" name="choice" value="{{.ID}}" class="form-radio text-brand-500">
+                                    <span>{{.Label}}</span>
+                                </label>
+                                {{end}}
+                            {{end}}
+                        {{end}}
+                        <label for="taskAnswer" class="sr-only">Your answer</label>
+                        <textarea name="content" id="taskAnswer" rows="3" placeholder="Your answer (optional details)..."
+                                  class="w-full bg-surface-900 border border-surface-600 rounded px-3 py-2 text-sm text-ink-200"></textarea>
+                        <div class="flex justify-end">
+                            <button type="submit" class="bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium px-4 py-1.5 rounded">Submit answer</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            {{end}}{{/* OpenCheckpoint */}}
+
+            {{/* Autonomy manual-approval gate. A task parked in
+                 AWAITING_APPROVAL (created under a project with
+                 requireApproval) waits here until the operator approves
+                 (→ QUEUED, the scheduler then runs it) or rejects
+                 (→ CANCELLED). Before this card existed these tasks
+                 waited forever with no UI affordance (operator report
+                 2026-06-09). See
+                 https://docs.vornik.io */}}
+            {{if eq (printf "%s" .Task.Status) "AWAITING_APPROVAL"}}
+            <div class="bg-sky-500/10 rounded-xl panel-primary overflow-hidden" data-tone="sky">
+                <div class="px-5 py-3.5 border-b border-sky-500/30 flex items-center gap-2">
+                    <svg class="h-4 w-4 text-sky-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    <h2 class="text-sm font-semibold text-sky-200">Awaiting your approval</h2>
+                </div>
+                <div class="px-5 py-4 space-y-3">
+                    <p class="text-sm text-ink-200">This autonomy task is held for manual approval. Approve to queue it for execution, or reject to cancel it.</p>
+                    <div class="flex justify-end gap-2">
+                        <form method="POST" action="/ui/tasks/{{.Task.ID}}/reject">
+                            <button type="submit" class="bg-surface-700 hover:bg-surface-600 text-ink-200 text-sm font-medium px-4 py-1.5 rounded border border-surface-600">Reject</button>
+                        </form>
+                        <form method="POST" action="/ui/tasks/{{.Task.ID}}/approve">
+                            <button type="submit" class="bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium px-4 py-1.5 rounded">Approve</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            {{end}}{{/* AWAITING_APPROVAL */}}
+
+            {{/* Phase tracker — sidebar-style horizontal pills */}}
+            {{if .Conversation.PhaseTracker}}
+            <div class="glass rounded-xl border border-surface-600 px-5 py-3.5">
+                <h3 class="text-xs uppercase tracking-wide text-ink-500 mb-2">Phases</h3>
+                <div class="flex flex-wrap gap-2">
+                    {{range .Conversation.PhaseTracker}}
+                        {{if .IsCurrent}}
+                        <span class="px-2.5 py-1 rounded-full bg-brand-500/20 text-brand-300 text-xs font-medium border border-brand-500/40">{{.Name}} (now)</span>
+                        {{else if eq .Status "exit"}}
+                        <span class="px-2.5 py-1 rounded-full bg-green-500/10 text-green-400/80 text-xs">{{.Name}} ✓</span>
+                        {{else}}
+                        <span class="px-2.5 py-1 rounded-full bg-surface-700 text-ink-400 text-xs">{{.Name}}</span>
+                        {{end}}
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+
+            {{/* Conversation thread */}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <svg class="h-4 w-4 text-ink-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+                        <h2 class="text-sm font-semibold text-ink-200">Conversation</h2>
+                        <span class="text-xs text-ink-500">{{len .Conversation.Messages}} message{{if ne (len .Conversation.Messages) 1}}s{{end}}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        {{if .Conversation.Pauseable}}
+                        <form method="POST" action="/ui/tasks/{{.Task.ID}}/pause" class="inline"><button class="text-xs text-ink-400 hover:text-ink-200">⏸ Pause</button></form>
+                        {{end}}
+                        {{if .Conversation.Resumeable}}
+                        <form method="POST" action="/ui/tasks/{{.Task.ID}}/resume" class="inline"><button class="text-xs text-ink-400 hover:text-ink-200">▶ Resume</button></form>
+                        {{end}}
+                        {{if .Conversation.Closeable}}
+                        <form method="POST" action="/ui/tasks/{{.Task.ID}}/close" class="inline" onsubmit="return confirm('Close this task? This is terminal.');">
+                            <button class="text-xs text-amber-400 hover:text-amber-200">✓ Close</button>
+                        </form>
+                        {{end}}
+                    </div>
+                </div>
+                {{/* Within-thread search — client-side filter.
+                     Hides messages that don't match the query as the
+                     operator types. The handler tags each message
+                     with data-search="<lowered content>" so a single
+                     scan is enough. ESC clears the box. */}}
+                <div class="px-5 py-2 border-b border-surface-600/60">
+                    <input type="search" id="conv-search" placeholder="Search messages…"
+                           autocomplete="off"
+                           aria-label="Search messages"
+                           class="w-full bg-surface-900 border border-surface-600 rounded-lg px-3 py-1.5 text-sm text-ink-200 focus:border-brand-500 focus:outline-none"
+                           oninput="convSearchFilter(this.value)" onkeydown="if(event.key==='Escape'){this.value='';convSearchFilter('');}">
+                </div>
+                <div id="conv-thread" class="px-5 py-4 space-y-3 max-h-[60vh] overflow-y-auto">
+                    {{/* Same-author grouping: when the previous message
+                         was from the same author within ~5 min, the
+                         author/timestamp column collapses to keep the
+                         thread tight. */}}
+                    {{$lastAuthor := ""}}
+                    {{$lastTime := ""}}
+                    {{range $i, $m := .Conversation.Messages}}
+                    {{$thisAuthor := printf "%s" $m.AuthorKind}}
+                    {{$thisTime := $m.CreatedAt.Format "Jan 02 15:04"}}
+                    {{$grouped := and (eq $thisAuthor $lastAuthor) (eq $thisTime $lastTime)}}
+                    <div class="conv-msg flex gap-3" data-search="{{lower $m.Content}} {{lower $m.MessageKind}} {{lower $thisAuthor}}">
+                        <div class="text-xs text-ink-500 w-24 md:w-32 shrink-0 font-mono">
+                            {{if not $grouped}}
+                            <div>{{$thisTime}}</div>
+                            <div class="text-ink-600 mt-0.5">{{$thisAuthor}}</div>
+                            {{end}}
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            {{if not $grouped}}
+                            <div class="text-xs uppercase tracking-wide mb-0.5
+                                {{if eq $m.MessageKind "checkpoint"}}text-amber-400
+                                {{else if eq $m.MessageKind "answer"}}text-green-400
+                                {{else if eq $m.MessageKind "directive"}}text-purple-400
+                                {{else if eq $m.MessageKind "phase_marker"}}text-accent-400
+                                {{else if eq $m.MessageKind "closure_request"}}text-amber-300
+                                {{else if eq $m.MessageKind "system"}}text-ink-500
+                                {{else if eq $m.MessageKind "hint"}}text-accent-300
+                                {{else}}text-ink-400{{end}}">
+                                {{if eq $m.MessageKind "hint"}}💡 hint{{else}}{{$m.MessageKind}}{{end}}
+                            </div>
+                            {{end}}
+                            <div class="text-sm text-ink-200 break-words">{{renderMarkdown $m.Content}}</div>
+                        </div>
+                    </div>
+                    {{$lastAuthor = $thisAuthor}}
+                    {{$lastTime = $thisTime}}
+                    {{end}}
+                </div>
+                <script>
+                    // Within-thread search — pure client filter.
+                    // The thread is short enough (cap 200 messages
+                    // server-side) that an O(n) scan per keystroke
+                    // is fine. Empty query → show all.
+                    function convSearchFilter(q) {
+                        var needle = (q || '').toLowerCase().trim();
+                        var msgs = document.querySelectorAll('#conv-thread .conv-msg');
+                        for (var i = 0; i < msgs.length; i++) {
+                            var hay = msgs[i].getAttribute('data-search') || '';
+                            msgs[i].style.display = (needle === '' || hay.indexOf(needle) !== -1) ? '' : 'none';
+                        }
+                    }
+                </script>
+            </div>
+
+            {{/* Compose / directive form.
+
+                 Phone: hidden by default; tapped open via the
+                 sticky bottom-bar "+ Compose" button. The form
+                 lives inside a <dialog> bottom sheet so it
+                 stays accessible regardless of scroll position.
+
+                 Desktop: inline card as before. Both surfaces
+                 share identical form markup so submit goes to
+                 the same handler. Hidden only when task is
+                 CLOSED — that is the one terminal status that
+                 the LLD §7.0 directive-requeue path excludes
+                 (archival is one-way; operator must hit /retry).
+                 FAILED and CANCELLED accept directives because
+                 a course-correction is the natural response to
+                 a bad outcome: the API and UI handlers route
+                 those through RequeueTerminalTask, which clears
+                 last_error and resets the attempt budget.
+
+                 Phase 84.  */}}
+            {{if ne (printf "%s" .Task.Status) "CLOSED"}}
+            <!-- Desktop inline (md:+) -->
+            <div class="hidden md:block glass rounded-xl border border-surface-600 overflow-hidden">
+                {{template "sectionHeader" (dict "Title" "Compose")}}
+                <div class="px-5 py-4 space-y-3">
+                    {{/* 2026-05-26 collapse: single "Send" button with
+                         an opt-in "as a course correction" checkbox.
+                         When checked, JS swaps the form's action to
+                         /directive (the imperative-requeue path). Pre-
+                         collapse the operator was confronted with two
+                         buttons (Send message / Send directive) whose
+                         difference was opaque. */}}
+                    <form method="POST" action="/ui/tasks/{{.Task.ID}}/message" class="space-y-2" id="taskComposeFormDesktop">
+                        <label for="taskComposeDesktop" class="sr-only">Message</label>
+                        <textarea name="content" id="taskComposeDesktop" rows="2" placeholder="Send a message to the lead. Check the directive box to course-correct (requeues failed/cancelled tasks)."
+                                  class="w-full bg-surface-900 border border-surface-600 rounded px-3 py-2 text-sm text-ink-200" required></textarea>
+                        <div class="flex items-center justify-between gap-3 flex-wrap">
+                            <label class="text-xs text-ink-400 flex items-center gap-2 cursor-pointer select-none">
+                                <input type="checkbox" id="taskComposeAsDirectiveDesktop"
+                                       onchange="document.getElementById('taskComposeFormDesktop').action = this.checked ? '/ui/tasks/{{.Task.ID}}/directive' : '/ui/tasks/{{.Task.ID}}/message'"
+                                       class="rounded border-surface-600 bg-surface-900 text-purple-500 focus:ring-purple-500/40">
+                                <span>As a course correction (directive — requeues failed/cancelled tasks)</span>
+                            </label>
+                            <button type="submit" class="bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium px-4 py-1.5 rounded">Send</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            {{/* Phone: sticky action bar above the bottom nav.
+
+                 Position math:
+                   nav height = 64px (h-16)
+                   nav reserved bottom inset = env(safe-area-inset-bottom)
+                   ⇒ action bar bottom = nav height + safe-area inset
+                   so the bar clears the iOS home indicator AND the nav
+                   without depending on flexible-units that don't pick
+                   up the env() variable.
+
+                 Colorblind-aware: every action shows a text label, not
+                 just an icon or color. Compose stays primary indigo;
+                 Pause/Resume use neutral gray; Close uses amber + a
+                 ✓ icon + the word "Close" so red-green colorblind
+                 operators don't have to read the colour as a signal. */}}
+            {{/* Mobile action bar — feature parity with the
+                 desktop md:+ header. Wraps to two rows when more
+                 than 4 actions apply so phones never lose Retry /
+                 Watch live / Cancel that the desktop layout
+                 offers (2026-05-23 — operator reported missing
+                 buttons on mobile). flex-wrap + min-h instead of
+                 a fixed-height bar so the layout adapts to the
+                 active-status combination. */}}
+            <div class="md:hidden fixed left-0 right-0 z-30 bg-surface-900/95 backdrop-blur border-t border-surface-600/60 px-3 py-2 flex flex-wrap gap-2"
+                 style="bottom: calc(64px + env(safe-area-inset-bottom));">
+                <button type="button" onclick="composeSheet.showModal()"
+                        class="flex-1 min-w-[8rem] h-12 bg-brand-600 active:bg-brand-500 text-white text-sm font-medium rounded-lg flex items-center justify-center gap-1.5">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                    Compose
+                </button>
+                {{if .Conversation.Pauseable}}
+                <form method="POST" action="/ui/tasks/{{.Task.ID}}/pause" class="contents">
+                    <button class="h-12 px-3 bg-surface-700 active:bg-surface-600 text-ink-200 text-sm rounded-lg flex items-center gap-1" aria-label="Pause task">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M10 9v6m4-6v6"/></svg>
+                        Pause
+                    </button>
+                </form>
+                {{end}}
+                {{if .Conversation.Resumeable}}
+                <form method="POST" action="/ui/tasks/{{.Task.ID}}/resume" class="contents">
+                    <button class="h-12 px-3 bg-surface-700 active:bg-surface-600 text-ink-200 text-sm rounded-lg flex items-center gap-1" aria-label="Resume task">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><circle cx="12" cy="12" r="9" stroke-width="2"/></svg>
+                        Resume
+                    </button>
+                </form>
+                {{end}}
+                {{/* Status-driven actions — same gates as the
+                     md:+ header above (kept in sync; do not
+                     drift). Retry covers terminal + PENDING;
+                     Watch live + Cancel cover any pre-terminal
+                     live status. */}}
+                {{if or (eq .Task.Status "QUEUED") (eq .Task.Status "PENDING") (eq .Task.Status "LEASED") (eq .Task.Status "RUNNING")}}
+                <a href="/ui/tasks/{{.Task.ID}}/live" class="h-12 px-3 bg-emerald-700 active:bg-emerald-600 text-white text-sm rounded-lg flex items-center gap-1" aria-label="Watch live execution">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="9"/></svg>
+                    Live
+                </a>
+                <form method="POST" action="/ui/tasks/{{.Task.ID}}/cancel" class="contents" onsubmit="return confirm('Cancel this task?');">
+                    <button class="h-12 px-3 bg-rose-700/90 active:bg-rose-600 text-rose-100 text-sm rounded-lg flex items-center gap-1" aria-label="Cancel task">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                        Cancel
+                    </button>
+                </form>
+                {{end}}
+                {{if or (eq .Task.Status "FAILED") (eq .Task.Status "CANCELLED") (eq .Task.Status "COMPLETED") (eq .Task.Status "PENDING")}}
+                <form method="POST" action="/ui/tasks/{{.Task.ID}}/retry" class="contents" onsubmit="return confirm('Requeue this task? Resets the attempt counter and starts a fresh execution from step 1.');">
+                    <button class="h-12 px-3 bg-brand-700/80 active:bg-brand-600 text-white text-sm rounded-lg flex items-center gap-1" aria-label="Requeue task">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+                        Requeue
+                    </button>
+                </form>
+                {{/* Requeue but force every role with a configured
+                     modelFallback onto that fallback for the next run.
+                     Posts the same /retry endpoint with fallback_model=1.
+                     Equivalent to typing "model: fallback" in a steer
+                     hint. */}}
+                <form method="POST" action="/ui/tasks/{{.Task.ID}}/retry" class="contents" onsubmit="return confirm('Requeue on the fallback model? Every role with a configured modelFallback runs on its fallback for this attempt.');">
+                    <input type="hidden" name="fallback_model" value="1">
+                    <button class="h-12 px-3 bg-surface-700 active:bg-surface-600 text-ink-100 text-sm rounded-lg flex items-center gap-1 ring-1 ring-surface-600" aria-label="Requeue on fallback model" title="Re-run with each role on its configured fallback model">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>
+                        Fallback model
+                    </button>
+                </form>
+                {{end}}
+                {{if .Conversation.Closeable}}
+                <form method="POST" action="/ui/tasks/{{.Task.ID}}/close" class="contents" onsubmit="return confirm('Close this task? This is terminal.');">
+                    <button class="h-12 px-3 bg-amber-700/80 active:bg-amber-600 text-amber-100 text-sm rounded-lg flex items-center gap-1 ring-1 ring-amber-600/40" aria-label="Close task — terminal">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                        Close
+                    </button>
+                </form>
+                {{end}}
+            </div>
+
+            <dialog id="composeSheet" class="md:hidden bottom-0 left-0 right-0 m-0 mb-0 mt-auto w-full max-w-full p-0 glass border-t border-surface-600 backdrop:bg-black/50 rounded-t-xl text-ink-100" aria-label="Compose message">
+                {{/* 2026-05-26 mobile compose collapse: same single-Send
+                     pattern as desktop. Checkbox swaps the form action
+                     between /message and /directive. */}}
+                <form method="POST" action="/ui/tasks/{{.Task.ID}}/message" id="taskComposeFormMobile">
+                    <div class="flex items-center justify-between px-4 py-3 border-b border-surface-600">
+                        <h2 class="text-sm font-semibold">Compose</h2>
+                        <button type="button" onclick="composeSheet.close()" class="tap p-1 text-ink-400" aria-label="Close">
+                            <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                        </button>
+                    </div>
+                    <div class="px-4 py-4 space-y-3">
+                        <label for="taskComposeMobile" class="sr-only">Message</label>
+                        <textarea name="content" id="taskComposeMobile" rows="4" autofocus placeholder="Send a message to the lead…"
+                                  class="w-full bg-surface-900 border border-surface-600 rounded-lg px-3 py-2 text-base text-ink-100" required></textarea>
+                        <label class="text-xs text-ink-300 flex items-center gap-2 cursor-pointer select-none">
+                            <input type="checkbox" id="taskComposeAsDirectiveMobile"
+                                   onchange="document.getElementById('taskComposeFormMobile').action = this.checked ? '/ui/tasks/{{.Task.ID}}/directive' : '/ui/tasks/{{.Task.ID}}/message'"
+                                   class="h-4 w-4 rounded border-surface-600 bg-surface-900 text-purple-500 focus:ring-purple-500/40">
+                            <span>Course correction (directive)</span>
+                        </label>
+                    </div>
+                    <div class="px-4 pb-4 safe-pb">
+                        <button type="submit" class="w-full h-12 bg-brand-600 active:bg-brand-500 text-white text-sm font-medium rounded-lg">Send</button>
+                    </div>
+                </form>
+            </dialog>
+            <script>
+                // Backdrop tap closes the compose sheet (browser
+                // <dialog> handles ESC natively).
+                (function() {
+                    var s = document.getElementById('composeSheet');
+                    if (!s) return;
+                    s.addEventListener('click', function(e) { if (e.target === s) s.close(); });
+                })();
+            </script>
+            {{end}}
+
+            {{/* Scratchpad summary — read-only collapsed view */}}
+            {{if .Conversation.Scratchpad}}
+            <details class="glass rounded-xl border border-surface-600">
+                <summary class="px-5 py-3 cursor-pointer text-sm text-ink-300">
+                    Lead's running summary
+                    {{with .Conversation.Scratchpad.CurrentPhase}}<span class="text-ink-500"> — phase: {{.}}</span>{{end}}
+                </summary>
+                <div class="px-5 py-4 space-y-2 border-t border-surface-600/60">
+                    {{if .Conversation.Scratchpad.Summary}}<p class="text-sm text-ink-200 whitespace-pre-wrap">{{.Conversation.Scratchpad.Summary}}</p>{{end}}
+                    {{if .Conversation.ScratchpadOpenQuestions}}
+                    <div>
+                        <h4 class="text-xs uppercase tracking-wide text-ink-500 mt-2 mb-1">Open questions</h4>
+                        <ul class="text-sm text-ink-300 list-disc pl-4 space-y-0.5">
+                            {{range .Conversation.ScratchpadOpenQuestions}}<li>{{.}}</li>{{end}}
+                        </ul>
+                    </div>
+                    {{end}}
+                </div>
+            </details>
+            {{end}}
+
+            {{end}}{{/* /.Conversation.Enabled */}}
+
+            <!-- Live Logs -->
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <svg class="h-4 w-4 text-ink-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 9l3 3-3 3m5 0h3M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z"/></svg>
+                        <h2 class="text-sm font-semibold text-ink-200">Logs</h2>
+                    </div>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <span class="text-xs text-ink-400">Auto-scroll</span>
+                        <input type="checkbox" id="autoscroll-toggle" class="form-checkbox h-3.5 w-3.5 text-brand-500 rounded border-surface-600 bg-surface-700" checked>
+                    </label>
+                </div>
+                {{/* Open the live SSE log stream only for non-
+                     terminal tasks. Terminal ones emit nothing
+                     more, so the EventSource just holds a browser
+                     connection slot for nothing — and Chrome's
+                     ~6-per-origin HTTP/1.1 cap means a few open
+                     task tabs starve new tabs. Step outcomes +
+                     artifacts (rendered server-side below) carry
+                     the post-mortem signal for completed tasks. */}}
+                {{if or (eq .Task.Status "QUEUED") (eq .Task.Status "PENDING") (eq .Task.Status "LEASED") (eq .Task.Status "RUNNING") (eq .Task.Status "WAITING_FOR_CHILDREN") (eq .Task.Status "AWAITING_INPUT") (eq .Task.Status "AWAITING_EXTERNAL")}}
+                <div id="task-log-stream"
+                     class="px-5 py-4 max-h-96 overflow-auto bg-black/20 font-mono text-xs"
+                     hx-ext="sse"
+                     sse-connect="/ui/tasks/{{.Task.ID}}/logs/stream"
+                     sse-swap="message">
+                    <pre class="text-xs leading-5 text-ink-500 whitespace-pre-wrap font-mono">Connecting...</pre>
+                </div>
+                {{else}}
+                <div class="px-5 py-4 bg-black/20 font-mono text-xs text-ink-500">
+                    Live logs are off for terminal tasks. See Step Outcomes and Artifacts below for the post-execution signal.
+                </div>
+                {{end}}
+            </div>
+
+            <script>
+                document.addEventListener('DOMContentLoaded', () => {
+                    const logContainer = document.getElementById('task-log-stream');
+                    const toggle = document.getElementById('autoscroll-toggle');
+                    
+                    if (logContainer) {
+                        const observer = new MutationObserver(() => {
+                            if (toggle.checked) {
+                                logContainer.scrollTop = logContainer.scrollHeight;
+                            }
+                        });
+                        observer.observe(logContainer, { childList: true, subtree: true, characterData: true });
+                    }
+                });
+            </script>
+
+            <!-- Task Details -->
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                {{template "sectionHeader" (dict "Title" "Details")}}
+                {{/* Project carries a navigational link (and an optional
+                     display-name + mono ID), so it stays a hand-rolled cell
+                     above the scalar statStrip rather than collapsing into
+                     the primitive (which renders plain {{.Value}} text). */}}
+                <dl class="px-5 pt-4">
+                    <dt class="text-ink-500 uppercase tracking-wider text-[10px]">Project</dt>
+                    <dd class="mt-0.5 text-sm text-ink-100">
+                        {{if .Project}}<a href="/ui/projects/{{.Project.ID}}" class="text-brand-400 hover:text-brand-300">{{if .Project.DisplayName}}{{.Project.DisplayName}}{{else}}{{.Project.ID}}{{end}}</a>
+                        {{if .Project.DisplayName}}<span class="ml-1 text-xs text-ink-500 font-mono">{{.Project.ID}}</span>{{end}}
+                        {{else}}<span class="font-mono text-ink-300">{{.Task.ProjectID}}</span><span class="ml-1 text-xs text-ink-500">not configured</span>{{end}}
+                    </dd>
+                </dl>
+                {{template "statStrip" (dict "Items" (slice
+                    (dict "Label" "Workflow" "Value" (or .Task.WorkflowID "-") "Mono" true)
+                    (dict "Label" "Priority" "Value" .Task.Priority)
+                    (dict "Label" "Source"   "Value" .Task.CreationSource)
+                    (dict "Label" "Attempt"  "Value" (printf "%d / %d" .Task.Attempt .Task.MaxAttempts))
+                    (dict "Label" "Created"  "Value" (.Task.CreatedAt.Format "2006-01-02 15:04:05"))
+                ))}}
+                {{if .Task.LastError}}
+                <div class="border-t border-surface-600/60 px-5 py-4">
+                    <div class="flex items-center gap-2 mb-2">
+                        <svg class="h-3.5 w-3.5 text-rose-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
+                        <span class="text-xs font-medium text-rose-400">Last Error</span>
+                    </div>
+                    <pre class="text-xs text-ink-300 bg-surface-900 rounded-lg p-3 overflow-x-auto border border-rose-900/30">{{.Task.LastError}}</pre>
+                </div>
+                {{end}}
+
+                {{/* Post-mortem panel — surfaces the LLM-generated
+                     failure explainer for FAILED tasks. Three states:
+
+                       1. Cached row exists  → render the summary +
+                          regenerate button.
+                       2. No cached row, explainer wired → "Explain
+                          this failure" button to fire it
+                          synchronously.
+                       3. No cached row, explainer NOT wired → hide
+                          (chat client wasn't available at startup).
+
+                     Non-failed tasks never see this panel — there's
+                     nothing useful to explain about a successful run. */}}
+                {{if eq .Task.Status "FAILED"}}
+                <div class="border-t border-surface-600/60 px-5 py-4">
+                    <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                        <div class="flex items-center gap-2">
+                            <svg class="h-3.5 w-3.5 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z"/></svg>
+                            <span class="text-xs font-medium text-amber-400">Post-mortem</span>
+                            {{if .PostMortem}}<span class="text-[10px] text-ink-500">recorded {{.PostMortem.RecordedAt.Format "Jan 2 15:04"}}</span>{{end}}
+                        </div>
+                        {{if .PostMortemAvailable}}
+                        <form method="POST" action="/ui/tasks/{{.Task.ID}}/post-mortem" class="m-0">
+                            {{if .PostMortem}}<input type="hidden" name="force_refresh" value="true">{{end}}
+                            <button type="submit" class="px-2.5 py-1 text-xs font-medium rounded-md bg-amber-700/40 hover:bg-amber-600/50 text-amber-100 ring-1 ring-amber-700/40 transition-colors">
+                                {{if .PostMortem}}Regenerate{{else}}Explain this failure{{end}}
+                            </button>
+                        </form>
+                        {{end}}
+                    </div>
+                    {{if .PostMortemError}}
+                    <div class="text-xs text-rose-300 bg-rose-900/20 border border-rose-800/40 rounded-md px-3 py-2 mb-2">
+                        Post-mortem generation failed: {{.PostMortemError}}
+                    </div>
+                    {{end}}
+                    {{if .PostMortem}}
+                    <div class="text-sm text-ink-200 bg-surface-900 rounded-lg p-3 border border-surface-600/60 whitespace-pre-wrap">{{.PostMortem.Summary}}</div>
+                    <div class="mt-2 flex items-center gap-3 text-[10px] text-ink-500">
+                        {{if .PostMortem.Model}}<span>model: <span class="text-ink-400 font-mono">{{.PostMortem.Model}}</span></span>{{end}}
+                        {{if gt .PostMortem.CostUSD 0.0}}<span>cost: <span class="text-ink-400 font-mono">${{printf "%.4f" .PostMortem.CostUSD}}</span></span>{{end}}
+                        {{if gt .PostMortem.PromptTokens 0}}<span>tokens: <span class="text-ink-400 font-mono">{{.PostMortem.PromptTokens}}/{{.PostMortem.CompletionTokens}}</span></span>{{end}}
+                    </div>
+                    {{else if .PostMortemAvailable}}
+                    <p class="text-xs text-ink-500 italic">
+                        Click the button above to ask a small LLM to summarise why this task failed.
+                        The explainer joins step outcomes, tool audit, and the last 100 lines of
+                        container log into a one-paragraph operator-friendly summary. Cached
+                        afterwards so re-renders are free.
+                    </p>
+                    {{else}}
+                    <p class="text-xs text-ink-500 italic">
+                        Post-mortem explainer is not wired on this daemon (no chat client
+                        available at startup). Container log + step outcomes are still visible
+                        below; the LLM-summarised version requires a chat provider.
+                    </p>
+                    {{end}}
+                </div>
+                {{end}}
+
+                {{/* Failure-class playbook — rule-based remediation
+                     list keyed off the task's last_error_class.
+                     Always renders for FAILED tasks where the
+                     classifier set a class. Distinct from the
+                     post-mortem panel: the post-mortem says "what
+                     went wrong on this specific task" (LLM-driven,
+                     async, may be empty); the playbook says "what
+                     historically resolves this class of failure"
+                     (rule-based, instant, always populated). */}}
+                {{if .Playbook}}
+                {{/* Human-friendly banner first (2026.6.0 SaaS-readiness).
+                     End-user-facing one-line summary surfaces above the
+                     operator-targeted Playbook section. The technical
+                     detail (Cause + Suggestions + Class) collapses into
+                     a "Show technical details" expander so casual users
+                     aren't confronted with jargon. Falls back to Cause
+                     if HumanMessage wasn't authored for this class. */}}
+                <div class="border-t border-surface-600/60 px-5 py-4">
+                    <div class="flex items-start gap-3 mb-3">
+                        <svg class="h-5 w-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
+                        <p class="text-base text-ink-100 leading-snug">{{.Playbook.HumanFriendly}}</p>
+                    </div>
+                    <details class="group">
+                        <summary class="cursor-pointer text-xs text-ink-400 hover:text-ink-200 transition-colors flex items-center gap-1.5">
+                            <svg class="h-3 w-3 transform transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+                            Show technical details
+                        </summary>
+                        <div class="mt-3 space-y-2 pl-4 border-l-2 border-surface-600">
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs font-medium text-sky-400">Playbook — {{.Playbook.Class}}</span>
+                            </div>
+                            <p class="text-sm text-ink-300">{{.Playbook.Cause}}</p>
+                            <ol class="list-decimal list-inside text-sm text-ink-200 space-y-1.5">
+                            {{range .Playbook.Suggestions}}
+                                <li>{{.}}</li>
+                            {{end}}
+                            </ol>
+                            {{if .Playbook.References}}
+                            <div class="mt-3 text-[10px] text-ink-500">
+                                <span class="font-medium">References:</span>
+                                <ul class="list-disc list-inside mt-1 space-y-0.5">
+                                {{range .Playbook.References}}
+                                    <li>{{.}}</li>
+                                {{end}}
+                                </ul>
+                            </div>
+                            {{end}}
+                        </div>
+                    </details>
+                </div>
+                {{end}}
+
+                {{/* Continuous-learning overlay (Consumer A, slice 3):
+                     worker-mined recovery instincts that resolved THIS
+                     failure class in THIS project before. Renders only
+                     when the instinct.consumers.failure_playbooks gate is
+                     on AND matching instincts exist — empty otherwise, so
+                     with the gate off this whole block is absent and the
+                     page is byte-for-byte unchanged. ADVISORY: it is
+                     evidence the operator weighs, not an action the daemon
+                     takes — recovery still goes through operator approval. */}}
+                {{if .LearnedRemediations}}
+                <div class="border-t border-surface-600/60 px-5 py-4">
+                    <div class="flex items-center gap-2 mb-2">
+                        <svg class="h-4 w-4 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        <span class="text-xs font-medium text-emerald-400">Similar failures here resolved by</span>
+                        <span class="text-[10px] text-ink-500">— learned from this project's history (advisory)</span>
+                    </div>
+                    <ul class="space-y-1.5">
+                    {{range .LearnedRemediations}}
+                        <li class="text-sm text-ink-200 flex items-baseline gap-2">
+                            <span>{{.Action}}</span>
+                            <span class="text-[10px] text-ink-500 whitespace-nowrap">(confidence {{printf "%.2f" .Confidence}} · {{.SupportCount}} resolved / {{.ContradictCount}} regressed)</span>
+                        </li>
+                    {{end}}
+                    </ul>
+                </div>
+                {{end}}
+
+                {{/* Recovery actions card (Upgrade #1 — 2026-05-26).
+                     Class-aware one-click next-steps for failed tasks.
+                     One PRIMARY action per class + universal "Steer +
+                     retry" and "Close" fallbacks. The class → action
+                     map lives in internal/ui/recovery_actions.go so
+                     adding a failure class is a single-file change.
+
+                     POST actions render as forms (so they survive
+                     no-JS clients); GET actions render as anchors.
+                     Confirm prompts fire via inline onsubmit/onclick
+                     — keeps the partial JS-light. */}}
+                {{if .RecoveryActions}}
+                <div class="border-t border-surface-600/60 px-5 py-4">
+                    <div class="flex items-center gap-2 mb-3">
+                        <svg class="h-3.5 w-3.5 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        <span class="text-xs font-medium text-emerald-400">Recovery actions</span>
+                    </div>
+                    <p class="text-xs text-ink-500 mb-3">One-click next-steps tuned to this failure class. The primary action is the recommended path.</p>
+                    <div class="flex flex-wrap gap-2">
+                    {{range .RecoveryActions}}
+                        {{if eq .Method "POST"}}
+                        <form method="POST" action="{{.URL}}" class="m-0"{{if .Confirm}} onsubmit="return confirm('{{.Confirm}}')"{{end}}>
+                            <button type="submit"
+                                    {{if .Tooltip}}title="{{.Tooltip}}"{{end}}
+                                    class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors {{if eq .Variant "primary"}}bg-emerald-700 hover:bg-emerald-600 text-white{{else if eq .Variant "danger"}}bg-rose-800/40 hover:bg-rose-700/50 text-rose-100 ring-1 ring-rose-800/40{{else}}bg-surface-700 hover:bg-surface-600 text-ink-200 ring-1 ring-surface-600{{end}}">
+                                {{.Label}}
+                            </button>
+                        </form>
+                        {{else}}
+                        <a href="{{.URL}}"
+                           {{if .Tooltip}}title="{{.Tooltip}}"{{end}}
+                           class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors {{if eq .Variant "primary"}}bg-emerald-700 hover:bg-emerald-600 text-white{{else if eq .Variant "danger"}}bg-rose-800/40 hover:bg-rose-700/50 text-rose-100 ring-1 ring-rose-800/40{{else}}bg-surface-700 hover:bg-surface-600 text-ink-200 ring-1 ring-surface-600{{end}}">
+                            {{.Label}}
+                        </a>
+                        {{end}}
+                    {{end}}
+                    </div>
+
+                    {{/* Inline steering compose for failed tasks
+                         (2026-05-26 follow-up). "Steer + retry" in the
+                         action row lands on /ui/tasks/{id}?steer=open
+                         which expands this section. The compose posts
+                         a TASK-scoped hint (survives the retry the
+                         operator does next) — that's the whole point
+                         of steering AFTER a failure. The hint endpoint
+                         is /api/v1/projects/{p}/tasks/{id}/hints which
+                         shipped 2026-05-26 with the task-scope schema. */}}
+                    <details id="steer-failed-section" class="mt-4 group">
+                        <summary class="cursor-pointer list-none flex items-center gap-1.5 text-xs font-medium text-accent-300 hover:text-accent-200">
+                            <svg class="h-3.5 w-3.5 transform transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+                            Compose a steering hint
+                            <span class="text-[10px] text-ink-500 font-normal ml-1">(applied on next retry)</span>
+                        </summary>
+                        <div class="mt-3 space-y-2">
+                            <textarea id="steer-failed-input" rows="3"
+                                      {{if .SteerPrefill}}data-steer-prefill="{{.SteerPrefill}}"{{end}}
+                                      placeholder="What should the next attempt do differently? e.g. &quot;Skip the headphones.com source — it's captcha-locked. Use Reuters for the news round-up.&quot;"
+                                      class="w-full px-3 py-2 text-sm rounded-lg bg-surface-900 border border-surface-600 text-ink-100 focus:border-accent-500/60 focus:outline-none resize-none"></textarea>
+                            <div class="flex items-center justify-between gap-2 flex-wrap">
+                                <span class="text-[11px] text-ink-500">Hint is task-scoped: <span class="text-ink-400">it survives the retry and applies to the new execution's first step.</span></span>
+                                <div class="flex items-center gap-3">
+                                    {{/* Secondary: queue without retry — for
+                                         operators composing multiple hints
+                                         before the actual retry. */}}
+                                    <button id="steer-failed-queue-only" type="button" onclick="submitFailedSteeringHint(false)" class="text-[11px] text-ink-400 hover:text-ink-200 transition-colors underline-offset-2 hover:underline">
+                                        Queue only
+                                    </button>
+                                    {{/* Primary: queue THEN retry in one
+                                         click — matches the recovery card's
+                                         "Steer + retry" promise. */}}
+                                    <button id="steer-failed-send" type="button" onclick="submitFailedSteeringHint(true)" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                                        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+                                        Queue &amp; retry
+                                    </button>
+                                </div>
+                            </div>
+                            <p id="steer-failed-error" class="hidden text-[11px] text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-2 py-1.5"></p>
+                            <p id="steer-failed-ok" class="hidden text-[11px] text-emerald-300 bg-emerald-950/30 border border-emerald-900/40 rounded px-2 py-1.5"></p>
+                            {{/* Hidden form used by the JS to submit the
+                                 retry after a successful hint POST. The
+                                 browser follows the server's redirect to
+                                 the refreshed task page so the operator
+                                 sees the new attempt state. */}}
+                            <form id="steer-failed-retry-form" method="POST" action="/ui/tasks/{{.Task.ID}}/retry" class="hidden"></form>
+                        </div>
+                    </details>
+                    <script>
+                        (function() {
+                            // Auto-open + focus when the recovery card
+                            // sent us here via ?steer=open. Without this,
+                            // the "Steer + retry" link visibly does
+                            // nothing — operator-observed regression
+                            // 2026-05-26.
+                            try {
+                                var params = new URLSearchParams(window.location.search);
+                                if (params.get('steer') === 'open') {
+                                    var det = document.getElementById('steer-failed-section');
+                                    if (det) {
+                                        det.open = true;
+                                        det.scrollIntoView({behavior: 'smooth', block: 'center'});
+                                        setTimeout(function() {
+                                            var ta = document.getElementById('steer-failed-input');
+                                            if (!ta) return;
+                                            // Seed a failure-derived starter hint when the
+                                            // box is empty (LLD-drift audit §8.6). Never
+                                            // clobber an operator's in-progress draft; place
+                                            // the cursor at the end so they continue typing.
+                                            var prefill = ta.getAttribute('data-steer-prefill');
+                                            if (prefill && ta.value.trim() === '') {
+                                                ta.value = prefill;
+                                                ta.setSelectionRange(ta.value.length, ta.value.length);
+                                            }
+                                            ta.focus();
+                                        }, 200);
+                                    }
+                                }
+                            } catch (e) { /* old browser — no harm */ }
+                            window.submitFailedSteeringHint = async function(alsoRetry) {
+                                var btn = document.getElementById('steer-failed-send');
+                                var queueBtn = document.getElementById('steer-failed-queue-only');
+                                var ta = document.getElementById('steer-failed-input');
+                                var err = document.getElementById('steer-failed-error');
+                                var ok  = document.getElementById('steer-failed-ok');
+                                var content = (ta && ta.value || '').trim();
+                                err.classList.add('hidden'); err.textContent = '';
+                                ok.classList.add('hidden');  ok.textContent  = '';
+                                if (!content) {
+                                    err.textContent = 'Hint content is required.';
+                                    err.classList.remove('hidden');
+                                    return;
+                                }
+                                btn.disabled = true;
+                                queueBtn.disabled = true;
+                                try {
+                                    var resp = await fetch('/api/v1/projects/' +
+                                        encodeURIComponent({{.Task.ProjectID}}) +
+                                        '/tasks/' + encodeURIComponent({{.Task.ID}}) +
+                                        '/hints',
+                                        {
+                                            method: 'POST',
+                                            headers: {'Content-Type': 'application/json'},
+                                            body: JSON.stringify({content: content}),
+                                        });
+                                    if (!resp.ok) {
+                                        var detail = '';
+                                        try { var b = await resp.json(); detail = b.message || b.error || resp.statusText; }
+                                        catch (e) { detail = resp.statusText; }
+                                        err.textContent = 'Hint failed (' + resp.status + '): ' + detail;
+                                        err.classList.remove('hidden');
+                                        return;
+                                    }
+                                    ta.value = '';
+                                    if (alsoRetry) {
+                                        // Submit the retry form — browser
+                                        // follows the redirect to the
+                                        // refreshed task page. No need to
+                                        // re-enable the button; the page
+                                        // is about to reload.
+                                        ok.textContent = 'Hint queued — retrying now…';
+                                        ok.classList.remove('hidden');
+                                        document.getElementById('steer-failed-retry-form').submit();
+                                        return;
+                                    }
+                                    ok.textContent = 'Hint queued. Click Retry above when you’re ready, or queue another hint first.';
+                                    ok.classList.remove('hidden');
+                                } catch (e) {
+                                    err.textContent = 'Network error: ' + e.message;
+                                    err.classList.remove('hidden');
+                                } finally {
+                                    btn.disabled = false;
+                                    queueBtn.disabled = false;
+                                }
+                            };
+                        })();
+                    </script>
+                </div>
+                {{end}}
+            </div>
+
+            <!-- Task Input (reference — closed by default) -->
+            {{if .Task.Payload}}
+            <details class="panel-ref overflow-hidden">
+                <summary>{{template "sectionHeader" (dict "Title" "Input")}}</summary>
+                <div class="px-5 py-4">
+                    {{$prompt := extractPrompt .Task.Payload}}
+                    {{if $prompt}}
+                    <div class="mb-3">
+                        <div class="text-xs text-ink-500 mb-1.5">Prompt</div>
+                        <div class="text-sm text-ink-200 bg-surface-900 rounded-lg p-3 border border-surface-600/60 whitespace-pre-wrap">{{$prompt}}</div>
+                    </div>
+                    {{end}}
+                    <details class="mt-2">
+                        <summary class="text-xs text-ink-500 cursor-pointer hover:text-ink-300 select-none">Raw payload</summary>
+                        <pre class="text-xs text-ink-400 bg-surface-900 rounded-lg p-3 overflow-auto mt-2 max-h-[60vh] border border-surface-600/60">{{prettyJSON .Task.Payload}}</pre>
+                    </details>
+                </div>
+            </details>
+            {{end}}
+
+            <!-- Execution Output (reference — open by default once the task is finished) -->
+            {{if .Execution}}{{if .Execution.Result}}
+            {{$r := parseResult .Execution.Result}}
+            <details class="panel-ref overflow-hidden" {{if refOpen .Task.Status "COMPLETED" "FAILED" "CANCELLED"}}open{{end}}>
+                <summary>{{template "sectionHeader" (dict "Title" "Output")}}</summary>
+                {{if or $r.toolCount $r.duration}}
+                <div class="px-5 pt-3 flex items-center gap-3">
+                    {{if $r.toolCount}}<span class="text-xs text-ink-500">{{$r.toolCount}} tool calls</span>{{end}}
+                    {{if $r.duration}}<span class="text-xs text-ink-500">{{$r.duration}}s</span>{{end}}
+                </div>
+                {{end}}
+                <div class="px-5 py-4">
+                    {{if $r.message}}
+                    <div class="text-sm text-ink-200 bg-surface-900 rounded-lg p-4 border border-surface-600/60 whitespace-pre-wrap max-h-[70vh] overflow-auto leading-relaxed mb-4">{{$r.message}}</div>
+                    {{end}}
+                    {{if $r.error}}
+                    <div class="mb-4 p-3 rounded-lg bg-rose-900/20 border border-rose-800/40">
+                        <div class="text-xs font-medium text-rose-400 mb-1">Error</div>
+                        <pre class="text-xs text-rose-200 whitespace-pre-wrap">{{$r.error}}</pre>
+                    </div>
+                    {{end}}
+                    {{if $r.artifactNames}}
+                    <div class="mb-4">
+                        <div class="text-xs text-ink-500 mb-2">Artifacts</div>
+                        <div class="flex flex-wrap gap-2">
+                            {{range $r.artifactNames}}<span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-surface-700 text-xs text-ink-300 ring-1 ring-inset ring-surface-600/50"><svg class="h-3.5 w-3.5 text-ink-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/></svg>{{.}}</span>{{end}}
+                        </div>
+                    </div>
+                    {{end}}
+                    <details>
+                        <summary class="text-xs text-ink-500 cursor-pointer hover:text-ink-300 select-none">Raw JSON</summary>
+                        <pre class="text-xs text-ink-400 bg-surface-900 rounded-lg p-3 overflow-auto mt-2 max-h-[60vh] border border-surface-600/60">{{prettyJSON .Execution.Result}}</pre>
+                    </details>
+                </div>
+            </details>
+            {{end}}{{end}}
+
+            {{if or .Task.ParentTaskID .Children .Ancestors}}
+            <div class="glass rounded-xl border border-surface-600 px-5 py-4 space-y-3">
+                {{if .Ancestors}}
+                <div>
+                    <div class="text-xs text-ink-500 mb-1">Lineage</div>
+                    <nav class="flex flex-wrap items-center gap-1.5 text-sm" aria-label="Task lineage">
+                        {{range $i, $a := .Ancestors}}
+                            {{if $i}}<span class="text-ink-600" aria-hidden="true">›</span>{{end}}
+                            <a href="/ui/tasks/{{$a.ID}}" class="text-brand-400 hover:text-brand-300 font-mono" title="{{$a.ID}}">{{shortID $a.ID}}</a>
+                        {{end}}
+                        <span class="text-ink-600" aria-hidden="true">›</span>
+                        <span class="font-mono text-ink-300" title="{{.Task.ID}}">{{shortID .Task.ID}}</span>
+                    </nav>
+                </div>
+                {{else if .Task.ParentTaskID}}
+                <div>
+                    <div class="text-xs text-ink-500 mb-1">Parent Task</div>
+                    <a href="/ui/tasks/{{.Task.ParentTaskID}}" class="text-brand-400 hover:text-brand-300 font-mono text-sm" title="{{.Task.ParentTaskID}}">{{shortID .Task.ParentTaskID}}</a>
+                </div>
+                {{end}}
+                {{if .Children}}
+                <div>
+                    <div class="text-xs text-ink-500 mb-2">Subtasks ({{len .Children}})</div>
+                    <ul class="space-y-1">
+                        {{range .Children}}
+                        <li class="flex items-center gap-2 text-sm">
+                            {{statusDot (printf "%s" .Status)}}
+                            <a href="/ui/tasks/{{.ID}}" class="text-brand-400 hover:text-brand-300 font-mono" title="{{.ID}}">{{shortID .ID}}</a>
+                            {{statusPill (printf "%s" .Status)}}
+                            <span class="text-xs text-ink-500 ml-auto">{{humanizeSince .CreatedAt}}</span>
+                        </li>
+                        {{end}}
+                    </ul>
+                </div>
+                {{end}}
+            </div>
+            {{end}}
+
+            <!-- Lease (reference — closed by default) -->
+            {{if .Task.LeaseID}}
+            <details class="panel-ref overflow-hidden">
+                <summary>{{template "sectionHeader" (dict "Title" "Lease")}}</summary>
+                <div class="px-5 py-4 grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    <dl><dt class="text-xs text-ink-500 mb-1">Lease ID</dt><dd class="text-sm text-ink-100 font-mono text-xs">{{.Task.LeaseID}}</dd></dl>
+                    <dl><dt class="text-xs text-ink-500 mb-1">Leased By</dt><dd class="text-sm text-ink-100 font-mono">{{if .Task.LeasedBy}}{{.Task.LeasedBy}}{{else}}-{{end}}</dd></dl>
+                    <dl><dt class="text-xs text-ink-500 mb-1">Leased At</dt><dd class="text-sm text-ink-100">{{if .Task.LeasedAt}}{{.Task.LeasedAt.Format "15:04:05"}}{{else}}-{{end}}</dd></dl>
+                    <dl><dt class="text-xs text-ink-500 mb-1">Expires At</dt><dd class="text-sm text-ink-100">{{if .Task.LeaseExpiresAt}}{{.Task.LeaseExpiresAt.Format "15:04:05"}}{{else}}-{{end}}</dd></dl>
+                </div>
+            </details>
+            {{end}}
+
+            <!-- Changelog (reference — closed by default) -->
+            {{if .ChangelogContent}}
+            <details class="panel-ref overflow-hidden">
+                <summary>{{template "sectionHeader" (dict "Title" "Changelog")}}</summary>
+                <div class="px-5 py-4">
+                    <div class="text-sm text-ink-200 bg-surface-900 rounded-lg p-4 border border-surface-600/60 whitespace-pre-wrap max-h-[70vh] overflow-auto leading-relaxed">{{.ChangelogContent}}</div>
+                </div>
+            </details>
+            {{end}}
+
+            <!-- LLM-as-judge verdict (reference — open by default once the task is finished) -->
+            {{if .JudgeVerdict}}
+            <details class="panel-ref overflow-hidden" {{if refOpen .Task.Status "COMPLETED" "FAILED" "CANCELLED"}}open{{end}}>
+                <summary>{{template "sectionHeader" (dict "Title" "Hallucination judge")}}</summary>
+                {{/* Verdict meta moves into the body — sectionHeader carries
+                     only Title + a single MetaText, but the decision badge +
+                     confidence + model is a three-part rich row. */}}
+                <div class="px-5 pt-3 flex items-center gap-3 text-xs text-ink-400 flex-wrap">
+                    {{if eq .JudgeVerdict.VerdictClass "outcome-ok"}}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-900/40 text-emerald-300 ring-1 ring-emerald-800/50">{{.JudgeVerdict.Decision}}</span>
+                    {{else if eq .JudgeVerdict.VerdictClass "outcome-bad"}}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-900/40 text-rose-300 ring-1 ring-rose-800/50">{{.JudgeVerdict.Decision}}</span>
+                    {{else}}
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-900/40 text-amber-300 ring-1 ring-amber-800/50">{{.JudgeVerdict.Decision}}</span>
+                    {{end}}
+                    <span>confidence: <span class="text-ink-200 font-mono">{{printf "%.2f" .JudgeVerdict.Confidence}}</span></span>
+                    {{if .JudgeVerdict.Model}}<span>model: <span class="text-ink-300 font-mono">{{.JudgeVerdict.Model}}</span></span>{{end}}
+                </div>
+                {{if .JudgeVerdict.Summary}}
+                <div class="px-5 py-3 text-sm text-ink-300 border-b border-surface-600/40">
+                    {{.JudgeVerdict.Summary}}
+                </div>
+                {{end}}
+                {{if .JudgeVerdict.Signals}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-surface-600/60">
+                        <thead class="bg-surface-900/60">
+                            <tr>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">Severity</th>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">Type</th>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">Claim</th>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">Detail</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-surface-600/40">
+                            {{range .JudgeVerdict.Signals}}
+                            <tr class="hover:bg-surface-700/30">
+                                <td class="px-4 py-2 align-top">
+                                    {{if eq .SeverityClass "outcome-bad"}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-900/40 text-rose-300 ring-1 ring-rose-800/50">{{.Severity}}</span>
+                                    {{else if eq .SeverityClass "outcome-pending"}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-900/40 text-amber-300 ring-1 ring-amber-800/50">{{.Severity}}</span>
+                                    {{else}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-surface-700 text-ink-300 ring-1 ring-surface-600">{{.Severity}}</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 font-mono text-xs text-ink-400 align-top">{{.ClaimType}}</td>
+                                <td class="px-4 py-2 text-xs text-ink-300 align-top font-mono break-all">{{.ClaimValue}}</td>
+                                <td class="px-4 py-2 text-xs text-ink-400 align-top">{{.Detail}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{end}}
+            </details>
+            {{end}}
+
+            {{/* LLM Cost — always rendered. The previous
+                 "hide when total == 0" guard left cancelled
+                 tasks blank, even when the operator
+                 specifically wanted to confirm whether any
+                 LLM activity had been recorded. Now: always
+                 show the section; the body switches between
+                 a row table (data present), a "no rows
+                 captured" hint (cancelled before any persist
+                 fired), and a "no LLM activity" note
+                 (legitimate zero-call task). */}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between flex-wrap gap-y-2">
+                    <h2 class="text-sm font-semibold text-ink-200 flex items-center gap-2">
+                        <svg class="h-4 w-4 text-ink-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        LLM Cost
+                    </h2>
+                    {{if .Cost.Rows}}
+                    <div class="flex items-center gap-4 text-xs text-ink-500">
+                        <span>total: <span class="text-accent-400 font-semibold">{{fmtUSD .Cost.TotalUSD}}</span></span>
+                        <span>in: {{fmtTokens .Cost.TotalPromptTok}} tok</span>
+                        <span>out: {{fmtTokens .Cost.TotalCompletionTok}} tok</span>
+                        <a href="?format=csv" class="px-2 py-0.5 rounded bg-surface-700 hover:bg-surface-600 text-ink-400 hover:text-ink-200">CSV</a>
+                        <a href="?format=json" class="px-2 py-0.5 rounded bg-surface-700 hover:bg-surface-600 text-ink-400 hover:text-ink-200">JSON</a>
+                    </div>
+                    {{end}}
+                </div>
+                {{if .Cost.Rows}}
+                <div class="px-5 py-3 overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead><tr class="border-b border-surface-600/60">
+                            {{template "sortHeader" (dict "Label" "Step"  "Key" "step"  "Active" .CostSort "Dir" .CostDir "BaseURL" .CostBaseURL "Align" "left")}}
+                            {{template "sortHeader" (dict "Label" "Role"  "Key" "role"  "Active" .CostSort "Dir" .CostDir "BaseURL" .CostBaseURL "Align" "left")}}
+                            {{template "sortHeader" (dict "Label" "Model" "Key" "model" "Active" .CostSort "Dir" .CostDir "BaseURL" .CostBaseURL "Align" "left")}}
+                            {{template "sortHeader" (dict "Label" "In"    "Key" "in"    "Active" .CostSort "Dir" .CostDir "BaseURL" .CostBaseURL "Align" "right")}}
+                            {{template "sortHeader" (dict "Label" "Out"   "Key" "out"   "Active" .CostSort "Dir" .CostDir "BaseURL" .CostBaseURL "Align" "right")}}
+                            {{template "sortHeader" (dict "Label" "Iters" "Key" "iters" "Active" .CostSort "Dir" .CostDir "BaseURL" .CostBaseURL "Align" "right")}}
+                            {{template "sortHeader" (dict "Label" "Cost"  "Key" "cost"  "Active" .CostSort "Dir" .CostDir "BaseURL" .CostBaseURL "Align" "right")}}
+                        </tr></thead>
+                        <tbody class="divide-y divide-surface-600/30">
+                            {{range .Cost.Rows}}
+                            <tr>
+                                <td class="px-2 py-1.5 text-ink-400 font-mono text-xs">{{.StepID}}</td>
+                                <td class="px-2 py-1.5 text-ink-300">{{.Role}}</td>
+                                <td class="px-2 py-1.5 text-ink-500 font-mono text-xs">{{.Model}}</td>
+                                <td class="px-2 py-1.5 text-right text-ink-400 tabular-nums">{{fmtTokens .PromptTokens}}</td>
+                                <td class="px-2 py-1.5 text-right text-ink-400 tabular-nums">{{fmtTokens .CompletionTokens}}</td>
+                                <td class="px-2 py-1.5 text-right text-ink-400 tabular-nums">{{.Iterations}}</td>
+                                <td class="px-2 py-1.5 text-right text-ink-300 tabular-nums">{{fmtUSD .CostUSD}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                {{/* No rows. Most likely this is a task that was
+                     cancelled before any iteration's per-step
+                     stream landed in the DB — the UI says so
+                     explicitly so the operator doesn't confuse
+                     "no data captured" with "task ran for free." */}}
+                <div class="px-5 py-4 text-xs text-ink-500">
+                    {{if eq .Task.Status "CANCELLED"}}
+                    No LLM activity recorded. The task was cancelled before any iteration's cost was persisted, or it never reached an LLM call.
+                    {{else if eq .Task.Status "FAILED"}}
+                    No LLM activity recorded. The task failed before any iteration's cost was persisted, or it never reached an LLM call.
+                    {{else}}
+                    No LLM activity recorded for this task.
+                    {{end}}
+                </div>
+                {{end}}
+            </div>
+
+            <!-- Execution Artifacts -->
+            {{if .ExecutionArtifacts}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                {{template "sectionHeader" (dict "Title" "Artifacts" "MetaText" (printf "%d" (len .ExecutionArtifacts)))}}
+                <div class="px-5 py-4 space-y-2">
+                    {{range .ExecutionArtifacts}}
+                    <div class="flex items-center justify-between bg-surface-900 rounded-lg px-3 py-2.5 border border-surface-600/60 hover:border-brand-700/30 transition-colors">
+                        <div class="flex items-center gap-2.5 min-w-0">
+                            <svg class="h-4 w-4 text-ink-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/></svg>
+                            <a href="/ui/artifacts/{{.ID}}" class="text-sm text-brand-400 hover:text-brand-300 font-mono truncate">{{.Name}}</a>
+                            <span class="text-xs text-ink-500 flex-shrink-0">{{.ArtifactClass}}</span>
+                        </div>
+                        <div class="flex items-center gap-3 flex-shrink-0">
+                            {{if .SizeBytes}}<span class="text-xs text-ink-500">{{.SizeBytes}} B</span>{{end}}
+                            <a href="/ui/artifacts/{{.ID}}" class="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-surface-700 hover:bg-surface-600 text-ink-300 text-xs transition-colors" title="Download">
+                                <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+                            </a>
+                        </div>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+
+            <!-- All Task Artifacts (legacy) -->
+            {{if .Artifacts}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div class="px-5 py-4">
+                    <details>
+                        <summary class="text-sm font-semibold text-ink-300 cursor-pointer hover:text-ink-100 select-none flex items-center gap-2">
+                            <svg class="h-4 w-4 text-ink-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+                            All Artifacts ({{len .Artifacts}})
+                        </summary>
+                        <div class="space-y-2 mt-3">
+                            {{range .Artifacts}}
+                            <div class="flex items-center justify-between bg-surface-900 rounded-lg px-3 py-2 border border-surface-600/60">
+                                <div class="flex items-center gap-2.5">
+                                    <svg class="h-3.5 w-3.5 text-ink-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/></svg>
+                                    <a href="/ui/artifacts/{{.ID}}" class="text-sm text-brand-400 hover:text-brand-300 font-mono">{{.Name}}</a>
+                                    <span class="text-xs text-ink-500">{{.ArtifactClass}}</span>
+                                </div>
+                                <div class="text-xs text-ink-500">
+                                    {{if .SizeBytes}}{{.SizeBytes}} B{{end}}
+                                    {{if .ExecutionID}}<span class="ml-2 font-mono" title="{{.ExecutionID}}">{{shortID .ExecutionID}}</span>{{end}}
+                                </div>
+                            </div>
+                            {{end}}
+                        </div>
+                    </details>
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Execution Attempts -->
+            {{if .Executions}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                {{template "sectionHeader" (dict "Title" "Execution Attempts" "MetaText" (printf "%d" (len .Executions)))}}
+                <div class="px-5 py-4 space-y-3">
+                    {{range $i, $exec := .Executions}}
+                    <div class="bg-surface-900 rounded-lg p-4 border {{if eq $exec.Status "FAILED"}}border-rose-900/50{{else if eq $exec.Status "COMPLETED"}}border-emerald-900/50{{else}}border-surface-600{{end}}">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="flex items-center gap-2.5">
+                                <a href="/ui/executions/{{$exec.ID}}" class="text-sm font-mono text-brand-400 hover:text-brand-300" title="{{$exec.ID}}">{{shortID $exec.ID}}</a>
+                                {{template "executionStatusBadge" $exec.Status}}
+                            </div>
+                            <div class="text-xs text-ink-500">
+                                {{if $exec.StartedAt}}{{$exec.StartedAt.Format "15:04:05"}}{{end}}
+                                {{if $exec.CompletedAt}} — {{$exec.CompletedAt.Format "15:04:05"}}{{end}}
+                            </div>
+                        </div>
+                        {{if $exec.CompletedSteps}}
+                        <div class="mb-2.5">
+                            <div class="text-xs text-ink-500 mb-1.5">Steps completed</div>
+                            <div class="flex flex-wrap gap-1.5">
+                                {{range $exec.CompletedSteps}}<span class="px-2 py-0.5 text-xs rounded bg-surface-800 text-ink-300 font-mono ring-1 ring-surface-600/50">{{.}}</span>{{end}}
+                            </div>
+                        </div>
+                        {{end}}
+                        {{if $exec.CurrentStepID}}
+                        <div class="mb-2.5">
+                            <div class="text-xs text-ink-500 mb-1.5">Last step</div>
+                            <span class="px-2 py-0.5 text-xs rounded bg-amber-900/30 text-amber-300 font-mono ring-1 ring-amber-800/30">{{$exec.CurrentStepID}}</span>
+                        </div>
+                        {{end}}
+                        {{if $exec.ErrorMessage}}
+                        <div class="p-3 rounded-lg bg-rose-900/20 border border-rose-800/40">
+                            <pre class="text-xs text-rose-200 whitespace-pre-wrap max-h-48 overflow-y-auto">{{$exec.ErrorMessage}}</pre>
+                        </div>
+                        {{end}}
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

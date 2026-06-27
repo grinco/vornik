@@ -1,0 +1,74 @@
+# vornik config — node.profile: ui
+#
+# This node serves the web UI and the data-plane/control API for the
+# UI tier. It has full database access (R/W on the trusted subnet) but
+# does NOT run the scheduler, executor, or any leader-elected singletons,
+# and does NOT serve public webhook ingress routes.
+#
+# Values vary between environments via ${VAR} expansion — the daemon's
+# loader runs os.ExpandEnv on every string before parsing
+# (see internal/config/loader.go).
+#
+# Used by: cluster.compose.yaml → vornik-ui service.
+# Mount at: /etc/vornik/config.yaml
+
+node:
+  profile: ui
+  # Preset ui expands to:
+  #   serve_ui:       true
+  #   serve_api:      true   (data-plane / control endpoints)
+  #   serve_webhooks: false
+  #   run_workers:    false  (no scheduler, no executor, no lease contention)
+
+server:
+  address: "0.0.0.0:8080"
+  read_timeout: 30s
+  write_timeout: 30s
+
+database:
+  host: postgres          # compose service name — resolves on the trusted bridge
+  port: 5432
+  name: "${POSTGRES_DB}"
+  user: "${POSTGRES_USER}"
+  password: "${VORNIK_DATABASE_PASSWORD}"
+  sslmode: disable
+
+storage:
+  artifacts_path: /var/lib/vornik/artifacts
+artifacts:
+  artifacts_path: /var/lib/vornik/artifacts
+
+logging:
+  level: info
+  format: json
+
+api:
+  auth_enabled: false
+  # api_keys:
+  #   - "${VORNIK_API_KEY}"
+
+metrics:
+  enabled: false
+  addr: ":9090"
+
+runtime:
+  run_as_user: "1000:1000"
+  project_workspace_path: /var/lib/vornik/workspaces
+
+  agent_llm:
+    endpoint: "${AGENT_LLM_ENDPOINT}"
+    model: "${AGENT_LLM_MODEL}"
+    api_key: "${VORNIK_AGENT_LLM_API_KEY}"
+
+chat:
+  provider: "http"
+  endpoint: "${CHAT_ENDPOINT}"
+  model: "${CHAT_MODEL}"
+  api_key: "${VORNIK_CHAT_API_KEY}"
+
+telegram:
+  enabled: false
+  bot_token: "${VORNIK_TELEGRAM_BOT_TOKEN}"
+
+memory:
+  enabled: false

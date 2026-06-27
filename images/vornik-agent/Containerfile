@@ -1,0 +1,125 @@
+# vornik-agent — LLM-backed agent container
+# Reads /app/input/task.json, calls an OpenAI-compatible LLM, writes /app/output/result.json
+#
+# Build from repo root (uses the calling user's uid/gid so bind mounts
+# work without permission gymnastics under --userns=host):
+#   make build-agent
+#
+# Or build explicitly:
+#   podman build -f images/vornik-agent/Containerfile \
+#     --build-arg VORNIK_UID=$(id -u) \
+#     --build-arg VORNIK_GID=$(id -g) \
+#     -t vornik-agent:latest .
+#
+# The defaults (1000:1000) are a reasonable non-root baseline when the
+# builder doesn't pass args — e.g. CI smoke tests — but local operator
+# builds should always match the running daemon's uid/gid.
+
+ARG VORNIK_UID=1000
+ARG VORNIK_GID=1000
+
+FROM golang:1.25 AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/mcp-bridge ./cmd/mcp-bridge \
+ && CGO_ENABLED=0 GOOS=linux go build -o /bin/vornik-agent-helper ./cmd/agent-helper
+
+FROM ubuntu:latest
+
+# Re-declare ARGs after FROM — build args don't cross stage boundaries.
+ARG VORNIK_UID
+ARG VORNIK_GID
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    jq curl coreutils git git-lfs openssh-client bash make \
+    python3 python-is-python3 pip python3-venv python3-pytest \
+    python3-numpy python3-scipy \
+    imagemagick \
+    pandoc weasyprint fonts-dejavu \
+    gcc libc6-dev \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python ergonomics for agent run_shell on Python projects (e.g. headmatch):
+#   - python-is-python3 provides `python` (Ubuntu ships only `python3`), so a
+#     project's `python ...` / README commands don't hit "python: not found"
+#     (incident 2026-06-13: headmatch coder spent iterations recovering).
+#   - PIP_BREAK_SYSTEM_PACKAGES lets `pip install -r requirements.txt` work in
+#     the throwaway agent container despite PEP-668's externally-managed guard
+#     (the container is ephemeral — no host site-packages to pollute). Agents
+#     can still make a venv when a project needs isolation.
+#   - numpy + scipy pre-bundled (the common scientific base) so the most
+#     frequent imports don't wait on per-task egress installs.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
+# GitHub CLI (gh) — the github-router workflow uses it for outbound GitHub
+# writes (gh pr review / gh pr create), authenticated by the GH_TOKEN the
+# daemon injects per task from the project's `github` App credentials.
+RUN install -d -m 755 /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/*
+
+# pandoc + weasyprint enable the research-swarm writer role to
+# convert its markdown deliverable to PDF / HTML / DOCX / EPUB /
+# RTF / ODT via `pandoc -o`. weasyprint is the headless PDF engine
+# (no LaTeX toolchain — ~150MB instead of ~1.5GB). fonts-dejavu is
+# the minimal sans/serif/mono trio weasyprint needs so PDFs don't
+# render as tofu when the markdown specifies no font. See
+# configs/swarms/{assistant,jankas}-swarm.yaml writer role.
+
+# gcc + libc6-dev are required for CGO. Without them, `go test -race`
+# (which mandates CGO) fails with "cgo: C compiler not found".
+# build-essential pulls dpkg-dev / make / g++ which we don't need;
+# gcc + libc6-dev are the minimal pair Go's race detector links against.
+# Added 2026-05-08 after a coverage agent reported "go test -race
+# requires cgo/gcc which is not available".
+
+# Non-root user for the agent process. The uid/gid are build args so
+# operators can match their host uid, making bind-mounted /app/input,
+# /app/output, and /app/workspace writable without --userns=keep-id
+# trickery or world-writable host directories.
+#
+# Ubuntu 24.04+ base images ship with a default 'ubuntu' user that may
+# collide with the target uid; delete it and any system user already
+# holding the uid/gid before creating ours.
+# /home/vornik is created by --create-home and used as HOME for git
+# and ssh operations that default to reading $HOME/.ssh, $HOME/.gitconfig.
+RUN userdel --remove ubuntu 2>/dev/null || true \
+ && if getent passwd "$VORNIK_UID" >/dev/null; then userdel --remove "$(getent passwd $VORNIK_UID | cut -d: -f1)" 2>/dev/null || true; fi \
+ && if getent group "$VORNIK_GID" >/dev/null; then groupdel "$(getent group $VORNIK_GID | cut -d: -f1)" 2>/dev/null || true; fi \
+ && groupadd --gid "$VORNIK_GID" vornik \
+ && useradd --uid "$VORNIK_UID" --gid "$VORNIK_GID" --create-home --shell /bin/bash vornik \
+ && mkdir -p /app/input /app/output /app/workspace \
+ && chown -R vornik:vornik /app
+
+COPY --from=builder /bin/mcp-bridge /usr/local/bin/mcp-bridge
+COPY --from=builder /bin/vornik-agent-helper /usr/local/bin/vornik-agent-helper
+
+# Carry the Go toolchain forward from the builder stage so agent
+# tasks on Go projects (e.g. the vornik-autocoder coverage workflow)
+# can run `go test`, `go build`, `go vet`, `go tool cover`. Without
+# this, the agent's shell tool returns "go: not found" and the
+# coverage-refresh task fabricates a "no testable files" report
+# (observed vornik-autocoder/CANNOT_RUN_COVERAGE.md, 2026-05-05).
+# GOCACHE / GOMODCACHE point under the vornik user's HOME so
+# go test can write its build cache without root.
+COPY --from=builder /usr/local/go /usr/local/go
+ENV PATH=/usr/local/go/bin:$PATH \
+    GOPATH=/home/vornik/go \
+    GOCACHE=/home/vornik/.cache/go-build \
+    GOMODCACHE=/home/vornik/go/pkg/mod
+
+COPY --chown=vornik:vornik images/vornik-agent/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+WORKDIR /app/workspace
+USER vornik:vornik
+
+ENTRYPOINT ["/entrypoint.sh"]

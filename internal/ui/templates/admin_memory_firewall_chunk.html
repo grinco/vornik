@@ -1,0 +1,189 @@
+{{define "admin_memory_firewall_chunk.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">Chunk Policy</h1>
+                <a href="/ui/admin/memory/firewall" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Firewall</a>
+            </div>
+            <div class="text-xs text-gray-400 font-mono break-all">{{.ChunkID}}</div>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 p-10 text-center text-gray-500 text-sm">
+                Firewall editor not wired on this deployment.
+            </div>
+            {{else if .NotFound}}
+            <div class="glass rounded-xl border border-dark-700 p-10 text-center text-gray-500 text-sm">
+                Chunk <code class="font-mono">{{.ChunkID}}</code> not found.
+            </div>
+            {{else if .Error}}
+            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-200 text-xs px-3 py-2 rounded-md">
+                {{.Error}}
+            </div>
+            {{else}}
+            <!-- Policy state + digest -->
+            <div class="glass rounded-xl border border-dark-700 px-4 py-3 space-y-2 text-xs">
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div>
+                        <div class="text-gray-500 uppercase tracking-wider mb-0.5">Policy digest</div>
+                        <div class="font-mono text-gray-200 text-xs break-all">{{.PolicyDigest}}</div>
+                    </div>
+                    <div>
+                        <div class="text-gray-500 uppercase tracking-wider mb-0.5">Content class</div>
+                        <div class="font-mono text-gray-200">{{.ContentClass}}</div>
+                    </div>
+                    <div>
+                        <div class="text-gray-500 uppercase tracking-wider mb-0.5">Validation status</div>
+                        <div class="font-mono text-gray-200">{{.ValidationStatus}}</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Edit form. Posts via JS to /api/v1/admin/memory/policy/chunks/{id}
+                 so the API's partial-update semantic (nil = leave untouched) is
+                 preserved. Vanilla fetch — no JS framework dep. -->
+            <form id="policy-form" class="glass rounded-xl border border-dark-700 px-4 py-4 space-y-3">
+                <div class="text-xs text-gray-500 uppercase tracking-wider">Edit policy</div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                    <label class="block">
+                        <span class="text-gray-400">Sensitivity tier</span>
+                        <select name="sensitivity_tier" class="mt-1 w-full bg-dark-900 border border-dark-700 rounded px-2 py-1 text-gray-100 font-mono">
+                            <option value="">(leave unchanged)</option>
+                            <option value="public" {{if eq .SensitivityTier "public"}}selected{{end}}>public</option>
+                            <option value="internal" {{if eq .SensitivityTier "internal"}}selected{{end}}>internal</option>
+                            <option value="confidential" {{if eq .SensitivityTier "confidential"}}selected{{end}}>confidential</option>
+                            <option value="restricted" {{if eq .SensitivityTier "restricted"}}selected{{end}}>restricted</option>
+                        </select>
+                    </label>
+                    <label class="block">
+                        <span class="text-gray-400">Tenant ID</span>
+                        <input name="tenant_id" type="text" value="{{.TenantID}}"
+                            placeholder="(empty to clear)"
+                            class="mt-1 w-full bg-dark-900 border border-dark-700 rounded px-2 py-1 text-gray-100 font-mono">
+                    </label>
+                    <label class="block">
+                        <span class="text-gray-400">Expires at (RFC3339)</span>
+                        <input name="firewall_expires_at" type="text" value="{{.FirewallExpiresAt}}"
+                            placeholder="e.g. 2026-12-31T23:59:59Z"
+                            class="mt-1 w-full bg-dark-900 border border-dark-700 rounded px-2 py-1 text-gray-100 font-mono">
+                    </label>
+                    <label class="block">
+                        <span class="text-gray-400">Permitted roles (CSV, empty = deny-all)</span>
+                        <input name="permitted_roles" type="text" value="{{.PermittedRolesCSV}}"
+                            placeholder="coder, analyst"
+                            class="mt-1 w-full bg-dark-900 border border-dark-700 rounded px-2 py-1 text-gray-100 font-mono">
+                    </label>
+                    <label class="block md:col-span-2">
+                        <span class="text-gray-400">Allowed purposes (CSV, empty = deny-all)</span>
+                        <input name="allowed_purposes" type="text" value="{{.AllowedPurposesCSV}}"
+                            placeholder="operational, audit_review"
+                            class="mt-1 w-full bg-dark-900 border border-dark-700 rounded px-2 py-1 text-gray-100 font-mono">
+                    </label>
+                </div>
+
+                <div class="flex items-center gap-3 pt-2">
+                    <button type="submit" class="bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium px-3 py-1.5 rounded">Save policy</button>
+                    <div id="policy-status" class="text-xs text-gray-400"></div>
+                </div>
+            </form>
+
+            <!-- Recent evaluations for this chunk -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-4 py-2 border-b border-dark-700 text-xs text-gray-500 uppercase tracking-wider">
+                    Recent evaluations for this chunk (last 30 days)
+                </div>
+                {{if not .RecentEvaluations}}
+                <div class="p-6 text-sm text-gray-500 text-center">No retrievals recorded for this chunk in the last 30 days.</div>
+                {{else}}
+                <table class="w-full text-xs">
+                    <thead class="bg-dark-900 text-gray-400 uppercase tracking-wider">
+                        <tr>
+                            <th class="px-3 py-2 text-left">When</th>
+                            <th class="px-3 py-2 text-left">Decision</th>
+                            <th class="px-3 py-2 text-left">Role / Purpose</th>
+                            <th class="px-3 py-2 text-left">Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-dark-700">
+                        {{range .RecentEvaluations}}
+                        <tr class="{{if .IsBlock}}bg-rose-950/20{{end}}">
+                            <td class="px-3 py-2 font-mono text-gray-400 whitespace-nowrap">{{.EvaluatedAt}}</td>
+                            <td class="px-3 py-2 font-mono {{if .IsBlock}}text-rose-300{{else}}text-emerald-300{{end}}">{{.Decision}}</td>
+                            <td class="px-3 py-2 text-gray-400">{{.RequestRole}} / {{.RequestPurpose}}</td>
+                            <td class="px-3 py-2 text-gray-400">{{.ReasonDetail}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+                {{end}}
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    <script>
+    // Vanilla fetch — no JS framework dep. Submits the policy
+    // form as a partial update (only non-empty fields land in
+    // the body so the API's "nil = leave untouched" semantic is
+    // respected; the sensitivity-tier select keeps an empty
+    // option for the "leave unchanged" path).
+    (function() {
+        const form = document.getElementById('policy-form');
+        const status = document.getElementById('policy-status');
+        if (!form) return;
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            status.textContent = 'Saving...';
+            status.className = 'text-xs text-gray-400';
+            const fd = new FormData(form);
+            const body = {};
+            // String fields — include only when the operator
+            // touched them. Empty value on the form means
+            // "clear the field" (the API's empty-pointer
+            // semantic); blank-and-unchanged is the only
+            // ambiguous case the v1 form can't express, but
+            // that's covered by the CLI's --json mode.
+            ['sensitivity_tier', 'tenant_id', 'firewall_expires_at',
+             'permitted_roles', 'allowed_purposes'].forEach(k => {
+                const v = fd.get(k);
+                if (v === null) return;
+                if (k === 'permitted_roles' || k === 'allowed_purposes') {
+                    body[k] = v.split(',').map(s => s.trim()).filter(s => s.length > 0);
+                } else {
+                    body[k] = v;
+                }
+            });
+            const chunkID = "{{.ChunkID}}";
+            try {
+                const resp = await fetch('/api/v1/admin/memory/policy/chunks/' + chunkID, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body),
+                    credentials: 'same-origin',
+                });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    status.textContent = 'Saved. New digest: ' + data.policy_digest.substring(0, 16) + '...';
+                    status.className = 'text-xs text-emerald-400';
+                } else {
+                    const txt = await resp.text();
+                    status.textContent = 'Failed (' + resp.status + '): ' + txt;
+                    status.className = 'text-xs text-rose-400';
+                }
+            } catch (err) {
+                status.textContent = 'Request failed: ' + err.message;
+                status.className = 'text-xs text-rose-400';
+            }
+        });
+    })();
+    </script>
+</body>
+</html>
+{{end}}

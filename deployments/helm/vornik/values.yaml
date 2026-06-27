@@ -1,0 +1,468 @@
+# vornik Helm chart — default values.
+#
+# Every block has a short explainer inline. Unset optional fields with
+# an empty string or `null` — don't delete keys; `helm upgrade --set ...`
+# relies on the key existing.
+
+# -----------------------------------------------------------------------
+# Image: the vornik daemon container built from deployments/docker/Dockerfile
+# -----------------------------------------------------------------------
+image:
+  repository: vornik
+  tag: ""            # defaults to .Chart.AppVersion at render time
+  pullPolicy: IfNotPresent
+  # pullSecrets: list of imagePullSecret references for private registries.
+  pullSecrets: []
+  # Example:
+  # pullSecrets:
+  #   - name: my-registry-creds
+
+# -----------------------------------------------------------------------
+# Agent image — used by vornik to spawn per-task agent containers.
+# Pre-built via `make build-agent` and pushed to the cluster's reachable
+# registry. This value ends up in the swarm role configs (configs/swarms)
+# as the image reference; the cluster must be able to pull it.
+# -----------------------------------------------------------------------
+agentImage:
+  repository: vornik-agent
+  tag: latest
+  # pullPolicy is respected by podman-in-pod via its own pull config.
+  pullPolicy: IfNotPresent
+
+# -----------------------------------------------------------------------
+# Runtime mode: how podman runs inside the vornik pod.
+#
+# privileged (default): securityContext.privileged: true + emptyDir at
+#   /var/lib/containers. Simplest path; works on any RKE2 node.
+#   Tradeoff: the container can do everything the kernel allows on the
+#   host namespace.
+#
+# host-socket: mount /run/podman/podman.sock from the host. Less privilege
+#   but couples the pod to the node that runs podman.service.
+#
+# rootless: experimental — not recommended for production yet.
+# -----------------------------------------------------------------------
+runtimeMode: privileged   # privileged | host-socket
+
+# When runtimeMode=host-socket, the socket path on the node.
+podmanHostSocket: /run/podman/podman.sock
+
+# -----------------------------------------------------------------------
+# Server / HTTP settings written into config.yaml
+# -----------------------------------------------------------------------
+server:
+  address: ":8080"
+  readTimeout: 30s
+  writeTimeout: 30s
+
+# -----------------------------------------------------------------------
+# API authentication. If you expose vornik beyond the cluster, set
+# api.authEnabled: true and put the keys into the secret as JSON array
+# (see secrets.apiKeys below).
+# -----------------------------------------------------------------------
+api:
+  authEnabled: true
+
+# -----------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------
+logging:
+  level: info       # debug | info | warn | error
+  format: json      # json | text
+
+# -----------------------------------------------------------------------
+# Scheduler defaults
+# -----------------------------------------------------------------------
+scheduler:
+  maxConcurrentTasks: 4
+  leaseTimeout: 5m
+
+# -----------------------------------------------------------------------
+# Metrics (Prometheus). /metrics is always exposed on the main API port;
+# set metrics.enabled: true to also bring up a dedicated metrics listener
+# on metrics.addr.
+# -----------------------------------------------------------------------
+metrics:
+  enabled: false
+  addr: ":9090"
+
+# -----------------------------------------------------------------------
+# Chat / dispatcher (the LLM used by the Telegram bot and the dispatcher).
+# Keys come from the secret below — these are the non-sensitive fields.
+#
+# provider picks the backend:
+#   "" / "http" / "openai" → OpenAI-compatible HTTP (needs endpoint + key)
+#   "claude-subscription"  → direct Messages API using the OAuth tokens
+#                            written by `claude login`. Project
+#                            ~/.claude/.credentials.json into the pod
+#                            (secret volume) or set CLAUDE_CODE_OAUTH_TOKEN.
+#                            No subprocess, native tool_use blocks.
+#   "claude-cli"           → deprecated; shells out to the `claude` CLI
+#                            inside the pod. Prefer claude-subscription.
+#                            The daemon image does NOT ship the CLI by
+#                            default; derive a custom image or project
+#                            an authenticated ~/.claude as a secret.
+#   "codex-cli"            → deprecated; shells out to `codex exec`.
+#                            Prefer the codex-subscription router
+#                            sub-provider when running against ChatGPT
+#                            plan-billed auth.
+#   "router"               → multi-provider dispatch by model prefix.
+#                            Default routes: claude-* →
+#                            claude-subscription (fallback claude-cli);
+#                            gpt-* / o3- / o4- / codex →
+#                            codex-subscription (fallback codex-cli);
+#                            gemini- / google/ → vertex (when enabled).
+#                            Configure each sub-provider via
+#                            extraConfig.chat.router (the chart doesn't
+#                            expand the router block as first-class
+#                            values yet). Vertex needs project_id,
+#                            location, api_key, and model — see the
+#                            chat provider section in the chart README.
+# -----------------------------------------------------------------------
+chat:
+  provider: "http"
+  endpoint: ""      # e.g. https://api.anthropic.com or http://ollama:11434/v1
+  model: ""         # e.g. claude-opus-4-7 or qwen.qwen3-coder-480b-a35b-v1:0
+  # cliBinary: ""   # absolute path to `claude` when provider=="claude-cli"
+  # apiKey is read from the secret (secrets.chatApiKey)
+
+# -----------------------------------------------------------------------
+# Agent LLM — the endpoint injected into agent containers. Falls back
+# to chat.* when empty.
+# -----------------------------------------------------------------------
+agentLLM:
+  endpoint: ""
+  model: ""
+  contextSize: 0
+  maxTokens: 0
+
+# -----------------------------------------------------------------------
+# Telegram bot (optional). Set enabled: false to skip the bot entirely.
+# -----------------------------------------------------------------------
+telegram:
+  enabled: false
+  # Token is pulled from the secret (secrets.telegramBotToken).
+
+# -----------------------------------------------------------------------
+# Memory / RAG (requires pgvector in the database, which the bundled
+# Postgres provides). Disable if you don't want embedding-based memory.
+# -----------------------------------------------------------------------
+memory:
+  enabled: false
+  embeddingEndpoint: ""
+  embeddingModel: ""
+  embeddingDimension: 1024
+
+  # Per-chunk topic labeller. Inline pass at ingest + 5-min background
+  # backfill loop. Display titles only — not load-bearing.
+  titler:
+    enabled: false
+    model: ""
+    timeoutSeconds: 30
+    maxPreviewBytes: 2048
+    # 0 → 5-minute default (loop runs unconditionally).
+    autoBackfillIntervalSeconds: 0
+    autoBackfillBatchSize: 25
+
+  # LLM content-class classifier. Picks one of {research, spec,
+  # decision, commit_msg, diagnostic, external_fetch, summary,
+  # unclassified} for chunks the deterministic role-map can't
+  # resolve. See docs/release-notes/2026.5.6.md for the two
+  # operating modes (auto-backfill loop vs inline at ingest).
+  classifier:
+    enabled: false
+    model: ""
+    timeoutSeconds: 30
+    maxPreviewBytes: 2048
+    # 0 disables the loop (operator-triggered backfill only).
+    # ≥300s recommended to keep the chat router's prompt cache warm.
+    autoBackfillIntervalSeconds: 0
+    autoBackfillBatchSize: 25
+    # Inline LLM call at ingest when role-map returns unclassified.
+    # Trades ingest latency for fresh class labels at write time.
+    inlineFallbackEnabled: false
+
+# -----------------------------------------------------------------------
+# Extra config.yaml fragment: merged verbatim into config.yaml at render
+# time. Useful for opaque sections we haven't templatised (retention,
+# tracing, custom runtime envvars). YAML is preserved as-is.
+# -----------------------------------------------------------------------
+extraConfig: {}
+#   retention:
+#     enabled: true
+#     interval: 6h
+#     task_llm_usage_days: 90
+#   runtime:
+#     userns_mode: "host"
+
+# -----------------------------------------------------------------------
+# Registry config — projects / swarms / workflows.
+#
+# The vornik registry (internal/registry) expects three subdirectories
+# inside VORNIK_CONFIGS_DIR: projects/, swarms/, workflows/. Kubernetes
+# ConfigMap keys can't contain slashes, so the chart creates THREE
+# ConfigMaps (one per subdir) and mounts each at its proper path.
+#
+# Keys under each map become filenames (".yaml" is appended), values
+# are the YAML body as a multi-line string.
+#
+# Keep content inline for small deployments; larger projects should
+# manage the three ConfigMaps out-of-band and point the chart at them
+# via registry.existing{Projects,Swarms,Workflows}ConfigMap.
+# -----------------------------------------------------------------------
+registry:
+  projects: {}
+  # projects:
+  #   dev:
+  #     |
+  #     id: dev
+  #     name: Development
+  #     swarm: dev-swarm
+  #     workflow: adaptive
+
+  swarms: {}
+  # swarms:
+  #   dev-swarm: |
+  #     id: dev-swarm
+  #     roles: []
+
+  workflows: {}
+  # workflows:
+  #   adaptive: |
+  #     workflowId: adaptive
+  #     entrypoint: plan
+  #     steps: {}
+
+  # Opt-out: point at ConfigMaps you manage yourself. When any of these
+  # is set, the corresponding inline `registry.{projects|swarms|workflows}`
+  # is ignored. The referenced ConfigMap keys must be .yaml-named (e.g.
+  # "dev.yaml") and mount directly under configs/<subdir>/.
+  existingProjectsConfigMap: ""
+  existingSwarmsConfigMap: ""
+  existingWorkflowsConfigMap: ""
+
+# pricing.yaml — shipped with vornik but you can override here. Leave
+# empty to use the repo-bundled configs/pricing.yaml baked into the image.
+pricing:
+  override: ""
+
+# -----------------------------------------------------------------------
+# Secrets: sensitive values mapped into a single Secret object. Either
+# provide them inline (convenient for first-install) or set
+# existingSecret to a Secret you manage out-of-band (recommended for
+# production — use Sealed Secrets / ExternalSecrets / Vault).
+# -----------------------------------------------------------------------
+secrets:
+  # When set, the chart does NOT create a Secret; it just references
+  # this name. The Secret must contain keys matching the rest of this
+  # block (dbPassword, chatApiKey, etc).
+  existingSecret: ""
+
+  # Inline values — only used when existingSecret is empty.
+  dbPassword: ""
+  chatApiKey: ""
+  agentLLMApiKey: ""       # falls back to chatApiKey when empty
+  embeddingApiKey: ""      # falls back to chatApiKey when empty
+  telegramBotToken: ""
+  apiKeys: ""              # JSON array string, e.g. '["k1","k2"]'
+
+# -----------------------------------------------------------------------
+# vornik persistent volume. Backs VORNIK_DATA_DIR (artifacts, tasks,
+# per-project workspaces). Size this generously — agent workspaces and
+# artifact retention can grow.
+# -----------------------------------------------------------------------
+persistence:
+  enabled: true
+  storageClass: ""         # "" = default StorageClass
+  size: 20Gi
+  accessModes:
+    - ReadWriteOnce
+
+# -----------------------------------------------------------------------
+# Resource requests / limits for the vornik pod. These are for the
+# DAEMON only, not the agent containers it spawns — agent resources are
+# set per-role in the swarm YAML. Defaults are modest; tune up for
+# busy clusters.
+# -----------------------------------------------------------------------
+resources:
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+  limits:
+    cpu: "2"
+    memory: "2Gi"
+
+# -----------------------------------------------------------------------
+# Service exposing vornik's HTTP API.
+# -----------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8080
+  metricsPort: 9090
+  annotations: {}
+
+# Optional: Ingress for the UI / API. Off by default — use
+# `kubectl port-forward` or set an Ingress controller up before turning
+# this on.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: vornik.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# -----------------------------------------------------------------------
+# Pod scheduling knobs
+# -----------------------------------------------------------------------
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Pod-level security context. The container running vornik must be
+# privileged when runtimeMode=privileged — that's set in the template,
+# not here.
+podSecurityContext: {}
+
+# -----------------------------------------------------------------------
+# ServiceAccount for the vornik pod. Not used by the daemon for k8s
+# API calls today (vornik has no k8s integration), but a dedicated SA
+# is still good practice for auditing and future PSP/PSS tightening.
+# -----------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""                 # empty → derived from release name
+  annotations: {}
+
+# -----------------------------------------------------------------------
+# Bundled Postgres (pgvector/pgvector:pg16)
+#
+# When postgres.enabled: true, the chart creates a StatefulSet for
+# Postgres using the pgvector image. vornik's migrations create the
+# `vector` extension on first run.
+#
+# For production, you may want to run Postgres outside the chart (as a
+# managed service or a dedicated operator). Set postgres.enabled: false
+# and fill database.host to point vornik at the external DB.
+# -----------------------------------------------------------------------
+postgres:
+  enabled: true
+  image:
+    repository: pgvector/pgvector
+    tag: pg16
+    pullPolicy: IfNotPresent
+  # Database / user created by the postgres image on first boot.
+  auth:
+    database: vornik
+    username: vornik
+    # Password comes from secrets.dbPassword (same secret the daemon uses).
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 10Gi
+    accessModes:
+      - ReadWriteOnce
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+  service:
+    port: 5432
+
+# When postgres.enabled is false, the daemon needs to know where the
+# external DB is. These fields land in config.yaml verbatim.
+database:
+  host: ""         # required when postgres.enabled=false
+  port: 5432
+  name: vornik
+  user: vornik
+  sslmode: disable
+
+# -----------------------------------------------------------------------
+# Cluster mode: opt-in per-role specialization.
+#
+# DEFAULT cluster.enabled: false → the chart renders EXACTLY today's
+# single all-in-one StatefulSet. Existing users upgrade with zero change.
+#
+# Set cluster.enabled: true to render three independent workloads
+# (ui Deployment, worker StatefulSet, webhook Deployment) instead of the
+# single "all" StatefulSet. Each tier uses the image appropriate for its
+# role (thin vs full) and has its own ConfigMap + Service.
+#
+# Prerequisites:
+#   - Build and push both images:
+#       make docker-build-full  → <repo>:<tag>         (podman, worker/all)
+#       make docker-build-thin  → <repo>:<tag>-thin     (podman-free, ui/webhook)
+#   - Generate the internal mTLS bundle for the DMZ relay seam (the chart
+#     does NOT generate certificates). Use the provided script or any
+#     internal CA:
+#       deployments/podman/gen-cluster-certs.sh \
+#           --secret vornik-relay-mtls --namespace vornik
+#     The resulting Secret must contain:
+#       ca.crt          — internal CA certificate (PEM)
+#       server.crt      — worker relay-ingress server certificate (PEM)
+#       server.key      — worker relay-ingress server key (PEM)
+#       client.crt      — webhook relay client certificate (PEM)
+#       client.key      — webhook relay client key (PEM)
+#     Reference it via cluster.mtls.secretName.
+# -----------------------------------------------------------------------
+cluster:
+  enabled: false
+
+  # Thin image (podman-free) used by ui and webhook tiers.
+  # Defaults to the same repository as image.repository with a "-thin"
+  # tag suffix (e.g. "vornik:2026.4.20-thin"). Override both fields to
+  # use a separate repository or an explicit tag.
+  thinImage:
+    repository: ""   # empty → same as image.repository
+    tag: ""          # empty → <appVersion>-thin
+
+  ui:
+    enabled: true
+    replicas: 2
+    # Resource requests/limits for the ui pods. Defaults match the
+    # main vornik daemon — tune down for stateless read-only nodes.
+    resources: {}
+    # nodeSelector/tolerations/affinity for the ui tier.
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+  worker:
+    enabled: true
+    replicas: 2
+    # Resources for the worker (full-image) pods. Defaults to the
+    # top-level resources block (same as today's single StatefulSet).
+    resources: {}
+    # nodeSelector/tolerations/affinity for the worker tier.
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+  webhook:
+    enabled: true
+    replicas: 2
+    # relayUpstream: the mTLS relay endpoint on the worker service.
+    # Empty → auto-derived as https://<release>-vornik-worker:8443
+    # Set explicitly if your worker Service has a custom name or port.
+    relayUpstream: ""
+    # Resources for the webhook pods.
+    resources: {}
+    # nodeSelector/tolerations/affinity for the webhook tier.
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+
+  # mTLS bundle for the DMZ relay seam.
+  # cluster.mtls.secretName is REQUIRED when cluster.enabled=true and
+  # both worker and webhook are enabled. The chart does NOT create or
+  # modify this Secret — the operator must provide it.
+  # Expected keys: ca.crt, server.crt, server.key, client.crt, client.key.
+  mtls:
+    secretName: ""   # e.g. vornik-relay-mtls

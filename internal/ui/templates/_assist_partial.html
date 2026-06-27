@@ -1,0 +1,251 @@
+{{/*
+  AI Assist controls — shared partial rendered next to each
+  editable prompt textarea (swarm role systemPrompts, workflow
+  agent-step prompts). Phase 2 v1 of the web-authoring UX work.
+
+  Expected context object shape (anonymous):
+    Kind          string  — assistantKind constant ("swarm_role" / "workflow_step")
+    TargetID      string  — owning swarm or workflow id
+    SubjectID     string  — role or step id being edited
+    PromptFieldID string  — DOM id of the textarea to populate on Apply
+    PanelID       string  — unique DOM id for the suggestion panel container
+
+  The buttons emit `data-assist-*` attributes the page-level
+  vornikAssist() JS reads to build the POST. Apply / Discard
+  buttons inside the panel are wired by the same JS — they live
+  inside #PanelID-result which is hidden until a suggestion
+  arrives.
+*/}}
+{{define "assistPanel"}}
+<div class="space-y-2">
+    <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[10px] uppercase tracking-wide text-gray-500">AI Assist:</span>
+        <button type="button"
+                class="px-2 py-1 text-[11px] rounded bg-brand-600/20 text-brand-300 border border-brand-500/30 hover:bg-brand-600/30"
+                data-assist-action="draft"
+                data-assist-kind="{{.Kind}}"
+                data-assist-target="{{.TargetID}}"
+                data-assist-subject="{{.SubjectID}}"
+                data-assist-panel="{{.PanelID}}"
+                data-assist-field="{{.PromptFieldID}}">
+            Draft
+        </button>
+        <button type="button"
+                class="px-2 py-1 text-[11px] rounded bg-dark-700/70 text-gray-300 border border-dark-700 hover:bg-dark-600"
+                data-assist-action="critique"
+                data-assist-kind="{{.Kind}}"
+                data-assist-target="{{.TargetID}}"
+                data-assist-subject="{{.SubjectID}}"
+                data-assist-panel="{{.PanelID}}"
+                data-assist-field="{{.PromptFieldID}}">
+            Critique
+        </button>
+        <button type="button"
+                class="px-2 py-1 text-[11px] rounded bg-dark-700/70 text-gray-300 border border-dark-700 hover:bg-dark-600"
+                data-assist-action="tighten"
+                data-assist-kind="{{.Kind}}"
+                data-assist-target="{{.TargetID}}"
+                data-assist-subject="{{.SubjectID}}"
+                data-assist-panel="{{.PanelID}}"
+                data-assist-field="{{.PromptFieldID}}">
+            Tighten
+        </button>
+        <button type="button"
+                class="px-2 py-1 text-[11px] rounded bg-dark-700/70 text-gray-300 border border-dark-700 hover:bg-dark-600"
+                data-assist-action="expand"
+                data-assist-kind="{{.Kind}}"
+                data-assist-target="{{.TargetID}}"
+                data-assist-subject="{{.SubjectID}}"
+                data-assist-panel="{{.PanelID}}"
+                data-assist-field="{{.PromptFieldID}}">
+            Expand
+        </button>
+        <button type="button"
+                class="px-2 py-1 text-[11px] rounded bg-dark-700/70 text-gray-300 border border-dark-700 hover:bg-dark-600"
+                data-assist-action="conflicts"
+                data-assist-kind="{{.Kind}}"
+                data-assist-target="{{.TargetID}}"
+                data-assist-subject="{{.SubjectID}}"
+                data-assist-panel="{{.PanelID}}"
+                data-assist-field="{{.PromptFieldID}}">
+            Conflicts
+        </button>
+        <span id="{{.PanelID}}-status" class="text-[11px] text-gray-500 italic" role="status" aria-live="polite"></span>
+    </div>
+    <div id="{{.PanelID}}-result" class="hidden rounded-md border border-dark-700 bg-dark-900/70 p-3 space-y-2">
+        <div class="flex items-center justify-between gap-2">
+            <span class="text-[10px] uppercase tracking-wide text-brand-300" data-assist-action-label></span>
+            <span class="text-[10px] text-gray-500 font-mono" data-assist-model-label></span>
+        </div>
+        <textarea readonly rows="8" data-assist-output
+                  class="w-full px-3 py-2 text-xs rounded bg-dark-800 border border-dark-700 text-gray-200 font-mono leading-6"></textarea>
+        <div data-assist-diff class="hidden grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+                <div class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Current</div>
+                <textarea readonly rows="8" data-assist-diff-current
+                          class="w-full px-3 py-2 text-xs rounded bg-dark-800 border border-dark-700 text-gray-300 font-mono leading-6"></textarea>
+            </div>
+            <div>
+                <div class="text-[10px] uppercase tracking-wide text-brand-300 mb-1">Suggested</div>
+                <textarea readonly rows="8" data-assist-diff-suggestion
+                          class="w-full px-3 py-2 text-xs rounded bg-dark-800 border border-dark-700 text-gray-200 font-mono leading-6"></textarea>
+            </div>
+        </div>
+        <div class="flex items-center justify-end gap-2">
+            <button type="button" data-assist-toggle-diff
+                    class="px-2 py-1 text-[11px] rounded bg-dark-700 text-gray-300 hover:bg-dark-600">Diff</button>
+            <button type="button" data-assist-discard
+                    class="px-2 py-1 text-[11px] rounded bg-dark-700 text-gray-300 hover:bg-dark-600">Discard</button>
+            <button type="button" data-assist-apply
+                    class="px-2 py-1 text-[11px] rounded bg-brand-600 text-white hover:bg-brand-500">Apply to field</button>
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{/*
+  The page-level JS that wires every {{template "assistPanel" …}}
+  emitted on the page. Stick this once near the bottom of the
+  swarm + workflow editor templates. Plain DOM + fetch — no
+  framework. Apply only fills the textarea; the operator still
+  has to click Save on the form for changes to land on disk
+  (matches the LLD's "assistant never silently overwrites" rule).
+*/}}
+{{define "assistScript"}}
+<script>
+(function () {
+    function el(id) { return document.getElementById(id); }
+    function setStatus(panelId, text) {
+        var s = el(panelId + '-status');
+        if (s) s.textContent = text || '';
+    }
+    function showResult(panelId, action, suggestion, model, err, currentValue) {
+        var box = el(panelId + '-result');
+        var out = box.querySelector('[data-assist-output]');
+        var actionLabel = box.querySelector('[data-assist-action-label]');
+        var modelLabel = box.querySelector('[data-assist-model-label]');
+        var diffBox = box.querySelector('[data-assist-diff]');
+        var diffCurrent = box.querySelector('[data-assist-diff-current]');
+        var diffSuggestion = box.querySelector('[data-assist-diff-suggestion]');
+        var applyBtn = box.querySelector('[data-assist-apply]');
+        var diffBtn = box.querySelector('[data-assist-toggle-diff]');
+        actionLabel.textContent = action;
+        modelLabel.textContent = model || '';
+        // Reset diff state on every show.
+        diffBox.classList.add('hidden');
+        out.classList.remove('hidden');
+        diffBtn.textContent = 'Diff';
+        if (err) {
+            out.value = 'Error: ' + err;
+            applyBtn.disabled = true;
+            diffBtn.disabled = true;
+        } else {
+            out.value = suggestion;
+            diffCurrent.value = currentValue || '';
+            diffSuggestion.value = suggestion;
+            applyBtn.disabled = false;
+            diffBtn.disabled = false;
+            // Conflicts mode is advisory — Apply doesn't make
+            // sense, gray it out.
+            if (action === 'conflicts') {
+                applyBtn.disabled = true;
+            }
+        }
+        box.classList.remove('hidden');
+    }
+    function hideResult(panelId) {
+        var box = el(panelId + '-result');
+        if (box) box.classList.add('hidden');
+    }
+    function applyTo(fieldId, panelId) {
+        var field = el(fieldId);
+        var box = el(panelId + '-result');
+        if (!field || !box) return;
+        var out = box.querySelector('[data-assist-output]');
+        field.value = out.value;
+        hideResult(panelId);
+    }
+    document.addEventListener('click', function (ev) {
+        var t = ev.target;
+        if (!(t instanceof HTMLElement)) return;
+        if (t.hasAttribute('data-assist-action')) {
+            ev.preventDefault();
+            var action = t.getAttribute('data-assist-action');
+            var kind = t.getAttribute('data-assist-kind');
+            var target = t.getAttribute('data-assist-target');
+            var subject = t.getAttribute('data-assist-subject');
+            var panelId = t.getAttribute('data-assist-panel');
+            var fieldId = t.getAttribute('data-assist-field');
+            var projectId = document.body.getAttribute('data-assist-project') || '';
+            var field = el(fieldId);
+            var currentValue = field ? field.value : '';
+            setStatus(panelId, 'thinking…');
+            hideResult(panelId);
+            var body = new URLSearchParams({
+                kind: kind,
+                projectId: projectId,
+                targetId: target,
+                subjectId: subject,
+                action: action,
+                currentValue: currentValue
+            }).toString();
+            fetch('/ui/assistant/draft', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: body
+            }).then(function (r) {
+                return r.json().then(function (j) { return { status: r.status, json: j }; });
+            }).then(function (res) {
+                setStatus(panelId, '');
+                if (res.status !== 200) {
+                    showResult(panelId, action, '', res.json.model || '', res.json.error || ('HTTP ' + res.status), currentValue);
+                } else {
+                    showResult(panelId, action, res.json.suggestion || '', res.json.model || '', '', currentValue);
+                }
+            }).catch(function (e) {
+                setStatus(panelId, '');
+                showResult(panelId, action, '', '', String(e), currentValue);
+            });
+            return;
+        }
+        if (t.hasAttribute('data-assist-toggle-diff')) {
+            ev.preventDefault();
+            var box3 = t.closest('[id$="-result"]');
+            if (!box3) return;
+            var out3 = box3.querySelector('[data-assist-output]');
+            var diff3 = box3.querySelector('[data-assist-diff]');
+            var hidden = diff3.classList.contains('hidden');
+            if (hidden) {
+                diff3.classList.remove('hidden');
+                out3.classList.add('hidden');
+                t.textContent = 'Hide diff';
+            } else {
+                diff3.classList.add('hidden');
+                out3.classList.remove('hidden');
+                t.textContent = 'Diff';
+            }
+            return;
+        }
+        if (t.hasAttribute('data-assist-discard')) {
+            ev.preventDefault();
+            var box = t.closest('[id$="-result"]');
+            if (box && box.id) hideResult(box.id.replace(/-result$/, ''));
+            return;
+        }
+        if (t.hasAttribute('data-assist-apply')) {
+            ev.preventDefault();
+            var box2 = t.closest('[id$="-result"]');
+            if (!box2) return;
+            var panelId2 = box2.id.replace(/-result$/, '');
+            var fieldId2 = '';
+            // Discover the field id by scanning the buttons that
+            // share this panel — they all carry data-assist-field.
+            var sibling = document.querySelector('[data-assist-panel="' + panelId2 + '"][data-assist-field]');
+            if (sibling) fieldId2 = sibling.getAttribute('data-assist-field');
+            applyTo(fieldId2, panelId2);
+            return;
+        }
+    });
+})();
+</script>
+{{end}}

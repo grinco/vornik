@@ -1,0 +1,54 @@
+projectId: "{{.projectId}}"
+displayName: "{{.displayName}}"
+swarmId: "{{.projectId}}-swarm"
+defaultWorkflowId: "adaptive"
+adaptiveCandidateWorkflows:
+  - research
+
+defaultPriority: 30
+maxConcurrentTasks: 1
+
+autonomy:
+  enabled: true
+  goal: |
+    Track and summarise: {{.topic}}.
+
+    On every autonomy invocation:
+      1. Check project memory for the most recent summary of this topic.
+      2. If the last summary is fresher than the configured cadence,
+         emit NO_ACTION and stop.
+      3. Otherwise, research {{.topic}} for new developments since the
+         last summary, write a concise digest to artifacts/out/digest.md,
+         and store the digest in project memory.
+
+    Keep digests scannable — bullet lists, not paragraphs.
+  mode: llm
+  pollInterval: "{{.interval}}"
+  maxTasksPerHour: 1
+  allowedTaskTypes:
+    - "research"
+    - "summary"
+
+permissions:
+  secrets: []
+  allowedTools:
+    - "current_time"
+    - "file_read"
+    - "file_write"
+    - "file_edit"
+    - "read_many_files"
+    - "grep"
+    - "glob"
+    - "memory_search"
+
+# Policy-Aware Memory Firewall (2026.5.9+). News-feed projects
+# fetch from public web sources — chunks land Public sensitivity
+# by default. Advisory mode (inherited from daemon default) is
+# the right shape: the operator sees PolicyWarning strings on
+# any anomalous chunk (e.g. a fetched page that smuggles a
+# credential pattern through the classifier) without breaking
+# the autonomy loop.
+#
+# Values: off / advisory (default) / enforce.
+firewall:
+  mode: ""  # inherit daemon default

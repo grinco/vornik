@@ -1,0 +1,191 @@
+{{define "project_keys.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">API Keys</h1>
+                    <p class="text-xs text-gray-500 font-mono mt-1">{{.ProjectID}}</p>
+                </div>
+                <a href="/ui/projects/{{.ProjectID}}" class="flex items-center gap-1 text-gray-500 hover:text-gray-300 text-sm transition-colors">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                    Project
+                </a>
+            </div>
+
+            <p class="text-sm text-gray-400 max-w-2xl">
+                DB-backed bearer tokens scoped to <span class="font-mono text-gray-300">{{.ProjectID}}</span>.
+                The token's bound project is the authoritative cost-row target — header overrides are
+                ignored. Secrets are stored as sha256 hashes; the daemon cannot recover a raw key after creation.
+            </p>
+
+            {{if .Success}}
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{{.Success}}</div>
+            {{end}}
+            {{if .Error}}
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            {{end}}
+
+            {{if .NewSecret}}
+            <div class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-4 text-sm space-y-2">
+                <div class="text-amber-100 font-semibold">Secret — shown once. Copy it now.</div>
+                <code class="block bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs font-mono break-all text-amber-200">{{.NewSecret}}</code>
+                <div class="text-xs text-amber-200/70">
+                    Use as <code class="font-mono">Authorization: Bearer &lt;secret&gt;</code> or <code class="font-mono">X-API-Key: &lt;secret&gt;</code>.
+                    Refresh this page to clear the secret from your screen.
+                </div>
+            </div>
+            {{end}}
+
+            <section class="rounded-lg border border-dark-700 bg-dark-800/40 p-4 space-y-3">
+                <h2 class="text-sm font-semibold text-gray-200">Create a new key</h2>
+                <form method="POST" action="/ui/projects/{{.ProjectID}}/keys" class="flex flex-wrap items-end gap-3">
+                    <input type="hidden" name="action" value="create"/>
+                    <div class="flex-1 min-w-[16rem]">
+                        <label for="keyName" class="block text-xs font-medium text-gray-300 mb-1.5">Name</label>
+                        <input type="text" name="name" id="keyName" required maxlength="128"
+                               placeholder="e.g. home-assistant, ci-pipeline"
+                               class="w-full rounded-md border border-dark-600 bg-dark-950 px-3 py-2 text-sm text-gray-100 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500"/>
+                    </div>
+                    <button type="submit"
+                            class="rounded-md bg-brand-500 hover:bg-brand-400 text-white text-sm font-medium px-4 py-2 transition-colors">
+                        Mint key
+                    </button>
+                </form>
+            </section>
+
+            <section class="rounded-lg border border-dark-700 bg-dark-800/40">
+                <header class="px-4 py-3 border-b border-dark-700 flex items-center justify-between gap-3 flex-wrap">
+                    <h2 class="text-sm font-semibold text-gray-200">Existing keys</h2>
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs text-gray-500">{{.Paginator.Total}} {{if eq .Status "active"}}active{{else}}total{{end}}</span>
+                        <nav class="flex items-center gap-1 text-xs">
+                            <a href="/ui/projects/{{.ProjectID}}/keys?status=active"
+                               class="tap px-2 py-1 rounded-md border {{if eq .Status "active"}}border-accent-500 text-accent-300{{else}}border-dark-700 text-gray-400 hover:border-dark-600{{end}}">Active</a>
+                            <a href="/ui/projects/{{.ProjectID}}/keys?status=all"
+                               class="tap px-2 py-1 rounded-md border {{if eq .Status "all"}}border-accent-500 text-accent-300{{else}}border-dark-700 text-gray-400 hover:border-dark-600{{end}}">All</a>
+                        </nav>
+                    </div>
+                </header>
+                {{if .Keys}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-xs font-mono">
+                        <thead class="text-left text-gray-400 border-b border-dark-700">
+                            <tr>
+                                <th scope="col" class="px-4 py-2 font-medium">Name</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Prefix</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Created</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Last used</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Expires</th>
+                                <th scope="col" class="px-4 py-2 font-medium" title="Configured per-API-key throttle from the api_keys row. Buckets are leaky tokens at the configured RPS rate, capped at the burst.">Limit</th>
+                                <th scope="col" class="px-4 py-2 font-medium" title="Live bucket level from the in-process APIKeyLimiter. Counts down as the key issues requests; refills at the configured RPS.">Headroom</th>
+                                <th scope="col" class="px-4 py-2 font-medium" title="Whether this key may push to the git-over-HTTPS workspace endpoint.">Git push</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Status</th>
+                                <th scope="col" class="px-4 py-2 font-medium text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {{range .Keys}}
+                            <tr class="border-b border-dark-700/50 {{if eq .Status "revoked"}}text-gray-600{{else}}text-gray-200{{end}}">
+                                <td class="px-4 py-2 whitespace-nowrap">{{.Name}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap">{{.Prefix}}…</td>
+                                <td class="px-4 py-2 whitespace-nowrap">{{.Created}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap">{{.LastUsed}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap">{{.Expires}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap">
+                                    {{if .RateLimited}}
+                                        <span class="text-amber-300">{{.RateLimitRPS}}/s · burst {{.RateLimitBurst}}</span>
+                                    {{else}}
+                                        <span class="text-gray-600">unlimited</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap" title="{{if ne .LastRefillAgo "—"}}refilled {{.LastRefillAgo}}{{end}}">
+                                    {{if .RateLimited}}
+                                        <span class="{{if eq .TokensRemaining "—"}}text-gray-500{{else}}text-gray-300{{end}}">{{.TokensRemaining}}</span>
+                                    {{else}}
+                                        <span class="text-gray-600">—</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap">
+                                    {{if eq .Status "active"}}
+                                        {{if .AllowPush}}
+                                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-emerald-900/30 text-emerald-300" title="This key may push to the git-over-HTTPS workspace.">push enabled</span>
+                                        {{else}}
+                                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-gray-800 text-gray-400" title="This key is read-only: clone/fetch allowed, push refused.">push disabled</span>
+                                        {{end}}
+                                    {{else}}
+                                        <span class="text-gray-700">—</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap">
+                                    {{if eq .Status "revoked"}}
+                                        <span class="text-red-300/80">revoked</span>
+                                    {{else}}
+                                        <span class="text-emerald-300">active</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap text-right">
+                                    {{if eq .Status "active"}}
+                                    {{if .AllowPush}}
+                                    <form method="POST" action="/ui/projects/{{$.ProjectID}}/keys" class="inline">
+                                        <input type="hidden" name="action" value="disable-push"/>
+                                        <input type="hidden" name="key_id" value="{{.ID}}"/>
+                                        <button type="submit"
+                                                class="text-xs text-sky-300 hover:text-sky-200 px-2 py-1 rounded transition-colors"
+                                                title="Make this key read-only (clone/fetch only; push refused)">
+                                            Disable push
+                                        </button>
+                                    </form>
+                                    {{else}}
+                                    <form method="POST" action="/ui/projects/{{$.ProjectID}}/keys" class="inline">
+                                        <input type="hidden" name="action" value="enable-push"/>
+                                        <input type="hidden" name="key_id" value="{{.ID}}"/>
+                                        <button type="submit"
+                                                class="text-xs text-sky-300 hover:text-sky-200 px-2 py-1 rounded transition-colors"
+                                                title="Allow this key to push to the git-over-HTTPS workspace">
+                                            Enable push
+                                        </button>
+                                    </form>
+                                    {{end}}
+                                    <form method="POST" action="/ui/projects/{{$.ProjectID}}/keys" class="inline">
+                                        <input type="hidden" name="action" value="rotate"/>
+                                        <input type="hidden" name="key_id" value="{{.ID}}"/>
+                                        <button type="submit"
+                                                class="text-xs text-amber-300 hover:text-amber-200 px-2 py-1 rounded transition-colors"
+                                                onclick="return confirm('Rotate {{.Name}}? The old key will be revoked.');">
+                                            rotate
+                                        </button>
+                                    </form>
+                                    <form method="POST" action="/ui/projects/{{$.ProjectID}}/keys" class="inline">
+                                        <input type="hidden" name="action" value="revoke"/>
+                                        <input type="hidden" name="key_id" value="{{.ID}}"/>
+                                        <button type="submit"
+                                                class="text-xs text-red-300 hover:text-red-200 px-2 py-1 rounded transition-colors"
+                                                onclick="return confirm('Revoke {{.Name}}? Cannot be undone.');">
+                                            revoke
+                                        </button>
+                                    </form>
+                                    {{end}}
+                                </td>
+                            </tr>
+                        {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="px-4 pb-3">{{template "pagination" .Paginator}}</div>
+                {{else}}
+                <div class="px-4 py-6 text-sm text-gray-500">{{if eq .Status "active"}}No active keys. Mint one above, or view <a href="/ui/projects/{{.ProjectID}}/keys?status=all" class="text-accent-300 hover:underline">all keys</a>.{{else}}No keys yet. Mint one above.{{end}}</div>
+                {{end}}
+            </section>
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

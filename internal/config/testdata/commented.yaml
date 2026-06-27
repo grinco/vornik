@@ -1,0 +1,7 @@
+# top comment
+instinct:
+  enabled: true
+  # consumers block
+  consumers:
+    failure_playbooks: true   # inline comment
+    application_feedback: false

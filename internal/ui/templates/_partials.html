@@ -1,0 +1,1694 @@
+{{/* Shared partials reused across pages. Naming uses camelCase to match
+     the existing taskStatusBadge / executionStatusBadge convention. */}}
+
+{{define "pageHead"}}
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    {{/* theme-color drives the mobile browser address-bar tint and the
+         PWA title-bar accent. Updated at runtime by the theme-picker
+         JS below so it tracks the operator's choice. The initial value
+         is the dark-theme brand-500 (EaseIT blue) since dark is the
+         default theme; the early script will overwrite this before
+         first paint if a light-theme preference is saved/system-set. */}}
+    <meta name="theme-color" content="#0078C3">
+    {{/* color-scheme is also set by the active palette's `color-scheme`
+         CSS property in :root/[data-theme=dark], which the browser
+         honours over this meta when the page is loaded. We keep the
+         meta for early-paint sanity (between HTML parse and CSSOM
+         build the browser may peek at the meta). */}}
+    <meta name="color-scheme" content="light dark">
+    <script>
+        // EARLY-PAINT THEME RESOLVER.
+        // Runs synchronously before the body parses so the data-theme
+        // attribute is set on <html> before Tailwind's CSS variables
+        // resolve — eliminates the "flash of wrong theme" on reload.
+        // Precedence:
+        //   1. localStorage['vornik:theme']  (operator's explicit pick)
+        //   2. prefers-color-scheme: dark    (system preference)
+        //   3. light                          (default)
+        (function () {
+            try {
+                var saved = localStorage.getItem('vornik:theme');
+                // Dark is the default (UI refresh 2026-06-08): honour an
+                // explicit saved pick first, then an explicit system LIGHT
+                // preference; otherwise fall through to dark.
+                var theme = saved
+                    || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+                document.documentElement.setAttribute('data-theme', theme);
+                // Sync the address-bar tint with the chosen theme.
+                // Light-theme brand-500 = #558A98 cadet teal.
+                // Dark-theme  brand-500 = #0078C3 EaseIT blue.
+                var meta = document.querySelector('meta[name="theme-color"]');
+                if (meta) meta.setAttribute('content', theme === 'dark' ? '#0078C3' : '#558A98');
+            } catch (e) {
+                // localStorage unavailable (Safari private mode, etc.) —
+                // fall through to default light theme via :root.
+            }
+        })();
+    </script>
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    {{/* Type system (UI design elevation): Bricolage Grotesque (display) +
+         Hanken Grotesk (UI/body) + JetBrains Mono (IDs, costs, hashes).
+         Distinctive, not the system-ui default. Same CDN tier as Tailwind;
+         falls back to system fonts offline. */}}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="manifest" href="/ui/static/manifest.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="/ui/static/icon.svg">
+    <link rel="icon" type="image/x-icon" href="/ui/static/favicon.ico">
+    <link rel="apple-touch-icon" sizes="180x180" href="/ui/static/apple-touch-icon.png">
+    <title>{{.Title}} - Vornik</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    {{/* HTMX is vendored under /ui/static/ so the dashboard works offline
+         and the CDN can't break the UI. Tailwind stays on the CDN — a
+         self-hosted build needs a node toolchain we don't ship. */}}
+    <script src="/ui/static/htmx.min.js"></script>
+    <script src="/ui/static/htmx-ext-sse.js"></script>
+    <script>
+      // Phase 42 — register the service worker once per page load.
+      // The SW serves the offline shell + caches static assets;
+      // it never serves stale data (API requests fall through to
+      // network). Best-effort: registration failure logs but
+      // doesn't break the UI.
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+          navigator.serviceWorker.register('/ui/static/sw.js', { scope: '/ui/' })
+            .catch(function(err) { console.warn('SW register failed:', err); });
+        });
+      }
+    </script>
+    <script>
+        // Two themes live in the same page, switched at runtime by
+        // setting `data-theme="light"` or `data-theme="dark"` on
+        // <html>. Token values are CSS custom properties (defined in
+        // the inline <style> block below) so a single attribute flip
+        // re-paints every surface, accent, and text colour without
+        // touching the rendered markup.
+        //
+        // Themes:
+        //   light  — Coolors palette
+        //            (https://coolors.co/ffcab1-69a2b0-659157-a1c084-e05263).
+        //            Cadet teal brand, forest accent, warm off-white
+        //            surfaces, dark ink. Default for new operators.
+        //   dark   — EaseIT brand palette on Nord-inspired cool-gray
+        //            surfaces. Saturated EaseIT blue + lime green
+        //            accents on a charcoal floor.
+        //
+        // Conventions baked into the token system:
+        //   * `dark-*` tokens are the SURFACE tier scale (page, card,
+        //     raised, border). The name is preserved for historical
+        //     reasons — it does NOT mean "dark colour".
+        //   * `gray-*` tokens are the INK tier. gray-100 = primary
+        //     text, gray-600 = disabled. Whether that maps to a
+        //     bright or dark hex value depends on the active theme.
+        //   * Status colours (amber=warning, rose=error, emerald=
+        //     success, violet=token-info, purple=paused) remain
+        //     Tailwind defaults — they are semantic signals, not
+        //     brand identity, and operators learn them once.
+        tailwind.config = {
+            // Wire `dark:` variants to our data-theme attribute so
+            // class strings like `text-brand-700 dark:text-brand-300`
+            // resolve based on the operator's theme choice (not the
+            // OS preference, which Tailwind's default 'media' mode
+            // would lock us into).
+            darkMode: ['selector', '[data-theme="dark"]'],
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"Hanken Grotesk"', 'system-ui', '-apple-system', 'sans-serif'],
+                        display: ['"Bricolage Grotesque"', 'system-ui', 'sans-serif'],
+                        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+                    },
+                    colors: {
+                        // Surface tiers (page → card → raised → border).
+                        dark: {
+                            900: 'rgb(var(--surface-900) / <alpha-value>)',
+                            800: 'rgb(var(--surface-800) / <alpha-value>)',
+                            700: 'rgb(var(--surface-700) / <alpha-value>)',
+                            600: 'rgb(var(--surface-600) / <alpha-value>)'
+                        },
+                        // Ink tier (semantically: 100 = primary text,
+                        // 600 = disabled). Tailwind's `gray` is the
+                        // most-used class family in the templates, so
+                        // overriding it lets every existing text-gray-*
+                        // use participate in theming without a sed.
+                        gray: {
+                            100: 'rgb(var(--ink-100) / <alpha-value>)',
+                            200: 'rgb(var(--ink-200) / <alpha-value>)',
+                            300: 'rgb(var(--ink-300) / <alpha-value>)',
+                            400: 'rgb(var(--ink-400) / <alpha-value>)',
+                            500: 'rgb(var(--ink-500) / <alpha-value>)',
+                            600: 'rgb(var(--ink-600) / <alpha-value>)',
+                            700: 'rgb(var(--ink-700) / <alpha-value>)',
+                            800: 'rgb(var(--ink-800) / <alpha-value>)',
+                            900: 'rgb(var(--ink-900) / <alpha-value>)'
+                        },
+                        // Explicit semantic aliases (ui-per-page-polish).
+                        // `surface` == the --surface-* tier (SAME vars as
+                        // `dark` above); `ink` == the --ink-* tier (SAME
+                        // vars as `gray`). Registered so the clearer
+                        // `bg-surface-*` / `text-ink-*` class names actually
+                        // resolve under the Tailwind CDN JIT. The four
+                        // re-tiered pages (dashboard/task_detail/
+                        // project_detail/execution) use these names; the rest
+                        // of the templates still use dark/gray (identical
+                        // vars). MUST stay in sync with the dark/gray blocks.
+                        surface: {
+                            900: 'rgb(var(--surface-900) / <alpha-value>)',
+                            800: 'rgb(var(--surface-800) / <alpha-value>)',
+                            700: 'rgb(var(--surface-700) / <alpha-value>)',
+                            600: 'rgb(var(--surface-600) / <alpha-value>)'
+                        },
+                        ink: {
+                            100: 'rgb(var(--ink-100) / <alpha-value>)',
+                            200: 'rgb(var(--ink-200) / <alpha-value>)',
+                            300: 'rgb(var(--ink-300) / <alpha-value>)',
+                            400: 'rgb(var(--ink-400) / <alpha-value>)',
+                            500: 'rgb(var(--ink-500) / <alpha-value>)',
+                            600: 'rgb(var(--ink-600) / <alpha-value>)',
+                            700: 'rgb(var(--ink-700) / <alpha-value>)',
+                            800: 'rgb(var(--ink-800) / <alpha-value>)',
+                            900: 'rgb(var(--ink-900) / <alpha-value>)'
+                        },
+                        // Primary brand — varies per theme.
+                        brand: {
+                            50:  'rgb(var(--brand-50) / <alpha-value>)',
+                            100: 'rgb(var(--brand-100) / <alpha-value>)',
+                            200: 'rgb(var(--brand-200) / <alpha-value>)',
+                            300: 'rgb(var(--brand-300) / <alpha-value>)',
+                            400: 'rgb(var(--brand-400) / <alpha-value>)',
+                            500: 'rgb(var(--brand-500) / <alpha-value>)',
+                            600: 'rgb(var(--brand-600) / <alpha-value>)',
+                            700: 'rgb(var(--brand-700) / <alpha-value>)',
+                            800: 'rgb(var(--brand-800) / <alpha-value>)',
+                            900: 'rgb(var(--brand-900) / <alpha-value>)'
+                        },
+                        // Secondary accent — varies per theme.
+                        accent: {
+                            50:  'rgb(var(--accent-50) / <alpha-value>)',
+                            100: 'rgb(var(--accent-100) / <alpha-value>)',
+                            200: 'rgb(var(--accent-200) / <alpha-value>)',
+                            300: 'rgb(var(--accent-300) / <alpha-value>)',
+                            400: 'rgb(var(--accent-400) / <alpha-value>)',
+                            500: 'rgb(var(--accent-500) / <alpha-value>)',
+                            600: 'rgb(var(--accent-600) / <alpha-value>)',
+                            700: 'rgb(var(--accent-700) / <alpha-value>)',
+                            800: 'rgb(var(--accent-800) / <alpha-value>)',
+                            900: 'rgb(var(--accent-900) / <alpha-value>)'
+                        },
+                        // Light-theme-only Coolors auxiliaries. Hardcoded
+                        // (not themed) — these shades have no dark-theme
+                        // equivalent today; they render the same way in
+                        // either theme. If/when the dark theme needs
+                        // distinct sage/peach/coral tones, lift these
+                        // into the variable system.
+                        sage: {
+                            100: '#E8F0DF', 200: '#CFE1BC', 300: '#B6D2A0',
+                            400: '#A1C084', 500: '#8AA670', 600: '#73895C'
+                        },
+                        peach: {
+                            100: '#FFF1E8', 200: '#FFDFCC', 300: '#FFCAB1',
+                            400: '#FFB294', 500: '#FF9774'
+                        },
+                        coral: {
+                            100: '#FAD3D7', 200: '#F5B8BE', 300: '#EE8B95',
+                            400: '#E5707C', 500: '#E05263', 600: '#C04050'
+                        }
+                    }
+                }
+            }
+        }
+        // Pages that poll for status (task/execution detail) gate their
+        // hx-trigger on `!document.body.classList.contains('poll-stopped')`.
+        // The server-side handlers send `HX-Trigger: stopPolling` once the
+        // entity reaches a terminal state — we listen for it here and
+        // stop further polls instead of needing per-page JS.
+        document.body && document.body.addEventListener('stopPolling',
+            () => document.body.classList.add('poll-stopped'));
+
+        // Sort persistence. When the URL omits `sort`, fall back to the
+        // user's last choice for this page (kept in localStorage). When
+        // they click a sortHeader anchor, capture the new sort+dir.
+        // Synchronous redirect on first paint avoids a flash of default
+        // sort, and the race of "set saved value, then race rerender."
+        (function persistSort() {
+            try {
+                var u = new URL(window.location.href);
+                var key = 'vornik:sort:' + u.pathname;
+                if (!u.searchParams.has('sort')) {
+                    var saved = localStorage.getItem(key);
+                    if (saved) {
+                        var p = JSON.parse(saved);
+                        if (p && p.sort && p.dir) {
+                            u.searchParams.set('sort', p.sort);
+                            u.searchParams.set('dir', p.dir);
+                            // Replace so back-button still works as expected.
+                            window.location.replace(u.toString());
+                            return;
+                        }
+                    }
+                } else {
+                    localStorage.setItem(key, JSON.stringify({
+                        sort: u.searchParams.get('sort'),
+                        dir: u.searchParams.get('dir') || 'desc',
+                    }));
+                }
+            } catch (e) { /* localStorage may be disabled — silent ignore */ }
+        })();
+
+        document.addEventListener('DOMContentLoaded', () => {
+            document.body.addEventListener('stopPolling',
+                () => document.body.classList.add('poll-stopped'));
+            initKeyboardNav();
+            showNoticeToast();
+        });
+
+        // showNoticeToast renders a one-shot toast for ?notice=KEY found in
+        // the URL after a redirect from a task action. The notice key
+        // resolves to a known message; unknown keys silently ignore (so
+        // the user can't be tricked into seeing arbitrary text via the
+        // query string). The param is then stripped from history so a
+        // back/forward navigation doesn't re-show the toast.
+        var NOTICES = {
+            'task-cancelled':       {kind: 'ok',   text: 'Task cancelled.'},
+            'task-not-cancellable': {kind: 'warn', text: 'Task already in a terminal state — nothing to cancel.'},
+            'task-retried':         {kind: 'ok',   text: 'Task re-queued for retry.'},
+            'task-not-retriable':   {kind: 'warn', text: 'Task is in-flight — wait for it to finish before retrying.'},
+            'bulk-cancelled':       {kind: 'ok',   text: 'Cancelled {count} task(s).'},
+            'bulk-retried':         {kind: 'ok',   text: 'Re-queued {count} task(s).'},
+            'bulk-closed':          {kind: 'ok',   text: 'Closed {count} task(s).'},
+            'bulk-exec-cancelled':  {kind: 'ok',   text: 'Cancelled {count} execution(s).'},
+        };
+        function showNoticeToast() {
+            try {
+                var u = new URL(window.location.href);
+                var key = u.searchParams.get('notice');
+                if (!key) return;
+                var n = NOTICES[key];
+                if (!n) return;
+                var msg = n.text.replace('{count}', u.searchParams.get('count') || '0');
+                renderToast(msg, n.kind);
+                u.searchParams.delete('notice');
+                u.searchParams.delete('count');
+                window.history.replaceState({}, '', u.toString());
+            } catch (e) { /* silent */ }
+        }
+        function renderToast(text, kind) {
+            var d = document.createElement('div');
+            var color = kind === 'warn'
+                ? 'bg-amber-900/90 border-amber-600/50 text-amber-100'
+                : 'bg-emerald-900/90 border-emerald-600/50 text-emerald-100';
+            d.className = 'fixed top-4 right-4 px-4 py-2.5 rounded-lg border shadow-xl text-sm z-50 ' + color;
+            d.style.transition = 'opacity 0.4s, transform 0.4s';
+            d.style.opacity = '0';
+            d.style.transform = 'translateY(-8px)';
+            // Live-region wiring so screen readers announce the toast.
+            // 'warn' is assertive (action-required); success is polite.
+            d.setAttribute('role', kind === 'warn' ? 'alert' : 'status');
+            d.setAttribute('aria-live', kind === 'warn' ? 'assertive' : 'polite');
+            d.setAttribute('aria-atomic', 'true');
+            d.textContent = text;
+            document.body.appendChild(d);
+            requestAnimationFrame(() => { d.style.opacity = '1'; d.style.transform = 'translateY(0)'; });
+            setTimeout(() => {
+                d.style.opacity = '0';
+                setTimeout(() => { if (d.parentNode) d.remove(); }, 400);
+            }, 3500);
+        }
+
+        // Keyboard navigation for tables marked with data-keynav.
+        // j/k cycle row selection, Enter follows the row's first link,
+        // gg/G jump to top/bottom, ? shows the help popup. Skips when
+        // the user is typing in an input/textarea.
+        function initKeyboardNav() {
+            var tables = document.querySelectorAll('table[data-keynav]');
+            if (!tables.length) return;
+            var rows = [];
+            tables.forEach(t => t.querySelectorAll('tbody tr').forEach(r => rows.push(r)));
+            if (!rows.length) return;
+            var idx = -1;
+            function setIdx(n) {
+                if (idx >= 0 && rows[idx]) rows[idx].classList.remove('keynav-selected');
+                idx = Math.max(0, Math.min(rows.length - 1, n));
+                rows[idx].classList.add('keynav-selected');
+                rows[idx].scrollIntoView({block: 'nearest'});
+            }
+            var lastG = 0;
+            document.addEventListener('keydown', (e) => {
+                var t = e.target;
+                if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+                if (e.metaKey || e.ctrlKey || e.altKey) return;
+                switch (e.key) {
+                    case 'j': setIdx(idx < 0 ? 0 : idx + 1); e.preventDefault(); break;
+                    case 'k': setIdx(idx < 0 ? 0 : idx - 1); e.preventDefault(); break;
+                    case 'G': setIdx(rows.length - 1); e.preventDefault(); break;
+                    case 'g':
+                        if (Date.now() - lastG < 500) { setIdx(0); lastG = 0; e.preventDefault(); }
+                        else { lastG = Date.now(); }
+                        break;
+                    case 'Enter':
+                        if (idx >= 0) {
+                            var a = rows[idx].querySelector('a[href]');
+                            if (a) { window.location.href = a.href; e.preventDefault(); }
+                        }
+                        break;
+                    case '?':
+                        toggleKeyHelp();
+                        e.preventDefault();
+                        break;
+                }
+            });
+        }
+
+        // toggleKeyHelp builds the help popup with safe DOM methods (no
+        // innerHTML) — the content is static but we follow the rule
+        // anyway so future edits can't accidentally inject user data.
+        function toggleKeyHelp() {
+            var existing = document.getElementById('keyhelp-popup');
+            if (existing) { existing.remove(); return; }
+            var d = document.createElement('div');
+            d.id = 'keyhelp-popup';
+            d.className = 'fixed bottom-4 right-4 bg-dark-800 border border-dark-700 rounded-lg shadow-xl px-4 py-3 text-xs text-gray-300 z-50';
+            var title = document.createElement('div');
+            title.className = 'font-semibold text-gray-200 mb-1';
+            title.textContent = 'Keyboard';
+            d.appendChild(title);
+            function row(label, keys) {
+                var line = document.createElement('div');
+                keys.forEach((k, i) => {
+                    if (i > 0) line.appendChild(document.createTextNode(' / '));
+                    var kbd = document.createElement('kbd');
+                    kbd.className = 'font-mono bg-dark-700 rounded px-1';
+                    kbd.textContent = k;
+                    line.appendChild(kbd);
+                });
+                line.appendChild(document.createTextNode(' ' + label));
+                d.appendChild(line);
+            }
+            row('next / prev row', ['j', 'k']);
+            row('top / bottom', ['gg', 'G']);
+            row('open row', ['Enter']);
+            row('toggle this', ['?']);
+            document.body.appendChild(d);
+            setTimeout(() => { if (d.parentNode) d.remove(); }, 5000);
+        }
+    </script>
+    <style>
+        /* ============================================================
+           THEME PALETTES — light (default) and dark.
+           Values are RGB triplets (no commas, no #) so Tailwind's
+           `rgb(var(--token) / <alpha-value>)` syntax can compose them
+           with opacity modifiers (e.g. bg-brand-500/15).
+           A change to `data-theme` on <html> re-paints the whole UI
+           without re-rendering markup.
+           ============================================================ */
+        :root, [data-theme="light"] {
+            /* LIGHT — Coolors palette */
+            color-scheme: light;
+            /* Surface (warm off-white) */
+            --surface-900: 245 241 236;   /* #F5F1EC page bg */
+            --surface-800: 255 255 255;   /* #FFFFFF cards */
+            --surface-700: 250 247 243;   /* #FAF7F3 raised */
+            --surface-600: 224 213 201;   /* #E0D5C9 border */
+            /* Ink (dark text on light bg — semantically: 100 = primary) */
+            --ink-100: 27 32 38;          /* #1B2026 primary heading */
+            --ink-200: 42 49 56;          /* #2A3138 strong body */
+            --ink-300: 63 71 80;          /* #3F4750 body */
+            --ink-400: 91 100 112;        /* #5B6470 caption */
+            --ink-500: 122 132 146;       /* #7A8492 muted */
+            --ink-600: 165 173 184;       /* #A5ADB8 disabled */
+            --ink-700: 209 213 219;       /* #D1D5DB very subtle */
+            --ink-800: 229 231 235;       /* #E5E7EB pale fill */
+            --ink-900: 243 244 246;       /* #F3F4F6 lightest */
+            /* Brand — cadet teal */
+            --brand-50:  238 245 247;     /* currentColor */
+            --brand-100: 210 227 232;     /* #D2E3E8 */
+            --brand-200: 165 199 207;     /* #A5C7CF */
+            --brand-300: 122 171 183;     /* #7AABB7 */
+            --brand-400: 105 162 176;     /* #69A2B0 — Coolors hero */
+            --brand-500: 85 138 152;      /* #558A98 nav, CTAs */
+            --brand-600: 66 114 128;      /* #427280 */
+            --brand-700: 48 90 104;       /* #305A68 */
+            --brand-800: 31 66 80;        /* #1F4250 */
+            --brand-900: 16 42 56;        /* #102A38 */
+            /* Accent — forest green */
+            --accent-50:  238 244 235;    /* #EEF4EB */
+            --accent-100: 210 227 202;    /* #D2E3CA */
+            --accent-200: 176 207 168;    /* #B0CFA8 */
+            --accent-300: 136 179 129;    /* #88B381 */
+            --accent-400: 122 159 110;    /* #7A9F6E */
+            --accent-500: 101 145 87;     /* #659157 — Coolors hero */
+            --accent-600: 84 120 74;      /* #54784A */
+            --accent-700: 67 96 61;       /* #43603D */
+            --accent-800: 50 72 48;       /* #324830 */
+            --accent-900: 33 48 36;       /* #213024 */
+        }
+        [data-theme="dark"] {
+            /* DARK — EaseIT brand on Nord-inspired neutral surfaces */
+            color-scheme: dark;
+            /* Surface (neutral cool charcoal) */
+            --surface-900: 59 66 82;      /* #3B4252 page bg */
+            --surface-800: 76 86 106;     /* #4C566A cards */
+            --surface-700: 94 107 133;    /* #5E6B85 raised */
+            --surface-600: 122 143 168;   /* #7A8FA8 border */
+            /* Ink (light text on dark bg — same semantic numbering;
+               gray-100 = lightest near-white, gray-600 = subdued) */
+            --ink-100: 243 244 246;       /* #F3F4F6 lightest */
+            --ink-200: 229 231 235;       /* #E5E7EB */
+            --ink-300: 209 213 219;       /* #D1D5DB */
+            --ink-400: 192 199 211;       /* #C0C7D3 caption (visible on surface-800) */
+            --ink-500: 168 180 197;       /* #A8B4C5 muted */
+            --ink-600: 148 161 180;       /* #94A1B4 subdued (still ≥3:1 on surface-800) */
+            --ink-700: 55 65 81;          /* #374151 */
+            --ink-800: 31 41 55;          /* #1F2937 */
+            --ink-900: 17 24 39;          /* #111827 deepest */
+            /* Brand — EaseIT blue */
+            --brand-50:  230 243 250;     /* #E6F3FA */
+            --brand-100: 204 231 245;     /* #CCE7F5 */
+            --brand-200: 153 207 235;     /* #99CFEB */
+            --brand-300: 102 183 225;     /* #66B7E1 */
+            --brand-400: 51 159 215;      /* #339FD7 */
+            --brand-500: 0 120 195;       /* #0078C3 — EaseIT hero */
+            --brand-600: 0 102 166;       /* #0066A6 */
+            --brand-700: 0 84 137;        /* #005489 */
+            --brand-800: 0 66 108;        /* #00426C */
+            --brand-900: 0 48 79;         /* #00304F */
+            /* Accent — EaseIT lime green */
+            --accent-50:  242 248 230;    /* #F2F8E6 */
+            --accent-100: 229 240 204;    /* #E5F0CC */
+            --accent-200: 203 225 153;    /* #CBE199 */
+            --accent-300: 177 210 102;    /* #B1D266 */
+            --accent-400: 151 195 51;     /* #97C333 */
+            --accent-500: 120 180 30;     /* #78B41E EaseIT hero */
+            --accent-600: 101 152 24;     /* #659818 */
+            --accent-700: 82 124 19;      /* #527C13 */
+            --accent-800: 63 96 14;       /* #3F600E */
+            --accent-900: 44 68 8;        /* #2C4408 */
+        }
+        /* Smooth crossfade when the operator toggles the theme so the
+           transition doesn't feel like a janky reload. Skipped for
+           transforms and motion-sensitive properties. */
+        html.theme-transition,
+        html.theme-transition *,
+        html.theme-transition *::before,
+        html.theme-transition *::after {
+            transition: background-color 200ms ease, color 200ms ease,
+                        border-color 200ms ease, fill 200ms ease,
+                        stroke 200ms ease !important;
+        }
+        /* Theme-toggle icon swap — show whichever glyph represents
+           the OTHER theme so the operator sees "what they will
+           switch to" on click. */
+        .theme-icon-sun  { display: none; }
+        .theme-icon-moon { display: block; }
+        [data-theme="dark"] .theme-icon-sun  { display: block; }
+        [data-theme="dark"] .theme-icon-moon { display: none; }
+        /* Nav-logo centre dot — different colour per theme so the
+           glyph mirrors each palette's accent identity:
+             light  → peach-300  (Coolors warm highlight)
+             dark   → accent-500 (EaseIT lime green) */
+        .nav-logo-dot { fill: #FFCAB1; }
+        [data-theme="dark"] .nav-logo-dot { fill: #78B41E; }
+
+        /* === Type system (UI design elevation) === */
+        body {
+            font-family: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility;
+        }
+        h1, h2, h3, .font-display {
+            font-family: 'Bricolage Grotesque', 'Hanken Grotesk', system-ui, sans-serif;
+            letter-spacing: -0.018em;
+        }
+        code, kbd, pre, samp, .font-mono {
+            font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+            font-feature-settings: "ss01", "zero";
+        }
+
+        /* === Atmosphere === page floor gets a soft brand glow + a hair of
+           grain instead of a flat fill, so the glass surfaces have something
+           with depth to sample. background-color still comes from the page's
+           bg-dark-900 utility; these layer on top, fixed so they don't scroll. */
+        body::before {
+            content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+            background:
+                radial-gradient(1100px circle at 8% -8%, rgb(var(--brand-500) / 0.16), transparent 55%),
+                radial-gradient(900px circle at 100% 0%, rgb(var(--brand-400) / 0.08), transparent 50%),
+                radial-gradient(1200px circle at 50% 120%, rgb(var(--brand-600) / 0.10), transparent 55%);
+        }
+        [data-theme="light"] body::before {
+            background:
+                radial-gradient(1100px circle at 8% -8%, rgb(var(--brand-500) / 0.10), transparent 55%),
+                radial-gradient(900px circle at 100% 0%, rgb(var(--brand-300) / 0.10), transparent 50%);
+        }
+        /* Fine grain overlay for tactile depth (very subtle). */
+        body::after {
+            content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: 0.035;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+        }
+        .htmx-request .htmx-indicator { display: inline; }
+        .htmx-indicator { display: none; }
+        .htmx-swapping { opacity: 0; transition: opacity 200ms ease-out; }
+        .htmx-settling { opacity: 1; transition: opacity 200ms ease-in; }
+        /* Sortable header: chevron next to label, dimmed when not the active sort key. */
+        th.sort-th a { display: inline-flex; align-items: center; gap: 0.25rem; }
+        th.sort-th a .sort-chevron { opacity: 0.25; }
+        th.sort-th a:hover .sort-chevron { opacity: 0.6; }
+        th.sort-th.sort-active a .sort-chevron { opacity: 1; }
+        /* Keyboard-nav row selection — j/k highlight without committing
+           to a click. Subtle brand wash + left-edge marker. Picks up
+           whichever brand-500 the active theme has set. */
+        tr.keynav-selected { background-color: rgb(var(--brand-500) / 0.18) !important; }
+        tr.keynav-selected td:first-child { box-shadow: inset 2px 0 0 rgb(var(--brand-500)); }
+
+        /* ===== Phase 33+ — phone-first base styles ===== */
+
+        /* iOS Safari treats <16px text inputs as "needs zoom" and
+           triggers the auto-zoom-on-focus that desktop users hate
+           and phone users HATE. 16px floor on every text-y input. */
+        input[type="text"],
+        input[type="search"],
+        input[type="email"],
+        input[type="password"],
+        input[type="url"],
+        input[type="number"],
+        input[type="tel"],
+        textarea, select {
+            font-size: 16px;
+        }
+
+        /* .tap — minimum touch target per Apple HIG (44px) +
+           Material Design (48dp). Adds an :active flash so taps
+           feel responsive on the slowest LTE-tethered phone. */
+        .tap {
+            min-height: 44px;
+            min-width: 44px;
+            touch-action: manipulation;
+        }
+        .tap:active { background-color: rgba(51, 65, 85, 0.6); }
+
+        /* Status pill — used by the statusPill template helper.
+           Centralised so a future colour-system swap is one diff. */
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.125rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        /* Safe-area utilities for iOS home-indicator + Android nav.
+           Used by bottom nav (Phase 34) + sticky action bars. */
+        .safe-pb { padding-bottom: env(safe-area-inset-bottom); }
+        .safe-pt { padding-top: env(safe-area-inset-top); }
+        .safe-pl { padding-left: env(safe-area-inset-left); }
+        .safe-pr { padding-right: env(safe-area-inset-right); }
+
+        /* Bottom-nav-aware spacing — content scroll containers
+           reserve room for the nav so the last row isn't hidden
+           under the icons. md: removes the reservation since the
+           nav collapses to the top.
+
+           Pages that ALSO carry a sticky action bar (task detail's
+           Compose / Pause / Resume / Close row) opt-in by setting
+           data-with-action-bar on <body>; that adds another 56px
+           of bottom padding so the last conversation message
+           doesn't tuck under the bar. */
+        @media (max-width: 767px) {
+            body { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+            body[data-with-action-bar] { padding-bottom: calc(64px + 56px + env(safe-area-inset-bottom)); }
+
+            /* Phase 41 — phone tap-target rescue.
+               Form action buttons (Submit, Send, Pause, Resume, Close,
+               Search, etc.) historically used `py-1.5 text-xs` to fit
+               desktop density. On phone that's a 28px hit area; below
+               Apple HIG's 44px floor. Boost every button to 44px on
+               phone without touching desktop styles. */
+            button, a[role="button"], input[type="submit"], input[type="button"] {
+                min-height: 44px;
+            }
+            /* Inline icon buttons inside larger interactive containers
+               (cards, links) opt out by carrying .icon-only — they're
+               hit-target-sized via their parent. */
+            .icon-only { min-height: auto; }
+
+            /* Visible focus ring at 3px so keyboard / screen-reader
+               users always see where they are. Off by default elsewhere
+               for visual reasons; mandatory on phone where the touch
+               state can be ambiguous. */
+            :focus-visible {
+                outline: 3px solid rgb(var(--brand-500));
+                outline-offset: 1px;
+            }
+        }
+
+        /* Reduced-motion: respect the OS setting. Anything that
+           transitions / animates collapses to a no-op so users with
+           vestibular sensitivity don't get nausea from card hover
+           transitions or the htmx swap fade. */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+                scroll-behavior: auto !important;
+            }
+        }
+
+        /* Skeleton shimmer for HTMX swaps. Apply .skeleton or
+           .skeleton-line class to placeholder elements; they pulse
+           a soft gradient while htmx-request fires. The shimmer
+           kicks in only during a request — at rest the elements
+           render normally. */
+        .skeleton {
+            background: linear-gradient(90deg,
+                rgba(51, 65, 85, 0.4) 0%,
+                rgba(71, 85, 105, 0.6) 50%,
+                rgba(51, 65, 85, 0.4) 100%);
+            background-size: 200% 100%;
+            animation: skeleton-shimmer 1.4s ease-in-out infinite;
+            border-radius: 0.375rem;
+        }
+        .skeleton-line {
+            display: block;
+            height: 0.875rem;
+            margin: 0.25rem 0;
+            background: linear-gradient(90deg,
+                rgba(51, 65, 85, 0.4) 0%,
+                rgba(71, 85, 105, 0.6) 50%,
+                rgba(51, 65, 85, 0.4) 100%);
+            background-size: 200% 100%;
+            animation: skeleton-shimmer 1.4s ease-in-out infinite;
+            border-radius: 0.25rem;
+        }
+        @keyframes skeleton-shimmer {
+            0%   { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+        /* HTMX integration — htmx-request is set on the triggering
+           element (which is often also the swap target). Match both
+           "the request element IS .skeleton-on-load" (.htmx-request.skeleton-on-load)
+           and "the request element CONTAINS .skeleton-on-load"
+           (.htmx-request .skeleton-on-load). */
+        .htmx-request.skeleton-on-load > *,
+        .htmx-request .skeleton-on-load > * { visibility: hidden; }
+        .htmx-request.skeleton-on-load::before,
+        .htmx-request .skeleton-on-load::before {
+            content: "";
+            display: block;
+            height: 4rem;
+            background: linear-gradient(90deg,
+                rgba(51, 65, 85, 0.4) 0%,
+                rgba(71, 85, 105, 0.6) 50%,
+                rgba(51, 65, 85, 0.4) 100%);
+            background-size: 200% 100%;
+            animation: skeleton-shimmer 1.4s ease-in-out infinite;
+            border-radius: 0.5rem;
+            margin: 0.5rem 0;
+        }
+
+        /* Floating Action Button (FAB) — quick-action button anchored
+           bottom-right, just above the bottom nav. Used by dashboard
+           and tasks list for "new task" one-thumb access. */
+        .fab {
+            position: fixed;
+            right: 1rem;
+            bottom: calc(64px + env(safe-area-inset-bottom) + 1rem);
+            width: 56px;
+            height: 56px;
+            border-radius: 9999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: rgb(var(--brand-500));
+            color: white;
+            box-shadow: 0 6px 16px rgb(var(--brand-500) / 0.4);
+            z-index: 30;
+        }
+        .fab:active { background: rgb(var(--brand-600)); transform: scale(0.96); }
+        @media (min-width: 768px) {
+            .fab { bottom: 1.5rem; }
+        }
+
+        /* === Glass surface system (UI refresh 2026-06-08, design §4) ===
+           L2 "balanced" translucency. Surfaces opt in via class="glass".
+           Tailwind CDN does not prune classes, so no safelist needed. */
+        :root, [data-theme="light"] {
+            --glass-bg: 255 255 255;          /* used as rgb(var(--glass-bg) / alpha) */
+            --glass-bg-alpha: 0.60;
+            --glass-border: rgba(255,255,255,0.80);
+            --glass-blur: 12px;
+            --glass-shadow: 0 8px 28px rgba(40,70,90,0.12);
+            --glass-inner: inset 0 1px 0 rgba(255,255,255,0.90);
+        }
+        [data-theme="dark"] {
+            --glass-bg: 255 255 255;
+            --glass-bg-alpha: 0.12;
+            --glass-border: rgba(255,255,255,0.22);
+            --glass-blur: 12px;
+            --glass-shadow: 0 8px 32px rgba(0,0,0,0.25);
+            --glass-inner: inset 0 1px 0 rgba(255,255,255,0.25);
+        }
+        .glass {
+            background: rgb(var(--glass-bg) / var(--glass-bg-alpha));
+            border: 1px solid var(--glass-border);
+            backdrop-filter: blur(var(--glass-blur));
+            -webkit-backdrop-filter: blur(var(--glass-blur));
+            box-shadow: var(--glass-shadow), var(--glass-inner);
+        }
+        /* Fallback: no backdrop-filter support → near-opaque surface. */
+        @supports not (backdrop-filter: blur(1px)) {
+            .glass { background: rgb(var(--glass-bg) / 0.92); }
+        }
+        /* Accessibility: respect reduced-transparency by dropping the blur. */
+        @media (prefers-reduced-transparency: reduce) {
+            .glass {
+                background: rgb(var(--glass-bg) / 0.96);
+                backdrop-filter: none;
+                -webkit-backdrop-filter: none;
+            }
+        }
+
+        /* === Rail + contextual-panel nav (UI refresh 2026-06-08) === */
+        .rail-ico {
+            display: flex; align-items: center; justify-content: center;
+            width: 2.5rem; height: 2.5rem; border-radius: 0.625rem;
+            color: rgb(var(--ink-300)); position: relative;
+        }
+        .rail-ico:hover { background: rgb(var(--ink-900) / 0.06); color: rgb(var(--ink-100)); }
+        [data-theme="dark"] .rail-ico:hover { background: rgb(255 255 255 / 0.08); }
+        /* Active = SOLID brand fill + white foreground (high contrast on the
+           translucent glass). The earlier subtle 0.12-alpha tint + brand-text
+           was nearly invisible on the rail/panel/tabs. */
+        .rail-ico-active { color: #fff; background: rgb(var(--brand-500)); }
+        .panel-item {
+            display: flex; align-items: center; gap: 0.625rem;
+            padding: 0.5rem 0.625rem; border-radius: 0.5rem;
+            font-size: 0.875rem; color: rgb(var(--ink-200));
+        }
+        .panel-item:hover { background: rgb(var(--ink-900) / 0.05); color: rgb(var(--ink-100)); }
+        [data-theme="dark"] .panel-item:hover { background: rgb(255 255 255 / 0.06); }
+        .panel-item-active { background: rgb(var(--brand-500)); color: #fff; font-weight: 600; }
+        .panel-item-active .nav-logo-dot { fill: #fff; }
+        /* Mobile bottom-tab drawer: sit ABOVE the fixed bottom bar
+           (h-16 = 4rem) including the safe-area inset, so the submenu no
+           longer overlaps the bar. Set in CSS (not a Tailwind bottom-*
+           class) so it can use env() and won't lose the cascade. */
+        [data-nav-drawer] { bottom: calc(4rem + env(safe-area-inset-bottom)); }
+        @media (prefers-reduced-motion: no-preference) {
+            .rail-ico, .panel-item { transition: background-color 150ms ease, color 150ms ease; }
+        }
+        /* Shell offset (UI refresh): content clears only the fixed icon-rail
+           (3.5rem) on md+. The contextual panel is a HOVER flyout that
+           overlays content (see .contextual-panel below), so it does NOT
+           reserve layout width. Applied on <body>, NOT the page <main> (the
+           <main>'s Tailwind px-*/mx-auto win the cascade over a same-element
+           rule). The fixed rail ignores body padding and stays pinned left.
+           :has scopes it to rail-bearing pages (login stays full-width).
+           Mobile (<768px) uses the body padding-bottom rule above instead. */
+        @media (min-width: 768px) {
+            /* Content clears only the rail (3.5rem). The contextual panel is a
+               HOVER flyout that overlays content — nothing is open by default
+               (the active area is shown by the highlighted rail icon), so the
+               submenu never lingers on detail pages or after an HTMX swap. */
+            body:has(nav[aria-label="Primary"]) { padding-left: 3.5rem; }
+        }
+        /* Contextual panels: one per area, stacked in the same fixed slot.
+           Hidden unless .panel-open, which only the JS hover handler sets. */
+        .contextual-panel { display: none; }
+        @media (min-width: 768px) {
+            .contextual-panel.panel-open { display: block; }
+        }
+        /* menu-solid: near-opaque surface for the mobile menus (operator
+           wanted them much less transparent). Overrides the glass tint with
+           the theme card surface at 0.97 — reads as solid while keeping the
+           backdrop blur from .glass. */
+        .menu-solid { background: rgb(var(--surface-800) / 0.97); }
+        /* Hierarchy primitives (ui-per-page-polish). Wrapper primitives are
+           classes, not partials, because html/template has no content slot. */
+        .panel-primary {
+            border: 1px solid rgb(var(--brand-500) / 0.40);
+            box-shadow: 0 4px 22px rgb(var(--brand-500) / 0.12);
+        }
+        /* Tone overrides: pages add data-tone to recolour the emphasis without
+           relisting the box-shadow. amber/sky/rose use Tailwind's palette hexes
+           (those colours aren't in the token vars). Tone border alpha is 0.50
+           (vs the base 0.40) on purpose — tones read more prominently. */
+        .panel-primary[data-tone="amber"] { border-color: rgb(245 158 11 / 0.50); box-shadow: 0 4px 22px rgb(245 158 11 / 0.12); }
+        .panel-primary[data-tone="sky"]   { border-color: rgb(14 165 233 / 0.50); box-shadow: 0 4px 22px rgb(14 165 233 / 0.12); }
+        .panel-primary[data-tone="rose"]  { border-color: rgb(244 63 94 / 0.50);  box-shadow: 0 4px 22px rgb(244 63 94 / 0.12); }
+
+        .panel-ref { background: rgb(var(--surface-800) / 0.40); border: 1px solid rgb(var(--surface-600) / 0.60); border-radius: 0.75rem; }
+        .panel-ref > summary { cursor: pointer; list-style: none; }
+        .panel-ref > summary::-webkit-details-marker { display: none; }
+        .panel-ref > summary::details-marker { display: none; }
+        .panel-ref[open] { background: rgb(var(--surface-800) / 0.60); }
+
+        /* ============================================================
+           SEMANTIC STATUS PILLS + ALERTS — theme-aware.
+           Replaces ad-hoc hardcoded Tailwind shades (text-purple-200,
+           bg-rose-500/15 …) that were tuned for dark and went
+           unreadable on the default LIGHT theme. Light theme (default):
+           dark text on a light tint of the hue. Dark theme: light text
+           on a dark tint. One place to tune status contrast.
+           ============================================================ */
+        .pill {
+            display: inline-flex; align-items: center; gap: 0.35em;
+            padding: 0.15rem 0.55rem; border-radius: 9999px;
+            font-size: 11px; font-weight: 600; line-height: 1.5;
+            letter-spacing: 0.02em; white-space: nowrap;
+            border: 1px solid transparent;
+        }
+        /* optional leading dot (omit with .pill-nodot) */
+        .pill:not(.pill-nodot)::before {
+            content: ""; width: 0.45em; height: 0.45em;
+            border-radius: 50%; background: currentColor; opacity: 0.85;
+        }
+        /* LIGHT (default) */
+        .pill-ok      { color: #3F5A1E; background: #E8F1D0; border-color: #B7D277; }
+        .pill-info    { color: #2C5563; background: #D6E5EA; border-color: #A5C7CF; }
+        .pill-warn    { color: #7E5300; background: #F7E7C4; border-color: #E6C476; }
+        .pill-danger  { color: #8A2025; background: #F6D9DB; border-color: #E39AA0; }
+        .pill-neutral { color: #525B66; background: #EAE3DA; border-color: #D6CCBF; }
+        .pill-spend   { color: #553188; background: #E9DEF5; border-color: #CBB4E6; }
+        /* DARK */
+        [data-theme="dark"] .pill-ok      { color: #CBE199; background: rgb(120 180 30 / 0.20); border-color: rgb(151 195 51 / 0.45); }
+        [data-theme="dark"] .pill-info    { color: #99CFEB; background: rgb(0 120 195 / 0.24);  border-color: rgb(51 159 215 / 0.48); }
+        [data-theme="dark"] .pill-warn    { color: #F0CE7A; background: rgb(214 154 40 / 0.22); border-color: rgb(224 164 64 / 0.48); }
+        [data-theme="dark"] .pill-danger  { color: #F1A9AD; background: rgb(206 70 80 / 0.24);  border-color: rgb(224 104 114 / 0.50); }
+        [data-theme="dark"] .pill-neutral { color: #C0C7D3; background: rgb(122 143 168 / 0.20); border-color: rgb(122 143 168 / 0.42); }
+        [data-theme="dark"] .pill-spend   { color: #D6BDF2; background: rgb(150 110 220 / 0.24); border-color: rgb(176 134 232 / 0.48); }
+
+        /* Larger callout (e.g. the dashboard spend-spike card). */
+        .alert { display: flex; gap: 0.75rem; align-items: flex-start; padding: 0.75rem 0.9rem; border-radius: 0.75rem; border: 1px solid transparent; }
+        .alert-icon { flex: 0 0 auto; width: 1.9rem; height: 1.9rem; border-radius: 0.6rem; display: grid; place-items: center; }
+        .alert-title { font-size: 13px; font-weight: 600; line-height: 1.3; }
+        .alert-sub { font-size: 11px; line-height: 1.4; margin-top: 0.15rem; opacity: 0.8; }
+        .alert-spend { color: #553188; background: #EEE6F8; border-color: #CBB4E6; }
+        .alert-spend .alert-icon { background: #DFD0F0; color: #6B43A0; }
+        [data-theme="dark"] .alert-spend { color: #E4D4F7; background: rgb(150 110 220 / 0.16); border-color: rgb(176 134 232 / 0.42); }
+        [data-theme="dark"] .alert-spend .alert-icon { background: rgb(150 110 220 / 0.28); color: #D6BDF2; }
+    </style>
+</head>
+{{end}}
+
+{{/* === Rail-area icon defines (UI refresh 2026-06-08) ===
+     Heroicons-style 24px line icons, one per nav area + destination.
+     Rendered by navIconResolve in the rail/panel/drawer. */}}
+{{define "navIconOverview"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3h7v7H3zm11 0h7v7h-7zM3 14h7v7H3zm11 0h7v7h-7z"/></svg>{{end}}
+{{define "navIconOrchestration"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h10"/></svg>{{end}}
+{{define "navIconSwarms"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2.2"/><circle cx="5" cy="18" r="2.2"/><circle cx="19" cy="18" r="2.2"/><path stroke-linecap="round" d="M12 7.2 6.5 15.8M12 7.2l5.5 8.6M7 18h10"/></svg>{{end}}
+{{define "navIconWorkflows"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="6" height="5" rx="1"/><rect x="15" y="15" width="6" height="5" rx="1"/><path stroke-linecap="round" d="M9 6.5h4a3 3 0 0 1 3 3v6"/></svg>{{end}}
+{{define "navIconExecutions"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 3l14 9-14 9V3z"/></svg>{{end}}
+{{/* navIconLive — broadcast/pulse (centre dot + radiating arcs); distinct from
+     navIconExecutions's play-triangle so the Live dest doesn't duplicate it. */}}
+{{define "navIconLive"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path stroke-linecap="round" stroke-linejoin="round" d="M8.46 8.46a5 5 0 000 7.08M15.54 8.46a5 5 0 010 7.08M5.64 5.64a9 9 0 000 12.72M18.36 5.64a9 9 0 010 12.72"/></svg>{{end}}
+{{/* navIconInbox — tray; distinct from navIconTasks's list rows so the
+     "Needs you" dest doesn't duplicate it. */}}
+{{define "navIconInbox"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 13h4l2 3h4l2-3h4M5 13V6a2 2 0 012-2h10a2 2 0 012 2v7M4 13v4a2 2 0 002 2h12a2 2 0 002-2v-4"/></svg>{{end}}
+{{/* navIconSteer — the Steer area (live control + action inbox): a 3-spoke
+     steering wheel (outer rim, filled hub, three spokes). */}}
+{{define "navIconSteer"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 9.8V3.2M10.1 13.1l-5.6 3.3M13.9 13.1l5.6 3.3"/></svg>{{end}}
+{{define "navIconTasks"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5h7M9 12h7M9 19h7M4.5 5h.01M4.5 12h.01M4.5 19h.01"/></svg>{{end}}
+{{define "navIconMemory"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3a4 4 0 0 0-4 4v1a3 3 0 0 0 0 6 3 3 0 0 0 4 2.8A3 3 0 0 0 16 14a3 3 0 0 0 0-6V7a4 4 0 0 0-4-4z"/></svg>{{end}}
+{{define "navIconReminders"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6a5 5 0 0 0-5 5v3l-1.5 2.5h13L17 14v-3a5 5 0 0 0-5-5zM10 19a2 2 0 0 0 4 0"/></svg>{{end}}
+{{define "navIconInsight"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 3v18h18M7 14l4-4 3 3 5-6"/></svg>{{end}}
+{{define "navIconSpend"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" d="M12 7v10M14.5 9.3A2.5 2.5 0 0 0 12 8c-1.4 0-2.5.9-2.5 2s1.1 2 2.5 2 2.5.9 2.5 2-1.1 2-2.5 2a2.5 2.5 0 0 1-2.5-1.3"/></svg>{{end}}
+{{define "navIconGauge"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 18a8 8 0 1 1 16 0"/><path stroke-linecap="round" d="M12 18l4-4.5"/><circle cx="12" cy="18" r="1" fill="currentColor" stroke="none"/></svg>{{end}}
+{{define "navIconTrading"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M7 4v10M7 17v3M7 8h3v6H7zM17 4v3M17 16v4M15.5 7h3v9h-3z"/></svg>{{end}}
+{{define "navIconAudit"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 4 0M8 13l2 2 4-4"/></svg>{{end}}
+{{define "navIconMcp"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path stroke-linecap="round" d="M8 9l3 3-3 3M13 15h3"/></svg>{{end}}
+{{define "navIconAdmin"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3l7 3v5c0 4.4-3 8.3-7 10-4-1.7-7-5.6-7-10V6l7-3z"/></svg>{{end}}
+{{define "navIconProjects"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M2 8.5A2.5 2.5 0 014.5 6H9l2 2h8.5A2.5 2.5 0 0122 10.5V17a2.5 2.5 0 01-2.5 2.5h-15A2.5 2.5 0 012 17V8.5z"/></svg>{{end}}
+{{/* navIconResolve maps an icon name (from navModel) to its define —
+     Go templates can't call a template by dynamic name, so dispatch. */}}
+{{define "navIconResolve"}}{{if eq . "navIconProjects"}}{{template "navIconProjects"}}{{else if eq . "navIconOverview"}}{{template "navIconOverview"}}{{else if eq . "navIconOrchestration"}}{{template "navIconOrchestration"}}{{else if eq . "navIconSwarms"}}{{template "navIconSwarms"}}{{else if eq . "navIconWorkflows"}}{{template "navIconWorkflows"}}{{else if eq . "navIconExecutions"}}{{template "navIconExecutions"}}{{else if eq . "navIconTasks"}}{{template "navIconTasks"}}{{else if eq . "navIconMemory"}}{{template "navIconMemory"}}{{else if eq . "navIconReminders"}}{{template "navIconReminders"}}{{else if eq . "navIconInsight"}}{{template "navIconInsight"}}{{else if eq . "navIconSpend"}}{{template "navIconSpend"}}{{else if eq . "navIconGauge"}}{{template "navIconGauge"}}{{else if eq . "navIconTrading"}}{{template "navIconTrading"}}{{else if eq . "navIconAudit"}}{{template "navIconAudit"}}{{else if eq . "navIconMcp"}}{{template "navIconMcp"}}{{else if eq . "navIconAdmin"}}{{template "navIconAdmin"}}{{else if eq . "navIconSteer"}}{{template "navIconSteer"}}{{else if eq . "navIconLive"}}{{template "navIconLive"}}{{else if eq . "navIconInbox"}}{{template "navIconInbox"}}{{end}}{{end}}
+
+{{define "navLogo"}}
+<a href="/ui/" title="Vornik — Dashboard" aria-label="Vornik — Dashboard" class="flex items-center justify-center text-gray-100">
+    {{/* Two-colour glyph rendered for legibility on the brand-500
+         (Coolors cadet teal) nav strip:
+           - hex outline + 6 satellites: brand-50 (currentColor), very
+             pale teal — high contrast on the saturated brand-500
+             background at small sizes;
+           - centre dot: peach-300 (#FFCAB1), the warm Coolors
+             highlight — gives the glyph a two-tone identity that
+             echoes the palette without competing with the green
+             accent reserved for spend / success metrics. */}}
+    <svg class="h-7 w-7" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+        <path d="M14 3L24 8.5v11L14 25 4 19.5v-11L14 3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+        {{/* Centre dot fill is theme-aware via the `nav-logo-dot`
+             class — see the rule in pageHead. */}}
+        <circle cx="14" cy="14" r="2.5" class="nav-logo-dot"/>
+        <circle cx="14" cy="7"  r="1.8" fill="currentColor" opacity="0.9"/>
+        <circle cx="20.2" cy="10.5" r="1.8" fill="currentColor" opacity="0.9"/>
+        <circle cx="20.2" cy="17.5" r="1.8" fill="currentColor" opacity="0.9"/>
+        <circle cx="14" cy="21" r="1.8" fill="currentColor" opacity="0.9"/>
+        <circle cx="7.8"  cy="17.5" r="1.8" fill="currentColor" opacity="0.9"/>
+        <circle cx="7.8"  cy="10.5" r="1.8" fill="currentColor" opacity="0.9"/>
+    </svg>
+    {{/* Icon-only mark (UI refresh 2026-06-08): the rail is 3.5rem wide,
+         so the old "Vornik" wordmark overflowed. Pages that want the
+         wordmark (e.g. login) render their own text next to this mark. */}}
+</a>
+{{end}}
+
+{{/* Phase 34 — phone-first nav.
+
+     Two responsive variants share the same {{template "nav" .}}
+     entry point so individual page templates don't need to change:
+
+       < md:  bottom nav (thumb-reach), hidden top nav
+       md:+   top nav as before, no bottom nav
+
+     The active link colours invert: indigo background fill at md:+,
+     coloured icon + visible label on phone (since the nav is the
+     only colour anchor at the bottom of the viewport).
+
+     Phone nav reserves space via body { padding-bottom: 64+safe }
+     in pageHead's <style>; that way no per-page `pb-16` plumbing
+     is needed and HTMX swaps don't accidentally hide content.
+*/}}
+{{define "navIcons"}}{{/* shared icon SVG paths so the two surfaces stay in sync */}}{{end}}
+
+{{define "themeToggle"}}
+{{/* Theme picker — toggles between `light` (Coolors palette) and
+     `dark` (EaseIT brand on Nord neutral). Persists the choice in
+     localStorage so it survives reloads and navigations. The early
+     resolver in pageHead applies the saved value before first paint,
+     so this button is the only place the operator interacts with
+     the system; the JS below just flips the attribute and persists.
+
+     Sun + moon icons are stacked — CSS toggles which is visible by
+     reading [data-theme] off <html>. No JS required for the icon
+     swap, only for the actual theme write. */}}
+<button type="button" id="theme-toggle"
+        class="mt-1 flex h-9 w-9 items-center justify-center rounded-md text-gray-400 hover:text-gray-100 hover:bg-gray-500/10 transition-colors"
+        aria-label="Toggle colour theme" title="Toggle colour theme">
+    {{/* Both glyphs sit in the same slot; theme-aware CSS in the
+         pageHead <style> block hides whichever is the current
+         theme so the visible one is "what you'll switch TO".
+         Sun = "switch to light"  (shown in dark mode)
+         Moon = "switch to dark"  (shown in light mode) */}}
+    <svg class="theme-icon-sun h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="4"/>
+        <path stroke-linecap="round" d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+    </svg>
+    <svg class="theme-icon-moon h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+    </svg>
+</button>
+<script>
+    // Picker logic: flip data-theme, persist, sync the theme-color
+    // meta (browser address-bar tint). The .theme-transition class
+    // adds a brief CSS transition window so the swap doesn't look
+    // like a jarring repaint; removed after the transition runs to
+    // avoid animating subsequent UI changes.
+    (function () {
+        var btn = document.getElementById('theme-toggle');
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+            var html = document.documentElement;
+            var current = html.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+            var next = current === 'dark' ? 'light' : 'dark';
+            html.classList.add('theme-transition');
+            html.setAttribute('data-theme', next);
+            try { localStorage.setItem('vornik:theme', next); } catch (e) { /* ignore */ }
+            var meta = document.querySelector('meta[name="theme-color"]');
+            if (meta) meta.setAttribute('content', next === 'dark' ? '#0078C3' : '#558A98');
+            // Drop the transition class after the animation window so
+            // unrelated HTMX swaps don't get the same fade treatment.
+            window.setTimeout(function () { html.classList.remove('theme-transition'); }, 220);
+        });
+    })();
+</script>
+{{end}}
+
+{{define "nav"}}
+{{/* Skip-to-main-content link — visually hidden until keyboard
+     focus reveals it. Targets #main on every page; pages must
+     give their <main> element id="main" tabindex="-1" so screen
+     readers + keyboard users can bypass the global nav. WCAG
+     2.4.1 (bypass blocks). */}}
+<a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[100] focus:bg-brand-600 focus:text-white focus:px-3 focus:py-2 focus:rounded-md focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-white">Skip to main content</a>
+{{/* === Icon rail + contextual panel (md:+) — UI refresh 2026-06-08 ===
+     Replaces the flat top-bar. The rail (areas) + panel (destinations
+     of the active area) + mobile drawer all render from navModel so the
+     IA cannot drift. Active area derived from CurrentPage. */}}
+{{$activeArea := navAreaForPage .CurrentPage}}
+<nav class="nav-rail hidden md:flex fixed inset-y-0 left-0 z-50 w-14 flex-col items-center gap-1 py-3 glass border-r"
+     role="navigation" aria-label="Primary">
+    {{template "navLogo" .}}
+    <div class="flex-1 flex flex-col items-center gap-1 mt-2">
+        {{range navModel}}
+        <a href="{{.Href}}" title="{{.Label}}" data-rail="{{.Key}}"
+           {{if .AdminOnly}}data-admin-link {{end}}class="{{if and .AdminOnly (not (hasAdminFlag $))}}hidden {{end}}rail-ico{{if eq $activeArea .Key}} rail-ico-active{{end}}"
+           {{if eq $activeArea .Key}}aria-current="true"{{end}}>
+            {{template "navIconResolve" .Icon}}
+            <span class="sr-only">{{.Label}}</span>
+        </a>
+        {{end}}
+    </div>
+    <form method="POST" action="/ui/logout" data-signout class="{{if not (hasSessionFlag .)}}hidden{{end}}">
+        <button type="submit" title="Sign out" class="rail-ico">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+            <span class="sr-only">Sign out</span>
+        </button>
+    </form>
+    {{template "themeToggle" .}}
+</nav>
+
+{{/* === Contextual panels (md:+) — one per area, stacked in the same fixed
+     slot. The ACTIVE area's panel is open by default (.panel-open); hovering
+     another rail icon swaps which one shows (script below). === */}}
+{{range navModel}}
+<aside data-panel="{{.Key}}" class="contextual-panel fixed inset-y-0 left-14 z-40 w-52 p-3 glass border-r" aria-label="{{.Label}} section">
+    <div class="font-display text-xs uppercase tracking-wider text-gray-500 px-2 mb-2 mt-1">{{.Label}}</div>
+    {{range .Dests}}
+    <a href="{{.Href}}" {{if .AdminOnly}}data-admin-link {{end}}{{if .Cap}}data-cap="{{.Cap}}" {{end}}class="{{if and .AdminOnly (not (hasAdminFlag $))}}hidden {{end}}panel-item{{if eq $.CurrentPage .Key}} panel-item-active{{end}}"
+       {{if eq $.CurrentPage .Key}}aria-current="page"{{end}}>
+        {{template "navIconResolve" .Icon}}<span>{{.Label}}</span>
+    </a>
+    {{end}}
+</aside>
+{{end}}
+{{/* Rail hover swaps the open panel; leaving reverts to the active area's.
+     A short revert delay bridges the icon→panel gap so it doesn't flicker. */}}
+<script>
+    (function () {
+        var rail = document.querySelector('.nav-rail');
+        if (!rail) return;
+        var panels = {};
+        document.querySelectorAll('[data-panel]').forEach(function (p) { panels[p.getAttribute('data-panel')] = p; });
+        var timer;
+        // Hover flyout: show one panel on hover, nothing open otherwise. The
+        // active area is shown by the highlighted rail icon, NOT an auto-open
+        // panel — so the submenu never lingers on detail pages or reappears
+        // after an HTMX content swap.
+        function show(k) {
+            Object.keys(panels).forEach(function (key) { panels[key].classList.toggle('panel-open', key === k); });
+        }
+        function closeAll() { Object.keys(panels).forEach(function (key) { panels[key].classList.remove('panel-open'); }); }
+        function scheduleClose() { timer = window.setTimeout(closeAll, 140); }
+        function cancelClose() { window.clearTimeout(timer); }
+        document.querySelectorAll('[data-rail]').forEach(function (icon) {
+            icon.addEventListener('mouseenter', function () { cancelClose(); show(icon.getAttribute('data-rail')); });
+        });
+        Object.keys(panels).forEach(function (key) {
+            panels[key].addEventListener('mouseenter', function () { cancelClose(); show(key); });
+            panels[key].addEventListener('mouseleave', scheduleClose);
+        });
+        rail.addEventListener('mouseleave', scheduleClose);
+    })();
+</script>
+
+{{/* === Bottom nav (< md:) === */}}
+{{/* Reminders replaces Audit on mobile: Audit is an admin-leaning
+     surface (rarely needed on phone), while Reminders is the
+     operator's at-a-glance schedule view and was previously
+     unreachable on mobile entirely. Audit stays one tap away
+     via the desktop nav and the command palette. */}}
+{{/* === Bottom area-tab bar + contextual drawers (< md) — UI refresh ===
+     Top-level AREAS as tabs (from navModel); tapping a tab toggles a
+     glass drawer listing that area's destinations. Admin tab gated like
+     the rail; sign-out is the trailing data-signout control. */}}
+<nav class="md:hidden fixed bottom-0 left-0 right-0 z-50 glass menu-solid border-t safe-pb" role="navigation" aria-label="Primary">
+    <div class="flex h-16">
+        {{/* Home/Dashboard — a direct link (no submenu). On desktop the logo
+             plays this role, but the mobile bar has no logo, so Dashboard
+             would otherwise be unreachable. Active when no area matches. */}}
+        <a href="/ui/" class="flex-1 flex flex-col items-center justify-center gap-0.5 tap {{if eq $activeArea ""}}text-brand-300 font-semibold{{else}}text-gray-400{{end}}" aria-label="Dashboard">
+            <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 11.5 12 4l9 7.5M5.5 10v9h13v-9"/></svg>
+            <span class="text-[10px] leading-none">Home</span>
+        </a>
+        {{range navModel}}
+        <button type="button" data-nav-tab="{{.Key}}"
+                {{if .AdminOnly}}data-admin-link {{end}}class="{{if and .AdminOnly (not (hasAdminFlag $))}}hidden {{end}}flex-1 flex flex-col items-center justify-center gap-0.5 tap {{if eq $activeArea .Key}}text-brand-300 font-semibold{{else}}text-gray-400{{end}}"
+                aria-label="{{.Label}}">
+            {{template "navIconResolve" .Icon}}
+            <span class="text-[10px] leading-none">{{.Label}}</span>
+        </button>
+        {{end}}
+        <form method="POST" action="/ui/logout" data-signout class="{{if not (hasSessionFlag .)}}hidden {{end}}flex-1" onsubmit="return confirm('Sign out?')">
+            <button type="submit" class="flex flex-col items-center justify-center gap-0.5 tap text-gray-400 w-full h-full" aria-label="Sign out">
+                <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+                <span class="text-[10px] leading-none">Sign out</span>
+            </button>
+        </form>
+    </div>
+    {{/* Per-area contextual drawers — hidden until the matching tab is tapped. */}}
+    {{range navModel}}
+    <div data-nav-drawer="{{.Key}}" class="hidden fixed inset-x-0 z-40 max-h-[60vh] overflow-y-auto glass menu-solid border-t p-3" role="menu" aria-label="{{.Label}}">
+        <div class="text-xs uppercase tracking-wide text-gray-500 px-2 mb-2">{{.Label}}</div>
+        {{range .Dests}}
+        <a href="{{.Href}}" {{if .AdminOnly}}data-admin-link {{end}}{{if .Cap}}data-cap="{{.Cap}}" {{end}}class="{{if and .AdminOnly (not (hasAdminFlag $))}}hidden {{end}}panel-item{{if eq $.CurrentPage .Key}} panel-item-active{{end}}">{{template "navIconResolve" .Icon}}<span>{{.Label}}</span></a>
+        {{end}}
+    </div>
+    {{end}}
+</nav>
+{{/* Mobile drawer toggle — tap a tab to reveal/hide its destinations.
+     Inline-script precedent: themeToggle / signout-gate. */}}
+<script>
+    (function () {
+        function closeDrawers() {
+            document.querySelectorAll('[data-nav-drawer]').forEach(function (d) { d.classList.add('hidden'); });
+        }
+        document.querySelectorAll('[data-nav-tab]').forEach(function (btn) {
+            btn.addEventListener('click', function (e) {
+                e.stopPropagation();
+                var key = btn.getAttribute('data-nav-tab');
+                document.querySelectorAll('[data-nav-drawer]').forEach(function (d) {
+                    if (d.getAttribute('data-nav-drawer') === key) {
+                        d.classList.toggle('hidden');
+                    } else {
+                        d.classList.add('hidden');
+                    }
+                });
+            });
+        });
+        // Auto-hide the drawer once a destination is chosen.
+        document.querySelectorAll('[data-nav-drawer] a').forEach(function (a) {
+            a.addEventListener('click', closeDrawers);
+        });
+        // Tap outside the bar/drawer closes any open drawer.
+        document.addEventListener('click', function (e) {
+            if (e.target.closest('[data-nav-tab]') || e.target.closest('[data-nav-drawer]')) return;
+            closeDrawers();
+        });
+    })();
+</script>
+{{/* Signout gate — unhides every [data-signout] control (and widens
+     the mobile grid to 7 columns) when the vornik_session_ui marker
+     cookie is present; marker value "admin" additionally unhides the
+     [data-admin-link] nav item. The marker is set/cleared by the
+     login flow and carries no secret — worst case a stale/spoofed
+     marker shows a button whose POST harmlessly redirects, or a link
+     whose target the admin gate 403s server-side. Inline-script
+     precedent: themeToggle above. */}}
+<script>
+    (function () {
+        var m = /(?:^|;\s*)vornik_session_ui=(1|admin)(?:;|$)/.exec(document.cookie);
+        if (!m) return;
+        document.querySelectorAll('[data-signout]').forEach(function (el) {
+            el.classList.remove('hidden');
+        });
+        if (m[1] === 'admin') {
+            document.querySelectorAll('[data-admin-link]').forEach(function (el) {
+                el.classList.remove('hidden');
+            });
+        }
+    })();
+    // Capability gate: hide [data-cap] nav items (e.g. Trading) when the
+    // login caps cookie is present and omits the capability. Fail-open —
+    // no cookie (old session / auth-off) leaves them visible.
+    (function () {
+        var c = /(?:^|;\s*)vornik_session_caps=([^;]*)/.exec(document.cookie);
+        if (!c) return;
+        var caps = c[1].split(',');
+        document.querySelectorAll('[data-cap]').forEach(function (el) {
+            if (caps.indexOf(el.getAttribute('data-cap')) === -1) {
+                el.classList.add('hidden');
+            }
+        });
+    })();
+</script>
+{{template "commandPalette" .}}
+{{end}}
+
+{{/* Cmd+K palette — global overlay; lives once per page via pageFooter
+     so every template gets it without per-template wiring.
+
+     Trigger: Cmd+K (macOS) or Ctrl+K. Esc closes. Up/Down arrows
+     navigate; Enter opens the highlighted result. Click backdrop
+     closes. The palette is a <dialog> so backdrop + ESC behaviour
+     is browser-native; the JS layer adds keyboard nav + fetch. */}}
+{{define "commandPalette"}}
+<dialog id="palette" class="rounded-xl border border-dark-700 bg-dark-800 backdrop:bg-black/50 backdrop:backdrop-blur-sm w-[90vw] max-w-2xl p-0 text-gray-100"
+        aria-label="Command palette">
+    <div class="flex items-center gap-2 px-4 py-3 border-b border-dark-700">
+        <svg class="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.2-5.2M17 11a6 6 0 11-12 0 6 6 0 0112 0z"/></svg>
+        <input id="palette-input" type="search" autocomplete="off" placeholder="Search tasks, projects, actions…"
+               aria-label="Search tasks, projects, actions"
+               class="flex-1 bg-transparent text-base text-gray-100 placeholder-gray-500 focus:outline-none">
+        <kbd class="hidden md:inline-block px-1.5 py-0.5 text-[10px] text-gray-500 bg-dark-900 border border-dark-700 rounded">Esc</kbd>
+    </div>
+    <ul id="palette-results" class="max-h-[60vh] overflow-y-auto py-1" role="listbox"></ul>
+    <div class="px-4 py-2 border-t border-dark-700 text-[10px] text-gray-500 flex items-center justify-between">
+        <span><kbd class="px-1 bg-dark-900 border border-dark-700 rounded">↑↓</kbd> navigate · <kbd class="px-1 bg-dark-900 border border-dark-700 rounded">Enter</kbd> open</span>
+        <span><kbd class="px-1 bg-dark-900 border border-dark-700 rounded">Cmd</kbd>+<kbd class="px-1 bg-dark-900 border border-dark-700 rounded">K</kbd></span>
+    </div>
+</dialog>
+<script>
+    (function() {
+        var dlg = document.getElementById('palette');
+        var input = document.getElementById('palette-input');
+        var list = document.getElementById('palette-results');
+        if (!dlg || !input || !list) return;
+        var selected = 0;
+        var results = [];
+        var debounceTimer;
+
+        function renderResults(arr) {
+            results = arr || [];
+            selected = 0;
+            list.textContent = '';
+            if (results.length === 0) {
+                var li = document.createElement('li');
+                li.className = 'px-4 py-3 text-sm text-gray-500';
+                li.textContent = 'No matches.';
+                list.appendChild(li);
+                return;
+            }
+            results.forEach(function(r, i) {
+                var li = document.createElement('li');
+                li.setAttribute('role', 'option');
+                li.dataset.url = r.url;
+                li.className = 'palette-row px-4 py-2 cursor-pointer flex items-center gap-3';
+                var kindBadge = document.createElement('span');
+                kindBadge.className = 'text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ' +
+                    (r.kind === 'task' ? 'bg-brand-500/20 text-brand-300' :
+                     r.kind === 'project' ? 'bg-emerald-500/20 text-emerald-300' :
+                     'bg-gray-500/20 text-gray-300');
+                kindBadge.textContent = r.kind;
+                li.appendChild(kindBadge);
+                var labelBox = document.createElement('div');
+                labelBox.className = 'flex-1 min-w-0';
+                var label = document.createElement('div');
+                label.className = 'text-sm text-gray-100 truncate';
+                label.textContent = r.label;
+                labelBox.appendChild(label);
+                if (r.sublabel) {
+                    var sub = document.createElement('div');
+                    sub.className = 'text-xs text-gray-500 truncate font-mono';
+                    sub.textContent = r.sublabel;
+                    labelBox.appendChild(sub);
+                }
+                li.appendChild(labelBox);
+                li.addEventListener('click', function() { openResult(r.url); });
+                list.appendChild(li);
+            });
+            highlight(0);
+        }
+        function highlight(idx) {
+            var rows = list.querySelectorAll('.palette-row');
+            rows.forEach(function(r, i) {
+                r.classList.toggle('bg-brand-500/10', i === idx);
+            });
+            selected = idx;
+            if (rows[idx]) rows[idx].scrollIntoView({ block: 'nearest' });
+        }
+        function openResult(url) {
+            close();
+            window.location.href = url;
+        }
+        function fetchResults(q) {
+            fetch('/ui/palette/search?q=' + encodeURIComponent(q || ''))
+                .then(function(r) { return r.json(); })
+                .then(renderResults)
+                .catch(function() { renderResults([]); });
+        }
+        function open() {
+            if (typeof dlg.showModal === 'function') dlg.showModal();
+            else dlg.setAttribute('open', '');
+            input.value = '';
+            input.focus();
+            fetchResults('');
+        }
+        function close() {
+            if (typeof dlg.close === 'function') dlg.close();
+            else dlg.removeAttribute('open');
+        }
+        document.addEventListener('keydown', function(e) {
+            if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+                e.preventDefault();
+                if (dlg.open) close(); else open();
+                return;
+            }
+            if (!dlg.open) return;
+            if (e.key === 'ArrowDown') { e.preventDefault(); highlight(Math.min(selected + 1, results.length - 1)); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); highlight(Math.max(selected - 1, 0)); }
+            else if (e.key === 'Enter' && results[selected]) { e.preventDefault(); openResult(results[selected].url); }
+        });
+        input.addEventListener('input', function() {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(function() { fetchResults(input.value); }, 100);
+        });
+        // Click on the backdrop closes; <dialog>'s native behaviour
+        // is sometimes inconsistent across browsers, so we add an
+        // explicit handler.
+        dlg.addEventListener('click', function(e) {
+            if (e.target === dlg) close();
+        });
+    })();
+</script>
+{{end}}
+
+{{/* pageFooter intentionally renders nothing (UI refresh 2026-06-08):
+     the old brand-colour footer clashed with the glass/dark shell and was
+     redundant with the rail. Kept as an empty define so the ~60
+     {{template "pageFooter"}} call sites don't all need editing. */}}
+{{define "pageFooter"}}{{end}}
+
+{{/*
+sortHeader renders a sortable <th>. Expects a dict:
+  Label    string
+  Key      string  (sort key for this column)
+  Active   string  (currently active sort key, from the request)
+  Dir      string  (currently active direction: "asc" or "desc")
+  BaseURL  string  (URL with all current query params except sort/dir; the
+                   partial appends ?sort=KEY&dir=DIR or &sort=...&dir=...)
+  Align    string  ("left" / "right")
+*/}}
+{{define "sortHeader"}}
+{{- $align := .Align -}}{{- if eq $align "" -}}{{ $align = "left" }}{{- end -}}
+{{- $isActive := eq .Active .Key -}}
+{{- $nextDir := "desc" -}}
+{{- if and $isActive (eq .Dir "desc") -}}{{ $nextDir = "asc" }}{{- end -}}
+{{- $sep := "?" -}}
+{{- if contains .BaseURL "?" -}}{{ $sep = "&" }}{{- end -}}
+{{- $href := printf "%s%ssort=%s&dir=%s" .BaseURL $sep .Key $nextDir -}}
+<th scope="col" {{if $isActive}}aria-sort="{{if eq .Dir "asc"}}ascending{{else}}descending{{end}}"{{end}} class="sort-th {{if $isActive}}sort-active{{end}} px-2 py-2 text-{{$align}} text-xs font-medium text-gray-500 uppercase tracking-wider">
+    <a href="{{$href}}" class="hover:text-gray-300 transition-colors">
+        {{.Label}}
+        <span class="sort-chevron" aria-hidden="true">
+            {{- if and $isActive (eq .Dir "asc") -}}
+            <svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
+            {{- else -}}
+            <svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+            {{- end -}}
+        </span>
+    </a>
+</th>
+{{end}}
+
+{{/* pageSizeSelector — shared "Show: 10 / 20 / 50 / 100" page-size
+     control. The audit page (internal/ui/templates/audit.html) is the
+     canonical source of the UX pattern; this partial generalises it
+     so /ui/, /ui/tasks, /ui/memory, /ui/projects/<id>, /ui/spend, and
+     the audit page itself all render identical chrome.
+
+     Args (via the `dict` template helper):
+       Action    string             — form target URL ("/ui/tasks", "/ui/spend"…)
+       Current   int                — currently-rendered page size (validated handler-side)
+       Options   []int              — option set; pass .LimitOptions
+       Hidden    map[string]string  — existing query params to preserve verbatim
+                                      (status, project, window, sort, dir, q, flat, …)
+                                      Empty-string values are skipped so the
+                                      submitted URL doesn't carry "&q=".
+       ParamName string             — OPTIONAL. Query-param name for the
+                                      select. Defaults to "limit". Pages
+                                      with multiple lists (memory_project's
+                                      epochs / quarantine / rollbacks /
+                                      eviction tables) pass a per-table
+                                      name (e.g. "epochs_limit") so each
+                                      selector controls its own table.
+                                      The id of the <select> also derives
+                                      from ParamName so multiple selectors
+                                      on one page don't share an id.
+
+     Why a form + hidden inputs rather than the original audit-style
+     onchange-href: the audit page rebuilt one URL per option in the
+     template, which forced every consumer to spell out every preserved
+     param inline. With a form, the browser serialises the hidden
+     inputs and the selected option on submit — adding a new
+     preserved param is a one-line dict change instead of an
+     N-option string-concat. JS-disabled clients can still submit
+     via the <noscript> button. */}}
+{{define "pageSizeSelector"}}
+{{$param := "limit"}}{{if .ParamName}}{{$param = .ParamName}}{{end}}
+<form method="GET" action="{{.Action}}" class="flex items-center gap-2 text-xs">
+    {{/* Preserve every other filter the operator already set so a
+         change to "show 50" doesn't silently drop project/status/q. */}}
+    {{range $k, $v := .Hidden}}{{if $v}}<input type="hidden" name="{{$k}}" value="{{$v}}">{{end}}{{end}}
+    <label for="page-size-{{$param}}" class="text-gray-500 uppercase tracking-wider">Show</label>
+    <select id="page-size-{{$param}}" name="{{$param}}"
+            onchange="this.form.submit()"
+            class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 hover:bg-dark-600 focus:border-brand-500 focus:outline-none">
+        {{$cur := .Current}}
+        {{range $val := .Options}}
+        <option value="{{$val}}" {{if eq $val $cur}}selected{{end}}>{{$val}}</option>
+        {{end}}
+    </select>
+    <noscript><button type="submit" class="px-2 py-1 rounded-md bg-brand-600/80 hover:bg-brand-500 text-white">Apply</button></noscript>
+</form>
+{{end}}
+
+{{/* Inline icon partials reused by status badges. The terminal-state
+     icons (✓ / ✕) are deliberate redundancy with colour so a colour-
+     blind reader can still distinguish completed from failed. */}}
+{{/* emptyState — uniform empty-state component used across list
+     pages. Three slots as of Upgrade #5 (2026-05-26):
+
+       Title    — what this section is for (one plain-English line).
+       Hint     — why it's empty (one line — usually "you haven't
+                  done X yet"). Optional.
+       CTALabel + CTAHref — primary action button. When the user CAN
+                  populate this surface, the CTA is the primary path
+                  (e.g. "Schedule a task"). Optional pair.
+       DocLabel + DocHref — secondary docs link. Useful when the
+                  surface is automatically populated and the user
+                  needs an explanation rather than an action. Optional
+                  pair.
+       Icon     — one of "search|tasks|memory|audit|chat|file"; falls
+                  back to a generic glyph.
+
+     Legacy call sites that pass only Title + Hint + Icon keep
+     working — the new fields are additive. */}}
+{{define "emptyState"}}
+<div class="bg-dark-800 rounded-xl border border-dark-700 px-5 py-10 text-center">
+    {{if eq .Icon "tasks"}}
+    <svg class="h-8 w-8 text-gray-600 mx-auto mb-2" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+    {{else if eq .Icon "audit"}}
+    <svg class="h-8 w-8 text-gray-600 mx-auto mb-2" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+    {{else if eq .Icon "memory"}}
+    <svg class="h-8 w-8 text-gray-600 mx-auto mb-2" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7l9-4 9 4v10l-9 4-9-4V7z M3 7l9 4 9-4 M12 11v10"/></svg>
+    {{else if eq .Icon "search"}}
+    <svg class="h-8 w-8 text-gray-600 mx-auto mb-2" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.2-5.2M17 11a6 6 0 11-12 0 6 6 0 0112 0z"/></svg>
+    {{else if eq .Icon "chat"}}
+    <svg class="h-8 w-8 text-gray-600 mx-auto mb-2" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.76c0 1.6 1.123 2.994 2.707 3.227 1.068.157 2.148.279 3.238.364.466.037.893.281 1.153.671L12 21l2.652-3.978c.26-.39.687-.634 1.153-.67 1.09-.086 2.17-.208 3.238-.365 1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0012 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018z"/></svg>
+    {{else if eq .Icon "file"}}
+    <svg class="h-8 w-8 text-gray-600 mx-auto mb-2" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>
+    {{else}}
+    <svg class="h-8 w-8 text-gray-600 mx-auto mb-2" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+    {{end}}
+    <p class="text-gray-300 text-sm font-medium">{{.Title}}</p>
+    {{if .Hint}}<p class="text-gray-500 text-xs mt-1 max-w-md mx-auto">{{.Hint}}</p>{{end}}
+    {{if or .CTAHref .DocHref}}
+    <div class="mt-4 flex items-center justify-center gap-2 flex-wrap">
+        {{if and .CTAHref .CTALabel}}
+        <a href="{{.CTAHref}}" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors">
+            {{.CTALabel}}
+            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+        </a>
+        {{end}}
+        {{if and .DocHref .DocLabel}}
+        <a href="{{.DocHref}}" class="inline-flex items-center gap-1 px-3 py-1.5 text-xs text-gray-400 hover:text-gray-200 rounded-lg transition-colors">
+            {{.DocLabel}}
+        </a>
+        {{end}}
+    </div>
+    {{end}}
+</div>
+{{end}}
+
+{{define "iconCheck"}}<svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>{{end}}
+{{define "iconX"}}<svg class="h-3 w-3" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>{{end}}
+{{define "iconSpinner"}}<svg class="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>{{end}}
+{{define "iconDot"}}<span class="h-1.5 w-1.5 rounded-full inline-block flex-shrink-0 {{.}}" aria-hidden="true"></span>{{end}}
+
+{{/*
+taskOriginBadge renders a small pill for a task's CreationSource
+so an operator can tell at a glance which subsystem put the task
+in the queue. Replaces the standalone "Autonomy" panel that used
+to live above the task list (cleanup, 2026-05-15).
+
+  USER       → blue   (chat / web UI / CLI / API operator action)
+  AUTONOMOUS → violet (the per-project autonomy lead's decision)
+  DELEGATION → cyan   (a parent step delegated to a child task)
+  ROUTE      → cyan   (strict-adaptive routing handoff — same family
+                        as DELEGATION; using the same colour keeps
+                        the table scannable while the title=...
+                        tooltip surfaces the precise label)
+  CHECKPOINT → amber  (executor split mid-step due to iteration cap)
+
+Empty / unknown sources fall through to a neutral gray badge so
+older rows without the column render cleanly.
+*/}}
+{{define "taskOriginBadge"}}
+{{- $label := . -}}
+{{- if eq . "USER" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-blue-500/15 text-blue-300 ring-1 ring-inset ring-blue-500/30 uppercase tracking-wide" title="created by a user action (chat / API / CLI)">manual</span>
+{{- else if eq . "AUTONOMOUS" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-violet-500/15 text-violet-300 ring-1 ring-inset ring-violet-500/30 uppercase tracking-wide" title="created by the autonomy loop">autonomy</span>
+{{- else if eq . "DELEGATION" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-cyan-500/15 text-cyan-300 ring-1 ring-inset ring-cyan-500/30 uppercase tracking-wide" title="delegated from a parent step">delegated</span>
+{{- else if eq . "ROUTE" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-cyan-500/15 text-cyan-300 ring-1 ring-inset ring-cyan-500/30 uppercase tracking-wide" title="strict-adaptive routing handoff">routed</span>
+{{- else if eq . "CHECKPOINT" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-300 ring-1 ring-inset ring-amber-500/30 uppercase tracking-wide" title="executor split this off when the parent ran out of agent iterations">checkpoint</span>
+{{- else -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-gray-500/15 text-gray-400 ring-1 ring-inset ring-gray-500/30 uppercase tracking-wide" title="origin not recorded">{{if $label}}{{$label}}{{else}}—{{end}}</span>
+{{- end -}}
+{{end}}
+
+{{/* Theme-aware status pills (.pill, _partials.html <style>). pill-nodot
+     suppresses the primitive's leading dot since these arms carry their own
+     status icon. Semantic mapping: in-progress→info, success→ok, problem→
+     danger, attention/transient→warn, passive/idle→neutral. */}}
+{{define "taskStatusBadge"}}
+{{if eq . "PENDING"}}<span class="pill pill-nodot pill-neutral">{{template "iconDot" "bg-gray-400"}}Pending</span>
+{{else if eq . "QUEUED"}}<span class="pill pill-nodot pill-warn">{{template "iconDot" "bg-amber-400"}}Queued</span>
+{{else if eq . "LEASED"}}<span class="pill pill-nodot pill-info">{{template "iconDot" "bg-blue-400"}}Leased</span>
+{{else if eq . "RUNNING"}}<span class="pill pill-nodot pill-info">{{template "iconSpinner"}}Running</span>
+{{else if eq . "WAITING_FOR_CHILDREN"}}<span class="pill pill-nodot pill-neutral">{{template "iconDot" "bg-purple-400"}}Waiting</span>
+{{else if eq . "AWAITING_APPROVAL"}}<span class="pill pill-nodot pill-info">{{template "iconDot" "bg-sky-300"}}Awaiting approval</span>
+{{else if eq . "AWAITING_INPUT"}}<span class="pill pill-nodot pill-warn">{{template "iconDot" "bg-amber-300"}}Awaiting input</span>
+{{else if eq . "AWAITING_EXTERNAL"}}<span class="pill pill-nodot pill-info">{{template "iconDot" "bg-cyan-400"}}Awaiting external</span>
+{{else if eq . "PAUSED"}}<span class="pill pill-nodot pill-warn">{{template "iconDot" "bg-purple-400"}}Paused</span>
+{{else if eq . "COMPLETED"}}<span class="pill pill-nodot pill-ok">{{template "iconCheck"}}Completed</span>
+{{else if eq . "CLOSED"}}<span class="pill pill-nodot pill-ok">{{template "iconCheck"}}Closed</span>
+{{else if eq . "FAILED"}}<span class="pill pill-nodot pill-danger">{{template "iconX"}}Failed</span>
+{{else if eq . "CANCELLED"}}<span class="pill pill-nodot pill-neutral">{{template "iconX"}}Cancelled</span>
+{{else}}<span class="pill pill-nodot pill-neutral">{{.}}</span>
+{{end}}
+{{end}}
+
+{{/*
+statusFilterPill renders one anchor in the tasks-list status filter row.
+Pass full class names (not just color names) so Tailwind JIT picks them up.
+Expects a dict:
+  Label    string  (e.g. "Queued")
+  Status   string  ("" for the All pill)
+  Active   string  (currently selected status, from .Status)
+  DotClass string  (full class for the dot, e.g. "bg-amber-400 animate-pulse"; "" for no dot)
+  ActiveBg string  (full class applied when active, e.g. "bg-amber-600")
+*/}}
+{{define "statusFilterPill"}}
+{{- $isActive := eq .Active .Status -}}
+{{- $href := "/ui/tasks" -}}
+{{- if .Status -}}{{ $href = printf "/ui/tasks?status=%s" .Status }}{{- end -}}
+{{- /* Preserve the Nested/Flat view selection when the user
+       clicks a status filter — otherwise switching from "Queued"
+       to "Running" silently flips them back to Nested. */ -}}
+{{- if .Flat -}}
+  {{- if .Status -}}{{ $href = printf "%s&flat=1" $href }}{{- else -}}{{ $href = printf "%s?flat=1" $href }}{{- end -}}
+{{- end -}}
+<a href="{{$href}}" hx-get="{{$href}}" hx-target="#task-content" hx-select="#task-content" hx-swap="outerHTML" hx-push-url="true"
+   class="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded-full transition-colors {{if $isActive}}{{.ActiveBg}} text-gray-100{{else}}bg-dark-700 text-gray-400 hover:bg-dark-600 hover:text-gray-200{{end}}">
+    {{- if .DotClass -}}
+    <span class="h-1.5 w-1.5 rounded-full inline-block {{.DotClass}}"></span>
+    {{- end -}}
+    {{.Label}}
+</a>
+{{end}}
+
+{{/*
+statusFilterCell renders one count cell in the /ui/tasks Status
+Overview grid. The cell is the entire clickable filter target —
+clicking "Running 7" navigates to ?status=RUNNING and the active
+cell highlights with the status' colour ring. Replaces the
+separate filter-pill row the 2026-05 redesign folded away.
+Expects a dict:
+  Label      string  ("Running", "All")
+  Status     string  ("RUNNING"; empty = clear filter)
+  Active     string  (.Status — currently-selected filter)
+  Count      int64   (the number to display)
+  CountColor string  (full Tailwind class for the count, e.g. "text-accent-400")
+  ActiveBg   string  (full classes applied when this cell is the active filter)
+  FlatQS     string  ("&flat=1" or "" — passed in once by the template
+                       so the cell preserves the nested/flat selection
+                       across filter clicks without recomputing per cell)
+  LimitQS    string  ("&limit=N")
+*/}}
+{{define "statusFilterCell"}}
+{{- $isActive := eq .Active .Status -}}
+{{- $href := "/ui/tasks" -}}
+{{- if .Status -}}
+  {{- $href = printf "/ui/tasks?status=%s%s%s" .Status .LimitQS .FlatQS -}}
+{{- else -}}
+  {{- /* "All" cell: clear status; keep nested/flat + page size. */ -}}
+  {{- if or .FlatQS .LimitQS -}}{{ $href = printf "/ui/tasks?_=1%s%s" .LimitQS .FlatQS }}{{- end -}}
+{{- end -}}
+<a href="{{$href}}" hx-get="{{$href}}" hx-target="#task-content" hx-select="#task-content" hx-swap="outerHTML" hx-push-url="true"
+   class="block text-center px-2 py-2 rounded-lg ring-1 transition-colors {{if $isActive}}{{.ActiveBg}}{{else}}bg-dark-900/60 ring-dark-700 hover:ring-dark-600 hover:bg-dark-900{{end}}"
+   aria-current="{{if $isActive}}page{{else}}false{{end}}"
+   aria-label="Filter to {{.Label}} ({{.Count}})">
+    <div class="text-xl font-bold {{.CountColor}} tabular-nums">{{.Count}}</div>
+    <div class="text-[11px] {{if $isActive}}text-gray-200{{else}}text-gray-500{{end}} mt-0.5">{{.Label}}</div>
+</a>
+{{end}}
+
+{{/*
+spendCard renders one card in a 4-up spend grid. Used on the dashboard and
+project detail. Tailwind classes are listed literally here so the JIT
+scanner picks them up. Pass a dict:
+  Label         string  ("Spend · 24h")
+  USD           float64 (the amount)
+  Color         string  ("cyan" — default — or "purple")
+  SparkLine     string  (optional — pre-built SVG polyline points for the line)
+  SparkFilled   string  (optional — closed polyline points for the area fill)
+*/}}
+{{define "spendCard"}}
+{{- $isPurple := eq .Color "purple" -}}
+<div class="bg-dark-800 rounded-xl border border-dark-700 {{if $isPurple}}hover:border-purple-700/40{{else}}hover:border-accent-700/40{{end}} transition-colors overflow-hidden">
+    <div class="px-5 py-4">
+        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider">{{.Label}}</p>
+        {{if .SparkLine}}
+        <svg viewBox="0 0 100 24" class="w-full h-6 mt-1" preserveAspectRatio="none" aria-hidden="true">
+            {{if $isPurple}}
+            <polyline fill="rgba(192, 132, 252, 0.18)" stroke="none" points="{{.SparkFilled}}"/>
+            <polyline fill="none" stroke="#c084fc" stroke-width="1.5" points="{{.SparkLine}}"/>
+            {{else}}
+            <polyline fill="rgba(101, 145, 87, 0.18)" stroke="none" points="{{.SparkFilled}}"/>
+            <polyline fill="none" stroke="#659157" stroke-width="1.5" points="{{.SparkLine}}"/>
+            {{end}}
+        </svg>
+        {{end}}
+        <p class="mt-1.5 text-2xl font-bold {{if $isPurple}}text-purple-400{{else}}text-accent-400{{end}} tabular-nums">{{fmtUSD2 .USD}}</p>
+    </div>
+    <div class="h-0.5 {{if $isPurple}}bg-purple-500/40{{else}}bg-accent-500/40{{end}}"></div>
+</div>
+{{end}}
+
+{{/* sectionHeader — unified card title bar. Args:
+       Title     (string, required; may include a leading icon SVG — the
+                  h2's gap-2 spaces it from the text)
+       MetaText  (string, optional right-aligned muted text)
+       Href      (string, optional) + HrefLabel (string, optional link text)
+     HrefLabel gates the anchor: Href renders only when HrefLabel is also
+     set, and HrefLabel wins over MetaText when both are given.
+     Replaces the hand-rolled `<div class="px-5 py-3.5 border-b ..."><h2>…` blocks. */}}
+{{define "sectionHeader"}}
+<div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between gap-2 flex-wrap">
+    <h2 class="text-sm font-semibold text-ink-200 flex items-center gap-2">{{.Title}}</h2>
+    {{if .HrefLabel}}<a href="{{.Href}}" class="text-xs text-ink-500 hover:text-ink-300">{{.HrefLabel}}</a>
+    {{else if .MetaText}}<span class="text-xs text-ink-400">{{.MetaText}}</span>{{end}}
+</div>
+{{end}}
+
+{{/* statStrip — compact key/value grid. Replaces the repeated
+       `grid grid-cols-2 sm:grid-cols-3 gap-4` detail grids. Args:
+       Items []{Label (string), Value (any — rendered via {{.Value}}, so
+              ints/strings both work), Mono (bool, optional)}
+     Nil/empty Items renders an empty strip (no error). */}}
+{{define "statStrip"}}
+<dl class="px-5 py-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 text-xs">
+    {{range .Items}}
+    <div>
+        <dt class="text-ink-500 uppercase tracking-wider text-[10px]">{{.Label}}</dt>
+        <dd class="mt-0.5 text-sm text-ink-100 tabular-nums{{if .Mono}} font-mono{{end}}">{{.Value}}</dd>
+    </div>
+    {{end}}
+</dl>
+{{end}}
+
+{{define "executionStatusBadge"}}
+{{if eq . "PENDING"}}<span class="pill pill-nodot pill-neutral">{{template "iconDot" "bg-gray-400"}}Pending</span>
+{{else if eq . "RUNNING"}}<span class="pill pill-nodot pill-info">{{template "iconSpinner"}}Running</span>
+{{else if eq . "PAUSED"}}<span class="pill pill-nodot pill-warn">{{template "iconDot" "bg-amber-400"}}Paused</span>
+{{else if eq . "COMPLETED"}}<span class="pill pill-nodot pill-ok">{{template "iconCheck"}}Completed</span>
+{{else if eq . "FAILED"}}<span class="pill pill-nodot pill-danger">{{template "iconX"}}Failed</span>
+{{else if eq . "CANCELLED"}}<span class="pill pill-nodot pill-neutral">{{template "iconX"}}Cancelled</span>
+{{else}}<span class="pill pill-nodot pill-neutral">{{.}}</span>
+{{end}}
+{{end}}

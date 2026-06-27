@@ -1,0 +1,15 @@
+{
+  "swarm": "assistant-swarm",
+  "role": "writer",
+  "reason": "Empty message — minLength:1 + min_length_message plausibility rule must reject.",
+  "expect": "fail",
+  "payload": {
+    "writing": {
+      "written": true,
+      "path": "artifacts/out/x.md",
+      "summary": "<one line>"
+    },
+    "produced_files": ["artifacts/out/x.md"],
+    "message": ""
+  }
+}

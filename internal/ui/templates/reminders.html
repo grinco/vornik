@@ -1,0 +1,121 @@
+{{define "reminders.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">Reminders</h1>
+                {{if .Available}}
+                <span class="text-sm text-gray-500">
+                    {{.Counts.Total}} total
+                    {{if gt .Counts.Pending 0}}<span class="text-amber-400">· {{.Counts.Pending}} pending</span>{{end}}
+                    {{if gt .Counts.Fired 0}}<span class="text-emerald-400">· {{.Counts.Fired}} fired</span>{{end}}
+                    {{if gt .Counts.Cancelled 0}}<span class="text-slate-400">· {{.Counts.Cancelled}} cancelled</span>{{end}}
+                </span>
+                {{end}}
+            </div>
+
+            <p class="text-xs text-gray-500 max-w-3xl">
+                Scheduled reminders set via the dispatcher (chat or
+                <code class="font-mono text-gray-400">set_reminder</code> tool) or the
+                <code class="font-mono text-gray-400">vornikctl reminders</code> CLI.
+                One-shot rows fire once; recurring rows (↻ marker) re-arm to the next cron slot
+                after every delivery. The heartbeat sweeps due rows every 30s on the operator's
+                channel of record; cancel a pending row to stop it firing.
+            </p>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 p-10 text-center text-gray-500 text-sm">
+                Reminders are not configured on this deployment. The dispatcher_reminders table requires Postgres; SQLite deployments don't get the heartbeat.
+            </div>
+            {{else}}
+            <form method="get" action="/ui/reminders"
+                  class="glass rounded-xl border border-dark-700 px-4 py-3 flex flex-wrap items-end gap-3 text-sm">
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Status</span>
+                    <select name="status" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-36">
+                        {{range .StatusOptions}}
+                        <option value="{{.}}" {{if eq . $.FilterStatus}}selected{{end}}>{{if .}}{{.}}{{else}}any{{end}}</option>
+                        {{end}}
+                    </select>
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Project</span>
+                    <input type="text" name="project" value="{{.FilterProject}}" placeholder="e.g. assistant" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-44">
+                </label>
+                <button class="bg-brand-500 hover:bg-brand-400 text-white text-xs font-medium px-3 py-1.5 rounded-md">Filter</button>
+            </form>
+
+            {{if .Rows}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="min-w-full" data-keynav>
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fire</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Content</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Channel</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Operator</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
+                            <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Rows}}
+                            <tr class="hover:bg-dark-700/40 transition-colors align-top">
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono" title="{{.FireAtISO}}">
+                                    <div>{{.FireAt}}</div>
+                                    <div class="text-[10px] text-gray-500 mt-0.5">{{.Countdown}}</div>
+                                    {{if .IsRecurring}}
+                                    <div class="text-[10px] text-violet-300 mt-0.5" title="Cron expression">↻ {{.CronExpr}}</div>
+                                    {{if .RecurrenceUntil}}
+                                    <div class="text-[10px] text-gray-500 mt-0.5">until {{.RecurrenceUntil}}</div>
+                                    {{end}}
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap">
+                                    <span class="font-mono {{.StatusBadge}}">{{.Status}}</span>
+                                </td>
+                                <td class="px-4 py-2 text-sm text-gray-200 max-w-md truncate" title="{{.Content}}">{{.Content}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-400 font-mono whitespace-nowrap">{{.Channel}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-400 font-mono whitespace-nowrap">{{.OperatorID}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-400 font-mono whitespace-nowrap">{{if .ProjectID}}<a href="/ui/projects/{{.ProjectID}}" class="hover:text-brand-300">{{.ProjectID}}</a>{{else}}—{{end}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-right">
+                                    <div class="inline-flex items-center gap-1.5">
+                                        {{if not .IsTerminal}}
+                                        <form method="post" action="/ui/reminders/{{.ID}}/cancel"
+                                              onsubmit="return confirm('Cancel reminder {{.ID}}?');"
+                                              class="inline-flex">
+                                            <button type="submit" class="text-[11px] font-medium px-2.5 py-1 rounded-md bg-dark-700 hover:bg-dark-600 text-gray-200 ring-1 ring-dark-600">Cancel</button>
+                                        </form>
+                                        {{else}}
+                                        <span class="text-[11px] text-gray-600 italic">terminal</span>
+                                        {{end}}
+                                        <form method="post" action="/ui/reminders/{{.ID}}/delete"
+                                              onsubmit="return confirm('Permanently delete reminder {{.ID}}? This cannot be undone.');"
+                                              class="inline-flex">
+                                            <button type="submit" class="text-[11px] font-medium px-2.5 py-1 rounded-md bg-rose-900/40 hover:bg-rose-900/60 text-rose-200 ring-1 ring-rose-700/40" title="Permanently remove this row">Delete</button>
+                                        </form>
+                                    </div>
+                                </td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{else}}
+            <div class="glass rounded-xl border border-dark-700 p-10 text-center text-gray-500 text-sm">No reminders match the filter.</div>
+            {{end}}
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

@@ -1,0 +1,123 @@
+{{define "admin_blackbox_compare.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 19l-7-7 7-7m6 14l7-7-7-7"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">Black Box Compare</h1>
+                <a href="/ui/admin/blackbox" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Black Box</a>
+            </div>
+
+            <div class="text-xs text-gray-400">
+                Comparing
+                <a href="/ui/admin/blackbox/{{.TaskA}}" class="font-mono text-brand-300 hover:text-brand-200">{{.TaskA}}</a>
+                ⇄
+                <a href="/ui/admin/blackbox/{{.TaskB}}" class="font-mono text-brand-300 hover:text-brand-200">{{.TaskB}}</a>
+            </div>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 p-10 text-center text-gray-500 text-sm">
+                Black Box trace service not configured on this deployment.
+            </div>
+            {{else if .NotFound}}
+            <div class="glass rounded-xl border border-dark-700 p-10 text-center text-gray-500 text-sm">
+                No audit data for task <code class="font-mono">{{.NotFound}}</code>. Check the task ID — retention may have swept the rows, or the task never ran.
+            </div>
+            {{else if .Error}}
+            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-200 text-xs px-3 py-2 rounded-md">
+                {{.Error}}
+            </div>
+            {{else if .Score}}
+            <!-- Scorecard summary banner -->
+            <div class="glass rounded-xl border border-dark-700 px-4 py-3 space-y-2 text-xs">
+                {{if .Score.StatusChanged}}
+                <div class="bg-amber-900/40 border border-amber-700/50 text-amber-200 px-3 py-2 rounded-md font-medium">
+                    Status changed: <code class="font-mono">{{.Score.Trace1Header.Status}}</code> → <code class="font-mono">{{.Score.Trace2Header.Status}}</code>
+                </div>
+                {{end}}
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div>
+                        <div class="text-gray-500 uppercase tracking-wider mb-0.5">Cost delta</div>
+                        <div class="font-mono text-gray-200">${{printf "%+.4f" .Score.CostDeltaUSD}} ({{printf "%.1f" .Score.CostDeltaPct}}%)</div>
+                    </div>
+                    <div>
+                        <div class="text-gray-500 uppercase tracking-wider mb-0.5">Step Δ</div>
+                        <div class="font-mono text-gray-200">{{printf "%+d" .Score.StepCountDelta}}</div>
+                    </div>
+                    <div>
+                        <div class="text-gray-500 uppercase tracking-wider mb-0.5">LLM call Δ</div>
+                        <div class="font-mono text-gray-200">{{printf "%+d" .Score.LLMCallDelta}}</div>
+                    </div>
+                    <div>
+                        <div class="text-gray-500 uppercase tracking-wider mb-0.5">Tool call Δ</div>
+                        <div class="font-mono text-gray-200">{{printf "%+d" .Score.ToolCallDelta}}</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Findings list -->
+            <div class="glass rounded-xl border border-dark-700 px-4 py-3">
+                <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">Findings</div>
+                <ul class="text-sm text-gray-200 space-y-1 list-disc list-inside">
+                    {{range .Score.Findings}}
+                    <li>{{.}}</li>
+                    {{end}}
+                </ul>
+            </div>
+
+            <!-- Two-column trace headers -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3 space-y-2 text-xs">
+                    <div class="font-mono text-brand-300 text-sm">{{.TraceA.Header.TaskID}}</div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <div class="text-gray-500 uppercase tracking-wider mb-0.5">Status</div>
+                            <div class="font-mono text-gray-200">{{.TraceA.Header.Status}}</div>
+                        </div>
+                        <div>
+                            <div class="text-gray-500 uppercase tracking-wider mb-0.5">Cost (USD)</div>
+                            <div class="font-mono text-gray-200">${{printf "%.4f" .TraceA.Header.TotalCostUSD}}</div>
+                        </div>
+                        <div>
+                            <div class="text-gray-500 uppercase tracking-wider mb-0.5">Workflow</div>
+                            <div class="font-mono text-gray-200">{{.TraceA.Header.WorkflowID}}</div>
+                        </div>
+                        <div>
+                            <div class="text-gray-500 uppercase tracking-wider mb-0.5">Events</div>
+                            <div class="font-mono text-gray-200">{{.TraceA.Counts.Events}}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3 space-y-2 text-xs">
+                    <div class="font-mono text-brand-300 text-sm">{{.TraceB.Header.TaskID}}</div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div>
+                            <div class="text-gray-500 uppercase tracking-wider mb-0.5">Status</div>
+                            <div class="font-mono text-gray-200">{{.TraceB.Header.Status}}</div>
+                        </div>
+                        <div>
+                            <div class="text-gray-500 uppercase tracking-wider mb-0.5">Cost (USD)</div>
+                            <div class="font-mono text-gray-200">${{printf "%.4f" .TraceB.Header.TotalCostUSD}}</div>
+                        </div>
+                        <div>
+                            <div class="text-gray-500 uppercase tracking-wider mb-0.5">Workflow</div>
+                            <div class="font-mono text-gray-200">{{.TraceB.Header.WorkflowID}}</div>
+                        </div>
+                        <div>
+                            <div class="text-gray-500 uppercase tracking-wider mb-0.5">Events</div>
+                            <div class="font-mono text-gray-200">{{.TraceB.Counts.Events}}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {{end}}
+        </div>
+    </main>
+</body>
+</html>
+{{end}}

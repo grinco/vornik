@@ -1,0 +1,108 @@
+{{define "projects_new.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">New project</h1>
+                {{if .Templates}}<span class="text-sm text-gray-500">{{len .Templates}} templates</span>{{end}}
+            </div>
+
+            <p class="text-sm text-gray-400 max-w-2xl">
+                Pick a template to start from. Each template prefills the
+                project and swarm YAML so you don't have to author them by
+                hand. You can edit everything after creation.
+            </p>
+
+            {{/* Conversational wizard CTA. Surfaces the wizard route as
+                 an alternative path for operators who don't yet know which
+                 template they want — the wizard asks clarifying questions
+                 and proposes a starter config from the conversation. */}}
+            <a href="/ui/projects/new/wizard"
+               class="block bg-gradient-to-r from-violet-600/15 via-accent-600/10 to-transparent border border-violet-500/30 hover:border-violet-400/60 rounded-xl px-5 py-4 transition-colors group">
+                <div class="flex items-center gap-4">
+                    <div class="flex-shrink-0 h-10 w-10 rounded-lg bg-violet-500/20 border border-violet-400/30 flex items-center justify-center">
+                        <svg class="h-5 w-5 text-violet-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-2">
+                            <h2 class="text-sm font-semibold text-violet-100">Not sure which template? Try the conversational wizard</h2>
+                            <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-200">New</span>
+                        </div>
+                        <p class="text-xs text-violet-200/70 mt-0.5">
+                            Describe what you want in plain language. The wizard
+                            asks clarifying questions and proposes a starter
+                            project config you can commit when it's ready.
+                        </p>
+                    </div>
+                    <svg class="h-4 w-4 text-violet-300 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+                </div>
+            </a>
+
+            {{if not .CatalogAvailable}}
+            <div class="glass rounded-xl border border-dark-700 px-6 py-10 text-center">
+                <p class="text-sm text-gray-300 mb-2">No template catalog installed.</p>
+                <p class="text-xs text-gray-500">
+                    Set <code class="text-gray-300">VORNIK_TEMPLATES_DIR</code>
+                    or drop templates under
+                    <code class="text-gray-300">configs/project-templates/</code>
+                    and restart the daemon.
+                </p>
+            </div>
+            {{else if .MaterialisationDisabled}}
+            <div class="bg-amber-500/10 border border-amber-500/40 rounded-xl px-4 py-3 text-sm text-amber-200">
+                The daemon doesn't have a writable configs directory configured;
+                you can browse templates but the "Create" button is disabled.
+                Set <code class="text-amber-100">VORNIK_CONFIGS_DIR</code> to enable.
+            </div>
+            {{end}}
+
+            {{if and .CatalogAvailable (gt (len .Domains) 1)}}
+            <div class="flex flex-wrap gap-2">
+                <a href="/ui/projects/new"
+                   class="px-3 py-1.5 rounded-lg text-xs font-medium {{if eq .ActiveDomain ""}}bg-brand-600 text-white{{else}}bg-dark-800 border border-dark-700 text-gray-300 hover:border-brand-600/50{{end}}">All</a>
+                {{range .Domains}}
+                <a href="/ui/projects/new?domain={{.}}"
+                   class="px-3 py-1.5 rounded-lg text-xs font-medium {{if eq $.ActiveDomain .}}bg-brand-600 text-white{{else}}bg-dark-800 border border-dark-700 text-gray-300 hover:border-brand-600/50{{end}}">{{.}}</a>
+                {{end}}
+            </div>
+            {{end}}
+
+            {{if .Templates}}
+            <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                {{range .Templates}}
+                <a href="/ui/projects/new?slug={{.Slug}}{{if $.ActiveDomain}}&domain={{$.ActiveDomain}}{{end}}"
+                   class="block group">
+                    <div class="glass rounded-xl border border-dark-700 group-hover:border-brand-600/50 transition-all overflow-hidden h-full">
+                        <div class="h-1 bg-gradient-to-r from-brand-600/60 via-violet-500/40 to-transparent"></div>
+                        <div class="p-5">
+                            <div class="flex items-start justify-between mb-2.5">
+                                <h2 class="text-sm font-semibold text-gray-100">{{.DisplayName}}</h2>
+                                <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-dark-900 text-gray-400">{{.Domain}}</span>
+                            </div>
+                            <p class="text-xs text-gray-400 leading-relaxed line-clamp-4">{{.Description}}</p>
+                            <div class="mt-3 text-[11px] text-gray-500">
+                                {{len .Parameters}} parameter{{if ne (len .Parameters) 1}}s{{end}}
+                            </div>
+                        </div>
+                    </div>
+                </a>
+                {{end}}
+            </div>
+            {{else if .CatalogAvailable}}
+            <div class="glass rounded-xl border border-dark-700 px-6 py-10 text-center text-sm text-gray-400">
+                No templates match this filter.
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

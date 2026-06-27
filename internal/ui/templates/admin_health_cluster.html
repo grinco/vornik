@@ -1,0 +1,174 @@
+{{define "admin_health_cluster.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <h1 class="text-xl font-semibold text-gray-100">Cluster &amp; workers</h1>
+                <span class="text-xs text-gray-500 font-mono">{{.GeneratedAt.Format "15:04:05 UTC"}}</span>
+                <a href="/ui/admin/health/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Health</a>
+            </div>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 p-5 text-gray-400 text-sm">
+                <p>Leader-election repo not wired.</p>
+                <p class="mt-2 text-gray-500">Single-process / SQLite deployments don't need cluster coordination — this page surfaces multi-replica topology from the <code class="font-mono text-brand-300">daemon_leader_locks</code> table. Postgres-backed deployments populate it automatically once any singleton worker acquires its first lock.</p>
+            </div>
+            {{else}}
+
+            {{if .Error}}
+            <div class="bg-rose-900/30 border border-rose-700/50 rounded-xl p-3 text-rose-200 text-sm" role="alert">
+                {{.Error}}
+            </div>
+            {{end}}
+
+            {{if .VersionSkew}}
+            <div class="bg-amber-900/30 border border-amber-700/50 rounded-xl p-3 text-amber-200 text-sm" role="alert">
+                ⚠ Version skew detected — cluster nodes are running more than one build version. Expected briefly during a rolling deploy; investigate if it persists.
+            </div>
+            {{end}}
+
+            {{if .FleetAvailable}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3 border-b border-dark-700/60 flex items-center gap-3">
+                    <h2 class="text-sm font-medium text-gray-200">Fleet</h2>
+                    <span class="text-xs text-gray-500">Every heartbeating node (incl. webhook/relay nodes that hold no leases)</span>
+                    <span class="text-xs text-gray-500 font-mono ml-auto">nodes: {{.FleetCounts.Nodes}} · active: {{.FleetCounts.Active}} · stale: {{.FleetCounts.Stale}}</span>
+                </div>
+                {{if .Fleet}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Instance</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Profile</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Version</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Address</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Health</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last seen</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Fleet}}
+                            <tr class="hover:bg-dark-700/40 transition-colors">
+                                <td class="px-4 py-2 text-xs text-gray-200 font-mono">{{.InstanceID}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-300 font-mono">{{.Profile}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-400 font-mono whitespace-nowrap">{{if .Version}}{{.Version}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-400 font-mono">{{if .Address}}{{.Address}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-2 text-xs whitespace-nowrap">
+                                    {{if eq .Health "ACTIVE"}}<span class="px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-200 font-mono">ACTIVE</span>{{end}}
+                                    {{if eq .Health "STALE"}}<span class="px-2 py-0.5 rounded bg-amber-900/40 text-amber-200 font-mono">STALE</span>{{end}}
+                                </td>
+                                <td class="px-4 py-2 text-xs text-gray-400 font-mono whitespace-nowrap" title="{{.LastSeen.Format "2006-01-02 15:04:05 MST"}}">{{.LastSeenAgo}} ago</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-5 py-10 text-center text-gray-500 text-sm">No nodes have heartbeated yet.</div>
+                {{end}}
+            </div>
+            {{end}}
+
+            {{if .LeasesAvailable}}
+            <div class="glass rounded-xl border border-dark-700 p-5">
+                <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-1">Lease summary</h2>
+                <p class="text-xs text-gray-500 mb-3">Leader-election lease ownership (daemon_leader_locks). Only nodes that run singleton workers hold leases — the Fleet above is the full node list.</p>
+                <ul class="flex flex-wrap gap-3 text-sm">
+                    <li class="px-3 py-1 rounded-md bg-dark-700 text-gray-200 font-mono"><span class="text-gray-400">lease-holders</span>: {{.Counts.Nodes}}</li>
+                    <li class="px-3 py-1 rounded-md bg-emerald-900/40 text-emerald-200 font-mono"><span class="text-emerald-400">active</span>: {{.Counts.Active}}</li>
+                    <li class="px-3 py-1 rounded-md bg-amber-900/40 text-amber-200 font-mono"><span class="text-amber-400">stale</span>: {{.Counts.Stale}}</li>
+                    <li class="px-3 py-1 rounded-md bg-rose-900/40 text-rose-200 font-mono"><span class="text-rose-400">expired</span>: {{.Counts.Expired}}</li>
+                </ul>
+            </div>
+
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3 border-b border-dark-700/60 flex items-center gap-3">
+                    <h2 class="text-sm font-medium text-gray-200">Lease holders</h2>
+                    <span class="text-xs text-gray-500">Instances holding singleton-worker leases (a DMZ/webhook node holds none — see Fleet)</span>
+                </div>
+                {{if .Nodes}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Holder</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Workers</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last renewed</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Nodes}}
+                            <tr class="hover:bg-dark-700/40 transition-colors">
+                                <td class="px-4 py-2 text-xs text-gray-200 font-mono">{{.HolderID}}</td>
+                                <td class="px-4 py-2 text-xs whitespace-nowrap">
+                                    {{if eq .Status "ACTIVE"}}<span class="px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-200 font-mono">ACTIVE</span>{{end}}
+                                    {{if eq .Status "STALE"}}<span class="px-2 py-0.5 rounded bg-amber-900/40 text-amber-200 font-mono">STALE</span>{{end}}
+                                    {{if eq .Status "EXPIRED"}}<span class="px-2 py-0.5 rounded bg-rose-900/40 text-rose-200 font-mono">EXPIRED</span>{{end}}
+                                </td>
+                                <td class="px-4 py-2 text-xs text-gray-300">
+                                    <div class="flex flex-wrap gap-1">
+                                        {{range .Workers}}<span class="px-1.5 py-0.5 rounded bg-dark-700 text-gray-300 font-mono">{{.}}</span>{{end}}
+                                    </div>
+                                </td>
+                                <td class="px-4 py-2 text-xs text-gray-400 font-mono whitespace-nowrap" title="{{.LastRenewed.Format "2006-01-02 15:04:05 MST"}}">{{.RenewedAgo}} ago</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-5 py-10 text-center text-gray-500 text-sm">No lease holders yet — no singleton worker has acquired a lock.</div>
+                {{end}}
+            </div>
+
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3 border-b border-dark-700/60 flex items-center gap-3">
+                    <h2 class="text-sm font-medium text-gray-200">Workers</h2>
+                    <span class="text-xs text-gray-500">One per singleton worker leader-elected across the cluster</span>
+                </div>
+                {{if .Workers}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Worker</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Holder</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Renewed</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Expires</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Acquired</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Workers}}
+                            <tr class="hover:bg-dark-700/40 transition-colors">
+                                <td class="px-4 py-2 text-xs text-gray-200 font-mono whitespace-nowrap">{{.WorkerID}}</td>
+                                <td class="px-4 py-2 text-xs whitespace-nowrap">
+                                    {{if eq .Status "ACTIVE"}}<span class="px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-200 font-mono">ACTIVE</span>{{end}}
+                                    {{if eq .Status "STALE"}}<span class="px-2 py-0.5 rounded bg-amber-900/40 text-amber-200 font-mono">STALE</span>{{end}}
+                                    {{if eq .Status "EXPIRED"}}<span class="px-2 py-0.5 rounded bg-rose-900/40 text-rose-200 font-mono">EXPIRED</span>{{end}}
+                                </td>
+                                <td class="px-4 py-2 text-xs text-gray-400 font-mono truncate max-w-xs" title="{{.HolderID}}">{{.HolderID}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-400 font-mono whitespace-nowrap" title="{{.RenewedAt.Format "2006-01-02 15:04:05 MST"}}">{{.RenewedAgo}} ago</td>
+                                <td class="px-4 py-2 text-xs text-gray-400 font-mono whitespace-nowrap" title="{{.ExpiresAt.Format "2006-01-02 15:04:05 MST"}}">{{.ExpiresIn}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-500 font-mono whitespace-nowrap">{{.AcquiredAt.Format "01-02 15:04:05"}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-5 py-10 text-center text-gray-500 text-sm">No worker rows yet — none of the singleton workers have acquired a lock.</div>
+                {{end}}
+            </div>
+            {{end}}{{/* LeasesAvailable */}}
+
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

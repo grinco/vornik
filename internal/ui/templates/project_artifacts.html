@@ -1,0 +1,100 @@
+{{define "project_artifacts.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">Artifacts</h1>
+                    <p class="text-xs text-gray-500 font-mono mt-1">{{.ProjectID}}{{if .WorkspacePath}} · {{.WorkspacePath}}{{end}}</p>
+                </div>
+                <a href="/ui/projects/{{.ProjectID}}" class="flex items-center gap-1 text-gray-500 hover:text-gray-300 text-sm transition-colors">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                    Project
+                </a>
+            </div>
+
+            <p class="text-sm text-gray-400 max-w-3xl">
+                Files under the project's persistent workspace tree
+                (<span class="font-mono text-gray-300">artifacts/</span>).
+                These are the files agents read and write through every task. Deleting one
+                here removes it from the host filesystem — it does not roll back any
+                downstream database rows that already point at the file.
+            </p>
+
+            {{if .Success}}
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{{.Success}}</div>
+            {{end}}
+            {{if .Error}}
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            {{end}}
+
+            <section class="rounded-lg border border-dark-700 bg-dark-800/40">
+                <header class="px-4 py-3 border-b border-dark-700 flex items-center justify-between gap-4">
+                    <div class="flex items-baseline gap-3">
+                        <h2 class="text-sm font-semibold text-gray-200">Files</h2>
+                        <span class="text-xs text-gray-500">showing {{len .Files}} of {{.TotalFiles}}</span>
+                    </div>
+                    {{template "pageSizeSelector" (dict
+                        "Action" (printf "/ui/projects/%s/artifacts" .ProjectID)
+                        "Current" .Limit
+                        "Options" .LimitOptions
+                        "Hidden" (dict))}}
+                </header>
+                {{if .Files}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-xs">
+                        <thead class="text-left text-gray-400 border-b border-dark-700">
+                            <tr>
+                                <th scope="col" class="px-4 py-2 font-medium">Path</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Size</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Modified</th>
+                                <th scope="col" class="px-4 py-2 font-medium text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {{range .Files}}
+                            <tr class="border-b border-dark-700/50 text-gray-200">
+                                <td class="px-4 py-2 font-mono whitespace-nowrap">{{.RelPath}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-gray-400">{{humanizeSize .Size}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-gray-400" title="{{.Mtime}}">{{humanizeSince .Mtime}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-right">
+                                    <a href="/ui/projects/{{$.ProjectID}}/artifacts/raw?path={{.RelPath | urlquery}}"
+                                       target="_blank" rel="noopener"
+                                       class="text-xs text-brand-300 hover:text-brand-200 px-2 py-1 rounded transition-colors">
+                                        view
+                                    </a>
+                                    <form method="POST" action="/ui/projects/{{$.ProjectID}}/artifacts/delete" class="inline">
+                                        <input type="hidden" name="path" value="{{.RelPath}}"/>
+                                        <button type="submit"
+                                                class="text-xs text-red-300 hover:text-red-200 px-2 py-1 rounded transition-colors"
+                                                onclick="return confirm('Delete {{.RelPath}}? This removes the file from disk.');">
+                                            delete
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
+                        {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                {{template "emptyState" (dict
+                    "Icon" "file"
+                    "Title" "No artifacts yet"
+                    "Hint" "Files that tasks write to artifacts/out/ or artifacts/research/ appear here. Schedule a task that produces a deliverable, or drop files into the workspace via SSH for tasks to read."
+                    "CTAHref" (printf "/ui/projects/%s/tasks/new" .ProjectID)
+                    "CTALabel" "Schedule a task")}}
+                {{end}}
+            </section>
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

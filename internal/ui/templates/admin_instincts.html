@@ -1,0 +1,162 @@
+{{define "admin_instincts.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">Instincts</h1>
+                <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
+            </div>
+
+            <p class="text-xs text-gray-500 max-w-3xl">
+                Continuous-learning instinct layer — confidence-scored learned
+                patterns mined from the audit spine. Instincts are
+                <strong>advisory</strong>: they are surfaced as evidence and
+                consumed only behind their own gates; they never auto-edit a
+                prompt, model, or workflow. Retiring an instinct here flips it
+                to <code class="font-mono text-gray-400">retired</code> and
+                writes <code class="font-mono text-gray-400">instinct.retired</code>
+                to the admin audit log.
+            </p>
+
+            {{if .FlashRetired}}
+            <div class="bg-emerald-900/30 border border-emerald-700/40 text-emerald-200 text-xs px-3 py-2 rounded-md">
+                Instinct <code class="font-mono">{{.FlashRetired}}</code> retired.
+            </div>
+            {{end}}
+
+            {{if .Error}}
+            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-200 text-xs px-3 py-2 rounded-md">{{.Error}}</div>
+            {{end}}
+
+            <form method="get" action="/ui/admin/instincts"
+                  class="glass rounded-xl border border-dark-700 px-4 py-3 flex flex-wrap items-end gap-3 text-sm">
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Domain</span>
+                    <select name="domain" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-36">
+                        {{range .DomainOptions}}
+                        <option value="{{.}}" {{if eq . $.FilterDomain}}selected{{end}}>{{if .}}{{.}}{{else}}any{{end}}</option>
+                        {{end}}
+                    </select>
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Scope</span>
+                    <select name="scope" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-32">
+                        {{range .ScopeOptions}}
+                        <option value="{{.}}" {{if eq . $.FilterScope}}selected{{end}}>{{if .}}{{.}}{{else}}any{{end}}</option>
+                        {{end}}
+                    </select>
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Status</span>
+                    <select name="status" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-36">
+                        {{range .StatusOptions}}
+                        <option value="{{.}}" {{if eq . $.FilterStatus}}selected{{end}}>{{if .}}{{.}}{{else}}any{{end}}</option>
+                        {{end}}
+                    </select>
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Project</span>
+                    <input type="text" name="project" value="{{.FilterProject}}" placeholder="e.g. assistant" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-40">
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Min confidence</span>
+                    <input type="text" name="min_confidence" value="{{.FilterMinConf}}" placeholder="0.0-1.0" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-28">
+                </label>
+                <input type="hidden" name="limit" value="{{.Limit}}">
+                <button class="bg-brand-500 hover:bg-brand-400 text-white text-xs font-medium px-3 py-1.5 rounded-md">Filter</button>
+            </form>
+
+            <div class="flex justify-end">
+                {{template "pageSizeSelector" (dict
+                    "Action" "/ui/admin/instincts"
+                    "Current" .Limit
+                    "Options" .LimitOptions
+                    "Hidden" (dict
+                        "domain" .FilterDomain
+                        "scope" .FilterScope
+                        "project" .FilterProject
+                        "status" .FilterStatus
+                        "min_confidence" .FilterMinConf))}}
+            </div>
+
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                {{if not .Available}}
+                <div class="px-5 py-12 text-center text-gray-500 text-sm">
+                    Instinct repository not wired on this deployment.
+                </div>
+                {{else if .Rows}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full" data-keynav>
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Domain / Scope</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Confidence</th>
+                            <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">+ / −</th>
+                            <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="Application feedback: ↑ succeeded · ↓ failed/rejected · … surfaced-but-unresolved">Lift</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last seen</th>
+                            <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Rows}}
+                            <tr class="hover:bg-dark-700/40 transition-colors align-top">
+                                <td class="px-4 py-2 text-xs text-gray-300 font-mono">
+                                    <div>{{.Domain}} <span class="text-gray-600">/</span> {{.Scope}}</div>
+                                    <div class="text-[10px] text-gray-500 mt-0.5">{{if .ProjectID}}{{.ProjectID}}{{else}}<span class="italic text-gray-600">global</span>{{end}}</div>
+                                    <div class="text-[10px] text-gray-600 mt-0.5">{{.Source}}{{if .DistillModel}} · {{.DistillModel}}{{end}}</div>
+                                </td>
+                                <td class="px-4 py-2 text-xs text-gray-300 max-w-md">
+                                    <div>{{.Action}}</div>
+                                    {{if .Trigger}}<div class="text-[10px] text-gray-500 font-mono mt-0.5 truncate" title="{{.Trigger}}">{{.Trigger}}</div>{{end}}
+                                    <div class="text-[10px] text-gray-700 font-mono mt-0.5">{{.ID}}</div>
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap">
+                                    <span class="font-mono {{.StatusBadge}}">{{.Status}}</span>
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap text-right text-xs text-gray-200 font-mono">{{.Confidence}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-right text-[11px] font-mono">
+                                    <span class="text-emerald-300">{{.SupportCount}}</span>
+                                    <span class="text-gray-600">/</span>
+                                    <span class="text-rose-300">{{.ContradictCount}}</span>
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap text-right text-[11px] font-mono text-gray-300" title="{{.AppSucceeded}} succeeded · {{.AppFailed}} failed/rejected · {{.AppIgnored}} unresolved">{{.LiftSummary}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-[11px] text-gray-400 font-mono" title="{{.LastSeenAt}}">
+                                    <div>{{.LastSeenAt}}</div>
+                                    <div class="text-[10px] text-gray-600">{{.LastSeenAgo}}</div>
+                                </td>
+                                <td class="px-4 py-2 whitespace-nowrap text-right">
+                                    {{if not .IsRetired}}
+                                    <form method="post" action="/ui/admin/instincts/{{.ID}}/retire" onsubmit="return confirm('Retire instinct {{.ID}}? It stays for audit but is removed from advisory surfaces.');" class="inline-flex items-center gap-1">
+                                        <input type="hidden" name="filter_domain" value="{{$.FilterDomain}}">
+                                        <input type="hidden" name="filter_scope" value="{{$.FilterScope}}">
+                                        <input type="hidden" name="filter_project" value="{{$.FilterProject}}">
+                                        <input type="hidden" name="filter_status" value="{{$.FilterStatus}}">
+                                        <input type="hidden" name="filter_min_confidence" value="{{$.FilterMinConf}}">
+                                        <button type="submit" class="text-[11px] font-medium px-2.5 py-1 rounded-md bg-rose-700/40 hover:bg-rose-700/60 text-rose-200 ring-1 ring-rose-700/40">Retire</button>
+                                    </form>
+                                    {{else}}
+                                    <span class="text-[11px] text-gray-600 italic">retired</span>
+                                    {{end}}
+                                </td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-5 py-12 text-center text-gray-500 text-sm">No instincts match the filter.</div>
+                {{end}}
+            </div>
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

@@ -1,0 +1,129 @@
+{{define "memory_index.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-center justify-between">
+                <h1 class="text-xl font-semibold text-gray-100">Memory (RAG)</h1>
+                <span class="text-xs text-gray-500">Per-project ingest, quarantine &amp; corpus snapshots</span>
+            </div>
+
+            <div data-admin-link class="{{if not (hasAdminFlag .)}}hidden {{end}}glass rounded-xl border border-dark-700 p-4 flex items-center gap-3">
+                <div class="flex-1">
+                    <h2 class="text-sm font-medium text-gray-200">Operator profiles</h2>
+                    <p class="text-xs text-gray-500 mt-0.5">Cross-project, cross-channel preferences + notes the dispatcher injects into every chat turn's system prompt. Distinct from per-project memory below — both layers compose. Admin-only.</p>
+                </div>
+                <a href="/ui/memory/operators" class="text-xs px-3 py-1.5 rounded bg-brand-600 hover:bg-brand-500 text-white font-medium">View operators →</a>
+            </div>
+
+            {{if not .Enabled}}
+            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-300 text-sm">
+                Memory hardening tables not present. Apply migration v23 (memory_hardening_phase0_provenance_epochs_quarantine) to populate corpus_epochs, project_memory_quarantine, and project_ingest_queue.
+            </div>
+            {{end}}
+
+            {{if and .IsAdmin .KG.Enabled}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60 flex items-center justify-between">
+                    <div>
+                        <h2 class="text-sm font-medium text-gray-300">Knowledge graph extraction</h2>
+                        <p class="mt-1 text-xs text-gray-500">Background pipeline turning project_memory_chunks into a property graph (entities + edges). One worker drains all projects.</p>
+                    </div>
+                    <a href="/ui/memory" class="text-xs text-emerald-400 hover:text-emerald-300" title="Refresh">↻ refresh</a>
+                </div>
+                <div class="px-5 py-4 border-b border-dark-700/60">
+                    <div class="flex items-end justify-between mb-2">
+                        <div>
+                            <span class="text-2xl font-semibold text-gray-100">{{printf "%.1f" .KG.PercentDone}}%</span>
+                            <span class="ml-2 text-xs text-gray-500">{{.KG.ChunksDone}} / {{.KG.ChunksTotal}} chunks extracted</span>
+                        </div>
+                        <span class="text-xs text-gray-500">{{.KG.ChunksPending}} pending</span>
+                    </div>
+                    <div class="w-full bg-dark-700/60 rounded-full h-2 overflow-hidden">
+                        <div class="bg-emerald-500 h-2 rounded-full transition-all"
+                             style="width: {{printf "%.2f" .KG.PercentDone}}%"></div>
+                    </div>
+                </div>
+                <div class="grid grid-cols-3 divide-x divide-dark-700/60 border-b border-dark-700/60">
+                    <div class="px-5 py-3 text-center">
+                        <div class="text-lg font-semibold text-gray-100">{{.KG.Entities}}</div>
+                        <div class="text-[11px] uppercase tracking-wider text-gray-500">Entities</div>
+                    </div>
+                    <div class="px-5 py-3 text-center">
+                        <div class="text-lg font-semibold text-gray-100">{{.KG.Edges}}</div>
+                        <div class="text-[11px] uppercase tracking-wider text-gray-500">Edges</div>
+                    </div>
+                    <div class="px-5 py-3 text-center">
+                        <div class="text-lg font-semibold text-gray-100">{{.KG.Mentions}}</div>
+                        <div class="text-[11px] uppercase tracking-wider text-gray-500">Mentions</div>
+                    </div>
+                </div>
+                {{if .KG.EntitiesByType}}
+                <div class="px-5 py-3">
+                    <p class="text-[11px] uppercase tracking-wider text-gray-500 mb-2">Entities by type</p>
+                    <div class="flex flex-wrap gap-2">
+                        {{range .KG.EntitiesByType}}
+                        <span class="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-dark-700/60 border border-dark-700 text-xs">
+                            <span class="text-gray-300">{{.Type}}</span>
+                            <span class="text-gray-500">{{.Count}}</span>
+                        </span>
+                        {{end}}
+                    </div>
+                </div>
+                {{end}}
+            </div>
+            {{end}}
+
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-4 border-b border-dark-700/60 flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                        <h2 class="text-sm font-medium text-gray-300">Per-project memory state</h2>
+                        <p class="mt-1 text-xs text-gray-500">Click a project to drill into its epochs, quarantine, and rollback history. <span class="text-gray-600">Showing {{len .Projects}} of {{.TotalProjects}}.</span></p>
+                    </div>
+                    {{/* Shared page-size selector — matches /ui/audit etc.
+                         The project list itself doesn't have other
+                         filters today, so the Hidden dict is empty. */}}
+                    {{template "pageSizeSelector" (dict "Action" "/ui/memory/" "Current" .Limit "Options" .LimitOptions "Hidden" (dict))}}
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-dark-700/60 text-sm">
+                        <thead class="bg-dark-800/60">
+                            <tr>
+                                <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
+                                <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Queue</th>
+                                <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Quarantine</th>
+                                <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Epochs (active / total)</th>
+                                <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last snapshot</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Projects}}
+                            <tr class="hover:bg-dark-700/30">
+                                <td class="px-4 py-2">
+                                    <a href="/ui/memory/{{.ID}}" class="text-brand-300 hover:text-brand-200 font-medium">{{.Name}}</a>
+                                    <div class="text-xs text-gray-500 font-mono">{{.ID}}</div>
+                                </td>
+                                <td class="px-4 py-2 text-right tabular-nums">{{if gt .QueueDepth 0}}<span class="text-amber-300">{{.QueueDepth}}</span>{{else}}<span class="text-gray-500">{{.QueueDepth}}</span>{{end}}</td>
+                                <td class="px-4 py-2 text-right tabular-nums">{{if gt .QuarantinePending 0}}<span class="text-rose-300">{{.QuarantinePending}}</span>{{else}}<span class="text-gray-500">0</span>{{end}}</td>
+                                <td class="px-4 py-2 text-right tabular-nums text-gray-300">{{.ActiveEpochs}} / {{.TotalEpochs}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-400">{{if .LastSnapshotAt.IsZero}}—{{else}}{{.LastSnapshotAt.Format "2006-01-02 15:04"}}{{end}}</td>
+                            </tr>
+                            {{else}}
+                            <tr>
+                                <td class="px-4 py-6 text-center text-gray-500" colspan="5">No projects.</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </main>
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

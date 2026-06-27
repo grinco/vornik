@@ -1,0 +1,71 @@
+{{define "memory_entities.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">Entities · {{.ProjectName}}</h1>
+                    <p class="text-xs text-gray-500 mt-0.5">Knowledge-graph entities extracted from this project's memory chunks. <a href="/ui/memory/{{.ProjectID}}" class="text-brand-300 hover:text-brand-200">← back to project</a></p>
+                </div>
+                <span class="text-xs text-gray-500 font-mono">{{.ProjectID}}</span>
+            </div>
+
+            {{if not .Enabled}}
+            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-300 text-sm">
+                Knowledge-graph read surface not enabled on this daemon. Wire a KnowledgeGraphReader (the extraction pipeline must also be running to populate entities).
+            </div>
+            {{else}}
+
+            <form method="get" action="/ui/memory/{{.ProjectID}}/entities" class="glass rounded-xl border border-dark-700 p-4 flex items-end gap-3 flex-wrap">
+                <div>
+                    <label for="type" class="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Type</label>
+                    <select id="type" name="type" class="bg-dark-900 border border-dark-700 rounded px-3 py-1.5 text-sm text-gray-200">
+                        <option value="" {{if eq .TypeFilter ""}}selected{{end}}>All types</option>
+                        {{range .Types}}
+                        <option value="{{.}}" {{if eq $.TypeFilter .}}selected{{end}}>{{.}}</option>
+                        {{end}}
+                    </select>
+                </div>
+                <div class="flex-1 min-w-[12rem]">
+                    <label for="q" class="block text-[11px] uppercase tracking-wider text-gray-500 mb-1">Search name</label>
+                    <input id="q" name="q" type="text" value="{{.Query}}" placeholder="e.g. ACME" class="w-full bg-dark-900 border border-dark-700 rounded px-3 py-1.5 text-sm text-gray-200" />
+                </div>
+                <button type="submit" class="px-3 py-1.5 rounded bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium">Filter</button>
+                <span class="text-xs text-gray-500 self-center">{{.Total}} match{{if ne .Total 1}}es{{end}}</span>
+            </form>
+
+            {{range .Groups}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3 border-b border-dark-700/60">
+                    <h2 class="text-sm font-medium text-gray-300">{{.Type}}</h2>
+                </div>
+                <ul class="divide-y divide-dark-700/40">
+                    {{range .Entities}}
+                    <li class="px-5 py-3 hover:bg-dark-700/30 flex items-center justify-between gap-3">
+                        <div class="min-w-0">
+                            <a href="/ui/memory/{{$.ProjectID}}/entities/{{.ID}}" class="text-brand-300 hover:text-brand-200 font-medium">{{.CanonicalName}}</a>
+                            {{if .Description}}<p class="text-xs text-gray-500 truncate">{{.Description}}</p>{{end}}
+                        </div>
+                        <a href="/ui/memory/{{$.ProjectID}}/subgraph/{{.ID}}" class="text-xs text-gray-500 hover:text-emerald-300 whitespace-nowrap" title="View 1-hop subgraph">graph →</a>
+                    </li>
+                    {{end}}
+                </ul>
+            </div>
+            {{else}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-8 text-center text-gray-500 text-sm">
+                No entities {{if or .Query (ne .TypeFilter "")}}match this filter{{else}}extracted yet for this project{{end}}.
+            </div>
+            {{end}}
+
+            {{end}}
+        </div>
+    </main>
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

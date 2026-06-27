@@ -1,0 +1,104 @@
+{{define "workflow_schema_config.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col" data-assist-project="{{.AssistProjectID}}">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-4xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">Workflow — schema</h1>
+                    <p class="text-xs text-gray-500 font-mono mt-1">{{.WorkflowID}}{{if .WorkflowPath}} · {{.WorkflowPath}}{{end}}</p>
+                    <p class="text-[11px] text-gray-500 mt-1">Every workflow + step parameter, rendered from the curated field schema. Terminals stay in raw YAML.</p>
+                </div>
+                <div class="flex items-center gap-3 text-sm">
+                    <a href="/ui/workflows/{{.WorkflowID}}/graph" class="text-brand-300 hover:text-brand-200 underline-offset-2 hover:underline">View graph →</a>
+                    <form method="POST" action="/ui/workflows/{{.WorkflowID}}/clone" class="flex items-center gap-1"
+                          onsubmit="return confirm('Clone this workflow to the new id?')">
+                        <input name="newId" placeholder="new-id" required pattern="[a-z0-9][a-z0-9-]{1,30}[a-z0-9]"
+                               class="w-28 bg-dark-800 border border-dark-700 rounded px-2 py-0.5 text-xs text-gray-200" aria-label="New workflow id">
+                        <button type="submit" class="text-gray-400 hover:text-gray-200 underline-offset-2 hover:underline">Clone</button>
+                    </form>
+                    <a href="/ui/workflows/{{.WorkflowID}}/edit" class="text-gray-400 hover:text-gray-200 underline-offset-2 hover:underline">Guided editor</a>
+                    <a href="/ui/workflows" class="flex items-center gap-1 text-gray-500 hover:text-gray-300 transition-colors">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                        Workflows
+                    </a>
+                </div>
+            </div>
+
+            {{if .Success}}
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200 whitespace-pre-wrap">{{.Success}}</div>
+            {{end}}
+            {{if .Error}}
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            {{end}}
+
+            <form method="POST" action="/ui/workflows/{{.WorkflowID}}/schema" class="space-y-5" onsubmit="wfRenumberCards()">
+                {{range .TopSections}}
+                <details class="rounded-xl border border-dark-700 bg-dark-800/60" {{if not .Advanced}}open{{end}}>
+                    <summary class="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-gray-200">{{.Title}}{{if .Advanced}} <span class="text-[10px] uppercase tracking-wide text-gray-500 font-normal">advanced</span>{{end}}</summary>
+                    <div class="px-4 pb-4 pt-1 space-y-4">
+                        {{if .Help}}<p class="text-[11px] text-gray-400 -mt-1">{{.Help}}</p>{{end}}
+                        {{range .Rows}}{{template "schemaRow" .}}{{end}}
+                    </div>
+                </details>
+                {{end}}
+
+                <section class="rounded-xl border border-dark-700 bg-dark-800/60 p-4 space-y-3">
+                    <div class="flex items-center justify-between gap-3">
+                        <div>
+                            <h3 class="text-sm font-semibold text-gray-200">{{.StepsTitle}}</h3>
+                            {{if .StepsHelp}}<p class="text-[11px] text-gray-400 mt-1">{{.StepsHelp}}</p>{{end}}
+                        </div>
+                        <button type="button" id="add-step"
+                                data-card-url="/ui/workflows/{{.WorkflowID}}/schema/step"
+                                onclick="wfAddCard(this)"
+                                class="px-3 py-1.5 rounded-md bg-dark-700 text-gray-100 hover:bg-dark-600 text-xs font-medium">Add {{.StepsSingular}}</button>
+                    </div>
+                    <div id="step-cards" class="space-y-3">
+                        {{range .StepCards}}{{template "workflow_step_card.html" .}}{{end}}
+                    </div>
+                </section>
+
+                <div class="flex items-center justify-end gap-3 pt-1">
+                    <a href="/ui/workflows/{{.WorkflowID}}/edit" class="text-sm text-gray-400 hover:text-gray-200">Cancel</a>
+                    <button type="submit" class="px-4 py-2 rounded-md bg-brand-600 text-white hover:bg-brand-500 text-sm font-medium">Save &amp; reload</button>
+                </div>
+            </form>
+        </div>
+    </main>
+
+    <script>
+    // Step cards are an index-keyed array form: field names look like
+    // steps[<i>].<path> (steps[<i>].stepId carries the map key). The
+    // server groups by index value, so renumber to DOM position on submit
+    // — add / remove / reorder are pure DOM ops.
+    function wfRenumberCards() {
+        document.querySelectorAll('#step-cards .step-card').forEach(function (card, i) {
+            card.setAttribute('data-step-index', i);
+            card.querySelectorAll('[name]').forEach(function (el) {
+                el.name = el.name.replace(/^steps\[\d+\]/, 'steps[' + i + ']');
+            });
+        });
+    }
+    function wfMoveCard(btn, dir) {
+        var card = btn.closest('.step-card');
+        if (dir < 0 && card.previousElementSibling) {
+            card.parentNode.insertBefore(card, card.previousElementSibling);
+        } else if (dir > 0 && card.nextElementSibling) {
+            card.parentNode.insertBefore(card.nextElementSibling, card);
+        }
+    }
+    function wfAddCard(btn) {
+        var n = document.querySelectorAll('#step-cards .step-card').length;
+        fetch(btn.getAttribute('data-card-url') + '?index=' + n, { credentials: 'same-origin' })
+            .then(function (r) { return r.text(); })
+            .then(function (html) { document.getElementById('step-cards').insertAdjacentHTML('beforeend', html); });
+    }
+    </script>
+</body>
+</html>
+{{end}}

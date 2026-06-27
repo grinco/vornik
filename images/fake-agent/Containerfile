@@ -1,0 +1,21 @@
+# Fake Agent Image
+# A minimal container that simulates an agent by reading input and writing output
+# Used for testing the vornik runtime contract
+
+FROM alpine:3.19
+
+# Install jq for JSON processing
+RUN apk add --no-cache jq
+
+# Create the vornik directory structure
+RUN mkdir -p /app/input /app/output /app/workspace
+
+# Set working directory
+WORKDIR /app/workspace
+
+# Copy entrypoint script
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Run the fake agent
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,219 @@
+# Bedrock on-demand pricing used by vornik for cost metrics.
+# All values are USD per 1,000,000 tokens (input/output).
+# Source: https://aws.amazon.com/bedrock/pricing/ — verified 2026-04-19.
+#
+# Unknown models fall through to `default`. The executor logs a one-time
+# warning per missing model, and still emits cost metrics using the
+# default rate. Update this file and reload config when adding a new
+# model to a swarm, to keep the cost metric accurate.
+
+models:
+  # Anthropic / MiniMax / coordinator-tier
+  minimax.minimax-m2:       { input: 0.30, output: 1.20 }
+  minimax.minimax-m2.5:     { input: 0.30, output: 1.20 }
+  minimax.minimax-m2.1:     { input: 0.30, output: 1.20 }
+
+  # Mistral Pixtral Large (vision-role fallback, multimodal). Mistral Large
+  # tier estimate, USD per 1M tokens — verify on the AWS pricing page.
+  # (Meta Llama 4 was dropped: geo-blocked in this region by Meta's EULA.)
+  us.mistral.pixtral-large-2502-v1:0: { input: 2.00, output: 6.00 }
+
+  # Qwen — dense + coder variants (Sydney pricing; vornik lets the gateway
+  # handle region routing, so the number here is the rate actually billed)
+  qwen.qwen3-32b-v1:0:             { input: 0.1545, output: 0.618 }
+  qwen.qwen3-coder-30b-a3b-v1:0:   { input: 0.1545, output: 0.618 }
+  qwen.qwen3-coder-480b-a35b-v1:0: { input: 0.60,   output: 1.80 }    # estimate — not in public pricing
+  qwen.qwen3-next-80b-a3b:         { input: 0.15,   output: 1.20 }
+  qwen.qwen3-235b-a22b-2507-v1:0:  { input: 0.2266, output: 0.9064 }
+
+  # Z.ai (GLM)
+  zai.glm-4.7-flash:  { input: 0.07, output: 0.40 }
+  zai.glm-4.7:        { input: 0.60, output: 2.20 }
+  zai.glm-5:          { input: 1.00, output: 3.20 }
+
+  # DeepSeek
+  deepseek.v3.2:   { input: 0.62, output: 1.85 }
+  deepseek.v3-v1:0: { input: 0.55, output: 1.65 } # estimate — Sydney-only on current page
+
+  # Google Gemma 3 (recently added to curated catalog)
+  google.gemma-3-4b-it:   { input: 0.04, output: 0.08 }
+  google.gemma-3-12b-it:  { input: 0.09, output: 0.29 }
+  google.gemma-3-27b-it:  { input: 0.23, output: 0.38 }
+
+  # Mistral
+  mistral.ministral-3-3b-instruct:   { input: 0.10, output: 0.10 }
+  mistral.ministral-3-8b-instruct:   { input: 0.15, output: 0.15 }
+  mistral.ministral-3-14b-instruct:  { input: 0.20, output: 0.20 }
+  mistral.devstral-2-123b:           { input: 0.40, output: 2.00 }
+
+  # NVIDIA Nemotron
+  nvidia.nemotron-nano-9b-v2:     { input: 0.06, output: 0.23 }
+  nvidia.nemotron-nano-12b-v2:    { input: 0.06, output: 0.23 }
+  nvidia.nemotron-nano-3-30b:     { input: 0.06, output: 0.24 }
+  nvidia.nemotron-super-3-120b:   { input: 0.20, output: 0.85 }
+
+  # OpenAI GPT-OSS
+  openai.gpt-oss-20b-1:0:   { input: 0.08, output: 0.20 }
+  openai.gpt-oss-120b-1:0:  { input: 0.15, output: 0.60 }
+
+  # Moonshot (thinking variants bill hidden reasoning tokens under
+  # completion_tokens — Bedrock doesn't split reasoning vs visible. The
+  # reasoning_multiplier compensates so the cost metric reflects what
+  # you actually pay rather than what you see. 2.0 assumes roughly
+  # equal reasoning and visible output; tune to your observed ratio if
+  # the vendor publishes one.)
+  moonshot.kimi-k2-thinking:
+    input: 0.60
+    output: 2.50
+    reasoning_multiplier: 2.0
+  moonshotai.kimi-k2.5:
+    input: 0.60
+    output: 3.00
+    reasoning_multiplier: 2.0
+
+  # Anthropic Claude — native (non-Bedrock) pricing, used when
+  # chat.provider: claude-cli. IDs are the hyphenated forms the
+  # `claude --model <ID>` flag accepts. Source:
+  # https://platform.claude.com/docs/en/about-claude/pricing
+  # (verified 2026-04-20). Base input / output rates per 1M tokens.
+  # Prompt-cache rates aren't enumerated explicitly — the calculator
+  # falls back to input × 1.25 (cache_creation) and input × 0.10
+  # (cache_read), matching the Anthropic 5-min cache standard. Add
+  # explicit `cache_creation:` / `cache_read:` keys per model when
+  # using 1-hour cache (write rate is 2× input) or when a provider
+  # diverges from the default ratios.
+  claude-opus-4-7:   { input: 5.00,  output: 25.00 }
+  claude-opus-4-6:   { input: 5.00,  output: 25.00 }
+  claude-opus-4-5:   { input: 5.00,  output: 25.00 }
+  claude-opus-4-1:   { input: 15.00, output: 75.00 }
+  claude-opus-4:     { input: 15.00, output: 75.00 }
+  claude-sonnet-4-6: { input: 3.00,  output: 15.00 }
+  claude-sonnet-4-5: { input: 3.00,  output: 15.00 }
+  claude-sonnet-4:   { input: 3.00,  output: 15.00 }
+  claude-haiku-4-5:  { input: 1.00,  output: 5.00 }
+  claude-haiku-3-5:  { input: 0.80,  output: 4.00 }
+  claude-haiku-3:    { input: 0.25,  output: 1.25 }
+
+  # OpenAI — API pricing per 1M tokens. Source:
+  # https://developers.openai.com/api/docs/pricing (verified 2026-04-20).
+  # IDs are the exact strings the Chat Completions / Responses APIs
+  # accept, which is also what `codex exec -m <ID>` passes through
+  # under API-key auth. Operators on ChatGPT-account auth can't
+  # select these per request (codex ignores -m and uses its server-
+  # side default) — pricing there is subsumed by the subscription.
+  #
+  # Flagship gpt-5.5 (added 2026-05-25, operator-supplied list
+  # rates; chatgpt.com has no public /v1/models endpoint so this
+  # is the only on-file pricing until OpenAI publishes it).
+  # NOTE 2026-05-25 operator clarification: gpt-5.5 ships as a
+  # single SKU — no -mini / -pro / -nano variants. The codex
+  # subscription's accessible model set is gpt-5.5, gpt-5.4,
+  # gpt-5.4-mini, gpt-5.3-codex, and gpt-5.2.
+  gpt-5.5:         { input: 5.00,  output: 30.00 }
+
+  # Flagship (gpt-5.4 family) — standard tier:
+  gpt-5.4:         { input: 2.50,  output: 15.00 }
+  gpt-5.4-mini:    { input: 0.75,  output: 4.50 }
+  gpt-5.4-nano:    { input: 0.20,  output: 1.25 }
+  gpt-5.4-pro:     { input: 30.00, output: 180.00 }
+
+  # Specialized / codex:
+  gpt-5.3-chat-latest: { input: 1.75, output: 14.00 }
+  gpt-5.3-codex:       { input: 1.75, output: 14.00 }
+  # gpt-5.2 is also accessible via the codex subscription (per
+  # 2026-05-25 operator confirmation) but list pricing is not yet
+  # on file. Calls fall through to `default` below until the rate
+  # is confirmed — add an explicit row before pinning a swarm role
+  # to gpt-5.2 so the cost dashboard doesn't under-count.
+
+  # Older-gen GPT-5 baseline (still billed for legacy deployments):
+  gpt-5:       { input: 0.625, output: 5.00 }
+  gpt-5-codex: { input: 1.25,  output: 10.00 }
+
+  # Reasoning / research:
+  o3-deep-research:      { input: 5.00, output: 20.00 }
+  o4-mini-deep-research: { input: 1.00, output: 4.00 }
+
+  # Realtime text (audio tier billed separately):
+  gpt-realtime-1.5-text: { input: 4.00, output: 16.00 }
+  gpt-realtime-mini-text: { input: 0.60, output: 2.40 }
+
+  # Google Vertex AI (Gemini Enterprise Agent Platform) — per 1M tokens.
+  # Source: https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing
+  # (verified 2026-04-25). IDs match what Vertex's OpenAI-compat endpoint
+  # returns in the response `model` field — including the "google/"
+  # prefix — so the lookup hits without any normalization.
+  #
+  # Caveats vs. the published table:
+  #   - Tiered input: Gemini 2.5 Pro/Flash/Flash-Lite roughly double
+  #     their input rate above 200K input tokens per request. vornik's
+  #     flat input/output schema can't model that, so the entries below
+  #     use the Standard ≤200K tier — the common case. Spend dashboards
+  #     undercount requests with very long contexts; tighten max_tokens
+  #     / context if that matters.
+  #   - Tier choice: only "Standard" is wired here. Vertex also offers
+  #     Priority (1.8x) and Flex/Batch (0.5x); reach those by switching
+  #     endpoints, not by changing pricing.
+  #   - Thinking accounting: Vertex returns reasoning tokens under
+  #     usage.completion_tokens_details.reasoning_tokens, NOT inside the
+  #     flat completion_tokens field. vornik's cost telemetry sees only
+  #     the flat field, so thinking-heavy Gemini calls undercount. (Not
+  #     applicable to gemma-4 — non-thinking.)
+  "google/gemma-4-26b-a4b-it-maas":    { input: 0.15, output: 0.60 }
+  "google/gemini-2.5-pro":             { input: 1.25, output: 10.00 }
+  "google/gemini-2.5-flash":           { input: 0.30, output: 2.50 }
+  "google/gemini-2.5-flash-lite":      { input: 0.10, output: 0.40 }
+  # Gemini 3.x — only the `-preview` aliases resolve on Vertex
+  # today (2026-05-07; bare names return HTTP 404). The bare-name
+  # rows below are forward-compat: they cost the same and the
+  # lookup is keyed on whatever the chat call actually sends, so
+  # leaving them in costs nothing and avoids a config edit when
+  # Vertex GAs the canonical names.
+  "google/gemini-3.1-pro-preview":      { input: 2.00, output: 12.00 }
+  "google/gemini-3.1-flash-preview":    { input: 0.50, output: 3.00 }
+  "google/gemini-3.1-flash-lite-preview": { input: 0.25, output: 1.50 }
+  "google/gemini-3.1-flash-image-preview": { input: 0.50, output: 3.00 }
+  "google/gemini-3-pro-preview":        { input: 2.00, output: 12.00 }
+  "google/gemini-3-pro-image-preview":  { input: 2.00, output: 12.00 }
+  "google/gemini-3-flash-preview":      { input: 0.50, output: 3.00 }
+  "google/gemini-3-flash-lite-preview": { input: 0.25, output: 1.50 }
+  "google/gemini-3.1-pro":             { input: 2.00, output: 12.00 }
+  "google/gemini-3.1-flash":           { input: 0.50, output: 3.00 }
+  "google/gemini-3.1-flash-lite":      { input: 0.25, output: 1.50 }
+  "google/gemini-3-pro":               { input: 2.00, output: 12.00 }
+  "google/gemini-3-flash":             { input: 0.50, output: 3.00 }
+  "google/gemini-3-flash-lite":        { input: 0.25, output: 1.50 }
+
+  # OpenRouter free tier ($0 in/out). Routed to the openrouter
+  # sub-provider via the ":free" suffix route. OpenRouter's free
+  # catalogue rotates — this list mirrors `vornikctl models list`
+  # output as of 2026-06-03; an unlisted ":free" model falls through to
+  # `default` below (which would OVER-count a zero-cost call), so keep
+  # it aligned with what the gateway actually serves. Free models are
+  # rate-limited (per-minute + daily cap → 429); throttle via per-route
+  # queue_depth if autonomy bursts trip the limit.
+  "cognitivecomputations/dolphin-mistral-24b-venice-edition:free": { input: 0.0, output: 0.0 }
+  "google/gemma-4-26b-a4b-it:free":                  { input: 0.0, output: 0.0 }
+  "google/gemma-4-31b-it:free":                      { input: 0.0, output: 0.0 }
+  "liquid/lfm-2.5-1.2b-instruct:free":               { input: 0.0, output: 0.0 }
+  "liquid/lfm-2.5-1.2b-thinking:free":               { input: 0.0, output: 0.0 }
+  "meta-llama/llama-3.2-3b-instruct:free":           { input: 0.0, output: 0.0 }
+  "meta-llama/llama-3.3-70b-instruct:free":          { input: 0.0, output: 0.0 }
+  "moonshotai/kimi-k2.6:free":                       { input: 0.0, output: 0.0 }
+  "nousresearch/hermes-3-llama-3.1-405b:free":       { input: 0.0, output: 0.0 }
+  "nvidia/nemotron-3-nano-30b-a3b:free":             { input: 0.0, output: 0.0 }
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": { input: 0.0, output: 0.0 }
+  "nvidia/nemotron-3-super-120b-a12b:free":          { input: 0.0, output: 0.0 }
+  "nvidia/nemotron-nano-12b-v2-vl:free":             { input: 0.0, output: 0.0 }
+  "nvidia/nemotron-nano-9b-v2:free":                 { input: 0.0, output: 0.0 }
+  "openai/gpt-oss-120b:free":                        { input: 0.0, output: 0.0 }
+  "openai/gpt-oss-20b:free":                         { input: 0.0, output: 0.0 }
+  "poolside/laguna-m.1:free":                        { input: 0.0, output: 0.0 }
+  "poolside/laguna-xs.2:free":                       { input: 0.0, output: 0.0 }
+  "qwen/qwen3-coder:free":                           { input: 0.0, output: 0.0 }
+  "qwen/qwen3-next-80b-a3b-instruct:free":           { input: 0.0, output: 0.0 }
+  "z-ai/glm-4.5-air:free":                           { input: 0.0, output: 0.0 }
+
+# Fallback for unknown models. Conservative ceiling so an unknown
+# model in a swarm doesn't silently produce $0 cost metrics.
+default: { input: 1.00, output: 3.00 }

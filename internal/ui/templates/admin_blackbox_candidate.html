@@ -1,0 +1,224 @@
+{{define "admin_blackbox_candidate.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-5xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <a href="/ui/admin/blackbox/candidates" class="text-xs text-brand-400 hover:text-brand-300">← Candidates</a>
+                <h1 class="text-xl font-semibold text-gray-100">Healing candidate</h1>
+            </div>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-12 text-center text-gray-500 text-sm">
+                Candidate ledger not wired on this deployment.
+            </div>
+            {{else}}
+
+            {{if .ActionError}}
+            <div class="bg-red-900/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-200">
+                <span class="font-medium">Action failed:</span> {{.ActionError}}
+            </div>
+            {{end}}
+
+            <!-- Risk banner — leads the page so the blast radius is the first thing read. -->
+            <div class="rounded-xl border ring-1 {{.Candidate.RiskBadge}} px-4 py-3 text-sm">
+                <span class="font-semibold uppercase tracking-wider text-[11px]">Risk: {{.Candidate.RiskLevel}}</span>
+                <span class="ml-2 text-gray-300">
+                    This is a structural <span class="font-mono">{{.Candidate.Class}}</span> repair for
+                    <span class="font-mono text-gray-100">{{.Candidate.WorkflowID}}</span>. Promotion rewrites the
+                    workflow definition and hot-reloads it for every future run — read the evidence and the
+                    trial scorecard below before you trust it.
+                </span>
+            </div>
+
+            <!-- Identity / metadata -->
+            <div class="glass rounded-xl border border-dark-700 px-5 py-4 grid grid-cols-1 sm:grid-cols-2 gap-y-2 gap-x-6 text-xs">
+                <div><span class="text-gray-500 uppercase tracking-wider text-[10px]">Status</span><br>
+                    <span class="px-1.5 py-0.5 text-[10px] rounded ring-1 {{.Candidate.StatusBadge}}">{{.Candidate.Status}}</span></div>
+                <div><span class="text-gray-500 uppercase tracking-wider text-[10px]">Project</span><br>
+                    <span class="font-mono text-gray-200">{{.Candidate.ProjectID}}</span></div>
+                <div><span class="text-gray-500 uppercase tracking-wider text-[10px]">Trigger</span><br>
+                    {{if .Candidate.TriggerID}}<a href="/ui/admin/blackbox/triggers/{{.Candidate.TriggerID}}" class="font-mono text-brand-300 hover:text-brand-200">{{.Candidate.TriggerID}}</a>{{else}}<span class="text-gray-500">—</span>{{end}}</div>
+                <div><span class="text-gray-500 uppercase tracking-wider text-[10px]">Proposal</span><br>
+                    {{if .ProposalID}}<a href="/ui/admin/workflow-proposals/{{.ProposalID}}" class="font-mono text-brand-300 hover:text-brand-200">{{.ProposalID}}</a>{{else}}<span class="text-gray-500">—</span>{{end}}</div>
+                <div><span class="text-gray-500 uppercase tracking-wider text-[10px]">Genome (baseline → candidate)</span><br>
+                    <span class="font-mono text-gray-400">{{if .GenomeBaseline}}{{.GenomeBaseline}}{{else}}—{{end}}</span>
+                    <span class="text-gray-600">→</span>
+                    <span class="font-mono text-gray-200">{{if .GenomeCandidate}}{{.GenomeCandidate}}{{else}}—{{end}}</span></div>
+                <div><span class="text-gray-500 uppercase tracking-wider text-[10px]">Created</span><br>
+                    <span class="font-mono text-gray-400">{{.Candidate.CreatedAt}}</span></div>
+            </div>
+
+            <!-- Why should I trust this? motivation + expected effect -->
+            {{if .Motivation}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-2">
+                <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Why this repair</h2>
+                <p class="text-sm text-gray-300 whitespace-pre-wrap">{{.Motivation}}</p>
+            </div>
+            {{end}}
+            {{if .ExpectedEffect}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-2">
+                <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Expected effect</h2>
+                <p class="text-sm text-gray-300 whitespace-pre-wrap">{{.ExpectedEffect}}</p>
+            </div>
+            {{end}}
+
+            <!-- Evidence — the failing runs that justified the candidate. -->
+            <div class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-2">
+                <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Evidence runs</h2>
+                {{if .Evidence}}
+                <p class="text-[11px] text-gray-500">The regressing executions that opened the trigger. Read these to judge whether the repair targets the real failure.</p>
+                <ul class="flex flex-wrap gap-2">
+                    {{range .Evidence}}
+                    <li><a href="/ui/executions/{{.}}" class="px-2 py-1 text-[11px] font-mono rounded ring-1 ring-dark-600 bg-dark-700/40 text-brand-300 hover:text-brand-200">{{.}}</a></li>
+                    {{end}}
+                </ul>
+                {{else}}
+                <p class="text-xs text-gray-500">No evidence runs recorded on the linked trigger.</p>
+                {{end}}
+            </div>
+
+            <!-- Proposed structural diff. -->
+            {{if .ProposalDiff}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-4 py-2.5 border-b border-dark-700/60 text-xs uppercase tracking-wider text-gray-500">Proposed workflow change</div>
+                <pre class="px-4 py-3 text-xs font-mono text-gray-300 overflow-x-auto whitespace-pre">{{.ProposalDiff}}</pre>
+            </div>
+            {{end}}
+
+            <!-- Trial scorecard history — the trust signal. -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-4 py-2.5 border-b border-dark-700/60 flex items-center gap-3">
+                    <div class="text-xs uppercase tracking-wider text-gray-500">Trials</div>
+                    <span class="text-[10px] text-gray-600">baseline vs candidate · newest first</span>
+                </div>
+                {{if .Trials}}
+                <div class="divide-y divide-dark-700/40">
+                    {{range .Trials}}
+                    <div class="px-5 py-4 space-y-3">
+                        <div class="flex items-center gap-3 text-xs">
+                            <span class="px-1.5 py-0.5 text-[10px] rounded ring-1 {{.VerdictBadge}}">{{.Verdict}}</span>
+                            <span class="font-mono text-gray-400">mode: {{.Mode}}</span>
+                            <span class="text-gray-600 ml-auto">{{.StartedAt}}{{if .FinishedAt}} → {{.FinishedAt}}{{end}}</span>
+                        </div>
+
+                        {{if .Inconclusive}}
+                        <div class="bg-amber-900/20 border border-amber-800/40 rounded-md px-3 py-2 text-[11px] text-amber-200">
+                            <span class="font-medium">Replay-mode limitation:</span>
+                            {{if .InconclusiveReason}}{{.InconclusiveReason}}{{else}}this trial could not produce a confident comparison.{{end}}
+                            A trial is a promotion <em>signal</em>, not proof — treat the deltas below as indicative only.
+                        </div>
+                        {{end}}
+
+                        {{if .HasScorecard}}
+                        <table class="min-w-full text-xs">
+                            <thead><tr class="border-b border-dark-700/60">
+                                <th scope="col" class="py-1.5 text-left text-[10px] font-medium text-gray-500 uppercase tracking-wider">Metric</th>
+                                <th scope="col" class="py-1.5 text-right text-[10px] font-medium text-gray-500 uppercase tracking-wider">Candidate − baseline</th>
+                            </tr></thead>
+                            <tbody>
+                                {{range .ScoreLines}}
+                                <tr>
+                                    <td class="py-1 text-gray-400">{{.Label}}</td>
+                                    <td class="py-1 text-right font-mono {{if .Improved}}text-emerald-300{{else if .Worsened}}text-rose-300{{else}}text-gray-300{{end}}">{{.Value}}</td>
+                                </tr>
+                                {{end}}
+                            </tbody>
+                        </table>
+                        {{else}}
+                        <p class="text-[11px] text-gray-500">No scorecard for this trial (static validation, or the trial errored).</p>
+                        {{end}}
+
+                        {{if or .Baseline .Candidate}}
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            {{with .Baseline}}
+                            <div class="rounded-md ring-1 ring-dark-600 bg-dark-700/30 px-3 py-2 text-[11px] space-y-0.5">
+                                <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Baseline</div>
+                                <div>runs <span class="font-mono text-gray-300">{{.Runs}}</span> · success <span class="font-mono text-gray-300">{{.SuccessRate}}</span></div>
+                                <div>cost <span class="font-mono text-gray-300">{{.AvgCostUSD}}</span> · dur <span class="font-mono text-gray-300">{{.AvgDurationSeconds}}</span></div>
+                                <div>halluc <span class="font-mono text-gray-300">{{.HallucinationRate}}</span> · verifier-fail <span class="font-mono text-gray-300">{{.VerifierFailureRate}}</span></div>
+                            </div>
+                            {{end}}
+                            {{with .Candidate}}
+                            <div class="rounded-md ring-1 ring-dark-600 bg-dark-700/30 px-3 py-2 text-[11px] space-y-0.5">
+                                <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Candidate</div>
+                                <div>runs <span class="font-mono text-gray-300">{{.Runs}}</span> · success <span class="font-mono text-gray-300">{{.SuccessRate}}</span></div>
+                                <div>cost <span class="font-mono text-gray-300">{{.AvgCostUSD}}</span> · dur <span class="font-mono text-gray-300">{{.AvgDurationSeconds}}</span></div>
+                                <div>halluc <span class="font-mono text-gray-300">{{.HallucinationRate}}</span> · verifier-fail <span class="font-mono text-gray-300">{{.VerifierFailureRate}}</span></div>
+                            </div>
+                            {{end}}
+                        </div>
+                        {{end}}
+
+                        {{if .Reasons}}
+                        <ul class="list-disc list-inside text-[11px] text-gray-400 space-y-0.5">
+                            {{range .Reasons}}<li>{{.}}</li>{{end}}
+                        </ul>
+                        {{end}}
+
+                        {{if .EvidenceIDs}}
+                        <div class="text-[10px] text-gray-600">evidence: {{range .EvidenceIDs}}<span class="font-mono">{{.}}</span> {{end}}</div>
+                        {{end}}
+                    </div>
+                    {{end}}
+                </div>
+                {{else}}
+                <div class="px-4 py-8 text-center text-xs text-gray-500">
+                    No trials yet. Run a trial below to gather the promotion signal — a static validation
+                    of the candidate shape, or a non-production replay of the evidence runs.
+                </div>
+                {{end}}
+            </div>
+
+            <!-- Operator actions. -->
+            <div class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-4">
+                <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Operator actions</h2>
+
+                {{if .CanRunTrial}}
+                <form method="post" action="/ui/admin/blackbox/candidates/{{.Candidate.ID}}/run-trial" class="flex flex-wrap items-end gap-3">
+                    <label class="block">
+                        <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Trial mode</span>
+                        <select name="mode" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1.5 font-mono">
+                            <option value="static">static (shape + policy validation — does not unlock promotion)</option>
+                            <option value="replay">replay (non-production, side-effects blocked — gates promotion)</option>
+                        </select>
+                    </label>
+                    <button type="submit" class="bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium px-4 py-2 rounded-md">Run trial</button>
+                    <span class="text-[11px] text-gray-500">Replay re-runs the evidence with side-effecting tools blocked; the original task is never touched. It runs in the background — refresh this page for the verdict.</span>
+                </form>
+                {{else if not .HasRunner}}
+                <p class="text-xs text-gray-500">Trial runner not wired on this deployment.</p>
+                {{end}}
+
+                <div class="flex flex-wrap items-center gap-3 pt-2 border-t border-dark-700/60">
+                    {{if .CanPromote}}
+                    <form method="post" action="/ui/admin/blackbox/candidates/{{.Candidate.ID}}/promote" class="inline"
+                          onsubmit="return confirm('Promote this candidate? This rewrites the live WORKFLOW.md, commits it, and hot-reloads config for all future runs.');">
+                        <button type="submit" class="bg-emerald-700 hover:bg-emerald-600 text-white text-sm font-medium px-4 py-2 rounded-md">Promote to production</button>
+                    </form>
+                    <span class="text-[11px] text-gray-500">Promotion is a manual operator action and requires a passing replay trial.</span>
+                    {{else if .HasPromoter}}
+                    <span class="text-[11px] text-gray-500">Promotion is unavailable until a <strong>replay</strong> trial passes (status must be <span class="font-mono">trial_passed</span>). A passed static trial validates shape + policy only and leaves the candidate at <span class="font-mono">draft</span> — it does not unlock promotion.</span>
+                    {{end}}
+
+                    {{if .CanReject}}
+                    <form method="post" action="/ui/admin/blackbox/candidates/{{.Candidate.ID}}/reject" class="inline ml-auto"
+                          onsubmit="return confirm('Reject this candidate? It will be marked rejected and no longer offered for promotion.');">
+                        <button type="submit" class="text-sm text-rose-400 hover:text-rose-300">Reject candidate</button>
+                    </form>
+                    {{end}}
+                </div>
+            </div>
+
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

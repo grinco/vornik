@@ -1,0 +1,106 @@
+{{define "project_document_detail.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">{{if .Document.Title}}{{.Document.Title}}{{else}}<span class="text-gray-500 italic">untitled document</span>{{end}}</h1>
+                    {{if .Document.Author}}<p class="text-sm text-gray-400 mt-0.5">{{.Document.Author}}</p>{{end}}
+                    <p class="text-xs text-gray-500 font-mono mt-1">{{.ProjectID}} · {{.Document.ID}}</p>
+                </div>
+                <a href="{{.BackURL}}" class="flex items-center gap-1 text-gray-500 hover:text-gray-300 text-sm transition-colors">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                    Documents
+                </a>
+            </div>
+
+            {{if .Success}}
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{{.Success}}</div>
+            {{end}}
+            {{if .Error}}
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            {{end}}
+
+            <section class="rounded-lg border border-dark-700 bg-dark-800/40 px-4 py-3">
+                <h2 class="text-sm font-semibold text-gray-200 mb-3">Metadata</h2>
+                <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-xs">
+                    <div><dt class="text-gray-500">Source artifact</dt><dd class="font-mono text-gray-300 break-all">{{.Document.SourceArtifactID}}</dd></div>
+                    <div><dt class="text-gray-500">MIME type</dt><dd class="font-mono text-gray-300">{{.Document.MimeType}}</dd></div>
+                    <div><dt class="text-gray-500">Extractor</dt><dd class="font-mono text-gray-300">{{.Document.ExtractorName}} v{{.Document.ExtractorVersion}}</dd></div>
+                    <div><dt class="text-gray-500">Status</dt><dd>
+                        {{if eq .Document.Status "OK"}}<span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-emerald-900/40 text-emerald-300 ring-1 ring-inset ring-emerald-600/40">OK</span>
+                        {{else if eq .Document.Status "PARTIAL"}}<span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-amber-900/40 text-amber-300 ring-1 ring-inset ring-amber-600/40">PARTIAL</span>
+                        {{else if eq .Document.Status "FAILED"}}<span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-rose-900/40 text-rose-300 ring-1 ring-inset ring-rose-600/40">FAILED</span>
+                        {{else}}<span class="text-gray-400">{{.Document.Status}}</span>{{end}}
+                    </dd></div>
+                    {{if .Document.Publisher}}<div><dt class="text-gray-500">Publisher</dt><dd class="text-gray-300">{{.Document.Publisher}}</dd></div>{{end}}
+                    {{if .Document.PublicationDate}}<div><dt class="text-gray-500">Published</dt><dd class="text-gray-300">{{.Document.PublicationDate}}</dd></div>{{end}}
+                    {{if .Document.ISBN}}<div><dt class="text-gray-500">ISBN</dt><dd class="font-mono text-gray-300">{{.Document.ISBN}}</dd></div>{{end}}
+                    {{if .Document.Language}}<div><dt class="text-gray-500">Language</dt><dd class="font-mono text-gray-300">{{.Document.Language}}</dd></div>{{end}}
+                    <div><dt class="text-gray-500">Sections</dt><dd class="tabular-nums text-gray-300">{{.Document.SectionCount}}</dd></div>
+                    <div><dt class="text-gray-500">Total text</dt><dd class="tabular-nums text-gray-300">{{humanizeSize .Document.TotalTextBytes}}</dd></div>
+                    <div><dt class="text-gray-500">Extracted</dt><dd class="text-gray-300" title="{{.Document.ExtractedAtAbsolute}}">{{.Document.ExtractedAtDisplay}}</dd></div>
+                    <div class="sm:col-span-2"><dt class="text-gray-500">Storage path</dt><dd class="font-mono text-gray-400 break-all text-[10px]">{{.StoragePath}}</dd></div>
+                </dl>
+                <div class="mt-4 flex gap-2 flex-wrap">
+                    {{if .CanReExtract}}
+                    <form method="POST" action="{{.ReExtractURL}}" class="inline">
+                        <button type="submit"
+                                class="text-xs px-3 py-1.5 rounded-md bg-brand-600/80 hover:bg-brand-500 text-white transition-colors"
+                                onclick="return confirm('Re-extract this document? This re-runs the extractor + re-chunks the result into project memory.');">
+                            Re-extract
+                        </button>
+                    </form>
+                    {{else}}
+                    <span class="text-xs text-gray-500 italic">Re-extract action unavailable (extraction pipeline not wired)</span>
+                    {{end}}
+                </div>
+            </section>
+
+            <section class="rounded-lg border border-dark-700 bg-dark-800/40">
+                <header class="px-4 py-3 border-b border-dark-700 flex items-center justify-between">
+                    <h2 class="text-sm font-semibold text-gray-200">Outline ({{len .Outline}} {{if eq (len .Outline) 1}}section{{else}}sections{{end}})</h2>
+                </header>
+                {{if .Outline}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-xs">
+                        <thead class="text-left text-gray-400 border-b border-dark-700">
+                            <tr>
+                                <th scope="col" class="px-4 py-2 font-medium">#</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Section ID</th>
+                                <th scope="col" class="px-4 py-2 font-medium">Title</th>
+                                <th scope="col" class="px-4 py-2 font-medium text-right">Text bytes</th>
+                                <th scope="col" class="px-4 py-2 font-medium text-right">Anchor</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        {{range $idx, $s := .Outline}}
+                            <tr class="border-b border-dark-700/50 text-gray-200">
+                                <td class="px-4 py-2 tabular-nums text-gray-500">{{add $idx 1}}</td>
+                                <td class="px-4 py-2 font-mono text-[10px] text-gray-400">{{$s.SectionID}}</td>
+                                <td class="px-4 py-2 text-gray-200">
+                                    {{if gt $s.Depth 0}}<span class="text-gray-600">{{indentDots $s.Depth}}</span> {{end}}{{$s.Title}}
+                                </td>
+                                <td class="px-4 py-2 tabular-nums text-gray-400 text-right">{{humanizeBytes $s.TextBytes}}</td>
+                                <td class="px-4 py-2 text-gray-500 text-right text-[10px]">
+                                    {{if $s.PageStart}}p.{{$s.PageStart}}{{else if $s.TimestampStartSec}}@{{$s.TimestampStartSec}}s{{else}}—{{end}}
+                                </td>
+                            </tr>
+                        {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-4 py-6 text-sm text-gray-500">No sections recorded for this document. The extractor may have produced a single-section result or the outline blob is missing — check the daemon log for the extraction run.</div>
+                {{end}}
+            </section>
+        </div>
+    </main>
+</body>
+</html>
+{{end}}

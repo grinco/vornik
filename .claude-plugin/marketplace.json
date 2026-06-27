@@ -1,0 +1,30 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "vornik",
+  "description": "Plugins for integrating Claude Code (and other host LLM clients) with a vornik daemon. Today: the async-offload companion plugin documented in LLD 21. Future entries will cover Codex / Gemini-CLI / opencode adapters and the reverse-direction A2A bridge.",
+  "owner": {
+    "name": "vornik",
+    "email": "support@vornik.io"
+  },
+  "plugins": [
+    {
+      "name": "vornik-companion",
+      "description": "Async-offload companion. Delegate reviews, audits, validations, research, summarization, and bulk RAG ingest to vornik-managed agents over MCP; results re-enter Claude's context via a SessionStart digest hook. Per-repo scoping (migration 75) so one project's RAG cleanly serves multiple repos. v0.5: commands shed the redundant vornik- prefix (/upload, /rag-ingest, delegate skill) and the docs make companion-architectural-review a standing merge gate for non-trivial changes and design docs. v0.6: adds /memory-correct + the memory_correct MCP tool (soft-refute stale RAG facts so newer findings take precedence) and rewrites /remember to the heredoc\u2192POST hardening so long notes no longer mangle on tool-call serialization. v0.7: /memory-correct gains a surgical --chunk-id mode (refute an exact chunk by id, not the claim-search top match).",
+      "author": {
+        "name": "vornik"
+      },
+      "category": "development",
+      "source": "./contrib/claude-code-companion",
+      "homepage": "https://vornik.io",
+      "license": "Apache-2.0",
+      "keywords": [
+        "vornik",
+        "async",
+        "delegation",
+        "code-review",
+        "agents",
+        "mcp"
+      ]
+    }
+  ]
+}

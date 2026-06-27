@@ -1,0 +1,14 @@
+version: 1
+# Curated index for skills.vornik.io. Each entry maps a
+# <handle>/<skill> reference to its source git repo + metadata
+# the discovery UI surfaces.
+#
+# Add a skill by appending a row and opening a PR — see
+# `vornikctl skill register --help` for the snippet shape.
+skills:
+  - handle: vornik
+    skill: research-and-write
+    git_url: https://github.com/vornik-dev/skill-research-and-write.git
+    description: Two-step researcher → writer pipeline producing a polished report plus a one-paragraph summary.
+    tags: [research, writing]
+    homepage: https://github.com/vornik-dev/skill-research-and-write

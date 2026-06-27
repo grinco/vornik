@@ -1,0 +1,83 @@
+{{- if .Values.postgres.enabled -}}
+# Bundled Postgres (pgvector-enabled). Single-instance StatefulSet — good
+# enough for a production single-tenant install. If you need HA, disable
+# this (postgres.enabled=false) and bring your own Postgres cluster.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "vornik.postgresFullname" . }}
+  labels: {{- include "vornik.postgresLabels" . | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ include "vornik.postgresFullname" . }}
+  selector:
+    matchLabels: {{- include "vornik.postgresSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "vornik.postgresLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        # The pgvector/pgvector:pg16 image runs as uid 999 by default
+        # (inherited from the official postgres image). fsGroup makes
+        # the PVC writable for it on volume mount.
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: {{ include "vornik.postgresImage" . }}
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.auth.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.auth.username | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vornik.secretName" . }}
+                  key: dbPassword
+            # PGDATA under a subdir of the mount so pg_init can chown
+            # without fighting the lost+found dir that some CSI drivers
+            # leave at the volume root.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.auth.username | quote }}, "-d", {{ .Values.postgres.auth.database | quote }}]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.auth.username | quote }}, "-d", {{ .Values.postgres.auth.database | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources: {{- toYaml .Values.postgres.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      {{- if not .Values.postgres.persistence.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- end }}
+  {{- if .Values.postgres.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: {{- toYaml .Values.postgres.persistence.accessModes | nindent 10 }}
+        {{- if .Values.postgres.persistence.storageClass }}
+        storageClassName: {{ .Values.postgres.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.persistence.size }}
+  {{- end }}
+{{- end }}

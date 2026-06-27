@@ -1,0 +1,29 @@
+{
+  "project_id": "test-project",
+  "workflow_id": "adaptive",
+  "cases": [
+    {
+      "name": "read-context",
+      "prompt": "scout: Read project/.autonomy/PROJECT_CONTEXT.md if present and summarize the current project state in artifacts/out/eval-read-context.md. If it is missing, write a short missing-context report instead.",
+      "expect": {
+        "outcome": "COMPLETED"
+      }
+    },
+    {
+      "name": "small-edit",
+      "prompt": "editor: Make a tiny documentation-only update in project/.autonomy/CURRENT_TASK.md describing this eval run, then commit it. Use file_edit when modifying an existing file.",
+      "expect": {
+        "outcome": "COMPLETED",
+        "regex": "modified_files"
+      }
+    },
+    {
+      "name": "review-rejects-empty-diff",
+      "prompt": "reviewer: review the change described in 'I made no changes'. Reject when there is no actual diff. Return {approved: false, feedback: ...}.",
+      "expect": {
+        "outcome": "COMPLETED",
+        "contains": {"approved": false}
+      }
+    }
+  ]
+}

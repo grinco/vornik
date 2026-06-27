@@ -1,0 +1,49 @@
+{{define "projects_new_success.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-3xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="bg-emerald-500/10 border border-emerald-500/40 rounded-xl px-5 py-4">
+                <div class="flex items-center gap-2 mb-1">
+                    <svg class="h-5 w-5 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                    <h1 class="text-base font-semibold text-emerald-200">Project created from <code>{{.CreatedSlug}}</code></h1>
+                </div>
+                <p class="text-xs text-emerald-300/80">
+                    The daemon's registry watcher will pick the new project up on the
+                    next reload cycle. Files written:
+                </p>
+            </div>
+
+            <ul class="glass rounded-xl border border-dark-700 divide-y divide-dark-700/40">
+                {{range .CreatedFiles}}
+                <li class="px-5 py-2.5 font-mono text-xs text-gray-300">{{.}}</li>
+                {{end}}
+            </ul>
+
+            {{if .CreatedProjectID}}
+            <div class="rounded-xl border border-brand-500/30 bg-brand-600/10 p-4">
+                <h2 class="text-sm font-semibold text-brand-200">Next: run the configuration wizard</h2>
+                <p class="text-[11px] text-gray-400 mt-1">Open the new project's page. The wizard tile guides you through adding a brief and enabling autonomy, then generates the swarm + workflow drafts from your brief.</p>
+            </div>
+            {{end}}
+
+            <div class="flex items-center gap-3">
+                {{if .CreatedProjectID}}
+                <a href="/ui/projects/{{.CreatedProjectID}}" class="px-4 py-2 text-sm rounded-lg bg-brand-600 hover:bg-brand-500 text-white">Open {{.CreatedProjectID}}</a>
+                <a href="/ui/projects" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200">All projects</a>
+                {{else}}
+                <a href="/ui/projects" class="px-4 py-2 text-sm rounded-lg bg-brand-600 hover:bg-brand-500 text-white">Go to projects</a>
+                {{end}}
+                <a href="/ui/projects/new" class="px-4 py-2 text-sm text-gray-400 hover:text-gray-200">Create another</a>
+            </div>
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

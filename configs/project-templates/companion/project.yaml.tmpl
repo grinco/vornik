@@ -1,0 +1,69 @@
+projectId: "{{.projectId}}"
+displayName: "{{.displayName}}"
+swarmId: "{{.projectId}}-swarm"
+
+# companion-architectural-review is the conservative default — it's
+# the workflow the host LLM client invokes most often (review my
+# diff). Other workflows are reachable by name via the delegate()
+# MCP tool; listing them as adaptive candidates keeps the project's
+# lead-routing path open for future enrichment.
+defaultWorkflowId: "companion-architectural-review"
+adaptiveCandidateWorkflows:
+  - companion-architectural-review
+  - companion-test-coverage-audit
+  - companion-doc-review
+  - companion-data-validation
+  - companion-research-gather
+  - companion-report-summarize
+
+defaultPriority: 50
+maxConcurrentTasks: 3
+
+# Autonomy stays off by default — the companion project exists to
+# serve delegated work from a host LLM, not to spawn its own. Operators
+# who want a background sweeper (nightly doc-review, hourly anomaly
+# check) can flip enabled:true and pick a goal.
+autonomy:
+  enabled: false
+  goal: |
+    (Autonomy is off for companion projects by default. Enable only
+    if you want this project to spawn its own work between host-LLM
+    delegations.)
+  mode: llm
+  pollInterval: "1h"
+  maxTasksPerHour: 2
+  allowedTaskTypes:
+    - "companion-research-gather"
+    - "companion-doc-review"
+
+# Per-project tool allowlist. Read-leaning by default; the only writer
+# is the summarizer (it has to emit artifacts/out/summary.md). The
+# plugin's bearer key is further scoped at the API-key layer, so
+# accidental over-grant here is bounded by the key contract.
+permissions:
+  secrets: []
+  allowedTools:
+    - "current_time"
+    - "file_read"
+    - "file_write"
+    - "file_edit"
+    - "read_many_files"
+    - "grep"
+    - "glob"
+    - "memory_search"
+
+# Policy-Aware Memory Firewall (2026.5.9+). Companion projects
+# store memory deposited by host-LLM remember() calls (operator
+# notes, code references, design specs) — typical operator-
+# trust shape. Advisory mode (inherited from daemon default)
+# gives the audit trail without breaking the host LLM's recall
+# loop.
+#
+# Operators routing companion through multiple repos may want
+# repo-scoped policies later (the LLD's per-chunk policy
+# editing covers that case via the POST /policy/chunks/{id}
+# admin surface).
+#
+# Values: off / advisory (default) / enforce.
+firewall:
+  mode: ""  # inherit daemon default

@@ -1,0 +1,150 @@
+{{define "admin_blackbox_overrides.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <a href="/ui/admin/blackbox" class="text-xs text-brand-400 hover:text-brand-300">← Black Box</a>
+                <h1 class="text-xl font-semibold text-gray-100">Trigger overrides</h1>
+                <span class="text-[10px] text-gray-600 ml-auto">per-(project, workflow, class)</span>
+            </div>
+
+            <p class="text-xs text-gray-500 max-w-3xl">
+                Operator overrides for the hourly regression detector. Threshold replaces
+                the default relative-delta cap (<code class="font-mono text-gray-400">+25%</code>
+                for <code class="font-mono text-gray-400">failure_rate_spike</code>,
+                <code class="font-mono text-gray-400">+40%</code> for
+                <code class="font-mono text-gray-400">cost_regression</code>). Mute suppresses
+                new triggers for the given workflow/class until the chosen instant; the
+                detector resumes automatically when the mute window expires.
+            </p>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-12 text-center text-gray-500 text-sm">
+                Override repository not wired on this deployment.
+            </div>
+            {{else}}
+
+            {{if .ActionError}}
+            <div class="bg-red-900/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-200">
+                <span class="font-medium">Action failed:</span> {{.ActionError}}
+            </div>
+            {{end}}
+
+            <form method="post" action="/ui/admin/blackbox/overrides/save"
+                  class="glass rounded-xl border border-dark-700 px-5 py-4 space-y-3">
+                <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">New / update override</h2>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <label class="block">
+                        <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Project</span>
+                        <input type="text" name="project" value="{{.PrefilledProject}}" required class="w-full bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1.5 font-mono">
+                    </label>
+                    <label class="block">
+                        <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Workflow</span>
+                        <input type="text" name="workflow" value="{{.PrefilledWorkflow}}" required class="w-full bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1.5 font-mono">
+                    </label>
+                    <label class="block">
+                        <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Class</span>
+                        <select name="class" required class="w-full bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1.5 font-mono">
+                            {{range .ClassOptions}}
+                            <option value="{{.}}" {{if eq . $.PrefilledClass}}selected{{end}}>{{.}}</option>
+                            {{end}}
+                        </select>
+                    </label>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <label class="block">
+                        <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Threshold % (blank = unset)</span>
+                        <input type="text" name="threshold_pct" placeholder="e.g. 50" class="w-full bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1.5 font-mono">
+                    </label>
+                    <label class="block">
+                        <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Mute for N hours</span>
+                        <input type="text" name="mute_hours" placeholder="e.g. 24" class="w-full bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1.5 font-mono">
+                    </label>
+                    <label class="flex items-end gap-2 text-xs text-gray-400 pb-1.5">
+                        <input type="checkbox" name="clear_mute" value="1" class="rounded">
+                        Clear existing mute on save
+                    </label>
+                </div>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Notes (operator-facing)</span>
+                    <textarea name="notes" rows="2" placeholder="Why is this override in place?" class="w-full bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1.5 font-mono"></textarea>
+                </label>
+                <div class="flex justify-end">
+                    <button type="submit" class="bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium px-4 py-2 rounded-md">
+                        Save override
+                    </button>
+                </div>
+            </form>
+
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-4 py-2.5 border-b border-dark-700/60 flex items-center gap-3">
+                    <div class="text-xs uppercase tracking-wider text-gray-500">Active overrides</div>
+                    <span class="text-[10px] text-gray-600">newest-updated first</span>
+                </div>
+                {{if .Rows}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2 text-left text-[10px] font-medium text-gray-500 uppercase tracking-wider">Project / Workflow</th>
+                            <th scope="col" class="px-4 py-2 text-left text-[10px] font-medium text-gray-500 uppercase tracking-wider">Class</th>
+                            <th scope="col" class="px-4 py-2 text-right text-[10px] font-medium text-gray-500 uppercase tracking-wider">Threshold</th>
+                            <th scope="col" class="px-4 py-2 text-left text-[10px] font-medium text-gray-500 uppercase tracking-wider">Mute</th>
+                            <th scope="col" class="px-4 py-2 text-left text-[10px] font-medium text-gray-500 uppercase tracking-wider">Notes</th>
+                            <th scope="col" class="px-4 py-2 text-right text-[10px] font-medium text-gray-500 uppercase tracking-wider">Updated</th>
+                            <th scope="col" class="px-4 py-2 text-right text-[10px] font-medium text-gray-500 uppercase tracking-wider"><span class="sr-only">Delete</span></th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Rows}}
+                            <tr class="hover:bg-dark-700/40 transition-colors">
+                                <td class="px-4 py-2 text-xs font-mono">
+                                    <a href="/ui/projects/{{.ProjectID}}" class="text-brand-300 hover:text-brand-200">{{.ProjectID}}</a>
+                                    <span class="text-gray-500"> / </span>
+                                    <span class="text-gray-200">{{.WorkflowID}}</span>
+                                </td>
+                                <td class="px-4 py-2 text-xs">
+                                    <span class="px-1.5 py-0.5 font-mono rounded ring-1 ring-violet-700/40 bg-violet-900/20 text-violet-200">{{.Class}}</span>
+                                </td>
+                                <td class="px-4 py-2 text-xs font-mono text-right text-gray-300">{{.ThresholdDisplay}}</td>
+                                <td class="px-4 py-2 text-xs font-mono">
+                                    {{if .MutedActive}}
+                                    <span class="px-1.5 py-0.5 text-[10px] rounded ring-1 ring-amber-700/50 bg-amber-900/30 text-amber-200">muted</span>
+                                    <span class="text-gray-500 ml-1">until {{.MutedUntilDisplay}}</span>
+                                    {{else}}
+                                    <span class="text-gray-500">{{.MutedUntilDisplay}}</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 text-xs text-gray-300 max-w-xs truncate" title="{{.Notes}}">{{.Notes}}</td>
+                                <td class="px-4 py-2 text-[10px] font-mono text-right text-gray-500">{{.UpdatedAt}}{{if .CreatedBy}} <span class="text-gray-600">by {{.CreatedBy}}</span>{{end}}</td>
+                                <td class="px-4 py-2 text-right">
+                                    <form method="post" action="/ui/admin/blackbox/overrides/delete" class="inline" onsubmit="return confirm('Delete this override?');">
+                                        <input type="hidden" name="project" value="{{.ProjectID}}">
+                                        <input type="hidden" name="workflow" value="{{.WorkflowID}}">
+                                        <input type="hidden" name="class" value="{{.Class}}">
+                                        <button type="submit" class="text-xs text-rose-400 hover:text-rose-300">Delete</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-4 py-8 text-center text-xs text-gray-500">
+                    No overrides yet. Add one above to tune the detector for a specific (project, workflow, class) tuple.
+                </div>
+                {{end}}
+            </div>
+
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

@@ -1,0 +1,43 @@
+{{define "admin_integrations_mcp.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <h1 class="text-xl font-semibold text-gray-100">MCP integrations</h1>
+                <span class="px-2 py-0.5 text-[10px] uppercase tracking-wider font-mono rounded-md bg-amber-900/40 text-amber-300 ring-1 ring-amber-700/40">read-only</span>
+                <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
+            </div>
+            <p class="text-xs text-gray-500">Edit support is slice 3. Today this surface lists every project that declares <code class="text-gray-300">mcp.servers</code> in its YAML.</p>
+
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                {{if not .Available}}
+                <div class="px-5 py-10 text-center text-gray-500 text-sm">Registry not wired.</div>
+                {{else if .Configured}}
+                <ul class="divide-y divide-dark-700/40">
+                    {{range .Configured}}
+                    <li class="px-5 py-3">
+                        <div class="text-sm font-mono text-gray-100">{{.ProjectID}}</div>
+                        <ul class="mt-1 flex flex-wrap gap-2">
+                            {{range .Servers}}
+                            <li class="px-2 py-0.5 text-xs font-mono rounded-md bg-dark-700 text-gray-300">{{.Name}}</li>
+                            {{end}}
+                        </ul>
+                    </li>
+                    {{end}}
+                </ul>
+                {{else}}
+                <div class="px-5 py-10 text-center text-gray-500 text-sm">No projects declare an MCP block.</div>
+                {{end}}
+            </div>
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

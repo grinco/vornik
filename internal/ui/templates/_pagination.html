@@ -1,0 +1,26 @@
+{{/*
+  Reusable pagination controls. Pass a ui.Paginator:
+      {{template "pagination" .Paginator}}
+  Renders nothing for an empty list. Prev/Next preserve all other
+  query params (status filters, etc.) via the URLs built in Go.
+*/}}
+{{define "pagination"}}
+{{if gt .Total 0}}
+<div class="flex items-center justify-between mt-3 text-[11px] text-gray-400">
+  <span>Showing {{.Start}}–{{.End}} of {{.Total}}</span>
+  <div class="flex items-center gap-2">
+    {{if .HasPrev}}
+    <a href="{{.PrevURL}}" class="tap px-2 py-1 rounded-md border border-dark-700 hover:border-dark-600 text-gray-300">‹ Prev</a>
+    {{else}}
+    <span class="px-2 py-1 rounded-md border border-dark-800 text-gray-600">‹ Prev</span>
+    {{end}}
+    <span>Page {{.Page}} / {{.Pages}}</span>
+    {{if .HasNext}}
+    <a href="{{.NextURL}}" class="tap px-2 py-1 rounded-md border border-dark-700 hover:border-dark-600 text-gray-300">Next ›</a>
+    {{else}}
+    <span class="px-2 py-1 rounded-md border border-dark-800 text-gray-600">Next ›</span>
+    {{end}}
+  </div>
+</div>
+{{end}}
+{{end}}

@@ -1,0 +1,55 @@
+{{define "inbox.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-5xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3 text-gray-400">
+                {{template "navIconInbox"}}
+                <h1 class="text-xl font-semibold text-gray-100">Needs you</h1>
+                <span class="text-xs text-gray-500">{{.Count}}</span>
+            </div>
+
+            {{/* Event-driven refresh off the fleet feed (a fleet transition is
+                 often what clears/creates an inbox item) + 30s backstop. */}}
+            <div id="inbox-list"
+                 hx-ext="sse"
+                 sse-connect="/api/v1/live/fleet"
+                 hx-get="/ui/inbox"
+                 hx-trigger="sse:fleet-changed, every 30s"
+                 hx-select="#inbox-list"
+                 hx-target="#inbox-list"
+                 hx-swap="outerHTML">
+            {{if .Items}}
+                <ul class="space-y-2">
+                    {{range .Items}}
+                    <li class="flex items-center gap-3 rounded-xl border border-dark-600 bg-dark-800 p-3.5">
+                        <span class="text-[11px] font-medium uppercase tracking-wide px-2 py-0.5 rounded-full
+                            {{if eq .Kind "Needs approval"}}bg-amber-500/20 text-amber-300
+                            {{else if eq .Kind "Needs input"}}bg-sky-500/20 text-sky-300
+                            {{else if eq .Kind "Failed"}}bg-rose-500/20 text-rose-300
+                            {{else}}bg-gray-500/20 text-gray-300{{end}}">{{.Kind}}</span>
+                        <div class="min-w-0 flex-1">
+                            <div class="text-sm text-gray-200 truncate font-mono">{{.TaskID}}</div>
+                            <div class="text-[11px] text-gray-500 flex items-center gap-2">
+                                <span>{{.ProjectID}}</span>
+                                {{if .Detail}}<span class="text-rose-400/80">{{.Detail}}</span>{{end}}
+                                <span class="ml-auto">{{.Age}}</span>
+                            </div>
+                        </div>
+                        <a href="{{.Href}}" class="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors">{{.Action}} →</a>
+                    </li>
+                    {{end}}
+                </ul>
+            {{else}}
+                {{template "emptyState" (dict "Icon" "tasks" "Title" "All clear" "Hint" "Nothing needs your attention — no approvals, checkpoints, recent failures, or blocked tasks.")}}
+            {{end}}
+            </div>
+        </div>
+    </main>
+</body>
+</html>
+{{end}}

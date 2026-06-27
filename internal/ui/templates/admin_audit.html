@@ -1,0 +1,96 @@
+{{define "admin_audit.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">Admin Audit</h1>
+                <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
+            </div>
+
+            <form method="get" action="/ui/admin/audit"
+                  class="glass rounded-xl border border-dark-700 px-4 py-3 flex flex-wrap items-end gap-3 text-sm">
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Action</span>
+                    <input type="text" name="action" value="{{.FilterAction}}" placeholder="mcp.refresh" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-44">
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Principal</span>
+                    <input type="text" name="principal" value="{{.FilterPrincipal}}" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-44">
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Target prefix</span>
+                    <input type="text" name="target" value="{{.FilterTarget}}" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-44">
+                </label>
+                <label class="block">
+                    <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Since (YYYY-MM-DD)</span>
+                    <input type="text" name="since" value="{{.FilterSince}}" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-44">
+                </label>
+                {{/* Page-size limit lives in its own form below — see the
+                     shared pageSizeSelector partial — so changing Show
+                     auto-submits without clearing the action/principal
+                     filters above. Preserve the current limit through
+                     this filter form as a hidden input so the user
+                     doesn't reset Show every time they re-Filter. */}}
+                <input type="hidden" name="limit" value="{{.Limit}}">
+                <button class="bg-brand-500 hover:bg-brand-400 text-white text-xs font-medium px-3 py-1.5 rounded-md">Filter</button>
+            </form>
+
+            <div class="flex justify-end">
+                {{template "pageSizeSelector" (dict
+                    "Action" "/ui/admin/audit"
+                    "Current" .Limit
+                    "Options" .LimitOptions
+                    "Hidden" (dict
+                        "action" .FilterAction
+                        "principal" .FilterPrincipal
+                        "target" .FilterTarget
+                        "since" .FilterSince))}}
+            </div>
+
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                {{if not .Available}}
+                <div class="px-5 py-12 text-center text-gray-500 text-sm">Admin audit repository not wired.</div>
+                {{else if .Entries}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full" data-keynav>
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Time</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Principal</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Target</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">IP</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">After</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Entries}}
+                            <tr class="hover:bg-dark-700/40 transition-colors">
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500 font-mono">{{.Timestamp.Format "01-02 15:04:05"}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap"><span class="px-2 py-0.5 text-xs font-mono rounded-md bg-dark-700 text-gray-200">{{.Action}}</span></td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-300 font-mono">{{.Source}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-300 font-mono">{{.Principal}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-300 max-w-xs truncate font-mono" title="{{.Target}}">{{.Target}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono">{{.IP}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-400 max-w-sm truncate font-mono" title="{{.After}}">{{.After}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                <div class="px-5 py-12 text-center text-gray-500 text-sm">No admin audit entries match the filter.</div>
+                {{end}}
+            </div>
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

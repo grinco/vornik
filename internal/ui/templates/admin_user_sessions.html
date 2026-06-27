@@ -1,0 +1,77 @@
+{{define "admin_user_sessions.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                {{template "navIconAdmin"}}
+                <h1 class="text-xl font-semibold text-gray-100">Sessions — {{if .DisplayName}}{{.DisplayName}}{{else}}{{.UserID}}{{end}}</h1>
+                <a href="/ui/admin/users" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Users</a>
+            </div>
+
+            {{if .Notice}}
+            <div class="glass rounded-xl border border-brand-700/50 bg-brand-900/20 px-4 py-2.5 text-sm text-brand-200">{{.Notice}}</div>
+            {{end}}
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-12 text-center text-gray-500 text-sm">
+                Session management requires the identity core (PostgreSQL); no session repository is wired on this deployment.
+            </div>
+            {{else if not .Sessions}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-12 text-center text-gray-500 text-sm">No active sessions for this user.</div>
+            {{else}}
+            <div class="flex items-center justify-between gap-3">
+                <p class="text-xs text-gray-500">{{len .Sessions}} active session{{if ne (len .Sessions) 1}}s{{end}}. Terminating a session signs that browser out immediately. Your own current session is protected.</p>
+                <form method="post" action="/ui/admin/users/{{.UserID}}/sessions/terminate-all">
+                    <button class="text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded-md border border-dark-600" onclick="return confirm('Terminate all other sessions for this user?')">Terminate all</button>
+                </form>
+            </div>
+
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="min-w-full">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Provider</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Agent</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">IP</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last seen</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Expires</th>
+                            <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{range .Sessions}}
+                            <tr class="hover:bg-dark-700/30">
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-200 font-mono">{{.Provider}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-300" title="{{.RawAgent}}">{{.Agent}}{{if .IsCurrent}} <span class="px-1.5 py-0.5 text-[10px] rounded bg-emerald-900/50 text-emerald-300">this session</span>{{end}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono">{{if .IP}}{{.IP}}{{else}}—{{end}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500 font-mono">{{.Created}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500 font-mono">{{.LastSeen}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500 font-mono">{{.Expires}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-right">
+                                    {{if .IsCurrent}}
+                                    <span class="text-xs text-gray-600">protected</span>
+                                    {{else}}
+                                    <form method="post" action="/ui/admin/users/{{$.UserID}}/sessions/{{.ID}}/terminate" class="inline">
+                                        <button class="text-xs text-red-400 hover:text-red-300">Terminate</button>
+                                    </form>
+                                    {{end}}
+                                </td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

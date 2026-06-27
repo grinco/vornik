@@ -1,0 +1,352 @@
+{{define "tasks.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">Tasks</h1>
+            </div>
+
+            {{/* Client-side filter — narrows the visible rows by
+                 substring across short ID + project + summary.
+                 Pure JS; no server round-trip. Survives the
+                 10s hx-get refresh because the input value is
+                 read directly from the DOM on each filter pass. */}}
+            <div class="glass rounded-xl border border-dark-700 px-4 py-2.5 flex items-center gap-3">
+                <svg class="h-4 w-4 text-gray-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                <input id="task-filter" type="text"
+                       placeholder="Filter visible tasks by id, project, or summary text…"
+                       oninput="filterTaskRows(this.value)"
+                       class="flex-1 bg-transparent border-none text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-0">
+                <span id="task-filter-count" class="text-[11px] text-gray-500"></span>
+            </div>
+
+            <div id="task-content" class="space-y-4"
+                 {{/* Auto-refresh the table when filter shows non-terminal tasks. */}}
+                 {{if or (eq .Status "RUNNING") (eq .Status "QUEUED") (eq .Status "PENDING") (eq .Status "LEASED") (eq .Status "WAITING_FOR_CHILDREN")}}
+                 hx-get="{{.BaseURL}}"
+                 hx-trigger="every 10s"
+                 hx-target="#task-content"
+                 hx-select="#task-content"
+                 hx-swap="outerHTML"
+                 {{end}}>
+            {{/* Status Overview = filter palette (2026.5.8 redesign).
+                 Each status cell is a clickable filter pill — clicking
+                 "Running 7" navigates to ?status=RUNNING and the active
+                 cell highlights in the matching colour. "All" sits at
+                 the start of the row as the clear-filter target. The
+                 separate filter-pill / search / page-size / view rows
+                 the old design carried are folded into this tile + the
+                 task-list tile's header below, so the page lands on
+                 one density rather than four. */}}
+            {{$flatQS := ""}}{{if .Flat}}{{$flatQS = "&flat=1"}}{{end}}
+            {{$limitQS := printf "&limit=%d" .Limit}}
+            {{$active := .Status}}
+            <div class="glass rounded-xl border border-dark-700">
+                <div class="px-5 py-3 border-b border-dark-700/60 flex items-center justify-between">
+                    <h2 class="text-sm font-semibold text-gray-200 flex items-center gap-2">
+                        <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/></svg>
+                        Status
+                    </h2>
+                    <span class="text-[11px] text-gray-500">tap a cell to filter</span>
+                </div>
+                {{/* 2026-05-26 status bucketing (refactor G): 11 raw
+                     statuses overwhelmed operators ("what's the
+                     difference between Pending and Queued?"). We
+                     group them into three buckets — Active /
+                     Blocked / Done — with the underlying statuses
+                     visually nested below each label. The All cell
+                     stays separate as the clear-filter target.
+                     Buckets are purely visual; clicking any cell
+                     still filters by its single status. */}}
+                <div class="px-3 py-3 space-y-3">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                        {{template "statusFilterCell" (dict "Label" "All" "Status" "" "Active" $active "Count" .TotalCount "CountColor" "text-gray-100" "ActiveBg" "bg-brand-600/30 ring-brand-500" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                    </div>
+                    <div class="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                        <div>
+                            <div class="text-[10px] uppercase tracking-wider text-accent-400 mb-1.5 px-1">Active · running through the swarm</div>
+                            <div class="grid grid-cols-2 gap-2">
+                                {{template "statusFilterCell" (dict "Label" "Queued"    "Status" "QUEUED"               "Active" $active "Count" (index .StatusCounts "QUEUED")               "CountColor" "text-amber-400"  "ActiveBg" "bg-amber-500/20 ring-amber-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Running"   "Status" "RUNNING"              "Active" $active "Count" (index .StatusCounts "RUNNING")              "CountColor" "text-accent-400" "ActiveBg" "bg-accent-500/20 ring-accent-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Leased"    "Status" "LEASED"               "Active" $active "Count" (index .StatusCounts "LEASED")               "CountColor" "text-blue-400"   "ActiveBg" "bg-blue-500/20 ring-blue-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Pending"   "Status" "PENDING"              "Active" $active "Count" (index .StatusCounts "PENDING")              "CountColor" "text-gray-400"   "ActiveBg" "bg-gray-500/20 ring-gray-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                            </div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] uppercase tracking-wider text-amber-300 mb-1.5 px-1">Blocked · needs you or a deadline</div>
+                            <div class="grid grid-cols-2 gap-2">
+                                {{template "statusFilterCell" (dict "Label" "Awaiting approval" "Status" "AWAITING_APPROVAL"    "Active" $active "Count" (index .StatusCounts "AWAITING_APPROVAL")    "CountColor" "text-sky-300"    "ActiveBg" "bg-sky-500/25 ring-sky-300" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Awaiting input"    "Status" "AWAITING_INPUT"       "Active" $active "Count" (index .StatusCounts "AWAITING_INPUT")       "CountColor" "text-amber-300"  "ActiveBg" "bg-amber-500/25 ring-amber-300" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Awaiting ext."     "Status" "AWAITING_EXTERNAL"    "Active" $active "Count" (index .StatusCounts "AWAITING_EXTERNAL")    "CountColor" "text-amber-300"  "ActiveBg" "bg-amber-500/25 ring-amber-300" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Waiting children"  "Status" "WAITING_FOR_CHILDREN" "Active" $active "Count" (index .StatusCounts "WAITING_FOR_CHILDREN") "CountColor" "text-purple-400" "ActiveBg" "bg-purple-500/20 ring-purple-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Paused"            "Status" "PAUSED"               "Active" $active "Count" (index .StatusCounts "PAUSED")               "CountColor" "text-purple-300" "ActiveBg" "bg-purple-500/25 ring-purple-300" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                            </div>
+                        </div>
+                        <div>
+                            <div class="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5 px-1">Done · terminal — no more work</div>
+                            <div class="grid grid-cols-2 gap-2">
+                                {{template "statusFilterCell" (dict "Label" "Completed" "Status" "COMPLETED" "Active" $active "Count" (index .StatusCounts "COMPLETED") "CountColor" "text-emerald-400" "ActiveBg" "bg-emerald-500/20 ring-emerald-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Failed"    "Status" "FAILED"    "Active" $active "Count" (index .StatusCounts "FAILED")    "CountColor" "text-rose-400"    "ActiveBg" "bg-rose-500/20 ring-rose-400"    "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Cancelled" "Status" "CANCELLED" "Active" $active "Count" (index .StatusCounts "CANCELLED") "CountColor" "text-gray-500"    "ActiveBg" "bg-gray-500/20 ring-gray-400"    "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Closed"    "Status" "CLOSED"    "Active" $active "Count" (index .StatusCounts "CLOSED")    "CountColor" "text-gray-600"    "ActiveBg" "bg-gray-600/20 ring-gray-500"    "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bulk action toolbar. Hidden until at least one row checkbox
+                 is ticked; the form is shared with the table so submitting
+                 it includes all checked task IDs. Phone view (cards) doesn't
+                 render checkboxes, so the toolbar stays hidden naturally —
+                 no need to gate by breakpoint. -->
+            <form id="bulk-form" method="POST" class="glass rounded-xl border border-dark-700 px-4 py-2 hidden items-center gap-2"
+                  onsubmit="return bulkConfirm(event)">
+                <span id="bulk-count" class="text-xs text-gray-400 mr-2" aria-live="polite" aria-atomic="true">0 selected</span>
+                <button type="submit" formaction="/ui/tasks-bulk/cancel" class="px-3 py-1 text-xs font-medium rounded-md bg-rose-700 hover:bg-rose-600 text-white">Cancel selected</button>
+                <button type="submit" formaction="/ui/tasks-bulk/retry"  class="px-3 py-1 text-xs font-medium rounded-md bg-brand-600 hover:bg-brand-500 text-white">Requeue selected</button>
+                <button type="submit" formaction="/ui/tasks-bulk/close"  class="px-3 py-1 text-xs font-medium rounded-md bg-amber-700 hover:bg-amber-600 text-white">Close selected</button>
+                <button type="button" onclick="bulkClear()" class="ml-auto px-3 py-1 text-xs font-medium rounded-md bg-dark-700 hover:bg-dark-600 text-gray-300">Clear</button>
+            </form>
+
+            {{/* Phase 35 — phone-first list view.
+                 < md:  vertical card stack (88px tall, full-width
+                        tap target opening detail page)
+                 md:+   existing dense table (preserved verbatim)
+                 Both render the same .Tasks slice; CSS gates which
+                 is visible. */}}
+
+            <!-- Phone: Tasks card stack -->
+            {{if .Tasks}}
+            {{$hier := .Hierarchy}}
+            <div class="md:hidden space-y-2">
+                {{range .Tasks}}
+                {{$meta := hierarchyMeta $hier .ID}}
+                <a href="/ui/tasks/{{.ID}}"
+                   class="tap block glass rounded-xl border border-dark-700 px-4 py-3 active:bg-dark-700/60 transition"
+                   style="{{indentStyle $meta.Depth}}"
+                   aria-label="Task {{shortID .ID}} status {{.Status}}{{if gt $meta.Depth 0}} (subtask){{end}}">
+                    <div class="flex items-center gap-2 mb-1">
+                        {{if gt $meta.Depth 0}}<span class="text-gray-500" aria-hidden="true">↳</span>{{end}}
+                        {{statusDot (printf "%s" .Status)}}
+                        <span class="font-mono text-sm text-brand-300" title="{{.ID}}">{{shortID .ID}}</span>
+                        {{statusPill (printf "%s" .Status)}}
+                        {{if gt $meta.ChildCount 0}}<span class="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-violet-900/40 text-violet-300 ring-1 ring-violet-700/40" title="{{$meta.ChildCount}} subtask(s)">+{{$meta.ChildCount}}</span>{{end}}
+                    </div>
+                    {{/* Phone card — show the prompt excerpt as the
+                         primary visible line so operators can scan
+                         what each task is about without drilling in.
+                         Falls back to project + attempt counter when
+                         the payload is opaque. */}}
+                    {{$summary := taskSummary .Payload}}
+                    <div class="text-sm text-gray-200 line-clamp-2" data-task-summary>
+                        {{if $summary}}{{$summary}}{{else}}{{.ProjectID}} · attempt {{.Attempt}}/{{.MaxAttempts}}{{end}}
+                    </div>
+                    <div class="text-xs text-gray-500 mt-0.5">{{.ProjectID}} · {{humanizeSince .CreatedAt}}</div>
+                </a>
+                {{end}}
+            </div>
+            {{else}}
+            <div class="md:hidden">
+            {{template "emptyState" (dict
+                "Icon" "tasks"
+                "Title" "No tasks match your filter"
+                "Hint" "Try a different status filter, or schedule new work — the dispatcher or API will create tasks here."
+                "CTAHref" "/ui/projects"
+                "CTALabel" "Pick a project")}}
+            </div>
+            {{end}}
+
+            <!-- Desktop: Tasks Table (md:+ only) -->
+            <div class="hidden md:block glass rounded-xl border border-dark-700 overflow-hidden">
+                {{/* Task list header strip — folds the View toggle
+                     (Nested/Flat) and page-size selector into the
+                     same tile as the table so they read as "controls
+                     for THIS list" instead of as separate filter
+                     rows. The previous design stranded these in
+                     anonymous rows above the bulk-action toolbar. */}}
+                <div class="px-5 py-2.5 border-b border-dark-700/60 flex items-center justify-between text-xs">
+                    <div class="flex items-center gap-2">
+                        <span class="text-gray-500 uppercase tracking-wider">View</span>
+                        <a href="{{.NestedURL}}"
+                           hx-get="{{.NestedURL}}" hx-target="#task-content" hx-select="#task-content" hx-swap="outerHTML" hx-push-url="true"
+                           class="px-2.5 py-1 rounded-md font-medium transition-colors {{if .Flat}}bg-dark-700 text-gray-400 hover:bg-dark-600 hover:text-gray-200{{else}}bg-brand-600/30 text-brand-200 ring-1 ring-brand-500{{end}}">Nested</a>
+                        <a href="{{.FlatURL}}"
+                           hx-get="{{.FlatURL}}" hx-target="#task-content" hx-select="#task-content" hx-swap="outerHTML" hx-push-url="true"
+                           class="px-2.5 py-1 rounded-md font-medium transition-colors {{if .Flat}}bg-brand-600/30 text-brand-200 ring-1 ring-brand-500{{else}}bg-dark-700 text-gray-400 hover:bg-dark-600 hover:text-gray-200{{end}}">Flat</a>
+                    </div>
+                    {{/* Shared page-size selector — matches /ui/audit etc.
+                         Pass status/project_id/q/flat through so changing
+                         page size doesn't drop the current filter view.
+                         flat=1 is passed conditionally; the form serialiser
+                         skips empty hidden values so an unset flat doesn't
+                         force ?flat= into the URL. */}}
+                    {{$flatVal := ""}}{{if .Flat}}{{$flatVal = "1"}}{{end}}
+                    {{template "pageSizeSelector" (dict
+                        "Action" "/ui/tasks"
+                        "Current" .Limit
+                        "Options" .LimitOptions
+                        "Hidden" (dict
+                            "status" .Status
+                            "project_id" .ProjectID
+                            "q" .Query
+                            "flat" $flatVal
+                            "sort" .Sort
+                            "dir" .Dir))}}
+                </div>
+                {{if .Tasks}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full" data-keynav>
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-3 py-2.5 w-8 text-left">
+                                <input type="checkbox" id="bulk-toggle-all"
+                                       onchange="bulkToggleAll(this.checked)"
+                                       class="form-checkbox h-3.5 w-3.5 rounded border-dark-600 bg-dark-700 text-brand-500" aria-label="Select all">
+                            </th>
+                            {{template "sortHeader" (dict "Label" "ID"       "Key" "id"       "Active" .Sort "Dir" .Dir "BaseURL" .BaseURL "Align" "left")}}
+                            {{template "sortHeader" (dict "Label" "Project"  "Key" "project"  "Active" .Sort "Dir" .Dir "BaseURL" .BaseURL "Align" "left")}}
+                            {{template "sortHeader" (dict "Label" "Status"   "Key" "status"   "Active" .Sort "Dir" .Dir "BaseURL" .BaseURL "Align" "left")}}
+                            <th scope="col" class="px-5 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Summary</th>
+                            <th scope="col" class="px-5 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Origin</th>
+                            {{template "sortHeader" (dict "Label" "Priority" "Key" "priority" "Active" .Sort "Dir" .Dir "BaseURL" .BaseURL "Align" "left")}}
+                            {{template "sortHeader" (dict "Label" "Attempt"  "Key" "attempt"  "Active" .Sort "Dir" .Dir "BaseURL" .BaseURL "Align" "left")}}
+                            {{template "sortHeader" (dict "Label" "Created"  "Key" "created"  "Active" .Sort "Dir" .Dir "BaseURL" .BaseURL "Align" "left")}}
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/40">
+                            {{$hier := .Hierarchy}}
+                            {{range .Tasks}}
+                            {{$meta := hierarchyMeta $hier .ID}}
+                            <tr class="hover:bg-dark-700/40 transition-colors">
+                                <td class="px-3 py-3 whitespace-nowrap">
+                                    <input type="checkbox" form="bulk-form" name="task_ids" value="{{.ID}}"
+                                           onchange="bulkUpdateCount()"
+                                           class="form-checkbox h-3.5 w-3.5 rounded border-dark-600 bg-dark-700 text-brand-500"
+                                           aria-label="Select task {{shortID .ID}}">
+                                </td>
+                                <td class="px-5 py-3 whitespace-nowrap" style="{{indentStyle $meta.Depth}}">
+                                    {{if gt $meta.Depth 0}}<span class="text-gray-500 mr-1" aria-hidden="true">↳</span>{{end}}
+                                    <a href="/ui/tasks/{{.ID}}" class="text-brand-400 hover:text-brand-300 font-mono text-sm" title="{{.ID}}">{{shortID .ID}}</a>
+                                    {{if gt $meta.ChildCount 0}}<span class="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-violet-900/40 text-violet-300 ring-1 ring-violet-700/40" title="{{$meta.ChildCount}} subtask(s)">+{{$meta.ChildCount}}</span>{{end}}
+                                </td>
+                                <td class="px-5 py-3 whitespace-nowrap text-sm text-gray-300"><a href="/ui/projects/{{.ProjectID}}" class="hover:text-gray-100">{{.ProjectID}}</a></td>
+                                <td class="px-5 py-3 whitespace-nowrap">{{template "taskStatusBadge" .Status}}</td>
+                                {{/* Summary column — first ~140 chars of the
+                                     task's prompt / brief from .Payload. The
+                                     <td> max-width + truncate Tailwind keep
+                                     the row at a single line; title= surfaces
+                                     the full text on hover. data-task-summary
+                                     marks the cell so the JS filter can read
+                                     its textContent. */}}
+                                {{$summary := taskSummary .Payload}}
+                                <td class="px-5 py-3 text-sm text-gray-300 max-w-xs truncate" title="{{$summary}}" data-task-summary>
+                                    {{if $summary}}{{$summary}}{{else}}<span class="text-gray-600">—</span>{{end}}
+                                </td>
+                                <td class="px-5 py-3 whitespace-nowrap">{{template "taskOriginBadge" .CreationSource}}</td>
+                                <td class="px-5 py-3 whitespace-nowrap text-sm text-gray-400 tabular-nums">{{.Priority}}</td>
+                                <td class="px-5 py-3 whitespace-nowrap text-sm text-gray-400 tabular-nums">{{.Attempt}}/{{.MaxAttempts}}</td>
+                                <td class="px-5 py-3 whitespace-nowrap text-sm text-gray-500">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+                {{else}}
+                {{template "emptyState" (dict
+                    "Icon" "tasks"
+                    "Title" "No tasks match your filter"
+                    "Hint" "Try a different status filter, or schedule new work — the dispatcher or API will create tasks here."
+                    "CTAHref" "/ui/projects"
+                    "CTALabel" "Pick a project")}}
+                {{end}}
+            </div>
+            </div><!-- #task-content -->
+        </div>
+    </main>
+
+    {{/* Quick-action FAB — phone-only.
+         Picks the operator's most-used project (first in the list)
+         as the target for new-task creation, or falls back to /ui/projects
+         when no project is selected. */}}
+    <a href="{{if .ProjectID}}/ui/projects/{{.ProjectID}}#new-task{{else}}/ui/projects{{end}}"
+       class="fab md:hidden" aria-label="Create new task">
+        <svg class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+    </a>
+
+    {{template "pageFooter" .}}
+    <script>
+        // Bulk-selection wiring. Each row checkbox uses form="bulk-form" so
+        // its value is included when the bulk-form submits, regardless of
+        // its DOM position. We just need to keep the count up-to-date and
+        // toggle the toolbar's visibility.
+        function bulkSelectedBoxes() {
+            return document.querySelectorAll('input[name="task_ids"]:checked');
+        }
+        // Confirm prompt keyed to the clicked submit button's formaction
+        // (form.action wouldn't reflect a button's formaction).
+        function bulkConfirm(ev) {
+            var a = (ev && ev.submitter && ev.submitter.formAction) || '';
+            if (a.endsWith('/close'))  return confirm('Close selected tasks?');
+            if (a.endsWith('/cancel')) return confirm('Cancel selected tasks?');
+            return confirm('Requeue selected tasks? Each one resets to attempt 1 and runs from step 1.');
+        }
+        function bulkUpdateCount() {
+            var n = bulkSelectedBoxes().length;
+            var bar = document.getElementById('bulk-form');
+            if (!bar) return;
+            bar.classList.toggle('hidden', n === 0);
+            bar.classList.toggle('flex', n > 0);
+            var label = document.getElementById('bulk-count');
+            if (label) label.textContent = n + ' selected';
+            var all = document.getElementById('bulk-toggle-all');
+            var total = document.querySelectorAll('input[name="task_ids"]').length;
+            if (all) all.checked = (n > 0 && n === total);
+        }
+        function bulkToggleAll(on) {
+            document.querySelectorAll('input[name="task_ids"]').forEach(c => c.checked = on);
+            bulkUpdateCount();
+        }
+        function bulkClear() { bulkToggleAll(false); }
+
+        // Task scannability — client-side substring filter.
+        // Hides rows / cards whose combined search text doesn't
+        // match the query. Pure JS so the hx-get auto-refresh
+        // doesn't have to round-trip; runs again after each
+        // refresh by reading the input value from the DOM.
+        function filterTaskRows(query) {
+            var q = (query || '').toLowerCase().trim();
+            var label = document.getElementById('task-filter-count');
+            var rows = document.querySelectorAll('tbody tr, .md\\:hidden a.tap');
+            var shown = 0;
+            rows.forEach(function (row) {
+                if (!q) {
+                    row.style.display = '';
+                    shown++;
+                    return;
+                }
+                var text = row.textContent.toLowerCase();
+                var match = text.indexOf(q) !== -1;
+                row.style.display = match ? '' : 'none';
+                if (match) shown++;
+            });
+            if (label) {
+                label.textContent = q ? (shown + ' visible') : '';
+            }
+        }
+        // Re-apply the filter after the htmx swap that the
+        // status-pill auto-refresh fires every 10s — without
+        // this the filter input visually clears its effect on
+        // every refresh.
+        document.body.addEventListener('htmx:afterSwap', function () {
+            var input = document.getElementById('task-filter');
+            if (input && input.value) filterTaskRows(input.value);
+        });
+    </script>
+</body>
+</html>
+{{end}}

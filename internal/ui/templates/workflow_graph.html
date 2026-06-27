@@ -1,0 +1,203 @@
+{{define "workflow_graph.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="text-xs text-gray-500">
+                <a href="/ui/workflows/{{.WorkflowID}}/schema" class="text-brand-300 hover:text-brand-200">← edit form</a>
+                <span class="mx-1">·</span>
+                <span class="font-mono">{{.WorkflowID}}</span>
+            </div>
+
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+                <h1 class="text-xl font-semibold text-gray-100">Workflow graph · {{.WorkflowID}}</h1>
+            </div>
+
+            {{if .Error}}
+            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-300 text-sm">{{.Error}}</div>
+            {{else}}
+            <div class="glass rounded-xl border border-dark-700 p-4 overflow-x-auto">
+                <svg viewBox="0 0 {{.Graph.Width}} {{.Graph.Height}}" width="{{.Graph.Width}}" height="{{.Graph.Height}}" role="img" aria-label="Workflow control-flow graph" class="mx-auto">
+                    {{range .Graph.Edges}}
+                    {{$stroke := "#fbbf24"}}{{if eq .Kind "success"}}{{$stroke = "#34d399"}}{{else if eq .Kind "fail"}}{{$stroke = "#f87171"}}{{end}}
+                    {{if .IsBack}}
+                    <path d="M {{.X1}} {{.Y1}} Q {{.MidX}} {{sub .Y1 48}} {{.X2}} {{.Y2}}" fill="none"
+                          stroke="{{$stroke}}" stroke-width="1.5" opacity="0.7" stroke-dasharray="4 3" />
+                    {{else}}
+                    <line x1="{{.X1}}" y1="{{.Y1}}" x2="{{.X2}}" y2="{{.Y2}}" stroke="{{$stroke}}" stroke-width="1.5" opacity="0.7" />
+                    {{end}}
+                    {{if .Label}}<text x="{{.MidX}}" y="{{.MidY}}" fill="#9ca3af" font-size="9" text-anchor="middle">{{.Label}}</text>{{end}}
+                    {{end}}
+                    {{range .Graph.Nodes}}
+                    <a href="/ui/workflows/{{$.WorkflowID}}/schema" data-node-id="{{.ID}}" data-node-kind="{{.Kind}}">
+                        <rect x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}" rx="8"
+                              fill="{{if eq .Kind "terminal"}}{{if .Recovery}}#2a1414{{else}}#06281c{{end}}{{else}}#101826{{end}}"
+                              stroke="{{if .IsEntry}}#60a5fa{{else if .Unreachable}}#a16207{{else}}#334155{{end}}"
+                              stroke-width="{{if .IsEntry}}2{{else}}1{{end}}" />
+                        <text x="{{add .X 10}}" y="{{add .Y 22}}" fill="#e5e7eb" font-size="12" font-weight="600">{{.ID}}</text>
+                        <text x="{{add .X 10}}" y="{{add .Y 38}}" fill="#94a3b8" font-size="10">{{.Type}}</text>
+                        {{if .IsEntry}}<text x="{{add .X 10}}" y="{{add .Y 50}}" fill="#60a5fa" font-size="9">▶ entry</text>{{end}}
+                        {{if .Unreachable}}<text x="{{add .X 70}}" y="{{add .Y 50}}" fill="#fbbf24" font-size="9">unreachable</text>{{end}}
+                        {{if .NoOutgoing}}<text x="{{add .X 70}}" y="{{add .Y 38}}" fill="#f59e0b" font-size="9">dead-end</text>{{end}}
+                    </a>
+                    {{end}}
+                </svg>
+                <p class="text-[11px] text-gray-500 mt-2 text-center">
+                    Green = on_success · red = on_fail · amber = gate · dashed = loop-back · blue ring = entrypoint. Click a node to edit it in the form.
+                </p>
+            </div>
+
+            <!-- Topology controls (admin mutations gated server-side). No-JS
+                 baseline: use the selects directly. Progressive enhancement:
+                 clicking two nodes pre-fills the Connect form. -->
+            <div class="grid gap-4 sm:grid-cols-3" data-graph-connect>
+                <form method="POST" action="/ui/workflows/{{.WorkflowID}}/graph/edge" class="glass rounded-xl border border-dark-700 p-4 space-y-2">
+                    <h2 class="text-sm font-medium text-gray-300">Connect</h2>
+                    <label class="block text-xs text-gray-500">From step
+                        <select name="src" data-connect-src class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200">
+                            {{range .StepIDs}}<option value="{{.}}">{{.}}</option>{{end}}
+                        </select>
+                    </label>
+                    <label class="block text-xs text-gray-500">Edge
+                        <select name="kind" class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200">
+                            <option value="success">on_success</option>
+                            <option value="fail">on_fail</option>
+                        </select>
+                    </label>
+                    <label class="block text-xs text-gray-500">To node
+                        <select name="dst" data-connect-dst class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200">
+                            {{range .NodeIDs}}<option value="{{.}}">{{.}}</option>{{end}}
+                        </select>
+                    </label>
+                    <button type="submit" class="w-full bg-brand-600 hover:bg-brand-500 text-white text-sm rounded px-3 py-1.5">Connect</button>
+                </form>
+
+                <form method="POST" action="/ui/workflows/{{.WorkflowID}}/graph/edge/delete" class="glass rounded-xl border border-dark-700 p-4 space-y-2">
+                    <h2 class="text-sm font-medium text-gray-300">Remove edge</h2>
+                    <label class="block text-xs text-gray-500">From step
+                        <select name="src" class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200">
+                            {{range .StepIDs}}<option value="{{.}}">{{.}}</option>{{end}}
+                        </select>
+                    </label>
+                    <label class="block text-xs text-gray-500">Edge
+                        <select name="kind" class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200">
+                            <option value="success">on_success</option>
+                            <option value="fail">on_fail</option>
+                        </select>
+                    </label>
+                    <button type="submit" class="w-full bg-dark-700 hover:bg-dark-600 text-gray-200 text-sm rounded px-3 py-1.5">Remove</button>
+                </form>
+
+                <form method="POST" action="/ui/workflows/{{.WorkflowID}}/graph/entrypoint" class="glass rounded-xl border border-dark-700 p-4 space-y-2">
+                    <h2 class="text-sm font-medium text-gray-300">Entrypoint</h2>
+                    <label class="block text-xs text-gray-500">First step
+                        <select name="id" class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200">
+                            {{range .StepIDs}}<option value="{{.}}">{{.}}</option>{{end}}
+                        </select>
+                    </label>
+                    <button type="submit" class="w-full bg-brand-600 hover:bg-brand-500 text-white text-sm rounded px-3 py-1.5">Set entrypoint</button>
+                </form>
+
+                <form method="POST" action="/ui/workflows/{{.WorkflowID}}/graph/node" class="glass rounded-xl border border-dark-700 p-4 space-y-2">
+                    <h2 class="text-sm font-medium text-gray-300">Add node</h2>
+                    <p class="text-[11px] text-gray-500">Inserted on the chosen edge so it stays reachable. agent/plan inherit the source step's role; other types prompt for required fields in the form.</p>
+                    <label class="block text-xs text-gray-500">New id
+                        <input name="id" class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200" placeholder="step id">
+                    </label>
+                    <label class="block text-xs text-gray-500">Type
+                        <select name="type" class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200">
+                            <option value="agent">agent</option>
+                            <option value="gate">gate</option>
+                            <option value="approval">approval</option>
+                            <option value="plan">plan</option>
+                            <option value="system">system</option>
+                            <option value="call_project">call_project</option>
+                            <option value="spawn_project">spawn_project</option>
+                            <option value="a2a_call">a2a_call</option>
+                        </select>
+                    </label>
+                    <label class="block text-xs text-gray-500">Insert from
+                        <select name="from" class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200">
+                            {{range .StepIDs}}<option value="{{.}}">{{.}}</option>{{end}}
+                        </select>
+                    </label>
+                    <label class="block text-xs text-gray-500">On edge
+                        <select name="fromKind" class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200">
+                            <option value="success">on_success</option>
+                            <option value="fail">on_fail</option>
+                        </select>
+                    </label>
+                    <button type="submit" class="w-full bg-brand-600 hover:bg-brand-500 text-white text-sm rounded px-3 py-1.5">Add node</button>
+                </form>
+
+                <form method="POST" action="/ui/workflows/{{.WorkflowID}}/graph/node/delete" class="glass rounded-xl border border-dark-700 p-4 space-y-2">
+                    <h2 class="text-sm font-medium text-gray-300">Delete node</h2>
+                    <label class="block text-xs text-gray-500">Step
+                        <select name="id" class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200">
+                            {{range .StepIDs}}<option value="{{.}}">{{.}}</option>{{end}}
+                        </select>
+                    </label>
+                    <button type="submit" class="w-full bg-rose-900/60 hover:bg-rose-800/60 text-rose-200 text-sm rounded px-3 py-1.5">Delete node</button>
+                </form>
+
+                <form method="POST" action="/ui/workflows/{{.WorkflowID}}/graph/edge" class="glass rounded-xl border border-dark-700 p-4 space-y-2">
+                    <h2 class="text-sm font-medium text-gray-300">Add gate</h2>
+                    <p class="text-[11px] text-gray-500">A conditional transition on a gate-type step.</p>
+                    <input type="hidden" name="kind" value="gate">
+                    <label class="block text-xs text-gray-500">On step
+                        <select name="src" class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200">
+                            {{range .StepIDs}}<option value="{{.}}">{{.}}</option>{{end}}
+                        </select>
+                    </label>
+                    <label class="block text-xs text-gray-500">Condition
+                        <input name="condition" class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200" placeholder="review.approved == true">
+                    </label>
+                    <label class="block text-xs text-gray-500">Target
+                        <select name="dst" class="mt-1 w-full bg-dark-800 border border-dark-700 rounded px-2 py-1 text-sm text-gray-200">
+                            {{range .NodeIDs}}<option value="{{.}}">{{.}}</option>{{end}}
+                        </select>
+                    </label>
+                    <button type="submit" class="w-full bg-amber-700/70 hover:bg-amber-600/70 text-amber-100 text-sm rounded px-3 py-1.5">Add gate</button>
+                </form>
+            </div>
+
+            <script>
+            // Progressive enhancement: click a source node, then a target node,
+            // to pre-fill the Connect form. No-JS users use the selects. ~40 lines.
+            (function () {
+                var panel = document.querySelector('[data-graph-connect]');
+                if (!panel) return;
+                var srcSel = panel.querySelector('[data-connect-src]');
+                var dstSel = panel.querySelector('[data-connect-dst]');
+                var first = null;
+                document.querySelectorAll('a[data-node-id]').forEach(function (a) {
+                    a.addEventListener('click', function (ev) {
+                        // Plain click navigates to the form (default). Shift-click
+                        // wires the Connect form instead.
+                        if (!ev.shiftKey) return;
+                        ev.preventDefault();
+                        var id = a.getAttribute('data-node-id');
+                        var kind = a.getAttribute('data-node-kind');
+                        if (first === null) {
+                            if (kind !== 'step') return; // sources must be steps
+                            first = id;
+                            if (srcSel) srcSel.value = id;
+                            a.classList.add('opacity-60');
+                        } else {
+                            if (dstSel) dstSel.value = id;
+                            first = null;
+                        }
+                    });
+                });
+            })();
+            </script>
+            {{end}}
+        </div>
+    </main>
+</body>
+</html>
+{{end}}

@@ -1,0 +1,12 @@
+{
+  "swarm": "dev-swarm",
+  "role": "feasibility",
+  "reason": "feasible:false but no blockers listed — blocked_explained must reject. A thumbs-down without a concrete blocker leaves the lead nowhere to go.",
+  "expect": "fail",
+  "payload": {
+    "feasibility": {
+      "feasible": false,
+      "reason": "looks risky"
+    }
+  }
+}

@@ -1,0 +1,270 @@
+{{/*
+vornik daemon StatefulSet — single all-in-one node.
+
+Only rendered when cluster.enabled=false (the default). When
+cluster.enabled=true the per-role workloads in cluster-*.yaml are used
+instead; this file is entirely skipped.
+
+Why StatefulSet, not Deployment:
+  - Single writer to the data PVC (artifacts, workspaces, tasks).
+  - Ordered start/stop matters: scheduler leases, podman storage
+    initialisation, and warm-container pool lifecycle all assume a
+    single active process.
+  - Horizontal scaling isn't supported today — multiple vornik pods
+    sharing a PVC would race on container ID allocation, warm-pool
+    bookkeeping, and migrations.
+
+Why privileged (default) or host-socket:
+  - vornik CLI-executes `podman` (internal/runtime/manager.go) and has
+    no Kubernetes-native backend. The pod must contain (or reach) a
+    working podman. See the Dockerfile's header comment for details.
+*/}}
+{{- if not .Values.cluster.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "vornik.fullname" . }}
+  labels: {{- include "vornik.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ include "vornik.fullname" . }}
+  selector:
+    matchLabels: {{- include "vornik.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "vornik.labels" . | nindent 8 }}
+      annotations:
+        # Roll pods when the config changes. checksum pins the hash so
+        # a values update => new pod, even if the image tag is pinned.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "vornik.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: vornik
+          image: {{ include "vornik.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            {{- end }}
+          # Probes hit /healthz (liveness) and /readyz (readiness) —
+          # both served by the main HTTP mux (container.go:953,964).
+          # Long initialDelay on startup covers the first-boot migration
+          # run; subsequent restarts reuse an already-migrated DB.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60      # up to 5 minutes for first-boot migrations
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            # podman-in-pod needs either privileged mode or a host
+            # socket. See values.yaml runtimeMode for the mode switch.
+            {{- if eq .Values.runtimeMode "privileged" }}
+            privileged: true
+            {{- else }}
+            privileged: false
+            capabilities:
+              # Minimal set needed for the socket client path. Most
+              # permission errors traced back to missing SETUID/SETGID
+              # when spawning helper processes.
+              add: ["SETUID", "SETGID"]
+            {{- end }}
+          env:
+            - name: VORNIK_CONFIG
+              value: /etc/vornik/config.yaml
+            - name: VORNIK_CONFIGS_DIR
+              value: /etc/vornik/configs
+            - name: VORNIK_DATA_DIR
+              value: /var/lib/vornik
+            {{- if eq .Values.runtimeMode "host-socket" }}
+            - name: CONTAINER_HOST
+              value: unix:///var/run/podman/podman.sock
+            {{- end }}
+            # Secrets expanded into the config.yaml via ${VAR}
+            # placeholders. vornik's loader runs os.ExpandEnv on every
+            # string value before parsing — see internal/config/loader.go.
+            - name: VORNIK_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vornik.secretName" . }}
+                  key: dbPassword
+            - name: VORNIK_CHAT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vornik.secretName" . }}
+                  key: chatApiKey
+                  optional: true
+            - name: VORNIK_AGENT_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vornik.secretName" . }}
+                  key: agentLLMApiKey
+                  optional: true
+            - name: VORNIK_EMBEDDING_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vornik.secretName" . }}
+                  key: embeddingApiKey
+                  optional: true
+            {{- if .Values.telegram.enabled }}
+            - name: VORNIK_TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "vornik.secretName" . }}
+                  key: telegramBotToken
+            {{- end }}
+            # The agent image vornik spawns per task. Injected as an
+            # env var so swarm role configs can pick it up via
+            # ${AGENT_IMAGE} expansion.
+            - name: AGENT_IMAGE
+              value: {{ include "vornik.agentImage" . | quote }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vornik/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            {{- if .Values.registry.existingProjectsConfigMap }}
+            - name: projects
+              mountPath: /etc/vornik/configs/projects
+              readOnly: true
+            {{- else if .Values.registry.projects }}
+            - name: projects
+              mountPath: /etc/vornik/configs/projects
+              readOnly: true
+            {{- end }}
+            {{- if .Values.registry.existingSwarmsConfigMap }}
+            - name: swarms
+              mountPath: /etc/vornik/configs/swarms
+              readOnly: true
+            {{- else if .Values.registry.swarms }}
+            - name: swarms
+              mountPath: /etc/vornik/configs/swarms
+              readOnly: true
+            {{- end }}
+            {{- if .Values.registry.existingWorkflowsConfigMap }}
+            - name: workflows
+              mountPath: /etc/vornik/configs/workflows
+              readOnly: true
+            {{- else if .Values.registry.workflows }}
+            - name: workflows
+              mountPath: /etc/vornik/configs/workflows
+              readOnly: true
+            {{- end }}
+            {{- if .Values.pricing.override }}
+            - name: pricing
+              mountPath: /etc/vornik/configs/pricing.yaml
+              subPath: pricing.yaml
+              readOnly: true
+            {{- end }}
+            - name: data
+              mountPath: /var/lib/vornik
+            - name: containers-storage
+              mountPath: /var/lib/containers
+            {{- if eq .Values.runtimeMode "host-socket" }}
+            - name: podman-socket
+              mountPath: /var/run/podman
+              readOnly: false
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "vornik.fullname" . }}-config
+        {{- if .Values.registry.existingProjectsConfigMap }}
+        - name: projects
+          configMap:
+            name: {{ .Values.registry.existingProjectsConfigMap }}
+        {{- else if .Values.registry.projects }}
+        - name: projects
+          configMap:
+            name: {{ include "vornik.fullname" . }}-projects
+        {{- end }}
+        {{- if .Values.registry.existingSwarmsConfigMap }}
+        - name: swarms
+          configMap:
+            name: {{ .Values.registry.existingSwarmsConfigMap }}
+        {{- else if .Values.registry.swarms }}
+        - name: swarms
+          configMap:
+            name: {{ include "vornik.fullname" . }}-swarms
+        {{- end }}
+        {{- if .Values.registry.existingWorkflowsConfigMap }}
+        - name: workflows
+          configMap:
+            name: {{ .Values.registry.existingWorkflowsConfigMap }}
+        {{- else if .Values.registry.workflows }}
+        - name: workflows
+          configMap:
+            name: {{ include "vornik.fullname" . }}-workflows
+        {{- end }}
+        {{- if .Values.pricing.override }}
+        - name: pricing
+          configMap:
+            name: {{ include "vornik.fullname" . }}-pricing
+        {{- end }}
+        # Containers storage: emptyDir for privileged mode (podman runs
+        # inside the pod with its own local storage). For host-socket
+        # mode this volume isn't used but declaring it unconditionally
+        # keeps the spec stable.
+        - name: containers-storage
+          emptyDir: {}
+        {{- if eq .Values.runtimeMode "host-socket" }}
+        - name: podman-socket
+          hostPath:
+            path: {{ .Values.podmanHostSocket | quote }}
+            type: Socket
+        {{- end }}
+        {{- if not .Values.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+  {{- end }}
+{{- end }}{{/* cluster.enabled=false guard */}}

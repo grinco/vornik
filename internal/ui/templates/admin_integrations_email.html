@@ -1,0 +1,79 @@
+{{define "admin_integrations_email.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <h1 class="text-xl font-semibold text-gray-100">Email channels</h1>
+                <span class="px-2 py-0.5 text-[10px] uppercase tracking-wider font-mono rounded-md bg-amber-900/40 text-amber-300 ring-1 ring-amber-700/40">read-only</span>
+                <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
+            </div>
+            <p class="text-xs text-gray-500">One card per project with a configured <code class="text-gray-300">email</code> block. The session list is in-memory only and clears on daemon restart — the authoritative truth is the IMAP mailbox itself.</p>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-10 text-center text-gray-500 text-sm">Email-channel inventory not wired.</div>
+            {{else if .Channels}}
+            <div class="space-y-4">
+                {{range .Channels}}
+                <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                    <div class="px-5 py-3 border-b border-dark-700 flex flex-wrap items-center gap-3">
+                        <div class="text-sm font-mono text-gray-100">{{.ProjectID}}</div>
+                        {{if .OutboundConfigured}}
+                        <span class="px-2 py-0.5 text-[10px] uppercase tracking-wider font-mono rounded-md bg-emerald-900/40 text-emerald-300 ring-1 ring-emerald-700/40">outbound on</span>
+                        {{else}}
+                        <span class="px-2 py-0.5 text-[10px] uppercase tracking-wider font-mono rounded-md bg-gray-800 text-gray-400 ring-1 ring-gray-700">outbound off</span>
+                        {{end}}
+                        {{if .VerifyInboundAuth}}
+                        <span class="px-2 py-0.5 text-[10px] uppercase tracking-wider font-mono rounded-md bg-sky-900/40 text-sky-300 ring-1 ring-sky-700/40">spf/dkim {{.AuthPolicy}}</span>
+                        {{end}}
+                    </div>
+                    <dl class="px-5 py-3 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-xs">
+                        <div class="flex gap-2"><dt class="text-gray-500 w-32 shrink-0">IMAP host</dt><dd class="text-gray-200 font-mono break-all">{{.IMAPHost}}{{if .IMAPPort}}:{{.IMAPPort}}{{end}}</dd></div>
+                        <div class="flex gap-2"><dt class="text-gray-500 w-32 shrink-0">Mailbox</dt><dd class="text-gray-200 font-mono">{{if .IMAPMailbox}}{{.IMAPMailbox}}{{else}}INBOX{{end}}</dd></div>
+                        {{if .OutboundConfigured}}
+                        <div class="flex gap-2"><dt class="text-gray-500 w-32 shrink-0">SMTP host</dt><dd class="text-gray-200 font-mono break-all">{{.SMTPHost}}</dd></div>
+                        <div class="flex gap-2"><dt class="text-gray-500 w-32 shrink-0">From address</dt><dd class="text-gray-200 font-mono break-all">{{.FromAddress}}</dd></div>
+                        {{end}}
+                        <div class="flex gap-2"><dt class="text-gray-500 w-32 shrink-0">Allowlist</dt><dd class="text-gray-200 font-mono">{{if .AllowlistSize}}{{.AllowlistSize}} entries{{else}}all senders{{end}}</dd></div>
+                        {{if .AttachmentCapBytes}}
+                        <div class="flex gap-2"><dt class="text-gray-500 w-32 shrink-0">Attachment cap</dt><dd class="text-gray-200 font-mono">{{.AttachmentCapBytes}} bytes</dd></div>
+                        {{end}}
+                    </dl>
+                    <div class="border-t border-dark-700/70 px-5 py-3">
+                        <div class="flex items-center gap-3 mb-2">
+                            <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-400">Threads seen this run</h3>
+                            <span class="text-[10px] font-mono text-gray-500">{{len .Sessions}}</span>
+                        </div>
+                        {{if .SessionsError}}
+                        <p class="text-xs text-rose-400 font-mono">{{.SessionsError}}</p>
+                        {{else if .Sessions}}
+                        <ul class="divide-y divide-dark-700/40 text-xs">
+                            {{range .Sessions}}
+                            <li class="py-2 flex flex-wrap items-center gap-3">
+                                <span class="text-gray-100 truncate max-w-md">{{if .Title}}{{.Title}}{{else}}<span class="italic text-gray-500">(no subject)</span>{{end}}</span>
+                                <span class="text-gray-500 font-mono ml-auto">{{.LastActivity.Format "2006-01-02 15:04 MST"}}</span>
+                                <span class="text-gray-400 font-mono">{{.ParticipantCount}}p</span>
+                            </li>
+                            {{end}}
+                        </ul>
+                        {{else}}
+                        <p class="text-gray-500 text-xs">No inbound on this channel since daemon start.</p>
+                        {{end}}
+                    </div>
+                </div>
+                {{end}}
+            </div>
+            {{else}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-10 text-center text-gray-500 text-sm">No projects declare an <code class="text-gray-300">email</code> block.</div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

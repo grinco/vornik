@@ -1,0 +1,65 @@
+{{define "memory_subgraph.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="text-xs text-gray-500">
+                <a href="/ui/memory/{{.ProjectID}}/entities/{{.SeedID}}" class="text-brand-300 hover:text-brand-200">← entity detail</a>
+                <span class="mx-1">·</span>
+                <span class="font-mono">{{.ProjectID}}</span>
+            </div>
+
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+                <h1 class="text-xl font-semibold text-gray-100">Subgraph · {{.Hops}}-hop neighbourhood</h1>
+            </div>
+
+            {{if not .Enabled}}
+            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-300 text-sm">Knowledge-graph read surface not enabled.</div>
+            {{else if not .Found}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-8 text-center text-gray-500 text-sm">No subgraph — entity not found or has no edges in this project.</div>
+            {{else}}
+
+            <div class="glass rounded-xl border border-dark-700 p-4 overflow-x-auto hidden sm:block">
+                <svg viewBox="0 0 {{.Width}} {{.Height}}" width="{{.Width}}" height="{{.Height}}" role="img" aria-label="Entity subgraph" class="mx-auto">
+                    {{range .Edges}}
+                    <line x1="{{.X1}}" y1="{{.Y1}}" x2="{{.X2}}" y2="{{.Y2}}" stroke="{{.Colour}}" stroke-width="1.5" opacity="0.6" />
+                    <text x="{{.MidX}}" y="{{.MidY}}" fill="#9ca3af" font-size="9" text-anchor="middle">{{.Predicate}}</text>
+                    {{end}}
+                    {{range .Nodes}}
+                    <a href="/ui/memory/{{$.ProjectID}}/entities/{{.ID}}">
+                        <circle cx="{{.X}}" cy="{{.Y}}" r="{{if .IsSeed}}10{{else}}7{{end}}"
+                                fill="{{if .IsSeed}}#34d399{{else}}#60a5fa{{end}}" stroke="#0f172a" stroke-width="1.5" />
+                        <text x="{{.X}}" y="{{.Y}}" dy="-12" fill="#e5e7eb" font-size="10" text-anchor="middle">{{.Name}}</text>
+                    </a>
+                    {{end}}
+                </svg>
+                <p class="text-[11px] text-gray-500 mt-2 text-center">Green = seed · blue = neighbour · coloured edges = closed-vocabulary predicates, gray = free-form. Click a node to navigate.</p>
+            </div>
+
+            <!-- Phone fallback: flat predicate list (LLD §7.3). -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden sm:hidden">
+                <div class="px-5 py-3 border-b border-dark-700/60"><h2 class="text-sm font-medium text-gray-300">Relationships</h2></div>
+                <ul class="divide-y divide-dark-700/40">
+                    {{range .FlatEdges}}
+                    <li class="px-5 py-2.5 text-sm">
+                        <a href="/ui/memory/{{$.ProjectID}}/entities/{{.FromEntity}}" class="text-brand-300">{{.FromName}}</a>
+                        <span class="text-emerald-400 mx-1">{{.Predicate}}</span>
+                        <a href="/ui/memory/{{$.ProjectID}}/entities/{{.ToEntity}}" class="text-brand-300">{{.ToName}}</a>
+                    </li>
+                    {{else}}
+                    <li class="px-5 py-4 text-center text-gray-500 text-xs">No edges.</li>
+                    {{end}}
+                </ul>
+            </div>
+
+            {{end}}
+        </div>
+    </main>
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

@@ -1,0 +1,515 @@
+{{define "spend.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">Spend</h1>
+                    <p class="text-xs text-gray-500 mt-0.5">Where the LLM dollars go — drill down by project, source, task, role, or model.</p>
+                </div>
+                <form method="get" action="/ui/spend" class="flex items-center gap-2">
+                    <select name="window" class="text-sm bg-dark-800 border border-dark-700 text-gray-200 rounded-md px-2 py-1.5">
+                        <option value="24h" {{if eq .WindowDays 1}}selected{{end}}>Last 24 hours</option>
+                        <option value="7d"  {{if eq .WindowDays 7}}selected{{end}}>Last 7 days</option>
+                        <option value="30d" {{if eq .WindowDays 30}}selected{{end}}>Last 30 days</option>
+                    </select>
+                    <select name="project" class="text-sm bg-dark-800 border border-dark-700 text-gray-200 rounded-md px-2 py-1.5">
+                        <option value="">{{if .AllAccess}}All projects{{else}}All my projects{{end}}</option>
+                        {{range .ProjectsList}}
+                        <option value="{{.}}" {{if eq . $.ProjectID}}selected{{end}}>{{.}}</option>
+                        {{end}}
+                    </select>
+                    <button type="submit" class="text-xs px-3 py-1.5 rounded-md bg-brand-600/80 hover:bg-brand-500 text-white">Apply</button>
+                </form>
+            </div>
+
+            {{/* Headline cards: total $, total tokens (with input ratio), call count, calls per task. */}}
+            <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                    <div class="px-5 py-4">
+                        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider">Total spend · {{.WindowLabel}}</p>
+                        <p class="mt-1.5 text-3xl font-bold text-accent-300 tabular-nums">{{fmtUSD .TotalUSD}}</p>
+                        {{/* Cache savings sub-line on the spend tile — visible only when prompt caching is observed (any Bedrock / Anthropic traffic in window). Frames the discount against the gross spend so operators see the deal they got, not just the bill. */}}
+                        {{if gt .TotalCacheSavingsUSD 0.0}}
+                        <p class="mt-1 text-xs text-emerald-400 tabular-nums" title="What cache reads WOULD have cost at the full input rate. Falls back to input × 0.10 when pricing.yaml doesn't enumerate cache rates explicitly.">
+                            saved {{fmtUSD .TotalCacheSavingsUSD}} via prompt cache
+                        </p>
+                        {{end}}
+                    </div>
+                    <div class="h-0.5 bg-accent-500/40"></div>
+                </div>
+                <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                    <div class="px-5 py-4">
+                        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider">Tokens (in / out)</p>
+                        <p class="mt-1.5 text-2xl font-bold text-gray-100 tabular-nums">{{fmtTokens .TotalPromptTokens}} <span class="text-gray-600">/</span> {{fmtTokens .TotalCompletionTokens}}</p>
+                        <p class="mt-1 text-xs {{if gt .InputRatioPct 90.0}}text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-400{{else}}text-gray-500{{end}}" title="Higher = more spend on context (prompt) than output. >90% suggests context bloat.">
+                            input ratio: {{printf "%.1f" .InputRatioPct}}%{{if gt .InputRatioPct 90.0}} · context-heavy{{end}}
+                        </p>
+                    </div>
+                    <div class="h-0.5 bg-violet-500/40"></div>
+                </div>
+                <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                    <div class="px-5 py-4">
+                        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider">LLM calls</p>
+                        <p class="mt-1.5 text-3xl font-bold text-gray-100 tabular-nums">{{.TotalCalls}}</p>
+                    </div>
+                    <div class="h-0.5 bg-emerald-500/40"></div>
+                </div>
+                <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                    <div class="px-5 py-4">
+                        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider">Avg cost / call</p>
+                        <p class="mt-1.5 text-3xl font-bold text-gray-100 tabular-nums">
+                            {{if gt .TotalCalls 0}}{{fmtUSD (div .TotalUSD .TotalCalls)}}{{else}}—{{end}}
+                        </p>
+                    </div>
+                    <div class="h-0.5 bg-amber-500/40"></div>
+                </div>
+            </div>
+
+            {{/* Embedding cache tile — orthogonal to the prompt-cache
+                 savings number on the spend tile. Embeddings are
+                 keyed on (content_hash, model) so the hit rate is
+                 a function of "did the same text get re-chunked"
+                 (memory replay, dev iterations). Skipped entirely
+                 when the cache is disabled or migration 41 hasn't
+                 landed. */}}
+            {{if .EmbeddingCacheAvailable}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-baseline justify-between gap-2 flex-wrap">
+                    <h2 class="text-sm font-semibold text-gray-200">Embedding cache</h2>
+                    <span class="text-xs text-gray-500">postgres-backed · keyed on (content_hash, model)</span>
+                </div>
+                <div class="px-5 py-4 grid grid-cols-2 sm:grid-cols-3 gap-4 text-xs">
+                    <div>
+                        <dt class="text-gray-500 uppercase tracking-wider text-[10px]">Cached embeddings</dt>
+                        <dd class="text-2xl font-semibold text-gray-100 tabular-nums">{{.EmbeddingCacheRows}}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-gray-500 uppercase tracking-wider text-[10px]">On-disk size</dt>
+                        <dd class="text-2xl font-semibold text-gray-100 tabular-nums" title="pg_total_relation_size of the embedding_cache table including indexes + TOAST. The vector(1024) column dominates per-row size.">{{fmtBytes .EmbeddingCacheBytes}}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-gray-500 uppercase tracking-wider text-[10px]">Distinct models</dt>
+                        <dd class="text-2xl font-semibold {{if gt .EmbeddingCacheModels 1}}text-amber-300{{else}}text-gray-100{{end}} tabular-nums" title="More than one distinct model means the embedder swapped underneath — parallel caches grow until one tier ages out via retention.">{{.EmbeddingCacheModels}}</dd>
+                    </div>
+                </div>
+            </div>
+            {{end}}
+
+            {{/* Phase E response cache tile — full-response memoisation
+                 for the memory background trio (Titler / Classifier /
+                 KG Extractor). Available=false renders nothing (i.e.
+                 disabled or migration 47 not applied). */}}
+            {{if .ResponseCacheAvailable}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-baseline justify-between gap-2 flex-wrap">
+                    <h2 class="text-sm font-semibold text-gray-200">Response cache</h2>
+                    <span class="text-xs text-gray-500">postgres-backed · memory_titler / memory_classifier / memory_kg_extract</span>
+                </div>
+                <div class="px-5 py-4 grid grid-cols-2 sm:grid-cols-5 gap-4 text-xs">
+                    {{/* Savings is the headline metric — left-most, accent-coloured, larger text. Renders even at $0 (so operators on un-priced models see "no pricing wired" rather than a missing column). */}}
+                    <div>
+                        <dt class="text-gray-500 uppercase tracking-wider text-[10px]">$ saved (lifetime)</dt>
+                        <dd class="text-3xl font-semibold {{if gt .ResponseCacheSavingsUSD 0.0}}text-accent-300{{else}}text-gray-500{{end}} tabular-nums" title="Sum across all rows of hit_count × CostUSD(model, prompt_tokens, completion_tokens). Zero means no pricing was wired or all hits landed on un-priced models — hit volume still counts.">{{fmtUSD .ResponseCacheSavingsUSD}}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-gray-500 uppercase tracking-wider text-[10px]">Lifetime hits</dt>
+                        <dd class="text-2xl font-semibold text-gray-100 tabular-nums" title="Sum of hit_count across all rows — the lifetime count of LLM calls saved by the response cache.">{{.ResponseCacheHits}}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-gray-500 uppercase tracking-wider text-[10px]">Cached responses</dt>
+                        <dd class="text-2xl font-semibold text-gray-100 tabular-nums">{{.ResponseCacheRows}}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-gray-500 uppercase tracking-wider text-[10px]">On-disk size</dt>
+                        <dd class="text-2xl font-semibold text-gray-100 tabular-nums" title="pg_total_relation_size of llm_response_cache including indexes.">{{fmtBytes .ResponseCacheBytes}}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-gray-500 uppercase tracking-wider text-[10px]">Distinct purposes</dt>
+                        <dd class="text-2xl font-semibold text-gray-100 tabular-nums" title="Expected range: 0–3 (one per memory background consumer wired today).">{{.ResponseCachePurposes}}</dd>
+                    </div>
+                </div>
+            </div>
+            {{end}}
+
+            {{/* Daily time-series. Skipped for the 24h window (the
+                 main dashboard's hourly sparkline already covers
+                 that case). Shown as a bar grid for clarity at
+                 7 / 30-day ranges. */}}
+            {{if .DailyBuckets}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between">
+                    <h2 class="text-sm font-semibold text-gray-200">Daily spend</h2>
+                    {{/* Peak label includes the date so operators can spot-check the chart without relying on per-bar tooltips. Suppressed when DailyMax==0 (no usage in window). */}}
+                    {{if gt .DailyMax 0.0}}
+                    <span class="text-xs text-gray-500">peak day: {{fmtUSD .DailyMax}} <span class="text-gray-600">({{.DailyMaxDay.Format "Jan 2"}})</span></span>
+                    {{end}}
+                </div>
+                <div class="px-5 py-4">
+                    {{/* Each column is a `group` so the absolute-positioned tooltip span only shows for the bar being hovered. The native `title` attr is unreliable (browser-dependent delay, sometimes suppressed entirely on inline-flex children) — a CSS-driven floating chip is consistent across browsers and visible immediately. */}}
+                    <div class="flex items-stretch gap-1 h-32">
+                        {{range .DailyBuckets}}
+                        <div class="group relative flex-1 flex flex-col items-center gap-1 min-w-0 h-full">
+                            <div class="w-full flex-1 flex items-end">
+                                <div class="w-full {{if gt .CostUSD 0.0}}bg-accent-500/70 group-hover:bg-accent-400/90{{else}}bg-dark-700/40 group-hover:bg-dark-600/60{{end}} rounded-sm transition-colors" style="height: {{if gt .HeightPct 0.0}}{{printf "%.1f" .HeightPct}}{{else}}1{{end}}%"></div>
+                            </div>
+                            <span class="text-[9px] text-gray-600 font-mono tabular-nums">{{.Day.Format "01-02"}}</span>
+                            {{/* Hover chip: shown via group-hover, positioned above the column with a small arrow. pointer-events-none so it doesn't capture mouse events that would flicker the hover state. */}}
+                            <div class="pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity absolute -top-1 left-1/2 -translate-x-1/2 -translate-y-full z-10 whitespace-nowrap bg-dark-900 border border-dark-600 rounded px-2 py-1 text-[10px] font-mono text-gray-200 shadow-lg">
+                                <div class="text-gray-400">{{.Day.Format "Jan 2, 2006"}}</div>
+                                <div class="tabular-nums text-accent-300">{{fmtUSD .CostUSD}}</div>
+                                <div class="text-gray-500 tabular-nums">{{.CallCount}} call{{if ne .CallCount 1}}s{{end}}</div>
+                            </div>
+                        </div>
+                        {{end}}
+                    </div>
+                </div>
+            </div>
+            {{end}}
+
+            {{/* Source attribution: workflow_step vs dispatcher.
+                 Direct answer to "is the chat dispatcher itself
+                 running up the bill?" */}}
+            {{if .BySource}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60">
+                    <h2 class="text-sm font-semibold text-gray-200">Source attribution</h2>
+                    <p class="text-xs text-gray-500 mt-0.5">Workflow steps are the executor's per-step LLM calls; dispatcher rows are the chat bot's tool-routing round-trips.</p>
+                </div>
+                {{/* Phone cards (Phase 39). */}}
+                <div class="md:hidden divide-y divide-dark-700/40">
+                    {{range .BySource}}
+                    <div class="px-4 py-3">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-sm text-gray-200 font-medium">{{.Display}}</span>
+                            <span class="text-accent-300 font-semibold tabular-nums">{{fmtUSD .CostUSD}}</span>
+                        </div>
+                        <div class="text-xs text-gray-500 flex items-center gap-3 tabular-nums">
+                            <span>{{.CallCount}} calls</span>
+                            <span>·</span>
+                            <span>{{fmtTokens .PromptTokens}} in / {{fmtTokens .CompletionTokens}} out</span>
+                            <span class="ml-auto">{{printf "%.1f" .PctOfTotal}}%</span>
+                        </div>
+                    </div>
+                    {{end}}
+                </div>
+                <div class="hidden md:block overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Calls</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tokens in</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tokens out</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Cost</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">% of total</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/30">
+                            {{range .BySource}}
+                            <tr class="hover:bg-dark-700/40">
+                                <td class="px-4 py-1.5 text-gray-300">{{.Display}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{.CallCount}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{fmtTokens .PromptTokens}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{fmtTokens .CompletionTokens}}</td>
+                                <td class="px-4 py-1.5 text-right text-accent-300 font-semibold tabular-nums">{{fmtUSD .CostUSD}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{printf "%.1f" .PctOfTotal}}%</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}
+
+            {{/* Top projects. cost-per-task highlights "one runaway
+                 task" vs "many small tasks" patterns. */}}
+            {{if .ByProject}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60">
+                    <h2 class="text-sm font-semibold text-gray-200">Top projects · {{.WindowLabel}}</h2>
+                </div>
+                <div class="md:hidden divide-y divide-dark-700/40">
+                    {{range .ByProject}}
+                    <a href="/ui/projects/{{.ProjectID}}" class="tap block px-4 py-3 active:bg-dark-700/40">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-sm font-mono text-brand-300 truncate">{{.ProjectID}}</span>
+                            <span class="text-accent-300 font-semibold tabular-nums">{{fmtUSD .CostUSD}}</span>
+                        </div>
+                        <div class="text-xs text-gray-500 flex items-center gap-2 tabular-nums">
+                            <span>{{.TaskCount}} tasks</span>
+                            <span>·</span>
+                            <span>{{fmtUSD .CostPerTaskUSD}}/task</span>
+                            <span>·</span>
+                            <span class="{{if gt .InputRatioPct 90.0}}text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.0f" .InputRatioPct}}% in</span>
+                        </div>
+                    </a>
+                    {{end}}
+                </div>
+                <div class="hidden md:block overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tasks</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Steps</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tokens (in/out)</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Input %</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">$ / task</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Cost</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/30">
+                            {{range .ByProject}}
+                            <tr class="hover:bg-dark-700/40">
+                                <td class="px-4 py-1.5"><a href="/ui/projects/{{.ProjectID}}" class="text-brand-400 hover:text-brand-300 font-mono text-xs">{{.ProjectID}}</a></td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{.TaskCount}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{.StepCount}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{fmtTokens .PromptTokens}} / {{fmtTokens .CompletionTokens}}</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .InputRatioPct 90.0}}text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.0f" .InputRatioPct}}%</td>
+                                <td class="px-4 py-1.5 text-right text-gray-300 tabular-nums">{{fmtUSD .CostPerTaskUSD}}</td>
+                                <td class="px-4 py-1.5 text-right text-accent-300 font-semibold tabular-nums">{{fmtUSD .CostUSD}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}
+
+            {{/* Top tasks. Iterations/step + input% surface the
+                 two most-common cost-driver shapes: runaway tool
+                 loops, and context-heavy steps. */}}
+            {{if .TopTasks}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                        <h2 class="text-sm font-semibold text-gray-200">Top tasks · {{.WindowLabel}}</h2>
+                        <p class="text-xs text-gray-500 mt-0.5">High <span class="text-amber-400">iter/step</span> = tool loop running long. High <span class="text-rose-400">input %</span> = context bloat.</p>
+                    </div>
+                    {{/* Shared page-size selector — preserves window +
+                         project so changing row count doesn't reset
+                         the time/project filter at the top of the page. */}}
+                    {{$windowVal := ""}}
+                    {{if eq .WindowDays 1}}{{$windowVal = "24h"}}{{else if eq .WindowDays 7}}{{$windowVal = "7d"}}{{else if eq .WindowDays 30}}{{$windowVal = "30d"}}{{end}}
+                    {{template "pageSizeSelector" (dict
+                        "Action" "/ui/spend"
+                        "Current" .Limit
+                        "Options" .LimitOptions
+                        "Hidden" (dict "window" $windowVal "project" .ProjectID))}}
+                </div>
+                <div class="md:hidden divide-y divide-dark-700/40">
+                    {{range .TopTasks}}
+                    <a href="/ui/tasks/{{.TaskID}}" class="tap block px-4 py-3 active:bg-dark-700/40">
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="text-sm font-mono text-brand-300" title="{{.TaskID}}">{{shortID .TaskID}}</span>
+                            <span class="text-accent-300 font-semibold tabular-nums">{{fmtUSD .CostUSD}}</span>
+                        </div>
+                        <div class="text-xs text-gray-500 flex items-center gap-2">
+                            <span>{{.ProjectID}}</span>
+                            <span>·</span>
+                            {{statusPill (printf "%s" .Status)}}
+                        </div>
+                        <div class="text-[11px] text-gray-500 mt-1 flex items-center gap-2 tabular-nums">
+                            <span>{{.StepCount}} steps</span>
+                            <span class="{{if gt .IterationsPerStep 5.0}}text-amber-400{{end}}">{{printf "%.1f" .IterationsPerStep}} iter/step</span>
+                            <span class="{{if gt .InputRatioPct 90.0}}text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-400{{end}}">{{printf "%.0f" .InputRatioPct}}% in</span>
+                        </div>
+                    </a>
+                    {{end}}
+                </div>
+                <div class="hidden md:block overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Task</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Steps</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Iter/step</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Input %</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Cost</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/30">
+                            {{range .TopTasks}}
+                            <tr class="hover:bg-dark-700/40">
+                                <td class="px-4 py-1.5"><a href="/ui/tasks/{{.TaskID}}" class="text-brand-400 hover:text-brand-300 font-mono text-xs" title="{{.TaskID}}">{{shortID .TaskID}}</a></td>
+                                <td class="px-4 py-1.5 text-gray-400 font-mono text-xs">{{.ProjectID}}</td>
+                                <td class="px-4 py-1.5">{{template "taskStatusBadge" .Status}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{.StepCount}}</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .IterationsPerStep 15.0}}text-rose-400{{else if gt .IterationsPerStep 10.0}}text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.1f" .IterationsPerStep}}</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .InputRatioPct 90.0}}text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.0f" .InputRatioPct}}%</td>
+                                <td class="px-4 py-1.5 text-right text-gray-500 tabular-nums">{{.DurationDisplay}}</td>
+                                <td class="px-4 py-1.5 text-right text-accent-300 font-semibold tabular-nums">{{fmtUSD .CostUSD}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}
+
+            {{/* Top role+model combos. cost-per-step + input ratio
+                 makes regression visible per role. */}}
+            {{if .TopRoleModels}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60">
+                    <h2 class="text-sm font-semibold text-gray-200">Top role + model combos · {{.WindowLabel}}</h2>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Model</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Steps</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tokens (in/out)</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Input %</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="$/success vs 7d baseline. >2× indicates a regression worth investigating.">Drift 24h</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="Cache hit ratio = cache_read / (cache_read + prompt_tokens). Populated for Bedrock + Anthropic; zero for providers without prompt caching.">Cache</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">$ / step</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Cost</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/30">
+                            {{range .TopRoleModels}}
+                            <tr class="hover:bg-dark-700/40">
+                                <td class="px-4 py-1.5 text-gray-300">{{.Role}}</td>
+                                <td class="px-4 py-1.5 text-gray-500 font-mono text-xs">{{.Model}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{.StepCount}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{fmtTokens .PromptTokens}} / {{fmtTokens .CompletionTokens}}</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .InputRatioPct 90.0}}text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.0f" .InputRatioPct}}%</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums">
+                                    {{if not .DriftHasBaseline}}<span class="text-gray-600">—</span>
+                                    {{else if gt .DriftRatio 2.0}}<span class="pill pill-danger" title="Cost per success is {{printf "%.1f" .DriftRatio}}× higher than the 7-day baseline. Investigate model choice / prompt regression.">{{printf "%.2f" .DriftRatio}}×</span>
+                                    {{else if gt .DriftRatio 1.5}}<span class="pill pill-warn" title="Cost per success is {{printf "%.1f" .DriftRatio}}× higher than the 7-day baseline.">{{printf "%.2f" .DriftRatio}}×</span>
+                                    {{else if lt .DriftRatio 0.7}}<span class="pill pill-ok" title="Cost per success has improved relative to baseline.">{{printf "%.2f" .DriftRatio}}×</span>
+                                    {{else}}<span class="text-gray-400">{{printf "%.2f" .DriftRatio}}×</span>{{end}}
+                                </td>
+                                <td class="px-4 py-1.5 text-right tabular-nums" title="cache_read tokens / (cache_read + prompt_tokens)">
+                                    {{if gt .CacheReadTokens 0}}<span class="text-emerald-300">{{printf "%.0f" .CacheHitRatioPct}}%</span>{{else}}<span class="text-gray-600">—</span>{{end}}
+                                </td>
+                                <td class="px-4 py-1.5 text-right text-gray-300 tabular-nums">{{fmtUSD .CostPerStepUSD}}</td>
+                                <td class="px-4 py-1.5 text-right text-accent-300 font-semibold tabular-nums">{{fmtUSD .CostUSD}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}
+
+            {{/* Phase 1 cohort table. Aggregated from
+                 execution_step_outcomes over the active window —
+                 one row per (worker role, model) cohort that
+                 fired any hallucination signal. Distinct from
+                 the Phase 3 panel below, which keys on the
+                 judge's (role, model). This tile answers "which
+                 worker model is generating the most claim-
+                 grounding failures?" and pairs naturally with
+                 the role/model leaderboard above so the operator
+                 can compare cost vs quality on the same cohorts. */}}
+            {{if .Phase1Cohorts}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-2 flex-wrap">
+                    <h2 class="text-sm font-semibold text-gray-200">Step quality cohorts · {{.WindowLabel}}</h2>
+                    <span class="text-xs text-gray-500">worker-side rule-based grounding; cohorts that never fired a signal are hidden</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Worker model</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="Steps where the cohort fired at least one signal. Lower is better.">Steps affected</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="Signals that blocked the step (severity=high). The first thing to investigate when a cohort lights up here.">High</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Warn</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Info</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Top detectors</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Last</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/30">
+                            {{range .Phase1Cohorts}}
+                            <tr class="hover:bg-dark-700/40">
+                                <td class="px-4 py-1.5 text-gray-300">{{if .Role}}{{.Role}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-1.5 text-gray-500 font-mono text-xs">{{if .Model}}{{.Model}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-300 tabular-nums">{{.StepsAffected}}</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .SignalsHigh 0}}text-rose-400 font-semibold{{else}}text-gray-500{{end}}">{{.SignalsHigh}}</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .SignalsWarn 0}}text-amber-400{{else}}text-gray-500{{end}}">{{.SignalsWarn}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-500 tabular-nums">{{.SignalsInfo}}</td>
+                                <td class="px-4 py-1.5 text-xs text-gray-400 font-mono whitespace-nowrap">
+                                    {{range $det, $count := .SignalsByDetector}}<span class="inline-block px-1.5 py-0.5 mr-1 mb-0.5 rounded bg-dark-700 ring-1 ring-dark-600">{{$det}}·{{$count}}</span>{{end}}
+                                </td>
+                                <td class="px-4 py-1.5 text-right text-[11px] text-gray-500 whitespace-nowrap">{{.LastRecordedAt.Format "Jan 2 15:04"}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}
+
+            {{/* Phase 3 hallucination rollup. Aggregated from
+                 task_judge_verdicts over the active window — one
+                 row per (role, model) cohort with pass-rate, mean
+                 confidence, and judge cost. The cohorts here are
+                 the JUDGE'S (role, model) pairs (always
+                 role="judge"), not the worker's — the panel is
+                 about which judge models the operator is using
+                 and how confidently they're scoring. The verdict
+                 itself reports on the worker's output; this tile
+                 helps the operator notice "judge gemma is fail-
+                 happy" or "judge gpt-oss is mostly abstaining". */}}
+            {{if .HallucinationRollup}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-2 flex-wrap">
+                    <h2 class="text-sm font-semibold text-gray-200">Hallucination judge rollup · {{.WindowLabel}}</h2>
+                    <span class="text-xs text-gray-500">judge-side scores; pass = worker output supported by evidence</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Judge model</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Verdicts</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="Pass rate over verdicts in this window. Higher is better — worker output more often supported by evidence.">Pass rate</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="Pass / Fail / Abstain breakdown.">P / F / A</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="Judge's mean self-reported confidence. Treat as a coarse signal — small judges over-report.">Mean conf</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">$ / verdict</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Cost</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Last</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/30">
+                            {{range .HallucinationRollup}}
+                            <tr class="hover:bg-dark-700/40">
+                                <td class="px-4 py-1.5 text-gray-300">{{if .Role}}{{.Role}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-1.5 text-gray-500 font-mono text-xs">{{if .Model}}{{.Model}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-300 tabular-nums">{{.Total}}</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if lt .PassRatePct 50.0}}text-rose-400{{else if lt .PassRatePct 75.0}}text-amber-400{{else}}text-emerald-400{{end}}">{{printf "%.0f" .PassRatePct}}%</td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">
+                                    <span class="text-emerald-400">{{.Pass}}</span> / <span class="text-rose-400">{{.Fail}}</span> / <span class="text-amber-400">{{.Abstain}}</span>
+                                </td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{printf "%.2f" .MeanConfidence}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{fmtUSD .CostPerTaskUSD}}</td>
+                                <td class="px-4 py-1.5 text-right text-accent-300 font-semibold tabular-nums">{{fmtUSD .TotalCostUSD}}</td>
+                                <td class="px-4 py-1.5 text-right text-[11px] text-gray-500 whitespace-nowrap">{{.LastRecordedAt.Format "Jan 2 15:04"}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}
+
+            {{if not .TotalCalls}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-8 text-center">
+                <p class="text-sm text-gray-400">No LLM usage recorded in the {{.WindowLabel}} window{{if .ProjectID}} for project {{.ProjectID}}{{end}}.</p>
+                <p class="text-xs text-gray-600 mt-2">If you're expecting data here: confirm the LLM usage repository is wired (executor logs at startup), pricing.yaml has entries for the models in use, and at least one task has actually run.</p>
+            </div>
+            {{end}}
+
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

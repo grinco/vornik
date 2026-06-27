@@ -1,0 +1,20 @@
+{
+  "name": "Vornik",
+  "short_name": "Vornik",
+  "description": "Multi-agent task orchestration",
+  "start_url": "/ui/",
+  "scope": "/ui/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#0078C3",
+  "background_color": "#3B4252",
+  "categories": ["productivity", "developer"],
+  "icons": [
+    {
+      "src": "/ui/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

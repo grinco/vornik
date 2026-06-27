@@ -1,0 +1,352 @@
+{{/*
+Per-role ConfigMaps for cluster mode (cluster.enabled=true).
+
+Each role gets its own config.yaml with the appropriate node: block.
+The non-node config is identical across roles (shared values source).
+Secrets remain env-var-expanded (${VORNIK_*}) — no secret material in
+ConfigMaps, same as the single-node configmap.yaml.
+
+The main config ConfigMap (rendered by configmap.yaml) is still created
+in cluster mode to hold registry/pricing data; it is NOT mounted by the
+per-role pods (they mount their own role-config ConfigMaps instead).
+*/}}
+{{- if .Values.cluster.enabled }}
+{{/* Trigger the mTLS validation so we fail early with a clear message. */}}
+{{- include "vornik.validateClusterMtls" . }}
+
+{{- if .Values.cluster.worker.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vornik.workerFullname" . }}-config
+  labels: {{- include "vornik.workerLabels" . | nindent 4 }}
+data:
+  config.yaml: |
+    server:
+      address: {{ .Values.server.address | quote }}
+      read_timeout: {{ .Values.server.readTimeout }}
+      write_timeout: {{ .Values.server.writeTimeout }}
+
+    # worker nodes have full DB access (R/W) for the scheduler, executor,
+    # migrations, and leader-elected singleton workers.
+    database:
+      host: {{ include "vornik.databaseHost" . | quote }}
+      port: {{ if .Values.postgres.enabled }}{{ .Values.postgres.service.port }}{{ else }}{{ .Values.database.port }}{{ end }}
+      name: {{ if .Values.postgres.enabled }}{{ .Values.postgres.auth.database | quote }}{{ else }}{{ .Values.database.name | quote }}{{ end }}
+      user: {{ if .Values.postgres.enabled }}{{ .Values.postgres.auth.username | quote }}{{ else }}{{ .Values.database.user | quote }}{{ end }}
+      password: "${VORNIK_DATABASE_PASSWORD}"
+      sslmode: {{ if .Values.postgres.enabled }}disable{{ else }}{{ .Values.database.sslmode | quote }}{{ end }}
+
+    storage:
+      artifacts_path: /var/lib/vornik/artifacts
+    artifacts:
+      artifacts_path: /var/lib/vornik/artifacts
+
+    scheduler:
+      max_concurrent_tasks: {{ .Values.scheduler.maxConcurrentTasks }}
+      lease_timeout: {{ .Values.scheduler.leaseTimeout }}
+
+    logging:
+      level: {{ .Values.logging.level | quote }}
+      format: {{ .Values.logging.format | quote }}
+
+    api:
+      auth_enabled: {{ .Values.api.authEnabled }}
+
+    metrics:
+      enabled: {{ .Values.metrics.enabled }}
+      addr: {{ .Values.metrics.addr | quote }}
+
+    runtime:
+      run_as_user: "1000:1000"
+      project_workspace_path: /var/lib/vornik/workspaces
+      agent_llm:
+        endpoint: {{ .Values.agentLLM.endpoint | quote }}
+        model: {{ .Values.agentLLM.model | quote }}
+        api_key: "${VORNIK_AGENT_LLM_API_KEY}"
+        context_size: {{ .Values.agentLLM.contextSize }}
+        max_tokens: {{ .Values.agentLLM.maxTokens }}
+
+    chat:
+      {{- if .Values.chat.provider }}
+      provider: {{ .Values.chat.provider | quote }}
+      {{- end }}
+      endpoint: {{ .Values.chat.endpoint | quote }}
+      model: {{ .Values.chat.model | quote }}
+      api_key: "${VORNIK_CHAT_API_KEY}"
+      {{- if .Values.chat.cliBinary }}
+      cli_binary: {{ .Values.chat.cliBinary | quote }}
+      {{- end }}
+
+    {{- if .Values.telegram.enabled }}
+    telegram:
+      enabled: true
+      bot_token: "${VORNIK_TELEGRAM_BOT_TOKEN}"
+    {{- end }}
+
+    {{- if .Values.memory.enabled }}
+    memory:
+      enabled: true
+      embedding_endpoint: {{ .Values.memory.embeddingEndpoint | quote }}
+      embedding_model: {{ .Values.memory.embeddingModel | quote }}
+      embedding_dimension: {{ .Values.memory.embeddingDimension }}
+      embedding_api_key: "${VORNIK_EMBEDDING_API_KEY}"
+      {{- if .Values.memory.titler }}
+      titler:
+        enabled: {{ .Values.memory.titler.enabled | default false }}
+        {{- with .Values.memory.titler.model }}
+        model: {{ . | quote }}
+        {{- end }}
+        timeout_seconds: {{ .Values.memory.titler.timeoutSeconds | default 30 }}
+        max_preview_bytes: {{ .Values.memory.titler.maxPreviewBytes | default 2048 }}
+        auto_backfill_interval_seconds: {{ .Values.memory.titler.autoBackfillIntervalSeconds | default 0 }}
+        auto_backfill_batch_size: {{ .Values.memory.titler.autoBackfillBatchSize | default 25 }}
+      {{- end }}
+      {{- if .Values.memory.classifier }}
+      classifier:
+        enabled: {{ .Values.memory.classifier.enabled | default false }}
+        {{- with .Values.memory.classifier.model }}
+        model: {{ . | quote }}
+        {{- end }}
+        timeout_seconds: {{ .Values.memory.classifier.timeoutSeconds | default 30 }}
+        max_preview_bytes: {{ .Values.memory.classifier.maxPreviewBytes | default 2048 }}
+        auto_backfill_interval_seconds: {{ .Values.memory.classifier.autoBackfillIntervalSeconds | default 0 }}
+        auto_backfill_batch_size: {{ .Values.memory.classifier.autoBackfillBatchSize | default 25 }}
+        inline_fallback_enabled: {{ .Values.memory.classifier.inlineFallbackEnabled | default false }}
+      {{- end }}
+    {{- end }}
+
+    # node.profile=worker enables: API endpoint + scheduler + executor (podman)
+    # + leader-elected singletons. run_workers=true is the safety gate that
+    # prevents UI/webhook nodes from ever contending for singleton leases.
+    # The relay_ingress block wires up the mTLS server on :8443 that the DMZ
+    # webhook nodes relay events through.
+    node:
+      profile: worker
+      relay_ingress:
+        addr: ":8443"
+        server_cert: /etc/vornik/mtls/server.crt
+        server_key:  /etc/vornik/mtls/server.key
+        client_ca:   /etc/vornik/mtls/ca.crt
+
+    {{- with .Values.extraConfig }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}{{/* worker.enabled */}}
+
+{{- if .Values.cluster.ui.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vornik.uiFullname" . }}-config
+  labels: {{- include "vornik.uiLabels" . | nindent 4 }}
+data:
+  config.yaml: |
+    server:
+      address: {{ .Values.server.address | quote }}
+      read_timeout: {{ .Values.server.readTimeout }}
+      write_timeout: {{ .Values.server.writeTimeout }}
+
+    # ui nodes have DB read access for serving the UI and the data-plane
+    # read endpoints. Full R/W is available if the role flags allow it.
+    database:
+      host: {{ include "vornik.databaseHost" . | quote }}
+      port: {{ if .Values.postgres.enabled }}{{ .Values.postgres.service.port }}{{ else }}{{ .Values.database.port }}{{ end }}
+      name: {{ if .Values.postgres.enabled }}{{ .Values.postgres.auth.database | quote }}{{ else }}{{ .Values.database.name | quote }}{{ end }}
+      user: {{ if .Values.postgres.enabled }}{{ .Values.postgres.auth.username | quote }}{{ else }}{{ .Values.database.user | quote }}{{ end }}
+      password: "${VORNIK_DATABASE_PASSWORD}"
+      sslmode: {{ if .Values.postgres.enabled }}disable{{ else }}{{ .Values.database.sslmode | quote }}{{ end }}
+
+    storage:
+      artifacts_path: /var/lib/vornik/artifacts
+    artifacts:
+      artifacts_path: /var/lib/vornik/artifacts
+
+    scheduler:
+      max_concurrent_tasks: {{ .Values.scheduler.maxConcurrentTasks }}
+      lease_timeout: {{ .Values.scheduler.leaseTimeout }}
+
+    logging:
+      level: {{ .Values.logging.level | quote }}
+      format: {{ .Values.logging.format | quote }}
+
+    api:
+      auth_enabled: {{ .Values.api.authEnabled }}
+
+    metrics:
+      enabled: {{ .Values.metrics.enabled }}
+      addr: {{ .Values.metrics.addr | quote }}
+
+    # runtime.agent_llm is intentionally omitted for the ui profile:
+    # ui nodes never run the executor, so injecting the agent LLM key would
+    # be unnecessary credential exposure (least-privilege).
+
+    chat:
+      {{- if .Values.chat.provider }}
+      provider: {{ .Values.chat.provider | quote }}
+      {{- end }}
+      endpoint: {{ .Values.chat.endpoint | quote }}
+      model: {{ .Values.chat.model | quote }}
+      api_key: "${VORNIK_CHAT_API_KEY}"
+      {{- if .Values.chat.cliBinary }}
+      cli_binary: {{ .Values.chat.cliBinary | quote }}
+      {{- end }}
+
+    {{- if .Values.telegram.enabled }}
+    telegram:
+      enabled: true
+      bot_token: "${VORNIK_TELEGRAM_BOT_TOKEN}"
+    {{- end }}
+
+    {{- if .Values.memory.enabled }}
+    memory:
+      enabled: true
+      embedding_endpoint: {{ .Values.memory.embeddingEndpoint | quote }}
+      embedding_model: {{ .Values.memory.embeddingModel | quote }}
+      embedding_dimension: {{ .Values.memory.embeddingDimension }}
+      embedding_api_key: "${VORNIK_EMBEDDING_API_KEY}"
+      {{- if .Values.memory.titler }}
+      titler:
+        enabled: {{ .Values.memory.titler.enabled | default false }}
+        {{- with .Values.memory.titler.model }}
+        model: {{ . | quote }}
+        {{- end }}
+        timeout_seconds: {{ .Values.memory.titler.timeoutSeconds | default 30 }}
+        max_preview_bytes: {{ .Values.memory.titler.maxPreviewBytes | default 2048 }}
+        auto_backfill_interval_seconds: {{ .Values.memory.titler.autoBackfillIntervalSeconds | default 0 }}
+        auto_backfill_batch_size: {{ .Values.memory.titler.autoBackfillBatchSize | default 25 }}
+      {{- end }}
+      {{- if .Values.memory.classifier }}
+      classifier:
+        enabled: {{ .Values.memory.classifier.enabled | default false }}
+        {{- with .Values.memory.classifier.model }}
+        model: {{ . | quote }}
+        {{- end }}
+        timeout_seconds: {{ .Values.memory.classifier.timeoutSeconds | default 30 }}
+        max_preview_bytes: {{ .Values.memory.classifier.maxPreviewBytes | default 2048 }}
+        auto_backfill_interval_seconds: {{ .Values.memory.classifier.autoBackfillIntervalSeconds | default 0 }}
+        auto_backfill_batch_size: {{ .Values.memory.classifier.autoBackfillBatchSize | default 25 }}
+        inline_fallback_enabled: {{ .Values.memory.classifier.inlineFallbackEnabled | default false }}
+      {{- end }}
+    {{- end }}
+
+    # node.profile=ui enables: /ui routes + the read-only data-plane
+    # endpoints. No scheduler, no executor (no podman), no singleton leases.
+    node:
+      profile: ui
+
+    {{- with .Values.extraConfig }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}{{/* ui.enabled */}}
+
+{{- if .Values.cluster.webhook.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vornik.webhookFullname" . }}-config
+  labels: {{- include "vornik.webhookLabels" . | nindent 4 }}
+data:
+  config.yaml: |
+    server:
+      address: {{ .Values.server.address | quote }}
+      read_timeout: {{ .Values.server.readTimeout }}
+      write_timeout: {{ .Values.server.writeTimeout }}
+
+    # webhook (DMZ) nodes have NO database credentials. The database block
+    # is intentionally absent — any DB config here would violate the least-
+    # privilege DMZ invariant (the firewall rule blocks :5432 from the DMZ).
+
+    logging:
+      level: {{ .Values.logging.level | quote }}
+      format: {{ .Values.logging.format | quote }}
+
+    api:
+      auth_enabled: {{ .Values.api.authEnabled }}
+
+    metrics:
+      enabled: {{ .Values.metrics.enabled }}
+      addr: {{ .Values.metrics.addr | quote }}
+
+    # node.profile=webhook enables: public webhook ingress routes + the
+    # relay client. No DB, no scheduler/executor, no singleton leases.
+    # The relay block points at the worker mTLS ingress and references the
+    # client cert/key + CA mounted from the mTLS Secret.
+    node:
+      profile: webhook
+      relay:
+        upstream: {{ include "vornik.relayUpstream" . | quote }}
+        client_cert: /etc/vornik/mtls/client.crt
+        client_key:  /etc/vornik/mtls/client.key
+        ca:          /etc/vornik/mtls/ca.crt
+        max_retries: 3
+        timeout:     "5s"
+
+    {{- with .Values.extraConfig }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}{{/* webhook.enabled */}}
+
+{{/*
+Registry ConfigMaps are shared across cluster mode exactly as in single-node
+mode. Only created when the relevant inline values are non-empty and no
+existing ConfigMap is referenced.
+*/}}
+{{- if and (not .Values.registry.existingProjectsConfigMap) .Values.registry.projects }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vornik.fullname" . }}-projects
+  labels: {{- include "vornik.labels" . | nindent 4 }}
+data:
+{{- range $name, $body := .Values.registry.projects }}
+  {{ $name }}.yaml: |
+{{ $body | indent 4 }}
+{{- end }}
+{{- end }}
+
+{{- if and (not .Values.registry.existingSwarmsConfigMap) .Values.registry.swarms }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vornik.fullname" . }}-swarms
+  labels: {{- include "vornik.labels" . | nindent 4 }}
+data:
+{{- range $name, $body := .Values.registry.swarms }}
+  {{ $name }}.yaml: |
+{{ $body | indent 4 }}
+{{- end }}
+{{- end }}
+
+{{- if and (not .Values.registry.existingWorkflowsConfigMap) .Values.registry.workflows }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vornik.fullname" . }}-workflows
+  labels: {{- include "vornik.labels" . | nindent 4 }}
+data:
+{{- range $name, $body := .Values.registry.workflows }}
+  {{ $name }}.yaml: |
+{{ $body | indent 4 }}
+{{- end }}
+{{- end }}
+
+{{- if .Values.pricing.override }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vornik.fullname" . }}-pricing
+  labels: {{- include "vornik.labels" . | nindent 4 }}
+data:
+  pricing.yaml: |
+{{ .Values.pricing.override | indent 4 }}
+{{- end }}
+
+{{- end }}{{/* cluster.enabled */}}

@@ -1,0 +1,364 @@
+{{define "projects_new_wizard.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+
+            <!-- Header -->
+            <div class="flex items-start justify-between flex-wrap gap-y-3">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">New project — wizard</h1>
+                    <p class="text-gray-500 text-xs mt-0.5">
+                        Describe what you want in plain language. The wizard will ask clarifying
+                        questions and propose a complete project YAML.
+                    </p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <a href="/ui/projects/new" class="text-xs text-gray-500 hover:text-gray-300">← Browse templates</a>
+                </div>
+            </div>
+
+            <!-- Two-pane layout: chat (left) + preview (right, stubbed in Phase A). -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+                <!-- Chat pane -->
+                <div class="glass rounded-xl border border-dark-700 overflow-hidden flex flex-col" style="min-height: 32rem;">
+                    <div class="px-5 py-3.5 border-b border-dark-700/60">
+                        <h2 class="text-sm font-semibold text-gray-200">Chat</h2>
+                    </div>
+                    <div id="wizard-transcript" class="flex-1 px-5 py-4 overflow-y-auto space-y-3 text-sm">
+                        <!-- First assistant message is rendered on page load; subsequent turns appended by JS. -->
+                        <div class="flex items-start gap-2">
+                            <span class="flex-shrink-0 inline-flex items-center justify-center h-7 w-7 rounded-full bg-accent-600/30 text-accent-300 text-xs font-medium">✨</span>
+                            <div class="flex-1 bg-dark-900/40 rounded-lg px-3 py-2 text-gray-200">
+                                Hi! What kind of project would you like to set up? Describe it in your own words — I'll ask a few clarifying questions and propose a draft.
+                            </div>
+                        </div>
+                    </div>
+                    <div id="wizard-suggestions" class="px-5 pb-2 flex flex-wrap gap-1.5 text-xs"></div>
+                    <div class="px-5 py-3 border-t border-dark-700/60">
+                        <form id="wizard-form" class="flex items-end gap-2" onsubmit="event.preventDefault(); submitWizardTurn();">
+                            <textarea id="wizard-input" rows="2" class="flex-1 px-3 py-2 text-sm rounded-lg bg-dark-900 border border-dark-700 text-gray-100 focus:border-accent-500/60 focus:outline-none resize-none" placeholder="Tell me about your project…" autofocus></textarea>
+                            <button id="wizard-submit" type="submit" class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M13 6l6 6-6 6"/></svg>
+                                Send
+                            </button>
+                        </form>
+                        <p id="wizard-error" class="hidden mt-2 text-xs text-rose-300"></p>
+                    </div>
+                </div>
+
+                <!-- Preview pane (Phase A stub). Phase B replaces with rendered YAML + first-run summary. -->
+                <div class="glass rounded-xl border border-dark-700 overflow-hidden flex flex-col" style="min-height: 32rem;">
+                    <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-baseline justify-between gap-2 flex-wrap">
+                        <h2 class="text-sm font-semibold text-gray-200">Proposal preview</h2>
+                        <span id="wizard-preview-status" class="text-xs text-gray-500">No proposal yet</span>
+                    </div>
+                    <div id="wizard-preview" class="flex-1 px-5 py-4 overflow-y-auto text-xs font-mono text-gray-400">
+                        <p class="text-gray-500">
+                            The wizard's draft project YAML will appear here once it's gathered
+                            enough information. Phase A renders the raw JSON; Phase B will format
+                            it as YAML with a "what will happen on first run" summary.
+                        </p>
+                    </div>
+                    <div class="px-5 py-3 border-t border-dark-700/60 flex items-center justify-end gap-2">
+                        <button id="wizard-cancel" type="button" onclick="submitWizardCancel()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 transition-colors" title="Cancel this session and return to projects">
+                            Cancel
+                        </button>
+                        <button id="wizard-commit" type="button" disabled onclick="submitWizardCommit()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-700 hover:bg-emerald-600 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed" title="Create the project from this proposal">
+                            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+                            Create project
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <script>
+    (function () {
+        // Seeded from ?session=<id> when resuming a draft (empty for a
+        // fresh wizard). Without this the page always started a NEW
+        // session on the first turn, so "Resume" never continued the
+        // draft and "Cancel" had no session to cancel.
+        let sessionID = "{{ .ResumeSessionID }}";
+        let lastProposal = null;
+
+        const els = {
+            transcript: document.getElementById('wizard-transcript'),
+            suggestions: document.getElementById('wizard-suggestions'),
+            input: document.getElementById('wizard-input'),
+            submit: document.getElementById('wizard-submit'),
+            error: document.getElementById('wizard-error'),
+            preview: document.getElementById('wizard-preview'),
+            previewStatus: document.getElementById('wizard-preview-status'),
+            commit: document.getElementById('wizard-commit'),
+            cancel: document.getElementById('wizard-cancel'),
+        };
+
+        function appendBubble(role, text) {
+            const wrap = document.createElement('div');
+            wrap.className = 'flex items-start gap-2';
+            const avatar = document.createElement('span');
+            const isUser = role === 'user';
+            avatar.className = 'flex-shrink-0 inline-flex items-center justify-center h-7 w-7 rounded-full text-xs font-medium ' +
+                (isUser ? 'bg-gray-700 text-gray-200' : 'bg-accent-600/30 text-accent-300');
+            avatar.textContent = isUser ? '🧑' : '✨';
+            wrap.appendChild(avatar);
+            const body = document.createElement('div');
+            body.className = 'flex-1 bg-dark-900/40 rounded-lg px-3 py-2 ' +
+                (isUser ? 'text-gray-300' : 'text-gray-200');
+            body.style.whiteSpace = 'pre-wrap';
+            body.textContent = text;
+            wrap.appendChild(body);
+            els.transcript.appendChild(wrap);
+            els.transcript.scrollTop = els.transcript.scrollHeight;
+        }
+
+        // Replay a resumed draft's prior turns so the operator continues
+        // where they left off. The server-side transcript also feeds the
+        // LLM on the next turn; this just re-renders the bubbles.
+        (function replayResumedTranscript() {
+            try {
+                const prior = {{ .ResumeTranscriptJSON }};
+                if (Array.isArray(prior)) {
+                    for (const t of prior) {
+                        if (t && t.content) {
+                            appendBubble(t.role === 'user' ? 'user' : 'assistant', t.content);
+                        }
+                    }
+                }
+            } catch (e) { /* malformed transcript — start clean */ }
+        })();
+
+        function renderSuggestions(open) {
+            els.suggestions.replaceChildren();
+            if (!open || !open.length) return;
+            for (const q of open) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'px-2 py-1 rounded-full bg-dark-700 hover:bg-dark-600 text-gray-300 transition-colors';
+                btn.textContent = q;
+                btn.onclick = () => {
+                    els.input.value = q;
+                    submitWizardTurn();
+                };
+                els.suggestions.appendChild(btn);
+            }
+        }
+
+        // Minimal YAML renderer. Handles strings/numbers/booleans
+        // (quoted when needed), nested maps, and arrays of those.
+        // Not a general YAML emitter — the wizard's proposals are
+        // tame enough that this covers them; an exotic shape just
+        // renders as JSON-ish.
+        function renderYaml(value, indent) {
+            indent = indent || 0;
+            const pad = '  '.repeat(indent);
+            if (value === null || value === undefined) return 'null\n';
+            if (Array.isArray(value)) {
+                if (value.length === 0) return '[]\n';
+                let out = '\n';
+                for (const item of value) {
+                    if (typeof item === 'object' && item !== null) {
+                        out += pad + '- ';
+                        const inner = renderYaml(item, indent + 1).trimStart();
+                        out += inner;
+                    } else {
+                        out += pad + '- ' + scalar(item) + '\n';
+                    }
+                }
+                return out;
+            }
+            if (typeof value === 'object') {
+                let out = (indent === 0 ? '' : '\n');
+                const keys = Object.keys(value);
+                if (keys.length === 0) return '{}\n';
+                for (const k of keys) {
+                    const v = value[k];
+                    if (v === null || v === undefined) {
+                        out += pad + k + ': null\n';
+                    } else if (typeof v === 'object') {
+                        out += pad + k + ':' + renderYaml(v, indent + 1);
+                    } else {
+                        out += pad + k + ': ' + scalar(v) + '\n';
+                    }
+                }
+                return out;
+            }
+            return scalar(value) + '\n';
+        }
+        function scalar(v) {
+            if (typeof v === 'string') {
+                // Quote when the string looks like a non-string token
+                // (numbers, booleans, YAML keywords) or contains chars
+                // that need escaping.
+                if (/^(true|false|null|yes|no|on|off|[0-9.+-])/i.test(v) || /[:#"'\n]/.test(v)) {
+                    return JSON.stringify(v);
+                }
+                return v;
+            }
+            return JSON.stringify(v);
+        }
+
+        function renderPreview(proposal, ready) {
+            if (!proposal) {
+                els.previewStatus.textContent = 'No proposal yet';
+                els.commit.disabled = true;
+                return;
+            }
+            lastProposal = proposal;
+            // The envelope's `proposal` field is the wrapped object
+            // {raw: {...}}; render the raw map as YAML.
+            const raw = proposal.raw || proposal;
+            const pre = document.createElement('pre');
+            pre.className = 'whitespace-pre-wrap break-words text-[11px] text-gray-200';
+            pre.textContent = renderYaml(raw, 0).trimStart();
+            els.preview.replaceChildren(pre);
+            els.previewStatus.textContent = ready ? 'Ready to create' : 'Draft';
+            els.commit.disabled = !ready;
+        }
+
+        window.submitWizardCommit = async function () {
+            if (!sessionID) return;
+            els.error.classList.add('hidden');
+            els.commit.disabled = true;
+            try {
+                const resp = await fetch('/api/v1/projects/wizard/' + encodeURIComponent(sessionID) + '/commit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                });
+                if (!resp.ok) {
+                    let detail = '';
+                    try {
+                        const body = await resp.json();
+                        // The daemon error envelope is {"error":{"code","message"}};
+                        // read the nested message. Fall back to a string-valued
+                        // error/message, then the status text. (Previously this
+                        // concatenated the error OBJECT → "[object Object]".)
+                        detail = (body.error && body.error.message) || body.message
+                            || (typeof body.error === 'string' ? body.error : '')
+                            || resp.statusText;
+                    } catch (e) {
+                        detail = resp.statusText;
+                    }
+                    els.error.textContent = 'Commit failed (' + resp.status + '): ' + detail;
+                    els.error.classList.remove('hidden');
+                    els.commit.disabled = false;
+                    return;
+                }
+                const body = await resp.json();
+                window.location.href = body.url || '/ui/projects/' + body.project_id;
+            } catch (e) {
+                els.error.textContent = 'Network error: ' + e.message;
+                els.error.classList.remove('hidden');
+                els.commit.disabled = false;
+            }
+        };
+
+        window.submitWizardCancel = async function () {
+            // No turn taken yet → nothing persisted; just leave.
+            if (!sessionID) {
+                window.location.href = '/ui/projects';
+                return;
+            }
+            els.error.classList.add('hidden');
+            els.cancel.disabled = true;
+            try {
+                const resp = await fetch('/api/v1/projects/wizard/' + encodeURIComponent(sessionID) + '/cancel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                });
+                // 404 means the session is already gone for this operator —
+                // the slot is freed either way, so treat it as success.
+                if (resp.ok || resp.status === 404) {
+                    window.location.href = '/ui/projects';
+                    return;
+                }
+                let detail = '';
+                try {
+                    const body = await resp.json();
+                    detail = (body.error && body.error.message) || body.message
+                        || (typeof body.error === 'string' ? body.error : '')
+                        || resp.statusText;
+                } catch (e) {
+                    detail = resp.statusText;
+                }
+                els.error.textContent = 'Cancel failed (' + resp.status + '): ' + detail;
+                els.error.classList.remove('hidden');
+                els.cancel.disabled = false;
+            } catch (e) {
+                els.error.textContent = 'Network error: ' + e.message;
+                els.error.classList.remove('hidden');
+                els.cancel.disabled = false;
+            }
+        };
+
+        window.submitWizardTurn = async function () {
+            const msg = els.input.value.trim();
+            if (!msg) return;
+            els.error.classList.add('hidden');
+            els.submit.disabled = true;
+            els.input.disabled = true;
+            appendBubble('user', msg);
+            els.input.value = '';
+            els.suggestions.replaceChildren();
+            try {
+                const resp = await fetch('/api/v1/projects/wizard/converse', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionID, message: msg }),
+                });
+                if (!resp.ok) {
+                    let detail = '';
+                    try {
+                        const body = await resp.json();
+                        // The daemon error envelope is {"error":{"code","message"}};
+                        // read the nested message. Fall back to a string-valued
+                        // error/message, then the status text. (Previously this
+                        // concatenated the error OBJECT → "[object Object]".)
+                        detail = (body.error && body.error.message) || body.message
+                            || (typeof body.error === 'string' ? body.error : '')
+                            || resp.statusText;
+                    } catch (e) {
+                        detail = resp.statusText;
+                    }
+                    els.error.textContent = 'Wizard error (' + resp.status + '): ' + detail;
+                    els.error.classList.remove('hidden');
+                    return;
+                }
+                const body = await resp.json();
+                sessionID = body.session_id || sessionID;
+                const env = body.envelope || {};
+                appendBubble('assistant', env.message || '');
+                renderSuggestions(env.open_questions);
+                renderPreview(env.proposal, env.ready_to_commit);
+            } catch (e) {
+                els.error.textContent = 'Network error: ' + e.message;
+                els.error.classList.remove('hidden');
+            } finally {
+                els.submit.disabled = false;
+                els.input.disabled = false;
+                els.input.focus();
+            }
+        };
+
+        // Submit on Cmd/Ctrl+Enter.
+        els.input.addEventListener('keydown', (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                e.preventDefault();
+                submitWizardTurn();
+            }
+        });
+    })();
+    </script>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

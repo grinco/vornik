@@ -1,0 +1,100 @@
+{{define "memory_entity_detail.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="text-xs text-gray-500">
+                <a href="/ui/memory/{{.ProjectID}}/entities" class="text-brand-300 hover:text-brand-200">← entities</a>
+                <span class="mx-1">·</span>
+                <span class="font-mono">{{.ProjectID}}</span>
+            </div>
+
+            {{if not .Enabled}}
+            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-300 text-sm">
+                Knowledge-graph read surface not enabled on this daemon.
+            </div>
+            {{else if not .Found}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-8 text-center text-gray-500 text-sm">
+                Entity not found in this project.
+            </div>
+            {{else}}
+
+            <div class="glass rounded-xl border border-dark-700 p-5">
+                <div class="flex items-start justify-between gap-3 flex-wrap">
+                    <div>
+                        <span class="inline-block text-[11px] uppercase tracking-wider px-2 py-0.5 rounded bg-dark-700 text-gray-400 mb-1">{{.Entity.Type}}</span>
+                        <h1 class="text-xl font-semibold text-gray-100">{{.Entity.CanonicalName}}</h1>
+                        {{if .Entity.Description}}<p class="text-sm text-gray-400 mt-1">{{.Entity.Description}}</p>{{end}}
+                    </div>
+                    <a href="/ui/memory/{{.ProjectID}}/subgraph/{{.Entity.ID}}" class="text-xs px-3 py-1.5 rounded bg-brand-600 hover:bg-brand-500 text-white font-medium whitespace-nowrap">View subgraph →</a>
+                </div>
+                {{if .Entity.Aliases}}
+                <div class="mt-3 flex flex-wrap gap-1.5">
+                    {{range .Entity.Aliases}}<span class="text-xs px-2 py-0.5 rounded-full bg-dark-700/60 border border-dark-700 text-gray-400">{{.}}</span>{{end}}
+                </div>
+                {{end}}
+                <div class="mt-3 text-xs text-gray-500">{{.Entity.Chunks}} mentioning chunks · {{.Entity.Edges}} edges · <span class="font-mono">{{.Entity.ID}}</span></div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                    <div class="px-5 py-3 border-b border-dark-700/60"><h2 class="text-sm font-medium text-gray-300">Outgoing edges</h2></div>
+                    <ul class="divide-y divide-dark-700/40">
+                        {{range .Outgoing}}
+                        <li class="px-5 py-2.5 text-sm">
+                            <span class="text-gray-300">{{.FromName}}</span>
+                            <span class="text-emerald-400 mx-1">{{.Predicate}}</span>
+                            <a href="/ui/memory/{{$.ProjectID}}/entities/{{.ToEntity}}" class="text-brand-300 hover:text-brand-200">{{.ToName}}</a>
+                            <span class="text-xs text-gray-600 ml-2">{{len .SourceChunks}} src</span>
+                        </li>
+                        {{else}}
+                        <li class="px-5 py-4 text-center text-gray-500 text-xs">No outgoing edges.</li>
+                        {{end}}
+                    </ul>
+                </div>
+                <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                    <div class="px-5 py-3 border-b border-dark-700/60"><h2 class="text-sm font-medium text-gray-300">Incoming edges</h2></div>
+                    <ul class="divide-y divide-dark-700/40">
+                        {{range .Incoming}}
+                        <li class="px-5 py-2.5 text-sm">
+                            <a href="/ui/memory/{{$.ProjectID}}/entities/{{.FromEntity}}" class="text-brand-300 hover:text-brand-200">{{.FromName}}</a>
+                            <span class="text-emerald-400 mx-1">{{.Predicate}}</span>
+                            <span class="text-gray-300">{{.ToName}}</span>
+                            <span class="text-xs text-gray-600 ml-2">{{len .SourceChunks}} src</span>
+                        </li>
+                        {{else}}
+                        <li class="px-5 py-4 text-center text-gray-500 text-xs">No incoming edges.</li>
+                        {{end}}
+                    </ul>
+                </div>
+            </div>
+
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3 border-b border-dark-700/60"><h2 class="text-sm font-medium text-gray-300">Mentioning chunks</h2></div>
+                <ul class="divide-y divide-dark-700/40">
+                    {{range .Chunks}}
+                    <li class="px-5 py-3">
+                        <div class="flex items-center justify-between gap-2 mb-1">
+                            <span class="text-xs text-gray-400 font-mono">{{.SourceName}}</span>
+                            {{if .RepoScope}}<span class="text-[10px] px-1.5 py-0.5 rounded bg-dark-700 text-gray-500">{{.RepoScope}}</span>{{end}}
+                        </div>
+                        <p class="text-sm text-gray-400">{{.Preview}}</p>
+                        {{if .Surface}}<p class="text-xs text-emerald-400/70 mt-1">matched: “{{.Surface}}”</p>{{end}}
+                    </li>
+                    {{else}}
+                    <li class="px-5 py-4 text-center text-gray-500 text-xs">No mentioning chunks (or filtered out by scope).</li>
+                    {{end}}
+                </ul>
+            </div>
+
+            {{end}}
+        </div>
+    </main>
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

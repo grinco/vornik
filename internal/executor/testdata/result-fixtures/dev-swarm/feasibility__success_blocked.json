@@ -1,0 +1,13 @@
+{
+  "swarm": "dev-swarm",
+  "role": "feasibility",
+  "reason": "Lead-plan-only role: the role's schema is the model's only spec. blocked_explained rule requires blockers when feasible:false; this has them.",
+  "expect": "pass",
+  "payload": {
+    "feasibility": {
+      "feasible": false,
+      "blockers": ["postgres 16 migration not yet committed"],
+      "reason": "the indexer changes depend on the new index syntax that lands with the migration"
+    }
+  }
+}

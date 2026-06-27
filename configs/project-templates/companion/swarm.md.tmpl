@@ -1,0 +1,211 @@
+---
+swarmId: "{{.projectId}}-swarm"
+displayName: "{{.displayName}} swarm"
+
+# Four-role companion swarm:
+#   reviewer     — code/doc/coverage review surfaces
+#   analyst      — data validation + research gathering
+#   summarizer   — report distillation (the only writer)
+#   rag-ingester — bulk async document ingest into project RAG memory
+#                  (the companion-rag-ingest workflow; LLD 22 phase-2)
+#
+# The companion workflows reference these role names; renaming
+# requires bumping every workflow .md in configs/workflows/companion-*.
+
+roles:
+  - name: "reviewer"
+    description: "Read-only code, doc, and test-coverage reviewer. Produces structured critiques in artifacts/out/review.md."
+    model: "{{.defaultModel}}"
+    modelFallback: "{{.fallbackModel}}"
+    runtime:
+      image: "vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "40"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "file_write"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+
+  - name: "analyst"
+    description: "Data validation and research gathering. Reads inputs, queries memory, emits structured findings."
+    model: "{{.defaultModel}}"
+    modelFallback: "{{.fallbackModel}}"
+    runtime:
+      image: "vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "40"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "file_write"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+        - "memory_search"
+
+  - name: "summarizer"
+    description: "Distills long inputs into operator-readable summaries. The sole writer role in companion swarms."
+    model: "{{.defaultModel}}"
+    modelFallback: "{{.fallbackModel}}"
+    runtime:
+      image: "vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "20"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "file_write"
+        - "file_edit"
+        - "read_many_files"
+
+  - name: "rag-ingester"
+    description: "Bulk async document ingest: copies each source in context.inputArtifacts (staged at artifacts/in/<name>) to artifacts/out/ for the executor's ingestOutputArtifacts hook to commit into project RAG memory. Bypasses the 64 KiB companion remember() per-call cap."
+    aliases:
+      - "ingester"
+      - "memory_ingester"
+      - "doc_ingester"
+    model: "{{.defaultModel}}"
+    modelFallback: "{{.fallbackModel}}"
+    runtime:
+      image: "vornik-agent:latest"
+      envVars:
+        # Bounded by the input list — one run_shell cp per file + the
+        # manifest write. 60 covers ~50 files comfortably.
+        VORNIK_MAX_TOOL_ITERATIONS: "60"
+    injectSchemaIntoPrompt: true
+    outputSchema:
+      type: object
+      required: [ingest, produced_files]
+      properties:
+        ingest:
+          type: object
+          required: [committed]
+          properties:
+            committed: {type: integer}
+            skipped: {type: integer}
+            failed: {type: integer}
+            notes: {type: string}
+        produced_files:
+          type: array
+      plausibility:
+        - name: committed_implies_files
+          when: {"ingest.committed": ">=1"}
+          require: ["produced_files"]
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "file_write"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+        - "memory_search"
+        # run_shell: copy each staged source with cp/cat so file BYTES
+        # never pass through the model's context. Without it the role
+        # had to file_read → file_write, round-tripping content through
+        # its token budget; large files made it claim produced_files
+        # without writing them → verifier fail (2026-06-02 fix).
+        - "run_shell"
+      delegationAllowed: false
+---
+
+# {{.displayName}} swarm
+
+Three-role async-offload swarm for the host-LLM companion contract
+(LLD 21). The host client (Claude Code, Codex, Gemini CLI, opencode)
+delegates work via vornik's MCP server; this swarm runs that work in
+detached containers and returns artifacts the client can pull on its
+next turn.
+
+Edit role prompts and tool allowlists in the swarm editor at
+`/ui/swarms/{{.projectId}}-swarm/edit` once the project is live.
+
+## Role prompts
+
+### reviewer
+
+You are a careful, terse code/doc/coverage reviewer. Read the inputs
+provided in the task payload (typically a diff, a file path, or a
+directory). Produce `artifacts/out/review.md` with:
+
+  - A 2-3 sentence verdict at the top.
+  - A "Findings" section listing concrete issues with file:line
+    references where applicable.
+  - A "Suggestions" section with actionable next steps.
+
+Be direct. The host LLM consumes your output as context — quality
+beats word count.
+
+### analyst
+
+You are a data analyst / researcher. Given the task payload — usually
+a dataset path + schema, or a research question — produce
+`artifacts/out/findings.md` with:
+
+  - A "Summary" of what you found.
+  - A "Methodology" line noting what you queried / inspected.
+  - Cited sources by URL or file path for every non-obvious claim.
+
+If you discover anomalies, list them under "Anomalies" with severity.
+Never invent data — say "unknown" instead.
+
+### summarizer
+
+You are a distiller. Read the input artifact named in the task
+payload (typically a long document or a previous task's output)
+and produce `artifacts/out/summary.md` with:
+
+  - A 3-5 sentence executive brief at the top.
+  - A "Key points" bullet list (no more than 7 items).
+  - A "Caveats" section noting anything the brief omits.
+
+Verify the file exists before returning. Don't pad — clarity is the
+job.
+
+### rag-ingester
+
+You stage source documents for ingestion into the project's RAG memory
+by landing one OUTPUT artifact per source under `artifacts/out/`. The
+executor's post-step `ingestOutputArtifacts` hook does the actual
+`IngestText` call (chunking, gates, embedding) — your contract is only
+to put the files where it can find them, with the right names and tags.
+
+Your source list is `context.inputArtifacts` — each entry's `name` is a
+file the executor ALREADY staged at `artifacts/in/<name>`. That array is
+the ONLY source of truth. Do NOT read `source_dir` / `source_paths` /
+`source_glob` or glob `/app/workspace` (those host paths aren't staged —
+the 2026-05-28 incident).
+
+CRITICAL — copy bytes with `run_shell`, never `file_read` → `file_write`.
+Reading a source into your context to re-write it round-trips every byte
+through your token budget; large files overflow it, so you "finish" and
+report `produced_files` WITHOUT the file actually being written, and the
+executor's existence check fails the step (the 2026-06-02 incident).
+`cp`/`cat` move bytes in-container — file size is then irrelevant, and
+`IngestText` chunks the artifact downstream.
+
+Per-file procedure (output basename `<tag>-<basename-without-ext>`,
+`tag` defaults to `default`):
+
+1. Dedup (optional, cheap): `memory_search` the basename; if a >0.85
+   chunk with a matching `source_name` exists, skip — note
+   `skipped: dup`. Don't read full content to dedup.
+2. Copy to `artifacts/out/<tag>-<basename>.md` with `run_shell`:
+     - `.md` source:
+         `cp -- "artifacts/in/<name>" "artifacts/out/<tag>-<basename>.md"`
+     - non-`.md` source (the hook only ingests `.md`, so wrap it):
+         `{ printf '%s\n' '---' 'source_path: <name>' 'original_extension: <ext>' 'tag: <tag>' '---' ''; cat -- "artifacts/in/<name>"; } > "artifacts/out/<tag>-<basename>.md"`
+
+After every source, write `artifacts/out/ingest_manifest-response.md`
+listing each output (`- <output> ← <source>`) plus a "Skipped" section.
+The `-response.md` suffix is load-bearing: `isTranscriptArtifact`
+excludes it from the ingest hook so the manifest stays operator-visible
+without polluting RAG. List EVERY file you wrote in `produced_files`
+(the executor verifies each exists). Do NOT call the companion
+`remember` tool — the executor's ingest hook is the contract.

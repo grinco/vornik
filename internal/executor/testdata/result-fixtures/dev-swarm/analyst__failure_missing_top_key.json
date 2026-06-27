@@ -1,0 +1,10 @@
+{
+  "swarm": "dev-swarm",
+  "role": "analyst",
+  "reason": "Top-level `analysis` key missing — the only invariant the analyst schema enforces (per-step prompts pin sub-fields).",
+  "expect": "fail",
+  "payload": {
+    "feature": "outputSchema-validator",
+    "subtask": "draft the JSON Schema converter"
+  }
+}

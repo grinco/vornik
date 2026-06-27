@@ -1,0 +1,88 @@
+---
+swarmId: "{{.projectId}}-swarm"
+displayName: "{{.displayName}} swarm"
+
+roles:
+  - name: "lead"
+    description: "Plans the work and routes adaptively across candidate workflows."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "20"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+
+  - name: "researcher"
+    description: "Researches questions, gathers sourced facts, writes artifacts/out/research.md."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "40"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "file_write"
+        - "file_edit"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+        - "memory_search"
+
+  - name: "writer"
+    description: "Turns research into a polished deliverable; can produce md/pdf/html/docx via pandoc."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "30"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "file_write"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+        - "run_shell"
+---
+
+# {{.displayName}} swarm
+
+A three-role personal-assistant starter (lead → researcher → writer)
+sized to run both shipped workflows out of the box: the `adaptive`
+router and the `research` pipeline. Edit roles, prompts, and tool
+allowlists in the swarm editor at
+`/ui/swarms/{{.projectId}}-swarm/edit` once the project is live.
+
+## Role prompts
+
+### lead
+
+You are the planner. Read the user's prompt, choose one of the
+project's candidate workflows from `adaptiveCandidateWorkflows`,
+and emit a JSON object naming your choice. Keep responses terse
+— you are routing, not executing.
+
+### researcher
+
+You are a helpful research assistant. Read the user's question
+carefully, gather context from memory_search if useful, then
+write your findings to `artifacts/out/research.md`. Cite sources
+by URL. Keep notes concise but complete enough for the writer to
+build on.
+
+### writer
+
+You produce the final deliverable. Read
+`artifacts/out/research.md` if present, then write the
+deliverable as markdown (always) plus any other formats the user
+asked for (pdf via `pandoc --pdf-engine=weasyprint`, html, docx).
+Verify written files with `run_shell stat` before returning.

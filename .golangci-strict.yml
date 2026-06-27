@@ -1,0 +1,50 @@
+# NEW-CODE-ONLY quality ratchet — run via `make lint-strict`.
+#
+# Enables the complexity/size/quality linters that the legacy codebase
+# does NOT yet pass (the 1000+ line god-functions: initHTTPServer,
+# executeWorkflowAttempt, PlaceOrderWithCaps, ...). To raise the standard
+# WITHOUT a flood of legacy findings, `issues.new-from-merge-base` scopes
+# reporting to code added/changed since the merge-base with origin/main —
+# so existing code is grandfathered but every new function is held to the
+# bar. golangci-lint's new-from is global, hence this is a SECOND config
+# (the default linters stay full-codebase in .golangci.yml).
+#
+# CI note (for when remote CI is unblocked): on a direct-to-main push,
+# merge-base == HEAD reports nothing; the CI step should instead pass
+# `--new-from-rev=<before-sha>` (e.g. GitHub's `${{ github.event.before }}`)
+# so each push's new commits are checked. Locally and on PR branches the
+# merge-base default below is correct. Requires full git history
+# (fetch-depth: 0 in CI).
+version: "2"
+linters:
+  default: none
+  enable:
+    - funlen
+    - gocognit
+    - nestif
+    - dupl
+    - gocritic
+    - revive
+    - unparam
+    - unconvert
+  settings:
+    funlen:
+      lines: 80
+      statements: 60
+    gocognit:
+      min-complexity: 30
+    nestif:
+      min-complexity: 8
+    dupl:
+      threshold: 150
+  exclusions:
+    rules:
+      # Tests may legitimately be long / repetitive (table cases, fixtures).
+      - path: _test\.go
+        linters:
+          - funlen
+          - gocognit
+          - dupl
+          - nestif
+issues:
+  new-from-merge-base: origin/main

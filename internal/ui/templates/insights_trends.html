@@ -1,0 +1,101 @@
+{{define "insights_trends.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+                <h1 class="text-xl font-semibold text-gray-100">Trends</h1>
+                {{if .AllowedProjects}}
+                <form method="get" action="/ui/insights/trends" class="flex items-center gap-2">
+                    <select name="projectId" onchange="this.form.submit()" class="text-sm bg-dark-800 border border-dark-700 text-gray-200 rounded-md px-2 py-1.5">
+                        <option value="">{{if .AllAccess}}All projects{{else}}All my projects{{end}}</option>
+                        {{range .AllowedProjects}}
+                        <option value="{{.}}" {{if eq . $.ProjectID}}selected{{end}}>{{.}}</option>
+                        {{end}}
+                    </select>
+                    <noscript><button type="submit" class="text-xs px-2 py-1 rounded bg-brand-600/80 text-white">Apply</button></noscript>
+                </form>
+                {{end}}
+            </div>
+            <p class="text-[11px] text-gray-500">Daily task throughput and success rate over the last {{.Stats.Days}} days, from the most recent {{.Stats.Sample}} tasks (bucketed by creation date).</p>
+
+            {{if .Notice}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-8 text-center text-gray-500 text-sm">{{.Notice}}</div>
+            {{else}}
+
+            <div class="grid gap-3 grid-cols-2 sm:grid-cols-4">
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.TotCreated}}</div><div class="text-[11px] text-gray-500 mt-0.5">Created</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-emerald-400">{{.Stats.TotCompleted}}</div><div class="text-[11px] text-gray-500 mt-0.5">Completed</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-rose-400">{{.Stats.TotFailed}}</div><div class="text-[11px] text-gray-500 mt-0.5">Failed</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.OverallSuccessPct}}%</div><div class="text-[11px] text-gray-500 mt-0.5">Success rate</div></div>
+            </div>
+
+            <div class="glass rounded-xl border border-dark-700 p-4 overflow-x-auto">
+                <h2 class="text-sm font-medium text-gray-300 mb-3">Daily throughput</h2>
+                <svg viewBox="0 0 {{.Stats.SVGWidth}} {{.Stats.SVGHeight}}" width="100%" role="img" aria-label="Daily task throughput">
+                    {{range .Stats.Buckets}}
+                    <rect x="{{.X}}" y="{{.BarY}}" width="22" height="{{.BarH}}" rx="2" fill="#60a5fa" opacity="0.85">
+                        <title>{{.Date}}: {{.Created}} created, {{.Completed}} completed, {{.Failed}} failed, {{.SuccessPct}}% success</title>
+                    </rect>
+                    {{end}}
+                </svg>
+                <p class="text-[11px] text-gray-500 mt-1">Bar height = tasks created that day. Hover a bar for the day's completed/failed/success breakdown.</p>
+            </div>
+
+            {{if .Verdicts.HasData}}
+            <div class="grid gap-3 grid-cols-2 sm:grid-cols-4">
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-emerald-400">{{.Verdicts.TotPass}}</div><div class="text-[11px] text-gray-500 mt-0.5">Judge pass</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-rose-400">{{.Verdicts.TotFail}}</div><div class="text-[11px] text-gray-500 mt-0.5">Judge fail</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-amber-400">{{.Verdicts.TotAbstain}}</div><div class="text-[11px] text-gray-500 mt-0.5">Abstain</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Verdicts.OverallAbstainPct}}%</div><div class="text-[11px] text-gray-500 mt-0.5">Abstain rate</div></div>
+            </div>
+            <div class="glass rounded-xl border border-dark-700 p-4 overflow-x-auto">
+                <h2 class="text-sm font-medium text-gray-300 mb-3">Daily judge verdicts</h2>
+                <svg viewBox="0 0 {{.Verdicts.SVGWidth}} {{.Verdicts.SVGHeight}}" width="100%" role="img" aria-label="Daily judge verdicts">
+                    {{range .Verdicts.Buckets}}
+                    <rect x="{{.X}}" y="{{.BarY}}" width="22" height="{{.BarH}}" rx="2" fill="#fbbf24" opacity="0.85">
+                        <title>{{.Date}}: {{.Total}} verdicts — {{.Pass}} pass, {{.Fail}} fail, {{.Abstain}} abstain ({{.AbstainPct}}% abstain)</title>
+                    </rect>
+                    {{end}}
+                </svg>
+                <p class="text-[11px] text-gray-500 mt-1">Bar height = verdicts recorded that day. Hover for the pass/fail/abstain breakdown.</p>
+            </div>
+            {{end}}
+
+            {{if .Recovery.HasData}}
+            <div class="glass rounded-xl border border-dark-700 p-4 overflow-x-auto">
+                <h2 class="text-sm font-medium text-gray-300 mb-1">Daily recoveries</h2>
+                <p class="text-[11px] text-gray-500 mb-2">Graceful-recovery exits (executions that reached a recovery terminal via on_fail) — {{.Recovery.Total}} in the window.</p>
+                <svg viewBox="0 0 {{.Recovery.SVGWidth}} {{.Recovery.SVGHeight}}" width="100%" role="img" aria-label="Daily recovery events">
+                    {{range .Recovery.Buckets}}
+                    <rect x="{{.X}}" y="{{.BarY}}" width="22" height="{{.BarH}}" rx="2" fill="#a78bfa" opacity="0.85">
+                        <title>{{.Date}}: {{.Count}} recoveries</title>
+                    </rect>
+                    {{end}}
+                </svg>
+            </div>
+            {{end}}
+
+            {{if .Spend.HasData}}
+            <div class="glass rounded-xl border border-dark-700 p-4 overflow-x-auto">
+                <h2 class="text-sm font-medium text-gray-300 mb-1">Daily LLM spend</h2>
+                <p class="text-[11px] text-gray-500 mb-2">{{.Spend.TotalLabel}} over the window.</p>
+                <svg viewBox="0 0 {{.Spend.SVGWidth}} {{.Spend.SVGHeight}}" width="100%" role="img" aria-label="Daily LLM spend">
+                    {{range .Spend.Buckets}}
+                    <rect x="{{.X}}" y="{{.BarY}}" width="22" height="{{.BarH}}" rx="2" fill="#34d399" opacity="0.85">
+                        <title>{{.Date}}: {{.CostLabel}}</title>
+                    </rect>
+                    {{end}}
+                </svg>
+            </div>
+            {{end}}
+            {{end}}
+        </div>
+    </main>
+</body>
+</html>
+{{end}}

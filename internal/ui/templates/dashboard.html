@@ -1,0 +1,492 @@
+{{define "dashboard.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-surface-900 text-ink-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-center justify-between">
+                <h1 class="text-xl font-semibold text-ink-100">Dashboard</h1>
+                <span class="htmx-indicator text-xs text-ink-500" role="status" aria-live="polite">refreshing…</span>
+            </div>
+
+            <div id="dashboard-live" class="space-y-6"
+                 aria-live="polite" aria-atomic="false"
+                 hx-ext="sse"
+                 sse-connect="/api/v1/live/fleet"
+                 hx-get="/ui/"
+                 hx-trigger="sse:fleet-changed, every 30s"
+                 hx-select="#dashboard-live"
+                 hx-target="this"
+                 hx-swap="outerHTML"
+                 hx-indicator=".htmx-indicator">
+                 {{/* Event-driven (UI F2): refresh on fleet activity via the
+                      live SSE feed; the 30s tick is a backstop for missed
+                      events + the non-execution tiles (spend, autonomy ETAs).
+                      Was a fixed every-5s poll. */}}
+
+            {{/* Phase 38 — Inbox tile.
+                 Pinned at the top of the dashboard so the operator
+                 lands on "what needs me right now" without scrolling.
+                 Renders only when there's at least one AWAITING_INPUT
+                 task; clicking jumps straight to the filtered task
+                 list. Conversational task lifecycle (Phase 23-32)
+                 makes this the single most actionable tile on phone. */}}
+            {{$awaiting := index .TaskCounts "AWAITING_INPUT"}}
+            {{if gt $awaiting 0}}
+            <a href="/ui/tasks?status=AWAITING_INPUT"
+               class="tap block bg-amber-500/10 rounded-xl panel-primary hover:border-amber-500/60 transition-colors px-5 py-4" data-tone="amber"
+               aria-label="{{$awaiting}} task(s) awaiting your input">
+                <div class="flex items-center gap-3">
+                    <div class="p-2 rounded-lg bg-amber-500/20 border border-amber-500/30">
+                        <svg class="h-5 w-5 text-amber-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-base font-semibold text-amber-200">{{$awaiting}} task{{if ne $awaiting 1}}s{{end}} awaiting your input</div>
+                        <div class="text-xs text-amber-300/80 mt-0.5">Tap to review checkpoints + answer →</div>
+                    </div>
+                </div>
+            </a>
+            {{end}}
+
+            {{/* Autonomy approval gate. Tasks created under a project
+                 with requireApproval park in AWAITING_APPROVAL until the
+                 operator approves/rejects them. Rendered as its own tile
+                 so "approve me" reads distinctly from "answer a
+                 checkpoint". See
+                 https://docs.vornik.io */}}
+            {{$approval := index .TaskCounts "AWAITING_APPROVAL"}}
+            {{if gt $approval 0}}
+            <a href="/ui/tasks?status=AWAITING_APPROVAL"
+               class="tap block bg-sky-500/10 rounded-xl panel-primary hover:border-sky-500/60 transition-colors px-5 py-4" data-tone="sky"
+               aria-label="{{$approval}} task(s) awaiting your approval">
+                <div class="flex items-center gap-3">
+                    <div class="p-2 rounded-lg bg-sky-500/20 border border-sky-500/30">
+                        <svg class="h-5 w-5 text-sky-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <div class="text-base font-semibold text-sky-200">{{$approval}} task{{if ne $approval 1}}s{{end}} awaiting your approval</div>
+                        <div class="text-xs text-sky-300/80 mt-0.5">Tap to approve or reject autonomy tasks →</div>
+                    </div>
+                </div>
+            </a>
+            {{end}}
+
+            {{/* Operator Queue rail (Upgrade #4 — 2026-05-26).
+                 Action-oriented cards: each answers "what needs me?"
+                 instead of "how many of X are there?". Cards render
+                 ONLY when their condition trips, so a quiet dashboard
+                 collapses to a single "Healthy" indicator rather
+                 than a sea of zero-cards. */}}
+            {{$queue := .OperatorQueue}}
+            {{$failed := $queue.FailedRecently}}
+            {{$stuck := $queue.StuckTotal}}
+            {{$spike := $queue.SpendSpike}}
+            {{$queueHasItems := or (or (gt $failed 0) (gt $stuck 0)) $spike}}
+            {{if $queueHasItems}}
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" role="region" aria-label="Operator queue">
+                {{if gt $failed 0}}
+                <a href="/ui/tasks?status=FAILED"
+                   class="tap block bg-rose-500/10 rounded-xl border border-rose-500/40 hover:border-rose-500/60 transition-colors px-4 py-3"
+                   aria-label="{{$failed}} tasks failed in the last 24 hours">
+                    <div class="flex items-start gap-3">
+                        <div class="p-1.5 rounded-lg bg-rose-500/20 border border-rose-500/30 flex-shrink-0 mt-0.5">
+                            <svg class="h-4 w-4 text-rose-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="text-sm font-semibold text-rose-200">{{$failed}} failed in last 24h</div>
+                            <div class="text-[11px] text-rose-300/70 mt-0.5">See what went wrong + recover →</div>
+                        </div>
+                    </div>
+                </a>
+                {{end}}
+                {{if gt $stuck 0}}
+                <a href="/ui/tasks?status=WAITING_FOR_CHILDREN"
+                   class="tap block bg-orange-500/10 rounded-xl border border-orange-500/40 hover:border-orange-500/60 transition-colors px-4 py-3"
+                   aria-label="{{$stuck}} tasks waiting for children — may be stuck">
+                    <div class="flex items-start gap-3">
+                        <div class="p-1.5 rounded-lg bg-orange-500/20 border border-orange-500/30 flex-shrink-0 mt-0.5">
+                            <svg class="h-4 w-4 text-orange-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="text-sm font-semibold text-orange-200">{{$stuck}} waiting for children</div>
+                            <div class="text-[11px] text-orange-300/70 mt-0.5">Parent tasks paused on delegated work →</div>
+                        </div>
+                    </div>
+                </a>
+                {{end}}
+                {{if $spike}}
+                <a href="/ui/spend"
+                   class="tap alert alert-spend hover:opacity-90 transition-opacity"
+                   aria-label="Spend spike — today is {{printf "%.1f" $queue.SpendSpikeRatio}}x rolling daily average">
+                    <div class="alert-icon">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <div class="alert-title">Spend spike — {{printf "%.1f" $queue.SpendSpikeRatio}}× daily avg</div>
+                        <div class="alert-sub">Today's burn is above the 7-day baseline →</div>
+                    </div>
+                </a>
+                {{end}}
+            </div>
+            {{else if eq $awaiting 0}}
+            {{/* Healthy state — no awaiting input, no failures, no stuck,
+                 no spend spike. One small indicator beats zero cards
+                 (which looks like a broken page) or four "0 ___" cards
+                 (which looks like an alarm panel). */}}
+            <div class="bg-emerald-500/5 rounded-xl border border-emerald-700/30 px-5 py-3 flex items-center gap-3" role="status">
+                <svg class="h-4 w-4 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span class="text-xs text-emerald-300">All clear — no queue items need attention.</span>
+            </div>
+            {{end}}
+
+            <!-- Stat counts — compact strip (re-tiered onto the statStrip
+                 primitive; the 4-card text-3xl block was disproportionate
+                 next to the action-oriented operator queue above it). -->
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                {{template "statStrip" (dict "Items" (slice
+                    (dict "Label" "Projects"  "Value" .ProjectCount)
+                    (dict "Label" "Queued"    "Value" (index .TaskCounts "QUEUED"))
+                    (dict "Label" "Running"   "Value" (index .TaskCounts "RUNNING"))
+                    (dict "Label" "Completed" "Value" (index .TaskCounts "COMPLETED"))
+                ))}}
+            </div>
+
+            <!-- LLM Spend (rolling windows, USD). Source: task_llm_usage.
+                 The 24h card carries a sparkline of hourly spend. -->
+            <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                {{template "spendCard" (dict "Label" "Spend · 24h"    "USD" .Spend.Day24hUSD     "Color" "cyan"   "SparkLine" .Spend.Sparkline "SparkFilled" .Spend.SparklineFilled)}}
+                {{template "spendCard" (dict "Label" "Spend · 7 days" "USD" .Spend.Day7USD       "Color" "cyan")}}
+                {{template "spendCard" (dict "Label" "Spend · 30 days" "USD" .Spend.Day30USD     "Color" "cyan")}}
+                {{template "spendCard" (dict "Label" "Month-to-date"  "USD" .Spend.MonthToDateUSD "Color" "purple")}}
+            </div>
+
+            {{/* Cache savings tile — Phase E response cache + future
+                 Phase D embedding cache when pricing arrives. Hidden
+                 until the cache has at least one hit so a fresh
+                 install isn't dominated by a $0.00 placeholder.
+                 Sits between spend rows and the "right now" panel so
+                 the dollar saved sits visually next to the dollar
+                 spent — operator immediately sees the net. */}}
+            {{if .CacheSavings.Available}}
+            <div class="glass rounded-xl border border-emerald-700/40 overflow-hidden">
+                {{template "sectionHeader" (dict "Title" "LLM cache savings" "Href" "/ui/spend" "HrefLabel" "drill down →")}}
+                <div class="px-5 py-4 grid grid-cols-2 gap-4 text-xs">
+                    <div>
+                        <dt class="text-ink-500 uppercase tracking-wider text-[10px]">$ saved (lifetime)</dt>
+                        <dd class="text-3xl font-semibold text-emerald-300 tabular-nums" title="Sum of hit_count × CostUSD(model, prompt_tokens, completion_tokens) across the Phase E response cache. Lifetime since first hit landed; not a 24h window.">{{fmtUSD .CacheSavings.TotalSavingsUSD}}</dd>
+                    </div>
+                    <div>
+                        <dt class="text-ink-500 uppercase tracking-wider text-[10px]">LLM calls skipped</dt>
+                        <dd class="text-3xl font-semibold text-ink-100 tabular-nums">{{.CacheSavings.TotalHits}}</dd>
+                    </div>
+                </div>
+            </div>
+            {{end}}
+
+            <!-- "Right now" panel: active tasks + active chats + next
+                 autonomy evals, all in one place so an operator landing
+                 on /ui/ sees in-flight signal without having to
+                 bookmark per-page URLs. -->
+            <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+
+                <!-- Active tasks tile. Header kept hand-rolled: it carries the
+                     pageSizeSelector widget on the right, which sectionHeader
+                     (Title + single link/meta) can't express. Token-migrated
+                     and uses border-b border-surface-600/60 to match sectionHeader. -->
+                <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                    <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between gap-2">
+                        <h2 class="text-sm font-semibold text-ink-200 flex items-center gap-2">
+                            <svg class="h-4 w-4 text-accent-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z"/></svg>
+                            Active Tasks
+                        </h2>
+                        <div class="flex items-center gap-3">
+                            <span class="text-xs text-ink-400">{{.ActiveTaskCount}} in flight</span>
+                            {{/* Shared page-size selector — same chrome as
+                                 /ui/audit, /ui/tasks, /ui/memory, /ui/projects,
+                                 /ui/spend. Lands the operator back on / with
+                                 the new ?limit=N. */}}
+                            {{template "pageSizeSelector" (dict "Action" "/ui/" "Current" .Limit "Options" .LimitOptions "Hidden" (dict))}}
+                        </div>
+                    </div>
+                    {{if .ActiveTasks}}
+                    <ul class="divide-y divide-surface-600/30">
+                        {{range .ActiveTasks}}
+                        <li class="px-5 py-2.5 hover:bg-surface-700/30 transition-colors">
+                            <a href="/ui/tasks/{{.ID}}" class="flex items-center justify-between gap-3 text-sm" title="{{.ID}}">
+                                <div class="min-w-0 flex-1">
+                                    <div class="text-brand-400 font-mono text-xs truncate">{{shortID .ID}}</div>
+                                    <div class="text-xs text-ink-500 mt-0.5">{{.ProjectID}}</div>
+                                </div>
+                                <span class="text-xs font-medium px-2 py-0.5 rounded
+                                    {{if eq (printf "%s" .Status) "RUNNING"}}bg-accent-500/15 text-accent-300
+                                    {{else if eq (printf "%s" .Status) "LEASED"}}bg-blue-500/15 text-blue-300
+                                    {{else if eq (printf "%s" .Status) "QUEUED"}}bg-amber-500/15 text-amber-300
+                                    {{else}}bg-ink-500/15 text-ink-300{{end}}">{{.Status}}</span>
+                            </a>
+                        </li>
+                        {{end}}
+                    </ul>
+                    {{else}}
+                    <div class="px-5 py-6 text-center text-xs text-ink-500">No active tasks. Schedule one via the API or Telegram bot.</div>
+                    {{end}}
+                </div>
+
+                <!-- Active chats tile -->
+                <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                    {{template "sectionHeader" (dict "Title" "Active Chats")}}
+                    <div class="px-5 py-6 flex flex-col items-center justify-center">
+                        <div class="text-4xl font-bold text-purple-400">{{.ActiveChatCount}}</div>
+                        <div class="text-xs text-ink-500 mt-2">Telegram conversations in flight</div>
+                    </div>
+                </div>
+
+                <!-- Autonomy ETAs tile -->
+                <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                    {{template "sectionHeader" (dict "Title" "Autonomy · next eval" "MetaText" (printf "%d active" (len .AutonomyETAs)))}}
+                    {{if .AutonomyETAs}}
+                    <ul class="divide-y divide-surface-600/30" id="autonomy-etas">
+                        {{range .AutonomyETAs}}
+                        <li class="px-5 py-2.5">
+                            <div class="flex items-center justify-between text-sm">
+                                <a href="/ui/projects/{{.ProjectID}}" class="text-ink-200 font-medium truncate">{{.ProjectID}}</a>
+                                <span class="text-xs text-amber-300 font-mono autonomy-eta-label" data-next-eval-iso="{{.NextEvalAtISO}}">{{.EtaLabel}}</span>
+                            </div>
+                            <div class="text-xs text-ink-500 mt-0.5 flex items-center gap-2">
+                                <span>every {{.Interval}}</span>
+                                {{if .AgoLabel}}<span class="text-ink-600">·</span><span>last {{.AgoLabel}}</span>{{end}}
+                                {{if .LastOutcome}}<span class="text-ink-600">·</span><span class="text-ink-400">{{.LastOutcome}}</span>{{end}}
+                            </div>
+                        </li>
+                        {{end}}
+                    </ul>
+                    {{else}}
+                    <div class="px-5 py-6 text-center text-xs text-ink-500">No projects have autonomy enabled.</div>
+                    {{end}}
+                </div>
+
+            </div>
+
+            <!-- "Health & knowledge" row (2026-05-12). Memory pipeline,
+                 trading safety envelope, judge quality — three subsystems
+                 that landed after this page was last rebuilt. Each tile
+                 silently empties when its repo isn't wired so older
+                 deployments don't crash. -->
+            <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+
+                <!-- Memory pipeline tile: KG extraction progress + ingest
+                     backlog summed across projects. Drives the operator
+                     question "is RAG keeping up with what tasks emit?". -->
+                <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                    {{template "sectionHeader" (dict "Title" "Memory pipeline" "Href" "/ui/memory" "HrefLabel" "drill in →")}}
+                    {{if .Memory.Enabled}}
+                    <div class="px-5 py-4 space-y-3">
+                        <div>
+                            <div class="flex items-baseline justify-between text-xs text-ink-400 mb-1.5">
+                                <span>KG extraction</span>
+                                <span class="font-mono tabular-nums text-ink-300">{{.Memory.ChunksDone}} / {{.Memory.ChunksTotal}} chunks</span>
+                            </div>
+                            <div class="h-1.5 rounded-full bg-surface-900 overflow-hidden">
+                                <div class="h-full bg-brand-500/70" style="width: {{printf "%.1f" .Memory.PercentDone}}%"></div>
+                            </div>
+                            <div class="mt-1 text-[11px] text-ink-500 font-mono tabular-nums">{{printf "%.1f" .Memory.PercentDone}}% · {{.Memory.ChunksPending}} pending</div>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2 text-center text-xs pt-1">
+                            <div>
+                                <div class="text-lg font-semibold text-ink-200 tabular-nums">{{.Memory.Entities}}</div>
+                                <div class="text-ink-500">entities</div>
+                            </div>
+                            <div>
+                                <div class="text-lg font-semibold text-ink-200 tabular-nums">{{.Memory.Edges}}</div>
+                                <div class="text-ink-500">edges</div>
+                            </div>
+                            <div>
+                                <div class="text-lg font-semibold text-ink-200 tabular-nums">{{.Memory.Mentions}}</div>
+                                <div class="text-ink-500">mentions</div>
+                            </div>
+                        </div>
+                        <div class="text-xs border-t border-surface-600/40 pt-2 flex items-center justify-between">
+                            <span class="text-ink-500">Ingest backlog</span>
+                            {{if gt .Memory.IngestBacklog 0}}
+                            <span class="font-mono tabular-nums text-amber-300">{{.Memory.IngestBacklog}} queued · {{.Memory.IngestProjects}} proj</span>
+                            {{else}}
+                            <span class="font-mono text-emerald-400">drained</span>
+                            {{end}}
+                        </div>
+                    </div>
+                    {{else}}
+                    <div class="px-5 py-6 text-center text-xs text-ink-500">KG extraction not wired.</div>
+                    {{end}}
+                </div>
+
+                <!-- Trading safety tile: cross-project envelope summary.
+                     KillSwitchCount > 0 paints the tile rose so it draws
+                     the eye when something is actively halted. -->
+                {{$tradingMeta := printf "%d projects" .Trading.EnabledCount}}{{if eq .Trading.EnabledCount 1}}{{$tradingMeta = "1 project"}}{{end}}
+                <div class="glass rounded-xl border {{if gt .Trading.KillSwitchCount 0}}border-rose-700/50{{else}}border-surface-600{{end}} overflow-hidden">
+                    {{template "sectionHeader" (dict "Title" "Trading safety" "MetaText" $tradingMeta)}}
+                    {{if gt .Trading.EnabledCount 0}}
+                    <div class="px-5 py-4 space-y-3">
+                        <div class="grid grid-cols-3 gap-2 text-center text-xs">
+                            <div>
+                                <div class="text-lg font-semibold text-rose-300 tabular-nums">{{.Trading.LiveCount}}</div>
+                                <div class="text-ink-500">live</div>
+                            </div>
+                            <div>
+                                <div class="text-lg font-semibold text-accent-300 tabular-nums">{{.Trading.PaperCount}}</div>
+                                <div class="text-ink-500">paper</div>
+                            </div>
+                            <div>
+                                <div class="text-lg font-semibold {{if gt .Trading.KillSwitchCount 0}}text-rose-400{{else}}text-ink-400{{end}} tabular-nums">{{.Trading.KillSwitchCount}}</div>
+                                <div class="text-ink-500">kill sw.</div>
+                            </div>
+                        </div>
+                        <div class="text-xs border-t border-surface-600/40 pt-2 space-y-1">
+                            <div class="flex items-center justify-between">
+                                <span class="text-ink-500">Safety events 24h</span>
+                                <span class="font-mono tabular-nums {{if gt .Trading.SafetyEvents24h 0}}text-amber-300{{else}}text-ink-400{{end}}">{{.Trading.SafetyEvents24h}}</span>
+                            </div>
+                            <div class="flex items-center justify-between">
+                                <span class="text-ink-500">Breaker trips 24h</span>
+                                <span class="font-mono tabular-nums {{if gt .Trading.BreakerTrips24h 0}}text-rose-400{{else}}text-ink-400{{end}}">{{.Trading.BreakerTrips24h}}</span>
+                            </div>
+                        </div>
+                    </div>
+                    {{else}}
+                    <div class="px-5 py-6 text-center text-xs text-ink-500">No projects have trading enabled.</div>
+                    {{end}}
+                </div>
+
+                <!-- Judge tile: hallucination judge verdict distribution
+                     over the rolling 24h window. The pass% bar is sized
+                     vs. the headline so a healthy day reads green at a
+                     glance and a regression day reads rose-heavy. -->
+                {{$judgeMeta := printf "%d verdicts" .Judge.Total}}{{if eq .Judge.Total 1}}{{$judgeMeta = "1 verdict"}}{{end}}
+                <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                    {{template "sectionHeader" (dict "Title" "Judge · last 24h" "MetaText" $judgeMeta)}}
+                    {{if .Judge.Enabled}}
+                        {{if gt .Judge.Total 0}}
+                        <div class="px-5 py-4 space-y-3">
+                            <div class="grid grid-cols-3 gap-2 text-center text-xs">
+                                <div>
+                                    <div class="text-lg font-semibold text-emerald-400 tabular-nums">{{.Judge.Pass}}</div>
+                                    <div class="text-ink-500">pass</div>
+                                </div>
+                                <div>
+                                    <div class="text-lg font-semibold text-rose-400 tabular-nums">{{.Judge.Fail}}</div>
+                                    <div class="text-ink-500">fail</div>
+                                </div>
+                                <div>
+                                    <div class="text-lg font-semibold text-amber-300 tabular-nums">{{.Judge.Abstain}}</div>
+                                    <div class="text-ink-500">abstain</div>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="flex items-baseline justify-between text-xs text-ink-400 mb-1.5">
+                                    <span>Pass rate</span>
+                                    <span class="font-mono tabular-nums text-ink-300">{{printf "%.0f" .Judge.PercentPass}}%</span>
+                                </div>
+                                <div class="h-1.5 rounded-full bg-surface-900 overflow-hidden">
+                                    <div class="h-full {{if ge .Judge.PercentPass 80.0}}bg-emerald-500/70{{else if ge .Judge.PercentPass 50.0}}bg-amber-500/70{{else}}bg-rose-500/70{{end}}" style="width: {{printf "%.1f" .Judge.PercentPass}}%"></div>
+                                </div>
+                            </div>
+                        </div>
+                        {{else}}
+                        <div class="px-5 py-6 text-center text-xs text-ink-500">No verdicts in the last 24h.</div>
+                        {{end}}
+                    {{else}}
+                    <div class="px-5 py-6 text-center text-xs text-ink-500">Judge not wired.</div>
+                    {{end}}
+                </div>
+
+            </div>
+
+            <!-- Model Leaderboard (top 10 role+model combos by 30-day cost).
+                 Effective-cost view is on the Grafana dashboard; here we just
+                 show the raw spend + step count so operators see who's
+                 driving the bill. -->
+            {{if .TopModels}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                {{template "sectionHeader" (dict "Title" "Model Leaderboard · last 30 days" "MetaText" "ranked by total cost")}}
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead><tr class="border-b border-surface-600/60">
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">#</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">Role</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-ink-500 uppercase tracking-wider">Model</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-ink-500 uppercase tracking-wider">Steps</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-ink-500 uppercase tracking-wider">Tokens in</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-ink-500 uppercase tracking-wider">Tokens out</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-ink-500 uppercase tracking-wider">Cost</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-surface-600/30">
+                            {{range $i, $r := .TopModels}}
+                            <tr class="hover:bg-surface-700/40 transition-colors">
+                                <td class="px-4 py-1.5 text-ink-500 tabular-nums">{{add $i 1}}</td>
+                                <td class="px-4 py-1.5 text-ink-300">{{$r.Role}}</td>
+                                <td class="px-4 py-1.5 text-ink-500 font-mono text-xs">{{$r.Model}}</td>
+                                <td class="px-4 py-1.5 text-right text-ink-400 tabular-nums">{{$r.StepCount}}</td>
+                                <td class="px-4 py-1.5 text-right text-ink-400 tabular-nums">{{fmtTokens $r.PromptTokens}}</td>
+                                <td class="px-4 py-1.5 text-right text-ink-400 tabular-nums">{{fmtTokens $r.CompletionTokens}}</td>
+                                <td class="px-4 py-1.5 text-right text-accent-400 font-semibold tabular-nums">{{fmtUSD $r.CostUSD}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}
+
+            </div><!-- #dashboard-live -->
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+
+    <!-- Live autonomy ETA ticker. Server-rendered EtaLabel is a
+         snapshot at page-load time; without this script the
+         countdown freezes until the operator manually refreshes
+         (operator-reported 2026-05-05 — "5m wait took much longer
+         than that, seconds wouldn't refresh"). Updates each
+         .autonomy-eta-label every 1s by parsing its
+         data-next-eval-iso attribute and formatting the delta.
+         When the deadline passes, switches to "due now" so the
+         operator knows the eval should be firing imminently.
+         Page Visibility API: only ticks when the tab is visible
+         to avoid wasted setInterval cycles in background tabs. -->
+    <script>
+      (function () {
+        function fmt(deltaSec) {
+          if (deltaSec <= 0) return "due now";
+          if (deltaSec < 60) return "in " + deltaSec + "s";
+          var m = Math.floor(deltaSec / 60), s = deltaSec % 60;
+          if (m < 60) return "in " + m + "m " + (s < 10 ? "0" : "") + s + "s";
+          var h = Math.floor(m / 60), mm = m % 60;
+          return "in " + h + "h " + (mm < 10 ? "0" : "") + mm + "m";
+        }
+        function tick() {
+          if (document.hidden) return;
+          var now = Date.now();
+          document.querySelectorAll(".autonomy-eta-label[data-next-eval-iso]").forEach(function (el) {
+            var iso = el.getAttribute("data-next-eval-iso");
+            if (!iso) return;
+            var when = Date.parse(iso);
+            if (isNaN(when)) return;
+            var deltaSec = Math.floor((when - now) / 1000);
+            el.textContent = fmt(deltaSec);
+          });
+        }
+        tick();
+        setInterval(tick, 1000);
+        // Repaint immediately when the tab regains focus so the
+        // operator doesn't briefly see the frozen pre-suspend value.
+        document.addEventListener("visibilitychange", function () {
+          if (!document.hidden) tick();
+        });
+      })();
+    </script>
+</body>
+</html>
+{{end}}

@@ -1,0 +1,42 @@
+{{define "admin_health_index.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <h1 class="text-xl font-semibold text-gray-100">Admin Health</h1>
+                <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                <a class="glass rounded-xl border border-dark-700 p-5 hover:bg-dark-700/60 block" href="/ui/admin/health/cluster">
+                    <h2 class="text-sm font-medium text-gray-200 mb-1">Cluster &amp; workers</h2>
+                    <p class="text-xs text-gray-500">Daemon nodes + leader-elected workers; ACTIVE / STALE / EXPIRED status.</p>
+                </a>
+                <a class="glass rounded-xl border border-dark-700 p-5 hover:bg-dark-700/60 block" href="/ui/admin/health/leases">
+                    <h2 class="text-sm font-medium text-gray-200 mb-1">Lease audit</h2>
+                    <p class="text-xs text-gray-500">Recent status / lease-id transitions captured by the v27 trigger.</p>
+                </a>
+                <a class="glass rounded-xl border border-dark-700 p-5 hover:bg-dark-700/60 block" href="/ui/admin/health/watchdog">
+                    <h2 class="text-sm font-medium text-gray-200 mb-1">Watchdog</h2>
+                    <p class="text-xs text-gray-500">Executions flagged stuck by the watchdog, last 20.</p>
+                </a>
+                <a class="glass rounded-xl border border-dark-700 p-5 hover:bg-dark-700/60 block" href="/ui/admin/health/mcp">
+                    <h2 class="text-sm font-medium text-gray-200 mb-1">MCP health</h2>
+                    <p class="text-xs text-gray-500">Per-project MCP server connections; force-refresh trigger.</p>
+                </a>
+                <a class="glass rounded-xl border border-dark-700 p-5 hover:bg-dark-700/60 block" href="/ui/admin/health/runtime">
+                    <h2 class="text-sm font-medium text-gray-200 mb-1">Runtime</h2>
+                    <p class="text-xs text-gray-500">Voice (STT/TTS/ffmpeg) provider probes + artifact storage backend reachability.</p>
+                </a>
+            </div>
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

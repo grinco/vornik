@@ -1,0 +1,10 @@
+# Patterns to ignore when building a chart tarball. Standard Helm defaults
+# plus anything editor-specific we might drop in the tree while iterating.
+.DS_Store
+.git/
+.gitignore
+.bak
+.swp
+.vscode/
+.idea/
+*.tgz

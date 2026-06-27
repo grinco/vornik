@@ -1,0 +1,620 @@
+{{define "execution.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-surface-900 text-ink-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <!-- Header -->
+            <div class="flex items-start justify-between flex-wrap gap-y-3">
+                <div>
+                    <div class="flex items-center gap-2 mb-1">
+                        {{template "executionStatusBadge" .Execution.Status}}
+                    </div>
+                    <h1 class="text-xl font-semibold text-ink-100">Execution</h1>
+                    <p class="text-ink-500 text-xs font-mono mt-0.5" title="{{.Execution.ID}}">{{.Execution.ID}}</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    {{if eq .Execution.Status "RUNNING"}}
+                    <form method="POST" action="/ui/executions/{{.Execution.ID}}/cancel" onsubmit="return confirm('Cancel this execution and its task?')">
+                        <button type="submit" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-rose-700 hover:bg-rose-600 text-white transition-colors">
+                            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                            Cancel
+                        </button>
+                    </form>
+                    {{end}}
+                    {{/* Rerun-from-step (2026.6.0; renamed 2026-05-26
+                         refactor B for verb consistency with the
+                         task-level "Requeue"): on FAILED/CANCELLED
+                         executions, let the operator pick a completed
+                         step (or the failed step) and rerun the
+                         execution from there. The form submits the
+                         picked step_id; the handler rewinds state,
+                         supersedes downstream outcomes, and calls
+                         executor.ResumePaused in-process. Distinct
+                         from task-level Requeue: that's a fresh
+                         execution from step 1, this rewinds the
+                         existing execution to the chosen step. */}}
+                    {{if or (eq .Execution.Status "FAILED") (eq .Execution.Status "CANCELLED")}}
+                    {{if .Execution.CompletedSteps}}
+                    <form method="POST" action="/ui/executions/{{.Execution.ID}}/retry-from-step"
+                          onsubmit="return confirm('Rerun this execution from the selected step? Downstream step outcomes from the original run will be marked as superseded.');"
+                          class="flex items-center gap-1.5">
+                        <select name="step_id" class="px-2 py-1.5 text-xs font-mono rounded-lg bg-surface-700 border border-surface-600 text-ink-100" required>
+                            <option value="" disabled selected>Rerun from step…</option>
+                            {{range .Execution.CompletedSteps}}
+                            <option value="{{.}}">{{.}}</option>
+                            {{end}}
+                            {{if .Execution.CurrentStepID}}
+                            <option value="{{.Execution.CurrentStepID}}">{{.Execution.CurrentStepID}} (failed)</option>
+                            {{end}}
+                        </select>
+                        <button type="submit" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-700 hover:bg-amber-600 text-white transition-colors" title="Rewind the existing execution to this step. For a fresh execution from step 1, use Requeue on the task detail page.">
+                            <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                            Rerun
+                        </button>
+                    </form>
+                    {{end}}
+                    {{end}}
+                    {{/* Replay deep-link — failure forensics page with the
+                         full step-by-step timeline. Shown for any execution
+                         that has finished, regardless of outcome. */}}
+                    {{if or (eq .Execution.Status "COMPLETED") (eq .Execution.Status "FAILED") (eq .Execution.Status "CANCELLED")}}
+                    <a href="/ui/executions/{{.Execution.ID}}/replay" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-surface-700 hover:bg-surface-600 text-ink-200 transition-colors" title="Step-by-step forensics timeline">
+                        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                        Replay
+                    </a>
+                    {{end}}
+                    <a href="/ui/tasks/{{.Execution.TaskID}}" class="flex items-center gap-1 text-ink-500 hover:text-ink-300 text-sm transition-colors">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                        Task
+                    </a>
+                </div>
+            </div>
+
+            <!-- Status Card with auto-refresh.
+                 CRITICAL: this card is the HTMX poll target and must stay
+                 OUTSIDE any <details>/panel-ref so the poll wiring is never
+                 hidden behind a collapsed element. -->
+            <div class="glass rounded-xl panel-primary overflow-hidden"
+                 id="execution-status-card"
+                 {{if eq .Execution.Status "FAILED"}}data-tone="rose"{{end}}
+                 {{if or (eq .Execution.Status "RUNNING") (eq .Execution.Status "PENDING")}}
+                 aria-live="polite" aria-atomic="false"
+                 hx-get="/ui/executions/{{.Execution.ID}}/status"
+                 hx-trigger="every 3s [!document.body.classList.contains('poll-stopped')]"
+                 hx-target="#live-status"
+                 hx-swap="innerHTML"
+                 {{end}}>
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between">
+                    <h2 class="text-sm font-semibold text-ink-200 flex items-center gap-2">
+                        <svg class="h-4 w-4 text-ink-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z"/></svg>
+                        Status
+                    </h2>
+                    <div id="live-status" class="flex items-center gap-2">
+                        {{if eq .Execution.Status "RUNNING"}}<svg class="animate-spin h-4 w-4 text-accent-400" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>{{end}}
+                        {{template "executionStatusBadge" .Execution.Status}}
+                    </div>
+                </div>
+                {{/* Metadata grid — Task ID has a navigational link so it is
+                     hand-rolled above the statStrip (mirrors task_detail.html's
+                     Project cell). All scalar fields go through statStrip.
+                     Time pointers are pre-resolved into display strings so the
+                     statStrip primitive (which renders {{.Value}} verbatim)
+                     receives a plain string, not a *time.Time pointer. */}}
+                <dl class="px-5 pt-4">
+                    <dt class="text-ink-500 uppercase tracking-wider text-[10px]">Task ID</dt>
+                    <dd class="mt-0.5 text-sm text-ink-100">
+                        <a href="/ui/tasks/{{.Execution.TaskID}}" class="text-brand-400 hover:text-brand-300 font-mono" title="{{.Execution.TaskID}}">{{shortID .Execution.TaskID}}</a>
+                    </dd>
+                </dl>
+                {{$curStepDisplay := "-"}}{{if .Execution.CurrentStepID}}{{$curStepDisplay = .Execution.CurrentStepID}}{{end}}
+                {{$startedDisplay := "-"}}{{if .Execution.StartedAt}}{{$startedDisplay = (.Execution.StartedAt.Format "2006-01-02 15:04:05")}}{{end}}
+                {{$completedDisplay := "-"}}{{if .Execution.CompletedAt}}{{$completedDisplay = (.Execution.CompletedAt.Format "2006-01-02 15:04:05")}}{{end}}
+                {{template "statStrip" (dict "Items" (slice
+                    (dict "Label" "Project"      "Value" .Execution.ProjectID)
+                    (dict "Label" "Workflow"     "Value" .Execution.WorkflowID "Mono" true)
+                    (dict "Label" "Current Step" "Value" $curStepDisplay "Mono" true)
+                    (dict "Label" "Started"      "Value" $startedDisplay)
+                    (dict "Label" "Completed"    "Value" $completedDisplay)
+                ))}}
+                {{/* Last checkpoint badge: only meaningful for in-flight rows.
+                     The watchdog uses the same updated_at column to detect
+                     stuck executions; this surfaces the same signal in the
+                     UI so an operator can see drift before the watchdog
+                     logs/fails the row. checkpointStale returns "stale"
+                     (red, past threshold), "warn" (amber, halfway there),
+                     or empty (green, healthy). */}}
+                {{if eq .Execution.Status "RUNNING"}}
+                {{$staleClass := checkpointStale .Execution.UpdatedAt}}
+                <dl class="px-5 pb-4">
+                    <dt class="text-ink-500 uppercase tracking-wider text-[10px] mb-1">Last checkpoint</dt>
+                    <dd class="text-sm">
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ring-1
+                            {{if eq $staleClass "stale"}}bg-rose-900/40 text-rose-300 ring-rose-800/50
+                            {{else if eq $staleClass "warn"}}bg-amber-900/40 text-amber-300 ring-amber-800/50
+                            {{else}}bg-emerald-900/30 text-emerald-300 ring-emerald-800/40{{end}}"
+                            title="Watchdog flags executions whose updated_at hasn't advanced in 30 minutes. This pill goes amber at 15m and red at 30m.">
+                            {{humanizeSince .Execution.UpdatedAt}}
+                            {{if eq $staleClass "stale"}} · stuck{{else if eq $staleClass "warn"}} · slow{{end}}
+                        </span>
+                    </dd>
+                </dl>
+                {{end}}
+                {{if .Execution.ErrorMessage}}
+                <div class="border-t border-surface-600/60 px-5 py-4">
+                    <div class="flex items-center gap-2 mb-2">
+                        <svg class="h-3.5 w-3.5 text-rose-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
+                        <span class="text-xs font-medium text-rose-400">Error{{if .Execution.ErrorCode}} ({{.Execution.ErrorCode}}){{end}}</span>
+                    </div>
+                    <pre class="text-xs text-ink-300 bg-surface-900 rounded-lg p-3 overflow-x-auto border border-rose-900/30">{{.Execution.ErrorMessage}}</pre>
+                </div>
+                {{end}}
+            </div>
+
+            <!-- Step Progress -->
+            {{if .Workflow}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center gap-2">
+                    <svg class="h-4 w-4 text-ink-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z"/></svg>
+                    <h2 class="text-sm font-semibold text-ink-200">Step Progress</h2>
+                </div>
+                <div class="px-5 py-4 space-y-1.5">
+                    {{$currentStep := .Execution.CurrentStepID}}
+                    {{$execStatus := .Execution.Status}}
+                    {{$workflow := .Workflow}}
+                    {{$colorByID := .StepColorByID}}
+                    {{$maxDur := .MaxStepDurationMS}}
+                    {{/* Render Step Progress from .Outcomes (the per-step
+                         outcome rows) rather than .Execution.CompletedSteps.
+                         Outcomes is the source of truth for what actually
+                         ran — including shape-retry, infra-retry, and
+                         model-fallback synthetic step IDs. The legacy
+                         CompletedSteps slice only carries top-level
+                         workflow step IDs and collapses retries, so a
+                         model_fallback-only execution would show "done"
+                         in Step Progress while the timeline showed the
+                         retry chain. Now both panels read the same
+                         outcomes, ordered by recorded_at, and stay in
+                         lockstep. */}}
+                    {{range $i, $o := .Outcomes}}
+                    {{$step := getStep $workflow.Steps $o.StepID}}
+                    {{$subRole := planSubRole $o.StepID}}
+                    {{$pct := durationPct $o.DurationMS $maxDur}}
+                    {{$sc := stepColor $colorByID $o.StepID}}
+                    {{/* Outcome class drives row styling: ok = green
+                         (done), pending = amber (validating), bad = rose
+                         (failed), other = gray. Matches the Step Timeline
+                         segment colors so operators see the same signal
+                         on both panels. */}}
+                    {{$borderClass := "border-emerald-900/30"}}
+                    {{$iconColor := "text-emerald-400"}}
+                    {{$statusColor := "text-emerald-500"}}
+                    {{$statusText := "done"}}
+                    {{if eq $o.OutcomeClass "outcome-pending"}}
+                        {{$borderClass = "border-amber-900/30"}}
+                        {{$iconColor = "text-amber-400"}}
+                        {{$statusColor = "text-amber-500"}}
+                        {{$statusText = "pending"}}
+                    {{else if eq $o.OutcomeClass "outcome-bad"}}
+                        {{$borderClass = "border-rose-900/30"}}
+                        {{$iconColor = "text-rose-400"}}
+                        {{$statusColor = "text-rose-500"}}
+                        {{$statusText = "failed"}}
+                    {{else if ne $o.OutcomeClass "outcome-ok"}}
+                        {{$borderClass = "border-surface-600"}}
+                        {{$iconColor = "text-ink-400"}}
+                        {{$statusColor = "text-ink-500"}}
+                        {{$statusText = $o.Outcome}}
+                    {{end}}
+                    <div class="rounded-lg bg-surface-900 border {{$borderClass}} overflow-hidden">
+                        <div class="flex items-center gap-3 px-3 py-2">
+                            {{if eq $o.OutcomeClass "outcome-ok"}}
+                            <svg class="h-4 w-4 flex-shrink-0 {{$iconColor}}" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+                            {{else if eq $o.OutcomeClass "outcome-bad"}}
+                            <svg class="h-4 w-4 flex-shrink-0 {{$iconColor}}" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/></svg>
+                            {{else}}
+                            <div class="h-4 w-4 flex-shrink-0 rounded-full border-2 {{$iconColor}}"></div>
+                            {{end}}
+                            <span class="text-sm font-mono text-ink-100">{{$o.StepID}}</span>
+                            {{if $step.Role}}<span class="text-xs px-1.5 py-0.5 rounded-full bg-accent-900/50 text-accent-300 ring-1 ring-accent-800/40">{{$step.Role}}</span>
+                            {{else if $subRole}}<span class="text-xs px-1.5 py-0.5 rounded-full bg-accent-900/50 text-accent-300 ring-1 ring-accent-800/40">{{$subRole}}</span>
+                            {{else if $o.Role}}<span class="text-xs px-1.5 py-0.5 rounded-full bg-accent-900/50 text-accent-300 ring-1 ring-accent-800/40">{{$o.Role}}</span>{{end}}
+                            {{if gt $o.DurationMS 0}}<span class="text-[10px] text-ink-500 font-mono">{{$o.DurationDisplay}}</span>{{end}}
+                            <span class="text-xs ml-auto {{$statusColor}}">{{$statusText}}</span>
+                            {{if or (eq $execStatus "COMPLETED") (eq $execStatus "FAILED") (eq $execStatus "CANCELLED")}}
+                            <button type="button"
+                                    class="text-[10px] px-2 py-0.5 rounded bg-surface-800 hover:bg-brand-900/40 text-ink-400 hover:text-brand-300 ring-1 ring-surface-600 hover:ring-brand-700/40 transition-colors"
+                                    title="Reset execution state to before this step and re-run from here"
+                                    onclick="retryExecutionFromStep('{{$.Execution.ID}}', '{{$o.StepID}}')">
+                                ↻ retry
+                            </button>
+                            {{end}}
+                        </div>
+                        {{if gt $maxDur 0}}
+                        <div class="h-[3px] w-full bg-surface-800/80">
+                            <div class="h-full"
+                                 style="width: {{$pct}}%; background: {{$sc}};"
+                                 title="{{$o.DurationDisplay}} · {{$pct}}% of longest step"></div>
+                        </div>
+                        {{end}}
+                    </div>
+                    {{end}}
+                    {{/* Current-step block: only render for in-flight
+                         executions. Terminal executions (COMPLETED /
+                         FAILED / CANCELLED) already have outcome rows
+                         covering every step that ran; rendering the
+                         pseudo-terminal step ("complete"/"failed") here
+                         duplicates the status badge at the top of the
+                         page and confuses the operator about which
+                         workflow step actually failed. */}}
+                    {{if and $currentStep (eq $execStatus "RUNNING")}}
+                    {{$outcomeByStep := .OutcomeByStep}}
+                    {{$curStep := getStep $workflow.Steps (deref $currentStep)}}
+                    {{$co := outcomeFor $outcomeByStep (deref $currentStep)}}
+                    {{$cpct := durationPct $co.DurationMS $maxDur}}
+                    {{$csc := stepColor $colorByID (deref $currentStep)}}
+                    <div class="rounded-lg overflow-hidden {{if eq $execStatus "RUNNING"}}bg-accent-900/20 border border-accent-700/40{{else if eq $execStatus "FAILED"}}bg-rose-900/20 border border-rose-700/40{{else}}bg-surface-900 border border-surface-600{{end}}">
+                        <div class="flex items-center gap-3 px-3 py-2">
+                            {{if eq $execStatus "RUNNING"}}
+                            <svg class="animate-spin h-4 w-4 flex-shrink-0 text-accent-400" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                            {{else if eq $execStatus "FAILED"}}
+                            <svg class="h-4 w-4 flex-shrink-0 text-rose-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/></svg>
+                            {{else}}
+                            <div class="h-4 w-4 flex-shrink-0 rounded-full border-2 border-ink-500"></div>
+                            {{end}}
+                            <span class="text-sm font-mono text-ink-100">{{deref $currentStep}}</span>
+                            {{if $curStep.Role}}<span class="text-xs px-1.5 py-0.5 rounded-full bg-accent-900/50 text-accent-300 ring-1 ring-accent-800/40">{{$curStep.Role}}</span>{{end}}
+                            {{if gt $co.DurationMS 0}}<span class="text-[10px] text-ink-500 font-mono">{{$co.DurationDisplay}}</span>{{end}}
+                            <span class="text-xs ml-auto {{if eq $execStatus "RUNNING"}}text-accent-400{{else if eq $execStatus "FAILED"}}text-rose-400{{else}}text-ink-400{{end}}">
+                                {{if eq $execStatus "RUNNING"}}running{{else if eq $execStatus "FAILED"}}failed{{else}}{{$execStatus}}{{end}}
+                            </span>
+                        </div>
+                        {{if and (gt $maxDur 0) (gt $co.DurationMS 0)}}
+                        <div class="h-[3px] w-full bg-surface-800/80">
+                            <div class="h-full"
+                                 style="width: {{$cpct}}%; background: {{$csc}};"
+                                 title="{{$co.DurationDisplay}} · {{$cpct}}% of longest step"></div>
+                        </div>
+                        {{end}}
+                    </div>
+                    {{$nextID := ""}}
+                    {{$curStepObj := getStep $workflow.Steps (deref $currentStep)}}
+                    {{if $curStepObj.OnSuccess}}{{$nextID = $curStepObj.OnSuccess}}{{end}}
+                    {{range $workflow.Steps}}
+                    {{if and (ne $nextID "") (ne $nextID "complete") (ne $nextID "failed") (ne $nextID "cancelled")}}
+                    {{$ns := getStep $workflow.Steps $nextID}}
+                    <div class="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-900 border border-surface-600/40 opacity-40">
+                        <div class="h-4 w-4 flex-shrink-0 rounded-full border-2 border-dashed border-ink-600"></div>
+                        <span class="text-sm font-mono text-ink-400">{{$nextID}}</span>
+                        {{if $ns.Role}}<span class="text-xs px-1.5 py-0.5 rounded-full bg-surface-700 text-ink-500">{{$ns.Role}}</span>{{end}}
+                        <span class="text-xs text-ink-600 ml-auto">pending</span>
+                    </div>
+                    {{$nextID = $ns.OnSuccess}}
+                    {{end}}
+                    {{end}}
+                    {{end}}
+                </div>
+            </div>
+            {{else if .Execution.CompletedSteps}}
+            <!-- Completed Steps — reference panel (closed by default) -->
+            <details class="panel-ref overflow-hidden">
+                <summary>{{template "sectionHeader" (dict "Title" "Completed Steps")}}</summary>
+                <div class="px-5 py-4 space-y-1.5">
+                    {{range .Execution.CompletedSteps}}
+                    <div class="flex items-center gap-3 px-3 py-2 rounded-lg bg-surface-900 border border-emerald-900/30">
+                        <svg class="h-4 w-4 flex-shrink-0 text-emerald-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+                        <span class="text-sm text-ink-300 font-mono">{{.}}</span>
+                        <span class="text-xs text-emerald-500 ml-auto">done</span>
+                    </div>
+                    {{end}}
+                </div>
+            </details>
+            {{end}}
+
+            <!-- Step Timeline. Stacked horizontal strip where each
+                 segment is one step, width proportional to duration.
+                 Hover for step ID + duration. Renders only when at least
+                 one step has measured duration. -->
+            {{if and .Outcomes (gt .TotalDurationMS 0)}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center gap-2">
+                    <svg class="h-4 w-4 text-ink-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    <h2 class="text-sm font-semibold text-ink-200">Step Timeline</h2>
+                    <span class="text-xs text-ink-500 ml-1">total {{fmtDurationMS .TotalDurationMS}} — segment width ∝ step duration</span>
+                </div>
+                <div class="px-5 py-4">
+                    {{$colorByID := .StepColorByID}}
+                    <!--
+                        Each segment now has TWO colors:
+                          - top band (~75% of height): the OUTCOME class
+                            (emerald/amber/rose/gray for ok/pending/bad/
+                            other) so a failed step still pops red.
+                          - bottom band (~25%, h=6px): the STEP IDENTITY
+                            color from the per-execution palette. Same
+                            color appears on the matching step's
+                            Progress card bar and in the legend below,
+                            so an operator can identify a segment
+                            without hovering for the tooltip.
+                    -->
+                    <div class="flex w-full h-7 rounded-md overflow-hidden ring-1 ring-surface-600/60" role="img" aria-label="Step timeline">
+                        {{range .Outcomes}}
+                        {{if gt .DurationMS 0}}
+                        <div class="flex flex-col h-full transition-opacity hover:opacity-80"
+                             style="flex-grow: {{.DurationMS}}; flex-basis: 0;"
+                             title="{{.StepID}} · {{.Role}} · {{.DurationDisplay}}">
+                            <div class="flex-1
+                                        {{if eq .OutcomeClass "outcome-ok"}}bg-emerald-500/70
+                                        {{else if eq .OutcomeClass "outcome-pending"}}bg-amber-500/70
+                                        {{else if eq .OutcomeClass "outcome-bad"}}bg-rose-500/70
+                                        {{else}}bg-ink-500/60{{end}}"></div>
+                            <div class="h-1.5" style="background: {{stepColor $colorByID .StepID}};"></div>
+                        </div>
+                        {{end}}
+                        {{end}}
+                    </div>
+                    <!--
+                        Two-row legend:
+                          - row 1: outcome → color (kept; the segment's
+                            top band still encodes outcome).
+                          - row 2: step ID → identity color, in the
+                            same order steps were discovered. This is
+                            the lookup that pairs timeline-bottom-
+                            stripe to step name without hovering.
+                    -->
+                    <div class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-ink-500">
+                        <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-sm bg-emerald-500/70 inline-block"></span>ok</span>
+                        <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-sm bg-amber-500/70 inline-block"></span>pending</span>
+                        <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-sm bg-rose-500/70 inline-block"></span>error</span>
+                        <span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-sm bg-ink-500/60 inline-block"></span>other</span>
+                    </div>
+                    {{if .StepColorOrder}}
+                    <div class="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-ink-400">
+                        {{range .StepColorOrder}}
+                        <span class="inline-flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-sm inline-block" style="background: {{.Color}};"></span>
+                            <span class="font-mono">{{.StepID}}</span>
+                        </span>
+                        {{end}}
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Step Outcomes — reference panel (open when reviewing a finished execution) -->
+            {{if .Outcomes}}
+            <details class="panel-ref overflow-hidden" {{if refOpen .Execution.Status "COMPLETED" "FAILED" "CANCELLED"}}open{{end}}>
+                <summary>{{template "sectionHeader" (dict "Title" "Step Outcomes" "MetaText" "output usability per step — the producer is blamed when a consumer can't read its output")}}</summary>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-sm">
+                        <thead class="bg-surface-900/40 text-xs uppercase text-ink-500">
+                            <tr>
+                                <th scope="col" class="px-4 py-2 text-left font-medium">Step</th>
+                                <th scope="col" class="px-4 py-2 text-left font-medium">Role</th>
+                                <th scope="col" class="px-4 py-2 text-left font-medium">Model</th>
+                                <th scope="col" class="px-4 py-2 text-left font-medium">Outcome</th>
+                                <th scope="col" class="px-4 py-2 text-left font-medium">Attributed to</th>
+                                <th scope="col" class="px-4 py-2 text-left font-medium">Duration</th>
+                                <th scope="col" class="px-4 py-2 text-left font-medium">Detail</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-surface-600/60">
+                            {{range .Outcomes}}
+                            <tr class="hover:bg-surface-900/40">
+                                <td class="px-4 py-2 font-mono text-xs text-ink-200">{{.StepID}}</td>
+                                <td class="px-4 py-2 text-xs text-accent-300">{{.Role}}</td>
+                                <td class="px-4 py-2 font-mono text-xs text-ink-400">{{if .Model}}{{.Model}}{{else}}—{{end}}</td>
+                                <td class="px-4 py-2">
+                                    {{if eq .OutcomeClass "outcome-ok"}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-900/40 text-emerald-300 ring-1 ring-emerald-800/50">{{.Outcome}}</span>
+                                    {{else if eq .OutcomeClass "outcome-pending"}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-900/40 text-amber-300 ring-1 ring-amber-800/50">{{.Outcome}}</span>
+                                    {{else if eq .OutcomeClass "outcome-bad"}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-900/40 text-rose-300 ring-1 ring-rose-800/50">{{.Outcome}}</span>
+                                    {{else}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-surface-700 text-ink-300 ring-1 ring-surface-600">{{.Outcome}}</span>
+                                    {{end}}
+                                    {{if .ErrorClass}}<div class="text-[10px] text-ink-500 mt-0.5 font-mono">{{.ErrorClass}}</div>{{end}}
+                                </td>
+                                <td class="px-4 py-2 font-mono text-xs text-ink-400">{{if .AttributedToStepID}}{{.AttributedToStepID}}{{else}}—{{end}}</td>
+                                <td class="px-4 py-2 text-xs text-ink-400">{{.DurationDisplay}}</td>
+                                <td class="px-4 py-2 text-xs text-ink-300 max-w-xs truncate" title="{{.ErrorDetail}}">{{if .ErrorDetail}}{{.ErrorDetail}}{{else}}—{{end}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </details>
+            {{end}}
+
+            {{/* Claim review: hallucination-detector findings
+                 grouped by step. Only renders when at least one
+                 step has signals — quiet executions don't get a
+                 noisy empty panel. The sentence column carries
+                 the model's prose so operators can read what the
+                 detector caught without opening result.json.
+                 Attention/failure surface → panel-primary data-tone="rose". */}}
+            {{$hasHalluc := false}}
+            {{range .Outcomes}}{{if .HallucinationSignals}}{{$hasHalluc = true}}{{end}}{{end}}
+            {{if $hasHalluc}}
+            <div class="glass rounded-xl panel-primary overflow-hidden" data-tone="rose">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center gap-2">
+                    <svg class="h-4 w-4 text-rose-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M4.93 19h14.14c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.2 16c-.77 1.33.19 3 1.73 3z"/></svg>
+                    <h2 class="text-sm font-semibold text-ink-200">Claim review</h2>
+                    <span class="text-xs text-ink-500 ml-1">hallucination-detector findings</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-surface-600/60">
+                        <thead class="bg-surface-900/60">
+                            <tr>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">Step</th>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">Severity</th>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">Detector</th>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">Claim</th>
+                                <th scope="col" class="px-4 py-2 text-left text-[11px] font-semibold text-ink-400 uppercase tracking-wider">Sentence</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-surface-600/40">
+                            {{range $step := .Outcomes}}
+                            {{range $sig := $step.HallucinationSignals}}
+                            <tr class="hover:bg-surface-700/30">
+                                <td class="px-4 py-2 font-mono text-xs text-ink-300 align-top">{{$step.StepID}}</td>
+                                <td class="px-4 py-2 align-top">
+                                    {{if eq $sig.SeverityClass "outcome-bad"}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-900/40 text-rose-300 ring-1 ring-rose-800/50">{{$sig.Severity}}</span>
+                                    {{else if eq $sig.SeverityClass "outcome-pending"}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-900/40 text-amber-300 ring-1 ring-amber-800/50">{{$sig.Severity}}</span>
+                                    {{else}}
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-surface-700 text-ink-300 ring-1 ring-surface-600">{{$sig.Severity}}</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-2 font-mono text-xs text-ink-400 align-top">{{$sig.Detector}}</td>
+                                <td class="px-4 py-2 text-xs text-ink-300 align-top">
+                                    <div class="text-ink-200">{{$sig.ClaimType}}</div>
+                                    <div class="font-mono text-[11px] text-ink-400 break-all">{{$sig.ClaimValue}}</div>
+                                </td>
+                                <td class="px-4 py-2 text-xs text-ink-400 max-w-md align-top" title="{{$sig.Detail}}">
+                                    {{if $sig.Sentence}}{{$sig.Sentence}}{{else}}<span class="text-ink-600">—</span>{{end}}
+                                </td>
+                            </tr>
+                            {{end}}
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}
+
+            {{/* Strict-adaptive routing decision: surfaces the
+                 lead's chosen workflow + reason + child task link,
+                 so an operator looking at the parent execution
+                 immediately sees which workflow actually ran the
+                 work, without drilling into the child task.
+                 Informational/positive surface → panel-primary with
+                 brand tone (default, no data-tone override). */}}
+            {{if .Routing}}
+            <div class="glass rounded-xl panel-primary overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center gap-2">
+                    <svg class="h-4 w-4 text-brand-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>
+                    <h2 class="text-sm font-semibold text-ink-200">Routing decision</h2>
+                    <span class="text-xs text-ink-500 ml-1">strict adaptive</span>
+                </div>
+                <div class="px-5 py-4 space-y-3">
+                    <div class="flex flex-wrap items-center gap-3">
+                        <span class="text-xs text-ink-500">Lead chose:</span>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-md bg-brand-900/40 text-brand-200 text-xs font-mono ring-1 ring-brand-800/50">{{.Routing.SelectedWorkflow}}</span>
+                        {{if and .Routing.ChildTaskID (ne .Routing.ChildWorkflowID .Routing.SelectedWorkflow)}}
+                        {{/* Selected differs from what actually ran on the child — fallback fired. */}}
+                        <span class="text-xs text-amber-400">→ ran on</span>
+                        <span class="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-900/30 text-amber-200 text-xs font-mono ring-1 ring-amber-800/40" title="Lead's pick wasn't in the project's adaptiveCandidateWorkflows list — executor fell back to the project default.">{{.Routing.ChildWorkflowID}} (fallback)</span>
+                        {{end}}
+                    </div>
+                    {{if .Routing.Reason}}
+                    <div class="text-sm text-ink-300 bg-surface-900 rounded-lg p-3 border border-surface-600/60 leading-relaxed">{{.Routing.Reason}}</div>
+                    {{end}}
+                    {{if .Routing.ChildTaskID}}
+                    <div class="text-xs text-ink-500">
+                        Delegated to child task
+                        <a href="/ui/tasks/{{.Routing.ChildTaskID}}" class="text-brand-400 hover:text-brand-300 font-mono ml-1" title="{{.Routing.ChildTaskID}}">{{shortID .Routing.ChildTaskID}}</a>
+                    </div>
+                    {{else}}
+                    <div class="text-xs text-amber-400">No child task found yet — delegation in flight or routing failed.</div>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Result — reference panel (open when reviewing a finished execution) -->
+            {{if .Execution.Result}}
+            {{$r := parseResult .Execution.Result}}
+            <details class="panel-ref overflow-hidden" {{if refOpen .Execution.Status "COMPLETED" "FAILED" "CANCELLED"}}open{{end}}>
+                <summary>
+                    {{template "sectionHeader" (dict "Title" "Result")}}
+                </summary>
+                <div class="px-5 pt-3 flex items-center gap-3 flex-wrap">
+                    {{if $r.toolCount}}<span class="text-xs text-ink-500">{{$r.toolCount}} tool calls</span>{{end}}
+                    {{if $r.duration}}<span class="text-xs text-ink-500">{{$r.duration}}s</span>{{end}}
+                    {{template "executionStatusBadge" $r.status}}
+                </div>
+                <div class="px-5 py-4">
+                    {{if $r.message}}<div class="text-sm text-ink-200 bg-surface-900 rounded-lg p-4 border border-surface-600/60 whitespace-pre-wrap max-h-[70vh] overflow-auto leading-relaxed mb-4">{{$r.message}}</div>{{end}}
+                    {{if $r.error}}
+                    <div class="mb-4 p-3 rounded-lg bg-rose-900/20 border border-rose-800/40">
+                        <div class="text-xs font-medium text-rose-400 mb-1">Error</div>
+                        <pre class="text-xs text-rose-200 whitespace-pre-wrap">{{$r.error}}</pre>
+                    </div>
+                    {{end}}
+                    {{if $r.artifactNames}}
+                    <div class="mb-4">
+                        <div class="text-xs text-ink-500 mb-2">Output Artifacts</div>
+                        <div class="flex flex-wrap gap-2">
+                            {{range $r.artifactNames}}<span class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-surface-700 text-xs text-ink-300 ring-1 ring-inset ring-surface-600/50"><svg class="h-3.5 w-3.5 text-ink-500" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/></svg>{{.}}</span>{{end}}
+                        </div>
+                    </div>
+                    {{end}}
+                    <details>
+                        <summary class="text-xs text-ink-500 cursor-pointer hover:text-ink-300 select-none">Raw JSON</summary>
+                        <pre class="text-xs text-ink-400 bg-surface-900 rounded-lg p-3 overflow-auto mt-2 max-h-[60vh] border border-surface-600/60">{{prettyJSON .Execution.Result}}</pre>
+                    </details>
+                </div>
+            </details>
+            {{end}}
+
+            <!-- Associated Task — reference panel (closed by default) -->
+            {{if .Task}}
+            <details class="panel-ref overflow-hidden">
+                <summary>
+                    {{template "sectionHeader" (dict "Title" "Associated Task" "Href" (printf "/ui/tasks/%s" .Task.ID) "HrefLabel" "View task →")}}
+                </summary>
+                <div class="px-5 py-4 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <dl><dt class="text-xs text-ink-500 mb-1">Task ID</dt><dd class="text-sm text-ink-100 font-mono" title="{{.Task.ID}}">{{shortID .Task.ID}}</dd></dl>
+                    <dl><dt class="text-xs text-ink-500 mb-1">Status</dt><dd class="mt-0.5">{{template "taskStatusBadge" .Task.Status}}</dd></dl>
+                    <dl><dt class="text-xs text-ink-500 mb-1">Priority</dt><dd class="text-sm text-ink-100">{{.Task.Priority}}</dd></dl>
+                </div>
+            </details>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+    <script>
+        // retryExecutionFromStep is bound to each completed step's
+        // "↻ retry" button. POSTs JSON to the dedicated API endpoint
+        // and reloads the page on success so the operator sees the
+        // re-running state. Failures surface a concise alert with
+        // the API's error class — operators get a precise reason
+        // (NOT_FOUND / INVALID_STATE / VALIDATION_ERROR / FORBIDDEN)
+        // rather than a generic 500.
+        async function retryExecutionFromStep(executionID, stepID) {
+            if (!confirm('Re-run this execution from step ' + stepID + '? Downstream steps will be re-executed.')) {
+                return;
+            }
+            try {
+                const resp = await fetch('/api/v1/executions/' + encodeURIComponent(executionID) + '/retry-from-step', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ step_id: stepID })
+                });
+                if (resp.ok) {
+                    window.location.reload();
+                    return;
+                }
+                let detail = await resp.text();
+                try {
+                    const parsed = JSON.parse(detail);
+                    detail = parsed.error?.message || parsed.message || detail;
+                } catch (e) {
+                    // not JSON — leave the raw body
+                }
+                alert('Retry failed (' + resp.status + '): ' + detail);
+            } catch (err) {
+                alert('Retry request failed: ' + err.message);
+            }
+        }
+    </script>
+</body>
+</html>
+{{end}}

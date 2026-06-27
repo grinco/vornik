@@ -1,0 +1,92 @@
+{{define "admin_memory_firewall.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-center gap-3">
+                <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 2l7 4v6c0 5-3.5 9-7 10-3.5-1-7-5-7-10V6l7-4z"/></svg>
+                <h1 class="text-xl font-semibold text-gray-100">Memory Firewall</h1>
+                <span class="ml-auto text-xs px-2 py-1 rounded-md
+                    {{if eq .Mode "enforce"}}bg-rose-900/40 border border-rose-700/50 text-rose-200
+                    {{else if eq .Mode "advisory"}}bg-amber-900/40 border border-amber-700/50 text-amber-200
+                    {{else}}bg-dark-700 border border-dark-600 text-gray-300{{end}}">
+                    mode: {{.Mode}}
+                </span>
+            </div>
+            <div class="text-xs text-gray-400">{{.ModeDescription}}</div>
+
+            {{if not .Available}}
+            <div class="glass rounded-xl border border-dark-700 p-10 text-center text-gray-500 text-sm">
+                Firewall audit repo not configured on this deployment.
+            </div>
+            {{else if .NoProjectSelected}}
+            <div class="glass rounded-xl border border-dark-700 p-6 text-sm text-gray-300">
+                <p class="mb-3">Pick a project to view its recent firewall evaluations:</p>
+                <form action="" method="GET" class="flex gap-2">
+                    <input name="project_id" type="text" placeholder="project_id"
+                           class="flex-1 bg-dark-900 border border-dark-700 rounded px-3 py-1.5 text-sm font-mono text-gray-100">
+                    <button class="bg-brand-600 hover:bg-brand-500 rounded px-3 py-1.5 text-xs">View</button>
+                </form>
+            </div>
+            {{else if .Error}}
+            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-200 text-xs px-3 py-2 rounded-md">
+                {{.Error}}
+            </div>
+            {{else}}
+            <!-- Blocks-by-class summary -->
+            {{if .BlocksByDecision}}
+            <div class="glass rounded-xl border border-dark-700 px-4 py-3">
+                <div class="text-xs text-gray-500 uppercase tracking-wider mb-2">Decisions in last 7 days (project {{.ProjectFilter}})</div>
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
+                    {{range .BlocksByDecision}}
+                    <div class="bg-dark-900 border border-dark-700 rounded px-3 py-2">
+                        <div class="font-mono text-gray-200">{{.Decision}}</div>
+                        <div class="text-gray-400">{{.Count}} row{{if ne .Count 1}}s{{end}}</div>
+                    </div>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+
+            <!-- Recent evaluations list -->
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-4 py-2 border-b border-dark-700 text-xs text-gray-500 uppercase tracking-wider">
+                    Recent evaluations (newest first)
+                </div>
+                {{if not .RecentEvaluations}}
+                <div class="p-6 text-sm text-gray-500 text-center">No evaluations recorded for this project.</div>
+                {{else}}
+                <table class="w-full text-xs">
+                    <thead class="bg-dark-900 text-gray-400 uppercase tracking-wider">
+                        <tr>
+                            <th class="px-3 py-2 text-left">When</th>
+                            <th class="px-3 py-2 text-left">Decision</th>
+                            <th class="px-3 py-2 text-left">Chunk</th>
+                            <th class="px-3 py-2 text-left">Role / Purpose</th>
+                            <th class="px-3 py-2 text-left">Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-dark-700">
+                        {{range .RecentEvaluations}}
+                        <tr class="{{if .IsBlock}}bg-rose-950/20{{end}}">
+                            <td class="px-3 py-2 font-mono text-gray-400 whitespace-nowrap">{{.EvaluatedAt}}</td>
+                            <td class="px-3 py-2 font-mono {{if .IsBlock}}text-rose-300{{else}}text-emerald-300{{end}}">{{.Decision}}</td>
+                            <td class="px-3 py-2 font-mono text-gray-300"><a href="/ui/admin/memory/firewall/chunks/{{.ChunkID}}" class="text-brand-300 hover:text-brand-200">{{.ChunkID}}</a></td>
+                            <td class="px-3 py-2 text-gray-400">{{.RequestRole}} / {{.RequestPurpose}}</td>
+                            <td class="px-3 py-2 text-gray-400">{{.ReasonDetail}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+                {{end}}
+            </div>
+            {{end}}
+        </div>
+    </main>
+</body>
+</html>
+{{end}}

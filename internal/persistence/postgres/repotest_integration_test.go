@@ -469,6 +469,10 @@ func TestProjectWizardSessionRepository_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
 	repotest.RunProjectWizardSessionSuite(t, NewProjectWizardSessionRepository(db.DB))
 }
+func TestInstallationOnboardingSessionRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunInstallationOnboardingSessionSuite(t, NewInstallationOnboardingSessionRepository(db.DB))
+}
 func TestCrossProjectCallRepository_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
 	repotest.RunCrossProjectCallSuite(t, NewCrossProjectCallRepository(db.DB))

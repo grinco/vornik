@@ -929,6 +929,29 @@ CREATE INDEX IF NOT EXISTS idx_pw_sessions_operator    ON project_wizard_session
 CREATE INDEX IF NOT EXISTS idx_pw_sessions_uncommitted ON project_wizard_sessions(updated_at DESC) WHERE committed_project_id IS NULL;
 
 -- ============================================================
+-- installation_onboarding_sessions (migration 111 — setup guide)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS installation_onboarding_sessions (
+    id                   TEXT PRIMARY KEY,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    operator_id          TEXT NOT NULL,
+    current_step         TEXT NOT NULL,
+    selected_use_case    TEXT NOT NULL,
+    transcript           TEXT NOT NULL DEFAULT '[]',
+    proposed_config      TEXT,
+    proposed_project     TEXT,
+    validation_results   TEXT,
+    committed_project_id TEXT,
+    committed_at         TEXT,
+    cancelled_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_onboarding_sessions_operator
+    ON installation_onboarding_sessions(operator_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_onboarding_sessions_committed
+    ON installation_onboarding_sessions(updated_at DESC) WHERE committed_project_id IS NOT NULL;
+
+-- ============================================================
 -- execution_hints (migration 50 — Feature #3; task-scope ext 66)
 -- ============================================================
 -- 2026-05-26: task_id nullable allows scoping a hint to the whole

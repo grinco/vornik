@@ -174,6 +174,19 @@ type ProjectWizardSessionRepository interface {
 	ListByOperator(ctx context.Context, operatorID string, pageSize int) ([]*ProjectWizardSession, error)
 }
 
+// InstallationOnboardingSessionRepository persists the durable state
+// for the installation-scoped setup guide. The committed row is the
+// source of truth for "already onboarded".
+type InstallationOnboardingSessionRepository interface {
+	Insert(ctx context.Context, s *InstallationOnboardingSession) error
+	Get(ctx context.Context, id string) (*InstallationOnboardingSession, error)
+	Update(ctx context.Context, s *InstallationOnboardingSession) error
+	CommitTo(ctx context.Context, sessionID, projectID string) error
+	Cancel(ctx context.Context, sessionID, operatorID string) error
+	ListByOperator(ctx context.Context, operatorID string, pageSize int) ([]*InstallationOnboardingSession, error)
+	HasCommitted(ctx context.Context) (bool, error)
+}
+
 // WorkflowProposalFilter narrows a List() call. Status filters to
 // rows matching any of the listed statuses (OR semantics); empty
 // means all statuses. WorkflowID filters to one workflow; empty

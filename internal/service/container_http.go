@@ -32,6 +32,7 @@ import (
 	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/httpx/realip"
 	"vornik.io/vornik/internal/memory"
+	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/postmortem"
 	"vornik.io/vornik/internal/ratelimit"
@@ -102,6 +103,26 @@ func (c *Container) initHTTPServer() error {
 		// available — bare-bones deployments fall through to the
 		// handler's 503.
 		api.WithProjectWizard(buildProjectWizardOrNil(c)),
+		func() api.ServerOption {
+			var sessions persistence.InstallationOnboardingSessionRepository
+			if c.repos != nil {
+				sessions = c.repos.InstallationOnboardingSessions
+			}
+			return api.WithOnboardingDetector(onboarding.Detector{
+				Sessions: sessions,
+				Config:   c.Config,
+			})
+		}(),
+		func() api.ServerOption {
+			var sessions persistence.InstallationOnboardingSessionRepository
+			if c.repos != nil {
+				sessions = c.repos.InstallationOnboardingSessions
+			}
+			return api.WithSetupSessions(sessions)
+		}(),
+		api.WithSetupValidator(onboarding.NewChatValidator()),
+		api.WithSetupConfigPath(c.ConfigPath),
+		api.WithSetupSecretsDir(onboardingSecretsDir(c.ConfigPath)),
 		// Live observation subscriber (Feature #3 Phase B). The
 		// publisher itself is wired into the executor at
 		// construction; the WebSocket handler reads from the
@@ -1344,6 +1365,16 @@ func (c *Container) initHTTPServer() error {
 	if c.repos != nil && c.repos.ProjectWizardSessions != nil {
 		uiOpts = append(uiOpts, ui.WithWizardSessionLister(c.repos.ProjectWizardSessions))
 	}
+	{
+		var sessions persistence.InstallationOnboardingSessionRepository
+		if c.repos != nil {
+			sessions = c.repos.InstallationOnboardingSessions
+		}
+		uiOpts = append(uiOpts, ui.WithOnboardingDetector(onboarding.Detector{
+			Sessions: sessions,
+			Config:   c.Config,
+		}))
+	}
 	if c.memoryManager != nil && c.memoryManager.Searcher != nil {
 		uiOpts = append(uiOpts, ui.WithMemorySearcher(
 			newUIMemorySearchAdapter(c.memoryManager.Searcher),
@@ -1556,6 +1587,10 @@ func (c *Container) initHTTPServer() error {
 
 	c.HTTPServer = server
 	return nil
+}
+
+func onboardingSecretsDir(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "secrets")
 }
 
 // adminUIDeps carries the locally-computed dependencies that

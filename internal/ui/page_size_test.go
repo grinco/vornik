@@ -13,10 +13,29 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/mocks"
 	"vornik.io/vornik/internal/registry"
 )
+
+// alreadyOnboardedDetector returns a Detector whose heuristic considers
+// the install fully configured, so the dashboard does not redirect to
+// /ui/setup during non-setup tests.
+func alreadyOnboardedDetector() onboarding.Detector {
+	return onboarding.Detector{
+		Config: &config.Config{
+			Chat: config.ChatConfig{
+				Endpoint: "http://localhost:11434",
+				Model:    "test-model",
+			},
+			Telegram: config.TelegramConfig{
+				DispatcherProjectID: "default",
+			},
+		},
+	}
+}
 
 // TestParsePageSize_DefaultsAndAllowlist covers every reachable
 // branch of the shared validator. The four "valid" cases must
@@ -284,7 +303,7 @@ func TestTasks_PreservesExistingFilters(t *testing.T) {
 // --- /ui/ (dashboard / landing page) ---
 
 func TestDashboard_RendersPageSizeSelector(t *testing.T) {
-	srv := NewServer(WithTaskRepository(tasksRepoStub(makeTasks(5))))
+	srv := NewServer(WithTaskRepository(tasksRepoStub(makeTasks(5))), WithOnboardingDetector(alreadyOnboardedDetector()))
 	req := httptest.NewRequest("GET", "/", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -294,7 +313,7 @@ func TestDashboard_RendersPageSizeSelector(t *testing.T) {
 
 func TestDashboard_LimitHonoursOperatorChoice(t *testing.T) {
 	rows := makeTasks(100)
-	srv := NewServer(WithTaskRepository(tasksRepoStub(rows)))
+	srv := NewServer(WithTaskRepository(tasksRepoStub(rows)), WithOnboardingDetector(alreadyOnboardedDetector()))
 	req := httptest.NewRequest("GET", "/?limit=10", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -303,7 +322,7 @@ func TestDashboard_LimitHonoursOperatorChoice(t *testing.T) {
 }
 
 func TestDashboard_DefaultLimitWhenAbsent(t *testing.T) {
-	srv := NewServer(WithTaskRepository(tasksRepoStub(makeTasks(0))))
+	srv := NewServer(WithTaskRepository(tasksRepoStub(makeTasks(0))), WithOnboardingDetector(alreadyOnboardedDetector()))
 	req := httptest.NewRequest("GET", "/", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -312,7 +331,7 @@ func TestDashboard_DefaultLimitWhenAbsent(t *testing.T) {
 }
 
 func TestDashboard_InvalidLimitFallsBack(t *testing.T) {
-	srv := NewServer(WithTaskRepository(tasksRepoStub(makeTasks(0))))
+	srv := NewServer(WithTaskRepository(tasksRepoStub(makeTasks(0))), WithOnboardingDetector(alreadyOnboardedDetector()))
 	req := httptest.NewRequest("GET", "/?limit=bogus", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)

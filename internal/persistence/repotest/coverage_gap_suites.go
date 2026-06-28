@@ -317,6 +317,161 @@ func RunProjectWizardSessionSuite(t *testing.T, repo persistence.ProjectWizardSe
 }
 
 // ---------------------------------------------------------------------------
+// InstallationOnboardingSessionRepository — durable on both backends.
+// ---------------------------------------------------------------------------
+
+// RunInstallationOnboardingSessionSuite exercises the installation-scoped
+// onboarding session contract: insert/get round-trip, mutable update,
+// the commit transition (one-way), the operator-scoped cancel IDOR guard,
+// list ordering, and the committed-row detector.
+func RunInstallationOnboardingSessionSuite(t *testing.T, repo persistence.InstallationOnboardingSessionRepository) {
+	t.Helper()
+
+	t.Run("Insert_then_Get_round_trips", func(t *testing.T) {
+		testOnboardingInsertGetRoundTrip(t, repo)
+	})
+	t.Run("Get_unknown_is_ErrNotFound", func(t *testing.T) {
+		testOnboardingGetUnknown(t, repo)
+	})
+	t.Run("Update_mutates_and_unknown_is_ErrNotFound", func(t *testing.T) {
+		testOnboardingUpdate(t, repo)
+	})
+	t.Run("CommitTo_is_one_way", func(t *testing.T) {
+		testOnboardingCommitTo(t, repo)
+	})
+	t.Run("Cancel_enforces_owner_and_refuses_committed", func(t *testing.T) {
+		testOnboardingCancel(t, repo)
+	})
+	t.Run("ListByOperator_newest_first", func(t *testing.T) {
+		testOnboardingListByOperator(t, repo)
+	})
+}
+
+func testOnboardingInsertGetRoundTrip(t *testing.T, repo persistence.InstallationOnboardingSessionRepository) {
+	ctx := context.Background()
+	s := newOnboardingSession(uniqueID("op"))
+	if err := repo.Insert(ctx, s); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	got, err := repo.Get(ctx, s.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.OperatorID != s.OperatorID || got.CurrentStep != s.CurrentStep || got.SelectedUseCase != s.SelectedUseCase || !jsonSemanticEqual(got.Transcript, s.Transcript) {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+}
+
+func testOnboardingGetUnknown(t *testing.T, repo persistence.InstallationOnboardingSessionRepository) {
+	ctx := context.Background()
+	if _, err := repo.Get(ctx, uniqueID("onb")); !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func testOnboardingUpdate(t *testing.T, repo persistence.InstallationOnboardingSessionRepository) {
+	ctx := context.Background()
+	s := newOnboardingSession(uniqueID("op"))
+	if err := repo.Insert(ctx, s); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	s.CurrentStep = "configure-chat"
+	s.SelectedUseCase = "companion"
+	s.ProposedConfig = []byte(`{"chat":{"model":"gpt-4.1"}}`)
+	s.ValidationResults = []byte(`[{"name":"chat","ok":true}]`)
+	if err := repo.Update(ctx, s); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, _ := repo.Get(ctx, s.ID)
+	if got.CurrentStep != s.CurrentStep || got.SelectedUseCase != s.SelectedUseCase || !jsonSemanticEqual(got.ProposedConfig, s.ProposedConfig) || !jsonSemanticEqual(got.ValidationResults, s.ValidationResults) {
+		t.Fatalf("update not reflected: %+v", got)
+	}
+	ghost := newOnboardingSession(uniqueID("op"))
+	if err := repo.Update(ctx, ghost); !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("Update of missing session: expected ErrNotFound, got %v", err)
+	}
+}
+
+func testOnboardingCommitTo(t *testing.T, repo persistence.InstallationOnboardingSessionRepository) {
+	ctx := context.Background()
+	s := newOnboardingSession(uniqueID("op"))
+	if err := repo.Insert(ctx, s); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := repo.CommitTo(ctx, s.ID, "committed-proj"); err != nil {
+		t.Fatalf("CommitTo: %v", err)
+	}
+	got, _ := repo.Get(ctx, s.ID)
+	if got.CommittedProjectID == nil || *got.CommittedProjectID != "committed-proj" {
+		t.Fatalf("commit not stamped: %+v", got)
+	}
+	if err := repo.CommitTo(ctx, s.ID, "again"); !errors.Is(err, persistence.ErrInvalidTransition) {
+		t.Fatalf("re-commit: expected ErrInvalidTransition, got %v", err)
+	}
+	if err := repo.CommitTo(ctx, uniqueID("onb"), "x"); !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("commit missing: expected ErrNotFound, got %v", err)
+	}
+	ok, err := repo.HasCommitted(ctx)
+	if err != nil {
+		t.Fatalf("HasCommitted: %v", err)
+	}
+	if !ok {
+		t.Fatal("HasCommitted should report true after commit")
+	}
+}
+
+func testOnboardingCancel(t *testing.T, repo persistence.InstallationOnboardingSessionRepository) {
+	ctx := context.Background()
+	op := uniqueID("op")
+	s := newOnboardingSession(op)
+	if err := repo.Insert(ctx, s); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if err := repo.Cancel(ctx, s.ID, uniqueID("op")); !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("cancel by non-owner: expected ErrNotFound, got %v", err)
+	}
+	if err := repo.Cancel(ctx, s.ID, op); err != nil {
+		t.Fatalf("Cancel by owner: %v", err)
+	}
+	if err := repo.Cancel(ctx, s.ID, op); err != nil {
+		t.Fatalf("Cancel idempotent: %v", err)
+	}
+}
+
+func testOnboardingListByOperator(t *testing.T, repo persistence.InstallationOnboardingSessionRepository) {
+	ctx := context.Background()
+	op := uniqueID("op")
+	first := newOnboardingSession(op)
+	if err := repo.Insert(ctx, first); err != nil {
+		t.Fatalf("Insert 1: %v", err)
+	}
+	second := newOnboardingSession(op)
+	if err := repo.Insert(ctx, second); err != nil {
+		t.Fatalf("Insert 2: %v", err)
+	}
+	got, err := repo.ListByOperator(ctx, op, 10)
+	if err != nil {
+		t.Fatalf("ListByOperator: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(got))
+	}
+	if got[0].UpdatedAt.Before(got[1].UpdatedAt) {
+		t.Fatalf("expected newest-first ordering, got %s before %s", got[0].ID, got[1].ID)
+	}
+}
+
+func newOnboardingSession(op string) *persistence.InstallationOnboardingSession {
+	return &persistence.InstallationOnboardingSession{
+		ID:              uniqueID("onb"),
+		OperatorID:      op,
+		CurrentStep:     "choose-purpose",
+		SelectedUseCase: "generic-assistant",
+		Transcript:      []byte(`[{"step":"choose-purpose","value":"generic-assistant"}]`),
+	}
+}
+
+// ---------------------------------------------------------------------------
 // CrossProjectCallRepository — Postgres-only (SQLite returns ErrSQLiteNotSupported).
 // ---------------------------------------------------------------------------
 

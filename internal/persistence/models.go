@@ -1856,6 +1856,28 @@ type ProjectWizardSession struct {
 	CancelledAt        *time.Time `json:"cancelled_at,omitempty"`
 }
 
+// InstallationOnboardingSession is the durable state for the
+// installation-scoped setup guide. Unlike project wizard sessions it
+// is global to the daemon install rather than to one project draft.
+//
+// The transcript and proposal blobs are stored opaquely so the UI can
+// evolve without invalidating older rows.
+type InstallationOnboardingSession struct {
+	ID                 string     `json:"id"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	OperatorID         string     `json:"operator_id"`
+	CurrentStep        string     `json:"current_step"`
+	SelectedUseCase    string     `json:"selected_use_case"`
+	Transcript         []byte     `json:"transcript"`
+	ProposedConfig     []byte     `json:"proposed_config,omitempty"`
+	ProposedProject    []byte     `json:"proposed_project,omitempty"`
+	ValidationResults  []byte     `json:"validation_results,omitempty"`
+	CommittedProjectID *string    `json:"committed_project_id,omitempty"`
+	CommittedAt        *time.Time `json:"committed_at,omitempty"`
+	CancelledAt        *time.Time `json:"cancelled_at,omitempty"`
+}
+
 // ProjectWizardTurn is one conversation message inside the
 // transcript. Roles mirror the chat conversation: "user" /
 // "assistant". On assistant turns, EnvelopeJSON carries the

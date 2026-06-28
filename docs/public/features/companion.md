@@ -1,11 +1,11 @@
 ---
 sources:
     - path: internal/api/companion_mcp.go
-      sha256: 0d9c44d6cdcb3036819a36e97b9212eda3db6da50e2bdebb8518f2f9d0dc4ef7
+      sha256: de7674085b8eed904d89926accb97374532e056e86c31f497aa87358872a20b1
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
       sha256: a3c31169e74f59b489ab29c5fb7f7173d19c80927dad6154762583be67e57031
     - path: contrib/codex-companion/.codex-plugin/plugin.json
-      sha256: 3a1bda131691e4c40d41aab3d1691956caa3b1b72cf0b358d58e9a52230693a8
+      sha256: c8c143b0ad4b4a9501da7ce6f95db71307fd2d66813ba56a425cfb34dab2ee22
 ---
 # Companion plugin
 
@@ -59,8 +59,36 @@ carries a **repo scope** — a token derived from the repo you're working in. A
 recall returns matches for the current scope plus anything marked
 cross-cutting, so two repos served by the same project don't pollute each
 other's results. Claude Code resolves the scope from your checkout's git remote
-in its SessionStart hook. Codex callers should pass the same remote-derived
-token explicitly as `repo_scope`.
+in its SessionStart hook. Codex ships no SessionStart hook, so its `delegate`
+skill and plugin prompt instruct the model to derive the same remote token and
+pass it explicitly as `repo_scope` on every memory call.
+
+As a backstop for clients without an automatic injector, a companion key can be
+minted with a **default repo scope** (`vornikctl companion grant --repo-scope
+<token>`). When set, the daemon stamps that scope on any `recall` / `remember` /
+`recent_memory` / `delegate` call that omits `repo_scope`, so a forgotten
+argument can't silently land a note un-scoped. An explicit per-call `repo_scope`
+still overrides the key default — keep passing it on a key reused across repos.
+
+Three scope values are worth distinguishing:
+
+- a **specific token** (`github.com/<org>/<repo>`) — the note is scoped to that
+  repo; a recall in a different repo won't see it.
+- `"*"` — **cross-cutting**. The note applies across every repo the project
+  serves and surfaces in every scoped recall. Use it for project-wide material
+  like coding standards, policies, and operator-wide conventions:
+  `remember(content="…", repo_scope="*", class="policy")`. It works from any key
+  (an explicit `repo_scope` always overrides the key default).
+- **NULL** (no scope) — the legacy/uncategorized bucket for notes ingested
+  before repo scopes existed. A non-strict recall still surfaces NULL-scoped
+  notes across scopes (a migration-grace fallthrough), but `strict_scope=true`
+  drops them. Don't deliberately deposit NULL for project-wide notes — use
+  `"*"` instead; NULL is meant to be promoted out of via the retag CLI.
+
+`recall` matches the current scope plus `"*"` plus (when `strict_scope` is off)
+NULL-scoped notes. `strict_scope=true` narrows to the current scope plus `"*"`
+only — handy for spotting NULL-scoped leaks or confirming a scope is actually
+populated.
 
 ```text
 /recall how does the scheduler lease tasks?
@@ -111,7 +139,9 @@ vornikctl companion grant \
     --budget-usd 5 --memory-read --memory-write
 ```
 
-Use `--client codex` instead when minting a key for the Codex plugin.
+Use `--client codex` instead when minting a key for the Codex plugin. For Codex
+(no SessionStart scope injector), add `--repo-scope github.com/<org>/<repo>` so
+memory calls that omit `repo_scope` inherit the right scope by default.
 
 The key's allowed workflows, spend cap, and memory permissions are enforced
 server-side from the key itself — never from the request.

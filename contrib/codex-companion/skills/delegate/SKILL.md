@@ -98,16 +98,46 @@ delegation without `inputArtifacts` is invalid. Stage the bytes first.
 
 ## Repo scope
 
-Use a `repo_scope` whenever you can identify the repository. A good scope token
-is the canonical git remote, for example:
+Codex ships no SessionStart hook, so — unlike the Claude companion — nothing
+auto-injects a repo scope for you. You MUST resolve it yourself and pass it on
+every memory call. Without it, deposits land NULL-scoped and pollute other
+repos' recalls.
 
-```text
-github.com/grinco/vornik
+**Resolve the canonical token once per session, then reuse it.** Run:
+
+```bash
+git config --get remote.origin.url
 ```
 
-Use `repo_scope="*"` only for cross-repo facts. Omit `repo_scope` only when you
-cannot determine the repository or the user explicitly wants project-wide
-memory.
+Normalize the result to a stable `host/path` token (same rules the Claude
+companion's hook uses, so scopes don't drift between clients):
+
+- strip a trailing `.git`
+- strip the scheme (`https://`, `http://`, `ssh://`)
+- strip a leading `<user>@` (e.g. `git@`) that precedes the first `:` or `/`
+- replace the first `:` with `/`
+
+Examples (all normalize to the SAME token):
+
+```text
+https://github.com/grinco/vornik.git  -> github.com/grinco/vornik
+git@github.com:grinco/vornik-enterprise.git      -> github.com/grinco/vornik
+```
+
+Do NOT hand-guess or lowercase the token (e.g. `github.com/easeit/vornik-ee`
+is WRONG for the repo above) — derive it from the remote so it matches the
+canonical scope already in memory.
+
+If there is no `origin` remote, use the repository's top-level directory name
+(`basename "$(git rev-parse --show-toplevel)"`). Use `repo_scope="*"` only for
+genuine cross-repo facts. Omit `repo_scope` only when you truly cannot
+determine the repository and the user wants project-wide memory.
+
+> Operator backstop: a companion key may be minted with a default scope
+> (`vornikctl companion grant --client=codex --repo-scope <token>`). When set,
+> the daemon stamps that scope on any call you make WITHOUT a `repo_scope`. It
+> is a safety net, not a substitute — for a key reused across repos, only the
+> token you pass per call is correct. Still resolve and pass it yourself.
 
 Pass the same scope on:
 

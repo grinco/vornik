@@ -1115,6 +1115,22 @@ type APIKey struct {
 	// "vadim/laptop". Pure UX — never authoritative.
 	SessionLabel string `json:"session_label,omitempty"`
 
+	// DefaultRepoScope is the repo_scope token (migration 75) the
+	// companion MCP memory surface stamps on remember / recall /
+	// recent_memory / delegate calls that OMIT an explicit repo_scope.
+	// Empty = no default (the caller is fully responsible for scope).
+	//
+	// Why this exists: scope correctness is otherwise entirely
+	// client-driven. The Claude plugin guarantees it with a SessionStart
+	// hook that derives the canonical token from the cwd's git remote
+	// and instructs the model to pass repo_scope on every call. Clients
+	// without such an injector (Codex ships no SessionStart hook) silently
+	// produce NULL-scoped chunks when the model forgets the arg. Binding a
+	// default on the key gives a server-side floor that can't be forgotten;
+	// an explicit caller scope still wins for multi-repo keys. Set per-key
+	// by `vornikctl companion grant --repo-scope`.
+	DefaultRepoScope string `json:"default_repo_scope,omitempty"`
+
 	// MemoryRead / MemoryWrite grant access to the companion RAG
 	// MCP tools (LLD 22). Both default false; set per-key by
 	// `vornikctl companion grant --memory-read` / `--memory-write`.
@@ -1160,6 +1176,7 @@ func (k *APIKey) RotatedCopy(id, keyHash, keyPrefix, createdBy string, now time.
 		AllowedWorkflows: append([]string(nil), k.AllowedWorkflows...),
 		ClientKind:       k.ClientKind,
 		SessionLabel:     k.SessionLabel,
+		DefaultRepoScope: k.DefaultRepoScope,
 		MemoryRead:       k.MemoryRead,
 		MemoryWrite:      k.MemoryWrite,
 		AllowPush:        k.AllowPush,

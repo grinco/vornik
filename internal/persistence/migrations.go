@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -83,21 +84,31 @@ func (r *MigrationRunner) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to sync bootstrap schema: %w", err)
 	}
 
-	// Get current version
-	currentVersion, err := r.getCurrentVersion(ctx)
+	// Determine which migrations are already recorded as applied. We use
+	// the full applied SET, not MAX(version), so a migration that was
+	// skipped earlier — a gap in the migrations table left by an inversion
+	// in the DefaultMigrations slice, or by a migration added after the DB
+	// had already migrated past its version — is re-applied idempotently
+	// rather than silently left missing. The migrations' DDL is
+	// IF NOT EXISTS / IF NOT EXISTS-guarded, so re-applying a partially- or
+	// never-applied migration is safe.
+	applied, err := r.getAppliedVersions(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get current schema version: %w", err)
+		return fmt.Errorf("failed to get applied migration versions: %w", err)
 	}
 
-	// Apply pending migrations
-	for _, m := range r.migrations {
-		if m.Version <= currentVersion {
-			continue
-		}
-
+	// Apply in VERSION order (not slice order). DefaultMigrations is
+	// maintained in roughly version order but has inversions (e.g. v26
+	// before v25, v74 before v73); applying in slice order with a
+	// "version <= currentMax" skip silently dropped the inverted
+	// migrations. Sorting by version respects inter-migration dependencies
+	// (a migration may FK or index a table created by an earlier one) and
+	// ensures none are skipped on ordering grounds.
+	for _, m := range pendingMigrations(applied, r.migrations) {
 		if err := r.applyMigration(ctx, m); err != nil {
 			return fmt.Errorf("failed to apply migration %d (%s): %w", m.Version, m.Name, err)
 		}
+		applied[m.Version] = true
 	}
 
 	return nil
@@ -179,6 +190,50 @@ func (r *MigrationRunner) getCurrentVersion(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return version, nil
+}
+
+// getAppliedVersions returns the set of migration versions recorded in the
+// migrations table. Run uses this (rather than getCurrentVersion's MAX) to
+// decide what to apply: a migration is applied iff its version is NOT in this
+// set. The old "version > MAX(version)" check silently skipped any migration
+// whose version was below the max but that had never actually been applied —
+// a gap left by slice inversions (v26 before v25, v74 before v73) or by a
+// migration added after the DB had already migrated past its version (the
+// memory-hardening v23 tables going missing on a long-lived DB).
+func (r *MigrationRunner) getAppliedVersions(ctx context.Context) (map[int]bool, error) {
+	rows, err := r.db.QueryContext(ctx, "SELECT version FROM migrations")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[int]bool)
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out[v] = true
+	}
+	return out, rows.Err()
+}
+
+// pendingMigrations returns the migrations to apply, in VERSION order, that
+// are not already in the applied set. Sorting by version (rather than
+// preserving slice order) respects inter-migration dependencies and defeats
+// the inversions in DefaultMigrations; filtering by the applied set (rather
+// than "version > MAX") re-applies any migration that was skipped earlier.
+// Pure (no DB) so it can be unit-tested directly.
+func pendingMigrations(applied map[int]bool, all []Migration) []Migration {
+	sorted := make([]Migration, len(all))
+	copy(sorted, all)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Version < sorted[j].Version })
+	out := make([]Migration, 0, len(sorted))
+	for _, m := range sorted {
+		if !applied[m.Version] {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // applyMigration executes a single migration.
@@ -4941,5 +4996,25 @@ ALTER TABLE trading_fills DROP COLUMN IF EXISTS account_id;
 ALTER TABLE trading_fills DROP COLUMN IF EXISTS exec_id;
 ALTER TABLE trading_orders DROP COLUMN IF EXISTS filled_qty;
 `,
+	},
+	{
+		Version: 110,
+		Name:    "api_keys_default_repo_scope",
+		// Per-key default repo_scope for companion memory. Scope on a
+		// companion deposit was entirely client-driven: the MCP handlers
+		// read repo_scope ONLY from the caller's argument, so any client
+		// without a SessionStart scope injector (Codex ships none) that
+		// omitted the arg produced NULL-scoped chunks. This column gives
+		// the server a per-key fallback the MCP memory surface stamps when
+		// the caller omits repo_scope. Nullable additive column; existing
+		// keys keep NULL (= no default) so behaviour is unchanged until an
+		// operator sets one via `vornikctl companion grant --repo-scope`.
+		Up: `ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS default_repo_scope TEXT;`,
+		// Postgres down path. SQLite has no migrations table — its schema is
+		// the canonical CREATE TABLE in internal/persistence/sqlite/schema.go,
+		// and a SQLite rollback would need ALTER TABLE ... DROP COLUMN
+		// (>= 3.35.0, and SQLite's DROP COLUMN has no IF EXISTS clause) or a
+		// table-recreate. See the schema.go comment on default_repo_scope.
+		Down: `ALTER TABLE api_keys DROP COLUMN IF EXISTS default_repo_scope;`,
 	},
 }

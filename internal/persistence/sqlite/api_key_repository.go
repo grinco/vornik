@@ -61,19 +61,23 @@ func (r *APIKeyRepository) Create(ctx context.Context, k *persistence.APIKey) er
 	if k.SessionLabel != "" {
 		sessionLabel = sql.NullString{String: k.SessionLabel, Valid: true}
 	}
+	defaultRepoScope := sql.NullString{}
+	if k.DefaultRepoScope != "" {
+		defaultRepoScope = sql.NullString{String: k.DefaultRepoScope, Valid: true}
+	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO api_keys (
 			id, project_id, name, key_hash, key_prefix,
 			created_at, last_used_at, expires_at, revoked_at, created_by,
 			rate_limit_rps, rate_limit_burst,
 			allowed_workflows, budget_cap_usd, client_kind, session_label,
-			memory_read, memory_write, allow_push
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			memory_read, memory_write, allow_push, default_repo_scope
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		k.ID, k.ProjectID, k.Name, k.KeyHash, k.KeyPrefix,
 		sqliteTime(k.CreatedAt), sqliteTimePtr(k.LastUsedAt), sqliteTimePtr(k.ExpiresAt),
 		sqliteTimePtr(k.RevokedAt), k.CreatedBy, k.RateLimitRPS, k.RateLimitBurst,
 		encodeAllowedWorkflows(k.AllowedWorkflows), budget, clientKind, sessionLabel,
-		boolToInt(k.MemoryRead), boolToInt(k.MemoryWrite), boolToInt(k.AllowPush),
+		boolToInt(k.MemoryRead), boolToInt(k.MemoryWrite), boolToInt(k.AllowPush), defaultRepoScope,
 	)
 	return err
 }
@@ -98,7 +102,7 @@ func (r *APIKeyRepository) LookupActiveByHash(ctx context.Context, keyHash strin
 		       created_at, last_used_at, expires_at, revoked_at, created_by,
 		       rate_limit_rps, rate_limit_burst,
 		       allowed_workflows, budget_cap_usd, client_kind, session_label,
-		       memory_read, memory_write, allow_push
+		       memory_read, memory_write, allow_push, default_repo_scope
 		FROM api_keys
 		WHERE key_hash = ?
 		  AND revoked_at IS NULL
@@ -122,7 +126,7 @@ func (r *APIKeyRepository) ListByProject(ctx context.Context, projectID string) 
 		       created_at, last_used_at, expires_at, revoked_at, created_by,
 		       rate_limit_rps, rate_limit_burst,
 		       allowed_workflows, budget_cap_usd, client_kind, session_label,
-		       memory_read, memory_write, allow_push
+		       memory_read, memory_write, allow_push, default_repo_scope
 		FROM api_keys WHERE project_id = ?
 		ORDER BY created_at DESC`, projectID)
 	if err != nil {
@@ -149,7 +153,7 @@ func (r *APIKeyRepository) ListCompanionByProject(ctx context.Context, projectID
 		       created_at, last_used_at, expires_at, revoked_at, created_by,
 		       rate_limit_rps, rate_limit_burst,
 		       allowed_workflows, budget_cap_usd, client_kind, session_label,
-		       memory_read, memory_write, allow_push
+		       memory_read, memory_write, allow_push, default_repo_scope
 		FROM api_keys
 		WHERE project_id = ?
 		  AND client_kind IS NOT NULL
@@ -219,17 +223,18 @@ func (r *APIKeyRepository) UpdateAllowedWorkflows(ctx context.Context, keyID str
 
 func scanAPIKey(scanner interface{ Scan(dest ...any) error }) (*persistence.APIKey, error) {
 	var (
-		k            persistence.APIKey
-		createdAt    sqlTime
-		lastUsed     sqlNullTime
-		expiresAt    sqlNullTime
-		revokedAt    sqlNullTime
-		createdBy    sql.NullString
-		rps, burst   sql.NullInt64
-		allowedWF    sql.NullString
-		budget       sql.NullFloat64
-		clientKind   sql.NullString
-		sessionLabel sql.NullString
+		k                persistence.APIKey
+		createdAt        sqlTime
+		lastUsed         sqlNullTime
+		expiresAt        sqlNullTime
+		revokedAt        sqlNullTime
+		createdBy        sql.NullString
+		rps, burst       sql.NullInt64
+		allowedWF        sql.NullString
+		budget           sql.NullFloat64
+		clientKind       sql.NullString
+		sessionLabel     sql.NullString
+		defaultRepoScope sql.NullString
 	)
 	var memRead, memWrite, allowPush sql.NullInt64
 	err := scanner.Scan(
@@ -237,7 +242,7 @@ func scanAPIKey(scanner interface{ Scan(dest ...any) error }) (*persistence.APIK
 		&createdAt, &lastUsed, &expiresAt, &revokedAt, &createdBy,
 		&rps, &burst,
 		&allowedWF, &budget, &clientKind, &sessionLabel,
-		&memRead, &memWrite, &allowPush,
+		&memRead, &memWrite, &allowPush, &defaultRepoScope,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -279,6 +284,9 @@ func scanAPIKey(scanner interface{ Scan(dest ...any) error }) (*persistence.APIK
 	}
 	if sessionLabel.Valid {
 		k.SessionLabel = sessionLabel.String
+	}
+	if defaultRepoScope.Valid {
+		k.DefaultRepoScope = defaultRepoScope.String
 	}
 	k.MemoryRead = memRead.Valid && memRead.Int64 != 0
 	k.MemoryWrite = memWrite.Valid && memWrite.Int64 != 0

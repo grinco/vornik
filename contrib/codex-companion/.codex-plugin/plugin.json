@@ -1,6 +1,6 @@
 {
   "name": "codex-companion",
-  "version": "0.7.0+codex.20260627202752",
+  "version": "0.8.0+codex.20260628",
   "description": "Vornik async-offload companion for Codex. Delegate reviews, audits, validations, research, summarization, and project RAG memory work to a vornik daemon over MCP.",
   "author": {
     "name": "vornik"
@@ -30,7 +30,7 @@
       "async-delegation",
       "project-memory"
     ],
-    "defaultPrompt": "Use the vornik companion MCP tools when work is large, async-friendly, or should be preserved in project memory. Recall before delegating research or review work."
+    "defaultPrompt": "Use the vornik companion MCP tools when work is large, async-friendly, or should be preserved in project memory. Recall before delegating research or review work. ALWAYS pass repo_scope on every recall/remember/recent_memory/delegate/memory_correct call: resolve it once per session from `git config --get remote.origin.url`, normalized to a host/path token (strip trailing .git, scheme, and any leading user@; replace the first ':' with '/') — e.g. github.com/grinco/vornik. Derive it from the remote; never hand-guess or lowercase it. Omitting repo_scope makes deposits land NULL-scoped and pollutes other repos' recalls."
   },
   "mcpServers": "./.mcp.json"
 }

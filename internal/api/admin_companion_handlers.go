@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -55,6 +56,12 @@ type companionGrantRequest struct {
 	// surfaces --memory-read / --memory-write / --memory-all.
 	MemoryRead  bool `json:"memoryRead,omitempty"`
 	MemoryWrite bool `json:"memoryWrite,omitempty"`
+	// DefaultRepoScope (migration 110) is the repo_scope the companion
+	// MCP memory surface stamps on calls that omit it. Set it for
+	// clients without a SessionStart scope injector (e.g. Codex) so
+	// their deposits can't silently land NULL-scoped. Empty = no
+	// default. CLI flag: --repo-scope.
+	DefaultRepoScope string `json:"defaultRepoScope,omitempty"`
 }
 
 // companionGrantResponse carries the one-time-visible secret back.
@@ -74,6 +81,7 @@ type companionGrantResponse struct {
 	ExpiresAt        *time.Time `json:"expiresAt,omitempty"`
 	MemoryRead       bool       `json:"memoryRead,omitempty"`
 	MemoryWrite      bool       `json:"memoryWrite,omitempty"`
+	DefaultRepoScope string     `json:"defaultRepoScope,omitempty"`
 }
 
 // CompanionGrant handles POST /api/v1/admin/companion/grant. Mints a
@@ -121,6 +129,15 @@ func (s *Server) CompanionGrant(w http.ResponseWriter, r *http.Request) {
 	req.ProjectID = strings.TrimSpace(req.ProjectID)
 	req.ClientKind = strings.TrimSpace(req.ClientKind)
 	req.SessionLabel = strings.TrimSpace(req.SessionLabel)
+	req.DefaultRepoScope = strings.TrimSpace(req.DefaultRepoScope)
+	// Bound the default scope to the same ceiling remember() enforces on
+	// a caller-supplied repo_scope so a stored default can never exceed
+	// what an explicit arg may carry.
+	if len(req.DefaultRepoScope) > rememberMaxRepoScopeBytes {
+		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR",
+			fmt.Sprintf("defaultRepoScope must be <= %d bytes", rememberMaxRepoScopeBytes))
+		return
+	}
 
 	// Client kind first — cheap check, narrows further validation
 	// to known shapes.
@@ -228,6 +245,7 @@ func (s *Server) CompanionGrant(w http.ResponseWriter, r *http.Request) {
 		BudgetCapUSD:     req.BudgetCapUSD,
 		ClientKind:       req.ClientKind,
 		SessionLabel:     req.SessionLabel,
+		DefaultRepoScope: req.DefaultRepoScope,
 		MemoryRead:       memoryRead,
 		MemoryWrite:      req.MemoryWrite,
 	}
@@ -254,6 +272,7 @@ func (s *Server) CompanionGrant(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:        row.ExpiresAt,
 		MemoryRead:       row.MemoryRead,
 		MemoryWrite:      row.MemoryWrite,
+		DefaultRepoScope: row.DefaultRepoScope,
 	})
 }
 
@@ -268,6 +287,7 @@ type companionKeyEntry struct {
 	KeyPrefix        string     `json:"keyPrefix"`
 	AllowedWorkflows []string   `json:"allowedWorkflows,omitempty"`
 	BudgetCapUSD     *float64   `json:"budgetCapUsd,omitempty"`
+	DefaultRepoScope string     `json:"defaultRepoScope,omitempty"`
 	CreatedAt        time.Time  `json:"createdAt"`
 	LastUsedAt       *time.Time `json:"lastUsedAt,omitempty"`
 	ExpiresAt        *time.Time `json:"expiresAt,omitempty"`
@@ -327,6 +347,7 @@ func (s *Server) CompanionKeysList(w http.ResponseWriter, r *http.Request) {
 			KeyPrefix:        k.KeyPrefix,
 			AllowedWorkflows: k.AllowedWorkflows,
 			BudgetCapUSD:     k.BudgetCapUSD,
+			DefaultRepoScope: k.DefaultRepoScope,
 			CreatedAt:        k.CreatedAt,
 			LastUsedAt:       k.LastUsedAt,
 			ExpiresAt:        k.ExpiresAt,

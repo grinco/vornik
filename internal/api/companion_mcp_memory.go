@@ -28,6 +28,34 @@ func companionActorKind(key *persistence.APIKey) string {
 	return "companion:" + key.ClientKind
 }
 
+// effectiveRepoScope resolves the repo_scope for a companion memory
+// operation. An explicit caller-supplied scope always wins; when the
+// caller omits it, we fall back to the key's operator-configured
+// DefaultRepoScope (migration 110). Both are trimmed; the result is "" only
+// when neither is set (genuine project-wide).
+//
+// This is the server-side floor that makes scope "defined by default" for
+// clients that lack a SessionStart scope injector. The Claude plugin derives
+// the canonical token from the cwd's git remote and instructs the model to
+// pass repo_scope on every call; Codex ships no such hook, so a model that
+// forgets the arg would otherwise deposit NULL-scoped chunks. Binding a
+// default on the key removes that failure mode without taking scope control
+// away from a caller that DOES pass one (multi-repo keys still override).
+//
+// Note for recall: strict_scope applies to the RESOLVED scope this returns,
+// not just the caller-supplied arg. A caller that omits repo_scope but sets
+// strict_scope=true is strict-scoped to the key default (NULL fallthrough
+// dropped) — which is the intended, tightening behaviour.
+func effectiveRepoScope(key *persistence.APIKey, argScope string) string {
+	if s := strings.TrimSpace(argScope); s != "" {
+		return s
+	}
+	if key == nil {
+		return ""
+	}
+	return strings.TrimSpace(key.DefaultRepoScope)
+}
+
 // recordCompanionToolAudit writes one tool_audit_log row per
 // companion MCP tool call (B-17). Gives operators a unified
 // "everything I called" view in the same table the agent-side
@@ -360,7 +388,7 @@ func (s *Server) companionToolRecall(ctx context.Context, key *persistence.APIKe
 		Limit:       args.Limit,
 		ActorKind:   companionActorKind(key),
 		ActorID:     key.ID,
-		RepoScope:   strings.TrimSpace(args.RepoScope),
+		RepoScope:   effectiveRepoScope(key, args.RepoScope),
 		StrictScope: args.StrictScope,
 	}
 	if args.FromDate != "" {
@@ -509,7 +537,7 @@ func (s *Server) companionToolRecentMemory(ctx context.Context, key *persistence
 		ctx,
 		key.ProjectID,
 		args.Limit,
-		strings.TrimSpace(args.RepoScope),
+		effectiveRepoScope(key, args.RepoScope),
 		args.StrictScope,
 		args.OnlyUntagged,
 		companionActorKind(key),
@@ -626,8 +654,15 @@ const (
 	rememberMaxTagLen          = 32
 	rememberMaxTTLDays         = 3650
 	rememberMaxSourceNameBytes = 512
-	rememberMaxRepoScopeBytes  = 512
-	rememberMaxClassBytes      = 128
+	// rememberMaxRepoScopeBytes bounds a repo_scope value on BOTH the per-call
+	// remember() path and the operator-configured key default (admin grant). It
+	// is the single ceiling the grant handler validates against so a default
+	// can't be stored that the remember path would later reject at runtime. 512
+	// bytes is far above any real repo token (a typical git-remote path is
+	// ~35-60 bytes) while bounding abuse; the value is stored in a TEXT column
+	// with no narrower DB constraint, so this is the only enforcement.
+	rememberMaxRepoScopeBytes = 512
+	rememberMaxClassBytes     = 128
 )
 
 // normalizeTags trims, drops empties, truncates each entry to
@@ -732,7 +767,7 @@ func (s *Server) companionToolRemember(ctx context.Context, key *persistence.API
 
 	sourceName := strings.TrimSpace(args.SourceName)
 	className := strings.TrimSpace(args.Class)
-	repoScope := strings.TrimSpace(args.RepoScope)
+	repoScope := effectiveRepoScope(key, args.RepoScope)
 	if args.TTLDays > rememberMaxTTLDays {
 		return "", fmt.Errorf("ttl_days must be <= %d", rememberMaxTTLDays)
 	}
@@ -881,7 +916,11 @@ func (s *Server) companionToolMemoryCorrect(ctx context.Context, key *persistenc
 		ProjectID:  key.ProjectID,
 		WrongClaim: args.WrongClaim,
 		Correction: args.Correction,
-		RepoScope:  strings.TrimSpace(args.RepoScope),
+		// Same effective-scope resolution as recall/remember/recent_memory:
+		// an explicit arg wins; an omitted arg falls back to the key's
+		// DefaultRepoScope (migration 110) so memory_correct doesn't search
+		// across the whole project when a caller forgets repo_scope.
+		RepoScope:  effectiveRepoScope(key, args.RepoScope),
 		MaxRefutes: args.MaxRefutes,
 		ActorKind:  companionActorKind(key),
 		ActorID:    key.ID,

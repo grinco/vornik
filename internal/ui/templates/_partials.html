@@ -299,8 +299,8 @@
         function renderToast(text, kind) {
             var d = document.createElement('div');
             var color = kind === 'warn'
-                ? 'bg-amber-900/90 border-amber-600/50 text-amber-600 dark:text-amber-100'
-                : 'bg-emerald-900/90 border-emerald-600/50 text-emerald-600 dark:text-emerald-100';
+                ? 'bg-amber-50 dark:bg-amber-900/90 border-amber-600/50 text-amber-700 dark:text-amber-100'
+                : 'bg-emerald-50 dark:bg-emerald-900/90 border-emerald-600/50 text-emerald-700 dark:text-emerald-100';
             d.className = 'fixed top-4 right-4 px-4 py-2.5 rounded-lg border shadow-xl text-sm z-50 ' + color;
             d.style.transition = 'opacity 0.4s, transform 0.4s';
             d.style.opacity = '0';

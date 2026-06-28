@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# vornikctl — host shim for the podman/quickstart deployment.
+#
+# The podman deployment runs the Vornik daemon (and its bundled
+# vornikctl) inside the `vornik` container. This shim lets you drive it
+# from the host as if vornikctl were installed locally:
+#
+#     vornikctl doctor
+#     vornikctl project list
+#
+# Why a shim instead of a copied binary:
+#   - No version skew — it always runs the CLI from the *running* image.
+#   - No host-side API key plumbing — the in-container CLI reaches the
+#     daemon on localhost and reads the container's config/credentials,
+#     so authenticated calls just work.
+#
+# Override the container name with VORNIK_CONTAINER if you renamed it.
+set -euo pipefail
+
+container="${VORNIK_CONTAINER:-vornik}"
+
+if ! command -v podman >/dev/null 2>&1; then
+    echo "vornikctl: podman not found on PATH — this shim drives the containerized CLI." >&2
+    exit 127
+fi
+
+if ! podman container exists "$container" 2>/dev/null; then
+    echo "vornikctl: container '$container' not found. Is the stack up?" >&2
+    echo "          start it: (cd deployments/podman && podman compose up -d vornik)" >&2
+    echo "          (set VORNIK_CONTAINER=<name> if you renamed it.)" >&2
+    exit 1
+fi
+
+if [ "$(podman container inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != "true" ]; then
+    echo "vornikctl: container '$container' is not running." >&2
+    echo "          start it: (cd deployments/podman && podman compose up -d vornik)" >&2
+    exit 1
+fi
+
+# Allocate a TTY only when both stdin and stdout are terminals, so
+# interactive use gets a pty while pipes/scripts (vornikctl ... | jq)
+# keep clean byte streams.
+exec_flags=(-i)
+if [ -t 0 ] && [ -t 1 ]; then
+    exec_flags+=(-t)
+fi
+
+exec podman exec "${exec_flags[@]}" "$container" /usr/local/bin/vornikctl "$@"

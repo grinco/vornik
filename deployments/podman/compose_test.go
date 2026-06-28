@@ -34,6 +34,20 @@ func TestSingleNodeConfigsMountIsWritable(t *testing.T) {
 	}
 }
 
+// TestSingleNodeConfigYamlMountIsWritable — the daemon edits config.yaml
+// in place for `vornikctl config` updates and the config-reload path, so
+// the host file must be writable; otherwise the entrypoint copies it to a
+// throwaway scratch path and in-container edits never reach the host.
+func TestSingleNodeConfigYamlMountIsWritable(t *testing.T) {
+	compose := readCompose(t, "podman-compose.yaml")
+	if !strings.Contains(compose, "./config/vornik.yaml:/etc/vornik/config.yaml:rw,Z") {
+		t.Error("podman-compose.yaml: config.yaml mount must be writable (rw,Z) so in-container vornikctl edits persist to the host file")
+	}
+	if strings.Contains(compose, "./config/vornik.yaml:/etc/vornik/config.yaml:ro") {
+		t.Error("podman-compose.yaml: config.yaml mount is read-only — vornikctl config edits would hit a scratch copy, not the host file")
+	}
+}
+
 // TestClusterUIConfigsMountIsWritable — in the cluster topology only the
 // UI node serves the web UI and writes config; workers/webhook stay
 // read-only. The UI node's configs mount must be writable.

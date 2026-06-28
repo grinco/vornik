@@ -2762,40 +2762,6 @@ DROP TABLE IF EXISTS project_wizard_sessions;
 `,
 	},
 	{
-		Version: 111,
-		Name:    "create_installation_onboarding_sessions",
-		// Installation-scoped onboarding for the first-run setup guide.
-		// Unlike project_wizard_sessions, this table is global to the
-		// daemon install and its committed row is the durable source of
-		// truth for "already onboarded".
-		Up: `
-CREATE TABLE IF NOT EXISTS installation_onboarding_sessions (
-    id                   TEXT PRIMARY KEY,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    operator_id          TEXT NOT NULL,
-    current_step         TEXT NOT NULL,
-    selected_use_case    TEXT NOT NULL,
-    transcript           JSONB NOT NULL DEFAULT '[]'::jsonb,
-    proposed_config      JSONB,
-    proposed_project     JSONB,
-    validation_results   JSONB,
-    committed_project_id TEXT,
-    committed_at         TIMESTAMPTZ,
-    cancelled_at         TIMESTAMPTZ
-);
-CREATE INDEX IF NOT EXISTS idx_onboarding_sessions_operator
-    ON installation_onboarding_sessions (operator_id, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_onboarding_sessions_committed
-    ON installation_onboarding_sessions (updated_at DESC) WHERE committed_project_id IS NOT NULL;
-`,
-		Down: `
-DROP INDEX IF EXISTS idx_onboarding_sessions_committed;
-DROP INDEX IF EXISTS idx_onboarding_sessions_operator;
-DROP TABLE IF EXISTS installation_onboarding_sessions;
-`,
-	},
-	{
 		Version: 50,
 		Name:    "create_execution_hints",
 		// Feature #3 Phase C — operator-injected hints. While an
@@ -5050,5 +5016,39 @@ ALTER TABLE trading_orders DROP COLUMN IF EXISTS filled_qty;
 		// (>= 3.35.0, and SQLite's DROP COLUMN has no IF EXISTS clause) or a
 		// table-recreate. See the schema.go comment on default_repo_scope.
 		Down: `ALTER TABLE api_keys DROP COLUMN IF EXISTS default_repo_scope;`,
+	},
+	{
+		Version: 111,
+		Name:    "create_installation_onboarding_sessions",
+		// Installation-scoped onboarding for the first-run setup guide.
+		// Unlike project_wizard_sessions, this table is global to the
+		// daemon install and its committed row is the durable source of
+		// truth for "already onboarded".
+		Up: `
+CREATE TABLE IF NOT EXISTS installation_onboarding_sessions (
+    id                   TEXT PRIMARY KEY,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    operator_id          TEXT NOT NULL,
+    current_step         TEXT NOT NULL,
+    selected_use_case    TEXT NOT NULL,
+    transcript           JSONB NOT NULL DEFAULT '[]'::jsonb,
+    proposed_config      JSONB,
+    proposed_project     JSONB,
+    validation_results   JSONB,
+    committed_project_id TEXT,
+    committed_at         TIMESTAMPTZ,
+    cancelled_at         TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_onboarding_sessions_operator
+    ON installation_onboarding_sessions (operator_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_onboarding_sessions_committed
+    ON installation_onboarding_sessions (updated_at DESC) WHERE committed_project_id IS NOT NULL;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_onboarding_sessions_committed;
+DROP INDEX IF EXISTS idx_onboarding_sessions_operator;
+DROP TABLE IF EXISTS installation_onboarding_sessions;
+`,
 	},
 }

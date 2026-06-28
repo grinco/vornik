@@ -26,11 +26,11 @@ package memory
 //	TEST_DATABASE_URL=postgres://vornik:vornik@localhost:5433/vornik_integration_test?sslmode=disable \
 //	  go test -tags=integration ./internal/memory/... -run TestIntegration_IngestRecall -race -count=1
 //
-// SAFETY: refuses to run against the daemon's live database
-// (vornik_test) unless VORNIK_TEST_ALLOW_DAEMON=1 is set, mirroring the
-// Makefile's integration-lane guard. Each subtest uses unique,
-// random-suffixed project IDs and deletes only its own rows on cleanup,
-// so it never touches pre-existing data.
+// SAFETY: refuses to run against any live daemon database — "vornik"
+// (default) or "vornik_test" — unless
+// VORNIK_TEST_ALLOW_DAEMON=1 is set (see isProtectedDaemonDB). Each subtest
+// uses unique, random-suffixed project IDs and deletes only its own rows on
+// cleanup, so it never touches pre-existing data.
 
 import (
 	"context"
@@ -76,10 +76,12 @@ func openIngestRecallDB(t *testing.T) *sql.DB {
 		t.Fatalf("parse TEST_DATABASE_URL: %v", err)
 	}
 	dbName := strings.TrimPrefix(u.Path, "/")
-	// Mirror the Makefile guard: never run destructive per-test cleanup
-	// against the daemon's live DB unless the operator explicitly opts in.
-	if dbName == "vornik_test" && os.Getenv("VORNIK_TEST_ALLOW_DAEMON") != "1" {
-		t.Skip("TEST_DATABASE_URL points at the daemon DB (vornik_test); refusing to run. Set VORNIK_TEST_ALLOW_DAEMON=1 to override.")
+	// Never run destructive per-test cleanup against a live daemon DB unless
+	// the operator explicitly opts in. isProtectedDaemonDB shields all of
+	// them — "vornik" (default) and "vornik_test" (see
+	// integration_guard_test.go for why the old vornik_test-only check was a gap).
+	if isProtectedDaemonDB(dbName) && os.Getenv("VORNIK_TEST_ALLOW_DAEMON") != "1" {
+		t.Skipf("TEST_DATABASE_URL points at a live daemon DB (%q); refusing to run. Set VORNIK_TEST_ALLOW_DAEMON=1 to override.", dbName)
 	}
 
 	db, err := sql.Open("postgres", rawURL)
@@ -258,6 +260,48 @@ func TestIntegration_IngestRecall_ProjectScoping(t *testing.T) {
 	}
 	if !foundA {
 		t.Fatalf("recall for project A did not return the ingested %q content; got %d hits", marker, len(resA))
+	}
+
+	// Multi-term recall regression (2026-06-28): a plain query where
+	// one distinctive term matches and one term does not must still
+	// retrieve through the relaxed OR keyword query. The strict
+	// websearch query alone would AND the terms and return nothing.
+	resRelaxed, err := searcher.Search(ctx, projectA, marker+" absentterm", 10)
+	if err != nil {
+		t.Fatalf("Search(projectA relaxed multi-term): %v", err)
+	}
+	foundRelaxed := false
+	for _, r := range resRelaxed {
+		if r.ProjectID != projectA {
+			t.Errorf("SECURITY: relaxed recall returned a chunk scoped to %q, want %q", r.ProjectID, projectA)
+		}
+		if strings.Contains(r.Content, marker) {
+			foundRelaxed = true
+		}
+	}
+	if !foundRelaxed {
+		t.Fatalf("relaxed multi-term recall did not return the ingested %q content; got %d hits", marker, len(resRelaxed))
+	}
+
+	// Explicit web-search syntax stays strict: quoted phrases are
+	// passed through unchanged and handled by Postgres' parser.
+	resPhrase, err := searcher.Search(ctx, projectA, `"flux capacitor"`, 10)
+	if err != nil {
+		t.Fatalf("Search(projectA quoted phrase): %v", err)
+	}
+	if len(resPhrase) == 0 {
+		t.Fatal("quoted phrase recall returned 0 hits; websearch_to_tsquery phrase handling broken")
+	}
+
+	// Stopword-heavy natural text should still reach the distinctive
+	// term; Postgres drops stopwords while the relaxed OR query keeps
+	// non-stopword anchors available.
+	resStopword, err := searcher.Search(ctx, projectA, "the "+marker+" and absentterm", 10)
+	if err != nil {
+		t.Fatalf("Search(projectA stopword-heavy): %v", err)
+	}
+	if len(resStopword) == 0 {
+		t.Fatal("stopword-heavy relaxed recall returned 0 hits")
 	}
 
 	// --- Recall for B (never ingested) returns NOTHING ------------------

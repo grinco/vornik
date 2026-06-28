@@ -69,6 +69,7 @@ func New(cfg Config, db *sql.DB, logger zerolog.Logger) (*Manager, error) {
 	}
 
 	repo := NewRepository(db)
+	repo.SetLogger(logger.With().Str("component", "memory.repository").Logger())
 	embedder := NewEmbedder(cfg)
 	// Phase D — embedding cache. When the daemon has pgvector +
 	// the embedding_cache table (migration 41), wire a postgres-

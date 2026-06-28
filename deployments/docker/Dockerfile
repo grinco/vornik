@@ -51,9 +51,8 @@ ARG VERSION=dev
 ARG BUILD_DATE=unknown
 ARG LDFLAGS="-X main.Version=${VERSION} -X main.BuildDate=${BUILD_DATE}"
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="${LDFLAGS}" -o /out/vornik        ./cmd/vornik        \
- && CGO_ENABLED=0 GOOS=linux go build -ldflags="${LDFLAGS}" -o /out/vornikctl      ./cmd/vornikctl      \
- && CGO_ENABLED=0 GOOS=linux go build -ldflags="${LDFLAGS}" -o /out/vornik-broker ./cmd/vornik-broker
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="" -o /out/vornik        ./cmd/vornik        \
+ && CGO_ENABLED=0 GOOS=linux go build -ldflags="" -o /out/vornikctl      ./cmd/vornikctl
 
 # -----------------------------------------------------------------------
 # Stage 2 (thin): podman-free, minimal image for ui/webhook/future roles
@@ -82,9 +81,8 @@ RUN apt-get update \
 
 COPY --from=builder /out/vornik        /usr/local/bin/vornik
 COPY --from=builder /out/vornikctl      /usr/local/bin/vornikctl
-COPY --from=builder /out/vornik-broker /usr/local/bin/vornik-broker
 COPY deployments/docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh /usr/local/bin/vornik /usr/local/bin/vornikctl /usr/local/bin/vornik-broker
+RUN chmod +x /entrypoint.sh /usr/local/bin/vornik /usr/local/bin/vornikctl
 
 # 8080: HTTP API + UI + /metrics (always)
 # 9090: dedicated metrics server (only if metrics.enabled=true)
@@ -159,9 +157,8 @@ RUN printf '%s\n' \
 
 COPY --from=builder /out/vornik        /usr/local/bin/vornik
 COPY --from=builder /out/vornikctl      /usr/local/bin/vornikctl
-COPY --from=builder /out/vornik-broker /usr/local/bin/vornik-broker
 COPY deployments/docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh /usr/local/bin/vornik /usr/local/bin/vornikctl /usr/local/bin/vornik-broker
+RUN chmod +x /entrypoint.sh /usr/local/bin/vornik /usr/local/bin/vornikctl
 
 # 8080: HTTP API + UI + /metrics (always)
 # 9090: dedicated metrics server (only if metrics.enabled=true)

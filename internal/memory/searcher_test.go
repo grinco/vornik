@@ -79,7 +79,7 @@ func TestSearch_KeywordOnly_NoEmbedder(t *testing.T) {
 	s.setMetrics(freshMetrics())
 
 	mock.ExpectQuery("ts_rank").
-		WithArgs("p", "q", 10).
+		WithArgs("p", "q", 10, "q").
 		WillReturnRows(makeRR([]string{"c1"}, []float64{0.5}))
 	got, err := s.Search(context.Background(), "p", "q", 0)
 	if err != nil || len(got) != 1 {
@@ -190,7 +190,7 @@ func TestSearch_RerankAppliedAndTruncated(t *testing.T) {
 
 	// Reranker is wired + opted in → searcher fetches 3*limit = 15.
 	mock.ExpectQuery("ts_rank").
-		WithArgs("p", "q", 15).
+		WithArgs("p", "q", 15, "q").
 		WillReturnRows(makeRR([]string{"a", "b", "c"}, []float64{0.9, 0.7, 0.5}))
 	out, err := s.SearchWithOptions(context.Background(), "p", "q", SearchOptions{Limit: 5, Rerank: true})
 	if err != nil {
@@ -213,7 +213,7 @@ func TestSearch_RerankFetchLimitClampedAt60(t *testing.T) {
 
 	// limit=30 → 3x=90, clamped to 60 (rerank opted in).
 	mock.ExpectQuery("ts_rank").
-		WithArgs("p", "q", 60).
+		WithArgs("p", "q", 60, "q").
 		WillReturnRows(makeRR([]string{}, []float64{}))
 	if _, err := s.SearchWithOptions(context.Background(), "p", "q", SearchOptions{Limit: 30, Rerank: true}); err != nil {
 		t.Fatal(err)
@@ -233,7 +233,7 @@ func TestSearch_NoRerankByDefault(t *testing.T) {
 
 	// No Rerank opt-in → fetch == limit (5), reranker untouched.
 	mock.ExpectQuery("ts_rank").
-		WithArgs("p", "q", 5).
+		WithArgs("p", "q", 5, "q").
 		WillReturnRows(makeRR([]string{"a", "b", "c"}, []float64{0.9, 0.7, 0.5}))
 	out, err := s.Search(context.Background(), "p", "q", 5)
 	if err != nil {
@@ -343,7 +343,7 @@ func TestSearch_QueryExpanderWidensKeywordSide(t *testing.T) {
 
 	// Searcher should call the keyword SQL with the widened query string.
 	mock.ExpectQuery("ts_rank").
-		WithArgs("p", "deploy kubernetes container", 10).
+		WithArgs("p", "deploy kubernetes container", 10, "deploy OR kubernetes OR container").
 		WillReturnRows(makeRR([]string{"c1"}, []float64{0.5}))
 
 	if _, err := s.Search(context.Background(), "p", "deploy", 10); err != nil {
@@ -361,7 +361,7 @@ func TestSearch_QueryExpanderEmptyExpansionIsNoOp(t *testing.T) {
 	s.SetQueryExpander(&stubExpander{terms: nil})
 
 	mock.ExpectQuery("ts_rank").
-		WithArgs("p", "deploy", 10).
+		WithArgs("p", "deploy", 10, "deploy").
 		WillReturnRows(makeRR([]string{}, []float64{}))
 	if _, err := s.Search(context.Background(), "p", "deploy", 10); err != nil {
 		t.Fatal(err)

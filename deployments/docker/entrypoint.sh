@@ -38,12 +38,16 @@ fi
 # opted out of in-pod podman and is relying on a mounted socket.
 # Verify the socket is reachable before starting vornik, otherwise the
 # first task execution will fail with an opaque "connection refused"
-# deep in the runtime manager's call stack.
+# deep in the runtime manager's call stack. The quickstart install
+# (deployments/podman/quickstart.sh) gates on the socket being LIVE
+# before bringing the daemon up, so this probe passes in the install
+# flow; exit 1 here is the loud fail-fast for a genuinely broken socket.
 if [[ -n "${CONTAINER_HOST:-}" ]]; then
     echo "[entrypoint] CONTAINER_HOST=${CONTAINER_HOST} — probing podman socket..."
     if ! podman --remote info >/dev/null 2>&1; then
         echo "[entrypoint] ERROR: podman socket at ${CONTAINER_HOST} is not reachable." >&2
-        echo "[entrypoint] Check the hostPath mount and that the node runs podman.service." >&2
+        echo "[entrypoint] Check the hostPath mount and that the node runs podman.service" >&2
+        echo "[entrypoint] (rootless: \$XDG_RUNTIME_DIR/podman/podman.sock; rootful: /run/podman/podman.sock)." >&2
         exit 1
     fi
     echo "[entrypoint] podman socket OK."

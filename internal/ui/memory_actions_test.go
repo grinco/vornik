@@ -87,6 +87,18 @@ func (s *uiStubQuarantineRepo) ListPending(ctx context.Context, projectID string
 	return nil, nil
 }
 
+type uiStubIngestQueueRepo struct {
+	persistence.IngestQueueRepository
+	queueDepthFn func(ctx context.Context, projectID string) (int, error)
+}
+
+func (s *uiStubIngestQueueRepo) QueueDepth(ctx context.Context, projectID string) (int, error) {
+	if s.queueDepthFn != nil {
+		return s.queueDepthFn(ctx, projectID)
+	}
+	return 0, nil
+}
+
 // --- MemoryRollbackAction --------------------------------------------
 
 func TestUIMemoryRollbackAction_MethodNotAllowed(t *testing.T) {

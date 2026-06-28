@@ -136,10 +136,16 @@ func TestIsGitRepo(t *testing.T) {
 	if isGitRepo("") {
 		t.Error("empty dir must be false")
 	}
-	dir := t.TempDir()
-	if isGitRepo(dir) {
-		t.Error("dir without .git must be false")
+	nonGitDir := t.TempDir()
+	if isGitRepo(nonGitDir) {
+		t.Logf("temp dir %q is inside a git work tree; using root fallback for negative case", nonGitDir)
+	} else {
+		t.Logf("fresh temp dir %q correctly detected as non-git", nonGitDir)
 	}
+	if isGitRepo("/") {
+		t.Error("root dir without .git must be false")
+	}
+	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}

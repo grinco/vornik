@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"regexp"
 	"testing"
 	"time"
@@ -51,8 +52,8 @@ func TestTaskKeyMinter_MintTaskKey_CreatesKeyAndReturnsRaw(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
 			// companion-scope cols (NULL) — client_kind MUST be empty
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			// memory caps + allow_push (false, false, false)
-			false, false, false,
+			// memory caps + allow_push (false, false, false), default_repo_scope (NULL)
+			false, false, false, sql.NullString{},
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

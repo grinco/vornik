@@ -401,10 +401,10 @@ func TestDB_MigrateAndRunner(t *testing.T) {
 	}
 
 	// Migrate runs the full chain: take pg_advisory_lock,
-	// CREATE migrations, sync bootstrap, get current version,
+	// CREATE migrations, sync bootstrap, read the full applied-version set,
 	// then apply each pending migration, finally release the
 	// advisory lock via defer. Sqlmock the smallest path:
-	// bootstrap already applied + current version = max so
+	// bootstrap already applied + every version already recorded so
 	// nothing needs to apply.
 	//
 	// Magic value 0x73776D646D696772 mirrors persistence.
@@ -419,8 +419,19 @@ func TestDB_MigrateAndRunner(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS(SELECT 1 FROM migrations WHERE version = $1)")).
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) FROM migrations")).
-		WillReturnRows(sqlmock.NewRows([]string{"v"}).AddRow(100000))
+	appliedRows := sqlmock.NewRows([]string{"version"})
+	hasMemoryHardening := false
+	for _, m := range persistence.DefaultMigrations {
+		if m.Version == 23 {
+			hasMemoryHardening = true
+		}
+		appliedRows.AddRow(m.Version)
+	}
+	if !hasMemoryHardening {
+		t.Fatal("DefaultMigrations must include v23 memory hardening migration")
+	}
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT version FROM migrations")).
+		WillReturnRows(appliedRows)
 	mock.ExpectExec(regexp.QuoteMeta("SELECT pg_advisory_unlock($1)")).
 		WithArgs(migLockKey).
 		WillReturnResult(sqlmock.NewResult(0, 0))

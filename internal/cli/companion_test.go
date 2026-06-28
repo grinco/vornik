@@ -22,9 +22,66 @@ func resetCompanionFlags() {
 	companionGrantWorkflowsCSV = ""
 	companionGrantBudgetStr = ""
 	companionGrantExpires = ""
+	companionGrantRepoScope = ""
 	companionGrantJSON = false
 	companionKeysProject = ""
 	companionKeysJSON = false
+}
+
+// TestRunCompanionGrant_RepoScope_ForwardedAsDefaultRepoScope — the
+// --repo-scope flag must reach the grant request as defaultRepoScope so
+// the daemon can stamp it on memory calls that omit repo_scope.
+func TestRunCompanionGrant_RepoScope_ForwardedAsDefaultRepoScope(t *testing.T) {
+	t.Cleanup(resetCompanionFlags)
+	srv, captured := captureGrantRequest(t, `{
+		"id":"k1","projectId":"alpha","clientKind":"codex",
+		"secret":"sk-vornik-alpha.xxx","keyPrefix":"sk-vornik-al",
+		"defaultRepoScope":"github.com/grinco/vornik",
+		"createdAt":"2026-06-28T10:00:00Z"
+	}`)
+	defer srv.Close()
+
+	t.Setenv("VORNIK_API_URL", srv.URL)
+	t.Setenv("VORNIK_API_KEY", "test-admin-key")
+
+	companionGrantProject = "alpha"
+	companionGrantClient = "codex"
+	companionGrantRepoScope = "  github.com/grinco/vornik  " // also exercises trimming
+	companionGrantJSON = true
+
+	require.NoError(t, runCompanionGrant(nil, nil))
+
+	require.NotEmpty(t, *captured)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(*captured, &got))
+	assert.Equal(t, "github.com/grinco/vornik", got["defaultRepoScope"],
+		"--repo-scope must forward as a trimmed defaultRepoScope field")
+}
+
+// TestRunCompanionGrant_OmitsRepoScope_WhenUnset — no flag, no field.
+func TestRunCompanionGrant_OmitsRepoScope_WhenUnset(t *testing.T) {
+	t.Cleanup(resetCompanionFlags)
+	srv, captured := captureGrantRequest(t, `{
+		"id":"k1","projectId":"alpha","clientKind":"codex",
+		"secret":"sk-vornik-alpha.xxx","keyPrefix":"sk-vornik-al",
+		"createdAt":"2026-06-28T10:00:00Z"
+	}`)
+	defer srv.Close()
+
+	t.Setenv("VORNIK_API_URL", srv.URL)
+	t.Setenv("VORNIK_API_KEY", "test-admin-key")
+
+	companionGrantProject = "alpha"
+	companionGrantClient = "codex"
+	companionGrantJSON = true
+
+	require.NoError(t, runCompanionGrant(nil, nil))
+
+	require.NotEmpty(t, *captured)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(*captured, &got))
+	_, present := got["defaultRepoScope"]
+	assert.False(t, present, "defaultRepoScope must be omitted when --repo-scope is unset")
 }
 
 // captureGrantRequest spins up a test server that returns a canned

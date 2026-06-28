@@ -190,6 +190,53 @@ func TestCompanionGrant_DefaultsName_WhenSessionLabelOmitted(t *testing.T) {
 		"fallback name should be companion-claude-code-<timestamp>, got %q", repo.rows[0].Name)
 }
 
+// TestCompanionGrant_PersistsAndEchoesDefaultRepoScope — migration 110:
+// a grant with defaultRepoScope must store it on the key and echo it
+// back so the operator can confirm the scope-by-default backstop landed.
+func TestCompanionGrant_PersistsAndEchoesDefaultRepoScope(t *testing.T) {
+	srv, repo := newCompanionServer(t)
+	body := companionGrantRequest{
+		ProjectID:        "alpha",
+		ClientKind:       "codex",
+		DefaultRepoScope: "github.com/grinco/vornik",
+	}
+	raw, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/companion/grant", strings.NewReader(string(raw)))
+	rec := httptest.NewRecorder()
+	srv.CompanionGrant(rec, withAuthDisabled(req))
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body=%s", rec.Body.String())
+	var resp companionGrantResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "github.com/grinco/vornik", resp.DefaultRepoScope,
+		"response must echo the default repo scope")
+
+	require.Len(t, repo.rows, 1)
+	assert.Equal(t, "github.com/grinco/vornik", repo.rows[0].DefaultRepoScope,
+		"key row must persist the default repo scope")
+}
+
+// TestCompanionGrant_RejectsOversizedDefaultRepoScope bounds the default
+// scope to the same ceiling remember() enforces on a per-call repo_scope.
+func TestCompanionGrant_RejectsOversizedDefaultRepoScope(t *testing.T) {
+	srv, repo := newCompanionServer(t)
+	body := companionGrantRequest{
+		ProjectID:        "alpha",
+		ClientKind:       "codex",
+		DefaultRepoScope: strings.Repeat("x", rememberMaxRepoScopeBytes+1),
+	}
+	raw, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/companion/grant", strings.NewReader(string(raw)))
+	rec := httptest.NewRecorder()
+	srv.CompanionGrant(rec, withAuthDisabled(req))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "defaultRepoScope must be")
+	assert.Empty(t, repo.rows, "no key should be created when validation fails")
+}
+
 func TestCompanionGrant_RejectsWrongMethod(t *testing.T) {
 	srv, _ := newCompanionServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/companion/grant", nil)

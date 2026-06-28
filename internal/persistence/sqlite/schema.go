@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     budget_cap_usd    REAL,        -- lifetime USD cap for this key; NULL = uncapped
     client_kind       TEXT,        -- "claude-code", "codex", "opencode", "gemini-cli"; NULL = non-companion
     session_label     TEXT,        -- operator-friendly session marker
+    default_repo_scope TEXT,       -- migration 110: repo_scope stamped on memory calls that omit it; NULL = none. Rollback (ALTER TABLE ... DROP COLUMN) needs SQLite >= 3.35.0 (2021); older builds reject DROP COLUMN and must recreate the table instead.
     -- Companion RAG capabilities (LLD 22). Default 0 so existing
     -- keys can't read or write project memory until explicitly granted.
     memory_read       INTEGER NOT NULL DEFAULT 0,

@@ -182,6 +182,41 @@ func TestCodexCompanionPlugin_SkillPresent(t *testing.T) {
 	assert.Contains(t, text, "repo_scope")
 }
 
+// TestCodexCompanionPlugin_ScopeDerivationGuidance pins the Part-B client
+// hardening: because Codex ships no SessionStart scope injector, the
+// always-on defaultPrompt AND the delegate skill must both teach the model
+// to DERIVE the canonical repo_scope from the git remote (not hand-guess
+// it). This is the regression guard for the NULL/drifted-scope leak that
+// produced github.com/easeit/vornik-ee chunks (2026-06-28).
+func TestCodexCompanionPlugin_ScopeDerivationGuidance(t *testing.T) {
+	// defaultPrompt must carry the always-on scope rule with a concrete
+	// derivation source — it fires even when the delegate skill isn't loaded.
+	manifestPath := filepath.Join(codexCompanionPluginDir, ".codex-plugin", "plugin.json")
+	body, err := os.ReadFile(manifestPath)
+	require.NoError(t, err)
+	var manifest struct {
+		Interface struct {
+			DefaultPrompt string `json:"defaultPrompt"`
+		} `json:"interface"`
+	}
+	require.NoError(t, json.Unmarshal(body, &manifest))
+	dp := manifest.Interface.DefaultPrompt
+	assert.Contains(t, dp, "repo_scope", "defaultPrompt must mention repo_scope")
+	assert.Contains(t, dp, "remote.origin.url",
+		"defaultPrompt must point at the git remote as the scope-derivation source")
+
+	// The delegate skill must spell out the normalization recipe so the
+	// token matches the canonical scope already in memory.
+	skillPath := filepath.Join(codexCompanionPluginDir, "skills", "delegate", "SKILL.md")
+	sb, err := os.ReadFile(skillPath)
+	require.NoError(t, err)
+	skill := string(sb)
+	assert.Contains(t, skill, "remote.origin.url",
+		"skill must instruct deriving the scope from the git remote")
+	assert.Contains(t, skill, ".git",
+		"skill must describe stripping the trailing .git in normalization")
+}
+
 func TestCodexCompanionPlugin_NoClaudeOnlySurfaces(t *testing.T) {
 	for _, rel := range []string{
 		filepath.Join("hooks", "hooks.json"),

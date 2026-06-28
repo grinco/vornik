@@ -87,14 +87,14 @@ func (r *APIKeyRepository) Create(ctx context.Context, key *persistence.APIKey) 
 		    created_at, expires_at, created_by,
 		    rate_limit_rps, rate_limit_burst,
 		    allowed_workflows, budget_cap_usd, client_kind, session_label,
-		    memory_read, memory_write, allow_push
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+		    memory_read, memory_write, allow_push, default_repo_scope
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
 		key.ID, key.ProjectID, key.Name, key.KeyHash, key.KeyPrefix,
 		key.CreatedAt, key.ExpiresAt, nullable(key.CreatedBy),
 		rps, burst,
 		encodeAllowedWorkflows(key.AllowedWorkflows), budget,
 		nullable(key.ClientKind), nullable(key.SessionLabel),
-		key.MemoryRead, key.MemoryWrite, key.AllowPush,
+		key.MemoryRead, key.MemoryWrite, key.AllowPush, nullable(key.DefaultRepoScope),
 	)
 	return mapDBError(err)
 }
@@ -109,7 +109,7 @@ func (r *APIKeyRepository) LookupActiveByHash(ctx context.Context, keyHash strin
 		       created_at, last_used_at, expires_at, revoked_at, created_by,
 		       rate_limit_rps, rate_limit_burst,
 		       allowed_workflows, budget_cap_usd, client_kind, session_label,
-		       memory_read, memory_write, allow_push
+		       memory_read, memory_write, allow_push, default_repo_scope
 		FROM api_keys
 		WHERE key_hash = $1
 		  AND revoked_at IS NULL
@@ -128,7 +128,7 @@ func (r *APIKeyRepository) ListByProject(ctx context.Context, projectID string) 
 		       created_at, last_used_at, expires_at, revoked_at, created_by,
 		       rate_limit_rps, rate_limit_burst,
 		       allowed_workflows, budget_cap_usd, client_kind, session_label,
-		       memory_read, memory_write, allow_push
+		       memory_read, memory_write, allow_push, default_repo_scope
 		FROM api_keys
 		WHERE project_id = $1
 		ORDER BY created_at DESC`,
@@ -160,7 +160,7 @@ func (r *APIKeyRepository) ListCompanionByProject(ctx context.Context, projectID
 		       created_at, last_used_at, expires_at, revoked_at, created_by,
 		       rate_limit_rps, rate_limit_burst,
 		       allowed_workflows, budget_cap_usd, client_kind, session_label,
-		       memory_read, memory_write, allow_push
+		       memory_read, memory_write, allow_push, default_repo_scope
 		FROM api_keys
 		WHERE project_id = $1
 		  AND client_kind IS NOT NULL
@@ -189,7 +189,7 @@ func (r *APIKeyRepository) ListCompanionByProject(ctx context.Context, projectID
 // *sql.Rows via the small interface.
 func scanAPIKeyRow(scanner interface{ Scan(dest ...any) error }) (*persistence.APIKey, error) {
 	var k persistence.APIKey
-	var createdBy, clientKind, sessionLabel sql.NullString
+	var createdBy, clientKind, sessionLabel, defaultRepoScope sql.NullString
 	var rps, burst sql.NullInt64
 	var allowedWF sql.NullString
 	var budget sql.NullFloat64
@@ -198,7 +198,7 @@ func scanAPIKeyRow(scanner interface{ Scan(dest ...any) error }) (*persistence.A
 		&k.CreatedAt, &k.LastUsedAt, &k.ExpiresAt, &k.RevokedAt, &createdBy,
 		&rps, &burst,
 		&allowedWF, &budget, &clientKind, &sessionLabel,
-		&k.MemoryRead, &k.MemoryWrite, &k.AllowPush,
+		&k.MemoryRead, &k.MemoryWrite, &k.AllowPush, &defaultRepoScope,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, persistence.ErrAPIKeyNotFound
@@ -226,6 +226,9 @@ func scanAPIKeyRow(scanner interface{ Scan(dest ...any) error }) (*persistence.A
 	}
 	if sessionLabel.Valid {
 		k.SessionLabel = sessionLabel.String
+	}
+	if defaultRepoScope.Valid {
+		k.DefaultRepoScope = defaultRepoScope.String
 	}
 	return &k, nil
 }

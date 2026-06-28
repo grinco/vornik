@@ -39,6 +39,7 @@ type companionGrantOutput struct {
 	ExpiresAt        *time.Time `json:"expiresAt,omitempty"`
 	MemoryRead       bool       `json:"memoryRead,omitempty"`
 	MemoryWrite      bool       `json:"memoryWrite,omitempty"`
+	DefaultRepoScope string     `json:"defaultRepoScope,omitempty"`
 }
 
 type companionKeyOutput struct {
@@ -83,6 +84,7 @@ var (
 	companionGrantWorkflowsCSV string
 	companionGrantBudgetStr    string
 	companionGrantExpires      string
+	companionGrantRepoScope    string
 	companionGrantMemoryRead   bool
 	companionGrantMemoryWrite  bool
 	companionGrantMemoryAll    bool
@@ -117,6 +119,10 @@ func init() {
 		"Lifetime USD budget cap for this key (omit for uncapped)")
 	companionGrantCmd.Flags().StringVar(&companionGrantExpires, "expires", "",
 		"Expiration (RFC3339 or duration like 30d, 6m). Empty = never expires.")
+	companionGrantCmd.Flags().StringVar(&companionGrantRepoScope, "repo-scope", "",
+		"Default repo_scope stamped on memory calls that omit it (e.g. github.com/grinco/vornik). "+
+			"Recommended for clients without a SessionStart scope injector (Codex) so deposits can't land NULL-scoped. "+
+			"An explicit per-call repo_scope still overrides it.")
 	// LLD 22: companion RAG capabilities. Off by default — existing
 	// scripts that don't pass these flags continue to mint keys that
 	// can delegate but can't reach memory.
@@ -178,6 +184,9 @@ func runCompanionGrant(cmd *cobra.Command, args []string) error {
 		}
 		body["expiresAt"] = ts.UTC().Format(time.RFC3339)
 	}
+	if rs := strings.TrimSpace(companionGrantRepoScope); rs != "" {
+		body["defaultRepoScope"] = rs
+	}
 	memRead := companionGrantMemoryRead || companionGrantMemoryAll || companionGrantMemoryWrite // write implies read
 	memWrite := companionGrantMemoryWrite || companionGrantMemoryAll
 	if memRead {
@@ -228,6 +237,9 @@ func runCompanionGrant(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  memory:     read + write\n")
 	case out.MemoryRead:
 		fmt.Printf("  memory:     read only\n")
+	}
+	if out.DefaultRepoScope != "" {
+		fmt.Printf("  repo_scope: %s (default; stamped on memory calls that omit repo_scope)\n", out.DefaultRepoScope)
 	}
 	fmt.Printf("  created_at: %s\n", out.CreatedAt.UTC().Format(time.RFC3339))
 	if out.ExpiresAt != nil {

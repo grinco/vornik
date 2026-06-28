@@ -695,7 +695,7 @@ func (s *Server) companionToolDelegate(ctx context.Context, key *persistence.API
 			"api_key_id":    key.ID,
 		},
 	}
-	if scope := strings.TrimSpace(args.RepoScope); scope != "" {
+	if scope := effectiveRepoScope(key, args.RepoScope); scope != "" {
 		payload["repo_scope"] = scope
 	}
 	rawCtx, err := json.Marshal(payload)

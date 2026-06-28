@@ -488,8 +488,8 @@ func TestMigration37_AppliesCleanlyOnFreshSchema(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS(SELECT 1 FROM migrations WHERE version = $1)")).
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) FROM migrations")).
-		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(36))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT version FROM migrations")).
+		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(1))
 	mock.ExpectBegin()
 	mock.ExpectExec("ALTER TABLE project_memory_chunks").
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -500,7 +500,9 @@ func TestMigration37_AppliesCleanlyOnFreshSchema(t *testing.T) {
 	expectMigrationAdvisoryUnlock(mock)
 
 	runner := NewMigrationRunner(db)
-	// Trim the migration set so the runner sees v36 applied and v37 pending.
+	// Trim the migration set to [v1, v37]. The applied set returned above
+	// contains v1, so v1 is skipped and v37 is pending — exercising the
+	// "apply the next unapplied migration" path against v37's real Up SQL.
 	var m37 Migration
 	for _, m := range DefaultMigrations {
 		if m.Version == 37 {
@@ -556,7 +558,7 @@ func TestMigrationRunnerRunAppliesPendingMigration(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS(SELECT 1 FROM migrations WHERE version = $1)")).
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) FROM migrations")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT version FROM migrations")).
 		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(0))
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("CREATE TABLE example (id INT)")).

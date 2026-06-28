@@ -141,7 +141,7 @@ func TestMigrationRunner_SyncBootstrap_DBAlreadySynced(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS(SELECT 1 FROM migrations WHERE version = $1)")).
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) FROM migrations")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT version FROM migrations")).
 		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(1))
 	expectMigrationAdvisoryUnlock(mock)
 
@@ -169,7 +169,7 @@ func TestMigrationRunner_SyncBootstrap_BootstrapNotPresent(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectQuery("SELECT").
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) FROM migrations")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT version FROM migrations")).
 		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(0))
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("SELECT 1")).
@@ -209,7 +209,7 @@ func TestMigrationRunner_SyncBootstrap_BootstrapPresentInsertsRow(t *testing.T) 
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO migrations (version, name)")).
 		WithArgs(1, "initial_schema").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) FROM migrations")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT version FROM migrations")).
 		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(1))
 	expectMigrationAdvisoryUnlock(mock)
 
@@ -235,7 +235,7 @@ func TestMigrationRunner_ApplyMigration_BeginTxFails(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS(SELECT 1 FROM migrations WHERE version = $1)")).
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) FROM migrations")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT version FROM migrations")).
 		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(0))
 	mock.ExpectBegin().WillReturnError(errors.New("begin boom"))
 	expectMigrationAdvisoryUnlock(mock)
@@ -262,7 +262,7 @@ func TestMigrationRunner_ApplyMigration_RecordInsertFails(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS(SELECT 1 FROM migrations WHERE version = $1)")).
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) FROM migrations")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT version FROM migrations")).
 		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(0))
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("SELECT 1")).
@@ -313,7 +313,7 @@ func TestMigrationRunner_Run_GetVersionFails(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS(SELECT 1 FROM migrations WHERE version = $1)")).
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) FROM migrations")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT version FROM migrations")).
 		WillReturnError(errors.New("query boom"))
 	expectMigrationAdvisoryUnlock(mock)
 
@@ -336,7 +336,7 @@ func TestMigrationRunner_Run_EmptyMigrationsSet(t *testing.T) {
 	expectMigrationAdvisoryLock(mock)
 	mock.ExpectExec("CREATE TABLE IF NOT EXISTS migrations").
 		WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) FROM migrations")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT version FROM migrations")).
 		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(0))
 	expectMigrationAdvisoryUnlock(mock)
 

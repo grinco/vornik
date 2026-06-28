@@ -163,3 +163,117 @@ func TestIntegrationFreshInstallMigrations(t *testing.T) {
 // out of the public Postgres surface. If a future refactor renames
 // Postgres.DB(), update the helper rather than every test.
 var _ = (*sql.DB)(nil)
+
+// TestIntegrationGapMigrationReapplied is the regression for the
+// MigrationRunner.Run rewrite (PR31): a migration whose version is below the
+// max applied but that was never actually recorded (a gap — e.g. v23 added
+// after the DB had already migrated past it, or an inversion that left a row
+// unrecorded) must be re-applied idempotently on the next Run, not silently
+// skipped. The old runner used MAX(version) and applied migrations with
+// Version > max, so a gap migration below the max was never re-applied — the
+// memory-hardening tables (corpus_epochs, project_memory_quarantine,
+// project_ingest_queue) went missing this way.
+//
+// The test: fully migrate a fresh DB, DELETE a mid-version row (v23) from the
+// migrations table to simulate the gap, re-run Migrate, and assert v23's row
+// re-appears and v23's tables are still present (re-apply is idempotent:
+// CREATE TABLE IF NOT EXISTS, DO$$-guarded constraints, zero-row backfill).
+//
+// Run with: go test -tags=integration ./internal/persistence/postgres/... -run GapMigrationReapplied
+func TestIntegrationGapMigrationReapplied(t *testing.T) {
+	cfg := Config{
+		Host:           getEnvOrDefault("POSTGRES_HOST", "localhost"),
+		Port:           integrationPort(),
+		Database:       getEnvOrDefault("POSTGRES_DB", integrationDBName),
+		User:           getEnvOrDefault("POSTGRES_USER", "vornik"),
+		Password:       getEnvOrDefault("POSTGRES_PASSWORD", "vornik"),
+		SSLMode:        "disable",
+		ConnectTimeout: 10 * time.Second,
+	}
+	ctx := context.Background()
+	admin, err := Connect(ctx, cfg)
+	if err != nil {
+		t.Fatalf("connect to admin DB: %v", err)
+	}
+	defer func() { _ = admin.Close() }()
+
+	gapDB := fmt.Sprintf("vornik_gap_reapply_test_%d", time.Now().UnixNano())
+	if _, err := admin.DB.ExecContext(ctx, fmt.Sprintf("CREATE DATABASE %s", gapDB)); err != nil {
+		t.Fatalf("create gap DB %s: %v", gapDB, err)
+	}
+	defer func() {
+		_, _ = admin.DB.ExecContext(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s", gapDB))
+	}()
+
+	gapCfg := cfg
+	gapCfg.Database = gapDB
+	conn, err := Connect(ctx, gapCfg)
+	if err != nil {
+		t.Fatalf("connect to gap DB: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Step 1: full apply.
+	if err := conn.Migrate(ctx); err != nil {
+		t.Fatalf("initial migrations failed: %v", err)
+	}
+
+	// Step 2: simulate a gap — delete v23's row (the memory-hardening
+	// migration whose tables went missing in production). v23's tables
+	// already exist; only its migrations-table row is removed.
+	const gapVersion = 23
+	if _, err := conn.DB.ExecContext(ctx,
+		"DELETE FROM migrations WHERE version = $1", gapVersion); err != nil {
+		t.Fatalf("delete gap migration row: %v", err)
+	}
+
+	// Sanity: the row is gone and the max version is still above the gap
+	// (the condition under which the old MAX-based runner skipped it).
+	var maxAfter int
+	if err := conn.DB.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(version), 0) FROM migrations").Scan(&maxAfter); err != nil {
+		t.Fatalf("read max version after gap: %v", err)
+	}
+	if maxAfter <= gapVersion {
+		t.Fatalf("max version %d not above gap %d — test setup is wrong", maxAfter, gapVersion)
+	}
+
+	// Step 3: re-run Migrate. Under the old runner this was a no-op (v23 <=
+	// max → skipped); under the rewrite it re-applies v23 idempotently and
+	// records its row.
+	if err := conn.Migrate(ctx); err != nil {
+		t.Fatalf("re-run migrations after gap: %v\n"+
+			"This means a gap-skipped migration is NOT idempotent on re-apply — "+
+			"its Up SQL needs IF NOT EXISTS / DO$$ guards (see migration-discipline.md).", err)
+	}
+
+	// Step 4: the gap migration's row re-appeared.
+	var gapRowExists bool
+	if err := conn.DB.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM migrations WHERE version = $1)", gapVersion,
+	).Scan(&gapRowExists); err != nil {
+		t.Fatalf("check gap row re-appeared: %v", err)
+	}
+	if !gapRowExists {
+		t.Errorf("gap migration v%d was not re-applied — its migrations-table row is still absent. "+
+			"The runner must re-apply any migration not in the applied set, not skip by MAX(version).", gapVersion)
+	}
+
+	// Step 5: v23's tables are still present (idempotent re-apply didn't drop
+	// or fail them).
+	for _, table := range []string{"corpus_epochs", "project_memory_quarantine", "project_ingest_queue"} {
+		var present bool
+		if err := conn.DB.QueryRowContext(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.tables
+				WHERE table_schema = 'public' AND table_name = $1
+			)
+		`, table).Scan(&present); err != nil {
+			t.Errorf("check table %s after gap re-apply: %v", table, err)
+			continue
+		}
+		if !present {
+			t.Errorf("v23 table %s missing after gap re-apply", table)
+		}
+	}
+}

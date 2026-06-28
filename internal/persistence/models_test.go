@@ -257,7 +257,8 @@ func TestAPIKey_RotatedCopy_PreservesScope(t *testing.T) {
 		RateLimitRPS: &rps, RateLimitBurst: &burst, BudgetCapUSD: &budget,
 		AllowedWorkflows: []string{"companion-architectural-review"},
 		ClientKind:       "claude-code", SessionLabel: "vadim/laptop",
-		MemoryRead: true, MemoryWrite: true, AllowPush: true,
+		DefaultRepoScope: "github.com/grinco/vornik",
+		MemoryRead:       true, MemoryWrite: true, AllowPush: true,
 	}
 	now := time.Now().UTC()
 	fresh := prior.RotatedCopy("akey-new", "newhash", "sk-vornik-b9", "ui", now)
@@ -277,6 +278,7 @@ func TestAPIKey_RotatedCopy_PreservesScope(t *testing.T) {
 	assert.Equal(t, prior.ExpiresAt, fresh.ExpiresAt)
 	assert.Equal(t, "claude-code", fresh.ClientKind)
 	assert.Equal(t, "vadim/laptop", fresh.SessionLabel)
+	assert.Equal(t, "github.com/grinco/vornik", fresh.DefaultRepoScope)
 	assert.True(t, fresh.MemoryRead)
 	assert.True(t, fresh.MemoryWrite)
 	assert.True(t, fresh.AllowPush)

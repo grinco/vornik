@@ -60,7 +60,7 @@ func TestMigrationRunner_Run_AcquiresAdvisoryLock(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS(SELECT 1 FROM migrations WHERE version = $1)")).
 		WithArgs(1).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COALESCE(MAX(version), 0) FROM migrations")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT version FROM migrations")).
 		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(1))
 	mock.ExpectExec(regexp.QuoteMeta("SELECT pg_advisory_unlock($1)")).
 		WithArgs(migrationLockKey).

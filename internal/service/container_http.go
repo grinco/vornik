@@ -1289,6 +1289,7 @@ func (c *Container) initHTTPServer() error {
 	}
 	// Phase 2-4 memory hardening surfaces — populate the /ui/memory
 	// section. Each is nil-safe.
+	uiOpts = append(uiOpts, ui.WithMemoryConfigured(c.Config.Memory.Enabled))
 	if c.memoryQuarantineRepo != nil {
 		uiOpts = append(uiOpts, ui.WithMemoryQuarantineRepository(c.memoryQuarantineRepo))
 	}

@@ -153,25 +153,27 @@ func (s *Server) Memory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := struct {
-		Title         string
-		CurrentPage   string
-		IsAdmin       bool
-		Projects      []projectRow
-		Enabled       bool
-		KG            kgProgress
-		Limit         int
-		LimitOptions  []int
-		TotalProjects int
+		Title            string
+		CurrentPage      string
+		IsAdmin          bool
+		Projects         []projectRow
+		MemoryConfigured bool
+		HardeningReady   bool
+		KG               kgProgress
+		Limit            int
+		LimitOptions     []int
+		TotalProjects    int
 	}{
-		Title:         "Memory — Vornik",
-		CurrentPage:   "memory",
-		IsAdmin:       requestHasAllProjectAccess(r),
-		Projects:      rows,
-		Enabled:       s.memoryQuarantine != nil && s.corpusEpochs != nil,
-		KG:            kg,
-		Limit:         limit,
-		LimitOptions:  PageSizeOptions,
-		TotalProjects: totalProjects,
+		Title:            "Memory — Vornik",
+		CurrentPage:      "memory",
+		IsAdmin:          requestHasAllProjectAccess(r),
+		Projects:         rows,
+		MemoryConfigured: s.memoryConfigured,
+		HardeningReady:   s.memoryQuarantine != nil && s.corpusEpochs != nil && s.ingestQueue != nil,
+		KG:               kg,
+		Limit:            limit,
+		LimitOptions:     PageSizeOptions,
+		TotalProjects:    totalProjects,
 	}
 	s.render(w, "memory_index.html", data)
 }

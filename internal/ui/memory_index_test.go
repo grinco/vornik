@@ -35,6 +35,12 @@ func TestMemory_RendersWithoutHardening(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "project-1") {
 		t.Errorf("expected project row; got %s", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), "Memory is disabled in config") {
+		t.Errorf("expected config-disabled banner; got %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "Memory hardening tables not present") {
+		t.Errorf("unexpected migration banner when memory is disabled in config; got %s", rec.Body.String())
+	}
 }
 
 // TestMemory_QuarantinePendingUsesUnboundedCount pins #7: the
@@ -86,6 +92,7 @@ func TestMemory_QuarantinePendingUsesUnboundedCount(t *testing.T) {
 func TestMemory_RendersWithStubbedHardening(t *testing.T) {
 	closed := time.Now().Add(-time.Hour)
 	srv := NewServer(
+		WithMemoryConfigured(true),
 		WithProjectRegistry(buildPopulatedUIRegistry(t)),
 		WithCorpusEpochRepository(&uiStubEpochRepo{
 			listEpochsFn: func(_ context.Context, _ string, _ int) ([]*persistence.CorpusEpoch, error) {
@@ -100,11 +107,36 @@ func TestMemory_RendersWithStubbedHardening(t *testing.T) {
 				return []*persistence.MemoryQuarantineItem{{ID: "q1"}}, nil
 			},
 		}),
+		WithIngestQueueRepository(&uiStubIngestQueueRepo{}),
 	)
 	req := httptest.NewRequest(http.MethodGet, "/ui/memory?limit=10", nil)
 	rec := httptest.NewRecorder()
 	srv.Memory(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: got %d, body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "Memory hardening tables not present") {
+		t.Fatalf("unexpected hardening banner with hardening repos wired: %s", body)
+	}
+}
+
+func TestMemory_ConfiguredWithoutHardeningShowsMigrationBanner(t *testing.T) {
+	srv := NewServer(
+		WithMemoryConfigured(true),
+		WithProjectRegistry(buildPopulatedUIRegistry(t)),
+	)
+	req := httptest.NewRequest(http.MethodGet, "/ui/memory", nil)
+	rec := httptest.NewRecorder()
+	srv.Memory(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d, body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Memory hardening tables not present") {
+		t.Fatalf("expected migration banner when memory is configured but hardening repos are unavailable: %s", body)
+	}
+	if strings.Contains(body, "Memory is disabled in config") {
+		t.Fatalf("unexpected config-disabled banner when memory is configured: %s", body)
 	}
 }

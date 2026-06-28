@@ -333,6 +333,10 @@ type Server struct {
 	// Memory hardening (Phase 2-4) repos for the /ui/memory section.
 	// Each is nil-safe: handlers degrade with a "memory hardening
 	// not enabled" message when the corresponding repo isn't wired.
+	// memoryConfigured snapshots config.memory.enabled so the UI can
+	// distinguish "memory is off in config" from "memory is on but the
+	// hardening surfaces were not wired".
+	memoryConfigured bool
 	memoryQuarantine persistence.MemoryQuarantineRepository
 	corpusEpochs     persistence.CorpusEpochRepository
 	ingestQueue      persistence.IngestQueueRepository
@@ -750,6 +754,12 @@ func WithMCPRegistry(r MCPRegistrySource) ServerOption {
 // for the /ui/memory section.
 func WithMemoryQuarantineRepository(repo persistence.MemoryQuarantineRepository) ServerOption {
 	return func(s *Server) { s.memoryQuarantine = repo }
+}
+
+// WithMemoryConfigured snapshots whether config.memory.enabled is on
+// so /ui/memory can render the correct disabled-vs-unavailable state.
+func WithMemoryConfigured(enabled bool) ServerOption {
+	return func(s *Server) { s.memoryConfigured = enabled }
 }
 
 // WithMemoryEvictor wires the hard-eviction surface (operator-

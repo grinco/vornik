@@ -237,3 +237,7 @@ func TestProjectWizardSessionRepository_Contract(t *testing.T) {
 	db := newTestDB(t)
 	repotest.RunProjectWizardSessionSuite(t, sqlite.NewProjectWizardSessionRepository(db.DB))
 }
+func TestInstallationOnboardingSessionRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunInstallationOnboardingSessionSuite(t, sqlite.NewInstallationOnboardingSessionRepository(db.DB))
+}

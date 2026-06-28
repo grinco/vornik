@@ -19,6 +19,7 @@ import (
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/auth"
 	"vornik.io/vornik/internal/budget"
+	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/ratelimit"
@@ -366,6 +367,9 @@ type Server struct {
 	// wizardSessions backs the Feature #2 Phase C drafts banner
 	// on /ui/projects. nil-safe — banner hides when unwired.
 	wizardSessions WizardSessionLister
+	// onboardingDetector backs /ui/setup. Nil falls back to the
+	// same conservative heuristic as the API status endpoint.
+	onboardingDetector onboarding.Detector
 	// Phase 2 — prompt-writing assistant. assistantLLM is the
 	// LLM backend the assistant handler calls; nil means the
 	// feature is disabled (handler returns 503). assistantDefault-
@@ -840,6 +844,13 @@ type WizardSessionLister interface {
 // /ui/projects banner. Optional — nil hides the banner.
 func WithWizardSessionLister(src WizardSessionLister) ServerOption {
 	return func(s *Server) { s.wizardSessions = src }
+}
+
+// WithOnboardingDetector wires the install-scoped setup detector used by
+// /ui/setup. Nil keeps the page on the same conservative heuristic as
+// the API status endpoint.
+func WithOnboardingDetector(det onboarding.Detector) ServerOption {
+	return func(s *Server) { s.onboardingDetector = det }
 }
 
 // WithSingleTenantOperatorID wires the auth-off operator fallback the
@@ -1720,6 +1731,7 @@ func (s *Server) Handler() http.Handler {
 	// Projects
 	mux.HandleFunc("/projects", s.Projects)
 	mux.HandleFunc("/projects/", s.projectRouter)
+	mux.HandleFunc("/setup", s.Setup)
 
 	// Swarms — top-level list (IA completion) + editor/create under
 	// the prefix. Exact /swarms hits the list; /swarms/ subtree (incl.

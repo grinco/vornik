@@ -223,6 +223,10 @@ func (s *Server) Dashboard(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/tasks", http.StatusFound)
 		return
 	}
+	if r.URL.Path == "/" && s.onboardingDetector.Config != nil && s.setupStatus(r).FreshInstall {
+		http.Redirect(w, r, "/ui/setup", http.StatusFound)
+		return
+	}
 	s.logger.Debug().
 		Str("method", r.Method).
 		Str("path", r.URL.Path).

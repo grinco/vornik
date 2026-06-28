@@ -1,0 +1,155 @@
+{{define "setup.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-start justify-between flex-wrap gap-3">
+                <div>
+                    <h1 class="text-xl font-semibold text-gray-100">Installation setup</h1>
+                    <p class="text-gray-500 text-xs mt-0.5">
+                        First-run onboarding is now modeled as a durable setup flow. This slice
+                        lands the session store, fresh-install detection, and the status surface
+                        the full guide will use.
+                    </p>
+                </div>
+                <a href="/api/v1/setup/status" class="text-xs text-gray-500 hover:text-gray-300">JSON status</a>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <section class="glass rounded-xl border border-dark-700 overflow-hidden">
+                    <div class="px-5 py-3.5 border-b border-dark-700/60">
+                        <h2 class="text-sm font-semibold text-gray-200">Step 2 — Configure chat</h2>
+                    </div>
+                    <div class="p-5 space-y-4 text-sm text-gray-300">
+                        <p class="text-xs text-gray-500">
+                            Wire the dispatcher's chat backend. This slice handles the single
+                            OpenAI-compatible <code>http</code> provider; <code>router</code>
+                            (multi-provider) is an advanced path — edit <code>config.yaml</code> directly.
+                        </p>
+                        <form id="chat-config-form" class="space-y-3">
+                            <label class="block">
+                                <span class="text-xs uppercase tracking-wide text-gray-500">Chat endpoint (base URL)</span>
+                                <input type="text" name="endpoint" value="{{.Prefill.Endpoint}}"
+                                       placeholder="http://localhost:11434/v1"
+                                       class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
+                            </label>
+                            <label class="block">
+                                <span class="text-xs uppercase tracking-wide text-gray-500">API key</span>
+                                <input type="password" name="api_key" value="{{.Prefill.APIKey}}"
+                                       placeholder="sk-..."
+                                       class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
+                            </label>
+                            <label class="block">
+                                <span class="text-xs uppercase tracking-wide text-gray-500">Default model</span>
+                                <input type="text" name="model" value="{{.Prefill.Model}}"
+                                       placeholder="gpt-4.1"
+                                       class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
+                            </label>
+                            <div class="flex items-center gap-3 pt-1">
+                                <button type="button"
+                                        hx-post="/api/v1/setup/session/new/validate"
+                                        hx-include="[name='endpoint'],[name='api_key'],[name='model']"
+                                        hx-target="#validation-result"
+                                        hx-swap="innerHTML"
+                                        class="px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold">
+                                    Test connection
+                                </button>
+                                <button type="button"
+                                        hx-post="/api/v1/setup/session/new/commit"
+                                        hx-include="[name='endpoint'],[name='api_key'],[name='model']"
+                                        hx-target="#validation-result"
+                                        hx-swap="innerHTML"
+                                        hx-on::after-request="if(event.detail.xhr.status===200){document.getElementById('restart-banner').classList.remove('hidden')}"
+                                        class="px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold">
+                                    Save &amp; continue
+                                </button>
+                            </div>
+                            <div id="validation-result"></div>
+                        </form>
+                        <div id="restart-banner" class="hidden rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-200">
+                            Chat config saved. <strong>Restart the daemon</strong> to load
+                            <code>VORNIK_CHAT_API_KEY</code> from <code>&lt;configDir&gt;/secrets/chat.env</code>.
+                        </div>
+                        <script>
+                        // On first interaction, create an onboarding session and retarget
+                        // the validate/commit buttons to /api/v1/setup/session/{id}/...
+                        (function () {
+                          var form = document.getElementById('chat-config-form');
+                          var created = false;
+                          function ensureSession(ev) {
+                            if (created) return;
+                            ev.preventDefault();
+                            fetch('/api/v1/setup/session', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+                              .then(function (r) { return r.json(); })
+                              .then(function (s) {
+                                created = true;
+                                var base = '/api/v1/setup/session/' + s.id;
+                                form.querySelector('[hx-post$="/validate"]').setAttribute('hx-post', base + '/validate');
+                                form.querySelector('[hx-post$="/commit"]').setAttribute('hx-post', base + '/commit');
+                                htmx.process(form);
+                                // Re-dispatch the original click now that targets are set.
+                                ev.target.click();
+                              });
+                          }
+                          form.querySelectorAll('button[hx-post]').forEach(function (b) {
+                            b.addEventListener('click', ensureSession, { capture: true, once: false });
+                          });
+                        })();
+                        </script>
+                    </div>
+                </section>
+
+                <section class="glass rounded-xl border border-dark-700 overflow-hidden">
+                    <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-3">
+                        <h2 class="text-sm font-semibold text-gray-200">Detected state</h2>
+                        <span class="text-xs px-2 py-1 rounded-full {{if .Status.FreshInstall}}bg-amber-500/15 text-amber-200{{else}}bg-emerald-500/15 text-emerald-200{{end}}">
+                            {{if .Status.FreshInstall}}Needs setup{{else}}Already onboarded{{end}}
+                        </span>
+                    </div>
+                    <div class="p-5 space-y-4 text-sm">
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div class="rounded-lg border border-dark-700 bg-dark-900/50 p-3">
+                                <div class="text-[11px] uppercase tracking-wide text-gray-500">Source</div>
+                                <div class="mt-1 text-gray-200">{{.Status.Source}}</div>
+                            </div>
+                            <div class="rounded-lg border border-dark-700 bg-dark-900/50 p-3">
+                                <div class="text-[11px] uppercase tracking-wide text-gray-500">Fresh install</div>
+                                <div class="mt-1 text-gray-200">{{if .Status.FreshInstall}}Yes{{else}}No{{end}}</div>
+                            </div>
+                            <div class="rounded-lg border border-dark-700 bg-dark-900/50 p-3">
+                                <div class="text-[11px] uppercase tracking-wide text-gray-500">Onboarded</div>
+                                <div class="mt-1 text-gray-200">{{if .Status.Onboarded}}Yes{{else}}No{{end}}</div>
+                            </div>
+                        </div>
+                        {{if .Status.Reasons}}
+                        <div>
+                            <div class="text-xs uppercase tracking-wide text-gray-500 mb-2">Signals</div>
+                            <ul class="space-y-2 text-sm text-gray-300">
+                                {{range .Status.Reasons}}
+                                <li class="rounded-md border border-dark-700 bg-dark-900/40 px-3 py-2">{{.}}</li>
+                                {{end}}
+                            </ul>
+                        </div>
+                        {{end}}
+                        <div class="pt-2 flex items-center gap-2">
+                            <a href="/projects/new" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors">
+                                Open project templates
+                            </a>
+                            <a href="/projects/new/wizard" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold transition-colors">
+                                Use project wizard
+                            </a>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

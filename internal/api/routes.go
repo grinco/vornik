@@ -416,6 +416,9 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		mux.HandleFunc("/api/v1/memory/cache-stats", server.MemoryCacheStats)
 		mux.HandleFunc("/api/v1/projects/wizard/converse", server.ProjectWizardConverse)
 		mux.HandleFunc("/api/v1/projects/wizard/", server.projectWizardRouter)
+		mux.HandleFunc("/api/v1/setup/status", server.SetupStatus)
+		mux.HandleFunc("/api/v1/setup/session", server.SetupSessionCreate)
+		mux.HandleFunc("/api/v1/setup/session/", server.setupSessionRouter)
 		mux.HandleFunc("/api/v1/memory/backfill-titles", server.MemoryBackfillTitles)
 		mux.HandleFunc("/api/v1/memory/reclassify-llm", server.MemoryReclassifyLLM)
 		// KG re-flag — operator-driven backfill of isolated entities.

@@ -449,6 +449,11 @@ func TestUISubtreeHandler_ServesDashboardPaths(t *testing.T) {
 	}
 }
 
+func TestOnboardingSecretsDir_DerivesSecretsSubdir(t *testing.T) {
+	got := onboardingSecretsDir("/etc/vornik/config.yaml")
+	assert.Equal(t, "/etc/vornik/secrets", got)
+}
+
 func TestUIAuthChain_EnforcesProjectScope(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

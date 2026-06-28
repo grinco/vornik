@@ -86,12 +86,14 @@ func (s *stubLLMUsageRepo) TaskCostBreakdown(context.Context, string) ([]persist
 	return nil, nil
 }
 
-// renderDashboardBody builds a default server, GETs /ui/, asserts a 200, and
-// returns the rendered body. Shared by the dashboard render tests so the
-// NewServer + ServeHTTP boilerplate lives in one place.
+// renderDashboardBody builds a default server with an already-onboarded
+// detector (so the dashboard doesn't redirect to /ui/setup), GETs /ui/,
+// asserts a 200, and returns the rendered body. Shared by the dashboard
+// render tests so the NewServer + ServeHTTP boilerplate lives in one place.
 func renderDashboardBody(t *testing.T, opts ...ServerOption) string {
 	t.Helper()
-	srv := NewServer(opts...)
+	all := append([]ServerOption{WithOnboardingDetector(alreadyOnboardedDetector())}, opts...)
+	srv := NewServer(all...)
 	req := httptest.NewRequest("GET", "/", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -129,7 +131,7 @@ func TestDashboardRendersWithSpend(t *testing.T) {
 			{CostUSD: 0.10, RecordedAt: now.Add(-22 * time.Hour)},
 		},
 	}
-	srv := NewServer(WithLLMUsageRepository(repo))
+	srv := NewServer(WithLLMUsageRepository(repo), WithOnboardingDetector(alreadyOnboardedDetector()))
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rr := httptest.NewRecorder()
@@ -168,7 +170,7 @@ func TestDashboard_CacheTileVisibleWhenHitsExist(t *testing.T) {
 			RowCount: 5, TotalHits: 42, TotalSavingsUSD: 1.23,
 		},
 	}
-	srv := NewServer(WithResponseCacheStatsSource(cache))
+	srv := NewServer(WithResponseCacheStatsSource(cache), WithOnboardingDetector(alreadyOnboardedDetector()))
 	req := httptest.NewRequest("GET", "/", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -188,7 +190,7 @@ func TestDashboard_CacheTileHiddenWhenNoHits(t *testing.T) {
 	cache := &stubCacheStatsSource{
 		stats: ResponseCacheStats{RowCount: 3, TotalHits: 0},
 	}
-	srv := NewServer(WithResponseCacheStatsSource(cache))
+	srv := NewServer(WithResponseCacheStatsSource(cache), WithOnboardingDetector(alreadyOnboardedDetector()))
 	req := httptest.NewRequest("GET", "/", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)
@@ -201,7 +203,7 @@ func TestDashboard_CacheTileHiddenWhenNoHits(t *testing.T) {
 }
 
 func TestDashboard_CacheTileHiddenWhenUnwired(t *testing.T) {
-	srv := NewServer()
+	srv := NewServer(WithOnboardingDetector(alreadyOnboardedDetector()))
 	req := httptest.NewRequest("GET", "/", nil)
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, req)

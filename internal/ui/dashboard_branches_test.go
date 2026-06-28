@@ -57,7 +57,7 @@ func (f *fakeActiveChatSource) ActiveChatCount() int { return f.count }
 // TestDashboard_RendersEmptyWithNoRepos — without any repo wired,
 // the landing page still renders (every tile is nil-safe).
 func TestDashboard_RendersEmptyWithNoRepos(t *testing.T) {
-	srv := NewServer()
+	srv := NewServer(WithOnboardingDetector(alreadyOnboardedDetector()))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	srv.Dashboard(rec, req)
@@ -70,7 +70,7 @@ func TestDashboard_RendersEmptyWithNoRepos(t *testing.T) {
 // collapses to the "All clear" indicator (NOT a sea of zero-cards).
 // Pins the design contract that quiet = quiet UI.
 func TestDashboard_OperatorQueue_HealthyState(t *testing.T) {
-	srv := NewServer()
+	srv := NewServer(WithOnboardingDetector(alreadyOnboardedDetector()))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	srv.Dashboard(rec, req)
@@ -103,7 +103,7 @@ func TestDashboard_OperatorQueue_StuckParentsCard(t *testing.T) {
 			return nil, nil
 		},
 	}
-	srv := NewServer(WithTaskRepository(taskRepo))
+	srv := NewServer(WithTaskRepository(taskRepo), WithOnboardingDetector(alreadyOnboardedDetector()))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	srv.Dashboard(rec, req)
@@ -137,7 +137,7 @@ func TestDashboard_RendersWithTaskCountsAndActive(t *testing.T) {
 			return nil, nil
 		},
 	}
-	srv := NewServer(WithTaskRepository(taskRepo))
+	srv := NewServer(WithTaskRepository(taskRepo), WithOnboardingDetector(alreadyOnboardedDetector()))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	srv.Dashboard(rec, req)
@@ -165,6 +165,7 @@ func TestDashboard_WithChunkGraphRendersMemoryTile(t *testing.T) {
 				Mentions:      120,
 			},
 		}),
+		WithOnboardingDetector(alreadyOnboardedDetector()),
 	)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -174,7 +175,7 @@ func TestDashboard_WithChunkGraphRendersMemoryTile(t *testing.T) {
 
 // TestDashboard_WithActiveChatCount — chat tile renders the count.
 func TestDashboard_WithActiveChatCount(t *testing.T) {
-	srv := NewServer(WithActiveChatSource(&fakeActiveChatSource{count: 5}))
+	srv := NewServer(WithActiveChatSource(&fakeActiveChatSource{count: 5}), WithOnboardingDetector(alreadyOnboardedDetector()))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	srv.Dashboard(rec, req)
@@ -220,7 +221,7 @@ func TestDashboard_LimitParamHonoured(t *testing.T) {
 			return rows, nil
 		},
 	}
-	srv := NewServer(WithTaskRepository(taskRepo))
+	srv := NewServer(WithTaskRepository(taskRepo), WithOnboardingDetector(alreadyOnboardedDetector()))
 	req := httptest.NewRequest(http.MethodGet, "/?limit=10", nil)
 	rec := httptest.NewRecorder()
 	srv.Dashboard(rec, req)

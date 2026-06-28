@@ -729,6 +729,24 @@ func (c *Client) Complete(ctx context.Context, messages []Message) (*ChatRespons
 	})
 }
 
+// PingCompletion proves the configured endpoint+key can actually invoke the
+// client's model by issuing one minimal chat completion (max_tokens=1,
+// a trivial user message) and returning only the error. The response
+// body is ignored — this is a reachability/invocability probe, not a
+// content call. It reuses doComplete so the wire shape (auth headers,
+// OpenAI-compatible request body) is owned in one place.
+//
+// Used by the onboarding chat validator and reusable by future
+// "repair my setup" flows and feature-doctor reachability checks.
+func (c *Client) PingCompletion(ctx context.Context) error {
+	_, err := c.doComplete(ctx, ChatRequest{
+		Model:     c.model,
+		Messages:  []Message{{Role: "user", Content: "ping"}},
+		MaxTokens: 1,
+	})
+	return err
+}
+
 // CompleteWithTools sends a chat completion request with tool definitions.
 func (c *Client) CompleteWithTools(ctx context.Context, messages []Message, tools []Tool) (*ChatResponse, error) {
 	return c.doComplete(ctx, ChatRequest{

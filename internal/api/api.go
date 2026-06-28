@@ -23,6 +23,7 @@ import (
 	"vornik.io/vornik/internal/featuredoctor"
 	"vornik.io/vornik/internal/mcp"
 	"vornik.io/vornik/internal/memoryfirewall"
+	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/postmortem"
 	"vornik.io/vornik/internal/pricing"
@@ -388,6 +389,23 @@ type Server struct {
 	// projectWizard backs POST /projects/wizard/converse
 	// (Feature #2). nil → endpoint returns 503.
 	projectWizard ProjectWizard
+	// setupDetector backs GET /api/v1/setup/status and the
+	// install-scoped onboarding page. Zero value means the
+	// endpoint renders a conservative "fresh install" heuristic.
+	setupDetector onboarding.Detector
+	// setupSessions backs POST /api/v1/setup/session, /validate, /commit.
+	// nil → the endpoints return 503. Wired by the service container.
+	setupSessions persistence.InstallationOnboardingSessionRepository
+	// setupValidator tests proposed chat credentials. nil → validate/commit
+	// return 503. Defaults are NOT assumed; the container injects a real
+	// onboarding.ChatValidator.
+	setupValidator onboarding.ChatValidatorInterface
+	// setupConfigPath is the daemon's resolved config.yaml path. The commit
+	// handler patches this file via featuredoctor.FileConfigWriter.
+	setupConfigPath string
+	// setupSecretsDir is <configDir>/secrets, derived from setupConfigPath
+	// by the container. The commit handler writes chat.env here.
+	setupSecretsDir string
 	// liveSub powers GET /executions/{id}/live (Feature #3
 	// Phase B). nil → endpoint returns 503.
 	liveSub LiveSubscriber
@@ -1100,6 +1118,39 @@ func WithProjectWizard(w ProjectWizard) ServerOption {
 	return func(s *Server) {
 		s.projectWizard = w
 	}
+}
+
+// WithOnboardingDetector wires the installation onboarding detector
+// used by /api/v1/setup/status. Nil detector fields keep the endpoint
+// conservative rather than crashing.
+func WithOnboardingDetector(det onboarding.Detector) ServerOption {
+	return func(s *Server) {
+		s.setupDetector = det
+	}
+}
+
+// WithSetupSessions wires the onboarding session repository backing the
+// setup write/validate/commit endpoints. nil → endpoints return 503.
+func WithSetupSessions(repo persistence.InstallationOnboardingSessionRepository) ServerOption {
+	return func(s *Server) { s.setupSessions = repo }
+}
+
+// WithSetupValidator wires the chat-config validator. nil → validate/commit
+// return 503.
+func WithSetupValidator(v onboarding.ChatValidatorInterface) ServerOption {
+	return func(s *Server) { s.setupValidator = v }
+}
+
+// WithSetupConfigPath records the daemon's resolved config.yaml path so
+// the commit handler can patch it via featuredoctor.FileConfigWriter.
+func WithSetupConfigPath(path string) ServerOption {
+	return func(s *Server) { s.setupConfigPath = path }
+}
+
+// WithSetupSecretsDir records the <configDir>/secrets directory the
+// commit handler writes chat.env into.
+func WithSetupSecretsDir(dir string) ServerOption {
+	return func(s *Server) { s.setupSecretsDir = dir }
 }
 
 // WithLiveSubscriber wires the live-observation event source

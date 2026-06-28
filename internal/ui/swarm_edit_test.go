@@ -96,7 +96,7 @@ func swarmEditServer(t *testing.T, root string) (*Server, *reloadingReloader) {
 	reg := registry.New()
 	require.NoError(t, reg.Load(root))
 	reloader := &reloadingReloader{reg: reg, root: root}
-	server := NewServer(WithProjectRegistry(reg), WithConfigReloader(reloader))
+	server := NewServer(WithProjectRegistry(reg), WithConfigReloader(reloader), WithOnboardingDetector(alreadyOnboardedDetector()))
 	return server, reloader
 }
 
@@ -427,7 +427,7 @@ func TestSwarmSave_ReloadErrorReportsConflict(t *testing.T) {
 	reg := registry.New()
 	require.NoError(t, reg.Load(root))
 	reloader := &erroringReloader{}
-	server := NewServer(WithProjectRegistry(reg), WithConfigReloader(reloader))
+	server := NewServer(WithProjectRegistry(reg), WithConfigReloader(reloader), WithOnboardingDetector(alreadyOnboardedDetector()))
 
 	form := url.Values{}
 	form.Set("displayName", "Editable Swarm")

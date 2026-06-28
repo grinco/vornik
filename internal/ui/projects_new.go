@@ -209,7 +209,27 @@ func (s *Server) ProjectsCreateFromTemplate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Re-read config so the freshly written project is live in the
+	// registry immediately — without this the project stays invisible
+	// (GetProject → nil, UI shows "Project Not Found") until the daemon
+	// restarts. Mirrors every other config-write handler, which reload
+	// after persisting. A reload failure is surfaced but non-fatal: the
+	// files are on disk, so a later restart/reload still picks them up.
 	data := s.buildProjectsNewData(r)
+	if s.configReloader != nil {
+		if err := s.configReloader.Reload(); err != nil {
+			data.SelectedSlug = slug
+			data.SelectedManifest = manifest
+			data.FormValues = params
+			data.Error = "Created " + strings.Join(written, ", ") +
+				" but daemon reload failed: " + err.Error() +
+				"\nThe files are on disk; restart the daemon or fix the cause and retry."
+			w.WriteHeader(http.StatusConflict)
+			s.render(w, "projects_new_form.html", data)
+			return
+		}
+	}
+
 	data.CreatedSlug = slug
 	data.CreatedFiles = written
 	data.CreatedProjectID = params["projectId"]

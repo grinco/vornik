@@ -156,6 +156,34 @@ func TestProjectsCreateFromTemplate_HappyPath(t *testing.T) {
 	assert.Contains(t, string(written), "projectId: myproject")
 }
 
+// TestProjectsCreateFromTemplate_TriggersReload pins the regression
+// where a freshly created project wasn't visible in the registry until
+// the daemon restarted: the handler wrote the files to disk but never
+// asked the config reloader to re-read them, so GetProject kept
+// returning nil and the UI showed "Project Not Found". Every other
+// config-write handler reloads after writing; this one must too.
+func TestProjectsCreateFromTemplate_TriggersReload(t *testing.T) {
+	srv, configsDir := templateRig(t)
+	reloader := &mockConfigReloader{}
+	WithConfigReloader(reloader)(srv)
+
+	form := url.Values{}
+	form.Set("slug", "alpha")
+	form.Set("p_projectId", "myproject")
+	req := httptest.NewRequest(http.MethodPost, "/ui/projects/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.ProjectsCreateFromTemplate(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body=%s", rr.Body.String())
+	assert.Equal(t, 1, reloader.calls,
+		"creating a project must reload config so the new project is visible without a restart")
+
+	// Sanity: the file did land on disk.
+	_, err := os.Stat(filepath.Join(configsDir, "projects/myproject.yaml"))
+	require.NoError(t, err)
+}
+
 func TestProjectsCreateFromTemplate_SessionUserForbidden(t *testing.T) {
 	srv, configsDir := templateRig(t)
 	form := url.Values{"slug": {"alpha"}, "p_projectId": {"forbidden-project"}}

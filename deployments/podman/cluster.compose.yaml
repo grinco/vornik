@@ -153,7 +153,11 @@ services:
       AGENT_LLM_MODEL:    ${AGENT_LLM_MODEL:-}
     volumes:
       - ./config/ui.yaml:/etc/vornik/config.yaml:ro,Z
-      - ../../configs:/etc/vornik/configs:ro,Z
+      # Writable (rw): only the UI node serves the web UI and writes
+      # project/swarm/workflow files back into the registry tree when an
+      # operator creates or edits them. Workers/webhook keep this mount
+      # read-only (below) since they only ever read config.
+      - ../../configs:/etc/vornik/configs:rw,Z
       - cluster-ui-data:/var/lib/vornik
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/livez"]

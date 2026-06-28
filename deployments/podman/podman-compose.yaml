@@ -164,8 +164,11 @@ services:
       - ./config/vornik.yaml:/etc/vornik/config.yaml:ro,Z
       # Registry (projects/swarms/workflows/pricing) — re-use the
       # repo-root configs/ tree so edits in the IDE flow through to
-      # the demo without rebuilds.
-      - ../../configs:/etc/vornik/configs:ro,Z
+      # the demo without rebuilds. Writable (rw): the daemon serves the
+      # web UI, which writes project/swarm/workflow files back here when
+      # an operator creates or edits them — a read-only mount makes "add
+      # project"/"edit config" fail with a permission error at write time.
+      - ../../configs:/etc/vornik/configs:rw,Z
       # Persistent data (artifacts, tasks, workspaces). Named volume so
       # `podman-compose down` keeps state; use `down -v` to wipe.
       - vornik-data:/var/lib/vornik

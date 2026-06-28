@@ -461,11 +461,13 @@ func (s *Server) ProjectDetail(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn().Str("project_id", projectID).Msg("project not found for UI")
 		w.WriteHeader(http.StatusNotFound)
 		s.render(w, "project_not_found.html", struct {
-			Title     string
-			ProjectID string
+			Title       string
+			CurrentPage string
+			ProjectID   string
 		}{
-			Title:     "Project Not Found",
-			ProjectID: projectID,
+			Title:       "Project Not Found",
+			CurrentPage: "projects",
+			ProjectID:   projectID,
 		})
 		return
 	}

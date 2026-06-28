@@ -159,9 +159,13 @@ services:
       AGENT_IMAGE: ${AGENT_IMAGE:-localhost/vornik-agent:latest}
     volumes:
       # vornik config.yaml — rendered from the template in this
-      # directory. Read-only: the entrypoint copies it to the data dir
-      # for any in-place rewrites vornikctl might do.
-      - ./config/vornik.yaml:/etc/vornik/config.yaml:ro,Z
+      # directory. Writable (rw): the daemon edits this file in place
+      # for `vornikctl config` updates (and the config-reload path), so
+      # changes made from inside the container — e.g. via the host
+      # `vornikctl` shim — persist back to this host file instead of a
+      # throwaway scratch copy. (entrypoint.sh only copies to scratch
+      # when the mount is read-only.)
+      - ./config/vornik.yaml:/etc/vornik/config.yaml:rw,Z
       # Registry (projects/swarms/workflows/pricing) — re-use the
       # repo-root configs/ tree so edits in the IDE flow through to
       # the demo without rebuilds. Writable (rw): the daemon serves the

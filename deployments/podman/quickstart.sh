@@ -153,6 +153,28 @@ else
   warn "Vornik did not report ready within the timeout. Check logs: podman logs vornik"
 fi
 
+# ---------------------------------------------------------------------------
+# 6. Install the host `vornikctl` shim so the operator can drive the
+#    containerized CLI without a separate binary or API-key plumbing. The
+#    shim execs `podman exec vornik vornikctl`, so it never drifts from
+#    the running image and inherits the container's credentials.
+# ---------------------------------------------------------------------------
+BIN_DIR="${HOME}/.local/bin"
+SHIM_SRC="$DIR/deployments/podman/vornikctl"
+SHIM_DST="$BIN_DIR/vornikctl"
+if [ -e "$SHIM_DST" ] && ! grep -q 'VORNIK_CONTAINER' "$SHIM_DST" 2>/dev/null; then
+  warn "$SHIM_DST already exists and is not the vornik shim — leaving it untouched."
+  warn "Run the shim directly instead: $SHIM_SRC"
+else
+  mkdir -p "$BIN_DIR"
+  install -m 0755 "$SHIM_SRC" "$SHIM_DST" && ok "Installed vornikctl shim → $SHIM_DST"
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) : ;;
+    *) warn "$BIN_DIR is not on your PATH. Add it, then re-open your shell:"
+       warn "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc" ;;
+  esac
+fi
+
 cat <<EOF
 
   ${c_green}Connect${c_off}
@@ -163,6 +185,11 @@ cat <<EOF
   ${c_green}Run tasks${c_off} — add an LLM key, then restart the daemon:
     edit   ${DIR}/deployments/podman/.env      # set VORNIK_CHAT_API_KEY (+ CHAT_ENDPOINT / CHAT_MODEL)
     apply  (cd ${DIR}/deployments/podman && ${compose[*]} up -d vornik)
+
+  ${c_green}Control${c_off} — vornikctl drives the daemon from the host (via the container):
+    check  vornikctl doctor
+    list   vornikctl project list
+    (If 'vornikctl' isn't found, add ~/.local/bin to your PATH — see the note above.)
 
   ${c_green}Manage${c_off}
     logs   podman logs -f vornik

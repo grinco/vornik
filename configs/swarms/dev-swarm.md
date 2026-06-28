@@ -25,7 +25,7 @@ roles:
     modelFallback: "moonshotai.kimi-k2.5"
     maxTokens: 4096
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -94,7 +94,7 @@ roles:
           when: {"feasibility.feasible": false}
           require: ["feasibility.blockers"]
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -160,7 +160,7 @@ roles:
               description: >-
                 Effort tier for the task you just spec'd, sizing the coder's budget. Rubric: trivial = one-line / single-file edit; standard = small multi-file change; complex = a real feature or bug fix touching several files or needing investigation; open_ended = large or ambiguous work needing broad exploration. When torn between two tiers, pick the HIGHER — under-calling starves the coder and it times out.
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -227,7 +227,7 @@ roles:
         implementation:
           type: object
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -329,7 +329,7 @@ roles:
           when: {"testing.passed": true}
           require: ["testing.pinned_cases_validated", "testing.cases"]
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -409,7 +409,7 @@ roles:
           when: {"review.approved": false}
           require: ["review.feedback"]
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -491,7 +491,7 @@ roles:
           when: {"scout.project_context_written": false}
           require: ["scout.reason"]
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -556,7 +556,7 @@ roles:
           when: {"architect.committed": false}
           require: ["architect.reason"]
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -611,7 +611,7 @@ roles:
             draft: {type: bool}
         selected_workflow: {type: string}
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       # Needs GitHub egress for `gh` + `git fetch/push`.
       network: "egress"
       cpu: "1"

@@ -18,7 +18,7 @@ roles:
     model: "{{.defaultModel}}"
     modelFallback: "{{.fallbackModel}}"
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "40"
     permissions:
@@ -35,7 +35,7 @@ roles:
     model: "{{.defaultModel}}"
     modelFallback: "{{.fallbackModel}}"
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "40"
     permissions:
@@ -53,7 +53,7 @@ roles:
     model: "{{.defaultModel}}"
     modelFallback: "{{.fallbackModel}}"
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "20"
     permissions:
@@ -73,7 +73,7 @@ roles:
     model: "{{.defaultModel}}"
     modelFallback: "{{.fallbackModel}}"
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       envVars:
         # Bounded by the input list — one run_shell cp per file + the
         # manifest write. 60 covers ~50 files comfortably.

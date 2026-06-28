@@ -45,15 +45,15 @@
             {{/* Status banner: mode + kill-switch + broker reachability + freshness. */}}
             <div class="flex items-center gap-2 flex-wrap text-xs">
                 {{if .Panel.Mode}}
-                <span class="px-2 py-0.5 rounded {{if eq .Panel.Mode "live"}}bg-rose-900/40 text-rose-300{{else}}bg-accent-900/40 text-accent-300{{end}} font-mono uppercase tracking-wider">{{.Panel.Mode}}</span>
+                <span class="px-2 py-0.5 rounded {{if eq .Panel.Mode "live"}}bg-rose-900/40 text-rose-700 dark:text-rose-300{{else}}bg-accent-900/40 text-accent-300{{end}} font-mono uppercase tracking-wider">{{.Panel.Mode}}</span>
                 {{end}}
                 {{if .Panel.KillSwitch}}
-                <span class="px-2 py-0.5 rounded bg-rose-900/40 text-rose-300 font-mono uppercase tracking-wider">kill-switch on</span>
+                <span class="px-2 py-0.5 rounded bg-rose-900/40 text-rose-700 dark:text-rose-300 font-mono uppercase tracking-wider">kill-switch on</span>
                 {{end}}
                 {{if .Panel.BrokerReachable}}
-                <span class="px-2 py-0.5 rounded bg-emerald-900/30 text-emerald-300">broker online</span>
+                <span class="px-2 py-0.5 rounded bg-emerald-900/30 text-emerald-700 dark:text-emerald-300">broker online</span>
                 {{else}}
-                <span class="px-2 py-0.5 rounded bg-amber-900/40 text-amber-300" title="{{.Panel.BrokerError}}">broker offline</span>
+                <span class="px-2 py-0.5 rounded bg-amber-900/40 text-amber-700 dark:text-amber-300" title="{{.Panel.BrokerError}}">broker offline</span>
                 {{end}}
                 {{if not .Panel.FetchedAt.IsZero}}
                 <span class="text-gray-600">as of {{.Panel.FetchedAt.Format "15:04:05 UTC"}}</span>
@@ -75,7 +75,7 @@
                 <div class="px-5 py-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 text-sm border-b border-dark-700/40">
                     <div>
                         <p class="text-xs text-gray-500 uppercase tracking-wider">Net realized</p>
-                        <p class="mt-1 text-lg font-bold tabular-nums {{if lt .Perf.NetRealizedUSD 0.0}}text-rose-400{{else if gt .Perf.NetRealizedUSD 0.0}}text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .Perf.NetRealizedUSD}}</p>
+                        <p class="mt-1 text-lg font-bold tabular-nums {{if lt .Perf.NetRealizedUSD 0.0}}text-rose-800 dark:text-rose-400{{else if gt .Perf.NetRealizedUSD 0.0}}text-emerald-800 dark:text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .Perf.NetRealizedUSD}}</p>
                     </div>
                     <div>
                         <p class="text-xs text-gray-500 uppercase tracking-wider">Win rate</p>
@@ -88,18 +88,18 @@
                     </div>
                     <div>
                         <p class="text-xs text-gray-500 uppercase tracking-wider">Gross won</p>
-                        <p class="mt-1 text-lg font-semibold text-emerald-400 tabular-nums">{{fmtUSD .Perf.GrossWonUSD}}</p>
+                        <p class="mt-1 text-lg font-semibold text-emerald-800 dark:text-emerald-400 tabular-nums">{{fmtUSD .Perf.GrossWonUSD}}</p>
                     </div>
                     <div>
                         <p class="text-xs text-gray-500 uppercase tracking-wider">Gross lost</p>
-                        <p class="mt-1 text-lg font-semibold text-rose-400 tabular-nums">{{fmtUSD .Perf.GrossLostUSD}}</p>
+                        <p class="mt-1 text-lg font-semibold text-rose-800 dark:text-rose-400 tabular-nums">{{fmtUSD .Perf.GrossLostUSD}}</p>
                     </div>
                     <div>
                         <p class="text-xs text-gray-500 uppercase tracking-wider">Avg win / loss</p>
                         <p class="mt-1 text-base font-semibold text-gray-200 tabular-nums">
-                            <span class="text-emerald-400">{{fmtUSD .Perf.AvgWinUSD}}</span>
+                            <span class="text-emerald-800 dark:text-emerald-400">{{fmtUSD .Perf.AvgWinUSD}}</span>
                             <span class="text-gray-600"> / </span>
-                            <span class="text-rose-400">{{fmtUSD .Perf.AvgLossUSD}}</span>
+                            <span class="text-rose-800 dark:text-rose-400">{{fmtUSD .Perf.AvgLossUSD}}</span>
                         </p>
                     </div>
                 </div>
@@ -181,9 +181,9 @@
                                 <td class="px-5 py-2 text-gray-200 font-mono">{{.Symbol}}</td>
                                 <td class="px-3 py-2 text-gray-300 tabular-nums text-right">{{.Trades}}</td>
                                 <td class="px-3 py-2 text-gray-300 tabular-nums text-right">{{printf "%.1f" .WinRatePct}}%</td>
-                                <td class="px-3 py-2 font-mono tabular-nums text-right {{if lt .NetRealizedUSD 0.0}}text-rose-400{{else if gt .NetRealizedUSD 0.0}}text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .NetRealizedUSD}}</td>
-                                <td class="px-3 py-2 text-emerald-400 font-mono tabular-nums text-right">{{fmtUSD .GrossWonUSD}}</td>
-                                <td class="px-3 py-2 text-rose-400 font-mono tabular-nums text-right">{{fmtUSD .GrossLostUSD}}</td>
+                                <td class="px-3 py-2 font-mono tabular-nums text-right {{if lt .NetRealizedUSD 0.0}}text-rose-800 dark:text-rose-400{{else if gt .NetRealizedUSD 0.0}}text-emerald-800 dark:text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .NetRealizedUSD}}</td>
+                                <td class="px-3 py-2 text-emerald-800 dark:text-emerald-400 font-mono tabular-nums text-right">{{fmtUSD .GrossWonUSD}}</td>
+                                <td class="px-3 py-2 text-rose-800 dark:text-rose-400 font-mono tabular-nums text-right">{{fmtUSD .GrossLostUSD}}</td>
                             </tr>
                             {{end}}
                         </tbody>
@@ -200,17 +200,17 @@
                          stale-fallback / no-data so the operator knows how much to
                          trust the figures, not just "snapshot". */}}
                     {{if eq .AccountStatus "snapshot_expired"}}
-                    <span class="px-2 py-0.5 rounded bg-rose-900/50 text-rose-200 font-semibold uppercase tracking-wider" title="Broker portfolio unavailable and the latest snapshot is over 24h old — DO NOT act on these figures; they are almost certainly out of date.">⚠ expired snapshot · {{.SnapshotAsOf.Format "Jan 2 15:04 UTC"}}</span>
+                    <span class="px-2 py-0.5 rounded bg-rose-900/50 text-rose-600 dark:text-rose-200 font-semibold uppercase tracking-wider" title="Broker portfolio unavailable and the latest snapshot is over 24h old — DO NOT act on these figures; they are almost certainly out of date.">⚠ expired snapshot · {{.SnapshotAsOf.Format "Jan 2 15:04 UTC"}}</span>
                     {{else if eq .AccountStatus "snapshot_stale"}}
-                    <span class="text-xs text-rose-300" title="Broker portfolio unavailable and the latest snapshot is stale (the equity sampler hasn't refreshed it) — figures may be well out of date.">⚠ stale snapshot · as of {{.SnapshotAsOf.Format "15:04 UTC on Jan 2"}}</span>
+                    <span class="text-xs text-rose-700 dark:text-rose-300" title="Broker portfolio unavailable and the latest snapshot is stale (the equity sampler hasn't refreshed it) — figures may be well out of date.">⚠ stale snapshot · as of {{.SnapshotAsOf.Format "15:04 UTC on Jan 2"}}</span>
                     {{else if eq .AccountStatus "snapshot_fresh"}}
-                    <span class="text-xs text-amber-300" title="Live broker portfolio momentarily unavailable; showing a recent persisted snapshot.">snapshot · as of {{.SnapshotAsOf.Format "15:04 UTC on Jan 2"}}</span>
+                    <span class="text-xs text-amber-700 dark:text-amber-300" title="Live broker portfolio momentarily unavailable; showing a recent persisted snapshot.">snapshot · as of {{.SnapshotAsOf.Format "15:04 UTC on Jan 2"}}</span>
                     {{else if eq .AccountStatus "no_snapshot"}}
-                    <span class="text-xs text-rose-400" title="Broker unreachable and no persisted snapshot exists in the retention window.">no data · broker offline</span>
+                    <span class="text-xs text-rose-800 dark:text-rose-400" title="Broker unreachable and no persisted snapshot exists in the retention window.">no data · broker offline</span>
                     {{else if eq .AccountStatus "snapshot_unavailable"}}
-                    <span class="text-xs text-rose-400" title="Broker unreachable AND the snapshot store could not be read — this is a vornik storage problem, not just a broker outage.">no data · snapshot store unavailable</span>
+                    <span class="text-xs text-rose-800 dark:text-rose-400" title="Broker unreachable AND the snapshot store could not be read — this is a vornik storage problem, not just a broker outage.">no data · snapshot store unavailable</span>
                     {{else if .Panel.PortfolioReachable}}
-                    <span class="text-xs text-emerald-400">live</span>
+                    <span class="text-xs text-emerald-800 dark:text-emerald-400">live</span>
                     {{end}}
                 </div>
                 {{if or .Panel.PortfolioReachable .AccountFromSnapshot}}
@@ -231,11 +231,11 @@
                     {{end}}
                     <div>
                         <p class="text-xs text-gray-500 uppercase tracking-wider">Unrealised P&amp;L</p>
-                        <p class="mt-1 text-lg font-semibold tabular-nums {{if lt .Panel.UnrealisedPLUSD 0.0}}text-rose-400{{else if gt .Panel.UnrealisedPLUSD 0.0}}text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .Panel.UnrealisedPLUSD}}</p>
+                        <p class="mt-1 text-lg font-semibold tabular-nums {{if lt .Panel.UnrealisedPLUSD 0.0}}text-rose-800 dark:text-rose-400{{else if gt .Panel.UnrealisedPLUSD 0.0}}text-emerald-800 dark:text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .Panel.UnrealisedPLUSD}}</p>
                     </div>
                     <div>
                         <p class="text-xs text-gray-500 uppercase tracking-wider">Realised P&amp;L (day)</p>
-                        <p class="mt-1 text-lg font-semibold tabular-nums {{if lt .Panel.RealisedPLDayUSD 0.0}}text-rose-400{{else if gt .Panel.RealisedPLDayUSD 0.0}}text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .Panel.RealisedPLDayUSD}}</p>
+                        <p class="mt-1 text-lg font-semibold tabular-nums {{if lt .Panel.RealisedPLDayUSD 0.0}}text-rose-800 dark:text-rose-400{{else if gt .Panel.RealisedPLDayUSD 0.0}}text-emerald-800 dark:text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .Panel.RealisedPLDayUSD}}</p>
                     </div>
                     {{if not .AccountFromSnapshot}}
                     <div>
@@ -245,7 +245,7 @@
                     {{end}}
                 </div>
                 {{else}}
-                <div class="px-5 py-4 text-xs text-amber-300">
+                <div class="px-5 py-4 text-xs text-amber-700 dark:text-amber-300">
                     Account snapshot unavailable: {{if .Panel.PortfolioError}}{{.Panel.PortfolioError}}{{else if .Panel.BrokerError}}{{.Panel.BrokerError}}{{else}}broker offline and no persisted snapshot in the last 30 days{{end}}
                 </div>
                 {{end}}
@@ -263,7 +263,7 @@
                     <div class="flex justify-between"><span class="text-gray-400">Orders / hour</span><span class="text-gray-200 font-mono tabular-nums">{{.Panel.OrdersInLastHour}}{{if gt .Panel.MaxOrdersPerHour 0}} <span class="text-gray-600">/ {{.Panel.MaxOrdersPerHour}}</span>{{else}} <span class="text-gray-600">/ unlimited</span>{{end}}</span></div>
                     <div class="flex justify-between"><span class="text-gray-400">Orders / minute</span><span class="text-gray-200 font-mono tabular-nums">{{.Panel.OrdersInLastMinute}}{{if gt .Panel.MaxOrdersPerMinute 0}} <span class="text-gray-600">/ {{.Panel.MaxOrdersPerMinute}}</span>{{else}} <span class="text-gray-600">/ unlimited</span>{{end}}</span></div>
                     <div class="flex justify-between"><span class="text-gray-400">Drawdown breaker</span><span class="text-gray-200 font-mono tabular-nums">{{if gt .Panel.DrawdownCircuitBreakerPct 0.0}}{{printf "%.1f" .Panel.DrawdownCircuitBreakerPct}}%{{else}}<span class="text-gray-600">disabled</span>{{end}}</span></div>
-                    <div class="flex justify-between"><span class="text-gray-400">Stop-loss</span><span class="text-gray-200 font-mono tabular-nums">{{if .Panel.RequireStopLoss}}<span class="text-emerald-400">required</span>{{else}}<span class="text-gray-500">optional</span>{{end}}{{if gt .Panel.DefaultStopLossPct 0.0}} · {{printf "%.1f" .Panel.DefaultStopLossPct}}%{{end}}</span></div>
+                    <div class="flex justify-between"><span class="text-gray-400">Stop-loss</span><span class="text-gray-200 font-mono tabular-nums">{{if .Panel.RequireStopLoss}}<span class="text-emerald-800 dark:text-emerald-400">required</span>{{else}}<span class="text-gray-500">optional</span>{{end}}{{if gt .Panel.DefaultStopLossPct 0.0}} · {{printf "%.1f" .Panel.DefaultStopLossPct}}%{{end}}</span></div>
                 </div>
             </div>
             {{end}}
@@ -277,15 +277,15 @@
                     {{if .Panel.Soak.SoakReady}}
                     <div>
                         <p class="text-xs text-gray-500 uppercase tracking-wider">Sharpe (ann.)</p>
-                        <p class="mt-1 text-lg font-semibold tabular-nums {{if lt .Panel.Soak.SharpeAnnualized 0.0}}text-rose-400{{else if gt .Panel.Soak.SharpeAnnualized 1.0}}text-emerald-400{{else}}text-gray-200{{end}}">{{printf "%.2f" .Panel.Soak.SharpeAnnualized}}</p>
+                        <p class="mt-1 text-lg font-semibold tabular-nums {{if lt .Panel.Soak.SharpeAnnualized 0.0}}text-rose-800 dark:text-rose-400{{else if gt .Panel.Soak.SharpeAnnualized 1.0}}text-emerald-800 dark:text-emerald-400{{else}}text-gray-200{{end}}">{{printf "%.2f" .Panel.Soak.SharpeAnnualized}}</p>
                     </div>
                     <div>
                         <p class="text-xs text-gray-500 uppercase tracking-wider">Max drawdown</p>
-                        <p class="mt-1 text-lg font-semibold text-amber-400 tabular-nums">{{printf "%.2f" .Panel.Soak.MaxDrawdownPct}}%</p>
+                        <p class="mt-1 text-lg font-semibold text-amber-800 dark:text-amber-400 tabular-nums">{{printf "%.2f" .Panel.Soak.MaxDrawdownPct}}%</p>
                     </div>
                     <div>
                         <p class="text-xs text-gray-500 uppercase tracking-wider">Equity 24h</p>
-                        <p class="mt-1 text-lg font-semibold tabular-nums {{if lt .Panel.Soak.Equity24hChangeUSD 0.0}}text-rose-400{{else if gt .Panel.Soak.Equity24hChangeUSD 0.0}}text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .Panel.Soak.Equity24hChangeUSD}} <span class="text-gray-600">({{printf "%.2f" .Panel.Soak.Equity24hChangePct}}%)</span></p>
+                        <p class="mt-1 text-lg font-semibold tabular-nums {{if lt .Panel.Soak.Equity24hChangeUSD 0.0}}text-rose-800 dark:text-rose-400{{else if gt .Panel.Soak.Equity24hChangeUSD 0.0}}text-emerald-800 dark:text-emerald-400{{else}}text-gray-300{{end}}">{{fmtUSD .Panel.Soak.Equity24hChangeUSD}} <span class="text-gray-600">({{printf "%.2f" .Panel.Soak.Equity24hChangePct}}%)</span></p>
                     </div>
                     {{else}}
                     <div class="col-span-2 sm:col-span-3 lg:col-span-6 text-xs text-gray-500">Soak warming up — {{.Panel.Soak.WindowDays}} day(s) of data ({{.Panel.Soak.SampleCount}} snapshots); Sharpe needs ≥5 days.</div>

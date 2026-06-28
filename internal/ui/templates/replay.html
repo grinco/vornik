@@ -42,11 +42,11 @@
                          project's name. */}}
                     {{with .Timeline.IncomingCrossProjectCall}}
                     <p class="text-[11px] text-gray-500 mt-1.5 flex items-center gap-1 flex-wrap">
-                        <span class="uppercase tracking-wider text-[9px] text-violet-400">called from</span>
+                        <span class="uppercase tracking-wider text-[9px] text-violet-800 dark:text-violet-400">called from</span>
                         {{if .CalleeURL}}
-                        <a href="{{.CalleeURL}}" class="font-mono text-violet-300 hover:text-violet-200" title="step {{.StepID}} in {{.CalleeProject}}">{{.CalleeProject}}</a>
+                        <a href="{{.CalleeURL}}" class="font-mono text-violet-700 dark:text-violet-300 hover:text-violet-600 dark:text-violet-200" title="step {{.StepID}} in {{.CalleeProject}}">{{.CalleeProject}}</a>
                         {{else}}
-                        <span class="font-mono text-violet-300">{{.CalleeProject}}</span>
+                        <span class="font-mono text-violet-700 dark:text-violet-300">{{.CalleeProject}}</span>
                         {{end}}
                         <span class="text-gray-600">·</span>
                         <span class="text-[10px] text-gray-500">cpc {{.CPCId}} · {{.CallStatus}}</span>
@@ -67,7 +67,7 @@
             <div class="glass rounded-xl border border-amber-700/40 overflow-hidden">
                 <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-baseline justify-between gap-2 flex-wrap">
                     <h2 class="text-sm font-semibold text-gray-200 flex items-center gap-2">
-                        <svg class="h-4 w-4 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.008v.008H12v-.008z"/></svg>
+                        <svg class="h-4 w-4 text-amber-800 dark:text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.008v.008H12v-.008z"/></svg>
                         Post-mortem
                     </h2>
                     <span class="text-xs text-gray-500">cached LLM diagnosis</span>
@@ -112,7 +112,7 @@
             <div class="glass rounded-xl border border-violet-700/40 overflow-hidden">
                 <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-baseline justify-between gap-2">
                     <h2 class="text-sm font-semibold text-gray-200 flex items-center gap-2">
-                        <svg class="h-4 w-4 text-violet-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
+                        <svg class="h-4 w-4 text-violet-800 dark:text-violet-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
                         Cross-project edges
                     </h2>
                     <span class="text-[11px] text-gray-500">{{len .Timeline.CrossProjectHops}} outbound</span>
@@ -121,9 +121,9 @@
                     {{range .Timeline.CrossProjectHops}}
                     <li class="px-5 py-3 flex items-start gap-3">
                         {{if eq .Kind "call"}}
-                        <span class="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-violet-900/40 text-violet-300 ring-1 ring-violet-700/40" title="call_project — synchronous wait">call</span>
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-violet-900/40 text-violet-700 dark:text-violet-300 ring-1 ring-violet-700/40" title="call_project — synchronous wait">call</span>
                         {{else}}
-                        <span class="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-emerald-900/40 text-emerald-300 ring-1 ring-emerald-700/40" title="spawn_project — fire-and-forget materialise">spawn</span>
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 ring-1 ring-emerald-700/40" title="spawn_project — fire-and-forget materialise">spawn</span>
                         {{end}}
                         <div class="flex-1 min-w-0 text-xs">
                             <div class="flex items-center gap-2 flex-wrap">
@@ -131,24 +131,24 @@
                                 <span class="text-gray-600">→</span>
                                 {{if eq .Kind "call"}}
                                 {{if .CalleeURL}}
-                                <a href="{{.CalleeURL}}" class="text-violet-300 hover:text-violet-200 font-mono">{{.CalleeProject}} / {{.CalleeWorkflow}}</a>
+                                <a href="{{.CalleeURL}}" class="text-violet-700 dark:text-violet-300 hover:text-violet-600 dark:text-violet-200 font-mono">{{.CalleeProject}} / {{.CalleeWorkflow}}</a>
                                 {{else}}
-                                <span class="text-violet-300 font-mono">{{.CalleeProject}} / {{.CalleeWorkflow}}</span>
+                                <span class="text-violet-700 dark:text-violet-300 font-mono">{{.CalleeProject}} / {{.CalleeWorkflow}}</span>
                                 {{end}}
                                 <span class="text-[10px] text-gray-500">schema {{.ExpectedSchema}}</span>
-                                <span class="text-[10px] {{if eq .CallStatus "completed"}}text-emerald-400{{else if eq .CallStatus "failed"}}text-rose-400{{else if eq .CallStatus "rejected"}}text-amber-400{{else}}text-gray-500{{end}}">{{.CallStatus}}</span>
+                                <span class="text-[10px] {{if eq .CallStatus "completed"}}text-emerald-800 dark:text-emerald-400{{else if eq .CallStatus "failed"}}text-rose-800 dark:text-rose-400{{else if eq .CallStatus "rejected"}}text-amber-800 dark:text-amber-400{{else}}text-gray-500{{end}}">{{.CallStatus}}</span>
                                 {{else}}
                                 {{if .CalleeURL}}
-                                <a href="{{.CalleeURL}}" class="text-emerald-300 hover:text-emerald-200 font-mono">{{.SpawnedProject}}</a>
+                                <a href="{{.CalleeURL}}" class="text-emerald-700 dark:text-emerald-300 hover:text-emerald-600 dark:text-emerald-200 font-mono">{{.SpawnedProject}}</a>
                                 {{else}}
-                                <span class="text-emerald-300 font-mono">{{.SpawnedProject}}</span>
+                                <span class="text-emerald-700 dark:text-emerald-300 font-mono">{{.SpawnedProject}}</span>
                                 {{end}}
                                 <span class="text-[10px] text-gray-500">template {{.TemplateSlug}}</span>
                                 {{if .InitialTaskID}}<span class="text-[10px] text-gray-500">+ initial_task</span>{{end}}
                                 {{end}}
                             </div>
                             {{if .ErrorMessage}}
-                            <div class="text-[11px] text-rose-300 mt-1 break-words">{{.ErrorMessage}}</div>
+                            <div class="text-[11px] text-rose-700 dark:text-rose-300 mt-1 break-words">{{.ErrorMessage}}</div>
                             {{end}}
                         </div>
                     </li>
@@ -174,9 +174,9 @@
                                         <span class="text-sm font-medium text-gray-100">{{$step.StepID}}</span>
                                         <span class="text-xs text-gray-500">{{$step.Role}} on {{$step.Model}}</span>
                                         {{if eq $step.Outcome "ok"}}
-                                            <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-900/40 text-emerald-300">ok</span>
+                                            <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">ok</span>
                                         {{else if $step.Outcome}}
-                                            <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-rose-900/40 text-rose-300">{{$step.Outcome}}</span>
+                                            <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-rose-900/40 text-rose-700 dark:text-rose-300">{{$step.Outcome}}</span>
                                         {{end}}
                                     </div>
                                     <div class="text-[11px] text-gray-500 tabular-nums">
@@ -205,9 +205,9 @@
                                      detail. */}}
                                 {{if and $step.Outcome (ne $step.Outcome "ok") (ne $step.Outcome "pending_validation")}}
                                 <div class="bg-rose-950/30 border border-rose-900/40 rounded-lg px-3 py-2">
-                                    <div class="text-rose-300 font-medium">{{$step.ErrorClass}}</div>
-                                    {{if $step.ErrorDetail}}<div class="text-rose-200/80 mt-1 whitespace-pre-wrap">{{$step.ErrorDetail}}</div>{{end}}
-                                    {{if $step.AttributedToStepID}}<div class="text-rose-400/60 mt-1">flipped by step <code>{{$step.AttributedToStepID}}</code></div>{{end}}
+                                    <div class="text-rose-700 dark:text-rose-300 font-medium">{{$step.ErrorClass}}</div>
+                                    {{if $step.ErrorDetail}}<div class="text-rose-600/80 dark:text-rose-200/80 mt-1 whitespace-pre-wrap">{{$step.ErrorDetail}}</div>{{end}}
+                                    {{if $step.AttributedToStepID}}<div class="text-rose-800/60 dark:text-rose-400/60 mt-1">flipped by step <code>{{$step.AttributedToStepID}}</code></div>{{end}}
                                 </div>
                                 {{end}}
 
@@ -328,7 +328,7 @@
     <div id="fork-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60" onclick="if (event.target === this) closeForkModal()">
         <div class="glass border border-dark-600 rounded-xl shadow-2xl max-w-lg w-full mx-4 overflow-hidden">
             <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between">
-                <h3 class="text-sm font-semibold text-gray-100">Fork from step <span id="fork-modal-step" class="font-mono text-amber-300"></span></h3>
+                <h3 class="text-sm font-semibold text-gray-100">Fork from step <span id="fork-modal-step" class="font-mono text-amber-700 dark:text-amber-300"></span></h3>
                 <button type="button" onclick="closeForkModal()" class="text-gray-500 hover:text-gray-300">
                     <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
@@ -339,7 +339,7 @@
                     <span class="text-gray-500 uppercase tracking-wider text-[10px]">Prompt override (optional)</span>
                     <textarea id="fork-modal-prompt" rows="5" class="mt-1 w-full px-3 py-2 text-sm font-mono rounded-lg bg-dark-900 border border-dark-700 text-gray-100 focus:border-amber-500/60 focus:outline-none" placeholder="Prepended to the step's original prompt on the first iteration."></textarea>
                 </label>
-                <div id="fork-modal-error" class="hidden text-xs text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-3 py-2"></div>
+                <div id="fork-modal-error" class="hidden text-xs text-rose-700 dark:text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-3 py-2"></div>
             </div>
             <div class="px-5 py-3 border-t border-dark-700/60 flex items-center justify-end gap-2 bg-dark-900/40">
                 <button type="button" onclick="closeForkModal()" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 transition-colors">Cancel</button>

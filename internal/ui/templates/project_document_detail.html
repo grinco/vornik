@@ -20,10 +20,10 @@
             </div>
 
             {{if .Success}}
-            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{{.Success}}</div>
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-600 dark:text-emerald-200">{{.Success}}</div>
             {{end}}
             {{if .Error}}
-            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-200 whitespace-pre-wrap">{{.Error}}</div>
             {{end}}
 
             <section class="rounded-lg border border-dark-700 bg-dark-800/40 px-4 py-3">
@@ -33,9 +33,9 @@
                     <div><dt class="text-gray-500">MIME type</dt><dd class="font-mono text-gray-300">{{.Document.MimeType}}</dd></div>
                     <div><dt class="text-gray-500">Extractor</dt><dd class="font-mono text-gray-300">{{.Document.ExtractorName}} v{{.Document.ExtractorVersion}}</dd></div>
                     <div><dt class="text-gray-500">Status</dt><dd>
-                        {{if eq .Document.Status "OK"}}<span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-emerald-900/40 text-emerald-300 ring-1 ring-inset ring-emerald-600/40">OK</span>
-                        {{else if eq .Document.Status "PARTIAL"}}<span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-amber-900/40 text-amber-300 ring-1 ring-inset ring-amber-600/40">PARTIAL</span>
-                        {{else if eq .Document.Status "FAILED"}}<span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-rose-900/40 text-rose-300 ring-1 ring-inset ring-rose-600/40">FAILED</span>
+                        {{if eq .Document.Status "OK"}}<span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 ring-1 ring-inset ring-emerald-600/40">OK</span>
+                        {{else if eq .Document.Status "PARTIAL"}}<span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-amber-900/40 text-amber-700 dark:text-amber-300 ring-1 ring-inset ring-amber-600/40">PARTIAL</span>
+                        {{else if eq .Document.Status "FAILED"}}<span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded-full bg-rose-900/40 text-rose-700 dark:text-rose-300 ring-1 ring-inset ring-rose-600/40">FAILED</span>
                         {{else}}<span class="text-gray-400">{{.Document.Status}}</span>{{end}}
                     </dd></div>
                     {{if .Document.Publisher}}<div><dt class="text-gray-500">Publisher</dt><dd class="text-gray-300">{{.Document.Publisher}}</dd></div>{{end}}

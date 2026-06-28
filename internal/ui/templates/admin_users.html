@@ -11,7 +11,7 @@
                 {{template "navIconAdmin"}}
                 <h1 class="text-xl font-semibold text-gray-100">Users</h1>
                 {{if gt .AwaitingCount 0}}
-                <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-900/60 text-amber-200" title="logins awaiting approval">{{.AwaitingCount}} awaiting</span>
+                <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-900/60 text-amber-600 dark:text-amber-200" title="logins awaiting approval">{{.AwaitingCount}} awaiting</span>
                 {{end}}
                 <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
             </div>
@@ -41,13 +41,13 @@
                         </div>
                         <div class="flex items-center gap-2">
                             {{if $row.Awaiting}}
-                            <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-900/50 text-amber-300">awaiting access</span>
+                            <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-900/50 text-amber-700 dark:text-amber-300">awaiting access</span>
                             {{else if eq $row.Role "admin"}}
-                            <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-emerald-900/50 text-emerald-300">admin</span>
+                            <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-emerald-900/50 text-emerald-700 dark:text-emerald-300">admin</span>
                             {{else}}
-                            <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-blue-900/50 text-blue-300">user</span>
+                            <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-blue-900/50 text-blue-700 dark:text-blue-300">user</span>
                             {{end}}
-                            {{if $row.Disabled}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-red-900/50 text-red-300">disabled</span>{{end}}
+                            {{if $row.Disabled}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-red-900/50 text-red-700 dark:text-red-300">disabled</span>{{end}}
                         </div>
                         <div class="text-xs text-gray-400 ml-auto">
                             {{if not $row.Awaiting}}
@@ -65,7 +65,7 @@
                                 <form method="post" action="/ui/admin/users/{{$row.UserID}}/revoke-identity" class="inline">
                                     <input type="hidden" name="channel" value="{{.Channel}}">
                                     <input type="hidden" name="external_id" value="{{.ExternalID}}">
-                                    <button class="text-red-400 hover:text-red-300 text-xs" title="unlink this identity" onclick="return confirm('Unlink {{.Channel}}:{{.ExternalID}}? They will provision fresh on next login.')">unlink</button>
+                                    <button class="text-red-800 dark:text-red-400 hover:text-red-700 dark:text-red-300 text-xs" title="unlink this identity" onclick="return confirm('Unlink {{.Channel}}:{{.ExternalID}}? They will provision fresh on next login.')">unlink</button>
                                 </form>
                             {{else}}<span class="text-gray-600">none</span>{{end}}
                         </div>
@@ -104,11 +104,11 @@
                             {{end}}
                             {{if $row.Disabled}}
                             <form method="post" action="/ui/admin/users/{{$row.UserID}}/enable" class="inline">
-                                <button class="text-xs text-emerald-400 hover:text-emerald-300 px-2 py-1 rounded-md border border-dark-600">Enable</button>
+                                <button class="text-xs text-emerald-800 dark:text-emerald-400 hover:text-emerald-700 dark:text-emerald-300 px-2 py-1 rounded-md border border-dark-600">Enable</button>
                             </form>
                             {{else}}
                             <form method="post" action="/ui/admin/users/{{$row.UserID}}/disable" class="inline">
-                                <button class="text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded-md border border-dark-600" onclick="return confirm('Disable {{$row.DisplayName}}? Active sessions are revoked immediately.')">Disable</button>
+                                <button class="text-xs text-red-800 dark:text-red-400 hover:text-red-700 dark:text-red-300 px-2 py-1 rounded-md border border-dark-600" onclick="return confirm('Disable {{$row.DisplayName}}? Active sessions are revoked immediately.')">Disable</button>
                             </form>
                             {{end}}
                         </div>

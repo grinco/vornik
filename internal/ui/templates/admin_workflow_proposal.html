@@ -12,11 +12,11 @@
                 <h1 class="text-xl font-semibold text-gray-100">{{if .Proposal}}{{.Proposal.WorkflowID}}{{else}}Proposal{{end}}</h1>
                 {{if .Proposal}}
                 <span class="px-2 py-0.5 text-xs font-mono rounded-md
-                    {{if eq (printf "%s" .Proposal.Status) "pending"}}bg-amber-900/50 text-amber-300
-                    {{else if eq (printf "%s" .Proposal.Status) "approved"}}bg-emerald-900/50 text-emerald-300
-                    {{else if eq (printf "%s" .Proposal.Status) "rejected"}}bg-red-900/50 text-red-300
-                    {{else if eq (printf "%s" .Proposal.Status) "applied"}}bg-blue-900/50 text-blue-300
-                    {{else if eq (printf "%s" .Proposal.Status) "rolled_back"}}bg-purple-900/50 text-purple-300
+                    {{if eq (printf "%s" .Proposal.Status) "pending"}}bg-amber-900/50 text-amber-700 dark:text-amber-300
+                    {{else if eq (printf "%s" .Proposal.Status) "approved"}}bg-emerald-900/50 text-emerald-700 dark:text-emerald-300
+                    {{else if eq (printf "%s" .Proposal.Status) "rejected"}}bg-red-900/50 text-red-700 dark:text-red-300
+                    {{else if eq (printf "%s" .Proposal.Status) "applied"}}bg-blue-900/50 text-blue-700 dark:text-blue-300
+                    {{else if eq (printf "%s" .Proposal.Status) "rolled_back"}}bg-purple-900/50 text-purple-700 dark:text-purple-300
                     {{else}}bg-dark-700 text-gray-300{{end}}">{{.Proposal.Status}}</span>
                 {{end}}
             </div>
@@ -28,7 +28,7 @@
             {{else if .Proposal}}
 
             {{if .DecideError}}
-            <div class="bg-red-900/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-200">
+            <div class="bg-red-900/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-600 dark:text-red-200">
                 <span class="font-medium">Decide failed:</span> {{.DecideError}}
             </div>
             {{end}}
@@ -98,7 +98,7 @@
                         <p class="text-[11px] text-gray-500 uppercase tracking-wider mb-1">Top failure classes</p>
                         <ul class="flex flex-wrap gap-1.5 text-xs">
                             {{range .Baseline.TopFailureClasses}}
-                            <li class="rounded bg-dark-700/60 px-2 py-0.5 font-mono text-rose-200">{{.ErrorClass}} <span class="text-gray-500">×{{.Count}}</span></li>
+                            <li class="rounded bg-dark-700/60 px-2 py-0.5 font-mono text-rose-600 dark:text-rose-200">{{.ErrorClass}} <span class="text-gray-500">×{{.Count}}</span></li>
                             {{end}}
                         </ul>
                     </div>
@@ -125,9 +125,9 @@
             <div class="glass rounded-xl border border-dark-700 overflow-hidden">
                 <div class="px-5 py-3 border-b border-dark-700/60 flex items-center justify-between">
                     <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Diff — current vs proposed</h2>
-                    <span class="text-xs font-mono"><span class="text-emerald-400">+{{.DiffAdded}}</span> <span class="text-rose-400">−{{.DiffRemoved}}</span></span>
+                    <span class="text-xs font-mono"><span class="text-emerald-800 dark:text-emerald-400">+{{.DiffAdded}}</span> <span class="text-rose-800 dark:text-rose-400">−{{.DiffRemoved}}</span></span>
                 </div>
-                <pre class="px-0 py-0 text-xs font-mono overflow-auto max-h-[480px]">{{range .Diff}}<div class="px-5 {{if eq (printf "%s" .Op) "add"}}bg-emerald-900/20 text-emerald-200{{else if eq (printf "%s" .Op) "remove"}}bg-rose-900/20 text-rose-200{{else}}text-gray-400{{end}}">{{if eq (printf "%s" .Op) "add"}}+ {{else if eq (printf "%s" .Op) "remove"}}- {{else}}  {{end}}{{.Text}}</div>{{end}}</pre>
+                <pre class="px-0 py-0 text-xs font-mono overflow-auto max-h-[480px]">{{range .Diff}}<div class="px-5 {{if eq (printf "%s" .Op) "add"}}bg-emerald-900/20 text-emerald-600 dark:text-emerald-200{{else if eq (printf "%s" .Op) "remove"}}bg-rose-900/20 text-rose-600 dark:text-rose-200{{else}}text-gray-400{{end}}">{{if eq (printf "%s" .Op) "add"}}+ {{else if eq (printf "%s" .Op) "remove"}}- {{else}}  {{end}}{{.Text}}</div>{{end}}</pre>
             </div>
             {{end}}
 

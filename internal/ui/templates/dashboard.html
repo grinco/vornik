@@ -41,11 +41,11 @@
                aria-label="{{$awaiting}} task(s) awaiting your input">
                 <div class="flex items-center gap-3">
                     <div class="p-2 rounded-lg bg-amber-500/20 border border-amber-500/30">
-                        <svg class="h-5 w-5 text-amber-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                        <svg class="h-5 w-5 text-amber-700 dark:text-amber-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
                     </div>
                     <div class="flex-1 min-w-0">
-                        <div class="text-base font-semibold text-amber-200">{{$awaiting}} task{{if ne $awaiting 1}}s{{end}} awaiting your input</div>
-                        <div class="text-xs text-amber-300/80 mt-0.5">Tap to review checkpoints + answer →</div>
+                        <div class="text-base font-semibold text-amber-600 dark:text-amber-200">{{$awaiting}} task{{if ne $awaiting 1}}s{{end}} awaiting your input</div>
+                        <div class="text-xs text-amber-700/80 dark:text-amber-300/80 mt-0.5">Tap to review checkpoints + answer →</div>
                     </div>
                 </div>
             </a>
@@ -64,11 +64,11 @@
                aria-label="{{$approval}} task(s) awaiting your approval">
                 <div class="flex items-center gap-3">
                     <div class="p-2 rounded-lg bg-sky-500/20 border border-sky-500/30">
-                        <svg class="h-5 w-5 text-sky-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        <svg class="h-5 w-5 text-sky-700 dark:text-sky-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                     </div>
                     <div class="flex-1 min-w-0">
-                        <div class="text-base font-semibold text-sky-200">{{$approval}} task{{if ne $approval 1}}s{{end}} awaiting your approval</div>
-                        <div class="text-xs text-sky-300/80 mt-0.5">Tap to approve or reject autonomy tasks →</div>
+                        <div class="text-base font-semibold text-sky-600 dark:text-sky-200">{{$approval}} task{{if ne $approval 1}}s{{end}} awaiting your approval</div>
+                        <div class="text-xs text-sky-700/80 dark:text-sky-300/80 mt-0.5">Tap to approve or reject autonomy tasks →</div>
                     </div>
                 </div>
             </a>
@@ -93,11 +93,11 @@
                    aria-label="{{$failed}} tasks failed in the last 24 hours">
                     <div class="flex items-start gap-3">
                         <div class="p-1.5 rounded-lg bg-rose-500/20 border border-rose-500/30 flex-shrink-0 mt-0.5">
-                            <svg class="h-4 w-4 text-rose-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
+                            <svg class="h-4 w-4 text-rose-700 dark:text-rose-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
                         </div>
                         <div class="flex-1 min-w-0">
-                            <div class="text-sm font-semibold text-rose-200">{{$failed}} failed in last 24h</div>
-                            <div class="text-[11px] text-rose-300/70 mt-0.5">See what went wrong + recover →</div>
+                            <div class="text-sm font-semibold text-rose-600 dark:text-rose-200">{{$failed}} failed in last 24h</div>
+                            <div class="text-[11px] text-rose-700/70 dark:text-rose-300/70 mt-0.5">See what went wrong + recover →</div>
                         </div>
                     </div>
                 </a>
@@ -108,11 +108,11 @@
                    aria-label="{{$stuck}} tasks waiting for children — may be stuck">
                     <div class="flex items-start gap-3">
                         <div class="p-1.5 rounded-lg bg-orange-500/20 border border-orange-500/30 flex-shrink-0 mt-0.5">
-                            <svg class="h-4 w-4 text-orange-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            <svg class="h-4 w-4 text-orange-700 dark:text-orange-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                         </div>
                         <div class="flex-1 min-w-0">
-                            <div class="text-sm font-semibold text-orange-200">{{$stuck}} waiting for children</div>
-                            <div class="text-[11px] text-orange-300/70 mt-0.5">Parent tasks paused on delegated work →</div>
+                            <div class="text-sm font-semibold text-orange-600 dark:text-orange-200">{{$stuck}} waiting for children</div>
+                            <div class="text-[11px] text-orange-700/70 dark:text-orange-300/70 mt-0.5">Parent tasks paused on delegated work →</div>
                         </div>
                     </div>
                 </a>
@@ -137,8 +137,8 @@
                  (which looks like a broken page) or four "0 ___" cards
                  (which looks like an alarm panel). */}}
             <div class="bg-emerald-500/5 rounded-xl border border-emerald-700/30 px-5 py-3 flex items-center gap-3" role="status">
-                <svg class="h-4 w-4 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                <span class="text-xs text-emerald-300">All clear — no queue items need attention.</span>
+                <svg class="h-4 w-4 text-emerald-800 dark:text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                <span class="text-xs text-emerald-700 dark:text-emerald-300">All clear — no queue items need attention.</span>
             </div>
             {{end}}
 
@@ -176,7 +176,7 @@
                 <div class="px-5 py-4 grid grid-cols-2 gap-4 text-xs">
                     <div>
                         <dt class="text-ink-500 uppercase tracking-wider text-[10px]">$ saved (lifetime)</dt>
-                        <dd class="text-3xl font-semibold text-emerald-300 tabular-nums" title="Sum of hit_count × CostUSD(model, prompt_tokens, completion_tokens) across the Phase E response cache. Lifetime since first hit landed; not a 24h window.">{{fmtUSD .CacheSavings.TotalSavingsUSD}}</dd>
+                        <dd class="text-3xl font-semibold text-emerald-700 dark:text-emerald-300 tabular-nums" title="Sum of hit_count × CostUSD(model, prompt_tokens, completion_tokens) across the Phase E response cache. Lifetime since first hit landed; not a 24h window.">{{fmtUSD .CacheSavings.TotalSavingsUSD}}</dd>
                     </div>
                     <div>
                         <dt class="text-ink-500 uppercase tracking-wider text-[10px]">LLM calls skipped</dt>
@@ -222,8 +222,8 @@
                                 </div>
                                 <span class="text-xs font-medium px-2 py-0.5 rounded
                                     {{if eq (printf "%s" .Status) "RUNNING"}}bg-accent-500/15 text-accent-300
-                                    {{else if eq (printf "%s" .Status) "LEASED"}}bg-blue-500/15 text-blue-300
-                                    {{else if eq (printf "%s" .Status) "QUEUED"}}bg-amber-500/15 text-amber-300
+                                    {{else if eq (printf "%s" .Status) "LEASED"}}bg-blue-500/15 text-blue-700 dark:text-blue-300
+                                    {{else if eq (printf "%s" .Status) "QUEUED"}}bg-amber-500/15 text-amber-700 dark:text-amber-300
                                     {{else}}bg-ink-500/15 text-ink-300{{end}}">{{.Status}}</span>
                             </a>
                         </li>
@@ -238,7 +238,7 @@
                 <div class="glass rounded-xl border border-surface-600 overflow-hidden">
                     {{template "sectionHeader" (dict "Title" "Active Chats")}}
                     <div class="px-5 py-6 flex flex-col items-center justify-center">
-                        <div class="text-4xl font-bold text-purple-400">{{.ActiveChatCount}}</div>
+                        <div class="text-4xl font-bold text-purple-800 dark:text-purple-400">{{.ActiveChatCount}}</div>
                         <div class="text-xs text-ink-500 mt-2">Telegram conversations in flight</div>
                     </div>
                 </div>
@@ -252,7 +252,7 @@
                         <li class="px-5 py-2.5">
                             <div class="flex items-center justify-between text-sm">
                                 <a href="/ui/projects/{{.ProjectID}}" class="text-ink-200 font-medium truncate">{{.ProjectID}}</a>
-                                <span class="text-xs text-amber-300 font-mono autonomy-eta-label" data-next-eval-iso="{{.NextEvalAtISO}}">{{.EtaLabel}}</span>
+                                <span class="text-xs text-amber-700 dark:text-amber-300 font-mono autonomy-eta-label" data-next-eval-iso="{{.NextEvalAtISO}}">{{.EtaLabel}}</span>
                             </div>
                             <div class="text-xs text-ink-500 mt-0.5 flex items-center gap-2">
                                 <span>every {{.Interval}}</span>
@@ -310,9 +310,9 @@
                         <div class="text-xs border-t border-surface-600/40 pt-2 flex items-center justify-between">
                             <span class="text-ink-500">Ingest backlog</span>
                             {{if gt .Memory.IngestBacklog 0}}
-                            <span class="font-mono tabular-nums text-amber-300">{{.Memory.IngestBacklog}} queued · {{.Memory.IngestProjects}} proj</span>
+                            <span class="font-mono tabular-nums text-amber-700 dark:text-amber-300">{{.Memory.IngestBacklog}} queued · {{.Memory.IngestProjects}} proj</span>
                             {{else}}
-                            <span class="font-mono text-emerald-400">drained</span>
+                            <span class="font-mono text-emerald-800 dark:text-emerald-400">drained</span>
                             {{end}}
                         </div>
                     </div>
@@ -331,7 +331,7 @@
                     <div class="px-5 py-4 space-y-3">
                         <div class="grid grid-cols-3 gap-2 text-center text-xs">
                             <div>
-                                <div class="text-lg font-semibold text-rose-300 tabular-nums">{{.Trading.LiveCount}}</div>
+                                <div class="text-lg font-semibold text-rose-700 dark:text-rose-300 tabular-nums">{{.Trading.LiveCount}}</div>
                                 <div class="text-ink-500">live</div>
                             </div>
                             <div>
@@ -339,18 +339,18 @@
                                 <div class="text-ink-500">paper</div>
                             </div>
                             <div>
-                                <div class="text-lg font-semibold {{if gt .Trading.KillSwitchCount 0}}text-rose-400{{else}}text-ink-400{{end}} tabular-nums">{{.Trading.KillSwitchCount}}</div>
+                                <div class="text-lg font-semibold {{if gt .Trading.KillSwitchCount 0}}text-rose-800 dark:text-rose-400{{else}}text-ink-400{{end}} tabular-nums">{{.Trading.KillSwitchCount}}</div>
                                 <div class="text-ink-500">kill sw.</div>
                             </div>
                         </div>
                         <div class="text-xs border-t border-surface-600/40 pt-2 space-y-1">
                             <div class="flex items-center justify-between">
                                 <span class="text-ink-500">Safety events 24h</span>
-                                <span class="font-mono tabular-nums {{if gt .Trading.SafetyEvents24h 0}}text-amber-300{{else}}text-ink-400{{end}}">{{.Trading.SafetyEvents24h}}</span>
+                                <span class="font-mono tabular-nums {{if gt .Trading.SafetyEvents24h 0}}text-amber-700 dark:text-amber-300{{else}}text-ink-400{{end}}">{{.Trading.SafetyEvents24h}}</span>
                             </div>
                             <div class="flex items-center justify-between">
                                 <span class="text-ink-500">Breaker trips 24h</span>
-                                <span class="font-mono tabular-nums {{if gt .Trading.BreakerTrips24h 0}}text-rose-400{{else}}text-ink-400{{end}}">{{.Trading.BreakerTrips24h}}</span>
+                                <span class="font-mono tabular-nums {{if gt .Trading.BreakerTrips24h 0}}text-rose-800 dark:text-rose-400{{else}}text-ink-400{{end}}">{{.Trading.BreakerTrips24h}}</span>
                             </div>
                         </div>
                     </div>
@@ -371,15 +371,15 @@
                         <div class="px-5 py-4 space-y-3">
                             <div class="grid grid-cols-3 gap-2 text-center text-xs">
                                 <div>
-                                    <div class="text-lg font-semibold text-emerald-400 tabular-nums">{{.Judge.Pass}}</div>
+                                    <div class="text-lg font-semibold text-emerald-800 dark:text-emerald-400 tabular-nums">{{.Judge.Pass}}</div>
                                     <div class="text-ink-500">pass</div>
                                 </div>
                                 <div>
-                                    <div class="text-lg font-semibold text-rose-400 tabular-nums">{{.Judge.Fail}}</div>
+                                    <div class="text-lg font-semibold text-rose-800 dark:text-rose-400 tabular-nums">{{.Judge.Fail}}</div>
                                     <div class="text-ink-500">fail</div>
                                 </div>
                                 <div>
-                                    <div class="text-lg font-semibold text-amber-300 tabular-nums">{{.Judge.Abstain}}</div>
+                                    <div class="text-lg font-semibold text-amber-700 dark:text-amber-300 tabular-nums">{{.Judge.Abstain}}</div>
                                     <div class="text-ink-500">abstain</div>
                                 </div>
                             </div>

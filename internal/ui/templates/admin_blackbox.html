@@ -57,7 +57,7 @@
 
             {{if .TriggersAvailable}}
             {{if .TriggersActionError}}
-            <div class="bg-red-900/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-200">
+            <div class="bg-red-900/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-600 dark:text-red-200">
                 <span class="font-medium">Bulk action:</span> {{.TriggersActionError}}
             </div>
             {{end}}
@@ -95,7 +95,7 @@
                                 <td class="px-4 py-2 whitespace-nowrap">
                                     <a href="/ui/admin/blackbox/triggers/{{.ID}}" class="inline-block hover:opacity-80">
                                     {{if .IsOpen}}
-                                    <span class="px-1.5 py-0.5 text-[10px] font-mono rounded ring-1 ring-amber-700/50 bg-amber-900/30 text-amber-200">{{.Status}}</span>
+                                    <span class="px-1.5 py-0.5 text-[10px] font-mono rounded ring-1 ring-amber-700/50 bg-amber-900/30 text-amber-600 dark:text-amber-200">{{.Status}}</span>
                                     {{else}}
                                     <span class="px-1.5 py-0.5 text-[10px] font-mono rounded ring-1 ring-dark-600 bg-dark-700 text-gray-400">{{.Status}}</span>
                                     {{end}}
@@ -107,14 +107,14 @@
                                     <a href="/ui/admin/blackbox/triggers/{{.ID}}" class="text-gray-200 hover:text-brand-200">{{.WorkflowID}}</a>
                                 </td>
                                 <td class="px-4 py-2 text-xs">
-                                    <span class="px-1.5 py-0.5 font-mono rounded ring-1 ring-violet-700/40 bg-violet-900/20 text-violet-200">{{.Class}}</span>
+                                    <span class="px-1.5 py-0.5 font-mono rounded ring-1 ring-violet-700/40 bg-violet-900/20 text-violet-600 dark:text-violet-200">{{.Class}}</span>
                                 </td>
                                 <td class="px-4 py-2 text-xs font-mono text-right text-gray-300">{{printf "%.4f" .BaselineValue}} → {{printf "%.4f" .ComparisonValue}}</td>
                                 <td class="px-4 py-2 text-xs font-mono text-right">
                                     {{if gt .DeltaPct 0.0}}
-                                    <span class="text-rose-300">+{{printf "%.1f" .DeltaPct}}%</span>
+                                    <span class="text-rose-700 dark:text-rose-300">+{{printf "%.1f" .DeltaPct}}%</span>
                                     {{else}}
-                                    <span class="text-emerald-300">{{printf "%.1f" .DeltaPct}}%</span>
+                                    <span class="text-emerald-700 dark:text-emerald-300">{{printf "%.1f" .DeltaPct}}%</span>
                                     {{end}}
                                 </td>
                                 <td class="px-4 py-2 text-[10px] font-mono text-right text-gray-500">{{.CreatedAt}}</td>

@@ -17,17 +17,17 @@
                  no project access yet (zero groups). */}}
             {{if .Awaiting}}
             <div class="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/25 text-sm">
-                <p class="font-medium text-amber-300 mb-1">Awaiting access</p>
-                <p class="text-amber-200/80">
+                <p class="font-medium text-amber-700 dark:text-amber-300 mb-1">Awaiting access</p>
+                <p class="text-amber-600/80 dark:text-amber-200/80">
                     Your account is recognised but not yet assigned to any project.
                     An administrator must grant you access before you can sign in.
                 </p>
                 {{if eq .Member "yes"}}
-                <p class="mt-2 text-amber-200/60 text-xs">Organisation membership: verified.</p>
+                <p class="mt-2 text-amber-600/60 dark:text-amber-200/60 text-xs">Organisation membership: verified.</p>
                 {{else if eq .Member "no"}}
-                <p class="mt-2 text-amber-200/60 text-xs">Organisation membership: not a member of the configured org.</p>
+                <p class="mt-2 text-amber-600/60 dark:text-amber-200/60 text-xs">Organisation membership: not a member of the configured org.</p>
                 {{else}}
-                <p class="mt-2 text-amber-200/60 text-xs">Organisation membership: not checked.</p>
+                <p class="mt-2 text-amber-600/60 dark:text-amber-200/60 text-xs">Organisation membership: not checked.</p>
                 {{end}}
             </div>
             {{end}}
@@ -35,8 +35,8 @@
             {{/* Error banner — coarse code only; detail stays in logs. */}}
             {{if .Error}}
             <div class="mb-6 p-4 rounded-xl bg-rose-500/10 border border-rose-500/25 text-sm">
-                <p class="font-medium text-rose-300 mb-1">Sign-in failed</p>
-                <p class="text-rose-200/80">
+                <p class="font-medium text-rose-700 dark:text-rose-300 mb-1">Sign-in failed</p>
+                <p class="text-rose-600/80 dark:text-rose-200/80">
                     {{if eq .Error "exchange"}}
                         The provider rejected the sign-in. Please try again.
                     {{else if eq .Error "state"}}

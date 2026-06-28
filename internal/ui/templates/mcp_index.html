@@ -16,9 +16,9 @@
             </div>
 
             {{if not .Configured}}
-            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-300 text-sm">
+            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-700 dark:text-amber-300 text-sm">
                 <p class="font-medium">No daemon-level MCP servers configured.</p>
-                <p class="mt-1 text-amber-200/80">Add a top-level <code class="px-1 py-0.5 rounded bg-amber-900/50 text-amber-100">mcp.servers</code> block to your daemon config to surface installed servers here. This block is read-only inventory — it does not grant projects access to the listed tools.</p>
+                <p class="mt-1 text-amber-600/80 dark:text-amber-200/80">Add a top-level <code class="px-1 py-0.5 rounded bg-amber-900/50 text-amber-600 dark:text-amber-100">mcp.servers</code> block to your daemon config to surface installed servers here. This block is read-only inventory — it does not grant projects access to the listed tools.</p>
             </div>
             {{else}}
             <div class="glass rounded-xl border border-dark-700 overflow-hidden">
@@ -48,12 +48,12 @@
                                 <td class="px-4 py-2 text-gray-400 font-mono text-xs truncate max-w-xs" title="{{if $srv.URL}}{{$srv.URL}}{{else}}{{$srv.Command}}{{end}}">{{if $srv.URL}}{{$srv.URL}}{{else}}{{$srv.Command}}{{end}}</td>
                                 <td class="px-4 py-2">
                                     {{if $srv.Reachable}}
-                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-900/40 border border-emerald-700/40 text-emerald-300 text-xs">
+                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-900/40 border border-emerald-700/40 text-emerald-700 dark:text-emerald-300 text-xs">
                                         <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>
                                         reachable
                                     </span>
                                     {{else}}
-                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-900/40 border border-rose-700/40 text-rose-300 text-xs" title="{{$srv.Error}}">
+                                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-900/40 border border-rose-700/40 text-rose-700 dark:text-rose-300 text-xs" title="{{$srv.Error}}">
                                         <span class="h-1.5 w-1.5 rounded-full bg-rose-400"></span>
                                         unreachable
                                     </span>
@@ -81,7 +81,7 @@
                             {{end}}
                             {{if not $srv.Reachable}}
                             <tr class="bg-dark-900/40">
-                                <td colspan="6" class="px-4 py-2 text-xs text-rose-300/90">
+                                <td colspan="6" class="px-4 py-2 text-xs text-rose-700/90 dark:text-rose-300/90">
                                     <span class="text-gray-500">last error:</span> {{if $srv.Error}}{{$srv.Error}}{{else}}unknown failure{{end}}
                                 </td>
                             </tr>
@@ -99,7 +99,7 @@
 
             <div class="bg-dark-800/40 border border-dark-700/40 rounded-lg p-4 text-xs text-gray-400 space-y-1">
                 <p><span class="text-gray-300 font-medium">How it works.</span> The daemon connects to every server listed in its top-level <code class="text-gray-200 font-mono">mcp.servers</code> block at startup, fetches the tool catalog, and caches it for 5 minutes. Stale entries refresh in the background — the page never waits for a slow server.</p>
-                <p><span class="text-amber-200 font-medium">Auto-discovery ≠ auto-grant.</span> Listing a server here does not give any project access to its tools. Granting a server to a project still requires adding it to that project's own <code class="text-gray-200 font-mono">mcp.servers</code> list.</p>
+                <p><span class="text-amber-600 dark:text-amber-200 font-medium">Auto-discovery ≠ auto-grant.</span> Listing a server here does not give any project access to its tools. Granting a server to a project still requires adding it to that project's own <code class="text-gray-200 font-mono">mcp.servers</code> list.</p>
             </div>
         </div>
     </main>

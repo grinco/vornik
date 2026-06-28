@@ -19,7 +19,7 @@
             {{else}}
 
             {{if .ActionError}}
-            <div class="bg-red-900/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-200">
+            <div class="bg-red-900/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-600 dark:text-red-200">
                 <span class="font-medium">Action failed:</span> {{.ActionError}}
             </div>
             {{end}}
@@ -107,7 +107,7 @@
                         </div>
 
                         {{if .Inconclusive}}
-                        <div class="bg-amber-900/20 border border-amber-800/40 rounded-md px-3 py-2 text-[11px] text-amber-200">
+                        <div class="bg-amber-900/20 border border-amber-800/40 rounded-md px-3 py-2 text-[11px] text-amber-600 dark:text-amber-200">
                             <span class="font-medium">Replay-mode limitation:</span>
                             {{if .InconclusiveReason}}{{.InconclusiveReason}}{{else}}this trial could not produce a confident comparison.{{end}}
                             A trial is a promotion <em>signal</em>, not proof — treat the deltas below as indicative only.
@@ -124,7 +124,7 @@
                                 {{range .ScoreLines}}
                                 <tr>
                                     <td class="py-1 text-gray-400">{{.Label}}</td>
-                                    <td class="py-1 text-right font-mono {{if .Improved}}text-emerald-300{{else if .Worsened}}text-rose-300{{else}}text-gray-300{{end}}">{{.Value}}</td>
+                                    <td class="py-1 text-right font-mono {{if .Improved}}text-emerald-700 dark:text-emerald-300{{else if .Worsened}}text-rose-700 dark:text-rose-300{{else}}text-gray-300{{end}}">{{.Value}}</td>
                                 </tr>
                                 {{end}}
                             </tbody>
@@ -208,7 +208,7 @@
                     {{if .CanReject}}
                     <form method="post" action="/ui/admin/blackbox/candidates/{{.Candidate.ID}}/reject" class="inline ml-auto"
                           onsubmit="return confirm('Reject this candidate? It will be marked rejected and no longer offered for promotion.');">
-                        <button type="submit" class="text-sm text-rose-400 hover:text-rose-300">Reject candidate</button>
+                        <button type="submit" class="text-sm text-rose-800 dark:text-rose-400 hover:text-rose-700 dark:text-rose-300">Reject candidate</button>
                     </form>
                     {{end}}
                 </div>

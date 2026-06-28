@@ -27,10 +27,10 @@
             </div>
 
             {{if .Success}}
-            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{{.Success}}</div>
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-600 dark:text-emerald-200">{{.Success}}</div>
             {{end}}
             {{if .Error}}
-            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-200 whitespace-pre-wrap">{{.Error}}</div>
             {{end}}
 
             <p class="text-sm text-gray-400 leading-relaxed">
@@ -239,7 +239,7 @@
                  workflow via defaultWorkflowId. -->
             <section class="rounded-lg border border-red-500/30 bg-red-500/5 p-5 space-y-3" data-testid="workflow-delete-section">
                 <header>
-                    <h2 class="text-sm font-semibold text-red-300 uppercase tracking-wide">Danger zone</h2>
+                    <h2 class="text-sm font-semibold text-red-700 dark:text-red-300 uppercase tracking-wide">Danger zone</h2>
                     <p class="text-[11px] text-gray-500 mt-1">Removes <code class="text-gray-300">{{.WorkflowID}}.md</code> from disk. Projects still pointing at this workflow will block the delete.</p>
                 </header>
                 <form method="POST" action="/ui/workflows/{{.WorkflowID}}/delete" onsubmit="return confirm('Delete workflow {{.WorkflowID}}? This removes the .md from disk and cannot be undone.');">

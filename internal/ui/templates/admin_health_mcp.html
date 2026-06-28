@@ -9,15 +9,15 @@
         <div class="space-y-5">
             <div class="flex items-center gap-3">
                 <h1 class="text-xl font-semibold text-gray-100">MCP health</h1>
-                <span class="px-2 py-0.5 text-[10px] uppercase tracking-wider font-mono rounded-md bg-amber-900/40 text-amber-300 ring-1 ring-amber-700/40">admin context</span>
+                <span class="px-2 py-0.5 text-[10px] uppercase tracking-wider font-mono rounded-md bg-amber-900/40 text-amber-700 dark:text-amber-300 ring-1 ring-amber-700/40">admin context</span>
                 <a href="/ui/admin/health/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Health</a>
             </div>
 
             {{if .Refreshed}}
-            <div class="bg-emerald-900/30 border border-emerald-700/50 rounded-xl p-3 text-emerald-200 text-sm" role="status">MCP servers refreshed.</div>
+            <div class="bg-emerald-900/30 border border-emerald-700/50 rounded-xl p-3 text-emerald-600 dark:text-emerald-200 text-sm" role="status">MCP servers refreshed.</div>
             {{end}}
             {{if .Error}}
-            <div class="bg-rose-900/30 border border-rose-700/50 rounded-xl p-3 text-rose-200 text-sm" role="alert">{{.Error}}</div>
+            <div class="bg-rose-900/30 border border-rose-700/50 rounded-xl p-3 text-rose-600 dark:text-rose-200 text-sm" role="alert">{{.Error}}</div>
             {{end}}
 
             <div class="glass rounded-xl border border-dark-700 p-5">

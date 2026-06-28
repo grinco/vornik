@@ -72,27 +72,27 @@
                         <div>
                             <div class="text-[10px] uppercase tracking-wider text-accent-400 mb-1.5 px-1">Active · running through the swarm</div>
                             <div class="grid grid-cols-2 gap-2">
-                                {{template "statusFilterCell" (dict "Label" "Queued"    "Status" "QUEUED"               "Active" $active "Count" (index .StatusCounts "QUEUED")               "CountColor" "text-amber-400"  "ActiveBg" "bg-amber-500/20 ring-amber-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Queued"    "Status" "QUEUED"               "Active" $active "Count" (index .StatusCounts "QUEUED")               "CountColor" "text-amber-800 dark:text-amber-400"  "ActiveBg" "bg-amber-500/20 ring-amber-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
                                 {{template "statusFilterCell" (dict "Label" "Running"   "Status" "RUNNING"              "Active" $active "Count" (index .StatusCounts "RUNNING")              "CountColor" "text-accent-400" "ActiveBg" "bg-accent-500/20 ring-accent-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
-                                {{template "statusFilterCell" (dict "Label" "Leased"    "Status" "LEASED"               "Active" $active "Count" (index .StatusCounts "LEASED")               "CountColor" "text-blue-400"   "ActiveBg" "bg-blue-500/20 ring-blue-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Leased"    "Status" "LEASED"               "Active" $active "Count" (index .StatusCounts "LEASED")               "CountColor" "text-blue-800 dark:text-blue-400"   "ActiveBg" "bg-blue-500/20 ring-blue-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
                                 {{template "statusFilterCell" (dict "Label" "Pending"   "Status" "PENDING"              "Active" $active "Count" (index .StatusCounts "PENDING")              "CountColor" "text-gray-400"   "ActiveBg" "bg-gray-500/20 ring-gray-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
                             </div>
                         </div>
                         <div>
-                            <div class="text-[10px] uppercase tracking-wider text-amber-300 mb-1.5 px-1">Blocked · needs you or a deadline</div>
+                            <div class="text-[10px] uppercase tracking-wider text-amber-700 dark:text-amber-300 mb-1.5 px-1">Blocked · needs you or a deadline</div>
                             <div class="grid grid-cols-2 gap-2">
-                                {{template "statusFilterCell" (dict "Label" "Awaiting approval" "Status" "AWAITING_APPROVAL"    "Active" $active "Count" (index .StatusCounts "AWAITING_APPROVAL")    "CountColor" "text-sky-300"    "ActiveBg" "bg-sky-500/25 ring-sky-300" "FlatQS" $flatQS "LimitQS" $limitQS)}}
-                                {{template "statusFilterCell" (dict "Label" "Awaiting input"    "Status" "AWAITING_INPUT"       "Active" $active "Count" (index .StatusCounts "AWAITING_INPUT")       "CountColor" "text-amber-300"  "ActiveBg" "bg-amber-500/25 ring-amber-300" "FlatQS" $flatQS "LimitQS" $limitQS)}}
-                                {{template "statusFilterCell" (dict "Label" "Awaiting ext."     "Status" "AWAITING_EXTERNAL"    "Active" $active "Count" (index .StatusCounts "AWAITING_EXTERNAL")    "CountColor" "text-amber-300"  "ActiveBg" "bg-amber-500/25 ring-amber-300" "FlatQS" $flatQS "LimitQS" $limitQS)}}
-                                {{template "statusFilterCell" (dict "Label" "Waiting children"  "Status" "WAITING_FOR_CHILDREN" "Active" $active "Count" (index .StatusCounts "WAITING_FOR_CHILDREN") "CountColor" "text-purple-400" "ActiveBg" "bg-purple-500/20 ring-purple-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
-                                {{template "statusFilterCell" (dict "Label" "Paused"            "Status" "PAUSED"               "Active" $active "Count" (index .StatusCounts "PAUSED")               "CountColor" "text-purple-300" "ActiveBg" "bg-purple-500/25 ring-purple-300" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Awaiting approval" "Status" "AWAITING_APPROVAL"    "Active" $active "Count" (index .StatusCounts "AWAITING_APPROVAL")    "CountColor" "text-sky-700 dark:text-sky-300"    "ActiveBg" "bg-sky-500/25 ring-sky-300" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Awaiting input"    "Status" "AWAITING_INPUT"       "Active" $active "Count" (index .StatusCounts "AWAITING_INPUT")       "CountColor" "text-amber-700 dark:text-amber-300"  "ActiveBg" "bg-amber-500/25 ring-amber-300" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Awaiting ext."     "Status" "AWAITING_EXTERNAL"    "Active" $active "Count" (index .StatusCounts "AWAITING_EXTERNAL")    "CountColor" "text-amber-700 dark:text-amber-300"  "ActiveBg" "bg-amber-500/25 ring-amber-300" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Waiting children"  "Status" "WAITING_FOR_CHILDREN" "Active" $active "Count" (index .StatusCounts "WAITING_FOR_CHILDREN") "CountColor" "text-purple-800 dark:text-purple-400" "ActiveBg" "bg-purple-500/20 ring-purple-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Paused"            "Status" "PAUSED"               "Active" $active "Count" (index .StatusCounts "PAUSED")               "CountColor" "text-purple-700 dark:text-purple-300" "ActiveBg" "bg-purple-500/25 ring-purple-300" "FlatQS" $flatQS "LimitQS" $limitQS)}}
                             </div>
                         </div>
                         <div>
                             <div class="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5 px-1">Done · terminal — no more work</div>
                             <div class="grid grid-cols-2 gap-2">
-                                {{template "statusFilterCell" (dict "Label" "Completed" "Status" "COMPLETED" "Active" $active "Count" (index .StatusCounts "COMPLETED") "CountColor" "text-emerald-400" "ActiveBg" "bg-emerald-500/20 ring-emerald-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
-                                {{template "statusFilterCell" (dict "Label" "Failed"    "Status" "FAILED"    "Active" $active "Count" (index .StatusCounts "FAILED")    "CountColor" "text-rose-400"    "ActiveBg" "bg-rose-500/20 ring-rose-400"    "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Completed" "Status" "COMPLETED" "Active" $active "Count" (index .StatusCounts "COMPLETED") "CountColor" "text-emerald-800 dark:text-emerald-400" "ActiveBg" "bg-emerald-500/20 ring-emerald-400" "FlatQS" $flatQS "LimitQS" $limitQS)}}
+                                {{template "statusFilterCell" (dict "Label" "Failed"    "Status" "FAILED"    "Active" $active "Count" (index .StatusCounts "FAILED")    "CountColor" "text-rose-800 dark:text-rose-400"    "ActiveBg" "bg-rose-500/20 ring-rose-400"    "FlatQS" $flatQS "LimitQS" $limitQS)}}
                                 {{template "statusFilterCell" (dict "Label" "Cancelled" "Status" "CANCELLED" "Active" $active "Count" (index .StatusCounts "CANCELLED") "CountColor" "text-gray-500"    "ActiveBg" "bg-gray-500/20 ring-gray-400"    "FlatQS" $flatQS "LimitQS" $limitQS)}}
                                 {{template "statusFilterCell" (dict "Label" "Closed"    "Status" "CLOSED"    "Active" $active "Count" (index .StatusCounts "CLOSED")    "CountColor" "text-gray-600"    "ActiveBg" "bg-gray-600/20 ring-gray-500"    "FlatQS" $flatQS "LimitQS" $limitQS)}}
                             </div>
@@ -137,7 +137,7 @@
                         {{statusDot (printf "%s" .Status)}}
                         <span class="font-mono text-sm text-brand-300" title="{{.ID}}">{{shortID .ID}}</span>
                         {{statusPill (printf "%s" .Status)}}
-                        {{if gt $meta.ChildCount 0}}<span class="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-violet-900/40 text-violet-300 ring-1 ring-violet-700/40" title="{{$meta.ChildCount}} subtask(s)">+{{$meta.ChildCount}}</span>{{end}}
+                        {{if gt $meta.ChildCount 0}}<span class="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-violet-900/40 text-violet-700 dark:text-violet-300 ring-1 ring-violet-700/40" title="{{$meta.ChildCount}} subtask(s)">+{{$meta.ChildCount}}</span>{{end}}
                     </div>
                     {{/* Phone card — show the prompt excerpt as the
                          primary visible line so operators can scan
@@ -232,7 +232,7 @@
                                 <td class="px-5 py-3 whitespace-nowrap" style="{{indentStyle $meta.Depth}}">
                                     {{if gt $meta.Depth 0}}<span class="text-gray-500 mr-1" aria-hidden="true">↳</span>{{end}}
                                     <a href="/ui/tasks/{{.ID}}" class="text-brand-400 hover:text-brand-300 font-mono text-sm" title="{{.ID}}">{{shortID .ID}}</a>
-                                    {{if gt $meta.ChildCount 0}}<span class="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-violet-900/40 text-violet-300 ring-1 ring-violet-700/40" title="{{$meta.ChildCount}} subtask(s)">+{{$meta.ChildCount}}</span>{{end}}
+                                    {{if gt $meta.ChildCount 0}}<span class="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-violet-900/40 text-violet-700 dark:text-violet-300 ring-1 ring-violet-700/40" title="{{$meta.ChildCount}} subtask(s)">+{{$meta.ChildCount}}</span>{{end}}
                                 </td>
                                 <td class="px-5 py-3 whitespace-nowrap text-sm text-gray-300"><a href="/ui/projects/{{.ProjectID}}" class="hover:text-gray-100">{{.ProjectID}}</a></td>
                                 <td class="px-5 py-3 whitespace-nowrap">{{template "taskStatusBadge" .Status}}</td>

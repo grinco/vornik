@@ -36,7 +36,7 @@
                         <p class="mt-1.5 text-3xl font-bold text-accent-300 tabular-nums">{{fmtUSD .TotalUSD}}</p>
                         {{/* Cache savings sub-line on the spend tile — visible only when prompt caching is observed (any Bedrock / Anthropic traffic in window). Frames the discount against the gross spend so operators see the deal they got, not just the bill. */}}
                         {{if gt .TotalCacheSavingsUSD 0.0}}
-                        <p class="mt-1 text-xs text-emerald-400 tabular-nums" title="What cache reads WOULD have cost at the full input rate. Falls back to input × 0.10 when pricing.yaml doesn't enumerate cache rates explicitly.">
+                        <p class="mt-1 text-xs text-emerald-800 dark:text-emerald-400 tabular-nums" title="What cache reads WOULD have cost at the full input rate. Falls back to input × 0.10 when pricing.yaml doesn't enumerate cache rates explicitly.">
                             saved {{fmtUSD .TotalCacheSavingsUSD}} via prompt cache
                         </p>
                         {{end}}
@@ -47,7 +47,7 @@
                     <div class="px-5 py-4">
                         <p class="text-xs font-medium text-gray-400 uppercase tracking-wider">Tokens (in / out)</p>
                         <p class="mt-1.5 text-2xl font-bold text-gray-100 tabular-nums">{{fmtTokens .TotalPromptTokens}} <span class="text-gray-600">/</span> {{fmtTokens .TotalCompletionTokens}}</p>
-                        <p class="mt-1 text-xs {{if gt .InputRatioPct 90.0}}text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-400{{else}}text-gray-500{{end}}" title="Higher = more spend on context (prompt) than output. >90% suggests context bloat.">
+                        <p class="mt-1 text-xs {{if gt .InputRatioPct 90.0}}text-rose-800 dark:text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-800 dark:text-amber-400{{else}}text-gray-500{{end}}" title="Higher = more spend on context (prompt) than output. >90% suggests context bloat.">
                             input ratio: {{printf "%.1f" .InputRatioPct}}%{{if gt .InputRatioPct 90.0}} · context-heavy{{end}}
                         </p>
                     </div>
@@ -95,7 +95,7 @@
                     </div>
                     <div>
                         <dt class="text-gray-500 uppercase tracking-wider text-[10px]">Distinct models</dt>
-                        <dd class="text-2xl font-semibold {{if gt .EmbeddingCacheModels 1}}text-amber-300{{else}}text-gray-100{{end}} tabular-nums" title="More than one distinct model means the embedder swapped underneath — parallel caches grow until one tier ages out via retention.">{{.EmbeddingCacheModels}}</dd>
+                        <dd class="text-2xl font-semibold {{if gt .EmbeddingCacheModels 1}}text-amber-700 dark:text-amber-300{{else}}text-gray-100{{end}} tabular-nums" title="More than one distinct model means the embedder swapped underneath — parallel caches grow until one tier ages out via retention.">{{.EmbeddingCacheModels}}</dd>
                     </div>
                 </div>
             </div>
@@ -244,7 +244,7 @@
                             <span>·</span>
                             <span>{{fmtUSD .CostPerTaskUSD}}/task</span>
                             <span>·</span>
-                            <span class="{{if gt .InputRatioPct 90.0}}text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.0f" .InputRatioPct}}% in</span>
+                            <span class="{{if gt .InputRatioPct 90.0}}text-rose-800 dark:text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-800 dark:text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.0f" .InputRatioPct}}% in</span>
                         </div>
                     </a>
                     {{end}}
@@ -267,7 +267,7 @@
                                 <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{.TaskCount}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{.StepCount}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{fmtTokens .PromptTokens}} / {{fmtTokens .CompletionTokens}}</td>
-                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .InputRatioPct 90.0}}text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.0f" .InputRatioPct}}%</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .InputRatioPct 90.0}}text-rose-800 dark:text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-800 dark:text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.0f" .InputRatioPct}}%</td>
                                 <td class="px-4 py-1.5 text-right text-gray-300 tabular-nums">{{fmtUSD .CostPerTaskUSD}}</td>
                                 <td class="px-4 py-1.5 text-right text-accent-300 font-semibold tabular-nums">{{fmtUSD .CostUSD}}</td>
                             </tr>
@@ -286,7 +286,7 @@
                 <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-3 flex-wrap">
                     <div>
                         <h2 class="text-sm font-semibold text-gray-200">Top tasks · {{.WindowLabel}}</h2>
-                        <p class="text-xs text-gray-500 mt-0.5">High <span class="text-amber-400">iter/step</span> = tool loop running long. High <span class="text-rose-400">input %</span> = context bloat.</p>
+                        <p class="text-xs text-gray-500 mt-0.5">High <span class="text-amber-800 dark:text-amber-400">iter/step</span> = tool loop running long. High <span class="text-rose-800 dark:text-rose-400">input %</span> = context bloat.</p>
                     </div>
                     {{/* Shared page-size selector — preserves window +
                          project so changing row count doesn't reset
@@ -313,8 +313,8 @@
                         </div>
                         <div class="text-[11px] text-gray-500 mt-1 flex items-center gap-2 tabular-nums">
                             <span>{{.StepCount}} steps</span>
-                            <span class="{{if gt .IterationsPerStep 5.0}}text-amber-400{{end}}">{{printf "%.1f" .IterationsPerStep}} iter/step</span>
-                            <span class="{{if gt .InputRatioPct 90.0}}text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-400{{end}}">{{printf "%.0f" .InputRatioPct}}% in</span>
+                            <span class="{{if gt .IterationsPerStep 5.0}}text-amber-800 dark:text-amber-400{{end}}">{{printf "%.1f" .IterationsPerStep}} iter/step</span>
+                            <span class="{{if gt .InputRatioPct 90.0}}text-rose-800 dark:text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-800 dark:text-amber-400{{end}}">{{printf "%.0f" .InputRatioPct}}% in</span>
                         </div>
                     </a>
                     {{end}}
@@ -338,8 +338,8 @@
                                 <td class="px-4 py-1.5 text-gray-400 font-mono text-xs">{{.ProjectID}}</td>
                                 <td class="px-4 py-1.5">{{template "taskStatusBadge" .Status}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{.StepCount}}</td>
-                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .IterationsPerStep 15.0}}text-rose-400{{else if gt .IterationsPerStep 10.0}}text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.1f" .IterationsPerStep}}</td>
-                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .InputRatioPct 90.0}}text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.0f" .InputRatioPct}}%</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .IterationsPerStep 15.0}}text-rose-800 dark:text-rose-400{{else if gt .IterationsPerStep 10.0}}text-amber-800 dark:text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.1f" .IterationsPerStep}}</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .InputRatioPct 90.0}}text-rose-800 dark:text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-800 dark:text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.0f" .InputRatioPct}}%</td>
                                 <td class="px-4 py-1.5 text-right text-gray-500 tabular-nums">{{.DurationDisplay}}</td>
                                 <td class="px-4 py-1.5 text-right text-accent-300 font-semibold tabular-nums">{{fmtUSD .CostUSD}}</td>
                             </tr>
@@ -377,7 +377,7 @@
                                 <td class="px-4 py-1.5 text-gray-500 font-mono text-xs">{{.Model}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{.StepCount}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{fmtTokens .PromptTokens}} / {{fmtTokens .CompletionTokens}}</td>
-                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .InputRatioPct 90.0}}text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.0f" .InputRatioPct}}%</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .InputRatioPct 90.0}}text-rose-800 dark:text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-800 dark:text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.0f" .InputRatioPct}}%</td>
                                 <td class="px-4 py-1.5 text-right tabular-nums">
                                     {{if not .DriftHasBaseline}}<span class="text-gray-600">—</span>
                                     {{else if gt .DriftRatio 2.0}}<span class="pill pill-danger" title="Cost per success is {{printf "%.1f" .DriftRatio}}× higher than the 7-day baseline. Investigate model choice / prompt regression.">{{printf "%.2f" .DriftRatio}}×</span>
@@ -386,7 +386,7 @@
                                     {{else}}<span class="text-gray-400">{{printf "%.2f" .DriftRatio}}×</span>{{end}}
                                 </td>
                                 <td class="px-4 py-1.5 text-right tabular-nums" title="cache_read tokens / (cache_read + prompt_tokens)">
-                                    {{if gt .CacheReadTokens 0}}<span class="text-emerald-300">{{printf "%.0f" .CacheHitRatioPct}}%</span>{{else}}<span class="text-gray-600">—</span>{{end}}
+                                    {{if gt .CacheReadTokens 0}}<span class="text-emerald-700 dark:text-emerald-300">{{printf "%.0f" .CacheHitRatioPct}}%</span>{{else}}<span class="text-gray-600">—</span>{{end}}
                                 </td>
                                 <td class="px-4 py-1.5 text-right text-gray-300 tabular-nums">{{fmtUSD .CostPerStepUSD}}</td>
                                 <td class="px-4 py-1.5 text-right text-accent-300 font-semibold tabular-nums">{{fmtUSD .CostUSD}}</td>
@@ -432,8 +432,8 @@
                                 <td class="px-4 py-1.5 text-gray-300">{{if .Role}}{{.Role}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
                                 <td class="px-4 py-1.5 text-gray-500 font-mono text-xs">{{if .Model}}{{.Model}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-300 tabular-nums">{{.StepsAffected}}</td>
-                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .SignalsHigh 0}}text-rose-400 font-semibold{{else}}text-gray-500{{end}}">{{.SignalsHigh}}</td>
-                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .SignalsWarn 0}}text-amber-400{{else}}text-gray-500{{end}}">{{.SignalsWarn}}</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .SignalsHigh 0}}text-rose-800 dark:text-rose-400 font-semibold{{else}}text-gray-500{{end}}">{{.SignalsHigh}}</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if gt .SignalsWarn 0}}text-amber-800 dark:text-amber-400{{else}}text-gray-500{{end}}">{{.SignalsWarn}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-500 tabular-nums">{{.SignalsInfo}}</td>
                                 <td class="px-4 py-1.5 text-xs text-gray-400 font-mono whitespace-nowrap">
                                     {{range $det, $count := .SignalsByDetector}}<span class="inline-block px-1.5 py-0.5 mr-1 mb-0.5 rounded bg-dark-700 ring-1 ring-dark-600">{{$det}}·{{$count}}</span>{{end}}
@@ -483,9 +483,9 @@
                                 <td class="px-4 py-1.5 text-gray-300">{{if .Role}}{{.Role}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
                                 <td class="px-4 py-1.5 text-gray-500 font-mono text-xs">{{if .Model}}{{.Model}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-300 tabular-nums">{{.Total}}</td>
-                                <td class="px-4 py-1.5 text-right tabular-nums {{if lt .PassRatePct 50.0}}text-rose-400{{else if lt .PassRatePct 75.0}}text-amber-400{{else}}text-emerald-400{{end}}">{{printf "%.0f" .PassRatePct}}%</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums {{if lt .PassRatePct 50.0}}text-rose-800 dark:text-rose-400{{else if lt .PassRatePct 75.0}}text-amber-800 dark:text-amber-400{{else}}text-emerald-800 dark:text-emerald-400{{end}}">{{printf "%.0f" .PassRatePct}}%</td>
                                 <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">
-                                    <span class="text-emerald-400">{{.Pass}}</span> / <span class="text-rose-400">{{.Fail}}</span> / <span class="text-amber-400">{{.Abstain}}</span>
+                                    <span class="text-emerald-800 dark:text-emerald-400">{{.Pass}}</span> / <span class="text-rose-800 dark:text-rose-400">{{.Fail}}</span> / <span class="text-amber-800 dark:text-amber-400">{{.Abstain}}</span>
                                 </td>
                                 <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{printf "%.2f" .MeanConfidence}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{fmtUSD .CostPerTaskUSD}}</td>

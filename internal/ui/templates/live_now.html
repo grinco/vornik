@@ -36,7 +36,7 @@
                        class="block rounded-xl border border-dark-600 bg-dark-800 hover:bg-dark-700 hover:border-accent-500/50 transition-colors p-4 space-y-2">
                         <div class="flex items-center gap-2">
                             <span class="inline-block w-2 h-2 rounded-full {{if .Stale}}bg-amber-500{{else}}bg-emerald-500 animate-pulse{{end}}"></span>
-                            <span class="text-xs font-medium uppercase tracking-wide {{if eq .Status "PAUSED"}}text-amber-400{{else if eq .Status "RUNNING"}}text-emerald-400{{else}}text-gray-400{{end}}">{{.Status}}</span>
+                            <span class="text-xs font-medium uppercase tracking-wide {{if eq .Status "PAUSED"}}text-amber-800 dark:text-amber-400{{else if eq .Status "RUNNING"}}text-emerald-800 dark:text-emerald-400{{else}}text-gray-400{{end}}">{{.Status}}</span>
                             <span class="ml-auto text-[11px] text-gray-500">{{.ProjectID}}</span>
                         </div>
                         <div class="text-sm text-gray-200 truncate" title="{{.CurrentStep}}">
@@ -44,7 +44,7 @@
                         </div>
                         <div class="flex items-center justify-between text-[11px] text-gray-500">
                             <span>{{.Elapsed}}</span>
-                            <span class="{{if .Stale}}text-amber-400{{end}}">last event {{.UpdatedAgo}}</span>
+                            <span class="{{if .Stale}}text-amber-800 dark:text-amber-400{{end}}">last event {{.UpdatedAgo}}</span>
                         </div>
                     </a>
                     {{end}}

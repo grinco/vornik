@@ -21,12 +21,14 @@ import (
 
 // canonicalErrorBanner is the exact pill shape every form uses.
 // If a new page introduces its own variant the diff lands here.
-const canonicalErrorBanner = `<div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">`
+// The text shade is theme-adaptive (text-red-600 in light, dark:text-red-200
+// in dark) for WCAG-AA contrast on both surfaces — see _partials.html.
+const canonicalErrorBanner = `<div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-200 whitespace-pre-wrap">`
 
 // canonicalSuccessBanner is the success counterpart. Forms that
 // redirect on success still emit the block conditionally so the
 // pattern stays consistent (cheap, dead code on the happy path).
-const canonicalSuccessBanner = `<div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">`
+const canonicalSuccessBanner = `<div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-600 dark:text-emerald-200">`
 
 // TestFormPattern_ProjectsNewUsesCanonicalErrorBanner — the
 // projects/new POST surface was the historical deviant

@@ -11,8 +11,8 @@
                 <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 2l7 4v6c0 5-3.5 9-7 10-3.5-1-7-5-7-10V6l7-4z"/></svg>
                 <h1 class="text-xl font-semibold text-gray-100">Memory Firewall</h1>
                 <span class="ml-auto text-xs px-2 py-1 rounded-md
-                    {{if eq .Mode "enforce"}}bg-rose-900/40 border border-rose-700/50 text-rose-200
-                    {{else if eq .Mode "advisory"}}bg-amber-900/40 border border-amber-700/50 text-amber-200
+                    {{if eq .Mode "enforce"}}bg-rose-900/40 border border-rose-700/50 text-rose-600 dark:text-rose-200
+                    {{else if eq .Mode "advisory"}}bg-amber-900/40 border border-amber-700/50 text-amber-600 dark:text-amber-200
                     {{else}}bg-dark-700 border border-dark-600 text-gray-300{{end}}">
                     mode: {{.Mode}}
                 </span>
@@ -33,7 +33,7 @@
                 </form>
             </div>
             {{else if .Error}}
-            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-200 text-xs px-3 py-2 rounded-md">
+            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-600 dark:text-rose-200 text-xs px-3 py-2 rounded-md">
                 {{.Error}}
             </div>
             {{else}}
@@ -74,7 +74,7 @@
                         {{range .RecentEvaluations}}
                         <tr class="{{if .IsBlock}}bg-rose-950/20{{end}}">
                             <td class="px-3 py-2 font-mono text-gray-400 whitespace-nowrap">{{.EvaluatedAt}}</td>
-                            <td class="px-3 py-2 font-mono {{if .IsBlock}}text-rose-300{{else}}text-emerald-300{{end}}">{{.Decision}}</td>
+                            <td class="px-3 py-2 font-mono {{if .IsBlock}}text-rose-700 dark:text-rose-300{{else}}text-emerald-700 dark:text-emerald-300{{end}}">{{.Decision}}</td>
                             <td class="px-3 py-2 font-mono text-gray-300"><a href="/ui/admin/memory/firewall/chunks/{{.ChunkID}}" class="text-brand-300 hover:text-brand-200">{{.ChunkID}}</a></td>
                             <td class="px-3 py-2 text-gray-400">{{.RequestRole}} / {{.RequestPurpose}}</td>
                             <td class="px-3 py-2 text-gray-400">{{.ReasonDetail}}</td>

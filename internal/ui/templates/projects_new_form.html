@@ -18,11 +18,11 @@
             <p class="text-sm text-gray-400 leading-relaxed">{{.SelectedManifest.Description}}</p>
 
             {{if .Error}}
-            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-200 whitespace-pre-wrap">{{.Error}}</div>
             {{end}}
 
             {{if .MaterialisationDisabled}}
-            <div class="bg-amber-500/10 border border-amber-500/40 rounded-lg px-4 py-3 text-sm text-amber-200">
+            <div class="bg-amber-500/10 border border-amber-500/40 rounded-lg px-4 py-3 text-sm text-amber-600 dark:text-amber-200">
                 The daemon has no writable configs directory; this form is read-only.
             </div>
             {{end}}
@@ -35,7 +35,7 @@
                 <div>
                     <label class="block text-xs font-medium text-gray-300 mb-1.5" for="p_{{.Name}}">
                         {{.Label}}
-                        {{if .Required}}<span class="text-rose-400">*</span>{{end}}
+                        {{if .Required}}<span class="text-rose-800 dark:text-rose-400">*</span>{{end}}
                     </label>
                     {{if eq .Type "enum"}}
                     <select name="p_{{.Name}}" id="p_{{.Name}}"

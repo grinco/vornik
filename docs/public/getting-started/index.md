@@ -35,6 +35,7 @@ defaults are safe and local-first.
   Podman container for isolation. Docker is not used.
 - **PostgreSQL** — vornik keeps all durable state (queues, tasks,
   executions, artifacts, memory) in PostgreSQL so work survives restarts.
+- **pgvector** — extension for PostgreSQL for vornik RAG
 - **Make** — convenience build targets.
 
 !!! note

@@ -336,6 +336,29 @@ func TestWriteRenderedFilesExclusive_RefusesTraversalAndSymlinkEscapes(t *testin
 	}
 }
 
+// TestWriteRenderedFilesExclusive_WritesProjectLast pins the race fix:
+// a project manifest references its swarm/workflow by ID, so it must be
+// written AFTER those definitions exist on disk. Otherwise a config
+// reload triggered (by the file watcher) between the project write and
+// its dependency writes sees a project whose refs don't resolve and
+// silently strips it from the active set — the project then stays
+// invisible in the UI until the next full reload/restart.
+func TestWriteRenderedFilesExclusive_WritesProjectLast(t *testing.T) {
+	root := t.TempDir()
+	written, err := WriteRenderedFilesExclusive(root, map[string]string{
+		"projects/companion.yaml":   "projectId: companion\n",
+		"swarms/companion-swarm.md": "swarm\n",
+		"workflows/companion-wf.md": "wf\n",
+	})
+	require.NoError(t, err)
+	require.Len(t, written, 3)
+	// The project file must be the last thing written so no reload
+	// observer ever sees it before its referenced definitions exist.
+	last := written[len(written)-1]
+	require.Truef(t, strings.HasPrefix(last, "projects/"),
+		"project manifest must be written last (after swarm/workflow deps); write order was %v", written)
+}
+
 func TestSortedTargets_DeterministicOrder(t *testing.T) {
 	got := SortedTargets(map[string]string{
 		"swarms/z.yaml":    "",

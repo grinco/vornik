@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"vornik.io/vornik/internal/safepath"
 )
@@ -38,7 +39,7 @@ func WriteRenderedFilesExclusive(root string, rendered map[string]string) ([]str
 	}
 
 	written := make([]string, 0, len(rendered))
-	for _, target := range targets {
+	for _, target := range dependencyWriteOrder(targets) {
 		body := rendered[target]
 		fullPath, err := resolveRenderedTarget(root, target)
 		if err != nil {
@@ -67,6 +68,31 @@ func WriteRenderedFilesExclusive(root string, rendered map[string]string) ([]str
 		written = append(written, target)
 	}
 	return written, nil
+}
+
+// dependencyWriteOrder reorders rendered targets so that files which
+// can be *referenced* by others are written before the files that
+// reference them. Concretely: a project manifest (projects/*.yaml)
+// names its swarm and workflow by ID, so it must land on disk AFTER
+// those definitions exist. Without this, a config reload triggered
+// concurrently (the daemon's file watcher fires the moment it sees the
+// new projects/*.yaml) observes a project whose swarm/workflow refs
+// don't resolve yet and silently strips it from the active set — the
+// project then stays invisible in the UI until the next full
+// reload/restart sees every file. Writing the project last closes that
+// window for any reload trigger. Order within each group is preserved
+// (callers pass SortedTargets), so output stays deterministic.
+func dependencyWriteOrder(targets []string) []string {
+	deps := make([]string, 0, len(targets))
+	projects := make([]string, 0, len(targets))
+	for _, t := range targets {
+		if strings.HasPrefix(t, "projects/") {
+			projects = append(projects, t)
+			continue
+		}
+		deps = append(deps, t)
+	}
+	return append(deps, projects...)
 }
 
 func resolveRenderedTarget(root, target string) (string, error) {

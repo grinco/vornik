@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"regexp"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/rs/zerolog"
 )
 
 func TestEscapeLikeWildcards(t *testing.T) {
@@ -22,6 +24,24 @@ func TestEscapeLikeWildcards(t *testing.T) {
 	for in, want := range cases {
 		if got := escapeLikeWildcards(in); got != want {
 			t.Errorf("escapeLikeWildcards(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestRelaxedFTSQueryText(t *testing.T) {
+	cases := map[string]string{
+		"netns sidecar":                   "netns OR sidecar",
+		"trading frozen resume gate soak": "trading OR frozen OR resume OR gate OR soak",
+		"duplicate duplicate token":       "duplicate OR token",
+		`"netns sidecar"`:                 `"netns sidecar"`,
+		"netns OR sidecar":                "netns OR sidecar",
+		"netns -sidecar":                  "netns -sidecar",
+		"vornik_test":                     "vornik_test",
+		"  ":                              "  ",
+	}
+	for in, want := range cases {
+		if got := relaxedFTSQueryText(in); got != want {
+			t.Errorf("relaxedFTSQueryText(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -962,7 +982,7 @@ func TestHybridSearch_PgvectorOffFallsBackToKeyword(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	// KeywordSearch query.
 	mock.ExpectQuery("ts_rank").
-		WithArgs("p", "q", 5).
+		WithArgs("p", "q", 5, "q").
 		WillReturnRows(makeRR([]string{"c1"}, []float64{0.5}))
 	got, err := r.HybridSearch(context.Background(), "p", []float32{0.1}, "q", 5)
 	if err != nil || len(got) != 1 || got[0].ChunkID != "c1" {
@@ -976,7 +996,7 @@ func TestHybridSearch_NoVecFallsBackToKeyword(t *testing.T) {
 	mock.ExpectQuery("SELECT EXISTS.*pg_extension").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectQuery("ts_rank").
-		WithArgs("p", "q", 5).
+		WithArgs("p", "q", 5, "q").
 		WillReturnRows(makeRR([]string{}, []float64{}))
 	if _, err := r.HybridSearch(context.Background(), "p", nil, "q", 5); err != nil {
 		t.Fatal(err)
@@ -988,8 +1008,8 @@ func TestHybridSearch_Happy(t *testing.T) {
 	defer cleanup()
 	mock.ExpectQuery("SELECT EXISTS.*pg_extension").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	mock.ExpectQuery(regexp.QuoteMeta("WITH semantic AS")).
-		WithArgs("p", "q", 5, "[0.1,0.2]").
+	mock.ExpectQuery(regexp.QuoteMeta("WITH q AS")).
+		WithArgs("p", "q", 5, "[0.1,0.2]", "q").
 		WillReturnRows(makeRR([]string{"c1", "c2"}, []float64{0.9, 0.5}))
 	got, err := r.HybridSearch(context.Background(), "p", []float32{0.1, 0.2}, "q", 5)
 	if err != nil || len(got) != 2 {
@@ -1002,13 +1022,18 @@ func TestHybridSearch_QueryErrorFallsBackToKeyword(t *testing.T) {
 	defer cleanup()
 	mock.ExpectQuery("SELECT EXISTS.*pg_extension").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	mock.ExpectQuery(regexp.QuoteMeta("WITH semantic AS")).
+	var buf bytes.Buffer
+	r.SetLogger(zerolog.New(&buf))
+	mock.ExpectQuery(regexp.QuoteMeta("WITH q AS")).
 		WillReturnError(errors.New("pgvec gone"))
 	mock.ExpectQuery("ts_rank").
-		WithArgs("p", "q", 5).
+		WithArgs("p", "q", 5, "q").
 		WillReturnRows(makeRR([]string{}, []float64{}))
 	if _, err := r.HybridSearch(context.Background(), "p", []float32{1}, "q", 5); err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "memory search degraded") || strings.Contains(buf.String(), `"q"`) {
+		t.Fatalf("expected degraded log without raw query text, got %s", buf.String())
 	}
 }
 
@@ -1018,7 +1043,7 @@ func TestHybridSearchWithEpochs_DisabledDelegates(t *testing.T) {
 	mock.ExpectQuery("SELECT EXISTS.*pg_extension").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectQuery("ts_rank").
-		WithArgs("p", "q", 5).
+		WithArgs("p", "q", 5, "q").
 		WillReturnRows(makeRR([]string{}, []float64{}))
 	if _, err := r.HybridSearchWithEpochs(context.Background(), "p", nil, "q", 5, nil, false, time.Time{}, time.Time{}, "", false); err != nil {
 		t.Fatal(err)
@@ -1036,7 +1061,7 @@ func TestHybridSearchWithEpochs_DisabledStillAppliesTemporalBounds(t *testing.T)
 	// threaded repoScope at $6. The added scope arg is nil (empty
 	// repoScope, lenient strict).
 	mock.ExpectQuery(regexp.QuoteMeta("c.created_at >= $4")).
-		WithArgs("p", "q", 5, from, to, nil).
+		WithArgs("p", "q", 5, from, to, nil, "q").
 		WillReturnRows(makeRR([]string{"c1"}, []float64{0.4}))
 	got, err := r.HybridSearchWithEpochs(context.Background(), "p", nil, "q", 5, nil, false, from, to, "", false)
 	if err != nil || len(got) != 1 {
@@ -1071,6 +1096,7 @@ func TestHybridSearchWithEpochs_NoPgvectorTakesKeywordPath(t *testing.T) {
 	mock.ExpectQuery("SELECT EXISTS.*pg_extension").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectQuery(regexp.QuoteMeta("c.epoch_id IS NULL")).
+		WithArgs("p", "q", 5, sqlmock.AnyArg(), nil, nil, nil, "q").
 		WillReturnRows(makeRR([]string{"c1"}, []float64{0.4}))
 	got, err := r.HybridSearchWithEpochs(context.Background(), "p", []float32{1}, "q", 5, []string{"e1"}, true, time.Time{}, time.Time{}, "", false)
 	if err != nil || len(got) != 1 {
@@ -1084,6 +1110,7 @@ func TestHybridSearchWithEpochs_Happy(t *testing.T) {
 	mock.ExpectQuery("SELECT EXISTS.*pg_extension").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 	mock.ExpectQuery(regexp.QuoteMeta("epoch_id = ANY($5")).
+		WithArgs("p", "q", 5, "[1]", sqlmock.AnyArg(), nil, nil, nil, "q").
 		WillReturnRows(makeRR([]string{"c1"}, []float64{0.7}))
 	got, err := r.HybridSearchWithEpochs(context.Background(), "p", []float32{1}, "q", 5, []string{"e1"}, true, time.Time{}, time.Time{}, "", false)
 	if err != nil || len(got) != 1 {
@@ -1099,6 +1126,7 @@ func TestHybridSearchWithEpochs_VecQueryFails(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("epoch_id = ANY($5")).
 		WillReturnError(errors.New("x"))
 	mock.ExpectQuery(regexp.QuoteMeta("c.epoch_id IS NULL")).
+		WithArgs("p", "q", 5, sqlmock.AnyArg(), nil, nil, nil, "q").
 		WillReturnRows(makeRR([]string{}, []float64{}))
 	if _, err := r.HybridSearchWithEpochs(context.Background(), "p", []float32{1}, "q", 5, []string{"e1"}, true, time.Time{}, time.Time{}, "", false); err != nil {
 		t.Fatal(err)
@@ -1246,7 +1274,7 @@ func TestKeywordSearch_Happy(t *testing.T) {
 	r, mock, cleanup := newRepo(t)
 	defer cleanup()
 	mock.ExpectQuery("ts_rank").
-		WithArgs("p", "q", 5).
+		WithArgs("p", "q", 5, "q").
 		WillReturnRows(makeRR([]string{"c1"}, []float64{0.3}))
 	got, err := r.KeywordSearch(context.Background(), "p", "q", 5)
 	if err != nil || len(got) != 1 {
@@ -1265,7 +1293,7 @@ func TestScanSearchResults_NineColumnShape(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	checkedAt := time.Date(2026, 5, 17, 10, 0, 0, 0, time.UTC)
 	mock.ExpectQuery("ts_rank").
-		WithArgs("p", "q", 5).
+		WithArgs("p", "q", 5, "q").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "project_id", "task_id", "source_name", "content", "score",
 			"content_class", "is_alive", "last_checked_at",

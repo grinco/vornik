@@ -82,7 +82,7 @@ func TestSearchWithOptions_DelegatesToInternal(t *testing.T) {
 	// caller passes no scope (project-wide), which the driver binds
 	// as nil from nullableString("").
 	mock.ExpectQuery("ts_rank").
-		WithArgs("p", "q", 7, from, to, nil).
+		WithArgs("p", "q", 7, from, to, nil, "q").
 		WillReturnRows(makeRR([]string{"c1"}, []float64{0.5}))
 
 	got, err := s.SearchWithOptions(context.Background(), "p", "q", SearchOptions{

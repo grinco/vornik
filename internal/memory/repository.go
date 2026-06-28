@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/lib/pq"
+	"github.com/rs/zerolog"
 )
 
 // Repository handles all database operations for the memory system.
@@ -19,11 +21,20 @@ type Repository struct {
 	db            *sql.DB
 	pgvectorOnce  sync.Once
 	pgvectorAvail bool
+	logger        zerolog.Logger
 }
 
 // NewRepository creates a new Repository.
 func NewRepository(db *sql.DB) *Repository {
-	return &Repository{db: db}
+	return &Repository{db: db, logger: zerolog.Nop()}
+}
+
+// SetLogger wires repository-level degraded-search logs. Nil-safe so tests and
+// disabled memory setups can call it without scaffolding.
+func (r *Repository) SetLogger(l zerolog.Logger) {
+	if r != nil {
+		r.logger = l
+	}
 }
 
 // pgvectorAvailable detects whether the pgvector extension is installed.
@@ -1332,6 +1343,55 @@ func vectorLiteral(v []float32) string {
 	return "[" + strings.Join(parts, ",") + "]"
 }
 
+var (
+	relaxedFTSTokenRe = regexp.MustCompile(`[[:alnum:]_]+`)
+	webOperatorRe     = regexp.MustCompile(`(?i)(^|\s)OR(\s|$)|(^|\s)-\S|["]`)
+)
+
+// relaxedFTSQueryText broadens only plain multi-term recall queries. Explicit
+// web-search syntax is left untouched so quoted phrases, OR, and negation keep
+// their PostgreSQL-defined meaning.
+func relaxedFTSQueryText(queryText string) string {
+	q := strings.TrimSpace(queryText)
+	if q == "" || webOperatorRe.MatchString(q) {
+		return queryText
+	}
+	tokens := relaxedFTSTokenRe.FindAllString(q, -1)
+	if len(tokens) <= 1 {
+		return queryText
+	}
+	seen := make(map[string]struct{}, len(tokens))
+	out := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		key := strings.ToLower(tok)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, tok)
+	}
+	if len(out) <= 1 {
+		return queryText
+	}
+	return strings.Join(out, " OR ")
+}
+
+func (r *Repository) logSearchDegrade(projectID, queryText string, err error, epochsEnabled bool, queryVec []float32, fallback string) {
+	if r == nil || err == nil {
+		return
+	}
+	r.logger.Warn().
+		Err(err).
+		Str("project_id", projectID).
+		Str("mode", "hybrid").
+		Str("fallback", fallback).
+		Bool("epochs_enabled", epochsEnabled).
+		Bool("has_query_vec", len(queryVec) > 0).
+		Int("query_vec_dim", len(queryVec)).
+		Int("query_len", len(queryText)).
+		Msg("memory search degraded; falling back")
+}
+
 // HybridSearch executes the combined semantic + keyword search using
 // Reciprocal Rank Fusion (RRF). RRF combines the rank positions from
 // semantic and keyword retrievers rather than their raw scores, which
@@ -1359,12 +1419,17 @@ func (r *Repository) HybridSearch(ctx context.Context, projectID string, queryVe
 	}
 
 	vecLit := vectorLiteral(queryVec)
+	relaxedQueryText := relaxedFTSQueryText(queryText)
 	// utility_score boost is multiplicative: base RRF * (1 + utility).
 	// utility ∈ [0,1] from UtilityScorer's per-project normalisation,
 	// so the maximum boost is 2×. Chunks the corpus actively uses
 	// climb the ranking without overwhelming raw relevance signal.
 	query := `
-WITH semantic AS (
+WITH q AS (
+    SELECT websearch_to_tsquery('vornik_english', $2) AS strict_q,
+           websearch_to_tsquery('vornik_english', $5) AS relaxed_q
+),
+semantic AS (
     SELECT id, row_number() OVER (ORDER BY embedding <=> $4::vector) AS rank
     FROM project_memory_chunks
     WHERE project_id = $1 AND embedding IS NOT NULL
@@ -1372,9 +1437,13 @@ WITH semantic AS (
     ORDER BY embedding <=> $4::vector LIMIT 20
 ),
 keyword AS (
-    SELECT id, row_number() OVER (ORDER BY ts_rank(tsv, plainto_tsquery('vornik_english', $2)) DESC) AS rank
-    FROM project_memory_chunks
-    WHERE project_id = $1 AND tsv @@ plainto_tsquery('vornik_english', $2)
+    SELECT id, row_number() OVER (
+        ORDER BY CASE WHEN tsv @@ q.strict_q THEN 0 ELSE 1 END,
+                 ts_rank(tsv, q.strict_q) DESC,
+                 ts_rank(tsv, q.relaxed_q) DESC
+    ) AS rank
+    FROM project_memory_chunks, q
+    WHERE project_id = $1 AND (tsv @@ q.strict_q OR tsv @@ q.relaxed_q)
       AND (expires_at IS NULL OR expires_at > NOW())
     LIMIT 20
 )
@@ -1389,10 +1458,11 @@ LEFT JOIN keyword  k ON k.id = c.id
 WHERE s.id IS NOT NULL OR k.id IS NOT NULL
 ORDER BY score DESC LIMIT $3`
 
-	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, limit, vecLit)
+	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, limit, vecLit, relaxedQueryText)
 	if err != nil {
 		// Degrade gracefully — pgvector ops may fail if the extension was
 		// removed after startup detection.
+		r.logSearchDegrade(projectID, queryText, err, false, queryVec, "keyword")
 		return r.KeywordSearch(ctx, projectID, queryText, limit)
 	}
 	defer func() { _ = rows.Close() }()
@@ -1411,9 +1481,14 @@ func (r *Repository) hybridSearchTemporal(ctx context.Context, projectID string,
 	}
 
 	vecLit := vectorLiteral(queryVec)
+	relaxedQueryText := relaxedFTSQueryText(queryText)
 	scopeClause := scopeFilterSQL(strictScope, 7)
 	query := fmt.Sprintf(`
-WITH semantic AS (
+WITH q AS (
+    SELECT websearch_to_tsquery('vornik_english', $2) AS strict_q,
+           websearch_to_tsquery('vornik_english', $8) AS relaxed_q
+),
+semantic AS (
     SELECT id, row_number() OVER (ORDER BY embedding <=> $4::vector) AS rank
     FROM project_memory_chunks
     WHERE project_id = $1 AND embedding IS NOT NULL
@@ -1424,9 +1499,13 @@ WITH semantic AS (
     ORDER BY embedding <=> $4::vector LIMIT 20
 ),
 keyword AS (
-    SELECT id, row_number() OVER (ORDER BY ts_rank(tsv, plainto_tsquery('vornik_english', $2)) DESC) AS rank
-    FROM project_memory_chunks
-    WHERE project_id = $1 AND tsv @@ plainto_tsquery('vornik_english', $2)
+    SELECT id, row_number() OVER (
+        ORDER BY CASE WHEN tsv @@ q.strict_q THEN 0 ELSE 1 END,
+                 ts_rank(tsv, q.strict_q) DESC,
+                 ts_rank(tsv, q.relaxed_q) DESC
+    ) AS rank
+    FROM project_memory_chunks, q
+    WHERE project_id = $1 AND (tsv @@ q.strict_q OR tsv @@ q.relaxed_q)
       AND (expires_at IS NULL OR expires_at > NOW())
       AND ($5::timestamptz IS NULL OR created_at >= $5::timestamptz)
       AND ($6::timestamptz IS NULL OR created_at <= $6::timestamptz)
@@ -1445,8 +1524,9 @@ LEFT JOIN keyword  k ON k.id = c.id
 WHERE s.id IS NOT NULL OR k.id IS NOT NULL
 ORDER BY score DESC LIMIT $3`, scopeClause)
 
-	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, limit, vecLit, nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope))
+	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, limit, vecLit, nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope), relaxedQueryText)
 	if err != nil {
+		r.logSearchDegrade(projectID, queryText, err, false, queryVec, "keyword")
 		return r.keywordSearchTemporal(ctx, projectID, queryText, limit, fromDate, toDate, repoScope, strictScope)
 	}
 	defer func() { _ = rows.Close() }()
@@ -1491,8 +1571,13 @@ func (r *Repository) HybridSearchWithEpochs(ctx context.Context, projectID strin
 	// optionally extended with the legacy "OR IS NULL" leak-through.
 	// See its doc for the strict-vs-lenient contract.
 	scopeClause := scopeFilterSQL(strictScope, 8)
+	relaxedQueryText := relaxedFTSQueryText(queryText)
 	query := fmt.Sprintf(`
-WITH semantic AS (
+WITH q AS (
+    SELECT websearch_to_tsquery('vornik_english', $2) AS strict_q,
+           websearch_to_tsquery('vornik_english', $9) AS relaxed_q
+),
+semantic AS (
     SELECT id, row_number() OVER (ORDER BY embedding <=> $4::vector) AS rank
     FROM project_memory_chunks
     WHERE project_id = $1 AND embedding IS NOT NULL
@@ -1506,9 +1591,13 @@ WITH semantic AS (
     ORDER BY embedding <=> $4::vector LIMIT 20
 ),
 keyword AS (
-    SELECT id, row_number() OVER (ORDER BY ts_rank(tsv, plainto_tsquery('vornik_english', $2)) DESC) AS rank
-    FROM project_memory_chunks
-    WHERE project_id = $1 AND tsv @@ plainto_tsquery('vornik_english', $2)
+    SELECT id, row_number() OVER (
+        ORDER BY CASE WHEN tsv @@ q.strict_q THEN 0 ELSE 1 END,
+                 ts_rank(tsv, q.strict_q) DESC,
+                 ts_rank(tsv, q.relaxed_q) DESC
+    ) AS rank
+    FROM project_memory_chunks, q
+    WHERE project_id = $1 AND (tsv @@ q.strict_q OR tsv @@ q.relaxed_q)
       AND lifecycle_state = 'published'
       AND validation_status NOT IN ('refuted','superseded')
       AND (expires_at IS NULL OR expires_at > NOW())
@@ -1530,8 +1619,9 @@ LEFT JOIN keyword  k ON k.id = c.id
 WHERE s.id IS NOT NULL OR k.id IS NOT NULL
 ORDER BY score DESC LIMIT $3`, scopeClause)
 
-	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, limit, vecLit, pqStringArray(activeEpochs), nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope))
+	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, limit, vecLit, pqStringArray(activeEpochs), nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope), relaxedQueryText)
 	if err != nil {
+		r.logSearchDegrade(projectID, queryText, err, epochsEnabled, queryVec, "keyword")
 		return r.keywordSearchWithEpochsTemporal(ctx, projectID, queryText, limit, activeEpochs, fromDate, toDate, repoScope, strictScope)
 	}
 	defer func() { _ = rows.Close() }()
@@ -1561,20 +1651,27 @@ func (r *Repository) keywordSearchWithEpochs(ctx context.Context, projectID, que
 }
 
 func (r *Repository) keywordSearchTemporal(ctx context.Context, projectID, queryText string, limit int, fromDate, toDate time.Time, repoScope string, strictScope bool) ([]SearchResult, error) {
+	relaxedQueryText := relaxedFTSQueryText(queryText)
 	q := fmt.Sprintf(`
+WITH q AS (
+    SELECT websearch_to_tsquery('vornik_english', $2) AS strict_q,
+           websearch_to_tsquery('vornik_english', $7) AS relaxed_q
+)
 SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
-       ts_rank(tsv, plainto_tsquery('vornik_english', $2)) * (1 + COALESCE(c.utility_score, 0)) AS score,
+       ((CASE WHEN c.tsv @@ q.strict_q THEN 1.0 ELSE 0.0 END)
+        + ts_rank(c.tsv, q.strict_q)
+        + (0.5 * ts_rank(c.tsv, q.relaxed_q))) * (1 + COALESCE(c.utility_score, 0)) AS score,
        COALESCE(c.content_class, ''),
        c.is_alive, c.last_checked_at,
        COALESCE(c.repo_scope, '') AS repo_scope
-FROM project_memory_chunks c
-WHERE c.project_id = $1 AND c.tsv @@ plainto_tsquery('vornik_english', $2)
+FROM project_memory_chunks c, q
+WHERE c.project_id = $1 AND (c.tsv @@ q.strict_q OR c.tsv @@ q.relaxed_q)
   AND (c.expires_at IS NULL OR c.expires_at > NOW())
   AND ($4::timestamptz IS NULL OR c.created_at >= $4::timestamptz)
   AND ($5::timestamptz IS NULL OR c.created_at <= $5::timestamptz)
   %s
 ORDER BY score DESC LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictScope, 6), "repo_scope", "c.repo_scope"))
-	rows, err := r.db.QueryContext(ctx, q, projectID, queryText, limit, nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope))
+	rows, err := r.db.QueryContext(ctx, q, projectID, queryText, limit, nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope), relaxedQueryText)
 	if err != nil {
 		return r.substringSearchTemporal(ctx, projectID, queryText, limit, fromDate, toDate, repoScope, strictScope)
 	}
@@ -1587,14 +1684,21 @@ ORDER BY score DESC LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictScope, 6)
 // Zero time.Time on either side disables that bound — see
 // nullableTime() for the NULL-binding contract.
 func (r *Repository) keywordSearchWithEpochsTemporal(ctx context.Context, projectID, queryText string, limit int, activeEpochs []string, fromDate, toDate time.Time, repoScope string, strictScope bool) ([]SearchResult, error) {
+	relaxedQueryText := relaxedFTSQueryText(queryText)
 	q := fmt.Sprintf(`
+WITH q AS (
+    SELECT websearch_to_tsquery('vornik_english', $2) AS strict_q,
+           websearch_to_tsquery('vornik_english', $8) AS relaxed_q
+)
 SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
-       ts_rank(tsv, plainto_tsquery('vornik_english', $2)) * (1 + COALESCE(c.utility_score, 0)) AS score,
+       ((CASE WHEN c.tsv @@ q.strict_q THEN 1.0 ELSE 0.0 END)
+        + ts_rank(c.tsv, q.strict_q)
+        + (0.5 * ts_rank(c.tsv, q.relaxed_q))) * (1 + COALESCE(c.utility_score, 0)) AS score,
        COALESCE(c.content_class, ''),
        c.is_alive, c.last_checked_at,
        COALESCE(c.repo_scope, '') AS repo_scope
-FROM project_memory_chunks c
-WHERE c.project_id = $1 AND c.tsv @@ plainto_tsquery('vornik_english', $2)
+FROM project_memory_chunks c, q
+WHERE c.project_id = $1 AND (c.tsv @@ q.strict_q OR c.tsv @@ q.relaxed_q)
   AND c.lifecycle_state = 'published'
   AND c.validation_status NOT IN ('refuted','superseded')
   AND (c.expires_at IS NULL OR c.expires_at > NOW())
@@ -1603,7 +1707,7 @@ WHERE c.project_id = $1 AND c.tsv @@ plainto_tsquery('vornik_english', $2)
   AND ($6::timestamptz IS NULL OR c.created_at <= $6::timestamptz)
   %s
 ORDER BY score DESC LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictScope, 7), "repo_scope", "c.repo_scope"))
-	rows, err := r.db.QueryContext(ctx, q, projectID, queryText, limit, pqStringArray(activeEpochs), nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope))
+	rows, err := r.db.QueryContext(ctx, q, projectID, queryText, limit, pqStringArray(activeEpochs), nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope), relaxedQueryText)
 	if err != nil {
 		return r.substringSearchWithEpochsTemporal(ctx, projectID, queryText, limit, activeEpochs, fromDate, toDate, repoScope, strictScope)
 	}
@@ -1635,17 +1739,24 @@ func pqStringArray(s []string) interface{} {
 // — a SELECT … WHERE content ILIKE that needs no extension and
 // no special index. Drives the SaaS reliability SLA.
 func (r *Repository) KeywordSearch(ctx context.Context, projectID string, queryText string, limit int) ([]SearchResult, error) {
+	relaxedQueryText := relaxedFTSQueryText(queryText)
 	const q = `
+WITH q AS (
+    SELECT websearch_to_tsquery('vornik_english', $2) AS strict_q,
+           websearch_to_tsquery('vornik_english', $4) AS relaxed_q
+)
 SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
-       ts_rank(tsv, plainto_tsquery('vornik_english', $2)) * (1 + COALESCE(c.utility_score, 0)) AS score,
+       ((CASE WHEN c.tsv @@ q.strict_q THEN 1.0 ELSE 0.0 END)
+        + ts_rank(c.tsv, q.strict_q)
+        + (0.5 * ts_rank(c.tsv, q.relaxed_q))) * (1 + COALESCE(c.utility_score, 0)) AS score,
        COALESCE(c.content_class, ''),
        c.is_alive, c.last_checked_at
-FROM project_memory_chunks c
-WHERE project_id = $1 AND tsv @@ plainto_tsquery('vornik_english', $2)
+FROM project_memory_chunks c, q
+WHERE project_id = $1 AND (tsv @@ q.strict_q OR tsv @@ q.relaxed_q)
   AND (c.expires_at IS NULL OR c.expires_at > NOW())
 ORDER BY score DESC LIMIT $3`
 
-	rows, err := r.db.QueryContext(ctx, q, projectID, queryText, limit)
+	rows, err := r.db.QueryContext(ctx, q, projectID, queryText, limit, relaxedQueryText)
 	if err != nil {
 		// Legacy KeywordSearch is unscoped (no repo_scope filter
 		// in its own query) — preserve that by passing empty

@@ -70,14 +70,47 @@ ok "Using compose provider: ${compose[*]}"
 # 2. Host config — let a container reach Podman to spawn sibling agents.
 # ---------------------------------------------------------------------------
 if [ "$(id -u)" -ne 0 ]; then
+  SCTL=(systemctl --user)
   loginctl enable-linger "$(id -un)"            >/dev/null 2>&1 || warn "could not enable login lingering — agents may stop when you log out"
-  systemctl --user enable --now podman.socket   >/dev/null 2>&1 || warn "could not enable the user podman.socket — start it manually: systemctl --user enable --now podman.socket"
   SOCK="${PODMAN_SOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock}"
 else
-  systemctl enable --now podman.socket          >/dev/null 2>&1 || warn "could not enable podman.socket"
+  SCTL=(systemctl)
   SOCK="${PODMAN_SOCK:-/run/podman/podman.sock}"
 fi
-[ -S "$SOCK" ] && ok "Podman socket: $SOCK" || warn "Podman socket not present yet at $SOCK — the daemon will fail its socket probe until it appears."
+
+# Enable + start the podman socket. A PREVIOUS podman run can leave the
+# socket file behind; systemd's podman.socket then fails
+# "Failed to create listening socket (...): Address already in use", the
+# unit goes to 'failed', and vornik connecting to the stale file later
+# gets "connection refused" (the file is present but nothing is listening).
+# The old check (`[ -S "$SOCK" ]`) passed for a stale file and proceeded
+# to a daemon that couldn't spawn agents. So: verify the unit is actually
+# LISTENING; if it isn't, clear the failed state, remove the stale socket
+# file, and restart the unit so it can bind to the now-free path.
+socket_listening() { "${SCTL[@]}" is-active --quiet podman.socket 2>/dev/null; }
+"${SCTL[@]}" enable podman.socket >/dev/null 2>&1 || warn "could not enable podman.socket"
+"${SCTL[@]}" start podman.socket  >/dev/null 2>&1 || true
+if ! socket_listening; then
+  warn "podman.socket not listening; clearing a possible stale socket at $SOCK and restarting"
+  "${SCTL[@]}" reset-failed podman.socket >/dev/null 2>&1 || true
+  rm -f "$SOCK"
+  "${SCTL[@]}" start podman.socket >/dev/null 2>&1 || warn "could not start podman.socket — start it manually: ${SCTL[*]} start podman.socket"
+fi
+
+# Liveness gate (not just file presence): a stale socket file passes
+# `[ -S ]` but vornik still gets "connection refused". Wait briefly for
+# socket activation, then FAIL FAST so the operator fixes the socket
+# BEFORE we bring up a daemon whose runtime manager hard-fails on an
+# unreachable podman (vornik can't do its job without spawning agents).
+for _ in $(seq 1 20); do
+  socket_listening && break
+  sleep 0.5
+done
+if socket_listening && [ -S "$SOCK" ]; then
+  ok "Podman socket live: $SOCK"
+else
+  die "Podman socket is not listening at $SOCK. vornik needs it to spawn agent containers. Fix it (e.g. ${SCTL[*]} restart podman.socket, or rm -f $SOCK and retry), then re-run."
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Fetch the compose scaffolding + image build context.

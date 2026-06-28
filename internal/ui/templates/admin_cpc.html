@@ -24,13 +24,13 @@
             </p>
 
             {{if .FlashCancel}}
-            <div class="bg-emerald-900/30 border border-emerald-700/40 text-emerald-200 text-xs px-3 py-2 rounded-md">
+            <div class="bg-emerald-900/30 border border-emerald-700/40 text-emerald-600 dark:text-emerald-200 text-xs px-3 py-2 rounded-md">
                 Cross-project call <code class="font-mono">{{.FlashCancel}}</code> cancelled.
             </div>
             {{end}}
 
             {{if .Error}}
-            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-200 text-xs px-3 py-2 rounded-md">{{.Error}}</div>
+            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-600 dark:text-rose-200 text-xs px-3 py-2 rounded-md">{{.Error}}</div>
             {{end}}
 
             <form method="get" action="/ui/admin/cpc"
@@ -103,7 +103,7 @@
                                         {{if .CallerStepID}}<span class="text-gray-600">·</span> step <span class="text-gray-400">{{.CallerStepID}}</span>{{end}}
                                     </div>
                                     {{if .CalleeTaskID}}
-                                    <div class="text-[10px] text-gray-500 mt-0.5">callee: <a href="/ui/tasks/{{.CalleeTaskID}}" class="text-violet-300 hover:text-violet-200">{{.CalleeTaskID}}</a></div>
+                                    <div class="text-[10px] text-gray-500 mt-0.5">callee: <a href="/ui/tasks/{{.CalleeTaskID}}" class="text-violet-700 dark:text-violet-300 hover:text-violet-600 dark:text-violet-200">{{.CalleeTaskID}}</a></div>
                                     {{end}}
                                 </td>
                                 <td class="px-4 py-2 text-xs text-gray-300 font-mono">
@@ -114,14 +114,14 @@
                                     <span class="font-mono {{.StatusBadge}}">{{.Status}}</span>
                                 </td>
                                 <td class="px-4 py-2 whitespace-nowrap text-[11px] text-gray-400 font-mono" title="{{if .ResolvedAt}}Resolved at {{.ResolvedAt}}{{else if .TimeoutAt}}Timeout at {{.TimeoutAt}}{{end}}">{{.DurationLabel}}</td>
-                                <td class="px-4 py-2 text-[11px] text-rose-300 max-w-sm truncate font-mono" title="{{.ErrorMessage}}">{{.ErrorMessage}}</td>
+                                <td class="px-4 py-2 text-[11px] text-rose-700 dark:text-rose-300 max-w-sm truncate font-mono" title="{{.ErrorMessage}}">{{.ErrorMessage}}</td>
                                 <td class="px-4 py-2 whitespace-nowrap text-right">
                                     {{if not .IsTerminal}}
                                     <form method="post" action="/ui/admin/cpc/{{.ID}}/cancel" onsubmit="return confirm('Force-cancel cross-project call {{.ID}}? The caller\'s on_fail branch will fire.');" class="inline-flex items-center gap-1">
                                         <input type="hidden" name="filter_status" value="{{$.FilterStatus}}">
                                         <input type="hidden" name="filter_caller" value="{{$.FilterCaller}}">
                                         <input type="hidden" name="filter_callee" value="{{$.FilterCallee}}">
-                                        <button type="submit" class="text-[11px] font-medium px-2.5 py-1 rounded-md bg-rose-700/40 hover:bg-rose-700/60 text-rose-200 ring-1 ring-rose-700/40">Cancel</button>
+                                        <button type="submit" class="text-[11px] font-medium px-2.5 py-1 rounded-md bg-rose-700/40 hover:bg-rose-700/60 text-rose-600 dark:text-rose-200 ring-1 ring-rose-700/40">Cancel</button>
                                     </form>
                                     {{else}}
                                     <span class="text-[11px] text-gray-600 italic">terminal</span>

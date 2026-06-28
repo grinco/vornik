@@ -1,7 +1,7 @@
 {{define "schemaRow"}}
 <div class="space-y-1">
     <label class="block text-xs font-medium text-gray-300">
-        {{.Field.Label}}{{if .Field.Required}} <span class="text-red-400">*</span>{{end}}
+        {{.Field.Label}}{{if .Field.Required}} <span class="text-red-800 dark:text-red-400">*</span>{{end}}
         {{if .Field.ReadOnly}}<span class="text-[10px] uppercase tracking-wide text-gray-500">read-only</span>{{end}}
     </label>
     {{if .Field.IsBool}}
@@ -27,7 +27,7 @@
            class="w-full rounded-md bg-dark-900 border border-dark-600 px-3 py-2 text-sm text-gray-100 disabled:opacity-50">
     {{end}}
     {{if .Field.Help}}<p class="text-[11px] text-gray-500">{{.Field.Help}}</p>{{end}}
-    {{if .Err}}<p class="text-[11px] text-red-300">{{.Err}}</p>{{end}}
+    {{if .Err}}<p class="text-[11px] text-red-700 dark:text-red-300">{{.Err}}</p>{{end}}
 </div>
 {{end}}
 
@@ -38,7 +38,7 @@
         <div class="flex items-center gap-2 text-xs">
             <button type="button" class="text-gray-400 hover:text-gray-200" onclick="swarmMoveCard(this,-1)" aria-label="Move up">▲</button>
             <button type="button" class="text-gray-400 hover:text-gray-200" onclick="swarmMoveCard(this,1)" aria-label="Move down">▼</button>
-            <button type="button" class="text-red-300 hover:text-red-200" onclick="this.closest('.role-card').remove()">Remove</button>
+            <button type="button" class="text-red-700 dark:text-red-300 hover:text-red-600 dark:text-red-200" onclick="this.closest('.role-card').remove()">Remove</button>
         </div>
     </div>
     {{range .Sections}}

@@ -33,10 +33,10 @@
                           data-tier="{{.ContextTier}}"
                           title="Context-budget headroom: {{.ContextHeadroomPct}}% remaining. Tier {{.ContextTier}} — when degrading or poor, deferred-tool mode auto-engages so the model sees a leaner schema and conversation history stays usable."
                           class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-medium border
-                                 {{if eq .ContextTier "peak"}}bg-emerald-500/10 border-emerald-500/30 text-emerald-300{{end}}
-                                 {{if eq .ContextTier "good"}}bg-yellow-500/10 border-yellow-500/30 text-yellow-300{{end}}
-                                 {{if eq .ContextTier "degrading"}}bg-orange-500/10 border-orange-500/30 text-orange-300{{end}}
-                                 {{if eq .ContextTier "poor"}}bg-red-500/10 border-red-500/30 text-red-300{{end}}">
+                                 {{if eq .ContextTier "peak"}}bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300{{end}}
+                                 {{if eq .ContextTier "good"}}bg-yellow-500/10 border-yellow-500/30 text-yellow-700 dark:text-yellow-300{{end}}
+                                 {{if eq .ContextTier "degrading"}}bg-orange-500/10 border-orange-500/30 text-orange-700 dark:text-orange-300{{end}}
+                                 {{if eq .ContextTier "poor"}}bg-red-500/10 border-red-500/30 text-red-700 dark:text-red-300{{end}}">
                         <span class="inline-block w-1.5 h-1.5 rounded-full
                                      {{if eq .ContextTier "peak"}}bg-emerald-400{{end}}
                                      {{if eq .ContextTier "good"}}bg-yellow-400{{end}}
@@ -50,7 +50,7 @@
             </div>
 
             {{if .Error}}
-            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap" data-testid="chat-error">{{.Error}}</div>
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-200 whitespace-pre-wrap" data-testid="chat-error">{{.Error}}</div>
             {{end}}
 
             <!-- Scrollable message list. New messages render at the

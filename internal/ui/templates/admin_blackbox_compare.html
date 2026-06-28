@@ -29,14 +29,14 @@
                 No audit data for task <code class="font-mono">{{.NotFound}}</code>. Check the task ID — retention may have swept the rows, or the task never ran.
             </div>
             {{else if .Error}}
-            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-200 text-xs px-3 py-2 rounded-md">
+            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-600 dark:text-rose-200 text-xs px-3 py-2 rounded-md">
                 {{.Error}}
             </div>
             {{else if .Score}}
             <!-- Scorecard summary banner -->
             <div class="glass rounded-xl border border-dark-700 px-4 py-3 space-y-2 text-xs">
                 {{if .Score.StatusChanged}}
-                <div class="bg-amber-900/40 border border-amber-700/50 text-amber-200 px-3 py-2 rounded-md font-medium">
+                <div class="bg-amber-900/40 border border-amber-700/50 text-amber-600 dark:text-amber-200 px-3 py-2 rounded-md font-medium">
                     Status changed: <code class="font-mono">{{.Score.Trace1Header.Status}}</code> → <code class="font-mono">{{.Score.Trace2Header.Status}}</code>
                 </div>
                 {{end}}

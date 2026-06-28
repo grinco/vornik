@@ -13,9 +13,9 @@
                 {{if .Available}}
                 <span class="text-sm text-gray-500">
                     {{.Counts.Total}} total
-                    {{if gt .Counts.Pending 0}}<span class="text-amber-400">· {{.Counts.Pending}} pending</span>{{end}}
-                    {{if gt .Counts.Fired 0}}<span class="text-emerald-400">· {{.Counts.Fired}} fired</span>{{end}}
-                    {{if gt .Counts.Cancelled 0}}<span class="text-slate-400">· {{.Counts.Cancelled}} cancelled</span>{{end}}
+                    {{if gt .Counts.Pending 0}}<span class="text-amber-800 dark:text-amber-400">· {{.Counts.Pending}} pending</span>{{end}}
+                    {{if gt .Counts.Fired 0}}<span class="text-emerald-800 dark:text-emerald-400">· {{.Counts.Fired}} fired</span>{{end}}
+                    {{if gt .Counts.Cancelled 0}}<span class="text-gray-400">· {{.Counts.Cancelled}} cancelled</span>{{end}}
                 </span>
                 {{end}}
             </div>
@@ -71,7 +71,7 @@
                                     <div>{{.FireAt}}</div>
                                     <div class="text-[10px] text-gray-500 mt-0.5">{{.Countdown}}</div>
                                     {{if .IsRecurring}}
-                                    <div class="text-[10px] text-violet-300 mt-0.5" title="Cron expression">↻ {{.CronExpr}}</div>
+                                    <div class="text-[10px] text-violet-700 dark:text-violet-300 mt-0.5" title="Cron expression">↻ {{.CronExpr}}</div>
                                     {{if .RecurrenceUntil}}
                                     <div class="text-[10px] text-gray-500 mt-0.5">until {{.RecurrenceUntil}}</div>
                                     {{end}}
@@ -98,7 +98,7 @@
                                         <form method="post" action="/ui/reminders/{{.ID}}/delete"
                                               onsubmit="return confirm('Permanently delete reminder {{.ID}}? This cannot be undone.');"
                                               class="inline-flex">
-                                            <button type="submit" class="text-[11px] font-medium px-2.5 py-1 rounded-md bg-rose-900/40 hover:bg-rose-900/60 text-rose-200 ring-1 ring-rose-700/40" title="Permanently remove this row">Delete</button>
+                                            <button type="submit" class="text-[11px] font-medium px-2.5 py-1 rounded-md bg-rose-900/40 hover:bg-rose-900/60 text-rose-600 dark:text-rose-200 ring-1 ring-rose-700/40" title="Permanently remove this row">Delete</button>
                                         </form>
                                     </div>
                                 </td>

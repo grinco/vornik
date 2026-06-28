@@ -29,8 +29,8 @@
 
             <div class="grid gap-3 grid-cols-2 sm:grid-cols-4">
                 <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.TotCreated}}</div><div class="text-[11px] text-gray-500 mt-0.5">Created</div></div>
-                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-emerald-400">{{.Stats.TotCompleted}}</div><div class="text-[11px] text-gray-500 mt-0.5">Completed</div></div>
-                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-rose-400">{{.Stats.TotFailed}}</div><div class="text-[11px] text-gray-500 mt-0.5">Failed</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-emerald-800 dark:text-emerald-400">{{.Stats.TotCompleted}}</div><div class="text-[11px] text-gray-500 mt-0.5">Completed</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-rose-800 dark:text-rose-400">{{.Stats.TotFailed}}</div><div class="text-[11px] text-gray-500 mt-0.5">Failed</div></div>
                 <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.OverallSuccessPct}}%</div><div class="text-[11px] text-gray-500 mt-0.5">Success rate</div></div>
             </div>
 
@@ -48,9 +48,9 @@
 
             {{if .Verdicts.HasData}}
             <div class="grid gap-3 grid-cols-2 sm:grid-cols-4">
-                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-emerald-400">{{.Verdicts.TotPass}}</div><div class="text-[11px] text-gray-500 mt-0.5">Judge pass</div></div>
-                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-rose-400">{{.Verdicts.TotFail}}</div><div class="text-[11px] text-gray-500 mt-0.5">Judge fail</div></div>
-                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-amber-400">{{.Verdicts.TotAbstain}}</div><div class="text-[11px] text-gray-500 mt-0.5">Abstain</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-emerald-800 dark:text-emerald-400">{{.Verdicts.TotPass}}</div><div class="text-[11px] text-gray-500 mt-0.5">Judge pass</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-rose-800 dark:text-rose-400">{{.Verdicts.TotFail}}</div><div class="text-[11px] text-gray-500 mt-0.5">Judge fail</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-amber-800 dark:text-amber-400">{{.Verdicts.TotAbstain}}</div><div class="text-[11px] text-gray-500 mt-0.5">Abstain</div></div>
                 <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Verdicts.OverallAbstainPct}}%</div><div class="text-[11px] text-gray-500 mt-0.5">Abstain rate</div></div>
             </div>
             <div class="glass rounded-xl border border-dark-700 p-4 overflow-x-auto">

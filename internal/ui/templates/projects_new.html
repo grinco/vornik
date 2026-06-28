@@ -27,20 +27,20 @@
                class="block bg-gradient-to-r from-violet-600/15 via-accent-600/10 to-transparent border border-violet-500/30 hover:border-violet-400/60 rounded-xl px-5 py-4 transition-colors group">
                 <div class="flex items-center gap-4">
                     <div class="flex-shrink-0 h-10 w-10 rounded-lg bg-violet-500/20 border border-violet-400/30 flex items-center justify-center">
-                        <svg class="h-5 w-5 text-violet-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+                        <svg class="h-5 w-5 text-violet-600 dark:text-violet-200" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
                     </div>
                     <div class="flex-1 min-w-0">
                         <div class="flex items-center gap-2">
-                            <h2 class="text-sm font-semibold text-violet-100">Not sure which template? Try the conversational wizard</h2>
-                            <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-200">New</span>
+                            <h2 class="text-sm font-semibold text-violet-600 dark:text-violet-100">Not sure which template? Try the conversational wizard</h2>
+                            <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-600 dark:text-violet-200">New</span>
                         </div>
-                        <p class="text-xs text-violet-200/70 mt-0.5">
+                        <p class="text-xs text-violet-600/70 dark:text-violet-200/70 mt-0.5">
                             Describe what you want in plain language. The wizard
                             asks clarifying questions and proposes a starter
                             project config you can commit when it's ready.
                         </p>
                     </div>
-                    <svg class="h-4 w-4 text-violet-300 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
+                    <svg class="h-4 w-4 text-violet-700 dark:text-violet-300 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
                 </div>
             </a>
 
@@ -55,10 +55,10 @@
                 </p>
             </div>
             {{else if .MaterialisationDisabled}}
-            <div class="bg-amber-500/10 border border-amber-500/40 rounded-xl px-4 py-3 text-sm text-amber-200">
+            <div class="bg-amber-500/10 border border-amber-500/40 rounded-xl px-4 py-3 text-sm text-amber-600 dark:text-amber-200">
                 The daemon doesn't have a writable configs directory configured;
                 you can browse templates but the "Create" button is disabled.
-                Set <code class="text-amber-100">VORNIK_CONFIGS_DIR</code> to enable.
+                Set <code class="text-amber-600 dark:text-amber-100">VORNIK_CONFIGS_DIR</code> to enable.
             </div>
             {{end}}
 

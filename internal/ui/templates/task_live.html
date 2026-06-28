@@ -53,18 +53,18 @@
         {{/* Reconnect banner — initially hidden. The JS layer flips
              it visible on socket drop and tracks the backoff schedule
              (1s → 2s → 4s → 8s → 16s → 30s cap). */}}
-        <div id="reconnect-banner" class="hidden mb-3 px-4 py-2 rounded-lg bg-amber-900/40 border border-amber-700/40 text-amber-200 text-xs flex items-center justify-between gap-3">
+        <div id="reconnect-banner" class="hidden mb-3 px-4 py-2 rounded-lg bg-amber-900/40 border border-amber-700/40 text-amber-600 dark:text-amber-200 text-xs flex items-center justify-between gap-3">
             <span>Reconnecting <span id="reconnect-detail">…</span></span>
-            <button type="button" id="reconnect-now" class="px-2 py-1 rounded bg-amber-800/60 hover:bg-amber-700/60 text-amber-100">Reconnect now</button>
+            <button type="button" id="reconnect-now" class="px-2 py-1 rounded bg-amber-800/60 hover:bg-amber-700/60 text-amber-600 dark:text-amber-100">Reconnect now</button>
         </div>
 
         {{/* Replay-gap banner — shown when the server emits a
              replay_gap event (cursor older than the ring buffer).
              A page refresh re-issues last_seq=0 and reseeds the
              timeline with the live view. */}}
-        <div id="gap-banner" class="hidden mb-3 px-4 py-2 rounded-lg bg-rose-950/40 border border-rose-900/40 text-rose-200 text-xs flex items-center justify-between gap-3">
+        <div id="gap-banner" class="hidden mb-3 px-4 py-2 rounded-lg bg-rose-950/40 border border-rose-900/40 text-rose-600 dark:text-rose-200 text-xs flex items-center justify-between gap-3">
             <span>The live stream skipped ahead beyond the server's replay buffer.</span>
-            <button type="button" onclick="window.location.reload()" class="px-2 py-1 rounded bg-rose-800/60 hover:bg-rose-700/60 text-rose-100">Refresh for full state</button>
+            <button type="button" onclick="window.location.reload()" class="px-2 py-1 rounded bg-rose-800/60 hover:bg-rose-700/60 text-rose-600 dark:text-rose-100">Refresh for full state</button>
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-[1fr,18rem] gap-4">
@@ -146,7 +146,7 @@
                                 <summary class="cursor-pointer list-none flex items-center gap-2 text-sm">
                                     <span class="text-[10px] font-mono text-gray-600">#{{$i}}</span>
                                     <span class="font-medium text-gray-100">{{$step}}</span>
-                                    <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-900/40 text-emerald-300">completed</span>
+                                    <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">completed</span>
                                 </summary>
                                 <div class="mt-2 text-[11px] text-gray-500">Step completed before this page loaded — refresh later or open the replay page for full detail.</div>
                             </details>
@@ -197,7 +197,7 @@
                              reacts to the chosen chip so the operator
                              sees exactly what their hint will do. */}}
                         <p id="steer-scope-explain" class="text-[10px] text-gray-500 leading-snug"></p>
-                        <p id="steer-error" class="hidden text-[11px] text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-2 py-1.5"></p>
+                        <p id="steer-error" class="hidden text-[11px] text-rose-700 dark:text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-2 py-1.5"></p>
                     </div>
                     {{/* Pause / Resume — non-hint steering actions
                          in a compact row. Fork moved into an inline
@@ -213,8 +213,8 @@
                             <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                             Resume
                         </button>
-                        <span id="hint-pending-badge" class="hidden ml-auto inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded-full bg-amber-700/60 text-amber-100" title="Hints queued, awaiting consumption by the next step"></span>
-                        <p id="steering-error" class="hidden w-full text-[11px] text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-2 py-1.5"></p>
+                        <span id="hint-pending-badge" class="hidden ml-auto inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded-full bg-amber-700/60 text-amber-600 dark:text-amber-100" title="Hints queued, awaiting consumption by the next step"></span>
+                        <p id="steering-error" class="hidden w-full text-[11px] text-rose-700 dark:text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-2 py-1.5"></p>
                     </div>
                     {{/* Inline fork (refactor D, 2026-05-26).
                          Replaces the modal — same step picker +
@@ -222,7 +222,7 @@
                          discoverable without an extra click. */}}
                     <div class="px-4 py-3 border-t border-dark-700/60">
                         <details id="fork-section" class="group">
-                            <summary class="cursor-pointer list-none flex items-center gap-1.5 text-xs font-medium text-amber-300 hover:text-amber-200">
+                            <summary class="cursor-pointer list-none flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:text-amber-600 dark:text-amber-200">
                                 <svg class="h-3.5 w-3.5 transform transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>
                                 Fork from a step
                                 <span class="text-[10px] text-gray-500 font-normal ml-1">(branch — current execution keeps running)</span>
@@ -242,7 +242,7 @@
                                         Create fork
                                     </button>
                                 </div>
-                                <p id="fork-inline-error" class="hidden text-[11px] text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-2 py-1.5"></p>
+                                <p id="fork-inline-error" class="hidden text-[11px] text-rose-700 dark:text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-2 py-1.5"></p>
                             </div>
                         </details>
                     </div>
@@ -580,8 +580,8 @@
         // "Last event Xs ago" label. The handleEventFrame stamp
         // lives at 4 Hz; the colour ladder is:
         //   < 10s   text-gray-400  (calm — events flowing)
-        //   10-30s  text-amber-300 (warming — stream slowing)
-        //   > 30s   text-rose-300  (cold — likely stalled)
+        //   10-30s  text-amber-700 dark:text-amber-300 (warming — stream slowing)
+        //   > 30s   text-rose-700 dark:text-rose-300  (cold — likely stalled)
         // Until the first event lands, the label shows "—" and
         // doesn't claim "0s ago" — that would be misleading.
         function startHeartbeat() {
@@ -596,9 +596,9 @@
                 const ageMs = Date.now() - lastEventAt;
                 el.textContent = formatAge(ageMs);
                 if (ageMs >= 30000) {
-                    el.className = 'text-rose-300 font-medium';
+                    el.className = 'text-rose-700 dark:text-rose-300 font-medium';
                 } else if (ageMs >= 10000) {
-                    el.className = 'text-amber-300';
+                    el.className = 'text-amber-700 dark:text-amber-300';
                 } else {
                     el.className = 'text-gray-300';
                 }
@@ -784,7 +784,7 @@
             name.textContent = stepID;
             const badge = document.createElement('span');
             badge.className = 'inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded ' +
-                (opts.completed ? 'bg-emerald-900/40 text-emerald-300' : 'bg-accent-900/40 text-accent-300');
+                (opts.completed ? 'bg-emerald-900/40 text-emerald-700 dark:text-emerald-300' : 'bg-accent-900/40 text-accent-300');
             badge.textContent = opts.completed ? 'completed' : 'running';
             summary.append(idx, name, badge);
             details.appendChild(summary);
@@ -890,7 +890,7 @@
             if (!card) return;
             card.badge.textContent = p.outcome ? p.outcome : 'completed';
             card.badge.className = 'inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded ' +
-                ((p.outcome && p.outcome !== 'ok') ? 'bg-rose-900/40 text-rose-300' : 'bg-emerald-900/40 text-emerald-300');
+                ((p.outcome && p.outcome !== 'ok') ? 'bg-rose-900/40 text-rose-700 dark:text-rose-300' : 'bg-emerald-900/40 text-emerald-700 dark:text-emerald-300');
             card.details.open = false;
         }
 
@@ -912,7 +912,7 @@
                 if (p.err) {
                     card.llmStatus.textContent = 'LLM error: ' + (p.err || 'unknown');
                     card.llmStatus.classList.remove('text-accent-300', 'text-gray-400');
-                    card.llmStatus.classList.add('text-rose-300');
+                    card.llmStatus.classList.add('text-rose-700 dark:text-rose-300');
                 } else {
                     const parts = [];
                     if (p.model) parts.push(p.model);
@@ -920,7 +920,7 @@
                     if (typeof p.completion_tokens === 'number') parts.push(p.completion_tokens + ' out');
                     if (typeof p.duration_ms === 'number') parts.push(p.duration_ms + 'ms');
                     card.llmStatus.textContent = parts.join(' · ') || 'idle';
-                    card.llmStatus.classList.remove('text-accent-300', 'text-rose-300');
+                    card.llmStatus.classList.remove('text-accent-300', 'text-rose-700 dark:text-rose-300');
                     card.llmStatus.classList.add('text-gray-400');
                 }
             }
@@ -1033,7 +1033,7 @@
             if (statusEl) {
                 if (p.err) {
                     statusEl.textContent = 'error';
-                    statusEl.className = 'text-[10px] text-rose-300';
+                    statusEl.className = 'text-[10px] text-rose-700 dark:text-rose-300';
                 } else {
                     statusEl.textContent = (typeof p.duration_ms === 'number' ? p.duration_ms + 'ms' : 'done');
                     statusEl.className = 'text-[10px] text-gray-500';
@@ -1044,7 +1044,7 @@
                 slot.replaceChildren();
                 if (p.err) {
                     const errDiv = document.createElement('div');
-                    errDiv.className = 'mt-1 text-[11px] text-rose-300 whitespace-pre-wrap';
+                    errDiv.className = 'mt-1 text-[11px] text-rose-700 dark:text-rose-300 whitespace-pre-wrap';
                     errDiv.textContent = p.err;
                     slot.appendChild(errDiv);
                 }
@@ -1074,8 +1074,8 @@
             const op = document.createElement('span');
             const opLabel = (p.op || 'modify');
             op.className = 'inline-flex items-center px-1 py-0.5 text-[9px] font-medium rounded ' +
-                (opLabel === 'delete' ? 'bg-rose-900/40 text-rose-300'
-                : opLabel === 'create' ? 'bg-emerald-900/40 text-emerald-300'
+                (opLabel === 'delete' ? 'bg-rose-900/40 text-rose-700 dark:text-rose-300'
+                : opLabel === 'create' ? 'bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
                 : 'bg-dark-700 text-gray-400');
             op.textContent = opLabel;
             const path = document.createElement('span');
@@ -1098,7 +1098,7 @@
             if (p.class) {
                 card.badge.textContent = p.class;
                 card.badge.className = 'inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded ' +
-                    (p.class === 'ok' ? 'bg-emerald-900/40 text-emerald-300' : 'bg-rose-900/40 text-rose-300');
+                    (p.class === 'ok' ? 'bg-emerald-900/40 text-emerald-700 dark:text-emerald-300' : 'bg-rose-900/40 text-rose-700 dark:text-rose-300');
             }
         }
 
@@ -1152,13 +1152,13 @@
                 span.classList.add('bg-accent-900/40', 'text-accent-300', 'ring-accent-600/40');
                 label = 'Running';
             } else if (s === 'PAUSED') {
-                span.classList.add('bg-amber-900/40', 'text-amber-300', 'ring-amber-600/40');
+                span.classList.add('bg-amber-900/40', 'text-amber-700 dark:text-amber-300', 'ring-amber-600/40');
                 label = 'Paused';
             } else if (s === 'COMPLETED') {
-                span.classList.add('bg-emerald-900/40', 'text-emerald-300', 'ring-emerald-600/40');
+                span.classList.add('bg-emerald-900/40', 'text-emerald-700 dark:text-emerald-300', 'ring-emerald-600/40');
                 label = 'Completed';
             } else if (s === 'FAILED') {
-                span.classList.add('bg-rose-900/40', 'text-rose-300', 'ring-rose-600/40');
+                span.classList.add('bg-rose-900/40', 'text-rose-700 dark:text-rose-300', 'ring-rose-600/40');
                 label = 'Failed';
             } else if (s === 'CANCELLED') {
                 span.classList.add('bg-gray-700/60', 'text-gray-400', 'ring-gray-600/50');
@@ -1334,10 +1334,10 @@
                 left.appendChild(stepLabel);
                 const badge = document.createElement('span');
                 if (h.applied_at) {
-                    badge.className = 'inline-flex items-center px-1.5 py-0 text-[9px] font-medium rounded bg-emerald-900/40 text-emerald-300';
+                    badge.className = 'inline-flex items-center px-1.5 py-0 text-[9px] font-medium rounded bg-emerald-900/40 text-emerald-700 dark:text-emerald-300';
                     badge.textContent = 'applied';
                 } else {
-                    badge.className = 'inline-flex items-center px-1.5 py-0 text-[9px] font-medium rounded bg-amber-900/40 text-amber-200';
+                    badge.className = 'inline-flex items-center px-1.5 py-0 text-[9px] font-medium rounded bg-amber-900/40 text-amber-600 dark:text-amber-200';
                     badge.textContent = 'pending';
                 }
                 head.append(left, badge);

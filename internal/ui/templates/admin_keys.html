@@ -13,9 +13,9 @@
                 {{if .Available}}
                 <span class="text-sm text-gray-500">
                     {{.Counts.Total}} total
-                    {{if gt .Counts.Active 0}}<span class="text-emerald-400">· {{.Counts.Active}} active</span>{{end}}
-                    {{if gt .Counts.Revoked 0}}<span class="text-rose-400">· {{.Counts.Revoked}} revoked</span>{{end}}
-                    {{if gt .Counts.Expired 0}}<span class="text-amber-400">· {{.Counts.Expired}} expired</span>{{end}}
+                    {{if gt .Counts.Active 0}}<span class="text-emerald-800 dark:text-emerald-400">· {{.Counts.Active}} active</span>{{end}}
+                    {{if gt .Counts.Revoked 0}}<span class="text-rose-800 dark:text-rose-400">· {{.Counts.Revoked}} revoked</span>{{end}}
+                    {{if gt .Counts.Expired 0}}<span class="text-amber-800 dark:text-amber-400">· {{.Counts.Expired}} expired</span>{{end}}
                 </span>
                 {{end}}
                 <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
@@ -26,7 +26,7 @@
             </p>
 
             {{if .Error}}
-            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-200 text-xs px-3 py-2 rounded-md">{{.Error}}</div>
+            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-600 dark:text-rose-200 text-xs px-3 py-2 rounded-md">{{.Error}}</div>
             {{end}}
 
             {{if not .Available}}

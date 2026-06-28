@@ -15,9 +15,9 @@
             {{if and .UsersWired (gt .AwaitingUsers 0)}}
             <a href="/ui/admin/users" class="block glass rounded-xl border border-amber-700/60 bg-amber-900/20 px-4 py-3 hover:bg-amber-900/30 transition-colors">
                 <div class="flex items-center gap-3">
-                    <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-800/70 text-amber-100">{{.AwaitingUsers}}</span>
-                    <span class="text-sm text-amber-100">login{{if ne .AwaitingUsers 1}}s{{end}} awaiting approval</span>
-                    <span class="text-xs text-amber-300/80 ml-auto">Review &amp; approve →</span>
+                    <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-800/70 text-amber-600 dark:text-amber-100">{{.AwaitingUsers}}</span>
+                    <span class="text-sm text-amber-600 dark:text-amber-100">login{{if ne .AwaitingUsers 1}}s{{end}} awaiting approval</span>
+                    <span class="text-xs text-amber-700/80 dark:text-amber-300/80 ml-auto">Review &amp; approve →</span>
                 </div>
             </a>
             {{end}}
@@ -32,7 +32,7 @@
                         <li class="flex items-center gap-2">
                             <span class="inline-block w-2 h-2 rounded-full {{if eq .Status "ok"}}bg-emerald-400{{else}}bg-red-400{{end}}"></span>
                             <span class="text-gray-200 font-mono">{{.Name}}</span>
-                            {{if .Error}}<span class="text-rose-400 text-xs ml-auto">{{.Error}}</span>{{end}}
+                            {{if .Error}}<span class="text-rose-800 dark:text-rose-400 text-xs ml-auto">{{.Error}}</span>{{end}}
                         </li>
                         {{end}}
                     </ul>
@@ -66,7 +66,7 @@
                 <div class="glass rounded-xl border border-dark-700 p-5">
                     <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Quick links</h2>
                     <ul class="space-y-2 text-sm">
-                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/users">Users <span class="text-[10px] text-gray-500">— approve logins, roles, project access</span>{{if and .UsersWired (gt .AwaitingUsers 0)}} <span class="px-1.5 py-0.5 text-[10px] font-mono rounded bg-amber-900/60 text-amber-200">{{.AwaitingUsers}} awaiting</span>{{end}}</a></li>
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/users">Users <span class="text-[10px] text-gray-500">— approve logins, roles, project access</span>{{if and .UsersWired (gt .AwaitingUsers 0)}} <span class="px-1.5 py-0.5 text-[10px] font-mono rounded bg-amber-900/60 text-amber-600 dark:text-amber-200">{{.AwaitingUsers}} awaiting</span>{{end}}</a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/audit">Audit log <span class="text-[10px] text-gray-500">— admin-initiated mutations</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/chat-audit">Chat audit <span class="text-[10px] text-gray-500">— dispatcher turn ledger</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/memory-audit">Memory audit <span class="text-[10px] text-gray-500">— retrieval + ingest</span></a></li>

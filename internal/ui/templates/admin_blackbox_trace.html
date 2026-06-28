@@ -23,7 +23,7 @@
                 No audit data for task <code class="font-mono">{{.TaskID}}</code>. Check the task ID — retention may have swept the rows, or the task never ran.
             </div>
             {{else if .Error}}
-            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-200 text-xs px-3 py-2 rounded-md">
+            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-600 dark:text-rose-200 text-xs px-3 py-2 rounded-md">
                 Trace assembly failed: {{.Error}}
             </div>
             {{else if .Trace}}
@@ -43,7 +43,7 @@
                 </div>
                 <div>
                     <div class="text-gray-500 uppercase tracking-wider mb-0.5">Total cost</div>
-                    <div class="font-mono text-emerald-300">${{printf "%.4f" .Trace.Header.TotalCostUSD}}</div>
+                    <div class="font-mono text-emerald-700 dark:text-emerald-300">${{printf "%.4f" .Trace.Header.TotalCostUSD}}</div>
                 </div>
                 <div class="col-span-2 md:col-span-4">
                     <div class="text-gray-500 uppercase tracking-wider mb-0.5">Digest <span class="text-[10px] text-gray-600">(schema v{{.Trace.Header.SchemaVersion}}) — cite this to identify the trace</span></div>
@@ -63,7 +63,7 @@
             </div>
 
             {{if .Trace.Warnings}}
-            <div class="bg-amber-900/30 border border-amber-700/40 text-amber-200 text-xs px-3 py-2 rounded-md space-y-1">
+            <div class="bg-amber-900/30 border border-amber-700/40 text-amber-600 dark:text-amber-200 text-xs px-3 py-2 rounded-md space-y-1">
                 <div class="font-medium">Partial trace — some sources failed:</div>
                 <ul class="list-disc list-inside ml-2">
                     {{range .Trace.Warnings}}<li>{{.}}</li>{{end}}
@@ -86,14 +86,14 @@
                             <div class="text-sm text-gray-200 truncate" title="{{.Title}}">{{.Title}}</div>
                             {{if .Summary}}<div class="text-[11px] text-gray-500 truncate" title="{{.Summary}}">{{.Summary}}</div>{{end}}
                             <div class="text-[10px] text-gray-600 font-mono mt-0.5">
-                                {{if .Role}}<span class="text-violet-400">{{.Role}}</span>{{end}}
+                                {{if .Role}}<span class="text-violet-800 dark:text-violet-400">{{.Role}}</span>{{end}}
                                 {{if .Model}} · {{.Model}}{{end}}
                                 {{if .StepID}} · step={{.StepID}}{{end}}
                                 {{if .ExecutionID}} · exec={{.ExecutionID}}{{end}}
                                 · {{.Source}}{{if .SourceID}}/{{.SourceID}}{{end}}
                             </div>
                         </div>
-                        {{if gt .CostUSD 0.0}}<div class="text-[11px] font-mono text-emerald-300 whitespace-nowrap pt-1">${{printf "%.4f" .CostUSD}}</div>{{end}}
+                        {{if gt .CostUSD 0.0}}<div class="text-[11px] font-mono text-emerald-700 dark:text-emerald-300 whitespace-nowrap pt-1">${{printf "%.4f" .CostUSD}}</div>{{end}}
                     </div>
                     {{end}}
                 </div>

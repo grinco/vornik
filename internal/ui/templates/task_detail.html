@@ -170,14 +170,14 @@
             {{if .Conversation.OpenCheckpoint}}
             <div class="bg-amber-500/10 rounded-xl panel-primary overflow-hidden" data-tone="amber">
                 <div class="px-5 py-3.5 border-b border-amber-500/30 flex items-center gap-2">
-                    <svg class="h-4 w-4 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
-                    <h2 class="text-sm font-semibold text-amber-200">Open checkpoint
+                    <svg class="h-4 w-4 text-amber-800 dark:text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                    <h2 class="text-sm font-semibold text-amber-600 dark:text-amber-200">Open checkpoint
                         {{with .Conversation.CheckpointPayload}} — {{.Kind}}{{end}}</h2>
                 </div>
                 <div class="px-5 py-4 space-y-3">
                     {{with .Conversation.CheckpointPayload}}
                         {{if .Question}}<p class="text-sm text-ink-200">{{.Question}}</p>{{end}}
-                        {{if .TaskForHuman}}<p class="text-sm text-ink-200"><span class="text-amber-400">action:</span> {{.TaskForHuman}}</p>{{end}}
+                        {{if .TaskForHuman}}<p class="text-sm text-ink-200"><span class="text-amber-800 dark:text-amber-400">action:</span> {{.TaskForHuman}}</p>{{end}}
                         {{if .Draft}}<pre class="text-xs text-ink-300 bg-surface-900 rounded p-3 whitespace-pre-wrap">{{.Draft}}</pre>{{end}}
                         {{if .ExpectedBy}}<p class="text-xs text-ink-500">expected by: {{.ExpectedBy}}</p>{{end}}
                     {{end}}
@@ -215,8 +215,8 @@
             {{if eq (printf "%s" .Task.Status) "AWAITING_APPROVAL"}}
             <div class="bg-sky-500/10 rounded-xl panel-primary overflow-hidden" data-tone="sky">
                 <div class="px-5 py-3.5 border-b border-sky-500/30 flex items-center gap-2">
-                    <svg class="h-4 w-4 text-sky-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    <h2 class="text-sm font-semibold text-sky-200">Awaiting your approval</h2>
+                    <svg class="h-4 w-4 text-sky-800 dark:text-sky-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    <h2 class="text-sm font-semibold text-sky-600 dark:text-sky-200">Awaiting your approval</h2>
                 </div>
                 <div class="px-5 py-4 space-y-3">
                     <p class="text-sm text-ink-200">This autonomy task is held for manual approval. Approve to queue it for execution, or reject to cancel it.</p>
@@ -241,7 +241,7 @@
                         {{if .IsCurrent}}
                         <span class="px-2.5 py-1 rounded-full bg-brand-500/20 text-brand-300 text-xs font-medium border border-brand-500/40">{{.Name}} (now)</span>
                         {{else if eq .Status "exit"}}
-                        <span class="px-2.5 py-1 rounded-full bg-green-500/10 text-green-400/80 text-xs">{{.Name}} ✓</span>
+                        <span class="px-2.5 py-1 rounded-full bg-green-500/10 text-green-800/80 dark:text-green-400/80 text-xs">{{.Name}} ✓</span>
                         {{else}}
                         <span class="px-2.5 py-1 rounded-full bg-surface-700 text-ink-400 text-xs">{{.Name}}</span>
                         {{end}}
@@ -267,7 +267,7 @@
                         {{end}}
                         {{if .Conversation.Closeable}}
                         <form method="POST" action="/ui/tasks/{{.Task.ID}}/close" class="inline" onsubmit="return confirm('Close this task? This is terminal.');">
-                            <button class="text-xs text-amber-400 hover:text-amber-200">✓ Close</button>
+                            <button class="text-xs text-amber-800 dark:text-amber-400 hover:text-amber-600 dark:text-amber-200">✓ Close</button>
                         </form>
                         {{end}}
                     </div>
@@ -305,11 +305,11 @@
                         <div class="flex-1 min-w-0">
                             {{if not $grouped}}
                             <div class="text-xs uppercase tracking-wide mb-0.5
-                                {{if eq $m.MessageKind "checkpoint"}}text-amber-400
-                                {{else if eq $m.MessageKind "answer"}}text-green-400
-                                {{else if eq $m.MessageKind "directive"}}text-purple-400
+                                {{if eq $m.MessageKind "checkpoint"}}text-amber-800 dark:text-amber-400
+                                {{else if eq $m.MessageKind "answer"}}text-green-800 dark:text-green-400
+                                {{else if eq $m.MessageKind "directive"}}text-purple-800 dark:text-purple-400
                                 {{else if eq $m.MessageKind "phase_marker"}}text-accent-400
-                                {{else if eq $m.MessageKind "closure_request"}}text-amber-300
+                                {{else if eq $m.MessageKind "closure_request"}}text-amber-700 dark:text-amber-300
                                 {{else if eq $m.MessageKind "system"}}text-ink-500
                                 {{else if eq $m.MessageKind "hint"}}text-accent-300
                                 {{else}}text-ink-400{{end}}">
@@ -379,7 +379,7 @@
                             <label class="text-xs text-ink-400 flex items-center gap-2 cursor-pointer select-none">
                                 <input type="checkbox" id="taskComposeAsDirectiveDesktop"
                                        onchange="document.getElementById('taskComposeFormDesktop').action = this.checked ? '/ui/tasks/{{.Task.ID}}/directive' : '/ui/tasks/{{.Task.ID}}/message'"
-                                       class="rounded border-surface-600 bg-surface-900 text-purple-500 focus:ring-purple-500/40">
+                                       class="rounded border-surface-600 bg-surface-900 text-purple-800 dark:text-purple-500 focus:ring-purple-500/40">
                                 <span>As a course correction (directive — requeues failed/cancelled tasks)</span>
                             </label>
                             <button type="submit" class="bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium px-4 py-1.5 rounded">Send</button>
@@ -445,7 +445,7 @@
                     Live
                 </a>
                 <form method="POST" action="/ui/tasks/{{.Task.ID}}/cancel" class="contents" onsubmit="return confirm('Cancel this task?');">
-                    <button class="h-12 px-3 bg-rose-700/90 active:bg-rose-600 text-rose-100 text-sm rounded-lg flex items-center gap-1" aria-label="Cancel task">
+                    <button class="h-12 px-3 bg-rose-700/90 active:bg-rose-600 text-rose-600 dark:text-rose-100 text-sm rounded-lg flex items-center gap-1" aria-label="Cancel task">
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
                         Cancel
                     </button>
@@ -473,7 +473,7 @@
                 {{end}}
                 {{if .Conversation.Closeable}}
                 <form method="POST" action="/ui/tasks/{{.Task.ID}}/close" class="contents" onsubmit="return confirm('Close this task? This is terminal.');">
-                    <button class="h-12 px-3 bg-amber-700/80 active:bg-amber-600 text-amber-100 text-sm rounded-lg flex items-center gap-1 ring-1 ring-amber-600/40" aria-label="Close task — terminal">
+                    <button class="h-12 px-3 bg-amber-700/80 active:bg-amber-600 text-amber-600 dark:text-amber-100 text-sm rounded-lg flex items-center gap-1 ring-1 ring-amber-600/40" aria-label="Close task — terminal">
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
                         Close
                     </button>
@@ -499,7 +499,7 @@
                         <label class="text-xs text-ink-300 flex items-center gap-2 cursor-pointer select-none">
                             <input type="checkbox" id="taskComposeAsDirectiveMobile"
                                    onchange="document.getElementById('taskComposeFormMobile').action = this.checked ? '/ui/tasks/{{.Task.ID}}/directive' : '/ui/tasks/{{.Task.ID}}/message'"
-                                   class="h-4 w-4 rounded border-surface-600 bg-surface-900 text-purple-500 focus:ring-purple-500/40">
+                                   class="h-4 w-4 rounded border-surface-600 bg-surface-900 text-purple-800 dark:text-purple-500 focus:ring-purple-500/40">
                             <span>Course correction (directive)</span>
                         </label>
                     </div>
@@ -618,8 +618,8 @@
                 {{if .Task.LastError}}
                 <div class="border-t border-surface-600/60 px-5 py-4">
                     <div class="flex items-center gap-2 mb-2">
-                        <svg class="h-3.5 w-3.5 text-rose-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
-                        <span class="text-xs font-medium text-rose-400">Last Error</span>
+                        <svg class="h-3.5 w-3.5 text-rose-800 dark:text-rose-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"/></svg>
+                        <span class="text-xs font-medium text-rose-800 dark:text-rose-400">Last Error</span>
                     </div>
                     <pre class="text-xs text-ink-300 bg-surface-900 rounded-lg p-3 overflow-x-auto border border-rose-900/30">{{.Task.LastError}}</pre>
                 </div>
@@ -642,21 +642,21 @@
                 <div class="border-t border-surface-600/60 px-5 py-4">
                     <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
                         <div class="flex items-center gap-2">
-                            <svg class="h-3.5 w-3.5 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z"/></svg>
-                            <span class="text-xs font-medium text-amber-400">Post-mortem</span>
+                            <svg class="h-3.5 w-3.5 text-amber-800 dark:text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z"/></svg>
+                            <span class="text-xs font-medium text-amber-800 dark:text-amber-400">Post-mortem</span>
                             {{if .PostMortem}}<span class="text-[10px] text-ink-500">recorded {{.PostMortem.RecordedAt.Format "Jan 2 15:04"}}</span>{{end}}
                         </div>
                         {{if .PostMortemAvailable}}
                         <form method="POST" action="/ui/tasks/{{.Task.ID}}/post-mortem" class="m-0">
                             {{if .PostMortem}}<input type="hidden" name="force_refresh" value="true">{{end}}
-                            <button type="submit" class="px-2.5 py-1 text-xs font-medium rounded-md bg-amber-700/40 hover:bg-amber-600/50 text-amber-100 ring-1 ring-amber-700/40 transition-colors">
+                            <button type="submit" class="px-2.5 py-1 text-xs font-medium rounded-md bg-amber-700/40 hover:bg-amber-600/50 text-amber-600 dark:text-amber-100 ring-1 ring-amber-700/40 transition-colors">
                                 {{if .PostMortem}}Regenerate{{else}}Explain this failure{{end}}
                             </button>
                         </form>
                         {{end}}
                     </div>
                     {{if .PostMortemError}}
-                    <div class="text-xs text-rose-300 bg-rose-900/20 border border-rose-800/40 rounded-md px-3 py-2 mb-2">
+                    <div class="text-xs text-rose-700 dark:text-rose-300 bg-rose-900/20 border border-rose-800/40 rounded-md px-3 py-2 mb-2">
                         Post-mortem generation failed: {{.PostMortemError}}
                     </div>
                     {{end}}
@@ -703,7 +703,7 @@
                      if HumanMessage wasn't authored for this class. */}}
                 <div class="border-t border-surface-600/60 px-5 py-4">
                     <div class="flex items-start gap-3 mb-3">
-                        <svg class="h-5 w-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
+                        <svg class="h-5 w-5 text-amber-800 dark:text-amber-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
                         <p class="text-base text-ink-100 leading-snug">{{.Playbook.HumanFriendly}}</p>
                     </div>
                     <details class="group">
@@ -713,7 +713,7 @@
                         </summary>
                         <div class="mt-3 space-y-2 pl-4 border-l-2 border-surface-600">
                             <div class="flex items-center gap-2">
-                                <span class="text-xs font-medium text-sky-400">Playbook — {{.Playbook.Class}}</span>
+                                <span class="text-xs font-medium text-sky-800 dark:text-sky-400">Playbook — {{.Playbook.Class}}</span>
                             </div>
                             <p class="text-sm text-ink-300">{{.Playbook.Cause}}</p>
                             <ol class="list-decimal list-inside text-sm text-ink-200 space-y-1.5">
@@ -748,8 +748,8 @@
                 {{if .LearnedRemediations}}
                 <div class="border-t border-surface-600/60 px-5 py-4">
                     <div class="flex items-center gap-2 mb-2">
-                        <svg class="h-4 w-4 text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                        <span class="text-xs font-medium text-emerald-400">Similar failures here resolved by</span>
+                        <svg class="h-4 w-4 text-emerald-800 dark:text-emerald-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        <span class="text-xs font-medium text-emerald-800 dark:text-emerald-400">Similar failures here resolved by</span>
                         <span class="text-[10px] text-ink-500">— learned from this project's history (advisory)</span>
                     </div>
                     <ul class="space-y-1.5">
@@ -777,8 +777,8 @@
                 {{if .RecoveryActions}}
                 <div class="border-t border-surface-600/60 px-5 py-4">
                     <div class="flex items-center gap-2 mb-3">
-                        <svg class="h-3.5 w-3.5 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                        <span class="text-xs font-medium text-emerald-400">Recovery actions</span>
+                        <svg class="h-3.5 w-3.5 text-emerald-800 dark:text-emerald-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        <span class="text-xs font-medium text-emerald-800 dark:text-emerald-400">Recovery actions</span>
                     </div>
                     <p class="text-xs text-ink-500 mb-3">One-click next-steps tuned to this failure class. The primary action is the recommended path.</p>
                     <div class="flex flex-wrap gap-2">
@@ -787,14 +787,14 @@
                         <form method="POST" action="{{.URL}}" class="m-0"{{if .Confirm}} onsubmit="return confirm('{{.Confirm}}')"{{end}}>
                             <button type="submit"
                                     {{if .Tooltip}}title="{{.Tooltip}}"{{end}}
-                                    class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors {{if eq .Variant "primary"}}bg-emerald-700 hover:bg-emerald-600 text-white{{else if eq .Variant "danger"}}bg-rose-800/40 hover:bg-rose-700/50 text-rose-100 ring-1 ring-rose-800/40{{else}}bg-surface-700 hover:bg-surface-600 text-ink-200 ring-1 ring-surface-600{{end}}">
+                                    class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors {{if eq .Variant "primary"}}bg-emerald-700 hover:bg-emerald-600 text-white{{else if eq .Variant "danger"}}bg-rose-800/40 hover:bg-rose-700/50 text-rose-600 dark:text-rose-100 ring-1 ring-rose-800/40{{else}}bg-surface-700 hover:bg-surface-600 text-ink-200 ring-1 ring-surface-600{{end}}">
                                 {{.Label}}
                             </button>
                         </form>
                         {{else}}
                         <a href="{{.URL}}"
                            {{if .Tooltip}}title="{{.Tooltip}}"{{end}}
-                           class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors {{if eq .Variant "primary"}}bg-emerald-700 hover:bg-emerald-600 text-white{{else if eq .Variant "danger"}}bg-rose-800/40 hover:bg-rose-700/50 text-rose-100 ring-1 ring-rose-800/40{{else}}bg-surface-700 hover:bg-surface-600 text-ink-200 ring-1 ring-surface-600{{end}}">
+                           class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors {{if eq .Variant "primary"}}bg-emerald-700 hover:bg-emerald-600 text-white{{else if eq .Variant "danger"}}bg-rose-800/40 hover:bg-rose-700/50 text-rose-600 dark:text-rose-100 ring-1 ring-rose-800/40{{else}}bg-surface-700 hover:bg-surface-600 text-ink-200 ring-1 ring-surface-600{{end}}">
                             {{.Label}}
                         </a>
                         {{end}}
@@ -839,8 +839,8 @@
                                     </button>
                                 </div>
                             </div>
-                            <p id="steer-failed-error" class="hidden text-[11px] text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-2 py-1.5"></p>
-                            <p id="steer-failed-ok" class="hidden text-[11px] text-emerald-300 bg-emerald-950/30 border border-emerald-900/40 rounded px-2 py-1.5"></p>
+                            <p id="steer-failed-error" class="hidden text-[11px] text-rose-700 dark:text-rose-300 bg-rose-950/30 border border-rose-900/40 rounded px-2 py-1.5"></p>
+                            <p id="steer-failed-ok" class="hidden text-[11px] text-emerald-700 dark:text-emerald-300 bg-emerald-950/30 border border-emerald-900/40 rounded px-2 py-1.5"></p>
                             {{/* Hidden form used by the JS to submit the
                                  retry after a successful hint POST. The
                                  browser follows the server's redirect to
@@ -979,8 +979,8 @@
                     {{end}}
                     {{if $r.error}}
                     <div class="mb-4 p-3 rounded-lg bg-rose-900/20 border border-rose-800/40">
-                        <div class="text-xs font-medium text-rose-400 mb-1">Error</div>
-                        <pre class="text-xs text-rose-200 whitespace-pre-wrap">{{$r.error}}</pre>
+                        <div class="text-xs font-medium text-rose-800 dark:text-rose-400 mb-1">Error</div>
+                        <pre class="text-xs text-rose-600 dark:text-rose-200 whitespace-pre-wrap">{{$r.error}}</pre>
                     </div>
                     {{end}}
                     {{if $r.artifactNames}}
@@ -1069,11 +1069,11 @@
                      confidence + model is a three-part rich row. */}}
                 <div class="px-5 pt-3 flex items-center gap-3 text-xs text-ink-400 flex-wrap">
                     {{if eq .JudgeVerdict.VerdictClass "outcome-ok"}}
-                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-900/40 text-emerald-300 ring-1 ring-emerald-800/50">{{.JudgeVerdict.Decision}}</span>
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 ring-1 ring-emerald-800/50">{{.JudgeVerdict.Decision}}</span>
                     {{else if eq .JudgeVerdict.VerdictClass "outcome-bad"}}
-                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-900/40 text-rose-300 ring-1 ring-rose-800/50">{{.JudgeVerdict.Decision}}</span>
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-900/40 text-rose-700 dark:text-rose-300 ring-1 ring-rose-800/50">{{.JudgeVerdict.Decision}}</span>
                     {{else}}
-                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-900/40 text-amber-300 ring-1 ring-amber-800/50">{{.JudgeVerdict.Decision}}</span>
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-900/40 text-amber-700 dark:text-amber-300 ring-1 ring-amber-800/50">{{.JudgeVerdict.Decision}}</span>
                     {{end}}
                     <span>confidence: <span class="text-ink-200 font-mono">{{printf "%.2f" .JudgeVerdict.Confidence}}</span></span>
                     {{if .JudgeVerdict.Model}}<span>model: <span class="text-ink-300 font-mono">{{.JudgeVerdict.Model}}</span></span>{{end}}
@@ -1099,9 +1099,9 @@
                             <tr class="hover:bg-surface-700/30">
                                 <td class="px-4 py-2 align-top">
                                     {{if eq .SeverityClass "outcome-bad"}}
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-900/40 text-rose-300 ring-1 ring-rose-800/50">{{.Severity}}</span>
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-rose-900/40 text-rose-700 dark:text-rose-300 ring-1 ring-rose-800/50">{{.Severity}}</span>
                                     {{else if eq .SeverityClass "outcome-pending"}}
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-900/40 text-amber-300 ring-1 ring-amber-800/50">{{.Severity}}</span>
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-900/40 text-amber-700 dark:text-amber-300 ring-1 ring-amber-800/50">{{.Severity}}</span>
                                     {{else}}
                                     <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-surface-700 text-ink-300 ring-1 ring-surface-600">{{.Severity}}</span>
                                     {{end}}
@@ -1270,12 +1270,12 @@
                         {{if $exec.CurrentStepID}}
                         <div class="mb-2.5">
                             <div class="text-xs text-ink-500 mb-1.5">Last step</div>
-                            <span class="px-2 py-0.5 text-xs rounded bg-amber-900/30 text-amber-300 font-mono ring-1 ring-amber-800/30">{{$exec.CurrentStepID}}</span>
+                            <span class="px-2 py-0.5 text-xs rounded bg-amber-900/30 text-amber-700 dark:text-amber-300 font-mono ring-1 ring-amber-800/30">{{$exec.CurrentStepID}}</span>
                         </div>
                         {{end}}
                         {{if $exec.ErrorMessage}}
                         <div class="p-3 rounded-lg bg-rose-900/20 border border-rose-800/40">
-                            <pre class="text-xs text-rose-200 whitespace-pre-wrap max-h-48 overflow-y-auto">{{$exec.ErrorMessage}}</pre>
+                            <pre class="text-xs text-rose-600 dark:text-rose-200 whitespace-pre-wrap max-h-48 overflow-y-auto">{{$exec.ErrorMessage}}</pre>
                         </div>
                         {{end}}
                     </div>

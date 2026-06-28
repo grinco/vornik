@@ -21,10 +21,10 @@
             </div>
 
             {{if .Success}}
-            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{{.Success}}</div>
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-600 dark:text-emerald-200">{{.Success}}</div>
             {{end}}
             {{if .Error}}
-            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-200 whitespace-pre-wrap">{{.Error}}</div>
             {{end}}
 
             <p class="text-sm text-gray-400 leading-relaxed">
@@ -61,7 +61,7 @@
                         <p class="text-[11px] text-gray-500 mt-1">All three are required; the parser rejects the brief if any is empty.</p>
                     </header>
                     <div>
-                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="goal">Goal <span class="text-rose-400">*</span></label>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="goal">Goal <span class="text-rose-800 dark:text-rose-400">*</span></label>
                         <textarea name="goal" id="goal" rows="5" required
                                   class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 leading-relaxed">{{.Goal}}</textarea>
                         <p class="text-[11px] text-gray-500 mt-1">The high-level objective the swarm works toward.</p>
@@ -74,7 +74,7 @@
                         )}}
                     </div>
                     <div>
-                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="audience">Audience <span class="text-rose-400">*</span></label>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="audience">Audience <span class="text-rose-800 dark:text-rose-400">*</span></label>
                         <textarea name="audience" id="audience" rows="3" required
                                   class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 leading-relaxed">{{.Audience}}</textarea>
                         <p class="text-[11px] text-gray-500 mt-1">Who uses this project and how — drives audience-specific phrasing in prompt suggestions.</p>
@@ -87,7 +87,7 @@
                         )}}
                     </div>
                     <div>
-                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="successCriteria">Success criteria <span class="text-rose-400">*</span></label>
+                        <label class="block text-xs font-medium text-gray-300 mb-1.5" for="successCriteria">Success criteria <span class="text-rose-800 dark:text-rose-400">*</span></label>
                         <textarea name="successCriteria" id="successCriteria" rows="5" required
                                   class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 leading-relaxed">{{.SuccessCriteria}}</textarea>
                         <p class="text-[11px] text-gray-500 mt-1">Bulleted list works well. What does "this project worked" look like?</p>

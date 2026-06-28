@@ -78,7 +78,7 @@
             </div>
 
             {{if .Error}}
-            <div class="bg-rose-900/30 border border-rose-700/60 rounded-md px-4 py-2 text-sm text-rose-300">
+            <div class="bg-rose-900/30 border border-rose-700/60 rounded-md px-4 py-2 text-sm text-rose-700 dark:text-rose-300">
                 {{.Error}}
             </div>
             {{end}}
@@ -110,9 +110,9 @@
                                 <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-300 font-mono">{{with .ActorKind}}{{.}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
                                 <td class="px-4 py-2 text-xs text-gray-300 max-w-sm truncate font-mono" title="{{.SourceName}}">{{.SourceName}}</td>
                                 <td class="px-4 py-2 whitespace-nowrap text-xs">
-                                    {{if eq .Decision "admitted"}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-emerald-900/40 text-emerald-300">{{.Decision}}</span>
-                                    {{else if eq .Decision "quarantined"}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-900/40 text-amber-300">{{.Decision}}</span>
-                                    {{else if eq .Decision "rejected"}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-rose-900/40 text-rose-300">{{.Decision}}</span>
+                                    {{if eq .Decision "admitted"}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">{{.Decision}}</span>
+                                    {{else if eq .Decision "quarantined"}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-900/40 text-amber-700 dark:text-amber-300">{{.Decision}}</span>
+                                    {{else if eq .Decision "rejected"}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-rose-900/40 text-rose-700 dark:text-rose-300">{{.Decision}}</span>
                                     {{else}}<span class="px-2 py-0.5 text-xs font-mono rounded-md bg-dark-700 text-gray-300">{{.Decision}}</span>{{end}}
                                 </td>
                                 <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono">{{with .ProposedClass}}{{.}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>

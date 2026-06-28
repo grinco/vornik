@@ -15,11 +15,11 @@
                 {{end}}
                 {{if .Available}}
                 {{if .Trigger.IsOpen}}
-                <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-900/50 text-amber-200 ring-1 ring-amber-700/50">{{.Trigger.Status}}</span>
+                <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-amber-900/50 text-amber-600 dark:text-amber-200 ring-1 ring-amber-700/50">{{.Trigger.Status}}</span>
                 {{else if eq .Trigger.Status "dismissed"}}
                 <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-dark-700 text-gray-400 ring-1 ring-dark-600">{{.Trigger.Status}}</span>
                 {{else}}
-                <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-emerald-900/30 text-emerald-200 ring-1 ring-emerald-700/40">{{.Trigger.Status}}</span>
+                <span class="px-2 py-0.5 text-xs font-mono rounded-md bg-emerald-900/30 text-emerald-600 dark:text-emerald-200 ring-1 ring-emerald-700/40">{{.Trigger.Status}}</span>
                 {{end}}
                 {{end}}
             </div>
@@ -31,7 +31,7 @@
             {{else}}
 
             {{if .ActionError}}
-            <div class="bg-red-900/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-200">
+            <div class="bg-red-900/30 border border-red-800/50 rounded-xl px-4 py-3 text-sm text-red-600 dark:text-red-200">
                 <span class="font-medium">Action failed:</span> {{.ActionError}}
             </div>
             {{end}}
@@ -48,7 +48,7 @@
                         <dt class="text-gray-500">Workflow</dt><dd class="text-gray-200 font-mono col-span-2">{{.Trigger.WorkflowID}}</dd>
                         <dt class="text-gray-500">Class</dt>
                         <dd class="col-span-2">
-                            <span class="px-1.5 py-0.5 text-xs font-mono rounded ring-1 ring-violet-700/40 bg-violet-900/20 text-violet-200">{{.Trigger.Class}}</span>
+                            <span class="px-1.5 py-0.5 text-xs font-mono rounded ring-1 ring-violet-700/40 bg-violet-900/20 text-violet-600 dark:text-violet-200">{{.Trigger.Class}}</span>
                         </dd>
                         <dt class="text-gray-500">Opened</dt><dd class="text-gray-200 font-mono col-span-2">{{.Trigger.CreatedAt}}</dd>
                         {{if .ResolvedAt}}
@@ -79,9 +79,9 @@
                         <dt class="text-gray-500">Delta</dt>
                         <dd class="font-mono col-span-2">
                             {{if gt .Trigger.DeltaPct 0.0}}
-                            <span class="text-rose-300">+{{printf "%.1f" .Trigger.DeltaPct}}%</span>
+                            <span class="text-rose-700 dark:text-rose-300">+{{printf "%.1f" .Trigger.DeltaPct}}%</span>
                             {{else}}
-                            <span class="text-emerald-300">{{printf "%.1f" .Trigger.DeltaPct}}%</span>
+                            <span class="text-emerald-700 dark:text-emerald-300">{{printf "%.1f" .Trigger.DeltaPct}}%</span>
                             {{end}}
                         </dd>
                     </dl>
@@ -125,19 +125,19 @@
                             <tr class="hover:bg-dark-700/40 transition-colors">
                                 <td class="px-4 py-2 whitespace-nowrap">
                                     {{if .IsOpen}}
-                                    <span class="px-1.5 py-0.5 text-[10px] font-mono rounded ring-1 ring-amber-700/50 bg-amber-900/30 text-amber-200">{{.Status}}</span>
+                                    <span class="px-1.5 py-0.5 text-[10px] font-mono rounded ring-1 ring-amber-700/50 bg-amber-900/30 text-amber-600 dark:text-amber-200">{{.Status}}</span>
                                     {{else}}
                                     <span class="px-1.5 py-0.5 text-[10px] font-mono rounded ring-1 ring-dark-600 bg-dark-700 text-gray-400">{{.Status}}</span>
                                     {{end}}
                                 </td>
                                 <td class="px-4 py-2 text-xs">
-                                    <span class="px-1.5 py-0.5 font-mono rounded ring-1 ring-violet-700/40 bg-violet-900/20 text-violet-200">{{.Class}}</span>
+                                    <span class="px-1.5 py-0.5 font-mono rounded ring-1 ring-violet-700/40 bg-violet-900/20 text-violet-600 dark:text-violet-200">{{.Class}}</span>
                                 </td>
                                 <td class="px-4 py-2 text-xs font-mono text-right">
                                     {{if gt .DeltaPct 0.0}}
-                                    <span class="text-rose-300">+{{printf "%.1f" .DeltaPct}}%</span>
+                                    <span class="text-rose-700 dark:text-rose-300">+{{printf "%.1f" .DeltaPct}}%</span>
                                     {{else}}
-                                    <span class="text-emerald-300">{{printf "%.1f" .DeltaPct}}%</span>
+                                    <span class="text-emerald-700 dark:text-emerald-300">{{printf "%.1f" .DeltaPct}}%</span>
                                     {{end}}
                                 </td>
                                 <td class="px-4 py-2 text-[10px] font-mono text-right text-gray-500">{{.CreatedAt}}</td>

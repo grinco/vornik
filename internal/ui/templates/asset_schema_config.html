@@ -24,10 +24,10 @@
             </div>
 
             {{if .Success}}
-            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200 whitespace-pre-wrap">{{.Success}}</div>
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-600 dark:text-emerald-200 whitespace-pre-wrap">{{.Success}}</div>
             {{end}}
             {{if .Error}}
-            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-200 whitespace-pre-wrap">{{.Error}}</div>
             {{end}}
 
             <form method="POST" action="/ui/projects/{{.ProjectID}}/config/schema" class="space-y-5">
@@ -43,7 +43,7 @@
                         {{$err := formValue $.FieldErrors .Path}}
                         <div class="space-y-1">
                             <label for="f-{{.Path}}" class="block text-xs font-medium text-gray-300">
-                                {{.Label}}{{if .Required}} <span class="text-red-400">*</span>{{end}}
+                                {{.Label}}{{if .Required}} <span class="text-red-800 dark:text-red-400">*</span>{{end}}
                                 {{if .ReadOnly}}<span class="text-[10px] uppercase tracking-wide text-gray-500">read-only</span>{{end}}
                             </label>
                             {{if .IsBool}}
@@ -69,7 +69,7 @@
                                    class="w-full rounded-md bg-dark-900 border border-dark-600 px-3 py-2 text-sm text-gray-100 disabled:opacity-50">
                             {{end}}
                             {{if .Help}}<p class="text-[11px] text-gray-500">{{.Help}}</p>{{end}}
-                            {{if $err}}<p class="text-[11px] text-red-300">{{$err}}</p>{{end}}
+                            {{if $err}}<p class="text-[11px] text-red-700 dark:text-red-300">{{$err}}</p>{{end}}
                         </div>
                         {{end}}
                     </div>

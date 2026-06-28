@@ -34,10 +34,10 @@
                              value on long-press / hover. Same pattern as
                              the ToolInput cell below. */}}
                         <span class="inline-block min-w-0 max-w-[14rem] truncate px-2 py-0.5 text-[11px] font-mono rounded-md font-medium
-                            {{if eq .ToolName "file_read"}}bg-blue-900/50 text-blue-300
-                            {{else if eq .ToolName "file_write"}}bg-emerald-900/50 text-emerald-300
-                            {{else if eq .ToolName "run_shell"}}bg-amber-900/50 text-amber-300
-                            {{else if eq .ToolName "create_task"}}bg-purple-900/50 text-purple-300
+                            {{if eq .ToolName "file_read"}}bg-blue-900/50 text-blue-700 dark:text-blue-300
+                            {{else if eq .ToolName "file_write"}}bg-emerald-900/50 text-emerald-700 dark:text-emerald-300
+                            {{else if eq .ToolName "run_shell"}}bg-amber-900/50 text-amber-700 dark:text-amber-300
+                            {{else if eq .ToolName "create_task"}}bg-purple-900/50 text-purple-700 dark:text-purple-300
                             {{else}}bg-dark-700 text-gray-300{{end}}"
                             title="{{.ToolName}}">{{.ToolName}}</span>
                         <span class="text-xs text-gray-500 font-mono ml-auto whitespace-nowrap">{{.DurationMs}}ms</span>
@@ -96,10 +96,10 @@
                                          the full value via title=. Mirrors
                                          the ToolInput cell's truncate pattern. */}}
                                     <span class="inline-block max-w-[18rem] truncate align-middle px-2 py-0.5 text-xs font-mono rounded-md font-medium
-                                        {{if eq .ToolName "file_read"}}bg-blue-900/50 text-blue-300 ring-1 ring-blue-700/30
-                                        {{else if eq .ToolName "file_write"}}bg-emerald-900/50 text-emerald-300 ring-1 ring-emerald-700/30
-                                        {{else if eq .ToolName "run_shell"}}bg-amber-900/50 text-amber-300 ring-1 ring-amber-700/30
-                                        {{else if eq .ToolName "create_task"}}bg-purple-900/50 text-purple-300 ring-1 ring-purple-700/30
+                                        {{if eq .ToolName "file_read"}}bg-blue-900/50 text-blue-700 dark:text-blue-300 ring-1 ring-blue-700/30
+                                        {{else if eq .ToolName "file_write"}}bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 ring-1 ring-emerald-700/30
+                                        {{else if eq .ToolName "run_shell"}}bg-amber-900/50 text-amber-700 dark:text-amber-300 ring-1 ring-amber-700/30
+                                        {{else if eq .ToolName "create_task"}}bg-purple-900/50 text-purple-700 dark:text-purple-300 ring-1 ring-purple-700/30
                                         {{else}}bg-dark-700 text-gray-300{{end}}"
                                         title="{{.ToolName}}">{{.ToolName}}</span>
                                 </td>
@@ -142,7 +142,7 @@
                     {{range .WebhookEvents}}
                     <div class="glass rounded-xl border border-dark-700 px-4 py-3">
                         <div class="flex items-center gap-2 mb-1">
-                            <span class="px-2 py-0.5 text-[11px] font-mono rounded-md font-medium {{if eq .Status "accepted"}}bg-emerald-900/50 text-emerald-300{{else if eq .Status "duplicate"}}bg-amber-900/50 text-amber-300{{else}}bg-red-900/50 text-red-300{{end}}">{{.Status}}</span>
+                            <span class="px-2 py-0.5 text-[11px] font-mono rounded-md font-medium {{if eq .Status "accepted"}}bg-emerald-900/50 text-emerald-700 dark:text-emerald-300{{else if eq .Status "duplicate"}}bg-amber-900/50 text-amber-700 dark:text-amber-300{{else}}bg-red-900/50 text-red-700 dark:text-red-300{{end}}">{{.Status}}</span>
                             <span class="text-xs text-gray-300 font-mono">{{.Source}}</span>
                             <span class="text-xs text-gray-500 ml-auto font-mono">{{.CreatedAt.Format "01-02 15:04"}}</span>
                         </div>
@@ -151,7 +151,7 @@
                             <span>{{.ProjectID}}</span>
                             {{if .TaskID}}<span>·</span><a href="/ui/tasks/{{.TaskID}}" class="text-brand-400 font-mono">{{shortID .TaskID}}</a>{{end}}
                         </div>
-                        {{if .ErrorCode}}<div class="mt-1 text-[11px] text-rose-400 truncate" title="{{.ErrorMessage}}">{{.ErrorCode}}: {{.ErrorMessage}}</div>{{end}}
+                        {{if .ErrorCode}}<div class="mt-1 text-[11px] text-rose-800 dark:text-rose-400 truncate" title="{{.ErrorMessage}}">{{.ErrorCode}}: {{.ErrorMessage}}</div>{{end}}
                     </div>
                     {{end}}
                 </div>
@@ -174,7 +174,7 @@
                                 <tr class="hover:bg-dark-700/40 transition-colors">
                                     <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500 font-mono">{{.CreatedAt.Format "01-02 15:04:05"}}</td>
                                     <td class="px-4 py-2 whitespace-nowrap">
-                                        <span class="px-2 py-0.5 text-xs font-mono rounded-md font-medium {{if eq .Status "accepted"}}bg-emerald-900/50 text-emerald-300 ring-1 ring-emerald-700/30{{else if eq .Status "duplicate"}}bg-amber-900/50 text-amber-300 ring-1 ring-amber-700/30{{else}}bg-red-900/50 text-red-300 ring-1 ring-red-700/30{{end}}">{{.Status}}</span>
+                                        <span class="px-2 py-0.5 text-xs font-mono rounded-md font-medium {{if eq .Status "accepted"}}bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 ring-1 ring-emerald-700/30{{else if eq .Status "duplicate"}}bg-amber-900/50 text-amber-700 dark:text-amber-300 ring-1 ring-amber-700/30{{else}}bg-red-900/50 text-red-700 dark:text-red-300 ring-1 ring-red-700/30{{end}}">{{.Status}}</span>
                                     </td>
                                     <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-300"><a href="/ui/projects/{{.ProjectID}}" class="hover:text-gray-100 hover:underline">{{.ProjectID}}</a></td>
                                     <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-300 font-mono">{{.Source}}</td>

@@ -21,13 +21,13 @@
             {{else}}
 
             {{if .Error}}
-            <div class="bg-rose-900/30 border border-rose-700/50 rounded-xl p-3 text-rose-200 text-sm" role="alert">
+            <div class="bg-rose-900/30 border border-rose-700/50 rounded-xl p-3 text-rose-600 dark:text-rose-200 text-sm" role="alert">
                 {{.Error}}
             </div>
             {{end}}
 
             {{if .VersionSkew}}
-            <div class="bg-amber-900/30 border border-amber-700/50 rounded-xl p-3 text-amber-200 text-sm" role="alert">
+            <div class="bg-amber-900/30 border border-amber-700/50 rounded-xl p-3 text-amber-600 dark:text-amber-200 text-sm" role="alert">
                 ⚠ Version skew detected — cluster nodes are running more than one build version. Expected briefly during a rolling deploy; investigate if it persists.
             </div>
             {{end}}
@@ -58,8 +58,8 @@
                                 <td class="px-4 py-2 text-xs text-gray-400 font-mono whitespace-nowrap">{{if .Version}}{{.Version}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
                                 <td class="px-4 py-2 text-xs text-gray-400 font-mono">{{if .Address}}{{.Address}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
                                 <td class="px-4 py-2 text-xs whitespace-nowrap">
-                                    {{if eq .Health "ACTIVE"}}<span class="px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-200 font-mono">ACTIVE</span>{{end}}
-                                    {{if eq .Health "STALE"}}<span class="px-2 py-0.5 rounded bg-amber-900/40 text-amber-200 font-mono">STALE</span>{{end}}
+                                    {{if eq .Health "ACTIVE"}}<span class="px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-600 dark:text-emerald-200 font-mono">ACTIVE</span>{{end}}
+                                    {{if eq .Health "STALE"}}<span class="px-2 py-0.5 rounded bg-amber-900/40 text-amber-600 dark:text-amber-200 font-mono">STALE</span>{{end}}
                                 </td>
                                 <td class="px-4 py-2 text-xs text-gray-400 font-mono whitespace-nowrap" title="{{.LastSeen.Format "2006-01-02 15:04:05 MST"}}">{{.LastSeenAgo}} ago</td>
                             </tr>
@@ -79,9 +79,9 @@
                 <p class="text-xs text-gray-500 mb-3">Leader-election lease ownership (daemon_leader_locks). Only nodes that run singleton workers hold leases — the Fleet above is the full node list.</p>
                 <ul class="flex flex-wrap gap-3 text-sm">
                     <li class="px-3 py-1 rounded-md bg-dark-700 text-gray-200 font-mono"><span class="text-gray-400">lease-holders</span>: {{.Counts.Nodes}}</li>
-                    <li class="px-3 py-1 rounded-md bg-emerald-900/40 text-emerald-200 font-mono"><span class="text-emerald-400">active</span>: {{.Counts.Active}}</li>
-                    <li class="px-3 py-1 rounded-md bg-amber-900/40 text-amber-200 font-mono"><span class="text-amber-400">stale</span>: {{.Counts.Stale}}</li>
-                    <li class="px-3 py-1 rounded-md bg-rose-900/40 text-rose-200 font-mono"><span class="text-rose-400">expired</span>: {{.Counts.Expired}}</li>
+                    <li class="px-3 py-1 rounded-md bg-emerald-900/40 text-emerald-600 dark:text-emerald-200 font-mono"><span class="text-emerald-800 dark:text-emerald-400">active</span>: {{.Counts.Active}}</li>
+                    <li class="px-3 py-1 rounded-md bg-amber-900/40 text-amber-600 dark:text-amber-200 font-mono"><span class="text-amber-800 dark:text-amber-400">stale</span>: {{.Counts.Stale}}</li>
+                    <li class="px-3 py-1 rounded-md bg-rose-900/40 text-rose-600 dark:text-rose-200 font-mono"><span class="text-rose-800 dark:text-rose-400">expired</span>: {{.Counts.Expired}}</li>
                 </ul>
             </div>
 
@@ -104,9 +104,9 @@
                             <tr class="hover:bg-dark-700/40 transition-colors">
                                 <td class="px-4 py-2 text-xs text-gray-200 font-mono">{{.HolderID}}</td>
                                 <td class="px-4 py-2 text-xs whitespace-nowrap">
-                                    {{if eq .Status "ACTIVE"}}<span class="px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-200 font-mono">ACTIVE</span>{{end}}
-                                    {{if eq .Status "STALE"}}<span class="px-2 py-0.5 rounded bg-amber-900/40 text-amber-200 font-mono">STALE</span>{{end}}
-                                    {{if eq .Status "EXPIRED"}}<span class="px-2 py-0.5 rounded bg-rose-900/40 text-rose-200 font-mono">EXPIRED</span>{{end}}
+                                    {{if eq .Status "ACTIVE"}}<span class="px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-600 dark:text-emerald-200 font-mono">ACTIVE</span>{{end}}
+                                    {{if eq .Status "STALE"}}<span class="px-2 py-0.5 rounded bg-amber-900/40 text-amber-600 dark:text-amber-200 font-mono">STALE</span>{{end}}
+                                    {{if eq .Status "EXPIRED"}}<span class="px-2 py-0.5 rounded bg-rose-900/40 text-rose-600 dark:text-rose-200 font-mono">EXPIRED</span>{{end}}
                                 </td>
                                 <td class="px-4 py-2 text-xs text-gray-300">
                                     <div class="flex flex-wrap gap-1">
@@ -145,9 +145,9 @@
                             <tr class="hover:bg-dark-700/40 transition-colors">
                                 <td class="px-4 py-2 text-xs text-gray-200 font-mono whitespace-nowrap">{{.WorkerID}}</td>
                                 <td class="px-4 py-2 text-xs whitespace-nowrap">
-                                    {{if eq .Status "ACTIVE"}}<span class="px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-200 font-mono">ACTIVE</span>{{end}}
-                                    {{if eq .Status "STALE"}}<span class="px-2 py-0.5 rounded bg-amber-900/40 text-amber-200 font-mono">STALE</span>{{end}}
-                                    {{if eq .Status "EXPIRED"}}<span class="px-2 py-0.5 rounded bg-rose-900/40 text-rose-200 font-mono">EXPIRED</span>{{end}}
+                                    {{if eq .Status "ACTIVE"}}<span class="px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-600 dark:text-emerald-200 font-mono">ACTIVE</span>{{end}}
+                                    {{if eq .Status "STALE"}}<span class="px-2 py-0.5 rounded bg-amber-900/40 text-amber-600 dark:text-amber-200 font-mono">STALE</span>{{end}}
+                                    {{if eq .Status "EXPIRED"}}<span class="px-2 py-0.5 rounded bg-rose-900/40 text-rose-600 dark:text-rose-200 font-mono">EXPIRED</span>{{end}}
                                 </td>
                                 <td class="px-4 py-2 text-xs text-gray-400 font-mono truncate max-w-xs" title="{{.HolderID}}">{{.HolderID}}</td>
                                 <td class="px-4 py-2 text-xs text-gray-400 font-mono whitespace-nowrap" title="{{.RenewedAt.Format "2006-01-02 15:04:05 MST"}}">{{.RenewedAgo}} ago</td>

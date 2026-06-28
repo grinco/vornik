@@ -14,7 +14,7 @@
             </div>
 
             {{if not .Enabled}}
-            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-300 text-sm">
+            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-700 dark:text-amber-300 text-sm">
                 Knowledge-graph read surface not enabled on this daemon.
             </div>
             {{else if not .Found}}
@@ -47,7 +47,7 @@
                         {{range .Outgoing}}
                         <li class="px-5 py-2.5 text-sm">
                             <span class="text-gray-300">{{.FromName}}</span>
-                            <span class="text-emerald-400 mx-1">{{.Predicate}}</span>
+                            <span class="text-emerald-800 dark:text-emerald-400 mx-1">{{.Predicate}}</span>
                             <a href="/ui/memory/{{$.ProjectID}}/entities/{{.ToEntity}}" class="text-brand-300 hover:text-brand-200">{{.ToName}}</a>
                             <span class="text-xs text-gray-600 ml-2">{{len .SourceChunks}} src</span>
                         </li>
@@ -62,7 +62,7 @@
                         {{range .Incoming}}
                         <li class="px-5 py-2.5 text-sm">
                             <a href="/ui/memory/{{$.ProjectID}}/entities/{{.FromEntity}}" class="text-brand-300 hover:text-brand-200">{{.FromName}}</a>
-                            <span class="text-emerald-400 mx-1">{{.Predicate}}</span>
+                            <span class="text-emerald-800 dark:text-emerald-400 mx-1">{{.Predicate}}</span>
                             <span class="text-gray-300">{{.ToName}}</span>
                             <span class="text-xs text-gray-600 ml-2">{{len .SourceChunks}} src</span>
                         </li>
@@ -83,7 +83,7 @@
                             {{if .RepoScope}}<span class="text-[10px] px-1.5 py-0.5 rounded bg-dark-700 text-gray-500">{{.RepoScope}}</span>{{end}}
                         </div>
                         <p class="text-sm text-gray-400">{{.Preview}}</p>
-                        {{if .Surface}}<p class="text-xs text-emerald-400/70 mt-1">matched: “{{.Surface}}”</p>{{end}}
+                        {{if .Surface}}<p class="text-xs text-emerald-800/70 dark:text-emerald-400/70 mt-1">matched: “{{.Surface}}”</p>{{end}}
                     </li>
                     {{else}}
                     <li class="px-5 py-4 text-center text-gray-500 text-xs">No mentioning chunks (or filtered out by scope).</li>

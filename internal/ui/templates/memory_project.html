@@ -17,13 +17,13 @@
                     <h1 class="text-xl font-semibold text-gray-100 mt-1">{{.ProjectName}}</h1>
                 </div>
                 <div class="flex items-center gap-3 text-xs text-gray-500">
-                    <span>Queue depth: <span class="tabular-nums {{if gt .QueueDepth 0}}text-amber-300{{else}}text-gray-300{{end}}">{{.QueueDepth}}</span></span>
-                    <span>Quarantine pending: <span class="tabular-nums {{if .QuarantinePending}}text-rose-300{{else}}text-gray-300{{end}}">{{len .QuarantinePending}}</span></span>
+                    <span>Queue depth: <span class="tabular-nums {{if gt .QueueDepth 0}}text-amber-700 dark:text-amber-300{{else}}text-gray-300{{end}}">{{.QueueDepth}}</span></span>
+                    <span>Quarantine pending: <span class="tabular-nums {{if .QuarantinePending}}text-rose-700 dark:text-rose-300{{else}}text-gray-300{{end}}">{{len .QuarantinePending}}</span></span>
                 </div>
             </div>
 
             {{if not .Enabled}}
-            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-300 text-sm">
+            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-700 dark:text-amber-300 text-sm">
                 Memory hardening repos not wired for this deployment.
             </div>
             {{end}}
@@ -48,7 +48,7 @@
                    class="px-4 py-2.5 text-sm font-medium transition-colors {{if eq $tab "operate"}}text-gray-100 border-b-2 border-brand-500{{else}}text-gray-400 border-b-2 border-transparent hover:text-gray-200 hover:border-dark-600{{end}}"
                    aria-current="{{if eq $tab "operate"}}page{{else}}false{{end}}">Operate</a>
                 {{if or (gt .QueueDepth 0) (gt (len .QuarantinePending) 0)}}
-                <span class="ml-auto text-[11px] text-amber-300/80 self-center pr-2">
+                <span class="ml-auto text-[11px] text-amber-700/80 dark:text-amber-300/80 self-center pr-2">
                     {{if gt (len .QuarantinePending) 0}}{{len .QuarantinePending}} quarantined{{end}}{{if and (gt .QueueDepth 0) (gt (len .QuarantinePending) 0)}} · {{end}}{{if gt .QueueDepth 0}}{{.QueueDepth}} queued{{end}}
                 </span>
                 {{end}}
@@ -214,7 +214,7 @@
 
                         if (data.error) {
                             var err = document.createElement('p');
-                            err.className = 'text-rose-300';
+                            err.className = 'text-rose-700 dark:text-rose-300';
                             err.textContent = 'Error: ' + data.error;
                             resultDiv.appendChild(err);
                             return;
@@ -334,7 +334,7 @@
                             if (btn) btn.disabled = false;
                             removeAllChildren(resultDiv);
                             var p = document.createElement('p');
-                            p.className = 'text-rose-300 text-xs';
+                            p.className = 'text-rose-700 dark:text-rose-300 text-xs';
                             p.textContent = 'Request failed: ' + err.message;
                             resultDiv.appendChild(p);
                         });
@@ -366,11 +366,11 @@
                     <div class="text-[10px] text-gray-500 uppercase tracking-wider mt-0.5">Admitted</div>
                 </div>
                 <div class="glass rounded-xl border border-dark-700 px-3 py-3 text-center">
-                    <div class="text-2xl font-bold text-emerald-300 tabular-nums">{{.Pipeline.Verified}}</div>
+                    <div class="text-2xl font-bold text-emerald-700 dark:text-emerald-300 tabular-nums">{{.Pipeline.Verified}}</div>
                     <div class="text-[10px] text-gray-500 uppercase tracking-wider mt-0.5">Verified</div>
                 </div>
                 <div class="glass rounded-xl border border-dark-700 px-3 py-3 text-center">
-                    <div class="text-2xl font-bold {{if .Pipeline.QuarantinePending}}text-rose-300{{else}}text-gray-500{{end}} tabular-nums">{{.Pipeline.QuarantinePending}}</div>
+                    <div class="text-2xl font-bold {{if .Pipeline.QuarantinePending}}text-rose-700 dark:text-rose-300{{else}}text-gray-500{{end}} tabular-nums">{{.Pipeline.QuarantinePending}}</div>
                     <div class="text-[10px] text-gray-500 uppercase tracking-wider mt-0.5">Quarantine</div>
                 </div>
             </div>
@@ -406,7 +406,7 @@
                     <div class="space-y-1">
                         <div class="flex items-baseline justify-between text-xs">
                             <span class="text-gray-400">Pending (queued + processing)</span>
-                            <span class="tabular-nums {{if gt .Pipeline.Pending 0}}text-amber-300{{else}}text-gray-500{{end}}">{{.Pipeline.Pending}}</span>
+                            <span class="tabular-nums {{if gt .Pipeline.Pending 0}}text-amber-700 dark:text-amber-300{{else}}text-gray-500{{end}}">{{.Pipeline.Pending}}</span>
                         </div>
                         <div class="h-3 bg-dark-700 rounded-full overflow-hidden">
                             <div class="h-full bg-amber-500/70 rounded-full" style="width: {{pctOf .Pipeline.Pending $max}}%"></div>
@@ -415,7 +415,7 @@
                     <div class="space-y-1">
                         <div class="flex items-baseline justify-between text-xs">
                             <span class="text-gray-400">Admitted to memory</span>
-                            <span class="tabular-nums text-emerald-300">{{.Pipeline.Admitted}}</span>
+                            <span class="tabular-nums text-emerald-700 dark:text-emerald-300">{{.Pipeline.Admitted}}</span>
                         </div>
                         <div class="h-3 bg-dark-700 rounded-full overflow-hidden">
                             <div class="h-full bg-emerald-500/70 rounded-full" style="width: {{pctOf .Pipeline.Admitted $max}}%"></div>
@@ -424,7 +424,7 @@
                     <div class="space-y-1">
                         <div class="flex items-baseline justify-between text-xs">
                             <span class="text-gray-400">Quarantined <span class="text-gray-600">(cumulative across epochs)</span></span>
-                            <span class="tabular-nums text-gray-300">{{.Pipeline.Quarantined}}{{if and (gt .Pipeline.Quarantined 0) (ne .Pipeline.QuarantinePending .Pipeline.Quarantined)}} <span class="text-rose-300">· {{.Pipeline.QuarantinePending}} pending</span>{{end}}</span>
+                            <span class="tabular-nums text-gray-300">{{.Pipeline.Quarantined}}{{if and (gt .Pipeline.Quarantined 0) (ne .Pipeline.QuarantinePending .Pipeline.Quarantined)}} <span class="text-rose-700 dark:text-rose-300">· {{.Pipeline.QuarantinePending}} pending</span>{{end}}</span>
                         </div>
                         <div class="h-3 bg-dark-700 rounded-full overflow-hidden">
                             <div class="h-full bg-rose-500/40 rounded-full" style="width: {{pctOf .Pipeline.Quarantined $max}}%"></div>
@@ -433,11 +433,11 @@
                     <div class="grid grid-cols-2 gap-4 pt-3 border-t border-dark-700/60">
                         <div class="text-xs">
                             <span class="text-gray-500">Verified (role-of-record):</span>
-                            <span class="ml-1 text-emerald-300 tabular-nums">{{.Pipeline.Verified}}</span>
+                            <span class="ml-1 text-emerald-700 dark:text-emerald-300 tabular-nums">{{.Pipeline.Verified}}</span>
                         </div>
                         <div class="text-xs">
                             <span class="text-gray-500">Superseded (newer wins):</span>
-                            <span class="ml-1 text-amber-300 tabular-nums">{{.Pipeline.Superseded}}</span>
+                            <span class="ml-1 text-amber-700 dark:text-amber-300 tabular-nums">{{.Pipeline.Superseded}}</span>
                         </div>
                     </div>
                 </div>
@@ -972,7 +972,7 @@
                                 if (tgt) selectNode(tgt);
                             });
                             var simSpan = document.createElement('span');
-                            simSpan.className = 'tabular-nums text-amber-300';
+                            simSpan.className = 'tabular-nums text-amber-700 dark:text-amber-300';
                             simSpan.textContent = (n.sim * 100).toFixed(1) + '%';
                             li.appendChild(btn);
                             li.appendChild(simSpan);
@@ -1150,7 +1150,7 @@
 
                     if (data.error) {
                         var err = document.createElement('p');
-                        err.className = 'text-rose-300';
+                        err.className = 'text-rose-700 dark:text-rose-300';
                         err.textContent = 'Error: ' + data.error;
                         resultsDiv.appendChild(err);
                         return;
@@ -1234,7 +1234,7 @@
                         showBtn.type = 'button';
                         showBtn.className = 'ml-auto text-[10px] px-2 py-0.5 rounded ' +
                             (inScatter
-                                ? 'bg-amber-600/80 hover:bg-amber-500 text-amber-50 cursor-pointer'
+                                ? 'bg-amber-600/80 hover:bg-amber-500 text-amber-600 dark:text-amber-50 cursor-pointer'
                                 : 'bg-dark-700/60 text-gray-500 cursor-not-allowed');
                         showBtn.textContent = inScatter ? '↓ trace in scatter' : '· not in scatter sample';
                         showBtn.disabled = !inScatter;
@@ -1290,7 +1290,7 @@
                     .catch(function(err) {
                         removeAllChildren(resultsDiv);
                         var p = document.createElement('p');
-                        p.className = 'text-rose-300';
+                        p.className = 'text-rose-700 dark:text-rose-300';
                         p.textContent = 'Request failed: ' + err.message;
                         resultsDiv.appendChild(p);
                     });
@@ -1326,7 +1326,7 @@
                     {{range $gate, $count := .QuarantineByGate}}
                     <span class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-dark-700/60 text-xs text-gray-300">
                         <span class="font-mono">{{$gate}}</span>
-                        <span class="text-rose-300 font-medium tabular-nums">{{$count}}</span>
+                        <span class="text-rose-700 dark:text-rose-300 font-medium tabular-nums">{{$count}}</span>
                     </span>
                     {{end}}
                 </div>
@@ -1373,13 +1373,13 @@
                             <tr class="hover:bg-dark-700/30">
                                 <td class="px-3 py-2 font-mono text-gray-400" title="{{.ID}}">{{shortID .ID}}</td>
                                 <td class="px-3 py-2 text-gray-400">{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
-                                <td class="px-3 py-2 text-gray-500">{{if .ClosedAt}}{{.ClosedAt.Format "15:04:05"}}{{else}}<span class="text-amber-400">open</span>{{end}}</td>
+                                <td class="px-3 py-2 text-gray-500">{{if .ClosedAt}}{{.ClosedAt.Format "15:04:05"}}{{else}}<span class="text-amber-800 dark:text-amber-400">open</span>{{end}}</td>
                                 <td class="px-3 py-2 text-right tabular-nums text-gray-300">{{.ChunksAdmitted}}</td>
-                                <td class="px-3 py-2 text-right tabular-nums {{if .ChunksQuarantined}}text-rose-300{{else}}text-gray-500{{end}}">{{.ChunksQuarantined}}</td>
-                                <td class="px-3 py-2 text-right tabular-nums {{if .ChunksVerified}}text-emerald-300{{else}}text-gray-500{{end}}">{{.ChunksVerified}}</td>
-                                <td class="px-3 py-2 text-right tabular-nums {{if .ChunksSuperseded}}text-amber-300{{else}}text-gray-500{{end}}">{{.ChunksSuperseded}}</td>
+                                <td class="px-3 py-2 text-right tabular-nums {{if .ChunksQuarantined}}text-rose-700 dark:text-rose-300{{else}}text-gray-500{{end}}">{{.ChunksQuarantined}}</td>
+                                <td class="px-3 py-2 text-right tabular-nums {{if .ChunksVerified}}text-emerald-700 dark:text-emerald-300{{else}}text-gray-500{{end}}">{{.ChunksVerified}}</td>
+                                <td class="px-3 py-2 text-right tabular-nums {{if .ChunksSuperseded}}text-amber-700 dark:text-amber-300{{else}}text-gray-500{{end}}">{{.ChunksSuperseded}}</td>
                                 <td class="px-3 py-2">
-                                    {{if .IsActive}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-900/40 text-emerald-300 ring-1 ring-inset ring-emerald-600/40 text-xs">active</span>
+                                    {{if .IsActive}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 ring-1 ring-inset ring-emerald-600/40 text-xs">active</span>
                                     {{else}}<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-700/60 text-gray-400 ring-1 ring-inset ring-gray-600/40 text-xs">rolled back</span>{{end}}
                                 </td>
                                 <td class="px-3 py-2">
@@ -1387,7 +1387,7 @@
                                     <form method="POST" action="/ui/memory/{{$.ProjectID}}/rollback" class="inline" onsubmit="return confirm('Roll back to epoch {{.ID}}? Newer active epochs will become invisible to default search.');">
                                         <input type="hidden" name="to" value="{{.ID}}">
                                         <input type="hidden" name="reason" value="UI rollback">
-                                        <button class="text-amber-400 hover:text-amber-300 text-xs underline">Roll back to here</button>
+                                        <button class="text-amber-800 dark:text-amber-400 hover:text-amber-700 dark:text-amber-300 text-xs underline">Roll back to here</button>
                                     </form>
                                     {{else}}
                                     <span class="text-gray-600 text-xs">—</span>
@@ -1443,20 +1443,20 @@
                                 <td class="px-3 py-2 text-gray-400 whitespace-nowrap">{{.QuarantinedAt.Format "2006-01-02 15:04"}}</td>
                                 <td class="px-3 py-2 text-gray-300">{{if .ProducerRole}}{{.ProducerRole}}{{else}}—{{end}}</td>
                                 <td class="px-3 py-2 text-gray-300 font-mono">{{if .ProposedClass}}{{.ProposedClass}}{{else}}—{{end}}</td>
-                                <td class="px-3 py-2 font-mono text-rose-300" data-quar-gate="{{.FailedGate}}" title="Click to highlight this gate in the pipeline diagram">{{.FailedGate}}</td>
+                                <td class="px-3 py-2 font-mono text-rose-700 dark:text-rose-300" data-quar-gate="{{.FailedGate}}" title="Click to highlight this gate in the pipeline diagram">{{.FailedGate}}</td>
                                 <td class="px-3 py-2 text-gray-400">{{.FailureDetail}}</td>
                                 <td class="px-3 py-2 text-gray-500 max-w-md truncate" title="{{.Preview}}">{{.Preview}}</td>
                                 <td class="px-3 py-2 whitespace-nowrap">
                                     <form method="POST" action="/ui/memory/{{$.ProjectID}}/quarantine" class="inline" onsubmit="return confirm('Drop quarantine row {{.ID}}? This is permanent — the chunk will never reach memory.');">
                                         <input type="hidden" name="id" value="{{.ID}}">
                                         <input type="hidden" name="action" value="drop">
-                                        <button class="text-rose-400 hover:text-rose-300 text-xs underline">Drop</button>
+                                        <button class="text-rose-800 dark:text-rose-400 hover:text-rose-700 dark:text-rose-300 text-xs underline">Drop</button>
                                     </form>
                                     <span class="text-gray-700 mx-1">·</span>
                                     <form method="POST" action="/ui/memory/{{$.ProjectID}}/quarantine" class="inline" onsubmit="return confirm('Release quarantine row {{.ID}}? This clears it from the pending list without re-inserting the chunk into memory.');">
                                         <input type="hidden" name="id" value="{{.ID}}">
                                         <input type="hidden" name="action" value="release">
-                                        <button class="text-emerald-400 hover:text-emerald-300 text-xs underline">Release</button>
+                                        <button class="text-emerald-800 dark:text-emerald-400 hover:text-emerald-700 dark:text-emerald-300 text-xs underline">Release</button>
                                     </form>
                                 </td>
                             </tr>
@@ -1474,13 +1474,13 @@
             {{if .EvictEnabled}}
             <div class="glass rounded-xl border border-rose-900/40 overflow-hidden">
                 <div class="px-5 py-4 border-b border-rose-900/40 bg-rose-900/10">
-                    <h2 class="text-sm font-medium text-rose-200 flex items-center gap-2">
+                    <h2 class="text-sm font-medium text-rose-600 dark:text-rose-200 flex items-center gap-2">
                         <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"/></svg>
                         Erase chunks (hard delete)
                     </h2>
                     <p class="mt-1 text-xs text-gray-400">
-                        Permanently delete chunks from <code class="text-rose-300">project_memory_chunks</code> with a
-                        <code class="text-rose-300">memory_eviction_audit</code> tombstone. Cascades through embed-queue, dlq, and entity-mentions
+                        Permanently delete chunks from <code class="text-rose-700 dark:text-rose-300">project_memory_chunks</code> with a
+                        <code class="text-rose-700 dark:text-rose-300">memory_eviction_audit</code> tombstone. Cascades through embed-queue, dlq, and entity-mentions
                         automatically. <strong>Irreversible.</strong>
                         Use for GDPR Art 17 erasure requests or cleanup of confirmed-bad records that the soft-refute path
                         (<a href="https://example.invalid" class="text-brand-300 underline-offset-2 hover:underline">memory_correct</a> tool) leaves cluttering search.
@@ -1505,7 +1505,7 @@
                     <div class="flex items-center justify-between gap-3 pt-2 border-t border-dark-700/40">
                         <label class="inline-flex items-center gap-2 text-xs text-gray-300">
                             <input type="checkbox" name="confirm" value="yes" required
-                                   class="form-checkbox h-3.5 w-3.5 rounded border-dark-600 bg-dark-700 text-rose-500 focus:ring-rose-500">
+                                   class="form-checkbox h-3.5 w-3.5 rounded border-dark-600 bg-dark-700 text-rose-800 dark:text-rose-500 focus:ring-rose-500">
                             I understand this is destructive and irreversible.
                         </label>
                         <button type="submit"

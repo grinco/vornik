@@ -19,8 +19,8 @@
 
             {{if not .Available}}
             <div class="glass rounded-xl border border-amber-700/30 px-5 py-4">
-                <p class="text-sm text-amber-200">Runtime readiness source not wired — the page is alive but no data
-                is being collected. Set <code class="text-amber-300">ui.WithRuntimeReadinessSource(...)</code> at
+                <p class="text-sm text-amber-600 dark:text-amber-200">Runtime readiness source not wired — the page is alive but no data
+                is being collected. Set <code class="text-amber-700 dark:text-amber-300">ui.WithRuntimeReadinessSource(...)</code> at
                 container boot to enable.</p>
             </div>
             {{else}}
@@ -31,14 +31,14 @@
                     <div>
                         <h2 class="text-sm font-medium text-gray-200">Voice providers</h2>
                         <p class="mt-1 text-xs text-gray-500">
-                            STT (Whisper) + TTS (Piper) + ffmpeg. A row's <span class="text-rose-300">red</span> status
+                            STT (Whisper) + TTS (Piper) + ffmpeg. A row's <span class="text-rose-700 dark:text-rose-300">red</span> status
                             means the first voice message will fail with that exact missing binary / model.
                         </p>
                     </div>
                     <div class="text-xs text-gray-400 flex items-center gap-3">
-                        <span>STT: <span class="{{if .Voice.STTProvider}}text-emerald-300{{else}}text-gray-500{{end}} font-mono">{{if .Voice.STTProvider}}{{.Voice.STTProvider}}{{else}}disabled{{end}}</span></span>
+                        <span>STT: <span class="{{if .Voice.STTProvider}}text-emerald-700 dark:text-emerald-300{{else}}text-gray-500{{end}} font-mono">{{if .Voice.STTProvider}}{{.Voice.STTProvider}}{{else}}disabled{{end}}</span></span>
                         <span>·</span>
-                        <span>TTS: <span class="{{if .Voice.TTSProvider}}text-emerald-300{{else}}text-gray-500{{end}} font-mono">{{if .Voice.TTSProvider}}{{.Voice.TTSProvider}}{{else}}disabled{{end}}</span></span>
+                        <span>TTS: <span class="{{if .Voice.TTSProvider}}text-emerald-700 dark:text-emerald-300{{else}}text-gray-500{{end}} font-mono">{{if .Voice.TTSProvider}}{{.Voice.TTSProvider}}{{else}}disabled{{end}}</span></span>
                     </div>
                 </div>
                 <div class="overflow-x-auto">
@@ -62,9 +62,9 @@
                                     {{if not .Configured}}
                                         <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-gray-700/40 text-gray-400">disabled</span>
                                     {{else if .OK}}
-                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-900/40 text-emerald-300">ok</span>
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">ok</span>
                                     {{else}}
-                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-rose-900/40 text-rose-300">missing</span>
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-rose-900/40 text-rose-700 dark:text-rose-300">missing</span>
                                     {{end}}
                                 </td>
                                 <td class="px-3 py-2 text-gray-400 max-w-md truncate" title="{{.Error}}">{{if .Error}}{{.Error}}{{else}}—{{end}}</td>
@@ -106,16 +106,16 @@
                             <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Writable</div>
                             <div>
                                 {{if .Storage.FilesystemWritable}}
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-900/40 text-emerald-300">yes</span>
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">yes</span>
                                 {{else}}
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-rose-900/40 text-rose-300">no</span>
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-rose-900/40 text-rose-700 dark:text-rose-300">no</span>
                                 {{end}}
                             </div>
                         </div>
                         {{if .Storage.FilesystemError}}
                         <div class="bg-rose-900/20 rounded p-3 border border-rose-900/40 md:col-span-3">
-                            <div class="text-rose-400 uppercase tracking-wider text-[10px] mb-1">Error</div>
-                            <div class="font-mono text-rose-200 text-xs">{{.Storage.FilesystemError}}</div>
+                            <div class="text-rose-800 dark:text-rose-400 uppercase tracking-wider text-[10px] mb-1">Error</div>
+                            <div class="font-mono text-rose-600 dark:text-rose-200 text-xs">{{.Storage.FilesystemError}}</div>
                         </div>
                         {{end}}
                     </div>
@@ -147,16 +147,16 @@
                             <div class="text-gray-500 uppercase tracking-wider text-[10px] mb-1">Reachable</div>
                             <div>
                                 {{if .Storage.S3Reachable}}
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-900/40 text-emerald-300">yes</span>
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">yes</span>
                                 {{else}}
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-rose-900/40 text-rose-300">no</span>
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-rose-900/40 text-rose-700 dark:text-rose-300">no</span>
                                 {{end}}
                             </div>
                         </div>
                         {{if .Storage.S3Error}}
                         <div class="bg-rose-900/20 rounded p-3 border border-rose-900/40 md:col-span-3">
-                            <div class="text-rose-400 uppercase tracking-wider text-[10px] mb-1">Error</div>
-                            <div class="font-mono text-rose-200 text-xs">{{.Storage.S3Error}}</div>
+                            <div class="text-rose-800 dark:text-rose-400 uppercase tracking-wider text-[10px] mb-1">Error</div>
+                            <div class="font-mono text-rose-600 dark:text-rose-200 text-xs">{{.Storage.S3Error}}</div>
                         </div>
                         {{end}}
                     </div>

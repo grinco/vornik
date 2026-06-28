@@ -25,13 +25,13 @@
             </p>
 
             {{if .FlashRetired}}
-            <div class="bg-emerald-900/30 border border-emerald-700/40 text-emerald-200 text-xs px-3 py-2 rounded-md">
+            <div class="bg-emerald-900/30 border border-emerald-700/40 text-emerald-600 dark:text-emerald-200 text-xs px-3 py-2 rounded-md">
                 Instinct <code class="font-mono">{{.FlashRetired}}</code> retired.
             </div>
             {{end}}
 
             {{if .Error}}
-            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-200 text-xs px-3 py-2 rounded-md">{{.Error}}</div>
+            <div class="bg-rose-900/30 border border-rose-700/40 text-rose-600 dark:text-rose-200 text-xs px-3 py-2 rounded-md">{{.Error}}</div>
             {{end}}
 
             <form method="get" action="/ui/admin/instincts"
@@ -121,9 +121,9 @@
                                 </td>
                                 <td class="px-4 py-2 whitespace-nowrap text-right text-xs text-gray-200 font-mono">{{.Confidence}}</td>
                                 <td class="px-4 py-2 whitespace-nowrap text-right text-[11px] font-mono">
-                                    <span class="text-emerald-300">{{.SupportCount}}</span>
+                                    <span class="text-emerald-700 dark:text-emerald-300">{{.SupportCount}}</span>
                                     <span class="text-gray-600">/</span>
-                                    <span class="text-rose-300">{{.ContradictCount}}</span>
+                                    <span class="text-rose-700 dark:text-rose-300">{{.ContradictCount}}</span>
                                 </td>
                                 <td class="px-4 py-2 whitespace-nowrap text-right text-[11px] font-mono text-gray-300" title="{{.AppSucceeded}} succeeded · {{.AppFailed}} failed/rejected · {{.AppIgnored}} unresolved">{{.LiftSummary}}</td>
                                 <td class="px-4 py-2 whitespace-nowrap text-[11px] text-gray-400 font-mono" title="{{.LastSeenAt}}">
@@ -138,7 +138,7 @@
                                         <input type="hidden" name="filter_project" value="{{$.FilterProject}}">
                                         <input type="hidden" name="filter_status" value="{{$.FilterStatus}}">
                                         <input type="hidden" name="filter_min_confidence" value="{{$.FilterMinConf}}">
-                                        <button type="submit" class="text-[11px] font-medium px-2.5 py-1 rounded-md bg-rose-700/40 hover:bg-rose-700/60 text-rose-200 ring-1 ring-rose-700/40">Retire</button>
+                                        <button type="submit" class="text-[11px] font-medium px-2.5 py-1 rounded-md bg-rose-700/40 hover:bg-rose-700/60 text-rose-600 dark:text-rose-200 ring-1 ring-rose-700/40">Retire</button>
                                     </form>
                                     {{else}}
                                     <span class="text-[11px] text-gray-600 italic">retired</span>

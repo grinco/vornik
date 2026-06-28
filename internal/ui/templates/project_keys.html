@@ -25,17 +25,17 @@
             </p>
 
             {{if .Success}}
-            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{{.Success}}</div>
+            <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-600 dark:text-emerald-200">{{.Success}}</div>
             {{end}}
             {{if .Error}}
-            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">{{.Error}}</div>
+            <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-200 whitespace-pre-wrap">{{.Error}}</div>
             {{end}}
 
             {{if .NewSecret}}
             <div class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-4 text-sm space-y-2">
-                <div class="text-amber-100 font-semibold">Secret — shown once. Copy it now.</div>
-                <code class="block bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs font-mono break-all text-amber-200">{{.NewSecret}}</code>
-                <div class="text-xs text-amber-200/70">
+                <div class="text-amber-600 dark:text-amber-100 font-semibold">Secret — shown once. Copy it now.</div>
+                <code class="block bg-dark-950 border border-dark-700 rounded px-3 py-2 text-xs font-mono break-all text-amber-600 dark:text-amber-200">{{.NewSecret}}</code>
+                <div class="text-xs text-amber-600/70 dark:text-amber-200/70">
                     Use as <code class="font-mono">Authorization: Bearer &lt;secret&gt;</code> or <code class="font-mono">X-API-Key: &lt;secret&gt;</code>.
                     Refresh this page to clear the secret from your screen.
                 </div>
@@ -99,7 +99,7 @@
                                 <td class="px-4 py-2 whitespace-nowrap">{{.Expires}}</td>
                                 <td class="px-4 py-2 whitespace-nowrap">
                                     {{if .RateLimited}}
-                                        <span class="text-amber-300">{{.RateLimitRPS}}/s · burst {{.RateLimitBurst}}</span>
+                                        <span class="text-amber-700 dark:text-amber-300">{{.RateLimitRPS}}/s · burst {{.RateLimitBurst}}</span>
                                     {{else}}
                                         <span class="text-gray-600">unlimited</span>
                                     {{end}}
@@ -114,7 +114,7 @@
                                 <td class="px-4 py-2 whitespace-nowrap">
                                     {{if eq .Status "active"}}
                                         {{if .AllowPush}}
-                                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-emerald-900/30 text-emerald-300" title="This key may push to the git-over-HTTPS workspace.">push enabled</span>
+                                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-emerald-900/30 text-emerald-700 dark:text-emerald-300" title="This key may push to the git-over-HTTPS workspace.">push enabled</span>
                                         {{else}}
                                             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-gray-800 text-gray-400" title="This key is read-only: clone/fetch allowed, push refused.">push disabled</span>
                                         {{end}}
@@ -124,9 +124,9 @@
                                 </td>
                                 <td class="px-4 py-2 whitespace-nowrap">
                                     {{if eq .Status "revoked"}}
-                                        <span class="text-red-300/80">revoked</span>
+                                        <span class="text-red-700/80 dark:text-red-300/80">revoked</span>
                                     {{else}}
-                                        <span class="text-emerald-300">active</span>
+                                        <span class="text-emerald-700 dark:text-emerald-300">active</span>
                                     {{end}}
                                 </td>
                                 <td class="px-4 py-2 whitespace-nowrap text-right">
@@ -136,7 +136,7 @@
                                         <input type="hidden" name="action" value="disable-push"/>
                                         <input type="hidden" name="key_id" value="{{.ID}}"/>
                                         <button type="submit"
-                                                class="text-xs text-sky-300 hover:text-sky-200 px-2 py-1 rounded transition-colors"
+                                                class="text-xs text-sky-700 dark:text-sky-300 hover:text-sky-600 dark:text-sky-200 px-2 py-1 rounded transition-colors"
                                                 title="Make this key read-only (clone/fetch only; push refused)">
                                             Disable push
                                         </button>
@@ -146,7 +146,7 @@
                                         <input type="hidden" name="action" value="enable-push"/>
                                         <input type="hidden" name="key_id" value="{{.ID}}"/>
                                         <button type="submit"
-                                                class="text-xs text-sky-300 hover:text-sky-200 px-2 py-1 rounded transition-colors"
+                                                class="text-xs text-sky-700 dark:text-sky-300 hover:text-sky-600 dark:text-sky-200 px-2 py-1 rounded transition-colors"
                                                 title="Allow this key to push to the git-over-HTTPS workspace">
                                             Enable push
                                         </button>
@@ -156,7 +156,7 @@
                                         <input type="hidden" name="action" value="rotate"/>
                                         <input type="hidden" name="key_id" value="{{.ID}}"/>
                                         <button type="submit"
-                                                class="text-xs text-amber-300 hover:text-amber-200 px-2 py-1 rounded transition-colors"
+                                                class="text-xs text-amber-700 dark:text-amber-300 hover:text-amber-600 dark:text-amber-200 px-2 py-1 rounded transition-colors"
                                                 onclick="return confirm('Rotate {{.Name}}? The old key will be revoked.');">
                                             rotate
                                         </button>
@@ -165,7 +165,7 @@
                                         <input type="hidden" name="action" value="revoke"/>
                                         <input type="hidden" name="key_id" value="{{.ID}}"/>
                                         <button type="submit"
-                                                class="text-xs text-red-300 hover:text-red-200 px-2 py-1 rounded transition-colors"
+                                                class="text-xs text-red-700 dark:text-red-300 hover:text-red-600 dark:text-red-200 px-2 py-1 rounded transition-colors"
                                                 onclick="return confirm('Revoke {{.Name}}? Cannot be undone.');">
                                             revoke
                                         </button>

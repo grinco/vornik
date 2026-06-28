@@ -21,7 +21,7 @@
             </div>
 
             {{if not .Enabled}}
-            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-300 text-sm">
+            <div class="bg-amber-900/30 border border-amber-700/40 rounded-lg p-4 text-amber-700 dark:text-amber-300 text-sm">
                 Memory hardening tables not present. Apply migration v23 (memory_hardening_phase0_provenance_epochs_quarantine) to populate corpus_epochs, project_memory_quarantine, and project_ingest_queue.
             </div>
             {{end}}
@@ -33,7 +33,7 @@
                         <h2 class="text-sm font-medium text-gray-300">Knowledge graph extraction</h2>
                         <p class="mt-1 text-xs text-gray-500">Background pipeline turning project_memory_chunks into a property graph (entities + edges). One worker drains all projects.</p>
                     </div>
-                    <a href="/ui/memory" class="text-xs text-emerald-400 hover:text-emerald-300" title="Refresh">↻ refresh</a>
+                    <a href="/ui/memory" class="text-xs text-emerald-800 dark:text-emerald-400 hover:text-emerald-700 dark:text-emerald-300" title="Refresh">↻ refresh</a>
                 </div>
                 <div class="px-5 py-4 border-b border-dark-700/60">
                     <div class="flex items-end justify-between mb-2">
@@ -107,8 +107,8 @@
                                     <a href="/ui/memory/{{.ID}}" class="text-brand-300 hover:text-brand-200 font-medium">{{.Name}}</a>
                                     <div class="text-xs text-gray-500 font-mono">{{.ID}}</div>
                                 </td>
-                                <td class="px-4 py-2 text-right tabular-nums">{{if gt .QueueDepth 0}}<span class="text-amber-300">{{.QueueDepth}}</span>{{else}}<span class="text-gray-500">{{.QueueDepth}}</span>{{end}}</td>
-                                <td class="px-4 py-2 text-right tabular-nums">{{if gt .QuarantinePending 0}}<span class="text-rose-300">{{.QuarantinePending}}</span>{{else}}<span class="text-gray-500">0</span>{{end}}</td>
+                                <td class="px-4 py-2 text-right tabular-nums">{{if gt .QueueDepth 0}}<span class="text-amber-700 dark:text-amber-300">{{.QueueDepth}}</span>{{else}}<span class="text-gray-500">{{.QueueDepth}}</span>{{end}}</td>
+                                <td class="px-4 py-2 text-right tabular-nums">{{if gt .QuarantinePending 0}}<span class="text-rose-700 dark:text-rose-300">{{.QuarantinePending}}</span>{{else}}<span class="text-gray-500">0</span>{{end}}</td>
                                 <td class="px-4 py-2 text-right tabular-nums text-gray-300">{{.ActiveEpochs}} / {{.TotalEpochs}}</td>
                                 <td class="px-4 py-2 text-xs text-gray-400">{{if .LastSnapshotAt.IsZero}}—{{else}}{{.LastSnapshotAt.Format "2006-01-02 15:04"}}{{end}}</td>
                             </tr>

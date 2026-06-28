@@ -27,7 +27,7 @@
             <div class="flex items-center justify-between gap-3">
                 <p class="text-xs text-gray-500">{{len .Sessions}} active session{{if ne (len .Sessions) 1}}s{{end}}. Terminating a session signs that browser out immediately. Your own current session is protected.</p>
                 <form method="post" action="/ui/admin/users/{{.UserID}}/sessions/terminate-all">
-                    <button class="text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded-md border border-dark-600" onclick="return confirm('Terminate all other sessions for this user?')">Terminate all</button>
+                    <button class="text-xs text-red-800 dark:text-red-400 hover:text-red-700 dark:text-red-300 px-2 py-1 rounded-md border border-dark-600" onclick="return confirm('Terminate all other sessions for this user?')">Terminate all</button>
                 </form>
             </div>
 
@@ -47,7 +47,7 @@
                             {{range .Sessions}}
                             <tr class="hover:bg-dark-700/30">
                                 <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-200 font-mono">{{.Provider}}</td>
-                                <td class="px-4 py-2 text-xs text-gray-300" title="{{.RawAgent}}">{{.Agent}}{{if .IsCurrent}} <span class="px-1.5 py-0.5 text-[10px] rounded bg-emerald-900/50 text-emerald-300">this session</span>{{end}}</td>
+                                <td class="px-4 py-2 text-xs text-gray-300" title="{{.RawAgent}}">{{.Agent}}{{if .IsCurrent}} <span class="px-1.5 py-0.5 text-[10px] rounded bg-emerald-900/50 text-emerald-700 dark:text-emerald-300">this session</span>{{end}}</td>
                                 <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-400 font-mono">{{if .IP}}{{.IP}}{{else}}—{{end}}</td>
                                 <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500 font-mono">{{.Created}}</td>
                                 <td class="px-4 py-2 whitespace-nowrap text-xs text-gray-500 font-mono">{{.LastSeen}}</td>
@@ -57,7 +57,7 @@
                                     <span class="text-xs text-gray-600">protected</span>
                                     {{else}}
                                     <form method="post" action="/ui/admin/users/{{$.UserID}}/sessions/{{.ID}}/terminate" class="inline">
-                                        <button class="text-xs text-red-400 hover:text-red-300">Terminate</button>
+                                        <button class="text-xs text-red-800 dark:text-red-400 hover:text-red-700 dark:text-red-300">Terminate</button>
                                     </form>
                                     {{end}}
                                 </td>

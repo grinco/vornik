@@ -299,8 +299,8 @@
         function renderToast(text, kind) {
             var d = document.createElement('div');
             var color = kind === 'warn'
-                ? 'bg-amber-900/90 border-amber-600/50 text-amber-100'
-                : 'bg-emerald-900/90 border-emerald-600/50 text-emerald-100';
+                ? 'bg-amber-900/90 border-amber-600/50 text-amber-600 dark:text-amber-100'
+                : 'bg-emerald-900/90 border-emerald-600/50 text-emerald-600 dark:text-emerald-100';
             d.className = 'fixed top-4 right-4 px-4 py-2.5 rounded-lg border shadow-xl text-sm z-50 ' + color;
             d.style.transition = 'opacity 0.4s, transform 0.4s';
             d.style.opacity = '0';
@@ -852,7 +852,7 @@
 
         /* ============================================================
            SEMANTIC STATUS PILLS + ALERTS — theme-aware.
-           Replaces ad-hoc hardcoded Tailwind shades (text-purple-200,
+           Replaces ad-hoc hardcoded Tailwind shades (text-purple-600 dark:text-purple-200,
            bg-rose-500/15 …) that were tuned for dark and went
            unreadable on the default LIGHT theme. Light theme (default):
            dark text on a light tint of the hue. Dark theme: light text
@@ -1273,7 +1273,7 @@
                 var kindBadge = document.createElement('span');
                 kindBadge.className = 'text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ' +
                     (r.kind === 'task' ? 'bg-brand-500/20 text-brand-300' :
-                     r.kind === 'project' ? 'bg-emerald-500/20 text-emerald-300' :
+                     r.kind === 'project' ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300' :
                      'bg-gray-500/20 text-gray-300');
                 kindBadge.textContent = r.kind;
                 li.appendChild(kindBadge);
@@ -1522,11 +1522,11 @@ older rows without the column render cleanly.
 */}}
 {{define "taskOriginBadge"}}
 {{- $label := . -}}
-{{- if eq . "USER" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-blue-500/15 text-blue-300 ring-1 ring-inset ring-blue-500/30 uppercase tracking-wide" title="created by a user action (chat / API / CLI)">manual</span>
-{{- else if eq . "AUTONOMOUS" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-violet-500/15 text-violet-300 ring-1 ring-inset ring-violet-500/30 uppercase tracking-wide" title="created by the autonomy loop">autonomy</span>
-{{- else if eq . "DELEGATION" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-cyan-500/15 text-cyan-300 ring-1 ring-inset ring-cyan-500/30 uppercase tracking-wide" title="delegated from a parent step">delegated</span>
-{{- else if eq . "ROUTE" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-cyan-500/15 text-cyan-300 ring-1 ring-inset ring-cyan-500/30 uppercase tracking-wide" title="strict-adaptive routing handoff">routed</span>
-{{- else if eq . "CHECKPOINT" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-300 ring-1 ring-inset ring-amber-500/30 uppercase tracking-wide" title="executor split this off when the parent ran out of agent iterations">checkpoint</span>
+{{- if eq . "USER" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-blue-500/15 text-blue-700 dark:text-blue-300 ring-1 ring-inset ring-blue-500/30 uppercase tracking-wide" title="created by a user action (chat / API / CLI)">manual</span>
+{{- else if eq . "AUTONOMOUS" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-violet-500/15 text-violet-700 dark:text-violet-300 ring-1 ring-inset ring-violet-500/30 uppercase tracking-wide" title="created by the autonomy loop">autonomy</span>
+{{- else if eq . "DELEGATION" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 ring-1 ring-inset ring-cyan-500/30 uppercase tracking-wide" title="delegated from a parent step">delegated</span>
+{{- else if eq . "ROUTE" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 ring-1 ring-inset ring-cyan-500/30 uppercase tracking-wide" title="strict-adaptive routing handoff">routed</span>
+{{- else if eq . "CHECKPOINT" -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-1 ring-inset ring-amber-500/30 uppercase tracking-wide" title="executor split this off when the parent ran out of agent iterations">checkpoint</span>
 {{- else -}}<span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded bg-gray-500/15 text-gray-400 ring-1 ring-inset ring-gray-500/30 uppercase tracking-wide" title="origin not recorded">{{if $label}}{{$label}}{{else}}—{{end}}</span>
 {{- end -}}
 {{end}}
@@ -1644,7 +1644,7 @@ scanner picks them up. Pass a dict:
             {{end}}
         </svg>
         {{end}}
-        <p class="mt-1.5 text-2xl font-bold {{if $isPurple}}text-purple-400{{else}}text-accent-400{{end}} tabular-nums">{{fmtUSD2 .USD}}</p>
+        <p class="mt-1.5 text-2xl font-bold {{if $isPurple}}text-purple-800 dark:text-purple-400{{else}}text-accent-400{{end}} tabular-nums">{{fmtUSD2 .USD}}</p>
     </div>
     <div class="h-0.5 {{if $isPurple}}bg-purple-500/40{{else}}bg-accent-500/40{{end}}"></div>
 </div>

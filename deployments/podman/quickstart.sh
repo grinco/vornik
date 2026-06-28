@@ -137,6 +137,27 @@ PODMAN_SOCK="$SOCK" VORNIK_HTTP_PORT="$HTTP_PORT" POSTGRES_PORT="$PG_PORT" \
   "${compose[@]}" -f podman-compose.yaml up -d --build postgres vornik
 
 # ---------------------------------------------------------------------------
+# 4b. Build the task-agent image. The daemon spawns each task's agent as a
+#     sibling container on the HOST's podman, so the image must live in the
+#     host's storage — qualified as localhost/vornik-agent:latest. The swarm
+#     configs reference it by that fully-qualified name on purpose: podman
+#     refuses to resolve a bare short-name ("vornik-agent:latest")
+#     non-interactively, so an unqualified ref makes every job fail at
+#     container start. The image's internal user is built with the caller's
+#     uid/gid so bind-mounted workspaces stay writable under rootless podman.
+# ---------------------------------------------------------------------------
+log "Building the agent image localhost/vornik-agent:latest (first run ~1-2 min)..."
+if podman build -f "$DIR/images/vornik-agent/Containerfile" \
+     --build-arg VORNIK_UID="$(id -u)" \
+     --build-arg VORNIK_GID="$(id -g)" \
+     -t localhost/vornik-agent:latest "$DIR"; then
+  ok "Agent image built: localhost/vornik-agent:latest"
+else
+  warn "Agent image build failed — jobs will fail at container start until it exists."
+  warn "  retry: podman build -f $DIR/images/vornik-agent/Containerfile -t localhost/vornik-agent:latest $DIR"
+fi
+
+# ---------------------------------------------------------------------------
 # 5. Wait for readiness and report.
 # ---------------------------------------------------------------------------
 log "Waiting for the daemon to become ready (schema migrates automatically)..."
@@ -180,6 +201,7 @@ cat <<EOF
   ${c_green}Connect${c_off}
     UI       http://localhost:${HTTP_PORT}/ui
     API      http://localhost:${HTTP_PORT}
+    CLI      vornikctl doctor          # installed to ~/.local/bin
     Health   curl http://localhost:${HTTP_PORT}/readyz
 
   ${c_green}Run tasks${c_off} — add an LLM key, then restart the daemon:

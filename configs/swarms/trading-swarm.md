@@ -8,7 +8,7 @@ roles:
     - name: "strategist"
       model: "zai.glm-5"
       runtime:
-        image: "vornik-agent:latest"
+        image: "localhost/vornik-agent:latest"
       permissions:
         allowedTools:
             - "current_time"
@@ -38,7 +38,7 @@ roles:
     - name: "risk-officer"
       model: "zai.glm-5"
       runtime:
-        image: "vornik-agent:latest"
+        image: "localhost/vornik-agent:latest"
       permissions:
         allowedTools:
             - "current_time"
@@ -61,7 +61,7 @@ roles:
     - name: "executor"
       model: "minimax.minimax-m2.5"
       runtime:
-        image: "vornik-agent:latest"
+        image: "localhost/vornik-agent:latest"
       permissions:
         allowedTools:
             - "current_time"

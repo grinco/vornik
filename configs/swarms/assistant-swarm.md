@@ -64,7 +64,7 @@ roles:
       modelFallback: "zai.glm-4.7"
       maxTokens: 4096
       runtime:
-        image: "vornik-agent:latest"
+        image: "localhost/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -137,7 +137,7 @@ roles:
               when: {"research.written": false}
               require: ["research.reason"]
       runtime:
-        image: "vornik-agent:latest"
+        image: "localhost/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -194,7 +194,7 @@ roles:
               when: {"planning.written": false}
               require: ["planning.reason"]
       runtime:
-        image: "vornik-agent:latest"
+        image: "localhost/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -269,7 +269,7 @@ roles:
               when: {"writing.written": false}
               require: ["writing.reason"]
       runtime:
-        image: "vornik-agent:latest"
+        image: "localhost/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -301,7 +301,7 @@ roles:
       modelFallback: "us.mistral.pixtral-large-2502-v1:0"
       maxTokens: 4096
       runtime:
-        image: "vornik-agent:latest"
+        image: "localhost/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:

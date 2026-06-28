@@ -7,7 +7,7 @@ roles:
     description: "Plans the autonomy tick and routes to the candidate workflows."
     model: "{{.llmModel}}"
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "20"
     permissions:
@@ -21,7 +21,7 @@ roles:
     description: "Researches the configured topic and writes findings to artifacts/out/research.md."
     model: "{{.llmModel}}"
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "60"
     permissions:
@@ -39,7 +39,7 @@ roles:
     description: "Turns research notes into a scannable digest at artifacts/out/digest.md."
     model: "{{.llmModel}}"
     runtime:
-      image: "vornik-agent:latest"
+      image: "localhost/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "30"
     permissions:

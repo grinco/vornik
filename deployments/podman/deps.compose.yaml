@@ -1,0 +1,67 @@
+# Vornik dependencies — PostgreSQL + pgvector.
+#
+# The Vornik daemon runs on the HOST as a rootless `systemctl --user`
+# service (see deployments/podman/systemd/vornik.service and the
+# quickstart one-liner), NOT in a container. It reaches this Postgres at
+# 127.0.0.1:${POSTGRES_PORT} and spawns agent containers directly via the
+# host's rootless podman — so the daemon, its exec scratch, the agent
+# workspaces, and the agent containers all share one filesystem view.
+# That is what fixes the container-mode DooD bind-mount failures
+# (`statfs ...: no such file or directory`); see
+# https://docs.vornik.io
+#
+# Quick start:
+#   curl -fsSL https://get.vornik.io | bash      # does everything below
+# Manual:
+#   podman compose -f deps.compose.yaml up -d
+#
+# The EE scraper is a separate overlay (scraper.compose.yaml), absent in
+# the public CE tree.
+
+version: "3.8"
+
+volumes:
+  vornik-postgres-data:
+    name: vornik-postgres-data
+
+services:
+
+  # ---------------------------------------------------------------------
+  # PostgreSQL + pgvector. Vornik's migrations create the vector
+  # extension on first boot — this image has the binary pre-built so
+  # CREATE EXTENSION vector succeeds for any user with the privilege.
+  # ---------------------------------------------------------------------
+  postgres:
+    container_name: vornik-postgres
+    image: docker.io/pgvector/pgvector:pg16
+    labels:
+      vornik.managed: "true"
+      vornik.component: postgres
+      vornik.layer: persistence
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-vornik}
+      POSTGRES_USER:     ${POSTGRES_USER:-vornik}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vornik_dev_password}
+      # PGDATA under a subdir avoids lost+found collisions on some
+      # filesystems and mirrors what the Helm chart does.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - vornik-postgres-data:/var/lib/postgresql/data
+    ports:
+      # Loopback by default: reachable by the host daemon (and local psql)
+      # WITHOUT LAN exposure. Set POSTGRES_BIND=0.0.0.0 only when off-host
+      # access is genuinely needed (and firewall it + use a strong password).
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vornik} -d ${POSTGRES_DB:-vornik}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # No deploy.resources.limits on purpose: on a fresh rootless host that
+    # has NOT delegated the memory cgroup controller to user@.service,
+    # podman writing memory.swap.max fails container start ("openat2
+    # .../memory.swap.max: no such file or directory"). The one-liner must
+    # come up without host-side cgroup delegation. Add limits via an
+    # override file on hosts where delegation is configured.
+    restart: always

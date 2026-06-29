@@ -15,7 +15,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-COMPOSE_FILE="${PROJECT_ROOT}/deployments/podman/podman-compose.yaml"
+COMPOSE_FILE="${PROJECT_ROOT}/deployments/podman/deps.compose.yaml"
 
 # Colors for output
 RED='\033[0;31m'
@@ -91,7 +91,7 @@ start_postgres() {
     if podman ps --format '{{.Names}}' | grep -q '^vornik-postgres$'; then
         log_info "PostgreSQL container already running"
     else
-        podman-compose -f podman-compose.yaml up -d
+        podman-compose -f deps.compose.yaml up -d
         log_info "PostgreSQL started"
     fi
 }

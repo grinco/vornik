@@ -137,3 +137,68 @@ func TestNavModelContract(t *testing.T) {
 		t.Errorf("trading dest mis-wired: %+v", trading)
 	}
 }
+
+// TestNavModelCommunityHidesTrading pins the 2026-06-29 fix: trading is an
+// Enterprise-only capability (the /trading route 404s on CE via
+// WithTradingEnabled), so the CE-wired nav func (navModelFunc(false)) must
+// omit the Trading destination entirely — otherwise CE renders a nav link to
+// a 404. EE (navModelFunc(true)) keeps it, and the canonical navModel() is
+// unchanged.
+func TestNavModelCommunityHidesTrading(t *testing.T) {
+	// Community: no "trading" dest anywhere.
+	for _, a := range navModelFunc(false)() {
+		for _, d := range a.Dests {
+			if d.Key == "trading" {
+				t.Fatalf("navModelFunc(false) must omit the Trading dest; found it under %q", a.Key)
+			}
+		}
+	}
+	// Enterprise keeps it (guards against an over-eager filter).
+	found := false
+	for _, a := range navModelFunc(true)() {
+		for _, d := range a.Dests {
+			if d.Key == "trading" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("navModelFunc(true) must keep the Trading dest")
+	}
+	// Canonical navModel() is edition-agnostic — always full.
+	if !navModelHasTrading(navModel()) {
+		t.Fatal("navModel() must include the Trading dest (gating happens in navModelFunc)")
+	}
+
+	// Render-level: the CE-wired navModel func emits no trading entry; sibling
+	// Insight dests (spend) still render.
+	fm := uiFuncMap()
+	fm["navModel"] = navModelFunc(false)
+	tmpl, err := template.New("t").Funcs(fm).
+		Parse(`{{range navModel}}{{range .Dests}}{{.Key}} {{end}}{{end}}`)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var sb strings.Builder
+	if err := tmpl.Execute(&sb, nil); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	out := sb.String()
+	if strings.Contains(out, "trading") {
+		t.Errorf("CE nav render must not contain trading: %q", out)
+	}
+	if !strings.Contains(out, "spend") {
+		t.Errorf("CE nav render should still contain sibling Insight dests: %q", out)
+	}
+}
+
+func navModelHasTrading(m []navAreaDef) bool {
+	for _, a := range m {
+		for _, d := range a.Dests {
+			if d.Key == "trading" {
+				return true
+			}
+		}
+	}
+	return false
+}

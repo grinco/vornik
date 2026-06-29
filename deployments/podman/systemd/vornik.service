@@ -1,0 +1,38 @@
+# Vornik Community Edition daemon — rootless user service.
+#
+# Installed by the quickstart to ~/.config/systemd/user/vornik.service:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now vornik.service
+#   journalctl --user -u vornik -f
+#
+# Runs the host-built CE binary (~/.local/bin/vornik) as your user, so the
+# agents it spawns via rootless podman share your filesystem view. %h is
+# expanded by systemd to your home directory.
+#
+# The future Enterprise RPM/deb replaces this with a SYSTEM unit running
+# /usr/bin/vornik-enterprise; see
+# https://docs.vornik.io §5.
+
+[Unit]
+Description=Vornik Community Edition daemon
+Documentation=https://docs.vornik.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/vornik
+Environment=VORNIK_CONFIG=%h/.config/vornik/config.yaml
+Environment=VORNIK_CONFIGS_DIR=%h/.config/vornik/configs
+Environment=VORNIK_DATA_DIR=%h/.local/share/vornik
+# Secrets + DB + LLM settings (see vornik.env.example). The leading '-'
+# makes the file optional so the unit still starts if it is absent.
+EnvironmentFile=-%h/.config/vornik/vornik.env
+Restart=on-failure
+RestartSec=3
+# Give first-boot DB migrations room before systemd considers a slow start
+# a failure.
+TimeoutStartSec=120
+
+[Install]
+WantedBy=default.target

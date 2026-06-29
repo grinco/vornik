@@ -28,7 +28,11 @@ server:
 
 database:
   host: 127.0.0.1         # published port of the deps.compose Postgres
-  port: ${POSTGRES_PORT}
+  # port is an int field — ${VAR} can't be used here (the loader unmarshals
+  # YAML into a typed struct before expanding, and expansion only applies to
+  # string fields). To run Postgres on a non-default port set
+  # VORNIK_DATABASE_PORT in vornik.env — the loader applies it over this value.
+  port: 5432
   name: "${POSTGRES_DB}"
   user: "${POSTGRES_USER}"
   password: "${VORNIK_DATABASE_PASSWORD}"

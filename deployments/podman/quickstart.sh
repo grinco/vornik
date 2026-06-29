@@ -242,7 +242,7 @@ if [ ! -f "$CONFIG_DIR/vornik.env" ]; then
   # Stamp host-specific values into the freshly seeded env only.
   sed -i \
     -e "s|^VORNIK_RUN_AS_USER=.*|VORNIK_RUN_AS_USER=$(id -u):$(id -g)|" \
-    -e "s|^POSTGRES_PORT=.*|POSTGRES_PORT=${PG_PORT}|" \
+    -e "s|^VORNIK_DATABASE_PORT=.*|VORNIK_DATABASE_PORT=${PG_PORT}|" \
     "$CONFIG_DIR/vornik.env"
   ok "Seeded $CONFIG_DIR/vornik.env (add your LLM key here)"
 fi

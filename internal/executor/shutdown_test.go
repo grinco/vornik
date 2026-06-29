@@ -19,12 +19,47 @@ import (
 // next daemon start. Without this, every graceful restart leaves
 // in-flight work permanently paused.
 func TestRecover_AutoResumesShutdownPaused(t *testing.T) {
-	e, _, er, _, tr := setup()
+	rt := NewMockRuntime()
+	// Block the resumed step in WaitForExit so the assertions observe the
+	// execution mid-flight. Without this the resume goroutine could drive
+	// the row to COMPLETED before the read — the flake that reddened CI
+	// under full-package load (the bare setup() had no workflow plan, so
+	// the resume ran straight to terminal). entered fires once the run is
+	// genuinely in flight; the gate keeps it there until cleanup.
+	gate := make(chan struct{})
+	entered := make(chan struct{})
+	rt.waitGate = gate
+	rt.waitEntered = entered
+
+	er := NewMockExecRepo()
+	ar := NewMockArtifactRepo()
+	tr := NewMockTaskRepo()
+	e := NewWithOptions(rt, er, ar, tr, nil)
+	e.config.RetryDelay = 0
+	e.SetWorkflowResolver(&MockWorkflowResolver{
+		projects: map[string]*registry.Project{
+			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
+		},
+		swarms: map[string]*registry.Swarm{
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+		},
+		workflows: map[string]*registry.Workflow{
+			"wf1": {
+				ID:         "wf1",
+				Entrypoint: "implement",
+				Steps:      map[string]registry.WorkflowStep{"implement": {Type: "agent", Role: "worker", OnSuccess: "done"}},
+				Terminals:  map[string]registry.WorkflowTerminal{"done": {Status: "COMPLETED"}},
+			},
+		},
+	})
+
 	tr.AddTask(&persistence.Task{
-		ID:        "t1",
-		ProjectID: "p1",
-		Status:    persistence.TaskStatusRunning,
-		CreatedAt: time.Now(),
+		ID:          "t1",
+		ProjectID:   "p1",
+		Status:      persistence.TaskStatusRunning,
+		Attempt:     1,
+		MaxAttempts: 3,
+		CreatedAt:   time.Now(),
 	})
 
 	state := executionState{
@@ -36,12 +71,30 @@ func TestRecover_AutoResumesShutdownPaused(t *testing.T) {
 		ID:            "e1",
 		TaskID:        "t1",
 		ProjectID:     "p1",
+		WorkflowID:    "wf1",
 		Status:        persistence.ExecutionStatusPaused,
 		StateSnapshot: snap,
 	}
 	require.NoError(t, er.Create(context.Background(), exec))
 
+	// Drain the resume goroutine on the way out: Stop cancels the exec
+	// context, which unblocks WaitForExit (ctx arm) so the goroutine exits
+	// and the WaitGroup drains — no leaked goroutine, no manual gate close.
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = e.Stop(ctx)
+	}()
+
 	require.NoError(t, e.Recover(context.Background()))
+
+	// Wait until the resumed step is genuinely in flight (goroutine blocked
+	// in WaitForExit) before asserting — deterministic, no sleeps.
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resumed execution never reached WaitForExit — auto-resume did not start")
+	}
 
 	// Status flipped back to RUNNING in the row.
 	got, err := er.Get(context.Background(), "e1")
@@ -49,10 +102,7 @@ func TestRecover_AutoResumesShutdownPaused(t *testing.T) {
 	assert.Equal(t, persistence.ExecutionStatusRunning, got.Status,
 		"shutdown-paused execution must be flipped back to RUNNING for the resume goroutine")
 
-	// And the executor is tracking it as active again. We don't
-	// assert on the goroutine actually completing because the mock
-	// runtime would need a real container plan; tracking-as-active
-	// is the same evidence Recover provides for any RUNNING row.
+	// And the executor is tracking it as active again.
 	assert.True(t, e.IsExecuting("t1"))
 }
 

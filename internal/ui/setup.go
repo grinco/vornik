@@ -2,6 +2,7 @@ package ui
 
 import (
 	"net/http"
+	"strings"
 
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/auth"
@@ -10,13 +11,22 @@ import (
 
 // SetupPageData is the server-rendered payload for /ui/setup.
 type SetupPageData struct {
-	Title       string
-	CurrentPage string
-	Status      onboarding.Status
+	Title                string
+	CurrentPage          string
+	Status               onboarding.Status
+	ChatConfigured       bool
+	MemoryConfigured     bool
+	DispatcherConfigured bool
+	ProjectOptions       []SetupProjectOption
 	// Prefill carries the last proposed chat config from an existing
 	// onboarding session, so a resumed flow shows prior input. Empty
 	// on a fresh install.
 	Prefill onboarding.ChatConfigProposal
+}
+
+type SetupProjectOption struct {
+	ID          string
+	DisplayName string
 }
 
 // Setup renders the installation onboarding landing page.
@@ -29,12 +39,15 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	status := s.setupStatus(r)
 	data := SetupPageData{
 		Title:       "Setup guide",
 		CurrentPage: "setup",
-		Status:      s.setupStatus(r),
+		Status:      status,
 		Prefill:     s.setupPrefill(r),
 	}
+	data.ChatConfigured, data.MemoryConfigured, data.DispatcherConfigured = s.setupStepState()
+	data.ProjectOptions = s.setupProjectOptions()
 	s.render(w, "setup.html", data)
 }
 
@@ -55,4 +68,31 @@ func (s *Server) setupStatus(r *http.Request) onboarding.Status {
 // sessions in a follow-on; the form renders empty for now.
 func (s *Server) setupPrefill(_ *http.Request) onboarding.ChatConfigProposal {
 	return onboarding.ChatConfigProposal{}
+}
+
+func (s *Server) setupStepState() (chatConfigured, memoryConfigured, dispatcherConfigured bool) {
+	cfg := s.onboardingDetector.Config
+	if cfg == nil {
+		return false, false, false
+	}
+	chatConfigured = strings.TrimSpace(cfg.Chat.Endpoint) != "" && strings.TrimSpace(cfg.Chat.Model) != ""
+	memoryConfigured = chatConfigured && (!cfg.Memory.Enabled ||
+		(strings.TrimSpace(cfg.Memory.EmbeddingModel) != "" && strings.TrimSpace(cfg.Memory.EmbeddingEndpoint) != ""))
+	dispatcherConfigured = strings.TrimSpace(cfg.Telegram.DispatcherProjectID) != ""
+	return chatConfigured, memoryConfigured, dispatcherConfigured
+}
+
+func (s *Server) setupProjectOptions() []SetupProjectOption {
+	if s.projectReg == nil {
+		return nil
+	}
+	projects := s.projectReg.ListProjects()
+	out := make([]SetupProjectOption, 0, len(projects))
+	for _, p := range projects {
+		if p == nil {
+			continue
+		}
+		out = append(out, SetupProjectOption{ID: p.ID, DisplayName: p.DisplayName})
+	}
+	return out
 }

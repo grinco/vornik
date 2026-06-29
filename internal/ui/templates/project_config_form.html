@@ -33,55 +33,6 @@
             <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-200 whitespace-pre-wrap">{{.Error}}</div>
             {{end}}
 
-            {{/* Configuration wizard surfacing on the Config page.
-                 The wizard tile also lives on the project detail
-                 page, but operators arriving via Projects > name >
-                 Config landed here without ever seeing it. Mirrors
-                 the prereq-checklist UX from project_detail.html so
-                 the wording is consistent across both entry points. */}}
-            {{if and .HasBrief .AutonomyEnabled (not .AutonomyRequireApproval)}}
-            <div class="rounded-xl border border-brand-500/30 bg-brand-600/10 p-4 flex items-center justify-between gap-4">
-                <div>
-                    <h3 class="text-sm font-semibold text-brand-200">Configuration wizard — generate swarm + workflow from brief</h3>
-                    <p class="text-[11px] text-gray-400 mt-1">All prerequisites met. The wizard generates fresh SWARM.md + WORKFLOW.md drafts from the project's brief and replaces the current swarmId / defaultWorkflowId. Review the drafts in the editors before running tasks.</p>
-                </div>
-                <form method="POST" action="/ui/projects/{{.ProjectID}}/wizard"
-                      onsubmit="return confirm('Generate fresh swarm + workflow from the brief? Existing swarmId / defaultWorkflowId on this project will be replaced.');">
-                    <button type="submit" class="px-4 py-2 rounded-md bg-brand-600 text-white hover:bg-brand-500 text-sm font-medium">Run wizard</button>
-                </form>
-            </div>
-            {{else}}
-            <div class="rounded-xl border border-dark-700 bg-dark-800/60 p-4">
-                <h3 class="text-sm font-semibold text-gray-200">Configuration wizard</h3>
-                <p class="text-[11px] text-gray-400 mt-1">Generates SWARM.md + WORKFLOW.md drafts from the project's brief. Available once the prerequisites below are met (fix them on this form or via the links).</p>
-                <ul class="mt-3 space-y-1.5 text-xs">
-                    {{if not .HasBrief}}
-                    <li class="flex items-center gap-2">
-                        <span class="text-amber-800 dark:text-amber-400">○</span>
-                        <span class="text-gray-300">Project brief is missing.</span>
-                        <a href="/ui/projects/{{.ProjectID}}/brief" class="text-brand-300 hover:text-brand-200 underline">Add a brief</a>
-                    </li>
-                    {{else}}
-                    <li class="flex items-center gap-2"><span class="text-emerald-800 dark:text-emerald-400">●</span><span class="text-gray-400">Project brief is set.</span></li>
-                    {{end}}
-                    {{if not .AutonomyEnabled}}
-                    <li class="flex items-center gap-2">
-                        <span class="text-amber-800 dark:text-amber-400">○</span>
-                        <span class="text-gray-300">Autonomy is disabled — flip the Autonomy section's <code class="text-[11px] bg-dark-900 px-1 rounded">Enabled</code> to <code class="text-[11px] bg-dark-900 px-1 rounded">true</code> below.</span>
-                    </li>
-                    {{else}}
-                    <li class="flex items-center gap-2"><span class="text-emerald-800 dark:text-emerald-400">●</span><span class="text-gray-400">Autonomy is enabled.</span></li>
-                    {{end}}
-                    {{if .AutonomyRequireApproval}}
-                    <li class="flex items-center gap-2">
-                        <span class="text-amber-800 dark:text-amber-400">○</span>
-                        <span class="text-gray-300"><code class="text-[11px] bg-dark-900 px-1 rounded">requireApproval</code> is on — the wizard needs it off. Toggle it in the Autonomy section below.</span>
-                    </li>
-                    {{end}}
-                </ul>
-            </div>
-            {{end}}
-
             <form method="POST" action="/ui/projects/{{.ProjectID}}/config/form" class="space-y-6">
 
                 <!-- Identity -->
@@ -251,7 +202,7 @@
                                 <option value="false" {{if not .AutonomyRequireApproval}}selected{{end}}>false</option>
                                 <option value="true" {{if .AutonomyRequireApproval}}selected{{end}}>true</option>
                             </select>
-                            <p class="text-[11px] text-gray-500 mt-1">When true, autonomously-proposed tasks are queued for human approval before running. The configuration wizard requires this to be false.</p>
+                            <p class="text-[11px] text-gray-500 mt-1">When true, autonomously-proposed tasks are queued for human approval before running.</p>
                         </div>
                     </div>
 

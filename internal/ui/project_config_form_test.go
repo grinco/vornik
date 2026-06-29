@@ -1130,12 +1130,10 @@ func TestProjectConfigFormEdit_RendersTimezoneSelect(t *testing.T) {
 	}
 }
 
-// TestProjectConfigFormEdit_RendersModelSelect — judge_model
-// renders as a select populated from the daemon's pricing
-// table. Operators no longer have to memorise model ids.
-// Falls back to text input when no pricing table is wired
-// (covered separately).
-func TestProjectConfigFormEdit_RendersModelSelect(t *testing.T) {
+// TestProjectConfigFormEdit_RendersModelTextInputWithPricingWired —
+// pricing.yaml is not a live reachability catalog, so judge_model remains
+// a free-text field even when pricing is wired.
+func TestProjectConfigFormEdit_RendersModelTextInputWithPricingWired(t *testing.T) {
 	root := writeFormFixture(t)
 	reg := registry.New()
 	require.NoError(t, reg.Load(root))
@@ -1152,14 +1150,9 @@ func TestProjectConfigFormEdit_RendersModelSelect(t *testing.T) {
 	server.ProjectConfigFormEdit(rec, req, "form-demo")
 	require.Equal(t, http.StatusOK, rec.Code)
 	body := rec.Body.String()
-	assert.Contains(t, body, `<select name="judge_model"`, "judge_model must render as <select>")
-	for _, want := range []string{
-		`value="gpt-5.4"`,
-		`value="claude-4.5-sonnet"`,
-		`value="kimi-k2.5"`,
-	} {
-		assert.Contains(t, body, want, "model option %q missing from dropdown", want)
-	}
+	assert.Contains(t, body, `<input type="text" name="judge_model"`, "judge_model must render as a text input")
+	assert.NotContains(t, body, `<select name="judge_model"`)
+	assert.NotContains(t, body, `value="claude-4.5-sonnet"`)
 }
 
 func TestProjectConfigFormEdit_PreservesCustomDropdownValues(t *testing.T) {
@@ -1187,7 +1180,8 @@ hallucinationJudge:
 	require.Equal(t, http.StatusOK, rec.Code)
 	body := rec.Body.String()
 	assert.Contains(t, body, `<option value="Pacific/Chatham" selected>Pacific/Chatham</option>`)
-	assert.Contains(t, body, `<option value="vendor/custom-judge" selected>vendor/custom-judge</option>`)
+	assert.Contains(t, body, `name="judge_model"`)
+	assert.Contains(t, body, `value="vendor/custom-judge"`)
 }
 
 // TestProjectConfigFormEdit_BriefCardLinksToBriefEditor — when

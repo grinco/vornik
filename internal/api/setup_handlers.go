@@ -88,6 +88,60 @@ func (s *Server) SetupModels(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]any{"models": models})
 }
 
+// SetupDispatcherCommit handles POST /api/v1/setup/dispatcher. It writes
+// telegram.dispatcher_project_id to config.yaml once chat/memory are already
+// configured and the operator has created a project to pin dispatcher chat
+// cost/routing to.
+func (s *Server) SetupDispatcherCommit(w http.ResponseWriter, r *http.Request) {
+	if SessionRoleFromContext(r.Context()) == auth.RoleUser {
+		respondError(w, http.StatusForbidden, "ADMIN_SCOPE_REQUIRED", "admin scope required")
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if s.setupConfigPath == "" {
+		respondError(w, http.StatusServiceUnavailable, "SETUP_NOT_CONFIGURED", "setup config writer not wired")
+		return
+	}
+	var body struct {
+		ProjectID string `json:"project_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondError(w, http.StatusBadRequest, "BAD_BODY", "invalid JSON body")
+		return
+	}
+	projectID := strings.TrimSpace(body.ProjectID)
+	if projectID == "" {
+		respondError(w, http.StatusBadRequest, "PROJECT_REQUIRED", "project_id required")
+		return
+	}
+	if strings.Contains(projectID, "/") || strings.Contains(projectID, `\`) {
+		respondError(w, http.StatusBadRequest, "PROJECT_INVALID", "project_id must be a project id, not a path")
+		return
+	}
+	if s.projectRegistry != nil && s.projectRegistry.GetProject(projectID) == nil {
+		respondError(w, http.StatusBadRequest, "PROJECT_UNKNOWN", "project_id is not loaded in the project registry")
+		return
+	}
+	if err := writeDispatcherProjectConfig(s.setupConfigPath, projectID); err != nil {
+		var pe *configPatchError
+		if errors.As(err, &pe) {
+			respondError(w, http.StatusInternalServerError, pe.Code, pe.Msg)
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "CONFIG_PATCH", err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
+		"committed":        true,
+		"restart_required": true,
+		"project_id":       projectID,
+	})
+}
+
 // SetupSessionCreate handles POST /api/v1/setup/session. It creates a
 // fresh onboarding session (Step 1 of the guide) and returns its JSON.
 func (s *Server) SetupSessionCreate(w http.ResponseWriter, r *http.Request) {
@@ -334,6 +388,32 @@ func writeChatConfig(configPath, secretPath string, proposal onboarding.ChatConf
 	if err := writer.Validate(); err != nil {
 		_ = writer.Restore(backup)
 		return &configPatchError{Code: "CONFIG_INVALID", Msg: fmt.Sprintf("written config did not validate and was rolled back; secret at %s is orphaned: %v", secretPath, err)}
+	}
+	return nil
+}
+
+func writeDispatcherProjectConfig(configPath, projectID string) error {
+	writer := &featuredoctor.FileConfigWriter{Path: configPath}
+	backup, err := writer.Backup()
+	if err != nil {
+		return &configPatchError{Code: "CONFIG_BACKUP", Msg: fmt.Sprintf("config backup failed: %v", err)}
+	}
+	content, err := writer.Read()
+	if err != nil {
+		return &configPatchError{Code: "CONFIG_READ", Msg: fmt.Sprintf("config read failed: %v", err)}
+	}
+	content, _, err = config.SetYAMLKey(content, "telegram.dispatcher_project_id", projectID)
+	if err != nil {
+		_ = writer.Restore(backup)
+		return &configPatchError{Code: "CONFIG_PATCH", Msg: fmt.Sprintf("config patch failed and was rolled back: %v", err)}
+	}
+	if err := writer.Write(content); err != nil {
+		_ = writer.Restore(backup)
+		return &configPatchError{Code: "CONFIG_WRITE", Msg: fmt.Sprintf("config write failed and was rolled back: %v", err)}
+	}
+	if err := writer.Validate(); err != nil {
+		_ = writer.Restore(backup)
+		return &configPatchError{Code: "CONFIG_INVALID", Msg: fmt.Sprintf("written config did not validate and was rolled back: %v", err)}
 	}
 	return nil
 }

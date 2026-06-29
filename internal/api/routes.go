@@ -418,6 +418,7 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		mux.HandleFunc("/api/v1/projects/wizard/", server.projectWizardRouter)
 		mux.HandleFunc("/api/v1/setup/status", server.SetupStatus)
 		mux.HandleFunc("/api/v1/setup/models", server.SetupModels)
+		mux.HandleFunc("/api/v1/setup/dispatcher", server.SetupDispatcherCommit)
 		mux.HandleFunc("/api/v1/setup/session", server.SetupSessionCreate)
 		mux.HandleFunc("/api/v1/setup/session/", server.setupSessionRouter)
 		mux.HandleFunc("/api/v1/memory/backfill-titles", server.MemoryBackfillTitles)

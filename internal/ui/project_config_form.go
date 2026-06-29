@@ -205,10 +205,10 @@ type ProjectConfigFormData struct {
 	// rendering-only and the canonical list of modes lives in
 	// Go code.
 	AutonomyModes []string
-	// ModelOptions feeds the judge_model + future model
-	// dropdowns. Populated from the daemon's pricing table
-	// (operator-curated catalog). Empty list = no dropdown,
-	// fall back to a free-text input in the template.
+	// ModelOptions feeds model dropdowns only when a live model
+	// catalog is wired. Pricing is not a reachability catalog, so
+	// the form deliberately leaves this empty and falls back to a
+	// free-text input until the UI can consume /api/v1/models.
 	ModelOptions []string
 	// TimezoneOptions feeds the budget timezone dropdown.
 	// Hardcoded daemon-side so operators picking a budget
@@ -405,7 +405,6 @@ func (s *Server) ProjectConfigFormSave(w http.ResponseWriter, r *http.Request, p
 		if proj := s.projectReg.GetProject(projectID); proj != nil {
 			populateFormFromProject(&data, proj)
 			data.TimezoneOptions = appendOptionIfMissing(data.TimezoneOptions, data.BudgetTimezone)
-			data.ModelOptions = appendOptionIfMissing(data.ModelOptions, data.JudgeModel)
 			// Reset + repopulate MCP section so post-save toggles
 			// reflect the on-disk state (e.g. operator unsubscribed
 			// → row goes back to Subscribed=false on the rerender).
@@ -432,9 +431,6 @@ func (s *Server) projectConfigFormData(projectID string) ProjectConfigFormData {
 		TimezoneOptions:     commonTimezones,
 		TaskTypeSuggestions: commonTaskTypeSuggestions,
 	}
-	if s.assistantPricing != nil {
-		data.ModelOptions = s.assistantPricing.IDs()
-	}
 	if projectID == "" || strings.Contains(projectID, "/") || strings.Contains(projectID, string(os.PathSeparator)) {
 		data.Error = "Invalid project id"
 		return data
@@ -453,7 +449,6 @@ func (s *Server) projectConfigFormData(projectID string) ProjectConfigFormData {
 		if proj := s.projectReg.GetProject(projectID); proj != nil {
 			populateFormFromProject(&data, proj)
 			data.TimezoneOptions = appendOptionIfMissing(data.TimezoneOptions, data.BudgetTimezone)
-			data.ModelOptions = appendOptionIfMissing(data.ModelOptions, data.JudgeModel)
 			populateMCPSection(&data, s.mcpRegistrySource, proj)
 		} else {
 			// Project not in registry — still render an empty MCP

@@ -69,7 +69,7 @@ func TestProjects_DraftsBannerHiddenWhenNoOperatorID(t *testing.T) {
 	}
 }
 
-func TestProjects_DraftsBannerVisibleWithDrafts(t *testing.T) {
+func TestProjects_DraftsBannerHiddenWithDraftsWhileWizardDisabled(t *testing.T) {
 	now := time.Now()
 	lister := &stubWizardLister{rows: []*persistence.ProjectWizardSession{
 		{ID: "pw_1", OperatorID: "op_1", UpdatedAt: now.Add(-30 * time.Minute)},
@@ -85,11 +85,8 @@ func TestProjects_DraftsBannerVisibleWithDrafts(t *testing.T) {
 		t.Fatalf("status %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "2 unfinished wizard drafts") {
-		t.Errorf("expected pluralised banner text, body: %s", body)
-	}
-	if !strings.Contains(body, "Resume wizard") {
-		t.Errorf("expected resume link, body: %s", body)
+	if strings.Contains(body, "unfinished wizard") || strings.Contains(body, "Resume wizard") {
+		t.Errorf("wizard drafts banner should be hidden while wizard is disabled, body: %s", body)
 	}
 }
 
@@ -107,7 +104,7 @@ func TestProjects_DraftsBannerIgnoresSpoofedHeaderWhenAuthEnabled(t *testing.T) 
 	}
 }
 
-func TestProjects_DraftsBannerCountIgnoresCommitted(t *testing.T) {
+func TestProjects_DraftsBannerCommittedDraftsStillHidden(t *testing.T) {
 	now := time.Now()
 	committed := "already-shipped"
 	lister := &stubWizardLister{rows: []*persistence.ProjectWizardSession{
@@ -121,13 +118,12 @@ func TestProjects_DraftsBannerCountIgnoresCommitted(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.Projects(rec, req)
 	body := rec.Body.String()
-	// Only the uncommitted row counts.
-	if !strings.Contains(body, "1 unfinished wizard draft") {
-		t.Errorf("expected singular banner text, body: %s", body)
+	if strings.Contains(body, "unfinished wizard") || strings.Contains(body, "Resume wizard") {
+		t.Errorf("wizard drafts banner should be hidden while wizard is disabled, body: %s", body)
 	}
 }
 
-func TestProjects_DraftsBannerCountIgnoresCancelled(t *testing.T) {
+func TestProjects_DraftsBannerCancelledDraftsStillHidden(t *testing.T) {
 	now := time.Now()
 	cancelledAt := now.Add(-10 * time.Minute)
 	lister := &stubWizardLister{rows: []*persistence.ProjectWizardSession{
@@ -143,8 +139,8 @@ func TestProjects_DraftsBannerCountIgnoresCancelled(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.Projects(rec, req)
 	body := rec.Body.String()
-	if !strings.Contains(body, "1 unfinished wizard draft") {
-		t.Errorf("cancelled draft must not count; expected singular banner, body: %s", body)
+	if strings.Contains(body, "unfinished wizard") || strings.Contains(body, "Resume wizard") {
+		t.Errorf("wizard drafts banner should be hidden while wizard is disabled, body: %s", body)
 	}
 }
 

@@ -36,20 +36,10 @@ parameters:
     default: "Companion"
     required: true
   - name: defaultModel
-    type: enum
-    label: "Default LLM model"
-    description: "Model used by every companion role. OSS-first defaults so async offload is cheap; the plugin can override per-call when a workflow needs a frontier model."
-    options:
-      - "openai.gpt-oss-120b-1:0"
-      - "moonshotai.kimi-k2.5"
-      - "zai.glm-4.7"
-    default: "openai.gpt-oss-120b-1:0"
-    required: true
-  - name: fallbackModel
     type: string
-    label: "Fallback LLM model"
-    description: "Model the executor auto-switches to when the primary's calls keep failing/timing out (model-down auto-fallback). Pick a model on a DIFFERENT provider/gateway than the primary so a single gateway outage can't take out both — e.g. gpt-5.4 (codex) when the primary is on Bedrock. Requires that provider to be configured in the chat router."
-    default: "gpt-5.4"
+    label: "Role model override"
+    description: "Optional. Leave blank to inherit the daemon chat model selected during setup."
+    default: ""
     required: false
 
 files:

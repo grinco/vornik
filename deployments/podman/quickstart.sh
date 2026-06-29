@@ -148,7 +148,19 @@ if [ "${VORNIK_SKIP_FETCH:-}" = "1" ]; then
   log "Using existing checkout (no fetch): $DIR"
 elif [ -d "$DIR/.git" ]; then
   log "Updating existing checkout at $DIR"
-  git -C "$DIR" pull --ff-only --quiet || warn "git pull failed — continuing with the existing checkout"
+  # Hard-reset to the remote ref rather than `pull --ff-only`. The CE publish
+  # rewrites grinco/vornik history, so a returning checkout can't fast-forward
+  # — the old code then warned and continued on a STALE tree, and the curled
+  # (latest) quickstart would reference files that tree lacks (e.g.
+  # config/vornik.host.yaml) → a confusing `cp: cannot stat` later. $DIR is a
+  # throwaway build/seed checkout (real config lives in ~/.config/vornik), so
+  # discarding local state here is safe. Fall back to a clean re-clone.
+  if ! git -C "$DIR" fetch --depth 1 origin "$REF" --quiet \
+     || ! git -C "$DIR" reset --hard FETCH_HEAD --quiet; then
+    warn "could not update $DIR cleanly — re-cloning"
+    rm -rf "$DIR"
+    git clone --depth 1 --branch "$REF" "$REPO_URL" "$DIR"
+  fi
 else
   log "Cloning $REPO_URL ($REF) -> $DIR"
   git clone --depth 1 --branch "$REF" "$REPO_URL" "$DIR"
@@ -212,6 +224,13 @@ fi
 #    re-run preserves operator edits and project/swarm changes.
 # ---------------------------------------------------------------------------
 mkdir -p "$CONFIG_DIR/configs" "$DATA_DIR/artifacts" "$DATA_DIR/workspaces"
+
+# Guard: the seed templates must exist in the checkout. If they don't, $DIR is
+# a stale/partial checkout — fail with an actionable message instead of a raw
+# `cp: cannot stat`.
+for f in deployments/podman/config/vornik.host.yaml deployments/podman/vornik.env.example; do
+  [ -f "$DIR/$f" ] || die "Missing $f in $DIR — the checkout looks stale/incomplete. Remove it and re-run: rm -rf '$DIR' && curl -fsSL https://get.vornik.io | bash"
+done
 
 if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
   cp "$DIR/deployments/podman/config/vornik.host.yaml" "$CONFIG_DIR/config.yaml"

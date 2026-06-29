@@ -16,7 +16,6 @@ roles:
   - name: "reviewer"
     description: "Read-only code, doc, and test-coverage reviewer. Produces structured critiques in artifacts/out/review.md."
     model: "{{.defaultModel}}"
-    modelFallback: "{{.fallbackModel}}"
     runtime:
       image: "localhost/vornik-agent:latest"
       envVars:
@@ -33,7 +32,6 @@ roles:
   - name: "analyst"
     description: "Data validation and research gathering. Reads inputs, queries memory, emits structured findings."
     model: "{{.defaultModel}}"
-    modelFallback: "{{.fallbackModel}}"
     runtime:
       image: "localhost/vornik-agent:latest"
       envVars:
@@ -51,7 +49,6 @@ roles:
   - name: "summarizer"
     description: "Distills long inputs into operator-readable summaries. The sole writer role in companion swarms."
     model: "{{.defaultModel}}"
-    modelFallback: "{{.fallbackModel}}"
     runtime:
       image: "localhost/vornik-agent:latest"
       envVars:
@@ -71,7 +68,6 @@ roles:
       - "memory_ingester"
       - "doc_ingester"
     model: "{{.defaultModel}}"
-    modelFallback: "{{.fallbackModel}}"
     runtime:
       image: "localhost/vornik-agent:latest"
       envVars:

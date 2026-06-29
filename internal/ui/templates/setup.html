@@ -19,7 +19,30 @@
                 <a href="/api/v1/setup/status" class="text-xs text-gray-500 hover:text-gray-300">JSON status</a>
             </div>
 
+            {{if or .ChatConfigured .MemoryConfigured}}
+            <section class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60">
+                    <h2 class="text-sm font-semibold text-gray-200">Completed setup</h2>
+                </div>
+                <div class="p-5 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+                    <div class="rounded-lg border {{if .ChatConfigured}}border-emerald-500/30 bg-emerald-500/5{{else}}border-dark-700 bg-dark-900/50{{end}} p-3">
+                        <div class="text-[11px] uppercase tracking-wide text-gray-500">Chat backend</div>
+                        <div class="mt-1 {{if .ChatConfigured}}text-emerald-200{{else}}text-gray-400{{end}}">{{if .ChatConfigured}}Configured{{else}}Not configured{{end}}</div>
+                    </div>
+                    <div class="rounded-lg border {{if .MemoryConfigured}}border-emerald-500/30 bg-emerald-500/5{{else}}border-dark-700 bg-dark-900/50{{end}} p-3">
+                        <div class="text-[11px] uppercase tracking-wide text-gray-500">Memory / RAG</div>
+                        <div class="mt-1 {{if .MemoryConfigured}}text-emerald-200{{else}}text-gray-400{{end}}">{{if .MemoryConfigured}}Configured{{else}}Not configured{{end}}</div>
+                    </div>
+                    <div class="rounded-lg border {{if .DispatcherConfigured}}border-emerald-500/30 bg-emerald-500/5{{else}}border-amber-500/30 bg-amber-500/5{{end}} p-3">
+                        <div class="text-[11px] uppercase tracking-wide text-gray-500">Dispatcher project</div>
+                        <div class="mt-1 {{if .DispatcherConfigured}}text-emerald-200{{else}}text-amber-200{{end}}">{{if .DispatcherConfigured}}Configured{{else}}Next step{{end}}</div>
+                    </div>
+                </div>
+            </section>
+            {{end}}
+
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {{if not .ChatConfigured}}
                 <section class="glass rounded-xl border border-dark-700 overflow-hidden">
                     <div class="px-5 py-3.5 border-b border-dark-700/60">
                         <h2 class="text-sm font-semibold text-gray-200">Step 2 — Configure chat</h2>
@@ -247,6 +270,7 @@
                         </script>
                     </div>
                 </section>
+                {{end}}
 
                 <section class="glass rounded-xl border border-dark-700 overflow-hidden">
                     <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-3">
@@ -284,18 +308,102 @@
                             <a href="/ui/projects/new" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors">
                                 Open project templates
                             </a>
-                            <a href="/ui/projects/new/wizard" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold transition-colors">
-                                Use project wizard
-                            </a>
                         </div>
                     </div>
                 </section>
             </div>
 
+            {{if and .ChatConfigured .MemoryConfigured (not .DispatcherConfigured)}}
+            <section class="glass rounded-xl border border-amber-500/30 overflow-hidden bg-amber-500/5">
+                <div class="px-5 py-3.5 border-b border-amber-500/20">
+                    <h2 class="text-sm font-semibold text-amber-100">Step 4 — Configure dispatcher project</h2>
+                </div>
+                <div class="p-5 space-y-4 text-sm text-gray-300">
+                    <p class="text-xs text-amber-100/80">
+                        Chat and memory are configured. Pin dispatcher chat cost and routing to a dedicated project by writing
+                        <code class="text-amber-100">telegram.dispatcher_project_id</code>, then restart the daemon.
+                    </p>
+                    {{if .ProjectOptions}}
+                    <form id="dispatcher-config-form" class="space-y-3">
+                        <label class="block">
+                            <span class="text-xs uppercase tracking-wide text-amber-100/70">Dispatcher project</span>
+                            <select id="dispatcher-project-id" class="mt-1 w-full max-w-xl rounded-md border border-amber-500/30 bg-dark-900/70 px-3 py-2 text-gray-100">
+                                {{range .ProjectOptions}}
+                                <option value="{{.ID}}">{{if .DisplayName}}{{.DisplayName}} — {{end}}{{.ID}}</option>
+                                {{end}}
+                            </select>
+                        </label>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <button type="button" id="dispatcher-save-btn" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors">
+                                Save dispatcher project
+                            </button>
+                            <a href="/ui/projects/new?slug=personal-assistant" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold transition-colors">
+                                Create assistant project
+                            </a>
+                        </div>
+                        <div id="dispatcher-result"></div>
+                    </form>
+                    <script>
+                    (function () {
+                      var btn = document.getElementById('dispatcher-save-btn');
+                      var sel = document.getElementById('dispatcher-project-id');
+                      var result = document.getElementById('dispatcher-result');
+                      function pill(kind, title, lines) {
+                        var cls = kind === 'ok'
+                          ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-200'
+                          : 'border-rose-500/30 bg-rose-500/5 text-rose-200';
+                        result.innerHTML = '<div class="mt-3 rounded-lg border px-4 py-3 text-xs ' + cls + '"><div class="font-semibold"></div></div>';
+                        var box = result.firstChild;
+                        box.firstChild.textContent = title;
+                        (lines || []).forEach(function (ln) {
+                          var d = document.createElement('div');
+                          d.className = 'mt-1 text-gray-300';
+                          d.textContent = ln;
+                          box.appendChild(d);
+                        });
+                      }
+                      function errDetail(body, status) {
+                        return (body && body.error && body.error.message) || (body && body.message)
+                          || (body && typeof body.error === 'string' ? body.error : '') || ('HTTP ' + status);
+                      }
+                      btn.addEventListener('click', async function () {
+                        btn.disabled = true;
+                        try {
+                          var r = await fetch('/api/v1/setup/dispatcher', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ project_id: sel.value })
+                          });
+                          var body = await r.json().catch(function () { return {}; });
+                          if (!r.ok) { pill('err', 'Save failed', [errDetail(body, r.status)]); return; }
+                          pill('ok', 'Dispatcher project saved', ['Restart the daemon to apply the updated config.']);
+                        } catch (e) {
+                          pill('err', 'Network error', [e.message]);
+                        } finally {
+                          btn.disabled = false;
+                        }
+                      });
+                    })();
+                    </script>
+                    {{else}}
+                    <div class="flex flex-wrap items-center gap-2">
+                        <a href="/ui/projects/new?slug=personal-assistant" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors">
+                            Create assistant project
+                        </a>
+                        <a href="/ui/projects/new" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold transition-colors">
+                            Browse templates
+                        </a>
+                    </div>
+                    {{end}}
+                </div>
+            </section>
+            {{end}}
+
+            {{if not .MemoryConfigured}}
             <!-- Step 3 — memory/RAG. Hidden until chat config is saved, then
                  revealed so onboarding is a linear flow. Optional: the operator
                  can disable memory and skip the embedding probe entirely. -->
-            <section id="memory-step" class="hidden glass rounded-xl border border-dark-700 overflow-hidden">
+            <section id="memory-step" class="{{if .ChatConfigured}}glass{{else}}hidden glass{{end}} rounded-xl border border-dark-700 overflow-hidden">
                 <div class="px-5 py-3.5 border-b border-dark-700/60">
                     <h2 class="text-sm font-semibold text-gray-200">Step 3 — Configure memory / RAG</h2>
                 </div>
@@ -449,6 +557,7 @@
                     </script>
                 </div>
             </section>
+            {{end}}
         </div>
     </main>
 

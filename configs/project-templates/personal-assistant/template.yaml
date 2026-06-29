@@ -29,15 +29,11 @@ parameters:
     default: "Personal Assistant"
     required: true
   - name: llmModel
-    type: enum
-    label: "Default LLM model"
-    description: "Model used by the assistant role. Pick a model that's already configured in your daemon's chat router."
-    options:
-      - "openai.gpt-oss-120b-1:0"
-      - "moonshotai.kimi-k2.5"
-      - "zai.glm-4.7"
-    default: "openai.gpt-oss-120b-1:0"
-    required: true
+    type: string
+    label: "Role model override"
+    description: "Optional. Leave blank to inherit the daemon chat model selected during setup."
+    default: ""
+    required: false
 
 files:
   - source: project.yaml.tmpl

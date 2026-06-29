@@ -6,12 +6,11 @@ import (
 	"testing"
 )
 
-// TestProjectsNewSuccess_LinksToWizardCTA — after a template is
+// TestProjectsNewSuccess_LinksToProjectDetail — after a template is
 // materialised, the success page must point operators at the new
-// project's detail page (where the configuration-wizard tile
-// lives) rather than dumping them on the global projects list
-// and hoping they find their freshly-created project.
-func TestProjectsNewSuccess_LinksToWizardCTA(t *testing.T) {
+// project's detail page rather than dumping them on the global
+// projects list and hoping they find their freshly-created project.
+func TestProjectsNewSuccess_LinksToProjectDetail(t *testing.T) {
 	s := NewServer()
 	data := ProjectsNewData{
 		Title:            "Project created",
@@ -28,8 +27,8 @@ func TestProjectsNewSuccess_LinksToWizardCTA(t *testing.T) {
 	if !strings.Contains(body, `href="/ui/projects/my-helper"`) {
 		t.Errorf("success page must link to the new project's detail page. excerpt:\n%s", excerptAround(body, "my-helper", 120))
 	}
-	if !strings.Contains(body, "configuration wizard") && !strings.Contains(body, "Configuration wizard") {
-		t.Errorf("success page should mention the next-step wizard. excerpt:\n%s", excerptAround(body, "wizard", 120))
+	if !strings.Contains(body, "review the project") && !strings.Contains(body, "Review the project") {
+		t.Errorf("success page should mention reviewing the project. excerpt:\n%s", excerptAround(body, "review", 120))
 	}
 }
 

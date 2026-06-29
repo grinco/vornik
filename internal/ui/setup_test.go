@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,6 +13,7 @@ import (
 	"vornik.io/vornik/internal/auth"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/onboarding"
+	"vornik.io/vornik/internal/registry"
 )
 
 func TestSetupPage_Renders(t *testing.T) {
@@ -120,26 +123,21 @@ func TestSetupPage_RendersChatForm(t *testing.T) {
 	}
 }
 
-// TestSetupPage_ProjectLinksAreUIScoped guards against the onboarding
-// regression where the "Open project templates" / "Use project wizard"
-// buttons pointed at /projects/new(+/wizard) instead of the /ui/-prefixed
-// routes. Without the prefix the browser hits the JSON API surface (or a
-// 404) instead of the rendered pages, so both buttons appeared dead.
-func TestSetupPage_ProjectLinksAreUIScoped(t *testing.T) {
+// TestSetupPage_ProjectTemplateLinkIsUIScoped guards against the onboarding
+// regression where the "Open project templates" button pointed at
+// /projects/new instead of the /ui/-prefixed route.
+func TestSetupPage_ProjectTemplateLinkIsUIScoped(t *testing.T) {
 	srv := NewServer(WithOnboardingDetector(onboarding.Detector{Config: &config.Config{}}))
 	req := httptest.NewRequest(http.MethodGet, "/setup", nil)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	body := rec.Body.String()
-	for _, want := range []string{
-		`href="/ui/projects/new"`,
-		`href="/ui/projects/new/wizard"`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("setup page missing UI-scoped link %q", want)
-		}
+	if !strings.Contains(body, `href="/ui/projects/new"`) {
+		t.Errorf("setup page missing UI-scoped template link")
 	}
-	// The bare (non-/ui) hrefs must not appear as standalone targets.
+	if strings.Contains(body, `/ui/projects/new/wizard`) {
+		t.Errorf("setup page should not advertise project wizard while the path is disabled")
+	}
 	for _, bad := range []string{
 		`href="/projects/new"`,
 		`href="/projects/new/wizard"`,
@@ -169,6 +167,87 @@ func TestSetupPage_RendersMemoryStep(t *testing.T) {
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("setup page missing memory-step marker %q", want)
+		}
+	}
+}
+
+func TestSetupPage_CompletedChatAndMemoryAdvanceToDispatcher(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"projects", "swarms", "workflows"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "projects", "assistant.yaml"), []byte(`projectId: assistant
+displayName: Assistant
+swarmId: assistant-swarm
+defaultWorkflowId: assistant-workflow
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "swarms", "assistant-swarm.md"), []byte(`---
+swarmId: assistant-swarm
+leadRole: dispatcher
+roles:
+  - name: dispatcher
+    runtime:
+      image: noop:dispatcher
+---
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "workflows", "assistant-workflow.md"), []byte(`---
+workflowId: assistant-workflow
+entrypoint: dispatch
+steps:
+  dispatch:
+    type: agent
+    role: dispatcher
+    prompt: "route chat"
+    on_success: done
+terminals:
+  done:
+    status: COMPLETED
+---
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg := registry.New()
+	if err := reg.Load(root); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	cfg.Chat.Endpoint = "http://chat.example/v1"
+	cfg.Chat.Model = "gpt-live"
+	cfg.Memory.Enabled = true
+	cfg.Memory.EmbeddingEndpoint = "http://embed.example/v1"
+	cfg.Memory.EmbeddingModel = "embed-live"
+	srv := NewServer(WithOnboardingDetector(onboarding.Detector{Config: cfg}), WithProjectRegistry(reg))
+	req := httptest.NewRequest(http.MethodGet, "/setup", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+
+	for _, bad := range []string{
+		`id="chat-config-form"`,
+		`Step 3 — Configure memory`,
+		`/ui/projects/new/wizard`,
+	} {
+		if strings.Contains(body, bad) {
+			t.Errorf("setup page should not render completed/broken setup affordance %q", bad)
+		}
+	}
+	for _, want := range []string{
+		"Completed setup",
+		"Step 4 — Configure dispatcher project",
+		`id="dispatcher-project-id"`,
+		`id="dispatcher-save-btn"`,
+		`fetch('/api/v1/setup/dispatcher'`,
+		`value="assistant"`,
+		"telegram.dispatcher_project_id",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("setup page missing dispatcher-next marker %q", want)
 		}
 	}
 }

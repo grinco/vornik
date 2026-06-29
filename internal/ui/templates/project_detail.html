@@ -141,56 +141,6 @@
                  "when does something next happen" question — that
                  belongs with the task list — but the goal text
                  lives here so it's visible without unfolding. -->
-            {{/* Configuration wizard CTA. Always rendered (action block — never
-                 folded into a panel-ref since it holds a POST form) so operators
-                 can discover it; branches on which prereqs are met. Customer-pain:
-                 the tile was previously invisible until brief + autonomy.Enabled +
-                 !RequireApproval all held, making the wizard impossible to find. */}}
-            {{if and .Project.Brief .Project.Autonomy.Enabled (not .Project.Autonomy.RequireApproval)}}
-            <div class="rounded-xl border border-brand-500/30 bg-brand-600/10 p-4 flex items-center justify-between gap-4">
-                <div>
-                    <h3 class="text-sm font-semibold text-brand-200">Configuration wizard — generate swarm + workflow from brief</h3>
-                    <p class="text-[11px] text-ink-400 mt-1">Builds a fresh SWARM.md + WORKFLOW.md draft from this project's brief and replaces the current swarmId / defaultWorkflowId. Review the result in the swarm / workflow editors before running tasks.</p>
-                </div>
-                <form method="POST" action="/ui/projects/{{.Project.ID}}/wizard"
-                      onsubmit="return confirm('Generate fresh swarm + workflow from the brief? Existing swarmId / defaultWorkflowId on this project will be replaced.');">
-                    <button type="submit" class="px-4 py-2 rounded-md bg-brand-600 text-white hover:bg-brand-500 text-sm font-medium">Generate</button>
-                </form>
-            </div>
-            {{else}}
-            <div class="rounded-xl border border-surface-600 bg-surface-800/60 p-4">
-                <h3 class="text-sm font-semibold text-ink-200">Configuration wizard</h3>
-                <p class="text-[11px] text-ink-400 mt-1">Once the prerequisites below are met, the wizard will generate a SWARM.md + WORKFLOW.md draft tailored to this project's brief.</p>
-                <ul class="mt-3 space-y-1.5 text-xs">
-                    {{if not .Project.Brief}}
-                    <li class="flex items-center gap-2">
-                        <span class="text-amber-800 dark:text-amber-400">○</span>
-                        <span class="text-ink-300">Project brief is missing.</span>
-                        <a href="/ui/projects/{{.Project.ID}}/brief" class="text-brand-300 hover:text-brand-200 underline">Add a brief</a>
-                    </li>
-                    {{else}}
-                    <li class="flex items-center gap-2"><span class="text-emerald-800 dark:text-emerald-400">●</span><span class="text-ink-400">Project brief is set.</span></li>
-                    {{end}}
-                    {{if not .Project.Autonomy.Enabled}}
-                    <li class="flex items-center gap-2">
-                        <span class="text-amber-800 dark:text-amber-400">○</span>
-                        <span class="text-ink-300">Autonomy is disabled.</span>
-                        <a href="/ui/projects/{{.Project.ID}}/config/form#autonomy" class="text-brand-300 hover:text-brand-200 underline">Enable autonomy</a>
-                    </li>
-                    {{else}}
-                    <li class="flex items-center gap-2"><span class="text-emerald-800 dark:text-emerald-400">●</span><span class="text-ink-400">Autonomy is enabled.</span></li>
-                    {{end}}
-                    {{if .Project.Autonomy.RequireApproval}}
-                    <li class="flex items-center gap-2">
-                        <span class="text-amber-800 dark:text-amber-400">○</span>
-                        <span class="text-ink-300"><code class="text-[11px] bg-surface-900 px-1 rounded">requireApproval</code> is on — the wizard needs it off.</span>
-                        <a href="/ui/projects/{{.Project.ID}}/config/form#autonomy" class="text-brand-300 hover:text-brand-200 underline">Update config</a>
-                    </li>
-                    {{end}}
-                </ul>
-            </div>
-            {{end}}
-
             {{/* Autonomy hero — panel-primary so it draws the eye.
                  Goal body is NEVER wrapped in <details> — regression guard
                  (2026-05-15 cleanup had collapsed it). */}}

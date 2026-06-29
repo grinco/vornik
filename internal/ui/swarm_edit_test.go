@@ -182,11 +182,10 @@ func TestSwarmSave_UpdatesPerRoleFrontmatter(t *testing.T) {
 	assert.Contains(t, got, "# operator comment that must survive form saves")
 }
 
-// TestSwarmEdit_RendersModelSelectWhenPricingWired — per-role
-// model field becomes a dropdown when the daemon's pricing
-// table is wired. Falls back to free-text when no pricing
-// (covered separately by TestSwarmEdit_PopulatesFromSwarm).
-func TestSwarmEdit_RendersModelSelectWhenPricingWired(t *testing.T) {
+// TestSwarmEdit_RendersModelTextInputWhenPricingWired — pricing.yaml is
+// not a live reachability catalog, so per-role model fields remain
+// free-text even when pricing is wired.
+func TestSwarmEdit_RendersModelTextInputWhenPricingWired(t *testing.T) {
 	root := writeSwarmFixture(t)
 	reg := registry.New()
 	require.NoError(t, reg.Load(root))
@@ -203,12 +202,12 @@ func TestSwarmEdit_RendersModelSelectWhenPricingWired(t *testing.T) {
 	server.SwarmEdit(rec, req, "edit-swarm")
 	require.Equal(t, http.StatusOK, rec.Code)
 	body := rec.Body.String()
-	assert.Contains(t, body, `<select name="roleModel_lead"`, "roleModel_lead must render as <select>")
-	assert.Contains(t, body, `value="gpt-5.4"`)
-	assert.Contains(t, body, `value="claude-4.5-sonnet"`)
+	assert.Contains(t, body, `<input type="text" name="roleModel_lead"`, "roleModel_lead must render as a text input")
+	assert.NotContains(t, body, `<select name="roleModel_lead"`)
+	assert.NotContains(t, body, `value="claude-4.5-sonnet"`)
 }
 
-func TestSwarmEdit_RendersCurrentModelWhenOutsidePricingCatalog(t *testing.T) {
+func TestSwarmEdit_RendersCurrentModelAsTextWhenOutsidePricingCatalog(t *testing.T) {
 	root := writeSwarmFixture(t)
 	reg := registry.New()
 	require.NoError(t, reg.Load(root))
@@ -222,8 +221,10 @@ func TestSwarmEdit_RendersCurrentModelWhenOutsidePricingCatalog(t *testing.T) {
 	server.SwarmEdit(rec, req, "edit-swarm")
 	require.Equal(t, http.StatusOK, rec.Code)
 	body := rec.Body.String()
-	assert.Contains(t, body, `<option value="test-lead-model" selected>test-lead-model</option>`)
-	assert.Contains(t, body, `<option value="test-coder-model" selected>test-coder-model</option>`)
+	assert.Contains(t, body, `name="roleModel_lead"`)
+	assert.Contains(t, body, `value="test-lead-model"`)
+	assert.Contains(t, body, `name="roleModel_coder"`)
+	assert.Contains(t, body, `value="test-coder-model"`)
 }
 
 // TestSwarmEdit_RendersAssistAffordance — every role row in

@@ -70,8 +70,8 @@ type ProjectsNewData struct {
 	// CreatedProjectID is the ID the operator chose for the new
 	// project (the `projectId` template parameter). Lets the
 	// success page link directly to /ui/projects/<id> so the
-	// operator can find the configuration wizard CTA without
-	// hunting through the project list.
+	// operator can review the new project without hunting through
+	// the project list.
 	CreatedProjectID string
 }
 

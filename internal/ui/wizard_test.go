@@ -291,11 +291,9 @@ func TestWizardGenerate_UnknownProject(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
-// TestProjectDetail_RendersGenerateButton — the project detail
-// page surfaces a "Generate swarm + workflow from brief" CTA
-// when the project has a brief AND autonomy is enabled.
-// Without the brief or autonomy gate the CTA is hidden.
-func TestProjectDetail_RendersGenerateButton(t *testing.T) {
+// TestProjectDetail_HidesGenerateButtonWhenReady verifies the legacy
+// project configuration wizard is not advertised while the flow is disabled.
+func TestProjectDetail_HidesGenerateButtonWhenReady(t *testing.T) {
 	s := NewServer()
 	data := ProjectDetailData{
 		Title:       "Project: demo",
@@ -314,15 +312,12 @@ func TestProjectDetail_RendersGenerateButton(t *testing.T) {
 	var buf strings.Builder
 	require.NoError(t, s.templates.ExecuteTemplate(&buf, "project_detail.html", data))
 	out := buf.String()
-	assert.Contains(t, out, "Configuration wizard")
-	assert.Contains(t, out, "generate swarm + workflow from brief")
-	assert.Contains(t, out, `action="/ui/projects/demo/wizard"`)
+	assert.NotContains(t, out, "Configuration wizard")
+	assert.NotContains(t, out, `action="/ui/projects/demo/wizard"`)
 }
 
 // TestProjectDetail_HidesGenerateButtonWhenNoBrief — without a
-// brief the Generate FORM stays hidden so clicking can't 400.
-// The wizard heading + prereq checklist now ALWAYS render to
-// guide the operator toward enabling it.
+// brief the Generate form stays hidden so clicking can't 400.
 func TestProjectDetail_HidesGenerateButtonWhenNoBrief(t *testing.T) {
 	s := NewServer()
 	data := ProjectDetailData{
@@ -340,10 +335,8 @@ func TestProjectDetail_HidesGenerateButtonWhenNoBrief(t *testing.T) {
 	var buf strings.Builder
 	require.NoError(t, s.templates.ExecuteTemplate(&buf, "project_detail.html", data))
 	out := buf.String()
-	// The form action must NOT be there — clicking would 400.
 	assert.NotContains(t, out, `action="/ui/projects/demo/wizard"`)
-	// But the wizard heading + prereq checklist DO render.
-	assert.Contains(t, out, "Configuration wizard")
+	assert.NotContains(t, out, "Configuration wizard")
 }
 
 // TestWizardGenerate_FormValueOverridesIDs — operators may

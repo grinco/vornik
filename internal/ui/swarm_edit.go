@@ -67,9 +67,10 @@ type SwarmEditData struct {
 	// summary + the editable systemPrompt textarea.
 	RoleViews []SwarmRoleView
 
-	// ModelOptions feeds the per-role model dropdown when the
-	// daemon's pricing table is wired. Empty list → roleModel
-	// inputs fall back to free-text.
+	// ModelOptions feeds per-role model dropdowns only when a live
+	// model catalog is wired. Pricing is not a reachability catalog,
+	// so this stays empty today and the template uses free-text
+	// inputs.
 	ModelOptions []string
 }
 
@@ -267,7 +268,6 @@ func (s *Server) SwarmSave(w http.ResponseWriter, r *http.Request, swarmID strin
 	if s.projectReg != nil {
 		if sw := s.projectReg.GetSwarm(swarmID); sw != nil {
 			populateSwarmEditData(&data, sw)
-			data.ModelOptions = appendRoleModelOptions(data.ModelOptions, data.RoleViews)
 		}
 	}
 	s.render(w, "swarm_edit.html", data)
@@ -306,19 +306,7 @@ func (s *Server) swarmEditData(swarmID string) SwarmEditData {
 		return data
 	}
 	populateSwarmEditData(&data, sw)
-	if s.assistantPricing != nil {
-		data.ModelOptions = s.assistantPricing.IDs()
-	}
-	data.ModelOptions = appendRoleModelOptions(data.ModelOptions, data.RoleViews)
 	return data
-}
-
-func appendRoleModelOptions(options []string, roles []SwarmRoleView) []string {
-	for _, role := range roles {
-		options = appendOptionIfMissing(options, role.Model)
-		options = appendOptionIfMissing(options, role.ModelFallback)
-	}
-	return options
 }
 
 // populateSwarmEditData copies field values from a parsed

@@ -18,6 +18,7 @@ import (
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/registry"
 )
 
 func TestSetupStatusRoute_ReturnsFreshInstallJSON(t *testing.T) {
@@ -724,6 +725,87 @@ func TestSetupCommit_BlocksProjectScopedUser(t *testing.T) {
 	srv, _, _, _ := newCommitServer(t, stubValidator{result: onboarding.ChatValidationResult{PingOK: true}})
 	router := NewRouter(srv, &config.Config{})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/setup/session/s1/commit", strings.NewReader(`{}`)).
+		WithContext(stampSetupIdentity(context.Background(), "user"))
+	rec := httptest.NewRecorder()
+	router.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+}
+
+func TestSetupDispatcherCommit_PatchesConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("chat:\n  enabled: true\napi:\n  auth_enabled: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(dir, "configs")
+	for _, subdir := range []string{"projects", "swarms", "workflows"} {
+		if err := os.MkdirAll(filepath.Join(configDir, subdir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "projects", "assistant.yaml"), []byte(`projectId: assistant
+swarmId: assistant-swarm
+defaultWorkflowId: assistant-workflow
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "swarms", "assistant-swarm.md"), []byte(`---
+swarmId: assistant-swarm
+leadRole: dispatcher
+roles:
+  - name: dispatcher
+    runtime:
+      image: noop:dispatcher
+---
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "workflows", "assistant-workflow.md"), []byte(`---
+workflowId: assistant-workflow
+entrypoint: dispatch
+steps:
+  dispatch:
+    type: agent
+    role: dispatcher
+    prompt: "route chat"
+    on_success: done
+terminals:
+  done:
+    status: COMPLETED
+---
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg := registry.New()
+	if err := reg.Load(configDir); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(WithSetupConfigPath(configPath), WithProjectRegistry(reg))
+	router := NewRouter(srv, &config.Config{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/setup/dispatcher", strings.NewReader(`{"project_id":"assistant"}`)).
+		WithContext(stampSetupIdentity(context.Background(), "admin"))
+	rec := httptest.NewRecorder()
+	router.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	got, _ := os.ReadFile(configPath)
+	if !strings.Contains(string(got), "dispatcher_project_id: assistant") {
+		t.Fatalf("dispatcher project not patched, config: %s", got)
+	}
+}
+
+func TestSetupDispatcherCommit_BlocksProjectScopedUser(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("api:\n  auth_enabled: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(WithSetupConfigPath(configPath))
+	router := NewRouter(srv, &config.Config{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/setup/dispatcher", strings.NewReader(`{"project_id":"assistant"}`)).
 		WithContext(stampSetupIdentity(context.Background(), "user"))
 	rec := httptest.NewRecorder()
 	router.Handler().ServeHTTP(rec, req)

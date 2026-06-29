@@ -18,10 +18,10 @@ type SetupPageData struct {
 	MemoryConfigured     bool
 	DispatcherConfigured bool
 	ProjectOptions       []SetupProjectOption
-	// Prefill carries the last proposed chat config from an existing
-	// onboarding session, so a resumed flow shows prior input. Empty
-	// on a fresh install.
-	Prefill onboarding.ChatConfigProposal
+	// Prefill carries the current chat config so completed setup stays
+	// editable without exposing env-placeholder secrets.
+	Prefill       onboarding.ChatConfigProposal
+	MemoryPrefill onboarding.MemoryConfigProposal
 }
 
 type SetupProjectOption struct {
@@ -41,10 +41,11 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 	}
 	status := s.setupStatus(r)
 	data := SetupPageData{
-		Title:       "Setup guide",
-		CurrentPage: "setup",
-		Status:      status,
-		Prefill:     s.setupPrefill(r),
+		Title:         "Setup guide",
+		CurrentPage:   "setup",
+		Status:        status,
+		Prefill:       s.setupPrefill(r),
+		MemoryPrefill: s.setupMemoryPrefill(),
 	}
 	data.ChatConfigured, data.MemoryConfigured, data.DispatcherConfigured = s.setupStepState()
 	data.ProjectOptions = s.setupProjectOptions()
@@ -60,14 +61,40 @@ func (s *Server) setupStatus(r *http.Request) onboarding.Status {
 	return s.onboardingDetector.Detect(r.Context())
 }
 
-// setupPrefill loads the most recent uncommitted onboarding session's
-// proposed chat config, if any, so a resumed flow pre-fills the form.
-// Returns the zero value when no session repo is wired or no session
-// exists. The UI server does not own the session repo in this slice
-// (the API does), so this returns zero until the UI is wired to read
-// sessions in a follow-on; the form renders empty for now.
+// setupPrefill loads current chat config so the form can be edited after a
+// completed setup. Env-placeholder secrets are intentionally left blank.
 func (s *Server) setupPrefill(_ *http.Request) onboarding.ChatConfigProposal {
-	return onboarding.ChatConfigProposal{}
+	cfg := s.onboardingDetector.Config
+	if cfg == nil {
+		return onboarding.ChatConfigProposal{}
+	}
+	apiKey := strings.TrimSpace(cfg.Chat.APIKey)
+	if strings.HasPrefix(apiKey, "${") {
+		apiKey = ""
+	}
+	return onboarding.ChatConfigProposal{
+		Endpoint: strings.TrimSpace(cfg.Chat.Endpoint),
+		APIKey:   apiKey,
+		Model:    strings.TrimSpace(cfg.Chat.Model),
+	}
+}
+
+func (s *Server) setupMemoryPrefill() onboarding.MemoryConfigProposal {
+	cfg := s.onboardingDetector.Config
+	if cfg == nil {
+		return onboarding.MemoryConfigProposal{}
+	}
+	apiKey := strings.TrimSpace(cfg.Memory.EmbeddingAPIKey)
+	if strings.HasPrefix(apiKey, "${") {
+		apiKey = ""
+	}
+	return onboarding.MemoryConfigProposal{
+		Enabled:            cfg.Memory.Enabled,
+		EmbeddingEndpoint:  strings.TrimSpace(cfg.Memory.EmbeddingEndpoint),
+		EmbeddingAPIKey:    apiKey,
+		EmbeddingModel:     strings.TrimSpace(cfg.Memory.EmbeddingModel),
+		EmbeddingDimension: cfg.Memory.EmbeddingDimension,
+	}
 }
 
 func (s *Server) setupStepState() (chatConfigured, memoryConfigured, dispatcherConfigured bool) {
@@ -75,9 +102,14 @@ func (s *Server) setupStepState() (chatConfigured, memoryConfigured, dispatcherC
 	if cfg == nil {
 		return false, false, false
 	}
-	chatConfigured = strings.TrimSpace(cfg.Chat.Endpoint) != "" && strings.TrimSpace(cfg.Chat.Model) != ""
-	memoryConfigured = chatConfigured && (!cfg.Memory.Enabled ||
-		(strings.TrimSpace(cfg.Memory.EmbeddingModel) != "" && strings.TrimSpace(cfg.Memory.EmbeddingEndpoint) != ""))
+	chatConfigured = cfg.Chat.Enabled &&
+		strings.TrimSpace(cfg.Chat.Provider) != "" &&
+		strings.TrimSpace(cfg.Chat.Endpoint) != "" &&
+		strings.TrimSpace(cfg.Chat.Model) != "" &&
+		strings.TrimSpace(cfg.Chat.APIKey) != ""
+	memoryConfigured = cfg.Memory.Enabled &&
+		strings.TrimSpace(cfg.Memory.EmbeddingModel) != "" &&
+		strings.TrimSpace(cfg.Memory.EmbeddingEndpoint) != ""
 	dispatcherConfigured = strings.TrimSpace(cfg.Telegram.DispatcherProjectID) != ""
 	return chatConfigured, memoryConfigured, dispatcherConfigured
 }

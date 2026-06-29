@@ -30,73 +30,218 @@
                             OpenAI-compatible <code>http</code> provider; <code>router</code>
                             (multi-provider) is an advanced path — edit <code>config.yaml</code> directly.
                         </p>
-                        <form id="chat-config-form" class="space-y-3">
+                        <form id="chat-config-form" class="space-y-3" autocomplete="off">
                             <label class="block">
                                 <span class="text-xs uppercase tracking-wide text-gray-500">Chat endpoint (base URL)</span>
-                                <input type="text" name="endpoint" value="{{.Prefill.Endpoint}}"
+                                <input type="text" id="chat-endpoint" name="endpoint" value="{{.Prefill.Endpoint}}"
                                        placeholder="http://localhost:11434/v1"
                                        class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
                             </label>
                             <label class="block">
                                 <span class="text-xs uppercase tracking-wide text-gray-500">API key</span>
-                                <input type="password" name="api_key" value="{{.Prefill.APIKey}}"
+                                <input type="password" id="chat-api-key" name="api_key" value="{{.Prefill.APIKey}}"
                                        placeholder="sk-..."
                                        class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
                             </label>
-                            <label class="block">
-                                <span class="text-xs uppercase tracking-wide text-gray-500">Default model</span>
-                                <input type="text" name="model" value="{{.Prefill.Model}}"
+                            <div class="block">
+                                <div class="flex items-center justify-between gap-2">
+                                    <span class="text-xs uppercase tracking-wide text-gray-500">Default model</span>
+                                    <button type="button" id="fetch-models-btn"
+                                            class="text-[11px] px-2 py-0.5 rounded bg-dark-700 hover:bg-dark-600 text-gray-300 disabled:opacity-50">
+                                        Fetch available models
+                                    </button>
+                                </div>
+                                <!-- Starts as a free-text input; "Fetch available models" swaps in
+                                     a <select> populated from the endpoint. A "type manually"
+                                     toggle falls back to the text input for providers that don't
+                                     list every invocable model. -->
+                                <input type="text" id="chat-model" name="model" value="{{.Prefill.Model}}"
                                        placeholder="gpt-4.1"
                                        class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
-                            </label>
+                                <select id="chat-model-select" class="hidden mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100"></select>
+                                <button type="button" id="model-manual-toggle"
+                                        class="hidden mt-1 text-[11px] text-gray-500 hover:text-gray-300">Type a model ID manually</button>
+                                <p id="models-note" class="hidden mt-1 text-[11px] text-gray-500"></p>
+                            </div>
                             <div class="flex items-center gap-3 pt-1">
-                                <button type="button"
-                                        hx-post="/api/v1/setup/session/new/validate"
-                                        hx-include="[name='endpoint'],[name='api_key'],[name='model']"
-                                        hx-target="#validation-result"
-                                        hx-swap="innerHTML"
-                                        class="px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold">
+                                <button type="button" id="test-conn-btn"
+                                        class="px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold disabled:opacity-50">
                                     Test connection
                                 </button>
-                                <button type="button"
-                                        hx-post="/api/v1/setup/session/new/commit"
-                                        hx-include="[name='endpoint'],[name='api_key'],[name='model']"
-                                        hx-target="#validation-result"
-                                        hx-swap="innerHTML"
-                                        hx-on::after-request="if(event.detail.xhr.status===200){document.getElementById('restart-banner').classList.remove('hidden')}"
-                                        class="px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold">
+                                <button type="button" id="save-continue-btn"
+                                        class="px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold disabled:opacity-50">
                                     Save &amp; continue
                                 </button>
                             </div>
                             <div id="validation-result"></div>
                         </form>
                         <div id="restart-banner" class="hidden rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-200">
-                            Chat config saved. <strong>Restart the daemon</strong> to load
+                            Chat config saved. <strong>Restart the daemon</strong> so it loads
                             <code>VORNIK_CHAT_API_KEY</code> from <code>&lt;configDir&gt;/secrets/chat.env</code>.
+                            The daemon now sources that file itself on start, so the chat backend
+                            and the project wizard come online after the restart on any deployment.
                         </div>
                         <script>
-                        // On first interaction, create an onboarding session and retarget
-                        // the validate/commit buttons to /api/v1/setup/session/{id}/...
+                        // Plain-fetch onboarding controller. Replaces the earlier htmx
+                        // dynamic-retarget hack, which silently dropped the success pill +
+                        // restart banner (commit succeeded server-side but the UI showed
+                        // nothing). The session is created up front so every call has a
+                        // stable URL; validate/commit/models all POST JSON and render
+                        // their own results deterministically.
                         (function () {
-                          var form = document.getElementById('chat-config-form');
-                          var created = false;
-                          function ensureSession(ev) {
-                            if (created) return;
-                            ev.preventDefault();
-                            fetch('/api/v1/setup/session', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
-                              .then(function (r) { return r.json(); })
-                              .then(function (s) {
-                                created = true;
-                                var base = '/api/v1/setup/session/' + s.id;
-                                form.querySelector('[hx-post$="/validate"]').setAttribute('hx-post', base + '/validate');
-                                form.querySelector('[hx-post$="/commit"]').setAttribute('hx-post', base + '/commit');
-                                htmx.process(form);
-                                // Re-dispatch the original click now that targets are set.
-                                ev.target.click();
-                              });
+                          var sessionID = "";
+                          var els = {
+                            form: document.getElementById('chat-config-form'),
+                            endpoint: document.getElementById('chat-endpoint'),
+                            apiKey: document.getElementById('chat-api-key'),
+                            model: document.getElementById('chat-model'),
+                            modelSelect: document.getElementById('chat-model-select'),
+                            manualToggle: document.getElementById('model-manual-toggle'),
+                            modelsNote: document.getElementById('models-note'),
+                            fetchModels: document.getElementById('fetch-models-btn'),
+                            test: document.getElementById('test-conn-btn'),
+                            save: document.getElementById('save-continue-btn'),
+                            result: document.getElementById('validation-result'),
+                            banner: document.getElementById('restart-banner'),
+                          };
+
+                          function proposal() {
+                            // The visible model field wins: the <select> when shown, else the text input.
+                            var model = (!els.modelSelect.classList.contains('hidden'))
+                              ? els.modelSelect.value : els.model.value;
+                            return { endpoint: els.endpoint.value.trim(), api_key: els.apiKey.value, model: (model || '').trim() };
                           }
-                          form.querySelectorAll('button[hx-post]').forEach(function (b) {
-                            b.addEventListener('click', ensureSession, { capture: true, once: false });
+
+                          function pill(kind, title, lines) {
+                            var cls = kind === 'ok'
+                              ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-200'
+                              : (kind === 'warn'
+                                ? 'border-amber-500/30 bg-amber-500/5 text-amber-200'
+                                : 'border-rose-500/30 bg-rose-500/5 text-rose-200');
+                            var html = '<div class="mt-3 rounded-lg border px-4 py-3 text-xs ' + cls + '"><div class="font-semibold"></div></div>';
+                            els.result.innerHTML = html;
+                            var box = els.result.firstChild;
+                            box.firstChild.textContent = title;
+                            (lines || []).forEach(function (ln) {
+                              var d = document.createElement('div');
+                              d.className = 'mt-1 text-gray-300';
+                              d.textContent = ln;
+                              box.appendChild(d);
+                            });
+                          }
+
+                          async function ensureSession() {
+                            if (sessionID) return sessionID;
+                            var r = await fetch('/api/v1/setup/session', {
+                              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+                            if (!r.ok) throw new Error('could not create setup session (' + r.status + ')');
+                            var s = await r.json();
+                            sessionID = s.id;
+                            return sessionID;
+                          }
+
+                          function errDetail(body, status) {
+                            return (body && body.error && body.error.message) || (body && body.message)
+                              || (body && typeof body.error === 'string' ? body.error : '') || ('HTTP ' + status);
+                          }
+
+                          els.fetchModels.addEventListener('click', async function () {
+                            var p = proposal();
+                            if (!p.endpoint || !p.api_key) { pill('warn', 'Enter the endpoint and API key first'); return; }
+                            els.fetchModels.disabled = true;
+                            els.fetchModels.textContent = 'Fetching…';
+                            try {
+                              var r = await fetch('/api/v1/setup/models', {
+                                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ endpoint: p.endpoint, api_key: p.api_key }) });
+                              var body = await r.json().catch(function () { return {}; });
+                              if (!r.ok) { pill('err', 'Could not fetch models', [errDetail(body, r.status)]); return; }
+                              var models = (body.models || []);
+                              if (!models.length) { pill('warn', 'Endpoint returned no models', ['Type the model ID manually instead.']); return; }
+                              els.modelSelect.replaceChildren();
+                              var current = p.model;
+                              models.forEach(function (m) {
+                                var opt = document.createElement('option');
+                                opt.value = m.id; opt.textContent = m.id + (m.owned_by ? ' (' + m.owned_by + ')' : '');
+                                if (m.id === current) opt.selected = true;
+                                els.modelSelect.appendChild(opt);
+                              });
+                              els.model.classList.add('hidden');
+                              els.modelSelect.classList.remove('hidden');
+                              els.manualToggle.classList.remove('hidden');
+                              els.modelsNote.textContent = models.length + ' model(s) available — pick one.';
+                              els.modelsNote.classList.remove('hidden');
+                              pill('ok', 'Models loaded');
+                            } catch (e) {
+                              pill('err', 'Network error', [e.message]);
+                            } finally {
+                              els.fetchModels.disabled = false;
+                              els.fetchModels.textContent = 'Fetch available models';
+                            }
+                          });
+
+                          els.manualToggle.addEventListener('click', function () {
+                            els.modelSelect.classList.add('hidden');
+                            els.manualToggle.classList.add('hidden');
+                            els.modelsNote.classList.add('hidden');
+                            els.model.classList.remove('hidden');
+                            els.model.focus();
+                          });
+
+                          function renderValidation(res) {
+                            if (res.ping_ok) {
+                              pill('ok', 'Connection validated', ['Model list and invocation probe passed.']);
+                              return;
+                            }
+                            var lines = (res.failures || []).map(function (f) {
+                              return f.message + (f.remediation ? ' — ' + f.remediation : '');
+                            });
+                            pill('warn', 'Connection needs attention', lines);
+                          }
+
+                          els.test.addEventListener('click', async function () {
+                            els.test.disabled = true;
+                            try {
+                              var id = await ensureSession();
+                              var r = await fetch('/api/v1/setup/session/' + encodeURIComponent(id) + '/validate', {
+                                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(proposal()) });
+                              var body = await r.json().catch(function () { return {}; });
+                              if (!r.ok) { pill('err', 'Validation failed', [errDetail(body, r.status)]); return; }
+                              renderValidation(body);
+                            } catch (e) {
+                              pill('err', 'Network error', [e.message]);
+                            } finally {
+                              els.test.disabled = false;
+                            }
+                          });
+
+                          els.save.addEventListener('click', async function () {
+                            els.save.disabled = true;
+                            try {
+                              var id = await ensureSession();
+                              var r = await fetch('/api/v1/setup/session/' + encodeURIComponent(id) + '/commit', {
+                                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(proposal()) });
+                              var body = await r.json().catch(function () { return {}; });
+                              if (r.status === 400 && body && body.failures) {
+                                // The commit gate failed re-validation — show why, no banner.
+                                renderValidation(body);
+                                return;
+                              }
+                              if (!r.ok) { pill('err', 'Save failed', [errDetail(body, r.status)]); return; }
+                              pill('ok', 'Chat config saved', ['Endpoint + model written to config.yaml; key written to secrets/chat.env.']);
+                              els.banner.classList.remove('hidden');
+                              // Advance to Step 3 (memory). Share the session id so the
+                              // memory step commits against the same onboarding session.
+                              window.__onbSession = id;
+                              var mem = document.getElementById('memory-step');
+                              if (mem) { mem.classList.remove('hidden'); mem.scrollIntoView({ behavior: 'smooth' }); }
+                            } catch (e) {
+                              pill('err', 'Network error', [e.message]);
+                            } finally {
+                              els.save.disabled = false;
+                            }
                           });
                         })();
                         </script>
@@ -136,16 +281,174 @@
                         </div>
                         {{end}}
                         <div class="pt-2 flex items-center gap-2">
-                            <a href="/projects/new" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors">
+                            <a href="/ui/projects/new" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors">
                                 Open project templates
                             </a>
-                            <a href="/projects/new/wizard" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold transition-colors">
+                            <a href="/ui/projects/new/wizard" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold transition-colors">
                                 Use project wizard
                             </a>
                         </div>
                     </div>
                 </section>
             </div>
+
+            <!-- Step 3 — memory/RAG. Hidden until chat config is saved, then
+                 revealed so onboarding is a linear flow. Optional: the operator
+                 can disable memory and skip the embedding probe entirely. -->
+            <section id="memory-step" class="hidden glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60">
+                    <h2 class="text-sm font-semibold text-gray-200">Step 3 — Configure memory / RAG</h2>
+                </div>
+                <div class="p-5 space-y-4 text-sm text-gray-300">
+                    <p class="text-xs text-gray-500">
+                        Memory gives projects long-term recall via an embedding endpoint
+                        (OpenAI-compatible <code>/v1/embeddings</code>). Optional — leave it
+                        off to finish setup without RAG.
+                    </p>
+                    <label class="flex items-center gap-2">
+                        <input type="checkbox" id="mem-enabled" class="rounded border-dark-700 bg-dark-900/50">
+                        <span class="text-gray-200">Enable memory for this installation</span>
+                    </label>
+                    <div id="mem-fields" class="hidden space-y-3">
+                        <label class="block">
+                            <span class="text-xs uppercase tracking-wide text-gray-500">Embedding endpoint (base URL)</span>
+                            <input type="text" id="mem-endpoint" placeholder="http://localhost:11434/v1"
+                                   class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
+                        </label>
+                        <label class="block">
+                            <span class="text-xs uppercase tracking-wide text-gray-500">Embedding API key</span>
+                            <input type="password" id="mem-api-key" placeholder="sk-… (leave blank to reuse none)"
+                                   class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
+                        </label>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <label class="block">
+                                <span class="text-xs uppercase tracking-wide text-gray-500">Embedding model</span>
+                                <input type="text" id="mem-model" placeholder="text-embedding-3-small"
+                                       class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
+                            </label>
+                            <label class="block">
+                                <span class="text-xs uppercase tracking-wide text-gray-500">Dimension (blank = auto-detect)</span>
+                                <input type="number" id="mem-dimension" placeholder="1536" min="1"
+                                       class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
+                            </label>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-3 pt-1">
+                        <button type="button" id="mem-test-btn"
+                                class="px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold disabled:opacity-50">
+                            Test embedding
+                        </button>
+                        <button type="button" id="mem-save-btn"
+                                class="px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold disabled:opacity-50">
+                            Save &amp; finish
+                        </button>
+                    </div>
+                    <div id="mem-result"></div>
+                    <div id="mem-done" class="hidden rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-xs text-emerald-200">
+                        Memory configuration saved. Setup is complete — restart the daemon to
+                        apply, then open the project templates or the wizard below.
+                    </div>
+                    <script>
+                    (function () {
+                      var els = {
+                        enabled: document.getElementById('mem-enabled'),
+                        fields: document.getElementById('mem-fields'),
+                        endpoint: document.getElementById('mem-endpoint'),
+                        apiKey: document.getElementById('mem-api-key'),
+                        model: document.getElementById('mem-model'),
+                        dimension: document.getElementById('mem-dimension'),
+                        test: document.getElementById('mem-test-btn'),
+                        save: document.getElementById('mem-save-btn'),
+                        result: document.getElementById('mem-result'),
+                        done: document.getElementById('mem-done'),
+                      };
+
+                      els.enabled.addEventListener('change', function () {
+                        els.fields.classList.toggle('hidden', !els.enabled.checked);
+                      });
+
+                      function proposal() {
+                        var dim = parseInt(els.dimension.value, 10);
+                        return {
+                          enabled: els.enabled.checked,
+                          embedding_endpoint: els.endpoint.value.trim(),
+                          embedding_api_key: els.apiKey.value,
+                          embedding_model: els.model.value.trim(),
+                          embedding_dimension: isNaN(dim) ? 0 : dim,
+                        };
+                      }
+
+                      function pill(kind, title, lines) {
+                        var cls = kind === 'ok'
+                          ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-200'
+                          : (kind === 'warn'
+                            ? 'border-amber-500/30 bg-amber-500/5 text-amber-200'
+                            : 'border-rose-500/30 bg-rose-500/5 text-rose-200');
+                        els.result.innerHTML = '<div class="mt-3 rounded-lg border px-4 py-3 text-xs ' + cls + '"><div class="font-semibold"></div></div>';
+                        var box = els.result.firstChild;
+                        box.firstChild.textContent = title;
+                        (lines || []).forEach(function (ln) {
+                          var d = document.createElement('div');
+                          d.className = 'mt-1 text-gray-300';
+                          d.textContent = ln;
+                          box.appendChild(d);
+                        });
+                      }
+
+                      function errDetail(body, status) {
+                        return (body && body.error && body.error.message) || (body && body.message)
+                          || (body && typeof body.error === 'string' ? body.error : '') || ('HTTP ' + status);
+                      }
+
+                      function sessionURL(suffix) {
+                        var id = window.__onbSession;
+                        if (!id) return null;
+                        return '/api/v1/setup/session/' + encodeURIComponent(id) + suffix;
+                      }
+
+                      function renderResult(res) {
+                        if (res.skipped) { pill('ok', 'Memory disabled', ['Nothing to validate.']); return; }
+                        if (res.embedding_ok) {
+                          var lines = ['Embedding endpoint reachable (dimension ' + res.returned_dimension + ').'];
+                          (res.failures || []).forEach(function (f) { lines.push(f.message + (f.remediation ? ' — ' + f.remediation : '')); });
+                          pill('ok', 'Embedding validated', lines);
+                          return;
+                        }
+                        pill('warn', 'Embedding needs attention',
+                          (res.failures || []).map(function (f) { return f.message + (f.remediation ? ' — ' + f.remediation : ''); }));
+                      }
+
+                      els.test.addEventListener('click', async function () {
+                        var url = sessionURL('/memory/validate');
+                        if (!url) { pill('err', 'Finish the chat step first'); return; }
+                        els.test.disabled = true;
+                        try {
+                          var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(proposal()) });
+                          var body = await r.json().catch(function () { return {}; });
+                          if (!r.ok) { pill('err', 'Validation failed', [errDetail(body, r.status)]); return; }
+                          renderResult(body);
+                        } catch (e) { pill('err', 'Network error', [e.message]); }
+                        finally { els.test.disabled = false; }
+                      });
+
+                      els.save.addEventListener('click', async function () {
+                        var url = sessionURL('/memory/commit');
+                        if (!url) { pill('err', 'Finish the chat step first'); return; }
+                        els.save.disabled = true;
+                        try {
+                          var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(proposal()) });
+                          var body = await r.json().catch(function () { return {}; });
+                          if (r.status === 400 && body && body.failures) { renderResult(body); return; }
+                          if (!r.ok) { pill('err', 'Save failed', [errDetail(body, r.status)]); return; }
+                          pill('ok', body.memory_enabled ? 'Memory config saved' : 'Memory left disabled');
+                          els.done.classList.remove('hidden');
+                        } catch (e) { pill('err', 'Network error', [e.message]); }
+                        finally { els.save.disabled = false; }
+                      });
+                    })();
+                    </script>
+                </div>
+            </section>
         </div>
     </main>
 

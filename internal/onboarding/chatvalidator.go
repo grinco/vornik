@@ -78,6 +78,23 @@ func NewChatValidatorWithFactory(fn chatClientFactory, timeout time.Duration) Ch
 	return ChatValidator{factory: fn, timeout: timeout}
 }
 
+// ListModels returns the models the proposed endpoint + key can see,
+// WITHOUT the invocation (ping) check. It powers the setup form's
+// "Fetch models" button so the operator can pick a model from a dropdown
+// before committing — they shouldn't have to know the exact model ID by
+// heart. Returns an error (not a structured result) so the handler maps
+// it to a simple inline message; the authoritative pass/fail gate stays
+// with Validate's ping.
+func (v ChatValidator) ListModels(ctx context.Context, endpoint, apiKey string) ([]chat.ModelInfo, error) {
+	if strings.TrimSpace(endpoint) == "" || strings.TrimSpace(apiKey) == "" {
+		return nil, errors.New("endpoint or API key is empty")
+	}
+	client := v.factory(endpoint, apiKey, "")
+	listCtx, cancel := context.WithTimeout(ctx, v.timeout)
+	defer cancel()
+	return client.ListModels(listCtx)
+}
+
 // Validate runs the list + ping checks and returns a structured result.
 // PingOK is the single blocking signal: ModelKnown is advisory because
 // some providers don't list every invocable model.

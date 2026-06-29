@@ -114,6 +114,15 @@ func LoadFromPath(path string) (*Config, error) {
 		cfg.Storage.S3.ForceSSL = cfg.Artifacts.S3.ForceSSL
 	}
 
+	// Source `<configDir>/secrets/*.env` into the process environment
+	// before resolving placeholders + env overrides, so secrets written
+	// by onboarding (e.g. chat.env's VORNIK_CHAT_API_KEY) activate on
+	// every deployment without relying on systemd EnvironmentFile= or a
+	// compose env_file. Idempotent + fill-empties-only (see the function
+	// doc), so explicit deployment env still wins and re-running on a hot
+	// reload is safe.
+	sourceSecretsEnvFiles(path)
+
 	expandEnvPlaceholders(cfg)
 
 	// Override with environment variables

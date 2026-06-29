@@ -97,12 +97,78 @@ func TestSetupPage_RendersChatForm(t *testing.T) {
 		`name="api_key"`,
 		`name="model"`,
 		"Test connection",
-		`hx-post="/api/v1/setup/session`,
+		`id="fetch-models-btn"`,
+		`id="save-continue-btn"`,
+		`id="test-conn-btn"`,
 		"restart-banner",
-		"hx-on::after-request",
+		`fetch('/api/v1/setup/models'`,
+		`/api/v1/setup/session/`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("setup page missing %q", want)
+		}
+	}
+	// The fragile htmx dynamic-retarget pattern must be gone — it silently
+	// dropped the commit pill + restart banner (the #2 regression).
+	for _, bad := range []string{
+		"hx-on::after-request",
+		`hx-post="/api/v1/setup/session/new/commit"`,
+	} {
+		if strings.Contains(body, bad) {
+			t.Errorf("setup page still uses removed htmx pattern %q", bad)
+		}
+	}
+}
+
+// TestSetupPage_ProjectLinksAreUIScoped guards against the onboarding
+// regression where the "Open project templates" / "Use project wizard"
+// buttons pointed at /projects/new(+/wizard) instead of the /ui/-prefixed
+// routes. Without the prefix the browser hits the JSON API surface (or a
+// 404) instead of the rendered pages, so both buttons appeared dead.
+func TestSetupPage_ProjectLinksAreUIScoped(t *testing.T) {
+	srv := NewServer(WithOnboardingDetector(onboarding.Detector{Config: &config.Config{}}))
+	req := httptest.NewRequest(http.MethodGet, "/setup", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	for _, want := range []string{
+		`href="/ui/projects/new"`,
+		`href="/ui/projects/new/wizard"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("setup page missing UI-scoped link %q", want)
+		}
+	}
+	// The bare (non-/ui) hrefs must not appear as standalone targets.
+	for _, bad := range []string{
+		`href="/projects/new"`,
+		`href="/projects/new/wizard"`,
+	} {
+		if strings.Contains(body, bad) {
+			t.Errorf("setup page still emits non-UI link %q (missing /ui/ prefix)", bad)
+		}
+	}
+}
+
+// TestSetupPage_RendersMemoryStep verifies the Step-3 memory form is in the
+// page (hidden until chat config is saved) and wired to the memory endpoints.
+func TestSetupPage_RendersMemoryStep(t *testing.T) {
+	srv := NewServer(WithOnboardingDetector(onboarding.Detector{Config: &config.Config{}}))
+	req := httptest.NewRequest(http.MethodGet, "/setup", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="memory-step"`,
+		`id="mem-enabled"`,
+		`id="mem-endpoint"`,
+		`id="mem-model"`,
+		`/memory/validate`,
+		`/memory/commit`,
+		"Step 3 — Configure memory",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("setup page missing memory-step marker %q", want)
 		}
 	}
 }

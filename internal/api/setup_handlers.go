@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"vornik.io/vornik/internal/auth"
+	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/featuredoctor"
 	"vornik.io/vornik/internal/onboarding"
@@ -42,6 +44,48 @@ func (s *Server) SetupStatus(w http.ResponseWriter, r *http.Request) {
 	status := detector.Detect(r.Context())
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(status)
+}
+
+// setupModelLister is the optional capability the concrete chat validator
+// implements: list the models a proposed endpoint+key can see, without the
+// invocation gate. Kept separate from ChatValidatorInterface so the test
+// stubs that only implement Validate keep compiling.
+type setupModelLister interface {
+	ListModels(ctx context.Context, endpoint, apiKey string) ([]chat.ModelInfo, error)
+}
+
+// SetupModels handles POST /api/v1/setup/models. Given a proposed chat
+// endpoint + API key it returns the model list the endpoint exposes, so
+// the setup form can offer a "Fetch models" dropdown instead of making the
+// operator type a model ID from memory. This is a read-only probe: it never
+// writes config or session state. Admin-scoped like the rest of setup.
+func (s *Server) SetupModels(w http.ResponseWriter, r *http.Request) {
+	if SessionRoleFromContext(r.Context()) == auth.RoleUser {
+		respondError(w, http.StatusForbidden, "ADMIN_SCOPE_REQUIRED", "admin scope required")
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	lister, ok := s.setupValidator.(setupModelLister)
+	if !ok || s.setupValidator == nil {
+		respondError(w, http.StatusServiceUnavailable, "SETUP_NOT_CONFIGURED", "model listing not wired")
+		return
+	}
+	proposal, _, err := decodeSetupChatProposal(r)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "BAD_BODY", err.Error())
+		return
+	}
+	models, err := lister.ListModels(r.Context(), proposal.Endpoint, proposal.APIKey)
+	if err != nil {
+		// 502: the upstream endpoint/key is the problem, not our request.
+		respondError(w, http.StatusBadGateway, "MODELS_UNAVAILABLE", err.Error())
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]any{"models": models})
 }
 
 // SetupSessionCreate handles POST /api/v1/setup/session. It creates a
@@ -297,6 +341,10 @@ func writeChatConfig(configPath, secretPath string, proposal onboarding.ChatConf
 // setupSessionRouter dispatches /api/v1/setup/session/{id}/{action}.
 func (s *Server) setupSessionRouter(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case strings.HasSuffix(r.URL.Path, "/memory/validate"):
+		s.SetupMemoryValidate(w, r)
+	case strings.HasSuffix(r.URL.Path, "/memory/commit"):
+		s.SetupMemoryCommit(w, r)
 	case strings.HasSuffix(r.URL.Path, "/validate"):
 		s.SetupSessionValidate(w, r)
 	case strings.HasSuffix(r.URL.Path, "/commit"):

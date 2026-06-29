@@ -388,6 +388,32 @@ func TestRouterFallbackUsesSubModelWhenChatModelEmpty(t *testing.T) {
 		"fallback should use router.<sub>.model when chat.model is empty")
 }
 
+// TestRouterHTTPInheritsTopLevelConfig covers onboarding/reload deployments
+// that still run provider=router while the setup flow wrote the validated
+// endpoint/key/model to the top-level chat fields. The HTTP sub-provider must
+// inherit those fields instead of failing router initialization with a missing
+// router.http.api_key.
+func TestRouterHTTPInheritsTopLevelConfig(t *testing.T) {
+	c := &Container{Logger: zerolog.Nop(), Config: &config.Config{}}
+	c.Config.Chat = config.ChatConfig{
+		Enabled:  true,
+		Provider: "router",
+		Endpoint: "http://example.invalid",
+		APIKey:   "top-secret",
+		Model:    "top-model",
+		Router: config.ChatRouterConfig{
+			Default: "http",
+			HTTP: config.ChatHTTPSubConfig{
+				Enabled: true,
+			},
+		},
+	}
+
+	require.NoError(t, c.initChatRouter(c.Config.Chat))
+	require.NotNil(t, c.ChatClient)
+	assert.Equal(t, "top-model", c.ChatClient.Model())
+}
+
 func TestBuildVertexEndpoint(t *testing.T) {
 	tests := []struct {
 		name      string

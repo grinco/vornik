@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/admin"
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/persistence"
@@ -166,7 +167,7 @@ func (s *Server) Memory(w http.ResponseWriter, r *http.Request) {
 	}{
 		Title:            "Memory — Vornik",
 		CurrentPage:      "memory",
-		IsAdmin:          requestHasAllProjectAccess(r),
+		IsAdmin:          admin.IsAdminFromContext(r.Context()) || !api.IsAuthEnabledFromContext(r.Context()),
 		Projects:         rows,
 		MemoryConfigured: s.memoryConfigured,
 		HardeningReady:   s.memoryQuarantine != nil && s.corpusEpochs != nil && s.ingestQueue != nil,

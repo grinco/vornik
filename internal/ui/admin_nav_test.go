@@ -143,3 +143,37 @@ func TestHasAdminFlag_AcceptsStructPointer(t *testing.T) {
 		})
 	}
 }
+
+func TestMemoryIndex_DoesNotTreatAllProjectAccessAsAdmin(t *testing.T) {
+	s := NewServer()
+	data := struct {
+		Title            string
+		CurrentPage      string
+		IsAdmin          bool
+		Projects         []struct{}
+		MemoryConfigured bool
+		HardeningReady   bool
+		KG               struct{ Enabled bool }
+		Limit            int
+		LimitOptions     []int
+		TotalProjects    int
+	}{
+		Title:            "Memory — Vornik",
+		CurrentPage:      "memory",
+		IsAdmin:          false,
+		MemoryConfigured: true,
+		HardeningReady:   true,
+	}
+
+	var buf bytes.Buffer
+	if err := s.templates.ExecuteTemplate(&buf, "memory_index.html", data); err != nil {
+		t.Fatalf("ExecuteTemplate(memory_index.html): %v", err)
+	}
+	rendered := buf.String()
+	if !strings.Contains(rendered, `data-admin-link class="hidden rail-ico`) {
+		t.Fatalf("memory index nav should keep the admin rail hidden for non-admin data; got:\n%s", rendered)
+	}
+	if strings.Contains(rendered, `data-admin-link class="rail-ico`) {
+		t.Fatalf("memory index nav must not render a visible admin rail for non-admin data; got:\n%s", rendered)
+	}
+}

@@ -397,6 +397,12 @@ func (c *Container) initChatRouter(cfg config.ChatConfig) error {
 		subs["claude-subscription"] = chat.NewClaudeSubscriptionClient(rcfg.ClaudeSubscription.Model, opts...)
 	}
 	if rcfg.HTTP.Enabled {
+		if rcfg.HTTP.Endpoint == "" {
+			rcfg.HTTP.Endpoint = cfg.Endpoint
+		}
+		if rcfg.HTTP.APIKey == "" {
+			rcfg.HTTP.APIKey = cfg.APIKey
+		}
 		if rcfg.HTTP.Endpoint == "" || rcfg.HTTP.APIKey == "" {
 			return fmt.Errorf("chat.router.http: endpoint and api_key are required when http sub-provider is enabled")
 		}

@@ -2,11 +2,13 @@ package featuredoctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
+	"syscall"
 
 	"vornik.io/vornik/internal/config"
 )
@@ -244,12 +246,25 @@ func (w *FileConfigWriter) Read() ([]byte, error) {
 	return os.ReadFile(w.Path)
 }
 
+// renameFunc indirects os.Rename so tests can force the EBUSY fallback
+// without needing a real bind mount.
+var renameFunc = os.Rename
+
 // Write atomically replaces the config file with data: it writes to a
 // temporary file in the same directory, fsyncs, then renames over the target.
 // A crash mid-write therefore never leaves a truncated config.yaml — the old
 // file survives until the rename commits the new one in a single step. (A
 // plain os.WriteFile truncates in place, so a crash between truncate and the
 // final write would corrupt the live config.)
+//
+// Fallback: when w.Path is a single-file bind mount (podman/docker
+// `-v host.yaml:/etc/vornik/config.yaml`), rename(2) over the mountpoint
+// returns EBUSY — the kernel won't replace a mountpoint inode. EXDEV is the
+// sibling case (temp on a different filesystem). In both, atomic rename is
+// impossible, so Write rewrites the file in place. That is not crash-atomic,
+// but every onboarding caller takes a Backup() before Write, so a rare
+// crash-mid-write is recoverable; a hard failure here would otherwise leave
+// the operator unable to save config at all on these (common) deployments.
 func (w *FileConfigWriter) Write(data []byte) error {
 	dir := filepath.Dir(w.Path)
 	tmp, err := os.CreateTemp(dir, ".config-*.yaml.tmp")
@@ -274,8 +289,34 @@ func (w *FileConfigWriter) Write(data []byte) error {
 	if err := os.Chmod(tmpName, 0o600); err != nil {
 		return fmt.Errorf("chmod temp config: %w", err)
 	}
-	if err := os.Rename(tmpName, w.Path); err != nil {
+	if err := renameFunc(tmpName, w.Path); err != nil {
+		if errors.Is(err, syscall.EBUSY) || errors.Is(err, syscall.EXDEV) {
+			return w.writeInPlace(data)
+		}
 		return fmt.Errorf("rename temp config into place: %w", err)
+	}
+	return nil
+}
+
+// writeInPlace truncates w.Path and rewrites it directly, preserving the
+// inode so a single-file bind mount stays intact. Used only when atomic
+// rename is impossible (see Write). The caller's Backup() is the safety net
+// against a crash mid-write.
+func (w *FileConfigWriter) writeInPlace(data []byte) error {
+	f, err := os.OpenFile(w.Path, os.O_WRONLY|os.O_TRUNC|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("open config for in-place write: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("in-place write config: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("sync config: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close config: %w", err)
 	}
 	return nil
 }

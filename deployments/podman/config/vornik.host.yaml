@@ -1,0 +1,94 @@
+# Vornik config — HOST install (rootless `systemctl --user` daemon).
+#
+# Seeded by the quickstart to ~/.config/vornik/config.yaml on first run.
+# Values that vary per host come from ~/.config/vornik/vornik.env (the
+# systemd EnvironmentFile) via ${VAR} expansion — the loader runs
+# os.ExpandEnv on every string before parsing (internal/config/loader.go).
+#
+# Differs from the old compose template (config/vornik.yaml) only where the
+# topology changed: database.host is 127.0.0.1 (Postgres is a published
+# container, not a compose-network peer) and the data/artifact/workspace
+# paths track ${VORNIK_DATA_DIR} (XDG ~/.local/share/vornik) instead of the
+# in-container /var/lib/vornik.
+#
+# Kept minimal: anything commented out uses its compiled-in default. For a
+# full walkthrough see configs/vornik.yaml.example at the repo root.
+
+server:
+  # Bind 0.0.0.0 on purpose: the daemon derives the VORNIK_API_URL it
+  # injects into agent containers from this address
+  # (internal/service/container.go:agentCallbackURL). A 0.0.0.0 bind is
+  # rewritten to host.containers.internal for the agent side, which is what
+  # lets agents — spawned as sibling containers on the host's podman — call
+  # back to the daemon running on the host. (Firewall the host if the LAN
+  # is untrusted.)
+  address: "0.0.0.0:8080"
+  read_timeout: 30s
+  write_timeout: 30s
+
+database:
+  host: 127.0.0.1         # published port of the deps.compose Postgres
+  port: ${POSTGRES_PORT}
+  name: "${POSTGRES_DB}"
+  user: "${POSTGRES_USER}"
+  password: "${VORNIK_DATABASE_PASSWORD}"
+  sslmode: disable
+
+storage:
+  artifacts_path: "${VORNIK_DATA_DIR}/artifacts"
+artifacts:
+  artifacts_path: "${VORNIK_DATA_DIR}/artifacts"
+
+scheduler:
+  max_concurrent_tasks: 4
+  lease_timeout: 5m
+
+logging:
+  level: info
+  format: json
+
+api:
+  # No auth by default. Flip to true + populate api_keys before exposing the
+  # UI beyond loopback.
+  auth_enabled: false
+  # api_keys:
+  #   - "${VORNIK_API_KEY}"
+
+metrics:
+  enabled: false
+  addr: ":9090"
+
+runtime:
+  # Agents run rootless under the operator's own uid/gid so bind-mounted
+  # workspaces under ${VORNIK_DATA_DIR}/workspaces stay writable. The
+  # quickstart sets VORNIK_RUN_AS_USER to "$(id -u):$(id -g)" and builds the
+  # agent image with matching VORNIK_UID/VORNIK_GID.
+  run_as_user: "${VORNIK_RUN_AS_USER}"
+  project_workspace_path: "${VORNIK_DATA_DIR}/workspaces"
+
+  agent_llm:
+    endpoint: "${AGENT_LLM_ENDPOINT}"
+    model: "${AGENT_LLM_MODEL}"
+    api_key: "${VORNIK_AGENT_LLM_API_KEY}"
+
+chat:
+  # "http" (OpenAI-compatible endpoint) or "claude-cli" (shells out to a
+  # local `claude` binary). Host installs can use claude-cli since the
+  # daemon runs as your user with your CLI auth — but http is the default.
+  provider: "http"
+  endpoint: "${CHAT_ENDPOINT}"
+  model: "${CHAT_MODEL}"
+  api_key: "${VORNIK_CHAT_API_KEY}"
+
+telegram:
+  enabled: false
+  bot_token: "${VORNIK_TELEGRAM_BOT_TOKEN}"
+
+memory:
+  # Memory/RAG needs pgvector (bundled) and an embedding endpoint. Disabled
+  # by default — enable when you have an embedding key.
+  enabled: false
+  # embedding_endpoint: "${CHAT_ENDPOINT}"
+  # embedding_model: "text-embedding-3-small"
+  # embedding_dimension: 1024
+  # embedding_api_key: "${VORNIK_EMBEDDING_API_KEY}"

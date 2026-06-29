@@ -1687,8 +1687,14 @@ func NewServer(opts ...ServerOption) *Server {
 	}
 
 	// Parse templates from embedded FS
+	// Edition-gate the nav: drop the Trading destination on Community (its
+	// /trading route 404s there — WithTradingEnabled unset). Override the
+	// default navModel func with the edition-aware one here rather than
+	// threading the flag through uiFuncMap (kept edition-agnostic + testable).
+	fm := uiFuncMap()
+	fm["navModel"] = navModelFunc(s.tradingEnabled)
 	tmpl, err := template.New("").
-		Funcs(uiFuncMap()).
+		Funcs(fm).
 		ParseFS(templatesFS, "templates/*.html")
 	if err != nil {
 		// Templates are embedded at build time — a parse error means the

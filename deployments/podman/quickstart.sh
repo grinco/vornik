@@ -4,24 +4,36 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/grinco/vornik/main/deployments/podman/quickstart.sh | bash
 #
-# What it does, in order:
-#   1. Installs Podman + a Compose provider + git (if missing) via your distro's
-#      package manager.
-#   2. Enables the user Podman socket (and login lingering) so the Vornik daemon
-#      — itself a container — can spawn agent containers as siblings on the host.
-#   3. Fetches this repo (compose scaffolding + the image build context).
-#   4. Brings up PostgreSQL + pgvector and the Vornik daemon with podman compose.
-#      The daemon creates and migrates its schema on first boot.
-#   5. Waits for readiness and prints how to connect.
+# Topology: the Vornik daemon runs ON THE HOST as a rootless
+# `systemctl --user` service; only PostgreSQL+pgvector (and, in Enterprise,
+# the scraper) run in containers. The daemon spawns each task's agent as a
+# sibling container via your rootless podman, so the daemon, its exec
+# scratch, the agent workspaces, and the agent containers all share one
+# filesystem view. (The previous daemon-in-a-container design broke here:
+# the host podman could not statfs bind-mount sources that existed only
+# inside the daemon container.) See
+# https://docs.vornik.io
 #
-# Re-running is safe (idempotent). Tunables via environment:
-#   VORNIK_REPO_URL   git URL to clone           (default: https://github.com/grinco/vornik)
-#   VORNIK_REF        branch/tag to check out     (default: main)
-#   VORNIK_DIR        where to place the checkout (default: $HOME/vornik)
+# What it does, in order:
+#   1. Installs podman + a compose provider + git (if missing).
+#   2. Fetches this repo (build context + config seed).
+#   3. Builds the `vornik` + `vornikctl` binaries in an ephemeral golang
+#      container (no host Go toolchain) and installs them to ~/.local/bin.
+#   4. Builds the agent image into your rootless podman storage.
+#   5. Seeds ~/.config/vornik (config.yaml + vornik.env + configs/) and
+#      ~/.local/share/vornik (data) on first run.
+#   6. Brings up PostgreSQL (+ scraper on Enterprise) via podman compose.
+#   7. Installs + starts the `vornik` user service (schema migrates on boot).
+#   8. Waits for readiness and prints how to connect.
+#
+# Re-running is safe (idempotent; existing config is never clobbered).
+# Tunables via environment:
+#   VORNIK_REPO_URL   git URL to clone            (default: https://github.com/grinco/vornik)
+#   VORNIK_REF        branch/tag to check out      (default: main)
+#   VORNIK_DIR        where to place the checkout  (default: $HOME/vornik)
 #   VORNIK_SKIP_FETCH 1 = use VORNIK_DIR as-is, no clone/pull (offline/dev)
-#   VORNIK_HTTP_PORT  host port for the UI/API    (default: 8080)
-#   POSTGRES_PORT     host port for PostgreSQL     (default: 5432)
-#   PODMAN_SOCK       explicit podman socket path  (default: auto-detected)
+#   VORNIK_HTTP_PORT  host port for the UI/API     (default: 8080)
+#   POSTGRES_PORT     host port for PostgreSQL      (default: 5432)
 #
 set -euo pipefail
 
@@ -30,6 +42,7 @@ REF="${VORNIK_REF:-main}"
 DIR="${VORNIK_DIR:-$HOME/vornik}"
 HTTP_PORT="${VORNIK_HTTP_PORT:-8080}"
 PG_PORT="${POSTGRES_PORT:-5432}"
+GO_IMAGE="${VORNIK_GO_IMAGE:-docker.io/library/golang:1.25}"
 
 c_blue=$'\033[1;36m'; c_yellow=$'\033[1;33m'; c_red=$'\033[1;31m'; c_green=$'\033[1;32m'; c_off=$'\033[0m'
 log()  { printf '%s==>%s %s\n' "$c_blue"   "$c_off" "$*"; }
@@ -37,86 +50,101 @@ ok()   { printf '%s ok%s %s\n' "$c_green"  "$c_off" "$*"; }
 warn() { printf '%s !!%s %s\n' "$c_yellow" "$c_off" "$*" >&2; }
 die()  { printf '%s xx%s %s\n' "$c_red"    "$c_off" "$*" >&2; exit 1; }
 
-[ "$(uname -s)" = "Linux" ] || die "This quickstart targets Linux (rootless Podman). For macOS/Windows or k8s, see deployments/podman/README.md and docs/public/getting-started.md."
+[ "$(uname -s)" = "Linux" ] || die "This quickstart targets Linux (rootless podman). For macOS/Windows or k8s, see deployments/podman/README.md and docs/public/getting-started.md."
+[ "$(id -u)" -ne 0 ] || die "Run as a normal (non-root) user: Vornik CE installs as a rootless 'systemctl --user' service and spawns agents via your rootless podman. (The Enterprise RPM/deb is the system-service path.)"
+
+CONFIG_DIR="$HOME/.config/vornik"
+DATA_DIR="$HOME/.local/share/vornik"
+BIN_DIR="$HOME/.local/bin"
+UNIT_DIR="$HOME/.config/systemd/user"
 
 # ---------------------------------------------------------------------------
-# 1. Prerequisites.
+# 1. Prerequisites. Works across mutable distros (dnf/apt/zypper/pacman),
+#    Homebrew, and immutable/ostree hosts (Bazzite, Silverblue, Kinoite,
+#    …) where podman ships in the base image and there is no dnf. We never
+#    assume a single package manager: each tool is installed only if it is
+#    actually missing, and the compose provider prefers a no-root /
+#    no-reboot path (pip --user) so immutable hosts don't need an
+#    rpm-ostree layer + reboot just to get going.
 # ---------------------------------------------------------------------------
 have_compose() { podman compose version >/dev/null 2>&1 || command -v podman-compose >/dev/null 2>&1; }
+is_immutable() { [ -f /run/ostree-booted ] || command -v rpm-ostree >/dev/null 2>&1; }
 
-need=()
-command -v podman >/dev/null 2>&1 || need+=(podman)
-command -v git    >/dev/null 2>&1 || need+=(git)
-command -v curl   >/dev/null 2>&1 || need+=(curl)
-have_compose                      || need+=(podman-compose)
+# Homebrew may be installed but not yet on PATH under `curl | bash`.
+if ! command -v brew >/dev/null 2>&1; then
+  for b in /home/linuxbrew/.linuxbrew/bin/brew "$HOME/.linuxbrew/bin/brew"; do
+    [ -x "$b" ] && eval "$("$b" shellenv)" && break
+  done
+fi
 
-if [ "${#need[@]}" -gt 0 ]; then
-  log "Installing prerequisites: ${need[*]}"
-  sudo=""; [ "$(id -u)" -eq 0 ] || sudo="sudo"
-  if   command -v dnf     >/dev/null 2>&1; then $sudo dnf install -y "${need[@]}"
-  elif command -v apt-get >/dev/null 2>&1; then $sudo apt-get update && $sudo apt-get install -y "${need[@]}"
-  elif command -v zypper  >/dev/null 2>&1; then $sudo zypper install -y "${need[@]}"
-  elif command -v pacman  >/dev/null 2>&1; then $sudo pacman -Sy --noconfirm "${need[@]}"
-  else die "No supported package manager found (dnf/apt-get/zypper/pacman). Install: ${need[*]} — then re-run."
+# install_sys <pkg...> — best-effort system package install. brew first
+# (immutable-friendly, no root), then the classic distro managers. Returns
+# non-zero WITHOUT dying so the caller can fall back or print guidance.
+install_sys() {
+  if   command -v brew    >/dev/null 2>&1; then brew install "$@"
+  elif command -v dnf     >/dev/null 2>&1; then sudo dnf install -y "$@"
+  elif command -v apt-get >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y "$@"
+  elif command -v zypper  >/dev/null 2>&1; then sudo zypper install -y "$@"
+  elif command -v pacman  >/dev/null 2>&1; then sudo pacman -Sy --noconfirm "$@"
+  else return 1
+  fi
+}
+
+# Compose provider: podman's `compose` subcommand just shells out to whatever
+# provider is on PATH. Prefer pip --user (no root, no reboot — works on
+# immutable hosts), then pipx, then a system package.
+ensure_compose() {
+  have_compose && return 0
+  log "Setting up a podman compose provider..."
+  if command -v pipx >/dev/null 2>&1 && pipx install podman-compose >/dev/null 2>&1; then
+    have_compose && return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -m pip --version >/dev/null 2>&1 || python3 -m ensurepip --user >/dev/null 2>&1 || true
+    if python3 -m pip install --user podman-compose >/dev/null 2>&1; then
+      export PATH="$HOME/.local/bin:$PATH"
+      have_compose && return 0
+    fi
+  fi
+  install_sys podman-compose >/dev/null 2>&1 || true
+  have_compose
+}
+
+# Core tools. On Bazzite/Silverblue these are already in the base image, so
+# this loop usually no-ops — we never reinstall what's present.
+missing=()
+for t in podman git curl; do command -v "$t" >/dev/null 2>&1 || missing+=("$t"); done
+if [ "${#missing[@]}" -gt 0 ]; then
+  log "Installing: ${missing[*]}"
+  if ! install_sys "${missing[@]}"; then
+    if is_immutable; then
+      die "Immutable OS detected and these tools are missing: ${missing[*]}.
+  Layer them, reboot, then re-run:
+      sudo rpm-ostree install ${missing[*]} && systemctl reboot
+  Or install Homebrew (https://brew.sh) — it needs no reboot — and re-run."
+    fi
+    die "Could not install: ${missing[*]}. Install them with your package manager and re-run."
   fi
 fi
-have_compose || die "A Compose provider is still unavailable. Install 'podman-compose' (or the docker compose v2 plugin) and re-run."
+command -v podman >/dev/null 2>&1 || die "podman is required but still not available."
+
+ensure_compose || die "No podman compose provider available. Install one without root via:
+      python3 -m pip install --user podman-compose      (or: brew install podman-compose)
+  then re-run."
 
 compose=(podman compose)
 podman compose version >/dev/null 2>&1 || compose=(podman-compose)
 ok "Using compose provider: ${compose[*]}"
 
-# ---------------------------------------------------------------------------
-# 2. Host config — let a container reach Podman to spawn sibling agents.
-# ---------------------------------------------------------------------------
-if [ "$(id -u)" -ne 0 ]; then
-  SCTL=(systemctl --user)
-  loginctl enable-linger "$(id -un)"            >/dev/null 2>&1 || warn "could not enable login lingering — agents may stop when you log out"
-  SOCK="${PODMAN_SOCK:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock}"
-else
-  SCTL=(systemctl)
-  SOCK="${PODMAN_SOCK:-/run/podman/podman.sock}"
-fi
-
-# Enable + start the podman socket. A PREVIOUS podman run can leave the
-# socket file behind; systemd's podman.socket then fails
-# "Failed to create listening socket (...): Address already in use", the
-# unit goes to 'failed', and vornik connecting to the stale file later
-# gets "connection refused" (the file is present but nothing is listening).
-# The old check (`[ -S "$SOCK" ]`) passed for a stale file and proceeded
-# to a daemon that couldn't spawn agents. So: verify the unit is actually
-# LISTENING; if it isn't, clear the failed state, remove the stale socket
-# file, and restart the unit so it can bind to the now-free path.
-socket_listening() { "${SCTL[@]}" is-active --quiet podman.socket 2>/dev/null; }
-"${SCTL[@]}" enable podman.socket >/dev/null 2>&1 || warn "could not enable podman.socket"
-"${SCTL[@]}" start podman.socket  >/dev/null 2>&1 || true
-if ! socket_listening; then
-  warn "podman.socket not listening; clearing a possible stale socket at $SOCK and restarting"
-  "${SCTL[@]}" reset-failed podman.socket >/dev/null 2>&1 || true
-  rm -f "$SOCK"
-  "${SCTL[@]}" start podman.socket >/dev/null 2>&1 || warn "could not start podman.socket — start it manually: ${SCTL[*]} start podman.socket"
-fi
-
-# Liveness gate (not just file presence): a stale socket file passes
-# `[ -S ]` but vornik still gets "connection refused". Wait briefly for
-# socket activation, then FAIL FAST so the operator fixes the socket
-# BEFORE we bring up a daemon whose runtime manager hard-fails on an
-# unreachable podman (vornik can't do its job without spawning agents).
-for _ in $(seq 1 20); do
-  socket_listening && break
-  sleep 0.5
-done
-if socket_listening && [ -S "$SOCK" ]; then
-  ok "Podman socket live: $SOCK"
-else
-  die "Podman socket is not listening at $SOCK. vornik needs it to spawn agent containers. Fix it (e.g. ${SCTL[*]} restart podman.socket, or rm -f $SOCK and retry), then re-run."
-fi
+# Keep the user service running after logout so agents survive a closed SSH
+# session. Not fatal if it can't be enabled (some minimal hosts lack logind).
+loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || warn "could not enable login lingering — the daemon may stop when you log out (run: loginctl enable-linger $(id -un))"
 
 # ---------------------------------------------------------------------------
-# 3. Fetch the compose scaffolding + image build context.
+# 2. Fetch the build context + config seed.
 # ---------------------------------------------------------------------------
 if [ "${VORNIK_SKIP_FETCH:-}" = "1" ]; then
-  [ -f "$DIR/deployments/podman/podman-compose.yaml" ] || die "VORNIK_SKIP_FETCH=1 but $DIR is not a Vornik checkout."
+  [ -f "$DIR/deployments/podman/deps.compose.yaml" ] || die "VORNIK_SKIP_FETCH=1 but $DIR is not a Vornik checkout."
   log "Using existing checkout (no fetch): $DIR"
 elif [ -d "$DIR/.git" ]; then
   log "Updating existing checkout at $DIR"
@@ -126,25 +154,47 @@ else
   git clone --depth 1 --branch "$REF" "$REPO_URL" "$DIR"
 fi
 
-cd "$DIR/deployments/podman"
-[ -f .env ] || { cp .env.example .env && ok "Created .env from .env.example"; }
+# ---------------------------------------------------------------------------
+# 3. Build the daemon + CLI in an ephemeral golang container (no host Go).
+#    Output to $DIR/.bin, then install to ~/.local/bin. Module + build
+#    caches persist in named volumes so re-runs are fast. label=disable
+#    avoids relabeling the whole checkout (same approach the daemon uses
+#    for podman ops); harmless on non-SELinux hosts.
+# ---------------------------------------------------------------------------
+log "Building vornik + vornikctl (first run downloads modules, ~2-3 min)..."
+mkdir -p "$DIR/.bin" "$BIN_DIR"
+BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+VERSION="${VORNIK_VERSION:-$(git -C "$DIR" describe --tags --always 2>/dev/null || echo dev)}"
+LDFLAGS="-X main.Version=${VERSION} -X main.BuildDate=${BUILD_DATE}"
+if podman run --rm \
+     --security-opt label=disable \
+     -v "$DIR":/src \
+     -v "$DIR/.bin":/out \
+     -v vornik-go-build-cache:/root/.cache/go-build \
+     -v vornik-go-mod-cache:/go/pkg/mod \
+     -w /src \
+     -e CGO_ENABLED=0 -e GOFLAGS=-buildvcs=false \
+     "$GO_IMAGE" \
+     sh -c "go build -ldflags=\"$LDFLAGS\" -o /out/vornik ./cmd/vornik && go build -ldflags=\"$LDFLAGS\" -o /out/vornikctl ./cmd/vornikctl"; then
+  install -m 0755 "$DIR/.bin/vornik"    "$BIN_DIR/vornik"
+  install -m 0755 "$DIR/.bin/vornikctl" "$BIN_DIR/vornikctl"
+  ok "Installed vornik + vornikctl -> $BIN_DIR"
+else
+  die "Build failed. Retry, or build on a host with Go: (cd $DIR && go build -o ~/.local/bin/vornik ./cmd/vornik)."
+fi
+case ":$PATH:" in
+  *":$BIN_DIR:"*) : ;;
+  *) warn "$BIN_DIR is not on your PATH. Add it, then re-open your shell:"
+     warn "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc" ;;
+esac
 
 # ---------------------------------------------------------------------------
-# 4. Bring up PostgreSQL (pgvector) + the Vornik daemon.
-# ---------------------------------------------------------------------------
-log "Starting PostgreSQL + pgvector and Vornik (first run builds the image, ~2 min)..."
-PODMAN_SOCK="$SOCK" VORNIK_HTTP_PORT="$HTTP_PORT" POSTGRES_PORT="$PG_PORT" \
-  "${compose[@]}" -f podman-compose.yaml up -d --build postgres vornik
-
-# ---------------------------------------------------------------------------
-# 4b. Build the task-agent image. The daemon spawns each task's agent as a
-#     sibling container on the HOST's podman, so the image must live in the
-#     host's storage — qualified as localhost/vornik-agent:latest. The swarm
-#     configs reference it by that fully-qualified name on purpose: podman
-#     refuses to resolve a bare short-name ("vornik-agent:latest")
-#     non-interactively, so an unqualified ref makes every job fail at
-#     container start. The image's internal user is built with the caller's
-#     uid/gid so bind-mounted workspaces stay writable under rootless podman.
+# 4. Build the agent image into the host's rootless podman storage. The
+#    daemon spawns each task's agent as a sibling container from here. The
+#    image's internal user is built with your uid/gid so bind-mounted
+#    workspaces stay writable under rootless podman. The fully-qualified
+#    localhost/ ref is required: podman refuses bare short-names
+#    non-interactively, so an unqualified ref fails every job at start.
 # ---------------------------------------------------------------------------
 log "Building the agent image localhost/vornik-agent:latest (first run ~1-2 min)..."
 if podman build -f "$DIR/images/vornik-agent/Containerfile" \
@@ -158,7 +208,59 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Wait for readiness and report.
+# 5. Seed host config (XDG) on first run. Never clobber existing files so a
+#    re-run preserves operator edits and project/swarm changes.
+# ---------------------------------------------------------------------------
+mkdir -p "$CONFIG_DIR/configs" "$DATA_DIR/artifacts" "$DATA_DIR/workspaces"
+
+if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
+  cp "$DIR/deployments/podman/config/vornik.host.yaml" "$CONFIG_DIR/config.yaml"
+  ok "Seeded $CONFIG_DIR/config.yaml"
+fi
+
+if [ ! -f "$CONFIG_DIR/vornik.env" ]; then
+  cp "$DIR/deployments/podman/vornik.env.example" "$CONFIG_DIR/vornik.env"
+  # Stamp host-specific values into the freshly seeded env only.
+  sed -i \
+    -e "s|^VORNIK_RUN_AS_USER=.*|VORNIK_RUN_AS_USER=$(id -u):$(id -g)|" \
+    -e "s|^POSTGRES_PORT=.*|POSTGRES_PORT=${PG_PORT}|" \
+    "$CONFIG_DIR/vornik.env"
+  ok "Seeded $CONFIG_DIR/vornik.env (add your LLM key here)"
+fi
+
+# Seed the registry tree (projects/swarms/workflows/pricing) on first run.
+if [ -z "$(ls -A "$CONFIG_DIR/configs" 2>/dev/null)" ]; then
+  cp -r "$DIR/configs/." "$CONFIG_DIR/configs/"
+  ok "Seeded $CONFIG_DIR/configs from the repo registry"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Bring up dependencies (PostgreSQL; scraper on Enterprise).
+# ---------------------------------------------------------------------------
+cd "$DIR/deployments/podman"
+[ -f .env ] || { cp .env.example .env && ok "Created .env from .env.example"; }
+
+log "Starting PostgreSQL + pgvector..."
+VORNIK_HTTP_PORT="$HTTP_PORT" POSTGRES_PORT="$PG_PORT" \
+  "${compose[@]}" -f deps.compose.yaml up -d
+
+# scraper.compose.yaml is Enterprise-only (stripped from the CE tree).
+if [ -f scraper.compose.yaml ]; then
+  log "Starting the scraper (Enterprise)..."
+  "${compose[@]}" -f scraper.compose.yaml up -d --build || warn "scraper failed to start — research-via-browser features will be unavailable."
+fi
+
+# ---------------------------------------------------------------------------
+# 7. Install + start the daemon user service.
+# ---------------------------------------------------------------------------
+log "Installing the vornik user service..."
+mkdir -p "$UNIT_DIR"
+install -m 0644 "$DIR/deployments/podman/systemd/vornik.service" "$UNIT_DIR/vornik.service"
+systemctl --user daemon-reload
+systemctl --user enable --now vornik.service || die "Failed to start vornik.service. Check: journalctl --user -u vornik -e"
+
+# ---------------------------------------------------------------------------
+# 8. Wait for readiness and report.
 # ---------------------------------------------------------------------------
 log "Waiting for the daemon to become ready (schema migrates automatically)..."
 ready=""
@@ -171,29 +273,7 @@ echo
 if [ -n "$ready" ]; then
   ok "Vornik is up and ready."
 else
-  warn "Vornik did not report ready within the timeout. Check logs: podman logs vornik"
-fi
-
-# ---------------------------------------------------------------------------
-# 6. Install the host `vornikctl` shim so the operator can drive the
-#    containerized CLI without a separate binary or API-key plumbing. The
-#    shim execs `podman exec vornik vornikctl`, so it never drifts from
-#    the running image and inherits the container's credentials.
-# ---------------------------------------------------------------------------
-BIN_DIR="${HOME}/.local/bin"
-SHIM_SRC="$DIR/deployments/podman/vornikctl"
-SHIM_DST="$BIN_DIR/vornikctl"
-if [ -e "$SHIM_DST" ] && ! grep -q 'VORNIK_CONTAINER' "$SHIM_DST" 2>/dev/null; then
-  warn "$SHIM_DST already exists and is not the vornik shim — leaving it untouched."
-  warn "Run the shim directly instead: $SHIM_SRC"
-else
-  mkdir -p "$BIN_DIR"
-  install -m 0755 "$SHIM_SRC" "$SHIM_DST" && ok "Installed vornikctl shim → $SHIM_DST"
-  case ":$PATH:" in
-    *":$BIN_DIR:"*) : ;;
-    *) warn "$BIN_DIR is not on your PATH. Add it, then re-open your shell:"
-       warn "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc" ;;
-  esac
+  warn "Vornik did not report ready within the timeout. Check logs: journalctl --user -u vornik -e"
 fi
 
 cat <<EOF
@@ -201,21 +281,22 @@ cat <<EOF
   ${c_green}Connect${c_off}
     UI       http://localhost:${HTTP_PORT}/ui
     API      http://localhost:${HTTP_PORT}
-    CLI      vornikctl doctor          # installed to ~/.local/bin
+    CLI      vornikctl doctor
     Health   curl http://localhost:${HTTP_PORT}/readyz
 
   ${c_green}Run tasks${c_off} — add an LLM key, then restart the daemon:
-    edit   ${DIR}/deployments/podman/.env      # set VORNIK_CHAT_API_KEY (+ CHAT_ENDPOINT / CHAT_MODEL)
-    apply  (cd ${DIR}/deployments/podman && ${compose[*]} up -d vornik)
+    edit     ${CONFIG_DIR}/vornik.env      # set VORNIK_CHAT_API_KEY (+ CHAT_ENDPOINT / CHAT_MODEL)
+    apply    systemctl --user restart vornik
 
-  ${c_green}Control${c_off} — vornikctl drives the daemon from the host (via the container):
-    check  vornikctl doctor
-    list   vornikctl project list
+  ${c_green}Control${c_off}
+    check    vornikctl doctor
+    list     vornikctl project list
     (If 'vornikctl' isn't found, add ~/.local/bin to your PATH — see the note above.)
 
   ${c_green}Manage${c_off}
-    logs   podman logs -f vornik
-    stop   (cd ${DIR}/deployments/podman && ${compose[*]} stop postgres vornik)
-    down   (cd ${DIR}/deployments/podman && ${compose[*]} down)        # add -v to also wipe data
+    logs     journalctl --user -u vornik -f
+    restart  systemctl --user restart vornik
+    stop     systemctl --user stop vornik
+    deps     (cd ${DIR}/deployments/podman && ${compose[*]} -f deps.compose.yaml down)   # add -v to wipe data
 
 EOF

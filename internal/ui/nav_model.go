@@ -40,6 +40,10 @@ type navAreaDef struct {
 // navModel is the single source of truth for the navigation IA. The
 // icon rail, the contextual panel, and the mobile drawer all render
 // from this slice so they cannot drift apart.
+//
+// The full model includes every destination; edition/capability gating is
+// applied by navModelFunc (e.g. Trading is dropped on Community). Keeping
+// navModel itself pure means pageToArea and tests see the canonical IA.
 func navModel() []navAreaDef {
 	return []navAreaDef{
 		// Steer leads the rail: the operator's live-control surface — watch
@@ -85,10 +89,44 @@ func navModel() []navAreaDef {
 	}
 }
 
+// navModelFunc is the edition-aware nav template func. On Community
+// (tradingEnabled=false) it drops the Trading destination, which is an
+// Enterprise-only capability whose /trading route 404s (WithTradingEnabled
+// unset) — without this the data-cap hint would still render a dead link in
+// CE. Built at the template-setup site so uiFuncMap stays edition-agnostic.
+func navModelFunc(tradingEnabled bool) func() []navAreaDef {
+	return func() []navAreaDef {
+		m := navModel()
+		if tradingEnabled {
+			return m
+		}
+		for i := range m {
+			m[i].Dests = filterDests(m[i].Dests, "trading")
+		}
+		return m
+	}
+}
+
+// filterDests returns dests with any entry whose Key == drop removed,
+// preserving order. Used to elide edition-gated destinations (e.g. Trading
+// on Community) so the nav never renders a link to a 404 route.
+func filterDests(dests []navDest, drop string) []navDest {
+	out := make([]navDest, 0, len(dests))
+	for _, d := range dests {
+		if d.Key != drop {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // pageToArea is derived from navModel at init so the mapping cannot
 // drift from the IA defined above.
 var pageToArea = func() map[string]string {
 	m := map[string]string{}
+	// Map every page→area including Trading: this is only consulted when the
+	// caller is actually on that page (which can't happen in CE, where the
+	// route 404s), and keeping it edition-independent avoids a second flag here.
 	for _, a := range navModel() {
 		for _, d := range a.Dests {
 			m[d.Key] = a.Key

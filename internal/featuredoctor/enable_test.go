@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -789,5 +791,54 @@ func TestFileConfigWriter_WriteIsAtomic(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// TestFileConfigWriter_WriteFallsBackOnEBUSY is the regression test for the
+// onboarding-commit failure on podman single-file bind mounts: config.yaml is
+// a mountpoint, so rename(2) over it returns EBUSY. Write must fall back to an
+// in-place rewrite instead of failing the commit. The renameFunc seam forces
+// EBUSY without a real bind mount.
+func TestFileConfigWriter_WriteFallsBackOnEBUSY(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/config.yaml"
+	if err := os.WriteFile(path, []byte("k: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Hard link tracks the inode: an in-place rewrite keeps the SAME inode, so
+	// the link must see the new content (the opposite of the atomic case).
+	link := dir + "/config.yaml.hardlink"
+	if err := os.Link(path, link); err != nil {
+		t.Skipf("hard links unsupported on this platform: %v", err)
+	}
+
+	orig := renameFunc
+	renameFunc = func(_, _ string) error { return syscall.EBUSY }
+	defer func() { renameFunc = orig }()
+
+	w := &FileConfigWriter{Path: path}
+	if err := w.Write([]byte("k: true\n")); err != nil {
+		t.Fatalf("Write should fall back on EBUSY, got: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "k: true\n" {
+		t.Fatalf("path content = %q, want new content after in-place fallback", got)
+	}
+	linkContent, err := os.ReadFile(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(linkContent) != "k: true\n" {
+		t.Fatalf("hard link content = %q; in-place fallback should keep the inode and update it", linkContent)
+	}
+	// No stray temp files left behind.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".config-") {
+			t.Errorf("temp file %q not cleaned up after fallback", e.Name())
+		}
 	}
 }

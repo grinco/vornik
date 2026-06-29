@@ -1,10 +1,12 @@
-// Package podman holds the podman-compose deployment manifests. The
-// test here is a lightweight lint that guards the registry config mount
-// against regressing to read-only: the daemon/UI writes project, swarm
-// and workflow files into /etc/vornik/configs when an operator creates
-// or edits them through the web UI, so that bind mount MUST be writable.
-// A read-only mount makes "add project" / "edit config" fail with a
-// permission error at write time.
+// Package podman holds the podman-compose deployment manifests. These
+// lightweight lints guard the manifests against regressing the topology
+// the quickstart relies on:
+//   - single-node: the daemon runs ON THE HOST (systemd --user), and only
+//     PostgreSQL runs in a container (deps.compose.yaml). The old
+//     daemon-in-a-container model — and its writable config-mount lints —
+//     was retired (see quickstart-host-daemon-install-design.md).
+//   - cluster: the UI node serves the web UI and must keep a writable
+//     registry mount.
 package podman
 
 import (
@@ -22,29 +24,28 @@ func readCompose(t *testing.T, name string) string {
 	return string(data)
 }
 
-// TestSingleNodeConfigsMountIsWritable — the single-node daemon serves
-// the web UI and must be able to write back into the registry tree.
-func TestSingleNodeConfigsMountIsWritable(t *testing.T) {
-	compose := readCompose(t, "podman-compose.yaml")
-	if !strings.Contains(compose, "../../configs:/etc/vornik/configs:rw,Z") {
-		t.Error("podman-compose.yaml: configs mount must be writable (rw,Z) so UI project creation/edits persist")
+// TestDepsComposeIsPostgresOnly pins the host-daemon split: deps.compose.yaml
+// brings up PostgreSQL only — the daemon runs on the host, NOT as a compose
+// service, and there is no host-podman-socket mount (the daemon shells out to
+// the podman CLI directly). Regressing any of these reintroduces the
+// daemon-in-a-container DooD bind-mount failures the redesign removed.
+func TestDepsComposeIsPostgresOnly(t *testing.T) {
+	compose := readCompose(t, "deps.compose.yaml")
+	if !strings.Contains(compose, "pgvector/pgvector") {
+		t.Error("deps.compose.yaml must define the PostgreSQL+pgvector service")
 	}
-	if strings.Contains(compose, "../../configs:/etc/vornik/configs:ro") {
-		t.Error("podman-compose.yaml: configs mount is read-only — UI 'add project'/'edit config' will fail to write")
+	// No in-container daemon service.
+	if strings.Contains(compose, "localhost/vornik:latest") ||
+		strings.Contains(compose, "deployments/docker/Dockerfile") {
+		t.Error("deps.compose.yaml must NOT run the vornik daemon as a container — it runs on the host")
 	}
-}
-
-// TestSingleNodeConfigYamlMountIsWritable — the daemon edits config.yaml
-// in place for `vornikctl config` updates and the config-reload path, so
-// the host file must be writable; otherwise the entrypoint copies it to a
-// throwaway scratch path and in-container edits never reach the host.
-func TestSingleNodeConfigYamlMountIsWritable(t *testing.T) {
-	compose := readCompose(t, "podman-compose.yaml")
-	if !strings.Contains(compose, "./config/vornik.yaml:/etc/vornik/config.yaml:rw,Z") {
-		t.Error("podman-compose.yaml: config.yaml mount must be writable (rw,Z) so in-container vornikctl edits persist to the host file")
+	// No host podman socket mount (the daemon-in-a-container DooD hook).
+	if strings.Contains(compose, "podman.sock") {
+		t.Error("deps.compose.yaml must NOT mount the host podman socket — the host daemon uses the podman CLI directly")
 	}
-	if strings.Contains(compose, "./config/vornik.yaml:/etc/vornik/config.yaml:ro") {
-		t.Error("podman-compose.yaml: config.yaml mount is read-only — vornikctl config edits would hit a scratch copy, not the host file")
+	// Postgres published on loopback by default (not the LAN).
+	if !strings.Contains(compose, "127.0.0.1") {
+		t.Error("deps.compose.yaml: Postgres should bind loopback by default")
 	}
 }
 

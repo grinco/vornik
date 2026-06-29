@@ -11,20 +11,22 @@
                 <div>
                     <h1 class="text-xl font-semibold text-gray-100">Installation setup</h1>
                     <p class="text-gray-500 text-xs mt-0.5">
-                        First-run onboarding is now modeled as a durable setup flow. This slice
-                        lands the session store, fresh-install detection, and the status surface
-                        the full guide will use.
+                        Configure the backends required by this installation. Completed sections
+                        stay editable so settings can be corrected without leaving setup.
                     </p>
                 </div>
                 <a href="/api/v1/setup/status" class="text-xs text-gray-500 hover:text-gray-300">JSON status</a>
             </div>
 
-            {{if or .ChatConfigured .MemoryConfigured}}
             <section class="glass rounded-xl border border-dark-700 overflow-hidden">
-                <div class="px-5 py-3.5 border-b border-dark-700/60">
-                    <h2 class="text-sm font-semibold text-gray-200">Completed setup</h2>
+                <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-3">
+                    <h2 class="text-sm font-semibold text-gray-200">Setup state</h2>
+                    <span class="text-xs px-2 py-1 rounded-full {{if .Status.FreshInstall}}bg-amber-500/15 text-amber-200{{else}}bg-emerald-500/15 text-emerald-200{{end}}">
+                        {{if .Status.FreshInstall}}Needs setup{{else}}Already onboarded{{end}}
+                    </span>
                 </div>
-                <div class="p-5 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+                <div class="p-5 space-y-4 text-sm">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div class="rounded-lg border {{if .ChatConfigured}}border-emerald-500/30 bg-emerald-500/5{{else}}border-dark-700 bg-dark-900/50{{end}} p-3">
                         <div class="text-[11px] uppercase tracking-wide text-gray-500">Chat backend</div>
                         <div class="mt-1 {{if .ChatConfigured}}text-emerald-200{{else}}text-gray-400{{end}}">{{if .ChatConfigured}}Configured{{else}}Not configured{{end}}</div>
@@ -33,19 +35,45 @@
                         <div class="text-[11px] uppercase tracking-wide text-gray-500">Memory / RAG</div>
                         <div class="mt-1 {{if .MemoryConfigured}}text-emerald-200{{else}}text-gray-400{{end}}">{{if .MemoryConfigured}}Configured{{else}}Not configured{{end}}</div>
                     </div>
-                    <div class="rounded-lg border {{if .DispatcherConfigured}}border-emerald-500/30 bg-emerald-500/5{{else}}border-amber-500/30 bg-amber-500/5{{end}} p-3">
+                    <div class="rounded-lg border {{if .DispatcherConfigured}}border-emerald-500/30 bg-emerald-500/5{{else if and .ChatConfigured .MemoryConfigured}}border-amber-500/30 bg-amber-500/5{{else}}border-dark-700 bg-dark-900/50{{end}} p-3">
                         <div class="text-[11px] uppercase tracking-wide text-gray-500">Dispatcher project</div>
-                        <div class="mt-1 {{if .DispatcherConfigured}}text-emerald-200{{else}}text-amber-200{{end}}">{{if .DispatcherConfigured}}Configured{{else}}Next step{{end}}</div>
+                        <div class="mt-1 {{if .DispatcherConfigured}}text-emerald-200{{else if and .ChatConfigured .MemoryConfigured}}text-amber-200{{else}}text-gray-400{{end}}">{{if .DispatcherConfigured}}Configured{{else if and .ChatConfigured .MemoryConfigured}}Next step{{else}}Not configured{{end}}</div>
                     </div>
                 </div>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div class="rounded-lg border border-dark-700 bg-dark-900/50 p-3">
+                        <div class="text-[11px] uppercase tracking-wide text-gray-500">Source</div>
+                        <div class="mt-1 text-gray-200">{{.Status.Source}}</div>
+                    </div>
+                    <div class="rounded-lg border border-dark-700 bg-dark-900/50 p-3">
+                        <div class="text-[11px] uppercase tracking-wide text-gray-500">Fresh install</div>
+                        <div class="mt-1 text-gray-200">{{if .Status.FreshInstall}}Yes{{else}}No{{end}}</div>
+                    </div>
+                    <div class="rounded-lg border border-dark-700 bg-dark-900/50 p-3">
+                        <div class="text-[11px] uppercase tracking-wide text-gray-500">Onboarded</div>
+                        <div class="mt-1 text-gray-200">{{if .Status.Onboarded}}Yes{{else}}No{{end}}</div>
+                    </div>
+                </div>
+                {{if .Status.Reasons}}
+                <div>
+                    <div class="text-xs uppercase tracking-wide text-gray-500 mb-2">Signals</div>
+                    <ul class="space-y-2 text-sm text-gray-300">
+                        {{range .Status.Reasons}}
+                        <li class="rounded-md border border-dark-700 bg-dark-900/40 px-3 py-2">{{.}}</li>
+                        {{end}}
+                    </ul>
+                </div>
+                {{end}}
+                </div>
             </section>
-            {{end}}
 
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {{if not .ChatConfigured}}
-                <section class="glass rounded-xl border border-dark-700 overflow-hidden">
-                    <div class="px-5 py-3.5 border-b border-dark-700/60">
+            <div class="space-y-4">
+                <section class="glass rounded-xl border {{if .ChatConfigured}}border-dark-700 opacity-80{{else}}border-brand-500/40{{end}} overflow-hidden">
+                    <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-3">
                         <h2 class="text-sm font-semibold text-gray-200">Step 2 — Configure chat</h2>
+                        <span class="text-xs px-2 py-1 rounded-full {{if .ChatConfigured}}bg-emerald-500/15 text-emerald-200{{else}}bg-amber-500/15 text-amber-200{{end}}">
+                            {{if .ChatConfigured}}Completed{{else}}Required{{end}}
+                        </span>
                     </div>
                     <div class="p-5 space-y-4 text-sm text-gray-300">
                         <p class="text-xs text-gray-500">
@@ -101,8 +129,8 @@
                         <div id="restart-banner" class="hidden rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-200">
                             Chat config saved. <strong>Restart the daemon</strong> so it loads
                             <code>VORNIK_CHAT_API_KEY</code> from <code>&lt;configDir&gt;/secrets/chat.env</code>.
-                            The daemon now sources that file itself on start, so the chat backend
-                            and the project wizard come online after the restart on any deployment.
+                            The daemon now sources that file itself on start, so chat-backed
+                            surfaces come online after the restart on any deployment.
                         </div>
                         <script>
                         // Plain-fetch onboarding controller. Replaces the earlier htmx
@@ -270,191 +298,64 @@
                         </script>
                     </div>
                 </section>
-                {{end}}
-
-                <section class="glass rounded-xl border border-dark-700 overflow-hidden">
-                    <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-3">
-                        <h2 class="text-sm font-semibold text-gray-200">Detected state</h2>
-                        <span class="text-xs px-2 py-1 rounded-full {{if .Status.FreshInstall}}bg-amber-500/15 text-amber-200{{else}}bg-emerald-500/15 text-emerald-200{{end}}">
-                            {{if .Status.FreshInstall}}Needs setup{{else}}Already onboarded{{end}}
-                        </span>
-                    </div>
-                    <div class="p-5 space-y-4 text-sm">
-                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                            <div class="rounded-lg border border-dark-700 bg-dark-900/50 p-3">
-                                <div class="text-[11px] uppercase tracking-wide text-gray-500">Source</div>
-                                <div class="mt-1 text-gray-200">{{.Status.Source}}</div>
-                            </div>
-                            <div class="rounded-lg border border-dark-700 bg-dark-900/50 p-3">
-                                <div class="text-[11px] uppercase tracking-wide text-gray-500">Fresh install</div>
-                                <div class="mt-1 text-gray-200">{{if .Status.FreshInstall}}Yes{{else}}No{{end}}</div>
-                            </div>
-                            <div class="rounded-lg border border-dark-700 bg-dark-900/50 p-3">
-                                <div class="text-[11px] uppercase tracking-wide text-gray-500">Onboarded</div>
-                                <div class="mt-1 text-gray-200">{{if .Status.Onboarded}}Yes{{else}}No{{end}}</div>
-                            </div>
-                        </div>
-                        {{if .Status.Reasons}}
-                        <div>
-                            <div class="text-xs uppercase tracking-wide text-gray-500 mb-2">Signals</div>
-                            <ul class="space-y-2 text-sm text-gray-300">
-                                {{range .Status.Reasons}}
-                                <li class="rounded-md border border-dark-700 bg-dark-900/40 px-3 py-2">{{.}}</li>
-                                {{end}}
-                            </ul>
-                        </div>
-                        {{end}}
-                        <div class="pt-2 flex items-center gap-2">
-                            <a href="/ui/projects/new" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors">
-                                Open project templates
-                            </a>
-                        </div>
-                    </div>
-                </section>
             </div>
 
-            {{if and .ChatConfigured .MemoryConfigured (not .DispatcherConfigured)}}
-            <section class="glass rounded-xl border border-amber-500/30 overflow-hidden bg-amber-500/5">
-                <div class="px-5 py-3.5 border-b border-amber-500/20">
-                    <h2 class="text-sm font-semibold text-amber-100">Step 4 — Configure dispatcher project</h2>
-                </div>
-                <div class="p-5 space-y-4 text-sm text-gray-300">
-                    <p class="text-xs text-amber-100/80">
-                        Chat and memory are configured. Pin dispatcher chat cost and routing to a dedicated project by writing
-                        <code class="text-amber-100">telegram.dispatcher_project_id</code>, then restart the daemon.
-                    </p>
-                    {{if .ProjectOptions}}
-                    <form id="dispatcher-config-form" class="space-y-3">
-                        <label class="block">
-                            <span class="text-xs uppercase tracking-wide text-amber-100/70">Dispatcher project</span>
-                            <select id="dispatcher-project-id" class="mt-1 w-full max-w-xl rounded-md border border-amber-500/30 bg-dark-900/70 px-3 py-2 text-gray-100">
-                                {{range .ProjectOptions}}
-                                <option value="{{.ID}}">{{if .DisplayName}}{{.DisplayName}} — {{end}}{{.ID}}</option>
-                                {{end}}
-                            </select>
-                        </label>
-                        <div class="flex flex-wrap items-center gap-2">
-                            <button type="button" id="dispatcher-save-btn" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors">
-                                Save dispatcher project
-                            </button>
-                            <a href="/ui/projects/new?slug=personal-assistant" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold transition-colors">
-                                Create assistant project
-                            </a>
-                        </div>
-                        <div id="dispatcher-result"></div>
-                    </form>
-                    <script>
-                    (function () {
-                      var btn = document.getElementById('dispatcher-save-btn');
-                      var sel = document.getElementById('dispatcher-project-id');
-                      var result = document.getElementById('dispatcher-result');
-                      function pill(kind, title, lines) {
-                        var cls = kind === 'ok'
-                          ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-200'
-                          : 'border-rose-500/30 bg-rose-500/5 text-rose-200';
-                        result.innerHTML = '<div class="mt-3 rounded-lg border px-4 py-3 text-xs ' + cls + '"><div class="font-semibold"></div></div>';
-                        var box = result.firstChild;
-                        box.firstChild.textContent = title;
-                        (lines || []).forEach(function (ln) {
-                          var d = document.createElement('div');
-                          d.className = 'mt-1 text-gray-300';
-                          d.textContent = ln;
-                          box.appendChild(d);
-                        });
-                      }
-                      function errDetail(body, status) {
-                        return (body && body.error && body.error.message) || (body && body.message)
-                          || (body && typeof body.error === 'string' ? body.error : '') || ('HTTP ' + status);
-                      }
-                      btn.addEventListener('click', async function () {
-                        btn.disabled = true;
-                        try {
-                          var r = await fetch('/api/v1/setup/dispatcher', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ project_id: sel.value })
-                          });
-                          var body = await r.json().catch(function () { return {}; });
-                          if (!r.ok) { pill('err', 'Save failed', [errDetail(body, r.status)]); return; }
-                          pill('ok', 'Dispatcher project saved', ['Restart the daemon to apply the updated config.']);
-                        } catch (e) {
-                          pill('err', 'Network error', [e.message]);
-                        } finally {
-                          btn.disabled = false;
-                        }
-                      });
-                    })();
-                    </script>
-                    {{else}}
-                    <div class="flex flex-wrap items-center gap-2">
-                        <a href="/ui/projects/new?slug=personal-assistant" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors">
-                            Create assistant project
-                        </a>
-                        <a href="/ui/projects/new" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold transition-colors">
-                            Browse templates
-                        </a>
-                    </div>
-                    {{end}}
-                </div>
-            </section>
-            {{end}}
-
-            {{if not .MemoryConfigured}}
-            <!-- Step 3 — memory/RAG. Hidden until chat config is saved, then
-                 revealed so onboarding is a linear flow. Optional: the operator
-                 can disable memory and skip the embedding probe entirely. -->
-            <section id="memory-step" class="{{if .ChatConfigured}}glass{{else}}hidden glass{{end}} rounded-xl border border-dark-700 overflow-hidden">
-                <div class="px-5 py-3.5 border-b border-dark-700/60">
+            <section id="memory-step" class="glass rounded-xl border {{if .MemoryConfigured}}border-dark-700 opacity-80{{else if .ChatConfigured}}border-brand-500/40{{else}}border-dark-700 opacity-70{{end}} overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-3">
                     <h2 class="text-sm font-semibold text-gray-200">Step 3 — Configure memory / RAG</h2>
+                    <span class="text-xs px-2 py-1 rounded-full {{if .MemoryConfigured}}bg-emerald-500/15 text-emerald-200{{else if .ChatConfigured}}bg-amber-500/15 text-amber-200{{else}}bg-dark-700 text-gray-400{{end}}">
+                        {{if .MemoryConfigured}}Completed{{else if .ChatConfigured}}Required{{else}}Waiting{{end}}
+                    </span>
                 </div>
                 <div class="p-5 space-y-4 text-sm text-gray-300">
                     <p class="text-xs text-gray-500">
                         Memory gives projects long-term recall via an embedding endpoint
-                        (OpenAI-compatible <code>/v1/embeddings</code>). Optional — leave it
-                        off to finish setup without RAG.
+                        (OpenAI-compatible <code>/v1/embeddings</code>).
                     </p>
                     <label class="flex items-center gap-2">
-                        <input type="checkbox" id="mem-enabled" class="rounded border-dark-700 bg-dark-900/50">
+                        <input type="checkbox" id="mem-enabled" {{if .MemoryPrefill.Enabled}}checked{{end}} class="rounded border-dark-700 bg-dark-900/50">
                         <span class="text-gray-200">Enable memory for this installation</span>
                     </label>
-                    <div id="mem-fields" class="hidden space-y-3">
+                    <div id="mem-fields" class="{{if not .MemoryPrefill.Enabled}}hidden {{end}}space-y-3">
                         <label class="block">
                             <span class="text-xs uppercase tracking-wide text-gray-500">Embedding endpoint (base URL)</span>
-                            <input type="text" id="mem-endpoint" placeholder="http://localhost:11434/v1"
+                            <input type="text" id="mem-endpoint" value="{{.MemoryPrefill.EmbeddingEndpoint}}" placeholder="http://localhost:11434/v1"
                                    class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
                         </label>
                         <label class="block">
                             <span class="text-xs uppercase tracking-wide text-gray-500">Embedding API key</span>
-                            <input type="password" id="mem-api-key" placeholder="sk-… (leave blank to reuse none)"
+                            <input type="password" id="mem-api-key" value="{{.MemoryPrefill.EmbeddingAPIKey}}" placeholder="sk-… (leave blank to reuse none)"
                                    class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
                         </label>
                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <label class="block">
                                 <span class="text-xs uppercase tracking-wide text-gray-500">Embedding model</span>
-                                <input type="text" id="mem-model" placeholder="text-embedding-3-small"
+                                <input type="text" id="mem-model" value="{{.MemoryPrefill.EmbeddingModel}}" placeholder="text-embedding-3-small"
                                        class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
                             </label>
                             <label class="block">
                                 <span class="text-xs uppercase tracking-wide text-gray-500">Dimension (blank = auto-detect)</span>
-                                <input type="number" id="mem-dimension" placeholder="1536" min="1"
+                                <input type="number" id="mem-dimension" value="{{if .MemoryPrefill.EmbeddingDimension}}{{.MemoryPrefill.EmbeddingDimension}}{{end}}" placeholder="1536" min="1"
                                        class="mt-1 w-full rounded-md border border-dark-700 bg-dark-900/50 px-3 py-2 text-gray-100">
                             </label>
                         </div>
                     </div>
+                    {{if not .ChatConfigured}}
+                    <p class="text-xs text-gray-500">Complete chat first so memory validation can use the same onboarding session.</p>
+                    {{end}}
                     <div class="flex items-center gap-3 pt-1">
-                        <button type="button" id="mem-test-btn"
-                                class="px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold disabled:opacity-50">
+                        <button type="button" id="mem-test-btn" {{if not .ChatConfigured}}disabled{{end}}
+                                class="px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed">
                             Test embedding
                         </button>
-                        <button type="button" id="mem-save-btn"
-                                class="px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold disabled:opacity-50">
-                            Save &amp; finish
+                        <button type="button" id="mem-save-btn" {{if not .ChatConfigured}}disabled{{end}}
+                                class="px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold disabled:opacity-40 disabled:cursor-not-allowed">
+                            Save &amp; continue
                         </button>
                     </div>
                     <div id="mem-result"></div>
                     <div id="mem-done" class="hidden rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-xs text-emerald-200">
-                        Memory configuration saved. Setup is complete — restart the daemon to
-                        apply, then open the project templates or the wizard below.
+                        Memory configuration saved. Restart the daemon to apply it, then finish the dispatcher project step.
                     </div>
                     <script>
                     (function () {
@@ -508,9 +409,19 @@
                           || (body && typeof body.error === 'string' ? body.error : '') || ('HTTP ' + status);
                       }
 
-                      function sessionURL(suffix) {
+                      async function ensureSession() {
                         var id = window.__onbSession;
-                        if (!id) return null;
+                        if (id) return id;
+                        var r = await fetch('/api/v1/setup/session', {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+                        if (!r.ok) throw new Error('could not create setup session (' + r.status + ')');
+                        var s = await r.json();
+                        window.__onbSession = s.id;
+                        return s.id;
+                      }
+
+                      async function sessionURL(suffix) {
+                        var id = await ensureSession();
                         return '/api/v1/setup/session/' + encodeURIComponent(id) + suffix;
                       }
 
@@ -527,10 +438,9 @@
                       }
 
                       els.test.addEventListener('click', async function () {
-                        var url = sessionURL('/memory/validate');
-                        if (!url) { pill('err', 'Finish the chat step first'); return; }
                         els.test.disabled = true;
                         try {
+                          var url = await sessionURL('/memory/validate');
                           var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(proposal()) });
                           var body = await r.json().catch(function () { return {}; });
                           if (!r.ok) { pill('err', 'Validation failed', [errDetail(body, r.status)]); return; }
@@ -540,10 +450,9 @@
                       });
 
                       els.save.addEventListener('click', async function () {
-                        var url = sessionURL('/memory/commit');
-                        if (!url) { pill('err', 'Finish the chat step first'); return; }
                         els.save.disabled = true;
                         try {
+                          var url = await sessionURL('/memory/commit');
                           var r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(proposal()) });
                           var body = await r.json().catch(function () { return {}; });
                           if (r.status === 400 && body && body.failures) { renderResult(body); return; }
@@ -557,7 +466,105 @@
                     </script>
                 </div>
             </section>
-            {{end}}
+
+            <section class="glass rounded-xl border {{if .DispatcherConfigured}}border-dark-700 opacity-80{{else if and .ChatConfigured .MemoryConfigured}}border-amber-500/30 bg-amber-500/5{{else}}border-dark-700 opacity-70{{end}} overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-3">
+                    <h2 class="text-sm font-semibold text-gray-200">Step 4 — Configure dispatcher project</h2>
+                    <span class="text-xs px-2 py-1 rounded-full {{if .DispatcherConfigured}}bg-emerald-500/15 text-emerald-200{{else if and .ChatConfigured .MemoryConfigured}}bg-amber-500/15 text-amber-200{{else}}bg-dark-700 text-gray-400{{end}}">
+                        {{if .DispatcherConfigured}}Completed{{else if and .ChatConfigured .MemoryConfigured}}Final step{{else}}Waiting{{end}}
+                    </span>
+                </div>
+                <div class="p-5 space-y-4 text-sm text-gray-300">
+                    <p class="text-xs text-amber-100/80">
+                        Pin dispatcher chat cost and routing to a dedicated project by writing
+                        <code class="text-amber-100">telegram.dispatcher_project_id</code>, then restart the daemon.
+                    </p>
+                    {{if not (and .ChatConfigured .MemoryConfigured)}}
+                    <p class="text-xs text-gray-500">Complete chat and memory first, then use this final step to save the dispatcher project.</p>
+                    {{end}}
+                    {{if .ProjectOptions}}
+                    <form id="dispatcher-config-form" class="space-y-3">
+                        <label class="block">
+                            <span class="text-xs uppercase tracking-wide text-amber-100/70">Dispatcher project</span>
+                            <select id="dispatcher-project-id" class="mt-1 w-full max-w-xl rounded-md border border-amber-500/30 bg-dark-900/70 px-3 py-2 text-gray-100">
+                                {{range .ProjectOptions}}
+                                <option value="{{.ID}}">{{if .DisplayName}}{{.DisplayName}} — {{end}}{{.ID}}</option>
+                                {{end}}
+                            </select>
+                        </label>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <button type="button" id="dispatcher-save-btn" {{if or .DispatcherConfigured (not (and .ChatConfigured .MemoryConfigured))}}disabled{{end}} class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                                Save dispatcher project
+                            </button>
+                            {{if and .ChatConfigured .MemoryConfigured}}
+                            <a href="/ui/projects/new?slug=personal-assistant" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold transition-colors">
+                                Create assistant project
+                            </a>
+                            {{else}}
+                            <span class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-800 text-gray-500 text-xs font-semibold cursor-not-allowed">
+                                Create assistant project
+                            </span>
+                            {{end}}
+                        </div>
+                        <div id="dispatcher-result"></div>
+                    </form>
+                    <script>
+                    (function () {
+                      var btn = document.getElementById('dispatcher-save-btn');
+                      var sel = document.getElementById('dispatcher-project-id');
+                      var result = document.getElementById('dispatcher-result');
+                      function pill(kind, title, lines) {
+                        var cls = kind === 'ok'
+                          ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-200'
+                          : 'border-rose-500/30 bg-rose-500/5 text-rose-200';
+                        result.innerHTML = '<div class="mt-3 rounded-lg border px-4 py-3 text-xs ' + cls + '"><div class="font-semibold"></div></div>';
+                        var box = result.firstChild;
+                        box.firstChild.textContent = title;
+                        (lines || []).forEach(function (ln) {
+                          var d = document.createElement('div');
+                          d.className = 'mt-1 text-gray-300';
+                          d.textContent = ln;
+                          box.appendChild(d);
+                        });
+                      }
+                      function errDetail(body, status) {
+                        return (body && body.error && body.error.message) || (body && body.message)
+                          || (body && typeof body.error === 'string' ? body.error : '') || ('HTTP ' + status);
+                      }
+                      btn.addEventListener('click', async function () {
+                        btn.disabled = true;
+                        try {
+                          var r = await fetch('/api/v1/setup/dispatcher', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ project_id: sel.value })
+                          });
+                          var body = await r.json().catch(function () { return {}; });
+                          if (!r.ok) { pill('err', 'Save failed', [errDetail(body, r.status)]); return; }
+                          pill('ok', 'Dispatcher project saved', ['Restart the daemon to apply the updated config.']);
+                        } catch (e) {
+                          pill('err', 'Network error', [e.message]);
+                        } finally {
+                          btn.disabled = false;
+                        }
+                      });
+                    })();
+                    </script>
+                    {{else}}
+                    <div class="flex flex-wrap items-center gap-2">
+                        {{if and .ChatConfigured .MemoryConfigured}}
+                        <a href="/ui/projects/new?slug=personal-assistant" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors">
+                            Create assistant project
+                        </a>
+                        {{else}}
+                        <span class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-800 text-gray-500 text-xs font-semibold cursor-not-allowed">
+                            Create assistant project
+                        </span>
+                        {{end}}
+                    </div>
+                    {{end}}
+                </div>
+            </section>
         </div>
     </main>
 

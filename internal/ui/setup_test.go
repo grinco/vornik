@@ -123,33 +123,67 @@ func TestSetupPage_RendersChatForm(t *testing.T) {
 	}
 }
 
-// TestSetupPage_ProjectTemplateLinkIsUIScoped guards against the onboarding
-// regression where the "Open project templates" button pointed at
-// /projects/new instead of the /ui/-prefixed route.
-func TestSetupPage_ProjectTemplateLinkIsUIScoped(t *testing.T) {
+// TestSetupPage_HidesBrokenTemplateEntrypoints guards against advertising
+// setup paths that are not part of the current onboarding flow.
+func TestSetupPage_HidesBrokenTemplateEntrypoints(t *testing.T) {
 	srv := NewServer(WithOnboardingDetector(onboarding.Detector{Config: &config.Config{}}))
 	req := httptest.NewRequest(http.MethodGet, "/setup", nil)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	body := rec.Body.String()
-	if !strings.Contains(body, `href="/ui/projects/new"`) {
-		t.Errorf("setup page missing UI-scoped template link")
-	}
-	if strings.Contains(body, `/ui/projects/new/wizard`) {
-		t.Errorf("setup page should not advertise project wizard while the path is disabled")
-	}
 	for _, bad := range []string{
+		"Open project templates",
+		`href="/ui/projects/new"`,
 		`href="/projects/new"`,
+		`href="/ui/projects/new/wizard"`,
 		`href="/projects/new/wizard"`,
 	} {
 		if strings.Contains(body, bad) {
-			t.Errorf("setup page still emits non-UI link %q (missing /ui/ prefix)", bad)
+			t.Errorf("setup page still emits disabled setup affordance %q", bad)
 		}
 	}
 }
 
-// TestSetupPage_RendersMemoryStep verifies the Step-3 memory form is in the
-// page (hidden until chat config is saved) and wired to the memory endpoints.
+func TestSetupPage_FreshDefaultsAreNotConfigured(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Chat.Endpoint = "http://localhost:11434/v1"
+	cfg.Chat.Model = "llama3.1"
+	cfg.Memory.EmbeddingEndpoint = "http://localhost:11434/v1"
+	cfg.Memory.EmbeddingModel = "nomic-embed-text"
+	srv := NewServer(WithOnboardingDetector(onboarding.Detector{Config: cfg}))
+
+	chat, memory, dispatcher := srv.setupStepState()
+	if chat || memory || dispatcher {
+		t.Fatalf("setupStepState() = chat:%v memory:%v dispatcher:%v, want all false for unenabled fresh defaults", chat, memory, dispatcher)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/setup", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Setup state",
+		"Chat backend",
+		"Memory / RAG",
+		"Not configured",
+		"Step 2 — Configure chat",
+		"Step 3 — Configure memory / RAG",
+		"Step 4 — Configure dispatcher project",
+		`id="mem-test-btn" disabled`,
+		`id="mem-save-btn" disabled`,
+		"Create assistant project",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("fresh setup page missing marker %q", want)
+		}
+	}
+	if strings.Contains(body, `href="/ui/projects/new?slug=personal-assistant"`) {
+		t.Error("fresh setup page should not enable assistant project creation before chat and memory are configured")
+	}
+}
+
+// TestSetupPage_RendersMemoryStep verifies the Step-3 memory form is present
+// and wired to the memory endpoints.
 func TestSetupPage_RendersMemoryStep(t *testing.T) {
 	srv := NewServer(WithOnboardingDetector(onboarding.Detector{Config: &config.Config{}}))
 	req := httptest.NewRequest(http.MethodGet, "/setup", nil)
@@ -217,7 +251,10 @@ terminals:
 		t.Fatal(err)
 	}
 	cfg := &config.Config{}
+	cfg.Chat.Enabled = true
+	cfg.Chat.Provider = "http"
 	cfg.Chat.Endpoint = "http://chat.example/v1"
+	cfg.Chat.APIKey = "sk-live"
 	cfg.Chat.Model = "gpt-live"
 	cfg.Memory.Enabled = true
 	cfg.Memory.EmbeddingEndpoint = "http://embed.example/v1"
@@ -229,21 +266,24 @@ terminals:
 	body := rec.Body.String()
 
 	for _, bad := range []string{
-		`id="chat-config-form"`,
-		`Step 3 — Configure memory`,
 		`/ui/projects/new/wizard`,
+		`id="dispatcher-save-btn" disabled`,
 	} {
 		if strings.Contains(body, bad) {
 			t.Errorf("setup page should not render completed/broken setup affordance %q", bad)
 		}
 	}
 	for _, want := range []string{
-		"Completed setup",
+		"Setup state",
+		`id="chat-config-form"`,
+		"Step 3 — Configure memory",
+		`id="mem-enabled" checked`,
 		"Step 4 — Configure dispatcher project",
 		`id="dispatcher-project-id"`,
 		`id="dispatcher-save-btn"`,
 		`fetch('/api/v1/setup/dispatcher'`,
 		`value="assistant"`,
+		`href="/ui/projects/new?slug=personal-assistant"`,
 		"telegram.dispatcher_project_id",
 	} {
 		if !strings.Contains(body, want) {

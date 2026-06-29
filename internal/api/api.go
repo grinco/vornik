@@ -400,6 +400,10 @@ type Server struct {
 	// return 503. Defaults are NOT assumed; the container injects a real
 	// onboarding.ChatValidator.
 	setupValidator onboarding.ChatValidatorInterface
+	// setupMemoryValidator tests proposed embedding credentials for the
+	// Step-3 memory form. nil → the memory validate/commit endpoints return
+	// 503. The container injects a real onboarding.MemoryValidator.
+	setupMemoryValidator onboarding.MemoryValidatorInterface
 	// setupConfigPath is the daemon's resolved config.yaml path. The commit
 	// handler patches this file via featuredoctor.FileConfigWriter.
 	setupConfigPath string
@@ -1139,6 +1143,12 @@ func WithSetupSessions(repo persistence.InstallationOnboardingSessionRepository)
 // return 503.
 func WithSetupValidator(v onboarding.ChatValidatorInterface) ServerOption {
 	return func(s *Server) { s.setupValidator = v }
+}
+
+// WithSetupMemoryValidator wires the Step-3 embedding-config validator.
+// nil → the memory validate/commit endpoints return 503.
+func WithSetupMemoryValidator(v onboarding.MemoryValidatorInterface) ServerOption {
+	return func(s *Server) { s.setupMemoryValidator = v }
 }
 
 // WithSetupConfigPath records the daemon's resolved config.yaml path so

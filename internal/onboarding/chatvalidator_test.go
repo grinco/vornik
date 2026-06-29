@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,30 @@ func (f fakeChatClient) PingCompletion(context.Context) error { return f.pingErr
 
 func newFakeFactory(c fakeChatClient) chatClientFactory {
 	return func(_, _, _ string) chatReachable { return c }
+}
+
+func TestListModels_ReturnsModelsWithoutPing(t *testing.T) {
+	v := NewChatValidatorWithFactory(newFakeFactory(fakeChatClient{
+		models:  []chat.ModelInfo{{ID: "a"}, {ID: "b"}},
+		pingErr: fmt.Errorf("ping should not be consulted"), // ListModels skips the ping
+	}), time.Second)
+	got, err := v.ListModels(context.Background(), "https://x/v1", "sk-1")
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "a" {
+		t.Fatalf("unexpected models: %#v", got)
+	}
+}
+
+func TestListModels_EmptyCredentials(t *testing.T) {
+	v := NewChatValidatorWithFactory(newFakeFactory(fakeChatClient{}), time.Second)
+	if _, err := v.ListModels(context.Background(), "", "sk-1"); err == nil {
+		t.Error("expected error for empty endpoint")
+	}
+	if _, err := v.ListModels(context.Background(), "https://x/v1", ""); err == nil {
+		t.Error("expected error for empty api key")
+	}
 }
 
 func hasFailure(r ChatValidationResult, name string) bool {

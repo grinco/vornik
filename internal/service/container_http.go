@@ -121,6 +121,7 @@ func (c *Container) initHTTPServer() error {
 			return api.WithSetupSessions(sessions)
 		}(),
 		api.WithSetupValidator(onboarding.NewChatValidator()),
+		api.WithSetupMemoryValidator(onboarding.NewMemoryValidator()),
 		api.WithSetupConfigPath(c.ConfigPath),
 		api.WithSetupSecretsDir(onboardingSecretsDir(c.ConfigPath)),
 		// Live observation subscriber (Feature #3 Phase B). The

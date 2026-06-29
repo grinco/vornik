@@ -160,13 +160,78 @@ func (stubSetupSessions) ListByOperator(context.Context, string, int) ([]*persis
 }
 func (stubSetupSessions) HasCommitted(context.Context) (bool, error) { return false, nil }
 
-// stubValidator satisfies onboarding.ChatValidatorInterface.
+// stubValidator satisfies onboarding.ChatValidatorInterface and the
+// optional setupModelLister capability the /setup/models handler probes.
 type stubValidator struct {
-	result onboarding.ChatValidationResult
+	result    onboarding.ChatValidationResult
+	models    []chat.ModelInfo
+	modelsErr error
 }
 
 func (s stubValidator) Validate(context.Context, onboarding.ChatConfigProposal) onboarding.ChatValidationResult {
 	return s.result
+}
+
+var errStubUpstream = fmt.Errorf("upstream 401: invalid api key")
+
+func (s stubValidator) ListModels(_ context.Context, _, _ string) ([]chat.ModelInfo, error) {
+	if s.modelsErr != nil {
+		return nil, s.modelsErr
+	}
+	return s.models, nil
+}
+
+func TestSetupModels_ReturnsModelList(t *testing.T) {
+	srv := NewServer(WithSetupValidator(stubValidator{models: []chat.ModelInfo{
+		{ID: "gpt-4.1", Source: "live"},
+		{ID: "gpt-4.1-mini", Source: "live"},
+	}}))
+	router := NewRouter(srv, &config.Config{})
+	body := strings.NewReader(`{"endpoint":"https://x/v1","api_key":"sk-1"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/setup/models", body)
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(stampSetupIdentity(req.Context(), "admin"))
+	rec := httptest.NewRecorder()
+	router.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Models []chat.ModelInfo `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Models) != 2 || got.Models[0].ID != "gpt-4.1" {
+		t.Fatalf("unexpected models: %#v", got.Models)
+	}
+}
+
+func TestSetupModels_UpstreamErrorIs502(t *testing.T) {
+	srv := NewServer(WithSetupValidator(stubValidator{modelsErr: errStubUpstream}))
+	router := NewRouter(srv, &config.Config{})
+	body := strings.NewReader(`{"endpoint":"https://x/v1","api_key":"bad"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/setup/models", body)
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(stampSetupIdentity(req.Context(), "admin"))
+	rec := httptest.NewRecorder()
+	router.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSetupModels_BlocksProjectScopedUser(t *testing.T) {
+	srv := NewServer(WithSetupValidator(stubValidator{}))
+	router := NewRouter(srv, &config.Config{})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/setup/models", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(stampSetupIdentity(req.Context(), "user"))
+	rec := httptest.NewRecorder()
+	router.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for RoleUser", rec.Code)
+	}
 }
 
 func TestSetupSessionCreate_ReturnsSessionJSON(t *testing.T) {

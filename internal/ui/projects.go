@@ -81,42 +81,54 @@ func (s *Server) Projects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Wizard drafts — best-effort, short timeout so a slow DB
-	// doesn't stall the projects page.
-	if s.wizardSessions != nil {
-		operator := s.operatorIDForRequest(r)
-		if operator != "" {
-			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-			rows, err := s.wizardSessions.ListByOperator(ctx, operator, 50)
-			cancel()
-			if err == nil {
-				count := 0
-				var latest *wizardDraftSummary
-				for _, row := range rows {
-					// Skip committed AND cancelled sessions — the banner
-					// counts only genuinely-unfinished drafts. (Cancelled
-					// must be excluded here too, mirroring the wizard's
-					// active-session cap; otherwise a cancelled draft keeps
-					// nagging in the projects UI.)
-					if row == nil || row.CommittedProjectID != nil || row.CancelledAt != nil {
-						continue
-					}
-					count++
-					if latest == nil || row.UpdatedAt.After(latest.UpdatedAt) {
-						latest = &wizardDraftSummary{ID: row.ID, UpdatedAt: row.UpdatedAt}
-					}
-				}
-				if count > 0 {
-					data.WizardDraftCount = count
-					if latest != nil {
-						data.WizardLatestDraftID = latest.ID
-						data.WizardLatestDraftAgo = humanAgo(latest.UpdatedAt)
-					}
-				}
-			}
-		}
-	}
+	// doesn't stall the projects page. Gated on wizardEnabled so the
+	// banner can't nag about drafts the operator can't resume when the
+	// wizard feature is off (no chat provider).
+	s.populateWizardDraftsBanner(r, &data)
 
 	s.render(w, "projects.html", data)
+}
+
+// populateWizardDraftsBanner fills the wizard-drafts banner fields on the
+// projects page. Best-effort with a short timeout so a slow DB doesn't stall
+// the page. Gated on wizardEnabled (chat provider wired) so the banner can't
+// nag about drafts the operator can't resume when the wizard feature is off;
+// nil-safe on the sessions repo. Skips committed AND cancelled sessions — the
+// banner counts only genuinely-unfinished drafts (a cancelled draft that kept
+// nagging would defeat the wizard's cancel).
+func (s *Server) populateWizardDraftsBanner(r *http.Request, data *ProjectsData) {
+	if !s.wizardEnabled || s.wizardSessions == nil {
+		return
+	}
+	operator := s.operatorIDForRequest(r)
+	if operator == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	rows, err := s.wizardSessions.ListByOperator(ctx, operator, 50)
+	if err != nil {
+		return
+	}
+	count := 0
+	var latest *wizardDraftSummary
+	for _, row := range rows {
+		if row == nil || row.CommittedProjectID != nil || row.CancelledAt != nil {
+			continue
+		}
+		count++
+		if latest == nil || row.UpdatedAt.After(latest.UpdatedAt) {
+			latest = &wizardDraftSummary{ID: row.ID, UpdatedAt: row.UpdatedAt}
+		}
+	}
+	if count == 0 {
+		return
+	}
+	data.WizardDraftCount = count
+	if latest != nil {
+		data.WizardLatestDraftID = latest.ID
+		data.WizardLatestDraftAgo = humanAgo(latest.UpdatedAt)
+	}
 }
 
 type wizardDraftSummary struct {

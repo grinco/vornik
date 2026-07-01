@@ -35,7 +35,11 @@
 #   VORNIK_HTTP_PORT  host port for the UI/API     (default: 8080)
 #   POSTGRES_PORT     host port for PostgreSQL      (default: 5432)
 #
-set -euo pipefail
+if [ "${VORNIK_QUICKSTART_SOURCED:-}" = 1 ]; then
+  set -eu
+else
+  set -euo pipefail
+fi
 
 REPO_URL="${VORNIK_REPO_URL:-https://github.com/grinco/vornik}"
 REF="${VORNIK_REF:-main}"
@@ -50,32 +54,13 @@ ok()   { printf '%s ok%s %s\n' "$c_green"  "$c_off" "$*"; }
 warn() { printf '%s !!%s %s\n' "$c_yellow" "$c_off" "$*" >&2; }
 die()  { printf '%s xx%s %s\n' "$c_red"    "$c_off" "$*" >&2; exit 1; }
 
-[ "$(uname -s)" = "Linux" ] || die "This quickstart targets Linux (rootless podman). For macOS/Windows or k8s, see deployments/podman/README.md and docs/public/getting-started.md."
-[ "$(id -u)" -ne 0 ] || die "Run as a normal (non-root) user: Vornik CE installs as a rootless 'systemctl --user' service and spawns agents via your rootless podman. (The Enterprise RPM/deb is the system-service path.)"
+# --- detection / selection helpers (sourced by quickstart_test.sh) -------
+# Kept here, above the install body, so a test harness can source just
+# these functions with VORNIK_QUICKSTART_SOURCED=1 without triggering the
+# podman/git/build steps below.
 
-CONFIG_DIR="$HOME/.config/vornik"
-DATA_DIR="$HOME/.local/share/vornik"
-BIN_DIR="$HOME/.local/bin"
-UNIT_DIR="$HOME/.config/systemd/user"
-
-# ---------------------------------------------------------------------------
-# 1. Prerequisites. Works across mutable distros (dnf/apt/zypper/pacman),
-#    Homebrew, and immutable/ostree hosts (Bazzite, Silverblue, Kinoite,
-#    …) where podman ships in the base image and there is no dnf. We never
-#    assume a single package manager: each tool is installed only if it is
-#    actually missing, and the compose provider prefers a no-root /
-#    no-reboot path (pip --user) so immutable hosts don't need an
-#    rpm-ostree layer + reboot just to get going.
-# ---------------------------------------------------------------------------
 have_compose() { podman compose version >/dev/null 2>&1 || command -v podman-compose >/dev/null 2>&1; }
 is_immutable() { [ -f /run/ostree-booted ] || command -v rpm-ostree >/dev/null 2>&1; }
-
-# Homebrew may be installed but not yet on PATH under `curl | bash`.
-if ! command -v brew >/dev/null 2>&1; then
-  for b in /home/linuxbrew/.linuxbrew/bin/brew "$HOME/.linuxbrew/bin/brew"; do
-    [ -x "$b" ] && eval "$("$b" shellenv)" && break
-  done
-fi
 
 # install_sys <pkg...> — best-effort system package install. brew first
 # (immutable-friendly, no root), then the classic distro managers. Returns
@@ -113,7 +98,7 @@ ensure_compose() {
 # require_safe_checkout_dir <path> — quickstart may delete and re-clone the
 # repo checkout, so refuse dangerous targets after resolving path traversal.
 require_safe_checkout_dir() {
-  local dir="$1" abs parent base parent_real target_real home_real
+  dir="$1"
 
   [ -n "$dir" ] || die "Refusing empty VORNIK_DIR. Set VORNIK_DIR to a dedicated checkout directory."
 
@@ -386,9 +371,11 @@ cat <<EOF
     CLI      vornikctl doctor
     Health   curl http://localhost:${HTTP_PORT}/readyz
 
-  ${c_green}Run tasks${c_off} — add an LLM key, then restart the daemon:
-    edit     ${CONFIG_DIR}/vornik.env      # set VORNIK_CHAT_API_KEY (+ CHAT_ENDPOINT / CHAT_MODEL)
-    apply    systemctl --user restart vornik
+  ${c_green}Run tasks${c_off} — connect an LLM:
+    guided   open http://localhost:${HTTP_PORT}/ui — the first-run setup guide
+             (/ui/setup) tests your endpoint + key and creates a first project
+    manual   edit ${CONFIG_DIR}/vornik.env    # set VORNIK_CHAT_API_KEY (+ CHAT_ENDPOINT / CHAT_MODEL)
+             then  systemctl --user restart vornik
 
   ${c_green}Control${c_off}
     check    vornikctl doctor

@@ -144,6 +144,17 @@ for unsafe in "" "/" "/tmp" "." ".." "$HOME" "$HOME/" "$HOME/." "$HOME/.." "$TMP
   fi
 done
 
+# --- final output advertises the setup guide -----------------------------
+# Onboarding contract (setup-guide rollout slice 2, restored 2026-07-01):
+# the closing "Connect / Run tasks" block must lead users to the first-run
+# setup guide, not only to hand-editing vornik.env.
+echo "--- final output mentions /ui/setup ---"
+if grep -q '/ui/setup' "$SCRIPT_DIR/quickstart.sh"; then
+  ok "quickstart output points at the /ui/setup guide"
+else
+  bad "quickstart.sh never mentions /ui/setup — the guided onboarding path is undiscoverable"
+fi
+
 echo "---"
 echo "PASS: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

@@ -90,6 +90,35 @@ func TestProjects_DraftsBannerHiddenWithDraftsWhileWizardDisabled(t *testing.T) 
 	}
 }
 
+// Positive counterpart to ...HiddenWithDraftsWhileWizardDisabled: with
+// the wizard feature ENABLED the banner renders and pluralises. Guards
+// the 2026-06-29 regression where the banner template markup was
+// deleted (e68385fa) instead of gating on wizard-enabled — the banner
+// stopped rendering even for a live wizard with real drafts.
+func TestProjects_DraftsBannerVisibleWithDraftsWhenWizardEnabled(t *testing.T) {
+	now := time.Now()
+	lister := &stubWizardLister{rows: []*persistence.ProjectWizardSession{
+		{ID: "pw_1", OperatorID: "op_1", UpdatedAt: now.Add(-30 * time.Minute)},
+		{ID: "pw_2", OperatorID: "op_1", UpdatedAt: now.Add(-2 * time.Hour)},
+	}}
+	srv := NewServer(WithWizardSessionLister(lister), WithWizardEnabled(true))
+	req := httptest.NewRequest(http.MethodGet, "/ui/projects", nil)
+	req.Header.Set("X-Operator-Id", "op_1")
+	req = authDisabledUIRequest(req)
+	rec := httptest.NewRecorder()
+	srv.Projects(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "2 unfinished wizard drafts") {
+		t.Errorf("expected pluralised banner text, body: %s", body)
+	}
+	if !strings.Contains(body, "Resume wizard") {
+		t.Errorf("expected resume link, body: %s", body)
+	}
+}
+
 func TestProjects_DraftsBannerIgnoresSpoofedHeaderWhenAuthEnabled(t *testing.T) {
 	lister := &stubWizardLister{rows: []*persistence.ProjectWizardSession{
 		{ID: "pw_1", OperatorID: "victim", UpdatedAt: time.Now()},
@@ -123,6 +152,27 @@ func TestProjects_DraftsBannerCommittedDraftsStillHidden(t *testing.T) {
 	}
 }
 
+// Positive counterpart: with the wizard enabled, a committed session
+// does NOT count — only the one uncommitted draft surfaces (singular).
+func TestProjects_DraftsBannerCountIgnoresCommittedWhenEnabled(t *testing.T) {
+	now := time.Now()
+	committed := "already-shipped"
+	lister := &stubWizardLister{rows: []*persistence.ProjectWizardSession{
+		{ID: "pw_1", OperatorID: "op_1", UpdatedAt: now, CommittedProjectID: &committed},
+		{ID: "pw_2", OperatorID: "op_1", UpdatedAt: now},
+	}}
+	srv := NewServer(WithWizardSessionLister(lister), WithWizardEnabled(true))
+	req := httptest.NewRequest(http.MethodGet, "/ui/projects", nil)
+	req.Header.Set("X-Operator-Id", "op_1")
+	req = authDisabledUIRequest(req)
+	rec := httptest.NewRecorder()
+	srv.Projects(rec, req)
+	body := rec.Body.String()
+	if !strings.Contains(body, "1 unfinished wizard draft") {
+		t.Errorf("expected singular banner text (committed excluded), body: %s", body)
+	}
+}
+
 func TestProjects_DraftsBannerCancelledDraftsStillHidden(t *testing.T) {
 	now := time.Now()
 	cancelledAt := now.Add(-10 * time.Minute)
@@ -141,6 +191,27 @@ func TestProjects_DraftsBannerCancelledDraftsStillHidden(t *testing.T) {
 	body := rec.Body.String()
 	if strings.Contains(body, "unfinished wizard") || strings.Contains(body, "Resume wizard") {
 		t.Errorf("wizard drafts banner should be hidden while wizard is disabled, body: %s", body)
+	}
+}
+
+// Positive counterpart: with the wizard enabled, a cancelled session
+// does NOT count — only the one live draft surfaces (singular).
+func TestProjects_DraftsBannerCountIgnoresCancelledWhenEnabled(t *testing.T) {
+	now := time.Now()
+	cancelledAt := now.Add(-10 * time.Minute)
+	lister := &stubWizardLister{rows: []*persistence.ProjectWizardSession{
+		{ID: "pw_cancelled", OperatorID: "op_1", UpdatedAt: now, CancelledAt: &cancelledAt},
+		{ID: "pw_live", OperatorID: "op_1", UpdatedAt: now},
+	}}
+	srv := NewServer(WithWizardSessionLister(lister), WithWizardEnabled(true))
+	req := httptest.NewRequest(http.MethodGet, "/ui/projects", nil)
+	req.Header.Set("X-Operator-Id", "op_1")
+	req = authDisabledUIRequest(req)
+	rec := httptest.NewRecorder()
+	srv.Projects(rec, req)
+	body := rec.Body.String()
+	if !strings.Contains(body, "1 unfinished wizard draft") {
+		t.Errorf("cancelled draft must not count; expected singular banner, body: %s", body)
 	}
 }
 

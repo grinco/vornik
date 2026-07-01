@@ -13,6 +13,22 @@
                 {{if .Rows}}<span class="text-sm text-gray-500">{{len .Rows}} configured{{if gt .ArchivedCount 0}}, {{.ArchivedCount}} archived{{end}}</span>{{end}}
             </div>
 
+            {{/* Wizard drafts banner (Feature #2 Phase C). Surfaces
+                 when the operator has uncommitted wizard sessions.
+                 Encourages finishing or abandoning the draft rather
+                 than starting another from scratch. */}}
+            {{if gt .WizardDraftCount 0}}
+            <div class="rounded-lg border border-amber-700/40 bg-amber-950/20 px-4 py-3 flex items-center justify-between flex-wrap gap-2">
+                <div class="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-200">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    You have {{.WizardDraftCount}} unfinished wizard {{if eq .WizardDraftCount 1}}draft{{else}}drafts{{end}}{{if .WizardLatestDraftAgo}} — last update {{.WizardLatestDraftAgo}}{{end}}.
+                </div>
+                <a href="/ui/projects/new/wizard{{if .WizardLatestDraftID}}?session={{.WizardLatestDraftID}}{{end}}" class="text-xs font-medium px-3 py-1.5 rounded-lg bg-amber-700/40 hover:bg-amber-700/60 text-amber-600 dark:text-amber-100 transition-colors">
+                    Resume wizard
+                </a>
+            </div>
+            {{end}}
+
             {{if .Rows}}
             <input id="project-search" type="search" placeholder="Filter projects… (Esc to clear)"
                    aria-label="Filter projects"

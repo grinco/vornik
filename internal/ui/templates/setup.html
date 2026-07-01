@@ -35,9 +35,9 @@
                         <div class="text-[11px] uppercase tracking-wide text-gray-500">Memory / RAG</div>
                         <div class="mt-1 {{if .MemoryConfigured}}text-emerald-200{{else}}text-gray-400{{end}}">{{if .MemoryConfigured}}Configured{{else}}Not configured{{end}}</div>
                     </div>
-                    <div class="rounded-lg border {{if .DispatcherConfigured}}border-emerald-500/30 bg-emerald-500/5{{else if and .ChatConfigured .MemoryConfigured}}border-amber-500/30 bg-amber-500/5{{else}}border-dark-700 bg-dark-900/50{{end}} p-3">
+                    <div class="rounded-lg border {{if .DispatcherConfigured}}border-emerald-500/30 bg-emerald-500/5{{else if .ChatConfigured}}border-amber-500/30 bg-amber-500/5{{else}}border-dark-700 bg-dark-900/50{{end}} p-3">
                         <div class="text-[11px] uppercase tracking-wide text-gray-500">Dispatcher project</div>
-                        <div class="mt-1 {{if .DispatcherConfigured}}text-emerald-200{{else if and .ChatConfigured .MemoryConfigured}}text-amber-200{{else}}text-gray-400{{end}}">{{if .DispatcherConfigured}}Configured{{else if and .ChatConfigured .MemoryConfigured}}Next step{{else}}Not configured{{end}}</div>
+                        <div class="mt-1 {{if .DispatcherConfigured}}text-emerald-200{{else if .ChatConfigured}}text-amber-200{{else}}text-gray-400{{end}}">{{if .DispatcherConfigured}}Configured{{else if .ChatConfigured}}Next step{{else}}Not configured{{end}}</div>
                     </div>
                 </div>
                 <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -131,6 +131,11 @@
                             <code>VORNIK_CHAT_API_KEY</code> from <code>&lt;configDir&gt;/secrets/chat.env</code>.
                             The daemon now sources that file itself on start, so chat-backed
                             surfaces come online after the restart on any deployment.
+                            <div class="mt-1.5 text-amber-100/90">
+                                Quickstart install: <code>systemctl --user restart vornik</code>
+                                &nbsp;·&nbsp; system package: <code>sudo systemctl restart vornik</code>
+                                &nbsp;·&nbsp; compose: restart the daemon container.
+                            </div>
                         </div>
                         <script>
                         // Plain-fetch onboarding controller. Replaces the earlier htmx
@@ -304,7 +309,7 @@
                 <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-3">
                     <h2 class="text-sm font-semibold text-gray-200">Step 3 — Configure memory / RAG</h2>
                     <span class="text-xs px-2 py-1 rounded-full {{if .MemoryConfigured}}bg-emerald-500/15 text-emerald-200{{else if .ChatConfigured}}bg-amber-500/15 text-amber-200{{else}}bg-dark-700 text-gray-400{{end}}">
-                        {{if .MemoryConfigured}}Completed{{else if .ChatConfigured}}Required{{else}}Waiting{{end}}
+                        {{if .MemoryConfigured}}Completed{{else if .ChatConfigured}}Optional{{else}}Waiting{{end}}
                     </span>
                 </div>
                 <div class="p-5 space-y-4 text-sm text-gray-300">
@@ -355,7 +360,7 @@
                     </div>
                     <div id="mem-result"></div>
                     <div id="mem-done" class="hidden rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-xs text-emerald-200">
-                        Memory configuration saved. Restart the daemon to apply it, then finish the dispatcher project step.
+                        Memory configuration saved. Restart the daemon to apply it (quickstart install: <code>systemctl --user restart vornik</code>), then finish the dispatcher project step.
                     </div>
                     <script>
                     (function () {
@@ -467,11 +472,11 @@
                 </div>
             </section>
 
-            <section class="glass rounded-xl border {{if .DispatcherConfigured}}border-dark-700 opacity-80{{else if and .ChatConfigured .MemoryConfigured}}border-amber-500/30 bg-amber-500/5{{else}}border-dark-700 opacity-70{{end}} overflow-hidden">
+            <section class="glass rounded-xl border {{if .DispatcherConfigured}}border-dark-700 opacity-80{{else if .ChatConfigured}}border-amber-500/30 bg-amber-500/5{{else}}border-dark-700 opacity-70{{end}} overflow-hidden">
                 <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-3">
                     <h2 class="text-sm font-semibold text-gray-200">Step 4 — Configure dispatcher project</h2>
-                    <span class="text-xs px-2 py-1 rounded-full {{if .DispatcherConfigured}}bg-emerald-500/15 text-emerald-200{{else if and .ChatConfigured .MemoryConfigured}}bg-amber-500/15 text-amber-200{{else}}bg-dark-700 text-gray-400{{end}}">
-                        {{if .DispatcherConfigured}}Completed{{else if and .ChatConfigured .MemoryConfigured}}Final step{{else}}Waiting{{end}}
+                    <span class="text-xs px-2 py-1 rounded-full {{if .DispatcherConfigured}}bg-emerald-500/15 text-emerald-200{{else if .ChatConfigured}}bg-amber-500/15 text-amber-200{{else}}bg-dark-700 text-gray-400{{end}}">
+                        {{if .DispatcherConfigured}}Completed{{else if .ChatConfigured}}Final step{{else}}Waiting{{end}}
                     </span>
                 </div>
                 <div class="p-5 space-y-4 text-sm text-gray-300">
@@ -479,8 +484,8 @@
                         Pin dispatcher chat cost and routing to a dedicated project by writing
                         <code class="text-amber-100">telegram.dispatcher_project_id</code>, then restart the daemon.
                     </p>
-                    {{if not (and .ChatConfigured .MemoryConfigured)}}
-                    <p class="text-xs text-gray-500">Complete chat and memory first, then use this final step to save the dispatcher project.</p>
+                    {{if not .ChatConfigured}}
+                    <p class="text-xs text-gray-500">Complete the chat step first, then use this final step to save the dispatcher project. Memory is optional and can stay disabled.</p>
                     {{end}}
                     {{if .ProjectOptions}}
                     <form id="dispatcher-config-form" class="space-y-3">
@@ -493,10 +498,10 @@
                             </select>
                         </label>
                         <div class="flex flex-wrap items-center gap-2">
-                            <button type="button" id="dispatcher-save-btn" {{if or .DispatcherConfigured (not (and .ChatConfigured .MemoryConfigured))}}disabled{{end}} class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                            <button type="button" id="dispatcher-save-btn" {{if or .DispatcherConfigured (not .ChatConfigured)}}disabled{{end}} class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                                 Save dispatcher project
                             </button>
-                            {{if and .ChatConfigured .MemoryConfigured}}
+                            {{if .ChatConfigured}}
                             <a href="/ui/projects/new?slug=personal-assistant" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 text-xs font-semibold transition-colors">
                                 Create assistant project
                             </a>
@@ -541,7 +546,7 @@
                           });
                           var body = await r.json().catch(function () { return {}; });
                           if (!r.ok) { pill('err', 'Save failed', [errDetail(body, r.status)]); return; }
-                          pill('ok', 'Dispatcher project saved', ['Restart the daemon to apply the updated config.']);
+                          pill('ok', 'Dispatcher project saved', ['Restart the daemon to apply the updated config.', 'Quickstart install: systemctl --user restart vornik']);
                         } catch (e) {
                           pill('err', 'Network error', [e.message]);
                         } finally {
@@ -552,7 +557,7 @@
                     </script>
                     {{else}}
                     <div class="flex flex-wrap items-center gap-2">
-                        {{if and .ChatConfigured .MemoryConfigured}}
+                        {{if .ChatConfigured}}
                         <a href="/ui/projects/new?slug=personal-assistant" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors">
                             Create assistant project
                         </a>
@@ -562,6 +567,35 @@
                         </span>
                         {{end}}
                     </div>
+                    {{end}}
+                </div>
+            </section>
+
+            <section class="glass rounded-xl border {{if .DispatcherConfigured}}border-brand-500/40{{else}}border-dark-700 opacity-70{{end}} overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-3">
+                    <h2 class="text-sm font-semibold text-gray-200">Step 5 — Say hello</h2>
+                    <span class="text-xs px-2 py-1 rounded-full {{if .DispatcherConfigured}}bg-brand-500/15 text-brand-200{{else}}bg-dark-700 text-gray-400{{end}}">
+                        {{if .DispatcherConfigured}}Ready{{else}}Waiting{{end}}
+                    </span>
+                </div>
+                <div class="p-5 space-y-3 text-sm text-gray-300">
+                    {{if and .DispatcherConfigured .DispatcherProjectID}}
+                    <p class="text-xs text-gray-400">
+                        Everything is wired. Open your dispatcher project's chat and send a
+                        first message — try <em>&ldquo;Introduce yourself — what can you do for me?&rdquo;</em>
+                    </p>
+                    <a href="/ui/projects/{{.DispatcherProjectID}}/chat" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold transition-colors">
+                        Open chat &amp; say hello
+                    </a>
+                    <p class="text-xs text-gray-500">
+                        If you just restarted the daemon, give it a few seconds to come back
+                        before sending.
+                    </p>
+                    {{else}}
+                    <p class="text-xs text-gray-500">
+                        Finish the steps above (and restart the daemon), then come back here
+                        to send your first message.
+                    </p>
                     {{end}}
                 </div>
             </section>

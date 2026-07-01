@@ -8,12 +8,14 @@ Vornik ships two binaries:
 ## `vornik` (daemon)
 
 The daemon takes no required flags. It finds its config file via the search order
-in [Getting started](getting-started.md#first-run) (`$VORNIK_CONFIG`, then
-`./config.yaml`, then `/etc/vornik/config.yaml`, then an XDG/home location).
+in [Getting started](getting-started.md#first-run) (`--config` flag, then
+`$VORNIK_CONFIG`, then `./vornik.yaml`/`./config.yaml`, then an XDG/home
+location, then `/etc/vornik/`).
 
 | Invocation | Effect |
 |---|---|
 | `vornik` | Start the daemon (loads config, runs the orchestration loop and API). |
+| `vornik --config <path>` | Start with an explicit config file. |
 | `vornik --version` | Print the build version and edition (Community), then exit. |
 | `kill -HUP <pid>` | Reload config in place (also `systemctl --user reload vornik`). |
 

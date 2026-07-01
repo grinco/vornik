@@ -367,6 +367,10 @@ type Server struct {
 	// wizardSessions backs the Feature #2 Phase C drafts banner
 	// on /ui/projects. nil-safe — banner hides when unwired.
 	wizardSessions WizardSessionLister
+	// wizardEnabled gates the drafts banner on the wizard feature
+	// being available (chat provider wired). false hides the banner
+	// even when wizardSessions has stale draft rows.
+	wizardEnabled bool
 	// onboardingDetector backs /ui/setup. Nil falls back to the
 	// same conservative heuristic as the API status endpoint.
 	onboardingDetector onboarding.Detector
@@ -844,6 +848,17 @@ type WizardSessionLister interface {
 // /ui/projects banner. Optional — nil hides the banner.
 func WithWizardSessionLister(src WizardSessionLister) ServerOption {
 	return func(s *Server) { s.wizardSessions = src }
+}
+
+// WithWizardEnabled gates the /ui/projects drafts banner on the
+// project-wizard feature being available. The wizard requires a chat
+// provider (its converse turn calls the LLM), so the banner should not
+// nag about resuming drafts the operator can't actually open — when the
+// wizard is disabled, stale draft rows stay hidden. The composition root
+// sets this from (ChatClient != nil); default false keeps the banner
+// hidden in unit tests and deployments without chat configured.
+func WithWizardEnabled(enabled bool) ServerOption {
+	return func(s *Server) { s.wizardEnabled = enabled }
 }
 
 // WithOnboardingDetector wires the install-scoped setup detector used by

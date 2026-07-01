@@ -1362,9 +1362,16 @@ func (c *Container) initHTTPServer() error {
 		}
 	}
 	// Wizard drafts banner (Feature #2 Phase C). nil-safe — banner
-	// hides if the wizard sessions repo isn't wired.
+	// hides if the wizard sessions repo isn't wired. Gated on the chat
+	// provider being wired (the wizard's converse turn needs an LLM):
+	// without chat the wizard feature is off, so stale draft rows stay
+	// hidden instead of nagging the operator to resume a draft they
+	// can't open.
 	if c.repos != nil && c.repos.ProjectWizardSessions != nil {
 		uiOpts = append(uiOpts, ui.WithWizardSessionLister(c.repos.ProjectWizardSessions))
+	}
+	if c.ChatClient != nil {
+		uiOpts = append(uiOpts, ui.WithWizardEnabled(true))
 	}
 	{
 		var sessions persistence.InstallationOnboardingSessionRepository

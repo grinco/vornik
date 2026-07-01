@@ -14,6 +14,22 @@ first task.
 
 ## Install
 
+### One-command quickstart (recommended)
+
+On a Linux host, one command installs any missing prerequisites, builds the
+daemon + CLI in an ephemeral container (no Go toolchain needed), starts
+PostgreSQL + pgvector in a container, and runs the daemon as a rootless
+`systemctl --user` service:
+
+```sh
+curl -fsSL https://get.vornik.io | bash
+```
+
+When it finishes, open <http://localhost:8080/ui> — a first-run **setup
+guide** walks you through connecting an LLM endpoint and key, optional
+memory/RAG, and creating your first project. Details and tunables:
+[deployments/podman/README.md](https://github.com/grinco/vornik/tree/main/deployments/podman).
+
 ### Build from source
 
 ```sh
@@ -33,12 +49,13 @@ This produces the Community daemon binary `vornik`. The control CLI is
 
 ## First run
 
-Vornik has no `--config` flag — it searches for its config file, in order:
+Vornik searches for its config file, in order:
 
-1. the path in the `$VORNIK_CONFIG` environment variable,
-2. `./config.yaml` (or `./vornik.yaml`) in the working directory,
-3. `/etc/vornik/config.yaml`,
-4. an XDG/home location (`$XDG_CONFIG_HOME/vornik/` or `~/.config/vornik/`).
+1. the `--config` flag,
+2. the path in the `$VORNIK_CONFIG` environment variable,
+3. `./vornik.yaml` (or `./config.yaml`) in the working directory,
+4. an XDG/home location (`$XDG_CONFIG_HOME/vornik/` or `~/.config/vornik/`),
+5. `/etc/vornik/vornik.yaml` (or `/etc/vornik/config.yaml`).
 
 Create a minimal `config.yaml` — keep secrets out of it and point at provider
 credentials via environment variables (see [Configuration](configuration.md)) —
@@ -63,7 +80,7 @@ the full, generated source of truth.
 vornikctl init project my-project --swarm basic-swarm
 
 # Submit a task to it, then watch it run
-vornikctl task submit -p my-project --brief "Summarise README.md"
+vornikctl task submit -p my-project --prompt "Summarise README.md"
 vornikctl task list   -p my-project
 vornikctl task tail   -p my-project <taskId>
 vornikctl task get    -p my-project <taskId>

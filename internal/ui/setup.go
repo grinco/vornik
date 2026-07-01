@@ -2,6 +2,7 @@ package ui
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
 
 	"vornik.io/vornik/internal/api"
@@ -17,7 +18,10 @@ type SetupPageData struct {
 	ChatConfigured       bool
 	MemoryConfigured     bool
 	DispatcherConfigured bool
-	ProjectOptions       []SetupProjectOption
+	// DispatcherProjectID backs the final say-hello step's deep link into
+	// the dispatcher project's chat once the dispatcher is pinned.
+	DispatcherProjectID string
+	ProjectOptions      []SetupProjectOption
 	// Prefill carries the current chat config so completed setup stays
 	// editable without exposing env-placeholder secrets.
 	Prefill       onboarding.ChatConfigProposal
@@ -48,6 +52,9 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 		MemoryPrefill: s.setupMemoryPrefill(),
 	}
 	data.ChatConfigured, data.MemoryConfigured, data.DispatcherConfigured = s.setupStepState()
+	if cfg := s.onboardingDetector.Config; cfg != nil {
+		data.DispatcherProjectID = s.sayHelloProjectID(strings.TrimSpace(cfg.Telegram.DispatcherProjectID))
+	}
 	data.ProjectOptions = s.setupProjectOptions()
 	s.render(w, "setup.html", data)
 }
@@ -97,6 +104,14 @@ func (s *Server) setupMemoryPrefill() onboarding.MemoryConfigProposal {
 	}
 }
 
+// setupStepState derives the per-step completion flags the template gates
+// on. The dispatcher step (and the create-project CTA) deliberately unlock
+// on chatConfigured ALONE: memory is optional — SetupMemoryCommit supports
+// committing enabled=false, and the server-side SetupDispatcherCommit never
+// required memory either. The old UI-only chat+memory gate permanently
+// dead-ended chat-only installs after the restart (regression test:
+// TestSetupPage_MemoryOptOutStillUnlocksDispatcher). memoryConfigured is
+// still reported so the memory step can show Completed vs Optional.
 func (s *Server) setupStepState() (chatConfigured, memoryConfigured, dispatcherConfigured bool) {
 	cfg := s.onboardingDetector.Config
 	if cfg == nil {
@@ -112,6 +127,27 @@ func (s *Server) setupStepState() (chatConfigured, memoryConfigured, dispatcherC
 		strings.TrimSpace(cfg.Memory.EmbeddingEndpoint) != ""
 	dispatcherConfigured = strings.TrimSpace(cfg.Telegram.DispatcherProjectID) != ""
 	return chatConfigured, memoryConfigured, dispatcherConfigured
+}
+
+// sayHelloProjectIDPattern is deliberately tighter than what the registry
+// accepts: alphanumeric start, then alphanumerics, dot, dash, underscore.
+// It exists so a hand-edited telegram.dispatcher_project_id can never put
+// HTML/URL metacharacters into the Step-5 href — defense-in-depth on top
+// of html/template's contextual escaping (review-20260701-12e3.md).
+var sayHelloProjectIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// sayHelloProjectID returns id only when it is shaped like a project ID
+// and is currently loaded in the registry. Anything else returns "" so the
+// Step-5 say-hello section renders its Waiting fallback instead of a chat
+// link that would 404 (deleted or typo'd dispatcher project).
+func (s *Server) sayHelloProjectID(id string) string {
+	if id == "" || !sayHelloProjectIDPattern.MatchString(id) {
+		return ""
+	}
+	if s.projectReg == nil || s.projectReg.GetProject(id) == nil {
+		return ""
+	}
+	return id
 }
 
 func (s *Server) setupProjectOptions() []SetupProjectOption {

@@ -1,7 +1,7 @@
 ---
 sources:
     - path: README.md
-      sha256: ccc2ddd7f6723367d1dc68223cab138015ab78ecb205d53a39515a2e7fe01130
+      sha256: de7af690fb01418ff253661f5f943bc6b77708cd10268063eb32992a96319349
 ---
 # Getting Started
 
@@ -50,20 +50,24 @@ defaults are safe and local-first.
 ## A 60-second playground
 
 If you just want to kick the tyres, skip the manual build below — one command
-stands up a complete playground (PostgreSQL + pgvector **and** the daemon) in
-containers via Podman Compose. It installs Podman Compose if it is missing,
-configures the host so the daemon can spawn agent containers, brings everything
-up, and prints the URL to open when it is ready:
+stands up a complete playground on a Linux host. It installs any missing
+prerequisites, builds the daemon + CLI in an ephemeral container (no Go
+toolchain needed), starts PostgreSQL + pgvector in a container, and runs the
+daemon as a rootless `systemctl --user` service that spawns agent containers
+via your rootless Podman:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/grinco/vornik/main/deployments/podman/quickstart.sh | bash
+curl -fsSL https://get.vornik.io | bash
 ```
 
 The daemon creates and migrates its own schema on first boot, so all you supply
 is an empty database — the script provisions it. When it finishes, open
-<http://localhost:8080/ui>. To run real tasks, add an LLM key to
-`deployments/podman/.env` and re-run `podman compose up -d vornik`. See the
-[Podman Compose deployment notes](https://github.com/grinco/vornik/tree/main/deployments/podman)
+<http://localhost:8080/ui>: a first-run **setup guide** walks you through
+connecting an LLM endpoint and key (with a live connection test), optional
+memory/RAG, and creating your first project. To do the same from the terminal,
+set `VORNIK_CHAT_API_KEY` in `~/.config/vornik/vornik.env` and run
+`systemctl --user restart vornik`. See the
+[Podman deployment notes](https://github.com/grinco/vornik/tree/main/deployments/podman)
 for tunables and the runtime model.
 
 This is the fastest way to get a working instance; the rest of this page builds
@@ -130,7 +134,8 @@ vornik
 ```
 
 With no flags, vornik looks for configuration in this order: the `--config`
-flag, the `VORNIK_CONFIG` environment variable, `./vornik.yaml`, then
+flag, the `VORNIK_CONFIG` environment variable, `./vornik.yaml` (or
+`./config.yaml`), `~/.config/vornik/` (XDG user config), then
 `/etc/vornik/vornik.yaml`. To run with an explicit file:
 
 ```bash

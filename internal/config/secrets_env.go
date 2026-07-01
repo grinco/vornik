@@ -55,6 +55,14 @@ func sourceSecretsEnvFiles(configPath string) {
 	}
 }
 
+// ParseEnvFile reads a systemd-style EnvironmentFile / dotenv file into a
+// map (KEY=VALUE, optional leading `export `, `#` comments, optional
+// surrounding quotes). A missing/unreadable file yields an empty map. This
+// is the exported entry point used by `vornik-enterprise migrate-ce`.
+func ParseEnvFile(path string) map[string]string {
+	return parseEnvFile(path)
+}
+
 // parseEnvFile reads a systemd-style EnvironmentFile / dotenv file into a
 // map. It accepts `KEY=VALUE` lines, an optional leading `export `, blank
 // lines, and `#` comments. Surrounding single or double quotes on the value

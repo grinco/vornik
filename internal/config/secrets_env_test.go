@@ -20,7 +20,10 @@ func writeSecretsEnv(t *testing.T, configDir, name, content string) {
 	}
 }
 
-func TestParseEnvFile(t *testing.T) {
+// TestParseEnvFile_Unexported exercises the internal parseEnvFile directly,
+// covering edge cases (spaced keys, lines without '=', empty keys) that the
+// exported ParseEnvFile pass-through inherits.
+func TestParseEnvFile_Unexported(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "chat.env")
 	content := "# a comment\n" +
@@ -110,5 +113,31 @@ func TestLoadFromPath_ResolvesChatKeyFromSecretsEnv(t *testing.T) {
 	}
 	if cfg.Chat.APIKey != "sk-onboarded" {
 		t.Fatalf("chat.api_key = %q, want %q (secrets/chat.env not sourced)", cfg.Chat.APIKey, "sk-onboarded")
+	}
+}
+
+func TestParseEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "x.env")
+	body := "# comment\nexport FOO=bar\nBAZ=\"qu ux\"\nEMPTY=\n\nQUOTED='v'\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := ParseEnvFile(p)
+	if got["FOO"] != "bar" {
+		t.Errorf("FOO=%q", got["FOO"])
+	}
+	if got["BAZ"] != "qu ux" {
+		t.Errorf("BAZ=%q", got["BAZ"])
+	}
+	if got["QUOTED"] != "v" {
+		t.Errorf("QUOTED=%q", got["QUOTED"])
+	}
+	if _, ok := got["EMPTY"]; !ok {
+		t.Errorf("EMPTY should be present (empty value)")
+	}
+	// Missing file → empty map, no panic.
+	if len(ParseEnvFile(filepath.Join(dir, "nope.env"))) != 0 {
+		t.Errorf("missing file should yield empty map")
 	}
 }

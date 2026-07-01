@@ -110,6 +110,87 @@ ensure_compose() {
   have_compose
 }
 
+# require_safe_checkout_dir <path> — quickstart may delete and re-clone the
+# repo checkout, so refuse dangerous targets after resolving path traversal.
+require_safe_checkout_dir() {
+  local dir="$1" abs parent base parent_real target_real home_real
+
+  [ -n "$dir" ] || die "Refusing empty VORNIK_DIR. Set VORNIK_DIR to a dedicated checkout directory."
+
+  case "$dir" in
+    "~"|"~/"*|"."|".."|*/.|*/..|*/./*|*/../*)
+      die "Refusing unsafe VORNIK_DIR value: '$dir'. Set VORNIK_DIR to a dedicated checkout directory."
+      ;;
+  esac
+
+  case "$dir" in
+    /*) abs="$dir" ;;
+    *) abs="$(pwd -P)/$dir" ;;
+  esac
+  while [ "$abs" != "/" ] && [ "${abs%/}" != "$abs" ]; do
+    abs="${abs%/}"
+  done
+
+  parent="${abs%/*}"
+  base="${abs##*/}"
+  [ -n "$parent" ] || parent="/"
+  [ -n "$base" ] || die "Refusing unsafe VORNIK_DIR value: '$dir'. Set VORNIK_DIR to a dedicated checkout directory."
+  [ -d "$parent" ] || die "Parent directory for VORNIK_DIR does not exist: '$parent'"
+
+  parent_real="$(cd "$parent" && pwd -P)"
+  if [ "$parent_real" = "/" ]; then
+    target_real="/$base"
+  else
+    target_real="$parent_real/$base"
+  fi
+  home_real="$(cd "$HOME" && pwd -P)"
+
+  case "$target_real" in
+    "/"|"$home_real"|/*)
+      if [ "$target_real" = "/" ] || [ "${target_real%/*}" = "" ]; then
+        die "Refusing unsafe VORNIK_DIR value: '$dir'. Set VORNIK_DIR to a dedicated checkout directory."
+      fi
+      ;;
+  esac
+
+  case "$home_real/" in
+    "$target_real/"*)
+      die "Refusing unsafe VORNIK_DIR value: '$dir'. Set VORNIK_DIR to a dedicated checkout directory."
+      ;;
+  esac
+}
+
+# When sourced by quickstart_test.sh, stop here — expose the helpers above
+# without running the install body (which calls sudo/podman/git/build).
+if [ "${VORNIK_QUICKSTART_SOURCED:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
+
+[ "$(uname -s)" = "Linux" ] || die "This quickstart targets Linux (rootless podman). For macOS/Windows or k8s, see deployments/podman/README.md and docs/public/getting-started.md."
+[ "$(id -u)" -ne 0 ] || die "Run as a normal (non-root) user: Vornik CE installs as a rootless 'systemctl --user' service and spawns agents via your rootless podman. (The Enterprise RPM/deb is the system-service path.)"
+
+CONFIG_DIR="$HOME/.config/vornik"
+DATA_DIR="$HOME/.local/share/vornik"
+BIN_DIR="$HOME/.local/bin"
+UNIT_DIR="$HOME/.config/systemd/user"
+
+# ---------------------------------------------------------------------------
+# 1. Prerequisites. Works across mutable distros (dnf/apt/zypper/pacman),
+#    Homebrew, and immutable/ostree hosts (Bazzite, Silverblue, Kinoite,
+#    …) where podman ships in the base image and there is no dnf. We never
+#    assume a single package manager: each tool is installed only if it is
+#    actually missing, and the compose provider prefers a no-root /
+#    no-reboot path (pip --user) so immutable hosts don't need an
+#    rpm-ostree layer + reboot just to get going.
+# ---------------------------------------------------------------------------
+# (detection helpers have_compose / is_immutable / install_sys /
+#  ensure_compose live above the source-guard, so quickstart_test.sh can
+#  exercise them in isolation.)
+
+# Homebrew may be installed but not yet on PATH under `curl | bash`.
+if ! command -v brew >/dev/null 2>&1; then
+  for b in /home/linuxbrew/.linuxbrew/bin/brew "$HOME/.linuxbrew/bin/brew"; do
+    [ -x "$b" ] && eval "$("$b" shellenv)" && break
+  done
+fi
 # Core tools. On Bazzite/Silverblue these are already in the base image, so
 # this loop usually no-ops — we never reinstall what's present.
 missing=()
@@ -158,11 +239,13 @@ elif [ -d "$DIR/.git" ]; then
   if ! git -C "$DIR" fetch --depth 1 origin "$REF" --quiet \
      || ! git -C "$DIR" reset --hard FETCH_HEAD --quiet; then
     warn "could not update $DIR cleanly — re-cloning"
+    require_safe_checkout_dir "$DIR"
     rm -rf "$DIR"
     git clone --depth 1 --branch "$REF" "$REPO_URL" "$DIR"
   fi
 else
   log "Cloning $REPO_URL ($REF) -> $DIR"
+  require_safe_checkout_dir "$DIR"
   git clone --depth 1 --branch "$REF" "$REPO_URL" "$DIR"
 fi
 

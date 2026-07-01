@@ -56,6 +56,46 @@ func SetYAMLKey(content []byte, dottedKey string, val any) (out []byte, created 
 	return buf.Bytes(), created, nil
 }
 
+// GetYAMLString returns the scalar string found at dottedKey (e.g.
+// "database.host") inside content, or "" if the key is absent, the document
+// is unparseable, or the resolved node is not a scalar. It is the read-side
+// counterpart to SetYAMLKey and shares the same dotted-path convention.
+//
+// A scalar that the YAML decoder would interpret as a non-string (e.g. an
+// int or bool) is returned as its plain textual form (the node's Value
+// field), since callers in the migrate-ce path only feed the result into
+// further string handling (placeholders, strconv.Atoi, defaults).
+func GetYAMLString(content []byte, dottedKey string) string {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return ""
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return ""
+	}
+	node := doc.Content[0]
+	for _, seg := range strings.Split(dottedKey, ".") {
+		if node.Kind != yaml.MappingNode {
+			return ""
+		}
+		var next *yaml.Node
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == seg {
+				next = node.Content[i+1]
+				break
+			}
+		}
+		if next == nil {
+			return ""
+		}
+		node = next
+	}
+	if node.Kind != yaml.ScalarNode {
+		return ""
+	}
+	return node.Value
+}
+
 // setInNode recursively walks mapping nodes following segments and sets the
 // leaf scalar's value. Returns created=true when the leaf key was absent and
 // had to be appended (directly, or beneath a freshly-created intermediate

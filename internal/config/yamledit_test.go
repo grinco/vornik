@@ -232,3 +232,63 @@ func TestSetYAMLKey_StringSliceCreatesMissingLeaf(t *testing.T) {
 		t.Errorf("api_keys = %v, want one injected key", parsed.API.APIKeys)
 	}
 }
+
+// TestGetYAMLString_ScalarPresent is the happy path: a scalar at a nested
+// dotted key is returned verbatim. This is the read-side counterpart to
+// SetYAMLKey and the primary primitive migrate-ce uses to pull CE's
+// database.* coordinates out of config.yaml before the preflight connect.
+func TestGetYAMLString_ScalarPresent(t *testing.T) {
+	in := []byte("database:\n  host: 127.0.0.1\n  port: 5432\n  name: vornik\n  user: vornik\n")
+	if got := GetYAMLString(in, "database.host"); got != "127.0.0.1" {
+		t.Errorf("database.host = %q, want %q", got, "127.0.0.1")
+	}
+	if got := GetYAMLString(in, "database.port"); got != "5432" {
+		t.Errorf("database.port = %q, want %q", got, "5432")
+	}
+	if got := GetYAMLString(in, "database.name"); got != "vornik" {
+		t.Errorf("database.name = %q, want %q", got, "vornik")
+	}
+}
+
+// TestGetYAMLString_AbsentKey returns "" for a missing key (the signal
+// migrate-ce's orDefault logic relies on to apply a fallback).
+func TestGetYAMLString_AbsentKey(t *testing.T) {
+	in := []byte("database:\n  host: 127.0.0.1\n")
+	if got := GetYAMLString(in, "database.port"); got != "" {
+		t.Errorf("missing database.port = %q, want empty", got)
+	}
+	if got := GetYAMLString(in, "server.port"); got != "" {
+		t.Errorf("missing top-level server.port = %q, want empty", got)
+	}
+}
+
+// TestGetYAMLString_NonScalarReturnsEmpty: descending into a mapping or
+// sequence must not return a garbage value — only scalars are readable.
+func TestGetYAMLString_NonScalarReturnsEmpty(t *testing.T) {
+	in := []byte("database:\n  host: 127.0.0.1\n")
+	if got := GetYAMLString(in, "database"); got != "" {
+		t.Errorf("database (a mapping) = %q, want empty", got)
+	}
+}
+
+// TestGetYAMLString_InvalidYAML returns "" rather than panicking —
+// migrate-ce tolerates a malformed config.yaml by falling back to defaults.
+func TestGetYAMLString_InvalidYAML(t *testing.T) {
+	if got := GetYAMLString([]byte(":\t:bad\n"), "database.host"); got != "" {
+		t.Errorf("invalid yaml = %q, want empty", got)
+	}
+}
+
+// TestGetYAMLString_RoundTripWithSet: a value written by SetYAMLKey is
+// readable back by GetYAMLString — the two helpers share the dotted-key
+// convention and must agree.
+func TestGetYAMLString_RoundTripWithSet(t *testing.T) {
+	in := []byte("database:\n  host: old\n")
+	out, _, err := SetYAMLKey(in, "database.host", "db.example.com")
+	if err != nil {
+		t.Fatalf("SetYAMLKey: %v", err)
+	}
+	if got := GetYAMLString(out, "database.host"); got != "db.example.com" {
+		t.Errorf("after Set, Get = %q, want %q", got, "db.example.com")
+	}
+}

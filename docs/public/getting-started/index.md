@@ -1,7 +1,7 @@
 ---
 sources:
     - path: README.md
-      sha256: de7af690fb01418ff253661f5f943bc6b77708cd10268063eb32992a96319349
+      sha256: 66e8527be7cb2a6783e7169699c7fe83a277d467c3c3cc434d6dba1ec343f684
 ---
 # Getting Started
 
@@ -49,12 +49,24 @@ defaults are safe and local-first.
 
 ## A 60-second playground
 
-If you just want to kick the tyres, skip the manual build below — one command
-stands up a complete playground on a Linux host. It installs any missing
-prerequisites, builds the daemon + CLI in an ephemeral container (no Go
-toolchain needed), starts PostgreSQL + pgvector in a container, and runs the
-daemon as a rootless `systemctl --user` service that spawns agent containers
-via your rootless Podman:
+!!! tip "Preferred: AI-assisted install"
+    If you use a coding agent (Claude Code, Codex, Gemini CLI, …), let it do
+    everything on this page for you — paste this into your agent:
+
+    > Set up Vornik for me. Follow the runbook at
+    > https://raw.githubusercontent.com/grinco/vornik/main/AGENTS.md
+
+    [AGENTS.md](https://github.com/grinco/vornik/blob/main/AGENTS.md) is an
+    agent-executable runbook: install (via the same `get.vornik.io` script
+    below), LLM key setup, a first task, and the agent's own companion
+    project + persistent RAG memory — with a verifiable check at every step,
+    and your approval required before anything privileged.
+
+If you'd rather run it yourself, one command stands up a complete playground
+on a Linux host. It installs any missing prerequisites, builds the daemon +
+CLI in an ephemeral container (no Go toolchain needed), starts PostgreSQL +
+pgvector in a container, and runs the daemon as a rootless `systemctl --user`
+service that spawns agent containers via your rootless Podman:
 
 ```bash
 curl -fsSL https://get.vornik.io | bash

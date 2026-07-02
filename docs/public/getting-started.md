@@ -14,7 +14,22 @@ first task.
 
 ## Install
 
-### One-command quickstart (recommended)
+### AI-assisted install (recommended)
+
+If you use a coding agent (Claude Code, Codex, Gemini CLI, …), let it do the
+whole thing — paste this:
+
+> Set up Vornik for me. Follow the runbook at
+> https://raw.githubusercontent.com/grinco/vornik/main/AGENTS.md
+
+[AGENTS.md](https://github.com/grinco/vornik/blob/main/AGENTS.md) is an
+agent-executable runbook — every step is a command plus a verifiable check.
+The agent installs the stack (via the same `get.vornik.io` script as below),
+connects your LLM key, runs a hello-world task, and wires itself in with a
+companion project and persistent RAG memory, asking you before anything
+privileged.
+
+### One-command quickstart
 
 On a Linux host, one command installs any missing prerequisites, builds the
 daemon + CLI in an ephemeral container (no Go toolchain needed), starts

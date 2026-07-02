@@ -53,8 +53,7 @@ defaults are safe and local-first.
     If you use a coding agent (Claude Code, Codex, Gemini CLI, …), let it do
     everything on this page for you — paste this into your agent:
 
-    > Set up Vornik for me. Follow the runbook at
-    > https://raw.githubusercontent.com/grinco/vornik/main/AGENTS.md
+    > Set up Vornik for me. Follow the runbook at https://agents.vornik.io
 
     [AGENTS.md](https://github.com/grinco/vornik/blob/main/AGENTS.md) is an
     agent-executable runbook: install (via the same `get.vornik.io` script

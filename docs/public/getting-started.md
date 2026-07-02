@@ -19,8 +19,7 @@ first task.
 If you use a coding agent (Claude Code, Codex, Gemini CLI, …), let it do the
 whole thing — paste this:
 
-> Set up Vornik for me. Follow the runbook at
-> https://raw.githubusercontent.com/grinco/vornik/main/AGENTS.md
+> Set up Vornik for me. Follow the runbook at https://agents.vornik.io
 
 [AGENTS.md](https://github.com/grinco/vornik/blob/main/AGENTS.md) is an
 agent-executable runbook — every step is a command plus a verifiable check.

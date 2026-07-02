@@ -519,6 +519,21 @@
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
             text-rendering: optimizeLegibility;
+            /* Base page chrome driven by the theme CSS variables in THIS
+               static <style>, not by the body's Tailwind utility classes
+               (bg-surface-900/text-ink-100). Tailwind is the Play CDN, so
+               those utilities don't exist until the CDN JS runs — with JS
+               disabled the body was left unstyled and the browser painted the
+               unstyled main content per the OS scheme (dark on a dark-mode
+               OS), while the static-CSS nav stayed light. Sourcing the base
+               background/ink from :root (which defaults to light) here makes
+               the no-JS page render one consistent scheme. `data-theme` flips
+               these vars for JS-enabled users exactly as before; the identical
+               Tailwind utilities layer on top with no visual change. Regression:
+               2026-07-02 "menu light, main dark with JS disabled". */
+            background-color: rgb(var(--surface-900));
+            color: rgb(var(--ink-100));
+            min-height: 100vh;
         }
         h1, h2, h3, .font-display {
             font-family: 'Bricolage Grotesque', 'Hanken Grotesk', system-ui, sans-serif;

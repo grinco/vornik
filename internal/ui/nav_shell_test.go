@@ -252,6 +252,36 @@ func TestWave4ConsumesShellOffsetAndGlass(t *testing.T) {
 	}
 }
 
+// TestPageHeadNoJSBodyChromeIsThemed guards the JavaScript-disabled render.
+// Tailwind is the Play CDN (JS-generated), so with JS off the body's
+// `bg-surface-900`/`text-ink-100` utility classes produce no CSS and the main
+// content is left unstyled — the browser then paints it per the OS scheme
+// (dark on a dark-mode OS) while the static-CSS-styled nav stays light,
+// giving the reported light-menu/dark-main split. The fix drives the base
+// page chrome from the theme CSS variables in the STATIC <style> block so a
+// no-JS page renders as one consistent (light, via :root) scheme. Regression
+// for the 2026-07-02 "menu light, main dark with JS disabled" bug report.
+func TestPageHeadNoJSBodyChromeIsThemed(t *testing.T) {
+	css := renderTemplateString(t, "pageHead", map[string]any{"Title": "Test"})
+	// Strip the early-paint <script> so we only assert against static CSS —
+	// the whole point is that this works with JS disabled.
+	if i := strings.Index(css, "</script>"); i >= 0 {
+		css = css[i:]
+	}
+	// The static body rule must set a themed background + text colour from the
+	// surface/ink vars (which :root defaults to light), not rely on Tailwind
+	// utilities that only exist once the CDN JS runs.
+	for _, want := range []string{
+		"background-color: rgb(var(--surface-900))",
+		"color: rgb(var(--ink-100))",
+	} {
+		if !strings.Contains(css, want) {
+			t.Errorf("pageHead static CSS missing no-JS body chrome rule %q — "+
+				"body colours must come from the <style> block, not Tailwind utilities", want)
+		}
+	}
+}
+
 func TestPageHeadHasGlassTokensAndDarkDefault(t *testing.T) {
 	html := renderTemplateString(t, "pageHead", map[string]any{"Title": "Test"})
 	// Glass tokens defined.

@@ -143,6 +143,11 @@ vornikctl init project --template companion "companion-$USER" \
   --config-dir "$HOME/.config/vornik/configs"
 vornikctl config reload
 
+# Mint a key scoped to YOUR CLI. Native companion plugins exist for Claude Code
+# and Codex only, so set --client to match: claude-code OR codex. If you are
+# Codex, also pass --repo-scope=<canonical git remote, e.g. github.com/ORG/REPO>:
+# Codex has no SessionStart scope injector, so the key default backstops any
+# memory call that omits repo_scope (keeps chunks from landing NULL-scoped).
 vornikctl companion grant \
   --project="companion-$USER" \
   --client=claude-code \
@@ -155,26 +160,45 @@ vornikctl companion grant \
 **Check:** the grant prints a `sk-vornik-…` secret — it is shown once.
 Store it per rule 2 (next step), never in your transcript.
 
-### B3. Install the plugin
+### B3. Install the plugin (Claude Code / Codex only)
 
-The Claude Code plugin ships in this repo (`contrib/claude-code-companion`;
-Codex adapter: `contrib/codex-companion`). Have your user add to their
-shell profile:
+Native companion plugins are packaged for **Claude Code** and **Codex** only.
+First export the connection env in your shell profile (both clients):
 
 ```bash
 export VORNIK_URL="http://localhost:8080"
 export VORNIK_COMPANION_TOKEN="<the sk-vornik-… secret>"
 ```
 
-Then, inside Claude Code:
+**Claude Code** — the plugin ships in this repo (`contrib/claude-code-companion`).
+Inside the CLI:
 
 ```
 /plugin marketplace add <path-to-this-checkout>
 /plugin install vornik-companion@vornik
 ```
 
-Full install options and the MCP wiring:
-`contrib/claude-code-companion/README.md`.
+Full options and MCP wiring: `contrib/claude-code-companion/README.md`.
+
+**Codex** — the adapter ships in `contrib/codex-companion`. Register the
+companion MCP endpoint:
+
+```bash
+codex mcp add vornik \
+  --url http://localhost:8080/api/v1/mcp/companion \
+  --bearer-token-env-var VORNIK_COMPANION_TOKEN
+```
+
+Codex has no slash-command / SessionStart layer, so there is no `/plugin`
+step and no auto session digest — call the `mcp__vornik__*` tools directly
+(`catalog`, `recall`, `delegate`, `remember`, …). Full options:
+`contrib/codex-companion/README.md`.
+
+**Any other CLI** (Gemini CLI, opencode, …): there is **no** native companion
+plugin — packaging covers Claude Code and Codex only. Skip this step and drive
+the companion over plain HTTP (B4); the `remember` / `recall` / `delegate`
+methods all work as stateless JSON-RPC, so every CLI can use them without a
+plugin.
 
 ### B4. RAG round-trip smoke test
 
@@ -209,9 +233,12 @@ curl -fsS -X POST "$MCP" -H "$AUTH" -H 'Content-Type: application/json' -d '{
     "max_refutes":1}}}'
 ```
 
-After the plugin is installed, start a fresh session: your SessionStart
-digest will list finished delegations and recent project memory, and the
-`recall`/`remember`/`delegate` tools are available natively.
+Once wired in, start a fresh session. On **Claude Code** the plugin's
+SessionStart digest lists finished delegations and recent project memory, and
+`recall`/`remember`/`delegate` are available as native tools. On **Codex** the
+`mcp__vornik__*` tools are available natively (no session digest — call
+`recent_memory` yourself to catch up). On any **other CLI**, keep using the
+HTTP calls above.
 
 ---
 

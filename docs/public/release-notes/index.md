@@ -17,6 +17,61 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
 
 ---
 
+## 2026.7.0
+
+**A renamed, edition-aware platform with an AI-first install and a hardened
+memory/chat core.** This release completes the rename to **vornik**, introduces
+a clean Community/Enterprise edition seam, publishes the docs site, and lands a
+broad reliability pass across memory/RAG, chat providers, onboarding, and
+deployment.
+
+!!! warning "This release renames the product"
+    `swarmd` is now **vornik** and `swarmctl` is now **vornikctl**. Service
+    names, command names, config paths, environment variables, and dashboards
+    changed. Review your automation for the `swarmd` → `vornik` migration before
+    upgrading, and always take a backup first.
+
+- **Vornik rename, end to end.** Source, commands, environment variables,
+  metrics, deployment files, Helm chart, Grafana dashboards, configs, and docs
+  moved from `swarmd` to `vornik`; `swarmctl` is now `vornikctl`.
+- **Edition-aware builds.** The codebase now has a clean Community/Enterprise
+  seam: every feature carries a CE/EE tag (shown in the docs and enforced in
+  code), and the Community Edition builds and ships independently under
+  AGPL-3.0.
+- **Published documentation.** Public docs are now served at
+  <https://docs.vornik.io>, with per-page edition markers and expanded
+  onboarding, architecture, configuration, CLI, security, and support material.
+- **AI-first install.** `AGENTS.md` is now a runbook a coding agent can execute
+  and verify end to end (install → LLM key → first task → its own persistent
+  memory); the getting-started path makes the AI-assisted install the preferred
+  route (short link: `agents.vornik.io`).
+- **Sharper memory recall.** Multi-term recall now uses a strict full-text query
+  with a relaxed fallback and all-term matches ranked first; a reranker-gated,
+  round-isolated retrieval path improves context assembly, scoped to
+  non-interactive use so interactive recall stays fast. By-id correction is now
+  the preferred way to fix a stale or wrong memory.
+- **More resilient chat.** Long conversations are summarized instead of dropped
+  when context overflows, chat providers share a tuned HTTP transport, and
+  persistent-timeout handling engages provider fallback faster.
+- **Companion & MCP.** A first-party Codex companion plugin joins the Claude
+  companion; companion memory gained a `memory_correct` tool (including a
+  surgical by-id refute mode) plus input-validation and reliability hardening.
+- **Deployment quickstarts.** A one-command, pgvector-backed local playground
+  and a hardened installer (clean re-checkout, safe cleanup, literal DB port);
+  PostgreSQL + pgvector is the recommended backend for memory/RAG.
+- **Fixes & hardening.** Rate-limit minute/hour buckets no longer cross-sum;
+  no-JavaScript pages render one consistent color scheme; Postgres integration
+  tests honor `POSTGRES_PORT`.
+
+!!! note "Restart required"
+    Restart the daemon after upgrading to pick up the new behavior.
+
+Enterprise-edition capabilities (packaging and installers, SSO and admin
+surfaces, clustering, and more) also advanced this release — see the
+[Editions matrix](../editions.md) for what's included where.
+
+---
+
 ## 2026.6.1
 
 **A more visual control plane, safer to expose and support.** This release

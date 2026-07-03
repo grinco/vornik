@@ -1,7 +1,7 @@
 ---
 sources:
     - path: internal/ui/task_conversation.go
-      sha256: fcb55e7db3be5cfb3f5ef7a49723ad3c720d44782965aadcf4ce507fa369eb2c
+      sha256: 27c22e31861428f3fa537dc0e08d5136d37f3e17065b9ba21474bcd54da2c8a8
     - path: internal/registry/project.go
       sha256: a6b13685371ebdecfddfa9870a8ae7fc37653f83374519c7d9cb9dc6ec0aeb82
 ---

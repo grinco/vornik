@@ -3,7 +3,7 @@ sources:
     - path: internal/observability/metrics.go
       sha256: 71ab1bc0f72aea69510677c929b401a7ab7030c1371905197f6504c5a71c120b
     - path: internal/ui/spend.go
-      sha256: 94800af6c00c8266261e8a4f7d16bb35d80b91e7001203788fd71dc578a5ec67
+      sha256: 860869a2ef4addc750f96359cdaecdbd914f84f7c2bdafa2a52e769d74dde377
 ---
 # Observability
 

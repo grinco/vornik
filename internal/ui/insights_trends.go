@@ -394,9 +394,12 @@ func (s *Server) InsightsTrends(w http.ResponseWriter, r *http.Request) {
 
 	// Judge-verdict trend (pass/fail/abstain). Merge across the scope.
 	if s.judgeVerdictRepo != nil {
+		// SQL-bounded to the trend window (E1, audit 2026-07-03) instead of
+		// pulling trendSampleCap rows/project and bucketing the tail in Go.
+		trendSince := time.Now().Add(-time.Duration(trendDays) * 24 * time.Hour)
 		var verdicts []*persistence.TaskJudgeVerdict
 		for _, pid := range iter {
-			if rows, vErr := s.judgeVerdictRepo.ListRecent(ctx, pid, trendSampleCap); vErr == nil {
+			if rows, vErr := s.judgeVerdictRepo.ListRecentSince(ctx, pid, trendSince, trendSampleCap); vErr == nil {
 				verdicts = append(verdicts, rows...)
 			}
 		}

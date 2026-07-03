@@ -3,7 +3,6 @@ package ui
 import (
 	"context"
 	"net/http"
-	"sort"
 	"time"
 
 	"vornik.io/vornik/internal/api"
@@ -146,28 +145,19 @@ func countExecutionStatuses(execs []*persistence.Execution) map[persistence.Exec
 // executions counterpart to listTasksScoped, for a project-scoped
 // session with no explicit project filter.
 func (s *Server) listExecutionsScoped(ctx context.Context, projects []string, base persistence.ExecutionFilter) []*persistence.Execution {
-	var merged []*persistence.Execution
-	for _, p := range projects {
-		f := base
-		pid := p
-		f.ProjectID = &pid
-		rows, err := s.execRepo.List(ctx, f)
-		if err != nil {
-			s.logger.Warn().Err(err).Str("project_id", p).Msg("scoped execution list failed for project")
-			continue
-		}
-		merged = append(merged, rows...)
+	if len(projects) == 0 {
+		return nil
 	}
-	sort.SliceStable(merged, func(i, j int) bool {
-		if merged[i] == nil || merged[j] == nil {
-			return merged[j] == nil && merged[i] != nil
-		}
-		return merged[i].CreatedAt.After(merged[j].CreatedAt)
-	})
-	if base.PageSize > 0 && len(merged) > base.PageSize {
-		merged = merged[:base.PageSize]
+	// One query with project_id IN (...) so the DB does the merge/sort/limit,
+	// instead of a full PageSize page per project fetched then re-sorted and
+	// truncated in Go (E3, audit 2026-07-03).
+	base.ProjectIDs = projects
+	rows, err := s.execRepo.List(ctx, base)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("scoped execution list failed")
+		return nil
 	}
-	return merged
+	return rows
 }
 
 // listExecutionsForScope returns the execution sample for a resolved
@@ -251,18 +241,15 @@ func (s *Server) ExecutionsList(w http.ResponseWriter, r *http.Request) {
 	// auth-filtered page. Mirrors tasks.go.
 	var counts map[persistence.ExecutionStatus]int64
 	if s.execRepo != nil && (projectID != "" || requestHasAllProjectAccess(r)) {
+		// One grouped query instead of one Count() per status (E4, audit
+		// 2026-07-03). CountByStatus handles the empty-project global case
+		// ($1 = '' OR project_id = $1); mirrors tasks.go.
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
-		counts = map[persistence.ExecutionStatus]int64{}
-		for _, st := range executionStatusOrder {
-			stCopy := st
-			cf := persistence.ExecutionFilter{Status: &stCopy}
-			if projectID != "" {
-				cf.ProjectID = &projectID
-			}
-			if n, err := s.execRepo.Count(ctx, cf); err == nil {
-				counts[st] = n
-			}
+		if c, err := s.execRepo.CountByStatus(ctx, projectID); err == nil {
+			counts = c
+		} else {
+			counts = countExecutionStatuses(execs)
 		}
 	} else {
 		counts = countExecutionStatuses(execs)

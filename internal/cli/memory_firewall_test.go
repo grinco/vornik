@@ -28,7 +28,7 @@ func resetMemoryFirewallFlags() {
 
 func TestRunMemoryFirewallMode_HumanReadable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/admin/memory/policy/mode" {
+		if r.URL.Path != "/api/v1/memory/policy/mode" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(firewallModeResp{
@@ -70,7 +70,7 @@ func TestRunMemoryFirewallMode_Non200IsAPIError(t *testing.T) {
 
 func TestRunMemoryFirewallEvals_ForwardsFiltersAndRenders(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/admin/memory/policy/evaluations" {
+		if r.URL.Path != "/api/v1/memory/policy/evaluations" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
 		q := r.URL.Query()
@@ -122,7 +122,7 @@ func TestRunMemoryFirewallEvals_Empty(t *testing.T) {
 
 func TestRunMemoryFirewallSetPolicy_ForwardsBodyAndRenders(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/admin/memory/policy/chunks/chunk-1" {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/memory/policy/chunks/chunk-1" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 		var req chunkPolicyUpdateRequest

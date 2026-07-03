@@ -407,7 +407,7 @@ func (c *Container) initScheduler() error {
 		// ledger. nil-safe (sqlite branch leaves this nil; handler
 		// returns errCrossProjectDisabled which the workflow's
 		// on_fail branch handles cleanly).
-		executor.WithCrossProjectCallRepository(c.repos.CrossProjectCalls),
+		executor.WithCrossProjectCallRepository(c.crossProjectCallRepo()),
 		// Inter-project orchestration Phase B — spawn_project
 		// lineage + template catalog + configs root + the
 		// registry-reload trigger. All optional individually —

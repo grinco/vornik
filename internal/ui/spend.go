@@ -498,16 +498,14 @@ func (s *Server) Spend(w http.ResponseWriter, r *http.Request) {
 	// repo / query error degrades to an empty rollup rather than
 	// blocking the rest of the spend page.
 	if s.judgeVerdictRepo != nil {
-		// 5000-row cap is generous: judge fires once per
-		// terminal task, so even a project doing 1000
-		// tasks/week needs only ~30 days of headroom. Walking
-		// the result set in Go to filter by window keeps the
-		// repo surface narrow (no need for a second SQL query
-		// shape) at the cost of one extra string compare per
-		// row, which is negligible.
+		// Window-bounded in SQL (E1, audit 2026-07-03): ListRecentSince
+		// applies recorded_at >= since via the (project_id, recorded_at)
+		// index, so the page transfers only the active window's rows instead
+		// of the full 5000-row cap then filtering in Go. The cap remains a
+		// safety ceiling.
 		var verdicts []*persistence.TaskJudgeVerdict
 		for _, pid := range iter {
-			v, err := s.judgeVerdictRepo.ListRecent(ctx, pid, 5000)
+			v, err := s.judgeVerdictRepo.ListRecentSince(ctx, pid, since, 5000)
 			if err != nil {
 				s.logger.Warn().Err(err).Str("project_id", pid).Msg("spend: failed to load judge verdicts for hallucination rollup")
 				continue

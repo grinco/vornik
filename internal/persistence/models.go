@@ -1976,20 +1976,31 @@ type ExecutionStepOutcomeFilter struct {
 	ProjectID   *string
 	TaskID      *string
 	ExecutionID *string
-	StepID      *string
-	Role        *string
-	Model       *string
-	Outcome     *string
-	Since       *time.Time
-	Until       *time.Time
-	PageSize    int
-	Offset      int
+	// ExecutionIDs matches any of several executions in one query
+	// (execution_id IN (...)). Lets callers avoid a per-execution N+1 when
+	// gathering evidence across a run set. Combined with ExecutionID it
+	// further narrows (both predicates apply). Empty slice = no constraint.
+	ExecutionIDs []string
+	StepID       *string
+	Role         *string
+	Model        *string
+	Outcome      *string
+	Since        *time.Time
+	Until        *time.Time
+	PageSize     int
+	Offset       int
 }
 
 // TaskFilter defines filtering options for task queries.
 type TaskFilter struct {
 	ProjectID *string
-	Status    *TaskStatus
+	// ProjectIDs matches any of several projects in one query
+	// (project_id IN (...)). Lets a project-scoped session list its allowed
+	// projects with a single DB round-trip instead of one query per project
+	// then a Go-side merge. Empty = no constraint. Combined with ProjectID,
+	// both predicates apply.
+	ProjectIDs []string
+	Status     *TaskStatus
 	// UpdatedBefore is the upper bound on tasks.updated_at. Used by
 	// the closure-grace scan (2026-05-29) to avoid fetching the full
 	// COMPLETED slice every tick when only stale-enough tasks
@@ -2004,10 +2015,14 @@ type TaskFilter struct {
 // ExecutionFilter defines filtering options for execution queries.
 type ExecutionFilter struct {
 	ProjectID *string
-	TaskID    *string
-	Status    *ExecutionStatus
-	PageSize  int
-	Offset    int
+	// ProjectIDs matches any of several projects in one query
+	// (project_id IN (...)) — see TaskFilter.ProjectIDs. Empty = no
+	// constraint.
+	ProjectIDs []string
+	TaskID     *string
+	Status     *ExecutionStatus
+	PageSize   int
+	Offset     int
 }
 
 // ArtifactFilter defines filtering options for artifact queries.

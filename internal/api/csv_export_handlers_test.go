@@ -64,6 +64,10 @@ func (m *mockTaskRepository) FindExpiredLeases(ctx context.Context, limit int) (
 func (m *mockTaskRepository) CountByStatus(ctx context.Context, projectID string) (map[persistence.TaskStatus]int64, error) {
 	return nil, nil
 }
+func (m *mockTaskRepository) CountRecentFailuresByProject(context.Context, []string, time.Time) (map[string]int, error) {
+	return nil, nil
+}
+
 func (m *mockTaskRepository) CountRecentFailures(ctx context.Context, projectID string, errorClasses []string, since time.Time) (int, error) {
 	return 0, nil
 }

@@ -112,6 +112,10 @@ func (s *stubVerdictRepo) Record(context.Context, *persistence.TaskJudgeVerdict)
 func (s *stubVerdictRepo) GetByTask(context.Context, string) (*persistence.TaskJudgeVerdict, error) {
 	return nil, nil
 }
+func (s *stubVerdictRepo) ListRecentSince(ctx context.Context, projectID string, _ time.Time, limit int) ([]*persistence.TaskJudgeVerdict, error) {
+	return s.ListRecent(ctx, projectID, limit)
+}
+
 func (s *stubVerdictRepo) ListRecent(context.Context, string, int) ([]*persistence.TaskJudgeVerdict, error) {
 	return s.rows, nil
 }

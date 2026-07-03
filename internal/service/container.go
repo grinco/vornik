@@ -2097,3 +2097,15 @@ func Run(version, buildDate, edition string, providers ProviderSet) error {
 	// Run until shutdown
 	return container.Run(ctx)
 }
+
+// crossProjectCallRepo returns the CPC ledger repository only when this edition
+// provides inter-project orchestration (providers.CrossProject). Community
+// returns nil, so the executor's `call_project` step returns
+// errCrossProjectDisabled and the CPC admin/UI surfaces have no ledger —
+// making cross-project orchestration Enterprise-only (editions matrix, CPC row).
+func (c *Container) crossProjectCallRepo() persistence.CrossProjectCallRepository {
+	if c == nil || !c.providers.CrossProject || c.repos == nil {
+		return nil
+	}
+	return c.repos.CrossProjectCalls
+}

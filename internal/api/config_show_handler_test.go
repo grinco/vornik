@@ -171,15 +171,25 @@ func Test_GetConfig_D1_PublicWebUIBaseURLNotRedacted(t *testing.T) {
 		"web_ui_base_url is a public key and must NOT be redacted by the url token")
 }
 
-func Test_GetConfig_RequiresAdmin(t *testing.T) {
-	cfg := &config.Config{}
-	server := NewServer(WithLogger(zerolog.Nop()), WithConfig(cfg), WithAdminConfig(config.AdminConfig{
-		Enabled:     true,
-		AllowedKeys: []string{"sk-admin"},
-	}))
+// config-show is a Community operator surface (moved off requireAdminGate
+// 2026-07-03): a project-scoped tenant key must not read daemon-wide config
+// (404, no leak), but an all-access operator/admin caller may — which is what
+// makes `vornikctl config` work in Community Edition.
+func Test_GetConfig_DeniesProjectScopedTenant(t *testing.T) {
+	server := NewServer(WithLogger(zerolog.Nop()), WithConfig(&config.Config{}))
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
-	req = req.WithContext(context.WithValue(req.Context(), apiKeyKey, "sk-project"))
+	req = req.WithContext(ContextWithProjectScope(req.Context(), "proj-a"))
 	rec := httptest.NewRecorder()
 	server.GetConfig(rec, req)
-	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func Test_GetConfig_AllowsOperator(t *testing.T) {
+	server := NewServer(WithLogger(zerolog.Nop()), WithConfig(&config.Config{}))
+	// Auth enabled, no project scope = all-access operator/admin key.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
+	req = req.WithContext(context.WithValue(req.Context(), authEnabledKey, true))
+	rec := httptest.NewRecorder()
+	server.GetConfig(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
 }

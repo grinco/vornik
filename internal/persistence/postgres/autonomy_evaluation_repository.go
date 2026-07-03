@@ -138,6 +138,31 @@ func (r *AutonomyEvaluationRepository) CountByOutcome(ctx context.Context, proje
 	return out, rows.Err()
 }
 
+// LatestByProject returns the newest evaluation per project in one query
+// (E2, audit 2026-07-03).
+func (r *AutonomyEvaluationRepository) LatestByProject(ctx context.Context) (map[string]*persistence.AutonomyEvaluation, error) {
+	query := `
+		SELECT DISTINCT ON (project_id)
+		       id, project_id, outcome, reason, task_id,
+		       task_type, workflow_id, prompt_hash, duration_ms, created_at
+		FROM autonomy_evaluations
+		ORDER BY project_id, created_at DESC`
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[string]*persistence.AutonomyEvaluation)
+	for rows.Next() {
+		e, err := scanAutonomyEvaluation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[e.ProjectID] = e
+	}
+	return out, rows.Err()
+}
+
 func scanAutonomyEvaluation(scanner interface {
 	Scan(dest ...any) error
 }) (*persistence.AutonomyEvaluation, error) {

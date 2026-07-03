@@ -175,7 +175,7 @@ type firewallEvalRow struct {
 
 func runMemoryFirewallMode(_ *cobra.Command, _ []string) error {
 	client := ClientFromEnv()
-	resp, err := client.Get("/api/v1/admin/memory/policy/mode")
+	resp, err := client.Get("/api/v1/memory/policy/mode")
 	if err != nil {
 		return fmt.Errorf("memory firewall mode: request failed: %w", err)
 	}
@@ -217,7 +217,7 @@ func runMemoryFirewallEvals(_ *cobra.Command, _ []string) error {
 	// window vs 7 for JSON). Body streamed verbatim so the
 	// RFC-4180 line endings + escaping survive shell
 	// redirection (vornikctl ... --csv > compliance.csv).
-	base := "/api/v1/admin/memory/policy/evaluations"
+	base := "/api/v1/memory/policy/evaluations"
 	if mfEvalsCSV {
 		base += ".csv"
 	}
@@ -325,7 +325,7 @@ func runMemoryFirewallSetPolicy(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("memory firewall set-policy: marshal: %w", err)
 	}
 	client := ClientFromEnv()
-	resp, err := client.Post("/api/v1/admin/memory/policy/chunks/"+url.PathEscape(chunkID), json.RawMessage(body))
+	resp, err := client.Post("/api/v1/memory/policy/chunks/"+url.PathEscape(chunkID), json.RawMessage(body))
 	if err != nil {
 		return fmt.Errorf("memory firewall set-policy: request failed: %w", err)
 	}

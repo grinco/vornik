@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -200,5 +201,15 @@ func TestClientFromEnv_BadTimeoutFallsBackToDefault(t *testing.T) {
 	c := ClientFromEnv()
 	if c.httpClient.Timeout != DefaultAPITimeout {
 		t.Errorf("bad VORNIK_API_TIMEOUT must fall back to default; got Timeout = %v", c.httpClient.Timeout)
+	}
+}
+
+// TestAPIError_EditionUnsupported — a typed 501 EDITION_UNSUPPORTED renders as
+// an "Enterprise-only" line so operators know it's an edition limit, not a bug.
+func TestAPIError_EditionUnsupported(t *testing.T) {
+	e := &APIError{StatusCode: 501, Code: "EDITION_UNSUPPORTED", Message: "admin suite is Enterprise-only"}
+	got := e.Error()
+	if !strings.HasPrefix(got, "Enterprise-only feature:") {
+		t.Fatalf("want an Enterprise-only message, got %q", got)
 	}
 }

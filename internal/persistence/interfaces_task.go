@@ -111,6 +111,12 @@ type TaskRepository interface {
 	// a stuck loop can't burn through the budget.
 	CountRecentFailures(ctx context.Context, projectID string, errorClasses []string, since time.Time) (int, error)
 
+	// CountRecentFailuresByProject returns recent-failure counts for every
+	// project in one grouped query, keyed by project_id. Lets the dashboard
+	// tally failures across projects without a CountRecentFailures call per
+	// project (E2, audit 2026-07-03). Same errorClasses / since semantics.
+	CountRecentFailuresByProject(ctx context.Context, errorClasses []string, since time.Time) (map[string]int, error)
+
 	// GetChildren retrieves all child tasks of a parent task.
 	GetChildren(ctx context.Context, parentTaskID string) ([]*Task, error)
 
@@ -593,6 +599,10 @@ type TaskJudgeVerdictRepository interface {
 	// projects when projectID is empty), newest first, capped at
 	// limit. Powers the per-role hallucination-score rollup.
 	ListRecent(ctx context.Context, projectID string, limit int) ([]*TaskJudgeVerdict, error)
+	// ListRecentSince is ListRecent bounded to recorded_at >= since, so a
+	// windowed insight page applies its time filter in SQL (indexed) instead
+	// of fetching a large cap and filtering in Go (E1, audit 2026-07-03).
+	ListRecentSince(ctx context.Context, projectID string, since time.Time, limit int) ([]*TaskJudgeVerdict, error)
 }
 
 // TaskPostMortemRepository persists LLM-generated failure

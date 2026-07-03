@@ -106,7 +106,7 @@ func WithMemoryFirewallProjectModeFn(fn func(projectID string) (memoryfirewall.E
 // 400 BAD_REQUEST       — required project_id missing.
 // 200 + list + count    — paged evaluation rows, newest first.
 func (s *Server) AdminMemoryFirewallEvaluations(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminGate(w, r) {
+	if !s.requireOperatorScope(w, r) {
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -173,7 +173,7 @@ func (s *Server) AdminMemoryFirewallEvaluations(w http.ResponseWriter, r *http.R
 // 400 BAD_REQUEST       — empty digest in path.
 // 200 + list + count    — evaluation rows for the digest, newest first.
 func (s *Server) AdminMemoryFirewallEvaluationsByDigest(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminGate(w, r) {
+	if !s.requireOperatorScope(w, r) {
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -254,7 +254,7 @@ type chunkPolicyUpdateResponse struct {
 // 404 CHUNK_NOT_FOUND   — UpdateChunkPolicy affected 0 rows.
 // 200 + new policy      — success.
 func (s *Server) AdminMemoryFirewallChunkPolicy(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminGate(w, r) {
+	if !s.requireOperatorScope(w, r) {
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -412,7 +412,7 @@ func policyFromChunkRow(row ChunkPolicyRow) memoryfirewall.Policy {
 // Default window 30 days (vs 7 for JSON) since CSV exports
 // usually drive monthly compliance reports.
 func (s *Server) AdminMemoryFirewallEvaluationsCSV(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminGate(w, r) {
+	if !s.requireOperatorScope(w, r) {
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -505,7 +505,7 @@ func (s *Server) AdminMemoryFirewallEvaluationsCSV(w http.ResponseWriter, r *htt
 // follow-on, 2026.5.9). The operator UI uses this to render a
 // status chip on the firewall landing page.
 func (s *Server) AdminMemoryFirewallMode(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdminGate(w, r) {
+	if !s.requireOperatorScope(w, r) {
 		return
 	}
 	if r.Method != http.MethodGet {

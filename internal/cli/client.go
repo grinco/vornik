@@ -158,6 +158,17 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
+	// Edition gate: the daemon returns 501 EDITION_UNSUPPORTED for admin-suite
+	// routes that aren't built into Community Edition. Render a clear, actionable
+	// line instead of a raw "API error 501" so operators know it's an edition
+	// limitation, not a bug or a broken endpoint.
+	if e.Code == "EDITION_UNSUPPORTED" {
+		msg := e.Message
+		if msg == "" {
+			msg = "this feature is not available in Community Edition"
+		}
+		return "Enterprise-only feature: " + msg
+	}
 	switch {
 	case e.Code != "" && e.Message != "":
 		return fmt.Sprintf("API error %d (%s): %s", e.StatusCode, e.Code, e.Message)

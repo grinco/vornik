@@ -204,6 +204,15 @@ func (r *TaskRepository) List(ctx context.Context, filter persistence.TaskFilter
 		args = append(args, *filter.ProjectID)
 		argPos++
 	}
+	if len(filter.ProjectIDs) > 0 {
+		placeholders := make([]string, len(filter.ProjectIDs))
+		for i, id := range filter.ProjectIDs {
+			placeholders[i] = fmt.Sprintf("$%d", argPos)
+			args = append(args, id)
+			argPos++
+		}
+		query += " AND project_id IN (" + strings.Join(placeholders, ", ") + ")"
+	}
 	if filter.Status != nil {
 		query += fmt.Sprintf(" AND status = $%d", argPos)
 		args = append(args, *filter.Status)
@@ -853,6 +862,41 @@ func (r *TaskRepository) CountRecentFailures(ctx context.Context, projectID stri
 		return 0, mapDBError(err)
 	}
 	return count, nil
+}
+
+// CountRecentFailuresByProject returns recent-failure counts per project in
+// one grouped query (E2, audit 2026-07-03).
+func (r *TaskRepository) CountRecentFailuresByProject(ctx context.Context, errorClasses []string, since time.Time) (map[string]int, error) {
+	query := `
+		SELECT project_id, COUNT(*)
+		FROM tasks
+		WHERE status = 'FAILED'
+		  AND updated_at >= $1`
+	args := []any{since}
+	if len(errorClasses) > 0 {
+		placeholders := make([]string, len(errorClasses))
+		for i, c := range errorClasses {
+			placeholders[i] = fmt.Sprintf("$%d", len(args)+1)
+			args = append(args, c)
+		}
+		query += " AND last_error_class IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	query += " GROUP BY project_id"
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[string]int)
+	for rows.Next() {
+		var pid string
+		var n int
+		if err := rows.Scan(&pid, &n); err != nil {
+			return nil, err
+		}
+		out[pid] = n
+	}
+	return out, rows.Err()
 }
 
 // GetChildren returns child tasks for a parent.

@@ -88,6 +88,51 @@ func (r *TaskJudgeVerdictRepository) GetByTask(ctx context.Context, taskID strin
 // ListRecent returns the newest verdicts for a project (or
 // every project when projectID is empty), capped at limit.
 // Powers the rollup tile + dashboards.
+// ListRecentSince is ListRecent bounded to recorded_at >= since (E1, audit
+// 2026-07-03). The (project_id, recorded_at DESC) access path serves the
+// predicate, so the window is applied in SQL instead of in Go.
+func (r *TaskJudgeVerdictRepository) ListRecentSince(ctx context.Context, projectID string, since time.Time, limit int) ([]*persistence.TaskJudgeVerdict, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	query := `
+		SELECT id, project_id, task_id, role, model, verdict,
+		       confidence, signals, summary, cost_usd, recorded_at
+		FROM task_judge_verdicts
+		WHERE recorded_at >= $1`
+	args := []any{since}
+	pos := 2
+	if projectID != "" {
+		query += fmt.Sprintf(" AND project_id = $%d", pos)
+		args = append(args, projectID)
+		pos++
+	}
+	query += fmt.Sprintf(" ORDER BY recorded_at DESC LIMIT $%d", pos)
+	args = append(args, limit)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*persistence.TaskJudgeVerdict
+	for rows.Next() {
+		v := &persistence.TaskJudgeVerdict{}
+		var signals []byte
+		if err := rows.Scan(
+			&v.ID, &v.ProjectID, &v.TaskID, &v.Role, &v.Model, &v.Verdict,
+			&v.Confidence, &signals, &v.Summary, &v.CostUSD, &v.RecordedAt,
+		); err != nil {
+			return nil, err
+		}
+		if len(signals) > 0 {
+			v.Signals = signals
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 func (r *TaskJudgeVerdictRepository) ListRecent(ctx context.Context, projectID string, limit int) ([]*persistence.TaskJudgeVerdict, error) {
 	if limit <= 0 {
 		limit = 50

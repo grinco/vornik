@@ -28,6 +28,10 @@ func (f *fakeJudgeVerdictRepo) Record(context.Context, *persistence.TaskJudgeVer
 func (f *fakeJudgeVerdictRepo) GetByTask(context.Context, string) (*persistence.TaskJudgeVerdict, error) {
 	return f.v, nil
 }
+func (f *fakeJudgeVerdictRepo) ListRecentSince(ctx context.Context, projectID string, _ time.Time, limit int) ([]*persistence.TaskJudgeVerdict, error) {
+	return f.ListRecent(ctx, projectID, limit)
+}
+
 func (f *fakeJudgeVerdictRepo) ListRecent(context.Context, string, int) ([]*persistence.TaskJudgeVerdict, error) {
 	return nil, nil
 }

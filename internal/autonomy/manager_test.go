@@ -83,6 +83,10 @@ func (m *mockTaskRepo) FindExpiredLeases(context.Context, int) ([]*persistence.T
 func (m *mockTaskRepo) CountByStatus(context.Context, string) (map[persistence.TaskStatus]int64, error) {
 	return nil, nil
 }
+func (m *mockTaskRepo) CountRecentFailuresByProject(context.Context, []string, time.Time) (map[string]int, error) {
+	return nil, nil
+}
+
 func (m *mockTaskRepo) CountRecentFailures(context.Context, string, []string, time.Time) (int, error) {
 	return 0, nil
 }
@@ -854,6 +858,10 @@ func (l *listMockEvalRepo) List(_ context.Context, _ persistence.AutonomyEvaluat
 	copy(out, l.recent)
 	return out, nil
 }
+func (l *listMockEvalRepo) LatestByProject(context.Context) (map[string]*persistence.AutonomyEvaluation, error) {
+	return nil, nil
+}
+
 func (l *listMockEvalRepo) CountByOutcome(_ context.Context, _ string, _, _ time.Time) (map[string]int64, error) {
 	return nil, nil
 }
@@ -927,6 +935,10 @@ func (c *captureEvalRepo) Record(_ context.Context, e *persistence.AutonomyEvalu
 func (c *captureEvalRepo) List(_ context.Context, _ persistence.AutonomyEvaluationFilter) ([]*persistence.AutonomyEvaluation, error) {
 	return nil, nil
 }
+func (c *captureEvalRepo) LatestByProject(context.Context) (map[string]*persistence.AutonomyEvaluation, error) {
+	return nil, nil
+}
+
 func (c *captureEvalRepo) CountByOutcome(_ context.Context, _ string, _, _ time.Time) (map[string]int64, error) {
 	return nil, nil
 }

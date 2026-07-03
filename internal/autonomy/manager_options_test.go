@@ -479,6 +479,10 @@ func (s *stubEvalRepo) Record(_ context.Context, e *persistence.AutonomyEvaluati
 func (s *stubEvalRepo) List(_ context.Context, _ persistence.AutonomyEvaluationFilter) ([]*persistence.AutonomyEvaluation, error) {
 	return nil, nil
 }
+func (s *stubEvalRepo) LatestByProject(context.Context) (map[string]*persistence.AutonomyEvaluation, error) {
+	return nil, nil
+}
+
 func (s *stubEvalRepo) CountByOutcome(_ context.Context, _ string, _, _ time.Time) (map[string]int64, error) {
 	return nil, nil
 }

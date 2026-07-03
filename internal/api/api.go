@@ -609,6 +609,13 @@ type Server struct {
 	// adminConfig carries the daemon's admin block; the endpoint
 	// gate reads it to decide 404 / 401 / 403 / 200.
 	adminConfig config.AdminConfig
+	// adminSurfacePresent is true when this edition ships the admin surface
+	// (Enterprise). Set by WithAdminConfig, which the service container calls
+	// ONLY inside its `providers.Admin` (edition) gate — so its being set is
+	// itself the edition signal. Community leaves it false, letting
+	// requireAdminGate return a typed 501 EDITION_UNSUPPORTED (not a bare 404)
+	// so the CLI can say "Enterprise-only" instead of "404 page not found".
+	adminSurfacePresent bool
 	// instinctRepo backs the instinct surfaces (continuous-learning
 	// instinct layer): GET /api/v1/instincts (list + filter), GET
 	// /api/v1/instincts/{id}, POST /api/v1/instincts/{id}/retire, and
@@ -1450,6 +1457,12 @@ func WithLeaderLockRepository(repo persistence.DaemonLeaderLockRepository) Serve
 func WithAdminConfig(cfg config.AdminConfig) ServerOption {
 	return func(s *Server) {
 		s.adminConfig = cfg
+		// Reaching WithAdminConfig means the service container passed its
+		// providers.Admin edition gate — i.e. this is Enterprise. Record that
+		// so requireAdminGate distinguishes "admin surface not in this edition"
+		// (Community → 501 EDITION_UNSUPPORTED) from "admin present but disabled
+		// in config" (Enterprise → 404).
+		s.adminSurfacePresent = true
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"testing"
 	"time"
 
@@ -183,6 +184,21 @@ type stubScopeTaskRepo struct {
 }
 
 func (s *stubScopeTaskRepo) List(_ context.Context, f persistence.TaskFilter) ([]*persistence.Task, error) {
+	// New single-query scoped path (E3): project_id IN (ids), ORDER BY
+	// created_at DESC, LIMIT PageSize — modelled here so the stub matches
+	// what the real repositories return.
+	if len(f.ProjectIDs) > 0 {
+		var out []*persistence.Task
+		for _, pid := range f.ProjectIDs {
+			s.calls = append(s.calls, pid)
+			out = append(out, s.byProject[pid]...)
+		}
+		sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+		if f.PageSize > 0 && len(out) > f.PageSize {
+			out = out[:f.PageSize]
+		}
+		return out, nil
+	}
 	if f.ProjectID == nil {
 		s.calls = append(s.calls, "*")
 		var all []*persistence.Task
@@ -244,6 +260,19 @@ type stubScopeExecRepo struct {
 }
 
 func (s *stubScopeExecRepo) List(_ context.Context, f persistence.ExecutionFilter) ([]*persistence.Execution, error) {
+	// New single-query scoped path (E3) — see stubScopeTaskRepo.List.
+	if len(f.ProjectIDs) > 0 {
+		var out []*persistence.Execution
+		for _, pid := range f.ProjectIDs {
+			s.calls = append(s.calls, pid)
+			out = append(out, s.byProject[pid]...)
+		}
+		sort.SliceStable(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+		if f.PageSize > 0 && len(out) > f.PageSize {
+			out = out[:f.PageSize]
+		}
+		return out, nil
+	}
 	if f.ProjectID == nil {
 		s.calls = append(s.calls, "*")
 		var all []*persistence.Execution

@@ -169,6 +169,17 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 		b.WriteString(" AND execution_id = ?")
 		args = append(args, *f.ExecutionID)
 	}
+	if len(f.ExecutionIDs) > 0 {
+		b.WriteString(" AND execution_id IN (")
+		for i, id := range f.ExecutionIDs {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString("?")
+			args = append(args, id)
+		}
+		b.WriteString(")")
+	}
 	if f.StepID != nil {
 		b.WriteString(" AND step_id = ?")
 		args = append(args, *f.StepID)

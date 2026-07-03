@@ -68,6 +68,10 @@ type MockTaskRepository struct {
 	// count for circuit-breaker exercises.
 	CountRecentFailuresFunc func(ctx context.Context, projectID string, errorClasses []string, since time.Time) (int, error)
 
+	// CountRecentFailuresByProjectFunc lets tests dictate the grouped
+	// per-project failure tally; nil returns an empty map.
+	CountRecentFailuresByProjectFunc func(ctx context.Context, errorClasses []string, since time.Time) (map[string]int, error)
+
 	// GetChildrenFunc is the function called for GetChildren.
 	GetChildrenFunc func(ctx context.Context, parentTaskID string) ([]*persistence.Task, error)
 
@@ -279,6 +283,15 @@ func (m *MockTaskRepository) CountRecentFailures(ctx context.Context, projectID 
 		return m.CountRecentFailuresFunc(ctx, projectID, errorClasses, since)
 	}
 	return 0, nil
+}
+
+// CountRecentFailuresByProject implements TaskRepository. Returns an empty
+// map by default; set CountRecentFailuresByProjectFunc to override.
+func (m *MockTaskRepository) CountRecentFailuresByProject(ctx context.Context, errorClasses []string, since time.Time) (map[string]int, error) {
+	if m.CountRecentFailuresByProjectFunc != nil {
+		return m.CountRecentFailuresByProjectFunc(ctx, errorClasses, since)
+	}
+	return map[string]int{}, nil
 }
 
 // GetChildren implements TaskRepository.

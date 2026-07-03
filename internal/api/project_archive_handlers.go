@@ -225,8 +225,14 @@ func apiArchivePrincipal(r *http.Request) string {
 	if p := apiKeyPrincipalFromContext(r.Context()); p != "" {
 		return p
 	}
-	if op := r.Header.Get("X-Operator-Id"); op != "" {
-		return op
+	// Honor the X-Operator-Id header only when auth is disabled — single-
+	// tenant tooling that authenticates via a shared key but identifies its
+	// operator via header. With auth enabled the header is caller-controlled
+	// and must not set the audit-row principal (S4, audit 2026-07-03).
+	if !IsAuthEnabledFromContext(r.Context()) {
+		if op := r.Header.Get("X-Operator-Id"); op != "" {
+			return op
+		}
 	}
 	return ""
 }

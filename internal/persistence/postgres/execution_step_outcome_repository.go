@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"vornik.io/vornik/internal/persistence"
@@ -210,6 +211,15 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 		query += fmt.Sprintf(" AND execution_id = $%d", pos)
 		args = append(args, *f.ExecutionID)
 		pos++
+	}
+	if len(f.ExecutionIDs) > 0 {
+		placeholders := make([]string, len(f.ExecutionIDs))
+		for i, id := range f.ExecutionIDs {
+			placeholders[i] = fmt.Sprintf("$%d", pos)
+			args = append(args, id)
+			pos++
+		}
+		query += " AND execution_id IN (" + strings.Join(placeholders, ", ") + ")"
 	}
 	if f.StepID != nil {
 		query += fmt.Sprintf(" AND step_id = $%d", pos)

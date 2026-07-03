@@ -213,6 +213,10 @@ func (m *mockTaskRepo) CountByStatus(ctx context.Context, projectID string) (map
 	return nil, nil
 }
 
+func (m *mockTaskRepo) CountRecentFailuresByProject(context.Context, []string, time.Time) (map[string]int, error) {
+	return nil, nil
+}
+
 func (m *mockTaskRepo) CountRecentFailures(ctx context.Context, projectID string, errorClasses []string, since time.Time) (int, error) {
 	return 0, nil
 }

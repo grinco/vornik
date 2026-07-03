@@ -48,6 +48,10 @@ type extendedJudgeVerdictRepo struct {
 	listErr  error
 }
 
+func (e *extendedJudgeVerdictRepo) ListRecentSince(ctx context.Context, projectID string, _ time.Time, limit int) ([]*persistence.TaskJudgeVerdict, error) {
+	return e.ListRecent(ctx, projectID, limit)
+}
+
 func (e *extendedJudgeVerdictRepo) ListRecent(context.Context, string, int) ([]*persistence.TaskJudgeVerdict, error) {
 	return e.listRows, e.listErr
 }

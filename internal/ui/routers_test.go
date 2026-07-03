@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/mocks"
 )
 
@@ -99,7 +100,15 @@ func TestWorkflowRouter_Unknown_NotFound(t *testing.T) {
 // --- taskRouter ------------------------------------------------------
 
 func TestTaskRouter_DispatchesAllKnownSuffixes(t *testing.T) {
-	srv := NewServer(WithTaskRepository(&mocks.MockTaskRepository{}))
+	// Get returns a task so the scope-gated handlers (events SSE fail-closed,
+	// conversation actions) pass their gate and reach their body instead of
+	// 404-ing on a missing task — we are pinning the dispatch decision, not
+	// the gate. Empty ProjectID keeps RequestAllowsProject permissive.
+	srv := NewServer(WithTaskRepository(&mocks.MockTaskRepository{
+		GetFunc: func(_ context.Context, id string) (*persistence.Task, error) {
+			return &persistence.Task{ID: id}, nil
+		},
+	}))
 	// Some downstream handlers (logs/stream, events) are streaming
 	// loops; we give every dispatch an already-cancelled context so
 	// they return immediately. The dispatch decision is what we're

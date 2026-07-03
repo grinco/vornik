@@ -1621,6 +1621,14 @@ func resolveResumeFromFile(params map[string]any, projectDir string) string {
 // A token is "grounded" when it appears as a case-insensitive substring of
 // the resume. We do NOT attempt fuzzy matching — the resume is authoritative
 // text, so exact (modulo case) presence is the correct bar.
+// Compiled once at package init rather than per evalCVClaims call (E1/E5,
+// audit 2026-07-03) — cvSentenceSplitRE splits on sentence boundaries;
+// cvOrgRE matches multi-word capitalised organisation tokens.
+var (
+	cvSentenceSplitRE = regexp.MustCompile(`[.!?]+\s+`)
+	cvOrgRE           = regexp.MustCompile(`\b([A-Z][a-zA-Z]{1,}(?:\s+[A-Z][a-zA-Z]{0,}){1,})\b`)
+)
+
 func evalCVClaims(cv, resume string) *Violation {
 	resumeLower := strings.ToLower(resume)
 
@@ -1631,11 +1639,10 @@ func evalCVClaims(cv, resume string) *Violation {
 	// letter, separated only by a single space (no punctuation crossing).
 	// Avoid single-word tokens (too noisy: "I", "The", "Prague").
 	// We split on sentence boundaries first to avoid matching across ".".
-	sentences := regexp.MustCompile(`[.!?]+\s+`).Split(cv, -1)
-	orgRE := regexp.MustCompile(`\b([A-Z][a-zA-Z]{1,}(?:\s+[A-Z][a-zA-Z]{0,}){1,})\b`)
+	sentences := cvSentenceSplitRE.Split(cv, -1)
 	seenOrgs := make(map[string]bool)
 	for _, sentence := range sentences {
-		for _, match := range orgRE.FindAllString(sentence, -1) {
+		for _, match := range cvOrgRE.FindAllString(sentence, -1) {
 			tok := strings.TrimSpace(match)
 			if seenOrgs[tok] {
 				continue

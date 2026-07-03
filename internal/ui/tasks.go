@@ -7,7 +7,6 @@ import (
 	"cmp"
 	"context"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -278,34 +277,19 @@ func requestHasAllProjectAccess(r *http.Request) bool {
 // page reflects the union of the caller's projects rather than a global
 // latest-N slice that other tenants' rows dominate.
 func (s *Server) listTasksScoped(ctx context.Context, projects []string, base persistence.TaskFilter) []*persistence.Task {
-	var merged []*persistence.Task
-	for _, p := range projects {
-		f := base
-		pid := p
-		f.ProjectID = &pid
-		rows, err := s.taskRepo.List(ctx, f)
-		if err != nil {
-			s.logger.Warn().Err(err).Str("project_id", p).Msg("scoped task list failed for project")
-			continue
-		}
-		merged = append(merged, rows...)
+	if len(projects) == 0 {
+		return nil
 	}
-	sortByCreatedDesc(merged)
-	if base.PageSize > 0 && len(merged) > base.PageSize {
-		merged = merged[:base.PageSize]
+	// One query with project_id IN (...) so the DB does the merge/sort/limit,
+	// instead of a full PageSize page per project fetched then re-sorted and
+	// truncated in Go (E3, audit 2026-07-03).
+	base.ProjectIDs = projects
+	rows, err := s.taskRepo.List(ctx, base)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("scoped task list failed")
+		return nil
 	}
-	return merged
-}
-
-// sortByCreatedDesc orders tasks newest-first (stable) so a merged
-// multi-project page matches the single-project ORDER BY created DESC.
-func sortByCreatedDesc(tasks []*persistence.Task) {
-	sort.SliceStable(tasks, func(i, j int) bool {
-		if tasks[i] == nil || tasks[j] == nil {
-			return tasks[j] == nil && tasks[i] != nil
-		}
-		return tasks[i].CreatedAt.After(tasks[j].CreatedAt)
-	})
+	return rows
 }
 
 func countStatuses(tasks []*persistence.Task) map[persistence.TaskStatus]int64 {

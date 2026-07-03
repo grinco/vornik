@@ -374,6 +374,17 @@ func (r *ExecutionRepository) List(ctx context.Context, filter persistence.Execu
 		b.WriteString(" AND project_id = ?")
 		args = append(args, *filter.ProjectID)
 	}
+	if len(filter.ProjectIDs) > 0 {
+		b.WriteString(" AND project_id IN (")
+		for i, id := range filter.ProjectIDs {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString("?")
+			args = append(args, id)
+		}
+		b.WriteString(")")
+	}
 	if filter.TaskID != nil {
 		b.WriteString(" AND task_id = ?")
 		args = append(args, *filter.TaskID)

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"vornik.io/vornik/internal/persistence"
@@ -61,6 +62,42 @@ func (r *TaskJudgeVerdictRepository) GetByTask(ctx context.Context, taskID strin
 
 // ListRecent returns the newest verdicts (capped) for a project,
 // or globally when projectID is empty.
+// ListRecentSince is ListRecent bounded to recorded_at >= since (E1, audit
+// 2026-07-03) so a windowed insight page filters in SQL, not in Go.
+func (r *TaskJudgeVerdictRepository) ListRecentSince(ctx context.Context, projectID string, since time.Time, limit int) ([]*persistence.TaskJudgeVerdict, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var b strings.Builder
+	b.WriteString(`
+		SELECT id, project_id, task_id, role, model, verdict,
+		       confidence, signals, summary, cost_usd, recorded_at
+		FROM task_judge_verdicts
+		WHERE recorded_at >= ?`)
+	args := []any{sqliteTime(since)}
+	if projectID != "" {
+		b.WriteString(" AND project_id = ?")
+		args = append(args, projectID)
+	}
+	b.WriteString(" ORDER BY recorded_at DESC LIMIT ?")
+	args = append(args, limit)
+
+	rows, err := r.db.QueryContext(ctx, b.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*persistence.TaskJudgeVerdict
+	for rows.Next() {
+		v, err := scanJudgeVerdict(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 func (r *TaskJudgeVerdictRepository) ListRecent(ctx context.Context, projectID string, limit int) ([]*persistence.TaskJudgeVerdict, error) {
 	if limit <= 0 {
 		limit = 50

@@ -27,6 +27,7 @@ Vornik comes in two editions built from the same core:
 | Memory firewall | ✅ | ✅ |
 | OIDC / SSO | — | ✅ |
 | Log shipping (Logship) | — | ✅ |
+| Cross-project orchestration (`call_project`) | — | ✅ |
 
 <!-- END GENERATED editions-matrix -->
 

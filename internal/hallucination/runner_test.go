@@ -33,6 +33,10 @@ func (f *fakeVerdictRepo) GetByTask(_ context.Context, _ string) (*persistence.T
 	return nil, persistence.ErrNotFound
 }
 
+func (f *fakeVerdictRepo) ListRecentSince(ctx context.Context, projectID string, _ time.Time, limit int) ([]*persistence.TaskJudgeVerdict, error) {
+	return f.ListRecent(ctx, projectID, limit)
+}
+
 func (f *fakeVerdictRepo) ListRecent(_ context.Context, _ string, _ int) ([]*persistence.TaskJudgeVerdict, error) {
 	return nil, nil
 }

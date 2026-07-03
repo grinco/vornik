@@ -389,14 +389,16 @@ func (s *Server) Dashboard(w http.ResponseWriter, r *http.Request) {
 	data.OperatorQueue.StuckTotal = data.TaskCounts[persistence.TaskStatusWaitingForChildren]
 	if s.taskRepo != nil && s.projectReg != nil {
 		since := time.Now().Add(-24 * time.Hour)
+		// One grouped query instead of CountRecentFailures per project (E2,
+		// audit 2026-07-03). Sum only the registered projects' entries so the
+		// tally matches the previous per-project loop.
 		var failedSum int
-		for _, p := range s.projectReg.ListProjects() {
-			if p == nil {
-				continue
-			}
-			n, ferr := s.taskRepo.CountRecentFailures(ctx, p.ID, nil, since)
-			if ferr == nil {
-				failedSum += n
+		if byProject, ferr := s.taskRepo.CountRecentFailuresByProject(ctx, nil, since); ferr == nil {
+			for _, p := range s.projectReg.ListProjects() {
+				if p == nil {
+					continue
+				}
+				failedSum += byProject[p.ID]
 			}
 		}
 		data.OperatorQueue.FailedRecently = int64(failedSum)
@@ -424,6 +426,9 @@ func (s *Server) Dashboard(w http.ResponseWriter, r *http.Request) {
 	if s.projectReg != nil && s.autonomyEvalRepo != nil {
 		nowETA := time.Now().UTC()
 		var etas []AutonomyProjectETA
+		// Fetch the latest eval for every project in one query instead of a
+		// List(PageSize:1) per project (E2, audit 2026-07-03).
+		latestByProject, _ := s.autonomyEvalRepo.LatestByProject(ctx)
 		for _, p := range s.projectReg.ListProjects() {
 			if p == nil || !p.Autonomy.Enabled {
 				continue
@@ -435,16 +440,11 @@ func (s *Server) Dashboard(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			pid := p.ID
-			rows, err := s.autonomyEvalRepo.List(ctx, persistence.AutonomyEvaluationFilter{
-				ProjectID: &pid,
-				PageSize:  1,
-			})
 			eta := AutonomyProjectETA{
 				ProjectID: pid,
 				Interval:  interval,
 			}
-			if err == nil && len(rows) > 0 {
-				last := rows[0]
+			if last := latestByProject[pid]; last != nil {
 				eta.LastEvalAt = last.CreatedAt
 				eta.LastOutcome = last.Outcome
 				eta.NextEvalAt = last.CreatedAt.Add(interval)

@@ -40,6 +40,10 @@ func (m *mockAutonomyEvaluationRepository) List(ctx context.Context, filter pers
 	return []*persistence.AutonomyEvaluation{}, nil
 }
 
+func (m *mockAutonomyEvaluationRepository) LatestByProject(context.Context) (map[string]*persistence.AutonomyEvaluation, error) {
+	return nil, nil
+}
+
 func (m *mockAutonomyEvaluationRepository) CountByOutcome(ctx context.Context, projectID string, since, until time.Time) (map[string]int64, error) {
 	if m.countFunc != nil {
 		return m.countFunc(ctx, projectID, since, until)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -492,6 +493,15 @@ func (r *ExecutionRepository) List(ctx context.Context, filter persistence.Execu
 		query += fmt.Sprintf(" AND project_id = $%d", argNum)
 		args = append(args, *filter.ProjectID)
 		argNum++
+	}
+	if len(filter.ProjectIDs) > 0 {
+		placeholders := make([]string, len(filter.ProjectIDs))
+		for i, id := range filter.ProjectIDs {
+			placeholders[i] = fmt.Sprintf("$%d", argNum)
+			args = append(args, id)
+			argNum++
+		}
+		query += " AND project_id IN (" + strings.Join(placeholders, ", ") + ")"
 	}
 	if filter.TaskID != nil {
 		query += fmt.Sprintf(" AND task_id = $%d", argNum)

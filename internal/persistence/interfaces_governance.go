@@ -113,4 +113,10 @@ type AutonomyEvaluationRepository interface {
 	// window. Zero time is unbounded on that side. Powers dashboards and
 	// the autonomy health check in vornikctl doctor.
 	CountByOutcome(ctx context.Context, projectID string, since, until time.Time) (map[string]int64, error)
+
+	// LatestByProject returns the most recent evaluation for each project in
+	// one query, keyed by project_id. Lets the dashboard build per-project
+	// autonomy ETAs without a List(PageSize:1) call per project (E2, audit
+	// 2026-07-03).
+	LatestByProject(ctx context.Context) (map[string]*AutonomyEvaluation, error)
 }

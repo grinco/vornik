@@ -192,6 +192,12 @@ type ProviderSet struct {
 	MemoryFirewall bool
 	OIDC           bool
 	Logship        bool
+	// CrossProject gates inter-project orchestration (the workflow
+	// `call_project` step + the CPC ledger). Enterprise-only (editions
+	// matrix). Community leaves it false — the container then never wires the
+	// CrossProjectCallRepository, so handleCallProjectStep returns
+	// errCrossProjectDisabled and the /api/v1/admin/cpc surface has no ledger.
+	CrossProject bool
 
 	// Group C — Phase-1c contract interfaces (nil in Community; EE wires real impls in Task 5).
 	//

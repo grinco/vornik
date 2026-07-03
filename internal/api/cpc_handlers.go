@@ -240,11 +240,46 @@ func (s *Server) AdminCPCCancel(w http.ResponseWriter, r *http.Request, id strin
 // endpoint returned 404 / 403 for every caller on auth-disabled
 // deployments, breaking the single-operator path that the rest
 // of the daemon explicitly supports.
+// requireOperatorScope gates a daemon-level operator surface that is NOT part
+// of the Enterprise admin suite — it must work in Community Edition (which has
+// no admin surface) while still keeping daemon-wide state away from
+// project-scoped tenant keys. Allowed: auth-off (single-operator), and any
+// all-access caller (admin key, session-admin, or an unscoped key). Denied
+// (404, no existence leak): a project-scoped tenant key. Used by config-show
+// and the memory-firewall management surface, both Community features per the
+// editions matrix. Unlike requireAdminGate it never depends on the admin
+// surface being wired, so it does not 404/501 in Community.
+func (s *Server) requireOperatorScope(w http.ResponseWriter, r *http.Request) bool {
+	if !IsAuthEnabledFromContext(r.Context()) {
+		return true
+	}
+	if _, scoped := RequestScopedProjects(r); scoped {
+		http.NotFound(w, r)
+		return false
+	}
+	return true
+}
+
 func (s *Server) requireAdminGate(w http.ResponseWriter, r *http.Request) bool {
 	if !IsAuthEnabledFromContext(r.Context()) {
 		return true
 	}
 	if !s.adminConfig.Enabled {
+		// The admin surface isn't serving. Distinguish WHY so the caller gets
+		// an honest signal (papercut, 2026-07-03):
+		//   - Community Edition ships no admin surface at all (WithAdminConfig
+		//     is only wired behind the service container's providers.Admin
+		//     edition gate, so adminSurfacePresent stays false). Return a typed
+		//     501 EDITION_UNSUPPORTED so the CLI/UI can say "Enterprise-only"
+		//     instead of a bare "404 page not found".
+		//   - Enterprise with admin merely disabled in config keeps the
+		//     existing 404 (hide the surface); it's a config choice, not an
+		//     edition limit, so "Enterprise-only" would be wrong.
+		if !s.adminSurfacePresent {
+			respondError(w, http.StatusNotImplemented, "EDITION_UNSUPPORTED",
+				"This is an Enterprise Edition feature (admin suite); it is not built into Community Edition. See https://docs.vornik.io/editions")
+			return false
+		}
 		http.NotFound(w, r)
 		return false
 	}

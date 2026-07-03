@@ -44,6 +44,19 @@ func (f *fakeAutonomyEvalRepo) Record(context.Context, *persistence.AutonomyEval
 func (f *fakeAutonomyEvalRepo) List(_ context.Context, filter persistence.AutonomyEvaluationFilter) ([]*persistence.AutonomyEvaluation, error) {
 	return f.rows, nil
 }
+func (f *fakeAutonomyEvalRepo) LatestByProject(context.Context) (map[string]*persistence.AutonomyEvaluation, error) {
+	out := map[string]*persistence.AutonomyEvaluation{}
+	for _, e := range f.rows {
+		if e == nil {
+			continue
+		}
+		if _, ok := out[e.ProjectID]; !ok { // rows are newest-first; first wins
+			out[e.ProjectID] = e
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeAutonomyEvalRepo) CountByOutcome(context.Context, string, time.Time, time.Time) (map[string]int64, error) {
 	return nil, nil
 }

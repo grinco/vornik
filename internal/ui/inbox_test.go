@@ -77,6 +77,13 @@ func TestInbox_ScopedUserSeesOwnRowsPastGlobalCap(t *testing.T) {
 			if f.Status == nil || *f.Status != persistence.TaskStatusAwaitingApproval {
 				return nil, nil
 			}
+			// Scoped single-query path (E3): project_id IN (ids). The
+			// caller's project surfaces their row.
+			for _, pid := range f.ProjectIDs {
+				if pid == "p1" {
+					return []*persistence.Task{{ID: "mine", ProjectID: "p1", CreatedAt: now, UpdatedAt: now}}, nil
+				}
+			}
 			// Per-project query for the caller's project surfaces their row.
 			if f.ProjectID != nil && *f.ProjectID == "p1" {
 				return []*persistence.Task{{ID: "mine", ProjectID: "p1", CreatedAt: now, UpdatedAt: now}}, nil

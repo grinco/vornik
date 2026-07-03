@@ -45,11 +45,20 @@ func (s *Server) TaskEventsStream(w http.ResponseWriter, r *http.Request) {
 	// Project-scope check before subscribing. A scoped key for
 	// project A must not observe project B's live event stream.
 	// 404 (not 403) so foreign task existence isn't leaked.
+	//
+	// Fail CLOSED (S4, audit 2026-07-03): a lookup error or missing task
+	// must deny, not fall through to subscribe. Pre-fix the gate only fired
+	// when the lookup succeeded, so a transient DB error plus a guessed
+	// foreign task id yielded a subscription to another project's stream.
 	if s.taskRepo != nil {
 		lookupCtx, lookupCancel := context.WithTimeout(r.Context(), 3*time.Second)
 		task, err := s.taskRepo.Get(lookupCtx, taskID)
 		lookupCancel()
-		if err == nil && task != nil && task.ProjectID != "" && !api.RequestAllowsProject(r, task.ProjectID) {
+		if err != nil || task == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if task.ProjectID != "" && !api.RequestAllowsProject(r, task.ProjectID) {
 			http.NotFound(w, r)
 			return
 		}

@@ -136,7 +136,7 @@ func (c *Container) initHTTPServer() error {
 		api.WithExecutionHintRepository(c.repos.ExecutionHints),
 		// Inter-project orchestration Phase D follow-on — wire
 		// the CPC ledger so /api/v1/admin/cpc endpoints work.
-		api.WithCrossProjectCallRepository(c.repos.CrossProjectCalls),
+		api.WithCrossProjectCallRepository(c.crossProjectCallRepo()),
 		api.WithReminderRepository(c.repos.Reminders),
 		// Autonomy Black Box — assembles per-task unified traces from the nine
 		// audit tables for the admin/SOC2 surface. Wired off Postgres only via the
@@ -1167,7 +1167,7 @@ func (c *Container) initHTTPServer() error {
 			c.Config != nil && c.Config.Instinct.Enabled && c.Config.Instinct.Consumers.FailurePlaybooks,
 		),
 		// Phase C — multi-hop replay tree dependencies.
-		ui.WithCrossProjectCallRepository(c.repos.CrossProjectCalls),
+		ui.WithCrossProjectCallRepository(c.crossProjectCallRepo()),
 		ui.WithReminderRepository(c.repos.Reminders),
 		// Autonomy Black Box read-side service — built via the EE BBTraceServiceFactory
 		// (Task 6 seam); nil in Community/SQLite (UI page hides the section).

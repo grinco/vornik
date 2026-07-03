@@ -54,6 +54,7 @@ func Matrix() []Row {
 		{Capability: "Memory firewall", Community: true, Enterprise: true /* FeatureID OMITTED — CrossCheck-exempt; gated at runtime, not via featuredoctor (see TestMemoryFirewallIsCommunity) */},
 		{Capability: "OIDC / SSO", Enterprise: true},
 		{Capability: "Log shipping (Logship)", Enterprise: true},
+		{Capability: "Cross-project orchestration (`call_project`)", Enterprise: true},
 	}
 }
 

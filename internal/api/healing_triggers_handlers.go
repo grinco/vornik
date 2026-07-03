@@ -454,14 +454,14 @@ const defaultHealingVerifierRole = "verifier"
 // concatenated. A per-execution query error is skipped (best-effort: a partial
 // tally still yields a usable offending-step signal).
 func (s *Server) evidenceStepOutcomes(ctx context.Context, executionIDs []string) []*persistence.ExecutionStepOutcome {
-	var rows []*persistence.ExecutionStepOutcome
-	for i := range executionIDs {
-		execID := executionIDs[i]
-		got, err := s.stepOutcomeRepo.List(ctx, persistence.ExecutionStepOutcomeFilter{ExecutionID: &execID})
-		if err != nil {
-			continue
-		}
-		rows = append(rows, got...)
+	if len(executionIDs) == 0 {
+		return nil
+	}
+	// Single query over the whole run set (execution_id IN (...)) instead of
+	// one List per execution (E5, audit 2026-07-03).
+	rows, err := s.stepOutcomeRepo.List(ctx, persistence.ExecutionStepOutcomeFilter{ExecutionIDs: executionIDs})
+	if err != nil {
+		return nil
 	}
 	return rows
 }

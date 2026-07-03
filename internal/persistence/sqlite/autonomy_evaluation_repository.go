@@ -91,6 +91,47 @@ func (r *AutonomyEvaluationRepository) List(ctx context.Context, filter persiste
 	return out, rows.Err()
 }
 
+// LatestByProject returns the newest evaluation per project in one query
+// (E2, audit 2026-07-03). SQLite lacks DISTINCT ON, so join each project's
+// MAX(created_at); a created_at tie may yield >1 row for a project, resolved
+// last-wins into the map.
+func (r *AutonomyEvaluationRepository) LatestByProject(ctx context.Context) (map[string]*persistence.AutonomyEvaluation, error) {
+	query := `
+		SELECT ae.id, ae.project_id, ae.outcome, ae.reason, ae.task_id,
+		       ae.task_type, ae.workflow_id, ae.prompt_hash, ae.duration_ms, ae.created_at
+		FROM autonomy_evaluations ae
+		JOIN (
+			SELECT project_id, MAX(created_at) AS mc
+			FROM autonomy_evaluations GROUP BY project_id
+		) m ON ae.project_id = m.project_id AND ae.created_at = m.mc`
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[string]*persistence.AutonomyEvaluation)
+	for rows.Next() {
+		var (
+			e         persistence.AutonomyEvaluation
+			taskID    sql.NullString
+			createdAt sqlTime
+		)
+		if err := rows.Scan(
+			&e.ID, &e.ProjectID, &e.Outcome, &e.Reason, &taskID,
+			&e.TaskType, &e.WorkflowID, &e.PromptHash, &e.DurationMs, &createdAt,
+		); err != nil {
+			return nil, err
+		}
+		if taskID.Valid {
+			e.TaskID = &taskID.String
+		}
+		e.CreatedAt = createdAt.Time
+		ecopy := e
+		out[e.ProjectID] = &ecopy
+	}
+	return out, rows.Err()
+}
+
 // CountByOutcome groups rows by outcome within a window.
 func (r *AutonomyEvaluationRepository) CountByOutcome(ctx context.Context, projectID string, since, until time.Time) (map[string]int64, error) {
 	var b strings.Builder

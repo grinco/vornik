@@ -230,6 +230,10 @@ func (f *fakeTaskRepo) FindExpiredLeases(context.Context, int) ([]*persistence.T
 func (f *fakeTaskRepo) CountByStatus(context.Context, string) (map[persistence.TaskStatus]int64, error) {
 	panic("not implemented")
 }
+func (f *fakeTaskRepo) CountRecentFailuresByProject(context.Context, []string, time.Time) (map[string]int, error) {
+	return nil, nil
+}
+
 func (f *fakeTaskRepo) CountRecentFailures(context.Context, string, []string, time.Time) (int, error) {
 	panic("not implemented")
 }

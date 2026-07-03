@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	bedrockdoc "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"vornik.io/vornik/internal/netguard"
 )
 
 // base64StdDecoder is a thin wrapper so the call sites can keep
@@ -475,9 +476,11 @@ func dataURLToBedrockImage(url string) (bedrocktypes.ContentBlock, string) {
 //     base64 + 10 MB raw; well within the daemon's footprint).
 //   - Content-Type drives the format selection — server's claimed
 //     type wins over a guess off the URL path.
-//   - No redirect filtering; trust operators to sanitise URLs
-//     upstream. SSRF mitigation is out of scope for this helper.
-var imageFetchHTTPClient = &http.Client{Timeout: 5 * time.Second}
+//   - SSRF-hardened: the client refuses loopback / RFC1918 / link-local
+//     (incl. 169.254 cloud-metadata) targets and re-validates redirect hops
+//     via internal/netguard, so a caller-supplied image_url cannot make the
+//     daemon fetch its own internal network (S3, audit 2026-07-03).
+var imageFetchHTTPClient = netguard.NewGuardedClient(5 * time.Second)
 
 const imageFetchMaxBytes = 10 * 1024 * 1024 // 10 MB
 

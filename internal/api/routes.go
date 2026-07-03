@@ -324,16 +324,21 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		mux.HandleFunc("/api/v1/admin/blackbox/replay", server.AdminBlackBoxReplay)
 		mux.HandleFunc("/api/v1/admin/blackbox/scorecard/", server.AdminBlackBoxScorecard)
 		mux.HandleFunc("/api/v1/admin/blackbox/sideeffects", server.AdminBlackBoxSideEffects)
-		// Policy-Aware Memory Firewall admin surface — Phase C.
-		mux.HandleFunc("/api/v1/admin/memory/policy/evaluations", server.AdminMemoryFirewallEvaluations)
-		mux.HandleFunc("/api/v1/admin/memory/policy/evaluations.csv", server.AdminMemoryFirewallEvaluationsCSV)
+		// Policy-Aware Memory Firewall management surface. Memory firewall is a
+		// Community feature (editions matrix), so its management routes are NOT
+		// under /api/v1/admin/ (that prefix carries the EE admin-gate invariant
+		// — admin_gate_lint_test). The handlers gate on requireOperatorScope
+		// (works in Community; denies project-scoped tenants). Moved off
+		// /admin/ 2026-07-03 to match the matrix.
+		mux.HandleFunc("/api/v1/memory/policy/evaluations", server.AdminMemoryFirewallEvaluations)
+		mux.HandleFunc("/api/v1/memory/policy/evaluations.csv", server.AdminMemoryFirewallEvaluationsCSV)
 		// Proof-verifier: all evaluations recorded under one policy digest.
 		// Prefix-registered so {digest} is read from the path tail. The
 		// exact-match "evaluations" route above wins for the bare path; the
 		// "/digest/" suffix routes here (drift-mitigation §8.3 — was 404).
-		mux.HandleFunc("/api/v1/admin/memory/policy/evaluations/digest/", server.AdminMemoryFirewallEvaluationsByDigest)
-		mux.HandleFunc("/api/v1/admin/memory/policy/mode", server.AdminMemoryFirewallMode)
-		mux.HandleFunc("/api/v1/admin/memory/policy/chunks/", server.AdminMemoryFirewallChunkPolicy)
+		mux.HandleFunc("/api/v1/memory/policy/evaluations/digest/", server.AdminMemoryFirewallEvaluationsByDigest)
+		mux.HandleFunc("/api/v1/memory/policy/mode", server.AdminMemoryFirewallMode)
+		mux.HandleFunc("/api/v1/memory/policy/chunks/", server.AdminMemoryFirewallChunkPolicy)
 
 		// Companion-plugin admin surface (LLD 21). Mints + lists
 		// per-session bearer keys scoped to one project + an optional

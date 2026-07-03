@@ -36,6 +36,10 @@ func (s *stubAutonomyEvalRepo) List(ctx context.Context, f persistence.AutonomyE
 	}
 	return nil, nil
 }
+func (s *stubAutonomyEvalRepo) LatestByProject(context.Context) (map[string]*persistence.AutonomyEvaluation, error) {
+	return nil, nil
+}
+
 func (s *stubAutonomyEvalRepo) CountByOutcome(context.Context, string, time.Time, time.Time) (map[string]int64, error) {
 	return nil, nil
 }

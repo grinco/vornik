@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	bedrockdoc "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
@@ -299,7 +300,18 @@ func TestBuildUserContentBlocks_DocumentRejectsUnsupported(t *testing.T) {
 // TestBuildUserContentBlocks_RemoteImageFetch — http(s) image
 // URLs go through the bounded fetch path. Server returns a real
 // PNG with Content-Type; converter inlines the bytes.
+// withUnguardedImageFetch swaps the SSRF-guarded image-fetch client for a
+// plain one so these fetch-behavior tests can reach a loopback httptest
+// server. The SSRF guard itself is covered by internal/netguard tests.
+func withUnguardedImageFetch(t *testing.T) {
+	t.Helper()
+	prev := imageFetchHTTPClient
+	imageFetchHTTPClient = &http.Client{Timeout: 5 * time.Second}
+	t.Cleanup(func() { imageFetchHTTPClient = prev })
+}
+
 func TestBuildUserContentBlocks_RemoteImageFetch(t *testing.T) {
+	withUnguardedImageFetch(t)
 	// 1x1 PNG bytes.
 	pngBytes := []byte{
 		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -337,10 +349,31 @@ func TestBuildUserContentBlocks_RemoteImageFetch(t *testing.T) {
 	}
 }
 
+// TestFetchAndInlineImage_SSRFBlocked — the default (guarded) fetch client
+// must refuse a loopback target, so a caller-supplied image_url cannot make
+// the daemon fetch its own internal network (S3, audit 2026-07-03). Uses the
+// real imageFetchHTTPClient — no unguard helper.
+func TestFetchAndInlineImage_SSRFBlocked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("should-never-be-reached"))
+	}))
+	defer server.Close()
+
+	block, note := fetchAndInlineImage(server.URL + "/internal.png")
+	if block != nil {
+		t.Fatalf("SSRF guard failed: loopback image was inlined")
+	}
+	if !strings.Contains(note, "private IP") && !strings.Contains(note, "failed") {
+		t.Errorf("expected SSRF-blocked fallback note, got %q", note)
+	}
+}
+
 // TestBuildUserContentBlocks_RemoteImageHTTPError — the bounded
 // fetch path surfaces transport / HTTP errors as text fallback
 // notes rather than failing the whole call.
 func TestBuildUserContentBlocks_RemoteImageHTTPError(t *testing.T) {
+	withUnguardedImageFetch(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 	}))
@@ -362,6 +395,7 @@ func TestBuildUserContentBlocks_RemoteImageHTTPError(t *testing.T) {
 // the 10 MB cap are rejected with a fallback note. Defensive: a
 // hostile / misconfigured server can't OOM the daemon.
 func TestBuildUserContentBlocks_RemoteImageOversize(t *testing.T) {
+	withUnguardedImageFetch(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		// Stream way more than the 10 MB cap.

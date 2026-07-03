@@ -245,6 +245,15 @@ func (e *Executor) Pause(taskID string) (*PauseStatus, error) {
 func (e *Executor) pauseWithReason(taskID, reason string) (*PauseStatus, error) {
 	e.mu.Lock()
 	handle, exists := e.activeExecutions[taskID]
+	// Snapshot the handle's mutable fields under the lock. containerID is
+	// written by the runExecution goroutine under e.mu each time a step's
+	// container starts (executor.go); reading it after Unlock is a data race,
+	// and a lost race reads "" and skips StopContainer, orphaning a still-
+	// billing container (B1, audit 2026-07-03). Mirrors Cancel.
+	var containerID string
+	if exists {
+		containerID = handle.containerID
+	}
 	e.mu.Unlock()
 
 	if !exists {
@@ -265,18 +274,18 @@ func (e *Executor) pauseWithReason(taskID, reason string) (*PauseStatus, error) 
 	// Timeout budget: 30s covers a normal SIGTERM-to-exit cycle (most
 	// agents drain in <5s); on miss, we fall through and let the
 	// caller proceed rather than stalling shutdown indefinitely.
-	if handle.containerID != "" {
-		if err := e.runtime.StopContainer(context.Background(), handle.containerID, false); err != nil {
+	if containerID != "" {
+		if err := e.runtime.StopContainer(context.Background(), containerID, false); err != nil {
 			// Log but continue - container might already be stopped
 			// Use force stop as fallback
-			_ = e.runtime.StopContainer(context.Background(), handle.containerID, true)
+			_ = e.runtime.StopContainer(context.Background(), containerID, true)
 		}
 		waitCtx, waitCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if _, err := e.runtime.WaitForExit(waitCtx, handle.containerID, 30*time.Second); err != nil {
+		if _, err := e.runtime.WaitForExit(waitCtx, containerID, 30*time.Second); err != nil {
 			e.logger.Warn().
 				Err(err).
 				Str("task_id", taskID).
-				Str("container_id", handle.containerID).
+				Str("container_id", containerID).
 				Msg("pause: container did not exit within 30s of SIGTERM — orphan window risk on next daemon start")
 		}
 		waitCancel()

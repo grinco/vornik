@@ -197,7 +197,7 @@ func runCompanionGrant(cmd *cobra.Command, args []string) error {
 	}
 
 	client := ClientFromEnv()
-	resp, err := client.Post("/api/v1/admin/companion/grant", body)
+	resp, err := client.Post("/api/v1/companion/grant", body)
 	if err != nil {
 		return fmt.Errorf("grant: %w", err)
 	}
@@ -256,7 +256,7 @@ func runCompanionGrant(cmd *cobra.Command, args []string) error {
 
 func runCompanionKeysList(cmd *cobra.Command, args []string) error {
 	client := ClientFromEnv()
-	resp, err := client.Get("/api/v1/admin/companion/keys?projectId=" + companionKeysProject)
+	resp, err := client.Get("/api/v1/companion/keys?projectId=" + companionKeysProject)
 	if err != nil {
 		return fmt.Errorf("list: %w", err)
 	}

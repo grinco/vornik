@@ -295,6 +295,13 @@ func (s *Server) ProjectConfigFormEdit(w http.ResponseWriter, r *http.Request, p
 // rendered form re-shows the operator's input plus an inline
 // error.
 func (s *Server) ProjectConfigFormSave(w http.ResponseWriter, r *http.Request, projectID string) {
+	// Mutations to a project's autonomy gates / tool allowlist / MCP config
+	// require admin scope, exactly as the raw-YAML sibling ProjectConfigSave
+	// does (D2/D3, audit 2026-06-10). This form variant was missed in that
+	// rollout (S1, audit 2026-07-03); RoleUser is operate-not-author.
+	if !s.uiRequireAdminMutation(w, r) {
+		return
+	}
 	data := s.projectConfigFormData(projectID)
 	if data.Error != "" {
 		w.WriteHeader(http.StatusNotFound)

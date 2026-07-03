@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"vornik.io/vornik/internal/admin"
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/registry"
 )
@@ -127,6 +128,10 @@ func formServer(t *testing.T, root string) (*Server, *reloadingReloader) {
 func postForm(values url.Values) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/projects/form-demo/config/form", strings.NewReader(values.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// ProjectConfigFormSave requires admin scope (config mutation; matches
+	// ProjectConfigSave — S1/D2/D3). These round-trip tests exercise the
+	// legitimate operator/admin flow, so stamp an admin context.
+	req = req.WithContext(admin.ContextWithAdmin(req.Context(), "test-admin"))
 	return req
 }
 
@@ -866,6 +871,7 @@ terminals:
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/projects/clear-demo/config/form", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req = req.WithContext(admin.ContextWithAdmin(req.Context(), "test-admin"))
 	server.ProjectConfigFormSave(rec, req, "clear-demo")
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 

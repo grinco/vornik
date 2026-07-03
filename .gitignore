@@ -74,3 +74,9 @@ __pycache__/
 # Local working clones used by the CE-export + site-publish scripts
 .vornik-public-clone/
 .vornik-site/
+
+# Root build artifacts (go build ./cmd/... lands the binary at repo root)
+/vornik
+/vornik-enterprise
+/vornikctl
+/vornik-broker

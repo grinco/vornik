@@ -176,6 +176,11 @@ func (s *Server) ExecutionLive(w http.ResponseWriter, r *http.Request, execID st
 		http.NotFound(w, r)
 		return
 	}
+	// Multi-tenant scope gate (S1, audit 2026-07-03): a project-scoped caller
+	// must not observe another tenant's execution. Mirrors ExecutionDetail.
+	if !s.uiRequireProjectScope(w, r, exec.ProjectID) {
+		return
+	}
 
 	// Terminal executions go to the replay page — the operator
 	// lands there for post-hoc forensics rather than an empty live

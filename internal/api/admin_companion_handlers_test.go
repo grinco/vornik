@@ -32,6 +32,52 @@ func newCompanionServer(t *testing.T) (*Server, *memAPIKeyRepo) {
 	return srv, repo
 }
 
+// TestCompanionGrant_CE_ProjectScopedCallerMints — companion key minting is a
+// per-project self-service action (moved off the admin gate so it works in
+// Community Edition). A caller scoped to the target project mints successfully
+// even with admin.enabled false. (Pre-fix: requireAdminGate → 404.)
+func TestCompanionGrant_CE_ProjectScopedCallerMints(t *testing.T) {
+	srv, repo := newCompanionServer(t)
+	body := `{"projectId":"alpha","clientKind":"claude-code","memoryRead":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/companion/grant", strings.NewReader(body))
+	req = req.WithContext(ContextWithProjectScope(req.Context(), "alpha"))
+	rec := httptest.NewRecorder()
+	srv.CompanionGrant(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	if len(repo.rows) != 1 || !repo.rows[0].MemoryRead {
+		t.Fatalf("expected one memory-scoped key minted, got %+v", repo.rows)
+	}
+}
+
+// TestCompanionGrant_ScopedToOtherProject_Denied — a caller scoped to project
+// B must not mint a companion key for project A (multi-tenant isolation). 404
+// (not 403) so foreign-project existence isn't leaked.
+func TestCompanionGrant_ScopedToOtherProject_Denied(t *testing.T) {
+	srv, repo := newCompanionServer(t)
+	body := `{"projectId":"alpha","clientKind":"claude-code"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/companion/grant", strings.NewReader(body))
+	req = req.WithContext(ContextWithProjectScope(req.Context(), "beta"))
+	rec := httptest.NewRecorder()
+	srv.CompanionGrant(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	if len(repo.rows) != 0 {
+		t.Fatalf("cross-project grant must not mint a key, got %+v", repo.rows)
+	}
+}
+
+// TestCompanionKeysList_CE_ProjectScopedCaller — the list endpoint is likewise
+// off the admin gate and project-scoped.
+func TestCompanionKeysList_CE_ProjectScopedCaller(t *testing.T) {
+	srv, _ := newCompanionServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/companion/keys?projectId=alpha", nil)
+	req = req.WithContext(ContextWithProjectScope(req.Context(), "alpha"))
+	rec := httptest.NewRecorder()
+	srv.CompanionKeysList(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+}
+
 // withAuthDisabled wraps a request with the auth-disabled context
 // flag. requireAdminGate then short-circuits to "allow" — the local
 // single-operator semantic the rest of the daemon uses.
@@ -51,7 +97,7 @@ func TestCompanionGrant_HappyPath_MintsScopedKey(t *testing.T) {
 	}
 	raw, _ := json.Marshal(body)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/companion/grant", strings.NewReader(string(raw)))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/companion/grant", strings.NewReader(string(raw)))
 	rec := httptest.NewRecorder()
 	srv.CompanionGrant(rec, withAuthDisabled(req))
 
@@ -84,7 +130,7 @@ func TestCompanionGrant_RejectsMissingClientKind(t *testing.T) {
 	srv, _ := newCompanionServer(t)
 	body := `{"projectId":"alpha"}`
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/companion/grant", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/companion/grant", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.CompanionGrant(rec, withAuthDisabled(req))
 
@@ -96,7 +142,7 @@ func TestCompanionGrant_RejectsUnknownClientKind(t *testing.T) {
 	srv, _ := newCompanionServer(t)
 	body := `{"projectId":"alpha","clientKind":"claude-cli"}`
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/companion/grant", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/companion/grant", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.CompanionGrant(rec, withAuthDisabled(req))
 
@@ -109,7 +155,7 @@ func TestCompanionGrant_RejectsUnknownProject(t *testing.T) {
 	srv, _ := newCompanionServer(t)
 	body := `{"projectId":"does-not-exist","clientKind":"claude-code"}`
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/companion/grant", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/companion/grant", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.CompanionGrant(rec, withAuthDisabled(req))
 
@@ -121,7 +167,7 @@ func TestCompanionGrant_RejectsEmptyAllowedWorkflows(t *testing.T) {
 	srv, _ := newCompanionServer(t)
 	body := `{"projectId":"alpha","clientKind":"claude-code","allowedWorkflows":[]}`
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/companion/grant", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/companion/grant", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.CompanionGrant(rec, withAuthDisabled(req))
 
@@ -134,7 +180,7 @@ func TestCompanionGrant_RejectsUnknownWorkflow(t *testing.T) {
 	srv, _ := newCompanionServer(t)
 	body := `{"projectId":"alpha","clientKind":"claude-code","allowedWorkflows":["does-not-exist"]}`
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/companion/grant", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/companion/grant", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.CompanionGrant(rec, withAuthDisabled(req))
 
@@ -147,7 +193,7 @@ func TestCompanionGrant_RejectsDuplicateWorkflow(t *testing.T) {
 	srv, _ := newCompanionServer(t)
 	body := `{"projectId":"alpha","clientKind":"claude-code","allowedWorkflows":["wf-alpha","wf-alpha"]}`
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/companion/grant", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/companion/grant", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.CompanionGrant(rec, withAuthDisabled(req))
 
@@ -161,7 +207,7 @@ func TestCompanionGrant_RejectsNonPositiveBudget(t *testing.T) {
 		`{"projectId":"alpha","clientKind":"claude-code","budgetCapUsd":0}`,
 		`{"projectId":"alpha","clientKind":"claude-code","budgetCapUsd":-5}`,
 	} {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/companion/grant", strings.NewReader(raw))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/companion/grant", strings.NewReader(raw))
 		rec := httptest.NewRecorder()
 		srv.CompanionGrant(rec, withAuthDisabled(req))
 
@@ -179,7 +225,7 @@ func TestCompanionGrant_DefaultsName_WhenSessionLabelOmitted(t *testing.T) {
 	srv, repo := newCompanionServer(t)
 	body := `{"projectId":"alpha","clientKind":"claude-code"}`
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/companion/grant", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/companion/grant", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.CompanionGrant(rec, withAuthDisabled(req))
 
@@ -202,7 +248,7 @@ func TestCompanionGrant_PersistsAndEchoesDefaultRepoScope(t *testing.T) {
 	}
 	raw, _ := json.Marshal(body)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/companion/grant", strings.NewReader(string(raw)))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/companion/grant", strings.NewReader(string(raw)))
 	rec := httptest.NewRecorder()
 	srv.CompanionGrant(rec, withAuthDisabled(req))
 
@@ -228,7 +274,7 @@ func TestCompanionGrant_RejectsOversizedDefaultRepoScope(t *testing.T) {
 	}
 	raw, _ := json.Marshal(body)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/companion/grant", strings.NewReader(string(raw)))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/companion/grant", strings.NewReader(string(raw)))
 	rec := httptest.NewRecorder()
 	srv.CompanionGrant(rec, withAuthDisabled(req))
 
@@ -239,7 +285,7 @@ func TestCompanionGrant_RejectsOversizedDefaultRepoScope(t *testing.T) {
 
 func TestCompanionGrant_RejectsWrongMethod(t *testing.T) {
 	srv, _ := newCompanionServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/companion/grant", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/companion/grant", nil)
 	rec := httptest.NewRecorder()
 	srv.CompanionGrant(rec, withAuthDisabled(req))
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
@@ -265,7 +311,7 @@ func TestCompanionKeysList_FiltersToCompanionRows(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet,
-		"/api/v1/admin/companion/keys?projectId=alpha", nil)
+		"/api/v1/companion/keys?projectId=alpha", nil)
 	rec := httptest.NewRecorder()
 	srv.CompanionKeysList(rec, withAuthDisabled(req))
 
@@ -280,7 +326,7 @@ func TestCompanionKeysList_FiltersToCompanionRows(t *testing.T) {
 
 func TestCompanionKeysList_RejectsMissingProjectId(t *testing.T) {
 	srv, _ := newCompanionServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/companion/keys", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/companion/keys", nil)
 	rec := httptest.NewRecorder()
 	srv.CompanionKeysList(rec, withAuthDisabled(req))
 	assert.Equal(t, http.StatusBadRequest, rec.Code)

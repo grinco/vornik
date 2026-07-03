@@ -1916,6 +1916,42 @@ func (s *Server) uiRequireAdminMutation(w http.ResponseWriter, r *http.Request) 
 	return false
 }
 
+// uiRequireProjectScope enforces multi-tenant isolation for a per-project
+// UI handler. Returns true when the caller's scope allows projectID; writes a
+// 404 (existence is not leaked — matching the gated sibling handlers) and
+// returns false otherwise. An empty projectID (non-project route) and an
+// all-access caller (admin, auth-off, unscoped key) are always allowed.
+//
+// S1 (audit 2026-07-03): the /ui/projects, /ui/tasks and /ui/executions
+// routers carry no scope middleware, so each handler must gate itself. Many
+// did not, letting a project-scoped key/session act on any other tenant's
+// project/task/execution. This is the shared gate; projectRouter enforces it
+// centrally (the project id is in the URL), while the task/execution handlers
+// call it after loading the entity (their project id is only known post-load).
+func (s *Server) uiRequireProjectScope(w http.ResponseWriter, r *http.Request, projectID string) bool {
+	if projectID == "" || api.RequestAllowsProject(r, projectID) {
+		return true
+	}
+	http.NotFound(w, r)
+	return false
+}
+
+// projectScopeIDFromPath returns the project id a /projects/{id}/… subpath is
+// scoped to — the first path segment — or "" for the project-less create
+// routes (/projects/new, /projects/new/wizard), which are gated separately by
+// sessionUserGlobalAuthoringPrefixes. The trailing "/projects/" prefix is
+// already stripped by the caller.
+func projectScopeIDFromPath(path string) string {
+	seg := path
+	if i := strings.IndexByte(path, '/'); i >= 0 {
+		seg = path[:i]
+	}
+	if seg == "new" {
+		return ""
+	}
+	return seg
+}
+
 // sessionUserGlobalAuthoringPrefixes are the daemon-global authoring
 // surfaces a project-scoped RoleUser browser session may NOT reach.
 // Browser session users are project-scoped; letting them edit shared
@@ -1954,6 +1990,14 @@ func sessionUserGlobalConfigPath(path string) bool {
 
 func (s *Server) projectRouter(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path[len("/projects/"):]
+	// Central multi-tenant scope gate (S1, audit 2026-07-03). The project id
+	// is the first path segment, so we enforce it here once rather than in
+	// every handler — a newly added /projects/{id}/… route cannot forget the
+	// check. The project-less create routes (/projects/new[…]) resolve to ""
+	// and are skipped; they are gated by sessionUserGlobalAuthoringPrefixes.
+	if projectID := projectScopeIDFromPath(path); !s.uiRequireProjectScope(w, r, projectID) {
+		return
+	}
 	switch {
 	// Project template gallery — 2026.6.0 F2 slice 2.
 	// /projects/new → GET renders the catalog; POST materialises

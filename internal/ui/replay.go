@@ -36,6 +36,23 @@ func (s *Server) ExecutionReplay(w http.ResponseWriter, r *http.Request, execID 
 		http.Error(w, "execution id required", http.StatusBadRequest)
 		return
 	}
+	// Multi-tenant scope gate (S1, audit 2026-07-03): the replay timeline
+	// exposes another tenant's full forensic trace (LLM prompts, tool-call
+	// audit, artifacts, task messages). The /executions/{id} route has no
+	// project segment, so resolve the owning project and enforce scope before
+	// building anything. Mirrors ExecutionDetail / ExecutionLive.
+	if s.execRepo != nil {
+		scopeCtx, scopeCancel := context.WithTimeout(r.Context(), 5*time.Second)
+		exec, execErr := s.execRepo.Get(scopeCtx, execID)
+		scopeCancel()
+		if execErr != nil || exec == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if !s.uiRequireProjectScope(w, r, exec.ProjectID) {
+			return
+		}
+	}
 	builder, err := s.replayBuilder()
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("replay builder unavailable")

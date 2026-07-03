@@ -303,6 +303,13 @@ func (s *Server) TaskConversationAction(w http.ResponseWriter, r *http.Request) 
 		http.NotFound(w, r)
 		return
 	}
+	// Multi-tenant scope gate (S1, audit 2026-07-03): a project-scoped caller
+	// must not drive conversation/lifecycle actions on another tenant's task.
+	// The /tasks/{id} route carries no project segment, so the scope check
+	// must happen here, after the load — mirroring TaskCancel/TaskRetry.
+	if task != nil && !s.uiRequireProjectScope(w, r, task.ProjectID) {
+		return
+	}
 
 	notice := ""
 	switch action {

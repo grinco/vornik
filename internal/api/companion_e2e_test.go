@@ -20,7 +20,7 @@ import (
 // TestCompanionE2E_GrantThenDelegateThenStatus stitches every phase-1
 // surface together in one happy-path test:
 //
-//  1. POST /api/v1/admin/companion/grant mints a scoped bearer.
+//  1. POST /api/v1/companion/grant mints a scoped bearer.
 //  2. Capture the one-time secret.
 //  3. POST /api/v1/mcp/companion (tools/call name=delegate) creates a
 //     task with the companion bearer.
@@ -82,7 +82,7 @@ func TestCompanionE2E_GrantThenDelegateThenStatus(t *testing.T) {
 	}
 	raw, _ := json.Marshal(grantBody)
 	grantReq := httptest.NewRequest(http.MethodPost,
-		"/api/v1/admin/companion/grant", bytes.NewReader(raw))
+		"/api/v1/companion/grant", bytes.NewReader(raw))
 	grantRec := httptest.NewRecorder()
 	srv.CompanionGrant(grantRec, withAuthDisabled(grantReq))
 

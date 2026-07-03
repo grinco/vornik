@@ -2471,11 +2471,17 @@ func (e *Executor) TaskLogs(ctx context.Context, taskID string, tail int) (strin
 		return "", fmt.Errorf("task_id is required")
 	}
 
+	// Snapshot containerID under the lock — the runExecution goroutine writes
+	// it per-step under e.mu (executor.go), so reading it after Unlock is a
+	// data race (B2, audit 2026-07-03). Mirrors Cancel / pauseWithReason.
 	e.mu.Lock()
-	handle := e.activeExecutions[taskID]
+	var containerID string
+	if handle := e.activeExecutions[taskID]; handle != nil {
+		containerID = handle.containerID
+	}
 	e.mu.Unlock()
-	if handle != nil && handle.containerID != "" {
-		return e.runtime.Logs(ctx, handle.containerID, tail)
+	if containerID != "" {
+		return e.runtime.Logs(ctx, containerID, tail)
 	}
 
 	container, err := e.runtime.GetContainerByTask(ctx, taskID)

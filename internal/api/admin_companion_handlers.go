@@ -11,15 +11,18 @@ import (
 	"vornik.io/vornik/internal/persistence"
 )
 
-// Companion-plugin admin surface (LLD 21).
+// Companion-plugin surface (LLD 21).
 //
-//   POST /api/v1/admin/companion/grant   — mint a scoped bearer key
-//   GET  /api/v1/admin/companion/keys    — list companion keys for a project
+//   POST /api/v1/companion/grant   — mint a scoped bearer key
+//   GET  /api/v1/companion/keys    — list companion keys for a project
 //
-// Both gate through requireAdminGate (admin-key allowlist + admin.enabled
-// check) — companion keys are an operator action, not a per-project
-// self-service surface. The minted key never has admin scope itself;
-// it's a regular DB-backed bearer with extra scope columns set.
+// Both gate on project scope via requestAllowsProject — companion key minting
+// is a per-project self-service action so it works in Community Edition (which
+// has no admin surface). The caller must be allowed the target project; admin /
+// unscoped keys and auth-off deployments pass. (Moved off requireAdminGate
+// 2026-07-03 — CE stripped the admin surface, which 404'd the mint path.)
+// The minted key never has admin scope itself; it's a regular DB-backed
+// bearer with extra scope columns set.
 //
 // The grant handler returns the raw secret exactly once. Subsequent
 // list calls (and the existing /api/v1/projects/{id}/keys list) return
@@ -38,7 +41,7 @@ var knownCompanionClients = map[string]bool{
 	"opencode":    true,
 }
 
-// companionGrantRequest is the body shape for POST /admin/companion/grant.
+// companionGrantRequest is the body shape for POST /api/v1/companion/grant.
 //
 // AllowedWorkflows is the most ergonomically dangerous field — an
 // explicit empty array means "no workflows" (effectively a useless
@@ -84,7 +87,7 @@ type companionGrantResponse struct {
 	DefaultRepoScope string     `json:"defaultRepoScope,omitempty"`
 }
 
-// CompanionGrant handles POST /api/v1/admin/companion/grant. Mints a
+// CompanionGrant handles POST /api/v1/companion/grant. Mints a
 // per-session bearer scoped to one project + an optional workflow
 // allowlist + an optional USD budget cap. Returns the raw secret
 // EXACTLY ONCE — the caller must capture it.
@@ -103,9 +106,6 @@ type companionGrantResponse struct {
 func (s *Server) CompanionGrant(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		respondError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
-		return
-	}
-	if !s.requireAdminGate(w, r) {
 		return
 	}
 	if s.apiKeyRepo == nil {
@@ -153,6 +153,17 @@ func (s *Server) CompanionGrant(w http.ResponseWriter, r *http.Request) {
 
 	if req.ProjectID == "" {
 		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", "projectId is required")
+		return
+	}
+	// Companion key minting is a per-project self-service action (moved off
+	// the admin gate so it works in Community Edition, which has no admin
+	// surface). The caller must be allowed the target project; admin /
+	// unscoped keys and auth-off deployments pass. 404 (not 403) so a scoped
+	// caller can't probe foreign-project existence — matches the /ui and
+	// data-plane scope convention.
+	if !requestAllowsProject(r, req.ProjectID) {
+		respondError(w, http.StatusNotFound, "PROJECT_NOT_FOUND",
+			"project not found: "+req.ProjectID)
 		return
 	}
 	if s.projectRegistry == nil {
@@ -299,7 +310,7 @@ type companionKeyListResponse struct {
 	Keys []companionKeyEntry `json:"keys"`
 }
 
-// CompanionKeysList handles GET /api/v1/admin/companion/keys.
+// CompanionKeysList handles GET /api/v1/companion/keys.
 // Required query param: projectId. Returns every companion-scoped
 // key for the project (including revoked rows) newest-first.
 //
@@ -311,9 +322,6 @@ func (s *Server) CompanionKeysList(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	if !s.requireAdminGate(w, r) {
-		return
-	}
 	if s.apiKeyRepo == nil {
 		respondError(w, http.StatusServiceUnavailable, "API_KEYS_DISABLED",
 			"api-key surface not configured")
@@ -323,6 +331,12 @@ func (s *Server) CompanionKeysList(w http.ResponseWriter, r *http.Request) {
 	if projectID == "" {
 		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR",
 			"projectId query parameter is required")
+		return
+	}
+	// Per-project scope gate (moved off the admin gate — see CompanionGrant).
+	if !requestAllowsProject(r, projectID) {
+		respondError(w, http.StatusNotFound, "PROJECT_NOT_FOUND",
+			"project not found: "+projectID)
 		return
 	}
 	keys, err := s.apiKeyRepo.ListCompanionByProject(r.Context(), projectID)

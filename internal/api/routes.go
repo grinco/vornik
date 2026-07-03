@@ -341,8 +341,14 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		// revocation reuses the existing /api/v1/projects/{id}/keys/{kid}
 		// DELETE handler since a companion key is just an api_keys row
 		// with extra scope columns.
-		mux.HandleFunc("/api/v1/admin/companion/grant", server.CompanionGrant)
-		mux.HandleFunc("/api/v1/admin/companion/keys", server.CompanionKeysList)
+		// Companion mint surface — NON-admin (project-scoped self-service) so
+		// it works in Community Edition, which strips the admin surface. The
+		// handlers gate on requestAllowsProject, not requireAdminGate (see
+		// admin_companion_handlers.go). Deliberately NOT under /api/v1/admin/
+		// — that prefix carries the admin-gate invariant (admin_gate_lint_test),
+		// and companion minting is no longer an admin-only action.
+		mux.HandleFunc("/api/v1/companion/grant", server.CompanionGrant)
+		mux.HandleFunc("/api/v1/companion/keys", server.CompanionKeysList)
 
 		// Continuous-learning instinct layer — read/inspect/retire surfaces.
 		// The list + per-id router go through the normal auth chain (no
@@ -357,7 +363,7 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 
 		// Companion MCP server (LLD 21). Speaks MCP JSON-RPC over HTTP;
 		// the host-LLM plugin connects with the bearer key minted via
-		// /api/v1/admin/companion/grant. The handler resolves the key
+		// /api/v1/companion/grant. The handler resolves the key
 		// row inside each call so AllowedWorkflows / BudgetCapUSD enforce
 		// even if AuthMiddleware's lighter check only verified the
 		// shape + active state.

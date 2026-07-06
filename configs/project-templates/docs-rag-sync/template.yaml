@@ -1,0 +1,48 @@
+displayName: "Docs RAG Sync"
+description: |
+  Keeps project memory (RAG) populated with the latest state of a
+  list of documentation sources. LLM-mode autonomy checks what
+  memory already holds each tick and ingests only new or changed
+  material — quiet ticks emit NO_ACTION.
+domain: "general"
+
+setup:
+  model: required
+  checks: [model_ping, schedule_armed]
+
+parameters:
+  - name: projectId
+    type: string
+    label: "Project ID"
+    description: "Lowercase letters, numbers, and hyphens only."
+    pattern: "[a-z0-9][a-z0-9-]{1,30}[a-z0-9]"
+    required: true
+  - name: displayName
+    type: string
+    label: "Display name"
+    default: "Docs RAG Sync"
+    required: true
+  - name: docSources
+    type: list
+    label: "Documentation sources"
+    description: "One per line — doc-site URLs, repo paths, or descriptions of what to track."
+    required: true
+  - name: cadence
+    type: enum
+    label: "Sync cadence"
+    options: ["12h", "24h", "168h"]
+    default: "24h"
+    required: true
+  - name: llmModel
+    type: string
+    label: "Role model override"
+    default: ""
+    required: false
+
+files:
+  - source: project.yaml.tmpl
+    target: "projects/{{.projectId}}.yaml"
+  - source: swarm.md.tmpl
+    target: "swarms/{{.projectId}}-swarm.md"
+  - source: workflow.md.tmpl
+    target: "workflows/{{.projectId}}-ingest.md"

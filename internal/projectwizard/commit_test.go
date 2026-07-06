@@ -28,7 +28,7 @@ func (c *capturingWriter) Write(_ context.Context, projectID string, yaml []byte
 	}
 	url := c.url
 	if url == "" {
-		url = "/ui/projects/" + projectID
+		url = "/ui/projects/" + projectID + "/setup"
 	}
 	return url, nil
 }
@@ -86,7 +86,7 @@ func TestCommit_HappyPath(t *testing.T) {
 	if result.ProjectID != "test-project" {
 		t.Errorf("project id wrong: %q", result.ProjectID)
 	}
-	if result.URL != "/ui/projects/test-project" {
+	if result.URL != "/ui/projects/test-project/setup" {
 		t.Errorf("url wrong: %q", result.URL)
 	}
 	if len(writer.calls) != 1 {
@@ -101,6 +101,101 @@ func TestCommit_HappyPath(t *testing.T) {
 	// Session should be terminal.
 	stored, _ := store.Get(context.Background(), sessionID)
 	if stored.CommittedProjectID == nil || *stored.CommittedProjectID != "test-project" {
+		t.Errorf("session not stamped: %+v", stored.CommittedProjectID)
+	}
+}
+
+// TestCommit_FreshURLEndsSetup asserts the non-re-click (fresh)
+// commit path lands the operator on the project's setup page, same
+// as the idempotent re-click branch — a fresh commit and a re-click
+// of the same commit must agree on where the UI redirects.
+func TestCommit_FreshURLEndsSetup(t *testing.T) {
+	w, store, _ := newWizardForTest()
+	w.Writer = &capturingWriter{}
+	w.Validator = RegistryValidator{}
+
+	sessionID := pinReadySession(t, store, "op_1", minimalValidProposal())
+	result, err := w.Commit(context.Background(), sessionID, "op_1")
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if !strings.HasSuffix(result.URL, "/setup") {
+		t.Errorf("fresh commit URL = %q, want a /setup suffix", result.URL)
+	}
+}
+
+// pinReadySessionWithComposition seeds a session carrying a
+// persisted wizard v2 composition (the JSON shape Converse stores on
+// session.Composition once a turn composes cleanly), mirroring
+// pinReadySession's legacy-proposal seeding. Every call site so far
+// commits as "op_1" — unlike pinReadySession, there's no cross-
+// operator composition test yet, so the operator id isn't
+// parameterised.
+func pinReadySessionWithComposition(t *testing.T, store *fakeSessionStore, comp *Composition) string {
+	t.Helper()
+	session := &persistence.ProjectWizardSession{
+		ID:            persistence.GenerateID("pw"),
+		OperatorID:    "op_1",
+		ReadyToCommit: true,
+	}
+	compositionBytes, err := json.Marshal(comp)
+	if err != nil {
+		t.Fatalf("marshal composition: %v", err)
+	}
+	session.Composition = compositionBytes
+	if err := store.Insert(context.Background(), session); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	return session.ID
+}
+
+// TestCommit_ComposesAndWritesComposedFiles: a session that reached
+// ready_to_commit via the wizard v2 composition path (custom-base +
+// a schedule addon) must have Commit re-run Compose and hand the
+// result to the multi-file writer — not fall through to the legacy
+// proposal path (there's no CurrentProposal on this session at all).
+func TestCommit_ComposesAndWritesComposedFiles(t *testing.T) {
+	w, store, _ := newWizardForTest()
+	writer := &multiFileCapturingWriter{}
+	w.Writer = writer
+	w.Templates = &composeFakeTemplateSource{known: map[string]bool{"custom-base": true}, files: baseFiles()}
+	w.KnownMCP = func(context.Context) map[string]bool { return map[string]bool{} }
+
+	comp := &Composition{
+		Template: "custom-base",
+		Params:   map[string]ParamValue{"projectId": {"pricing-watch"}},
+		Addons: []Addon{
+			mustAddon(`{"type":"schedule","interval":"168h","goal":"weekly pricing digest","task_type":"report"}`),
+		},
+	}
+	sessionID := pinReadySessionWithComposition(t, store, comp)
+
+	result, err := w.Commit(context.Background(), sessionID, "op_1")
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if result.ProjectID != "pricing-watch" {
+		t.Errorf("project id = %q, want pricing-watch", result.ProjectID)
+	}
+	if !strings.HasSuffix(result.URL, "/setup") {
+		t.Errorf("composed commit URL = %q, want a /setup suffix", result.URL)
+	}
+	if writer.singleCalls != 0 {
+		t.Error("composed commit must use the multi-file writer, not single-file Write")
+	}
+	if writer.projectID != "pricing-watch" {
+		t.Errorf("WriteFiles projectID = %q, want pricing-watch", writer.projectID)
+	}
+	proj, ok := writer.multiFiles["projects/pricing-watch.yaml"]
+	if !ok {
+		t.Fatalf("expected composed project file written, got %#v", writer.multiFiles)
+	}
+	if !strings.Contains(proj, "168h") {
+		t.Errorf("composed project YAML missing the schedule addon: %s", proj)
+	}
+	// Session should be terminal, same as the legacy path.
+	stored, _ := store.Get(context.Background(), sessionID)
+	if stored.CommittedProjectID == nil || *stored.CommittedProjectID != "pricing-watch" {
 		t.Errorf("session not stamped: %+v", stored.CommittedProjectID)
 	}
 }
@@ -157,8 +252,8 @@ func TestCommit_AlreadyCommittedIsIdempotent(t *testing.T) {
 	if result.ProjectID != committed {
 		t.Errorf("expected prior project id, got %q", result.ProjectID)
 	}
-	if result.URL != "/ui/projects/"+committed {
-		t.Errorf("expected redirect to existing project, got %q", result.URL)
+	if result.URL != "/ui/projects/"+committed+"/setup" {
+		t.Errorf("expected redirect to existing project setup, got %q", result.URL)
 	}
 }
 

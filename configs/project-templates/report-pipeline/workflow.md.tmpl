@@ -1,0 +1,67 @@
+---
+workflowId: "{{.projectId}}-report"
+displayName: "{{.displayName}} report run"
+description: "Collect from configured sources, then write the recurring report."
+version: "1.0"
+entrypoint: "collect"
+maxStepVisits: 2
+maxIterations: 8
+maxWallClock: "45m"
+cleanup_artifacts:
+  - artifacts/out/collected.md
+  - artifacts/out/report.md
+  - artifacts/out/summary.txt
+steps:
+  collect:
+    type: "agent"
+    role: "collector"
+    on_success: "write"
+    on_fail: "recover"
+    timeout: "25m"
+    retry:
+      on: ["container_non_zero_exit", "context_timeout"]
+      max_attempts: 3
+      backoff: "exponential"
+      initial_delay: "30s"
+  write:
+    type: "agent"
+    role: "writer"
+    on_success: "done"
+    on_fail: "recover"
+    timeout: "10m"
+  recover:
+    type: "plan"
+    role: "lead"
+    on_success: "failed"
+    on_fail: "failed"
+    timeout: "5m"
+terminals:
+  done:
+    status: "COMPLETED"
+  failed:
+    status: "FAILED"
+    message: "Report run failed"
+---
+
+# {{.displayName}} report run
+
+Two-step pipeline: collect fresh items from every configured
+source, then write the report. The lead handles recovery
+checkpoints (unreachable sources, container failures) so a single
+bad source doesn't kill the scheduled run.
+
+## Prompts
+
+### collect
+
+Collect what is new from every configured source since the last
+report. Write findings to `artifacts/out/collected.md` grouped per
+source. Follow the collector role prompt's rules on freshness and
+unreachable sources.
+
+### write
+
+Read `artifacts/out/collected.md` and produce
+`artifacts/out/report.md` + `artifacts/out/summary.txt` per the
+writer role prompt. Your response's top-level `message` field must
+carry the 2-3 sentence summary.

@@ -1843,13 +1843,18 @@ type ExecutionHint struct {
 // successful commit. Subsequent /converse calls on a committed
 // session return 410 Gone.
 type ProjectWizardSession struct {
-	ID                 string     `json:"id"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
-	OperatorID         string     `json:"operator_id"`
-	Transcript         []byte     `json:"transcript"`                 // JSON-encoded []ProjectWizardTurn
-	CurrentProposal    []byte     `json:"current_proposal,omitempty"` // JSON-encoded ProjectYAML or null
-	SuggestedTemplate  string     `json:"suggested_template,omitempty"`
+	ID                string    `json:"id"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	OperatorID        string    `json:"operator_id"`
+	Transcript        []byte    `json:"transcript"`                 // JSON-encoded []ProjectWizardTurn
+	CurrentProposal   []byte    `json:"current_proposal,omitempty"` // JSON-encoded ProjectYAML or null
+	SuggestedTemplate string    `json:"suggested_template,omitempty"`
+	// Composition is JSON of the wizard v2 Composition; nil for v1
+	// sessions. Populated once the wizard v2 flow has assembled a
+	// composition so Commit can consume it directly instead of
+	// re-deriving it from the transcript.
+	Composition        []byte     `json:"composition,omitempty"`
 	ReadyToCommit      bool       `json:"ready_to_commit"`
 	CommittedProjectID *string    `json:"committed_project_id,omitempty"`
 	CommittedAt        *time.Time `json:"committed_at,omitempty"`

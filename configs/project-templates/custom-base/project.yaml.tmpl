@@ -1,0 +1,21 @@
+projectId: "{{.projectId}}"
+displayName: "{{.displayName}}"
+swarmId: "{{.projectId}}-swarm"
+defaultWorkflowId: "adaptive"
+
+defaultPriority: 40
+maxConcurrentTasks: 1
+
+autonomy:
+  enabled: false
+
+permissions:
+  secrets: []
+  allowedTools:
+    - "current_time"
+    - "file_read"
+    - "read_many_files"
+    - "memory_search"
+
+firewall:
+  mode: ""  # inherit daemon default

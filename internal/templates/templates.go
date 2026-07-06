@@ -55,6 +55,16 @@ type Manifest struct {
 	// renders a default placeholder.
 	Screenshot string `yaml:"screenshot,omitempty"`
 
+	// Hidden excludes this template from List()/Domains() (gallery
+	// + CLI listings) while keeping it resolvable via Get — the
+	// wizard's composition anchor (custom-base) uses this.
+	Hidden bool `yaml:"hidden,omitempty"`
+
+	// Setup declares post-materialisation prerequisites consumed
+	// by the Phase 2 project doctor and summarised on gallery
+	// cards. Parse+validate only in Phase 1.
+	Setup *SetupSpec `yaml:"setup,omitempty"`
+
 	// Parameters defines the form the user fills out before
 	// materialisation. The order in this slice is preserved as
 	// the rendering order in the UI form.
@@ -96,6 +106,12 @@ type Parameter struct {
 	// Options (enum types only) is the closed set of values
 	// accepted. The form renders as a select.
 	Options []string `yaml:"options,omitempty"`
+
+	// OptionsFrom (enum/multiselect only) names a dynamic option
+	// source resolved at form-render and submit time. Recognised
+	// sources: "mcp_registry", "models". Mutually exclusive with
+	// Options. See project-creation-e2e-design §1a.
+	OptionsFrom string `yaml:"optionsFrom,omitempty"`
 
 	// Required, when true, refuses an empty value at validation
 	// time. String/enum parameters set this true when they have
@@ -179,6 +195,9 @@ func (c *Catalog) List() []Manifest {
 	}
 	out := make([]Manifest, 0, len(c.manifests))
 	for _, m := range c.manifests {
+		if m.Hidden {
+			continue
+		}
 		out = append(out, m)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -200,6 +219,9 @@ func (c *Catalog) Domains() []string {
 	}
 	seen := make(map[string]struct{}, 4)
 	for _, m := range c.manifests {
+		if m.Hidden {
+			continue
+		}
 		seen[m.Domain] = struct{}{}
 	}
 	out := make([]string, 0, len(seen))
@@ -372,6 +394,39 @@ func renderInline(text string, params map[string]string) (string, error) {
 	return b.String(), nil
 }
 
+// renderInlineAny mirrors renderInline with a map[string]any
+// context. Separate function (not a signature change) so the
+// legacy scalar path stays physically untouched.
+func renderInlineAny(text string, params map[string]any) (string, error) {
+	t, err := template.New("inline").Option("missingkey=error").Parse(text)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	if err := t.Execute(&b, params); err != nil {
+		return "", err
+	}
+	return b.String(), nil
+}
+
+// renderSourceAny reads and renders one template source file with
+// an any context (multi-value path only).
+func (c *Catalog) renderSourceAny(slug, source string, params map[string]any) (string, error) {
+	sourcePath, serr := safepath.JoinUnder(filepath.Join(c.dir, slug), source)
+	if serr != nil {
+		return "", fmt.Errorf("source template %q refused: %w", source, serr)
+	}
+	raw, rerr := os.ReadFile(sourcePath)
+	if rerr != nil {
+		return "", fmt.Errorf("read template source %q: %w", sourcePath, rerr)
+	}
+	body, berr := renderInlineAny(string(raw), params)
+	if berr != nil {
+		return "", fmt.Errorf("render body %q: %w", sourcePath, berr)
+	}
+	return body, nil
+}
+
 // validateManifest catches the manifest-level invariants the
 // loader can check without consulting any external state. Loaded
 // at startup; a bad manifest fails the daemon's Load so operators
@@ -394,12 +449,34 @@ func validateManifest(m Manifest) error {
 		}
 		names[p.Name] = struct{}{}
 		switch strings.ToLower(p.Type) {
-		case "", "string", "enum", "bool":
+		case "", "string", "enum", "bool", "list", "multiselect":
 		default:
-			return fmt.Errorf("parameter %q: unknown type %q (expected string|enum|bool)", p.Name, p.Type)
+			return fmt.Errorf("parameter %q: unknown type %q (expected string|enum|bool|list|multiselect)", p.Name, p.Type)
 		}
-		if strings.EqualFold(p.Type, "enum") && len(p.Options) == 0 {
-			return fmt.Errorf("parameter %q: enum type requires non-empty options", p.Name)
+		if strings.EqualFold(p.Type, "enum") && len(p.Options) == 0 && p.OptionsFrom == "" {
+			return fmt.Errorf("parameter %q: enum type requires non-empty options (or optionsFrom)", p.Name)
+		}
+		if strings.EqualFold(p.Type, "multiselect") && len(p.Options) == 0 && p.OptionsFrom == "" {
+			return fmt.Errorf("parameter %q: multiselect type requires non-empty options (or optionsFrom)", p.Name)
+		}
+		if (strings.EqualFold(p.Type, "list") || strings.EqualFold(p.Type, "multiselect")) && p.Default != "" {
+			return fmt.Errorf("parameter %q: list types do not support a default", p.Name)
+		}
+		if strings.EqualFold(p.Type, "list") && len(p.Options) > 0 {
+			return fmt.Errorf("parameter %q: list type does not take options (use multiselect)", p.Name)
+		}
+		if p.OptionsFrom != "" {
+			if !KnownOptionsSource(p.OptionsFrom) {
+				return fmt.Errorf("parameter %q: unknown optionsFrom source %q (expected %s|%s)",
+					p.Name, p.OptionsFrom, OptionsSourceMCPRegistry, OptionsSourceModels)
+			}
+			if len(p.Options) > 0 {
+				return fmt.Errorf("parameter %q: options and optionsFrom are mutually exclusive", p.Name)
+			}
+			lt := strings.ToLower(p.Type)
+			if lt != "enum" && lt != "multiselect" {
+				return fmt.Errorf("parameter %q: optionsFrom is only valid on enum or multiselect parameters", p.Name)
+			}
 		}
 	}
 	for _, fm := range m.Files {
@@ -412,6 +489,9 @@ func validateManifest(m Manifest) error {
 		if err := validateRelativeTarget(fm.Target); err != nil {
 			return fmt.Errorf("files[].target %q must be a relative path inside configs: %w", fm.Target, err)
 		}
+	}
+	if err := validateSetup(m.Setup); err != nil {
+		return err
 	}
 	return nil
 }

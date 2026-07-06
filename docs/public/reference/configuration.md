@@ -94,6 +94,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `runtime.agent_llm.context_size` | int | Context-window tokens. |
 | `runtime.agent_llm.max_tokens` | int | Max output tokens per call. |
 | `runtime.agent_llm.timeout` | string | Bound on a single LLM call from inside an agent. |
+| `runtime.agent_llm.tool_result_max_bytes` | int | Max bytes of a tool result fed back to the model (0 = agent default 256 KiB). |
 | `runtime.warm_pool.enabled` | bool | Reuse warm containers for faster task start. |
 | `runtime.warm_pool.idle_timeout` | string | How long an idle warm container is kept. |
 | `runtime.warm_pool.max_per_role` | int | Max warm containers per project and role. |
@@ -132,6 +133,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `secrets.enabled` | bool | Turn detection on. |
 | `secrets.allowlist` | list | Extra regexes appended to the default allowlist. |
 | `secrets.checkpoints` | map | Map a channel to an action: detect, redact, or block. |
+| `secrets.trusted_output_tools` | list | Tool-name prefixes whose tool-audit OUTPUT is exempt from generic_kv/entropy redaction (strong credential patterns still redact; input always scanned). |
 
 ## retention
 

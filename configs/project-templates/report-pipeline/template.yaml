@@ -1,0 +1,53 @@
+displayName: "Report Pipeline"
+description: |
+  Pulls data from a list of sources on a schedule and produces a
+  regular report. Deterministic cron autonomy: every tick collects
+  fresh items from every configured source, then writes a scannable
+  report to artifacts and project memory. Best fit for "give me a
+  daily/weekly digest of X, Y and Z" workloads.
+domain: "research"
+
+setup:
+  model: required
+  checks: [model_ping, schedule_armed, smoke]
+  smokeTask:
+    goal: "Collect one item from the first configured source and produce a three-line sample report at artifacts/out/report.md."
+
+parameters:
+  - name: projectId
+    type: string
+    label: "Project ID"
+    description: "Lowercase letters, numbers, and hyphens only."
+    pattern: "[a-z0-9][a-z0-9-]{1,30}[a-z0-9]"
+    required: true
+  - name: displayName
+    type: string
+    label: "Display name"
+    default: "Report Pipeline"
+    required: true
+  - name: sources
+    type: list
+    label: "Sources to pull from"
+    description: "One per line — URLs or plain descriptions of where to collect from."
+    required: true
+  - name: cadence
+    type: enum
+    label: "Report cadence"
+    description: "How often a fresh report is produced."
+    options: ["6h", "12h", "24h", "168h"]
+    default: "24h"
+    required: true
+  - name: llmModel
+    type: string
+    label: "Role model override"
+    description: "Optional. Leave blank to inherit the daemon chat model."
+    default: ""
+    required: false
+
+files:
+  - source: project.yaml.tmpl
+    target: "projects/{{.projectId}}.yaml"
+  - source: swarm.md.tmpl
+    target: "swarms/{{.projectId}}-swarm.md"
+  - source: workflow.md.tmpl
+    target: "workflows/{{.projectId}}-report.md"

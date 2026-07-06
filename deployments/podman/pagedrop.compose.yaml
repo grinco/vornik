@@ -1,0 +1,68 @@
+# PageDrop host service — self-hosted HTML page publisher for the assistant
+# and janka projects. Image is built from upstream by
+# deployments/podman/pagedrop/sync.sh (run `make pagedrop-sync` first).
+#
+# Bring up / tear down under a DEDICATED compose project so it never
+# reconciles against the shared `podman` project (the trading/broker/scraper
+# stacks). podman-compose treats the given file(s) as the full desired state
+# for the project, so a single-file `up` under the default project would try
+# to remove the other stacks' containers. Always pass `-p pagedrop`:
+#
+#   cd deployments/podman
+#   podman-compose --env-file ~/.config/vornik/secrets/pagedrop.env \
+#     -p pagedrop -f pagedrop.compose.yaml up -d
+#   podman-compose -p pagedrop -f pagedrop.compose.yaml down   # to stop
+version: "3.8"
+
+volumes:
+  pagedrop-data:
+    name: vornik-pagedrop-data
+
+services:
+  pagedrop-host:
+    container_name: vornik-pagedrop-host
+    image: localhost/pagedrop-host:current
+    labels:
+      vornik.managed: "true"
+      vornik.component: pagedrop-host
+      vornik.layer: publishing
+    environment:
+      PAGEDROP_HOST_TOKEN: ${PAGEDROP_HOST_TOKEN}
+      PAGEDROP_HOST_DATA_DIR: /data
+      PAGEDROP_HOST_VIEW_PORT: "8080"
+      PAGEDROP_HOST_API_PORT: "8081"
+      # Link lifecycle + protection (upstream feat/lifecycle-and-protection).
+      # Default 90-day TTL on every publish (7776000s; a publish may override
+      # with ttlSeconds, 0 = never). DEFAULT_PROTECT auto-generates a password
+      # for any publish without one — the plaintext is returned once in the
+      # publish response (surfaced to the agent as "Password: …"). COOKIE_SECRET
+      # signs unlock cookies and is REQUIRED when DEFAULT_PROTECT is on (the host
+      # refuses to start otherwise); it must be persistent so unlock sessions
+      # survive container restarts.
+      PAGEDROP_DEFAULT_TTL_SECONDS: "7776000"
+      PAGEDROP_DEFAULT_PROTECT: "true"
+      PAGEDROP_COOKIE_SECRET: ${PAGEDROP_COOKIE_SECRET}
+      # Write-API body cap. Left UNSET → upstream default 40 MiB
+      # (PAGEDROP_HOST_MAX_BODY_BYTES), which is what lets inlined-image pages
+      # (daemon media-handles → images[] base64) publish. Do NOT lower it below
+      # the largest page you expect to publish, or inlined-image publishes 400.
+      # The unlock cookie is Secure by default (kept). Only if this service is
+      # reached over plain HTTP (no TLS anywhere in front) must you also set
+      # PAGEDROP_COOKIE_SECURE: "false" — otherwise browsers drop the Secure
+      # cookie over http:// and password-protected pages loop on unlock.
+    volumes:
+      - pagedrop-data:/data
+    ports:
+      - "127.0.0.1:8081:8081"        # write API — daemon only
+      # Viewing. Put an HTTPS-terminating reverse proxy in front and point
+      # PAGEDROP_K8S_BASE_URL at it: the unlock cookie is `Secure`, so
+      # password-protected pages only work when the browser reaches the page
+      # over HTTPS. The proxy forwards to this host:port.
+      - "192.0.2.10:8090:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: always

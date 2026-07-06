@@ -2,6 +2,7 @@ package projectwizard
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -24,7 +25,7 @@ type ProjectWriter interface {
 	// projectID is the parsed projectId field; yaml is the
 	// fully-marshalled project.yaml body. Returns the operator-
 	// facing URL to redirect to on success (typically
-	// "/ui/projects/<id>").
+	// "/ui/projects/<id>/setup").
 	Write(ctx context.Context, projectID string, yaml []byte) (string, error)
 }
 
@@ -106,47 +107,35 @@ func (w *Wizard) Commit(ctx context.Context, sessionID, operatorID string) (*Com
 		return nil, persistence.ErrNotFound
 	}
 	if session.CommittedProjectID != nil {
-		// Idempotent re-click: return the existing project's URL
+		// Idempotent re-click: return the existing project's setup URL
 		// so the UI redirect lands cleanly.
 		return &CommitResult{
 			SessionID: session.ID,
 			ProjectID: *session.CommittedProjectID,
-			URL:       "/ui/projects/" + *session.CommittedProjectID,
+			URL:       "/ui/projects/" + *session.CommittedProjectID + "/setup",
 		}, nil
 	}
 	if !session.ReadyToCommit {
 		return nil, ErrNotReadyToCommit
 	}
-	if len(session.CurrentProposal) == 0 {
-		return nil, ErrNoProposal
-	}
 
-	var proposal ProjectYAML
-	if err := proposal.UnmarshalJSON(session.CurrentProposal); err != nil {
-		return nil, fmt.Errorf("projectwizard: decode proposal: %w", err)
+	// Wizard v2 sessions carry a structured composition (persisted by
+	// Converse once a turn composes cleanly); everything else is the
+	// legacy raw-proposal path. Split into two helpers — inlining both
+	// here nests deep enough to bury the shared tail (session stamp +
+	// metrics) below two independent validation ladders.
+	var (
+		projectID string
+		url       string
+		commitErr error
+	)
+	if len(session.Composition) > 0 {
+		projectID, url, commitErr = w.commitComposition(ctx, session.Composition)
+	} else {
+		projectID, url, commitErr = w.commitProposal(ctx, session)
 	}
-
-	slug := session.SuggestedTemplate
-
-	// Defence in depth — re-validate before writing, the same way the
-	// proposal was gated for ready_to_commit (template-anchored when a
-	// template resolves; raw-proposal otherwise).
-	if err := w.validateProposal(&proposal, slug); err != nil {
-		return nil, fmt.Errorf("projectwizard: re-validation failed: %w", err)
-	}
-
-	projectID := ProposalProjectID(&proposal)
-	if projectID == "" {
-		return nil, errors.New("projectwizard: proposal missing projectId after validation (validator regression?)")
-	}
-	if !isSafeProjectID(projectID) {
-		return nil, fmt.Errorf("projectwizard: invalid projectId %q: use only letters, digits, '-' and '_'", projectID)
-	}
-
-	url, err := w.writeProject(ctx, projectID, &proposal, slug)
-	if err != nil {
-		w.Metrics.recordCommit(commitOutcomeFailed)
-		return nil, fmt.Errorf("projectwizard: write project: %w", err)
+	if commitErr != nil {
+		return nil, commitErr
 	}
 
 	if err := w.Sessions.CommitTo(ctx, session.ID, projectID); err != nil {
@@ -168,6 +157,85 @@ func (w *Wizard) Commit(ctx context.Context, sessionID, operatorID string) (*Com
 		ProjectID: projectID,
 		URL:       url,
 	}, nil
+}
+
+// commitComposition re-runs the 3a Compose pipeline against a
+// session's persisted wizard v2 composition and writes the result via
+// the multi-file writer. Re-composing (rather than trusting a stale
+// render) is the same defence-in-depth reason the legacy path
+// re-validates: the template catalog or MCP inventory may have moved
+// between the last /converse turn and this commit click. Returns the
+// new project's ID and redirect URL.
+func (w *Wizard) commitComposition(ctx context.Context, rawComposition []byte) (string, string, error) {
+	var comp Composition
+	if err := json.Unmarshal(rawComposition, &comp); err != nil {
+		return "", "", fmt.Errorf("projectwizard: decode composition: %w", err)
+	}
+	files, _, cerr := w.composeFromEnvelope(ctx, &Envelope{Composition: &comp})
+	if cerr != nil {
+		w.Metrics.recordCommit(commitOutcomeFailed)
+		return "", "", fmt.Errorf("projectwizard: re-compose failed: %w", cerr)
+	}
+	projectID := compositionProjectID(&comp)
+	if projectID == "" {
+		w.Metrics.recordCommit(commitOutcomeFailed)
+		return "", "", errors.New("projectwizard: composition missing projectId param")
+	}
+	if !isSafeProjectID(projectID) {
+		w.Metrics.recordCommit(commitOutcomeFailed)
+		return "", "", fmt.Errorf("projectwizard: invalid projectId %q: use only letters, digits, '-' and '_'", projectID)
+	}
+	mw, ok := w.Writer.(MultiFileProjectWriter)
+	if !ok {
+		w.Metrics.recordCommit(commitOutcomeFailed)
+		return "", "", errors.New("projectwizard: writer does not support multi-file writes required to commit a composition")
+	}
+	url, werr := mw.WriteFiles(ctx, projectID, files)
+	if werr != nil {
+		w.Metrics.recordCommit(commitOutcomeFailed)
+		return "", "", fmt.Errorf("projectwizard: write project: %w", werr)
+	}
+	return projectID, url, nil
+}
+
+// commitProposal is the legacy (pre-wizard-v2) path: decode the
+// session's raw proposal, re-validate it, and write it — template-
+// anchored when a suggested_template resolves and the writer supports
+// multi-file writes, else the proposal's own YAML. Returns the new
+// project's ID and redirect URL.
+func (w *Wizard) commitProposal(ctx context.Context, session *persistence.ProjectWizardSession) (string, string, error) {
+	if len(session.CurrentProposal) == 0 {
+		return "", "", ErrNoProposal
+	}
+
+	var proposal ProjectYAML
+	if err := proposal.UnmarshalJSON(session.CurrentProposal); err != nil {
+		return "", "", fmt.Errorf("projectwizard: decode proposal: %w", err)
+	}
+
+	slug := session.SuggestedTemplate
+
+	// Defence in depth — re-validate before writing, the same way the
+	// proposal was gated for ready_to_commit (template-anchored when a
+	// template resolves; raw-proposal otherwise).
+	if err := w.validateProposal(&proposal, slug); err != nil {
+		return "", "", fmt.Errorf("projectwizard: re-validation failed: %w", err)
+	}
+
+	projectID := ProposalProjectID(&proposal)
+	if projectID == "" {
+		return "", "", errors.New("projectwizard: proposal missing projectId after validation (validator regression?)")
+	}
+	if !isSafeProjectID(projectID) {
+		return "", "", fmt.Errorf("projectwizard: invalid projectId %q: use only letters, digits, '-' and '_'", projectID)
+	}
+
+	url, err := w.writeProject(ctx, projectID, &proposal, slug)
+	if err != nil {
+		w.Metrics.recordCommit(commitOutcomeFailed)
+		return "", "", fmt.Errorf("projectwizard: write project: %w", err)
+	}
+	return projectID, url, nil
 }
 
 // Cancel terminally cancels an in-progress session, freeing the
@@ -235,6 +303,20 @@ func (w *Wizard) writeProject(ctx context.Context, projectID string, proposal *P
 		return "", fmt.Errorf("render yaml: %w", err)
 	}
 	return w.Writer.Write(ctx, projectID, yamlBody)
+}
+
+// compositionProjectID pulls the projectId param out of a wizard v2
+// composition. Mirrors ProposalProjectID for the legacy proposal
+// path. Returns "" when the param is missing or empty.
+func compositionProjectID(c *Composition) string {
+	if c == nil {
+		return ""
+	}
+	vals, ok := c.Params["projectId"]
+	if !ok || len(vals) == 0 {
+		return ""
+	}
+	return vals[0]
 }
 
 func isSafeProjectID(id string) bool {

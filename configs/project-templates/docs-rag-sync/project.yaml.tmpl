@@ -1,0 +1,43 @@
+projectId: "{{.projectId}}"
+displayName: "{{.displayName}}"
+swarmId: "{{.projectId}}-swarm"
+defaultWorkflowId: "{{.projectId}}-ingest"
+
+defaultPriority: 30
+maxConcurrentTasks: 1
+
+autonomy:
+  enabled: true
+  mode: llm
+  pollInterval: "{{.cadence}}"
+  maxTasksPerHour: 1
+  allowedTaskTypes:
+    - "ingest"
+    - "research"
+  goal: |
+    Keep project memory current on these documentation sources:
+{{range .docSources}}      - {{.}}
+{{end}}
+    On every autonomy invocation:
+      1. Use memory_search to determine what versions/sections of
+         each source are already in project memory and when they
+         were last synced.
+      2. If everything is fresher than the configured cadence, emit
+         NO_ACTION and stop.
+      3. Otherwise schedule an ingest run for the stale sources
+         only.
+
+permissions:
+  secrets: []
+  allowedTools:
+    - "current_time"
+    - "file_read"
+    - "file_write"
+    - "file_edit"
+    - "read_many_files"
+    - "grep"
+    - "glob"
+    - "memory_search"
+
+firewall:
+  mode: ""  # inherit daemon default

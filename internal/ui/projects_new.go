@@ -73,6 +73,20 @@ type ProjectsNewData struct {
 	// operator can review the new project without hunting through
 	// the project list.
 	CreatedProjectID string
+
+	// FormValuesMulti carries multi-value fields (list textarea
+	// content re-joined with \n, multiselect checked values) for
+	// re-render after validation failure. FormValues stays for
+	// scalar fields (existing template references).
+	FormValuesMulti map[string][]string
+	// ResolvedOptions holds submit-and-render-time dynamic options
+	// per optionsFrom parameter name; OptionErrors the per-field
+	// resolution failure (field rendered disabled with the error).
+	ResolvedOptions map[string][]string
+	OptionErrors    map[string]string
+	// SuggestedSlug is the free projectId offered after an ID
+	// conflict (banner + prefilled field).
+	SuggestedSlug string
 }
 
 // ProjectsNew renders the gallery at GET /ui/projects/new. When
@@ -97,13 +111,15 @@ func (s *Server) ProjectsNew(w http.ResponseWriter, r *http.Request) {
 // surfaces can't drift.
 func (s *Server) buildProjectsNewData(r *http.Request) ProjectsNewData {
 	data := ProjectsNewData{
-		Title:        "New project",
-		CurrentPage:  "projects",
-		ActiveDomain: strings.TrimSpace(r.URL.Query().Get("domain")),
-		SelectedSlug: strings.TrimSpace(r.URL.Query().Get("slug")),
-		FormValues:   map[string]string{},
+		Title:           "New project",
+		CurrentPage:     "projects",
+		ActiveDomain:    strings.TrimSpace(r.URL.Query().Get("domain")),
+		SelectedSlug:    strings.TrimSpace(r.URL.Query().Get("slug")),
+		FormValues:      map[string]string{},
+		FormValuesMulti: map[string][]string{},
 	}
 	if s.projectTemplates == nil {
+		s.resolveDynamicOptions(&data)
 		return data
 	}
 	data.CatalogAvailable = true
@@ -129,7 +145,41 @@ func (s *Server) buildProjectsNewData(r *http.Request) ProjectsNewData {
 		}
 		data.Templates = filtered
 	}
+	s.resolveDynamicOptions(&data)
 	return data
+}
+
+// resolveDynamicOptions resolves every optionsFrom parameter on
+// data.SelectedManifest into data.ResolvedOptions, recording a
+// per-field message in data.OptionErrors on failure instead of
+// letting the form render a silently empty select (spec
+// error-handling contract). Called both from buildProjectsNewData
+// (GET path) and again by ProjectsCreateFromTemplate after it
+// overrides SelectedSlug/SelectedManifest post-validation-failure —
+// buildProjectsNewData alone can't see the POST body's slug, only
+// the query string, so a bare call there would leave dynamic options
+// unresolved on a failed-then-re-rendered form.
+func (s *Server) resolveDynamicOptions(data *ProjectsNewData) {
+	data.ResolvedOptions = map[string][]string{}
+	data.OptionErrors = map[string]string{}
+	if data.SelectedSlug == "" {
+		return
+	}
+	for _, p := range data.SelectedManifest.Parameters {
+		if p.OptionsFrom == "" {
+			continue
+		}
+		if s.templateOptions == nil {
+			data.OptionErrors[p.Name] = "dynamic options unavailable (resolver not wired)"
+			continue
+		}
+		opts, err := s.templateOptions.ResolveOptions(p.OptionsFrom)
+		if err != nil {
+			data.OptionErrors[p.Name] = "could not load options from " + p.OptionsFrom + ": " + err.Error()
+			continue
+		}
+		data.ResolvedOptions[p.Name] = opts
+	}
 }
 
 // ProjectsCreateFromTemplate handles POST /ui/projects/new. The
@@ -169,13 +219,40 @@ func (s *Server) ProjectsCreateFromTemplate(w http.ResponseWriter, r *http.Reque
 
 	// Collect declared parameters from the form. Form fields are
 	// prefixed `p_<name>` so the slug + meta fields don't collide
-	// with user parameters.
-	params := make(map[string]string, len(manifest.Parameters))
+	// with user parameters. List params post as one textarea (one
+	// value per line, split here); multiselect params post as
+	// repeated checkbox values under the same name; everything else
+	// stays a single scalar value.
+	multi := make(map[string][]string, len(manifest.Parameters))
 	for _, p := range manifest.Parameters {
-		params[p.Name] = strings.TrimSpace(r.FormValue("p_" + p.Name))
+		switch strings.ToLower(p.Type) {
+		case "list":
+			raw := r.FormValue("p_" + p.Name)
+			multi[p.Name] = normalizeTemplateListValues(raw)
+		case "multiselect":
+			multi[p.Name] = r.Form["p_"+p.Name]
+		default:
+			multi[p.Name] = []string{strings.TrimSpace(r.FormValue("p_" + p.Name))}
+		}
+	}
+	// flat collapses multi to the legacy map[string]string shape
+	// ("last value wins" for anything scalar) so unchanged template
+	// refs (data.FormValues, MaterialiseFiles) keep working
+	// regardless of which materialisation path runs below.
+	flat := make(map[string]string, len(multi))
+	for k, v := range multi {
+		if len(v) > 0 {
+			flat[k] = v[len(v)-1]
+		}
 	}
 
-	rendered, err := s.projectTemplates.MaterialiseFiles(manifest, params)
+	var rendered map[string]string
+	var err error
+	if manifest.NeedsMultiValue() {
+		rendered, err = s.projectTemplates.MaterialiseFilesMulti(manifest, multi, s.templateOptions)
+	} else {
+		rendered, err = s.projectTemplates.MaterialiseFiles(manifest, flat)
+	}
 	if err != nil {
 		// ValidationError → re-render with operator's values so
 		// they don't lose their work. Other errors → 500.
@@ -184,8 +261,10 @@ func (s *Server) ProjectsCreateFromTemplate(w http.ResponseWriter, r *http.Reque
 			data := s.buildProjectsNewData(r)
 			data.SelectedSlug = slug
 			data.SelectedManifest = manifest
+			s.resolveDynamicOptions(&data)
 			data.Error = err.Error()
-			data.FormValues = params
+			data.FormValues = flat
+			data.FormValuesMulti = multi
 			s.render(w, "projects_new_form.html", data)
 			return
 		}
@@ -200,8 +279,20 @@ func (s *Server) ProjectsCreateFromTemplate(w http.ResponseWriter, r *http.Reque
 			data := s.buildProjectsNewData(r)
 			data.SelectedSlug = slug
 			data.SelectedManifest = manifest
-			data.Error = "A project at " + exists.Target + " already exists. Pick a different ID or delete the existing one first."
-			data.FormValues = params
+			s.resolveDynamicOptions(&data)
+
+			pid := ""
+			if v := multi["projectId"]; len(v) > 0 {
+				pid = v[len(v)-1]
+			}
+			if sug := templates.SuggestFreeProjectID(s.configsDir, pid); sug != "" && sug != pid {
+				data.SuggestedSlug = sug
+				data.Error = "A project at " + exists.Target + " already exists. Suggested free ID: " + sug + "."
+			} else {
+				data.Error = "A project at " + exists.Target + " already exists. Pick a different ID or delete the existing one first."
+			}
+			data.FormValues = flat
+			data.FormValuesMulti = multi
 			s.render(w, "projects_new_form.html", data)
 			return
 		}
@@ -220,7 +311,9 @@ func (s *Server) ProjectsCreateFromTemplate(w http.ResponseWriter, r *http.Reque
 		if err := s.configReloader.Reload(); err != nil {
 			data.SelectedSlug = slug
 			data.SelectedManifest = manifest
-			data.FormValues = params
+			s.resolveDynamicOptions(&data)
+			data.FormValues = flat
+			data.FormValuesMulti = multi
 			data.Error = "Created " + strings.Join(written, ", ") +
 				" but daemon reload failed: " + err.Error() +
 				"\nThe files are on disk; restart the daemon or fix the cause and retry."
@@ -232,6 +325,19 @@ func (s *Server) ProjectsCreateFromTemplate(w http.ResponseWriter, r *http.Reque
 
 	data.CreatedSlug = slug
 	data.CreatedFiles = written
-	data.CreatedProjectID = params["projectId"]
+	data.CreatedProjectID = flat["projectId"]
 	s.render(w, "projects_new_success.html", data)
+}
+
+func normalizeTemplateListValues(raw string) []string {
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	raw = strings.ReplaceAll(raw, "\r", "\n")
+	lines := strings.Split(raw, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if v := strings.TrimSpace(line); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

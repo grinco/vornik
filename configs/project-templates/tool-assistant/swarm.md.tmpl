@@ -1,0 +1,63 @@
+---
+swarmId: "{{.projectId}}-swarm"
+displayName: "{{.displayName}} swarm"
+
+roles:
+  - name: "lead"
+    description: "Routes ad-hoc tasks through the adaptive workflow."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "localhost/vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "40"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "file_write"
+        - "file_edit"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+        - "memory_search"
+
+  - name: "dispatcher"
+    description: "Handles chat conversations for this project and uses the attached MCP tools."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "localhost/vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "40"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+        - "memory_search"
+---
+
+# {{.displayName}} swarm
+
+A chat-first swarm: the dispatcher handles conversations and MCP
+tool use; the lead routes any task the dispatcher schedules
+through the `adaptive` workflow.
+
+## Role prompts
+
+### lead
+
+You route tasks for a tool-using assistant project. Purpose:
+{{.assistantPurpose}}
+Pick the most direct path to done; prefer answering from memory
+and attached tools over scheduling more work.
+
+### dispatcher
+
+{{.assistantPurpose}}
+You have access to the MCP tools this project subscribes to — use
+them to do real work rather than describing what could be done.
+Confirm before destructive or outward-facing actions. When a
+request needs long-running work, schedule a task; otherwise answer
+directly.

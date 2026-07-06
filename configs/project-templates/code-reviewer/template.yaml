@@ -1,0 +1,45 @@
+displayName: "Code Reviewer"
+description: |
+  Reviews pull requests for one GitHub repository through the
+  existing github-review workflow. Autonomy off — reviews are
+  triggered by the GitHub channel (webhook or app) which you wire
+  after creation; the setup checklist walks you through it.
+domain: "code"
+
+setup:
+  model: required
+  secrets:
+    - name: GITHUB_TOKEN
+      label: "GitHub token (repo read + PR comments)"
+      required: true
+  checks: [secrets, model_ping]
+
+parameters:
+  - name: projectId
+    type: string
+    label: "Project ID"
+    description: "Lowercase letters, numbers, and hyphens only."
+    pattern: "[a-z0-9][a-z0-9-]{1,30}[a-z0-9]"
+    required: true
+  - name: displayName
+    type: string
+    label: "Display name"
+    default: "Code Reviewer"
+    required: true
+  - name: repo
+    type: string
+    label: "GitHub repository"
+    description: "owner/name, e.g. acme/widgets"
+    pattern: "[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+    required: true
+  - name: llmModel
+    type: string
+    label: "Role model override"
+    default: ""
+    required: false
+
+files:
+  - source: project.yaml.tmpl
+    target: "projects/{{.projectId}}.yaml"
+  - source: swarm.md.tmpl
+    target: "swarms/{{.projectId}}-swarm.md"

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -31,6 +32,11 @@ type projectTemplateSummary struct {
 	Description string            `json:"description"`
 	Domain      string            `json:"domain"`
 	Parameters  []paramDescriptor `json:"parameters"`
+	// Setup surfaces the manifest's setup: block as short
+	// operator-facing "Needs: ..." chips (SetupSpec.Summary(), nil
+	// receiver-safe) so the gallery card shows prerequisites before
+	// the user commits to a template.
+	Setup []string `json:"setup,omitempty"`
 }
 
 // paramDescriptor is the shape the form-builder UI consumes.
@@ -45,6 +51,16 @@ type paramDescriptor struct {
 	Pattern     string   `json:"pattern,omitempty"`
 	Options     []string `json:"options,omitempty"`
 	Required    bool     `json:"required,omitempty"`
+	// OptionsFrom names the dynamic option source (mcp_registry |
+	// models) declared in the manifest, if any — provenance for the
+	// UI so it knows Options below came from a live resolve rather
+	// than a static manifest list.
+	OptionsFrom string `json:"optionsFrom,omitempty"`
+	// OptionsError carries the resolver failure message when
+	// OptionsFrom is set but resolution failed at listing time.
+	// Options stays at its manifest default (usually empty) in that
+	// case; the form falls back to free-text entry.
+	OptionsError string `json:"optionsError,omitempty"`
 }
 
 // ListProjectTemplates handles GET /api/v1/project-templates.
@@ -58,6 +74,9 @@ func (s *Server) ListProjectTemplates(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
+	if !s.requireAdminGate(w, r) {
+		return
+	}
 	if s.projectTemplates == nil {
 		respondError(w, http.StatusServiceUnavailable, "TEMPLATES_NOT_CONFIGURED",
 			"project-template catalog not wired; check VORNIK_TEMPLATES_DIR and the configs/project-templates/ directory")
@@ -68,7 +87,7 @@ func (s *Server) ListProjectTemplates(w http.ResponseWriter, r *http.Request) {
 	for _, m := range manifests {
 		params := make([]paramDescriptor, 0, len(m.Parameters))
 		for _, p := range m.Parameters {
-			params = append(params, paramDescriptor{
+			d := paramDescriptor{
 				Name:        p.Name,
 				Type:        p.Type,
 				Label:       p.Label,
@@ -77,7 +96,21 @@ func (s *Server) ListProjectTemplates(w http.ResponseWriter, r *http.Request) {
 				Pattern:     p.Pattern,
 				Options:     p.Options,
 				Required:    p.Required,
-			})
+				OptionsFrom: p.OptionsFrom,
+			}
+			// Inline the resolved option set for dynamic sources so
+			// the gallery/CLI can render a select without a
+			// follow-up round-trip. Resolution failure surfaces as
+			// OptionsError rather than failing the whole listing —
+			// one broken source shouldn't hide every other template.
+			if p.OptionsFrom != "" && s.templateOptions != nil {
+				if opts, rerr := s.templateOptions.ResolveOptions(p.OptionsFrom); rerr == nil {
+					d.Options = opts
+				} else {
+					d.OptionsError = rerr.Error()
+				}
+			}
+			params = append(params, d)
 		}
 		out = append(out, projectTemplateSummary{
 			Slug:        m.Slug,
@@ -85,17 +118,43 @@ func (s *Server) ListProjectTemplates(w http.ResponseWriter, r *http.Request) {
 			Description: m.Description,
 			Domain:      m.Domain,
 			Parameters:  params,
+			Setup:       m.Setup.Summary(),
 		})
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"templates": out, "total": len(out)})
 }
 
+// paramValues accepts a JSON string or array-of-strings for one
+// parameter — the wire back-compat shim for list parameters
+// (spec back-compat contract item 4: existing string-valued
+// clients keep working unchanged).
+type paramValues []string
+
+// UnmarshalJSON tries a plain string first (today's wire shape),
+// then falls back to an array of strings (list/multiselect
+// parameters introduced alongside this shim).
+func (p *paramValues) UnmarshalJSON(b []byte) error {
+	var one string
+	if err := json.Unmarshal(b, &one); err == nil {
+		*p = []string{one}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(b, &many); err != nil {
+		return fmt.Errorf("parameter values must be a string or an array of strings")
+	}
+	*p = many
+	return nil
+}
+
 // createProjectFromTemplateRequest is the wire shape for the
 // POST endpoint. `slug` selects the template; `parameters` is the
-// flat map of values the form / CLI collected.
+// map of values the form / CLI collected — each value is either a
+// JSON string (scalar parameter) or an array of strings (list /
+// multiselect parameter).
 type createProjectFromTemplateRequest struct {
-	Slug       string            `json:"slug"`
-	Parameters map[string]string `json:"parameters"`
+	Slug       string                 `json:"slug"`
+	Parameters map[string]paramValues `json:"parameters"`
 }
 
 // createProjectFromTemplateResponse echoes back which files were
@@ -165,7 +224,27 @@ func (s *Server) CreateProjectFromTemplate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	rendered, err := s.projectTemplates.MaterialiseFiles(manifest, req.Parameters)
+	// Flatten the wire shape (map[string]paramValues) to the
+	// map[string][]string ValidateParamsMulti/MaterialiseFilesMulti
+	// expect. Scalar-only manifests keep the byte-identical legacy
+	// path (spec back-compat contract item 1) by collapsing back to
+	// map[string]string and calling MaterialiseFiles directly.
+	multi := make(map[string][]string, len(req.Parameters))
+	for k, v := range req.Parameters {
+		multi[k] = v
+	}
+	var rendered map[string]string
+	if manifest.NeedsMultiValue() {
+		rendered, err = s.projectTemplates.MaterialiseFilesMulti(manifest, multi, s.templateOptions)
+	} else {
+		flat := make(map[string]string, len(multi))
+		for k, v := range multi {
+			if len(v) > 0 {
+				flat[k] = v[len(v)-1]
+			}
+		}
+		rendered, err = s.projectTemplates.MaterialiseFiles(manifest, flat)
+	}
 	if err != nil {
 		// ValidationError surfaces as a 400 with the field name
 		// so the UI can highlight the offending input. Other
@@ -184,8 +263,25 @@ func (s *Server) CreateProjectFromTemplate(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		var exists *templates.ExistingTargetError
 		if errors.As(err, &exists) {
-			respondError(w, http.StatusConflict, "FILE_EXISTS",
-				"file already exists: "+exists.Target+" — pick a different projectId or remove the existing project first")
+			// Mirrors respondError's exact {"error":{"code",
+			// "message"}} shape (checked against
+			// internal/api/middleware.go's respondError) so
+			// existing consumers parse this 409 unchanged, plus a
+			// new top-level "suggestedSlug" (omitted when there's
+			// no free ID to suggest).
+			message := "file already exists: " + exists.Target + " — pick a different projectId or remove the existing project first"
+			payload := map[string]any{
+				"error": map[string]any{
+					"code":    "FILE_EXISTS",
+					"message": message,
+				},
+			}
+			if pid := lastValue(multi["projectId"]); pid != "" {
+				if sug := templates.SuggestFreeProjectID(s.configsDir, pid); sug != "" && sug != pid {
+					payload["suggestedSlug"] = sug
+				}
+			}
+			respondJSON(w, http.StatusConflict, payload)
 			return
 		}
 		respondError(w, http.StatusInternalServerError, "WRITE_FAILED", err.Error())
@@ -205,4 +301,15 @@ func (s *Server) CreateProjectFromTemplate(w http.ResponseWriter, r *http.Reques
 		Slug:         req.Slug,
 		FilesWritten: written,
 	})
+}
+
+// lastValue returns the last element of v, or "" when v is empty —
+// scalar-collapse helper matching ValidateParamsMulti's "last value
+// wins" convention for the projectId lookup used to build the
+// suggestedSlug hint.
+func lastValue(v []string) string {
+	if len(v) == 0 {
+		return ""
+	}
+	return v[len(v)-1]
 }

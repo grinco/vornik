@@ -8,8 +8,7 @@ import (
 
 // TestProjectsNewSuccess_LinksToProjectDetail — after a template is
 // materialised, the success page must point operators at the new
-// project's detail page rather than dumping them on the global
-// projects list and hoping they find their freshly-created project.
+// project's setup page to finish configuring before running tasks.
 func TestProjectsNewSuccess_LinksToProjectDetail(t *testing.T) {
 	s := NewServer()
 	data := ProjectsNewData{
@@ -24,11 +23,11 @@ func TestProjectsNewSuccess_LinksToProjectDetail(t *testing.T) {
 		t.Fatalf("template render: %v", err)
 	}
 	body := buf.String()
-	if !strings.Contains(body, `href="/ui/projects/my-helper"`) {
-		t.Errorf("success page must link to the new project's detail page. excerpt:\n%s", excerptAround(body, "my-helper", 120))
+	if !strings.Contains(body, `href="/ui/projects/my-helper/setup"`) {
+		t.Errorf("success page must link to the new project's setup page. excerpt:\n%s", excerptAround(body, "my-helper", 120))
 	}
-	if !strings.Contains(body, "review the project") && !strings.Contains(body, "Review the project") {
-		t.Errorf("success page should mention reviewing the project. excerpt:\n%s", excerptAround(body, "review", 120))
+	if !strings.Contains(body, "Finish setup") {
+		t.Errorf("success page should mention finishing setup. excerpt:\n%s", excerptAround(body, "Finish", 120))
 	}
 }
 

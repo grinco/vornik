@@ -1,0 +1,108 @@
+{{/* project_setup_check.html — the per-check readiness panel.
+     Rendered three ways, always from the same projectSetupCheckData
+     {ProjectID, Check}: inline inside project_setup.html's initial
+     SSR (no-JS fallback), as the response of the htmx-load lazy
+     fetch that immediately follows, and as the response of every
+     "Re-run" / secret-save / smoke-trigger action. The div's id
+     (check-{key}) is the hx-target every one of those actions swaps
+     via outerHTML, so this template — not its caller — owns that id;
+     it must never itself carry hx-trigger="load" or a swap-in would
+     refire it forever. */}}
+{{define "project_setup_check.html"}}
+<div id="check-{{.Check.Key}}" class="glass rounded-xl border border-surface-600 overflow-hidden">
+    <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between gap-2 flex-wrap">
+        <h2 class="text-sm font-semibold text-ink-200 flex items-center gap-2">
+            {{.Check.Title}}
+            {{template "checkStatusPill" .Check.Status}}
+        </h2>
+        <button type="button"
+                hx-get="/ui/projects/{{.ProjectID}}/setup/checks/{{.Check.Key}}"
+                hx-target="#check-{{.Check.Key}}"
+                hx-swap="outerHTML"
+                class="text-xs text-ink-500 hover:text-ink-300">
+            Re-run
+        </button>
+    </div>
+    <div class="px-5 py-4 space-y-3 text-sm">
+        {{if .Check.Detail}}<p class="text-ink-300">{{.Check.Detail}}</p>{{end}}
+
+        {{if and .Check.Remediation (ne .Check.Status "green")}}
+        <p class="text-xs text-amber-800 dark:text-amber-400">
+            {{.Check.Remediation}}
+            {{if .Check.FixHref}}<a href="{{.Check.FixHref}}" class="ml-1 text-brand-400 hover:text-brand-300">Fix →</a>{{end}}
+        </p>
+        {{end}}
+
+        {{if .Check.Items}}
+        <ul class="space-y-1.5">
+            {{range .Check.Items}}
+            <li class="flex items-center justify-between gap-2 text-xs bg-surface-900 rounded-lg px-3 py-2 border border-surface-600/60">
+                <span class="font-mono text-ink-300">{{.Name}}</span>
+                <span class="flex items-center gap-2">
+                    {{if .Detail}}<span class="text-ink-500">{{.Detail}}</span>{{end}}
+                    {{template "checkStatusPill" .Status}}
+                </span>
+            </li>
+            {{end}}
+        </ul>
+        {{end}}
+
+        {{/* Inline masked-secret fix — one small form per still-red
+             declared secret, posting straight back to this panel. */}}
+        {{if eq .Check.Key "secrets"}}
+        {{range .Check.Items}}
+        {{if eq .Status "red"}}
+        <form hx-post="/ui/projects/{{$.ProjectID}}/setup/secrets"
+              hx-target="#check-secrets"
+              hx-swap="outerHTML"
+              class="flex flex-wrap items-end gap-2 pt-2 border-t border-surface-600/40">
+            <input type="hidden" name="name" value="{{.Name}}">
+            <div class="flex-1 min-w-[12rem]">
+                <label class="block text-[11px] text-ink-500 mb-1" for="secret-{{.Name}}">{{.Name}}</label>
+                <input type="password" name="value" id="secret-{{.Name}}" required
+                       class="w-full px-3 py-1.5 text-xs rounded-lg bg-surface-900 border border-surface-600 focus:border-brand-500 focus:outline-none text-ink-200 font-mono">
+            </div>
+            <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 hover:bg-brand-500 text-white">Save</button>
+        </form>
+        {{end}}
+        {{end}}
+        {{end}}
+
+        {{/* Smoke trigger — confirm-gated (spends tokens) and
+             disabled while a run is already in flight. metaValue on a
+             nil/short map yields "" rather than erroring, so a
+             degraded status that's missing usd/taskId still renders
+             cleanly. (Can't use the builtin `index` here — server.go's
+             uiFuncMap overrides it with a narrowly-typed TaskStatus-map
+             helper for the dashboard.) */}}
+        {{if eq .Check.Key "smoke"}}
+        {{$running := eq (metaValue .Check.Meta "running") "true"}}
+        <div class="pt-2 border-t border-surface-600/40 space-y-2">
+            {{if metaValue .Check.Meta "taskId"}}<p class="text-xs text-ink-500 font-mono">task: {{metaValue .Check.Meta "taskId"}}</p>{{end}}
+            {{if metaValue .Check.Meta "usd"}}<p class="text-xs text-ink-500">cost so far: ${{metaValue .Check.Meta "usd"}}</p>{{end}}
+            <button type="button"
+                    hx-post="/ui/projects/{{.ProjectID}}/setup/smoke"
+                    hx-target="#check-smoke"
+                    hx-swap="outerHTML"
+                    hx-confirm="This runs a real task and spends tokens. Continue?"
+                    {{if $running}}disabled{{end}}
+                    class="px-4 py-2 text-sm font-medium rounded-lg bg-brand-600 hover:bg-brand-500 text-white disabled:opacity-40 disabled:cursor-not-allowed">
+                {{if $running}}Running…{{else}}Run smoke test{{end}}
+            </button>
+        </div>
+        {{end}}
+    </div>
+</div>
+{{end}}
+
+{{/* checkStatusPill — traffic-light chip for a projectdoctor.Status.
+     Reuses the site-wide theme-aware .pill component (_partials.html)
+     rather than inventing new colours. */}}
+{{define "checkStatusPill"}}
+{{if eq . "green"}}<span class="pill pill-nodot pill-ok">{{template "iconCheck"}}Green</span>
+{{else if eq . "yellow"}}<span class="pill pill-nodot pill-warn">{{template "iconDot" "bg-amber-400"}}Yellow</span>
+{{else if eq . "red"}}<span class="pill pill-nodot pill-danger">{{template "iconX"}}Red</span>
+{{else if eq . "neutral"}}<span class="pill pill-nodot pill-neutral">{{template "iconDot" "bg-gray-400"}}N/A</span>
+{{else}}<span class="pill pill-nodot pill-neutral">{{template "iconDot" "bg-gray-400"}}Unknown</span>
+{{end}}
+{{end}}

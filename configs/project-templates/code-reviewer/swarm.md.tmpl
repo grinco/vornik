@@ -1,0 +1,69 @@
+---
+swarmId: "{{.projectId}}-swarm"
+displayName: "{{.displayName}} swarm"
+
+roles:
+  - name: "lead"
+    description: "Routes ad-hoc (non-review) tasks and recovery checkpoints."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "localhost/vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "30"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+        - "memory_search"
+
+  - name: "reviewer"
+    description: "Reviews pull-request diffs via the github-review workflow."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "localhost/vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "60"
+    permissions:
+      # No git_status/git_diff/git_log/git_show here: the
+      # github-review workflow's fetch_diff step (forge.fetch_diff)
+      # fetches the complete unified diff daemon-side and the
+      # review prompt explicitly tells the agent NOT to run git —
+      # granting git tools to this role would violate least
+      # privilege for a capability it's told never to use.
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+        - "memory_search"
+---
+
+# {{.displayName}} swarm
+
+A review-focused swarm for **{{.repo}}**: the reviewer runs the
+`github-review` workflow's diff reviews; the lead routes anything
+else. Edit roles + prompts at
+`/ui/swarms/{{.projectId}}-swarm/edit`.
+
+## Role prompts
+
+### lead
+
+You route ad-hoc tasks for a code-review project covering
+**{{.repo}}**. Most work arrives as PR-review tasks through the
+github-review workflow; route anything else through adaptive
+judgment, preferring the most direct path.
+
+### reviewer
+
+You review pull requests for **{{.repo}}**. For each diff: check
+correctness first (logic errors, unhandled failure paths,
+concurrency hazards), then security (injection, authz gaps,
+secret handling), then maintainability. Report only findings that
+matter, each with file:line, a one-sentence problem statement,
+and a concrete failure scenario. No style nitpicks a linter would
+catch. End with a short verdict paragraph.

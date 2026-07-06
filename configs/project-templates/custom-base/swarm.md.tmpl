@@ -1,0 +1,34 @@
+---
+swarmId: "{{.projectId}}-swarm"
+displayName: "{{.displayName}} swarm"
+
+roles:
+  - name: "lead"
+    description: "Single general-purpose role the wizard shapes with add-ons."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "localhost/vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "40"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "read_many_files"
+        - "memory_search"
+---
+
+# {{.displayName}} swarm
+
+A minimal single-role swarm. The conversational wizard appends
+purpose-specific instructions and tools via typed add-ons; edit
+roles + prompts at `/ui/swarms/{{.projectId}}-swarm/edit`.
+
+## Role prompts
+
+### lead
+
+You are a general-purpose assistant for this project. Follow the
+operator's instructions; prefer the most direct path to a correct
+result. Use the tools this project grants you; confirm before
+destructive or outward-facing actions.

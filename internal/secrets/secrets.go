@@ -176,6 +176,13 @@ type Finding struct {
 // internal/executor/secrets_scan.go filterFindingsOutsidePathSpans.
 const FindingTypeEntropy = "entropy"
 
+// FindingTypeGenericKV is the Type value for the high-recall, lower-precision
+// generic `<key>=<value>` heuristic. Together with entropy it is the "weak"
+// finding class that a provenance-trusted tool OUTPUT may carry legitimately
+// (e.g. a viewing password) — see internal/executor/secrets_scan.go
+// dropHeuristicFindings. Strong prefix-anchored patterns are never dropped.
+const FindingTypeGenericKV = "generic_kv"
+
 // Detector is the abstraction every checkpoint consumes. The
 // production implementation is *MultiDetector; tests can stub.
 type Detector interface {

@@ -1,7 +1,7 @@
 ---
 sources:
     - path: README.md
-      sha256: 951d1dfabd3c34aee1a31fc56c613bc920d9cfcf4457929d4e34b9ddbfef9318
+      sha256: 3b284beb2c5ae6c7cf4feddb60a7cffa18ef45c0a27edbfca6563696c5104ac0
 ---
 # Getting Started
 
@@ -205,8 +205,10 @@ does not exist.
 !!! note
     You can also create projects without touching the CLI: open the Web UI
     at `/ui/projects/new` for a gallery of templates, or
-    `/ui/projects/new/wizard` for a conversational wizard that builds the
-    project, swarm, and workflow for you.
+    `/ui/projects/new/wizard` for a conversational wizard that composes a
+    base template with typed add-ons (MCP servers, schedule, secrets,
+    tools, role instructions) and builds the project, swarm, and workflow
+    for you.
 
 Confirm the daemon has loaded your project:
 
@@ -214,6 +216,11 @@ Confirm the daemon has loaded your project:
 vornikctl project list
 vornikctl project show my-project
 ```
+
+However you created it, every project gets a readiness checklist at
+`/ui/projects/{id}/setup` — config, secrets, MCP reachability, chat model,
+schedule, and an optional smoke test — and the project list flags any
+project with unmet required checks.
 
 ## Submit your first task
 

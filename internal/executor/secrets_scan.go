@@ -6,10 +6,41 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/secrets"
 )
+
+// isTrustedOutputTool reports whether tool's tool-audit OUTPUT is
+// provenance-trusted — i.e. its output is a daemon-proxied tool response the
+// agent cannot forge, so heuristic (generic_kv/entropy) findings there are
+// operator-facing values, not smuggled secrets. Prefix match against the
+// operator-configured secretsTrustedOutputTools (empty = nothing trusted).
+func (e *Executor) isTrustedOutputTool(tool string) bool {
+	for _, prefix := range e.secretsTrustedOutputTools {
+		if prefix != "" && strings.HasPrefix(tool, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// dropHeuristicFindings removes the "weak" finding classes (generic_kv +
+// entropy) while KEEPING every strong, prefix-anchored credential pattern
+// (openai/anthropic/github/aws/jwt/private_key/…). Used only for a
+// provenance-trusted tool's OUTPUT — so a real leaked credential still
+// redacts even there, and the exemption can't be abused as an exfil channel.
+func dropHeuristicFindings(findings []secrets.Finding) []secrets.Finding {
+	out := findings[:0]
+	for _, f := range findings {
+		if f.Type == secrets.FindingTypeGenericKV || f.Type == secrets.FindingTypeEntropy {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
 
 // urlRe matches an http(s) URL up to the first whitespace, quote, or angle
 // bracket — the shape URLs take inside JSON result bodies and prose.
@@ -211,6 +242,16 @@ func (e *Executor) scanToolAuditForSecrets(execution *persistence.Execution, ste
 	}
 	inputFindings := e.secretsDetector.Scan([]byte(input))
 	outputFindings := e.secretsDetector.Scan([]byte(output))
+	// Provenance exemption: for a trusted-output tool, the OUTPUT is the
+	// daemon-proxied tool response (the agent cannot forge it), so drop its
+	// HEURISTIC (generic_kv/entropy) findings — those are operator-facing
+	// values like a PageDrop viewing password, not smuggled secrets. Strong
+	// prefix-anchored credential patterns are retained (still redacted), and
+	// the agent-supplied INPUT is never exempt — so this cannot be used as a
+	// labeled-exfil channel. See secretsTrustedOutputTools.
+	if len(outputFindings) > 0 && e.isTrustedOutputTool(tool) {
+		outputFindings = dropHeuristicFindings(outputFindings)
+	}
 	if len(inputFindings) == 0 && len(outputFindings) == 0 {
 		return input, output
 	}

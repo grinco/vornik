@@ -264,6 +264,14 @@ func TestRetryFromStep_RetryAtEntrypointWipesAllOutcomes(t *testing.T) {
 // still the canonical record of the original-run upstream work.
 func TestRetryFromStep_PreservesUpstreamOutcomes(t *testing.T) {
 	e, _, er, _, tr := setup()
+	// RetryFromStep -> recoverExecution spawns a background runExecution
+	// goroutine (tracked on e.wg). This test only asserts the synchronous
+	// outcome-supersession side effect, but the goroutine reads package
+	// globals (e.g. infraRetryBaseDelay) as it runs — if it outlives the
+	// test it races the next test that mutates those globals
+	// (TestModelFallback_RecoversAfterPersistentTimeout). Drain it before
+	// returning, per the executor lifecycle contract.
+	t.Cleanup(func() { _ = e.Stop(context.Background()) })
 	e.SetWorkflowResolver(&MockWorkflowResolver{
 		projects: map[string]*registry.Project{
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},

@@ -117,11 +117,10 @@ func (s *Server) setupStepState() (chatConfigured, memoryConfigured, dispatcherC
 	if cfg == nil {
 		return false, false, false
 	}
-	chatConfigured = cfg.Chat.Enabled &&
-		strings.TrimSpace(cfg.Chat.Provider) != "" &&
-		strings.TrimSpace(cfg.Chat.Endpoint) != "" &&
-		strings.TrimSpace(cfg.Chat.Model) != "" &&
-		strings.TrimSpace(cfg.Chat.APIKey) != ""
+	// Family-aware chat readiness (router/CLI carry no top-level
+	// endpoint/model/key) lives on config.ChatConfig so this and the
+	// onboarding detector share one definition (2026-07-04).
+	chatConfigured = cfg.Chat.Enabled && cfg.Chat.ProviderConfigured()
 	memoryConfigured = cfg.Memory.Enabled &&
 		strings.TrimSpace(cfg.Memory.EmbeddingModel) != "" &&
 		strings.TrimSpace(cfg.Memory.EmbeddingEndpoint) != ""

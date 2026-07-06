@@ -1,0 +1,47 @@
+displayName: "Tool Assistant"
+description: |
+  A chat-dispatcher-facing project wired to the MCP servers you
+  pick. Talk to it through the normal chat surfaces; it can use
+  the selected servers' tools to do real work. No autonomy — it
+  acts when you ask.
+domain: "general"
+
+setup:
+  model: required
+  checks: [mcp_reachable, model_ping]
+
+parameters:
+  - name: projectId
+    type: string
+    label: "Project ID"
+    description: "Lowercase letters, numbers, and hyphens only."
+    pattern: "[a-z0-9][a-z0-9-]{1,30}[a-z0-9]"
+    required: true
+  - name: displayName
+    type: string
+    label: "Display name"
+    default: "Tool Assistant"
+    required: true
+  - name: assistantPurpose
+    type: string
+    label: "What is this assistant for?"
+    description: "One or two sentences; becomes the dispatcher's standing instruction."
+    default: "General-purpose assistant for this daemon's operator."
+    required: true
+  - name: mcpServers
+    type: multiselect
+    label: "MCP servers to attach"
+    description: "Daemon-configured servers this project may use. Add more later in the project config form."
+    optionsFrom: mcp_registry
+    required: false
+  - name: llmModel
+    type: string
+    label: "Role model override"
+    default: ""
+    required: false
+
+files:
+  - source: project.yaml.tmpl
+    target: "projects/{{.projectId}}.yaml"
+  - source: swarm.md.tmpl
+    target: "swarms/{{.projectId}}-swarm.md"

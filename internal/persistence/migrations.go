@@ -5051,4 +5051,20 @@ DROP INDEX IF EXISTS idx_onboarding_sessions_operator;
 DROP TABLE IF EXISTS installation_onboarding_sessions;
 `,
 	},
+	{
+		Version: 112,
+		Name:    "project_wizard_sessions_composition",
+		// Wizard v2 assembles a Composition (the multi-service shape
+		// the operator has built up) ahead of Commit. Stored the same
+		// way current_proposal already is — a nullable JSONB blob the
+		// repo round-trips opaquely — so Commit can consume it
+		// directly instead of re-deriving it from the transcript.
+		// Additive nullable column; v1 sessions keep NULL.
+		Up: `
+ALTER TABLE project_wizard_sessions ADD COLUMN IF NOT EXISTS composition JSONB;
+`,
+		Down: `
+ALTER TABLE project_wizard_sessions DROP COLUMN IF EXISTS composition;
+`,
+	},
 }

@@ -52,10 +52,10 @@ func (r *ProjectWizardSessionRepository) Insert(ctx context.Context, s *persiste
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO project_wizard_sessions (
 		    id, created_at, updated_at, operator_id,
-		    transcript, current_proposal, suggested_template, ready_to_commit
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)`,
+		    transcript, current_proposal, suggested_template, ready_to_commit, composition
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)`,
 		s.ID, s.CreatedAt, s.UpdatedAt, s.OperatorID,
-		string(transcript), jsonbValue(s.CurrentProposal), nullableStr(s.SuggestedTemplate), s.ReadyToCommit,
+		string(transcript), jsonbValue(s.CurrentProposal), nullableStr(s.SuggestedTemplate), s.ReadyToCommit, jsonbValue(s.Composition),
 	)
 	return mapDBError(err)
 }
@@ -68,7 +68,7 @@ func (r *ProjectWizardSessionRepository) Get(ctx context.Context, id string) (*p
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, created_at, updated_at, operator_id,
 		       transcript, current_proposal, suggested_template, ready_to_commit,
-		       committed_project_id, committed_at, cancelled_at
+		       committed_project_id, committed_at, cancelled_at, composition
 		FROM project_wizard_sessions
 		WHERE id = $1`, id)
 	return scanProjectWizardSession(row)
@@ -94,9 +94,10 @@ func (r *ProjectWizardSessionRepository) Update(ctx context.Context, s *persiste
 		    current_proposal  = $3,
 		    suggested_template = $4,
 		    ready_to_commit   = $5,
+		    composition       = $6,
 		    updated_at        = NOW()
 		WHERE id = $1`,
-		s.ID, string(transcript), jsonbValue(s.CurrentProposal), nullableStr(s.SuggestedTemplate), s.ReadyToCommit,
+		s.ID, string(transcript), jsonbValue(s.CurrentProposal), nullableStr(s.SuggestedTemplate), s.ReadyToCommit, jsonbValue(s.Composition),
 	)
 	if err != nil {
 		return mapDBError(err)
@@ -205,7 +206,7 @@ func (r *ProjectWizardSessionRepository) ListByOperator(ctx context.Context, ope
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, created_at, updated_at, operator_id,
 		       transcript, current_proposal, suggested_template, ready_to_commit,
-		       committed_project_id, committed_at, cancelled_at
+		       committed_project_id, committed_at, cancelled_at, composition
 		FROM project_wizard_sessions
 		WHERE operator_id = $1
 		ORDER BY updated_at DESC
@@ -236,11 +237,12 @@ func scanProjectWizardSession(scanner interface {
 		committedProjectID sql.NullString
 		committedAt        sql.NullTime
 		cancelledAt        sql.NullTime
+		composition        sql.NullString
 	)
 	err := scanner.Scan(
 		&s.ID, &s.CreatedAt, &s.UpdatedAt, &s.OperatorID,
 		&transcriptStr, &currentProposal, &suggestedTemplate, &s.ReadyToCommit,
-		&committedProjectID, &committedAt, &cancelledAt,
+		&committedProjectID, &committedAt, &cancelledAt, &composition,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -265,6 +267,9 @@ func scanProjectWizardSession(scanner interface {
 	if cancelledAt.Valid {
 		t := cancelledAt.Time
 		s.CancelledAt = &t
+	}
+	if composition.Valid {
+		s.Composition = []byte(composition.String)
 	}
 	return &s, nil
 }

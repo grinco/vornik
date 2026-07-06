@@ -237,6 +237,47 @@ func RunProjectWizardSessionSuite(t *testing.T, repo persistence.ProjectWizardSe
 		}
 	})
 
+	t.Run("Composition_round_trips_through_insert_and_update", func(t *testing.T) {
+		s := newSession(uniqueID("op"))
+		s.Composition = []byte(`{"template":"x"}`)
+		if err := repo.Insert(ctx, s); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+		got, err := repo.Get(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if !jsonSemanticEqual(got.Composition, s.Composition) {
+			t.Fatalf("composition not round-tripped on insert: got %q, want %q", got.Composition, s.Composition)
+		}
+
+		s.Composition = []byte(`{"template":"y","services":["api"]}`)
+		if err := repo.Update(ctx, s); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		got, err = repo.Get(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("Get after update: %v", err)
+		}
+		if !jsonSemanticEqual(got.Composition, s.Composition) {
+			t.Fatalf("composition not round-tripped on update: got %q, want %q", got.Composition, s.Composition)
+		}
+	})
+
+	t.Run("Composition_nil_for_v1_sessions", func(t *testing.T) {
+		s := newSession(uniqueID("op"))
+		if err := repo.Insert(ctx, s); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+		got, err := repo.Get(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Composition != nil {
+			t.Fatalf("expected nil Composition for v1 session, got %q", got.Composition)
+		}
+	})
+
 	t.Run("Update_mutates_and_unknown_is_ErrNotFound", func(t *testing.T) {
 		s := newSession(uniqueID("op"))
 		if err := repo.Insert(ctx, s); err != nil {

@@ -923,7 +923,8 @@ CREATE TABLE IF NOT EXISTS project_wizard_sessions (
     ready_to_commit      INTEGER NOT NULL DEFAULT 0,
     committed_project_id TEXT,
     committed_at         TEXT,
-    cancelled_at         TEXT
+    cancelled_at         TEXT,
+    composition          TEXT -- migration 112: JSON of the wizard v2 Composition; NULL for v1 sessions
 );
 CREATE INDEX IF NOT EXISTS idx_pw_sessions_operator    ON project_wizard_sessions(operator_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pw_sessions_uncommitted ON project_wizard_sessions(updated_at DESC) WHERE committed_project_id IS NULL;

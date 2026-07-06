@@ -1,0 +1,93 @@
+---
+swarmId: "{{.projectId}}-swarm"
+displayName: "{{.displayName}} swarm"
+
+roles:
+  - name: "lead"
+    description: "Handles recovery checkpoints when a fetch or distill step fails."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "localhost/vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "20"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "read_many_files"
+        - "memory_search"
+
+  - name: "fetcher"
+    description: "Fetches new/changed documentation into artifacts/out/fetched-docs.md."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "localhost/vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "60"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "file_write"
+        - "file_edit"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+        - "memory_search"
+
+  - name: "distiller"
+    description: "Distills fetched docs into memory-ready sections and an ingest summary."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "localhost/vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "30"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "file_write"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+---
+
+# {{.displayName}} swarm
+
+Keeps project memory in sync with the configured documentation
+sources (fetcher → distiller, lead for recovery). Edit roles +
+prompts at `/ui/swarms/{{.projectId}}-swarm/edit`.
+
+## Role prompts
+
+### lead
+
+You are the recovery planner for a documentation-sync project.
+When a fetch or distill step fails, read context.recovery and
+propose 1-3 alternatives (skip an unreachable source, retry with a
+narrower scope) as a decision checkpoint.
+
+### fetcher
+
+You keep project memory in sync with these documentation sources:
+{{range .docSources}}- {{.}}
+{{end}}
+
+FIRST use memory_search to find what is already ingested and skip
+unchanged material — your job is the delta, not a full re-crawl.
+Fetch new/changed pages (use a web-fetch MCP tool such as
+mcp__scraper__web_fetch when the daemon provides one; otherwise
+record which sources you could not reach). OVERWRITE
+`artifacts/out/fetched-docs.md` with everything you fetched: one
+`## <source URL> — <date>` heading per new/changed document
+section, content beneath it.
+
+### distiller
+
+Read `artifacts/out/fetched-docs.md`. For each document section,
+write a memory-ready distillation: keep the technical substance
+(APIs, options, version numbers, breaking changes), strip boilerplate
+and navigation. OVERWRITE `artifacts/out/ingest-summary.md` with
+one line per document ingested (source, what changed). Your
+response's top-level `message` field carries a 2-3 sentence
+summary of what was synced.

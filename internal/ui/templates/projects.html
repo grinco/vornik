@@ -85,6 +85,20 @@
                                         Auto
                                     </span>
                                     {{end}}
+                                    {{if not .SetupComplete}}
+                                    {{/* The whole card is already an <a class="project-card">
+                                         (see the range below); a real nested <a> here would
+                                         get silently split out of that outer link by the
+                                         browser's adoption-agency algorithm, stripping click-
+                                         through from everything rendered after it. Navigate
+                                         via JS instead and stop the click from also firing
+                                         the card's own link. */}}
+                                    <span role="link" tabindex="0" class="pill pill-nodot pill-danger cursor-pointer"
+                                          onclick="event.preventDefault(); event.stopPropagation(); window.location.href='/ui/projects/{{.Project.ID}}/setup';"
+                                          onkeydown="if(event.key==='Enter'){event.preventDefault(); event.stopPropagation(); window.location.href='/ui/projects/{{.Project.ID}}/setup';}">
+                                        {{template "iconX"}}Setup incomplete
+                                    </span>
+                                    {{end}}
                                 </div>
                             </div>
 

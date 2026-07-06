@@ -57,6 +57,49 @@ func TestProjectsNewWizard_FreshWhenNoSessionParam(t *testing.T) {
 	}
 }
 
+// TestProjectsNewWizard_RendersCompositionSummaryPanel guards the
+// "what will be wired" composition-summary wiring (Task 9): the panel's
+// DOM hooks, the renderComposition function, and the call site that
+// feeds it env.composition on every converse response must all be
+// present in the rendered page. This is a server-rendered static
+// template — the JS itself isn't executed here — so the assertions
+// pin the markup/JS-contract rather than runtime behavior; renderer
+// logic (per-addon-type lines, defensive scalar/array handling) is
+// covered by manual verification per the phase plan.
+func TestProjectsNewWizard_RendersCompositionSummaryPanel(t *testing.T) {
+	srv := NewServer(WithWizardSessionLister(&stubWizardLister{}))
+	rec := httptest.NewRecorder()
+	srv.ProjectsNewWizard(rec, resumeReq("", "op_1"))
+	if rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	body := rec.Body.String()
+
+	for _, want := range []string{
+		`id="wizard-composition"`,
+		`id="wizard-composition-list"`,
+		"What will be wired",
+		"function renderComposition(composition)",
+		"function addonSummaryLine(addon)",
+		"renderComposition(env.composition);",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered wizard page missing composition-summary wiring %q; body:\n%s", want, body)
+		}
+	}
+
+	// The panel starts hidden (nothing to summarise before the first
+	// converse turn) and sits above the commit button in DOM order.
+	compIdx := strings.Index(body, `id="wizard-composition"`)
+	commitIdx := strings.Index(body, `id="wizard-commit"`)
+	if compIdx < 0 || commitIdx < 0 || compIdx > commitIdx {
+		t.Errorf("composition panel must appear before the commit button in DOM order")
+	}
+	if !strings.Contains(body, `id="wizard-composition" class="hidden`) {
+		t.Errorf("composition panel must start hidden until a composition is rendered")
+	}
+}
+
 // A crafted ?session= must not resume another operator's draft, nor a
 // committed/cancelled one — the page falls back to fresh.
 func TestProjectsNewWizard_ResumeRejectsForeignAndClosed(t *testing.T) {

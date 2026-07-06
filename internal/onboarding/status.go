@@ -57,7 +57,7 @@ func (d Detector) Detect(ctx context.Context) Status {
 		return status
 	}
 
-	chatConfigured := strings.TrimSpace(d.Config.Chat.Endpoint) != "" && strings.TrimSpace(d.Config.Chat.Model) != ""
+	chatConfigured := d.Config.Chat.ProviderConfigured()
 	dispatcherPinned := strings.TrimSpace(d.Config.Telegram.DispatcherProjectID) != ""
 
 	if !chatConfigured {

@@ -59,7 +59,7 @@ func templateAdminReq(req *http.Request) *http.Request {
 
 func TestListProjectTemplates_HappyPath(t *testing.T) {
 	srv, _, _, _ := templateRig(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/project-templates", nil)
+	req := templateAdminReq(httptest.NewRequest(http.MethodGet, "/api/v1/project-templates", nil))
 	rec := httptest.NewRecorder()
 	srv.ListProjectTemplates(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
@@ -78,8 +78,10 @@ func TestListProjectTemplates_HappyPath(t *testing.T) {
 }
 
 func TestListProjectTemplates_NotConfigured(t *testing.T) {
-	srv := &Server{}
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/project-templates", nil)
+	srv := &Server{
+		adminConfig: config.AdminConfig{Enabled: true, AllowedKeys: []string{"sk-admin"}},
+	}
+	req := templateAdminReq(httptest.NewRequest(http.MethodGet, "/api/v1/project-templates", nil))
 	rec := httptest.NewRecorder()
 	srv.ListProjectTemplates(rec, req)
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code,
@@ -87,9 +89,17 @@ func TestListProjectTemplates_NotConfigured(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "TEMPLATES_NOT_CONFIGURED")
 }
 
+func TestListProjectTemplates_RequiresAdmin(t *testing.T) {
+	srv, _, _, _ := templateRig(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/project-templates", nil)
+	rec := httptest.NewRecorder()
+	srv.ListProjectTemplates(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
 func TestListProjectTemplates_MethodGuard(t *testing.T) {
 	srv, _, _, _ := templateRig(t)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/project-templates", nil)
+	req := templateAdminReq(httptest.NewRequest(http.MethodPost, "/api/v1/project-templates", nil))
 	rec := httptest.NewRecorder()
 	srv.ListProjectTemplates(rec, req)
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
@@ -288,4 +298,193 @@ func TestCreateProjectFromTemplate_MethodGuard(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.CreateProjectFromTemplate(rec, req)
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+}
+
+// --- Task 6: multi-value parameters, resolved options, setup
+// summary, suggestedSlug on 409. ---
+//
+// The tests below build bespoke single-template catalogs (rather
+// than reusing templateRig's shared "demo" fixture) because each
+// one needs a manifest shape templateRig doesn't offer: a list
+// param, a setup: block, an optionsFrom param, or a pre-seeded
+// conflict target. writeTemplateFixture mirrors templateRig's
+// inline-manifest-writing style for that purpose.
+
+// writeTemplateFixture writes a one-template catalog directory
+// (template.yaml + a single source file "p.tmpl") under root/slug.
+func writeTemplateFixture(t *testing.T, root, slug, manifestYAML, sourceTmpl string) {
+	t.Helper()
+	dir := filepath.Join(root, slug)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "p.tmpl"), []byte(sourceTmpl), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "template.yaml"), []byte(manifestYAML), 0o644))
+}
+
+// fakeOptionsResolver is a canned templates.OptionsResolver for
+// tests that need a dynamic optionsFrom source resolved without
+// wiring the real MCP registry / model list.
+type fakeOptionsResolver struct{ opts []string }
+
+func (f fakeOptionsResolver) ResolveOptions(string) ([]string, error) {
+	return f.opts, nil
+}
+
+func TestCreateFromTemplate_AcceptsArrayParameterValues(t *testing.T) {
+	tplDir := t.TempDir()
+	writeTemplateFixture(t, tplDir, "multi", `displayName: "Multi"
+parameters:
+  - {name: projectId, type: string, label: "ID", required: true}
+  - {name: feeds, type: list, label: "Feeds", required: true}
+files:
+  - {source: p.tmpl, target: "projects/{{.projectId}}.yaml"}
+`, "id: {{.projectId}}\nfeeds:\n{{range .feeds}}  - {{.}}\n{{end}}")
+
+	cat, err := templates.Load(tplDir)
+	require.NoError(t, err)
+	configsDir := t.TempDir()
+	srv := &Server{
+		projectTemplates: cat,
+		configsDir:       configsDir,
+		adminConfig:      config.AdminConfig{Enabled: true, AllowedKeys: []string{"sk-admin"}},
+	}
+
+	body := `{"slug":"multi","parameters":{"projectId":"px","feeds":["https://a.example","https://b.example"]}}`
+	req := templateAdminReq(httptest.NewRequest(http.MethodPost, "/api/v1/projects/from-template", strings.NewReader(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.CreateProjectFromTemplate(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code, "body=%s", rec.Body.String())
+
+	got, rerr := os.ReadFile(filepath.Join(configsDir, "projects", "px.yaml"))
+	require.NoError(t, rerr)
+	assert.Contains(t, string(got), "- https://a.example", "first feed value must render")
+	assert.Contains(t, string(got), "- https://b.example", "second feed value must render")
+}
+
+func TestCreateFromTemplate_ScalarStringValuesStillWork(t *testing.T) {
+	// Load the real shipped catalog (configs/project-templates,
+	// including the scalar-only news-feed manifest) so this test
+	// pins that today's plain-string request shape — the wire
+	// format every existing client sends — keeps working once
+	// createProjectFromTemplateRequest switches its Parameters
+	// value type from string to paramValues (spec back-compat
+	// contract item 4).
+	cat, err := templates.Load("../../configs/project-templates")
+	require.NoError(t, err)
+	_, ok := cat.Get("news-feed")
+	require.True(t, ok, "news-feed fixture template must be present in the shipped catalog")
+
+	configsDir := t.TempDir()
+	srv := &Server{
+		projectTemplates: cat,
+		configsDir:       configsDir,
+		adminConfig:      config.AdminConfig{Enabled: true, AllowedKeys: []string{"sk-admin"}},
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"slug": "news-feed",
+		"parameters": map[string]string{
+			"projectId":   "news-scalar",
+			"displayName": "Scalar News",
+			"topic":       "quantum computing",
+			"interval":    "4h",
+		},
+	})
+	req := templateAdminReq(httptest.NewRequest(http.MethodPost, "/api/v1/projects/from-template", bytes.NewReader(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.CreateProjectFromTemplate(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code, "body=%s", rec.Body.String())
+
+	got, rerr := os.ReadFile(filepath.Join(configsDir, "projects", "news-scalar.yaml"))
+	require.NoError(t, rerr)
+	assert.Contains(t, string(got), `projectId: "news-scalar"`)
+	assert.Contains(t, string(got), "quantum computing")
+}
+
+func TestCreateFromTemplate_ConflictCarriesSuggestedSlug(t *testing.T) {
+	tplDir := t.TempDir()
+	writeTemplateFixture(t, tplDir, "conflict", `displayName: "Conflict"
+parameters:
+  - {name: projectId, type: string, label: "ID", required: true}
+files:
+  - {source: p.tmpl, target: "projects/{{.projectId}}.yaml"}
+`, "id: {{.projectId}}\n")
+
+	cat, err := templates.Load(tplDir)
+	require.NoError(t, err)
+	configsDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(configsDir, "projects"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(configsDir, "projects", "px.yaml"), []byte("existing\n"), 0o644))
+
+	srv := &Server{
+		projectTemplates: cat,
+		configsDir:       configsDir,
+		adminConfig:      config.AdminConfig{Enabled: true, AllowedKeys: []string{"sk-admin"}},
+	}
+
+	body := `{"slug":"conflict","parameters":{"projectId":"px"}}`
+	req := templateAdminReq(httptest.NewRequest(http.MethodPost, "/api/v1/projects/from-template", strings.NewReader(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.CreateProjectFromTemplate(rec, req)
+	require.Equal(t, http.StatusConflict, rec.Code, "body=%s", rec.Body.String())
+
+	// The 409 body must mirror respondError's exact {"error":
+	// {"code","message"}} shape (existing-consumer back-compat)
+	// plus a new top-level "suggestedSlug".
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+		SuggestedSlug string `json:"suggestedSlug"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.Equal(t, "FILE_EXISTS", resp.Error.Code)
+	assert.Equal(t, "px-2", resp.SuggestedSlug)
+	assert.NotContains(t, resp.Error.Message, "px-2")
+}
+
+func TestListProjectTemplates_SetupSummaryAndResolvedOptions(t *testing.T) {
+	tplDir := t.TempDir()
+	writeTemplateFixture(t, tplDir, "withsetup", `displayName: "With Setup"
+setup:
+  secrets:
+    - {name: GITHUB_TOKEN, label: "GitHub token", required: true}
+parameters:
+  - {name: projectId, type: string, label: "ID", required: true}
+  - {name: servers, type: multiselect, label: "Servers", optionsFrom: mcp_registry}
+files:
+  - {source: p.tmpl, target: "projects/{{.projectId}}.yaml"}
+`, "id: {{.projectId}}\n")
+
+	cat, err := templates.Load(tplDir)
+	require.NoError(t, err)
+	srv := &Server{
+		projectTemplates: cat,
+		templateOptions:  fakeOptionsResolver{opts: []string{"slack"}},
+		adminConfig:      config.AdminConfig{Enabled: true, AllowedKeys: []string{"sk-admin"}},
+	}
+
+	req := templateAdminReq(httptest.NewRequest(http.MethodGet, "/api/v1/project-templates", nil))
+	rec := httptest.NewRecorder()
+	srv.ListProjectTemplates(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+
+	var resp struct {
+		Templates []projectTemplateSummary `json:"templates"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.Len(t, resp.Templates, 1)
+	tpl := resp.Templates[0]
+
+	require.Len(t, tpl.Setup, 1)
+	assert.Contains(t, tpl.Setup[0], "GitHub token")
+
+	require.Len(t, tpl.Parameters, 2)
+	servers := tpl.Parameters[1]
+	assert.Equal(t, "servers", servers.Name)
+	assert.Equal(t, "mcp_registry", servers.OptionsFrom)
+	assert.Equal(t, []string{"slack"}, servers.Options)
 }

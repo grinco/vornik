@@ -412,6 +412,58 @@ type ProjectTrading struct {
 	// 2s window) into a single message so a 4-leg partial fill
 	// doesn't spam the operator's chat.
 	NotifyFillsChatID int64 `yaml:"notify_fills_chat_id"`
+
+	// Scorecard gates entries behind a minimum composite score.
+	// Dark by default (Enabled false) — the strategist's existing
+	// entry path is unaffected until an operator opts in per
+	// project. Consumed by the Task 9 entry-floor verifier.
+	Scorecard TradingScorecard `yaml:"scorecard"`
+
+	// Regime gates entries/long-side exposure behind a market-
+	// regime read (e.g. risk-on/risk-off breadth across
+	// us/eu/apac). Dark by default (Enabled false). Consumed by
+	// the Task 9 entry-floor verifier.
+	Regime TradingRegime `yaml:"regime"`
+
+	// ProtectedSymbols lists tickers the strategist must never
+	// submit a closing/reducing order for regardless of scorecard
+	// or regime state — e.g. RSU-LOCKUP positions the operator
+	// holds for reasons outside the strategy's model. Consumed by
+	// the Task 9 entry-floor verifier.
+	ProtectedSymbols []string `yaml:"protected_symbols"`
+}
+
+// TradingScorecard configures the composite entry-score gate. When
+// Enabled, the Task 9 entry-floor verifier rejects entries whose
+// scorecard total falls below MinEntryTotal.
+type TradingScorecard struct {
+	Enabled       bool `yaml:"enabled"`
+	MinEntryTotal int  `yaml:"min_entry_total"`
+}
+
+// TradingRegime configures the market-regime entry/exposure gate.
+// When Enabled, the Task 9 entry-floor verifier consults the
+// regime read before allowing new long entries (BlockLongInRiskOff)
+// and applies StaleBehavior once the regime read is older than
+// MaxStalenessDays. MinComponentCount sets, per region key (e.g.
+// "us", "eu", "apac"), the minimum number of breadth components
+// required for the regime read to be considered valid rather than
+// degraded.
+type TradingRegime struct {
+	Enabled            bool `yaml:"enabled"`
+	BlockLongInRiskOff bool `yaml:"block_long_in_risk_off"`
+	// MaxStalenessDays is parsed and defaulted (3, see LoadProjects)
+	// but NOT YET plumbed through to the sidecar regime tool, which
+	// computes `stale` at a hardcoded 3-day window. Setting a
+	// non-default value here currently has no effect on staleness
+	// detection.
+	// TODO(go-live): wire to the sidecar before relying on non-default values.
+	MaxStalenessDays int `yaml:"max_staleness_days"`
+	// StaleBehavior governs what the verifier does once the regime
+	// read exceeds MaxStalenessDays: "block_opens" (default),
+	// "neutral", or "last_known".
+	StaleBehavior     string         `yaml:"stale_behavior"`
+	MinComponentCount map[string]int `yaml:"min_component_count"`
 }
 
 // TradingCaps is the per-project subset of broker.Caps that the
@@ -1753,6 +1805,19 @@ func LoadProjects(dir string) (map[string]*Project, error) {
 			// it appears in the daemon log.
 			fmt.Fprintf(os.Stderr, "vornik/registry: skipping %s: yaml parse error: %v\n", name, err)
 			continue
+		}
+
+		// Regime staleness defaults: an operator who sets
+		// trading.regime.enabled=true without spelling out every
+		// knob should still get a safe verifier behavior rather
+		// than a zero-value StaleBehavior ("" is not one of the
+		// verifier's recognized modes) or a zero-day staleness
+		// window (which would treat every regime read as stale).
+		if project.Trading.Regime.StaleBehavior == "" {
+			project.Trading.Regime.StaleBehavior = "block_opens"
+		}
+		if project.Trading.Regime.MaxStalenessDays == 0 {
+			project.Trading.Regime.MaxStalenessDays = 3
 		}
 
 		// Validate the project

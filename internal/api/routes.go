@@ -909,6 +909,15 @@ func (s *Server) apiV1ProjectsHandler(w http.ResponseWriter, r *http.Request) {
 			s.GetProjectConfig(w, r)
 			return
 		}
+	} else if strings.HasPrefix(remaining, "/doctor") {
+		// GET /doctor, POST /doctor/checks/{key}/run, POST
+		// /doctor/secrets — per-project readiness surface (Phase 2).
+		// ProjectDoctor re-derives projectID/suffix from r.URL.Path
+		// itself, so dispatching here (rather than registering a
+		// second mux prefix, which would panic on the already-
+		// registered "/api/v1/projects/" pattern) is sufficient.
+		s.ProjectDoctor(w, r)
+		return
 	} else if remaining == "/archive" || remaining == "/archive/" {
 		// POST /projects/{id}/archive — flips lifecycle.status to
 		// archived + schedules deletion. Body {"grace":"7d",

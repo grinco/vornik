@@ -1,0 +1,65 @@
+---
+workflowId: "{{.projectId}}-ingest"
+displayName: "{{.displayName}} ingest run"
+description: "Fetch new/changed documentation, then distill it into memory-ready sections."
+version: "1.0"
+entrypoint: "fetch"
+maxStepVisits: 2
+maxIterations: 8
+maxWallClock: "45m"
+cleanup_artifacts:
+  - artifacts/out/fetched-docs.md
+  - artifacts/out/ingest-summary.md
+steps:
+  fetch:
+    type: "agent"
+    role: "fetcher"
+    on_success: "distill"
+    on_fail: "recover"
+    timeout: "25m"
+    retry:
+      on: ["container_non_zero_exit", "context_timeout"]
+      max_attempts: 3
+      backoff: "exponential"
+      initial_delay: "30s"
+  distill:
+    type: "agent"
+    role: "distiller"
+    on_success: "done"
+    on_fail: "recover"
+    timeout: "10m"
+  recover:
+    type: "plan"
+    role: "lead"
+    on_success: "failed"
+    on_fail: "failed"
+    timeout: "5m"
+terminals:
+  done:
+    status: "COMPLETED"
+  failed:
+    status: "FAILED"
+    message: "Docs ingest run failed"
+---
+
+# {{.displayName}} ingest run
+
+Two-step pipeline: fetch the delta from every configured source,
+then distill it for project memory. The lead handles recovery
+checkpoints so one unreachable doc site doesn't kill the sync.
+
+## Prompts
+
+### fetch
+
+Fetch what is new or changed from every configured documentation
+source since the last sync (memory_search first — delta only, per
+the fetcher role prompt). Write each new/changed section to
+`artifacts/out/fetched-docs.md` under its own source heading.
+
+### distill
+
+Read `artifacts/out/fetched-docs.md` and produce memory-ready
+distillations plus `artifacts/out/ingest-summary.md` per the
+distiller role prompt. Your response's top-level `message` field
+must carry a 2-3 sentence summary of what was synced.

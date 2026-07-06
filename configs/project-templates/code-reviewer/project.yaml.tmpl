@@ -1,0 +1,33 @@
+projectId: "{{.projectId}}"
+displayName: "{{.displayName}}"
+swarmId: "{{.projectId}}-swarm"
+defaultWorkflowId: "github-review"
+
+defaultPriority: 40
+maxConcurrentTasks: 1
+
+autonomy:
+  enabled: false
+
+permissions:
+  secrets:
+    - "GITHUB_TOKEN"
+  allowedTools:
+    - "current_time"
+    - "file_read"
+    - "read_many_files"
+    - "grep"
+    - "glob"
+    - "git_status"
+    - "git_diff"
+    - "git_log"
+    - "git_show"
+    - "memory_search"
+
+# Review triggers: wire the GitHub channel for {{.repo}} after
+# creation — the project setup checklist links the steps. See
+# https://docs.vornik.io for the
+# github/github_app block reference.
+
+firewall:
+  mode: ""  # inherit daemon default

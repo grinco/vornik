@@ -412,6 +412,16 @@ type Executor struct {
 	// Nil disables the layer (tests, opted-out deployments).
 	secretsDetector secrets.Detector
 	secretsActions  map[string]secrets.Action
+	// secretsTrustedOutputTools holds tool-name prefixes whose tool-audit
+	// OUTPUT is exempt from HEURISTIC (generic_kv / entropy) redaction. These
+	// are tools whose output is a trusted daemon-proxied response the agent
+	// cannot forge (e.g. mcp__pagedrop__pagedrop_publish, whose result carries
+	// an operator-facing viewing password). Strong, prefix-anchored credential
+	// patterns (openai/anthropic/github/aws/jwt/…) STILL redact even here, and
+	// the tool INPUT (agent-supplied) is always fully scanned — so this is not
+	// a labeled-exfil channel. Empty (default) = no exemption. Config:
+	// secrets.trusted_output_tools.
+	secretsTrustedOutputTools []string
 	// hallucinationDetector scans the agent's result.json prose
 	// after each step against a grounding context built from the
 	// step's tool_audit_log + artifact list. Signals are
@@ -801,6 +811,15 @@ func WithSecrets(d secrets.Detector, actions map[string]secrets.Action) Option {
 	return func(e *Executor) {
 		e.secretsDetector = d
 		e.secretsActions = actions
+	}
+}
+
+// WithSecretsTrustedOutputTools sets the tool-name prefixes whose tool-audit
+// OUTPUT is exempt from heuristic (generic_kv/entropy) redaction. See the
+// secretsTrustedOutputTools field. Additive to WithSecrets; empty = no change.
+func WithSecretsTrustedOutputTools(tools []string) Option {
+	return func(e *Executor) {
+		e.secretsTrustedOutputTools = tools
 	}
 }
 

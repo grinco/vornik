@@ -144,6 +144,53 @@ func TestSetupPage_HidesBrokenTemplateEntrypoints(t *testing.T) {
 	}
 }
 
+// TestChatProviderConfigured_RouterAndCLI is the regression for the
+// 2026-07-04 report "still getting chat backend not configured on a
+// router setup": the router + CLI providers carry no top-level
+// endpoint/model/key, so requiring those wrongly reported a working
+// deployment as unconfigured on the setup page.
+func TestChatProviderConfigured_RouterAndCLI(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  config.ChatConfig
+		want bool
+	}{
+		{"router (no endpoint/model/key) is configured",
+			config.ChatConfig{Provider: "router"}, true},
+		{"claude-cli is configured",
+			config.ChatConfig{Provider: "claude-cli"}, true},
+		{"codex-cli is configured",
+			config.ChatConfig{Provider: "codex-cli"}, true},
+		{"empty everything is not configured",
+			config.ChatConfig{Provider: ""}, false},
+		{"empty provider defaults to http: endpoint+model is configured",
+			config.ChatConfig{Provider: "", Endpoint: "http://x/v1", Model: "m"}, true},
+		{"http with endpoint+model (no key, e.g. Ollama) is configured",
+			config.ChatConfig{Provider: "http", Endpoint: "http://x/v1", Model: "m"}, true},
+		{"http missing endpoint is not configured",
+			config.ChatConfig{Provider: "http", Model: "m"}, false},
+	}
+	for _, c := range cases {
+		if got := c.cfg.ProviderConfigured(); got != c.want {
+			t.Errorf("%s: ProviderConfigured = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestSetupStepState_RouterEnabledIsChatConfigured pins that an
+// enabled router deployment reports chat as configured end-to-end
+// through setupStepState (the surface the operator sees).
+func TestSetupStepState_RouterEnabledIsChatConfigured(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Chat.Enabled = true
+	cfg.Chat.Provider = "router"
+	srv := NewServer(WithOnboardingDetector(onboarding.Detector{Config: cfg}))
+	chat, _, _ := srv.setupStepState()
+	if !chat {
+		t.Fatal("enabled router must report chatConfigured=true")
+	}
+}
+
 func TestSetupPage_FreshDefaultsAreNotConfigured(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Chat.Endpoint = "http://localhost:11434/v1"

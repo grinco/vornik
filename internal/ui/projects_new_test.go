@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -149,6 +150,8 @@ func TestProjectsCreateFromTemplate_HappyPath(t *testing.T) {
 	body := rr.Body.String()
 	assert.Contains(t, body, "Project created from")
 	assert.Contains(t, body, "projects/myproject.yaml")
+	assert.Contains(t, body, "/ui/projects/myproject/setup",
+		"success page must link to the setup page")
 
 	// File must actually exist on disk.
 	written, err := os.ReadFile(filepath.Join(configsDir, "projects/myproject.yaml"))
@@ -327,4 +330,285 @@ func TestProjectsNew_UnknownSlugInQueryFallsBackToGallery(t *testing.T) {
 	body := rr.Body.String()
 	assert.Contains(t, body, "Alpha Demo",
 		"unknown slug should fall back to the gallery grid, not a blank page")
+}
+
+// singleParamTemplateRig builds a one-template catalog whose
+// template.yaml body and rendering template are supplied by the
+// caller, plus a writable configsDir. Used by the multi-value gallery
+// tests below so each fixture can declare exactly the parameter shape
+// (list / multiselect / dynamic optionsFrom) it needs without
+// perturbing templateRig's shared alpha/beta fixture that the rest of
+// this file's tests depend on.
+func singleParamTemplateRig(t *testing.T, manifestYAML, renderBody string, opts ...ServerOption) (*Server, string) {
+	t.Helper()
+	tplDir := filepath.Join(t.TempDir(), "tpl")
+	require.NoError(t, os.MkdirAll(filepath.Join(tplDir, "demo"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "demo", "template.yaml"), []byte(manifestYAML), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "demo", "project.yaml.tmpl"), []byte(renderBody), 0o644))
+
+	cat, err := templates.Load(tplDir)
+	require.NoError(t, err)
+	configsDir := t.TempDir()
+	allOpts := append([]ServerOption{WithProjectTemplates(cat), WithConfigsDir(configsDir)}, opts...)
+	srv := NewServer(allOpts...)
+	return srv, configsDir
+}
+
+// TestProjectsCreate_ListParamTextareaSplitsLines pins the list-param
+// form contract: the browser posts one textarea named p_<name>, the
+// handler splits it on "\n", trims blank lines, and both surviving
+// values reach the rendered project file.
+func TestProjectsCreate_ListParamTextareaSplitsLines(t *testing.T) {
+	srv, configsDir := singleParamTemplateRig(t, `
+displayName: "List Demo"
+description: "list param demo."
+domain: "general"
+parameters:
+  - {name: projectId, type: string, label: "ID", required: true, pattern: "[a-z][a-z0-9-]{1,20}[a-z0-9]"}
+  - {name: feeds, type: list, label: "Feeds", required: true}
+files:
+  - {source: project.yaml.tmpl, target: "projects/{{.projectId}}.yaml"}
+`, "projectId: {{.projectId}}\nfeeds:\n{{range .feeds}}  - {{.}}\n{{end}}")
+
+	form := url.Values{}
+	form.Set("slug", "demo")
+	form.Set("p_projectId", "myproject")
+	form.Set("p_feeds", "  https://a.example  \r\nhttps://b.example\r\n   \r\n")
+
+	req := httptest.NewRequest(http.MethodPost, "/ui/projects/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.ProjectsCreateFromTemplate(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, "body=%s", rr.Body.String())
+	assert.Contains(t, rr.Body.String(), "Project created from")
+
+	written, err := os.ReadFile(filepath.Join(configsDir, "projects/myproject.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(written), "  - https://a.example\n")
+	assert.Contains(t, string(written), "  - https://b.example\n")
+	assert.NotContains(t, string(written), "\r")
+	assert.NotContains(t, string(written), "  -   ")
+}
+
+// TestProjectsCreate_MultiselectCheckboxesCollectAll pins the
+// multiselect form contract: repeated checkbox values named p_<name>
+// all land in the rendered file, not just the last one.
+func TestProjectsCreate_MultiselectCheckboxesCollectAll(t *testing.T) {
+	srv, configsDir := singleParamTemplateRig(t, `
+displayName: "Multiselect Demo"
+description: "multiselect param demo."
+domain: "general"
+parameters:
+  - {name: projectId, type: string, label: "ID", required: true, pattern: "[a-z][a-z0-9-]{1,20}[a-z0-9]"}
+  - {name: servers, type: multiselect, label: "Servers", required: true, options: ["alpha", "beta", "gamma"]}
+files:
+  - {source: project.yaml.tmpl, target: "projects/{{.projectId}}.yaml"}
+`, "projectId: {{.projectId}}\nservers:\n{{range .servers}}  - {{.}}\n{{end}}")
+
+	form := url.Values{
+		"slug":        {"demo"},
+		"p_projectId": {"myproject"},
+		"p_servers":   {"alpha", "beta"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/ui/projects/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.ProjectsCreateFromTemplate(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, "body=%s", rr.Body.String())
+
+	written, err := os.ReadFile(filepath.Join(configsDir, "projects/myproject.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(written), "alpha")
+	assert.Contains(t, string(written), "beta")
+}
+
+// TestProjectsCreate_ConflictSuggestsFreeSlug pins the conflict-retry
+// UX: an ID collision re-renders the form with a suggested free slug
+// banner while preserving the operator's submitted projectId.
+func TestProjectsCreate_ConflictSuggestsFreeSlug(t *testing.T) {
+	srv, configsDir := templateRig(t)
+	// "gridops" (not "px") — a short slug like "px" collides with the
+	// ubiquitous Tailwind "px-2"/"px-4" padding utility classes that
+	// litter every page, which would make a substring assertion on
+	// the suggested "px-2" slug a false positive.
+	require.NoError(t, os.MkdirAll(filepath.Join(configsDir, "projects"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(configsDir, "projects/gridops.yaml"), []byte("existing\n"), 0o644))
+
+	form := url.Values{}
+	form.Set("slug", "alpha")
+	form.Set("p_projectId", "gridops")
+	req := httptest.NewRequest(http.MethodPost, "/ui/projects/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.ProjectsCreateFromTemplate(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, "conflict re-renders the form, not 4xx")
+
+	body := rr.Body.String()
+	assert.Contains(t, body, "gridops-2", "the first free slug must be suggested")
+	assert.Contains(t, body, `value="gridops"`,
+		"the projectId field must preserve the operator's submitted value")
+	assert.NotContains(t, body, `value="gridops-2"`,
+		"the suggested slug must not overwrite the submitted value")
+
+	// Existing file must survive untouched.
+	got, err := os.ReadFile(filepath.Join(configsDir, "projects/gridops.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, "existing\n", string(got))
+}
+
+// errOptionsResolver is a canned templates.OptionsResolver that
+// always fails, for exercising the dynamic-option resolver-failure
+// path.
+type errOptionsResolver struct{ err error }
+
+func (e errOptionsResolver) ResolveOptions(string) ([]string, error) {
+	return nil, e.err
+}
+
+// TestProjectsNewForm_DynamicOptionFailureRendersInlineError pins the
+// spec's error-handling contract for optionsFrom parameters: a
+// resolver failure must never silently render an empty select. The
+// field renders disabled with the resolver's failure text inline.
+func TestProjectsNewForm_DynamicOptionFailureRendersInlineError(t *testing.T) {
+	srv, _ := singleParamTemplateRig(t, `
+displayName: "Dynamic Demo"
+description: "dynamic optionsFrom param demo."
+domain: "general"
+parameters:
+  - {name: projectId, type: string, label: "ID", required: true}
+  - {name: servers, type: multiselect, label: "Servers", required: true, optionsFrom: mcp_registry}
+files:
+  - {source: project.yaml.tmpl, target: "projects/{{.projectId}}.yaml"}
+`, "projectId: {{.projectId}}\n",
+		WithTemplateOptionsResolver(errOptionsResolver{err: errors.New("registry unreachable")}))
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/projects/new?slug=demo", nil)
+	rr := httptest.NewRecorder()
+	srv.ProjectsNew(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	body := rr.Body.String()
+	assert.Contains(t, body, "could not load options from mcp_registry",
+		"resolver failure text must surface inline")
+	assert.Contains(t, body, "registry unreachable")
+	assert.Contains(t, body, `id="p_servers" disabled`,
+		"the field must render disabled, never a silently empty select")
+}
+
+// TestProjectsNewGallery_ShowsSetupChips pins the gallery
+// "Needs:" chip surfacing prerequisites declared in a template's
+// setup: block, so operators see them before committing.
+func TestProjectsNewGallery_ShowsSetupChips(t *testing.T) {
+	srv, _ := singleParamTemplateRig(t, `
+displayName: "Chip Demo"
+description: "setup chip demo."
+domain: "general"
+setup:
+  secrets:
+    - {name: GITHUB_TOKEN, label: "GitHub token", required: true}
+parameters:
+  - {name: projectId, type: string, label: "ID", required: true}
+files:
+  - {source: project.yaml.tmpl, target: "projects/{{.projectId}}.yaml"}
+`, "projectId: {{.projectId}}\n")
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/projects/new", nil)
+	rr := httptest.NewRecorder()
+	srv.ProjectsNew(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Contains(t, rr.Body.String(), "Needs: GitHub token")
+}
+
+// fakeOptionsResolver returns a fixed set of options for known sources.
+type fakeOptionsResolver struct{}
+
+func (f fakeOptionsResolver) ResolveOptions(source string) ([]string, error) {
+	if source == "mcp_registry" {
+		return []string{"duckduckgo", "github"}, nil
+	}
+	return nil, errors.New("unknown source: " + source)
+}
+
+// TestProjectsCreateFromTemplate_ToolAssistantMCPServers pins the
+// tool-assistant template with optionsFrom: mcp_registry multiselect:
+// GET shows two checkboxes; POST with one selected produces
+// mcp.servers entry under project.yaml; POST with none produces no mcp: block.
+func TestProjectsCreateFromTemplate_ToolAssistantMCPServers(t *testing.T) {
+	// Render the tool-assistant template form with a fake resolver
+	// returning two MCP servers.
+	srv, configsDir := singleParamTemplateRig(t, `
+displayName: "Tool Assistant"
+description: "Chat-dispatcher-facing project wired to MCP servers."
+domain: "general"
+setup:
+  model: required
+  checks: [mcp_reachable, model_ping]
+parameters:
+  - {name: projectId, type: string, label: "Project ID", description: "Lowercase letters, numbers, and hyphens only.", pattern: "[a-z0-9][a-z0-9-]{1,30}[a-z0-9]", required: true}
+  - {name: displayName, type: string, label: "Display name", default: "Tool Assistant", required: true}
+  - {name: assistantPurpose, type: string, label: "What is this assistant for?", description: "One or two sentences.", default: "General-purpose assistant for this daemon's operator.", required: true}
+  - {name: mcpServers, type: multiselect, label: "MCP servers to attach", description: "Daemon-configured servers this project may use.", optionsFrom: mcp_registry, required: false}
+  - {name: llmModel, type: string, label: "Role model override", default: "", required: false}
+files:
+  - {source: project.yaml.tmpl, target: "projects/{{.projectId}}.yaml"}
+`, `projectId: "{{.projectId}}"
+displayName: "{{.displayName}}"
+
+{{if .mcpServers}}mcp:
+  servers:
+{{range .mcpServers}}    - name: "{{.}}"
+{{end}}{{end}}`,
+		WithTemplateOptionsResolver(fakeOptionsResolver{}))
+
+	// GET the form: should render two checkboxes for the two servers
+	req := httptest.NewRequest(http.MethodGet, "/ui/projects/new?slug=demo", nil)
+	rr := httptest.NewRecorder()
+	srv.ProjectsNew(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, "form GET: %s", rr.Body.String())
+
+	body := rr.Body.String()
+	assert.Contains(t, body, `name="p_mcpServers"`)
+	assert.Contains(t, body, `value="duckduckgo"`)
+	assert.Contains(t, body, `value="github"`)
+
+	// POST with one server selected: project file must contain mcp.servers entry
+	form := url.Values{
+		"slug":               {"demo"},
+		"p_projectId":        {"test-one-server"},
+		"p_displayName":      {"Test One"},
+		"p_assistantPurpose": {"test purpose"},
+		"p_mcpServers":       {"duckduckgo"},
+		"p_llmModel":         {""},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/ui/projects/new", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr = httptest.NewRecorder()
+	srv.ProjectsCreateFromTemplate(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, "POST one server: %s", rr.Body.String())
+
+	written, err := os.ReadFile(filepath.Join(configsDir, "projects/test-one-server.yaml"))
+	require.NoError(t, err)
+	content := string(written)
+	assert.Contains(t, content, "mcp:", "mcp: block must be present when servers are selected")
+	assert.Contains(t, content, `- name: "duckduckgo"`, "selected server must appear in mcp.servers")
+
+	// POST with no servers selected: project file must have NO mcp: block
+	form2 := url.Values{
+		"slug":               {"demo"},
+		"p_projectId":        {"test-no-servers"},
+		"p_displayName":      {"Test None"},
+		"p_assistantPurpose": {"test purpose"},
+		"p_mcpServers":       {}, // empty
+		"p_llmModel":         {""},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/ui/projects/new", strings.NewReader(form2.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr = httptest.NewRecorder()
+	srv.ProjectsCreateFromTemplate(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, "POST no servers: %s", rr.Body.String())
+
+	written, err = os.ReadFile(filepath.Join(configsDir, "projects/test-no-servers.yaml"))
+	require.NoError(t, err)
+	content = string(written)
+	assert.NotContains(t, content, "mcp:", "mcp: block must NOT be present when no servers are selected")
 }

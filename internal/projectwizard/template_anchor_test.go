@@ -210,7 +210,7 @@ type multiFileCapturingWriter struct {
 
 func (m *multiFileCapturingWriter) Write(_ context.Context, projectID string, _ []byte) (string, error) {
 	m.singleCalls++
-	return "/ui/projects/" + projectID, m.err
+	return "/ui/projects/" + projectID + "/setup", m.err
 }
 
 func (m *multiFileCapturingWriter) WriteFiles(_ context.Context, projectID string, files map[string]string) (string, error) {
@@ -219,7 +219,7 @@ func (m *multiFileCapturingWriter) WriteFiles(_ context.Context, projectID strin
 	if m.err != nil {
 		return "", m.err
 	}
-	return "/ui/projects/" + projectID, nil
+	return "/ui/projects/" + projectID + "/setup", nil
 }
 
 func TestCommit_TemplateAnchored_WritesRenderedFileSet(t *testing.T) {

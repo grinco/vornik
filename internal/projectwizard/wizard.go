@@ -10,6 +10,7 @@ import (
 
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/templates"
 )
 
 // systemPromptTemplate is the wizard's instructions to the LLM.
@@ -43,6 +44,16 @@ Rules:
    "looks good", "commit", or "yes go ahead".
 5. If the operator's description matches a template in the
    gallery, set suggested_template; otherwise leave empty.
+6. Once the build is clear, ALSO emit a "composition" object:
+   {"template": <slug>, "params": {...}, "addons": [...]}. Pick
+   "template" from the grounded base-template list below when one
+   fits the intent; omit "template" entirely to build from
+   custom-base instead. Only reference MCP servers and tools that
+   appear in the live grounding below — never invent one that
+   isn't listed. Addons must match the documented vocabulary and
+   field shapes exactly. Never combine a "schedule" addon with a
+   "rag_source" addon in the same composition — they're mutually
+   exclusive.
 
 %s
 
@@ -154,6 +165,27 @@ type Wizard struct {
 	MaxTurns int
 	// Timeout caps each LLM call. 0 → 60s.
 	Timeout time.Duration
+	// MCP grounds the system prompt in the daemon's live MCP server
+	// + tool inventory, so the LLM only proposes mcp_server addons
+	// referencing servers/tools that actually exist. Optional — nil
+	// still renders the addon vocabulary via BuildGrounding, just
+	// without a live server list.
+	MCP MCPGroundingSource
+	// Models grounds the system prompt in the daemon's live model
+	// catalog. Optional — nil renders a "default model only" note.
+	Models ModelLister
+	// KnownMCP returns the set of MCP server names configured on the
+	// daemon, keyed for O(1) lookup. This is the same dependency the
+	// compose engine's mcp_server applier uses (ComposeDeps.KnownMCP)
+	// to reject a server the LLM hallucinated; the wizard holds its
+	// own accessor here because Compose only runs at commit time,
+	// after the session's conversation is done. Optional.
+	KnownMCP func(ctx context.Context) map[string]bool
+	// Resolver resolves optionsFrom sources (mcp_registry, models)
+	// when materialising a multi-value template parameter at commit
+	// time — the same seam ComposeDeps.Resolver fills. Optional; nil
+	// leaves dynamic optionsFrom values unresolved.
+	Resolver templates.OptionsResolver
 }
 
 // ErrSessionCommitted — the session was already committed; further
@@ -289,7 +321,7 @@ func (w *Wizard) Converse(ctx context.Context, sessionID, operatorID, userMessag
 	})
 
 	// Build LLM messages.
-	msgs := w.buildChatMessages(transcript)
+	msgs := w.buildChatMessages(callCtx, transcript)
 
 	// Apply response_format=json_schema via context so the chat
 	// router enforces the envelope shape (Bedrock injects a
@@ -314,24 +346,25 @@ func (w *Wizard) Converse(ctx context.Context, sessionID, operatorID, userMessag
 		return nil, fmt.Errorf("projectwizard: parse envelope: %w", err)
 	}
 
-	// Validate proposal. Failure appends the reason to the
-	// message and resets ready_to_commit so the UI doesn't show
-	// an enabled commit button on an invalid draft.
-	turnOutcome := turnOutcomeAssistantReply
-	if envelope.Proposal != nil {
-		// Prefer this turn's template hint; fall back to the value
-		// stickied on the session from an earlier turn.
-		slug := envelope.SuggestedTemplate
-		if slug == "" {
-			slug = session.SuggestedTemplate
-		}
-		if verr := w.validateProposal(envelope.Proposal, slug); verr != nil {
-			envelope.Message = envelope.Message + "\n\n(validation: " + verr.Error() + ")"
-			envelope.ReadyToCommit = false
-			turnOutcome = turnOutcomeValidationError
-		}
+	// Validate proposal (legacy path) or run Compose against the
+	// structured composition (wizard v2). Failure appends the reason
+	// to the message and resets ready_to_commit so the UI doesn't
+	// show an enabled commit button on an invalid draft.
+	var turnOutcome string
+	if envelope.Composition != nil {
+		turnOutcome = w.applyComposition(callCtx, session, envelope)
+	} else {
+		// Legacy/proposal-only turn (or a bare question with neither) —
+		// the persisted composition must track only the LATEST turn.
+		// Leaving a prior turn's composition in place here is exactly
+		// the bug the whole-branch review's Important #1 finding
+		// caught: Commit's `len(session.Composition) > 0` branch would
+		// silently commit that stale build instead of the proposal the
+		// operator is now looking at (or approving) on this turn.
+		session.Composition = nil
+		turnOutcome = w.applyProposal(session, envelope)
 	}
-	if envelope.Proposal == nil {
+	if envelope.Proposal == nil && envelope.Composition == nil {
 		envelope.ReadyToCommit = false
 	}
 	w.Metrics.recordTurn(turnOutcome)
@@ -370,12 +403,63 @@ func (w *Wizard) Converse(ctx context.Context, sessionID, operatorID, userMessag
 	return &Result{SessionID: session.ID, Envelope: envelope}, nil
 }
 
+// applyComposition runs the 3a Compose pipeline against the
+// envelope's structured composition, persisting it onto the session
+// on success or folding the failure reason into the operator-visible
+// message (and resetting ready_to_commit) on failure. Returns the
+// turn outcome for the metrics counter.
+func (w *Wizard) applyComposition(ctx context.Context, session *persistence.ProjectWizardSession, envelope *Envelope) string {
+	if _, _, cerr := w.composeFromEnvelope(ctx, envelope); cerr != nil {
+		// ComposeError.Error() already self-prefixes "composition: "
+		// on structural (AddonIndex<0) failures; don't double it up —
+		// this text is fed back to the LLM to self-correct, so a
+		// "(composition: composition: ...)" stutter reads as noise.
+		msg := cerr.Error()
+		if !strings.HasPrefix(msg, "composition:") {
+			msg = "composition: " + msg
+		}
+		envelope.Message = envelope.Message + "\n\n(" + msg + ")"
+		envelope.ReadyToCommit = false
+		return turnOutcomeValidationError
+	}
+	compositionBytes, _ := json.Marshal(envelope.Composition)
+	session.Composition = compositionBytes
+	return turnOutcomeAssistantReply
+}
+
+// applyProposal validates the legacy raw-proposal path, folding a
+// validation failure into the operator-visible message (and
+// resetting ready_to_commit) the same way applyComposition does for
+// the wizard v2 path. Returns the turn outcome for the metrics
+// counter; a bare question turn (no proposal at all) is a no-op.
+func (w *Wizard) applyProposal(session *persistence.ProjectWizardSession, envelope *Envelope) string {
+	if envelope.Proposal == nil {
+		return turnOutcomeAssistantReply
+	}
+	// Prefer this turn's template hint; fall back to the value
+	// stickied on the session from an earlier turn.
+	slug := envelope.SuggestedTemplate
+	if slug == "" {
+		slug = session.SuggestedTemplate
+	}
+	if verr := w.validateProposal(envelope.Proposal, slug); verr != nil {
+		envelope.Message = envelope.Message + "\n\n(validation: " + verr.Error() + ")"
+		envelope.ReadyToCommit = false
+		return turnOutcomeValidationError
+	}
+	return turnOutcomeAssistantReply
+}
+
 // buildChatMessages composes the system+conversation pair the
 // chat router consumes. System message reuses the template (with
-// priors spliced); conversation is the transcript rendered as
-// role/content pairs.
-func (w *Wizard) buildChatMessages(transcript []Turn) []chat.Message {
+// priors spliced) plus the live grounding block (MCP servers,
+// models, base templates, addon vocabulary); conversation is the
+// transcript rendered as role/content pairs. BuildGrounding is
+// nil-safe on w.MCP/w.Models, so this always appends — even with
+// no grounding deps wired the addon vocabulary still renders.
+func (w *Wizard) buildChatMessages(ctx context.Context, transcript []Turn) []chat.Message {
 	system := fmt.Sprintf(systemPromptTemplate, RenderPriors(w.Priors))
+	system += "\n\n" + BuildGrounding(ctx, w.MCP, w.Models, w.Priors)
 	msgs := []chat.Message{
 		{Role: "system", Content: system},
 	}
@@ -439,6 +523,36 @@ func envelopeResponseFormat() *chat.ResponseFormat {
 					"raw": map[string]any{
 						"type":        "object",
 						"description": "Proposed project YAML as a generic map.",
+					},
+				},
+			},
+			"composition": map[string]any{
+				"type":        "object",
+				"description": "Structured build: template, params, and addons.",
+				"properties": map[string]any{
+					"template": map[string]any{
+						"type":        "string",
+						"description": "Base template slug.",
+					},
+					"params": map[string]any{
+						"type":                 "object",
+						"additionalProperties": true,
+						"description":          "Template parameters (each value is a string or array of strings).",
+					},
+					"addons": map[string]any{
+						"type":        "array",
+						"description": "Ordered list of typed composition mutations.",
+						"items": map[string]any{
+							"type":                 "object",
+							"required":             []string{"type"},
+							"additionalProperties": true,
+							"properties": map[string]any{
+								"type": map[string]any{
+									"type":        "string",
+									"description": "Addon type selector (e.g., schedule, mcp_server).",
+								},
+							},
+						},
 					},
 				},
 			},
@@ -592,6 +706,61 @@ func pickModel(client chat.Provider, model string) chat.Provider {
 		return mo.WithModel(model)
 	}
 	return client
+}
+
+// composeFromEnvelope runs the 3a Compose pipeline against the
+// envelope's structured composition. The anchor slug is
+// composition.Template; an empty slug, or one the catalog doesn't
+// recognise, anchors on "custom-base" instead — the LLM either
+// deliberately built from scratch or hallucinated a slug, and either
+// way custom-base is the safe materialisation target. Wizard.Templates
+// is typed TemplateSource (the scalar single-value seam Commit's
+// legacy path uses); the compose engine needs the multi-value
+// MaterialiseMulti the production catalogTemplateSource adapter also
+// implements, so this asserts for it and returns a clear ComposeError
+// when the wired source doesn't support it (only relevant to
+// misconfigured deployments/tests — production always wires the
+// adapter).
+//
+// The []DeclaredSecret result is plumbed through from Compose for
+// both call sites (Converse's compose-on-turn and Commit's
+// re-compose-on-commit) to consume once the doctor-todo surfacing for
+// declared-but-unset secrets lands; today both discard it.
+func (w *Wizard) composeFromEnvelope(ctx context.Context, env *Envelope) (map[string]string, []DeclaredSecret, error) { //nolint:unparam // second result awaits the doctor-todo consumer; see comment above
+	comp := env.Composition
+	slug := comp.Template
+	if slug == "" {
+		slug = "custom-base"
+	} else if w.Templates == nil {
+		slug = "custom-base"
+	} else if _, ok := w.Templates.Lookup(slug); !ok {
+		slug = "custom-base"
+	}
+
+	mat, ok := w.Templates.(MultiMaterialiser)
+	if !ok {
+		return nil, nil, &ComposeError{AddonIndex: -1, Message: "template source does not support multi-value materialisation"}
+	}
+
+	var knownMCP map[string]bool
+	if w.KnownMCP != nil {
+		knownMCP = w.KnownMCP(ctx)
+	}
+	if knownMCP == nil {
+		knownMCP = map[string]bool{}
+	}
+
+	in := ComposeInput{
+		TemplateSlug: slug,
+		Params:       comp.ParamsMulti(),
+		Addons:       comp.Addons,
+	}
+	deps := ComposeDeps{
+		Templates: mat,
+		Resolver:  w.Resolver,
+		KnownMCP:  knownMCP,
+	}
+	return Compose(in, deps)
 }
 
 // validateProposal gates ready_to_commit. When a template is

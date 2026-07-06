@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/auth"
+	"vornik.io/vornik/internal/projectdoctor"
 	"vornik.io/vornik/internal/registry"
 )
 
@@ -180,6 +181,98 @@ func TestDashboard_SessionUserRedirectsToTasks(t *testing.T) {
 	srv.Dashboard(rec, req)
 	require.Equal(t, http.StatusFound, rec.Code)
 	assert.Equal(t, "/ui/tasks", rec.Header().Get("Location"))
+}
+
+// projectsRegistryWithDoctor mirrors projectsRig's fixture but
+// returns the raw registry (before wrapping it in a Server) so the
+// caller can wire the same registry into a projectdoctor.Doctor —
+// registry.Registry satisfies projectdoctor.ProjectResolver via
+// ResolveProjectConfig. Alpha declares a required secret so a doctor
+// with no SecretReader wired reports it "unknown", which QuickStatus
+// treats as incomplete; Beta declares none and stays complete.
+func projectsRegistryWithDoctor(t *testing.T) *registry.Registry {
+	t.Helper()
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "projects"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "swarms"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "workflows"), 0o755))
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "projects", "alpha.yaml"), []byte(`projectId: alpha
+displayName: "Alpha Project"
+swarmId: dev-swarm
+defaultWorkflowId: w1
+defaultPriority: 50
+maxConcurrentTasks: 1
+permissions:
+  secrets: ["TOK"]
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "projects", "beta.yaml"), []byte(`projectId: beta
+displayName: "Beta Project"
+swarmId: dev-swarm
+defaultWorkflowId: w1
+defaultPriority: 50
+maxConcurrentTasks: 1
+`), 0o644))
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "swarms", "dev-swarm.md"), []byte(`---
+swarmId: dev-swarm
+displayName: "Dev Swarm"
+leadRole: lead
+roles:
+  - name: "lead"
+    description: "Plans"
+    model: "test"
+    runtime:
+      image: "vornik-agent:latest"
+---
+`), 0o600))
+
+	require.NoError(t, os.WriteFile(filepath.Join(root, "workflows", "w1.md"), []byte(`---
+workflowId: w1
+entrypoint: build
+steps:
+  build:
+    type: agent
+    prompt: "do work"
+    role: lead
+    on_success: done
+terminals:
+  done:
+    status: COMPLETED
+---
+`), 0o644))
+
+	reg := registry.New()
+	require.NoError(t, reg.Load(root))
+	return reg
+}
+
+func TestProjects_SetupIncompleteBadge(t *testing.T) {
+	reg := projectsRegistryWithDoctor(t)
+	doctor := projectdoctor.New(projectdoctor.Deps{Registry: reg})
+	srv := NewServer(WithProjectRegistry(reg), WithProjectDoctor(doctor))
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/projects", nil)
+	rec := httptest.NewRecorder()
+	srv.Projects(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+
+	assert.Contains(t, body, "Setup incomplete", "alpha has a required-but-unresolvable secret check")
+	assert.Contains(t, body, "/ui/projects/alpha/setup", "the badge must link to the setup page")
+	assert.Contains(t, body, "Beta Project", "beta card must still render")
+}
+
+func TestProjects_NilDoctorRendersNoBadge(t *testing.T) {
+	// Guard: when the doctor isn't wired (e.g. older configs, or a
+	// deployment mode without it), the list must not panic and must
+	// not show any badge — SetupComplete defaults true.
+	srv := projectsRig(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/projects", nil)
+	rec := httptest.NewRecorder()
+	srv.Projects(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "Setup incomplete")
 }
 
 func TestHandler_SessionUserCannotReachGlobalAuthoring(t *testing.T) {

@@ -1,0 +1,33 @@
+projectId: "{{.projectId}}"
+displayName: "{{.displayName}}"
+swarmId: "{{.projectId}}-swarm"
+defaultWorkflowId: "adaptive"
+
+defaultPriority: 40
+maxConcurrentTasks: 2
+
+autonomy:
+  enabled: false
+
+chat:
+  system_prefix: |
+    {{.assistantPurpose}}
+
+permissions:
+  secrets: []
+  allowedTools:
+    - "current_time"
+    - "file_read"
+    - "file_write"
+    - "file_edit"
+    - "read_many_files"
+    - "grep"
+    - "glob"
+    - "memory_search"
+
+{{if .mcpServers}}mcp:
+  servers:
+{{range .mcpServers}}    - name: "{{.}}"
+{{end}}{{end}}
+firewall:
+  mode: ""  # inherit daemon default

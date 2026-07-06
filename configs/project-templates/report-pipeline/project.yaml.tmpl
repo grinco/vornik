@@ -1,0 +1,44 @@
+projectId: "{{.projectId}}"
+displayName: "{{.displayName}}"
+swarmId: "{{.projectId}}-swarm"
+defaultWorkflowId: "{{.projectId}}-report"
+
+defaultPriority: 30
+maxConcurrentTasks: 1
+
+autonomy:
+  enabled: true
+  # cron mode fires the goal below VERBATIM as the task prompt on
+  # every tick — no LLM evaluation step. duplicateWindow must be
+  # "0" for cron projects whose goal is identical every tick (see
+  # registry.ProjectAutonomy docs); the active-task check still
+  # prevents two concurrent runs.
+  mode: cron
+  cronTaskType: "report"
+  duplicateWindow: "0"
+  pollInterval: "{{.cadence}}"
+  maxTasksPerHour: 1
+  allowedTaskTypes:
+    - "report"
+  goal: |
+    Produce the scheduled report. Collect fresh items from every
+    configured source:
+{{range .sources}}      - {{.}}
+{{end}}    Then write a scannable report to artifacts/out/report.md (lead
+    with a one-line summary, then grouped bullets per source) and a
+    2-3 sentence summary to artifacts/out/summary.txt.
+
+permissions:
+  secrets: []
+  allowedTools:
+    - "current_time"
+    - "file_read"
+    - "file_write"
+    - "file_edit"
+    - "read_many_files"
+    - "grep"
+    - "glob"
+    - "memory_search"
+
+firewall:
+  mode: ""  # inherit daemon default

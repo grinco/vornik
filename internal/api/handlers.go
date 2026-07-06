@@ -280,7 +280,24 @@ func RequestOperatorIDOrSingleTenant(r *http.Request, fallback string) string {
 		return op
 	}
 	if IsAuthEnabledFromContext(r.Context()) {
-		return ""
+		// Auth enabled. requestOperatorID already returned any api-key
+		// principal; a browser SESSION caller (setup page, wizard) has
+		// no api-key principal and the X-Operator-Id header is refused
+		// under auth. But a session-authenticated request carries a
+		// real, non-spoofable Identity stamped by the auth middleware —
+		// so scope it to the server-side single-tenant operator id
+		// rather than 401ing (2026-07-04: the setup "create session" +
+		// wizard converse 401'd for browser admins on a single-operator
+		// deployment). Only a genuinely unauthenticated request (no
+		// Identity — which the middleware would normally reject before
+		// the handler anyway) still resolves to "".
+		if IdentityFromContext(r.Context()) == nil {
+			return ""
+		}
+		if strings.TrimSpace(fallback) != "" {
+			return fallback
+		}
+		return defaultSingleTenantOperatorID
 	}
 	if strings.TrimSpace(fallback) == "" {
 		return defaultSingleTenantOperatorID
@@ -1617,6 +1634,33 @@ func (s *Server) CallMCPTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Media-handle sink expansion: if this is a sink tool, inject the stashed
+	// image payloads referenced by <img src="cid:HANDLE"> in its HTML arg into
+	// the call's images arg (base64 travels daemon→daemon, never via the
+	// agent). A dangling handle is a caller mistake the agent can fix, so
+	// surface it as the tool result text (like an MCP error), not a transport
+	// error.
+	if s.mediaHandles != nil {
+		// Image-integrity gate: strip any <img> whose src is not a cid: handle
+		// (external/placeholder/data/relative) before forwarding. Guarantees a
+		// self-contained page even when the agent ignores the prompt rules and
+		// emits e.g. <img src="https://picsum.photos/…"> (task_20260705152851).
+		if sanitized, stripped := s.mediaHandles.SanitizeSinkHTML(req.Name, args); len(stripped) > 0 {
+			s.logger.Warn().
+				Str("task_id", taskID).
+				Str("tool", req.Name).
+				Strs("stripped_srcs", stripped).
+				Msg("media-handle gate: stripped non-cid <img> src(s) from publish HTML")
+			args = sanitized
+		}
+		expanded, mhErr := s.mediaHandles.ExpandSinkArgs(taskID, req.Name, args)
+		if mhErr != nil {
+			respondJSON(w, http.StatusOK, CallMCPToolResponse{Text: "MCP error: " + mhErr.Error()})
+			return
+		}
+		args = expanded
+	}
+
 	text, err := s.mcpExecutor.Execute(ctx, projectID, req.Name, args)
 	if err != nil {
 		// Include err text so agents can surface the root cause (e.g.
@@ -1624,6 +1668,13 @@ func (s *Server) CallMCPTool(w http.ResponseWriter, r *http.Request) {
 		// these aren't sensitive and are essential for debugging.
 		respondError(w, http.StatusBadGateway, "MCP_ERROR", err.Error())
 		return
+	}
+	// Media-handle source extraction: if this is a source tool that returned a
+	// large data:image URI, stash it daemon-side and hand the agent back only a
+	// handle + metadata (keeps the base64 out of the 50 KB tool-result cap and
+	// the 16 K output cap).
+	if s.mediaHandles != nil {
+		text = s.mediaHandles.ExtractSourceResult(taskID, req.Name, text)
 	}
 	respondJSON(w, http.StatusOK, CallMCPToolResponse{Text: text})
 }

@@ -43,6 +43,21 @@ trading:
     max_orders_per_minute: 3
     drawdown_circuit_breaker_pct: 5
   killSwitch: false                 # flip via vornikctl trading kill or YAML edit
+  # Scorecard/regime entry floor — DARK by default (both enabled:
+  # false). The scorecard_floor verifier is a clean no-op until an
+  # operator opts in on this project. See
+  # https://docs.vornik.io for the field
+  # semantics.
+  scorecard:
+    enabled: false
+    min_entry_total: 3
+  regime:
+    enabled: false
+    block_long_in_risk_off: true
+    max_staleness_days: 3
+    stale_behavior: block_opens
+    min_component_count: {us: 6, eu: 5, apac: 4}
+  protected_symbols: []
 
 budget:
   # LLM-only budget (separate from trading P&L).  The strategist
@@ -101,6 +116,14 @@ verifiers:
     whenStep: execute
     params:
       urls: ["mcp__broker__place_order"]
+  # Code-enforced scorecard/regime entry floor. Inert (no-op) unless
+  # trading.scorecard.enabled AND trading.regime.enabled are both
+  # true above — dark by default. No params: the verifier reads its
+  # config from the project's Trading block directly.
+  - name: scorecard_floor
+    type: scorecard_floor
+    whenTaskType: trading
+    whenStep: strategize
 
 # Phase 3 LLM-as-judge. The judge sees the strategist's
 # rationale + risk officer's decisions + the actual orders
@@ -176,6 +199,9 @@ mcp:
         - "rsi"
         - "macd"
         - "bbands"
+        - "trix"
+        - "regime"
+        - "scorecard"
 
 permissions:
   secrets: []

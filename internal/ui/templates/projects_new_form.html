@@ -21,6 +21,12 @@
             <div class="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-200 whitespace-pre-wrap">{{.Error}}</div>
             {{end}}
 
+            {{if .SuggestedSlug}}
+            <div class="rounded-lg border border-sky-500/40 bg-sky-500/10 px-4 py-3 text-sm text-sky-700 dark:text-sky-200">
+                ID was taken — suggested free ID <code class="text-sky-600 dark:text-sky-100">{{.SuggestedSlug}}</code> is available.
+            </div>
+            {{end}}
+
             {{if .MaterialisationDisabled}}
             <div class="bg-amber-500/10 border border-amber-500/40 rounded-lg px-4 py-3 text-sm text-amber-600 dark:text-amber-200">
                 The daemon has no writable configs directory; this form is read-only.
@@ -32,12 +38,51 @@
 
                 {{range .SelectedManifest.Parameters}}
                 {{$current := or (formValue $.FormValues .Name) .Default}}
+                {{$optErr := formValue $.OptionErrors .Name}}
                 <div>
                     <label class="block text-xs font-medium text-gray-300 mb-1.5" for="p_{{.Name}}">
                         {{.Label}}
                         {{if .Required}}<span class="text-rose-800 dark:text-rose-400">*</span>{{end}}
                     </label>
-                    {{if eq .Type "enum"}}
+                    {{if eq .Type "list"}}
+                    <textarea name="p_{{.Name}}" id="p_{{.Name}}" rows="4"
+                              placeholder="one value per line"
+                              class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200 font-mono">{{join (listFromMap $.FormValuesMulti .Name) "\n"}}</textarea>
+                    {{else if eq .Type "multiselect"}}
+                    {{if $optErr}}
+                    <select id="p_{{.Name}}" disabled multiple
+                            class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-red-500/40 text-gray-500 cursor-not-allowed"></select>
+                    <p class="text-[11px] text-rose-600 dark:text-rose-400 mt-1">{{$optErr}}</p>
+                    {{else}}
+                    {{$opts := or (listFromMap $.ResolvedOptions .Name) .Options}}
+                    {{$name := .Name}}
+                    <div id="p_{{.Name}}" class="flex flex-wrap gap-3">
+                        {{range $opts}}
+                        <label class="inline-flex items-center gap-1.5 text-xs text-gray-300">
+                            <input type="checkbox" name="p_{{$name}}" value="{{.}}"
+                                   {{if selected $.FormValuesMulti $name .}}checked{{end}}
+                                   class="rounded border-dark-700 bg-dark-800 text-brand-600 focus:ring-brand-500">
+                            {{.}}
+                        </label>
+                        {{end}}
+                    </div>
+                    {{end}}
+                    {{else if and (eq .Type "enum") .OptionsFrom}}
+                    {{if $optErr}}
+                    <select name="p_{{.Name}}" id="p_{{.Name}}" disabled
+                            class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-red-500/40 text-gray-500 cursor-not-allowed">
+                        <option value="">unavailable</option>
+                    </select>
+                    <p class="text-[11px] text-rose-600 dark:text-rose-400 mt-1">{{$optErr}}</p>
+                    {{else}}
+                    <select name="p_{{.Name}}" id="p_{{.Name}}"
+                            class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200">
+                        {{range listFromMap $.ResolvedOptions .Name}}
+                        <option value="{{.}}" {{if eq . $current}}selected{{end}}>{{.}}</option>
+                        {{end}}
+                    </select>
+                    {{end}}
+                    {{else if eq .Type "enum"}}
                     <select name="p_{{.Name}}" id="p_{{.Name}}"
                             class="w-full px-3 py-2 text-sm rounded-lg bg-dark-800 border border-dark-700 focus:border-brand-500 focus:outline-none text-gray-200">
                         {{range .Options}}

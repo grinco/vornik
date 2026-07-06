@@ -271,6 +271,13 @@ type Input struct {
 	// no-op (non-trading projects, pre-warm failure, no open
 	// proposals).
 	EntryGateIndicators map[string]EntryGateIndicator
+	// TradingFloor carries the project's scorecard/regime entry-floor
+	// configuration (registry Project.Trading), projected by the
+	// executor's verifier call site for trading projects. Nil for
+	// non-trading projects, which makes scorecard_floor a clean no-op;
+	// the verifier is also inert unless both gate flags are enabled
+	// (the soak gate).
+	TradingFloor *TradingFloorConfig
 }
 
 // EntryGateIndicator is the minimal deterministic indicator snapshot
@@ -320,6 +327,8 @@ func Run(ctx context.Context, cfg Config, in Input) (*Violation, error) {
 		v, err = verifyProposalsMatchWatchlist(cfg, in)
 	case "entry_gate_consistent":
 		v, err = verifyEntryGateConsistent(cfg, in)
+	case "scorecard_floor":
+		v = verifyScorecardFloor(cfg, in)
 	case "placements_match_audit":
 		v, err = verifyPlacementsMatchAudit(cfg, in)
 	case "cv_claims_grounded":

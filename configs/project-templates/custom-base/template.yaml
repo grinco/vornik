@@ -1,0 +1,35 @@
+displayName: "Custom (wizard base)"
+description: |
+  Minimal single-role project the conversational wizard uses as its
+  composition anchor when no purpose template fits. Not shown in the
+  gallery — the wizard shapes it with typed add-ons (MCP servers,
+  schedule, secrets, role instructions).
+hidden: true
+domain: "general"
+
+setup:
+  model: required
+  checks: [model_ping]
+
+parameters:
+  - name: projectId
+    type: string
+    label: "Project ID"
+    pattern: "[a-z0-9][a-z0-9-]{1,30}[a-z0-9]"
+    required: true
+  - name: displayName
+    type: string
+    label: "Display name"
+    default: "Custom project"
+    required: true
+  - name: llmModel
+    type: string
+    label: "Role model override"
+    default: ""
+    required: false
+
+files:
+  - source: project.yaml.tmpl
+    target: "projects/{{.projectId}}.yaml"
+  - source: swarm.md.tmpl
+    target: "swarms/{{.projectId}}-swarm.md"

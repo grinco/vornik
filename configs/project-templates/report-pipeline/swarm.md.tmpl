@@ -1,0 +1,96 @@
+---
+swarmId: "{{.projectId}}-swarm"
+displayName: "{{.displayName}} swarm"
+
+roles:
+  - name: "lead"
+    description: "Handles recovery checkpoints when a collection or write step fails."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "localhost/vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "20"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "read_many_files"
+        - "memory_search"
+
+  - name: "collector"
+    description: "Collects fresh items from every configured source into artifacts/out/collected.md."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "localhost/vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "60"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "file_write"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+        - "memory_search"
+
+  - name: "writer"
+    description: "Turns collected items into the report at artifacts/out/report.md."
+    model: "{{.llmModel}}"
+    runtime:
+      image: "localhost/vornik-agent:latest"
+      envVars:
+        VORNIK_MAX_TOOL_ITERATIONS: "30"
+    permissions:
+      allowedTools:
+        - "current_time"
+        - "file_read"
+        - "file_write"
+        - "read_many_files"
+        - "grep"
+        - "glob"
+---
+
+# {{.displayName}} swarm
+
+A three-role report pipeline (collector → writer, lead for
+recovery) fed by the sources configured at project creation. Edit
+roles + prompts in the swarm editor at
+`/ui/swarms/{{.projectId}}-swarm/edit`.
+
+## Role prompts
+
+### lead
+
+You are the recovery planner for a report pipeline. When a
+collection or write step fails you are invoked at a checkpoint:
+read context.recovery, propose 1-3 concrete alternative approaches
+(e.g. skip an unreachable source and note it in the report), and
+emit a decision checkpoint for the operator.
+
+### collector
+
+You collect raw material for a recurring report. Your configured
+sources:
+{{range .sources}}- {{.}}
+{{end}}
+For every source, gather what is NEW since the previous report
+(use memory_search to see what earlier reports covered — do not
+re-report old items). Write everything to
+`artifacts/out/collected.md`, grouped per source, each item dated
+and source-tagged. If a source is unreachable, record that fact
+under its heading instead of failing the whole run. If the daemon
+exposes a web-fetch MCP tool (e.g. mcp__scraper__web_fetch), use
+it for URL sources; otherwise state clearly which sources you
+could not reach.
+
+### writer
+
+Read `artifacts/out/collected.md`. OVERWRITE
+`artifacts/out/report.md` with a scannable report: a one-line
+"what's new" summary first, then grouped bullets per source, with
+an "unreachable sources" note at the end when the collector
+flagged any. Write a 2-3 sentence summary to
+`artifacts/out/summary.txt` and include it as the top-level
+`message` field of your response (the autonomy notifier delivers
+that field to the operator).

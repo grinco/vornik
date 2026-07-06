@@ -1,0 +1,46 @@
+{{define "project_setup.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-surface-900 text-ink-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-4xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                    <h1 class="text-xl font-semibold text-ink-100">Project setup</h1>
+                    <p class="text-ink-500 text-xs font-mono mt-0.5">{{.ProjectID}}</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    {{if .Report.Complete}}
+                    <span class="pill pill-nodot pill-ok">{{template "iconCheck"}}Setup complete</span>
+                    {{else}}
+                    <span class="pill pill-nodot pill-danger">{{template "iconX"}}Setup incomplete</span>
+                    {{end}}
+                    <a href="/ui/projects/{{.ProjectID}}" class="flex items-center gap-1 text-ink-500 hover:text-ink-300 text-sm transition-colors">
+                        <svg class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18"/></svg>
+                        Project
+                    </a>
+                </div>
+            </div>
+
+            {{/* Each check panel starts wrapped in an anonymous htmx-load
+                 trigger so the checklist re-validates live subsystems
+                 (model ping, MCP reachability) right after paint, while
+                 still rendering the Run()-time state inline for no-JS.
+                 The load response replaces this wrapper outright (its
+                 root carries no hx-trigger of its own — see
+                 project_setup_check.html), so it fires exactly once. */}}
+            {{range .Report.Checks}}
+            <div hx-get="/ui/projects/{{$.ProjectID}}/setup/checks/{{.Key}}" hx-trigger="load" hx-swap="outerHTML">
+                {{template "project_setup_check.html" (dict "ProjectID" $.ProjectID "Check" .)}}
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

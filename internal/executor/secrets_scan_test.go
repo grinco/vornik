@@ -287,3 +287,64 @@ func TestExtractPathFieldSpans_BoundariesAreInclusiveOfStringBody(t *testing.T) 
 	assert.ElementsMatch(t, []string{"foo.pdf", "bar.html", "baz.md"}, got,
 		"spans must point at the literal string content, not the surrounding JSON")
 }
+
+// --- Provenance-scoped tool-output exemption (feat/pagedrop-password) ----
+// A trusted tool's OUTPUT is the daemon-proxied tool response (the agent
+// cannot forge it), so its heuristic generic_kv/entropy hits — e.g. a
+// PageDrop viewing password — are operator-facing values, not smuggled
+// secrets, and must survive redaction. STRONG credential patterns still
+// redact even there; the INPUT (agent-supplied) is always fully scanned.
+
+func newTestExecutorWithTrustedOutputs(t *testing.T, actions map[string]secrets.Action, trusted []string) *Executor {
+	t.Helper()
+	det, err := secrets.NewMultiDetector(secrets.Config{})
+	require.NoError(t, err)
+	return &Executor{
+		secretsDetector:           det,
+		secretsActions:            actions,
+		secretsTrustedOutputTools: trusted,
+		logger:                    zerolog.Nop(),
+	}
+}
+
+func TestScanToolAudit_TrustedToolPasswordSurvives(t *testing.T) {
+	e := newTestExecutorWithTrustedOutputs(t,
+		map[string]secrets.Action{secrets.CheckpointToolAudit: secrets.ActionRedact},
+		[]string{"mcp__pagedrop__pagedrop_publish"})
+	out := "Published page.\nView: https://v.example.cc/p/abc-123\nPassword: salt8fog6marrytrip — share separately."
+	_, gotOut := e.scanToolAuditForSecrets(&persistence.Execution{ID: "e1"}, "publish", "mcp__pagedrop__pagedrop_publish_page", "", out)
+	assert.Contains(t, gotOut, "salt8fog6marrytrip",
+		"trusted publish tool OUTPUT must keep its viewing password (generic_kv exempt by provenance)")
+}
+
+func TestScanToolAudit_UntrustedToolPasswordRedacted(t *testing.T) {
+	e := newTestExecutorWithTrustedOutputs(t,
+		map[string]secrets.Action{secrets.CheckpointToolAudit: secrets.ActionRedact},
+		[]string{"mcp__pagedrop__pagedrop_publish"})
+	out := "Password: salt8fog6marrytrip — leaked via untrusted tool."
+	_, gotOut := e.scanToolAuditForSecrets(&persistence.Execution{ID: "e1"}, "step", "mcp__scraper__web_fetch", "", out)
+	assert.NotContains(t, gotOut, "salt8fog6marrytrip",
+		"non-trusted tool output must STILL redact a generic_kv password")
+	assert.Contains(t, gotOut, "[REDACTED:generic_kv]")
+}
+
+func TestScanToolAudit_TrustedToolStrongCredentialStillRedacted(t *testing.T) {
+	e := newTestExecutorWithTrustedOutputs(t,
+		map[string]secrets.Action{secrets.CheckpointToolAudit: secrets.ActionRedact},
+		[]string{"mcp__pagedrop__pagedrop_publish"})
+	out := "here is a real key sk-proj1234567890abcdefghijklmnopqrstuv in trusted output"
+	_, gotOut := e.scanToolAuditForSecrets(&persistence.Execution{ID: "e1"}, "publish", "mcp__pagedrop__pagedrop_publish_page", "", out)
+	assert.NotContains(t, gotOut, "sk-proj1234567890",
+		"EXFIL GUARD: trusted-output exemption must NOT let a strong credential (OpenAI key) through")
+	assert.Contains(t, gotOut, "[REDACTED:openai_key]")
+}
+
+func TestScanToolAudit_TrustedToolInputStillRedacted(t *testing.T) {
+	e := newTestExecutorWithTrustedOutputs(t,
+		map[string]secrets.Action{secrets.CheckpointToolAudit: secrets.ActionRedact},
+		[]string{"mcp__pagedrop__pagedrop_publish"})
+	in := "Password: injectedSecretValue123 supplied by the agent"
+	gotIn, _ := e.scanToolAuditForSecrets(&persistence.Execution{ID: "e1"}, "publish", "mcp__pagedrop__pagedrop_publish_page", in, "")
+	assert.NotContains(t, gotIn, "injectedSecretValue123",
+		"trusted tool INPUT (agent-supplied) must still be redacted — only OUTPUT is provenance-exempt")
+}

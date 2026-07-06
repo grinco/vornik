@@ -35,6 +35,12 @@ LLM_CONTEXT_SIZE="${VORNIK_LLM_CONTEXT_SIZE:-0}"
 LLM_MAX_TOKENS="${VORNIK_LLM_MAX_TOKENS:-8192}"
 MAX_TOOL_ITERATIONS="${VORNIK_MAX_TOOL_ITERATIONS:-30}"
 SHELL_TIMEOUT="${VORNIK_SHELL_TIMEOUT:-300}"
+# Max bytes of a single tool result fed back to the model. Historically a hard
+# 50 KB; raised to 256 KiB so large web_fetch / read_many_files results survive
+# for big-context models, and operator-tunable per role via
+# agent_llm.tool_result_max_bytes (→ VORNIK_TOOL_RESULT_MAX_BYTES) — set it
+# higher (e.g. 1-4 MiB) for 1M-context models.
+TOOL_RESULT_MAX_BYTES="${VORNIK_TOOL_RESULT_MAX_BYTES:-262144}"
 # Max wall-clock seconds for a single LLM HTTP call. The daemon derives this
 # from chat.timeout (or runtime.agent_llm.timeout) and passes it in as
 # VORNIK_LLM_TIMEOUT. Fallback default is 300s (5 minutes) — long enough for
@@ -2095,7 +2101,11 @@ ${previous_result}
                     log "WARN: LLM emitted tool call as text instead of using tool_calls API — nudging"
                     # Append the broken response + correction to conversation
                     local nudge_msg_file="$WORKSPACE/.nudge_msgs.json"
-                    jq -n --arg content "$content" \
+                    # --rawfile (not --arg): assistant content is max_tokens-bounded
+                    # but can exceed MAX_ARG_STRLEN (128 KB) on large output caps.
+                    local nudge_content_file="$WORKSPACE/.nudge_content_raw"
+                    printf '%s' "$content" > "$nudge_content_file"
+                    jq -n --rawfile content "$nudge_content_file" \
                         '[{"role":"assistant","content":$content},{"role":"user","content":"You tried to call a tool by writing XML/text, but you must use the tool_calls API. Do NOT write <function=...> or similar markup. Use the provided tools (file_read, file_write, run_shell, current_time) through the proper function calling interface. Now complete the original task."}]' > "$nudge_msg_file"
                     jq --slurpfile msgs "$nudge_msg_file" '. + $msgs[0]' "$msgs_file" > "$msgs_file.tmp" && mv "$msgs_file.tmp" "$msgs_file"
                     continue
@@ -2198,7 +2208,7 @@ ${previous_result}
 
             if [ "$tc_cache_hit" = "0" ]; then
                 debug "tool: $tc_name (id=$tc_id)"
-                tool_result=$(exec_tool "$tc_name" "$tc_args" 2>&1 | head -c 50000)
+                tool_result=$(exec_tool "$tc_name" "$tc_args" 2>&1 | head -c "$TOOL_RESULT_MAX_BYTES")
 
                 # Populate the cache / miss tracker AFTER exec_tool for
                 # file_read. Must happen here (parent shell) — the
@@ -2335,9 +2345,15 @@ ${previous_result}
                 fi
             fi
 
-            # Append tool result message via file to avoid ARG_MAX
+            # Append tool result message. Pass the (possibly large) content via a
+            # FILE with --rawfile, NOT --arg: a single command-line argument is
+            # capped at MAX_ARG_STRLEN (128 KB) regardless of total ARG_MAX, so a
+            # large tool result fails with "jq: Argument list too long". printf is
+            # a shell builtin, so writing the value to the file isn't arg-limited.
             local tool_msg_file="$WORKSPACE/.tool_msg.json"
-            jq -n --arg id "$tc_id" --arg content "$tool_result" \
+            local tool_result_file="$WORKSPACE/.tool_result_raw"
+            printf '%s' "$tool_result" > "$tool_result_file"
+            jq -n --arg id "$tc_id" --rawfile content "$tool_result_file" \
                 '{"role":"tool","tool_call_id":$id,"content":$content}' > "$tool_msg_file"
             jq --slurpfile msg "$tool_msg_file" '. + $msg' "$msgs_file" > "$msgs_file.tmp" && mv "$msgs_file.tmp" "$msgs_file"
 

@@ -65,6 +65,14 @@
                             it as YAML with a "what will happen on first run" summary.
                         </p>
                     </div>
+                    <!-- Composition summary ("what will be wired") — populated from
+                         env.composition when the wizard v2 LLM has produced a structured
+                         build (base template + typed addons). Hidden until then; the raw
+                         YAML preview above stays regardless. -->
+                    <div id="wizard-composition" class="hidden px-5 py-3 border-t border-dark-700/60 text-xs text-gray-300">
+                        <h3 class="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-1.5">What will be wired</h3>
+                        <ul id="wizard-composition-list" class="space-y-1 list-disc list-inside text-gray-300"></ul>
+                    </div>
                     <div class="px-5 py-3 border-t border-dark-700/60 flex items-center justify-end gap-2">
                         <button id="wizard-cancel" type="button" onclick="submitWizardCancel()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 transition-colors" title="Cancel this session and return to projects">
                             Cancel
@@ -97,6 +105,8 @@
             error: document.getElementById('wizard-error'),
             preview: document.getElementById('wizard-preview'),
             previewStatus: document.getElementById('wizard-preview-status'),
+            composition: document.getElementById('wizard-composition'),
+            compositionList: document.getElementById('wizard-composition-list'),
             commit: document.getElementById('wizard-commit'),
             cancel: document.getElementById('wizard-cancel'),
         };
@@ -224,6 +234,105 @@
             els.commit.disabled = !ready;
         }
 
+        // Some structured fields (e.g. template params) round-trip as a
+        // JSON array even for a single scalar value (see ParamValue on the
+        // Go side). Addon fields are normally plain scalars, but the LLM's
+        // JSON schema doesn't enforce that — normalise defensively so a
+        // stray array doesn't render as "[object Object]"/literal commas
+        // where a single value is expected.
+        function firstScalar(v) {
+            if (Array.isArray(v)) return v.length ? String(v[0]) : '';
+            if (v === null || v === undefined) return '';
+            return String(v);
+        }
+        function stringList(v) {
+            if (Array.isArray(v)) return v.map(String).filter(Boolean);
+            if (typeof v === 'string' && v) return [v];
+            return [];
+        }
+
+        // One plain-language line per addon type, mirroring the vocabulary
+        // documented in internal/projectwizard/grounding.go. Unknown/future
+        // addon types still get a generic line instead of being dropped
+        // silently; missing required fields render nothing (not
+        // "undefined") so a partial/in-progress addon doesn't confuse the
+        // operator.
+        function addonSummaryLine(addon) {
+            if (!addon || typeof addon !== 'object') return null;
+            const type = addon.type;
+            switch (type) {
+                case 'mcp_server': {
+                    const name = firstScalar(addon.name);
+                    if (!name) return null;
+                    const tools = stringList(addon.allowed_tools);
+                    let line = 'Attach MCP server "' + name + '"';
+                    if (tools.length) line += ' (' + tools.join(', ') + ')';
+                    return line;
+                }
+                case 'schedule': {
+                    const interval = firstScalar(addon.interval);
+                    if (!interval) return null;
+                    let line = 'Run every ' + interval;
+                    const goal = firstScalar(addon.goal);
+                    if (goal) line += ' — ' + goal;
+                    return line;
+                }
+                case 'rag_source': {
+                    const source = firstScalar(addon.source);
+                    if (!source) return null;
+                    let line = 'Track source ' + source;
+                    const cadence = firstScalar(addon.cadence);
+                    if (cadence) line += ' (every ' + cadence + ')';
+                    return line;
+                }
+                case 'chat_tools': {
+                    const tools = stringList(addon.allowed_tools);
+                    if (!tools.length) return null;
+                    return 'Add tools: ' + tools.join(', ');
+                }
+                case 'role_prompt_append': {
+                    const role = firstScalar(addon.role);
+                    if (!role) return null;
+                    return 'Append instructions to role "' + role + '"';
+                }
+                case 'secret_requirement': {
+                    const name = firstScalar(addon.name);
+                    if (!name) return null;
+                    return 'Needs secret ' + name;
+                }
+                default:
+                    return type ? ('Addon: ' + firstScalar(type)) : null;
+            }
+        }
+
+        // Renders the "what will be wired" summary above the commit button
+        // from env.composition (base template + typed addons; T7). Purely
+        // additive — the raw-proposal preview above is untouched, and
+        // ready_to_commit (not this panel) still gates the commit button.
+        function renderComposition(composition) {
+            if (!els.composition || !els.compositionList) return;
+            if (!composition || typeof composition !== 'object') {
+                els.composition.classList.add('hidden');
+                els.compositionList.replaceChildren();
+                return;
+            }
+            const items = [];
+            const template = firstScalar(composition.template);
+            items.push(template ? 'Base template: ' + template : 'Base template: custom build (no template)');
+            const addons = Array.isArray(composition.addons) ? composition.addons : [];
+            for (const addon of addons) {
+                const line = addonSummaryLine(addon);
+                if (line) items.push(line);
+            }
+            els.compositionList.replaceChildren();
+            for (const text of items) {
+                const li = document.createElement('li');
+                li.textContent = text;
+                els.compositionList.appendChild(li);
+            }
+            els.composition.classList.remove('hidden');
+        }
+
         window.submitWizardCommit = async function () {
             if (!sessionID) return;
             els.error.classList.add('hidden');
@@ -338,6 +447,7 @@
                 appendBubble('assistant', env.message || '');
                 renderSuggestions(env.open_questions);
                 renderPreview(env.proposal, env.ready_to_commit);
+                renderComposition(env.composition);
             } catch (e) {
                 els.error.textContent = 'Network error: ' + e.message;
                 els.error.classList.remove('hidden');

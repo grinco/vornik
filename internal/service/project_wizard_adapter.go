@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -87,7 +88,7 @@ func (w *fsProjectWriter) Write(_ context.Context, projectID string, body []byte
 	if w.reload != nil {
 		_ = w.reload()
 	}
-	return "/ui/projects/" + projectID, nil
+	return "/ui/projects/" + projectID + "/setup", nil
 }
 
 // WriteFiles lands a full rendered template file set (project.yaml +
@@ -116,7 +117,7 @@ func (w *fsProjectWriter) WriteFiles(_ context.Context, projectID string, files 
 	if w.reload != nil {
 		_ = w.reload()
 	}
-	return "/ui/projects/" + projectID, nil
+	return "/ui/projects/" + projectID + "/setup", nil
 }
 
 func safeProjectConfigID(id string) bool {
@@ -231,6 +232,32 @@ func buildProjectWizardOrNil(c *Container) api.ProjectWizard {
 		})
 	}
 
+	// Wizard v2 grounding deps — same live daemon state Phase 1/2
+	// already wired for the template gallery / project doctor
+	// (container_http.go's mcpServerNamesFn/modelIDsFn and
+	// doctorMCP). Without these the wizard still runs (BuildGrounding
+	// and composeFromEnvelope are nil-safe on MCP/Models/KnownMCP —
+	// see wizard.go), it just degrades to the addon-vocab-only
+	// grounding block and an empty KnownMCP set.
+	if c.mcpRegistry != nil {
+		// MCP servers + tools grounding block, and the known-server set
+		// the commit-time compose engine's mcp_server applier checks a
+		// proposed addon's server name against.
+		wiz.MCP = &wizardMCPGroundingAdapter{registry: c.mcpRegistry}
+		wiz.KnownMCP = wizardKnownMCPServers(c.mcpRegistry)
+	}
+	// c.ChatClient is guaranteed non-nil here — buildProjectWizardOrNil
+	// already returned early above when it was nil — so the model
+	// catalog grounding is always wired alongside the wizard itself.
+	wiz.Models = wizardModelLister{provider: c.ChatClient}
+	// Resolver: same optionsFrom(mcp_registry)/optionsFrom(models)
+	// resolver the project-template gallery uses, needed at commit
+	// time when composeFromEnvelope materialises a template's
+	// dynamic-select parameters (ComposeDeps.Resolver). Degrades
+	// per-source (not to nil) when a subsystem is unwired — see
+	// buildTemplateOptionsResolver.
+	wiz.Resolver = buildTemplateOptionsResolver(c)
+
 	// Log the EFFECTIVE wizard model at startup so "did chat.wizard_model
 	// actually load?" is answerable from the journal without debug-level
 	// router tracing. wizard_model="" means the daemon read a config
@@ -288,6 +315,21 @@ func (s catalogTemplateSource) Materialise(slug string, params map[string]string
 	return s.cat.MaterialiseFiles(m, params)
 }
 
+// MaterialiseMulti renders the template with multi-value params (the
+// wizard v2 composition path). Mirrors Materialise but calls the
+// catalog's MaterialiseFilesMulti so list/multiselect/optionsFrom
+// params work. Satisfies projectwizard.MultiMaterialiser.
+func (s catalogTemplateSource) MaterialiseMulti(slug string, params map[string][]string, resolver templates.OptionsResolver) (map[string]string, error) {
+	if s.cat == nil {
+		return nil, fmt.Errorf("template catalog not configured")
+	}
+	m, ok := s.cat.Get(slug)
+	if !ok {
+		return nil, fmt.Errorf("unknown template %q", slug)
+	}
+	return s.cat.MaterialiseFilesMulti(m, params, resolver)
+}
+
 func (a *projectWizardAdapter) Commit(ctx context.Context, sessionID, operatorID string) (*api.ProjectWizardCommitResult, error) {
 	res, err := a.wizard.Commit(ctx, sessionID, operatorID)
 	if err != nil {
@@ -328,6 +370,30 @@ func (a *projectWizardAdapter) Converse(ctx context.Context, sessionID, operator
 		if res.Envelope.Proposal != nil {
 			apiResult.Envelope.Proposal = res.Envelope.Proposal.Raw
 		}
+		if res.Envelope.Composition != nil {
+			apiResult.Envelope.Composition = toAPIComposition(res.Envelope.Composition)
+		}
 	}
 	return apiResult, nil
+}
+
+// toAPIComposition mirrors a projectwizard.Composition into the API's
+// JSON-generic api.WizardComposition. Round-trips through JSON rather
+// than walking each field so it reuses projectwizard.Addon's own
+// MarshalJSON (which reproduces the addon's verbatim JSON object —
+// see the long comment on Addon.MarshalJSON) instead of re-deriving a
+// shape that would drop every addon field but "type".
+func toAPIComposition(c *projectwizard.Composition) *api.WizardComposition {
+	if c == nil {
+		return nil
+	}
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return &api.WizardComposition{Template: c.Template}
+	}
+	out := &api.WizardComposition{}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return &api.WizardComposition{Template: c.Template}
+	}
+	return out
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -188,6 +189,38 @@ type MCPConfig struct {
 	// fail to connect appear in the surface with reachable=false
 	// + an error message so operators can diagnose.
 	Servers []MCPServerConfig `yaml:"servers"`
+	// MediaHandles keeps large tool outputs (e.g. encode_image's base64
+	// data URIs) out of the agent's LLM context and output budget: a
+	// "source" tool's oversized result is stashed daemon-side under a short
+	// handle, and the payloads referenced by <img src="cid:HANDLE"> in a
+	// "sink" tool's HTML arg are re-injected into that call's images arg.
+	// Empty/omitted => disabled.
+	MediaHandles *MediaHandlesConfig `yaml:"media_handles,omitempty"`
+}
+
+// MediaHandlesConfig configures the daemon-side media-handle mechanism
+// (see internal/mediahandles). Empty sources+sinks => disabled.
+type MediaHandlesConfig struct {
+	// Sources are fully-qualified tool names whose result data_uri is
+	// stashed (e.g. mcp__scraper__encode_image).
+	Sources []string `yaml:"sources"`
+	// Sinks are tools whose HTML arg is scanned for cid: refs and whose
+	// images arg receives the matching payloads.
+	Sinks []MediaSinkConfig `yaml:"sinks"`
+	// MaxBytesPerImage caps a single stashed image (default 2_000_000).
+	MaxBytesPerImage int64 `yaml:"max_bytes_per_image,omitempty"`
+	// MaxImagesPerTask caps stashed images per task (default 20).
+	MaxImagesPerTask int `yaml:"max_images_per_task,omitempty"`
+	// IdleTTL evicts a task's stashed media after this idle duration
+	// (Go duration string, default 30m).
+	IdleTTL string `yaml:"idle_ttl,omitempty"`
+}
+
+// MediaSinkConfig maps a sink tool's HTML and images argument names.
+type MediaSinkConfig struct {
+	Tool      string `yaml:"tool"`
+	HTMLArg   string `yaml:"html_arg"`
+	ImagesArg string `yaml:"images_arg"`
 }
 
 // MCPServerConfig defines one daemon-level MCP server. Field set
@@ -379,6 +412,15 @@ type SecretsConfig struct {
 	// action (detect / redact / block). Unset checkpoints inherit
 	// per-channel compiled defaults — see internal/secrets.
 	Checkpoints map[string]string `yaml:"checkpoints" doc:"Map a channel to an action: detect, redact, or block."`
+	// TrustedOutputTools lists tool-name prefixes whose tool-audit OUTPUT is
+	// exempt from HEURISTIC (generic_kv / entropy) redaction. Use ONLY for tools
+	// whose output is a trusted daemon-proxied response the agent cannot forge
+	// and which legitimately carries an operator-facing value — e.g.
+	// "mcp__pagedrop__pagedrop_publish" (the viewing password). Strong,
+	// prefix-anchored credential patterns (openai/anthropic/github/aws/jwt/…)
+	// still redact even for these tools, and the agent-supplied INPUT is always
+	// fully scanned, so this is not a labeled-exfil channel. Empty = no exemption.
+	TrustedOutputTools []string `yaml:"trusted_output_tools" doc:"Tool-name prefixes whose tool-audit OUTPUT is exempt from generic_kv/entropy redaction (strong credential patterns still redact; input always scanned)."`
 }
 
 // SecretsPatternsConfig is the patterns substructure: a list of
@@ -822,6 +864,12 @@ type AgentLLMConfig struct {
 	// Prevents a stalled gateway connection from pinning a task for the
 	// default 30-minute curl timeout.
 	Timeout string `yaml:"timeout" doc:"Bound on a single LLM call from inside an agent."`
+	// ToolResultMaxBytes caps how many bytes of a single tool result the
+	// agent feeds back to the model (the entrypoint's `head -c`). Large-
+	// context models can absorb much more than the historical 50 KB; raise
+	// this for 1M-context roles. 0 = use the entrypoint default (256 KiB).
+	// Injected as VORNIK_TOOL_RESULT_MAX_BYTES.
+	ToolResultMaxBytes int `yaml:"tool_result_max_bytes" doc:"Max bytes of a tool result fed back to the model (0 = agent default 256 KiB)."`
 	// ModelLimits sets per-model max_tokens and context_size overrides.
 	// Keyed by model name; applied automatically when a role uses that model.
 	// Example: {"claude-haiku-4-5": {MaxTokens: 4096}, "claude-opus-4-6": {MaxTokens: 32768}}
@@ -1206,6 +1254,30 @@ type ChatConfig struct {
 	// Vertex, Ollama) ignore this knob — no cost, no behavior
 	// change. See https://docs.vornik.io
 	PromptCacheMode string `yaml:"prompt_cache_mode" doc:"Provider-native prompt caching: off, auto (recommended), or prefix."`
+}
+
+// ProviderConfigured reports whether the chat provider is specified
+// for its provider family. The single-provider HTTP path ("", "http",
+// "openai" — empty defaults to http) needs endpoint + model; it does
+// NOT require an api key, since local endpoints (Ollama) need none and
+// keyed providers commonly supply the key via a ${ENV} placeholder
+// resolved at runtime. The "router" provider configures its
+// sub-providers under router.* (validated by the daemon at startup)
+// and the CLI providers ("claude-cli", "codex-cli") shell out to a
+// local binary — neither carries a top-level endpoint/model/key.
+// Centralised here because the setup page (ui.setupStepState) and the
+// onboarding detector (onboarding.Detect) both need the same
+// family-aware check: a working router deployment was wrongly reported
+// "chat backend not configured" / "onboarded: no" (2026-07-04).
+// Families mirror the switch in service/container_chat.go's initChat.
+// Does NOT check Enabled — callers gate on that separately.
+func (c ChatConfig) ProviderConfigured() bool {
+	switch strings.TrimSpace(c.Provider) {
+	case "router", "claude-cli", "codex-cli":
+		return true
+	default: // "", "http", "openai" — the single-provider HTTP path
+		return strings.TrimSpace(c.Endpoint) != "" && strings.TrimSpace(c.Model) != ""
+	}
 }
 
 // ChatRouterConfig composes multiple providers behind a single

@@ -1108,6 +1108,19 @@ func (e *Executor) buildVerifierInput(
 		// (2026-06-12 NVDA whipsaw). No-op (nil) when there are no
 		// open proposals, which is the common case per tick.
 		in.EntryGateIndicators = e.entryGateIndicators(ctx, p, resultBytes)
+		// Project the scorecard/regime entry-floor config so the
+		// scorecard_floor verifier can enforce the code-side floor on
+		// OPEN proposals and refuse EXIT-class actions on protected
+		// symbols. Inert unless both gate flags are enabled (soak gate).
+		in.TradingFloor = &verifier.TradingFloorConfig{
+			ScorecardEnabled:   p.Trading.Scorecard.Enabled,
+			RegimeEnabled:      p.Trading.Regime.Enabled,
+			MinEntryTotal:      p.Trading.Scorecard.MinEntryTotal,
+			BlockLongInRiskOff: p.Trading.Regime.BlockLongInRiskOff,
+			StaleBehavior:      p.Trading.Regime.StaleBehavior,
+			MinComponentCount:  p.Trading.Regime.MinComponentCount,
+			ProtectedSymbols:   p.Trading.ProtectedSymbols,
+		}
 	}
 	if e.auditRepo != nil && execution.ID != "" {
 		execID := execution.ID

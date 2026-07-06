@@ -51,10 +51,10 @@ func (r *ProjectWizardSessionRepository) Insert(ctx context.Context, s *persiste
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO project_wizard_sessions (
 		    id, created_at, updated_at, operator_id,
-		    transcript, current_proposal, suggested_template, ready_to_commit
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		    transcript, current_proposal, suggested_template, ready_to_commit, composition
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.ID, sqliteTime(s.CreatedAt), sqliteTime(s.UpdatedAt), s.OperatorID,
-		transcript, nullableSqliteBytes(s.CurrentProposal), nullableSqliteString(s.SuggestedTemplate), readyInt,
+		transcript, nullableSqliteBytes(s.CurrentProposal), nullableSqliteString(s.SuggestedTemplate), readyInt, nullableSqliteBytes(s.Composition),
 	)
 	return err
 }
@@ -66,7 +66,7 @@ func (r *ProjectWizardSessionRepository) Get(ctx context.Context, id string) (*p
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, created_at, updated_at, operator_id,
 		       transcript, current_proposal, suggested_template, ready_to_commit,
-		       committed_project_id, committed_at, cancelled_at
+		       committed_project_id, committed_at, cancelled_at, composition
 		FROM project_wizard_sessions
 		WHERE id = ?`, id)
 	return scanSqliteWizardSession(row)
@@ -93,10 +93,11 @@ func (r *ProjectWizardSessionRepository) Update(ctx context.Context, s *persiste
 		    current_proposal = ?,
 		    suggested_template = ?,
 		    ready_to_commit = ?,
+		    composition = ?,
 		    updated_at = ?
 		WHERE id = ?`,
 		transcript, nullableSqliteBytes(s.CurrentProposal), nullableSqliteString(s.SuggestedTemplate),
-		readyInt, sqliteTime(time.Now().UTC()), s.ID,
+		readyInt, nullableSqliteBytes(s.Composition), sqliteTime(time.Now().UTC()), s.ID,
 	)
 	if err != nil {
 		return err
@@ -195,7 +196,7 @@ func (r *ProjectWizardSessionRepository) ListByOperator(ctx context.Context, ope
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, created_at, updated_at, operator_id,
 		       transcript, current_proposal, suggested_template, ready_to_commit,
-		       committed_project_id, committed_at, cancelled_at
+		       committed_project_id, committed_at, cancelled_at, composition
 		FROM project_wizard_sessions
 		WHERE operator_id = ?
 		ORDER BY updated_at DESC
@@ -227,11 +228,12 @@ func scanSqliteWizardSession(scanner interface{ Scan(dest ...any) error }) (*per
 		committedProjectID sql.NullString
 		committedAt        sqlNullTime
 		cancelledAt        sqlNullTime
+		composition        sql.NullString
 	)
 	err := scanner.Scan(
 		&s.ID, &createdAt, &updatedAt, &s.OperatorID,
 		&transcript, &currentProposal, &suggestedTemplate, &readyInt,
-		&committedProjectID, &committedAt, &cancelledAt,
+		&committedProjectID, &committedAt, &cancelledAt, &composition,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -259,6 +261,9 @@ func scanSqliteWizardSession(scanner interface{ Scan(dest ...any) error }) (*per
 	if cancelledAt.Valid {
 		t := cancelledAt.Time
 		s.CancelledAt = &t
+	}
+	if composition.Valid {
+		s.Composition = []byte(composition.String)
 	}
 	return &s, nil
 }

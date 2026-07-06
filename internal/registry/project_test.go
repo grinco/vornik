@@ -410,6 +410,118 @@ trading:
 	}
 }
 
+// TestProjectTradingScorecardRegime confirms the scorecard/regime/
+// protected-symbols knobs parse off trading.* into Project.Trading,
+// including the nested min_component_count map. Consumed by the
+// Task 9 entry-floor verifier.
+func TestProjectTradingScorecardRegime(t *testing.T) {
+	yaml := `projectId: "test-project"
+swarmId: "test-swarm"
+defaultWorkflowId: "test-workflow"
+trading:
+  watchlist: [AAPL]
+  scorecard: {enabled: true, min_entry_total: 3}
+  regime:
+    enabled: true
+    block_long_in_risk_off: true
+    max_staleness_days: 3
+    stale_behavior: block_opens
+    min_component_count: {us: 6, eu: 5, apac: 4}
+  protected_symbols: [RSU-LOCKUP]
+`
+	tmpDir, err := os.MkdirTemp("", "project-test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	projectsDir := filepath.Join(tmpDir, "projects")
+	if err := os.Mkdir(projectsDir, 0755); err != nil {
+		t.Fatalf("failed to create projects dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectsDir, "test.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatalf("failed to write project: %v", err)
+	}
+	projects, err := LoadProjects(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadProjects failed: %v", err)
+	}
+	p := projects["test-project"]
+	if p == nil {
+		t.Fatal("expected test-project")
+	}
+	if !p.Trading.Scorecard.Enabled {
+		t.Error("Scorecard.Enabled: want true")
+	}
+	if p.Trading.Scorecard.MinEntryTotal != 3 {
+		t.Errorf("Scorecard.MinEntryTotal: want 3, got %d", p.Trading.Scorecard.MinEntryTotal)
+	}
+	if !p.Trading.Regime.Enabled {
+		t.Error("Regime.Enabled: want true")
+	}
+	if !p.Trading.Regime.BlockLongInRiskOff {
+		t.Error("Regime.BlockLongInRiskOff: want true")
+	}
+	if p.Trading.Regime.MaxStalenessDays != 3 {
+		t.Errorf("Regime.MaxStalenessDays: want 3, got %d", p.Trading.Regime.MaxStalenessDays)
+	}
+	if p.Trading.Regime.StaleBehavior != "block_opens" {
+		t.Errorf("Regime.StaleBehavior: want %q, got %q", "block_opens", p.Trading.Regime.StaleBehavior)
+	}
+	wantCounts := map[string]int{"us": 6, "eu": 5, "apac": 4}
+	for k, v := range wantCounts {
+		if p.Trading.Regime.MinComponentCount[k] != v {
+			t.Errorf("Regime.MinComponentCount[%s]: want %d, got %d", k, v, p.Trading.Regime.MinComponentCount[k])
+		}
+	}
+	if len(p.Trading.ProtectedSymbols) != 1 || p.Trading.ProtectedSymbols[0] != "RSU-LOCKUP" {
+		t.Errorf("ProtectedSymbols: want [RSU-LOCKUP], got %v", p.Trading.ProtectedSymbols)
+	}
+}
+
+// TestProjectTradingScorecardRegimeDefaults confirms the scorecard
+// and regime blocks are dark-by-default (Enabled false) when the
+// project YAML omits trading.scorecard/trading.regime entirely, and
+// that Regime.StaleBehavior/MaxStalenessDays still get their safe
+// defaults applied so the Task 9 verifier never sees zero values.
+func TestProjectTradingScorecardRegimeDefaults(t *testing.T) {
+	yaml := `projectId: "test-project"
+swarmId: "test-swarm"
+defaultWorkflowId: "test-workflow"
+`
+	tmpDir, err := os.MkdirTemp("", "project-test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	projectsDir := filepath.Join(tmpDir, "projects")
+	if err := os.Mkdir(projectsDir, 0755); err != nil {
+		t.Fatalf("failed to create projects dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectsDir, "test.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatalf("failed to write project: %v", err)
+	}
+	projects, err := LoadProjects(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadProjects failed: %v", err)
+	}
+	p := projects["test-project"]
+	if p == nil {
+		t.Fatal("expected test-project")
+	}
+	if p.Trading.Scorecard.Enabled {
+		t.Error("Scorecard.Enabled: want false (dark by default)")
+	}
+	if p.Trading.Regime.Enabled {
+		t.Error("Regime.Enabled: want false (dark by default)")
+	}
+	if p.Trading.Regime.StaleBehavior != "block_opens" {
+		t.Errorf("Regime.StaleBehavior default: want %q, got %q", "block_opens", p.Trading.Regime.StaleBehavior)
+	}
+	if p.Trading.Regime.MaxStalenessDays != 3 {
+		t.Errorf("Regime.MaxStalenessDays default: want 3, got %d", p.Trading.Regime.MaxStalenessDays)
+	}
+}
+
 // TestProjectPermissions tests permission configuration.
 func TestProjectPermissions(t *testing.T) {
 	yaml := `projectId: "test-project"

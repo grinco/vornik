@@ -100,6 +100,29 @@ func TestParseEnvelope_PureProseBecomesMessage(t *testing.T) {
 	}
 }
 
+func TestParseEnvelope_WithComposition(t *testing.T) {
+	raw := `{"message":"here's your composition","ready_to_commit":false,"composition":{"template":"report-pipeline","params":{"projectId":"acme","sources":["x","y"]},"addons":[{"type":"schedule","interval":"168h"}]}}`
+	env, err := parseEnvelope(raw)
+	if err != nil {
+		t.Fatalf("parse with composition: %v", err)
+	}
+	if env.Composition == nil {
+		t.Errorf("composition is nil")
+	}
+	if env.Composition.Template != "report-pipeline" {
+		t.Errorf("template = %q", env.Composition.Template)
+	}
+	if len(env.Composition.Params) != 2 {
+		t.Errorf("params count = %d", len(env.Composition.Params))
+	}
+	if len(env.Composition.Addons) != 1 {
+		t.Errorf("addons count = %d", len(env.Composition.Addons))
+	}
+	if env.Composition.Addons[0].Type != "schedule" {
+		t.Errorf("addon type = %q", env.Composition.Addons[0].Type)
+	}
+}
+
 func TestFirstJSONObject(t *testing.T) {
 	cases := []struct {
 		in   string

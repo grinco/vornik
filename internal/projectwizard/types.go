@@ -12,8 +12,49 @@ package projectwizard
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
+
+// ParamValue is a template param value the LLM may emit as a JSON
+// string or an array of strings (list/multiselect params). Always
+// stored as a slice.
+type ParamValue []string
+
+// UnmarshalJSON accepts a JSON string or array of strings, always
+// storing the result as a slice.
+func (p *ParamValue) UnmarshalJSON(b []byte) error {
+	var one string
+	if err := json.Unmarshal(b, &one); err == nil {
+		*p = []string{one}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(b, &many); err != nil {
+		return fmt.Errorf("param value must be a string or an array of strings")
+	}
+	*p = many
+	return nil
+}
+
+// Composition is the wizard v2 structured build: a base template,
+// its params, and an ordered list of typed addons. Consumed by the
+// 3a Compose pipeline. proposal.raw remains the human preview.
+type Composition struct {
+	Template string                `json:"template"`
+	Params   map[string]ParamValue `json:"params"`
+	Addons   []Addon               `json:"addons"`
+}
+
+// ParamsMulti flattens Params into the map[string][]string shape
+// Compose consumes.
+func (c *Composition) ParamsMulti() map[string][]string {
+	out := make(map[string][]string, len(c.Params))
+	for k, v := range c.Params {
+		out[k] = []string(v)
+	}
+	return out
+}
 
 // Envelope is the LLM-emitted structured output for every wizard
 // turn. The chat call is constrained to this shape via
@@ -46,6 +87,11 @@ type Envelope struct {
 	// Short list ("yes", "every 6 hours", "no human approval")
 	// the operator can click instead of typing free text.
 	OpenQuestions []string `json:"open_questions,omitempty"`
+
+	// Composition is the wizard v2 structured build when the LLM has
+	// produced a complete template selection + parameters + addons.
+	// Nil on clarifying-question turns before the build is clear.
+	Composition *Composition `json:"composition,omitempty"`
 }
 
 // ProjectYAML carries the proposed project configuration. It's a

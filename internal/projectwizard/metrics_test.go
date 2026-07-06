@@ -132,6 +132,68 @@ func TestMetrics_Commits_OnWriterFailure(t *testing.T) {
 	}
 }
 
+// TestMetrics_Commits_OnCompositionMissingProjectID guards Minor #2
+// from the whole-branch review: commitComposition's missing-projectId
+// early return must record a failed-commit metric, the same as the
+// re-compose and WriteFiles error paths already do.
+func TestMetrics_Commits_OnCompositionMissingProjectID(t *testing.T) {
+	w, store, _ := newWizardForTest()
+	metrics := NewMetrics(prometheus.NewRegistry())
+	w.Metrics = metrics
+	w.Writer = &multiFileCapturingWriter{}
+	w.Templates = &composeFakeTemplateSource{known: map[string]bool{"custom-base": true}, files: baseFiles()}
+	w.KnownMCP = func(context.Context) map[string]bool { return map[string]bool{} }
+
+	comp := &Composition{Template: "custom-base", Params: map[string]ParamValue{}}
+	sessionID := pinReadySessionWithComposition(t, store, comp)
+	if _, err := w.Commit(context.Background(), sessionID, "op_1"); err == nil {
+		t.Fatal("expected missing projectId error")
+	}
+	if commitsMetricValue(t, metrics, commitOutcomeFailed) != 1 {
+		t.Errorf("expected 1 failed commit, got %.2f", commitsMetricValue(t, metrics, commitOutcomeFailed))
+	}
+}
+
+// TestMetrics_Commits_OnCompositionUnsafeProjectID mirrors the above
+// for the isSafeProjectID early return.
+func TestMetrics_Commits_OnCompositionUnsafeProjectID(t *testing.T) {
+	w, store, _ := newWizardForTest()
+	metrics := NewMetrics(prometheus.NewRegistry())
+	w.Metrics = metrics
+	w.Writer = &multiFileCapturingWriter{}
+	w.Templates = &composeFakeTemplateSource{known: map[string]bool{"custom-base": true}, files: baseFiles()}
+	w.KnownMCP = func(context.Context) map[string]bool { return map[string]bool{} }
+
+	comp := &Composition{Template: "custom-base", Params: map[string]ParamValue{"projectId": {"../escape"}}}
+	sessionID := pinReadySessionWithComposition(t, store, comp)
+	if _, err := w.Commit(context.Background(), sessionID, "op_1"); err == nil {
+		t.Fatal("expected invalid projectId error")
+	}
+	if commitsMetricValue(t, metrics, commitOutcomeFailed) != 1 {
+		t.Errorf("expected 1 failed commit, got %.2f", commitsMetricValue(t, metrics, commitOutcomeFailed))
+	}
+}
+
+// TestMetrics_Commits_OnCompositionWriterNotMultiFile mirrors the
+// above for the non-MultiFileProjectWriter early return.
+func TestMetrics_Commits_OnCompositionWriterNotMultiFile(t *testing.T) {
+	w, store, _ := newWizardForTest()
+	metrics := NewMetrics(prometheus.NewRegistry())
+	w.Metrics = metrics
+	w.Writer = &capturingWriter{} // single-file only — no WriteFiles
+	w.Templates = &composeFakeTemplateSource{known: map[string]bool{"custom-base": true}, files: baseFiles()}
+	w.KnownMCP = func(context.Context) map[string]bool { return map[string]bool{} }
+
+	comp := &Composition{Template: "custom-base", Params: map[string]ParamValue{"projectId": {"pricing-watch"}}}
+	sessionID := pinReadySessionWithComposition(t, store, comp)
+	if _, err := w.Commit(context.Background(), sessionID, "op_1"); err == nil {
+		t.Fatal("expected writer-does-not-support-multi-file error")
+	}
+	if commitsMetricValue(t, metrics, commitOutcomeFailed) != 1 {
+		t.Errorf("expected 1 failed commit, got %.2f", commitsMetricValue(t, metrics, commitOutcomeFailed))
+	}
+}
+
 func TestConverse_ConcurrentSessionCap(t *testing.T) {
 	w, store, _ := newWizardForTest(
 		chatReply{content: envelopeAskQuestion},

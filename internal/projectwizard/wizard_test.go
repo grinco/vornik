@@ -171,6 +171,26 @@ func (f *fakeChatProvider) CompleteWithToolsStream(context.Context, []chat.Messa
 func (f *fakeChatProvider) Model() string            { return "fake" }
 func (f *fakeChatProvider) SetMetrics(*chat.Metrics) {}
 
+// capturingChatProvider wraps fakeChatProvider and records every system
+// message it receives, so tests can assert on what buildChatMessages
+// actually assembled (grounding block included).
+type capturingChatProvider struct {
+	fakeChatProvider
+	mu         sync.Mutex
+	systemMsgs []string
+}
+
+func (c *capturingChatProvider) Complete(ctx context.Context, msgs []chat.Message) (*chat.ChatResponse, error) {
+	c.mu.Lock()
+	for _, m := range msgs {
+		if m.Role == "system" {
+			c.systemMsgs = append(c.systemMsgs, m.Content)
+		}
+	}
+	c.mu.Unlock()
+	return c.fakeChatProvider.Complete(ctx, msgs)
+}
+
 // canned envelope JSONs for fixture replies.
 const envelopeAskQuestion = `{"message":"What sites should I track?","ready_to_commit":false,"open_questions":["news.example.com","another.com"]}`
 const envelopeProposeDraft = `{"message":"Here's a draft.","ready_to_commit":false,"proposal":{"raw":{"projectId":"news","displayName":"News"}}}`
@@ -366,6 +386,61 @@ func TestParseEnvelope_RejectsEmptyMessage(t *testing.T) {
 	_, err := parseEnvelope(`{"message":"  ","ready_to_commit":false}`)
 	if err == nil {
 		t.Error("expected error on empty message")
+	}
+}
+
+func TestConverse_SystemPromptIncludesLiveGrounding(t *testing.T) {
+	chatStub := &capturingChatProvider{
+		fakeChatProvider: fakeChatProvider{replies: []chatReply{{content: envelopeAskQuestion}}},
+	}
+	w := &Wizard{
+		Sessions: newFakeStore(),
+		Chat:     chatStub,
+		MCP:      fakeMCPGrounding{{Name: "slack", Tools: []string{"send_message"}}},
+		Models:   fakeModelLister{"m1"},
+		MaxTurns: 5,
+		Timeout:  time.Second,
+	}
+	if _, err := w.Converse(context.Background(), "", "op_1", "I want a news feed"); err != nil {
+		t.Fatalf("converse: %v", err)
+	}
+	if len(chatStub.systemMsgs) != 1 {
+		t.Fatalf("expected 1 system message, got %d", len(chatStub.systemMsgs))
+	}
+	sys := chatStub.systemMsgs[0]
+	if !strings.Contains(sys, "slack") {
+		t.Errorf("expected grounded MCP server name in system prompt, got: %s", sys)
+	}
+	if !strings.Contains(sys, "mcp_server") {
+		t.Errorf("expected addon-vocabulary keyword in system prompt, got: %s", sys)
+	}
+	if !strings.Contains(sys, "composition") {
+		t.Errorf("expected composition instructions in system prompt, got: %s", sys)
+	}
+}
+
+func TestConverse_NilGroundingDepsStillBuildsPrompt(t *testing.T) {
+	chatStub := &capturingChatProvider{
+		fakeChatProvider: fakeChatProvider{replies: []chatReply{{content: envelopeAskQuestion}}},
+	}
+	w := &Wizard{
+		Sessions: newFakeStore(),
+		Chat:     chatStub,
+		MaxTurns: 5,
+		Timeout:  time.Second,
+	}
+	if _, err := w.Converse(context.Background(), "", "op_1", "hi"); err != nil {
+		t.Fatalf("converse with nil grounding deps: %v", err)
+	}
+	if len(chatStub.systemMsgs) != 1 || chatStub.systemMsgs[0] == "" {
+		t.Fatal("expected a non-empty system prompt even with nil MCP/Models")
+	}
+	sys := chatStub.systemMsgs[0]
+	if strings.Contains(sys, "slack") {
+		t.Errorf("did not expect a grounded server name with nil MCP source, got: %s", sys)
+	}
+	if !strings.Contains(sys, "mcp_server") {
+		t.Errorf("expected the static addon vocabulary to still render, got: %s", sys)
 	}
 }
 

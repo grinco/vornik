@@ -90,7 +90,11 @@ func resetTemplateFlags() {
 func TestParseParamFlags_HappyPath(t *testing.T) {
 	got, err := parseParamFlags([]string{"a=1", "b=hello world", "c=eq=in=value"})
 	require.NoError(t, err)
-	assert.Equal(t, map[string]string{"a": "1", "b": "hello world", "c": "eq=in=value"}, got,
+	assert.Equal(t, map[string][]string{
+		"a": {"1"},
+		"b": {"hello world"},
+		"c": {"eq=in=value"},
+	}, got,
 		"= in the value must be preserved — only the FIRST = is the delimiter")
 }
 
@@ -110,8 +114,9 @@ func TestRunInitProjectFromTemplate_HappyPath_MaterialisesFiles(t *testing.T) {
 	initTemplate = "demo"
 	initParams = []string{"projectId=my-proj", "greeting=hi"}
 
+	buf := &bytes.Buffer{}
 	cmd := &cobra.Command{}
-	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetOut(buf)
 	require.NoError(t, runInitProjectFromTemplate(cmd, []string{"my-proj"}, configDir))
 
 	got, err := os.ReadFile(filepath.Join(configDir, "projects", "my-proj.yaml"))
@@ -120,6 +125,10 @@ func TestRunInitProjectFromTemplate_HappyPath_MaterialisesFiles(t *testing.T) {
 	assert.Contains(t, body, "projectId: my-proj")
 	assert.Contains(t, body, `swarmId: "demo-swarm"`)
 	assert.Contains(t, body, `defaultWorkflowId: "demo-wf"`)
+
+	output := buf.String()
+	assert.Contains(t, output, "/ui/projects/my-proj/setup",
+		"output must include setup hint with /setup path")
 }
 
 func TestRunInitProjectFromTemplate_FallsBackToPositionalProjectID(t *testing.T) {
@@ -281,4 +290,88 @@ func TestRunInitProjectFromTemplate_InvalidParameterRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pattern",
 		"pattern-validation failures surface to the operator with the specific rule that failed")
+}
+
+// writeListParamTemplate adds a "feeds" template — declaring a
+// required list parameter — alongside the demo fixtures in the same
+// configDir. list params flip Manifest.NeedsMultiValue() to true, so
+// tests using this fixture exercise the MaterialiseFilesMulti branch
+// of runInitProjectFromTemplate (the demo template is scalar-only and
+// never reaches it).
+func writeListParamTemplate(t *testing.T, configDir string) {
+	t.Helper()
+	tplDir := filepath.Join(configDir, "project-templates", "feeds")
+	require.NoError(t, os.MkdirAll(tplDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "template.yaml"), []byte(`
+displayName: "Feeds CLI"
+description: "list-param test template"
+category: "general"
+parameters:
+  - {name: projectId, type: string, label: "ID", required: true, pattern: "[a-z][a-z0-9-]{1,20}[a-z0-9]"}
+  - {name: feeds, type: list, label: "Feeds", required: true}
+files:
+  - {source: project.yaml.tmpl, target: "projects/{{.projectId}}.yaml"}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tplDir, "project.yaml.tmpl"),
+		[]byte(`projectId: {{.projectId}}
+displayName: "{{.projectId}}"
+swarmId: "demo-swarm"
+defaultWorkflowId: "demo-wf"
+# feeds is a test-only list param the registry ignores:
+{{- range .feeds}}
+# feed: {{.}}
+{{- end}}
+`), 0o644))
+}
+
+// TestInitProjectFromTemplate_ListParamRendersAllValues covers the
+// NeedsMultiValue() branch of runInitProjectFromTemplate: a template
+// with a list parameter must receive EVERY repeated --param value,
+// not just the last one (the scalar-flattening path would drop all
+// but the final feed).
+func TestInitProjectFromTemplate_ListParamRendersAllValues(t *testing.T) {
+	t.Cleanup(resetTemplateFlags)
+	configDir := writeDemoTemplate(t)
+	writeListParamTemplate(t, configDir)
+	initTemplate = "feeds"
+	initParams = []string{
+		"projectId=feed-proj",
+		"feeds=https://a.example",
+		"feeds=https://b.example",
+	}
+	initDryRun = true
+
+	buf := &bytes.Buffer{}
+	cmd := &cobra.Command{}
+	cmd.SetOut(buf)
+	require.NoError(t, runInitProjectFromTemplate(cmd, []string{"feed-proj"}, configDir))
+
+	out := buf.String()
+	assert.Contains(t, out, "feed: https://a.example",
+		"first repeated --param feeds value must render via {{range .feeds}}")
+	assert.Contains(t, out, "feed: https://b.example",
+		"second repeated --param feeds value must render via {{range .feeds}}")
+}
+
+func TestInitProjectFromTemplate_ConflictPrintsSuggestion(t *testing.T) {
+	t.Cleanup(resetTemplateFlags)
+	configDir := writeDemoTemplate(t)
+	initTemplate = "demo"
+	initParams = []string{"projectId=collide"}
+
+	// Pre-place the target.
+	targetDir := filepath.Join(configDir, "projects")
+	require.NoError(t, os.MkdirAll(targetDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(targetDir, "collide.yaml"),
+		[]byte("existing\n"), 0o644))
+
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	err := runInitProjectFromTemplate(cmd, []string{"collide"}, configDir)
+	require.Error(t, err)
+	errMsg := err.Error()
+	assert.Contains(t, errMsg, "already exists",
+		"conflict must be reported")
+	assert.Contains(t, errMsg, "collide-2",
+		"error must suggest the next free projectId so the operator can --force or retry with the suggestion")
 }

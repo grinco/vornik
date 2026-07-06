@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,24 +61,23 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 }
 
-// parseParamFlags splits "k=v" pairs from --param into a map.
-// Duplicate keys take the last value (matches operator intuition
-// when overriding). Empty or malformed entries return a structured
-// error so the operator sees a clear message instead of a silent
-// drop.
-func parseParamFlags(raw []string) (map[string]string, error) {
-	out := make(map[string]string, len(raw))
+// parseParamFlags splits "k=v" pairs from --param into a
+// multi-value map. Repeated keys ACCUMULATE in flag order — list
+// parameters are supplied as repeated flags (--param feeds=a
+// --param feeds=b); for scalar parameters the validator takes the
+// last value, preserving the old override intuition.
+func parseParamFlags(raw []string) (map[string][]string, error) {
+	out := make(map[string][]string, len(raw))
 	for _, item := range raw {
 		eq := strings.Index(item, "=")
 		if eq <= 0 {
 			return nil, fmt.Errorf("--param %q: expected name=value", item)
 		}
 		name := strings.TrimSpace(item[:eq])
-		val := item[eq+1:]
 		if name == "" {
 			return nil, fmt.Errorf("--param %q: name must be non-empty", item)
 		}
-		out[name] = val
+		out[name] = append(out[name], strings.TrimSpace(item[eq+1:]))
 	}
 	return out, nil
 }
@@ -115,10 +115,25 @@ func runInitProjectFromTemplate(cmd *cobra.Command, args []string, configDir str
 	// Fall back to the positional <name> arg for projectId when
 	// it's not explicitly passed via --param projectId=... .
 	if _, ok := params["projectId"]; !ok && len(args) > 0 {
-		params["projectId"] = sanitizeProjectID(args[0])
+		params["projectId"] = []string{sanitizeProjectID(args[0])}
 	}
 
-	rendered, rerr := cat.MaterialiseFiles(manifest, params)
+	var rendered map[string]string
+	var rerr error
+	if manifest.NeedsMultiValue() {
+		// nil resolver: the CLI runs offline; optionsFrom values
+		// pass through as free strings (spec §1a) and the sandbox
+		// registry validation below still gates structural errors.
+		rendered, rerr = cat.MaterialiseFilesMulti(manifest, params, nil)
+	} else {
+		flat := make(map[string]string, len(params))
+		for k, v := range params {
+			if len(v) > 0 {
+				flat[k] = v[len(v)-1]
+			}
+		}
+		rendered, rerr = cat.MaterialiseFiles(manifest, flat)
+	}
 	if rerr != nil {
 		return rerr
 	}
@@ -145,10 +160,18 @@ func runInitProjectFromTemplate(cmd *cobra.Command, args []string, configDir str
 	// handler's CONFLICT semantics so the operator's data is
 	// safe.
 	targets := templates.SortedTargets(rendered)
+	projectID := ""
+	if v := params["projectId"]; len(v) > 0 {
+		projectID = v[len(v)-1]
+	}
 	for _, target := range targets {
 		fullPath := filepath.Join(configDir, target)
 		if _, err := os.Stat(fullPath); err == nil && !initForce {
-			return fmt.Errorf("file already exists: %s (use --force to overwrite)", fullPath)
+			msg := fmt.Sprintf("file already exists: %s (use --force to overwrite", fullPath)
+			if sug := templates.SuggestFreeProjectID(configDir, projectID); sug != "" && sug != projectID {
+				msg += fmt.Sprintf(", or retry with --param projectId=%s", sug)
+			}
+			return errors.New(msg + ")")
 		}
 	}
 	for _, target := range targets {
@@ -163,6 +186,9 @@ func runInitProjectFromTemplate(cmd *cobra.Command, args []string, configDir str
 			return wErr
 		}
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n", fullPath)
+	}
+	if projectID != "" {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Next: open /ui/projects/%s/setup to finish configuring and verify readiness.\n", projectID)
 	}
 	return nil
 }
@@ -252,6 +278,7 @@ func runInitProject(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("Created %s\n", path)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Next: open /ui/projects/%s/setup to finish configuring and verify readiness.\n", projectID)
 	return nil
 }
 

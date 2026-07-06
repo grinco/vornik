@@ -258,6 +258,9 @@ func (c *Container) initScheduler() error {
 		if llm.MaxTokens > 0 {
 			executorConfig.AgentLLMEnv["VORNIK_LLM_MAX_TOKENS"] = strconv.Itoa(llm.MaxTokens)
 		}
+		if llm.ToolResultMaxBytes > 0 {
+			executorConfig.AgentLLMEnv["VORNIK_TOOL_RESULT_MAX_BYTES"] = strconv.Itoa(llm.ToolResultMaxBytes)
+		}
 		// Per-call timeout, forwarded to curl --max-time in the agent
 		// entrypoint. We accept the same duration format as chat.timeout
 		// (e.g. "300s", "5m") and round down to whole seconds because curl
@@ -490,6 +493,11 @@ func (c *Container) initScheduler() error {
 			c.Logger.Error().Err(err).Msg("secrets: detector failed to construct — continuing without secret-leak protection")
 		} else {
 			executorOpts = append(executorOpts, executor.WithSecrets(detector, actions))
+			if len(c.Config.Secrets.TrustedOutputTools) > 0 {
+				executorOpts = append(executorOpts, executor.WithSecretsTrustedOutputTools(c.Config.Secrets.TrustedOutputTools))
+				c.Logger.Info().Strs("trusted_output_tools", c.Config.Secrets.TrustedOutputTools).
+					Msg("secrets: tool-audit OUTPUT exempt from heuristic redaction for these provenance-trusted tools")
+			}
 			c.secretsDetector = detector
 			c.secretsActions = actions
 			// Phase 2: artifact store was constructed in initScheduler
@@ -1393,6 +1401,13 @@ func (c *Container) rebuildSchedulerMetrics() {
 		c.Scheduler.SetMetrics(scheduler.NewMetrics(reg))
 		c.Logger.Info().Msg("scheduler metrics wired")
 	}
+
+	// scorecard_floor verifier's rejection counter. Registered here on
+	// the served observability registry (not the default registerer the
+	// verifier package can't reach) so vornik_trading_floor_rejected_total
+	// is visible on /metrics — avoids the 2026-06-06 invisible-metric class.
+	verifier.RegisterFloorMetrics(reg)
+	c.Logger.Info().Msg("trading floor metrics wired")
 
 	// Memory firewall metrics (LLD § Observability / drift-mitigation
 	// §8.3). The six promised series were registered nowhere before

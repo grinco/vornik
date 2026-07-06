@@ -22,6 +22,7 @@ import (
 	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
+	"vornik.io/vornik/internal/projectdoctor"
 	"vornik.io/vornik/internal/ratelimit"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/sessionstore"
@@ -389,6 +390,15 @@ type Server struct {
 	// nil renders the /ui/projects/new page in a "no catalog
 	// installed" state instead of crashing.
 	projectTemplates *templates.Catalog
+	// Per-project readiness doctor (project-creation-e2e Phase 2).
+	// Optional — nil disables the /ui/projects/{id}/setup page and
+	// the project-list completeness badge instead of panicking. See
+	// WithProjectDoctor.
+	projectDoctor *projectdoctor.Doctor
+	// templateOptions resolves optionsFrom sources (mcp_registry /
+	// models) for dynamic template parameters. nil leaves those
+	// sources unresolvable (free-string validation).
+	templateOptions templates.OptionsResolver
 	// configsDir is the writable root where /ui/projects/new
 	// materialises rendered template files. Same value the API
 	// server uses; required to be non-empty for the POST flow.
@@ -723,6 +733,23 @@ func WithActiveChatSource(src ActiveChatSource) ServerOption {
 func WithProjectTemplates(cat *templates.Catalog) ServerOption {
 	return func(s *Server) {
 		s.projectTemplates = cat
+	}
+}
+
+// WithProjectDoctor wires the per-project readiness doctor used by
+// the /ui/projects/{id}/setup page and the project-list badge.
+func WithProjectDoctor(d *projectdoctor.Doctor) ServerOption {
+	return func(s *Server) { s.projectDoctor = d }
+}
+
+// WithTemplateOptionsResolver wires the live optionsFrom resolver
+// (mcp_registry / models) used when validating dynamic template
+// parameters at submit time. Optional — nil leaves dynamic options
+// unresolvable (free-string validation), which is only appropriate
+// for tests.
+func WithTemplateOptionsResolver(r templates.OptionsResolver) ServerOption {
+	return func(s *Server) {
+		s.templateOptions = r
 	}
 }
 
@@ -2096,6 +2123,33 @@ func (s *Server) projectRouter(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/artifacts"):
 		projectID := strings.TrimSuffix(path, "/artifacts")
 		s.ProjectArtifacts(w, r, projectID)
+	// Project doctor readiness page — /setup/checks/{key} and the
+	// POST-only /setup/secrets + /setup/smoke sub-routes are matched
+	// SPECIFIC-FIRST, ahead of the bare /setup case below, so a
+	// longer-suffix path never gets misrouted to the whole-page
+	// handler. Mirrors the /git/toggle and /artifacts/delete pattern:
+	// a stray non-POST on a POST-only sub-route is rejected here
+	// rather than falling through to ProjectDetail and 200'ing.
+	case r.Method == http.MethodGet && strings.Contains(path, "/setup/checks/"):
+		parts := strings.SplitN(path, "/setup/checks/", 2)
+		if len(parts) != 2 || parts[1] == "" {
+			http.NotFound(w, r)
+			return
+		}
+		s.ProjectSetupCheck(w, r, parts[0], parts[1])
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/setup/secrets"):
+		projectID := strings.TrimSuffix(path, "/setup/secrets")
+		s.ProjectSetupSecret(w, r, projectID)
+	case strings.HasSuffix(path, "/setup/secrets"):
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/setup/smoke"):
+		projectID := strings.TrimSuffix(path, "/setup/smoke")
+		s.ProjectSetupSmoke(w, r, projectID)
+	case strings.HasSuffix(path, "/setup/smoke"):
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/setup"):
+		projectID := strings.TrimSuffix(path, "/setup")
+		s.ProjectSetup(w, r, projectID)
 	// /ui/projects/{id}/documents — Phase 6: list extracted_documents.
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/documents"):
 		projectID := strings.TrimSuffix(path, "/documents")
@@ -2348,6 +2402,50 @@ func uiFuncMap() template.FuncMap {
 				return ""
 			}
 			return m[name]
+		},
+		// metaValue looks up a projectdoctor.CheckResult.Meta entry by
+		// key (e.g. "taskId", "usd", "running"). Same shape as
+		// formValue but named for its call site (project_setup_check.html)
+		// — the custom `index` above is narrowly typed for the
+		// dashboard TaskStatus map and won't accept map[string]string.
+		// Missing keys and a nil map both resolve to "" rather than
+		// erroring, so a degraded check result with a partial Meta
+		// still renders cleanly.
+		"metaValue": func(m map[string]string, key string) string {
+			if m == nil {
+				return ""
+			}
+			return m[key]
+		},
+		// join re-flattens a list/multiselect parameter's submitted
+		// values back into textarea content on form re-render (one
+		// value per line, matching the p_<name> textarea contract).
+		"join": strings.Join,
+		// listFromMap looks up a []string by key in a
+		// map[string][]string (FormValuesMulti / ResolvedOptions).
+		// The built-in `index` can't be used here — it's shadowed
+		// above by a narrowly-typed TaskStatus-map helper — so every
+		// non-TaskStatus map lookup needs its own named helper
+		// (matches formValue/boolFromMap/roleQuality above).
+		"listFromMap": func(m map[string][]string, key string) []string {
+			if m == nil {
+				return nil
+			}
+			return m[key]
+		},
+		// selected reports whether value is among the submitted
+		// values for the named multiselect parameter, so its
+		// checkbox re-renders checked after a validation failure.
+		"selected": func(m map[string][]string, name, value string) bool {
+			if m == nil {
+				return false
+			}
+			for _, v := range m[name] {
+				if v == value {
+					return true
+				}
+			}
+			return false
 		},
 		// boolFromMap returns m[key] for a map[string]bool. Used
 		// by the project config form's MCP section to look up

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,10 +32,12 @@ import (
 	"vornik.io/vornik/internal/email"
 	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/httpx/realip"
+	"vornik.io/vornik/internal/mediahandles"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/postmortem"
+	"vornik.io/vornik/internal/projectdoctor"
 	"vornik.io/vornik/internal/ratelimit"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/replay"
@@ -332,6 +335,7 @@ func (c *Container) initHTTPServer() error {
 	// the API block so the UI server below can reuse it.
 	var projectTemplatesCatalog *templates.Catalog
 	var projectTemplatesConfigsDir string
+	var templateOptionsResolver templates.OptionsResolver
 	if configsDir := resolveRegistryConfigDir(c.ConfigPath); configsDir != "" {
 		templatesDir := filepath.Join(configsDir, "project-templates")
 		if templatesEnv := os.Getenv("VORNIK_TEMPLATES_DIR"); templatesEnv != "" {
@@ -345,12 +349,62 @@ func (c *Container) initHTTPServer() error {
 			projectTemplatesConfigsDir = configsDir
 			apiOpts = append(apiOpts, api.WithProjectTemplates(cat))
 			apiOpts = append(apiOpts, api.WithConfigsDir(configsDir))
+			// Live optionsFrom resolver for the catalog's dynamic
+			// (mcp_registry / models) select parameters. mcp_registry
+			// maps the SAME registry adapter wired into
+			// ui.WithMCPFormRegistrySource below (c.mcpRegistry) so the
+			// gallery form and the project config form's MCP section
+			// never disagree; models flattens the same c.ChatClient
+			// object api.WithChatProvider gives the API server, via
+			// templateModelIDs (mirrors ListModels' fan-out). Either
+			// closure is left nil when its subsystem isn't configured —
+			// the adapter then errors per-source instead of the form
+			// silently rendering an empty <select>.
+			templateOptionsResolver = buildTemplateOptionsResolver(c)
+			apiOpts = append(apiOpts, api.WithTemplateOptionsResolver(templateOptionsResolver))
 			c.Logger.Info().
 				Str("dir", templatesDir).
 				Int("templates", len(cat.List())).
 				Msg("project-templates: catalog loaded")
 		}
 	}
+
+	// Per-project readiness doctor (project-creation-e2e Phase 2).
+	// One instance shared by both the API and UI servers so the
+	// smoke-task map (in-memory, keyed by projectID) stays consistent
+	// across surfaces. The model probe is a reachability ping built
+	// from the daemon's live chat provider: every provider family
+	// (http/router/cli/subscription) implements chat.Pinger and the
+	// LoggingProvider/QueuedProvider wrappers forward Ping, so one
+	// assertion covers all backends (including the deployed "router"
+	// config). A nil c.ChatClient (chat disabled) yields a nil pinger
+	// → checkModel degrades to a non-blocking neutral.
+	modelPinger := doctorModelPinger(c.ChatClient)
+	// c.Registry / c.mcpRegistry are typed *registry.Registry /
+	// *mcp.Registry and can be nil (registry init failure, MCP not
+	// configured). Assign to the interface-typed locals only when
+	// non-nil so Deps.Registry/Deps.MCP stay a true nil interface —
+	// otherwise Doctor's "== nil" degrade checks would see a non-nil
+	// interface wrapping a nil pointer and panic calling into it.
+	var doctorRegistry projectdoctor.ProjectResolver
+	if c.Registry != nil {
+		doctorRegistry = c.Registry
+	}
+	var doctorMCP projectdoctor.MCPSnapshotSource
+	if c.mcpRegistry != nil {
+		doctorMCP = c.mcpRegistry
+	}
+	doctorSecrets := projectdoctor.NewEnvSecrets(onboardingSecretsDir(c.ConfigPath))
+	projectDoctor := projectdoctor.New(projectdoctor.Deps{
+		Registry:     doctorRegistry,
+		MCP:          doctorMCP,
+		Model:        modelPinger,
+		Secrets:      doctorSecrets,
+		SecretWriter: doctorSecrets,
+		Smoke:        newSmokeRunner(taskCreator, c.repos.Tasks, c.repos.LLMUsage),
+		Logger:       c.Logger,
+	})
+	apiOpts = append(apiOpts, api.WithProjectDoctor(projectDoctor))
 	if reg := c.observabilityRegistry(); reg != nil {
 		if c.rateLimitMetrics == nil {
 			c.rateLimitMetrics = ratelimit.NewMetrics(reg)
@@ -685,6 +739,30 @@ func (c *Container) initHTTPServer() error {
 			composed.External = c.mcpManager
 		}
 		apiOpts = append(apiOpts, api.WithMCPExecutor(composed))
+	}
+	if mh := c.Config.MCP.MediaHandles; mh != nil {
+		// Daemon-side media handles: stash large source-tool outputs (image
+		// data URIs) and re-inject them into sink-tool calls, keeping base64
+		// out of the agent. New() returns nil (no option added) when neither
+		// sources nor sinks are configured.
+		mhOpts := mediahandles.Options{
+			Sources:          mh.Sources,
+			MaxBytesPerImage: mh.MaxBytesPerImage,
+			MaxImagesPerTask: mh.MaxImagesPerTask,
+		}
+		for _, sk := range mh.Sinks {
+			mhOpts.Sinks = append(mhOpts.Sinks, mediahandles.Sink{Tool: sk.Tool, HTMLArg: sk.HTMLArg, ImagesArg: sk.ImagesArg})
+		}
+		if mh.IdleTTL != "" {
+			if d, err := time.ParseDuration(mh.IdleTTL); err == nil {
+				mhOpts.IdleTTL = d
+			} else {
+				c.Logger.Warn().Str("idle_ttl", mh.IdleTTL).Err(err).Msg("mcp.media_handles.idle_ttl not a valid duration — using default")
+			}
+		}
+		if store := mediahandles.New(mhOpts); store != nil {
+			apiOpts = append(apiOpts, api.WithMediaHandles(store))
+		}
 	}
 	if c.mcpRegistry != nil {
 		// Daemon-level discovery surface. Wires GET /api/v1/mcp/servers
@@ -1271,10 +1349,15 @@ func (c *Container) initHTTPServer() error {
 	// installed" empty state.
 	if projectTemplatesCatalog != nil {
 		uiOpts = append(uiOpts, ui.WithProjectTemplates(projectTemplatesCatalog))
+		uiOpts = append(uiOpts, ui.WithTemplateOptionsResolver(templateOptionsResolver))
 	}
 	if projectTemplatesConfigsDir != "" {
 		uiOpts = append(uiOpts, ui.WithConfigsDir(projectTemplatesConfigsDir))
 	}
+	// Per-project readiness doctor — same instance the API server
+	// got above, so /ui/projects/{id}/setup and the API's doctor
+	// endpoints (and their shared smoke-task state) never disagree.
+	uiOpts = append(uiOpts, ui.WithProjectDoctor(projectDoctor))
 
 	// Retention defaults — surfaced on the per-project page so
 	// operators can see which fields are inherited vs overridden.
@@ -2002,4 +2085,51 @@ func resolvePricingPath(configPath string) string {
 		}
 	}
 	return "configs/pricing.yaml"
+}
+
+// templateModelIDs flattens the chat provider's model catalog to bare
+// IDs for the project-template gallery's `optionsFrom: models` source.
+// It mirrors the same three-tier fan-out api.Server.ListModels uses
+// (internal/api/models_handlers.go) against the identical c.ChatClient
+// object api.WithChatProvider wires into the API server, so the
+// template form's model select always matches what GET
+// /api/v1/models reports:
+//  1. *chat.Router directly (no wrapping)
+//  2. chat.ModelAggregator (QueuedProvider/LoggingProvider wrapping a
+//     router), falling back to its flat ListModels when aggregation
+//     isn't available
+//  3. any chat.ModelLister (single sub-provider, no router)
+func templateModelIDs(ctx context.Context, provider chat.Provider) ([]string, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("chat provider not configured")
+	}
+	var result chat.ListModelsResult
+	switch p := provider.(type) {
+	case *chat.Router:
+		result = p.ListModels(ctx)
+	case chat.ModelAggregator:
+		if agg, ok := p.ListModelsAggregated(ctx); ok {
+			result = agg
+		} else if models, err := p.ListModels(ctx); err == nil {
+			result = chat.ListModelsResult{Providers: map[string][]chat.ModelInfo{"chat": models}}
+		} else {
+			return nil, err
+		}
+	case chat.ModelLister:
+		models, err := p.ListModels(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result = chat.ListModelsResult{Providers: map[string][]chat.ModelInfo{"chat": models}}
+	default:
+		return nil, fmt.Errorf("chat provider does not implement model discovery")
+	}
+	ids := make([]string, 0, 16)
+	for _, models := range result.Providers {
+		for _, m := range models {
+			ids = append(ids, m.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
 }

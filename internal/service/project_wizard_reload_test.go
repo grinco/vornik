@@ -22,8 +22,8 @@ func TestFSProjectWriterTriggersReload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if url != "/ui/projects/proj-test" {
-		t.Errorf("url = %q, want /ui/projects/proj-test", url)
+	if url != "/ui/projects/proj-test/setup" {
+		t.Errorf("url = %q, want /ui/projects/proj-test/setup", url)
 	}
 	if reloads != 1 {
 		t.Errorf("reload called %d times, want exactly 1", reloads)

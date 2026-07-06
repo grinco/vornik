@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 209f370baf479388ce40a9220a63051a2a11ae0aef7c54e37a5123797fd67d88
+      sha256: 292ffa050053c0c8b56485a4c659f859fae1bcc5f828b34b1cbb293e9ca21607
 ---
 # Release Notes
 
@@ -14,6 +14,44 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.7.1
+
+**A polish release: leaner large tool outputs, an end-to-end project-creation
+experience, and clearer edition boundaries.** This follow-up to 2026.7.0 keeps
+big tool payloads out of the model's context, finishes the guided
+project-creation flow, and tightens the Community/Enterprise line.
+
+- **Large tool outputs stay out of the context window.** The daemon can now hold
+  a large MCP tool result and hand the model a compact handle instead of the
+  full payload, and the per-result size cap is configurable (default raised to
+  256 KiB). A new image-encoding helper fetches and downscales an image to an
+  inline data URI, hardened against SSRF.
+- **End-to-end project creation.** Project templates gained list/multiselect
+  parameters, dynamic option sources, and conflict-free ID suggestions, with new
+  ready-made purpose templates (code reviewer, tool assistant, report pipeline,
+  docs↔RAG sync). A per-project **readiness page** (`/ui/projects/{id}/setup`)
+  runs config, schedule, secrets, MCP, model, and smoke checks and flags what is
+  still incomplete, and the conversational **project wizard** now composes a
+  project turn by turn from your live MCP servers and models, showing a summary
+  before it commits.
+- **Clearer edition boundaries.** Community Edition returns a typed
+  "Enterprise-only" response on Enterprise-gated admin routes, companion API-key
+  minting is available in Community, and the Memory Firewall and project
+  configuration are now Community features (cross-project context remains
+  Enterprise).
+- **Security & correctness.** Fixes for a cross-project access-control gap in the
+  UI, a server-side request-forgery path, and several query-efficiency
+  improvements on hot paths.
+- **Onboarding fixes.** The setup flow now correctly recognizes router- and
+  CLI-based chat providers as configured, clearing spurious "not configured" and
+  session-authentication errors on the setup and wizard pages.
+
+!!! note "Restart to pick up new behavior"
+    The configurable tool-result cap and media-handle behavior take effect after
+    a daemon restart.
 
 ---
 

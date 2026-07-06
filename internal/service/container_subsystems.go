@@ -14,12 +14,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
+	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/mcp"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/persistence"
@@ -74,6 +76,7 @@ func (c *Container) initMCP() {
 // registry currently declares — the desired state SyncProjects
 // reconciles the live manager against.
 func (c *Container) mcpDesiredServers() map[string][]mcp.ServerConfig {
+	daemonServers := daemonMCPServersByName(c.Config)
 	desired := make(map[string][]mcp.ServerConfig)
 	for _, p := range c.Registry.ListProjects() {
 		if len(p.MCP.Servers) == 0 {
@@ -97,7 +100,7 @@ func (c *Container) mcpDesiredServers() map[string][]mcp.ServerConfig {
 		}
 		servers := make([]mcp.ServerConfig, 0, len(p.MCP.Servers))
 		for _, s := range p.MCP.Servers {
-			servers = append(servers, mcp.ServerConfig{
+			cfg := mcp.ServerConfig{
 				Name:           s.Name,
 				Transport:      s.Transport,
 				Command:        s.Command,
@@ -108,11 +111,55 @@ func (c *Container) mcpDesiredServers() map[string][]mcp.ServerConfig {
 				Headers:        brokerHeadersFor(p, s.Name),
 				ToolRateLimits: toolLimits,
 				ProjectID:      p.ID,
-			})
+			}
+			// Regression: template-bundles-v2 final review — name-only
+			// subscription entries (tool-assistant template) were
+			// silently skipped with `unsupported transport ""`. The
+			// tool-assistant project.yaml.tmpl renders mcp.servers
+			// entries as `- name: "<server>"` only, per the
+			// name-presence subscription model documented in
+			// internal/ui/project_config_form_mcp.go — the daemon must
+			// supply the connection details for a project entry that
+			// doesn't carry its own. When the project entry has no
+			// transport of its own and its name matches a daemon-level
+			// server (config.yaml's mcp.servers), inherit that
+			// server's connection fields while keeping the project's
+			// own AllowedTools narrowing. A project entry that already
+			// declares its own transport stays verbatim (today's
+			// behavior), and a name-only entry with no daemon match
+			// falls through unchanged — the manager's existing
+			// log-and-skip path handles it.
+			if s.Transport == "" {
+				if daemon, ok := daemonServers[s.Name]; ok {
+					cfg.Transport = daemon.Transport
+					cfg.Command = daemon.Command
+					cfg.Args = append([]string(nil), daemon.Args...)
+					cfg.Env = maps.Clone(daemon.Env)
+					cfg.URL = daemon.URL
+				}
+			}
+			servers = append(servers, cfg)
 		}
 		desired[p.ID] = servers
 	}
 	return desired
+}
+
+// daemonMCPServersByName indexes the daemon-level MCP server catalog
+// (config.yaml's mcp.servers block) by name so mcpDesiredServers can
+// look up connection details for a project entry that only supplies a
+// name. Returns an empty map (not nil misuse) when cfg is nil or
+// declares no daemon-level servers, so callers can index it
+// unconditionally.
+func daemonMCPServersByName(cfg *config.Config) map[string]config.MCPServerConfig {
+	byName := make(map[string]config.MCPServerConfig)
+	if cfg == nil {
+		return byName
+	}
+	for _, s := range cfg.MCP.Servers {
+		byName[s.Name] = s
+	}
+	return byName
 }
 
 // initMCPRegistry builds the daemon-level MCP discovery registry from

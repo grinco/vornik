@@ -42,6 +42,11 @@ type ProjectsData struct {
 type ProjectsListRow struct {
 	Project   *registry.Project
 	Lifecycle ProjectLifecyclePanel
+	// SetupComplete mirrors projectDoctor.QuickStatus(Project.ID) — a
+	// cheap, non-network rollup of config_valid/secrets/schedule.
+	// True (no badge) when the doctor isn't wired at all, so
+	// deployments without it never show a false "incomplete".
+	SetupComplete bool
 }
 
 // Projects renders the projects list page.
@@ -71,7 +76,11 @@ func (s *Server) Projects(w http.ResponseWriter, r *http.Request) {
 		if lc.IsArchived {
 			archivedCount++
 		}
-		rows = append(rows, ProjectsListRow{Project: p, Lifecycle: lc})
+		setupComplete := true
+		if s.projectDoctor != nil {
+			setupComplete = s.projectDoctor.QuickStatus(p.ID)
+		}
+		rows = append(rows, ProjectsListRow{Project: p, Lifecycle: lc, SetupComplete: setupComplete})
 	}
 	data := ProjectsData{
 		Title:         "Projects",

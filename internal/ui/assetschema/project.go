@@ -123,6 +123,15 @@ func ProjectSchema() AssetSchema {
 					{Path: "trading.caps.daily_loss_circuit_breaker_pct", Label: "Daily-loss breaker (%)", Kind: KindFloat},
 					{Path: "trading.watchlist", Label: "Watchlist", Kind: KindStringList},
 					{Path: "trading.notify_fills_chat_id", Label: "Notify fills chat ID", Kind: KindString},
+					// Scorecard/regime entry floor — dark by default; both enabled flags
+					// gate the code-enforced scorecard_floor verifier.
+					{Path: "trading.scorecard.enabled", Label: "Scorecard floor enabled", Kind: KindBool, Help: "Enable the code-enforced scorecard entry floor. Off = no-op."},
+					{Path: "trading.scorecard.min_entry_total", Label: "Min entry scorecard total", Kind: KindInt, Help: "Opens below this scorecard total are rejected."},
+					{Path: "trading.regime.enabled", Label: "Regime floor enabled", Kind: KindBool, Help: "Enable the regime component of the entry floor. Off = no-op."},
+					{Path: "trading.regime.block_long_in_risk_off", Label: "Block longs in RISK_OFF", Kind: KindBool},
+					{Path: "trading.regime.max_staleness_days", Label: "Max regime staleness (days)", Kind: KindInt},
+					{Path: "trading.regime.stale_behavior", Label: "Stale regime behavior", Kind: KindEnum, Enum: []string{"block_opens", "neutral", "last_known"}, Help: "Fail-closed: empty/unknown blocks opens; only neutral/last_known opt out."},
+					{Path: "trading.protected_symbols", Label: "Protected symbols", Kind: KindStringList, Help: "The floor refuses to close (intent=close) any symbol listed here."},
 				},
 			},
 			{
@@ -155,6 +164,9 @@ var ProjectDeferredPaths = []string{
 	"webhooks.sources",
 	// Trading per-project order rate-limit (pre-live ops knob; YAML-only like the other *_rps limits).
 	"trading_rate_limit.orders_per_minute", "trading_rate_limit.orders_per_hour",
+	// Regime per-region min component count — a map[string]int (e.g. {us:6, eu:5,
+	// apac:4}); no scalar form Kind, so it stays a raw-YAML block.
+	"trading.regime.min_component_count",
 	// GitHub App channel + outbound credentials.
 	"github_app.app_id", "github_app.private_key_path", "github_app.installation_id",
 	"github_app.api_base_url", "github_app.webhook_secret_env", "github_app.repo_allowlist",

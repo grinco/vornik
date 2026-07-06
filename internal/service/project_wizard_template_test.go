@@ -32,8 +32,8 @@ func TestFSProjectWriterWriteFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteFiles: %v", err)
 	}
-	if url != "/ui/projects/acme" {
-		t.Errorf("url = %q, want /ui/projects/acme", url)
+	if url != "/ui/projects/acme/setup" {
+		t.Errorf("url = %q, want /ui/projects/acme/setup", url)
 	}
 	if reloads != 1 {
 		t.Errorf("reload called %d times, want 1", reloads)

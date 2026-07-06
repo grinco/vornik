@@ -22,12 +22,14 @@ import (
 	"vornik.io/vornik/internal/extractor"
 	"vornik.io/vornik/internal/featuredoctor"
 	"vornik.io/vornik/internal/mcp"
+	"vornik.io/vornik/internal/mediahandles"
 	"vornik.io/vornik/internal/memoryfirewall"
 	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/postmortem"
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/projectarchive"
+	"vornik.io/vornik/internal/projectdoctor"
 	"vornik.io/vornik/internal/queue"
 	"vornik.io/vornik/internal/ratelimit"
 	"vornik.io/vornik/internal/registry"
@@ -343,11 +345,26 @@ type ProjectWizardResult struct {
 // ProjectWizardEnvelope mirrors projectwizard.Envelope at the API
 // boundary.
 type ProjectWizardEnvelope struct {
-	Message           string         `json:"message"`
-	Proposal          map[string]any `json:"proposal,omitempty"`
-	ReadyToCommit     bool           `json:"ready_to_commit"`
-	SuggestedTemplate string         `json:"suggested_template,omitempty"`
-	OpenQuestions     []string       `json:"open_questions,omitempty"`
+	Message           string             `json:"message"`
+	Proposal          map[string]any     `json:"proposal,omitempty"`
+	ReadyToCommit     bool               `json:"ready_to_commit"`
+	SuggestedTemplate string             `json:"suggested_template,omitempty"`
+	OpenQuestions     []string           `json:"open_questions,omitempty"`
+	Composition       *WizardComposition `json:"composition,omitempty"`
+}
+
+// WizardComposition mirrors projectwizard.Composition at the API
+// boundary — the wizard v2 structured build (base template + its
+// params + an ordered list of typed addons) so the UI can render the
+// composition summary. Params/Addons stay JSON-generic (map[string]any
+// / []map[string]any) rather than the typed projectwizard.ParamValue /
+// projectwizard.Addon shapes, keeping this package free of an import
+// on projectwizard (same reasoning as Proposal above). Absent
+// (omitempty) on legacy v1 turns that never populate a composition.
+type WizardComposition struct {
+	Template string           `json:"template"`
+	Params   map[string]any   `json:"params,omitempty"`
+	Addons   []map[string]any `json:"addons,omitempty"`
 }
 
 // ForkExecutor is the narrow interface POST
@@ -694,7 +711,13 @@ type Server struct {
 	// nil in minimal deployments (the check degrades to a graceful skip).
 	featureTradingProbe featuredoctor.TradingSeriesProbe
 	projectTemplates    *templates.Catalog
+	templateOptions     templates.OptionsResolver
 	configsDir          string
+	// projectDoctor serves the per-project readiness endpoints
+	// (report, per-check run, secret set). Nil in deployments that
+	// haven't wired it — the doctor endpoints answer 503 rather than
+	// panicking. See WithProjectDoctor.
+	projectDoctor *projectdoctor.Doctor
 	// reloadHook triggers a synchronous config reload after a
 	// create-from-template write so the new project is registered
 	// in-memory before the client navigates to it. Nil = rely on the
@@ -829,6 +852,10 @@ type Server struct {
 	// the key-scoped CheckKey surface is available.
 	tradingRateLimiter *ratelimit.Limiter
 	mcpExecutor        MCPExecutor
+	// mediaHandles stashes large MCP tool outputs (image data URIs) out of
+	// the agent's context and re-injects them into a sink tool's call. Nil =
+	// disabled (pass-through). See internal/mediahandles.
+	mediaHandles *mediahandles.Store
 	// mcpRegistry powers GET /api/v1/mcp/servers — the daemon-level
 	// MCP discovery surface. Distinct from mcpExecutor (per-project
 	// tool routing): this is read-only, never participates in tool
@@ -1715,6 +1742,23 @@ func WithProjectTemplates(c *templates.Catalog) ServerOption {
 	}
 }
 
+// WithProjectDoctor wires the per-project readiness doctor. Optional —
+// nil serves 503 from the doctor endpoints.
+func WithProjectDoctor(d *projectdoctor.Doctor) ServerOption {
+	return func(s *Server) { s.projectDoctor = d }
+}
+
+// WithTemplateOptionsResolver wires the live optionsFrom resolver
+// (mcp_registry / models) used when validating dynamic template
+// parameters at submit time. Optional — nil leaves dynamic options
+// unresolvable (free-string validation), which is only appropriate
+// for tests.
+func WithTemplateOptionsResolver(r templates.OptionsResolver) ServerOption {
+	return func(s *Server) {
+		s.templateOptions = r
+	}
+}
+
 // WithConfigsDir sets the daemon's configs/ root. Templates write
 // new project YAML into this directory; without it the template
 // gallery refuses to materialise. Set by the service container at
@@ -2108,6 +2152,15 @@ func WithExternalAPIBillingProjectID(projectID string) ServerOption {
 func WithMCPExecutor(m MCPExecutor) ServerOption {
 	return func(s *Server) {
 		s.mcpExecutor = m
+	}
+}
+
+// WithMediaHandles wires the daemon-side media-handle store used by the
+// MCP proxy to keep large tool outputs (image data URIs) out of the agent.
+// Nil leaves the proxy in pass-through mode.
+func WithMediaHandles(store *mediahandles.Store) ServerOption {
+	return func(s *Server) {
+		s.mediaHandles = store
 	}
 }
 

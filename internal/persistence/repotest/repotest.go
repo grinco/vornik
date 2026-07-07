@@ -931,6 +931,31 @@ func RunAPIKeyRepositorySuite(t *testing.T, repo persistence.APIKeyRepository) {
 		}
 	})
 
+	t.Run("Skill_capabilities_round_trip", func(t *testing.T) {
+		hash := uniqueID("hash")
+		k := &persistence.APIKey{
+			ID:         uniqueID("akey"),
+			ProjectID:  uniqueID("proj"),
+			KeyHash:    hash,
+			KeyPrefix:  "sk-test",
+			CreatedAt:  time.Now().UTC(),
+			SkillRead:  true,
+			SkillWrite: true,
+			SkillAdmin: false,
+		}
+		if err := repo.Create(ctx, k); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		got, err := repo.LookupActiveByHash(ctx, hash)
+		if err != nil {
+			t.Fatalf("LookupActiveByHash: %v", err)
+		}
+		if !got.SkillRead || !got.SkillWrite || got.SkillAdmin {
+			t.Errorf("skill caps did not round-trip: read=%v write=%v admin=%v",
+				got.SkillRead, got.SkillWrite, got.SkillAdmin)
+		}
+	})
+
 	t.Run("LookupActiveByHash_treats_revoked_as_missing", func(t *testing.T) {
 		hash := uniqueID("hash")
 		k := &persistence.APIKey{

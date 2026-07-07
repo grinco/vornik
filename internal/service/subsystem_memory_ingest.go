@@ -236,6 +236,23 @@ func (s *MemoryIngestSubsystem) Start(ctx context.Context) error {
 		go s.llmConsolidateWorker.Run(collectorsCtxFrom(ctx, c))
 	}
 
+	// Knowledge-skill maturity engine (learning-loop §D.3). Leader-gated
+	// promote/decay of operator-approved skills; hourly cadence. Nil-safe
+	// when the skill store isn't wired (e.g. minimal harnesses).
+	if c != nil && c.repos != nil && c.repos.Skills != nil {
+		smw := &memory.SkillMaturityWorker{
+			Skills:   c.repos.Skills,
+			Interval: time.Hour,
+			Logger:   c.Logger.With().Str("component", "memory").Str("worker", "skill-maturity").Logger(),
+		}
+		if elector := c.initWorkerElector("skill_maturity"); elector != nil {
+			smw.LeaderGate = elector
+			elector.BootstrapAcquire(ctx)
+			go elector.Run(ctx)
+		}
+		go smw.Run(collectorsCtxFrom(ctx, c))
+	}
+
 	return nil
 }
 

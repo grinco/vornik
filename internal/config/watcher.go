@@ -410,7 +410,13 @@ func (r *ConfigReloader) Reload() error {
 	// One reload cycle at a time — see the reloadMu field doc.
 	r.reloadMu.Lock()
 	defer r.reloadMu.Unlock()
+	return r.runCycle()
+}
 
+// runCycle runs one loader → validator → activator cycle and updates the
+// status fields. The caller MUST hold reloadMu: Reload() takes it directly;
+// TryReload()'s watchdog goroutine takes it before calling runCycle.
+func (r *ConfigReloader) runCycle() error {
 	r.mu.Lock()
 	r.lastAttempt = time.Now()
 	r.reloadErrors = nil
@@ -477,6 +483,15 @@ func (r *ConfigReloader) Reload() error {
 		}
 	}
 
+	r.finishReloadSuccess(start)
+	return nil
+}
+
+// finishReloadSuccess records a clean reload cycle: it clears the
+// error/pending/blocked status, observes success metrics, logs, and fires
+// the best-effort post-reload hook. Extracted from runCycle to keep that
+// function within the funlen budget. Caller holds reloadMu.
+func (r *ConfigReloader) finishReloadSuccess(start time.Time) {
 	r.mu.Lock()
 	r.lastReload = time.Now()
 	r.pendingActivation = false
@@ -505,7 +520,67 @@ func (r *ConfigReloader) Reload() error {
 			hook()
 		}()
 	}
-	return nil
+}
+
+// ReloadOutcome classifies the result of a bounded TryReload attempt.
+type ReloadOutcome int
+
+const (
+	// ReloadApplied — the cycle completed cleanly within the bound.
+	ReloadApplied ReloadOutcome = iota
+	// ReloadDeferred — the reloader was busy/wedged (lock held) or the
+	// cycle exceeded the bound. The edit is on disk; a daemon restart is
+	// required to apply it.
+	ReloadDeferred
+	// ReloadBlocked — activation is gated (e.g. in-flight tasks). The edit
+	// is on disk and will apply on a later reload or a restart.
+	ReloadBlocked
+	// ReloadFailed — validation/activation returned a hard error.
+	ReloadFailed
+)
+
+// TryReload attempts a reload bounded by d. It never blocks the caller
+// longer than d. See
+// https://docs.vornik.io
+//
+//   - If reloadMu is already held (a reload in progress, or wedged like the
+//     2026-07-06 incident), it returns ReloadDeferred immediately — no block.
+//   - Otherwise it runs the cycle in a watchdog goroutine and waits up to d.
+//     Completing in time yields ReloadApplied / ReloadBlocked / ReloadFailed.
+//     Exceeding d yields ReloadDeferred; the goroutine keeps ownership of
+//     reloadMu and Unlocks when the cycle returns. If the cycle wedges
+//     forever, later TryReload calls take the TryLock fast-path and also
+//     return ReloadDeferred — the system degrades to restart-required
+//     everywhere, never a hang.
+func (r *ConfigReloader) TryReload(d time.Duration) (ReloadOutcome, error) {
+	if !r.reloadMu.TryLock() {
+		return ReloadDeferred, nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		defer r.reloadMu.Unlock()
+		done <- r.runCycle()
+	}()
+	select {
+	case err := <-done:
+		switch {
+		case err == nil:
+			return ReloadApplied, nil
+		case isActivationBlocked(err):
+			return ReloadBlocked, err
+		default:
+			return ReloadFailed, err
+		}
+	case <-time.After(d):
+		return ReloadDeferred, nil
+	}
+}
+
+// isActivationBlocked reports whether err is (or wraps) an
+// *ActivationBlockedError — the in-flight-task activation gate.
+func isActivationBlocked(err error) bool {
+	var blocked *ActivationBlockedError
+	return errors.As(err, &blocked)
 }
 
 // Status returns the current reload status.

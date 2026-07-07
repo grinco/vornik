@@ -76,7 +76,7 @@ func TestProjectConfigSaveWritesAndReloads(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 	assert.Equal(t, 1, reloader.calls)
-	assert.Contains(t, rec.Body.String(), "saved and reloaded")
+	assert.Contains(t, rec.Body.String(), "saved and applied live")
 	backups, err := filepath.Glob(filepath.Join(root, "projects", "project-1.yaml.bak-*"))
 	require.NoError(t, err)
 	require.Len(t, backups, 1)

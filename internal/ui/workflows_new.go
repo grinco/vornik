@@ -149,14 +149,11 @@ func (s *Server) WorkflowsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.configReloader != nil {
-		if err := s.configReloader.Reload(); err != nil {
-			data.Error = "Saved workflows/" + data.WorkflowID + ".md but daemon reload failed: " + err.Error() +
-				"\nThe file is on disk; restart the daemon or fix the cause and retry the reload."
-			w.WriteHeader(http.StatusConflict)
-			s.render(w, "workflows_new.html", data)
-			return
-		}
+	if res := s.applyConfigEdit("workflow " + data.WorkflowID); res.Level == "error" {
+		data.Error = "Saved workflows/" + data.WorkflowID + ".md but " + res.Message
+		w.WriteHeader(http.StatusConflict)
+		s.render(w, "workflows_new.html", data)
+		return
 	}
 
 	http.Redirect(w, r, "/ui/workflows/"+data.WorkflowID+"/edit", http.StatusSeeOther)

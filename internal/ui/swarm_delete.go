@@ -55,11 +55,7 @@ func (s *Server) SwarmDelete(w http.ResponseWriter, r *http.Request, swarmID str
 		return
 	}
 
-	if s.configReloader != nil {
-		_ = s.configReloader.Reload()
-	} else if s.projectReg != nil {
-		_ = s.projectReg.Load(s.configDir())
-	}
+	_ = s.applyConfigEdit("swarm " + swarmID + " deletion")
 
 	http.Redirect(w, r, "/ui/swarms?deleted="+swarmID, http.StatusSeeOther)
 }
@@ -92,11 +88,7 @@ func (s *Server) WorkflowDelete(w http.ResponseWriter, r *http.Request, workflow
 		return
 	}
 
-	if s.configReloader != nil {
-		_ = s.configReloader.Reload()
-	} else if s.projectReg != nil {
-		_ = s.projectReg.Load(s.configDir())
-	}
+	_ = s.applyConfigEdit("workflow " + workflowID + " deletion")
 
 	http.Redirect(w, r, "/ui/workflows?deleted="+workflowID, http.StatusSeeOther)
 }

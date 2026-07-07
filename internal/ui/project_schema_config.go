@@ -153,31 +153,20 @@ func (s *Server) ProjectSchemaConfigSave(w http.ResponseWriter, r *http.Request,
 	}
 	data.BackupPath = backupPath
 
-	if s.configReloader != nil {
-		if err := s.configReloader.Reload(); err != nil {
-			data.Error = "Saved, but reload failed: " + err.Error()
-			if backupPath != "" {
-				data.Error += "\nBackup: " + backupPath
-			}
-			w.WriteHeader(http.StatusConflict)
-			s.render(w, "asset_schema_config.html", data)
-			return
+	res := s.applyConfigEdit("project " + projectID + " config")
+	if res.Level == "error" {
+		data.Error = res.Message
+		if backupPath != "" {
+			data.Error += "\nBackup: " + backupPath
 		}
-	} else if s.projectReg != nil {
-		if err := s.projectReg.Load(s.configDir()); err != nil {
-			data.Error = "Saved, but registry reload failed: " + err.Error()
-			if backupPath != "" {
-				data.Error += "\nBackup: " + backupPath
-			}
-			w.WriteHeader(http.StatusConflict)
-			s.render(w, "asset_schema_config.html", data)
-			return
-		}
+		w.WriteHeader(http.StatusConflict)
+		s.render(w, "asset_schema_config.html", data)
+		return
 	}
 
 	s.writeProjectSaveAudit(r, projectID, len(patches))
 
-	data.Success = "Project config saved and reloaded."
+	data.Success = res.Message
 	if backupPath != "" {
 		data.Success += " Backup: " + backupPath
 	}

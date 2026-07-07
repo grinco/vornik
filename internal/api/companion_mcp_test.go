@@ -1821,6 +1821,13 @@ func TestCompanionMCP_Result_TruncatesOversizedArtifact(t *testing.T) {
 	assert.Equal(t, true, first["truncated"])
 }
 
+func TestReadLimitedArtifactStopsAtCap(t *testing.T) {
+	content, truncated, err := readLimitedArtifact(strings.NewReader(strings.Repeat("x", 1024)), 65)
+	require.NoError(t, err)
+	assert.True(t, truncated)
+	assert.Len(t, content, 65)
+}
+
 // A wired-but-empty artifact set (or a nil artifactRepo on minimal
 // deployments) must not break the terminal result shape.
 func TestCompanionMCP_Result_NoArtifactRepo_StillCompletes(t *testing.T) {

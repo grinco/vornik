@@ -1141,6 +1141,19 @@ type APIKey struct {
 	MemoryRead  bool `json:"memory_read,omitempty"`
 	MemoryWrite bool `json:"memory_write,omitempty"`
 
+	// SkillRead / SkillWrite / SkillAdmin gate the knowledge-skill MCP
+	// tools (LLD 2026-07-07-knowledge-skill-store-design). All default
+	// false; set per-key by `vornikctl companion grant --skill-read /
+	// --skill-write / --skill-admin`. skill_search/get/list require
+	// SkillRead; skill_propose requires SkillWrite (implies read);
+	// skill_approve/reject require SkillAdmin — the human gate that
+	// promotes a draft to active, deliberately opt-in so a client can
+	// propose but not self-approve. Stored as BOOLEAN on postgres and
+	// INTEGER 0/1 on the sqlite mirror.
+	SkillRead  bool `json:"skill_read,omitempty"`
+	SkillWrite bool `json:"skill_write,omitempty"`
+	SkillAdmin bool `json:"skill_admin,omitempty"`
+
 	// AllowPush grants git-push access over HTTPS (git-over-HTTPS design,
 	// LLD slice 2). Default false — keys are read-only by default; push
 	// is opt-in per key. Stored as BOOLEAN on postgres and INTEGER 0/1

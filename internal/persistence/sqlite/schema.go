@@ -197,6 +197,9 @@ CREATE TABLE IF NOT EXISTS api_keys (
     -- keys can't read or write project memory until explicitly granted.
     memory_read       INTEGER NOT NULL DEFAULT 0,
     memory_write      INTEGER NOT NULL DEFAULT 0,
+    skill_read        INTEGER NOT NULL DEFAULT 0,
+    skill_write       INTEGER NOT NULL DEFAULT 0,
+    skill_admin       INTEGER NOT NULL DEFAULT 0,
     -- git-over-HTTPS push gate (LLD slice 2). Default 0 = read-only.
     allow_push        INTEGER NOT NULL DEFAULT 0
 );
@@ -1098,4 +1101,57 @@ CREATE TABLE IF NOT EXISTS daemon_leader_locks (
     expires_at  TEXT NOT NULL,
     epoch       INTEGER NOT NULL DEFAULT 0
 );
+
+-- ============================================================
+-- project_skills — knowledge-skill store
+-- (LLD 2026-07-07-knowledge-skill-store-design; Postgres parity:
+-- migration 113). repo_scope NULL = uncategorized, '*' = cross-
+-- cutting. tags/roles are JSON-encoded TEXT (sqliteStringArray),
+-- not TEXT[]. No embedding column — this slice does no semantic
+-- ranking. usage_* counters are written by RecordFeedback but not
+-- read until slice D.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS project_skills (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL,
+    repo_scope      TEXT,
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    body_sha256     TEXT NOT NULL,
+    domain          TEXT,
+    tags            TEXT NOT NULL DEFAULT '[]',
+    roles           TEXT NOT NULL DEFAULT '[]',
+    maturity        TEXT NOT NULL DEFAULT 'draft'
+                      CHECK (maturity IN ('draft','active','trusted','retired')),
+    version         INTEGER NOT NULL DEFAULT 1,
+    origin_client   TEXT,
+    origin_task     TEXT,
+    author          TEXT,
+    usage_fired     INTEGER NOT NULL DEFAULT 0,
+    usage_worked    INTEGER NOT NULL DEFAULT 0,
+    usage_corrected INTEGER NOT NULL DEFAULT 0,
+    last_fired_at   TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE (project_id, repo_scope, name)
+);
+CREATE INDEX IF NOT EXISTS idx_project_skills_lookup
+    ON project_skills (project_id, repo_scope, maturity);
+
+-- ============================================================
+-- execution_injected_skills — which approved skills were injected
+-- into a role for an execution (LLD 2026-07-07-knowledge-skill-
+-- learning-loop-design §D.2). Read at successful completion to
+-- credit a "worked" signal. Postgres parity: migration 115.
+-- injected_at is write-only provenance (never ordered cross-backend).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS execution_injected_skills (
+    execution_id TEXT NOT NULL,
+    skill_id     TEXT NOT NULL,
+    injected_at  TEXT NOT NULL,
+    PRIMARY KEY (execution_id, skill_id)
+);
+CREATE INDEX IF NOT EXISTS idx_exec_injected_skills_skill
+    ON execution_injected_skills (skill_id);
 `

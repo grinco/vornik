@@ -19,6 +19,7 @@ import (
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/auth"
 	"vornik.io/vornik/internal/budget"
+	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
@@ -111,8 +112,20 @@ type TaskLogSource interface {
 }
 
 // ConfigReloader reloads daemon config after validated UI edits.
+//
+// The save handlers prefer the bounded, non-blocking-on-contention
+// boundedReloader capability (see applyConfigEdit) so a busy or wedged reload
+// can never hang the HTTP request (2026-07-06 incident); reloaders that only
+// implement Reload() fall back to a direct blocking reload.
 type ConfigReloader interface {
 	Reload() error
+}
+
+// boundedReloader is the optional capability applyConfigEdit uses to bound the
+// reload. The daemon's *config.ConfigReloader satisfies it; lightweight test
+// fakes need not.
+type boundedReloader interface {
+	TryReload(d time.Duration) (config.ReloadOutcome, error)
 }
 
 // ArchiveSweeper is the narrow contract the UI uses to kick a
@@ -302,6 +315,13 @@ type Server struct {
 	// NewServer (falls back to workspacelock.New()).
 	workspaceLock  *workspacelock.Locker
 	configReloader ConfigReloader
+	// restartPending records that a config edit was saved to disk but could
+	// not be applied live (reloader busy/wedged/slow, or activation
+	// gated/failed). It is in-memory only, so it clears on the next daemon
+	// boot — exactly when the pending config actually gets applied. Drives
+	// the persistent "restart required" banner. See
+	// https://docs.vornik.io
+	restartPending restartPendingFlag
 	// archiveSweeper is the project-archival deletion runner.
 	// Optional — when nil the archive/unarchive endpoints still
 	// work (writing the YAML + reloading the registry); only the
@@ -1735,6 +1755,9 @@ func NewServer(opts ...ServerOption) *Server {
 	// threading the flag through uiFuncMap (kept edition-agnostic + testable).
 	fm := uiFuncMap()
 	fm["navModel"] = navModelFunc(s.tradingEnabled)
+	// Server-bound so the persistent "restart required" banner reflects live
+	// pending-restart state on every render (see the nav partial).
+	fm["restartPending"] = s.restartBanner
 	tmpl, err := template.New("").
 		Funcs(fm).
 		ParseFS(templatesFS, "templates/*.html")

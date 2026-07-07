@@ -54,6 +54,8 @@ func TestTaskKeyMinter_MintTaskKey_CreatesKeyAndReturnsRaw(t *testing.T) {
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			// memory caps + allow_push (false, false, false), default_repo_scope (NULL)
 			false, false, false, sql.NullString{},
+			// skill caps (skill_read, skill_write, skill_admin) all false
+			false, false, false,
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

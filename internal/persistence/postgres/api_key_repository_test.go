@@ -39,7 +39,7 @@ func TestAPIKeyRepository_Create(t *testing.T) {
 			// Companion RAG capabilities (LLD 22): default false.
 			// allow_push (LLD slice 2): default false.
 			// default_repo_scope (migration 110): NULL when unset.
-			false, false, false, sql.NullString{}).
+			false, false, false, sql.NullString{}, false, false, false).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := repo.Create(context.Background(), key); err != nil {
@@ -73,7 +73,7 @@ func TestAPIKeyRepository_Create_PreservesRateLimits(t *testing.T) {
 			key.CreatedAt, key.ExpiresAt, sql.NullString{},
 			sql.NullInt64{Int64: 5, Valid: true}, sql.NullInt64{Int64: 11, Valid: true},
 			sql.NullString{}, sql.NullFloat64{}, sql.NullString{}, sql.NullString{},
-			false, false, false, sql.NullString{}).
+			false, false, false, sql.NullString{}, false, false, false).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := repo.Create(context.Background(), key); err != nil {
@@ -103,7 +103,7 @@ func TestAPIKeyRepository_Create_NullCreatedBy(t *testing.T) {
 			key.CreatedAt, key.ExpiresAt, sql.NullString{},
 			sql.NullInt64{}, sql.NullInt64{},
 			sql.NullString{}, sql.NullFloat64{}, sql.NullString{}, sql.NullString{},
-			false, false, false, sql.NullString{}).
+			false, false, false, sql.NullString{}, false, false, false).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := repo.Create(context.Background(), key); err != nil {
@@ -133,8 +133,9 @@ func TestAPIKeyRepository_LookupActiveByHash_Found(t *testing.T) {
 			"rate_limit_rps", "rate_limit_burst",
 			"allowed_workflows", "budget_cap_usd", "client_kind", "session_label",
 			"memory_read", "memory_write", "allow_push", "default_repo_scope",
+			"skill_read", "skill_write", "skill_admin",
 		}).AddRow("akey-3", "assistant", "ha-key", hash, "sk-vornik-as",
-			created, nil, nil, nil, "operator", nil, nil, nil, nil, nil, nil, false, false, false, nil))
+			created, nil, nil, nil, "operator", nil, nil, nil, nil, nil, nil, false, false, false, nil, false, false, false))
 
 	got, err := repo.LookupActiveByHash(context.Background(), hash)
 	if err != nil {
@@ -183,9 +184,10 @@ func TestAPIKeyRepository_ListByProject(t *testing.T) {
 			"rate_limit_rps", "rate_limit_burst",
 			"allowed_workflows", "budget_cap_usd", "client_kind", "session_label",
 			"memory_read", "memory_write", "allow_push", "default_repo_scope",
+			"skill_read", "skill_write", "skill_admin",
 		}).
-			AddRow("akey-new", "assistant", "n1", "h1", "sk-vornik-as", now, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, false, false, nil).
-			AddRow("akey-old", "assistant", "n2", "h2", "sk-vornik-as", older, nil, nil, &revoked, "ops", nil, nil, nil, nil, nil, nil, false, false, false, nil))
+			AddRow("akey-new", "assistant", "n1", "h1", "sk-vornik-as", now, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, false, false, false, nil, false, false, false).
+			AddRow("akey-old", "assistant", "n2", "h2", "sk-vornik-as", older, nil, nil, &revoked, "ops", nil, nil, nil, nil, nil, nil, false, false, false, nil, false, false, false))
 
 	got, err := repo.ListByProject(context.Background(), "assistant")
 	if err != nil {
@@ -221,8 +223,9 @@ func TestAPIKeyRepository_LookupActiveByHash_DecodesRateLimits(t *testing.T) {
 			"rate_limit_rps", "rate_limit_burst",
 			"allowed_workflows", "budget_cap_usd", "client_kind", "session_label",
 			"memory_read", "memory_write", "allow_push", "default_repo_scope",
+			"skill_read", "skill_write", "skill_admin",
 		}).AddRow("akey-rate", "assistant", "throttled", hash, "sk-vornik-as",
-			created, nil, nil, nil, nil, int64(50), int64(100), nil, nil, nil, nil, false, false, false, nil))
+			created, nil, nil, nil, nil, int64(50), int64(100), nil, nil, nil, nil, false, false, false, nil, false, false, false))
 
 	got, err := repo.LookupActiveByHash(context.Background(), hash)
 	if err != nil {
@@ -282,7 +285,7 @@ func TestAPIKeyRepository_Create_CompanionScope(t *testing.T) {
 			sql.NullFloat64{Float64: 25.50, Valid: true},
 			sql.NullString{String: "claude-code", Valid: true},
 			sql.NullString{String: "vadim/laptop", Valid: true},
-			false, false, false, sql.NullString{}).
+			false, false, false, sql.NullString{}, false, false, false).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := repo.Create(context.Background(), key); err != nil {
@@ -312,10 +315,11 @@ func TestAPIKeyRepository_LookupActiveByHash_DecodesCompanionScope(t *testing.T)
 			"rate_limit_rps", "rate_limit_burst",
 			"allowed_workflows", "budget_cap_usd", "client_kind", "session_label",
 			"memory_read", "memory_write", "allow_push", "default_repo_scope",
+			"skill_read", "skill_write", "skill_admin",
 		}).AddRow("akey-co", "companion-example", "session-1", hash, "sk-vornik-co",
 			created, nil, nil, nil, nil, nil, nil,
 			`["companion-architectural-review"]`, 25.50, "claude-code", "vadim/laptop",
-			false, false, false, nil))
+			false, false, false, nil, false, false, false))
 
 	got, err := repo.LookupActiveByHash(context.Background(), hash)
 	if err != nil {
@@ -353,11 +357,12 @@ func TestAPIKeyRepository_ListCompanionByProject(t *testing.T) {
 			"rate_limit_rps", "rate_limit_burst",
 			"allowed_workflows", "budget_cap_usd", "client_kind", "session_label",
 			"memory_read", "memory_write", "allow_push", "default_repo_scope",
+			"skill_read", "skill_write", "skill_admin",
 		}).
 			AddRow("co-1", "companion-example", "claude-laptop", "h1", "sk-vornik-co",
-				now, nil, nil, nil, nil, nil, nil, `[]`, nil, "claude-code", nil, false, false, false, nil).
+				now, nil, nil, nil, nil, nil, nil, `[]`, nil, "claude-code", nil, false, false, false, nil, false, false, false).
 			AddRow("co-2", "companion-example", "codex-laptop", "h2", "sk-vornik-co",
-				now.Add(-time.Hour), nil, nil, nil, nil, nil, nil, nil, nil, "codex", nil, false, false, false, nil))
+				now.Add(-time.Hour), nil, nil, nil, nil, nil, nil, nil, nil, "codex", nil, false, false, false, nil, false, false, false))
 
 	got, err := repo.ListCompanionByProject(context.Background(), "companion-example")
 	if err != nil {
@@ -396,7 +401,7 @@ func TestAPIKeyRepository_MemoryCapabilities(t *testing.T) {
 			sql.NullString{}, sql.NullFloat64{},
 			sql.NullString{String: "claude-code", Valid: true},
 			sql.NullString{},
-			true, true, false, sql.NullString{}).
+			true, true, false, sql.NullString{}, false, false, false).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := repo.Create(context.Background(), key); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -411,9 +416,10 @@ func TestAPIKeyRepository_MemoryCapabilities(t *testing.T) {
 			"rate_limit_rps", "rate_limit_burst",
 			"allowed_workflows", "budget_cap_usd", "client_kind", "session_label",
 			"memory_read", "memory_write", "allow_push", "default_repo_scope",
+			"skill_read", "skill_write", "skill_admin",
 		}).AddRow("akey-mem", "companion-example", "rag-key", hash, "sk-vornik-co",
 			key.CreatedAt, nil, nil, nil, nil, nil, nil,
-			nil, nil, "claude-code", nil, true, true, false, nil))
+			nil, nil, "claude-code", nil, true, true, false, nil, false, false, false))
 
 	got, err := repo.LookupActiveByHash(context.Background(), hash)
 	if err != nil {
@@ -570,7 +576,7 @@ func TestAPIKeyRepository_Create_AllowPush(t *testing.T) {
 			key.CreatedAt, key.ExpiresAt, sql.NullString{},
 			sql.NullInt64{}, sql.NullInt64{},
 			sql.NullString{}, sql.NullFloat64{}, sql.NullString{}, sql.NullString{},
-			false, false, false, sql.NullString{}). // memory_read, memory_write, allow_push, default_repo_scope
+			false, false, false, sql.NullString{}, false, false, false). // memory_read, memory_write, allow_push, default_repo_scope
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := repo.Create(context.Background(), key); err != nil {

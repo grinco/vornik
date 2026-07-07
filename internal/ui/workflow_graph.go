@@ -74,12 +74,12 @@ func (s *Server) applyWorkflowGraphEdit(
 	if err != nil {
 		return "Failed to write workflow: " + err.Error()
 	}
-	if s.configReloader != nil {
-		if err := s.configReloader.Reload(); err != nil {
-			return reloadErrMsg(err, backupPath)
+	if res := s.applyConfigEdit("workflow " + workflowID); res.Level == "error" {
+		msg := res.Message
+		if backupPath != "" {
+			msg += "\nBackup: " + backupPath
 		}
-	} else if err := s.projectReg.Load(s.configDir()); err != nil {
-		return reloadErrMsg(err, backupPath)
+		return msg
 	}
 
 	s.writeWorkflowGraphAudit(r, workflowID, action)

@@ -230,16 +230,9 @@ func (s *Server) WizardGenerate(w http.ResponseWriter, r *http.Request, projectI
 	}
 
 	// Reload so the new artifacts are live.
-	if s.configReloader != nil {
-		if err := s.configReloader.Reload(); err != nil {
-			writeWizardJSON(w, http.StatusConflict, wizardResponse{Error: "saved, but reload failed: " + err.Error()})
-			return
-		}
-	} else {
-		if err := s.projectReg.Load(configDir); err != nil {
-			writeWizardJSON(w, http.StatusConflict, wizardResponse{Error: "saved, but registry reload failed: " + err.Error()})
-			return
-		}
+	if res := s.applyConfigEdit("project wizard"); res.Level == "error" {
+		writeWizardJSON(w, http.StatusConflict, wizardResponse{Error: res.Message})
+		return
 	}
 
 	writeWizardJSON(w, http.StatusOK, wizardResponse{

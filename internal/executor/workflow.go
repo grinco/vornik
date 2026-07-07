@@ -1626,6 +1626,9 @@ func (e *Executor) handleSuccess(ctx context.Context, task *persistence.Task, ex
 	// follow-up turn (see 2026-05-21 watchlist incident).
 	_ = e.taskRepo.UpdateStatus(ctx, task.ID, persistence.TaskStatusCompleted)
 	task.Status = persistence.TaskStatusCompleted
+	// Credit a "worked" maturity signal to every knowledge skill
+	// injected into this task's executions (learning-loop §D.1).
+	e.creditSkillsWorked(ctx, task.ID)
 	e.settleBudgetReservation(ctx, task.ID)
 	e.cascadeOrphanExecutions(ctx, task.ID)
 	// Inter-project orchestration: if this task is a callee

@@ -385,7 +385,7 @@ func TestProjectConfigFormSave_HappyPath(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 	assert.Equal(t, 1, reloader.calls)
-	assert.Contains(t, rec.Body.String(), "Project config saved and reloaded")
+	assert.Contains(t, rec.Body.String(), "saved and applied live")
 	assert.Contains(t, rec.Body.String(), "Renamed Demo", "rendered form should reflect post-save state")
 
 	after, err := os.ReadFile(path)

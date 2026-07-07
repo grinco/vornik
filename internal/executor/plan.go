@@ -182,6 +182,14 @@ type agentInputOpts struct {
 	// workspace-prep time so the agent finds it in task.json
 	// instead of burning tool calls searching the workspace.
 	CanonicalContext CanonicalContext
+
+	// Skills are the project's approved (active/trusted) knowledge
+	// skills relevant to this role, injected as trusted directive
+	// guidance in the system prompt (LLD 2026-07-07-knowledge-skill-
+	// store-design). Empty when the store is unwired or nothing
+	// matches. Populated at workspace-prep time alongside
+	// CanonicalContext.
+	Skills []SkillBlock
 }
 
 // RecoveryContext carries the failure shape the on_fail handler

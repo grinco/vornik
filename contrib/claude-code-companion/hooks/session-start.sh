@@ -248,6 +248,38 @@ EOF
 # stdout still reaches context (proven 2026-05-28) but doesn't
 # render in the banner.
 DIGEST=$(build_digest)
+
+# ----- Knowledge-skill self-authoring directive (learning-loop E2) ----
+# Vornik cannot see this session's transcript — only the MCP calls this
+# client makes. So capturing reusable know-how has to be client-driven.
+# Plant the directive at session start (reliable — the model carries it
+# through the whole session) rather than a fragile stop-hook re-prompt.
+# The proposed skill is a DRAFT; an operator approves it (e.g. from a
+# Telegram review prompt) before it activates. The transcript never
+# leaves this machine — only the skill_propose call (the draft) does.
+SKILL_DIRECTIVE=$(cat <<EOF
+
+## vornik: capture reusable know-how as skills
+
+When you and the operator work out a **durable, reusable, project-relevant
+procedure** this session — a troubleshooting flow, a non-obvious fix, a
+deploy/verify sequence worth doing the same way next time — proactively
+capture it as a vornik knowledge skill:
+
+1. First \`mcp__vornik__skill_search\` (repo_scope \`${REPO_SCOPE}\`) to
+   avoid duplicating an existing skill.
+2. If it's genuinely new, call \`mcp__vornik__skill_propose\` with a
+   kebab-case \`name\`, a one-line \`description\` (WHEN to apply it), a
+   Markdown \`body\` (the actual steps/checks/anti-patterns), and
+   \`repo_scope: "${REPO_SCOPE}"\`.
+
+It lands as a **draft** and does NOT take effect until an operator
+approves it — so propose freely, but only for things genuinely worth
+reusing. Do NOT propose trivial, one-off, or secret-bearing content.
+EOF
+)
+DIGEST=$(printf '%s\n%s' "$DIGEST" "$SKILL_DIRECTIVE")
+
 if [[ -n "$DIGEST" ]]; then
   jq -n --arg ctx "$DIGEST" '{
     hookSpecificOutput: {

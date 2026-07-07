@@ -136,17 +136,15 @@ func (s *Server) saveSchemaAsset(r *http.Request, spec schemaAssetSpec) {
 		return
 	}
 
-	// Step 13: hot-reload (full reloader if wired, else registry reload).
-	if s.configReloader != nil {
-		if err := s.configReloader.Reload(); err != nil {
-			spec.renderErr(http.StatusConflict, reloadErrMsg(err, backupPath), values, errs)
-			return
+	// Step 13: bounded hot-reload — a busy/wedged reloader must not hang the
+	// request; it falls back to "restart required" + the persistent banner.
+	if res := s.applyConfigEdit(spec.assetNoun + " config"); res.Level == "error" {
+		msg := res.Message
+		if backupPath != "" {
+			msg += "\nBackup: " + backupPath
 		}
-	} else if s.projectReg != nil {
-		if err := s.projectReg.Load(s.configDir()); err != nil {
-			spec.renderErr(http.StatusConflict, reloadErrMsg(err, backupPath), values, errs)
-			return
-		}
+		spec.renderErr(http.StatusConflict, msg, values, errs)
+		return
 	}
 
 	// Step 14: audit + success render.

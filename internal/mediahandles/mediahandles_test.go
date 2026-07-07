@@ -63,7 +63,7 @@ func TestExtractStashesAndReturnsHandle(t *testing.T) {
 	if strings.Contains(out, "AAAA") {
 		t.Fatal("data URI must not leak into the agent-facing result")
 	}
-	if hr.Bytes != 500 || hr.ContentType != "image/jpeg" {
+	if hr.Bytes != 3 || hr.ContentType != "image/jpeg" {
 		t.Fatalf("metadata not preserved: %+v", hr)
 	}
 }
@@ -83,7 +83,7 @@ func TestExtractPassesThroughNonSourceAndNonImage(t *testing.T) {
 
 func TestExtractRejectsOversizeAndOverCount(t *testing.T) {
 	s := testStore()
-	over := s.ExtractSourceResult("t1", encodeTool, encodeResult("data:image/jpeg;base64,AAAA", 2000))
+	over := s.ExtractSourceResult("t1", encodeTool, encodeResult("data:image/jpeg;base64,"+strings.Repeat("A", 2000), 2000))
 	if !strings.Contains(over, "media_handle_error") || !strings.Contains(over, "over the") {
 		t.Fatalf("expected over-cap error result, got %q", over)
 	}
@@ -94,6 +94,15 @@ func TestExtractRejectsOversizeAndOverCount(t *testing.T) {
 	fourth := s.ExtractSourceResult("t2", encodeTool, encodeResult("data:image/jpeg;base64,AAAA", 100))
 	if !strings.Contains(fourth, "too many images") {
 		t.Fatalf("expected count-cap error, got %q", fourth)
+	}
+}
+
+func TestExtractRejectsOversizeEvenWhenSourceUnderReportsBytes(t *testing.T) {
+	s := testStore()
+	huge := "data:image/jpeg;base64," + strings.Repeat("A", 2000)
+	out := s.ExtractSourceResult("t1", encodeTool, encodeResult(huge, 1))
+	if !strings.Contains(out, "media_handle_error") || !strings.Contains(out, "over the") {
+		t.Fatalf("expected actual data URI size to enforce cap, got %q", out)
 	}
 }
 
@@ -123,6 +132,20 @@ func TestExpandInjectsReferencedImages(t *testing.T) {
 	}
 	if len(parsed.Images) != 1 || parsed.Images[0].ID != h || parsed.Images[0].DataURI != "data:image/jpeg;base64,ZZZZ" {
 		t.Fatalf("images not injected correctly: %+v", parsed.Images)
+	}
+}
+
+func TestExpandRecognizesCidSrcWithWhitespace(t *testing.T) {
+	s := testStore()
+	h := mustHandle(t, s, "data:image/jpeg;base64,ZZZZ")
+
+	args := `{"html":"<h1>x</h1><img alt=\"x\" src = \"cid:` + h + `\">"}`
+	out, err := s.ExpandSinkArgs("t1", publishTool, args)
+	if err != nil {
+		t.Fatalf("expand error: %v", err)
+	}
+	if !strings.Contains(out, `"images"`) || !strings.Contains(out, h) {
+		t.Fatalf("expected image injection for spaced src attr, got %s", out)
 	}
 }
 

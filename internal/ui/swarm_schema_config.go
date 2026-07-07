@@ -431,16 +431,6 @@ func joinFieldErrors(a, b []assetschema.FieldError) string {
 	return strings.Join(msgs, "; ")
 }
 
-// reloadErrMsg formats the saved-but-reload-failed message with the
-// backup path for recovery.
-func reloadErrMsg(err error, backupPath string) string {
-	msg := "Saved, but reload failed: " + err.Error()
-	if backupPath != "" {
-		msg += "\nBackup: " + backupPath
-	}
-	return msg
-}
-
 // writeSwarmSaveAudit records one admin-audit row for a successful save.
 func (s *Server) writeSwarmSaveAudit(r *http.Request, swarmID string, roleCount int) {
 	if s.adminAuditRepo == nil {

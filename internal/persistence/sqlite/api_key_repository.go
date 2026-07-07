@@ -71,13 +71,15 @@ func (r *APIKeyRepository) Create(ctx context.Context, k *persistence.APIKey) er
 			created_at, last_used_at, expires_at, revoked_at, created_by,
 			rate_limit_rps, rate_limit_burst,
 			allowed_workflows, budget_cap_usd, client_kind, session_label,
-			memory_read, memory_write, allow_push, default_repo_scope
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			memory_read, memory_write, allow_push, default_repo_scope,
+			skill_read, skill_write, skill_admin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		k.ID, k.ProjectID, k.Name, k.KeyHash, k.KeyPrefix,
 		sqliteTime(k.CreatedAt), sqliteTimePtr(k.LastUsedAt), sqliteTimePtr(k.ExpiresAt),
 		sqliteTimePtr(k.RevokedAt), k.CreatedBy, k.RateLimitRPS, k.RateLimitBurst,
 		encodeAllowedWorkflows(k.AllowedWorkflows), budget, clientKind, sessionLabel,
 		boolToInt(k.MemoryRead), boolToInt(k.MemoryWrite), boolToInt(k.AllowPush), defaultRepoScope,
+		boolToInt(k.SkillRead), boolToInt(k.SkillWrite), boolToInt(k.SkillAdmin),
 	)
 	return err
 }
@@ -102,7 +104,8 @@ func (r *APIKeyRepository) LookupActiveByHash(ctx context.Context, keyHash strin
 		       created_at, last_used_at, expires_at, revoked_at, created_by,
 		       rate_limit_rps, rate_limit_burst,
 		       allowed_workflows, budget_cap_usd, client_kind, session_label,
-		       memory_read, memory_write, allow_push, default_repo_scope
+		       memory_read, memory_write, allow_push, default_repo_scope,
+		       skill_read, skill_write, skill_admin
 		FROM api_keys
 		WHERE key_hash = ?
 		  AND revoked_at IS NULL
@@ -126,7 +129,8 @@ func (r *APIKeyRepository) ListByProject(ctx context.Context, projectID string) 
 		       created_at, last_used_at, expires_at, revoked_at, created_by,
 		       rate_limit_rps, rate_limit_burst,
 		       allowed_workflows, budget_cap_usd, client_kind, session_label,
-		       memory_read, memory_write, allow_push, default_repo_scope
+		       memory_read, memory_write, allow_push, default_repo_scope,
+		       skill_read, skill_write, skill_admin
 		FROM api_keys WHERE project_id = ?
 		ORDER BY created_at DESC`, projectID)
 	if err != nil {
@@ -153,7 +157,8 @@ func (r *APIKeyRepository) ListCompanionByProject(ctx context.Context, projectID
 		       created_at, last_used_at, expires_at, revoked_at, created_by,
 		       rate_limit_rps, rate_limit_burst,
 		       allowed_workflows, budget_cap_usd, client_kind, session_label,
-		       memory_read, memory_write, allow_push, default_repo_scope
+		       memory_read, memory_write, allow_push, default_repo_scope,
+		       skill_read, skill_write, skill_admin
 		FROM api_keys
 		WHERE project_id = ?
 		  AND client_kind IS NOT NULL
@@ -237,12 +242,14 @@ func scanAPIKey(scanner interface{ Scan(dest ...any) error }) (*persistence.APIK
 		defaultRepoScope sql.NullString
 	)
 	var memRead, memWrite, allowPush sql.NullInt64
+	var skillRead, skillWrite, skillAdmin sql.NullInt64
 	err := scanner.Scan(
 		&k.ID, &k.ProjectID, &k.Name, &k.KeyHash, &k.KeyPrefix,
 		&createdAt, &lastUsed, &expiresAt, &revokedAt, &createdBy,
 		&rps, &burst,
 		&allowedWF, &budget, &clientKind, &sessionLabel,
 		&memRead, &memWrite, &allowPush, &defaultRepoScope,
+		&skillRead, &skillWrite, &skillAdmin,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -291,6 +298,9 @@ func scanAPIKey(scanner interface{ Scan(dest ...any) error }) (*persistence.APIK
 	k.MemoryRead = memRead.Valid && memRead.Int64 != 0
 	k.MemoryWrite = memWrite.Valid && memWrite.Int64 != 0
 	k.AllowPush = allowPush.Valid && allowPush.Int64 != 0
+	k.SkillRead = skillRead.Valid && skillRead.Int64 != 0
+	k.SkillWrite = skillWrite.Valid && skillWrite.Int64 != 0
+	k.SkillAdmin = skillAdmin.Valid && skillAdmin.Int64 != 0
 	return &k, nil
 }
 

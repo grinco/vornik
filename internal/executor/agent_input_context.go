@@ -151,8 +151,13 @@ func buildAgentContextMap(taskType, prompt string, timeContext currentDateTimeCo
 	// Append canonical-context guidance whenever the pre-load populated
 	// something, so the agent reads context.projectContext / userGuidance
 	// before walking the workspace (LLD §3.2).
-	if opts.SystemPrompt != "" || !opts.CanonicalContext.Empty() {
-		contextMap["systemPrompt"] = composeSystemPromptWithCanonicalContext(opts.SystemPrompt, opts.CanonicalContext)
+	if opts.SystemPrompt != "" || !opts.CanonicalContext.Empty() || len(opts.Skills) > 0 {
+		sp := composeSystemPromptWithCanonicalContext(opts.SystemPrompt, opts.CanonicalContext)
+		// Learned skills are operator-approved, so they ride the trusted
+		// directive channel (system prompt), appended after canonical
+		// context (LLD 2026-07-07-knowledge-skill-store-design §4).
+		sp = composeSystemPromptWithSkills(sp, opts.Skills)
+		contextMap["systemPrompt"] = sp
 	}
 	// Adaptive candidate list — the lead picks a value from this slice
 	// verbatim; the executor validates the choice post-run.

@@ -51,7 +51,7 @@ const (
 // RE2 has no backreferences, so we accept either quote on each side. We only
 // extract the handle (never rewrite the HTML), so quote-matching precision is
 // irrelevant; the {1,64} bound matches PageDrop's accepted id shape.
-var cidRefRE = regexp.MustCompile(`src=["']cid:([a-z0-9-]{1,64})["']`)
+var cidRefRE = regexp.MustCompile(`(?i)\bsrc\s*=\s*["']cid:([a-z0-9-]{1,64})["']`)
 
 // imgTagRE matches a whole <img …> tag; imgSrcRE pulls its src value (either
 // quote). Used by SanitizeSinkHTML to keep only cid: images in published HTML.
@@ -158,9 +158,9 @@ func (s *Store) ExtractSourceResult(taskID, tool, resultText string) string {
 		// or a tool output without a data_uri. Leave it for the agent.
 		return resultText
 	}
-	bytes := sr.Bytes
+	bytes := decodedBytes(sr.DataURI)
 	if bytes <= 0 {
-		bytes = decodedBytes(sr.DataURI)
+		bytes = sr.Bytes
 	}
 	if bytes > s.maxBytes {
 		return toolError(fmt.Sprintf("image is %d bytes, over the %d-byte limit; not embedded", bytes, s.maxBytes))

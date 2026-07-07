@@ -279,14 +279,8 @@ func (s *Server) applyProjectPatches(projectID string, guard *fieldguard.Guard, 
 	if _, err := writeProjectConfigAtomic(path, patched); err != nil {
 		return fmt.Errorf("write project yaml: %w", err)
 	}
-	if s.configReloader != nil {
-		if err := s.configReloader.Reload(); err != nil {
-			return fmt.Errorf("reload registry: %w", err)
-		}
-	} else if s.projectReg != nil {
-		if err := s.projectReg.Load(configDir); err != nil {
-			return fmt.Errorf("reload registry: %w", err)
-		}
+	if res := s.applyConfigEdit("project " + projectID + " lifecycle"); res.Level == "error" {
+		return fmt.Errorf("reload registry: %s", res.Message)
 	}
 	return nil
 }

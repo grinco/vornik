@@ -274,29 +274,18 @@ func (s *Server) WorkflowSave(w http.ResponseWriter, r *http.Request, workflowID
 	}
 	data.BackupPath = backupPath
 
-	if s.configReloader != nil {
-		if err := s.configReloader.Reload(); err != nil {
-			data.Error = "Saved, but reload failed: " + err.Error()
-			if backupPath != "" {
-				data.Error += "\nBackup: " + backupPath
-			}
-			w.WriteHeader(http.StatusConflict)
-			s.render(w, "workflow_edit.html", data)
-			return
+	res := s.applyConfigEdit("workflow config")
+	if res.Level == "error" {
+		data.Error = res.Message
+		if backupPath != "" {
+			data.Error += "\nBackup: " + backupPath
 		}
-	} else if s.projectReg != nil {
-		if err := s.projectReg.Load(s.configDir()); err != nil {
-			data.Error = "Saved, but registry reload failed: " + err.Error()
-			if backupPath != "" {
-				data.Error += "\nBackup: " + backupPath
-			}
-			w.WriteHeader(http.StatusConflict)
-			s.render(w, "workflow_edit.html", data)
-			return
-		}
+		w.WriteHeader(http.StatusConflict)
+		s.render(w, "workflow_edit.html", data)
+		return
 	}
 
-	data.Success = "Workflow saved and reloaded."
+	data.Success = res.Message
 	if backupPath != "" {
 		data.Success += " Backup: " + backupPath
 	}

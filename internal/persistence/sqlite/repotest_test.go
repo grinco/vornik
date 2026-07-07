@@ -36,6 +36,21 @@ func TestTaskWatcherRepository_Contract(t *testing.T) {
 	repotest.RunTaskWatcherSuite(t, sqlite.NewTaskWatcherRepository(db.DB))
 }
 
+// TestSkillRepository_Contract — knowledge-skill store. Both backends
+// must agree on scope isolation, the version-bump-on-edit upsert, and
+// the maturity/role list filters.
+func TestSkillRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunSkillSuite(t, sqlite.NewSkillRepository(db.DB))
+}
+
+// TestExecutionInjectedSkillRepository_Contract — the execution→skill
+// association backing the maturity engine's "worked" credit.
+func TestExecutionInjectedSkillRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunExecutionInjectedSkillSuite(t, sqlite.NewExecutionInjectedSkillRepository(db.DB))
+}
+
 // TestToolAuditRepository_Contract — same shape, on tool_audit_log.
 func TestToolAuditRepository_Contract(t *testing.T) {
 	db := newTestDB(t)

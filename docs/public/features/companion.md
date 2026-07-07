@@ -1,11 +1,11 @@
 ---
 sources:
     - path: internal/api/companion_mcp.go
-      sha256: de7674085b8eed904d89926accb97374532e056e86c31f497aa87358872a20b1
+      sha256: 146bdd8e82c069a8902e546f1cffa1ff41c4487ca3639cc8bc908bc2c87d17b0
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
-      sha256: a3c31169e74f59b489ab29c5fb7f7173d19c80927dad6154762583be67e57031
+      sha256: cf4f94eeba240cfb076632dd2b06e4e44fd62bfbd06aefe9edc2ec78cb736051
     - path: contrib/codex-companion/.codex-plugin/plugin.json
-      sha256: c8c143b0ad4b4a9501da7ce6f95db71307fd2d66813ba56a425cfb34dab2ee22
+      sha256: c66881d15d3c654eeef6a3be03a9ad0196b411653381e9d8bb4836c52768ee40
 ---
 # Companion plugin
 
@@ -30,7 +30,7 @@ scoped key, so it never needs your admin credentials.
 
 ## The tools
 
-The companion exposes ten MCP tools:
+The companion exposes these MCP tools:
 
 | Tool | Purpose |
 |------|---------|
@@ -44,6 +44,20 @@ The companion exposes ten MCP tools:
 | `cancel` | cancel a task that hasn't finished |
 | `list` | list recent companion-created tasks for the project |
 | `catalog` | show which workflows this key may delegate to, with cost estimates |
+| `skill_propose` | propose a knowledge skill (instructional know-how) as a draft (needs `skill_write`) |
+| `skill_search` | find active/trusted knowledge skills by scope, domain, role (needs `skill_read`) |
+| `skill_get` | fetch one knowledge skill's full body (needs `skill_read`) |
+| `skill_list` | enumerate knowledge skills by maturity for management (needs `skill_read`) |
+| `skill_approve` | promote a draft skill to active — the human gate (needs `skill_admin`) |
+| `skill_reject` | retire/revoke a knowledge skill (needs `skill_admin`) |
+
+The `skill_*` tools are the client surface of the daemon-owned **knowledge-skill
+store**: instructional know-how authored from any client (a proven procedure, a
+hard-won gotcha) that, once approved, is served to swarm roles and every
+companion client. They are distinct from the `SWARM-SKILL.md` capability skills
+(workflow + roles) and share no storage with project memory. A proposed skill
+lands as a `draft` and never fires until an operator with a `skill_admin` key
+approves it.
 
 In Claude Code, several tools are also wrapped as slash commands — for example
 `/recall`, `/remember`, `/delegate`, `/review` (a one-shot architectural

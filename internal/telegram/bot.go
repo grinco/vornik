@@ -427,9 +427,16 @@ type Bot struct {
 	// serialises createForumTopic calls per task_id to avoid
 	// orphan topics when two notifications race; the DB
 	// UNIQUE(chat_id, thread_id) is the durable guard.
-	forumChatID      int64
-	forumIconColor   int
-	threadRepo       persistence.TelegramThreadRepository
+	forumChatID    int64
+	forumIconColor int
+	threadRepo     persistence.TelegramThreadRepository
+	// skillRepo backs the knowledge-skill approval surface (learning-
+	// loop §approval). Nil disables skill approve/reject callbacks +
+	// the review digest.
+	skillRepo persistence.SkillRepository
+	// skillDigestSeen dedupes the periodic review digest so each draft
+	// is surfaced once, not re-pinged every tick.
+	skillDigestSeen  notifiedSkillDrafts
 	forumCreateMu    sync.Mutex
 	forumCreateInFly map[string]chan struct{}
 	// forumSentArtifacts dedupes per-(thread_id, artifact_id) so
@@ -527,6 +534,14 @@ func WithHTTPClient(hc *http.Client) BotOption {
 }
 
 // WithTaskRepository sets the task repository.
+// WithSkillRepository wires the knowledge-skill store so the bot can
+// render approve/reject buttons and apply operator decisions. Nil-safe.
+func WithSkillRepository(repo persistence.SkillRepository) BotOption {
+	return func(b *Bot) {
+		b.skillRepo = repo
+	}
+}
+
 func WithTaskRepository(repo persistence.TaskRepository) BotOption {
 	return func(b *Bot) {
 		b.taskRepo = repo
@@ -2163,6 +2178,9 @@ func (b *Bot) periodicSaveLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			b.saveConversations()
+			// Batched knowledge-skill review digest (learning-loop):
+			// surface fresh draft skills to operators once, deduped.
+			b.sendSkillReviewDigest(ctx)
 		}
 	}
 }

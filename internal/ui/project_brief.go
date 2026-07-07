@@ -126,30 +126,18 @@ func (s *Server) ProjectBriefSave(w http.ResponseWriter, r *http.Request, projec
 	}
 	data.BackupPath = backupPath
 
-	if s.configReloader != nil {
-		if err := s.configReloader.Reload(); err != nil {
-			data.Error = "Saved, but reload failed: " + err.Error()
-			if backupPath != "" {
-				data.Error += "\nBackup: " + backupPath
-			}
-			w.WriteHeader(http.StatusConflict)
-			s.render(w, "project_brief.html", data)
-			return
+	res := s.applyConfigEdit("project " + projectID + " brief")
+	if res.Level == "error" {
+		data.Error = res.Message
+		if backupPath != "" {
+			data.Error += "\nBackup: " + backupPath
 		}
-	} else if s.projectReg != nil {
-		if err := s.projectReg.Load(s.configDir()); err != nil {
-			data.Error = "Saved, but registry reload failed: " + err.Error()
-			if backupPath != "" {
-				data.Error += "\nBackup: " + backupPath
-			}
-			w.WriteHeader(http.StatusConflict)
-			s.render(w, "project_brief.html", data)
-			return
-		}
+		w.WriteHeader(http.StatusConflict)
+		s.render(w, "project_brief.html", data)
+		return
 	}
-
 	data.HasExisting = true
-	data.Success = "Brief saved and reloaded."
+	data.Success = res.Message
 	if backupPath != "" {
 		data.Success += " Backup: " + backupPath
 	}

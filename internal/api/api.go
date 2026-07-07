@@ -756,7 +756,12 @@ type Server struct {
 	// "memory subsystem not wired on this daemon" error when this
 	// field is unset, so deployments that don't run the memory
 	// subsystem (e.g. tests, minimal harnesses) continue to work.
-	memoryCompanion          MemoryCompanionAdapter
+	memoryCompanion MemoryCompanionAdapter
+	// skillStore backs the knowledge-skill companion MCP tools
+	// (skill_propose/search/get/list/approve/reject). Nil-safe: those
+	// tools return "skill store not wired on this daemon" when unset,
+	// so minimal harnesses/tests keep working.
+	skillStore               persistence.SkillRepository
 	memoryTitleBackfiller    MemoryTitleBackfiller
 	memoryClassifyBackfiller MemoryClassifyBackfiller
 	// memoryGraphReflagger powers POST /api/v1/memory/regraph —
@@ -1814,6 +1819,15 @@ func WithMemorySearcher(ms MemorySearcher) ServerOption {
 func WithMemoryCompanionAdapter(a MemoryCompanionAdapter) ServerOption {
 	return func(s *Server) {
 		s.memoryCompanion = a
+	}
+}
+
+// WithSkillStore wires the knowledge-skill store backing the
+// skill_* companion MCP tools. Nil preserves the "not wired" posture
+// (those tools return a clear error).
+func WithSkillStore(repo persistence.SkillRepository) ServerOption {
+	return func(s *Server) {
+		s.skillStore = repo
 	}
 }
 

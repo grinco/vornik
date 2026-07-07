@@ -150,14 +150,11 @@ func (s *Server) SwarmsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.configReloader != nil {
-		if err := s.configReloader.Reload(); err != nil {
-			data.Error = "Saved swarms/" + data.SwarmID + ".md but daemon reload failed: " + err.Error() +
-				"\nThe file is on disk; restart the daemon or fix the cause and retry the reload."
-			w.WriteHeader(http.StatusConflict)
-			s.render(w, "swarms_new.html", data)
-			return
-		}
+	if res := s.applyConfigEdit("swarm " + data.SwarmID); res.Level == "error" {
+		data.Error = "Saved swarms/" + data.SwarmID + ".md but " + res.Message
+		w.WriteHeader(http.StatusConflict)
+		s.render(w, "swarms_new.html", data)
+		return
 	}
 
 	// Redirect to the existing editor — the operator wanted "new

@@ -307,20 +307,16 @@ func (s *Server) ProjectsCreateFromTemplate(w http.ResponseWriter, r *http.Reque
 	// after persisting. A reload failure is surfaced but non-fatal: the
 	// files are on disk, so a later restart/reload still picks them up.
 	data := s.buildProjectsNewData(r)
-	if s.configReloader != nil {
-		if err := s.configReloader.Reload(); err != nil {
-			data.SelectedSlug = slug
-			data.SelectedManifest = manifest
-			s.resolveDynamicOptions(&data)
-			data.FormValues = flat
-			data.FormValuesMulti = multi
-			data.Error = "Created " + strings.Join(written, ", ") +
-				" but daemon reload failed: " + err.Error() +
-				"\nThe files are on disk; restart the daemon or fix the cause and retry."
-			w.WriteHeader(http.StatusConflict)
-			s.render(w, "projects_new_form.html", data)
-			return
-		}
+	if res := s.applyConfigEdit("new project " + flat["projectId"]); res.Level == "error" {
+		data.SelectedSlug = slug
+		data.SelectedManifest = manifest
+		s.resolveDynamicOptions(&data)
+		data.FormValues = flat
+		data.FormValuesMulti = multi
+		data.Error = "Created " + strings.Join(written, ", ") + " but " + res.Message
+		w.WriteHeader(http.StatusConflict)
+		s.render(w, "projects_new_form.html", data)
+		return
 	}
 
 	data.CreatedSlug = slug

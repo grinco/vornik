@@ -5067,4 +5067,97 @@ ALTER TABLE project_wizard_sessions ADD COLUMN IF NOT EXISTS composition JSONB;
 ALTER TABLE project_wizard_sessions DROP COLUMN IF EXISTS composition;
 `,
 	},
+	{
+		Version: 113,
+		Name:    "create_project_skills",
+		// Knowledge-skill store (LLD 2026-07-07-knowledge-skill-store-
+		// design). Daemon-owned instructional skills, distinct from the
+		// SWARM-SKILL.md capability-skill primitive and sharing no
+		// storage/retrieval with project RAG memory. repo_scope follows
+		// the migration-75 token convention (NULL=uncategorized,
+		// '*'=cross-cutting). tags/roles are JSON-encoded TEXT (not
+		// TEXT[]) so the SQLite backend can round-trip the same repo
+		// code; no embedding column (this slice does no semantic
+		// ranking). usage_* counters are written by RecordFeedback but
+		// not read until the slice-D maturity engine. Additive-only.
+		Up: `
+CREATE TABLE IF NOT EXISTS project_skills (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL,
+    repo_scope      TEXT,
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    body_sha256     TEXT NOT NULL,
+    domain          TEXT,
+    tags            TEXT NOT NULL DEFAULT '[]',
+    roles           TEXT NOT NULL DEFAULT '[]',
+    maturity        TEXT NOT NULL DEFAULT 'draft'
+                      CHECK (maturity IN ('draft','active','trusted','retired')),
+    version         INTEGER NOT NULL DEFAULT 1,
+    origin_client   TEXT,
+    origin_task     TEXT,
+    author          TEXT,
+    usage_fired     BIGINT NOT NULL DEFAULT 0,
+    usage_worked    BIGINT NOT NULL DEFAULT 0,
+    usage_corrected BIGINT NOT NULL DEFAULT 0,
+    last_fired_at   TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (project_id, repo_scope, name)
+);
+CREATE INDEX IF NOT EXISTS idx_project_skills_lookup
+    ON project_skills (project_id, repo_scope, maturity);
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_project_skills_lookup;
+DROP TABLE IF EXISTS project_skills;
+`,
+	},
+	{
+		Version: 114,
+		Name:    "api_keys_skill_capabilities",
+		// Per-key capability gates for the knowledge-skill MCP tools
+		// (LLD 2026-07-07-knowledge-skill-store-design). skill_read →
+		// search/get/list; skill_write → propose (implies read);
+		// skill_admin → approve/reject (the human gate). All default
+		// FALSE so existing keys gain no skill access implicitly.
+		// Additive-only, mirrors the memory_read/write column addition.
+		Up: `
+ALTER TABLE api_keys
+    ADD COLUMN IF NOT EXISTS skill_read  BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS skill_write BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS skill_admin BOOLEAN NOT NULL DEFAULT FALSE;
+`,
+		Down: `
+ALTER TABLE api_keys
+    DROP COLUMN IF EXISTS skill_admin,
+    DROP COLUMN IF EXISTS skill_write,
+    DROP COLUMN IF EXISTS skill_read;
+`,
+	},
+	{
+		Version: 115,
+		Name:    "create_execution_injected_skills",
+		// Execution→injected-skill association (LLD 2026-07-07-knowledge-
+		// skill-learning-loop-design §D.2). Records which approved skills
+		// were injected into a role for an execution, so a successful
+		// completion can credit a "worked" signal to exactly those
+		// skills. injected_at is write-only provenance (never
+		// ordered/compared cross-backend). Additive-only.
+		Up: `
+CREATE TABLE IF NOT EXISTS execution_injected_skills (
+    execution_id TEXT NOT NULL,
+    skill_id     TEXT NOT NULL,
+    injected_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (execution_id, skill_id)
+);
+CREATE INDEX IF NOT EXISTS idx_exec_injected_skills_skill
+    ON execution_injected_skills (skill_id);
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_exec_injected_skills_skill;
+DROP TABLE IF EXISTS execution_injected_skills;
+`,
+	},
 }

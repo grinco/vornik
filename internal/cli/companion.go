@@ -88,6 +88,10 @@ var (
 	companionGrantMemoryRead   bool
 	companionGrantMemoryWrite  bool
 	companionGrantMemoryAll    bool
+	companionGrantSkillRead    bool
+	companionGrantSkillWrite   bool
+	companionGrantSkillAdmin   bool
+	companionGrantSkillAll     bool
 	companionGrantJSON         bool
 
 	companionKeysProject string
@@ -132,6 +136,14 @@ func init() {
 		"Allow this key to call remember() to deposit notes into the project's RAG store. Implies --memory-read.")
 	companionGrantCmd.Flags().BoolVar(&companionGrantMemoryAll, "memory-all", false,
 		"Shorthand for --memory-read --memory-write.")
+	companionGrantCmd.Flags().BoolVar(&companionGrantSkillRead, "skill-read", false,
+		"Allow this key to call skill_search/get/list on the knowledge-skill store.")
+	companionGrantCmd.Flags().BoolVar(&companionGrantSkillWrite, "skill-write", false,
+		"Allow this key to call skill_propose (draft a skill). Implies --skill-read.")
+	companionGrantCmd.Flags().BoolVar(&companionGrantSkillAdmin, "skill-admin", false,
+		"Allow this key to approve/reject skills (the human gate that promotes a draft to active).")
+	companionGrantCmd.Flags().BoolVar(&companionGrantSkillAll, "skill-all", false,
+		"Shorthand for --skill-read --skill-write --skill-admin.")
 	companionGrantCmd.Flags().BoolVar(&companionGrantJSON, "json", false, "Emit JSON instead of human text")
 	_ = companionGrantCmd.MarkFlagRequired("project")
 	_ = companionGrantCmd.MarkFlagRequired("client")
@@ -194,6 +206,18 @@ func runCompanionGrant(cmd *cobra.Command, args []string) error {
 	}
 	if memWrite {
 		body["memoryWrite"] = true
+	}
+	skillRead := companionGrantSkillRead || companionGrantSkillAll || companionGrantSkillWrite // write implies read
+	skillWrite := companionGrantSkillWrite || companionGrantSkillAll
+	skillAdmin := companionGrantSkillAdmin || companionGrantSkillAll
+	if skillRead {
+		body["skillRead"] = true
+	}
+	if skillWrite {
+		body["skillWrite"] = true
+	}
+	if skillAdmin {
+		body["skillAdmin"] = true
 	}
 
 	client := ClientFromEnv()

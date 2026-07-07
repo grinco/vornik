@@ -237,29 +237,17 @@ func (s *Server) SwarmSave(w http.ResponseWriter, r *http.Request, swarmID strin
 	}
 	data.BackupPath = backupPath
 
-	if s.configReloader != nil {
-		if err := s.configReloader.Reload(); err != nil {
-			data.Error = "Saved, but reload failed: " + err.Error()
-			if backupPath != "" {
-				data.Error += "\nBackup: " + backupPath
-			}
-			w.WriteHeader(http.StatusConflict)
-			s.render(w, "swarm_edit.html", data)
-			return
+	res := s.applyConfigEdit("swarm config")
+	if res.Level == "error" {
+		data.Error = res.Message
+		if backupPath != "" {
+			data.Error += "\nBackup: " + backupPath
 		}
-	} else if s.projectReg != nil {
-		if err := s.projectReg.Load(s.configDir()); err != nil {
-			data.Error = "Saved, but registry reload failed: " + err.Error()
-			if backupPath != "" {
-				data.Error += "\nBackup: " + backupPath
-			}
-			w.WriteHeader(http.StatusConflict)
-			s.render(w, "swarm_edit.html", data)
-			return
-		}
+		w.WriteHeader(http.StatusConflict)
+		s.render(w, "swarm_edit.html", data)
+		return
 	}
-
-	data.Success = "Swarm saved and reloaded."
+	data.Success = res.Message
 	if backupPath != "" {
 		data.Success += " Backup: " + backupPath
 	}

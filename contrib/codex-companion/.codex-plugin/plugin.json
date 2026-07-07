@@ -1,6 +1,6 @@
 {
   "name": "codex-companion",
-  "version": "0.8.0+codex.20260628",
+  "version": "0.9.0+codex.20260707",
   "description": "Vornik async-offload companion for Codex. Delegate reviews, audits, validations, research, summarization, and project RAG memory work to a vornik daemon over MCP.",
   "author": {
     "name": "vornik"
@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Vornik Companion for Codex",
     "shortDescription": "Delegate async agent work from Codex to vornik.",
-    "longDescription": "Connects Codex to the vornik companion MCP endpoint so Codex can queue long-running reviews, audits, validation, research, summarization, and RAG memory operations without doing all work inline.",
+    "longDescription": "Connects Codex to the vornik companion MCP endpoint so Codex can queue long-running reviews, audits, validation, research, summarization, and RAG memory operations without doing all work inline. 0.9.0 adds a `knowledge` skill teaching Codex the daemon-owned knowledge-skill store: propose reusable procedures (draft → operator-approved → served to swarm roles + all clients), search/apply approved skills, and approve with an admin key. Distinct from SWARM-SKILL.md capability skills and from RAG memory.",
     "developerName": "vornik",
     "category": "Development",
     "capabilities": [

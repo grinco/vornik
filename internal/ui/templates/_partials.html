@@ -1052,6 +1052,19 @@
      readers + keyboard users can bypass the global nav. WCAG
      2.4.1 (bypass blocks). */}}
 <a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[100] focus:bg-brand-600 focus:text-white focus:px-3 focus:py-2 focus:rounded-md focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-white">Skip to main content</a>
+{{/* Persistent "restart required" banner — shown on every page while a
+     config edit is saved-but-not-applied (reloader busy/wedged/slow, or
+     activation gated/failed). In-memory flag; clears on the next daemon
+     boot, which is when the pending config actually applies. See
+     https://docs.vornik.io */}}
+{{with restartPending}}{{if .Pending}}
+<div role="alert" class="fixed top-0 inset-x-0 z-[90] flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-amber-950 bg-amber-300 border-b border-amber-500 shadow">
+    <span aria-hidden="true">⚠</span>
+    <span>Configuration saved — restart the daemon to apply pending changes:
+    <code class="font-mono bg-amber-200 px-1 rounded">systemctl --user restart vornik</code>{{if .Since}}
+    <span class="opacity-70">· pending since {{.Since}}</span>{{end}}</span>
+</div>
+{{end}}{{end}}
 {{/* === Icon rail + contextual panel (md:+) — UI refresh 2026-06-08 ===
      Replaces the flat top-bar. The rail (areas) + panel (destinations
      of the active area) + mobile drawer all render from navModel so the

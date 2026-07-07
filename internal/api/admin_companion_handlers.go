@@ -59,6 +59,13 @@ type companionGrantRequest struct {
 	// surfaces --memory-read / --memory-write / --memory-all.
 	MemoryRead  bool `json:"memoryRead,omitempty"`
 	MemoryWrite bool `json:"memoryWrite,omitempty"`
+	// Knowledge-skill capabilities (LLD 2026-07-07-knowledge-skill-store).
+	// CLI: --skill-read / --skill-write / --skill-admin / --skill-all.
+	// skill_write implies skill_read; skill_admin (the approval gate) is
+	// independent and deliberately opt-in.
+	SkillRead  bool `json:"skillRead,omitempty"`
+	SkillWrite bool `json:"skillWrite,omitempty"`
+	SkillAdmin bool `json:"skillAdmin,omitempty"`
 	// DefaultRepoScope (migration 110) is the repo_scope the companion
 	// MCP memory surface stamps on calls that omit it. Set it for
 	// clients without a SessionStart scope injector (e.g. Codex) so
@@ -84,6 +91,9 @@ type companionGrantResponse struct {
 	ExpiresAt        *time.Time `json:"expiresAt,omitempty"`
 	MemoryRead       bool       `json:"memoryRead,omitempty"`
 	MemoryWrite      bool       `json:"memoryWrite,omitempty"`
+	SkillRead        bool       `json:"skillRead,omitempty"`
+	SkillWrite       bool       `json:"skillWrite,omitempty"`
+	SkillAdmin       bool       `json:"skillAdmin,omitempty"`
 	DefaultRepoScope string     `json:"defaultRepoScope,omitempty"`
 }
 
@@ -243,6 +253,9 @@ func (s *Server) CompanionGrant(w http.ResponseWriter, r *http.Request) {
 	// future callers that POST directly can't end up in the
 	// nonsensical write-without-read state.
 	memoryRead := req.MemoryRead || req.MemoryWrite
+	// skill_write implies skill_read (a writer must be able to read
+	// back what it proposed); skill_admin is independent.
+	skillRead := req.SkillRead || req.SkillWrite
 	row := &persistence.APIKey{
 		ID:               persistence.GenerateID("akey"),
 		ProjectID:        req.ProjectID,
@@ -259,6 +272,9 @@ func (s *Server) CompanionGrant(w http.ResponseWriter, r *http.Request) {
 		DefaultRepoScope: req.DefaultRepoScope,
 		MemoryRead:       memoryRead,
 		MemoryWrite:      req.MemoryWrite,
+		SkillRead:        skillRead,
+		SkillWrite:       req.SkillWrite,
+		SkillAdmin:       req.SkillAdmin,
 	}
 	if err := s.apiKeyRepo.Create(r.Context(), row); err != nil {
 		s.logger.Warn().Err(err).
@@ -283,6 +299,9 @@ func (s *Server) CompanionGrant(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:        row.ExpiresAt,
 		MemoryRead:       row.MemoryRead,
 		MemoryWrite:      row.MemoryWrite,
+		SkillRead:        row.SkillRead,
+		SkillWrite:       row.SkillWrite,
+		SkillAdmin:       row.SkillAdmin,
 		DefaultRepoScope: row.DefaultRepoScope,
 	})
 }

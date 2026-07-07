@@ -422,6 +422,85 @@ func companionToolDefs() []mcpToolDef {
 				},
 			},
 		},
+		{
+			Name:        "skill_propose",
+			Description: "Propose a knowledge skill (instructional SKILL.md-style know-how) into this project's skill store as a DRAFT. An operator must approve it (skill_approve) before it activates and becomes eligible for injection. Re-proposing the same (repo_scope,name) edits in place: bumps the version and resets to draft. Body cap 64 KiB. Requires skill_write.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":        map[string]any{"type": "string", "description": "kebab-case skill slug, unique within (repo_scope)."},
+					"description": map[string]any{"type": "string", "description": "One-line trigger describing when to use the skill."},
+					"body":        map[string]any{"type": "string", "maxLength": 65536, "description": "Markdown instructional content."},
+					"domain":      map[string]any{"type": "string", "description": "Optional domain, e.g. 'software' / 'networking'."},
+					"tags":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"roles":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Swarm roles this skill applies to; empty = any role."},
+					"repo_scope":  map[string]any{"type": "string", "description": "Repo scope token '<host>/<path>' (migration 75); omit for the key default."},
+					"author":      map[string]any{"type": "string"},
+				},
+				"required": []any{"name", "description", "body"},
+			},
+		},
+		{
+			Name:        "skill_search",
+			Description: "Search this project's ACTIVE/TRUSTED knowledge skills by repo scope, domain, role, and an optional name/description substring. Returns summaries (no body). Requires skill_read.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query":        map[string]any{"type": "string", "description": "Optional case-insensitive substring over name/description."},
+					"repo_scope":   map[string]any{"type": "string"},
+					"domain":       map[string]any{"type": "string"},
+					"role":         map[string]any{"type": "string"},
+					"limit":        map[string]any{"type": "integer"},
+					"strict_scope": map[string]any{"type": "boolean", "description": "Drop NULL-scoped skills from a scoped search."},
+				},
+			},
+		},
+		{
+			Name:        "skill_get",
+			Description: "Fetch one knowledge skill's full body by id, or by its scope-qualified name (name + repo_scope). Requires skill_read.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id":         map[string]any{"type": "string"},
+					"name":       map[string]any{"type": "string"},
+					"repo_scope": map[string]any{"type": "string"},
+				},
+			},
+		},
+		{
+			Name:        "skill_list",
+			Description: "List this project's knowledge skills for management, optionally filtered by maturity (draft/active/trusted/retired), repo scope, and domain. Returns summaries. Requires skill_read.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"maturity":   map[string]any{"type": "string", "enum": []any{"draft", "active", "trusted", "retired"}},
+					"repo_scope": map[string]any{"type": "string"},
+					"domain":     map[string]any{"type": "string"},
+					"limit":      map[string]any{"type": "integer"},
+				},
+			},
+		},
+		{
+			Name:        "skill_approve",
+			Description: "Approve a DRAFT knowledge skill by id, promoting it to ACTIVE (the human gate). Requires skill_admin.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"id": map[string]any{"type": "string"}},
+				"required":   []any{"id"},
+			},
+		},
+		{
+			Name:        "skill_reject",
+			Description: "Reject/retire a knowledge skill by id (terminal for a draft; a revocation for an active/trusted skill). Requires skill_admin.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id":     map[string]any{"type": "string"},
+					"reason": map[string]any{"type": "string"},
+				},
+				"required": []any{"id"},
+			},
+		},
 	}
 }
 
@@ -494,6 +573,18 @@ func (s *Server) handleCompanionToolCall(w http.ResponseWriter, r *http.Request,
 		result, toolErr = s.companionToolListScopes(ctx, key)
 	case "memory_correct":
 		result, toolErr = s.companionToolMemoryCorrect(ctx, key, params.Arguments)
+	case "skill_propose":
+		result, toolErr = s.companionToolSkillPropose(ctx, key, params.Arguments)
+	case "skill_search":
+		result, toolErr = s.companionToolSkillSearch(ctx, key, params.Arguments)
+	case "skill_get":
+		result, toolErr = s.companionToolSkillGet(ctx, key, params.Arguments)
+	case "skill_list":
+		result, toolErr = s.companionToolSkillList(ctx, key, params.Arguments)
+	case "skill_approve":
+		result, toolErr = s.companionToolSkillApprove(ctx, key, params.Arguments)
+	case "skill_reject":
+		result, toolErr = s.companionToolSkillReject(ctx, key, params.Arguments)
 	default:
 		writeJSONRPCError(w, id, -32601, "unknown tool: "+params.Name)
 		return
@@ -1046,44 +1137,66 @@ func (s *Server) companionInlineArtifacts(ctx context.Context, taskID string) []
 		if a.SizeBytes != nil {
 			entry["size_bytes"] = *a.SizeBytes
 		}
-		content, rerr := s.readArtifactBytes(ctx, a)
 		switch {
-		case rerr != nil:
-			s.logger.Warn().Err(rerr).Str("artifact_id", a.ID).
-				Msg("companion result: artifact read failed; inlining metadata only")
-			entry["content_error"] = "artifact body could not be read"
 		case budget <= 0:
 			entry["truncated"] = true
 			entry["content_error"] = "inline budget exhausted by earlier artifacts"
-		case len(content) > budget:
-			entry["content"] = string(content[:budget])
-			entry["truncated"] = true
-			budget = 0
 		default:
+			content, truncatedByRead, rerr := s.readArtifactBytes(ctx, a, budget+1)
+			if rerr != nil {
+				s.logger.Warn().Err(rerr).Str("artifact_id", a.ID).
+					Msg("companion result: artifact read failed; inlining metadata only")
+				entry["content_error"] = "artifact body could not be read"
+				inlined = append(inlined, entry)
+				continue
+			}
+			if len(content) > budget {
+				content = content[:budget]
+				truncatedByRead = true
+			}
 			entry["content"] = string(content)
 			budget -= len(content)
+			if truncatedByRead {
+				entry["truncated"] = true
+			}
 		}
 		inlined = append(inlined, entry)
 	}
 	return inlined
 }
 
-// readArtifactBytes reads an artifact body via the backend-aware opener
-// when wired (local + S3), falling back to the legacy direct-disk path
-// — the same fallback ladder the executor's memory ingest uses.
-func (s *Server) readArtifactBytes(ctx context.Context, a *persistence.Artifact) ([]byte, error) {
+// readArtifactBytes reads at most maxBytes from an artifact body via the
+// backend-aware opener when wired (local + S3), falling back to the legacy
+// direct-disk path. truncated is true when more bytes were available.
+func (s *Server) readArtifactBytes(ctx context.Context, a *persistence.Artifact, maxBytes int) ([]byte, bool, error) {
+	if maxBytes <= 0 {
+		return nil, false, nil
+	}
 	if s.artifactOpener != nil {
 		rc, err := s.artifactOpener.Open(ctx, a.ID)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		defer func() { _ = rc.Close() }()
-		return io.ReadAll(rc)
+		return readLimitedArtifact(rc, maxBytes)
 	}
 	if a.StoragePath == "" {
-		return nil, errors.New("artifact has no storage path and no opener is wired")
+		return nil, false, errors.New("artifact has no storage path and no opener is wired")
 	}
-	return os.ReadFile(a.StoragePath)
+	f, err := os.Open(a.StoragePath)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = f.Close() }()
+	return readLimitedArtifact(f, maxBytes)
+}
+
+func readLimitedArtifact(r io.Reader, maxBytes int) ([]byte, bool, error) {
+	content, err := io.ReadAll(io.LimitReader(r, int64(maxBytes)))
+	if err != nil {
+		return nil, false, err
+	}
+	return content, len(content) == maxBytes, nil
 }
 
 // isTerminalStatus mirrors the executor's terminal-set check; kept

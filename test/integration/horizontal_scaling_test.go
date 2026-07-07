@@ -287,12 +287,18 @@ func TestHorizontalScaling_ConfigReload_PeerListenerInvokesReload(t *testing.T) 
 	// sub-millisecond in healthy postgres + B's reload is in-
 	// process). Poll the spy counters rather than fixed-sleep so
 	// fast machines exit quickly.
+	//
+	// Gate on the ACTIVATOR (the last of loader->validator->activator that
+	// Reload runs sequentially), not the loader. Breaking on the loader
+	// could observe loaderCalls==1 while Reload is still between loader and
+	// validator/activator, so the assertions below would read the trailing
+	// counters as 0 mid-cycle — a flake seen under CI load.
 	deadline := time.After(2 * time.Second)
 	for {
 		bMu.Lock()
-		gotLoader := bLoaderCalls
+		gotActivator := bActivatorCalls
 		bMu.Unlock()
-		if gotLoader >= 1 {
+		if gotActivator >= 1 {
 			break
 		}
 		select {

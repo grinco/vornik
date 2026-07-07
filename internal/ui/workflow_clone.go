@@ -82,13 +82,9 @@ func (s *Server) WorkflowClone(w http.ResponseWriter, r *http.Request, srcID str
 		http.Error(w, "write failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if s.configReloader != nil {
-		if err := s.configReloader.Reload(); err != nil {
-			http.Error(w, "cloned to workflows/"+newID+".md but daemon reload failed: "+err.Error(), http.StatusConflict)
-			return
-		}
-	} else {
-		_ = s.projectReg.Load(dir)
+	if res := s.applyConfigEdit("workflow " + newID); res.Level == "error" {
+		http.Error(w, "cloned to workflows/"+newID+".md but "+res.Message, http.StatusConflict)
+		return
 	}
 	s.writeWorkflowGraphAudit(r, newID, "clone")
 	http.Redirect(w, r, "/ui/workflows/"+newID+"/graph", http.StatusSeeOther)

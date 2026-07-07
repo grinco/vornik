@@ -422,6 +422,12 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	if opts.CanonicalContext.Source != "" {
 		e.contextSourceByExecution.Store(execution.ID, opts.CanonicalContext.Source)
 	}
+	// Pre-load approved knowledge skills for this role, same guard as
+	// CanonicalContext so an adaptive re-spawn reusing prior opts
+	// doesn't double-load.
+	if len(opts.Skills) == 0 {
+		opts.Skills = e.resolveSkills(ctx, task.ProjectID, step.Role, execution.ID)
+	}
 	input := buildAgentInput(task, execution.ID, plan.workflow.ID, swarmID, stepID, step.Role, step.Prompt, opts)
 	// 0o600 — task.json holds the step prompt + any inline
 	// secrets / credentials passed from project config.

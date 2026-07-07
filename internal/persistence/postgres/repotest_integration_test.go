@@ -150,6 +150,11 @@ func purgeRepotestLeftovers() error {
 		"DELETE FROM corpus_epochs_active WHERE " + cond,
 		"DELETE FROM corpus_epochs WHERE " + cond,
 		"DELETE FROM project_memory_chunks WHERE " + cond,
+		"DELETE FROM project_skills WHERE " + cond,
+		// repotest seeds execution_injected_skills with 'exec-' (hyphen)
+		// fixtures; production execution IDs are 'exec_' (underscore), so
+		// this prefix can't match real rows.
+		"DELETE FROM execution_injected_skills WHERE execution_id LIKE 'exec-%'",
 		// Round-2: trading children before orders
 		"DELETE FROM trading_fills WHERE " + cond,
 		"DELETE FROM trading_safety_events WHERE " + cond,
@@ -266,6 +271,21 @@ func TestToolAuditRepository_PostgresContract(t *testing.T) {
 func TestRecoveryEventRepository_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
 	repotest.RunRecoveryEventSuite(t, NewRecoveryEventRepository(db.DB))
+}
+
+// TestSkillRepository_PostgresContract — knowledge-skill store, the
+// same suite that runs against SQLite. Must agree on scope isolation,
+// the version-bump-on-edit upsert, and the maturity/role list filters.
+func TestSkillRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunSkillSuite(t, NewSkillRepository(db.DB))
+}
+
+// TestExecutionInjectedSkillRepository_PostgresContract — the
+// execution→skill association, same suite the SQLite side runs.
+func TestExecutionInjectedSkillRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunExecutionInjectedSkillSuite(t, NewExecutionInjectedSkillRepository(db.DB))
 }
 
 // TestArtifactRepository_PostgresContract — same shape on

@@ -35,15 +35,17 @@ import (
 // interface type so callers stay decoupled from the underlying
 // driver.
 type Repositories struct {
-	Tasks          persistence.TaskRepository
-	Executions     persistence.ExecutionRepository
-	Artifacts      persistence.ArtifactRepository
-	Watchers       persistence.TaskWatcherRepository
-	ToolAudit      persistence.ToolAuditRepository
-	RecoveryEvents persistence.RecoveryEventRepository
-	AdminAudit     persistence.AdminAuditRepository
-	ChatAudit      persistence.ChatAuditRepository
-	APIKeys        persistence.APIKeyRepository
+	Tasks              persistence.TaskRepository
+	Executions         persistence.ExecutionRepository
+	Artifacts          persistence.ArtifactRepository
+	Watchers           persistence.TaskWatcherRepository
+	ToolAudit          persistence.ToolAuditRepository
+	RecoveryEvents     persistence.RecoveryEventRepository
+	Skills             persistence.SkillRepository
+	ExecInjectedSkills persistence.ExecutionInjectedSkillRepository
+	AdminAudit         persistence.AdminAuditRepository
+	ChatAudit          persistence.ChatAuditRepository
+	APIKeys            persistence.APIKeyRepository
 	// Identity is the identity-core repository (users, groups,
 	// channel bindings) backing internal/authz. Phase 2 of
 	// oidc-identity-permissions-design.md.
@@ -283,6 +285,8 @@ func openSQLite(ctx context.Context, cfg config.DatabaseConfig) (*Backend, error
 		Watchers:                       sqlite.NewTaskWatcherRepository(db.DB),
 		ToolAudit:                      sqlite.NewToolAuditRepository(db.DB),
 		RecoveryEvents:                 sqlite.NewRecoveryEventRepository(db.DB),
+		Skills:                         sqlite.NewSkillRepository(db.DB),
+		ExecInjectedSkills:             sqlite.NewExecutionInjectedSkillRepository(db.DB),
 		AdminAudit:                     sqlite.NewAdminAuditRepository(db.DB),
 		ChatAudit:                      sqlite.NewChatAuditRepository(db.DB),
 		APIKeys:                        sqlite.NewAPIKeyRepository(db.DB),
@@ -392,6 +396,8 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		Watchers:                       postgres.NewTaskWatcherRepository(dbtx),
 		ToolAudit:                      postgres.NewToolAuditRepository(dbtx),
 		RecoveryEvents:                 postgres.NewRecoveryEventRepository(dbtx),
+		Skills:                         postgres.NewSkillRepository(dbtx),
+		ExecInjectedSkills:             postgres.NewExecutionInjectedSkillRepository(dbtx),
 		AdminAudit:                     postgres.NewAdminAuditRepository(dbtx),
 		ChatAudit:                      postgres.NewChatAuditRepository(dbtx),
 		APIKeys:                        postgres.NewAPIKeyRepository(dbtx),

@@ -295,6 +295,7 @@ func (c *Container) initTelegram() error {
 	botOpts := []telegram.BotOption{
 		telegram.WithLogger(c.Logger),
 		telegram.WithTaskRepository(c.repos.Tasks),
+		telegram.WithSkillRepository(c.repos.Skills),
 		telegram.WithExecutionRepository(c.repos.Executions),
 		telegram.WithArtifactRepository(c.repos.Artifacts),
 		telegram.WithRegistry(c.Registry),

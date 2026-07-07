@@ -100,6 +100,8 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cq *struct {
 	switch ns {
 	case "project":
 		err = b.handleProjectCallback(ctx, chatID, userID, cq.ID, action, payload)
+	case "skill":
+		err = b.handleSkillCallback(ctx, cq.ID, userID, action, payload)
 	default:
 		b.logger.Warn().Str("namespace", ns).Msg("telegram: unknown callback namespace")
 		return b.answerCallbackQuery(ctx, cq.ID, "This action isn't recognised — the bot may have been updated since this button was rendered.", false)

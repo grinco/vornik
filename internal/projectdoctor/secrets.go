@@ -36,9 +36,8 @@ func (e EnvSecrets) Has(name string) bool {
 // (e.g. an already-connected MCP server) pick the new value up on
 // their next use / re-sync, not retroactively.
 func (e EnvSecrets) Set(name, value string) error {
-	if err := os.Setenv(name, value); err != nil {
+	if _, err := onboarding.WriteEnvSecret(e.Dir, envSecretsFile, name, value); err != nil {
 		return err
 	}
-	_, err := onboarding.WriteEnvSecret(e.Dir, envSecretsFile, name, value)
-	return err
+	return os.Setenv(name, value)
 }

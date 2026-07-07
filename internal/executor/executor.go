@@ -288,12 +288,20 @@ type Executor struct {
 	taskRepo       TaskRepository
 	auditRepo      persistence.ToolAuditRepository
 	recoveryEvents persistence.RecoveryEventRepository
-	llmUsageRepo   persistence.TaskLLMUsageRepository
-	reservRepo     persistence.BudgetReservationRepository
-	outcomeRepo    persistence.ExecutionStepOutcomeRepository
-	notifier       CompletionNotifier
-	steering       SteeringNotifier
-	memoryIndexer  MemoryIndexer
+	// skillRepo backs knowledge-skill injection into role context
+	// (LLD 2026-07-07-knowledge-skill-store-design). Nil disables
+	// injection — roles simply don't receive learned skills.
+	skillRepo persistence.SkillRepository
+	// execSkillRepo records which skills were injected into each
+	// execution so a successful task can credit a "worked" maturity
+	// signal to exactly those skills (learning-loop §D.2). Nil-safe.
+	execSkillRepo persistence.ExecutionInjectedSkillRepository
+	llmUsageRepo  persistence.TaskLLMUsageRepository
+	reservRepo    persistence.BudgetReservationRepository
+	outcomeRepo   persistence.ExecutionStepOutcomeRepository
+	notifier      CompletionNotifier
+	steering      SteeringNotifier
+	memoryIndexer MemoryIndexer
 	// systemHandlers backs the `system` workflow step type (B-7).
 	// Populated at executor construction via WithSystemHandlers.
 	// Nil-safe: a missing handler surfaces the standard
@@ -985,6 +993,23 @@ func WithLivePublisher(pub livepubsub.Publisher) Option {
 func WithRecoveryEventRepository(repo persistence.RecoveryEventRepository) Option {
 	return func(e *Executor) {
 		e.recoveryEvents = repo
+	}
+}
+
+// WithSkillRepository wires the knowledge-skill store so approved
+// (active/trusted) skills are injected into role context at task
+// start. Nil disables injection.
+func WithSkillRepository(repo persistence.SkillRepository) Option {
+	return func(e *Executor) {
+		e.skillRepo = repo
+	}
+}
+
+// WithExecutionInjectedSkillRepository wires the execution→skill
+// association used to credit "worked" maturity signals. Nil-safe.
+func WithExecutionInjectedSkillRepository(repo persistence.ExecutionInjectedSkillRepository) Option {
+	return func(e *Executor) {
+		e.execSkillRepo = repo
 	}
 }
 

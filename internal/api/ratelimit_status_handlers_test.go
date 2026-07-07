@@ -296,3 +296,7 @@ func TestBuildTaskCreationStatus_NoLimiter(t *testing.T) {
 	assert.Equal(t, 5, tc.MinuteHeadroom)
 	assert.Equal(t, 0, tc.MinuteCount)
 }
+
+func (*stubRateLimitAPIKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
+	return nil
+}

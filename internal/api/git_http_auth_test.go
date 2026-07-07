@@ -259,3 +259,7 @@ func TestGitHTTPAuth_Read(t *testing.T) {
 		})
 	}
 }
+
+func (fakeKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
+	return nil
+}

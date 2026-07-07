@@ -30,6 +30,7 @@ type AdminKeysData struct {
 	FilterProject string
 	StatusOptions []string
 	Error         string
+	Flash         string
 }
 
 // AdminKeysCounts summarises the row distribution so the header
@@ -60,12 +61,22 @@ type AdminKeyRow struct {
 	RevokedAt      string
 	CreatedBy      string
 	RateLimitLabel string // "60 rps / 10 burst" or "unlimited"
+	ClientKind     string // companion client kind (empty for non-companion keys)
+	MemoryRead     bool
+	MemoryWrite    bool
+	SkillRead      bool
+	SkillWrite     bool
+	SkillAdmin     bool
 }
 
 // AdminKeys renders /ui/admin/keys. Filter axes: status,
 // project. Defaults to status=active so the most common view
 // (live keys) loads first.
 func (s *Server) AdminKeys(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		s.adminKeySetCaps(w, r)
+		return
+	}
 	q := r.URL.Query()
 	data := AdminKeysData{
 		adminCommonData: adminCommonData{
@@ -77,6 +88,7 @@ func (s *Server) AdminKeys(w http.ResponseWriter, r *http.Request) {
 		FilterStatus:  strings.TrimSpace(q.Get("status")),
 		FilterProject: strings.TrimSpace(q.Get("project")),
 		StatusOptions: []string{"", "active", "revoked", "expired"},
+		Flash:         strings.TrimSpace(q.Get("done")),
 	}
 	if !data.Available {
 		s.render(w, "admin_keys.html", data)
@@ -129,16 +141,60 @@ func (s *Server) AdminKeys(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "admin_keys.html", data)
 }
 
+// adminKeySetCaps handles the per-key capability form POST: it grants
+// or revokes the memory + skill flags via UpdateCapabilities. memory_write
+// implies memory_read and skill_write implies skill_read (normalised here
+// to match the API-layer gates). Redirects back with a flash.
+func (s *Server) adminKeySetCaps(w http.ResponseWriter, r *http.Request) {
+	if s.apiKeyRepo == nil {
+		http.Error(w, "api-key repo not wired", http.StatusNotImplemented)
+		return
+	}
+	_ = r.ParseForm()
+	id := strings.TrimSpace(r.FormValue("id"))
+	if id == "" {
+		http.Redirect(w, r, "/ui/admin/keys", http.StatusSeeOther)
+		return
+	}
+	caps := persistence.APIKeyCapabilities{
+		MemoryRead:  r.FormValue("memory_read") == "on",
+		MemoryWrite: r.FormValue("memory_write") == "on",
+		SkillRead:   r.FormValue("skill_read") == "on",
+		SkillWrite:  r.FormValue("skill_write") == "on",
+		SkillAdmin:  r.FormValue("skill_admin") == "on",
+	}
+	// Write implies read (mirror the API-layer gates + companion grant).
+	if caps.MemoryWrite {
+		caps.MemoryRead = true
+	}
+	if caps.SkillWrite {
+		caps.SkillRead = true
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := s.apiKeyRepo.UpdateCapabilities(ctx, id, caps); err != nil {
+		http.Redirect(w, r, "/ui/admin/keys?done=error", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/ui/admin/keys?done=caps-updated", http.StatusSeeOther)
+}
+
 // adminKeyToRow converts the persistence row to the template-
 // friendly shape. Pure — no I/O.
 func adminKeyToRow(k *persistence.APIKey, now time.Time) AdminKeyRow {
 	row := AdminKeyRow{
-		ID:        k.ID,
-		ProjectID: k.ProjectID,
-		Name:      k.Name,
-		KeyPrefix: k.KeyPrefix,
-		CreatedAt: k.CreatedAt.Format("2006-01-02 15:04:05"),
-		CreatedBy: k.CreatedBy,
+		ID:          k.ID,
+		ProjectID:   k.ProjectID,
+		Name:        k.Name,
+		KeyPrefix:   k.KeyPrefix,
+		CreatedAt:   k.CreatedAt.Format("2006-01-02 15:04:05"),
+		CreatedBy:   k.CreatedBy,
+		ClientKind:  k.ClientKind,
+		MemoryRead:  k.MemoryRead,
+		MemoryWrite: k.MemoryWrite,
+		SkillRead:   k.SkillRead,
+		SkillWrite:  k.SkillWrite,
+		SkillAdmin:  k.SkillAdmin,
 	}
 	row.CreatedAgo = humanDuration(now.Sub(k.CreatedAt)) + " ago"
 	switch {

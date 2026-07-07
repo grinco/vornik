@@ -329,6 +329,30 @@ func (r *APIKeyRepository) UpdateAllowPush(ctx context.Context, keyID string, al
 	return nil
 }
 
+// UpdateCapabilities sets the memory + skill capability flags on a key.
+func (r *APIKeyRepository) UpdateCapabilities(ctx context.Context, keyID string, caps persistence.APIKeyCapabilities) error {
+	if keyID == "" {
+		return fmt.Errorf("UpdateCapabilities: keyID is required")
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE api_keys
+		SET memory_read = $2, memory_write = $3, skill_read = $4, skill_write = $5, skill_admin = $6
+		WHERE id = $1`,
+		keyID, caps.MemoryRead, caps.MemoryWrite, caps.SkillRead, caps.SkillWrite, caps.SkillAdmin,
+	)
+	if err != nil {
+		return mapDBError(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return mapDBError(err)
+	}
+	if n == 0 {
+		return persistence.ErrAPIKeyNotFound
+	}
+	return nil
+}
+
 // nullable converts an empty string to a sql.NullString so the
 // column stays NULL rather than landing as the empty string. Both
 // would technically work — every read path tolerates both — but

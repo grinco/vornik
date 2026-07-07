@@ -350,3 +350,11 @@ func TestUpdateAllowPush_MapsUpdateFailureTo500(t *testing.T) {
 		t.Fatalf("leaked raw repo error: %s", rec.Body.String())
 	}
 }
+
+func (*allowPushUpdateFailRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
+	return nil
+}
+
+func (*failingAPIKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
+	return nil
+}

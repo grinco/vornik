@@ -51,6 +51,7 @@
                 <button class="bg-brand-500 hover:bg-brand-400 text-white text-xs font-medium px-3 py-1.5 rounded-md">Filter</button>
             </form>
 
+            {{if .Flash}}<div class="rounded-md bg-dark-800 border border-dark-700 px-3 py-2 text-xs text-brand-300 mb-3">Capabilities: {{.Flash}}</div>{{end}}
             {{if .Rows}}
             <div class="glass rounded-xl border border-dark-700 overflow-hidden">
                 <div class="overflow-x-auto">
@@ -63,6 +64,7 @@
                             <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
                             <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last used</th>
                             <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Rate limit</th>
+                            <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Capabilities</th>
                             <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Manage</th>
                         </tr></thead>
                         <tbody class="divide-y divide-dark-700/40">
@@ -87,6 +89,17 @@
                                     {{end}}
                                 </td>
                                 <td class="px-4 py-2 text-xs text-gray-400 font-mono whitespace-nowrap">{{.RateLimitLabel}}</td>
+                                <td class="px-4 py-2">
+                                    <form method="POST" action="/ui/admin/keys" class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-gray-300">
+                                        <input type="hidden" name="id" value="{{.ID}}">
+                                        <label class="inline-flex items-center gap-1"><input type="checkbox" name="memory_read" {{if .MemoryRead}}checked{{end}} class="accent-brand-500"> mem&nbsp;r</label>
+                                        <label class="inline-flex items-center gap-1"><input type="checkbox" name="memory_write" {{if .MemoryWrite}}checked{{end}} class="accent-brand-500"> mem&nbsp;w</label>
+                                        <label class="inline-flex items-center gap-1"><input type="checkbox" name="skill_read" {{if .SkillRead}}checked{{end}} class="accent-brand-500"> skill&nbsp;r</label>
+                                        <label class="inline-flex items-center gap-1"><input type="checkbox" name="skill_write" {{if .SkillWrite}}checked{{end}} class="accent-brand-500"> skill&nbsp;w</label>
+                                        <label class="inline-flex items-center gap-1" title="approve/reject skills — the human gate"><input type="checkbox" name="skill_admin" {{if .SkillAdmin}}checked{{end}} class="accent-brand-500"> skill&nbsp;admin</label>
+                                        <button type="submit" class="px-2 py-0.5 rounded bg-brand-700 hover:bg-brand-600 text-white">Save</button>
+                                    </form>
+                                </td>
                                 <td class="px-4 py-2 text-right">
                                     <a href="/ui/projects/{{.ProjectID}}/keys" class="text-[11px] text-brand-400 hover:text-brand-300">Manage →</a>
                                 </td>

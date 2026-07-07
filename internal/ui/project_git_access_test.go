@@ -452,3 +452,7 @@ func TestWithPublicBaseURL_StoresValue(t *testing.T) {
 	s := NewServer(WithPublicBaseURL("https://vornik.example.com"))
 	assert.Equal(t, "https://vornik.example.com", s.publicBaseURL)
 }
+
+func (*spyAPIKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
+	return nil
+}

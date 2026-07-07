@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,10 @@ import (
 // admin view can be exercised with a multi-project fixture
 // without duplicating every method on the live APIKeyRepository.
 type adminKeysRepoStub struct {
-	byProject map[string][]*persistence.APIKey
+	byProject   map[string][]*persistence.APIKey
+	lastCapsID  string
+	lastCaps    persistence.APIKeyCapabilities
+	capsUpdated bool
 }
 
 func (s *adminKeysRepoStub) Create(context.Context, *persistence.APIKey) error {
@@ -44,6 +48,39 @@ func (s *adminKeysRepoStub) UpdateAllowedWorkflows(context.Context, string, []st
 }
 func (s *adminKeysRepoStub) UpdateAllowPush(context.Context, string, bool) error { return nil }
 func (s *adminKeysRepoStub) RevokeByName(context.Context, string) error          { return nil }
+func (s *adminKeysRepoStub) UpdateCapabilities(_ context.Context, id string, caps persistence.APIKeyCapabilities) error {
+	s.lastCapsID = id
+	s.lastCaps = caps
+	s.capsUpdated = true
+	return nil
+}
+
+// TestAdminKeys_SetCaps covers the capability-grant form POST: skill
+// caps get set (skill_write normalises skill_read on too).
+func TestAdminKeys_SetCaps(t *testing.T) {
+	repo := &adminKeysRepoStub{byProject: map[string][]*persistence.APIKey{}}
+	reg := registry.New()
+	s := NewServer(WithAPIKeyRepository(repo), WithProjectRegistry(reg))
+
+	form := url.Values{"id": {"k_x"}, "skill_write": {"on"}, "skill_admin": {"on"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/keys", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.AdminKeys(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status: want 303, got %d", rec.Code)
+	}
+	if !repo.capsUpdated || repo.lastCapsID != "k_x" {
+		t.Fatalf("UpdateCapabilities not called for k_x: %+v", repo)
+	}
+	if !repo.lastCaps.SkillWrite || !repo.lastCaps.SkillAdmin {
+		t.Fatalf("skill caps not set: %+v", repo.lastCaps)
+	}
+	if !repo.lastCaps.SkillRead {
+		t.Fatalf("skill_write must normalise skill_read on: %+v", repo.lastCaps)
+	}
+}
 
 // TestAdminKeys_RendersAcrossProjects covers the happy path:
 // two projects with one key each → the page renders both rows.

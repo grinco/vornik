@@ -388,3 +388,7 @@ func TestRenderKeyRows_StatusAndNullDisplay(t *testing.T) {
 	assert.Equal(t, "—", got[1].LastUsed) // nil → "—"
 	assert.Equal(t, "—", got[1].Expires)
 }
+
+func (*uiMemAPIKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
+	return nil
+}

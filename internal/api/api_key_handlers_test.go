@@ -966,3 +966,7 @@ func TestListAPIKeys_SurfacesAllowPush(t *testing.T) {
 // Keep the import set used by the test file pinned even when the
 // last assertion above is removed.
 var _ = bytes.NewReader
+
+func (*memAPIKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
+	return nil
+}

@@ -223,3 +223,7 @@ func (r *inMemAPIKeyRepo) UpdateAllowedWorkflows(context.Context, string, []stri
 	return nil
 }
 func (r *inMemAPIKeyRepo) UpdateAllowPush(context.Context, string, bool) error { return nil }
+
+func (*inMemAPIKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
+	return nil
+}

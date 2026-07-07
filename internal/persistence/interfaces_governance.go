@@ -72,6 +72,25 @@ type APIKeyRepository interface {
 	// (git-over-HTTPS design, LLD slice 2). Returns ErrAPIKeyNotFound
 	// when the key doesn't exist.
 	UpdateAllowPush(ctx context.Context, keyID string, allowed bool) error
+
+	// UpdateCapabilities sets the companion + knowledge-skill capability
+	// flags on an existing key in one write — the operator surface for
+	// granting/revoking these "roles" from the UI without re-minting.
+	// The auth path reads these columns live, so the change takes effect
+	// on the key's next request. Returns ErrAPIKeyNotFound when absent.
+	UpdateCapabilities(ctx context.Context, keyID string, caps APIKeyCapabilities) error
+}
+
+// APIKeyCapabilities is the mutable capability set an operator can grant
+// to a key via UpdateCapabilities. memory_write implies memory_read and
+// skill_write implies skill_read at the API layer, but this struct
+// stores exactly what it's given — callers normalise before passing.
+type APIKeyCapabilities struct {
+	MemoryRead  bool
+	MemoryWrite bool
+	SkillRead   bool
+	SkillWrite  bool
+	SkillAdmin  bool
 }
 
 // ErrAPIKeyNotFound is returned by LookupActiveByHash when no

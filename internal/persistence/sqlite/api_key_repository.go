@@ -326,3 +326,28 @@ func (r *APIKeyRepository) UpdateAllowPush(ctx context.Context, keyID string, al
 	}
 	return nil
 }
+
+// UpdateCapabilities sets the memory + skill capability flags on a key.
+func (r *APIKeyRepository) UpdateCapabilities(ctx context.Context, keyID string, caps persistence.APIKeyCapabilities) error {
+	if keyID == "" {
+		return fmt.Errorf("UpdateCapabilities: keyID is required")
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE api_keys SET memory_read = ?, memory_write = ?,
+			skill_read = ?, skill_write = ?, skill_admin = ?
+		WHERE id = ?`,
+		boolToInt(caps.MemoryRead), boolToInt(caps.MemoryWrite),
+		boolToInt(caps.SkillRead), boolToInt(caps.SkillWrite), boolToInt(caps.SkillAdmin),
+		keyID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return persistence.ErrAPIKeyNotFound
+	}
+	return nil
+}

@@ -956,6 +956,42 @@ func RunAPIKeyRepositorySuite(t *testing.T, repo persistence.APIKeyRepository) {
 		}
 	})
 
+	t.Run("UpdateCapabilities_grants_and_revokes", func(t *testing.T) {
+		hash := uniqueID("hash")
+		k := &persistence.APIKey{
+			ID: uniqueID("akey"), ProjectID: uniqueID("proj"), KeyHash: hash,
+			KeyPrefix: "sk-test", CreatedAt: time.Now().UTC(),
+		}
+		if err := repo.Create(ctx, k); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if err := repo.UpdateCapabilities(ctx, k.ID, persistence.APIKeyCapabilities{
+			MemoryRead: true, MemoryWrite: true, SkillRead: true, SkillWrite: true, SkillAdmin: true,
+		}); err != nil {
+			t.Fatalf("UpdateCapabilities grant: %v", err)
+		}
+		got, err := repo.LookupActiveByHash(ctx, hash)
+		if err != nil {
+			t.Fatalf("lookup: %v", err)
+		}
+		if !got.SkillRead || !got.SkillWrite || !got.SkillAdmin || !got.MemoryRead || !got.MemoryWrite {
+			t.Fatalf("caps not granted: %+v", got)
+		}
+		// Revoke skill_admin only.
+		if err := repo.UpdateCapabilities(ctx, k.ID, persistence.APIKeyCapabilities{
+			MemoryRead: true, MemoryWrite: true, SkillRead: true, SkillWrite: true, SkillAdmin: false,
+		}); err != nil {
+			t.Fatalf("UpdateCapabilities revoke: %v", err)
+		}
+		got, _ = repo.LookupActiveByHash(ctx, hash)
+		if got.SkillAdmin {
+			t.Fatalf("skill_admin should have been revoked")
+		}
+		if !got.SkillWrite {
+			t.Fatalf("skill_write should remain")
+		}
+	})
+
 	t.Run("LookupActiveByHash_treats_revoked_as_missing", func(t *testing.T) {
 		hash := uniqueID("hash")
 		k := &persistence.APIKey{

@@ -112,3 +112,7 @@ func TestBuildRateLimitPanel_NilSafe(t *testing.T) {
 	assert.Empty(t, buildRateLimitPanel(context.Background(), repo, "", zerolog.Nop()),
 		"empty project id returns empty (still safe — no panic)")
 }
+
+func (*stubAPIKeyRepo) UpdateCapabilities(context.Context, string, persistence.APIKeyCapabilities) error {
+	return nil
+}

@@ -34,9 +34,34 @@ type OperatorAlertConfig struct {
 	Address string `yaml:"address" json:"address"`
 }
 
-// configured reports whether a usable recipient is set.
+// configured reports whether a channel is set. A per-project recipient
+// resolver (ProjectRecipients) supplies the actual recipients; Session is
+// only a fallback for projects that resolve to no one, so it is no longer
+// required for the notifier to be usable.
 func (c OperatorAlertConfig) configured() bool {
-	return strings.TrimSpace(c.Channel) != "" && strings.TrimSpace(c.Session) != ""
+	return strings.TrimSpace(c.Channel) != ""
+}
+
+// ProjectRecipients resolves the operator session IDs to alert for a task's
+// project on a channel — e.g. the Telegram chat IDs of allowed users who may
+// access that project. Implemented in the service layer (backed by the
+// Telegram allow-list); nil means "no per-project routing, use the fallback
+// session only". Returning an empty slice means "nobody has access", which
+// falls through to the configured fallback session.
+type ProjectRecipients interface {
+	RecipientsForProject(channel, projectID string) []string
+}
+
+// ownerlessSteeringSources are the CreationSources of tasks that have NO
+// originating chat the chat/DM Notifier could reach: autonomy loop tasks and
+// the routed / checkpoint sub-tasks they (or any adaptive task) spawn — a
+// routed child never inherits its parent's ChatTurnID, so a checkpoint on it
+// notifies nobody without this fallback. USER / COMPANION / A2A / DELEGATION
+// are excluded: they carry a chat origin or their own push path.
+var ownerlessSteeringSources = map[persistence.TaskCreationSource]bool{
+	persistence.TaskCreationSourceAutonomous: true,
+	persistence.TaskCreationSourceRoute:      true,
+	persistence.TaskCreationSourceCheckpoint: true,
 }
 
 // OperatorAlertNotifier is the steering sink for ownerless autonomy tasks. It
@@ -45,27 +70,45 @@ func (c OperatorAlertConfig) configured() bool {
 // notifier, enabled=false, or an unconfigured recipient makes every call a
 // no-op.
 type OperatorAlertNotifier struct {
-	resolver ChannelResolver
-	baseURL  string
-	cfg      OperatorAlertConfig
-	enabled  bool
-	logger   zerolog.Logger
+	resolver   ChannelResolver
+	recipients ProjectRecipients
+	baseURL    string
+	cfg        OperatorAlertConfig
+	enabled    bool
+	logger     zerolog.Logger
 
 	mu   sync.Mutex
 	sent map[string]time.Time
 }
 
 // NewOperatorAlert builds an OperatorAlertNotifier. enabled=false, a nil
-// resolver, or an unconfigured cfg yields a no-op notifier.
-func NewOperatorAlert(resolver ChannelResolver, baseURL string, cfg OperatorAlertConfig, enabled bool, logger zerolog.Logger) *OperatorAlertNotifier {
+// resolver, or an unconfigured cfg (no channel) yields a no-op notifier.
+// recipients may be nil (falls back to cfg.Session for every project).
+func NewOperatorAlert(resolver ChannelResolver, recipients ProjectRecipients, baseURL string, cfg OperatorAlertConfig, enabled bool, logger zerolog.Logger) *OperatorAlertNotifier {
 	return &OperatorAlertNotifier{
-		resolver: resolver,
-		baseURL:  strings.TrimRight(baseURL, "/"),
-		cfg:      cfg,
-		enabled:  enabled,
-		logger:   logger,
-		sent:     map[string]time.Time{},
+		resolver:   resolver,
+		recipients: recipients,
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		cfg:        cfg,
+		enabled:    enabled,
+		logger:     logger,
+		sent:       map[string]time.Time{},
 	}
+}
+
+// recipientSessions resolves the channel session IDs to alert for a task's
+// project — per-project operators first, the configured fallback session
+// otherwise.
+func (n *OperatorAlertNotifier) recipientSessions(projectID string) []string {
+	if n.recipients != nil {
+		if s := n.recipients.RecipientsForProject(n.cfg.Channel, projectID); len(s) > 0 {
+			return s
+		}
+	}
+	if strings.TrimSpace(n.cfg.Session) != "" {
+		return []string{n.cfg.Session}
+	}
+	return nil
 }
 
 // NotifySteeringRequired alerts the configured operator recipient when an
@@ -84,13 +127,11 @@ func (n *OperatorAlertNotifier) NotifySteeringRequired(ctx context.Context, task
 	if task.ChatTurnID != nil && *task.ChatTurnID != "" {
 		return
 	}
-	// Scope to autonomy-created tasks: these are the genuinely ownerless ones
-	// that would otherwise stall unseen. Other ownerless sources (A2A) have
-	// their own push path; user/API tasks are the operator's own doing.
-	if task.CreationSource != persistence.TaskCreationSourceAutonomous {
-		return
-	}
-	if n.recentlySent(task.ID, state) {
+	// Fire only for genuinely ownerless tasks — autonomy loop tasks AND the
+	// routed / checkpoint sub-tasks they spawn (a routed child has no
+	// ChatTurnID, so the chat Notifier can never reach it). USER / COMPANION /
+	// A2A / DELEGATION are excluded (chat origin or their own push path).
+	if !ownerlessSteeringSources[task.CreationSource] {
 		return
 	}
 
@@ -101,25 +142,39 @@ func (n *OperatorAlertNotifier) NotifySteeringRequired(ctx context.Context, task
 		return
 	}
 
-	msg := conversation.ChannelMessage{
-		SessionID: n.cfg.Session,
-		Text:      n.composeText(task, state),
-	}
-	if n.cfg.Channel == "email" && n.cfg.Address != "" {
-		msg.ChannelSpecific = map[string]string{
-			"to":      n.cfg.Address,
-			"subject": "vornik: an autonomous task needs your attention",
-		}
-	}
-
-	if _, err := ch.Send(ctx, msg); err != nil {
-		n.logger.Warn().Err(err).Str("task_id", task.ID).Str("channel", n.cfg.Channel).
-			Msg("operator-alert: outbound send failed")
+	// Fan out to the operators with access to THIS task's project (wildcard +
+	// project-scoped), so assistant tasks reach assistant operators, janka
+	// tasks reach janka operators, etc. Falls back to the configured session.
+	sessions := n.recipientSessions(task.ProjectID)
+	if len(sessions) == 0 {
+		n.logger.Debug().Str("task_id", task.ID).Str("project", task.ProjectID).
+			Msg("operator-alert: no recipients for project; skipping")
 		return
 	}
-	n.markSent(task.ID, state)
-	n.logger.Info().Str("task_id", task.ID).Str("channel", n.cfg.Channel).Str("state", state).
-		Msg("operator-alert: notified operator of ownerless autonomy task")
+
+	text := n.composeText(task, state)
+	for _, session := range sessions {
+		dedupKey := task.ID + "|" + session
+		if n.recentlySent(dedupKey, state) {
+			continue
+		}
+		msg := conversation.ChannelMessage{SessionID: session, Text: text}
+		if n.cfg.Channel == "email" && n.cfg.Address != "" {
+			msg.ChannelSpecific = map[string]string{
+				"to":      n.cfg.Address,
+				"subject": "vornik: an autonomous task needs your attention",
+			}
+		}
+		if _, err := ch.Send(ctx, msg); err != nil {
+			n.logger.Warn().Err(err).Str("task_id", task.ID).Str("channel", n.cfg.Channel).
+				Str("session", session).Msg("operator-alert: outbound send failed")
+			continue
+		}
+		n.markSent(dedupKey, state)
+		n.logger.Info().Str("task_id", task.ID).Str("project", task.ProjectID).
+			Str("channel", n.cfg.Channel).Str("session", session).Str("state", state).
+			Msg("operator-alert: notified operator of ownerless task")
+	}
 }
 
 // NotifyOperator pushes a free-form operator alert (e.g. a cluster-monitor
@@ -149,8 +204,8 @@ func (n *OperatorAlertNotifier) NotifyOperator(ctx context.Context, subject, bod
 	}
 }
 
-func (n *OperatorAlertNotifier) recentlySent(taskID, state string) bool {
-	key := taskID + "|" + state
+func (n *OperatorAlertNotifier) recentlySent(recipientKey, state string) bool {
+	key := recipientKey + "|" + state
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	last, ok := n.sent[key]
@@ -160,8 +215,8 @@ func (n *OperatorAlertNotifier) recentlySent(taskID, state string) bool {
 	return time.Since(last) < dedupWindow
 }
 
-func (n *OperatorAlertNotifier) markSent(taskID, state string) {
-	key := taskID + "|" + state
+func (n *OperatorAlertNotifier) markSent(recipientKey, state string) {
+	key := recipientKey + "|" + state
 	n.mu.Lock()
 	n.sent[key] = time.Now()
 	if len(n.sent) > 4096 {

@@ -13,12 +13,24 @@ import (
 
 func newOperatorAlert(t *testing.T, ch *fakeChannel, cfg OperatorAlertConfig, enabled bool) (*OperatorAlertNotifier, *fakeChannel) {
 	t.Helper()
+	return newOperatorAlertR(t, ch, nil, cfg, enabled)
+}
+
+// newOperatorAlertR builds a notifier with an explicit per-project recipient
+// resolver (nil = fall back to cfg.Session).
+func newOperatorAlertR(t *testing.T, ch *fakeChannel, recipients ProjectRecipients, cfg OperatorAlertConfig, enabled bool) (*OperatorAlertNotifier, *fakeChannel) {
+	t.Helper()
 	res := fakeResolver{byName: map[string]conversation.Channel{}}
 	if ch != nil {
 		res.byName[ch.name] = ch
 	}
-	return NewOperatorAlert(res, "https://vornik.example", cfg, enabled, zerolog.Nop()), ch
+	return NewOperatorAlert(res, recipients, "https://vornik.example", cfg, enabled, zerolog.Nop()), ch
 }
+
+// fakeRecipients maps projectID → session IDs for the per-project fan-out test.
+type fakeRecipients map[string][]string
+
+func (f fakeRecipients) RecipientsForProject(_, projectID string) []string { return f[projectID] }
 
 func autonomyTask() *persistence.Task {
 	return &persistence.Task{
@@ -70,6 +82,71 @@ func TestOperatorAlert_SkipsNonAutonomyOwnerless(t *testing.T) {
 
 	if len(tg.sent) != 0 {
 		t.Fatalf("non-autonomy ownerless task must not trigger the operator alert")
+	}
+}
+
+// TestOperatorAlert_NotifiesRoutedSubtask is the reported gap: an autonomy
+// task's routed CHILD (source=route, no ChatTurnID) checkpoints, and the chat
+// notifier can't reach it. The operator-alert must now catch it.
+func TestOperatorAlert_NotifiesRoutedSubtask(t *testing.T) {
+	ch := &fakeChannel{name: "telegram"}
+	n, tg := newOperatorAlert(t, ch, OperatorAlertConfig{Channel: "telegram", Session: "555"}, true)
+
+	task := autonomyTask()
+	task.ID = "task_routed_child"
+	task.CreationSource = persistence.TaskCreationSourceRoute
+	n.NotifySteeringRequired(context.Background(), task, string(persistence.TaskStatusAwaitingInput))
+
+	if len(tg.sent) != 1 {
+		t.Fatalf("routed ownerless sub-task checkpoint must alert the operator, got %d", len(tg.sent))
+	}
+}
+
+// TestOperatorAlert_PerProjectFanOut: alerts route to the operators with
+// access to the task's project (assistant → wildcard only; janka → wildcard +
+// janka-scoped), not a single fixed session.
+func TestOperatorAlert_PerProjectFanOut(t *testing.T) {
+	ch := &fakeChannel{name: "telegram"}
+	recips := fakeRecipients{
+		"assistant": {"559741208"},
+		"janka":     {"559741208", "8019099642"},
+	}
+	n, tg := newOperatorAlertR(t, ch, recips, OperatorAlertConfig{Channel: "telegram", Session: "fallback"}, true)
+
+	assistantTask := autonomyTask()
+	assistantTask.ID, assistantTask.ProjectID = "task_a", "assistant"
+	n.NotifySteeringRequired(context.Background(), assistantTask, string(persistence.TaskStatusAwaitingInput))
+
+	jankaTask := autonomyTask()
+	jankaTask.ID, jankaTask.ProjectID = "task_j", "janka"
+	n.NotifySteeringRequired(context.Background(), jankaTask, string(persistence.TaskStatusAwaitingInput))
+
+	got := map[string]int{}
+	for _, m := range tg.sent {
+		got[m.SessionID]++
+	}
+	// assistant → 1 (wildcard only); janka → 2 (wildcard + scoped).
+	if got["559741208"] != 2 { // wildcard operator gets both
+		t.Errorf("wildcard operator should get both projects' alerts, got %d", got["559741208"])
+	}
+	if got["8019099642"] != 1 { // janka-scoped only for janka
+		t.Errorf("janka-scoped operator should get exactly janka's alert, got %d", got["8019099642"])
+	}
+	if got["fallback"] != 0 {
+		t.Errorf("fallback session must not be used when per-project recipients resolve")
+	}
+}
+
+// TestOperatorAlert_FallbackWhenNoProjectRecipients: with a resolver that
+// returns nobody for the project, the configured fallback session is used.
+func TestOperatorAlert_FallbackWhenNoProjectRecipients(t *testing.T) {
+	ch := &fakeChannel{name: "telegram"}
+	n, tg := newOperatorAlertR(t, ch, fakeRecipients{}, OperatorAlertConfig{Channel: "telegram", Session: "fallback"}, true)
+
+	n.NotifySteeringRequired(context.Background(), autonomyTask(), string(persistence.TaskStatusAwaitingInput))
+
+	if len(tg.sent) != 1 || tg.sent[0].SessionID != "fallback" {
+		t.Fatalf("must fall back to the configured session when no project recipients resolve: %+v", tg.sent)
 	}
 }
 

@@ -1,8 +1,29 @@
 package service
 
 import (
+	"strconv"
+
 	"vornik.io/vornik/internal/steering"
 )
+
+// telegramProjectRecipients resolves ownerless-task steering alerts to the
+// Telegram chat IDs of allowed users with access to the task's project
+// (wildcard users + users scoped to that project). Implements
+// steering.ProjectRecipients. Only the telegram channel is backed today;
+// other channels return nil so the notifier uses its fallback session.
+type telegramProjectRecipients struct{ c *Container }
+
+func (t telegramProjectRecipients) RecipientsForProject(channel, projectID string) []string {
+	if channel != "telegram" || t.c == nil || t.c.TelegramBot == nil {
+		return nil
+	}
+	ids := t.c.TelegramBot.OperatorChatIDsForProject(projectID)
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, strconv.FormatInt(id, 10))
+	}
+	return out
+}
 
 // operatorAlertNotifier builds the fallback steering sink for ownerless
 // autonomy tasks (those the chat/DM notifier can't reach). Returns nil when no
@@ -14,11 +35,14 @@ func (c *Container) operatorAlertNotifier() *steering.OperatorAlertNotifier {
 		return nil
 	}
 	src := c.Config.SteeringOperatorAlert
-	if src.Channel == "" || src.Session == "" {
+	// A channel is required; Session is now only a fallback for projects that
+	// resolve to no per-project recipient, so it's optional.
+	if src.Channel == "" {
 		return nil
 	}
 	return steering.NewOperatorAlert(
 		&containerChannelResolver{c: c},
+		telegramProjectRecipients{c: c},
 		c.Config.Auth.ExternalBaseURL,
 		steering.OperatorAlertConfig{Channel: src.Channel, Session: src.Session, Address: src.Address},
 		c.Config.SteeringNotificationsEnabled,

@@ -32,6 +32,9 @@ type AdminSkillRow struct {
 	Domain      string
 	OriginTask  string
 	Maturity    string
+	// Roles are the swarm roles this skill injects into (empty = any
+	// role). Surfaced so the operator sees a skill's role scoping.
+	Roles []string
 	// IsGlobal drives the GLOBAL badge + the "affects ALL projects"
 	// blast-radius label so the operator sees a skill's cross-project
 	// reach before approving or while managing it.
@@ -123,6 +126,7 @@ func (s *Server) AdminSkills(w http.ResponseWriter, r *http.Request) {
 			BodyPreview: skillBodyPreview(sk.Body, 400),
 			ProjectID:   sk.ProjectID, RepoScope: sk.RepoScope, Domain: sk.Domain,
 			OriginTask: sk.OriginTask, Maturity: sk.Maturity, IsGlobal: sk.IsGlobal,
+			Roles:      sk.Roles,
 			UsageFired: sk.UsageFired, UsageWorked: sk.UsageWorked, UsageCorrected: sk.UsageCorrected,
 			// Approve promotes draft/retired → active; Reject/retire is a
 			// no-op-to-show on an already-retired skill.

@@ -19,12 +19,16 @@ func TestOperatorAlertNotifier_NilUnlessConfigured(t *testing.T) {
 		}
 	})
 
-	t.Run("channel without session → nil", func(t *testing.T) {
+	t.Run("channel without session → live (per-project recipients supply the destination)", func(t *testing.T) {
+		// Session is now only a fallback: with a channel set, per-project
+		// recipient resolution (telegram allow-list) supplies the actual
+		// recipients, so the notifier is live even without a fixed session.
 		c := &Container{Logger: zerolog.Nop(), Config: &config.Config{
-			SteeringOperatorAlert: config.SteeringOperatorAlertConfig{Channel: "telegram"},
+			SteeringNotificationsEnabled: true,
+			SteeringOperatorAlert:        config.SteeringOperatorAlertConfig{Channel: "telegram"},
 		}}
-		if c.operatorAlertNotifier() != nil {
-			t.Fatal("expected nil when a channel is set but no session")
+		if c.operatorAlertNotifier() == nil {
+			t.Fatal("expected a live notifier when a channel is set (per-project routing)")
 		}
 	})
 

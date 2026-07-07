@@ -145,6 +145,35 @@ func TestAdminSkills_ShowsActiveSkills(t *testing.T) {
 	}
 }
 
+func TestAdminSkills_RendersRoles(t *testing.T) {
+	repo := newSkillRepoUI(t)
+	if err := repo.Create(context.Background(), &persistence.Skill{
+		ID: "rr", ProjectID: "companion-example", Name: "scoped", Description: "d",
+		Body: "b", BodySHA256: "h", Maturity: persistence.SkillMaturityActive,
+		Roles: []string{"researcher", "writer"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// A skill with no roles should render "any".
+	if err := repo.Create(context.Background(), &persistence.Skill{
+		ID: "ar", ProjectID: "companion-example", Name: "anyrole", Description: "d",
+		Body: "b", BodySHA256: "h", Maturity: persistence.SkillMaturityActive,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	s := NewServer(WithSkillRepository(repo))
+	req := httptest.NewRequest(http.MethodGet, "/admin/skills", nil)
+	rec := httptest.NewRecorder()
+	s.AdminSkills(rec, req)
+	body := rec.Body.String()
+	if !strings.Contains(body, "researcher, writer") {
+		t.Error("role-scoped skill must render its roles")
+	}
+	if !strings.Contains(body, "roles <code class=\"text-gray-400\">any") {
+		t.Error("no-roles skill must render 'any'")
+	}
+}
+
 func TestAdminSkills_MaturityFilter(t *testing.T) {
 	repo := newSkillRepoUI(t)
 	ctx := context.Background()

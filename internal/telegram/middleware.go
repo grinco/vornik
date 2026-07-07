@@ -35,6 +35,26 @@ func (b *Bot) UserCanAccessProject(userID int64, projectID string) bool {
 	return ua.CanAccessProject(projectID)
 }
 
+// OperatorChatIDsForProject returns the Telegram chat IDs (a DM chat_id
+// equals the user id) of every allowed user who may access projectID —
+// wildcard users always, project-scoped users only when projectID is in
+// their whitelist. Used to route ownerless-task steering alerts (autonomy /
+// routed sub-tasks with no originating chat) to exactly the operators with
+// access to that task's project. Returns nil when no allowlist is
+// configured (dev mode: no scoped recipients to fan out to).
+func (b *Bot) OperatorChatIDsForProject(projectID string) []int64 {
+	if len(b.config.AllowedUsers) == 0 {
+		return nil
+	}
+	var out []int64
+	for id, ua := range b.config.AllowedUsers {
+		if ua.Allowed && ua.CanAccessProject(projectID) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // AllowedProjectsForUser returns the project-ID whitelist for a
 // dispatcher.Request. Semantics match the API's projectIDKey context
 // value: nil → no restriction (dev mode or fully-trusted user);

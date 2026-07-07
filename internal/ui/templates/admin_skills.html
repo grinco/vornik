@@ -61,7 +61,8 @@
                                 {{if .IsGlobal}}<div class="text-[11px] text-amber-400 mt-1">⚠ Affects ALL projects — injects into every project's roles.</div>{{end}}
                                 <div class="text-[11px] text-gray-500 mt-1">
                                     project <code class="text-gray-400">{{.ProjectID}}</code>
-                                    {{if .RepoScope}} · scope <code class="text-gray-400">{{.RepoScope}}</code>{{end}}
+                                    · roles <code class="text-gray-400">{{if .Roles}}{{range $i, $r := .Roles}}{{if $i}}, {{end}}{{$r}}{{end}}{{else}}any{{end}}</code>
+                                    {{if .RepoScope}} · repo <code class="text-gray-400">{{.RepoScope}}</code>{{end}}
                                     {{if .Domain}} · domain <code class="text-gray-400">{{.Domain}}</code>{{end}}
                                 </div>
                                 <div class="text-[11px] text-gray-500 mt-1">

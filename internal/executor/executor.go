@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/contracts"
 	"vornik.io/vornik/internal/executor/livepubsub"
 	"vornik.io/vornik/internal/hallucination"
@@ -296,12 +297,17 @@ type Executor struct {
 	// execution so a successful task can credit a "worked" maturity
 	// signal to exactly those skills (learning-loop §D.2). Nil-safe.
 	execSkillRepo persistence.ExecutionInjectedSkillRepository
-	llmUsageRepo  persistence.TaskLLMUsageRepository
-	reservRepo    persistence.BudgetReservationRepository
-	outcomeRepo   persistence.ExecutionStepOutcomeRepository
-	notifier      CompletionNotifier
-	steering      SteeringNotifier
-	memoryIndexer MemoryIndexer
+	// distillerLLM powers the server-side skill distiller (learning-loop
+	// §E1): a bounded LLM pass over a completed task that may propose a
+	// draft skill. Nil disables distillation.
+	distillerLLM   chat.Provider
+	distillLimiter skillDistillLimiter
+	llmUsageRepo   persistence.TaskLLMUsageRepository
+	reservRepo     persistence.BudgetReservationRepository
+	outcomeRepo    persistence.ExecutionStepOutcomeRepository
+	notifier       CompletionNotifier
+	steering       SteeringNotifier
+	memoryIndexer  MemoryIndexer
 	// systemHandlers backs the `system` workflow step type (B-7).
 	// Populated at executor construction via WithSystemHandlers.
 	// Nil-safe: a missing handler surfaces the standard
@@ -1010,6 +1016,14 @@ func WithSkillRepository(repo persistence.SkillRepository) Option {
 func WithExecutionInjectedSkillRepository(repo persistence.ExecutionInjectedSkillRepository) Option {
 	return func(e *Executor) {
 		e.execSkillRepo = repo
+	}
+}
+
+// WithSkillDistiller wires the LLM provider that powers the server-side
+// skill distiller (E1). Nil disables distillation.
+func WithSkillDistiller(llm chat.Provider) Option {
+	return func(e *Executor) {
+		e.distillerLLM = llm
 	}
 }
 

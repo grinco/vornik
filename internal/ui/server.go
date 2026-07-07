@@ -184,6 +184,7 @@ type Server struct {
 	outcomeRepo         persistence.ExecutionStepOutcomeRepository
 	judgeVerdictRepo    persistence.TaskJudgeVerdictRepository
 	recoveryEventRepo   persistence.RecoveryEventRepository
+	skillRepo           persistence.SkillRepository
 	tradingSnapshotRepo persistence.TradingPositionsSnapshotRepository
 	tradingOrderRepo    persistence.TradingOrderRepository
 	tradingSafetyRepo   persistence.TradingSafetyEventRepository
@@ -1195,6 +1196,14 @@ func WithJudgeVerdictRepository(repo persistence.TaskJudgeVerdictRepository) Ser
 func WithRecoveryEventRepository(repo persistence.RecoveryEventRepository) ServerOption {
 	return func(s *Server) {
 		s.recoveryEventRepo = repo
+	}
+}
+
+// WithSkillRepository wires the knowledge-skill store for the EE
+// skills-review inbox (/ui/admin/skills). Nil-safe.
+func WithSkillRepository(repo persistence.SkillRepository) ServerOption {
+	return func(s *Server) {
+		s.skillRepo = repo
 	}
 }
 

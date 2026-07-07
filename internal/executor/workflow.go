@@ -1681,6 +1681,18 @@ func (e *Executor) handleSuccess(ctx context.Context, task *persistence.Task, ex
 		}
 	}
 
+	// Distil a draft skill from this successful task (learning-loop §E1).
+	// Async + best-effort so it never delays completion; a detached
+	// context so it survives the request ctx unwinding.
+	if e.distillerLLM != nil {
+		distillTask, distillResult := task, string(result)
+		go func() {
+			dctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			e.maybeDistillSkill(dctx, distillTask, distillResult)
+		}()
+	}
+
 	// Notify watchers
 	if e.notifier != nil {
 		e.notifier.NotifyTaskCompleted(ctx, task, true, notifyMsg)

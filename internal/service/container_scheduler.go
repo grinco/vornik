@@ -375,6 +375,7 @@ func (c *Container) initScheduler() error {
 		executor.WithRecoveryEventRepository(c.repos.RecoveryEvents),
 		executor.WithSkillRepository(c.repos.Skills),
 		executor.WithExecutionInjectedSkillRepository(c.repos.ExecInjectedSkills),
+		executor.WithSkillDistiller(c.ChatClient),
 		// Phase 25 — conversational task lifecycle. The executor
 		// uses these to write checkpoint / external_wait /
 		// closure_request task_messages and flip the task status

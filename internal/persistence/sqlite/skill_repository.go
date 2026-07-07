@@ -24,7 +24,8 @@ func NewSkillRepository(db DBTX) *SkillRepository { return &SkillRepository{db: 
 
 const skillColumns = `id, project_id, repo_scope, name, description, body, body_sha256,
 	domain, tags, roles, maturity, version, origin_client, origin_task, author,
-	usage_fired, usage_worked, usage_corrected, last_fired_at, created_at, updated_at`
+	usage_fired, usage_worked, usage_corrected, last_fired_at, created_at, updated_at,
+	is_global`
 
 // scopeArg maps the Go "" convention to a NULL column value.
 func scopeArg(scope string) interface{} {
@@ -61,12 +62,12 @@ func (r *SkillRepository) insert(ctx context.Context, s *persistence.Skill) erro
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO project_skills (`+skillColumns+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		s.ID, s.ProjectID, scopeArg(s.RepoScope), s.Name, s.Description, s.Body, s.BodySHA256,
 		nullStr(s.Domain), sqliteStringArray(s.Tags), sqliteStringArray(s.Roles),
 		s.Maturity, s.Version, nullStr(s.OriginClient), nullStr(s.OriginTask), nullStr(s.Author),
 		s.UsageFired, s.UsageWorked, s.UsageCorrected, sqliteTimePtr(s.LastFiredAt),
-		sqliteTime(s.CreatedAt), sqliteTime(s.UpdatedAt),
+		sqliteTime(s.CreatedAt), sqliteTime(s.UpdatedAt), s.IsGlobal,
 	)
 	return err
 }
@@ -132,8 +133,14 @@ func (r *SkillRepository) Get(ctx context.Context, projectID, repoScope, name st
 // List returns skills matching the filter, newest-updated first.
 func (r *SkillRepository) List(ctx context.Context, projectID string, f persistence.SkillListFilter) ([]*persistence.Skill, error) {
 	var b strings.Builder
-	b.WriteString(`SELECT ` + skillColumns + ` FROM project_skills WHERE project_id = ?`)
 	args := []interface{}{projectID}
+	// IncludeGlobal widens to global skills, but ONLY for a non-empty
+	// projectID — an empty project must never match all rows (guard).
+	if f.IncludeGlobal && projectID != "" {
+		b.WriteString(`SELECT ` + skillColumns + ` FROM project_skills WHERE (project_id = ? OR is_global = 1)`)
+	} else {
+		b.WriteString(`SELECT ` + skillColumns + ` FROM project_skills WHERE project_id = ?`)
+	}
 
 	if f.RepoScope != "" {
 		if f.StrictScope {
@@ -239,6 +246,17 @@ func (r *SkillRepository) SetMaturity(ctx context.Context, id, maturity string) 
 	return errIfNoRows(res)
 }
 
+// SetGlobal flips a skill's cross-project reach without touching maturity.
+func (r *SkillRepository) SetGlobal(ctx context.Context, id string, global bool) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE project_skills SET is_global = ?, updated_at = ? WHERE id = ?`,
+		global, sqliteTime(time.Now().UTC()), id)
+	if err != nil {
+		return err
+	}
+	return errIfNoRows(res)
+}
+
 // RecordFeedback increments the usage counter for the given signal and, for
 // "fired", stamps last_fired_at.
 func (r *SkillRepository) RecordFeedback(ctx context.Context, id, signal string) error {
@@ -306,6 +324,7 @@ func scanSkill(sc skillScanner) (*persistence.Skill, error) {
 		&s.ID, &s.ProjectID, &repoScope, &s.Name, &s.Description, &s.Body, &s.BodySHA256,
 		&domain, &tags, &roles, &s.Maturity, &s.Version, &originCl, &originTask, &author,
 		&s.UsageFired, &s.UsageWorked, &s.UsageCorrected, &lastFired, &createdAt, &updatedAt,
+		&s.IsGlobal,
 	); err != nil {
 		return nil, err
 	}

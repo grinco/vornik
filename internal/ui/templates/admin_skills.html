@@ -33,8 +33,12 @@
                     <div class="rounded-lg bg-dark-800 border border-dark-700 p-4">
                         <div class="flex items-start gap-3">
                             <div class="min-w-0 flex-1">
-                                <div class="font-mono text-sm text-gray-100">{{.Name}}</div>
+                                <div class="flex items-center gap-2">
+                                    <div class="font-mono text-sm text-gray-100">{{.Name}}</div>
+                                    {{if .IsGlobal}}<span class="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-600/30 text-amber-300 border border-amber-700">GLOBAL</span>{{end}}
+                                </div>
                                 <div class="text-xs text-gray-400 mt-0.5">{{.Description}}</div>
+                                {{if .IsGlobal}}<div class="text-[11px] text-amber-400 mt-1">⚠ Affects ALL projects — once approved this skill injects into every project's roles.</div>{{end}}
                                 <div class="text-[11px] text-gray-500 mt-1">
                                     project <code class="text-gray-400">{{.ProjectID}}</code>
                                     {{if .RepoScope}} · scope <code class="text-gray-400">{{.RepoScope}}</code>{{end}}
@@ -53,6 +57,19 @@
                                     <input type="hidden" name="action" value="reject">
                                     <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-red-800 hover:bg-red-700 text-white">❌ Reject</button>
                                 </form>
+                                {{if .IsGlobal}}
+                                <form method="POST" action="/ui/admin/skills">
+                                    <input type="hidden" name="id" value="{{.ID}}">
+                                    <input type="hidden" name="action" value="set-project">
+                                    <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-dark-700 hover:bg-dark-600 text-gray-200 border border-dark-600">Make project-only</button>
+                                </form>
+                                {{else}}
+                                <form method="POST" action="/ui/admin/skills">
+                                    <input type="hidden" name="id" value="{{.ID}}">
+                                    <input type="hidden" name="action" value="set-global">
+                                    <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-amber-700/40 hover:bg-amber-700/60 text-amber-200 border border-amber-700">Make global</button>
+                                </form>
+                                {{end}}
                             </div>
                         </div>
                     </div>

@@ -34,6 +34,9 @@ type skillProposeArgs struct {
 	Roles       []string `json:"roles"`
 	RepoScope   string   `json:"repo_scope"`
 	Author      string   `json:"author"`
+	// Global, when true, proposes a cross-project skill: once approved it
+	// injects into EVERY project's roles, not just this key's project.
+	Global bool `json:"global"`
 }
 
 type skillSearchArgs struct {
@@ -63,6 +66,11 @@ type skillModerateArgs struct {
 	Reason string `json:"reason"`
 }
 
+type skillSetGlobalArgs struct {
+	ID     string `json:"id"`
+	Global bool   `json:"global"`
+}
+
 // --- response shapes -------------------------------------------------
 
 type skillSummary struct {
@@ -75,13 +83,14 @@ type skillSummary struct {
 	RepoScope   string   `json:"repo_scope,omitempty"`
 	Maturity    string   `json:"maturity"`
 	Version     int      `json:"version"`
+	IsGlobal    bool     `json:"is_global,omitempty"`
 }
 
 func toSkillSummary(s *persistence.Skill) skillSummary {
 	return skillSummary{
 		ID: s.ID, Name: s.Name, Description: s.Description, Domain: s.Domain,
 		Tags: s.Tags, Roles: s.Roles, RepoScope: s.RepoScope,
-		Maturity: s.Maturity, Version: s.Version,
+		Maturity: s.Maturity, Version: s.Version, IsGlobal: s.IsGlobal,
 	}
 }
 
@@ -132,19 +141,28 @@ func (s *Server) companionToolSkillPropose(ctx context.Context, key *persistence
 		OriginClient: key.ClientKind,
 		OriginTask:   taskIDFromContext(ctx),
 		Author:       strings.TrimSpace(args.Author),
+		IsGlobal:     args.Global,
 	}
 	// Upsert so re-proposing the same (scope,name) edits in place: it
 	// bumps the version and resets to draft, requiring fresh approval.
+	// NOTE: Upsert preserves is_global on an EDIT (it never clears an
+	// already-set flag); global:true only takes effect on a fresh create.
+	// Use skill_set_global to change reach on an existing skill.
 	stored, err := s.skillStore.Upsert(ctx, skill)
 	if err != nil {
 		return "", fmt.Errorf("propose failed: %w", err)
 	}
+	note := "proposed as draft — an operator must approve it before it activates"
+	if stored.IsGlobal {
+		note = "proposed as a GLOBAL draft (affects ALL projects once approved) — an operator must approve it before it activates"
+	}
 	return marshalSkill(map[string]any{
-		"id":       stored.ID,
-		"name":     stored.Name,
-		"maturity": stored.Maturity,
-		"version":  stored.Version,
-		"note":     "proposed as draft — an operator must approve it before it activates",
+		"id":        stored.ID,
+		"name":      stored.Name,
+		"maturity":  stored.Maturity,
+		"version":   stored.Version,
+		"is_global": stored.IsGlobal,
+		"note":      note,
 	})
 }
 
@@ -234,6 +252,7 @@ func (s *Server) companionToolSkillGet(ctx context.Context, key *persistence.API
 		"body": skill.Body, "domain": skill.Domain, "tags": skill.Tags,
 		"roles": skill.Roles, "repo_scope": skill.RepoScope,
 		"maturity": skill.Maturity, "version": skill.Version,
+		"is_global": skill.IsGlobal,
 	})
 }
 
@@ -283,6 +302,46 @@ func (s *Server) skillModerate(ctx context.Context, key *persistence.APIKey, raw
 		"id": skill.ID, "name": skill.Name, "maturity": outcome,
 		"body_sha256": skill.BodySHA256, // approval binds to the exact reviewed body
 		"reason":      strings.TrimSpace(args.Reason),
+	})
+}
+
+// companionToolSkillSetGlobal flips a skill's cross-project reach. It is
+// SkillAdmin-gated (same human gate as approve/reject — marking a skill
+// global fires it in EVERY project) and project-checked so a caller can
+// only widen its OWN project's skills. Does not change maturity.
+func (s *Server) companionToolSkillSetGlobal(ctx context.Context, key *persistence.APIKey, raw json.RawMessage) (string, error) {
+	if !key.SkillAdmin {
+		return "", errors.New("this key lacks skill_admin; changing a skill's global reach requires `vornikctl companion grant --skill-admin`")
+	}
+	if s.skillStore == nil {
+		return "", errors.New("skill store not wired on this daemon")
+	}
+	var args skillSetGlobalArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if strings.TrimSpace(args.ID) == "" {
+		return "", errors.New("id is required")
+	}
+	// Project-check before mutating: a caller can only flip a skill in
+	// its own project (the home-project invariant — is_global widens
+	// injection, never ownership).
+	skill, err := s.skillStore.GetByID(ctx, args.ID)
+	if err != nil {
+		return "", fmt.Errorf("skill not found: %w", err)
+	}
+	if skill.ProjectID != key.ProjectID {
+		return "", errors.New("skill not found in this project")
+	}
+	if err := s.skillStore.SetGlobal(ctx, args.ID, args.Global); err != nil {
+		return "", fmt.Errorf("set global failed: %w", err)
+	}
+	note := "skill is now project-only"
+	if args.Global {
+		note = "skill is now GLOBAL — it injects into ALL projects' roles"
+	}
+	return marshalSkill(map[string]any{
+		"id": skill.ID, "name": skill.Name, "is_global": args.Global, "note": note,
 	})
 }
 

@@ -88,6 +88,11 @@ func buildSkillReviewDigest(drafts []*persistence.Skill) (string, InlineKeyboard
 	var buttons []Button
 	for i, s := range drafts {
 		fmt.Fprintf(&text, "\n%d. *%s* — %s", i+1, s.Name, s.Description)
+		if s.IsGlobal {
+			// Blast-radius label: an approved global skill fires in every
+			// project, so the approver must see the scope before deciding.
+			text.WriteString("\n   ⚠ GLOBAL — affects ALL projects once approved")
+		}
 		if approve, err := EncodeCallback("skill", "approve", s.ID); err == nil {
 			buttons = append(buttons, Button{Text: fmt.Sprintf("✅ %d", i+1), Data: approve})
 		}

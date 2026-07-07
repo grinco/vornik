@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/api/companion_mcp.go
-      sha256: 146bdd8e82c069a8902e546f1cffa1ff41c4487ca3639cc8bc908bc2c87d17b0
+      sha256: f97c71fafb8d4fcba8e0bf456002288f8b65e6bcf84296c685c30f26071fefaa
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
-      sha256: cf4f94eeba240cfb076632dd2b06e4e44fd62bfbd06aefe9edc2ec78cb736051
+      sha256: e1385ce8ff546a10855d73877ef2e2a6721b81f3093d6b404efd05e23c0e8289
     - path: contrib/codex-companion/.codex-plugin/plugin.json
       sha256: c66881d15d3c654eeef6a3be03a9ad0196b411653381e9d8bb4836c52768ee40
 ---
@@ -50,6 +50,7 @@ The companion exposes these MCP tools:
 | `skill_list` | enumerate knowledge skills by maturity for management (needs `skill_read`) |
 | `skill_approve` | promote a draft skill to active — the human gate (needs `skill_admin`) |
 | `skill_reject` | retire/revoke a knowledge skill (needs `skill_admin`) |
+| `skill_set_global` | set/clear a skill's cross-project (global) reach (needs `skill_admin`) |
 
 The `skill_*` tools are the client surface of the daemon-owned **knowledge-skill
 store**: instructional know-how authored from any client (a proven procedure, a
@@ -57,7 +58,10 @@ hard-won gotcha) that, once approved, is served to swarm roles and every
 companion client. They are distinct from the `SWARM-SKILL.md` capability skills
 (workflow + roles) and share no storage with project memory. A proposed skill
 lands as a `draft` and never fires until an operator with a `skill_admin` key
-approves it.
+approves it. A skill can also be marked **global** (`skill_propose global:true`
+or `skill_set_global`) so it injects into every project's roles, not just its
+home project — the way a procedure captured in your companion project reaches
+the autonomy roles. See [Knowledge skills](knowledge-skills.md).
 
 In Claude Code, several tools are also wrapped as slash commands — for example
 `/recall`, `/remember`, `/delegate`, `/review` (a one-shot architectural
@@ -145,20 +149,27 @@ endpoint):
 # confirm the daemon advertises the companion capabilities
 curl "$VORNIK_URL/api/v1/capabilities"
 
-# mint a scoped key (printed once)
+# mint a scoped key (printed once) — memory + knowledge-skill capable
 vornikctl companion grant \
     --project companion-$USER \
     --client claude-code \
     --workflows companion-architectural-review,companion-rag-ingest \
-    --budget-usd 5 --memory-read --memory-write
+    --budget-usd 5 --memory-all --skill-all
 ```
+
+`--memory-all` and `--skill-all` are the recommended default for a companion
+project: they grant RAG (`remember`/`recall`) and the full knowledge-skill
+store (`skill_read`/`write`/`admin`) so you can capture and approve procedures
+without a second grant. Narrow them per key — e.g. `--skill-read --skill-write`
+(propose but not self-approve), or drop `--skill-all` entirely for a
+delegate-only key. `--memory-all` = `--memory-read --memory-write`.
 
 Use `--client codex` instead when minting a key for the Codex plugin. For Codex
 (no SessionStart scope injector), add `--repo-scope github.com/<org>/<repo>` so
 memory calls that omit `repo_scope` inherit the right scope by default.
 
-The key's allowed workflows, spend cap, and memory permissions are enforced
-server-side from the key itself — never from the request.
+The key's allowed workflows, spend cap, and memory + skill permissions are
+enforced server-side from the key itself — never from the request.
 
 On the **client** side, set the companion bearer token and install the plugin:
 

@@ -80,6 +80,61 @@ func TestResolveSkills_OnlyApprovedMatchingRole(t *testing.T) {
 	}
 }
 
+func TestResolveSkills_InjectsGlobalFromOtherProject(t *testing.T) {
+	repo := newSkillRepoForExec(t)
+	ctx := context.Background()
+	mk := func(id, proj, name string, global bool) {
+		if err := repo.Create(ctx, &persistence.Skill{
+			ID: id, ProjectID: proj, RepoScope: "github.com/x/a", Name: name,
+			Description: "d", Body: "b", BodySHA256: "h-" + id,
+			Maturity: persistence.SkillMaturityActive, Roles: []string{"researcher"},
+			IsGlobal: global,
+		}); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	// Global skill authored under project A; a non-global one under A.
+	mk("g-a", "projA", "global-from-a", true)
+	mk("l-a", "projA", "local-to-a", false)
+	// Project B's own skill.
+	mk("l-b", "projB", "local-to-b", false)
+
+	e := &Executor{skillRepo: repo}
+	got := e.resolveSkills(ctx, "projB", "researcher", "exec-g")
+
+	names := map[string]bool{}
+	for _, s := range got {
+		names[s.Name] = true
+	}
+	if !names["local-to-b"] {
+		t.Error("project B must see its own skill")
+	}
+	if !names["global-from-a"] {
+		t.Error("project B must inject project A's GLOBAL skill")
+	}
+	if names["local-to-a"] {
+		t.Error("isolation leak: project B injected project A's non-global skill")
+	}
+
+	// A global skill whose home IS the current project injects exactly
+	// once (dedup guard) and still fires once.
+	e2 := &Executor{skillRepo: repo}
+	gotA := e2.resolveSkills(ctx, "projA", "researcher", "exec-h")
+	count := 0
+	for _, s := range gotA {
+		if s.Name == "global-from-a" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("home-project global must appear exactly once, got %d", count)
+	}
+	stored, _ := repo.GetByID(ctx, "g-a")
+	if stored.UsageFired != 2 { // once for exec-g (projB), once for exec-h (projA)
+		t.Errorf("global skill should have fired exactly twice, got %d", stored.UsageFired)
+	}
+}
+
 func TestResolveSkills_NilStore(t *testing.T) {
 	e := &Executor{}
 	if got := e.resolveSkills(context.Background(), "p1", "researcher", "exec-x"); got != nil {

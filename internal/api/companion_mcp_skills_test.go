@@ -199,6 +199,86 @@ func TestSkillReject_DraftNoCorrected(t *testing.T) {
 	}
 }
 
+func TestSkillPropose_GlobalStoresFlag(t *testing.T) {
+	s := newSkillTestServer(t)
+	ctx := context.Background()
+	key := skillKey("p1", true, false)
+	out, err := s.companionToolSkillPropose(ctx, key, rawArgs(t, map[string]any{
+		"name": "g", "description": "d", "body": "# b", "global": true,
+	}))
+	if err != nil {
+		t.Fatalf("propose: %v", err)
+	}
+	if !strings.Contains(out, "affects ALL projects") {
+		t.Fatalf("global propose must label blast radius, got %s", out)
+	}
+	got, err := s.skillStore.GetByID(ctx, proposeID(t, out))
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if !got.IsGlobal {
+		t.Fatalf("propose global:true must store is_global, got %+v", got)
+	}
+}
+
+func TestSkillSetGlobal_RequiresSkillAdmin(t *testing.T) {
+	s := newSkillTestServer(t)
+	ctx := context.Background()
+	writer := skillKey("p1", true, false)
+	out, _ := s.companionToolSkillPropose(ctx, writer, rawArgs(t, map[string]any{
+		"name": "x", "description": "d", "body": "b",
+	}))
+	_, err := s.companionToolSkillSetGlobal(ctx, writer, rawArgs(t, map[string]any{
+		"id": proposeID(t, out), "global": true,
+	}))
+	if err == nil || !strings.Contains(err.Error(), "skill_admin") {
+		t.Fatalf("expected skill_admin gate error, got %v", err)
+	}
+}
+
+func TestSkillSetGlobal_FlipsWithoutTouchingMaturity(t *testing.T) {
+	s := newSkillTestServer(t)
+	ctx := context.Background()
+	admin := skillKey("p1", true, true)
+	out, _ := s.companionToolSkillPropose(ctx, admin, rawArgs(t, map[string]any{
+		"name": "promote-me", "description": "d", "body": "b", "repo_scope": "github.com/x/a",
+	}))
+	id := proposeID(t, out)
+	if _, err := s.companionToolSkillApprove(ctx, admin, rawArgs(t, map[string]any{"id": id})); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if _, err := s.companionToolSkillSetGlobal(ctx, admin, rawArgs(t, map[string]any{"id": id, "global": true})); err != nil {
+		t.Fatalf("set-global: %v", err)
+	}
+	got, _ := s.skillStore.GetByID(ctx, id)
+	if !got.IsGlobal {
+		t.Errorf("set-global did not stick: %+v", got)
+	}
+	if got.Maturity != persistence.SkillMaturityActive {
+		t.Errorf("set-global must not touch maturity, got %s", got.Maturity)
+	}
+}
+
+func TestSkillSetGlobal_RejectsCrossProject(t *testing.T) {
+	s := newSkillTestServer(t)
+	ctx := context.Background()
+	p1admin := skillKey("p1", true, true)
+	out, _ := s.companionToolSkillPropose(ctx, p1admin, rawArgs(t, map[string]any{
+		"name": "mine", "description": "d", "body": "b",
+	}))
+	id := proposeID(t, out)
+	p2admin := skillKey("p2", true, true)
+	_, err := s.companionToolSkillSetGlobal(ctx, p2admin, rawArgs(t, map[string]any{"id": id, "global": true}))
+	if err == nil || !strings.Contains(err.Error(), "not found in this project") {
+		t.Fatalf("expected cross-project rejection, got %v", err)
+	}
+	// The skill must remain project-only after the rejected attempt.
+	got, _ := s.skillStore.GetByID(ctx, id)
+	if got.IsGlobal {
+		t.Errorf("cross-project set-global must not have flipped the flag")
+	}
+}
+
 func TestSkillGet_RejectsCrossProject(t *testing.T) {
 	s := newSkillTestServer(t)
 	ctx := context.Background()

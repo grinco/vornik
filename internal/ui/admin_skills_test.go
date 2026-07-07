@@ -68,6 +68,56 @@ func TestAdminSkills_ApprovePost(t *testing.T) {
 	}
 }
 
+func TestAdminSkills_GlobalBadgeAndBlastRadius(t *testing.T) {
+	repo := newSkillRepoUI(t)
+	if err := repo.Create(context.Background(), &persistence.Skill{
+		ID: "sg", ProjectID: "p1", Name: "global-draft", Description: "d",
+		Body: "b", BodySHA256: "h", Maturity: persistence.SkillMaturityDraft, IsGlobal: true,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	s := NewServer(WithSkillRepository(repo))
+	req := httptest.NewRequest(http.MethodGet, "/admin/skills", nil)
+	rec := httptest.NewRecorder()
+	s.AdminSkills(rec, req)
+	body := rec.Body.String()
+	if !strings.Contains(body, "GLOBAL") {
+		t.Error("global draft must render a GLOBAL badge")
+	}
+	if !strings.Contains(body, "Affects ALL projects") {
+		t.Error("global draft must show the blast-radius warning")
+	}
+	if !strings.Contains(body, "Make project-only") {
+		t.Error("global draft must offer a demote button")
+	}
+}
+
+func TestAdminSkills_SetGlobalPost(t *testing.T) {
+	repo := newSkillRepoUI(t)
+	if err := repo.Create(context.Background(), &persistence.Skill{
+		ID: "sp", ProjectID: "p1", Name: "promote", Description: "d",
+		Body: "b", BodySHA256: "h", Maturity: persistence.SkillMaturityDraft,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	s := NewServer(WithSkillRepository(repo))
+	form := url.Values{"id": {"sp"}, "action": {"set-global"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/skills", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.AdminSkills(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rec.Code)
+	}
+	got, _ := repo.GetByID(context.Background(), "sp")
+	if !got.IsGlobal {
+		t.Fatalf("set-global did not flip the flag")
+	}
+	if got.Maturity != persistence.SkillMaturityDraft {
+		t.Fatalf("set-global must not touch maturity, got %s", got.Maturity)
+	}
+}
+
 func TestAdminSkills_RepoUnwired(t *testing.T) {
 	s := NewServer()
 	req := httptest.NewRequest(http.MethodGet, "/admin/skills", nil)

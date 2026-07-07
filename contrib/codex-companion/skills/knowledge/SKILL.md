@@ -27,6 +27,7 @@ This is NOT the same as:
 - `mcp__vornik__skill_get` — fetch one skill's full body (needs `skill_read`).
 - `mcp__vornik__skill_list` — enumerate by maturity for review (needs `skill_read`).
 - `mcp__vornik__skill_approve` / `skill_reject` — the human gate (needs `skill_admin`).
+- `mcp__vornik__skill_set_global` — set/clear a skill's GLOBAL reach (needs `skill_admin`).
 
 ## When to propose
 
@@ -40,6 +41,19 @@ troubleshooting flow, a deploy sequence, a non-obvious fix. Provide:
 
 The skill lands as a `draft` and does not fire until an operator approves it.
 Tell the user it needs approval; don't imply it's live.
+
+## Cross-project (global) skills
+
+By default a skill is project-scoped — it only injects into its home project's
+roles. To make a skill reach EVERY project (e.g. so the janka and assistant
+autonomy roles pick up a procedure you captured here), either:
+
+- propose it with `global=true` (honored only on a fresh create), or
+- flip an existing skill with `skill_set_global` (`id`, `global`).
+
+Both need `skill_admin` and only affect a skill in this key's own project.
+Changing reach never changes maturity. A global draft's approval prompt is
+labelled "affects ALL projects" so the operator decides knowingly.
 
 ## Search before re-deriving
 

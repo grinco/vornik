@@ -518,6 +518,34 @@ vornikctl key update <keyID> [flags]
 | `--set-workflows` | `[]` | Workflow ID(s) replacing allowed_workflows. Empty value (--set-workflows='') clears the list = every project workflow. |
 | `-p`, `--project` |  | Project ID (required) |
 
+## vornikctl knowledge
+
+Manage knowledge skills (cross-project reach)
+
+Operator surface for the knowledge-skill store.
+
+A knowledge skill authored in one project can be promoted to GLOBAL so it
+injects into every project's roles — e.g. a skill captured from a Claude
+companion session becomes available to the janka and assistant autonomy
+roles. Promotion does not change a skill's maturity; an approved skill
+stays approved.
+
+## vornikctl knowledge set-global
+
+Promote a knowledge skill to GLOBAL (injects into ALL projects)
+
+```
+vornikctl knowledge set-global <skill-id>
+```
+
+## vornikctl knowledge set-project
+
+Demote a knowledge skill to project-only (its home project)
+
+```
+vornikctl knowledge set-project <skill-id>
+```
+
 ## vornikctl mcp
 
 Inspect and call MCP tools wired to a project

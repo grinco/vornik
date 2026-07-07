@@ -25,7 +25,8 @@ func NewSkillRepository(db DBTX) *SkillRepository { return &SkillRepository{db: 
 
 const pgSkillColumns = `id, project_id, repo_scope, name, description, body, body_sha256,
 	domain, tags, roles, maturity, version, origin_client, origin_task, author,
-	usage_fired, usage_worked, usage_corrected, last_fired_at, created_at, updated_at`
+	usage_fired, usage_worked, usage_corrected, last_fired_at, created_at, updated_at,
+	is_global`
 
 func encodeSkillList(v []string) string {
 	if v == nil {
@@ -83,12 +84,12 @@ func (r *SkillRepository) insert(ctx context.Context, s *persistence.Skill) erro
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO project_skills (`+pgSkillColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
 		s.ID, s.ProjectID, pgNullStr(s.RepoScope), s.Name, s.Description, s.Body, s.BodySHA256,
 		pgNullStr(s.Domain), encodeSkillList(s.Tags), encodeSkillList(s.Roles),
 		s.Maturity, s.Version, pgNullStr(s.OriginClient), pgNullStr(s.OriginTask), pgNullStr(s.Author),
 		s.UsageFired, s.UsageWorked, s.UsageCorrected, s.LastFiredAt,
-		s.CreatedAt, s.UpdatedAt,
+		s.CreatedAt, s.UpdatedAt, s.IsGlobal,
 	)
 	return mapDBError(err)
 }
@@ -152,7 +153,13 @@ func (r *SkillRepository) Get(ctx context.Context, projectID, repoScope, name st
 // List returns skills matching the filter, newest-updated first.
 func (r *SkillRepository) List(ctx context.Context, projectID string, f persistence.SkillListFilter) ([]*persistence.Skill, error) {
 	var b strings.Builder
-	b.WriteString(`SELECT ` + pgSkillColumns + ` FROM project_skills WHERE project_id = $1`)
+	// IncludeGlobal widens to global skills, but ONLY for a non-empty
+	// projectID — an empty project must never match all rows (guard).
+	if f.IncludeGlobal && projectID != "" {
+		b.WriteString(`SELECT ` + pgSkillColumns + ` FROM project_skills WHERE (project_id = $1 OR is_global = true)`)
+	} else {
+		b.WriteString(`SELECT ` + pgSkillColumns + ` FROM project_skills WHERE project_id = $1`)
+	}
 	args := []interface{}{projectID}
 	pos := 2
 	next := func(v interface{}) string {
@@ -262,6 +269,17 @@ func (r *SkillRepository) SetMaturity(ctx context.Context, id, maturity string) 
 	return pgErrIfNoRows(res)
 }
 
+// SetGlobal flips a skill's cross-project reach without touching maturity.
+func (r *SkillRepository) SetGlobal(ctx context.Context, id string, global bool) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE project_skills SET is_global = $1, updated_at = $2 WHERE id = $3`,
+		global, time.Now().UTC(), id)
+	if err != nil {
+		return mapDBError(err)
+	}
+	return pgErrIfNoRows(res)
+}
+
 // RecordFeedback increments the usage counter for the given signal and, for
 // "fired", stamps last_fired_at.
 func (r *SkillRepository) RecordFeedback(ctx context.Context, id, signal string) error {
@@ -329,6 +347,7 @@ func scanPGSkill(sc pgSkillScanner) (*persistence.Skill, error) {
 		&s.ID, &s.ProjectID, &repoScope, &s.Name, &s.Description, &s.Body, &s.BodySHA256,
 		&domain, &tags, &roles, &s.Maturity, &s.Version, &originCl, &originTask, &author,
 		&s.UsageFired, &s.UsageWorked, &s.UsageCorrected, &lastFired, &s.CreatedAt, &s.UpdatedAt,
+		&s.IsGlobal,
 	); err != nil {
 		return nil, err
 	}

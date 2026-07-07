@@ -47,18 +47,23 @@ const ErrSkillNameConflict RepositoryError = "skill name conflict"
 // token convention: "" is persisted as NULL (uncategorized, visible in
 // every scope), "*" is cross-cutting, any other value is a repo token.
 type Skill struct {
-	ID           string
-	ProjectID    string
-	RepoScope    string
-	Name         string
-	Description  string
-	Body         string
-	BodySHA256   string
-	Domain       string
-	Tags         []string
-	Roles        []string // swarm roles this skill applies to; empty = any role
-	Maturity     string
-	Version      int
+	ID          string
+	ProjectID   string
+	RepoScope   string
+	Name        string
+	Description string
+	Body        string
+	BodySHA256  string
+	Domain      string
+	Tags        []string
+	Roles       []string // swarm roles this skill applies to; empty = any role
+	Maturity    string
+	Version     int
+	// IsGlobal, when true, makes an approved skill inject into EVERY
+	// project's roles, not just its home ProjectID. The home project is
+	// still ProjectID (the authoring key's project) — is_global only
+	// widens injection. Default false.
+	IsGlobal     bool
 	OriginClient string
 	OriginTask   string
 	Author       string
@@ -92,6 +97,13 @@ type SkillListFilter struct {
 	// Role matches skills whose roles list contains Role OR is empty
 	// (empty roles = applies to any role). "" = no role constraint.
 	Role string
+
+	// IncludeGlobal widens the match to any is_global skill in addition
+	// to the caller's projectID (the cross-project injection tier). It is
+	// only honored when projectID is non-empty — an empty projectID never
+	// widens to all rows (the OR-to-true guard). When false, List is
+	// strictly project-scoped as before.
+	IncludeGlobal bool
 
 	// Limit caps the result count; <= 0 = unbounded.
 	Limit int
@@ -146,4 +158,10 @@ type SkillRepository interface {
 	// first, capped by limit (<=0 = unbounded). Powers the operator
 	// review digest / inbox.
 	ListDrafts(ctx context.Context, limit int) ([]*Skill, error)
+
+	// SetGlobal flips a skill's cross-project reach (is_global). Does NOT
+	// change maturity — an already-approved skill stays approved and
+	// simply widens/narrows where it injects on its next task. Returns
+	// ErrNotFound when the id is unknown.
+	SetGlobal(ctx context.Context, id string, global bool) error
 }

@@ -47,13 +47,25 @@ func (e *Executor) resolveSkills(ctx context.Context, projectID, role, execution
 	skills, err := e.skillRepo.List(ctx, projectID, persistence.SkillListFilter{
 		Maturities: []string{persistence.SkillMaturityActive, persistence.SkillMaturityTrusted},
 		Role:       role,
-		Limit:      skillInjectionLimit,
+		// Inject the project's own skills PLUS any operator-wide global
+		// skill (LLD 2026-07-07-cross-project-global-skills-design), so a
+		// skill authored once reaches every project's roles.
+		IncludeGlobal: true,
+		Limit:         skillInjectionLimit,
 	})
 	if err != nil || len(skills) == 0 {
 		return nil
 	}
 	out := make([]SkillBlock, 0, len(skills))
+	seen := make(map[string]bool, len(skills))
 	for _, s := range skills {
+		// Dedup by skill id: a global skill whose home IS this project
+		// matches the project_id OR is_global widening as a single row,
+		// but guard anyway so the fired/worked signals credit once.
+		if seen[s.ID] {
+			continue
+		}
+		seen[s.ID] = true
 		// Usage telemetry (learning-loop §D.1). Best-effort, nil-safe;
 		// a failure here must never block injection.
 		_ = e.skillRepo.RecordFeedback(ctx, s.ID, persistence.SkillSignalFired)

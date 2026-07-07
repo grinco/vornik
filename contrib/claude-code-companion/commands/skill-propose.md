@@ -25,6 +25,12 @@ Call `mcp__vornik__skill_propose` with:
   a cross-repo procedure.
 - `domain` / `tags` / `roles` — optional. `roles` limits which swarm roles the
   skill injects into (empty = any role).
+- `global` — optional (default false). Set `global=true` to propose a
+  CROSS-PROJECT skill: once approved it injects into EVERY project's roles, not
+  just this one — e.g. a procedure you want the janka and assistant autonomy
+  roles to pick up too. Only honored on a fresh create; use `/skill-set-global`
+  to change reach on an existing skill. A global skill's approval prompt is
+  labelled "affects ALL projects" so the operator decides knowingly.
 
 Draft first: the skill lands as a `draft` and does NOT fire until an operator
 approves it (`/skill-approve` with a `skill_admin` key). Report the returned

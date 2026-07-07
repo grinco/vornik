@@ -1134,10 +1134,13 @@ CREATE TABLE IF NOT EXISTS project_skills (
     last_fired_at   TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
+    is_global       INTEGER NOT NULL DEFAULT 0,
     UNIQUE (project_id, repo_scope, name)
 );
 CREATE INDEX IF NOT EXISTS idx_project_skills_lookup
     ON project_skills (project_id, repo_scope, maturity);
+CREATE INDEX IF NOT EXISTS idx_project_skills_global
+    ON project_skills (is_global);
 
 -- ============================================================
 -- execution_injected_skills — which approved skills were injected

@@ -154,8 +154,17 @@ vornikctl companion grant \
   --label="$(hostname)/$USER" \
   --workflows=companion-architectural-review,companion-doc-review,companion-research-gather,companion-report-summarize,companion-rag-ingest \
   --budget-usd=25 \
-  --memory-all
+  --memory-all \
+  --skill-all
 ```
+
+`--memory-all` grants RAG `remember`/`recall`; `--skill-all` grants the
+knowledge-skill store (`skill_read`/`write`/`admin`) — both are the
+recommended default for a companion project so you can capture reusable
+procedures as **knowledge skills** and approve them without a second grant.
+Drop `--skill-admin` (use `--skill-read --skill-write`) if you want proposals
+to require a separate operator approval; drop `--skill-all` entirely for a
+delegate-only key.
 
 **Check:** the grant prints a `sk-vornik-…` secret — it is shown once.
 Store it per rule 2 (next step), never in your transcript.
@@ -239,6 +248,27 @@ SessionStart digest lists finished delegations and recent project memory, and
 `mcp__vornik__*` tools are available natively (no session digest — call
 `recent_memory` yourself to catch up). On any **other CLI**, keep using the
 HTTP calls above.
+
+### B5. Capture a knowledge skill (with `--skill-all`)
+
+RAG memory is for **facts**; a **knowledge skill** is a reusable **procedure**
+the agent should apply — a troubleshooting flow, a deploy sequence, a
+non-obvious fix. Once an operator approves it, vornik injects it into swarm
+roles AND serves it to every companion client, so you write it once and it's
+available everywhere.
+
+On **Claude Code**: `/skill-propose`, `/skill-search`, `/skill-approve`,
+`/skill-set-global`. On **Codex**: the `skill_propose` / `skill_search` /
+`skill_get` / `skill_set_global` MCP tools (see the `knowledge` skill). A
+proposal lands as a `draft` and does not fire until approved (`skill_admin`).
+
+**Cross-project (global) skills.** By default a skill only injects into its
+home project. Mark it **global** — `skill_propose global:true`, or
+`/skill-set-global <id>` / `vornikctl knowledge set-global <id>` — and it
+injects into **every** project's roles, so a procedure captured in your
+`companion-$USER` project reaches the autonomy roles (e.g. `janka`,
+`assistant`) too. Global drafts are labelled "affects ALL projects" wherever
+they're reviewed.
 
 ---
 

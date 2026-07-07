@@ -15,6 +15,7 @@ config
 doctor
 memory
 instinct
+knowledge
 models
 mcp
 skill

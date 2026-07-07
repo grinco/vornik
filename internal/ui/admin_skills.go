@@ -25,6 +25,10 @@ type AdminSkillRow struct {
 	RepoScope   string
 	Domain      string
 	OriginTask  string
+	// IsGlobal drives the GLOBAL badge + the "affects ALL projects"
+	// blast-radius label so the operator sees a draft's cross-project
+	// reach before approving it.
+	IsGlobal bool
 }
 
 // AdminSkillsData backs the admin_skills.html template.
@@ -65,7 +69,7 @@ func (s *Server) AdminSkills(w http.ResponseWriter, r *http.Request) {
 			ID: d.ID, Name: d.Name, Description: d.Description,
 			BodyPreview: skillBodyPreview(d.Body, 400),
 			ProjectID:   d.ProjectID, RepoScope: d.RepoScope, Domain: d.Domain,
-			OriginTask: d.OriginTask,
+			OriginTask: d.OriginTask, IsGlobal: d.IsGlobal,
 		})
 	}
 	s.render(w, "admin_skills.html", data)
@@ -83,12 +87,27 @@ func (s *Server) adminSkillDecide(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/admin/skills", http.StatusSeeOther)
 		return
 	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// set-global / set-project flip a draft's cross-project reach without
+	// touching maturity (LLD 2026-07-07-cross-project-global-skills). It
+	// routes through the same SkillRepository.SetGlobal the CLI/companion
+	// use, so the surfaces can't diverge.
+	switch r.FormValue("action") {
+	case "set-global", "set-project":
+		if err := s.skillRepo.SetGlobal(ctx, id, r.FormValue("action") == "set-global"); err != nil {
+			http.Redirect(w, r, "/ui/admin/skills?done=error", http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/ui/admin/skills?done=reach-updated", http.StatusSeeOther)
+		return
+	}
+
 	decision := skills.Approve
 	if r.FormValue("action") == "reject" {
 		decision = skills.Reject
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
 	outcome, err := skills.ApplyDecision(ctx, s.skillRepo, id, decision)
 	if err != nil {
 		http.Redirect(w, r, "/ui/admin/skills?done=error", http.StatusSeeOther)

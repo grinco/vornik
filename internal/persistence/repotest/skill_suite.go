@@ -30,6 +30,144 @@ func RunSkillSuite(t *testing.T, repo persistence.SkillRepository) {
 	t.Run("RecordFeedback_increments_counters", func(t *testing.T) { skillRecordFeedback(t, repo) })
 	t.Run("ListForMaturityScan_only_active_trusted", func(t *testing.T) { skillMaturityScan(t, repo) })
 	t.Run("ListDrafts_only_drafts", func(t *testing.T) { skillListDrafts(t, repo) })
+	t.Run("Create_global_round_trips", func(t *testing.T) { skillCreateGlobalRoundTrip(t, repo) })
+	t.Run("SetGlobal_flips_without_touching_maturity", func(t *testing.T) { skillSetGlobal(t, repo) })
+	t.Run("Upsert_preserves_is_global", func(t *testing.T) { skillUpsertPreservesGlobal(t, repo) })
+	t.Run("List_IncludeGlobal_Isolation", func(t *testing.T) { skillListIncludeGlobalIsolation(t, repo) })
+}
+
+// skillListIncludeGlobalIsolation is the named cross-project contract
+// test (LLD review #3/#7): with IncludeGlobal set, a project sees its own
+// skills PLUS any global skill from another project, but NEVER another
+// project's non-global skill; and an empty projectID never widens to all
+// rows (the OR-to-true guard).
+func skillListIncludeGlobalIsolation(t *testing.T, repo persistence.SkillRepository) {
+	ctx := context.Background()
+	// Home project p1: one local, one global.
+	local := newTestSkill("ig-p1-local", "p1", "", "ig-p1-loc")
+	local.Maturity = persistence.SkillMaturityActive
+	mustCreateSkill(t, repo, local)
+	glob := newTestSkill("ig-p1-global", "p1", "", "ig-p1-glob")
+	glob.Maturity = persistence.SkillMaturityActive
+	glob.IsGlobal = true
+	mustCreateSkill(t, repo, glob)
+	// Other project p2: a non-global skill that must stay isolated.
+	other := newTestSkill("ig-p2-local", "p2", "", "ig-p2-loc")
+	other.Maturity = persistence.SkillMaturityActive
+	mustCreateSkill(t, repo, other)
+
+	// From p2's perspective, with IncludeGlobal: p2's own + p1's global,
+	// but NOT p1's non-global local.
+	got, err := repo.List(ctx, "p2", persistence.SkillListFilter{
+		Maturities:    []string{persistence.SkillMaturityActive, persistence.SkillMaturityTrusted},
+		IncludeGlobal: true,
+	})
+	if err != nil {
+		t.Fatalf("List p2 IncludeGlobal: %v", err)
+	}
+	ids := idset(got)
+	if !ids["ig-p2-local"] {
+		t.Errorf("p2 must see its own skill: %v", keys(ids))
+	}
+	if !ids["ig-p1-global"] {
+		t.Errorf("p2 must see p1's GLOBAL skill: %v", keys(ids))
+	}
+	if ids["ig-p1-local"] {
+		t.Errorf("isolation leak: p2 saw p1's non-global skill: %v", keys(ids))
+	}
+
+	// Without IncludeGlobal, p2 sees ONLY its own — no global bleed.
+	got, _ = repo.List(ctx, "p2", persistence.SkillListFilter{
+		Maturities: []string{persistence.SkillMaturityActive, persistence.SkillMaturityTrusted},
+	})
+	ids = idset(got)
+	if ids["ig-p1-global"] || ids["ig-p1-local"] {
+		t.Errorf("IncludeGlobal off: p2 must NOT see any p1 skill: %v", keys(ids))
+	}
+
+	// OR-to-true guard: an empty projectID with IncludeGlobal must NOT
+	// match all rows — it returns nothing (no project matches "").
+	got, _ = repo.List(ctx, "", persistence.SkillListFilter{
+		Maturities:    []string{persistence.SkillMaturityActive, persistence.SkillMaturityTrusted},
+		IncludeGlobal: true,
+	})
+	if len(got) != 0 {
+		t.Errorf("empty projectID must never widen to all rows, got %d", len(got))
+	}
+}
+
+// skillCreateGlobalRoundTrip: a skill created with IsGlobal=true reads
+// back global; the default (unset) reads back false.
+func skillCreateGlobalRoundTrip(t *testing.T, repo persistence.SkillRepository) {
+	ctx := context.Background()
+	g := newTestSkill("cg-global", "p1", "github.com/x/cg", "cg-glob")
+	g.IsGlobal = true
+	mustCreateSkill(t, repo, g)
+	mustCreateSkill(t, repo, newTestSkill("cg-local", "p1", "github.com/x/cg", "cg-loc"))
+
+	got, err := repo.GetByID(ctx, "cg-global")
+	if err != nil {
+		t.Fatalf("GetByID global: %v", err)
+	}
+	if !got.IsGlobal {
+		t.Errorf("created-global skill must read back is_global=true: %+v", got)
+	}
+	loc, _ := repo.GetByID(ctx, "cg-local")
+	if loc.IsGlobal {
+		t.Errorf("default skill must read back is_global=false: %+v", loc)
+	}
+}
+
+// skillSetGlobal: SetGlobal flips is_global both directions without
+// changing maturity, and returns ErrNotFound for an unknown id.
+func skillSetGlobal(t *testing.T, repo persistence.SkillRepository) {
+	ctx := context.Background()
+	s := newTestSkill("sg-1", "p1", "github.com/x/sg", "sg-skill")
+	s.Maturity = persistence.SkillMaturityTrusted
+	mustCreateSkill(t, repo, s)
+
+	if err := repo.SetGlobal(ctx, "sg-1", true); err != nil {
+		t.Fatalf("SetGlobal true: %v", err)
+	}
+	got, _ := repo.GetByID(ctx, "sg-1")
+	if !got.IsGlobal {
+		t.Errorf("SetGlobal(true) did not stick: %+v", got)
+	}
+	if got.Maturity != persistence.SkillMaturityTrusted {
+		t.Errorf("SetGlobal must NOT touch maturity: got %s", got.Maturity)
+	}
+
+	if err := repo.SetGlobal(ctx, "sg-1", false); err != nil {
+		t.Fatalf("SetGlobal false: %v", err)
+	}
+	got, _ = repo.GetByID(ctx, "sg-1")
+	if got.IsGlobal {
+		t.Errorf("SetGlobal(false) did not demote: %+v", got)
+	}
+
+	if err := repo.SetGlobal(ctx, "no-such", true); !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("SetGlobal unknown id: expected ErrNotFound, got %v", err)
+	}
+}
+
+// skillUpsertPreservesGlobal: editing a skill in place (re-propose) must
+// not clear an already-set is_global flag.
+func skillUpsertPreservesGlobal(t *testing.T, repo persistence.SkillRepository) {
+	ctx := context.Background()
+	orig := newTestSkill("upg-1", "p1", "github.com/x/upg", "upg-skill")
+	orig.IsGlobal = true
+	mustCreateSkill(t, repo, orig)
+
+	edit := newTestSkill("upg-ignored", "p1", "github.com/x/upg", "upg-skill")
+	edit.Body = "# upg-skill\n\nrewritten"
+	edit.IsGlobal = false // a re-propose carries the default; must NOT clear the flag
+	stored, err := repo.Upsert(ctx, edit)
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if !stored.IsGlobal {
+		t.Errorf("Upsert must preserve is_global across an edit: %+v", stored)
+	}
 }
 
 func skillListDrafts(t *testing.T, repo persistence.SkillRepository) {

@@ -355,6 +355,14 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		mux.HandleFunc("/api/v1/companion/grant", server.CompanionGrant)
 		mux.HandleFunc("/api/v1/companion/keys", server.CompanionKeysList)
 
+		// Knowledge-skill global-reach toggle — operator CLI surface
+		// (vornikctl knowledge set-global/set-project). Cross-project
+		// skills are a Community feature, so this route is NOT under
+		// /api/v1/admin/ (that prefix carries the EE admin-gate invariant)
+		// — the handler gates on requireOperatorScope. See LLD 2026-07-07-
+		// cross-project-global-skills-design.
+		mux.HandleFunc("/api/v1/skills/", server.SkillSetGlobal)
+
 		// Continuous-learning instinct layer — read/inspect/retire surfaces.
 		// The list + per-id router go through the normal auth chain (no
 		// admin scope required: instincts are advisory evidence, reading

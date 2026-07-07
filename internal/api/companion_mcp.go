@@ -436,6 +436,7 @@ func companionToolDefs() []mcpToolDef {
 					"roles":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Swarm roles this skill applies to; empty = any role."},
 					"repo_scope":  map[string]any{"type": "string", "description": "Repo scope token '<host>/<path>' (migration 75); omit for the key default."},
 					"author":      map[string]any{"type": "string"},
+					"global":      map[string]any{"type": "boolean", "description": "Propose a GLOBAL skill: once approved it injects into EVERY project's roles, not just this one. Default false. Only honored on a fresh create; use skill_set_global to change reach on an existing skill."},
 				},
 				"required": []any{"name", "description", "body"},
 			},
@@ -499,6 +500,18 @@ func companionToolDefs() []mcpToolDef {
 					"reason": map[string]any{"type": "string"},
 				},
 				"required": []any{"id"},
+			},
+		},
+		{
+			Name:        "skill_set_global",
+			Description: "Set (or clear) a knowledge skill's GLOBAL reach by id. A global skill injects into EVERY project's roles, not just its home project; this does NOT change maturity (an approved skill stays approved). Only affects a skill in this key's own project. Requires skill_admin.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id":     map[string]any{"type": "string"},
+					"global": map[string]any{"type": "boolean", "description": "true = global (all projects); false = project-only."},
+				},
+				"required": []any{"id", "global"},
 			},
 		},
 	}
@@ -585,6 +598,8 @@ func (s *Server) handleCompanionToolCall(w http.ResponseWriter, r *http.Request,
 		result, toolErr = s.companionToolSkillApprove(ctx, key, params.Arguments)
 	case "skill_reject":
 		result, toolErr = s.companionToolSkillReject(ctx, key, params.Arguments)
+	case "skill_set_global":
+		result, toolErr = s.companionToolSkillSetGlobal(ctx, key, params.Arguments)
 	default:
 		writeJSONRPCError(w, id, -32601, "unknown tool: "+params.Name)
 		return

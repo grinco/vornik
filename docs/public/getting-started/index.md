@@ -58,8 +58,10 @@ defaults are safe and local-first.
     [AGENTS.md](https://github.com/grinco/vornik/blob/main/AGENTS.md) is an
     agent-executable runbook: install (via the same `get.vornik.io` script
     below), LLM key setup, a first task, and the agent's own companion
-    project + persistent RAG memory — with a verifiable check at every step,
-    and your approval required before anything privileged.
+    project + persistent RAG memory + knowledge-skill store (so it can
+    capture reusable procedures and reuse them across sessions and projects)
+    — with a verifiable check at every step, and your approval required
+    before anything privileged.
 
 If you'd rather run it yourself, one command stands up a complete playground
 on a Linux host. It installs any missing prerequisites, builds the daemon +
@@ -288,6 +290,10 @@ the API and Web UI.
 - **[Guides](../guides/index.md)** — task-focused how-tos, including
   [workflows and LLM controls](../guides/workflows-and-llm-controls.md) and
   [conversation channels](../guides/conversation-channels.md).
+- **[Companion](../features/companion.md)** and
+  **[Knowledge skills](../features/knowledge-skills.md)** — wire your own
+  coding agent into vornik and teach it reusable procedures that inject into
+  swarm roles (and, when marked global, every project).
 - **[Configuration reference](../reference/configuration.md)** and the
   **[vornikctl reference](../reference/vornikctl.md)** — every setting and
   command.

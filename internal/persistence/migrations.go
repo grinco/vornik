@@ -5160,4 +5160,22 @@ DROP INDEX IF EXISTS idx_exec_injected_skills_skill;
 DROP TABLE IF EXISTS execution_injected_skills;
 `,
 	},
+	{
+		Version: 116,
+		Name:    "project_skills_is_global",
+		// Cross-project (global) knowledge skills (LLD 2026-07-07-cross-
+		// project-global-skills-design). is_global=true makes an approved
+		// skill inject into EVERY project's roles, not just its home
+		// project. Additive, default false. Partial index keeps the
+		// `OR is_global` injection query cheap.
+		Up: `
+ALTER TABLE project_skills ADD COLUMN IF NOT EXISTS is_global BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS idx_project_skills_global
+    ON project_skills (is_global) WHERE is_global;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_project_skills_global;
+ALTER TABLE project_skills DROP COLUMN IF EXISTS is_global;
+`,
+	},
 }

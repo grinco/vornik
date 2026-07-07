@@ -74,6 +74,31 @@ MCP tools):
 | `skill_list` | list skills by maturity | `skill_read` |
 | `skill_approve` | promote a draft to active | `skill_admin` |
 | `skill_reject` | retire a skill | `skill_admin` |
+| `skill_set_global` | set/clear cross-project reach | `skill_admin` |
+
+## Cross-project (global) skills
+
+By default a knowledge skill is **project-scoped** — it injects only into its
+home project's roles. Mark a skill **global** and it injects into **every**
+project's roles instead, so a procedure captured once (say, from your
+`companion-<you>` project) reaches your autonomy roles across projects.
+
+- **Create global:** `skill_propose` with `global: true` (`/skill-propose`
+  documents the flag). Honored only on a fresh create.
+- **Promote/demote an existing skill** from any of three surfaces, all of
+  which flip the same flag without changing the skill's maturity:
+    - **Companion:** `/skill-set-global <id>` (Claude Code) or the
+      `skill_set_global` MCP tool (Codex).
+    - **CLI:** `vornikctl knowledge set-global <id>` /
+      `vornikctl knowledge set-project <id>`.
+    - **Web UI (Enterprise):** the **Make global / Make project-only**
+      buttons on the **Admin → Skills** inbox.
+
+Because an approved global skill fires in every project, every review surface
+labels a global draft **"affects ALL projects"** so the approver decides its
+blast radius knowingly. Marking a skill global is a `skill_admin` action and
+only affects a skill in the key's own project. Non-global skills stay isolated
+to their project.
 
 ## Capabilities & access
 

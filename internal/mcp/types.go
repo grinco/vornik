@@ -18,6 +18,13 @@ type ServerConfig struct {
 	// set to only those whose names are listed. Empty means "all tools
 	// the server advertises" (back-compatible default).
 	AllowedTools []string `yaml:"allowed_tools" json:"allowed_tools,omitempty"`
+	// TimeoutSeconds overrides the per-request HTTP timeout for SSE /
+	// streamable-http transports (initialize, tools/list, tools/call). 0
+	// = the 30s default. Raise it for servers whose tools legitimately
+	// run long — e.g. the scraper's web_fetch against slow / anti-bot
+	// target sites, which was failing at the 30s default (context
+	// deadline exceeded). Stdio transport ignores this.
+	TimeoutSeconds int `yaml:"timeout_seconds" json:"timeout_seconds,omitempty"`
 	// Headers are attached to every SSE-transport HTTP request the
 	// Client makes (initialize, tools/list, tools/call). Populated
 	// programmatically by the daemon — NOT from project YAML — so

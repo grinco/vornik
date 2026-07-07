@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/registry/project.go
-      sha256: b1308aca4e8dcc0988ef1ccde8f2138b08e669a65b7da0510c4898a03e2bda1d
+      sha256: a6dcb31d5d571eb975281dad60b7a316938e7c61e2db28b6d49e86726f67b53e
     - path: internal/mcp/client.go
-      sha256: 58b7947e57225689fc091810856c14ef3e7e3f3c0c8ca1eb35d5391d214fde93
+      sha256: 1f5e285f57610d93adac8f06eab871d6f75ebe23b96cc77ee3b522b1ded9e895
     - path: internal/mcp/ratelimit.go
       sha256: 19ad0c64e2abd9d25e95971e1ba5e3cfe91f34852edeca6e4f9c70825b2e901d
     - path: internal/cli/mcp.go
@@ -60,6 +60,23 @@ There are two transports:
 `command`/`args`/`env` apply only to `stdio`; `url` applies only to `sse`.
 `name` must be unique within the project — it's how tools are namespaced and
 how you target a server from the CLI.
+
+### Per-server request timeout
+
+`sse`/`streamable-http` servers use a **30-second** per-request timeout by
+default. If a server has tools that legitimately run longer — e.g. a scraper
+whose `web_fetch` hits slow or anti-bot sites — raise it with
+`timeout_seconds` so a slow call completes instead of failing with
+`context deadline exceeded`:
+
+```yaml
+mcp:
+  servers:
+    - name: "scraper"
+      transport: "sse"
+      url: "http://127.0.0.1:8787"
+      timeout_seconds: 90      # 0 or omitted = 30s default
+```
 
 ## Restricting tools with `allowed_tools`
 

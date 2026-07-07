@@ -258,6 +258,35 @@ func scanPGSkillList(rows *sql.Rows, err error) ([]*persistence.Skill, error) {
 	return out, rows.Err()
 }
 
+// ListAcrossProjects returns skills from every project in the given
+// maturity states (empty = any), newest-updated first. Powers the admin
+// skills browser.
+func (r *SkillRepository) ListAcrossProjects(ctx context.Context, maturities []string, limit int) ([]*persistence.Skill, error) {
+	var b strings.Builder
+	b.WriteString(`SELECT ` + pgSkillColumns + ` FROM project_skills`)
+	args := []interface{}{}
+	pos := 1
+	next := func(v interface{}) string {
+		args = append(args, v)
+		p := fmt.Sprintf("$%d", pos)
+		pos++
+		return p
+	}
+	if len(maturities) > 0 {
+		parts := make([]string, 0, len(maturities))
+		for _, m := range maturities {
+			parts = append(parts, next(m))
+		}
+		b.WriteString(` WHERE maturity IN (` + strings.Join(parts, ",") + `)`)
+	}
+	b.WriteString(` ORDER BY updated_at DESC`)
+	if limit > 0 {
+		b.WriteString(` LIMIT ` + next(limit))
+	}
+	rows, err := r.db.QueryContext(ctx, b.String(), args...)
+	return scanPGSkillList(rows, err)
+}
+
 // SetMaturity transitions a skill to the given maturity state.
 func (r *SkillRepository) SetMaturity(ctx context.Context, id, maturity string) error {
 	res, err := r.db.ExecContext(ctx,

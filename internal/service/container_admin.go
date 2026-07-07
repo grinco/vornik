@@ -221,13 +221,14 @@ func (a *adminMCPRefresher) RefreshAll(ctx context.Context) error {
 		servers := make([]mcp.ServerConfig, 0, len(p.MCP.Servers))
 		for _, s := range p.MCP.Servers {
 			servers = append(servers, mcp.ServerConfig{
-				Name:         s.Name,
-				Transport:    s.Transport,
-				Command:      s.Command,
-				Args:         s.Args,
-				Env:          s.Env,
-				URL:          s.URL,
-				AllowedTools: s.AllowedTools,
+				Name:           s.Name,
+				Transport:      s.Transport,
+				Command:        s.Command,
+				Args:           s.Args,
+				Env:            s.Env,
+				URL:            s.URL,
+				AllowedTools:   s.AllowedTools,
+				TimeoutSeconds: s.TimeoutSeconds,
 			})
 		}
 		if len(servers) == 0 {

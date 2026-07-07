@@ -245,6 +245,10 @@ type MCPServerConfig struct {
 	// server appear in the discovery catalog. Empty = all advertised
 	// tools.
 	AllowedTools []string `yaml:"allowed_tools" doc:"Restrict which advertised tools appear."`
+	// TimeoutSeconds overrides the per-request HTTP timeout (SSE /
+	// streamable-http). 0 = the 30s default. Raise it for servers with
+	// legitimately long-running tools (e.g. scraper web_fetch).
+	TimeoutSeconds int `yaml:"timeout_seconds" doc:"Per-request HTTP timeout in seconds (0 = 30s default)."`
 }
 
 // AuthSettings holds daemon-wide authentication settings that sit

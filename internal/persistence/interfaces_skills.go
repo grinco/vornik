@@ -159,6 +159,13 @@ type SkillRepository interface {
 	// review digest / inbox.
 	ListDrafts(ctx context.Context, limit int) ([]*Skill, error)
 
+	// ListAcrossProjects returns skills from ALL projects in the given
+	// maturity states (empty = any maturity), newest-updated first, capped
+	// by limit (<=0 = unbounded). Powers the operator skills browser (the
+	// admin UI), which surveys the whole store — distinct from ListDrafts
+	// (oldest-first review queue) and the per-project List.
+	ListAcrossProjects(ctx context.Context, maturities []string, limit int) ([]*Skill, error)
+
 	// SetGlobal flips a skill's cross-project reach (is_global). Does NOT
 	// change maturity — an already-approved skill stays approved and
 	// simply widens/narrows where it injects on its next task. Returns

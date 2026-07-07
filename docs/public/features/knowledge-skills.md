@@ -59,7 +59,11 @@ Pick whichever surface suits you — they all apply the same decision:
 - **Companion command.** `/skill-list maturity=draft` to see pending drafts,
   then `/skill-approve <id>` (needs a key with the `skill_admin` capability).
 - **Web UI (Enterprise).** The **Admin → Skills** page (`/ui/admin/skills`)
-  lists drafts with Approve / Reject.
+  is a full skills browser across all projects, with maturity tabs
+  (Pending review / Active / Trusted / Retired / All) and per-skill usage
+  counters. Pending drafts carry Approve / Reject; any skill carries a
+  Make global / Make project-only toggle; active/trusted skills can be
+  retired.
 
 ## Client tools
 

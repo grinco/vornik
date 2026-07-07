@@ -1521,6 +1521,11 @@ type MCPServerConfig struct {
 	// per-project scope knob when the same MCP server is used across
 	// multiple projects with different intended capabilities.
 	AllowedTools []string `yaml:"allowed_tools"`
+	// TimeoutSeconds overrides the per-request HTTP timeout (SSE /
+	// streamable-http) for this server's tool calls. 0 = the 30s
+	// default. Raise it for servers with legitimately long-running
+	// tools (e.g. scraper web_fetch against slow / anti-bot sites).
+	TimeoutSeconds int `yaml:"timeout_seconds"`
 }
 
 // ProjectPermissions defines project-level access and permissions

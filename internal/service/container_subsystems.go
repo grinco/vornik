@@ -108,6 +108,7 @@ func (c *Container) mcpDesiredServers() map[string][]mcp.ServerConfig {
 				Env:            s.Env,
 				URL:            s.URL,
 				AllowedTools:   s.AllowedTools,
+				TimeoutSeconds: s.TimeoutSeconds,
 				Headers:        brokerHeadersFor(p, s.Name),
 				ToolRateLimits: toolLimits,
 				ProjectID:      p.ID,
@@ -176,13 +177,14 @@ func (c *Container) initMCPRegistry() {
 	servers := make([]mcp.ServerConfig, 0, len(c.Config.MCP.Servers))
 	for _, s := range c.Config.MCP.Servers {
 		servers = append(servers, mcp.ServerConfig{
-			Name:         s.Name,
-			Transport:    s.Transport,
-			Command:      s.Command,
-			Args:         s.Args,
-			Env:          s.Env,
-			URL:          s.URL,
-			AllowedTools: s.AllowedTools,
+			Name:           s.Name,
+			Transport:      s.Transport,
+			Command:        s.Command,
+			Args:           s.Args,
+			Env:            s.Env,
+			URL:            s.URL,
+			AllowedTools:   s.AllowedTools,
+			TimeoutSeconds: s.TimeoutSeconds,
 		})
 	}
 	c.mcpRegistry = mcp.NewRegistry(servers, 0,

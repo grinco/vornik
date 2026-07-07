@@ -235,6 +235,40 @@ func (r *SkillRepository) ListDrafts(ctx context.Context, limit int) ([]*persist
 	return out, rows.Err()
 }
 
+// ListAcrossProjects returns skills from every project in the given
+// maturity states (empty = any), newest-updated first. Powers the admin
+// skills browser.
+func (r *SkillRepository) ListAcrossProjects(ctx context.Context, maturities []string, limit int) ([]*persistence.Skill, error) {
+	var b strings.Builder
+	b.WriteString(`SELECT ` + skillColumns + ` FROM project_skills`)
+	args := []interface{}{}
+	if len(maturities) > 0 {
+		b.WriteString(` WHERE maturity IN (` + placeholders(len(maturities)) + `)`)
+		for _, m := range maturities {
+			args = append(args, m)
+		}
+	}
+	b.WriteString(` ORDER BY updated_at DESC`)
+	if limit > 0 {
+		b.WriteString(` LIMIT ?`)
+		args = append(args, limit)
+	}
+	rows, err := r.db.QueryContext(ctx, b.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*persistence.Skill
+	for rows.Next() {
+		s, err := scanSkill(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // SetMaturity transitions a skill to the given maturity state.
 func (r *SkillRepository) SetMaturity(ctx context.Context, id, maturity string) error {
 	res, err := r.db.ExecContext(ctx,

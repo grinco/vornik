@@ -796,6 +796,11 @@ tool_budget:
 #     - name: scraper
 #       transport: sse
 #       url: http://127.0.0.1:8787
+#       # Per-request HTTP timeout in seconds (0/omitted = 30s default).
+#       # Raise it for servers with legitimately long-running tools —
+#       # e.g. web_fetch against slow / anti-bot target sites, which
+#       # otherwise fails at 30s with "sse ... context deadline exceeded".
+#       timeout_seconds: 90
 #       allowed_tools:
 #         - web_fetch
 #         - ical_events

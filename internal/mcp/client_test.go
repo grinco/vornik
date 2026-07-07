@@ -241,6 +241,34 @@ func TestClient_SSE_AttachesConfiguredHeaders(t *testing.T) {
 	}
 }
 
+// TestConnect_HTTPTimeoutFromConfig: a server with TimeoutSeconds set gets
+// that HTTP client timeout; unset falls back to the 30s default. Guards the
+// scraper web_fetch fix (raising the 30s default for slow targets).
+func TestConnect_HTTPTimeoutFromConfig(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.ReadAll(r.Body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0", "id": 1, "result": map[string]any{"tools": []any{}},
+		})
+	}))
+	defer srv.Close()
+
+	custom, err := Connect(context.Background(), ServerConfig{
+		Name: "slow", Transport: "sse", URL: srv.URL, TimeoutSeconds: 90,
+	}, zerolog.Nop())
+	require.NoError(t, err)
+	defer func() { _ = custom.Close() }()
+	assert.Equal(t, 90*time.Second, custom.httpClient.Timeout, "TimeoutSeconds must set the HTTP client timeout")
+
+	def, err := Connect(context.Background(), ServerConfig{
+		Name: "default", Transport: "sse", URL: srv.URL,
+	}, zerolog.Nop())
+	require.NoError(t, err)
+	defer func() { _ = def.Close() }()
+	assert.Equal(t, 30*time.Second, def.httpClient.Timeout, "unset TimeoutSeconds must keep the 30s default")
+}
+
 func toolNames(ts []Tool) []string {
 	names := make([]string, len(ts))
 	for i, t := range ts {

@@ -604,6 +604,28 @@ Pick the right outcome shape per execution:
   - external_wait:   waiting on a real-world deadline
   - closure_request: task is done; recommend operator close
 
+DEFAULT TO ACTING, NOT ASKING (especially unattended). If this task
+is running unattended — autonomy/scheduled, or any task whose
+creation_source is not a direct operator request, i.e. nobody is
+waiting at a keyboard — a `checkpoint kind:decision` STALLS the task
+indefinitely (it parks in AWAITING_INPUT until a human answers), which
+defeats autonomy. So:
+  - For a routine, low-risk, or REVERSIBLE decision (which source to
+    use, how to structure a report, whether a scan looks complete,
+    ordinary next steps), DO NOT checkpoint — pick the sensible
+    default, PROCEED (continue / closure_request), and record the call
+    + your reasoning in scratchpad_update so it's auditable.
+  - When a phase genuinely finished and nothing else is due, emit
+    `closure_request`, not a decision checkpoint asking "shall I
+    proceed?".
+  - RESERVE `checkpoint kind:decision` for: recovery mode (below), or a
+    genuinely IRREVERSIBLE / destructive / high-cost / policy- or
+    money-touching action, or a real ambiguity you cannot resolve from
+    the project context. When you do checkpoint, always set
+    `default_if_no_response` so an unanswered prompt still resolves.
+  - An attended task (operator actively in the thread) may checkpoint
+    more freely — but even then, prefer proceeding on reversible calls.
+
 The executor injects the authoritative format spec at runtime —
 follow that spec exactly. Always include scratchpad_update
 to preserve context for the next execution (one paragraph

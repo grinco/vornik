@@ -9,15 +9,19 @@
         <div class="space-y-5">
             <div class="flex items-center gap-3">
                 <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                <h1 class="text-xl font-semibold text-gray-100">Knowledge skills — review</h1>
+                <h1 class="text-xl font-semibold text-gray-100">Knowledge skills</h1>
                 <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
             </div>
 
             <p class="text-xs text-gray-500 max-w-3xl">
-                Draft knowledge skills awaiting the human gate. Approving a
-                skill activates it — it then gets injected into swarm roles
-                and matures on usage. Rejecting retires it. (Telegram gives
-                the same Approve/Reject prompt for non-technical staff.)
+                The daemon-owned knowledge-skill store across all projects.
+                <strong>Pending review</strong> drafts await the human gate —
+                approving activates a skill (it then injects into swarm roles
+                and matures on usage); rejecting retires it. A
+                <span class="text-amber-300">GLOBAL</span> skill injects into
+                <em>every</em> project's roles, not just its home project.
+                (Telegram gives the same Approve/Reject prompt for
+                non-technical staff.)
             </p>
 
             {{if .Flash}}<div class="rounded-md bg-dark-800 border border-dark-700 px-3 py-2 text-xs text-brand-300">Last action: {{.Flash}}</div>{{end}}
@@ -25,47 +29,76 @@
 
             {{if not .Available}}
                 <div class="text-sm text-gray-400">The knowledge-skill store is not wired on this daemon.</div>
-            {{else if not .Rows}}
-                <div class="text-sm text-gray-400">No draft skills awaiting review. 🎉</div>
             {{else}}
+                {{/* Maturity filter tabs */}}
+                <div class="flex flex-wrap gap-1.5 border-b border-dark-700 pb-2">
+                    {{range .Tabs}}
+                    <a href="/ui/admin/skills{{if .Key}}?maturity={{.Key}}{{end}}"
+                       class="px-3 py-1 text-xs rounded-md {{if .Active}}bg-brand-600 text-white{{else}}bg-dark-800 text-gray-300 hover:bg-dark-700{{end}}">
+                        {{.Label}} <span class="opacity-70">{{.Count}}</span>
+                    </a>
+                    {{end}}
+                </div>
+
+                {{if not .Rows}}
+                    <div class="text-sm text-gray-400">No skills in this view.</div>
+                {{else}}
                 <div class="space-y-4">
                     {{range .Rows}}
                     <div class="rounded-lg bg-dark-800 border border-dark-700 p-4">
                         <div class="flex items-start gap-3">
                             <div class="min-w-0 flex-1">
-                                <div class="flex items-center gap-2">
+                                <div class="flex items-center gap-2 flex-wrap">
                                     <div class="font-mono text-sm text-gray-100">{{.Name}}</div>
+                                    <span class="px-1.5 py-0.5 text-[10px] font-semibold rounded
+                                        {{if eq .Maturity "active"}}bg-green-700/30 text-green-300 border border-green-700
+                                        {{else if eq .Maturity "trusted"}}bg-emerald-600/30 text-emerald-300 border border-emerald-700
+                                        {{else if eq .Maturity "draft"}}bg-sky-700/30 text-sky-300 border border-sky-700
+                                        {{else}}bg-dark-700 text-gray-400 border border-dark-600{{end}}">{{.Maturity}}</span>
                                     {{if .IsGlobal}}<span class="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-600/30 text-amber-300 border border-amber-700">GLOBAL</span>{{end}}
                                 </div>
                                 <div class="text-xs text-gray-400 mt-0.5">{{.Description}}</div>
-                                {{if .IsGlobal}}<div class="text-[11px] text-amber-400 mt-1">⚠ Affects ALL projects — once approved this skill injects into every project's roles.</div>{{end}}
+                                {{if .IsGlobal}}<div class="text-[11px] text-amber-400 mt-1">⚠ Affects ALL projects — injects into every project's roles.</div>{{end}}
                                 <div class="text-[11px] text-gray-500 mt-1">
                                     project <code class="text-gray-400">{{.ProjectID}}</code>
                                     {{if .RepoScope}} · scope <code class="text-gray-400">{{.RepoScope}}</code>{{end}}
                                     {{if .Domain}} · domain <code class="text-gray-400">{{.Domain}}</code>{{end}}
                                 </div>
+                                <div class="text-[11px] text-gray-500 mt-1">
+                                    usage: fired <span class="text-gray-300">{{.UsageFired}}</span>
+                                    · worked <span class="text-gray-300">{{.UsageWorked}}</span>
+                                    · corrected <span class="text-gray-300">{{.UsageCorrected}}</span>
+                                </div>
                                 <pre class="mt-2 whitespace-pre-wrap text-[11px] text-gray-400 bg-dark-900 rounded p-2 max-h-40 overflow-auto">{{.BodyPreview}}</pre>
                             </div>
                             <div class="flex flex-col gap-2 shrink-0">
+                                {{if .CanApprove}}
                                 <form method="POST" action="/ui/admin/skills">
                                     <input type="hidden" name="id" value="{{.ID}}">
+                                    <input type="hidden" name="maturity" value="{{$.Filter}}">
                                     <input type="hidden" name="action" value="approve">
                                     <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-green-700 hover:bg-green-600 text-white">✅ Approve</button>
                                 </form>
+                                {{end}}
+                                {{if .CanReject}}
                                 <form method="POST" action="/ui/admin/skills">
                                     <input type="hidden" name="id" value="{{.ID}}">
+                                    <input type="hidden" name="maturity" value="{{$.Filter}}">
                                     <input type="hidden" name="action" value="reject">
-                                    <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-red-800 hover:bg-red-700 text-white">❌ Reject</button>
+                                    <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-red-800 hover:bg-red-700 text-white">{{if eq .Maturity "draft"}}❌ Reject{{else}}🗑 Retire{{end}}</button>
                                 </form>
+                                {{end}}
                                 {{if .IsGlobal}}
                                 <form method="POST" action="/ui/admin/skills">
                                     <input type="hidden" name="id" value="{{.ID}}">
+                                    <input type="hidden" name="maturity" value="{{$.Filter}}">
                                     <input type="hidden" name="action" value="set-project">
                                     <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-dark-700 hover:bg-dark-600 text-gray-200 border border-dark-600">Make project-only</button>
                                 </form>
                                 {{else}}
                                 <form method="POST" action="/ui/admin/skills">
                                     <input type="hidden" name="id" value="{{.ID}}">
+                                    <input type="hidden" name="maturity" value="{{$.Filter}}">
                                     <input type="hidden" name="action" value="set-global">
                                     <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-amber-700/40 hover:bg-amber-700/60 text-amber-200 border border-amber-700">Make global</button>
                                 </form>
@@ -75,6 +108,7 @@
                     </div>
                     {{end}}
                 </div>
+                {{end}}
             {{end}}
         </div>
     </main>

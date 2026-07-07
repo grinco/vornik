@@ -85,10 +85,17 @@ type stdioResult struct {
 // For stdio transport, it starts the subprocess. For SSE and
 // streamable-http, it validates the URL.
 func Connect(ctx context.Context, cfg ServerConfig, logger zerolog.Logger) (*Client, error) {
+	// Per-request HTTP timeout for SSE / streamable-http. Default 30s;
+	// a server may raise it (cfg.TimeoutSeconds) when its tools run long
+	// (e.g. scraper web_fetch against slow targets).
+	httpTimeout := 30 * time.Second
+	if cfg.TimeoutSeconds > 0 {
+		httpTimeout = time.Duration(cfg.TimeoutSeconds) * time.Second
+	}
 	c := &Client{
 		config:     cfg,
 		logger:     logger,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{Timeout: httpTimeout},
 		pending:    make(map[int64]chan stdioResult),
 	}
 

@@ -118,6 +118,52 @@ func TestAdminSkills_SetGlobalPost(t *testing.T) {
 	}
 }
 
+func TestAdminSkills_ShowsActiveSkills(t *testing.T) {
+	repo := newSkillRepoUI(t)
+	// An approved (active) global skill — the case the drafts-only inbox
+	// used to hide.
+	if err := repo.Create(context.Background(), &persistence.Skill{
+		ID: "act", ProjectID: "companion-example", Name: "cite-sources", Description: "d",
+		Body: "b", BodySHA256: "h", Maturity: persistence.SkillMaturityActive, IsGlobal: true,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	s := NewServer(WithSkillRepository(repo))
+	req := httptest.NewRequest(http.MethodGet, "/admin/skills", nil) // default = all
+	rec := httptest.NewRecorder()
+	s.AdminSkills(rec, req)
+	body := rec.Body.String()
+	if !strings.Contains(body, "cite-sources") {
+		t.Fatal("active skill must render in the default (all) view")
+	}
+	if !strings.Contains(body, "GLOBAL") || !strings.Contains(body, "Active") && !strings.Contains(body, "active") {
+		t.Errorf("active/global badges must render for the skill")
+	}
+	// Tabs with counts render.
+	if !strings.Contains(body, "Pending review") || !strings.Contains(body, "Active") {
+		t.Errorf("maturity tabs must render")
+	}
+}
+
+func TestAdminSkills_MaturityFilter(t *testing.T) {
+	repo := newSkillRepoUI(t)
+	ctx := context.Background()
+	_ = repo.Create(ctx, &persistence.Skill{ID: "d1", ProjectID: "p1", Name: "a-draft", Description: "d", Body: "b", BodySHA256: "h", Maturity: persistence.SkillMaturityDraft})
+	_ = repo.Create(ctx, &persistence.Skill{ID: "a1", ProjectID: "p1", Name: "an-active", Description: "d", Body: "b", BodySHA256: "h", Maturity: persistence.SkillMaturityActive})
+	s := NewServer(WithSkillRepository(repo))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/skills?maturity=active", nil)
+	rec := httptest.NewRecorder()
+	s.AdminSkills(rec, req)
+	body := rec.Body.String()
+	if !strings.Contains(body, "an-active") {
+		t.Error("active filter must show the active skill")
+	}
+	if strings.Contains(body, "a-draft") {
+		t.Error("active filter must hide the draft")
+	}
+}
+
 func TestAdminSkills_RepoUnwired(t *testing.T) {
 	s := NewServer()
 	req := httptest.NewRequest(http.MethodGet, "/admin/skills", nil)

@@ -34,6 +34,51 @@ func RunSkillSuite(t *testing.T, repo persistence.SkillRepository) {
 	t.Run("SetGlobal_flips_without_touching_maturity", func(t *testing.T) { skillSetGlobal(t, repo) })
 	t.Run("Upsert_preserves_is_global", func(t *testing.T) { skillUpsertPreservesGlobal(t, repo) })
 	t.Run("List_IncludeGlobal_Isolation", func(t *testing.T) { skillListIncludeGlobalIsolation(t, repo) })
+	t.Run("ListAcrossProjects_filters_by_maturity", func(t *testing.T) { skillListAcrossProjects(t, repo) })
+}
+
+// skillListAcrossProjects: the admin-browser query spans every project and
+// filters by the given maturities (empty = any).
+func skillListAcrossProjects(t *testing.T, repo persistence.SkillRepository) {
+	ctx := context.Background()
+	mk := func(id, proj, maturity string) {
+		s := newTestSkill(id, proj, "github.com/x/lap", "n-"+id)
+		s.Maturity = maturity
+		mustCreateSkill(t, repo, s)
+	}
+	mk("lap-a-active", "p1", persistence.SkillMaturityActive)
+	mk("lap-b-active", "p2", persistence.SkillMaturityActive)
+	mk("lap-a-draft", "p1", persistence.SkillMaturityDraft)
+
+	// Filter to active only — spans both projects, excludes the draft.
+	got, err := repo.ListAcrossProjects(ctx, []string{persistence.SkillMaturityActive}, 0)
+	if err != nil {
+		t.Fatalf("ListAcrossProjects: %v", err)
+	}
+	ids := idset(got)
+	if !ids["lap-a-active"] || !ids["lap-b-active"] {
+		t.Errorf("active filter must span all projects: %v", keys(ids))
+	}
+	if ids["lap-a-draft"] {
+		t.Errorf("active filter must exclude drafts: %v", keys(ids))
+	}
+
+	// Empty maturities = any state.
+	all := idset(mustList(t, repo, func() ([]*persistence.Skill, error) {
+		return repo.ListAcrossProjects(ctx, nil, 0)
+	}))
+	if !all["lap-a-draft"] || !all["lap-a-active"] || !all["lap-b-active"] {
+		t.Errorf("empty maturities must return every state: %v", keys(all))
+	}
+}
+
+func mustList(t *testing.T, _ persistence.SkillRepository, fn func() ([]*persistence.Skill, error)) []*persistence.Skill {
+	t.Helper()
+	got, err := fn()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	return got
 }
 
 // skillListIncludeGlobalIsolation is the named cross-project contract

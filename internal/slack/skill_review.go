@@ -41,7 +41,7 @@ func BuildSkillReviewBlocks(drafts []SkillReviewDraft) []map[string]any {
 		blocks = append(blocks,
 			map[string]any{
 				"type": "section",
-				"text": map[string]any{"type": "mrkdwn", "text": "*" + d.Name + "* — " + d.Description},
+				"text": map[string]any{"type": "mrkdwn", "text": "*" + slackEscape(d.Name) + "* — " + slackEscape(d.Description)},
 			},
 			map[string]any{
 				"type": "actions",
@@ -65,6 +65,17 @@ func BuildSkillReviewBlocks(drafts []SkillReviewDraft) []map[string]any {
 		)
 	}
 	return blocks
+}
+
+// slackEscape escapes the three characters Slack requires escaped in
+// text fields (https://api.slack.com/reference/surfaces/formatting#escaping),
+// so an operator-proposed skill name/description can't inject mrkdwn
+// links, @mentions, or markup into the review message.
+func slackEscape(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }
 
 // ParseSkillAction decodes a block_actions action_id into (approve,

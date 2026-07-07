@@ -1,6 +1,9 @@
 package slack
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseSkillAction(t *testing.T) {
 	if ap, id, ok := ParseSkillAction("skill_approve:sk-1"); !ok || !ap || id != "sk-1" {
@@ -11,6 +14,23 @@ func TestParseSkillAction(t *testing.T) {
 	}
 	if _, _, ok := ParseSkillAction("project_select:foo"); ok {
 		t.Fatalf("non-skill action must not parse as skill")
+	}
+}
+
+func TestSlackEscape(t *testing.T) {
+	got := slackEscape("evil <https://x|click> & <@U1>")
+	if got != "evil &lt;https://x|click&gt; &amp; &lt;@U1&gt;" {
+		t.Fatalf("slackEscape did not neutralize markup: %q", got)
+	}
+}
+
+func TestBuildSkillReviewBlocks_EscapesUserContent(t *testing.T) {
+	blocks := BuildSkillReviewBlocks([]SkillReviewDraft{
+		{ID: "sk-x", Name: "n", Description: "<https://evil|click>"},
+	})
+	txt := blocks[1]["text"].(map[string]any)["text"].(string)
+	if strings.Contains(txt, "<https://evil") {
+		t.Fatalf("unescaped user content leaked into mrkdwn: %q", txt)
 	}
 }
 

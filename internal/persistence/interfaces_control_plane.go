@@ -102,6 +102,11 @@ type ControlPlaneProposal struct {
 	// a specific rewrite.
 	ApplyTarget  string
 	ApplyContent string
+	// ApplyOps carries a MULTI-FILE apply (Phase 2b scaffold): a JSON array of
+	// {op:create|replace, path, content}. When empty, the engine falls back to
+	// the single (ApplyTarget, ApplyContent) as a one-element replace op
+	// (back-compat with Phase-2a proposals). Persisted as the raw JSON string.
+	ApplyOps string
 	// AppliedBy is the operator who applied it — set ONLY on a successful
 	// apply (a failed/aborted apply leaves it empty).
 	AppliedBy string

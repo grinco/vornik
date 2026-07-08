@@ -143,6 +143,9 @@ func (a *auditRepoStub) List(ctx context.Context, f persistence.ToolAuditFilter)
 	}
 	return a.entries, nil
 }
+func (a *auditRepoStub) ToolLatencyP95ByProjectTool(context.Context, time.Time) ([]persistence.ToolLatencyStat, error) {
+	return nil, nil
+}
 func (a *auditRepoStub) CountByTool(context.Context, string) (map[string]int64, error) {
 	return nil, nil
 }

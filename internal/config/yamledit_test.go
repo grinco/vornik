@@ -292,3 +292,32 @@ func TestGetYAMLString_RoundTripWithSet(t *testing.T) {
 		t.Errorf("after Set, Get = %q, want %q", got, "db.example.com")
 	}
 }
+
+func TestDeleteYAMLKey_RemovesNodePreservingComments(t *testing.T) {
+	in := []byte("# top\nmcp_servers:\n  keep: # keep me\n    url: http://a\n  drop:\n    url: http://b\nother: 1 # tail\n")
+	out, removed, err := DeleteYAMLKey(in, "mcp_servers.drop")
+	if err != nil || !removed {
+		t.Fatalf("delete: removed=%v err=%v", removed, err)
+	}
+	s := string(out)
+	if strings.Contains(s, "drop") || strings.Contains(s, "http://b") {
+		t.Errorf("dropped node still present: %s", s)
+	}
+	if !strings.Contains(s, "keep") || !strings.Contains(s, "# keep me") || !strings.Contains(s, "# tail") {
+		t.Errorf("sibling nodes/comments must survive: %s", s)
+	}
+}
+
+func TestDeleteYAMLKey_AbsentIsNoop(t *testing.T) {
+	in := []byte("a: 1\n")
+	out, removed, err := DeleteYAMLKey(in, "mcp_servers.ghost")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if removed {
+		t.Error("absent key must report removed=false")
+	}
+	if string(out) != string(in) {
+		t.Error("absent-key delete must return content unchanged")
+	}
+}

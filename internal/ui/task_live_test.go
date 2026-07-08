@@ -42,6 +42,60 @@ func TestLiveTask_404WhenMissing(t *testing.T) {
 	}
 }
 
+// TestLiveTask_SeedsPerAttemptOutcomeStatus is the 2026-07-08 fix: the live
+// step timeline seeded every recorded step with a hardcoded "completed" badge
+// (and the JS-only path showed retries stuck on "running"). It must instead
+// seed from the recorded per-attempt ExecutionStepOutcome rows so a FAILED
+// retry attempt renders "failed", not "running"/"completed".
+func TestLiveTask_SeedsPerAttemptOutcomeStatus(t *testing.T) {
+	taskRepo := &mocks.MockTaskRepository{
+		GetFunc: func(_ context.Context, id string) (*persistence.Task, error) {
+			return &persistence.Task{ID: id, Status: persistence.TaskStatusRunning, ProjectID: "p1"}, nil
+		},
+	}
+	execRepo := &mocks.MockExecutionRepository{
+		ListFunc: func(_ context.Context, _ persistence.ExecutionFilter) ([]*persistence.Execution, error) {
+			return []*persistence.Execution{{
+				ID: "exec_1", TaskID: "task_retry", ProjectID: "p1",
+				Status:         persistence.ExecutionStatusRunning,
+				CompletedSteps: []string{"research"},
+			}}, nil
+		},
+	}
+	t0 := time.Now().Add(-3 * time.Minute)
+	t1 := t0.Add(time.Minute)
+	outcomes := &fakeOutcomeRepo{rows: []*persistence.ExecutionStepOutcome{
+		// Newest-first (repo order); the seed reverses to execution order.
+		{ID: "o2", StepID: "research", Role: "researcher", Outcome: "ok", RecordedAt: t1},
+		{ID: "o1", StepID: "research", Role: "researcher", Outcome: "failed", ErrorClass: "TIMEOUT", RecordedAt: t0},
+	}}
+	srv := NewServer(
+		WithTaskRepository(taskRepo),
+		WithExecutionRepository(execRepo),
+		WithStepOutcomeRepository(outcomes),
+	)
+	req := httptest.NewRequest(http.MethodGet, "/ui/tasks/task_retry/live", nil)
+	rr := httptest.NewRecorder()
+	srv.TaskLive(rr, req, "task_retry")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	// The failed attempt must render its own terminal status (regression: it
+	// previously showed a hardcoded "completed" / lived as "running").
+	if !strings.Contains(body, "failed") {
+		t.Errorf("live timeline must show the failed retry attempt as 'failed'; body:\n%s", body[:min(len(body), 1200)])
+	}
+	// And the successful attempt still reads completed.
+	if !strings.Contains(body, "completed") {
+		t.Errorf("live timeline must show the successful attempt as 'completed'")
+	}
+	// The error class from the failed attempt surfaces in the seeded detail.
+	if !strings.Contains(body, "TIMEOUT") {
+		t.Errorf("failed attempt's error class should surface in the seeded row")
+	}
+}
+
 // TestLiveTask_RedirectOnTerminalStatus — visits for COMPLETED /
 // FAILED / CANCELLED / CLOSED tasks go to the task detail page where
 // the replay link lives. The live stream has nothing to show once

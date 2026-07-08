@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -35,6 +36,9 @@ func (s *stubAuditRepo) List(_ context.Context, _ persistence.ToolAuditFilter) (
 	return nil, nil
 }
 
+func (s *stubAuditRepo) ToolLatencyP95ByProjectTool(_ context.Context, _ time.Time) ([]persistence.ToolLatencyStat, error) {
+	return nil, nil
+}
 func (s *stubAuditRepo) CountByTool(_ context.Context, _ string) (map[string]int64, error) {
 	return nil, nil
 }

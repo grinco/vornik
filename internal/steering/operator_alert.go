@@ -72,6 +72,7 @@ var ownerlessSteeringSources = map[persistence.TaskCreationSource]bool{
 type OperatorAlertNotifier struct {
 	resolver   ChannelResolver
 	recipients ProjectRecipients
+	tasks      TaskGetter // optional; walks ParentTaskID to detect a chat origin
 	baseURL    string
 	cfg        OperatorAlertConfig
 	enabled    bool
@@ -83,11 +84,15 @@ type OperatorAlertNotifier struct {
 
 // NewOperatorAlert builds an OperatorAlertNotifier. enabled=false, a nil
 // resolver, or an unconfigured cfg (no channel) yields a no-op notifier.
-// recipients may be nil (falls back to cfg.Session for every project).
-func NewOperatorAlert(resolver ChannelResolver, recipients ProjectRecipients, baseURL string, cfg OperatorAlertConfig, enabled bool, logger zerolog.Logger) *OperatorAlertNotifier {
+// recipients may be nil (falls back to cfg.Session for every project). tasks
+// is optional: when non-nil, a task whose ancestry carries a ChatTurnID is
+// treated as chat-owned (the chat Notifier handles it) and skipped here, so a
+// chat-scheduled task's children don't get a duplicate generic operator alert.
+func NewOperatorAlert(resolver ChannelResolver, recipients ProjectRecipients, tasks TaskGetter, baseURL string, cfg OperatorAlertConfig, enabled bool, logger zerolog.Logger) *OperatorAlertNotifier {
 	return &OperatorAlertNotifier{
 		resolver:   resolver,
 		recipients: recipients,
+		tasks:      tasks,
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		cfg:        cfg,
 		enabled:    enabled,
@@ -124,13 +129,17 @@ func (n *OperatorAlertNotifier) NotifySteeringRequired(ctx context.Context, task
 		return
 	}
 	// Chat-originated tasks are the chat Notifier's job; don't double-notify.
-	if task.ChatTurnID != nil && *task.ChatTurnID != "" {
+	// This checks the whole ancestry, not just the immediate task: a
+	// checkpoint/route child of a chat-scheduled task carries only
+	// ParentTaskID, so without the walk it would wrongly get this generic
+	// alert instead of routing back to the originating chat (2026-07-08 fix).
+	if chatOriginTurnID(ctx, task, n.tasks) != "" {
 		return
 	}
 	// Fire only for genuinely ownerless tasks — autonomy loop tasks AND the
-	// routed / checkpoint sub-tasks they spawn (a routed child has no
-	// ChatTurnID, so the chat Notifier can never reach it). USER / COMPANION /
-	// A2A / DELEGATION are excluded (chat origin or their own push path).
+	// routed / checkpoint sub-tasks they spawn that have NO chat ancestor.
+	// USER / COMPANION / A2A / DELEGATION are excluded (chat origin or their
+	// own push path).
 	if !ownerlessSteeringSources[task.CreationSource] {
 		return
 	}
@@ -242,8 +251,11 @@ func (n *OperatorAlertNotifier) composeText(task *persistence.Task, state string
 	}
 	b := &strings.Builder{}
 	fmt.Fprintf(b, "🔔 Autonomous task %s (project %s) %s. No chat originated it, so this is your operator alert.", task.ID, task.ProjectID, what)
-	if n.baseURL != "" && task.ProjectID != "" {
-		fmt.Fprintf(b, "\nOpen it: %s/ui/projects/%s/tasks/%s", n.baseURL, task.ProjectID, task.ID)
+	if n.baseURL != "" {
+		// Canonical UI task-detail route is /ui/tasks/{id} — the nested
+		// /ui/projects/{p}/tasks/{id} form is the API path shape and 404s in
+		// the browser (operator-reported 2026-07-08).
+		fmt.Fprintf(b, "\nOpen it: %s/ui/tasks/%s", n.baseURL, task.ID)
 	}
 	return b.String()
 }

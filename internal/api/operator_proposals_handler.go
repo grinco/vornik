@@ -149,6 +149,14 @@ func (s *Server) operatorPropose(w http.ResponseWriter, r *http.Request) {
 	if proposedBy == "" {
 		proposedBy = "operator"
 	}
+	// Reserved proposer identities (operator-ui + the control-plane workers) may
+	// only be stamped by in-daemon code — reject a client trying to masquerade
+	// as one (would let it satisfy the human-approval gate). Hardening from the
+	// control-plane hub review.
+	if controlplane.IsReservedProposer(proposedBy) {
+		respondError(w, http.StatusBadRequest, "RESERVED_PROPOSER", "proposedBy is a reserved system identity")
+		return
+	}
 	p := &persistence.ControlPlaneProposal{
 		ID:          persistence.GenerateID("cpp"),
 		ProjectID:   strings.TrimSpace(req.ProjectID),
@@ -290,6 +298,47 @@ func (s *Server) respondApplyOutcome(w http.ResponseWriter, r *http.Request, id 
 	default:
 		// Validation/reload failures (already auto-rolled-back by the engine).
 		respondError(w, http.StatusUnprocessableEntity, "APPLY_FAILED", err.Error())
+	}
+}
+
+// OperatorDiagnose handles POST /api/v1/operator/diagnose {focus, propose}:
+// a single-shot diagnosis of a project/task. Operator-scope, CE, not under
+// /api/v1/admin/. Read-only; with propose=true it may file a review-only
+// DRAFT proposal.
+func (s *Server) OperatorDiagnose(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+	if !s.requireOperatorScope(w, r) {
+		return
+	}
+	if s.diagnoser == nil {
+		respondError(w, http.StatusServiceUnavailable, "DIAGNOSE_UNAVAILABLE", "diagnose engine not wired on this daemon")
+		return
+	}
+	var body struct {
+		Focus   string `json:"focus"`
+		Propose bool   `json:"propose"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondError(w, http.StatusBadRequest, "INVALID_BODY", "expected {\"focus\":...}: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(body.Focus) == "" {
+		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", "focus is required")
+		return
+	}
+	verdict, proposalID, err := s.diagnoser.Diagnose(r.Context(), strings.TrimSpace(body.Focus), body.Propose)
+	switch {
+	case err == nil:
+		respondJSON(w, http.StatusOK, map[string]any{"verdict": verdict, "proposalId": proposalID})
+	case errors.Is(err, controlplane.ErrDiagnoseAmbiguousFocus):
+		respondError(w, http.StatusConflict, "AMBIGUOUS_FOCUS", err.Error())
+	case errors.Is(err, controlplane.ErrDiagnoseNoLLM):
+		respondError(w, http.StatusServiceUnavailable, "DIAGNOSE_UNAVAILABLE", err.Error())
+	default:
+		respondError(w, http.StatusUnprocessableEntity, "DIAGNOSE_FAILED", err.Error())
 	}
 }
 

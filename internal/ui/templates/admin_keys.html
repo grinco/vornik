@@ -40,7 +40,7 @@
                     <span class="block text-xs text-gray-500 uppercase tracking-wider mb-1">Status</span>
                     <select name="status" class="bg-dark-700 border border-dark-600 text-gray-200 text-xs rounded-md px-2 py-1 w-36">
                         {{range .StatusOptions}}
-                        <option value="{{.}}" {{if eq . $.FilterStatus}}selected{{end}}>{{if .}}{{.}}{{else}}any{{end}}</option>
+                        <option value="{{.}}" {{if eq . $.FilterStatus}}selected{{end}}>{{if .}}{{.}}{{else}}all{{end}}</option>
                         {{end}}
                     </select>
                 </label>

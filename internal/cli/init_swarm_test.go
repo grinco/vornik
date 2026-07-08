@@ -43,6 +43,20 @@ func TestReadPreset_ReturnsMarkdown(t *testing.T) {
 	}
 }
 
+// TestReadPreset_ResearchNoNetworkGuidance is the regression test for the
+// 2026-07-08 fix: the research preset's researcher/writer prompts must warn
+// that the container has no network (--network none) and steer web access to
+// the web_fetch tool, so newly-created research swarms don't shell out to
+// curl/wget (which always fails and wastes iterations).
+func TestReadPreset_ResearchNoNetworkGuidance(t *testing.T) {
+	body, err := readPreset("research")
+	require.NoError(t, err)
+	assert.Contains(t, body, "--network none",
+		"research preset should state the container has no network")
+	assert.Contains(t, body, "web_fetch",
+		"research preset should steer web access to the web_fetch tool")
+}
+
 // TestReadPreset_UnknownTemplateError — operator-facing error
 // when the preset name isn't recognised. Wording check survives
 // the YAML → MD switch.

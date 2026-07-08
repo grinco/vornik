@@ -30,6 +30,9 @@ func (s *stubToolAuditRepo) List(ctx context.Context, filter persistence.ToolAud
 func (s *stubToolAuditRepo) CountByTool(ctx context.Context, executionID string) (map[string]int64, error) {
 	return map[string]int64{}, nil
 }
+func (s *stubToolAuditRepo) ToolLatencyP95ByProjectTool(context.Context, time.Time) ([]persistence.ToolLatencyStat, error) {
+	return nil, nil
+}
 
 func TestGateActionToString(t *testing.T) {
 	assert.Equal(t, "allow", gateActionToString(memory.GateAllow))

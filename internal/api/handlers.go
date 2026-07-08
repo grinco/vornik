@@ -893,6 +893,16 @@ func (s *Server) CancelTask(w http.ResponseWriter, r *http.Request) {
 		s.executor.NotifyChildTerminal(r.Context(), taskID)
 	}
 
+	// Downward cascade: a cancelled parent must not leave its children
+	// running. Walk the parent_task_id tree and cancel non-terminal
+	// children (idempotent, race-safe, recursive). Without this a
+	// cancelled parent left its route/delegation/checkpoint children
+	// RUNNING/QUEUED. Cross-project callees are handled separately via
+	// the CPC ledger, not this in-project relation.
+	if s.executor != nil {
+		s.executor.CancelChildren(r.Context(), taskID)
+	}
+
 	// Build response
 	resp := CancelTaskResponse{
 		TaskID:      taskID,
@@ -2444,7 +2454,10 @@ func (s *Server) ProjectWizardCommit(w http.ResponseWriter, r *http.Request) {
 		case strings.Contains(msg, "not found"):
 			respondError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
-		case strings.Contains(msg, "write project") && strings.Contains(msg, "already exists"):
+		case strings.Contains(msg, "already exists"):
+			// Project-id collision on either land path — direct-write
+			// ("write project ... already exists") or the ledger proposer
+			// ("propose project ... already exists (project id in use)").
 			respondError(w, http.StatusConflict, "PROJECT_EXISTS",
 				"a project with that id already exists; ask the wizard to pick a different id")
 			return

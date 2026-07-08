@@ -5230,4 +5230,18 @@ ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS apply_content;
 ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS apply_target;
 `,
 	},
+	{
+		Version: 119,
+		Name:    "control_plane_proposals_apply_ops",
+		// Phase 2b (scaffold-apply): a multi-file atomic apply. apply_ops holds
+		// a JSON array of {op:create|replace, path, content}; when empty the
+		// engine falls back to the single apply_target/apply_content as a
+		// one-element replace (back-compat). Additive.
+		Up: `
+ALTER TABLE control_plane_proposals ADD COLUMN IF NOT EXISTS apply_ops TEXT NOT NULL DEFAULT '';
+`,
+		Down: `
+ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS apply_ops;
+`,
+	},
 }

@@ -931,6 +931,12 @@ func (s *Server) adminRouter(w http.ResponseWriter, r *http.Request) {
 		s.AdminSkills(w, r)
 	case "/control-plane", "/control-plane/":
 		s.AdminControlPlane(w, r)
+	case "/control-plane/diagnose", "/control-plane/diagnose/":
+		s.AdminControlPlaneDiagnose(w, r)
+	case "/control-plane/mcp", "/control-plane/mcp/":
+		s.AdminControlPlaneMCPWrite(w, r)
+	case "/control-plane/mcp/probe", "/control-plane/mcp/probe/":
+		s.AdminControlPlaneMCPProbe(w, r)
 	case "/blackbox", "/blackbox/":
 		s.AdminBlackBox(w, r)
 	case "/blackbox/overrides", "/blackbox/overrides/":

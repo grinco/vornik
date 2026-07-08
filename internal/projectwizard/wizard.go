@@ -150,10 +150,17 @@ type Wizard struct {
 	// Optional.
 	LLMUsage UsageRecorder
 	// Writer commits the final proposal as a project on disk
-	// (Phase B). Optional — without it, Commit returns
-	// ErrWriterUnwired. Converse works fine without a writer; the
-	// wizard just can't finalise the session.
+	// (Phase B). Optional — without it (and without Proposer), Commit
+	// returns ErrWriterUnwired. Converse works fine without a writer;
+	// the wizard just can't finalise the session. When Proposer is
+	// wired the writer is the CE fallback used only if no ledger exists.
 	Writer ProjectWriter
+	// Proposer routes commit through the control-plane proposal ledger:
+	// the composed file set becomes a reviewable DRAFT scaffold proposal
+	// instead of a direct disk write. When wired (production control
+	// plane) it takes precedence over Writer. Optional — nil falls back
+	// to the direct-write Writer.
+	Proposer ScaffoldProposer
 	// Metrics counts converse + commit outcomes for operator
 	// dashboards (Phase C). Optional — nil is no-op.
 	Metrics *Metrics

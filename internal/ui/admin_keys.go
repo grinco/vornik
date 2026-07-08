@@ -78,14 +78,22 @@ func (s *Server) AdminKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
+	// Default the status filter to active-only so the most common view (live
+	// keys) loads first; an explicit status param (including the empty "all"
+	// option) overrides this. q.Has distinguishes "param absent" (default to
+	// active) from "?status=" (operator explicitly asked to show all).
+	filterStatus := strings.TrimSpace(q.Get("status"))
+	if !q.Has("status") {
+		filterStatus = "active"
+	}
 	data := AdminKeysData{
 		adminCommonData: adminCommonData{
 			Title:       "API keys",
-			CurrentPage: "admin",
+			CurrentPage: "admin-keys",
 			IsAdmin:     true,
 		},
 		Available:     s.apiKeyRepo != nil && s.projectReg != nil,
-		FilterStatus:  strings.TrimSpace(q.Get("status")),
+		FilterStatus:  filterStatus,
 		FilterProject: strings.TrimSpace(q.Get("project")),
 		StatusOptions: []string{"", "active", "revoked", "expired"},
 		Flash:         strings.TrimSpace(q.Get("done")),

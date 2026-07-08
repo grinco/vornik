@@ -18,6 +18,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,6 +40,9 @@ func (s *memAdapterStubAuditRepo) List(context.Context, persistence.ToolAuditFil
 	return s.rows, nil
 }
 func (s *memAdapterStubAuditRepo) CountByTool(context.Context, string) (map[string]int64, error) {
+	return nil, nil
+}
+func (s *memAdapterStubAuditRepo) ToolLatencyP95ByProjectTool(context.Context, time.Time) ([]persistence.ToolLatencyStat, error) {
 	return nil, nil
 }
 

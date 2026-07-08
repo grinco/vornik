@@ -90,6 +90,35 @@ func TestSmokeLoad_AssistantSwarmMigratedRoles(t *testing.T) {
 	})
 }
 
+// TestAssistantSwarm_ResearcherWriterNoNetworkGuidance is the regression
+// test for the 2026-07-08 fix: agents in the network-none assistant swarm
+// were shelling out to curl/wget (always fails, wastes iterations). The
+// researcher and writer role prompts must state the container has no
+// network and steer web access to the web_fetch tool, not run_shell.
+func TestAssistantSwarm_ResearcherWriterNoNetworkGuidance(t *testing.T) {
+	swarms, err := LoadSwarms("../../configs")
+	if err != nil {
+		t.Fatalf("LoadSwarms: %v", err)
+	}
+	a := swarms["assistant-swarm"]
+	if a == nil {
+		t.Fatal("assistant-swarm not found")
+	}
+	// Both roles must state the container has no network so neither shells
+	// out to curl/wget. Only the researcher fetches the web, so only its
+	// prompt steers to the web_fetch tool; the writer is told not to fetch
+	// at all.
+	for _, name := range []string{"researcher", "writer"} {
+		role := findRole(t, a, name)
+		if !strings.Contains(role.SystemPrompt, "--network none") {
+			t.Errorf("role %q prompt should state the container has no network (--network none)", name)
+		}
+	}
+	if r := findRole(t, a, "researcher"); !strings.Contains(r.SystemPrompt, "web_fetch") {
+		t.Error("researcher prompt should steer web access to the web_fetch tool")
+	}
+}
+
 // TestSmokeLoad_DevSwarmMigratedRoles covers the dev-swarm migration.
 // Touches a representative member of each conflict-class the migration
 // addressed:

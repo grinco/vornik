@@ -9,16 +9,9 @@
         <div class="space-y-5">
             <div class="flex items-center gap-3">
                 <svg class="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><circle cx="12" cy="12" r="3"/></svg>
-                <h1 class="text-xl font-semibold text-gray-100">Control plane — proposals</h1>
+                <h1 class="text-xl font-semibold text-gray-100">Control plane</h1>
                 <a href="/ui/admin/" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">← Admin</a>
             </div>
-
-            <p class="text-xs text-gray-500 max-w-3xl">
-                Human-gated change proposals from the operator and the Tune
-                detector. Approve/reject a draft; apply an approved change
-                (hot-reload, auto-rolls-back if the config is rejected); roll an
-                applied change back. Nothing is applied without you.
-            </p>
 
             {{if .Flash}}<div class="rounded-md bg-dark-800 border border-dark-700 px-3 py-2 text-xs text-brand-300">{{.Flash}}</div>{{end}}
             {{if .Error}}<div class="rounded-md bg-red-900/30 border border-red-800 px-3 py-2 text-xs text-red-300">{{.Error}}</div>{{end}}
@@ -26,14 +19,99 @@
             {{if not .Available}}
                 <div class="text-sm text-gray-400">The proposal ledger is not wired on this daemon.</div>
             {{else}}
+                <!-- Hub section tabs -->
+                <div class="flex flex-wrap gap-1.5 border-b border-dark-700 pb-2">
+                    {{range .Sections}}
+                    <a href="{{.Href}}"
+                       class="px-3 py-1 text-xs rounded-md font-medium {{if .Active}}bg-brand-600 text-white{{else}}bg-dark-800 text-gray-300 hover:bg-dark-700{{end}}">
+                        {{.Label}}
+                    </a>
+                    {{end}}
+                </div>
+
+                {{if eq .Section "overview"}}
+                <!-- ===== Overview ===== -->
+                <p class="text-xs text-gray-500 max-w-3xl">
+                    What the control plane is doing right now. It watches health signals,
+                    diagnoses failures, and proposes changes — but never applies anything
+                    without you. Open proposals wait for your review on the Proposals tab.
+                </p>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div class="rounded-lg bg-dark-800 border border-dark-700 p-4">
+                        <div class="text-2xl font-semibold text-gray-100">{{.OpenTotal}}</div>
+                        <div class="text-[11px] text-gray-500 mt-1">open proposals awaiting review</div>
+                    </div>
+                    <div class="rounded-lg bg-dark-800 border border-dark-700 p-4">
+                        <div class="text-2xl font-semibold text-gray-100">{{len .OpenIncidents}}</div>
+                        <div class="text-[11px] text-gray-500 mt-1">open self-heal incidents</div>
+                    </div>
+                    <div class="rounded-lg bg-dark-800 border border-dark-700 p-4 flex flex-col justify-center gap-1">
+                        <a href="/ui/admin/control-plane?section=proposals" class="text-xs text-brand-400 hover:text-brand-300">Review proposals →</a>
+                        <a href="/ui/admin/control-plane?section=diagnose" class="text-xs text-brand-400 hover:text-brand-300">Run a diagnosis →</a>
+                        <a href="/ui/admin/control-plane?section=mcp" class="text-xs text-brand-400 hover:text-brand-300">Manage MCP servers →</a>
+                    </div>
+                </div>
+
+                {{if .SourceCounts}}
+                <div>
+                    <h2 class="text-sm font-semibold text-gray-200 mb-2">Open proposals by source</h2>
+                    <div class="flex flex-wrap gap-2">
+                        {{range .SourceCounts}}
+                        <a href="/ui/admin/control-plane?section=proposals" class="rounded-md bg-dark-800 border border-dark-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-dark-700">
+                            {{.Label}} <span class="ml-1 font-semibold text-gray-100">{{.Open}}</span>
+                        </a>
+                        {{end}}
+                    </div>
+                </div>
+                {{end}}
+
+                {{if .OpenIncidents}}
+                <div>
+                    <h2 class="text-sm font-semibold text-gray-200 mb-2">🩺 Open incidents (self-heal)</h2>
+                    <div class="space-y-2">
+                        {{range .OpenIncidents}}
+                        <div class="rounded-lg bg-dark-800 border border-dark-700 p-3">
+                            <div class="flex items-center gap-2 flex-wrap">
+                                <div class="text-xs font-mono text-gray-100">{{.Title}}</div>
+                                <code class="text-[10px] text-gray-400">{{if .ProjectID}}{{.ProjectID}}{{else}}(daemon){{end}}</code>
+                            </div>
+                            {{if .RootCause}}<div class="text-[11px] text-gray-400 mt-1">{{.RootCause}}</div>{{end}}
+                        </div>
+                        {{end}}
+                    </div>
+                </div>
+                {{else}}
+                <div class="text-xs text-gray-500">No open incidents.</div>
+                {{end}}
+                {{end}}
+
+                {{if eq .Section "proposals"}}
+                <!-- ===== Proposals ===== -->
+                <p class="text-xs text-gray-500 max-w-3xl">
+                    Human-gated change proposals from the operator and the control-plane
+                    workers. Approve/reject a draft; apply an approved change (hot-reload,
+                    auto-rolls-back if the config is rejected); roll an applied change back.
+                    Nothing is applied without you.
+                </p>
                 <div class="flex flex-wrap gap-1.5 border-b border-dark-700 pb-2">
                     {{range .Tabs}}
-                    <a href="/ui/admin/control-plane{{if .Key}}?status={{.Key}}{{end}}"
+                    <a href="/ui/admin/control-plane?section=proposals{{if .Key}}&status={{.Key}}{{end}}{{if $.SourceFilter}}&source={{$.SourceFilter}}{{end}}"
                        class="px-3 py-1 text-xs rounded-md {{if .Active}}bg-brand-600 text-white{{else}}bg-dark-800 text-gray-300 hover:bg-dark-700{{end}}">
                         {{.Label}} <span class="opacity-70">{{.Count}}</span>
                     </a>
                     {{end}}
                 </div>
+                {{if .SourceTabs}}
+                <div class="flex flex-wrap items-center gap-1.5">
+                    <span class="text-[11px] text-gray-500 mr-1">source:</span>
+                    {{range .SourceTabs}}
+                    <a href="/ui/admin/control-plane?section=proposals{{if $.Filter}}&status={{$.Filter}}{{end}}{{if .Key}}&source={{.Key}}{{end}}"
+                       class="px-2 py-0.5 text-[11px] rounded {{if .Active}}bg-brand-600 text-white{{else}}bg-dark-800 text-gray-400 hover:bg-dark-700{{end}}">
+                        {{.Label}} <span class="opacity-70">{{.Count}}</span>
+                    </a>
+                    {{end}}
+                </div>
+                {{end}}
 
                 {{if not .Rows}}
                     <div class="text-sm text-gray-400">No proposals in this view.</div>
@@ -104,6 +182,134 @@
                     {{end}}
                 </div>
                 {{end}}
+                {{end}}{{/* end section=proposals */}}
+
+                {{if eq .Section "diagnose"}}
+                <!-- ===== Diagnose ===== -->
+                <p class="text-xs text-gray-500 max-w-3xl">
+                    Ask the control-plane diagnostician for the likely root cause of a
+                    failing project or task. Read-only by default; tick “file a proposal”
+                    to have it draft a review-only fix suggestion (never auto-applied).
+                </p>
+                <form method="POST" action="/ui/admin/control-plane/diagnose" class="rounded-lg bg-dark-800 border border-dark-700 p-4 space-y-3 max-w-2xl">
+                    <div>
+                        <label class="block text-xs text-gray-400 mb-1">Focus</label>
+                        <input type="text" name="focus" required placeholder="project id, task_… id, or free text"
+                               value="{{if .Diagnose}}{{.Diagnose.Focus}}{{end}}"
+                               class="w-full rounded-md bg-dark-900 border border-dark-600 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none">
+                    </div>
+                    <label class="flex items-center gap-2 text-xs text-gray-300">
+                        <input type="checkbox" name="propose"> file a review-only proposal from the diagnosis
+                    </label>
+                    <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-brand-600 hover:bg-brand-500 text-white">🔍 Diagnose</button>
+                </form>
+
+                {{with .Diagnose}}
+                    {{if .Err}}
+                    <div class="rounded-md bg-red-900/30 border border-red-800 px-3 py-2 text-xs text-red-300 max-w-2xl">{{.Err}}</div>
+                    {{else if .Ran}}
+                    <div class="rounded-lg bg-dark-800 border border-dark-700 p-4 space-y-2 max-w-2xl">
+                        <div class="text-sm text-gray-100"><span class="text-gray-500">root cause:</span> {{.RootCause}}</div>
+                        <div class="text-xs text-gray-400"><span class="text-gray-500">confidence:</span> {{.Confidence}}</div>
+                        {{if .Evidence}}
+                        <div class="text-xs text-gray-400">
+                            <div class="text-gray-500 mb-1">evidence:</div>
+                            <ul class="list-disc list-inside space-y-0.5">{{range .Evidence}}<li>{{.}}</li>{{end}}</ul>
+                        </div>
+                        {{end}}
+                        {{if .SuggestedChange}}<div class="text-xs text-gray-300"><span class="text-gray-500">suggested change:</span> {{.SuggestedChange}}</div>{{end}}
+                        {{if .ProposalID}}
+                        <div class="text-xs text-brand-300">Filed review-only proposal <code>{{.ProposalID}}</code> — <a href="/ui/admin/control-plane?section=proposals" class="underline hover:text-brand-200">review it →</a></div>
+                        {{end}}
+                    </div>
+                    {{end}}
+                {{end}}
+                {{end}}{{/* end section=diagnose */}}
+
+                {{if eq .Section "mcp"}}
+                <!-- ===== MCP servers ===== -->
+                <p class="text-xs text-gray-500 max-w-3xl">
+                    Third-party MCP servers available to the daemon (Home Assistant,
+                    PageDrop, network/cluster tooling, …). Add or remove one here and it
+                    files a daemon-scope change <em>proposal</em> — review the diff and
+                    apply it on the Proposals tab (nothing changes until you do). Projects
+                    then opt in from their config form.
+                </p>
+
+                {{if .MCPRows}}
+                <div class="space-y-2">
+                    {{range .MCPRows}}
+                    <div class="rounded-lg bg-dark-800 border border-dark-700 p-3 flex items-start gap-3">
+                        <div class="min-w-0 flex-1">
+                            <div class="flex items-center gap-2 flex-wrap">
+                                <div class="font-mono text-sm text-gray-100">{{.Name}}</div>
+                                <span class="px-1.5 py-0.5 text-[10px] font-semibold rounded {{if .Reachable}}bg-green-700/30 text-green-300 border border-green-700{{else}}bg-red-900/30 text-red-300 border border-red-800{{end}}">{{if .Reachable}}reachable{{else}}unreachable{{end}}</span>
+                                <span class="text-[10px] text-gray-500">{{.Transport}} · {{.ToolCount}} tools</span>
+                            </div>
+                            {{if .Endpoint}}<div class="text-[11px] text-gray-500 mt-1 font-mono truncate">{{.Endpoint}}</div>{{end}}
+                            {{if .Error}}<div class="text-[11px] text-red-400 mt-1">{{.Error}}</div>{{end}}
+                            {{if .LastCheck}}<div class="text-[10px] text-gray-600 mt-1">last checked {{.LastCheck}}</div>{{end}}
+                        </div>
+                        {{if $.MCPWritable}}
+                        <form method="POST" action="/ui/admin/control-plane/mcp" onsubmit="return confirm('Propose removing MCP server {{.Name}}? (daemon-scope — you review + apply on the Proposals tab)')">
+                            <input type="hidden" name="action" value="remove">
+                            <input type="hidden" name="name" value="{{.Name}}">
+                            <button type="submit" class="px-2.5 py-1 text-xs rounded-md bg-dark-700 hover:bg-red-900/40 text-gray-300 border border-dark-600">Remove…</button>
+                        </form>
+                        {{end}}
+                    </div>
+                    {{end}}
+                </div>
+                {{else}}
+                <div class="text-sm text-gray-400">No MCP servers configured.</div>
+                {{end}}
+
+                {{if .MCPWritable}}
+                <div class="rounded-lg bg-dark-800 border border-dark-700 p-4 max-w-2xl">
+                    <h2 class="text-sm font-semibold text-gray-200 mb-3">Add an MCP server</h2>
+                    <form method="POST" action="/ui/admin/control-plane/mcp" class="space-y-3">
+                        <input type="hidden" name="action" value="add">
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Name</label>
+                            <input type="text" name="name" required placeholder="homeassistant"
+                                   class="w-full rounded-md bg-dark-900 border border-dark-600 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Transport</label>
+                            <select name="transport" class="w-full rounded-md bg-dark-900 border border-dark-600 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none">
+                                <option value="streamable-http">streamable-http</option>
+                                <option value="sse">sse</option>
+                                <option value="stdio">stdio</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">URL <span class="text-gray-600">(sse / streamable-http)</span></label>
+                            <input type="text" name="url" placeholder="http://homeassistant.local:8123/mcp"
+                                   class="w-full rounded-md bg-dark-900 border border-dark-600 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-400 mb-1">Command <span class="text-gray-600">(stdio)</span></label>
+                            <input type="text" name="command" placeholder="/usr/bin/some-mcp-server"
+                                   class="w-full rounded-md bg-dark-900 border border-dark-600 px-3 py-1.5 text-sm text-gray-100 focus:border-brand-500 focus:outline-none">
+                        </div>
+                        <p class="text-[11px] text-gray-500">Secrets: use a <code>${ENV_VAR}</code> placeholder in the URL/command — never a literal token.</p>
+                        <div class="flex items-center gap-2">
+                            <button type="button"
+                                    hx-post="/ui/admin/control-plane/mcp/probe"
+                                    hx-include="closest form"
+                                    hx-target="#mcp-probe-result"
+                                    hx-swap="innerHTML"
+                                    class="px-3 py-1.5 text-xs rounded-md bg-dark-700 hover:bg-dark-600 text-gray-200 ring-1 ring-dark-600"
+                                    title="Connect to this endpoint now and list its tools — before filing the proposal">Test endpoint</button>
+                            <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-brand-600 hover:bg-brand-500 text-white">Propose add (daemon-scope)</button>
+                        </div>
+                        <div id="mcp-probe-result" class="mt-1"></div>
+                    </form>
+                </div>
+                {{else}}
+                <div class="text-xs text-gray-500">Ledger-gated MCP editing is not wired on this daemon (no config path / proposal store).</div>
+                {{end}}
+                {{end}}{{/* end section=mcp */}}
             {{end}}
         </div>
     </main>

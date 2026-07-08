@@ -373,7 +373,8 @@ func TestUICloseTask_FromFailed(t *testing.T) {
 // path can be asserted on without booting an executor. The other
 // ExecutorInterface methods aren't exercised by uiCloseTask.
 type closeNotifySpy struct {
-	calls []string
+	calls        []string
+	cascadeCalls []string
 }
 
 func (s *closeNotifySpy) Cancel(string) error       { return nil }
@@ -382,6 +383,9 @@ func (s *closeNotifySpy) ResumePaused(string) error { return nil }
 func (s *closeNotifySpy) ResumeTask(string) error   { return nil }
 func (s *closeNotifySpy) NotifyChildTerminal(_ context.Context, childTaskID string) {
 	s.calls = append(s.calls, childTaskID)
+}
+func (s *closeNotifySpy) CancelChildren(_ context.Context, parentTaskID string) {
+	s.cascadeCalls = append(s.cascadeCalls, parentTaskID)
 }
 
 // TestUICloseTask_NotifiesExecutorOnChildClose — when the closed

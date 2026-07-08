@@ -56,6 +56,61 @@ func SetYAMLKey(content []byte, dottedKey string, val any) (out []byte, created 
 	return buf.Bytes(), created, nil
 }
 
+// DeleteYAMLKey removes the node at dottedKey (e.g. "mcp_servers.homeassistant")
+// and everything under it, preserving comments/ordering on the surrounding
+// mapping. Returns removed=false (no error) when the key is absent. Errors only
+// if a path segment exists but isn't a mapping. Comment-preserving counterpart
+// to SetYAMLKey (control-plane hub MCP-remove path).
+func DeleteYAMLKey(content []byte, dottedKey string) (out []byte, removed bool, err error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return nil, false, fmt.Errorf("yamledit: unmarshal: %w", err)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil, false, fmt.Errorf("yamledit: unexpected document structure")
+	}
+	root := doc.Content[0]
+	removed, err = deleteInNode(root, strings.Split(dottedKey, "."))
+	if err != nil {
+		return nil, false, err
+	}
+	if !removed {
+		return content, false, nil
+	}
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return nil, false, fmt.Errorf("yamledit: marshal: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, false, fmt.Errorf("yamledit: marshal close: %w", err)
+	}
+	return buf.Bytes(), true, nil
+}
+
+// deleteInNode walks mappings following segments and removes the leaf key/value
+// pair from its parent mapping's Content. Returns removed=false when the key is
+// absent at any level.
+func deleteInNode(node *yaml.Node, segments []string) (bool, error) {
+	if node.Kind != yaml.MappingNode {
+		return false, fmt.Errorf("yamledit: expected mapping node, got kind %d", node.Kind)
+	}
+	key := segments[0]
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value != key {
+			continue
+		}
+		if len(segments) == 1 {
+			// Drop the [key, val] pair, preserving the rest of the block.
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+			return true, nil
+		}
+		return deleteInNode(node.Content[i+1], segments[1:])
+	}
+	return false, nil
+}
+
 // GetYAMLString returns the scalar string found at dottedKey (e.g.
 // "database.host") inside content, or "" if the key is absent, the document
 // is unparseable, or the resolved node is not a scalar. It is the read-side

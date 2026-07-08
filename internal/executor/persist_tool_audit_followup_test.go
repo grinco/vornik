@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -36,6 +37,9 @@ func (s *stubAuditRepoY) Log(_ context.Context, e *persistence.ToolAuditEntry) e
 	return nil
 }
 func (s *stubAuditRepoY) List(_ context.Context, _ persistence.ToolAuditFilter) ([]*persistence.ToolAuditEntry, error) {
+	return nil, nil
+}
+func (s *stubAuditRepoY) ToolLatencyP95ByProjectTool(_ context.Context, _ time.Time) ([]persistence.ToolLatencyStat, error) {
 	return nil, nil
 }
 func (s *stubAuditRepoY) CountByTool(_ context.Context, _ string) (map[string]int64, error) {

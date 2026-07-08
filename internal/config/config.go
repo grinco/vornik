@@ -55,6 +55,23 @@ type ExpectedEndpointConfig struct {
 	Kind string `yaml:"kind" json:"kind" doc:"https | readyz | mtls-relay | db"`
 }
 
+// ControlPlaneConfig holds control-plane worker knobs (LLD 2026-07-08-control-
+// plane-self-healing-design). Self-healing is opt-in: when enabled AND a
+// diagnose LLM is wired, a sustained per-project failed-rate breach
+// auto-invokes the Diagnoser and files a review-only diagnosis proposal (and
+// the Tune worker yields the failed-rate signal to it). Default false leaves
+// the generic Tune failed-rate proposal behaviour unchanged.
+type ControlPlaneConfig struct {
+	SelfHealEnabled bool `yaml:"self_heal_enabled" json:"self_heal_enabled" doc:"Auto-run the diagnoser on a sustained per-project failed-rate breach and file a review-only diagnosis proposal. Opt-in; default false."`
+	// SystemProjectID, when set, is never self-diagnosed (loop-safety). In the
+	// current architecture the diagnoser is a synchronous in-daemon LLM call
+	// that spawns no task/execution, so it cannot feed the failed-rate metric —
+	// this is defensive and normally left empty.
+	SystemProjectID string `yaml:"system_project_id" json:"system_project_id" doc:"Project id the self-healer must never diagnose (loop-safety). Usually empty."`
+	// MaxIncidentsPerHour globally caps auto-opened incidents (0 → default 3).
+	MaxIncidentsPerHour int `yaml:"max_incidents_per_hour" json:"max_incidents_per_hour" doc:"Global cap on self-heal incidents opened per rolling hour. 0 means 3."`
+}
+
 type Config struct {
 	// SteeringNotificationsEnabled pushes a prompt to the originating
 	// chat/DM when a task that was created there enters a steering state
@@ -74,6 +91,11 @@ type Config struct {
 	// Cluster holds cluster-diagnostics knobs (expected endpoints to validate,
 	// monitor cadence). Optional; empty = config-derived endpoints only.
 	Cluster ClusterConfig `yaml:"cluster" json:"cluster" doc:"Cluster-diagnostics: expected endpoints + monitor interval."`
+
+	// ControlPlane holds control-plane worker knobs. Opt-in; the default
+	// (self_heal_enabled=false) leaves the Tune detector filing generic
+	// failed-rate proposals exactly as before.
+	ControlPlane ControlPlaneConfig `yaml:"control_plane" json:"control_plane" doc:"Control-plane worker knobs (self-healing incident detection)."`
 
 	// NamedSecrets are operator-declared secrets injected into agent
 	// containers ONLY for the projects each one allows — a per-secret

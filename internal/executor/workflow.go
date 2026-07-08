@@ -2858,3 +2858,70 @@ func (e *Executor) NotifyChildTerminal(ctx context.Context, childTaskID string) 
 	}
 	e.checkParentUnblock(ctx, child)
 }
+
+// cancellableChildStatuses are the non-terminal statuses a child task may be
+// cancelled from during a parent cascade. It mirrors the direct-cancel set
+// but ALSO includes WAITING_FOR_CHILDREN so an intermediate parent inside the
+// tree is itself cancelled — its own children are then reached by recursion.
+var cancellableChildStatuses = []persistence.TaskStatus{
+	persistence.TaskStatusPending,
+	persistence.TaskStatusQueued,
+	persistence.TaskStatusLeased,
+	persistence.TaskStatusRunning,
+	persistence.TaskStatusWaitingForChildren,
+}
+
+// CancelChildren recursively cancels the non-terminal in-project children of a
+// just-cancelled parent. CancelTask / the UI cancel path transition only the
+// target task; without this a cancelled parent leaves its route / delegation /
+// checkpoint children RUNNING or QUEUED (the downward-cascade gap — the upward
+// NotifyChildTerminal path and the CPC-only cascadeCancelCallee never covered
+// in-project parent→child). Cross-project callees are intentionally NOT
+// touched here: they live in the CPC ledger (cancelled via the CPC timeout
+// scanner's cascadeCancelCallee), not the parent_task_id relation GetChildren
+// walks.
+//
+// Idempotent + race-safe: each child flips via TransitionConditional gated on
+// the active statuses, so a child that reached a terminal state concurrently
+// keeps it. A running child additionally has its process torn down. The seen
+// set guards against any accidental parent_task_id cycle.
+func (e *Executor) CancelChildren(ctx context.Context, parentTaskID string) {
+	if e == nil || e.taskRepo == nil || parentTaskID == "" {
+		return
+	}
+	e.cancelDescendants(ctx, parentTaskID, map[string]bool{parentTaskID: true})
+}
+
+func (e *Executor) cancelDescendants(ctx context.Context, parentTaskID string, seen map[string]bool) {
+	children, err := e.taskRepo.GetChildren(ctx, parentTaskID)
+	if err != nil {
+		e.logger.Warn().Err(err).Str("parent_task_id", parentTaskID).
+			Msg("cancel cascade: failed to list children")
+		return
+	}
+	for _, child := range children {
+		if child == nil || seen[child.ID] {
+			continue
+		}
+		seen[child.ID] = true
+
+		moved, terr := e.taskRepo.TransitionConditional(ctx, child.ID,
+			cancellableChildStatuses, persistence.TaskStatusCancelled,
+			persistence.TransitionOpts{})
+		if terr != nil {
+			// Log and keep going — a grandchild may still be cancellable
+			// even if this child's transition errored.
+			e.logger.Warn().Err(terr).Str("child_task_id", child.ID).
+				Msg("cancel cascade: failed to cancel child")
+		}
+		if moved && child.Status == persistence.TaskStatusRunning {
+			if cerr := e.Cancel(child.ID); cerr != nil {
+				e.logger.Warn().Err(cerr).Str("child_task_id", child.ID).
+					Msg("cancel cascade: failed to tear down running child")
+			}
+		}
+		// Recurse regardless of whether this child transitioned: it may
+		// already have been terminal yet still have active descendants.
+		e.cancelDescendants(ctx, child.ID, seen)
+	}
+}

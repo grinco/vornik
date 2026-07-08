@@ -48,6 +48,36 @@ func TestBuildSystemPrompt_ContainsAntiPromiseSection(t *testing.T) {
 	}
 }
 
+// TestBuildSystemPrompt_ContainsWorkflowSelectionGuide pins the
+// 2026-07-08 workflow-selection guide: the dispatcher must be taught to
+// map intent → workflow archetype (research vs research-and-publish vs
+// plan-and-write vs dev vs adaptive) instead of defaulting everything to
+// adaptive/the project default, and to confirm ids via list_workflows.
+func TestBuildSystemPrompt_ContainsWorkflowSelectionGuide(t *testing.T) {
+	out := BuildSystemPrompt("", nil)
+	mustContain := []string{
+		"CHOOSING THE WORKFLOW",
+		"RESEARCH workflow",
+		"RESEARCH-AND-PUBLISH workflow",
+		"PLAN-AND-WRITE workflow",
+		"DEV pipeline workflow",
+		"ADAPTIVE workflow",
+		"list_workflows",
+		// The load-bearing heuristic the user gave: report back vs just know more.
+		"does the user expect a document/report back",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(out, want) {
+			t.Errorf("system prompt missing workflow-selection guidance %q", want)
+		}
+	}
+	// The guide belongs before the anti-promise section (it's part of the
+	// scheduling guidance).
+	if gi, ai := strings.Index(out, "CHOOSING THE WORKFLOW"), strings.Index(out, "DO NOT PROMISE"); gi == -1 || ai == -1 || gi >= ai {
+		t.Errorf("workflow guide should precede DO NOT PROMISE; got guide=%d antiPromise=%d", gi, ai)
+	}
+}
+
 // TestBuildSystemPrompt_AntiPromiseFollowsFastPath — section
 // ordering matters: the new rule sits AFTER the explicit-
 // scheduling fast path because the fast path handles the

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/auth"
@@ -226,6 +227,9 @@ func (m *capturingToolAuditRepo) Log(_ context.Context, e *persistence.ToolAudit
 	return nil
 }
 func (m *capturingToolAuditRepo) List(_ context.Context, _ persistence.ToolAuditFilter) ([]*persistence.ToolAuditEntry, error) {
+	return nil, nil
+}
+func (m *capturingToolAuditRepo) ToolLatencyP95ByProjectTool(_ context.Context, _ time.Time) ([]persistence.ToolLatencyStat, error) {
 	return nil, nil
 }
 func (m *capturingToolAuditRepo) CountByTool(_ context.Context, _ string) (map[string]int64, error) {

@@ -108,6 +108,10 @@ roles:
         synthesize as soon as you have enough to answer the question; do not keep
         gathering just because tool iterations remain. When you do fetch, prefer a
         NEW source over re-checking one you've already seen.
+        Web access: the container runs with NO network (`--network none`), so
+        `curl`, `wget`, and any direct HTTP from run_shell ALWAYS fail — never use
+        run_shell for the web. Use the mcp__scraper__web_fetch tool for every web
+        fetch; if a portal blocks it, record the failure and move on.
       # produced_files is verified by the executor: every path listed
       # must exist on disk and have been written during this step.
       # outputSchema replaces requiredOutputKeys + the prose Output
@@ -730,9 +734,12 @@ Context source:
 - Otherwise read project/.autonomy/PROJECT_CONTEXT.md for
   the autonomy-feed procedure (source lists, output schema).
 
-Web: use mcp__scraper__web_fetch when available. Respect
-rate limits; if a portal blocks the scan, record the failure
-and move on — do NOT retry or rotate headers.
+Web: the container runs with NO network (`--network none`), so
+`curl`, `wget`, and any direct HTTP from run_shell ALWAYS fail —
+never use run_shell for web access. Use mcp__scraper__web_fetch
+(when available) for every web fetch. Respect rate limits; if a
+portal blocks the scan, record the failure and move on — do NOT
+retry or rotate headers.
 
 Write exactly one file: artifacts/out/research.md with summary,
 key facts, source URLs/names, caveats, useful raw notes. For
@@ -803,6 +810,12 @@ research supplies the facts. Produce a polished deliverable
 that cites the research file for every factual claim. No
 hedging boilerplate ("as an AI…") — operators forward
 these verbatim.
+
+Write from the research/plan files and task inputs — do NOT
+fetch the web yourself. The container has NO network
+(`--network none`), so `curl`/`wget`/HTTP from run_shell always
+fail; run_shell here is only for local pandoc conversion. If a
+fact is missing, note the gap rather than trying to retrieve it.
 
 Context source:
 - If env var VORNIK_TASK_CREATION_SOURCE = "USER" and

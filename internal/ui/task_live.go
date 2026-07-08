@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sort"
 	"time"
 
 	"vornik.io/vornik/internal/api"
@@ -32,6 +33,58 @@ type LiveTaskPageData struct {
 	// CurrentStep is the dereferenced Execution.CurrentStepID. Empty
 	// when the execution hasn't started its first step yet.
 	CurrentStep string
+	// Outcomes are the recorded per-attempt step outcomes (oldest first),
+	// each carrying its OWN status — the same source of truth the non-live
+	// /ui/executions/{id} page uses. Seeding the timeline from these (instead
+	// of a hardcoded "completed"/"running" badge per step id) is the fix for
+	// the 2026-07-08 report where every retry attempt showed RUNNING: a failed
+	// attempt now renders "failed", only the live attempt is "running".
+	Outcomes []StepOutcomeRow
+}
+
+// liveStepOutcomes loads the recorded step-outcome rows for an execution and
+// projects them (oldest first) for the live-timeline seed. Mirrors the
+// non-live execution-detail projection but returns only the fields the live
+// timeline renders. Best-effort: a nil repo or a load error yields no seed
+// rows (the JS layer still fills the live timeline from the WebSocket).
+func (s *Server) liveStepOutcomes(ctx context.Context, executionID string) []StepOutcomeRow {
+	if s.outcomeRepo == nil || executionID == "" {
+		return nil
+	}
+	rows, err := s.outcomeRepo.List(ctx, persistence.ExecutionStepOutcomeFilter{
+		ExecutionID: &executionID,
+		PageSize:    200,
+	})
+	if err != nil {
+		s.logger.Warn().Err(err).Str("execution_id", executionID).
+			Msg("live: failed to load step outcomes for timeline seed")
+		return nil
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	// Repo returns newest first; reverse to execution order (RecordedAt asc,
+	// ID tie-break) — same ordering the execution-detail page uses.
+	sort.SliceStable(rows, func(i, j int) bool {
+		if !rows[i].RecordedAt.Equal(rows[j].RecordedAt) {
+			return rows[i].RecordedAt.Before(rows[j].RecordedAt)
+		}
+		return rows[i].ID < rows[j].ID
+	})
+	out := make([]StepOutcomeRow, 0, len(rows))
+	for _, o := range rows {
+		row := StepOutcomeRow{
+			StepID:       o.StepID,
+			Role:         o.Role,
+			Model:        o.Model,
+			Outcome:      o.Outcome,
+			ErrorClass:   o.ErrorClass,
+			ErrorDetail:  o.ErrorDetail,
+			OutcomeClass: outcomeCSSClass(o.Outcome),
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 // TaskLive renders the live observation page for /ui/tasks/<id>/live.
@@ -136,6 +189,7 @@ func (s *Server) TaskLive(w http.ResponseWriter, r *http.Request, taskID string)
 		if exec.CurrentStepID != nil {
 			data.CurrentStep = *exec.CurrentStepID
 		}
+		data.Outcomes = s.liveStepOutcomes(ctx, exec.ID)
 	}
 	s.render(w, "task_live.html", data)
 }
@@ -208,6 +262,7 @@ func (s *Server) ExecutionLive(w http.ResponseWriter, r *http.Request, execID st
 	if exec.CurrentStepID != nil {
 		data.CurrentStep = *exec.CurrentStepID
 	}
+	data.Outcomes = s.liveStepOutcomes(ctx, exec.ID)
 	s.render(w, "task_live.html", data)
 }
 

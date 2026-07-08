@@ -81,7 +81,10 @@ func navModel() []navAreaDef {
 			{Key: "insights", Label: "Tool budget", Href: "/ui/insights/tool-budget", Icon: "navIconGauge"},
 			{Key: "trading", Label: "Trading", Href: "/ui/trading", Icon: "navIconTrading", Cap: "trading"},
 			{Key: "audit", Label: "Audit", Href: "/ui/audit", Icon: "navIconAudit", AdminOnly: true},
-			{Key: "mcp", Label: "MCP", Href: "/ui/mcp", Icon: "navIconMcp", AdminOnly: true},
+			// MCP moved to the control-plane hub's MCP tab (the canonical
+			// management surface). The old top-level /ui/mcp discovery page
+			// was a duplicate nav entry point; it now 302s into the hub
+			// (2026-07-08 nav dedupe).
 		}},
 		{Key: "admin", Label: "Admin", Icon: "navIconAdmin", Href: "/ui/admin/", AdminOnly: true, Dests: []navDest{
 			{Key: "admin", Label: "Admin console", Href: "/ui/admin/", Icon: "navIconAdmin"},

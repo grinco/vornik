@@ -8,6 +8,7 @@ package controlplane
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -19,6 +20,27 @@ import (
 // double-propose. Nil-safe at the worker.
 type LeaderGate interface {
 	IsLeader() bool
+}
+
+// reservedProposers are ProposedBy identities that ONLY in-daemon code may
+// stamp (the control-plane workers + the operator-UI hub). An external caller
+// (an agent hitting the operator-propose API) must not be able to masquerade as
+// one of these and thereby satisfy the human-approval gate — see IsReservedProposer.
+var reservedProposers = map[string]bool{
+	"operator-ui":   true,
+	"tune-detector": true,
+	"instinct":      true,
+	"diagnose":      true,
+	"self-heal":     true,
+}
+
+// IsReservedProposer reports whether a ProposedBy value is a reserved
+// system principal that only in-daemon code may set. The operator-propose
+// API/CLI rejects a client-supplied reserved value (hardening from the
+// control-plane hub review: a compromised agent must not forge "operator-ui"
+// to self-approve).
+func IsReservedProposer(proposedBy string) bool {
+	return reservedProposers[proposedBy]
 }
 
 // RateSample is one project's failed-task rate over the scan window.
@@ -35,6 +57,22 @@ type LatencySample struct {
 	Count      int
 }
 
+// ProjectToolKey identifies a (project, tool) instance for the operational-
+// instinct tool-timeout signal (Phase 3). Used directly as a Go map key — no
+// delimiter-joined strings (review-hardened: no collision).
+type ProjectToolKey struct {
+	Project string
+	Tool    string
+}
+
+// ToolLatencySample is one (project, tool)'s tool-call p95 (seconds) + sample
+// count over the window (operational-instinct tool-timeout signal).
+type ToolLatencySample struct {
+	Key        ProjectToolKey
+	P95Seconds float64
+	Count      int
+}
+
 // MetricsSource supplies the per-project signals the Tune worker watches.
 // Phase 1 tracks two concrete signals computed from the executions table
 // (failed-task rate + latency p95); an empty-completion signal comes with the
@@ -46,6 +84,10 @@ type MetricsSource interface {
 	// LatencyP95s returns, per project id, the execution-latency p95 over the
 	// worker's window.
 	LatencyP95s(ctx context.Context) (map[string]LatencySample, error)
+	// ToolLatencies returns per-(project, tool) tool-call p95 over the window
+	// — the operational-instinct tool-timeout signal (Phase 3). An empty slice
+	// (e.g. the query is unavailable) simply means the instinct never fires.
+	ToolLatencies(ctx context.Context) ([]ToolLatencySample, error)
 }
 
 // TuneWorker is the leader-gated failed-rate detector.
@@ -65,13 +107,42 @@ type TuneWorker struct {
 	MinSamples              int
 	BreachesToPropose       int
 
+	// ToolLatencyThresholdSeconds is the tool-call p95 (seconds) at/above which
+	// the operational-instinct tool-timeout signal breaches (default 60).
+	// MaxSuggestedTimeoutSeconds caps the suggested new timeout so a transient
+	// p95 spike can't propose an absurd value (default 300). Either signal is
+	// disabled by setting its threshold < 0.
+	ToolLatencyThresholdSeconds float64
+	MaxSuggestedTimeoutSeconds  float64
+
+	// SkipFailedRate makes scanFailedRate a no-op — set at construction when
+	// the SelfHealWorker owns the failed-rate signal (self-healing design §5).
+	// Unconditional, no per-tick handshake; false = today's behaviour.
+	SkipFailedRate bool
+
 	LeaderGate LeaderGate
 	Logger     zerolog.Logger
 
-	// per-signal consecutive-breach counters, keyed by project.
+	// per-signal consecutive-breach counters. failed/latency are keyed by
+	// project; tool by the (project, tool) composite (typed, no string join).
 	failedBreaches  map[string]int
 	latencyBreaches map[string]int
+	toolBreaches    map[ProjectToolKey]int
 	stopped         chan struct{}
+}
+
+func (w *TuneWorker) toolLatencyThreshold() float64 {
+	if w.ToolLatencyThresholdSeconds != 0 {
+		return w.ToolLatencyThresholdSeconds
+	}
+	return 60
+}
+
+func (w *TuneWorker) maxSuggestedTimeout() float64 {
+	if w.MaxSuggestedTimeoutSeconds > 0 {
+		return w.MaxSuggestedTimeoutSeconds
+	}
+	return 300
 }
 
 func (w *TuneWorker) latencyThreshold() float64 {
@@ -118,6 +189,9 @@ func (w *TuneWorker) Run(ctx context.Context) {
 	if w.latencyBreaches == nil {
 		w.latencyBreaches = map[string]int{}
 	}
+	if w.toolBreaches == nil {
+		w.toolBreaches = map[ProjectToolKey]int{}
+	}
 	if w.stopped == nil {
 		w.stopped = make(chan struct{})
 	}
@@ -151,14 +225,18 @@ func (w *TuneWorker) Stopped() <-chan struct{} {
 	return w.stopped
 }
 
-// tick reads each signal and proposes for any project that has been breaching
+// tick reads each signal and proposes for any instance that has been breaching
 // for BreachesToPropose consecutive ticks.
 func (w *TuneWorker) tick(ctx context.Context) {
 	w.scanFailedRate(ctx)
 	w.scanLatency(ctx)
+	w.scanToolLatency(ctx)
 }
 
 func (w *TuneWorker) scanFailedRate(ctx context.Context) {
+	if w.SkipFailedRate {
+		return // the SelfHealWorker owns the failed-rate signal
+	}
 	rates, err := w.Metrics.FailedTaskRates(ctx)
 	if err != nil {
 		w.Logger.Warn().Err(err).Msg("tune: failed to read failed-rate metrics")
@@ -168,16 +246,25 @@ func (w *TuneWorker) scanFailedRate(ctx context.Context) {
 	for project, s := range rates {
 		seen[project] = true
 		breaching := s.Total >= w.minSamples() && s.Rate >= w.threshold()
-		if !w.advanceStreak(w.failedBreaches, project, breaching) {
+		if !advanceStreak(w.failedBreaches, project, breaching, w.breachesToPropose()) {
 			continue
 		}
-		w.propose(ctx, project, tuneFailedRateTitle(project),
-			fmt.Sprintf("Failed-task rate %.0f%% (%d/%d) over the scan window, sustained for %d consecutive scans — above the %.0f%% threshold. Investigate the failing step (logs/traces) or consider a model/timeout change.",
-				s.Rate*100, s.Failed, s.Total, w.breachesToPropose(), w.threshold()*100),
-			fmt.Sprintf(`{"signal":"failed_task_rate","rate":%.3f,"failed":%d,"total":%d}`, s.Rate, s.Failed, s.Total),
-		)
+		FileFailedRateProposal(ctx, w.Proposals, w.Logger, project, s, w.breachesToPropose(), w.threshold())
 	}
-	w.resetAbsent(w.failedBreaches, seen)
+	resetAbsent(w.failedBreaches, seen)
+}
+
+// FileFailedRateProposal writes the generic review-only failed-rate DRAFT
+// proposal (ProposedBy="tune-detector"), deduped on the open-DRAFT title. It is
+// the SINGLE source of the generic failed-rate proposal — called by the Tune
+// worker's scan AND by the SelfHealWorker when its diagnosis is unavailable
+// (self-healing design §4.5), so the logic is never duplicated.
+func FileFailedRateProposal(ctx context.Context, proposals persistence.ProposalRepository, logger zerolog.Logger, project string, s RateSample, wantStreak int, threshold float64) {
+	title := tuneFailedRateTitle(project)
+	rationale := fmt.Sprintf("Failed-task rate %.0f%% (%d/%d) over the scan window, sustained for %d consecutive scans — above the %.0f%% threshold. Investigate the failing step (logs/traces) or consider a model/timeout change.",
+		s.Rate*100, s.Failed, s.Total, wantStreak, threshold*100)
+	evidence := fmt.Sprintf(`{"signal":"failed_task_rate","rate":%.3f,"failed":%d,"total":%d}`, s.Rate, s.Failed, s.Total)
+	fileProposal(ctx, proposals, logger, project, title, rationale, evidence, "tune-detector")
 }
 
 func (w *TuneWorker) scanLatency(ctx context.Context) {
@@ -190,49 +277,98 @@ func (w *TuneWorker) scanLatency(ctx context.Context) {
 	for project, s := range lats {
 		seen[project] = true
 		breaching := s.Count >= w.minSamples() && s.P95Seconds >= w.latencyThreshold()
-		if !w.advanceStreak(w.latencyBreaches, project, breaching) {
+		if !advanceStreak(w.latencyBreaches, project, breaching, w.breachesToPropose()) {
 			continue
 		}
 		w.propose(ctx, project, tuneLatencyTitle(project),
 			fmt.Sprintf("Execution p95 latency %.0fs (n=%d) over the scan window, sustained for %d consecutive scans — above the %.0fs threshold. Investigate slow steps/tools or consider a faster model or a step-timeout change.",
 				s.P95Seconds, s.Count, w.breachesToPropose(), w.latencyThreshold()),
 			fmt.Sprintf(`{"signal":"latency_p95_seconds","p95":%.1f,"count":%d}`, s.P95Seconds, s.Count),
+			"tune-detector",
 		)
 	}
-	w.resetAbsent(w.latencyBreaches, seen)
+	resetAbsent(w.latencyBreaches, seen)
 }
 
-// advanceStreak increments project's consecutive-breach counter and reports
-// whether it just reached the propose threshold (resetting it so we don't
-// re-propose every subsequent tick). A non-breaching tick resets the streak.
-func (w *TuneWorker) advanceStreak(counters map[string]int, project string, breaching bool) bool {
+// scanToolLatency is the operational-instinct tool-timeout signal (Phase 3):
+// per (project, tool) tool-call p95 above the threshold, sustained, proposes a
+// review-only timeout bump. Disabled when ToolLatencyThresholdSeconds < 0.
+func (w *TuneWorker) scanToolLatency(ctx context.Context) {
+	if w.ToolLatencyThresholdSeconds < 0 {
+		return // signal disabled by config
+	}
+	samples, err := w.Metrics.ToolLatencies(ctx)
+	if err != nil {
+		w.Logger.Warn().Err(err).Msg("tune: failed to read tool-latency metrics")
+		return
+	}
+	threshold := w.toolLatencyThreshold()
+	seen := map[ProjectToolKey]bool{}
+	for _, s := range samples {
+		seen[s.Key] = true
+		breaching := s.Count >= w.minSamples() && s.P95Seconds >= threshold
+		if !advanceStreak(w.toolBreaches, s.Key, breaching, w.breachesToPropose()) {
+			continue
+		}
+		suggested := math.Ceil(s.P95Seconds * 1.5)
+		clamped := ""
+		if maxT := w.maxSuggestedTimeout(); suggested > maxT {
+			suggested = maxT
+			clamped = fmt.Sprintf(" (clamped to the %0.fs cap; the raw p95 suggests a larger bump — raise it by hand if you truly need more)", maxT)
+		}
+		w.propose(ctx, s.Key.Project, instinctToolTimeoutTitle(s.Key),
+			fmt.Sprintf("Tool %q p95 call latency is %.0fs (n=%d) in project %s, sustained for %d consecutive scans — above the %.0fs threshold. Consider raising this tool's timeout to ~%.0fs%s, or investigate why the tool is slow.",
+				s.Key.Tool, s.P95Seconds, s.Count, s.Key.Project, w.breachesToPropose(), threshold, suggested, clamped),
+			fmt.Sprintf(`{"signal":"tool_latency_p95_seconds","tool":%q,"p95":%.1f,"count":%d,"suggested_timeout_s":%.0f}`, s.Key.Tool, s.P95Seconds, s.Count, suggested),
+			"instinct",
+		)
+	}
+	resetAbsent(w.toolBreaches, seen)
+}
+
+// advanceStreak increments key's consecutive-breach counter and reports whether
+// it just reached wantStreak (resetting it so we don't re-propose every tick).
+// A non-breaching tick (below threshold OR below MinSamples — the caller folds
+// both into `breaching`) resets the streak. Generic over the key type so the
+// same hysteresis serves project-keyed and (project,tool)-keyed signals.
+func advanceStreak[K comparable](counters map[K]int, key K, breaching bool, wantStreak int) bool {
 	if !breaching {
-		delete(counters, project)
+		delete(counters, key)
 		return false
 	}
-	counters[project]++
-	if counters[project] >= w.breachesToPropose() {
-		delete(counters, project)
+	counters[key]++
+	if counters[key] >= wantStreak {
+		delete(counters, key)
 		return true
 	}
 	return false
 }
 
-// resetAbsent clears streaks for projects that dropped out of this tick's
-// sample entirely (no data == not breaching).
-func (w *TuneWorker) resetAbsent(counters map[string]int, seen map[string]bool) {
-	for p := range counters {
-		if !seen[p] {
-			delete(counters, p)
+// resetAbsent clears streaks for keys that dropped out of this tick's sample
+// entirely (no data == not breaching).
+func resetAbsent[K comparable](counters map[K]int, seen map[K]bool) {
+	for k := range counters {
+		if !seen[k] {
+			delete(counters, k)
 		}
 	}
 }
 
 // propose writes a DRAFT proposal unless an open (DRAFT) one with the same
-// title already exists for this project (dedup so the ledger doesn't fill
-// with duplicates while the operator hasn't decided yet).
-func (w *TuneWorker) propose(ctx context.Context, project, title, rationale, evidence string) {
-	existing, err := w.Proposals.List(ctx, persistence.ProposalListFilter{
+// title already exists for this project (dedup so the ledger doesn't fill with
+// duplicates while the operator hasn't decided yet). proposedBy tags the source
+// ("tune-detector" for the metric signals, "instinct" for operational
+// instincts) — never a human, so a human approving always satisfies the
+// no-self-approval gate.
+func (w *TuneWorker) propose(ctx context.Context, project, title, rationale, evidence, proposedBy string) {
+	fileProposal(ctx, w.Proposals, w.Logger, project, title, rationale, evidence, proposedBy)
+}
+
+// fileProposal writes a project-scoped review-only DRAFT proposal, deduped on
+// the open-DRAFT title. Shared by the Tune worker, the instinct scans, and the
+// self-heal generic fallback.
+func fileProposal(ctx context.Context, proposals persistence.ProposalRepository, logger zerolog.Logger, project, title, rationale, evidence, proposedBy string) {
+	existing, err := proposals.List(ctx, persistence.ProposalListFilter{
 		ProjectID: project, Statuses: []string{persistence.ProposalStatusDraft},
 	})
 	if err == nil {
@@ -251,16 +387,14 @@ func (w *TuneWorker) propose(ctx context.Context, project, title, rationale, evi
 		Rationale:   rationale,
 		Evidence:    evidence,
 		Status:      persistence.ProposalStatusDraft,
-		// The proposer is the detector, never a human — so a human approving
-		// it always satisfies the no-self-approval gate.
-		ProposedBy: "tune-detector",
+		ProposedBy:  proposedBy,
 	}
-	if err := w.Proposals.Create(ctx, p); err != nil {
-		w.Logger.Warn().Err(err).Str("project", project).Msg("tune: failed to create proposal")
+	if err := proposals.Create(ctx, p); err != nil {
+		logger.Warn().Err(err).Str("project", project).Msg("control-plane: failed to create proposal")
 		return
 	}
-	w.Logger.Info().Str("project", project).Str("proposal_id", p.ID).Str("title", title).
-		Msg("tune: raised DRAFT proposal")
+	logger.Info().Str("project", project).Str("proposal_id", p.ID).Str("title", title).Str("by", proposedBy).
+		Msg("control-plane: raised DRAFT proposal")
 }
 
 func tuneFailedRateTitle(project string) string {
@@ -269,4 +403,8 @@ func tuneFailedRateTitle(project string) string {
 
 func tuneLatencyTitle(project string) string {
 	return "Tune: high p95 latency on " + project
+}
+
+func instinctToolTimeoutTitle(k ProjectToolKey) string {
+	return fmt.Sprintf("Instinct: %s timeouts in %s", k.Tool, k.Project)
 }

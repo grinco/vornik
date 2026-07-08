@@ -100,7 +100,11 @@ func TestAdminKeys_RendersAcrossProjects(t *testing.T) {
 	})
 
 	s := NewServer(WithAPIKeyRepository(repo), WithProjectRegistry(reg))
-	req := httptest.NewRequest(http.MethodGet, "/admin/keys", nil)
+	// Explicit ?status= (empty) is the "show all" toggle; the bare
+	// /admin/keys default is now active-only (see
+	// TestAdminKeys_DefaultsToActiveOnly), so this cross-project +
+	// revoked-visible assertion must request the show-all view.
+	req := httptest.NewRequest(http.MethodGet, "/admin/keys?status=", nil)
 	rec := httptest.NewRecorder()
 	s.adminRouter(rec, withAdminUI(req))
 	if rec.Code != http.StatusOK {
@@ -123,6 +127,42 @@ func TestAdminKeys_RendersAcrossProjects(t *testing.T) {
 	}
 	if !strings.Contains(body, "1 active") || !strings.Contains(body, "1 revoked") {
 		t.Errorf("header should distinguish active vs revoked")
+	}
+}
+
+// TestAdminKeys_DefaultsToActiveOnly pins the 2026-07-08 UX fix: with
+// no explicit status param, /admin/keys defaults to the active-only view
+// so the most common surface (live keys) loads first; revoked/superseded
+// keys are hidden until the operator explicitly widens the filter.
+func TestAdminKeys_DefaultsToActiveOnly(t *testing.T) {
+	now := time.Now()
+	revoked := now.Add(-1 * time.Hour)
+	repo := &adminKeysRepoStub{byProject: map[string][]*persistence.APIKey{
+		"alpha": {
+			{ID: "k_active", ProjectID: "alpha", Name: "live-key", KeyPrefix: "sk-vornik-alpha.ab12", CreatedAt: now.Add(-2 * time.Hour)},
+			{ID: "k_rev", ProjectID: "alpha", Name: "rotated-out-key", KeyPrefix: "sk-vornik-alpha.cd34", CreatedAt: now.Add(-3 * time.Hour), RevokedAt: &revoked},
+		},
+	}}
+	reg := registry.New()
+	registry.SeedForTest(reg, map[string]*registry.Project{"alpha": {ID: "alpha"}})
+	s := NewServer(WithAPIKeyRepository(repo), WithProjectRegistry(reg))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/keys", nil)
+	rec := httptest.NewRecorder()
+	s.adminRouter(rec, withAdminUI(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: want 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "live-key") {
+		t.Errorf("active key should be shown in the default view")
+	}
+	if strings.Contains(body, "rotated-out-key") {
+		t.Errorf("revoked key should be hidden in the default (active-only) view")
+	}
+	// The Status dropdown should reflect the active default as selected.
+	if !strings.Contains(body, `value="active" selected`) {
+		t.Errorf("status filter should default to active (selected)")
 	}
 }
 

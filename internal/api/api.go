@@ -332,7 +332,11 @@ type ProjectWizard interface {
 type ProjectWizardCommitResult struct {
 	SessionID string `json:"session_id"`
 	ProjectID string `json:"project_id"`
-	URL       string `json:"url"`
+	// ProposalID is set on the ledger-gated path: commit filed a DRAFT
+	// scaffold proposal (no project yet) and URL points at its review page.
+	// Empty on the direct-write path.
+	ProposalID string `json:"proposal_id,omitempty"`
+	URL        string `json:"url"`
 }
 
 // ProjectWizardResult mirrors projectwizard.Result at the API
@@ -768,7 +772,10 @@ type Server struct {
 	proposalStore persistence.ProposalRepository
 	// proposalApplier is the control-plane apply/rollback engine (Phase 2).
 	// Nil-safe: apply/rollback endpoints return "not wired" when unset.
-	proposalApplier          proposalApplier
+	proposalApplier proposalApplier
+	// diagnoser powers POST /api/v1/operator/diagnose (control-plane Phase
+	// 3a). Nil-safe: the endpoint returns "not wired" when unset.
+	diagnoser                proposalDiagnoser
 	memoryTitleBackfiller    MemoryTitleBackfiller
 	memoryClassifyBackfiller MemoryClassifyBackfiller
 	// memoryGraphReflagger powers POST /api/v1/memory/regraph —
@@ -1866,6 +1873,25 @@ func WithProposalApplier(a proposalApplier) ServerOption {
 			return
 		}
 		s.proposalApplier = a
+	}
+}
+
+// proposalDiagnoser runs a single-shot diagnosis (satisfied by
+// *controlplane.Diagnoser); an interface for handler-test fakes.
+type proposalDiagnoser interface {
+	Diagnose(ctx context.Context, focus string, propose bool) (*controlplane.DiagnoseVerdict, string, error)
+}
+
+// WithDiagnoser wires the diagnose engine (Phase 3a). Typed-nil-safe.
+func WithDiagnoser(d proposalDiagnoser) ServerOption {
+	return func(s *Server) {
+		if e, ok := d.(*controlplane.Diagnoser); ok && e == nil {
+			return
+		}
+		if d == nil {
+			return
+		}
+		s.diagnoser = d
 	}
 }
 

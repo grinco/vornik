@@ -39,7 +39,7 @@ func decodeProposal(t *testing.T, body string) proposalJSON {
 func TestOperatorPropose_WritesDraft(t *testing.T) {
 	s := newProposalTestServer(t)
 	rec := httptest.NewRecorder()
-	body := `{"kind":"config","blastRadius":"project","projectId":"janka","title":"bump scraper timeout","diff":"-30\n+90","proposedBy":"tune-detector"}`
+	body := `{"kind":"config","blastRadius":"project","projectId":"janka","title":"bump scraper timeout","diff":"-30\n+90","proposedBy":"agent-x"}`
 	s.OperatorProposals(rec, operatorReq(http.MethodPost, "/api/v1/operator/proposals", body))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("propose: want 201, got %d: %s", rec.Code, rec.Body.String())
@@ -47,6 +47,18 @@ func TestOperatorPropose_WritesDraft(t *testing.T) {
 	p := decodeProposal(t, rec.Body.String())
 	if p.Status != "DRAFT" || p.ID == "" || p.ProjectID != "janka" {
 		t.Fatalf("unexpected proposal: %+v", p)
+	}
+}
+
+func TestOperatorPropose_RejectsReservedProposer(t *testing.T) {
+	s := newProposalTestServer(t)
+	for _, reserved := range []string{"operator-ui", "tune-detector", "instinct", "diagnose", "self-heal"} {
+		rec := httptest.NewRecorder()
+		body := `{"kind":"config","blastRadius":"project","projectId":"janka","title":"forge","proposedBy":"` + reserved + `"}`
+		s.OperatorProposals(rec, operatorReq(http.MethodPost, "/api/v1/operator/proposals", body))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("reserved proposer %q must be rejected (400), got %d", reserved, rec.Code)
+		}
 	}
 }
 

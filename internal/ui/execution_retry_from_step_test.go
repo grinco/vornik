@@ -63,6 +63,8 @@ func (e *retryFromStepFakeExecutor) ResumeTask(_ string) error {
 // parent-child fixture.
 func (e *retryFromStepFakeExecutor) NotifyChildTerminal(_ context.Context, _ string) {}
 
+func (e *retryFromStepFakeExecutor) CancelChildren(_ context.Context, _ string) {}
+
 // retryFromStepFakeOutcomeRepo records SupersedeAfter invocations
 // and serves a controllable List response. Implements the full
 // ExecutionStepOutcomeRepository interface; the methods the test

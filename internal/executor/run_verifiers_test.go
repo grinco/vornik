@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -33,6 +34,9 @@ func (r *recordingAuditRepo) List(_ context.Context, f persistence.ToolAuditFilt
 	return r.entries, nil
 }
 
+func (r *recordingAuditRepo) ToolLatencyP95ByProjectTool(_ context.Context, _ time.Time) ([]persistence.ToolLatencyStat, error) {
+	return nil, nil
+}
 func (r *recordingAuditRepo) CountByTool(_ context.Context, _ string) (map[string]int64, error) {
 	return nil, nil
 }

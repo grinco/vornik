@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,6 +33,9 @@ func (f *fakeToolAuditRepo) Log(_ context.Context, e *persistence.ToolAuditEntry
 	return nil
 }
 func (f *fakeToolAuditRepo) List(_ context.Context, _ persistence.ToolAuditFilter) ([]*persistence.ToolAuditEntry, error) {
+	return nil, nil
+}
+func (f *fakeToolAuditRepo) ToolLatencyP95ByProjectTool(_ context.Context, _ time.Time) ([]persistence.ToolLatencyStat, error) {
 	return nil, nil
 }
 func (f *fakeToolAuditRepo) CountByTool(_ context.Context, _ string) (map[string]int64, error) {

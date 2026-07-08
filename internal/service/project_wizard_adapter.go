@@ -230,6 +230,14 @@ func buildProjectWizardOrNil(c *Container) api.ProjectWizard {
 			}
 			return c.ConfigReloader.Reload()
 		})
+		// Ledger-gated commit path: when the control-plane proposal store is
+		// wired, route commit through it — the composed file set becomes a
+		// reviewable DRAFT scaffold proposal instead of a direct disk write
+		// (reusing the shipped Phase-2b apply/rollback engine). The Writer
+		// above stays as the CE fallback for deployments without the ledger.
+		if c.repos != nil && c.repos.Proposals != nil {
+			wiz.Proposer = newScaffoldProposer(c.repos.Proposals, c.ConfigPath, configsDir)
+		}
 	}
 
 	// Wizard v2 grounding deps — same live daemon state Phase 1/2
@@ -339,9 +347,10 @@ func (a *projectWizardAdapter) Commit(ctx context.Context, sessionID, operatorID
 		return nil, nil
 	}
 	return &api.ProjectWizardCommitResult{
-		SessionID: res.SessionID,
-		ProjectID: res.ProjectID,
-		URL:       res.URL,
+		SessionID:  res.SessionID,
+		ProjectID:  res.ProjectID,
+		ProposalID: res.ProposalID,
+		URL:        res.URL,
 	}, nil
 }
 

@@ -137,9 +137,42 @@
                         <span id="timeline-status" class="text-[10px] text-gray-500">connecting…</span>
                     </div>
                     <ol id="timeline" class="divide-y divide-dark-700/60">
-                        {{/* Completed steps from the execution snapshot
-                             — collapsed by default. The JS layer takes
-                             over once the WebSocket connects. */}}
+                        {{/* Seed from the RECORDED per-attempt outcomes so each
+                             attempt shows its OWN status (a failed retry reads
+                             "failed", not "running") — the 2026-07-08 fix. Each
+                             row carries data-seeded so the JS layer leaves it
+                             alone and only appends the live in-flight step. When
+                             no outcomes are recorded yet we fall back to the
+                             bare completed-step ids. */}}
+                        {{if .Outcomes}}
+                        {{range $i, $o := .Outcomes}}
+                        {{$badgeClass := "bg-emerald-500/10 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300"}}
+                        {{$statusText := "completed"}}
+                        {{if eq $o.OutcomeClass "outcome-pending"}}
+                            {{$badgeClass = "bg-amber-500/10 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"}}
+                            {{$statusText = "pending"}}
+                        {{else if eq $o.OutcomeClass "outcome-bad"}}
+                            {{$badgeClass = "bg-rose-500/10 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300"}}
+                            {{$statusText = "failed"}}
+                        {{else if ne $o.OutcomeClass "outcome-ok"}}
+                            {{$badgeClass = "bg-gray-500/10 dark:bg-gray-700/40 text-gray-600 dark:text-gray-300"}}
+                            {{$statusText = $o.Outcome}}
+                        {{end}}
+                        <li class="px-5 py-3" data-step="{{$o.StepID}}" data-seeded="1">
+                            <details>
+                                <summary class="cursor-pointer list-none flex items-center gap-2 text-sm">
+                                    <span class="text-[10px] font-mono text-gray-600">#{{$i}}</span>
+                                    <span class="font-medium text-gray-100">{{$o.StepID}}</span>
+                                    {{if $o.Role}}<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-accent-900/50 text-accent-300">{{$o.Role}}</span>{{end}}
+                                    <span class="inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded {{$badgeClass}}">{{$statusText}}</span>
+                                </summary>
+                                <div class="mt-2 text-[11px] text-gray-500">
+                                    {{if $o.ErrorClass}}<span class="text-rose-400">{{$o.ErrorClass}}</span>{{if $o.ErrorDetail}}: {{$o.ErrorDetail}}{{end}} — {{end}}Recorded before this page loaded — open the replay page for full detail.
+                                </div>
+                            </details>
+                        </li>
+                        {{end}}
+                        {{else}}
                         {{range $i, $step := .CompletedSteps}}
                         <li class="px-5 py-3" data-step="{{$step}}" data-completed="1">
                             <details>
@@ -152,8 +185,9 @@
                             </details>
                         </li>
                         {{end}}
+                        {{end}}
                     </ol>
-                    <div id="timeline-empty" class="px-5 py-8 text-center text-sm text-gray-500 {{if .CompletedSteps}}hidden{{end}}">
+                    <div id="timeline-empty" class="px-5 py-8 text-center text-sm text-gray-500 {{if or .Outcomes .CompletedSteps}}hidden{{end}}">
                         Waiting for the first step…
                     </div>
                 </div>

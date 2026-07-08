@@ -38,11 +38,17 @@ func TestNavAreaForPage(t *testing.T) {
 		"spend":      "insight",
 		"trading":    "insight",
 		"audit":      "insight",
-		"mcp":        "insight",
 		"admin":      "admin",
-		"dashboard":  "", // reached via the logo; no area/panel
-		"":           "", // unknown → no area (no stale panel)
-		"nonsense":   "",
+		// Admin sub-destinations with dedicated panel items must map to the
+		// admin area (2026-07-08 highlight fix — handlers previously passed
+		// the generic "admin" token so these items never lit up).
+		"admin-skills":        "admin",
+		"admin-keys":          "admin",
+		"admin-control-plane": "admin",
+		"dashboard":           "", // reached via the logo; no area/panel
+		"mcp":                 "", // removed from nav (2026-07-08 dedupe → hub MCP tab); no longer an area
+		"":                    "", // unknown → no area (no stale panel)
+		"nonsense":            "",
 	}
 	for page, want := range cases {
 		if got := navAreaForPage(page); got != want {

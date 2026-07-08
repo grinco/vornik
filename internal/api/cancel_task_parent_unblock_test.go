@@ -18,11 +18,16 @@ import (
 // notification can be asserted on.
 type cancelNotifySpy struct {
 	mockPauseResumeExecutor
-	notifyCalls []string
+	notifyCalls  []string
+	cascadeCalls []string
 }
 
 func (s *cancelNotifySpy) NotifyChildTerminal(_ context.Context, childTaskID string) {
 	s.notifyCalls = append(s.notifyCalls, childTaskID)
+}
+
+func (s *cancelNotifySpy) CancelChildren(_ context.Context, parentTaskID string) {
+	s.cascadeCalls = append(s.cascadeCalls, parentTaskID)
 }
 
 // TestServer_CancelTask_NotifiesParentUnblock — regression test for
@@ -62,4 +67,39 @@ func TestServer_CancelTask_NotifiesParentUnblock(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, []string{"task-1"}, spy.notifyCalls,
 		"CancelTask must notify the executor so the parent-unblock sweep runs")
+}
+
+// TestServer_CancelTask_CascadesToChildren — regression test for the
+// downward-cascade gap: cancelling a parent transitioned only the target
+// task, leaving its route/delegation/checkpoint children RUNNING/QUEUED.
+// CancelTask must drive the executor's recursive child cancel after the
+// parent transition succeeds.
+func TestServer_CancelTask_CascadesToChildren(t *testing.T) {
+	taskRepo := &mocks.MockTaskRepository{
+		GetFunc: func(_ context.Context, _ string) (*persistence.Task, error) {
+			return &persistence.Task{
+				ID:        "parent-1",
+				ProjectID: "project-1",
+				Status:    persistence.TaskStatusRunning,
+				CreatedAt: time.Now(),
+			}, nil
+		},
+		TransitionToCancelledFunc: func(_ context.Context, _ string) (bool, error) {
+			return true, nil
+		},
+	}
+	spy := &cancelNotifySpy{}
+	server := NewServer(
+		WithLogger(zerolog.Nop()),
+		WithTaskRepository(taskRepo),
+		WithExecutor(spy),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/projects/project-1/tasks/parent-1/cancel", nil)
+	rec := httptest.NewRecorder()
+	server.CancelTask(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, []string{"parent-1"}, spy.cascadeCalls,
+		"CancelTask must cascade the cancel to the task's children")
 }

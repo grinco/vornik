@@ -78,6 +78,21 @@ var cpRollbackCmd = &cobra.Command{
 	RunE:  func(_ *cobra.Command, args []string) error { return runCPRollback(args[0]) },
 }
 
+var cpDiagnoseCmd = &cobra.Command{
+	Use:   "diagnose <focus>",
+	Short: "Diagnose a project/task from its logs & metrics (read-only unless --propose)",
+	Long: `Run a single-shot diagnosis: the daemon assembles an evidence bundle
+(recent failed/successful executions, metrics, logs, known failure patterns)
+and asks the configured LLM for a root cause. Read-only by default; with
+--propose it may file a review-only DRAFT proposal (never auto-applied). Any
+suggested change carrying a secret or an external URL is rejected before a
+proposal is filed.
+
+<focus> is a task id (task_...) or a project id / substring.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(_ *cobra.Command, args []string) error { return runCPDiagnose(args[0]) },
+}
+
 var (
 	cpListProject string
 	cpListStatus  string
@@ -92,6 +107,9 @@ var (
 
 	cpActor    string
 	cpApplyAck bool
+
+	cpDiagnosePropose bool
+	cpDiagnoseJSON    bool
 )
 
 func init() {
@@ -113,7 +131,10 @@ func init() {
 	cpApplyCmd.Flags().StringVar(&cpActor, "author", cpDefaultActor(), "Operator identity applying the change")
 	cpApplyCmd.Flags().BoolVar(&cpApplyAck, "ack-daemon", false, "Acknowledge a daemon-scope change affects every project")
 
-	controlPlaneCmd.AddCommand(cpProposalsCmd, cpShowCmd, cpApproveCmd, cpRejectCmd, cpProposeCmd, cpApplyCmd, cpRollbackCmd)
+	cpDiagnoseCmd.Flags().BoolVar(&cpDiagnosePropose, "propose", false, "File a review-only DRAFT proposal from the diagnosis (never auto-applied)")
+	cpDiagnoseCmd.Flags().BoolVar(&cpDiagnoseJSON, "json", false, "Emit the raw verdict JSON")
+
+	controlPlaneCmd.AddCommand(cpProposalsCmd, cpShowCmd, cpApproveCmd, cpRejectCmd, cpProposeCmd, cpApplyCmd, cpRollbackCmd, cpDiagnoseCmd)
 	rootCmd.AddCommand(controlPlaneCmd)
 }
 
@@ -267,6 +288,51 @@ func runCPRollback(id string) error {
 		return fmt.Errorf("decode: %w", err)
 	}
 	fmt.Printf("Rolled back %s — status %s.\n", p.ID, p.Status)
+	return nil
+}
+
+func runCPDiagnose(focus string) error {
+	client := ClientFromEnv()
+	resp, err := client.Post("/api/v1/operator/diagnose",
+		map[string]any{"focus": focus, "propose": cpDiagnosePropose})
+	if err != nil {
+		return fmt.Errorf("diagnose: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ParseAPIError(resp)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out struct {
+		Verdict struct {
+			RootCause       string   `json:"root_cause"`
+			Confidence      string   `json:"confidence"`
+			Evidence        []string `json:"evidence"`
+			SuggestedChange string   `json:"suggested_change"`
+		} `json:"verdict"`
+		ProposalID string `json:"proposalId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+	if cpDiagnoseJSON {
+		return json.NewEncoder(os.Stdout).Encode(out)
+	}
+	fmt.Printf("root cause:  %s\nconfidence:  %s\n", out.Verdict.RootCause, out.Verdict.Confidence)
+	if len(out.Verdict.Evidence) > 0 {
+		fmt.Println("\nevidence:")
+		for _, e := range out.Verdict.Evidence {
+			fmt.Printf("  - %s\n", e)
+		}
+	}
+	if out.Verdict.SuggestedChange != "" {
+		fmt.Printf("\nsuggested change:\n%s\n", out.Verdict.SuggestedChange)
+	}
+	switch {
+	case out.ProposalID != "":
+		fmt.Printf("\nFiled review-only proposal %s. Review: vornikctl cp show %s\n", out.ProposalID, out.ProposalID)
+	case cpDiagnosePropose:
+		fmt.Println("\nNo proposal filed (no actionable, safe suggested change).")
+	}
 	return nil
 }
 

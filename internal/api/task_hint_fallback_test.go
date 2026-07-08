@@ -123,3 +123,60 @@ func TestTaskHintCreate_PlainHint_NoOverride(t *testing.T) {
 	require.Equal(t, http.StatusCreated, rec.Code)
 	assert.Nil(t, captured, "plain hint must not rewrite the task payload")
 }
+
+// fallbackExecHintServer wires the same fallback registry + a capturing task
+// repo, plus an execution repo returning exec_1 → task_xyz, for the
+// execution-scoped hint path.
+func fallbackExecHintServer(t *testing.T, task *persistence.Task, captured **persistence.Task) *Server {
+	t.Helper()
+	tr := &mocks.MockTaskRepository{
+		GetFunc: func(_ context.Context, id string) (*persistence.Task, error) {
+			if task == nil || task.ID != id {
+				return nil, persistence.ErrNotFound
+			}
+			return task, nil
+		},
+		UpdateFunc: func(_ context.Context, tk *persistence.Task) error { *captured = tk; return nil },
+	}
+	exec := &persistence.Execution{ID: "exec_1", TaskID: "task_xyz", ProjectID: "p1"}
+	return NewServer(
+		WithTaskRepository(tr),
+		WithExecutionHintRepository(&stubHintRepo{}),
+		WithExecutionRepository(&stubExecRepoForFork{exec: exec}),
+		WithProjectRegistry(fallbackHintRegistry(t)),
+	)
+}
+
+// TestExecutionHintCreate_FallbackKeyword_AppliesOverride is the 2026-07-08
+// fix: steering the EXECUTION (not just the task) to re-run with the fallback
+// model must write the operator model override to the task payload, so the
+// re-run switches models. Previously only the task-scoped hint honored it.
+func TestExecutionHintCreate_FallbackKeyword_AppliesOverride(t *testing.T) {
+	task := &persistence.Task{ID: "task_xyz", ProjectID: "p1", Payload: json.RawMessage(`{"context":{}}`)}
+	var captured *persistence.Task
+	srv := fallbackExecHintServer(t, task, &captured)
+
+	req := hintBody(t, ExecutionHintRequest{Content: "re-run this step. model: fallback"})
+	rec := httptest.NewRecorder()
+	srv.ExecutionHintCreate(rec, req, "exec_1")
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	require.NotNil(t, captured, "execution-hint keyword must trigger a payload override write")
+	assert.Contains(t, string(captured.Payload), "operator_model_override")
+	assert.Contains(t, string(captured.Payload), "minimax.minimax-m2.5")
+}
+
+// TestExecutionHintCreate_PlainHint_NoOverride — an ordinary execution hint
+// must not rewrite the payload.
+func TestExecutionHintCreate_PlainHint_NoOverride(t *testing.T) {
+	task := &persistence.Task{ID: "task_xyz", ProjectID: "p1", Payload: json.RawMessage(`{"context":{}}`)}
+	var captured *persistence.Task
+	srv := fallbackExecHintServer(t, task, &captured)
+
+	req := hintBody(t, ExecutionHintRequest{Content: "focus only on the official portal"})
+	rec := httptest.NewRecorder()
+	srv.ExecutionHintCreate(rec, req, "exec_1")
+
+	require.Equal(t, http.StatusCreated, rec.Code)
+	assert.Nil(t, captured, "plain execution hint must not rewrite the task payload")
+}

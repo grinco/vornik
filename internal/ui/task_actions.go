@@ -66,6 +66,13 @@ func (s *Server) cancelOne(ctx context.Context, r *http.Request, taskID string) 
 	if task.ParentTaskID != nil && *task.ParentTaskID != "" && s.executor != nil {
 		s.executor.NotifyChildTerminal(ctx, taskID)
 	}
+	// Downward cascade: cancel this task's own non-terminal children so a
+	// cancelled parent doesn't leave route/delegation/checkpoint children
+	// RUNNING/QUEUED. Idempotent + race-safe; mirrors the API CancelTask
+	// handler. Cross-project callees are handled via the CPC ledger.
+	if s.executor != nil {
+		s.executor.CancelChildren(ctx, taskID)
+	}
 	s.logger.Info().Str("task_id", taskID).Msg("task cancelled via UI")
 	return true
 }

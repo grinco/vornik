@@ -43,6 +43,7 @@ func (c *Container) operatorAlertNotifier() *steering.OperatorAlertNotifier {
 	return steering.NewOperatorAlert(
 		&containerChannelResolver{c: c},
 		telegramProjectRecipients{c: c},
+		c.steeringTaskGetter(),
 		c.Config.Auth.ExternalBaseURL,
 		steering.OperatorAlertConfig{Channel: src.Channel, Session: src.Session, Address: src.Address},
 		c.Config.SteeringNotificationsEnabled,
@@ -72,8 +73,20 @@ func (c *Container) steeringNotifier() *steering.Notifier {
 	return steering.New(
 		c.repos.ChatAudit,
 		&containerChannelResolver{c: c},
+		c.steeringTaskGetter(),
 		baseURL,
 		enabled,
 		c.Logger.With().Str("component", "steering").Logger(),
 	)
+}
+
+// steeringTaskGetter returns the task repo the steering notifiers use to walk
+// a task's ParentTaskID ancestry (to find the originating chat of a
+// chat-scheduled task's children). Returns nil when the task repo isn't wired
+// — the notifiers then fall back to inspecting only the immediate task.
+func (c *Container) steeringTaskGetter() steering.TaskGetter {
+	if c == nil || c.repos == nil || c.repos.Tasks == nil {
+		return nil
+	}
+	return c.repos.Tasks
 }

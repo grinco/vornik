@@ -36,6 +36,27 @@ func TestCancelOne_NotifiesExecutorOnChildCancel(t *testing.T) {
 	}
 }
 
+// TestCancelOne_CascadesToChildren — the UI cancel path must cascade the
+// cancel to the task's own children (the downward-cascade gap), so a
+// cancelled parent doesn't leave its children RUNNING/QUEUED. Mirrors the
+// API CancelTask handler.
+func TestCancelOne_CascadesToChildren(t *testing.T) {
+	repo := &mocks.MockTaskRepository{
+		GetFunc: func(_ context.Context, _ string) (*persistence.Task, error) {
+			return uiTask("parent-1", persistence.TaskStatusRunning), nil
+		},
+	}
+	spy := &closeNotifySpy{}
+	srv := NewServer(WithTaskRepository(repo), WithExecutor(spy))
+
+	if !srv.cancelOne(context.Background(), httptest.NewRequest(http.MethodPost, "/", nil), "parent-1") {
+		t.Fatal("cancelOne = false, want true")
+	}
+	if len(spy.cascadeCalls) != 1 || spy.cascadeCalls[0] != "parent-1" {
+		t.Errorf("CancelChildren calls = %v, want [parent-1]", spy.cascadeCalls)
+	}
+}
+
 // Cancelling a root task must not fire the notification — nothing to
 // unblock. Mirrors TestUICloseTask_NoNotifyForRootTask.
 func TestCancelOne_NoNotifyForRootTask(t *testing.T) {

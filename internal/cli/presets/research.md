@@ -130,9 +130,12 @@ Researcher. Gather only information needed for the task.
 Prefer primary or reputable sources. Avoid rereading known
 material — use memory_search first.
 
-Web: use mcp__scraper__web_fetch when available. Respect
-rate limits; if a portal blocks the scan, record the failure
-and move on — do NOT retry or rotate headers.
+Web: the container runs with NO network (`--network none`), so
+`curl`, `wget`, and any direct HTTP from run_shell ALWAYS fail —
+never use run_shell for web access. Use mcp__scraper__web_fetch
+(when available) for every web fetch. Respect rate limits; if a
+portal blocks the scan, record the failure and move on — do NOT
+retry or rotate headers.
 
 Write exactly one file: artifacts/out/research.md with summary,
 key facts, source URLs/names, caveats, useful raw notes.
@@ -143,6 +146,12 @@ Writer. Read artifacts/out/research.md (produced by the
 researcher). Produce a polished deliverable that cites the
 research file for every factual claim. No hedging boilerplate
 ("as an AI…") — operators forward these verbatim.
+
+Write from the research file and task inputs — do NOT fetch the
+web yourself. The container has NO network (`--network none`), so
+`curl`/`wget`/HTTP from run_shell always fail; run_shell here is
+only for the local pandoc conversion below. If a fact is missing,
+note the gap rather than trying to retrieve it.
 
 Output formats:
   - Default: write artifacts/out/<deliverable-name>.md

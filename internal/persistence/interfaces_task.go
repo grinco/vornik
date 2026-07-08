@@ -216,6 +216,15 @@ type ExecLatencyStat struct {
 	Count      int64
 }
 
+// ToolLatencyStat is one (project, tool)'s tool-call latency p95 over a window
+// (control-plane operational-instinct tool-timeout signal, Phase 3).
+type ToolLatencyStat struct {
+	ProjectID  string
+	ToolName   string
+	P95Seconds float64
+	Count      int64
+}
+
 // P95Seconds returns the 95th-percentile value of durs (seconds) by the
 // nearest-rank method. Returns 0 for an empty input. Mutates order (sorts).
 func P95Seconds(durs []float64) float64 {

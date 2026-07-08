@@ -179,6 +179,7 @@ func (c *Container) initHTTPServer() error {
 		api.WithSkillStore(c.repos.Skills),
 		api.WithProposalStore(c.repos.Proposals),
 		api.WithProposalApplier(c.newProposalApplier()),
+		api.WithDiagnoser(c.newDiagnoser()),
 		api.WithAPIKeyLimiter(c.apiKeyLimiter),
 		// Per-IP backstop (hardening sub-item 2). Same instance is
 		// shared with the UI subtree's middleware below so a flood
@@ -1236,6 +1237,8 @@ func (c *Container) initHTTPServer() error {
 		ui.WithSkillRepository(c.repos.Skills),
 		ui.WithProposalStore(c.repos.Proposals),
 		ui.WithProposalApplier(c.newProposalApplier()),
+		ui.WithDiagnoser(c.newDiagnoser()),
+		ui.WithControlPlaneConfigPath(c.ConfigPath),
 		ui.WithTradingSnapshotRepository(c.repos.TradingSnapshots),
 		ui.WithTradingOrderRepository(c.repos.TradingOrders),
 		ui.WithTradingSafetyRepository(c.repos.TradingSafetyEvents),

@@ -256,6 +256,9 @@ func (s *MemoryIngestSubsystem) Start(ctx context.Context) error {
 	// Control-plane Tune detector (leader-gated). Watches per-project
 	// failed-task rate and raises DRAFT proposals; never mutates.
 	c.startTuneWorker(ctx)
+	// Control-plane self-healing (leader-gated, opt-in). On a sustained
+	// failed-rate breach it auto-diagnoses + files a review-only incident.
+	c.startSelfHealWorker(ctx)
 
 	return nil
 }

@@ -49,7 +49,8 @@ type ChannelResolver interface {
 type Notifier struct {
 	audit    ChatAuditLookup
 	resolver ChannelResolver
-	baseURL  string // external base URL for UI deep links; may be empty
+	tasks    TaskGetter // optional; walks ParentTaskID to find a chat origin
+	baseURL  string     // external base URL for UI deep links; may be empty
 	enabled  bool
 	logger   zerolog.Logger
 
@@ -58,11 +59,14 @@ type Notifier struct {
 }
 
 // New builds a Notifier. enabled=false (or a nil audit/resolver) yields a
-// no-op notifier.
-func New(audit ChatAuditLookup, resolver ChannelResolver, baseURL string, enabled bool, logger zerolog.Logger) *Notifier {
+// no-op notifier. tasks is optional: when non-nil the notifier walks a task's
+// ParentTaskID ancestry to find the originating chat (so a chat-scheduled
+// task's spawned children still route to the chat); nil disables the walk.
+func New(audit ChatAuditLookup, resolver ChannelResolver, tasks TaskGetter, baseURL string, enabled bool, logger zerolog.Logger) *Notifier {
 	return &Notifier{
 		audit:    audit,
 		resolver: resolver,
+		tasks:    tasks,
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		enabled:  enabled,
 		logger:   logger,
@@ -78,17 +82,24 @@ func (n *Notifier) NotifySteeringRequired(ctx context.Context, task *persistence
 	if n == nil || !n.enabled || n.audit == nil || n.resolver == nil {
 		return
 	}
-	if task == nil || task.ChatTurnID == nil || *task.ChatTurnID == "" {
-		// Not chat-originated (API / autonomy / A2A) — no DM to notify.
+	if task == nil {
+		return
+	}
+	// Resolve the originating chat turn — the task's own, or the nearest
+	// chat-originated ancestor's (a chat-scheduled task's children carry only
+	// ParentTaskID, not ChatTurnID). Empty ⇒ not chat-originated anywhere in
+	// the lineage (API / autonomy / A2A) — no DM to notify.
+	turnID := chatOriginTurnID(ctx, task, n.tasks)
+	if turnID == "" {
 		return
 	}
 	if n.recentlySent(task.ID, state) {
 		return
 	}
 
-	row, err := n.audit.GetByID(ctx, *task.ChatTurnID)
+	row, err := n.audit.GetByID(ctx, turnID)
 	if err != nil || row == nil {
-		n.logger.Debug().Err(err).Str("task_id", task.ID).Str("chat_turn_id", *task.ChatTurnID).
+		n.logger.Debug().Err(err).Str("task_id", task.ID).Str("chat_turn_id", turnID).
 			Msg("steering: could not resolve originating chat turn; skipping")
 		return
 	}
@@ -170,8 +181,11 @@ func (n *Notifier) composeText(task *persistence.Task, state string) string {
 	}
 	b := &strings.Builder{}
 	fmt.Fprintf(b, "🔔 Task %s (project %s) %s.", task.ID, task.ProjectID, what)
-	if n.baseURL != "" && task.ProjectID != "" {
-		fmt.Fprintf(b, "\nOpen it: %s/ui/projects/%s/tasks/%s", n.baseURL, task.ProjectID, task.ID)
+	if n.baseURL != "" {
+		// Canonical UI task-detail route is /ui/tasks/{id} — the nested
+		// /ui/projects/{p}/tasks/{id} form is the API path shape and 404s in
+		// the browser (operator-reported 2026-07-08).
+		fmt.Fprintf(b, "\nOpen it: %s/ui/tasks/%s", n.baseURL, task.ID)
 	}
 	return b.String()
 }

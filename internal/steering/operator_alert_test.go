@@ -24,7 +24,7 @@ func newOperatorAlertR(t *testing.T, ch *fakeChannel, recipients ProjectRecipien
 	if ch != nil {
 		res.byName[ch.name] = ch
 	}
-	return NewOperatorAlert(res, recipients, "https://vornik.example", cfg, enabled, zerolog.Nop()), ch
+	return NewOperatorAlert(res, recipients, nil, "https://vornik.example", cfg, enabled, zerolog.Nop()), ch
 }
 
 // fakeRecipients maps projectID → session IDs for the per-project fan-out test.
@@ -56,6 +56,15 @@ func TestOperatorAlert_NotifiesOwnerlessAutonomyApproval(t *testing.T) {
 	}
 	if !strings.Contains(m.Text, "task_auto") {
 		t.Errorf("alert text missing task id: %q", m.Text)
+	}
+	// Deep link must be the canonical /ui/tasks/{id} route; the nested
+	// /ui/projects/{p}/tasks/{id} form 404s in the browser (operator-reported
+	// 2026-07-08).
+	if !strings.Contains(m.Text, "https://vornik.example/ui/tasks/task_auto") {
+		t.Errorf("alert missing canonical deep link /ui/tasks/task_auto: %q", m.Text)
+	}
+	if strings.Contains(m.Text, "/ui/projects/") {
+		t.Errorf("alert deep link must not use the 404-ing nested form: %q", m.Text)
 	}
 }
 
@@ -99,6 +108,32 @@ func TestOperatorAlert_NotifiesRoutedSubtask(t *testing.T) {
 
 	if len(tg.sent) != 1 {
 		t.Fatalf("routed ownerless sub-task checkpoint must alert the operator, got %d", len(tg.sent))
+	}
+}
+
+// TestOperatorAlert_SkipsChatOriginatedViaAncestor is the 2026-07-08 fix: a
+// ROUTE/CHECKPOINT child of a task that WAS scheduled from a chat carries only
+// ParentTaskID. With the ancestry walk wired, the operator-alert must treat it
+// as chat-owned and SKIP (the chat Notifier routes it back to the chat),
+// instead of firing the generic "No chat originated it" operator alert.
+func TestOperatorAlert_SkipsChatOriginatedViaAncestor(t *testing.T) {
+	ch := &fakeChannel{name: "telegram"}
+	res := fakeResolver{byName: map[string]conversation.Channel{"telegram": ch}}
+
+	parentID := "parent-chat"
+	parent := &persistence.Task{ID: parentID, ProjectID: "p1", ChatTurnID: turnID("chat_1")}
+	child := autonomyTask()
+	child.ID = "task_routed_child"
+	child.CreationSource = persistence.TaskCreationSourceRoute
+	child.ParentTaskID = &parentID // no own ChatTurnID
+	getter := fakeTaskGetter{byID: map[string]*persistence.Task{parentID: parent}}
+
+	n := NewOperatorAlert(res, nil, getter, "https://vornik.example",
+		OperatorAlertConfig{Channel: "telegram", Session: "555"}, true, zerolog.Nop())
+	n.NotifySteeringRequired(context.Background(), child, string(persistence.TaskStatusAwaitingInput))
+
+	if len(ch.sent) != 0 {
+		t.Fatalf("child of a chat-scheduled task must NOT get the generic operator alert (chat notifier owns it); got %d", len(ch.sent))
 	}
 }
 

@@ -369,6 +369,7 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		// under /api/v1/admin/ (CE feature). LLD 2026-07-07-control-plane.
 		mux.HandleFunc("/api/v1/operator/proposals", server.OperatorProposals)
 		mux.HandleFunc("/api/v1/operator/proposals/", server.OperatorProposalItem)
+		mux.HandleFunc("/api/v1/operator/diagnose", server.OperatorDiagnose)
 
 		// Continuous-learning instinct layer — read/inspect/retire surfaces.
 		// The list + per-id router go through the normal auth chain (no

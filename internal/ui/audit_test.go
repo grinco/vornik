@@ -31,6 +31,9 @@ func (f *fakeToolAuditRepo) List(_ context.Context, filter persistence.ToolAudit
 	}
 	return f.rows, nil
 }
+func (f *fakeToolAuditRepo) ToolLatencyP95ByProjectTool(context.Context, time.Time) ([]persistence.ToolLatencyStat, error) {
+	return nil, nil
+}
 func (f *fakeToolAuditRepo) CountByTool(context.Context, string) (map[string]int64, error) {
 	return nil, nil
 }

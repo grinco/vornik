@@ -23,7 +23,7 @@ func NewProposalRepository(db DBTX) *ProposalRepository { return &ProposalReposi
 
 const pgProposalColumns = `id, project_id, kind, blast_radius, title, diff, rationale,
 	evidence, status, proposed_by, approver, pre_apply_snapshot,
-	apply_target, apply_content, applied_by,
+	apply_target, apply_content, apply_ops, applied_by,
 	created_at, decided_at, applied_at`
 
 // Create inserts a new proposal, rejecting an oversized text field.
@@ -39,17 +39,17 @@ func (r *ProposalRepository) Create(ctx context.Context, p *persistence.ControlP
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO control_plane_proposals (`+pgProposalColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		p.ID, pgNullStr(p.ProjectID), p.Kind, p.BlastRadius, p.Title, p.Diff, p.Rationale,
 		p.Evidence, p.Status, p.ProposedBy, p.Approver, p.PreApplySnapshot,
-		p.ApplyTarget, p.ApplyContent, p.AppliedBy,
+		p.ApplyTarget, p.ApplyContent, p.ApplyOps, p.AppliedBy,
 		p.CreatedAt, p.DecidedAt, p.AppliedAt,
 	)
 	return mapDBError(err)
 }
 
 func validatePGProposalFieldSizes(p *persistence.ControlPlaneProposal) error {
-	for _, f := range []string{p.Diff, p.Rationale, p.Evidence, p.PreApplySnapshot} {
+	for _, f := range []string{p.Diff, p.Rationale, p.Evidence, p.PreApplySnapshot, p.ApplyOps} {
 		if len(f) > persistence.ProposalMaxFieldBytes {
 			return persistence.ErrProposalFieldTooLarge
 		}
@@ -190,7 +190,7 @@ func scanPGProposal(sc pgSkillScanner) (*persistence.ControlPlaneProposal, error
 	if err := sc.Scan(
 		&p.ID, &projectID, &p.Kind, &p.BlastRadius, &p.Title, &p.Diff, &p.Rationale,
 		&p.Evidence, &p.Status, &p.ProposedBy, &p.Approver, &p.PreApplySnapshot,
-		&p.ApplyTarget, &p.ApplyContent, &p.AppliedBy,
+		&p.ApplyTarget, &p.ApplyContent, &p.ApplyOps, &p.AppliedBy,
 		&p.CreatedAt, &decidedAt, &appliedAt,
 	); err != nil {
 		return nil, err

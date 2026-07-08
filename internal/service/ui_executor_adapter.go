@@ -52,6 +52,10 @@ func (a uiExecutorAdapter) NotifyChildTerminal(ctx context.Context, childTaskID 
 	a.e.NotifyChildTerminal(ctx, childTaskID)
 }
 
+func (a uiExecutorAdapter) CancelChildren(ctx context.Context, parentTaskID string) {
+	a.e.CancelChildren(ctx, parentTaskID)
+}
+
 // TaskLogs surfaces container logs for the live SSE log panel on
 // /ui/tasks/{id}. Without this passthrough the UI's
 // ui.WithExecutor type-assertion to TaskLogSource fails, the

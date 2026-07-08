@@ -7,6 +7,7 @@ package persistence
 
 import (
 	"context"
+	"time"
 )
 
 // ToolAuditRepository persists tool invocation audit entries.
@@ -19,6 +20,12 @@ type ToolAuditRepository interface {
 
 	// CountByTool returns tool invocation counts grouped by tool name.
 	CountByTool(ctx context.Context, executionID string) (map[string]int64, error)
+
+	// ToolLatencyP95ByProjectTool returns p95 call latency (seconds) + sample
+	// count per (project, tool) over calls created at/after `since` — the
+	// control-plane operational-instinct tool-timeout signal (Phase 3). p95 is
+	// computed in Go (persistence.P95Seconds), mirroring LatencyP95ByProject.
+	ToolLatencyP95ByProjectTool(ctx context.Context, since time.Time) ([]ToolLatencyStat, error)
 }
 
 // RecoveryEventRepository persists graceful-recovery markers — one row each

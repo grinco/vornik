@@ -75,7 +75,8 @@ func TestNavPartial_IsAdminFlag(t *testing.T) {
 // nav links that 403 server-side.
 func TestNavPartial_AdminOnlyDests(t *testing.T) {
 	s := NewServer()
-	adminOnlyHrefs := []string{"/ui/swarms", "/ui/workflows", "/ui/audit", "/ui/mcp"}
+	// /ui/mcp removed 2026-07-08 (nav dedupe → the control-plane hub MCP tab).
+	adminOnlyHrefs := []string{"/ui/swarms", "/ui/workflows", "/ui/audit"}
 	openHrefs := []string{"/ui/tasks", "/ui/projects", "/ui/spend"}
 
 	render := func(isAdmin bool) string {

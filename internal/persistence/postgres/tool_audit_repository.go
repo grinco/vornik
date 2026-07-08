@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"vornik.io/vornik/internal/persistence"
 )
@@ -127,4 +128,39 @@ func (r *ToolAuditRepository) CountByTool(ctx context.Context, executionID strin
 		counts[name] = count
 	}
 	return counts, rows.Err()
+}
+
+// ToolLatencyP95ByProjectTool returns p95 call latency (seconds) + count per
+// (project, tool) over calls created at/after since. p95 is computed in Go
+// (persistence.P95Seconds), mirroring the SQLite backend + LatencyP95ByProject.
+func (r *ToolAuditRepository) ToolLatencyP95ByProjectTool(ctx context.Context, since time.Time) ([]persistence.ToolLatencyStat, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT project_id, tool_name, duration_ms FROM tool_audit_log
+		WHERE created_at >= $1 AND duration_ms >= 0`, since.UTC())
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type key struct{ project, tool string }
+	byKey := make(map[key][]float64)
+	for rows.Next() {
+		var project, tool string
+		var durMs int64
+		if err := rows.Scan(&project, &tool, &durMs); err != nil {
+			return nil, err
+		}
+		byKey[key{project, tool}] = append(byKey[key{project, tool}], float64(durMs)/1000.0)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]persistence.ToolLatencyStat, 0, len(byKey))
+	for k, durs := range byKey {
+		out = append(out, persistence.ToolLatencyStat{
+			ProjectID: k.project, ToolName: k.tool,
+			P95Seconds: persistence.P95Seconds(durs), Count: int64(len(durs)),
+		})
+	}
+	return out, nil
 }

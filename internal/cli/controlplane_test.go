@@ -21,7 +21,7 @@ func TestControlPlaneCommand_Wiring(t *testing.T) {
 	for _, c := range controlPlaneCmd.Commands() {
 		sub[c.Name()] = true
 	}
-	for _, want := range []string{"proposals", "show", "approve", "reject", "propose"} {
+	for _, want := range []string{"proposals", "show", "approve", "reject", "propose", "diagnose"} {
 		if !sub[want] {
 			t.Errorf("control-plane missing subcommand %q: %v", want, sub)
 		}
@@ -114,6 +114,56 @@ func TestCPRollback_Posts(t *testing.T) {
 	}
 	if path != "/api/v1/operator/proposals/cpp_1/rollback" || !strings.Contains(out, "ROLLED_BACK") {
 		t.Errorf("path=%q out=%q", path, out)
+	}
+}
+
+func TestCPDiagnose_PostsFocusAndRendersVerdict(t *testing.T) {
+	var path string
+	var body map[string]any
+	cpHTTPStub(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"verdict": map[string]any{
+				"root_cause":       "web_fetch timeout",
+				"confidence":       "high",
+				"evidence":         []string{"log line"},
+				"suggested_change": "raise the scraper timeout",
+			},
+			"proposalId": "cpp_9",
+		})
+	})
+	cpDiagnosePropose, cpDiagnoseJSON = true, false
+	out, err := captureStdoutFn(t, func() error { return runCPDiagnose("janka") })
+	if err != nil {
+		t.Fatalf("diagnose: %v", err)
+	}
+	if path != "/api/v1/operator/diagnose" {
+		t.Errorf("path = %q", path)
+	}
+	if body["focus"] != "janka" || body["propose"] != true {
+		t.Errorf("wrong body: %v", body)
+	}
+	if !strings.Contains(out, "web_fetch timeout") || !strings.Contains(out, "cpp_9") {
+		t.Errorf("output missing verdict/proposal: %q", out)
+	}
+}
+
+func TestCPDiagnose_NoProposalMessage(t *testing.T) {
+	cpHTTPStub(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"verdict":    map[string]any{"root_cause": "unclear", "confidence": "low"},
+			"proposalId": "",
+		})
+	})
+	cpDiagnosePropose, cpDiagnoseJSON = true, false
+	out, err := captureStdoutFn(t, func() error { return runCPDiagnose("janka") })
+	if err != nil {
+		t.Fatalf("diagnose: %v", err)
+	}
+	if !strings.Contains(out, "No proposal filed") {
+		t.Errorf("expected no-proposal notice: %q", out)
 	}
 }
 

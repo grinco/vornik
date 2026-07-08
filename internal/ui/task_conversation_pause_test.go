@@ -84,6 +84,8 @@ func (p *pauseSpy) NotifyChildTerminal(_ context.Context, childTaskID string) {
 	p.notifies = append(p.notifies, childTaskID)
 }
 
+func (p *pauseSpy) CancelChildren(_ context.Context, _ string) {}
+
 // fakeTaskMessageRepo: minimal stub matching
 // persistence.TaskMessageRepository. The UI pause path only fires
 // Insert; the rest exist so we satisfy the interface.

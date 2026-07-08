@@ -58,13 +58,52 @@ func (f fakeResolver) ResolveChannel(name string) conversation.Channel {
 
 func turnID(s string) *string { return &s }
 
+// fakeTaskGetter serves tasks by ID so the ancestry walk can be exercised.
+type fakeTaskGetter struct {
+	byID map[string]*persistence.Task
+	err  error
+}
+
+func (f fakeTaskGetter) Get(_ context.Context, id string) (*persistence.Task, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.byID[id], nil
+}
+
 func newNotifier(t *testing.T, row *persistence.ChatAuditEntry, ch *fakeChannel, enabled bool) (*Notifier, *fakeChannel) {
 	t.Helper()
 	res := fakeResolver{byName: map[string]conversation.Channel{}}
 	if ch != nil {
 		res.byName[ch.name] = ch
 	}
-	return New(fakeAudit{row: row}, res, "https://vornik.example", enabled, zerolog.Nop()), ch
+	// nil task-getter: existing tests exercise the immediate-task path only.
+	return New(fakeAudit{row: row}, res, nil, "https://vornik.example", enabled, zerolog.Nop()), ch
+}
+
+// TestNotify_ChatOriginatedViaAncestor is the 2026-07-08 fix: a child task
+// (checkpoint/route/delegation) carries only ParentTaskID, not ChatTurnID.
+// The notifier must walk the ancestry, find the chat-scheduled parent's
+// ChatTurnID, and route the DM to that chat — not silently skip.
+func TestNotify_ChatOriginatedViaAncestor(t *testing.T) {
+	row := &persistence.ChatAuditEntry{ID: "chat_1", ChatID: "555", UserID: "telegram:555", ProjectID: "p1"}
+	ch := &fakeChannel{name: "telegram"}
+	res := fakeResolver{byName: map[string]conversation.Channel{"telegram": ch}}
+
+	parentID := "parent-chat"
+	parent := &persistence.Task{ID: parentID, ProjectID: "p1", ChatTurnID: turnID("chat_1")}
+	child := &persistence.Task{ID: "child-1", ProjectID: "p1", ParentTaskID: &parentID} // no ChatTurnID
+	getter := fakeTaskGetter{byID: map[string]*persistence.Task{parentID: parent}}
+
+	n := New(fakeAudit{row: row}, res, getter, "https://vornik.example", true, zerolog.Nop())
+	n.NotifySteeringRequired(context.Background(), child, string(persistence.TaskStatusAwaitingInput))
+
+	if len(ch.sent) != 1 {
+		t.Fatalf("want 1 DM to the ancestor's chat, got %d", len(ch.sent))
+	}
+	if ch.sent[0].SessionID != "555" {
+		t.Errorf("SessionID = %q, want the ancestor chat's 555", ch.sent[0].SessionID)
+	}
 }
 
 // --- decodeChatID ---------------------------------------------------------
@@ -106,8 +145,14 @@ func TestNotify_TelegramInput(t *testing.T) {
 	if !strings.Contains(m.Text, "task_a") || !strings.Contains(m.Text, "input") {
 		t.Errorf("text missing task id / intent: %q", m.Text)
 	}
-	if !strings.Contains(m.Text, "https://vornik.example/ui/projects/p1/tasks/task_a") {
-		t.Errorf("text missing deep link: %q", m.Text)
+	// Deep link must use the canonical UI task-detail route /ui/tasks/{id};
+	// the nested /ui/projects/{p}/tasks/{id} form is the API path and 404s in
+	// the browser (operator-reported 2026-07-08 regression).
+	if !strings.Contains(m.Text, "https://vornik.example/ui/tasks/task_a") {
+		t.Errorf("text missing canonical deep link /ui/tasks/task_a: %q", m.Text)
+	}
+	if strings.Contains(m.Text, "/ui/projects/") {
+		t.Errorf("deep link must not use the 404-ing nested /ui/projects/.../tasks form: %q", m.Text)
 	}
 }
 

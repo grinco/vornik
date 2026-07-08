@@ -119,6 +119,27 @@ func (s *Server) ExecutionHintCreate(w http.ResponseWriter, r *http.Request, exe
 		return
 	}
 
+	// Steer keyword: `model: fallback` (or `@fallback`) in the hint switches
+	// every role with a configured modelFallback onto that fallback. This
+	// mirrors the task-scoped TaskHintCreate path — previously only the
+	// task-scoped hint honored the directive, so steering the *execution* to
+	// "re-run with the fallback model" silently kept the original model
+	// (2026-07-08 report). The override is written to the TASK payload (the
+	// executor resolves the per-step model from there at launch), so a
+	// retry-from-step / resume the operator fires next picks it up. Best-effort
+	// — a resolution/persist failure must not fail the hint already stored.
+	if s.projectRegistry != nil && s.taskRepo != nil && exec.TaskID != "" && executor.ParseFallbackModelDirective(body.Content) {
+		if task, terr := s.taskRepo.Get(r.Context(), exec.TaskID); terr == nil && task != nil {
+			if applied, oerr := executor.ApplyFallbackModelOverride(r.Context(), s.projectRegistry, s.taskRepo, task); oerr != nil {
+				s.logger.Warn().Err(oerr).Str("executionId", executionID).Str("taskId", exec.TaskID).
+					Msg("execution hint: fallback-model override failed")
+			} else if applied {
+				s.logger.Info().Str("executionId", executionID).Str("taskId", exec.TaskID).
+					Msg("execution hint: applied fallback-model override from steer keyword")
+			}
+		}
+	}
+
 	respondJSON(w, http.StatusCreated, ExecutionHintResponse{
 		ID:          hint.ID,
 		ExecutionID: hint.ExecutionID,

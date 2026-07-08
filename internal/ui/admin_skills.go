@@ -85,7 +85,7 @@ func (s *Server) AdminSkills(w http.ResponseWriter, r *http.Request) {
 	}
 	filter := normalizeSkillFilter(r.URL.Query().Get("maturity"))
 	data := AdminSkillsData{
-		adminCommonData: adminCommonData{Title: "Skills", CurrentPage: "admin", IsAdmin: true},
+		adminCommonData: adminCommonData{Title: "Skills", CurrentPage: "admin-skills", IsAdmin: true},
 		Available:       s.skillRepo != nil,
 		Filter:          filter,
 		Flash:           r.URL.Query().Get("done"),

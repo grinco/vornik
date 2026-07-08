@@ -105,6 +105,12 @@ type ExecutorInterface interface {
 	// closed child left its parent stuck in WAITING_FOR_CHILDREN
 	// (task_20260521111852_8016a4a902b4f959).
 	NotifyChildTerminal(ctx context.Context, childTaskID string)
+	// CancelChildren recursively cancels the non-terminal in-project
+	// children of a just-cancelled parent (the downward cascade), so a
+	// cancelled parent doesn't leave its route/delegation/checkpoint
+	// children RUNNING/QUEUED. Idempotent + race-safe; cross-project
+	// callees are handled separately via the CPC ledger.
+	CancelChildren(ctx context.Context, parentTaskID string)
 }
 
 // TaskLogSource provides best-effort logs for task debugging.
@@ -188,8 +194,12 @@ type Server struct {
 	skillRepo         persistence.SkillRepository
 	// proposalStore + proposalApplier back the EE control-plane console
 	// (/ui/admin/control-plane). Nil-safe: the page renders "not wired".
-	proposalStore       persistence.ProposalRepository
-	proposalApplier     proposalApplier
+	proposalStore   persistence.ProposalRepository
+	proposalApplier proposalApplier
+	diagnoser       proposalDiagnoser
+	// cpConfigPath is the deployed config.yaml the hub's ledger-gated edits
+	// read + splice (MCP-server add/remove). Empty disables hub config writes.
+	cpConfigPath        string
 	tradingSnapshotRepo persistence.TradingPositionsSnapshotRepository
 	tradingOrderRepo    persistence.TradingOrderRepository
 	tradingSafetyRepo   persistence.TradingSafetyEventRepository
@@ -1219,6 +1229,32 @@ type proposalApplier interface {
 	Rollback(ctx context.Context, id string) error
 }
 
+// proposalDiagnoser runs a single-shot diagnosis (satisfied by
+// *controlplane.Diagnoser); powers the hub Diagnose tab.
+type proposalDiagnoser interface {
+	Diagnose(ctx context.Context, focus string, propose bool) (*controlplane.DiagnoseVerdict, string, error)
+}
+
+// WithDiagnoser wires the diagnose engine for the hub Diagnose tab.
+// Typed-nil-safe against *controlplane.Diagnoser.
+func WithDiagnoser(d proposalDiagnoser) ServerOption {
+	return func(s *Server) {
+		if e, ok := d.(*controlplane.Diagnoser); ok && e == nil {
+			return
+		}
+		if d == nil {
+			return
+		}
+		s.diagnoser = d
+	}
+}
+
+// WithControlPlaneConfigPath wires the deployed config.yaml path the hub's
+// ledger-gated config edits (MCP-server management) read + splice.
+func WithControlPlaneConfigPath(path string) ServerOption {
+	return func(s *Server) { s.cpConfigPath = path }
+}
+
 // WithProposalStore + WithProposalApplier wire the control-plane console
 // (/ui/admin/control-plane). Nil-safe (page renders "not wired").
 func WithProposalStore(repo persistence.ProposalRepository) ServerOption {
@@ -1913,7 +1949,13 @@ func (s *Server) Handler() http.Handler {
 	// catalog and reachability state. Read-only — adding a server
 	// to a project still requires an explicit YAML edit on that
 	// project's config.
-	mux.HandleFunc("/mcp", s.MCPIndex)
+	// /ui/mcp is superseded by the control-plane hub's MCP tab (the
+	// canonical MCP surface: list + reachability + ledger-gated add/remove +
+	// pre-commit probe). 302 the old discovery route into the hub so
+	// bookmarks/links still land somewhere useful (2026-07-08 nav dedupe).
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/admin/control-plane?section=mcp", http.StatusFound)
+	})
 
 	// Admin surface — admin-ui-design.md slice 1. The mux registers
 	// the routes unconditionally; the actual auth gate is applied

@@ -98,6 +98,9 @@ func (m *mockToolAuditRepository) List(ctx context.Context, filter persistence.T
 	}
 	return nil, nil
 }
+func (m *mockToolAuditRepository) ToolLatencyP95ByProjectTool(context.Context, time.Time) ([]persistence.ToolLatencyStat, error) {
+	return nil, nil
+}
 func (m *mockToolAuditRepository) CountByTool(ctx context.Context, executionID string) (map[string]int64, error) {
 	return nil, nil
 }

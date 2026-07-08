@@ -219,6 +219,44 @@ func RunToolAuditSuite(t *testing.T, repo persistence.ToolAuditRepository) {
 			t.Fatalf("filter mishit: %+v", got)
 		}
 	})
+
+	t.Run("ToolLatencyP95ByProjectTool_aggregates_by_project_and_tool", func(t *testing.T) {
+		project := uniqueID("proj")
+		since := time.Now().UTC().Add(-time.Hour)
+		// 5 slow web_fetch calls (1000ms) + 1 fast shell (10ms) in one project.
+		for i := 0; i < 5; i++ {
+			_ = repo.Log(ctx, &persistence.ToolAuditEntry{
+				ID: uniqueID("aud"), ProjectID: project, TaskID: "t", ExecutionID: "e",
+				ToolName: "web_fetch", DurationMs: 1000, CreatedAt: time.Now().UTC(),
+			})
+		}
+		_ = repo.Log(ctx, &persistence.ToolAuditEntry{
+			ID: uniqueID("aud"), ProjectID: project, TaskID: "t", ExecutionID: "e",
+			ToolName: "shell", DurationMs: 10, CreatedAt: time.Now().UTC(),
+		})
+		stats, err := repo.ToolLatencyP95ByProjectTool(ctx, since)
+		if err != nil {
+			t.Fatalf("ToolLatencyP95ByProjectTool: %v", err)
+		}
+		var fetch, shell *persistence.ToolLatencyStat
+		for i := range stats {
+			if stats[i].ProjectID != project {
+				continue
+			}
+			switch stats[i].ToolName {
+			case "web_fetch":
+				fetch = &stats[i]
+			case "shell":
+				shell = &stats[i]
+			}
+		}
+		if fetch == nil || fetch.Count != 5 || fetch.P95Seconds != 1.0 {
+			t.Fatalf("web_fetch p95 wrong: %+v", fetch)
+		}
+		if shell == nil || shell.Count != 1 || shell.P95Seconds != 0.01 {
+			t.Fatalf("shell p95 wrong: %+v", shell)
+		}
+	})
 }
 
 // RunRecoveryEventSuite exercises persistence.RecoveryEventRepository against

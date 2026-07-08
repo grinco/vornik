@@ -22,4 +22,10 @@ type ExecutorInterface interface {
 	// own flow (e.g. CancelTask on a non-running child, where
 	// handleCancelled never fires). No-op for tasks without a parent.
 	NotifyChildTerminal(ctx context.Context, childTaskID string)
+	// CancelChildren recursively cancels the non-terminal in-project
+	// children of a just-cancelled parent (the downward cascade), so a
+	// cancelled parent doesn't leave its route/delegation/checkpoint
+	// children RUNNING/QUEUED. Idempotent + race-safe; cross-project
+	// callees are handled separately via the CPC ledger.
+	CancelChildren(ctx context.Context, parentTaskID string)
 }

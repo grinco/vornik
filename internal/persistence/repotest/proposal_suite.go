@@ -33,6 +33,7 @@ func proposalApplyFields(t *testing.T, repo persistence.ProposalRepository) {
 	p := newTestProposal("af-1", "p1")
 	p.ApplyTarget = "config.yaml"
 	p.ApplyContent = "server:\n  address: :8080\n"
+	p.ApplyOps = `[{"op":"create","path":"projects/x.yaml","content":"id: x\n"}]`
 	mustCreateProposal(t, repo, p)
 	got, err := repo.GetByID(ctx, "af-1")
 	if err != nil {
@@ -40,6 +41,9 @@ func proposalApplyFields(t *testing.T, repo persistence.ProposalRepository) {
 	}
 	if got.ApplyTarget != "config.yaml" || got.ApplyContent != "server:\n  address: :8080\n" {
 		t.Errorf("apply fields did not round-trip: %+v", got)
+	}
+	if got.ApplyOps != p.ApplyOps {
+		t.Errorf("apply_ops did not round-trip: got %q want %q", got.ApplyOps, p.ApplyOps)
 	}
 	if got.AppliedBy != "" || got.AppliedAt != nil {
 		t.Errorf("un-applied proposal must have empty applied_by/at: %+v", got)

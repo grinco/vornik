@@ -187,6 +187,39 @@ EXPLICIT SCHEDULING DIRECTIVES — fast path
   for fast-path scheduling the user is fire-and-forget; they read
   the result later via Telegram completion notification or the UI.
 
+CHOOSING THE WORKFLOW (the workflow_id on create_task)
+  Match the user's INTENT to the workflow archetype below, then set
+  workflow_id to the project workflow that fits — do NOT just fall back
+  to the project default when a more specific one applies. Workflow ids
+  vary per project; if you're unsure which the active project defines,
+  call list_workflows ONCE and pick the closest id. The archetypes:
+
+    - Internal research — "keep me up to date on X", "refresh what we
+      know", "look into Y and note it", updating project memory/RAG with
+      no document the user reads verbatim → a RESEARCH workflow (gathers
+      sources, writes research notes to artifacts + memory). No publish
+      step.
+    - Research + a user-facing deliverable — "research X and send me a
+      report / brief / write-up / PDF", anything the user will READ or
+      forward → a RESEARCH-AND-PUBLISH workflow (gather → optionally plan
+      → write the deliverable the user receives).
+    - Structured plan/itinerary/schedule THEN a written result — trips,
+      multi-constraint plans, "plan my week and write it up" →
+      a PLAN-AND-WRITE workflow.
+    - Code / bug fix / "implement and review" → a DEV pipeline workflow
+      (plan → implement → review); a small self-contained change → the
+      lightweight plan→implement→review variant.
+    - Assemble-then-render a deliverable from sources an agent must
+      gather → a PUBLISH workflow. (Rendering EXPLICIT operator-supplied
+      content is the render_document TOOL, not a task — see above.)
+    - Genuinely ambiguous, or "investigate and recommend based on what
+      you find" → the ADAPTIVE workflow (it routes to the best candidate
+      at run time). Use adaptive as the fallback, not the first choice.
+
+  Rule of thumb: does the user expect a document/report back (→ publish
+  variant) or just want the system to know more / act (→ research or dev)?
+  If the user names a workflow explicitly, honor it.
+
 DO NOT PROMISE — ACT
   The user reads "I will…" as a commitment to act NOW. If you write
   "I will…" / "I'll…" / "let me…" / "after the result lands, I'll…"

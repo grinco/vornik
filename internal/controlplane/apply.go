@@ -2,10 +2,14 @@ package controlplane
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -41,7 +45,55 @@ var (
 	ErrApplyInProgress = errors.New("control-plane: another apply is in progress")
 	// ErrSnapshotMissing means rollback found an empty/corrupt snapshot.
 	ErrSnapshotMissing = errors.New("control-plane: pre-apply snapshot missing; restore by hand")
+	// ErrScaffoldConflict means a create target already exists or a replace
+	// target is missing (Phase 2b multi-op pre-flight; also the orphan/crash
+	// re-apply signal). Maps to 409.
+	ErrScaffoldConflict = errors.New("control-plane: scaffold conflict (create target exists or replace target missing)")
+	// ErrTooManyOps means an apply carries more than scaffoldMaxOps file ops.
+	ErrTooManyOps = errors.New("control-plane: too many apply ops")
+	// ErrStaleBase means the on-disk config changed since the proposal was
+	// drafted (its recorded base hash no longer matches) — re-draft against
+	// current config. Optimistic concurrency for hub-authored config edits.
+	ErrStaleBase = errors.New("control-plane: config changed since this proposal was drafted; re-draft it")
 )
+
+// scaffoldMaxOps caps the file ops in one apply (a project + swarm + a few
+// workflows; refuse a runaway plan). Design §3.
+const scaffoldMaxOps = 12
+
+// applyFileOp is one file operation in a multi-op (scaffold) apply.
+type applyFileOp struct {
+	Op      string `json:"op"`   // applyOpCreate | applyOpReplace
+	Path    string `json:"path"` // relative to ConfigDir (path-traversal-guarded)
+	Content string `json:"content"`
+}
+
+const (
+	applyOpCreate  = "create"
+	applyOpReplace = "replace"
+)
+
+// snapshotEntry / snapshotEnvelope are the multi-op rollback record (design §3,
+// F4/S4): existed=false ⇒ delete on rollback; existed=true ⇒ restore Content.
+type snapshotEntry struct {
+	Existed bool   `json:"existed"`
+	Content string `json:"content,omitempty"`
+}
+
+type snapshotEnvelope struct {
+	Version int                      `json:"version"`
+	Entries map[string]snapshotEntry `json:"entries"`
+}
+
+const snapshotEnvelopeVersion = 1
+
+// resolvedOp is an op after path-resolution + pre-image capture.
+type resolvedOp struct {
+	op       applyFileOp
+	target   string // absolute, guarded
+	existed  bool
+	preImage []byte
+}
 
 // ApplyEngine applies + rolls back proposals against the deployed config tree.
 // Deps are funcs/interfaces so tests can drive every path.
@@ -90,20 +142,31 @@ func (e *ApplyEngine) Apply(ctx context.Context, id, actor string, ackDaemon boo
 	if p.Status != persistence.ProposalStatusApproved {
 		return persistence.ErrProposalNotApproved
 	}
-	if strings.TrimSpace(p.ApplyTarget) == "" {
+	ops, err := e.buildOps(p)
+	if err != nil {
+		return err
+	}
+	if len(ops) == 0 {
 		return ErrReviewOnly
+	}
+	if len(ops) > scaffoldMaxOps {
+		return ErrTooManyOps
 	}
 	if p.BlastRadius == persistence.ProposalScopeDaemon && !ackDaemon {
 		return ErrDaemonAckRequired
 	}
-	if len(p.ApplyContent) > applyMaxContentBytes {
+	total := 0
+	for _, op := range ops {
+		total += len(op.Content)
+	}
+	if total > applyMaxContentBytes {
 		return ErrContentTooLarge
 	}
-	target, err := e.resolveTarget(p.ApplyTarget)
-	if err != nil {
-		return err
-	}
-	// Busy check: daemon-scope looks across all projects ("" ), else the
+	// Deterministic ordering (design §4): creates first, then replaces, with
+	// config.yaml replaced LAST so a crash leaves referenced files already on
+	// disk (orphans inert). Enforced by the engine, not the generator.
+	orderOps(ops)
+	// Busy check: daemon-scope looks across all projects (""), else the
 	// proposal's project.
 	scope := p.ProjectID
 	if p.BlastRadius == persistence.ProposalScopeDaemon {
@@ -118,44 +181,189 @@ func (e *ApplyEngine) Apply(ctx context.Context, id, actor string, ackDaemon boo
 			return ErrBusy
 		}
 	}
-	// Validate BEFORE any write.
-	if e.Validate != nil {
-		if verr := e.Validate(p.ApplyTarget, p.ApplyContent); verr != nil {
-			return fmt.Errorf("validation failed: %w", verr)
+	// Resolve + pre-flight + validate every op BEFORE any write.
+	resolved := make([]resolvedOp, 0, len(ops))
+	for _, op := range ops {
+		target, terr := e.resolveTarget(op.Path)
+		if terr != nil {
+			return terr
 		}
-	}
-	// Snapshot the current bytes (in memory) for auto-rollback.
-	snapshot, err := os.ReadFile(target) //nolint:gosec // path is guarded above
-	if err != nil {
-		return fmt.Errorf("read current file for snapshot: %w", err)
-	}
-	// Atomic write of the new content.
-	if err := atomicWrite(target, []byte(p.ApplyContent)); err != nil {
-		return fmt.Errorf("apply write failed (original untouched): %w", err)
-	}
-	// Reload; on failure, auto-rollback to the snapshot.
-	if rerr := e.reload(); rerr != nil {
-		if rbErr := atomicWrite(target, snapshot); rbErr != nil {
-			e.Logger.Error().Err(rbErr).Str("target", target).
-				Msg("control-plane: CRITICAL auto-rollback write failed; config may be inconsistent")
-			return fmt.Errorf("apply reload failed AND auto-rollback failed: %w (rollback: %v)", rerr, rbErr)
+		pre, existed, rerr := readIfExists(target)
+		if rerr != nil {
+			return fmt.Errorf("read %s for snapshot: %w", op.Path, rerr)
 		}
-		_ = e.reload() // best-effort restore of the known-good config
-		e.Logger.Warn().Err(rerr).Str("proposal_id", id).
-			Msg("control-plane: apply reload rejected; auto-rolled-back, proposal stays APPROVED")
-		return fmt.Errorf("apply reload rejected (auto-rolled-back): %w", rerr)
+		switch op.Op {
+		case applyOpCreate:
+			if existed {
+				return fmt.Errorf("%w: create target %s already exists", ErrScaffoldConflict, op.Path)
+			}
+		case applyOpReplace:
+			if !existed {
+				return fmt.Errorf("%w: replace target %s does not exist", ErrScaffoldConflict, op.Path)
+			}
+		default:
+			return fmt.Errorf("unknown apply op %q for %s", op.Op, op.Path)
+		}
+		if e.Validate != nil {
+			if verr := e.Validate(op.Path, op.Content); verr != nil {
+				return fmt.Errorf("validation failed for %s: %w", op.Path, verr)
+			}
+		}
+		resolved = append(resolved, resolvedOp{op: op, target: target, existed: existed, preImage: pre})
 	}
-	// Reload OK — persist APPLIED + the snapshot. If this DB write fails, the
-	// file+ledger would diverge, so roll the file back and stay APPROVED.
-	if merr := e.Proposals.MarkApplied(ctx, id, actor, string(snapshot)); merr != nil {
-		if rbErr := atomicWrite(target, snapshot); rbErr == nil {
+	// Optimistic concurrency: if the proposal recorded a base hash (hub-authored
+	// config edit), refuse when the on-disk file has changed since drafting.
+	if berr := verifyBaseHash(p, resolved); berr != nil {
+		return berr
+	}
+	// Snapshot: single legacy replace keeps the bare pre-image string (Phase-2a
+	// back-compat); multi-op uses the versioned JSON envelope (§3).
+	snapshot := buildSnapshot(p, resolved)
+	// Write every op; on any write failure reverse what we wrote and abort.
+	written := make([]resolvedOp, 0, len(resolved))
+	for _, ro := range resolved {
+		if werr := atomicWrite(ro.target, []byte(ro.op.Content)); werr != nil {
+			e.reverseWrites(written)
 			_ = e.reload()
+			return fmt.Errorf("apply write failed for %s (reversed): %w", ro.op.Path, werr)
 		}
-		return fmt.Errorf("apply recorded failed, rolled back file: %w", merr)
+		written = append(written, ro)
 	}
-	e.Logger.Info().Str("proposal_id", id).Str("target", target).Str("applied_by", actor).
+	// Reload; on failure reverse every write, restore known-good, stay APPROVED.
+	if rerr := e.reload(); rerr != nil {
+		e.reverseWrites(written)
+		_ = e.reload()
+		e.Logger.Warn().Err(rerr).Str("proposal_id", id).
+			Msg("control-plane: apply reload rejected; reversed all writes, proposal stays APPROVED")
+		return fmt.Errorf("apply reload rejected (reversed): %w", rerr)
+	}
+	// Reload OK — persist APPLIED + snapshot. On DB failure reverse the writes
+	// so file+ledger never diverge.
+	if merr := e.Proposals.MarkApplied(ctx, id, actor, snapshot); merr != nil {
+		e.reverseWrites(written)
+		_ = e.reload()
+		return fmt.Errorf("apply recorded failed, reversed writes: %w", merr)
+	}
+	e.Logger.Info().Str("proposal_id", id).Int("ops", len(written)).Str("applied_by", actor).
 		Msg("control-plane: proposal applied")
 	return nil
+}
+
+// buildOps derives the ordered op list from a proposal: the multi-op ApplyOps
+// JSON when present, else the single (ApplyTarget, ApplyContent) as a one-op
+// replace (Phase-2a back-compat). Empty ⇒ review-only.
+func (e *ApplyEngine) buildOps(p *persistence.ControlPlaneProposal) ([]applyFileOp, error) {
+	if strings.TrimSpace(p.ApplyOps) != "" {
+		var ops []applyFileOp
+		if err := json.Unmarshal([]byte(p.ApplyOps), &ops); err != nil {
+			return nil, fmt.Errorf("apply_ops parse: %w", err)
+		}
+		return ops, nil
+	}
+	if strings.TrimSpace(p.ApplyTarget) == "" {
+		return nil, nil
+	}
+	return []applyFileOp{{Op: applyOpReplace, Path: p.ApplyTarget, Content: p.ApplyContent}}, nil
+}
+
+// orderOps sorts creates before replaces, with a config.yaml replace last so a
+// crash mid-write leaves referenced files present (orphans inert; §4).
+func orderOps(ops []applyFileOp) {
+	rank := func(o applyFileOp) int {
+		if o.Op == applyOpCreate {
+			return 0
+		}
+		if filepath.Base(o.Path) == "config.yaml" {
+			return 2
+		}
+		return 1
+	}
+	sort.SliceStable(ops, func(i, j int) bool { return rank(ops[i]) < rank(ops[j]) })
+}
+
+// buildSnapshot returns the rollback snapshot string: a bare pre-image for a
+// single legacy replace (Phase-2a), else the versioned JSON envelope.
+func buildSnapshot(p *persistence.ControlPlaneProposal, resolved []resolvedOp) string {
+	if strings.TrimSpace(p.ApplyOps) == "" && len(resolved) == 1 {
+		return string(resolved[0].preImage)
+	}
+	env := snapshotEnvelope{Version: snapshotEnvelopeVersion, Entries: map[string]snapshotEntry{}}
+	for _, ro := range resolved {
+		e := snapshotEntry{Existed: ro.existed}
+		if ro.existed {
+			e.Content = string(ro.preImage)
+		}
+		env.Entries[ro.op.Path] = e
+	}
+	b, _ := json.Marshal(env)
+	return string(b)
+}
+
+// reverseWrites undoes applied writes in reverse order: delete created files,
+// restore replaced files from their pre-image. A reverse failure is CRITICAL
+// (file+ledger may diverge) but never panics.
+func (e *ApplyEngine) reverseWrites(written []resolvedOp) {
+	for i := len(written) - 1; i >= 0; i-- {
+		ro := written[i]
+		var err error
+		if ro.existed {
+			err = atomicWrite(ro.target, ro.preImage)
+		} else {
+			err = os.Remove(ro.target)
+			if os.IsNotExist(err) {
+				err = nil
+			}
+		}
+		if err != nil {
+			e.Logger.Error().Err(err).Str("target", ro.target).
+				Msg("control-plane: CRITICAL reverse-write failed; file+ledger may diverge — free the resource and re-apply")
+		}
+	}
+}
+
+// verifyBaseHash enforces optimistic concurrency for hub-authored config edits.
+// If the proposal's Evidence carries {"base_hash":"<sha256>"}, the op editing
+// that path must find the on-disk pre-image hashing to the same value — else the
+// file changed since the proposal was drafted (ErrStaleBase). Proposals without
+// a base hash (workers, scaffold, legacy) skip the check entirely.
+func verifyBaseHash(p *persistence.ControlPlaneProposal, resolved []resolvedOp) error {
+	if strings.TrimSpace(p.Evidence) == "" {
+		return nil
+	}
+	var ev struct {
+		BaseHash string `json:"base_hash"`
+	}
+	if err := json.Unmarshal([]byte(p.Evidence), &ev); err != nil || ev.BaseHash == "" {
+		return nil // Evidence isn't a base-hash envelope — not a hub config edit
+	}
+	// The base hash covers the (single) config-target file this proposal edits.
+	for _, ro := range resolved {
+		if !ro.existed {
+			continue
+		}
+		if hashBytes(ro.preImage) == ev.BaseHash {
+			return nil
+		}
+	}
+	return ErrStaleBase
+}
+
+func hashBytes(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// readIfExists returns (bytes, true, nil) if the file exists, (nil, false, nil)
+// if absent, or an error for any other read failure.
+func readIfExists(path string) ([]byte, bool, error) {
+	b, err := os.ReadFile(path) //nolint:gosec // path is guarded by resolveTarget
+	if err == nil {
+		return b, true, nil
+	}
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	return nil, false, err
 }
 
 // Rollback restores an APPLIED proposal's pre-apply snapshot.
@@ -175,12 +383,8 @@ func (e *ApplyEngine) Rollback(ctx context.Context, id string) error {
 	if p.PreApplySnapshot == "" {
 		return ErrSnapshotMissing
 	}
-	target, err := e.resolveTarget(p.ApplyTarget)
-	if err != nil {
+	if err := e.restoreSnapshot(p); err != nil {
 		return err
-	}
-	if err := atomicWrite(target, []byte(p.PreApplySnapshot)); err != nil {
-		return fmt.Errorf("rollback write failed: %w", err)
 	}
 	if rerr := e.reload(); rerr != nil {
 		// The restored snapshot itself failed to reload — leave it on disk
@@ -193,6 +397,43 @@ func (e *ApplyEngine) Rollback(ctx context.Context, id string) error {
 		return fmt.Errorf("rollback recorded failed: %w", err)
 	}
 	e.Logger.Info().Str("proposal_id", id).Msg("control-plane: proposal rolled back")
+	return nil
+}
+
+// restoreSnapshot restores a proposal's pre-apply state. A single legacy
+// replace (no ApplyOps) restores the bare pre-image to ApplyTarget; a multi-op
+// proposal parses the JSON envelope and, per entry, deletes created files
+// (existed=false) or restores replaced files (existed=true).
+func (e *ApplyEngine) restoreSnapshot(p *persistence.ControlPlaneProposal) error {
+	if strings.TrimSpace(p.ApplyOps) == "" {
+		target, err := e.resolveTarget(p.ApplyTarget)
+		if err != nil {
+			return err
+		}
+		if err := atomicWrite(target, []byte(p.PreApplySnapshot)); err != nil {
+			return fmt.Errorf("rollback write failed: %w", err)
+		}
+		return nil
+	}
+	var env snapshotEnvelope
+	if err := json.Unmarshal([]byte(p.PreApplySnapshot), &env); err != nil || env.Version == 0 {
+		return ErrSnapshotMissing
+	}
+	for relPath, entry := range env.Entries {
+		target, err := e.resolveTarget(relPath)
+		if err != nil {
+			return err
+		}
+		if entry.Existed {
+			if err := atomicWrite(target, []byte(entry.Content)); err != nil {
+				return fmt.Errorf("rollback restore %s failed: %w", relPath, err)
+			}
+			continue
+		}
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("rollback delete %s failed: %w", relPath, err)
+		}
+	}
 	return nil
 }
 

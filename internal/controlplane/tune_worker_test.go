@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -12,8 +13,9 @@ import (
 
 // fakeMetrics returns scripted signals per tick.
 type fakeMetrics struct {
-	ret  map[string]RateSample
-	lats map[string]LatencySample
+	ret   map[string]RateSample
+	lats  map[string]LatencySample
+	tools []ToolLatencySample
 }
 
 func (f *fakeMetrics) FailedTaskRates(_ context.Context) (map[string]RateSample, error) {
@@ -22,6 +24,10 @@ func (f *fakeMetrics) FailedTaskRates(_ context.Context) (map[string]RateSample,
 
 func (f *fakeMetrics) LatencyP95s(_ context.Context) (map[string]LatencySample, error) {
 	return f.lats, nil
+}
+
+func (f *fakeMetrics) ToolLatencies(_ context.Context) ([]ToolLatencySample, error) {
+	return f.tools, nil
 }
 
 func newTuneTestRepo(t *testing.T) persistence.ProposalRepository {
@@ -50,9 +56,11 @@ func newTuneWorker(repo persistence.ProposalRepository, m MetricsSource) *TuneWo
 	return &TuneWorker{
 		Proposals: repo, Metrics: m, Interval: 1, // Interval only matters for Run
 		Threshold: 0.5, LatencyThresholdSeconds: 300, MinSamples: 5, BreachesToPropose: 3,
+		ToolLatencyThresholdSeconds: 60, MaxSuggestedTimeoutSeconds: 300,
 		Logger:          zerolog.Nop(),
 		failedBreaches:  map[string]int{},
 		latencyBreaches: map[string]int{},
+		toolBreaches:    map[ProjectToolKey]int{},
 	}
 }
 
@@ -150,3 +158,120 @@ func TestTune_BreachStreakResetsOnRecovery(t *testing.T) {
 		t.Fatalf("expected 1 proposal after fresh streak, got %d", n)
 	}
 }
+
+func toolProposal(t *testing.T, repo persistence.ProposalRepository) *persistence.ControlPlaneProposal {
+	t.Helper()
+	ps, _ := repo.List(context.Background(), persistence.ProposalListFilter{})
+	for _, p := range ps {
+		if p.ProposedBy == "instinct" {
+			return p
+		}
+	}
+	return nil
+}
+
+func TestInstinct_ToolTimeoutProposesWithClampedSuggestion(t *testing.T) {
+	repo := newTuneTestRepo(t)
+	// p95 = 400s → ceil(400*1.5)=600 > 300 cap → clamped to 300.
+	m := &fakeMetrics{tools: []ToolLatencySample{
+		{Key: ProjectToolKey{Project: "janka", Tool: "web_fetch"}, P95Seconds: 400, Count: 10},
+	}}
+	w := newTuneWorker(repo, m)
+	ctx := context.Background()
+	w.tick(ctx)
+	w.tick(ctx)
+	if n := draftCount(t, repo); n != 0 {
+		t.Fatalf("must not propose before 3 breaches, got %d", n)
+	}
+	w.tick(ctx)
+	p := toolProposal(t, repo)
+	if p == nil {
+		t.Fatal("expected an instinct proposal after 3 sustained breaches")
+	}
+	if p.ProposedBy != "instinct" {
+		t.Errorf("ProposedBy = %q, want instinct", p.ProposedBy)
+	}
+	if !contains(p.Rationale, "web_fetch") || !contains(p.Rationale, "clamped") {
+		t.Errorf("rationale should name the tool + note the clamp: %q", p.Rationale)
+	}
+	if !contains(p.Evidence, `"suggested_timeout_s":300`) {
+		t.Errorf("evidence should carry the clamped suggested timeout: %q", p.Evidence)
+	}
+}
+
+func TestInstinct_ToolBelowThresholdNeverFires(t *testing.T) {
+	repo := newTuneTestRepo(t)
+	m := &fakeMetrics{tools: []ToolLatencySample{
+		{Key: ProjectToolKey{Project: "janka", Tool: "shell"}, P95Seconds: 10, Count: 100},
+	}}
+	w := newTuneWorker(repo, m)
+	for i := 0; i < 5; i++ {
+		w.tick(context.Background())
+	}
+	if n := draftCount(t, repo); n != 0 {
+		t.Fatalf("sub-threshold tool latency must never propose, got %d", n)
+	}
+}
+
+func TestInstinct_ToolBelowMinSamplesResetsStreak(t *testing.T) {
+	repo := newTuneTestRepo(t)
+	key := ProjectToolKey{Project: "janka", Tool: "web_fetch"}
+	m := &fakeMetrics{tools: []ToolLatencySample{{Key: key, P95Seconds: 400, Count: 10}}}
+	w := newTuneWorker(repo, m)
+	ctx := context.Background()
+	w.tick(ctx)
+	w.tick(ctx) // 2 breaches
+	// Intermittent load: count dips below MinSamples → treated as recovery.
+	m.tools = []ToolLatencySample{{Key: key, P95Seconds: 400, Count: 2}}
+	w.tick(ctx)
+	// Back to breaching — must need 3 fresh consecutive.
+	m.tools = []ToolLatencySample{{Key: key, P95Seconds: 400, Count: 10}}
+	w.tick(ctx)
+	w.tick(ctx)
+	if n := draftCount(t, repo); n != 0 {
+		t.Fatalf("streak must reset when count<MinSamples; got %d", n)
+	}
+	w.tick(ctx)
+	if n := draftCount(t, repo); n != 1 {
+		t.Fatalf("expected 1 proposal after fresh streak, got %d", n)
+	}
+}
+
+func TestInstinct_ToolSignalDisabledByNegativeThreshold(t *testing.T) {
+	repo := newTuneTestRepo(t)
+	m := &fakeMetrics{tools: []ToolLatencySample{
+		{Key: ProjectToolKey{Project: "janka", Tool: "web_fetch"}, P95Seconds: 999, Count: 100},
+	}}
+	w := newTuneWorker(repo, m)
+	w.ToolLatencyThresholdSeconds = -1 // disabled
+	for i := 0; i < 5; i++ {
+		w.tick(context.Background())
+	}
+	if n := draftCount(t, repo); n != 0 {
+		t.Fatalf("disabled tool signal must never propose, got %d", n)
+	}
+}
+
+func TestInstinct_CompositeKeysDoNotCollide(t *testing.T) {
+	// Keys that would collide under naive "|"-joining maintain independent
+	// streaks (typed struct keys): project "a|b"+tool "c" vs "a"+tool "b|c".
+	repo := newTuneTestRepo(t)
+	k1 := ProjectToolKey{Project: "a|b", Tool: "c"}
+	k2 := ProjectToolKey{Project: "a", Tool: "b|c"}
+	m := &fakeMetrics{tools: []ToolLatencySample{
+		{Key: k1, P95Seconds: 400, Count: 10},
+		{Key: k2, P95Seconds: 400, Count: 10},
+	}}
+	w := newTuneWorker(repo, m)
+	w.toolBreaches[k1] = 2 // k1 already at 2 breaches; k2 fresh
+	w.tick(context.Background())
+	// k1 hits 3 (fires); k2 only at 1 (no fire) — proves independent streaks.
+	if got := w.toolBreaches[k2]; got != 1 {
+		t.Fatalf("k2 streak must be independent (1), got %d", got)
+	}
+	if n := draftCount(t, repo); n != 1 {
+		t.Fatalf("only k1 should have fired, got %d proposals", n)
+	}
+}
+
+func contains(s, sub string) bool { return strings.Contains(s, sub) }

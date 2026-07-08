@@ -1234,6 +1234,8 @@ func (c *Container) initHTTPServer() error {
 		ui.WithJudgeVerdictRepository(c.repos.JudgeVerdicts),
 		ui.WithRecoveryEventRepository(c.repos.RecoveryEvents),
 		ui.WithSkillRepository(c.repos.Skills),
+		ui.WithProposalStore(c.repos.Proposals),
+		ui.WithProposalApplier(c.newProposalApplier()),
 		ui.WithTradingSnapshotRepository(c.repos.TradingSnapshots),
 		ui.WithTradingOrderRepository(c.repos.TradingOrders),
 		ui.WithTradingSafetyRepository(c.repos.TradingSafetyEvents),

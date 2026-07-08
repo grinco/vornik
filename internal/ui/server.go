@@ -20,6 +20,7 @@ import (
 	"vornik.io/vornik/internal/auth"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/controlplane"
 	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
@@ -180,11 +181,15 @@ type Server struct {
 	llmUsageRepo     persistence.TaskLLMUsageRepository
 	// apiKeyRepo backs /ui/projects/{id}/keys. Nil disables the
 	// page (renders 503).
-	apiKeyRepo          persistence.APIKeyRepository
-	outcomeRepo         persistence.ExecutionStepOutcomeRepository
-	judgeVerdictRepo    persistence.TaskJudgeVerdictRepository
-	recoveryEventRepo   persistence.RecoveryEventRepository
-	skillRepo           persistence.SkillRepository
+	apiKeyRepo        persistence.APIKeyRepository
+	outcomeRepo       persistence.ExecutionStepOutcomeRepository
+	judgeVerdictRepo  persistence.TaskJudgeVerdictRepository
+	recoveryEventRepo persistence.RecoveryEventRepository
+	skillRepo         persistence.SkillRepository
+	// proposalStore + proposalApplier back the EE control-plane console
+	// (/ui/admin/control-plane). Nil-safe: the page renders "not wired".
+	proposalStore       persistence.ProposalRepository
+	proposalApplier     proposalApplier
 	tradingSnapshotRepo persistence.TradingPositionsSnapshotRepository
 	tradingOrderRepo    persistence.TradingOrderRepository
 	tradingSafetyRepo   persistence.TradingSafetyEventRepository
@@ -1204,6 +1209,32 @@ func WithRecoveryEventRepository(repo persistence.RecoveryEventRepository) Serve
 func WithSkillRepository(repo persistence.SkillRepository) ServerOption {
 	return func(s *Server) {
 		s.skillRepo = repo
+	}
+}
+
+// proposalApplier is the control-plane apply/rollback engine (satisfied by
+// *controlplane.ApplyEngine); an interface so tests can fake it.
+type proposalApplier interface {
+	Apply(ctx context.Context, id, actor string, ackDaemon bool) error
+	Rollback(ctx context.Context, id string) error
+}
+
+// WithProposalStore + WithProposalApplier wire the control-plane console
+// (/ui/admin/control-plane). Nil-safe (page renders "not wired").
+func WithProposalStore(repo persistence.ProposalRepository) ServerOption {
+	return func(s *Server) { s.proposalStore = repo }
+}
+
+// WithProposalApplier wires the apply/rollback engine. Typed-nil-safe.
+func WithProposalApplier(a proposalApplier) ServerOption {
+	return func(s *Server) {
+		if e, ok := a.(*controlplane.ApplyEngine); ok && e == nil {
+			return
+		}
+		if a == nil {
+			return
+		}
+		s.proposalApplier = a
 	}
 }
 

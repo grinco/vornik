@@ -929,6 +929,8 @@ func (s *Server) adminRouter(w http.ResponseWriter, r *http.Request) {
 		s.AdminInstincts(w, r)
 	case "/skills", "/skills/":
 		s.AdminSkills(w, r)
+	case "/control-plane", "/control-plane/":
+		s.AdminControlPlane(w, r)
 	case "/blackbox", "/blackbox/":
 		s.AdminBlackBox(w, r)
 	case "/blackbox/overrides", "/blackbox/overrides/":

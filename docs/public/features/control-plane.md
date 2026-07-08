@@ -91,6 +91,16 @@ their own proposal** — approval is always a separate human decision. So when
 the Tune detector proposes (as `tune-detector`), a human approval always
 clears the gate.
 
+## Web console (Enterprise)
+
+The **Admin → Control plane** page (`/ui/admin/control-plane`) is a browser
+surface over the same ledger: browse proposals by status, read a proposal's
+rationale + diff, and **approve / reject / apply / rollback** with a click. It
+delegates to the same engine as the CLI, so every gate holds — a daemon-scope
+apply needs the "affects all projects" checkbox, and the proposer can't approve
+their own proposal. (The CLI above is the Community path; the console is an
+Enterprise convenience.)
+
 ## `vornikctl doctor --offline`
 
 The escape hatch for when the daemon **won't start**. It runs static checks

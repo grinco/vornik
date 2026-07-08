@@ -45,6 +45,37 @@ func TestAdminSkills_ListsDrafts(t *testing.T) {
 	}
 }
 
+// TestAdminSkills_RendersFullBody is the 2026-07-08 fix: the skills page
+// previously showed only a 400-char truncated preview, so an operator couldn't
+// see what they were approving. The full body must now render (in an
+// expandable "View full skill" block).
+func TestAdminSkills_RendersFullBody(t *testing.T) {
+	repo := newSkillRepoUI(t)
+	// A body longer than the old 400-char cap, with a marker near the very end
+	// that truncation would have cut.
+	body := "# Skill\n\n" + strings.Repeat("Detailed instruction line that must be fully visible.\n", 20) + "\nFINAL_STEP_MARKER_XYZ"
+	if err := repo.Create(context.Background(), &persistence.Skill{
+		ID: "sfull", ProjectID: "p1", Name: "long-skill", Description: "d",
+		Body: body, BodySHA256: "h", Maturity: persistence.SkillMaturityDraft,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	s := NewServer(WithSkillRepository(repo))
+	req := httptest.NewRequest(http.MethodGet, "/admin/skills", nil)
+	rec := httptest.NewRecorder()
+	s.AdminSkills(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	out := rec.Body.String()
+	if !strings.Contains(out, "FINAL_STEP_MARKER_XYZ") {
+		t.Errorf("full skill body must render (end marker missing → still truncated)")
+	}
+	if !strings.Contains(out, "View full skill") {
+		t.Errorf("expandable 'View full skill' toggle missing")
+	}
+}
+
 func TestAdminSkills_ApprovePost(t *testing.T) {
 	repo := newSkillRepoUI(t)
 	if err := repo.Create(context.Background(), &persistence.Skill{

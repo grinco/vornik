@@ -70,10 +70,15 @@ func (c *Container) steeringNotifier() *steering.Notifier {
 		baseURL = c.Config.Auth.ExternalBaseURL
 	}
 	enabled := c.Config != nil && c.Config.SteeringNotificationsEnabled
+	var checkpoints steering.CheckpointReader
+	if c.repos.Messages != nil {
+		checkpoints = c.repos.Messages // enables decision-option buttons on steering prompts
+	}
 	return steering.New(
 		c.repos.ChatAudit,
 		&containerChannelResolver{c: c},
 		c.steeringTaskGetter(),
+		checkpoints,
 		baseURL,
 		enabled,
 		c.Logger.With().Str("component", "steering").Logger(),

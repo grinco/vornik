@@ -65,9 +65,10 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cq *struct {
 		return b.answerCallbackQuery(ctx, cq.ID, "This button is from an older version of the bot. Please start a fresh chat.", false)
 	}
 
-	var chatID int64
+	var chatID, msgID int64
 	if cq.Message != nil {
 		chatID = cq.Message.Chat.ID
+		msgID = cq.Message.ID
 	}
 	userID := cq.From.ID
 
@@ -102,6 +103,8 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cq *struct {
 		err = b.handleProjectCallback(ctx, chatID, userID, cq.ID, action, payload)
 	case "skill":
 		err = b.handleSkillCallback(ctx, cq.ID, userID, action, payload)
+	case "steer":
+		err = b.handleSteerCallback(ctx, chatID, userID, cq.ID, msgID, action, payload)
 	default:
 		b.logger.Warn().Str("namespace", ns).Msg("telegram: unknown callback namespace")
 		return b.answerCallbackQuery(ctx, cq.ID, "This action isn't recognised — the bot may have been updated since this button was rendered.", false)

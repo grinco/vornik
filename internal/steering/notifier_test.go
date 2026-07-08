@@ -77,8 +77,9 @@ func newNotifier(t *testing.T, row *persistence.ChatAuditEntry, ch *fakeChannel,
 	if ch != nil {
 		res.byName[ch.name] = ch
 	}
-	// nil task-getter: existing tests exercise the immediate-task path only.
-	return New(fakeAudit{row: row}, res, nil, "https://vornik.example", enabled, zerolog.Nop()), ch
+	// nil task-getter + nil checkpoints: existing tests exercise the
+	// immediate-task, no-button path only.
+	return New(fakeAudit{row: row}, res, nil, nil, "https://vornik.example", enabled, zerolog.Nop()), ch
 }
 
 // TestNotify_ChatOriginatedViaAncestor is the 2026-07-08 fix: a child task
@@ -95,7 +96,7 @@ func TestNotify_ChatOriginatedViaAncestor(t *testing.T) {
 	child := &persistence.Task{ID: "child-1", ProjectID: "p1", ParentTaskID: &parentID} // no ChatTurnID
 	getter := fakeTaskGetter{byID: map[string]*persistence.Task{parentID: parent}}
 
-	n := New(fakeAudit{row: row}, res, getter, "https://vornik.example", true, zerolog.Nop())
+	n := New(fakeAudit{row: row}, res, getter, nil, "https://vornik.example", true, zerolog.Nop())
 	n.NotifySteeringRequired(context.Background(), child, string(persistence.TaskStatusAwaitingInput))
 
 	if len(ch.sent) != 1 {

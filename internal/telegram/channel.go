@@ -64,6 +64,17 @@ func (c *Channel) Send(ctx context.Context, msg conversation.ChannelMessage) (st
 	if err != nil {
 		return "", err
 	}
+	// A message carrying interactive buttons (a steering/approval prompt)
+	// renders as an inline keyboard, never as voice — the operator taps a
+	// choice. The sent message id isn't needed downstream (the edit-to-
+	// recorded path uses the callback query's message id), so return "".
+	if len(msg.Buttons) > 0 {
+		markup := inlineMarkupFromButtons(msg.Buttons)
+		if err := c.bot.sendMessageWithMarkup(ctx, chatID, msg.Text, &markup); err != nil {
+			return "", err
+		}
+		return "", nil
+	}
 	voiceMode := c.bot.shouldReplyAsVoice(chatID)
 	c.bot.logger.Info().
 		Int64("chat_id", chatID).

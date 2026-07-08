@@ -70,7 +70,17 @@
                                     · worked <span class="text-gray-300">{{.UsageWorked}}</span>
                                     · corrected <span class="text-gray-300">{{.UsageCorrected}}</span>
                                 </div>
-                                <pre class="mt-2 whitespace-pre-wrap text-[11px] text-gray-400 bg-dark-900 rounded p-2 max-h-40 overflow-auto">{{.BodyPreview}}</pre>
+                                {{/* Full skill document — collapsed to a teaser so the
+                                     list stays scannable, expandable so the operator
+                                     reads the WHOLE thing before approving (truncated
+                                     preview alone made informed approval impossible). */}}
+                                <details class="mt-2 group">
+                                    <summary class="cursor-pointer list-none flex items-center gap-1 text-[11px] text-brand-400 hover:text-brand-300 select-none">
+                                        <span class="group-open:hidden">▸ View full skill ({{len .Body}} chars)</span>
+                                        <span class="hidden group-open:inline">▾ Hide skill</span>
+                                    </summary>
+                                    <pre class="mt-2 whitespace-pre-wrap text-[11px] text-gray-300 bg-dark-900 rounded p-2 max-h-[60vh] overflow-auto">{{.Body}}</pre>
+                                </details>
                             </div>
                             <div class="flex flex-col gap-2 shrink-0">
                                 {{if .CanApprove}}

@@ -365,6 +365,11 @@ func (c *Container) initTelegram() error {
 	if c.Scheduler != nil {
 		botOpts = append(botOpts, telegram.WithRescheduler(c.Scheduler))
 	}
+	if c.Executor != nil {
+		// Steering "Reject" taps cancel an approval task + cascade to its
+		// children (reuses Executor.CancelChildren).
+		botOpts = append(botOpts, telegram.WithChildCanceller(c.Executor))
+	}
 	// Operator-profile cross-channel linking (/link slash command).
 	// All three repos are required; missing any disables the
 	// command with a clear operator message rather than 500ing.

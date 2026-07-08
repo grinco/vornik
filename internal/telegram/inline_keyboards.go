@@ -3,6 +3,8 @@ package telegram
 import (
 	"fmt"
 	"strings"
+
+	"vornik.io/vornik/internal/conversation"
 )
 
 // Inline-keyboard primitives — 2026.6.0 SaaS-readiness feature 3.
@@ -102,6 +104,29 @@ func KeyboardGrid(cols int, buttons ...Button) InlineKeyboardMarkup {
 		rows = append(rows, current)
 	}
 	return InlineKeyboardMarkup{InlineKeyboard: rows}
+}
+
+// inlineMarkupFromButtons converts the channel-agnostic
+// [][]conversation.MessageButton (rows) into the Telegram
+// InlineKeyboardMarkup wire shape, preserving the caller's row layout. A
+// button whose callback data exceeds the 64-byte cap is dropped (logged
+// nowhere — the builder is the steering notifier, which encodes compactly;
+// this is a defensive backstop, not a hot path). Empty rows are skipped.
+func inlineMarkupFromButtons(rows [][]conversation.MessageButton) InlineKeyboardMarkup {
+	out := make([][]inlineKeyboardButton, 0, len(rows))
+	for _, row := range rows {
+		cells := make([]inlineKeyboardButton, 0, len(row))
+		for _, b := range row {
+			if b.Label == "" || len(b.CallbackData) > inlineButtonMaxBytes {
+				continue
+			}
+			cells = append(cells, inlineKeyboardButton{Text: b.Label, CallbackData: b.CallbackData})
+		}
+		if len(cells) > 0 {
+			out = append(out, cells)
+		}
+	}
+	return InlineKeyboardMarkup{InlineKeyboard: out}
 }
 
 // EncodeCallback formats a (namespace, action, payload) tuple into

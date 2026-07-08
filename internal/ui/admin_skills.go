@@ -26,12 +26,16 @@ type AdminSkillRow struct {
 	ID          string
 	Name        string
 	Description string
-	BodyPreview string
-	ProjectID   string
-	RepoScope   string
-	Domain      string
-	OriginTask  string
-	Maturity    string
+	// Body is the FULL skill document, rendered in an expandable block so the
+	// operator can read exactly what they're approving. Previously only a
+	// truncated preview was shown, making informed approval impossible
+	// (2026-07-08 operator report).
+	Body       string
+	ProjectID  string
+	RepoScope  string
+	Domain     string
+	OriginTask string
+	Maturity   string
 	// Roles are the swarm roles this skill injects into (empty = any
 	// role). Surfaced so the operator sees a skill's role scoping.
 	Roles []string
@@ -123,8 +127,8 @@ func (s *Server) AdminSkills(w http.ResponseWriter, r *http.Request) {
 		}
 		data.Rows = append(data.Rows, AdminSkillRow{
 			ID: sk.ID, Name: sk.Name, Description: sk.Description,
-			BodyPreview: skillBodyPreview(sk.Body, 400),
-			ProjectID:   sk.ProjectID, RepoScope: sk.RepoScope, Domain: sk.Domain,
+			Body:      strings.TrimSpace(sk.Body),
+			ProjectID: sk.ProjectID, RepoScope: sk.RepoScope, Domain: sk.Domain,
 			OriginTask: sk.OriginTask, Maturity: sk.Maturity, IsGlobal: sk.IsGlobal,
 			Roles:      sk.Roles,
 			UsageFired: sk.UsageFired, UsageWorked: sk.UsageWorked, UsageCorrected: sk.UsageCorrected,

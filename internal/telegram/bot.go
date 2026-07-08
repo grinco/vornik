@@ -402,6 +402,7 @@ type Bot struct {
 	// the right thread. All nil-safe.
 	taskMessageRepo persistence.TaskMessageRepository
 	rescheduler     Rescheduler
+	childCanceller  ChildCanceller
 	notifTracker    *taskNotifTracker
 
 	// Operator-profile cross-channel linking (Phase A finalisation,
@@ -571,6 +572,15 @@ type Rescheduler interface {
 	Wake()
 }
 
+// ChildCanceller cascades a cancel to a task's non-terminal children — the
+// executor's CancelChildren, wired in so a Telegram "Reject" tap on an
+// approval task doesn't leave orphaned RUNNING/QUEUED children. Optional;
+// nil skips the cascade (the parent still transitions to CANCELLED). Separate
+// type to avoid a cross-package import of internal/executor.
+type ChildCanceller interface {
+	CancelChildren(ctx context.Context, parentTaskID string)
+}
+
 // WithTaskMessageRepository wires the conversational task
 // lifecycle backing for reply routing (Phase 28).
 func WithTaskMessageRepository(repo persistence.TaskMessageRepository) BotOption {
@@ -660,6 +670,14 @@ func WithPollerStateRepository(repo persistence.TelegramPollerStateRepository, b
 func WithRescheduler(r Rescheduler) BotOption {
 	return func(b *Bot) {
 		b.rescheduler = r
+	}
+}
+
+// WithChildCanceller wires the child-cascade used when a steering "Reject"
+// tap cancels an approval task (so its children are cancelled too). Optional.
+func WithChildCanceller(c ChildCanceller) BotOption {
+	return func(b *Bot) {
+		b.childCanceller = c
 	}
 }
 
@@ -2859,11 +2877,30 @@ func (b *Bot) editMessageText(ctx context.Context, chatID, messageID int64, text
 	if len(text) > 4096 {
 		text = text[:4093] + "..."
 	}
-	body, _ := json.Marshal(map[string]any{
+	return b.editMessageTextAndMarkup(ctx, chatID, messageID, text, nil)
+}
+
+// editMessageTextAndMarkup edits a message's text AND its inline keyboard in
+// one call. markup=nil leaves the keyboard untouched; a non-nil markup
+// replaces it — pass a markup with an empty InlineKeyboard to STRIP the
+// buttons (the "✓ recorded" path, so a tapped steering prompt visibly stops
+// looking actionable). Empty text is a no-op (Telegram rejects it).
+func (b *Bot) editMessageTextAndMarkup(ctx context.Context, chatID, messageID int64, text string, markup *InlineKeyboardMarkup) error {
+	if text == "" {
+		return nil
+	}
+	if len(text) > 4096 {
+		text = text[:4093] + "..."
+	}
+	payload := map[string]any{
 		"chat_id":    chatID,
 		"message_id": messageID,
 		"text":       text,
-	})
+	}
+	if markup != nil {
+		payload["reply_markup"] = markup
+	}
+	body, _ := json.Marshal(payload)
 	url := fmt.Sprintf("%s/editMessageText", b.baseURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {

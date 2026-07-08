@@ -197,6 +197,22 @@ type ChannelMessage struct {
 	// Send implementation reads it back to reconstruct the
 	// upstream wire shape for replies.
 	ChannelSpecific map[string]string
+
+	// Buttons, when non-empty, requests interactive choice buttons on the
+	// sent message (rows of buttons). Channels that support them (Telegram
+	// inline keyboards) render them and route a tap back via the button's
+	// CallbackData; channels that don't (email) ignore the field. Used by
+	// the steering notifier to turn a decision-checkpoint / approval prompt
+	// into tap-to-answer buttons instead of a "reply with text" prompt.
+	Buttons [][]MessageButton
+}
+
+// MessageButton is one interactive button on a ChannelMessage. Label is what
+// the operator sees; CallbackData is the opaque token the channel routes back
+// on tap (for Telegram it must be ≤64 bytes — the caller encodes compactly).
+type MessageButton struct {
+	Label        string
+	CallbackData string
 }
 
 // Attachment is the generic file-attachment envelope. Channels

@@ -10,11 +10,18 @@ import (
 	"vornik.io/vornik/internal/persistence/sqlite"
 )
 
-// fakeMetrics returns a scripted rate per tick.
-type fakeMetrics struct{ ret map[string]RateSample }
+// fakeMetrics returns scripted signals per tick.
+type fakeMetrics struct {
+	ret  map[string]RateSample
+	lats map[string]LatencySample
+}
 
 func (f *fakeMetrics) FailedTaskRates(_ context.Context) (map[string]RateSample, error) {
 	return f.ret, nil
+}
+
+func (f *fakeMetrics) LatencyP95s(_ context.Context) (map[string]LatencySample, error) {
+	return f.lats, nil
 }
 
 func newTuneTestRepo(t *testing.T) persistence.ProposalRepository {
@@ -42,9 +49,10 @@ func draftCount(t *testing.T, repo persistence.ProposalRepository) int {
 func newTuneWorker(repo persistence.ProposalRepository, m MetricsSource) *TuneWorker {
 	return &TuneWorker{
 		Proposals: repo, Metrics: m, Interval: 1, // Interval only matters for Run
-		Threshold: 0.5, MinSamples: 5, BreachesToPropose: 3,
-		Logger:   zerolog.Nop(),
-		breaches: map[string]int{},
+		Threshold: 0.5, LatencyThresholdSeconds: 300, MinSamples: 5, BreachesToPropose: 3,
+		Logger:          zerolog.Nop(),
+		failedBreaches:  map[string]int{},
+		latencyBreaches: map[string]int{},
 	}
 }
 
@@ -71,6 +79,27 @@ func TestTune_ProposesOnSustainedBreach(t *testing.T) {
 	w.tick(ctx)
 	if n := draftCount(t, repo); n != 1 {
 		t.Fatalf("open DRAFT must dedup; expected still 1, got %d", n)
+	}
+}
+
+func TestTune_ProposesOnSustainedLatencyBreach(t *testing.T) {
+	repo := newTuneTestRepo(t)
+	m := &fakeMetrics{lats: map[string]LatencySample{"janka": {P95Seconds: 420, Count: 8}}}
+	w := newTuneWorker(repo, m)
+	ctx := context.Background()
+	w.tick(ctx)
+	w.tick(ctx)
+	if n := draftCount(t, repo); n != 0 {
+		t.Fatalf("must not propose before 3 consecutive latency breaches, got %d", n)
+	}
+	w.tick(ctx)
+	if n := draftCount(t, repo); n != 1 {
+		t.Fatalf("expected 1 latency proposal on the 3rd breach, got %d", n)
+	}
+	// The proposal must be the latency one (distinct from failed-rate).
+	ps, _ := repo.List(ctx, persistence.ProposalListFilter{ProjectID: "janka"})
+	if len(ps) != 1 || ps[0].Title != tuneLatencyTitle("janka") {
+		t.Fatalf("expected the latency-titled proposal, got %+v", ps)
 	}
 }
 

@@ -265,6 +265,11 @@ func (m *MockExecutionRepository) FailedRateByProject(_ context.Context, _ time.
 	return map[string]persistence.ExecFailedRate{}, nil
 }
 
+// LatencyP95ByProject implements ExecutionRepository.
+func (m *MockExecutionRepository) LatencyP95ByProject(_ context.Context, _ time.Time) (map[string]persistence.ExecLatencyStat, error) {
+	return map[string]persistence.ExecLatencyStat{}, nil
+}
+
 // GetRoleQuality implements ExecutionRepository.
 func (m *MockExecutionRepository) GetRoleQuality(ctx context.Context, projectID string, since time.Duration) (map[string]*persistence.RoleQuality, error) {
 	m.CallCount.GetRoleQuality++

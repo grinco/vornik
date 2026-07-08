@@ -372,6 +372,44 @@ func (r *ExecutionRepository) FailedRateByProject(ctx context.Context, since tim
 	return out, rows.Err()
 }
 
+// LatencyP95ByProject returns per-project p95 wall-clock duration (seconds)
+// of COMPLETED executions finished at/after `since`. Duration is computed in
+// SQL (EPOCH diff); p95 is computed in Go per project.
+func (r *ExecutionRepository) LatencyP95ByProject(ctx context.Context, since time.Time) (map[string]persistence.ExecLatencyStat, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT project_id, EXTRACT(EPOCH FROM (completed_at - started_at)) AS dur
+		FROM executions
+		WHERE status = 'COMPLETED' AND completed_at IS NOT NULL AND started_at IS NOT NULL
+		      AND completed_at >= $1
+	`, since.UTC())
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer func() { _ = rows.Close() }()
+	byProject := make(map[string][]float64)
+	for rows.Next() {
+		var project string
+		var dur float64
+		if err := rows.Scan(&project, &dur); err != nil {
+			return nil, err
+		}
+		if dur < 0 {
+			dur = 0
+		}
+		byProject[project] = append(byProject[project], dur)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]persistence.ExecLatencyStat, len(byProject))
+	for project, durs := range byProject {
+		out[project] = persistence.ExecLatencyStat{
+			P95Seconds: persistence.P95Seconds(durs), Count: int64(len(durs)),
+		}
+	}
+	return out, nil
+}
+
 // GetRoleQuality aggregates per-role output quality stats for a project
 // over a rolling time window. It uses execution_step_outcomes rather than
 // tool_audit_log so roles that produce valid output without calling tools

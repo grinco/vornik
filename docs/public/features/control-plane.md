@@ -26,8 +26,16 @@ DRAFT ──approve──▶ APPROVED        (you then action it by hand — Pha
 
 Proposals come from you (via the CLI) or from a **Tune detector** — a
 leader-gated watcher that raises a DRAFT when a project's health signal
-degrades (e.g. a sustained high failed-task rate), so a regression surfaces as
-a reviewable suggestion rather than something you have to notice yourself.
+degrades, so a regression surfaces as a reviewable suggestion rather than
+something you have to notice yourself. It watches two signals over a rolling
+window and only fires after a **sustained** breach (three consecutive scans):
+
+- **failed-task rate** — too many executions failing;
+- **p95 latency** — executions taking too long.
+
+So a project that starts failing or slowing down produces a DRAFT proposal
+("investigate the failing step / consider a faster model or a timeout change")
+you can review with `vornikctl cp proposals`.
 
 ### `vornikctl control-plane` (alias `cp`)
 

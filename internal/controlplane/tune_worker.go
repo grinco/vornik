@@ -28,14 +28,24 @@ type RateSample struct {
 	Rate   float64 // Failed / Total; 0 when Total == 0
 }
 
+// LatencySample is one project's execution-latency p95 (seconds) over the
+// window, with the sample count it was computed from.
+type LatencySample struct {
+	P95Seconds float64
+	Count      int
+}
+
 // MetricsSource supplies the per-project signals the Tune worker watches.
-// Phase 1 tracks one concrete signal (failed-task rate) computed from the
-// executions table; more signals (latency p95, empty-completion) come with
-// the metric gap-analysis in a later phase.
+// Phase 1 tracks two concrete signals computed from the executions table
+// (failed-task rate + latency p95); an empty-completion signal comes with the
+// metric gap-analysis in a later phase.
 type MetricsSource interface {
 	// FailedTaskRates returns, per project id, the failed-task rate over the
 	// worker's window.
 	FailedTaskRates(ctx context.Context) (map[string]RateSample, error)
+	// LatencyP95s returns, per project id, the execution-latency p95 over the
+	// worker's window.
+	LatencyP95s(ctx context.Context) (map[string]LatencySample, error)
 }
 
 // TuneWorker is the leader-gated failed-rate detector.
@@ -45,19 +55,30 @@ type TuneWorker struct {
 	Interval  time.Duration
 
 	// Threshold is the failed-rate at/above which a project is "breaching"
-	// (default 0.5). MinSamples avoids proposing off tiny samples (default 5).
-	// BreachesToPropose is how many CONSECUTIVE breaching ticks before a
-	// proposal is raised (default 3), so a single bad window doesn't fire.
-	Threshold         float64
-	MinSamples        int
-	BreachesToPropose int
+	// (default 0.5). LatencyThresholdSeconds is the execution p95 at/above
+	// which the latency signal breaches (default 300s). MinSamples avoids
+	// proposing off tiny samples (default 5). BreachesToPropose is how many
+	// CONSECUTIVE breaching ticks before a proposal is raised (default 3), so
+	// a single bad window doesn't fire.
+	Threshold               float64
+	LatencyThresholdSeconds float64
+	MinSamples              int
+	BreachesToPropose       int
 
 	LeaderGate LeaderGate
 	Logger     zerolog.Logger
 
-	// breaches counts consecutive breaching ticks per project.
-	breaches map[string]int
-	stopped  chan struct{}
+	// per-signal consecutive-breach counters, keyed by project.
+	failedBreaches  map[string]int
+	latencyBreaches map[string]int
+	stopped         chan struct{}
+}
+
+func (w *TuneWorker) latencyThreshold() float64 {
+	if w.LatencyThresholdSeconds > 0 {
+		return w.LatencyThresholdSeconds
+	}
+	return 300
 }
 
 func (w *TuneWorker) threshold() float64 {
@@ -91,8 +112,11 @@ func (w *TuneWorker) Run(ctx context.Context) {
 		w.Logger.Debug().Msg("tune worker disabled by config")
 		return
 	}
-	if w.breaches == nil {
-		w.breaches = map[string]int{}
+	if w.failedBreaches == nil {
+		w.failedBreaches = map[string]int{}
+	}
+	if w.latencyBreaches == nil {
+		w.latencyBreaches = map[string]int{}
 	}
 	if w.stopped == nil {
 		w.stopped = make(chan struct{})
@@ -127,51 +151,94 @@ func (w *TuneWorker) Stopped() <-chan struct{} {
 	return w.stopped
 }
 
-// tick reads the signals and proposes for any project that has been breaching
+// tick reads each signal and proposes for any project that has been breaching
 // for BreachesToPropose consecutive ticks.
 func (w *TuneWorker) tick(ctx context.Context) {
+	w.scanFailedRate(ctx)
+	w.scanLatency(ctx)
+}
+
+func (w *TuneWorker) scanFailedRate(ctx context.Context) {
 	rates, err := w.Metrics.FailedTaskRates(ctx)
 	if err != nil {
-		w.Logger.Warn().Err(err).Msg("tune: failed to read metrics")
+		w.Logger.Warn().Err(err).Msg("tune: failed to read failed-rate metrics")
 		return
 	}
 	seen := map[string]bool{}
 	for project, s := range rates {
 		seen[project] = true
 		breaching := s.Total >= w.minSamples() && s.Rate >= w.threshold()
-		if !breaching {
-			delete(w.breaches, project)
+		if !w.advanceStreak(w.failedBreaches, project, breaching) {
 			continue
 		}
-		w.breaches[project]++
-		if w.breaches[project] < w.breachesToPropose() {
-			continue
-		}
-		w.maybePropose(ctx, project, s)
-		// Reset so we don't re-propose every subsequent tick; a fresh
-		// sustained breach after a decision starts the count over.
-		delete(w.breaches, project)
+		w.propose(ctx, project, tuneFailedRateTitle(project),
+			fmt.Sprintf("Failed-task rate %.0f%% (%d/%d) over the scan window, sustained for %d consecutive scans — above the %.0f%% threshold. Investigate the failing step (logs/traces) or consider a model/timeout change.",
+				s.Rate*100, s.Failed, s.Total, w.breachesToPropose(), w.threshold()*100),
+			fmt.Sprintf(`{"signal":"failed_task_rate","rate":%.3f,"failed":%d,"total":%d}`, s.Rate, s.Failed, s.Total),
+		)
 	}
-	// Projects that dropped out of the sample this tick reset.
-	for p := range w.breaches {
+	w.resetAbsent(w.failedBreaches, seen)
+}
+
+func (w *TuneWorker) scanLatency(ctx context.Context) {
+	lats, err := w.Metrics.LatencyP95s(ctx)
+	if err != nil {
+		w.Logger.Warn().Err(err).Msg("tune: failed to read latency metrics")
+		return
+	}
+	seen := map[string]bool{}
+	for project, s := range lats {
+		seen[project] = true
+		breaching := s.Count >= w.minSamples() && s.P95Seconds >= w.latencyThreshold()
+		if !w.advanceStreak(w.latencyBreaches, project, breaching) {
+			continue
+		}
+		w.propose(ctx, project, tuneLatencyTitle(project),
+			fmt.Sprintf("Execution p95 latency %.0fs (n=%d) over the scan window, sustained for %d consecutive scans — above the %.0fs threshold. Investigate slow steps/tools or consider a faster model or a step-timeout change.",
+				s.P95Seconds, s.Count, w.breachesToPropose(), w.latencyThreshold()),
+			fmt.Sprintf(`{"signal":"latency_p95_seconds","p95":%.1f,"count":%d}`, s.P95Seconds, s.Count),
+		)
+	}
+	w.resetAbsent(w.latencyBreaches, seen)
+}
+
+// advanceStreak increments project's consecutive-breach counter and reports
+// whether it just reached the propose threshold (resetting it so we don't
+// re-propose every subsequent tick). A non-breaching tick resets the streak.
+func (w *TuneWorker) advanceStreak(counters map[string]int, project string, breaching bool) bool {
+	if !breaching {
+		delete(counters, project)
+		return false
+	}
+	counters[project]++
+	if counters[project] >= w.breachesToPropose() {
+		delete(counters, project)
+		return true
+	}
+	return false
+}
+
+// resetAbsent clears streaks for projects that dropped out of this tick's
+// sample entirely (no data == not breaching).
+func (w *TuneWorker) resetAbsent(counters map[string]int, seen map[string]bool) {
+	for p := range counters {
 		if !seen[p] {
-			delete(w.breaches, p)
+			delete(counters, p)
 		}
 	}
 }
 
-// maybePropose writes a DRAFT proposal unless an open (DRAFT) one already
-// exists for this project's failed-rate signal (dedup so the ledger doesn't
-// fill with duplicates while the operator hasn't decided yet).
-func (w *TuneWorker) maybePropose(ctx context.Context, project string, s RateSample) {
-	title := tuneFailedRateTitle(project)
+// propose writes a DRAFT proposal unless an open (DRAFT) one with the same
+// title already exists for this project (dedup so the ledger doesn't fill
+// with duplicates while the operator hasn't decided yet).
+func (w *TuneWorker) propose(ctx context.Context, project, title, rationale, evidence string) {
 	existing, err := w.Proposals.List(ctx, persistence.ProposalListFilter{
 		ProjectID: project, Statuses: []string{persistence.ProposalStatusDraft},
 	})
 	if err == nil {
 		for _, p := range existing {
 			if p.Title == title {
-				return // already an open proposal for this signal
+				return
 			}
 		}
 	}
@@ -181,11 +248,9 @@ func (w *TuneWorker) maybePropose(ctx context.Context, project string, s RateSam
 		Kind:        persistence.ProposalKindConfig,
 		BlastRadius: persistence.ProposalScopeProject,
 		Title:       title,
-		Rationale: fmt.Sprintf(
-			"Failed-task rate %.0f%% (%d/%d) over the scan window, sustained for %d consecutive scans — above the %.0f%% threshold. Investigate the failing step (logs/traces) or consider a model/timeout change.",
-			s.Rate*100, s.Failed, s.Total, w.breachesToPropose(), w.threshold()*100),
-		Evidence: fmt.Sprintf(`{"signal":"failed_task_rate","rate":%.3f,"failed":%d,"total":%d}`, s.Rate, s.Failed, s.Total),
-		Status:   persistence.ProposalStatusDraft,
+		Rationale:   rationale,
+		Evidence:    evidence,
+		Status:      persistence.ProposalStatusDraft,
 		// The proposer is the detector, never a human — so a human approving
 		// it always satisfies the no-self-approval gate.
 		ProposedBy: "tune-detector",
@@ -194,10 +259,14 @@ func (w *TuneWorker) maybePropose(ctx context.Context, project string, s RateSam
 		w.Logger.Warn().Err(err).Str("project", project).Msg("tune: failed to create proposal")
 		return
 	}
-	w.Logger.Info().Str("project", project).Str("proposal_id", p.ID).
-		Float64("failed_rate", s.Rate).Msg("tune: raised DRAFT proposal for high failed-task rate")
+	w.Logger.Info().Str("project", project).Str("proposal_id", p.ID).Str("title", title).
+		Msg("tune: raised DRAFT proposal")
 }
 
 func tuneFailedRateTitle(project string) string {
 	return "Tune: high failed-task rate on " + project
+}
+
+func tuneLatencyTitle(project string) string {
+	return "Tune: high p95 latency on " + project
 }

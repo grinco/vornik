@@ -7,6 +7,8 @@ package persistence
 
 import (
 	"context"
+	"math"
+	"sort"
 	"time"
 )
 
@@ -207,6 +209,32 @@ type ExecFailedRate struct {
 	Total  int64
 }
 
+// ExecLatencyStat is one project's execution-latency p95 over a window
+// (control-plane Tune detector's latency signal).
+type ExecLatencyStat struct {
+	P95Seconds float64
+	Count      int64
+}
+
+// P95Seconds returns the 95th-percentile value of durs (seconds) by the
+// nearest-rank method. Returns 0 for an empty input. Mutates order (sorts).
+func P95Seconds(durs []float64) float64 {
+	n := len(durs)
+	if n == 0 {
+		return 0
+	}
+	sort.Float64s(durs)
+	// nearest-rank: ceil(0.95 * n), 1-indexed → clamp to [1,n].
+	rank := int(math.Ceil(0.95*float64(n))) - 1
+	if rank < 0 {
+		rank = 0
+	}
+	if rank >= n {
+		rank = n - 1
+	}
+	return durs[rank]
+}
+
 type ExecutionRepository interface {
 	// Create inserts a new execution into the database.
 	Create(ctx context.Context, execution *Execution) error
@@ -309,6 +337,12 @@ type ExecutionRepository interface {
 	// Powers the control-plane Tune detector's failed-task-rate signal.
 	// Projects with no terminal executions in the window are omitted.
 	FailedRateByProject(ctx context.Context, since time.Time) (map[string]ExecFailedRate, error)
+
+	// LatencyP95ByProject returns, per project, the p95 wall-clock duration
+	// (seconds) of COMPLETED executions finished at/after `since` (those with
+	// both started_at and completed_at). Powers the Tune detector's latency
+	// signal. Projects with no such executions are omitted.
+	LatencyP95ByProject(ctx context.Context, since time.Time) (map[string]ExecLatencyStat, error)
 
 	// GetRoleQuality returns per-role output quality stats for a project
 	// within the given time window. Keyed by execution_step_outcomes.role.

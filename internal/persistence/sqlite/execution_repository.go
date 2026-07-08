@@ -391,6 +391,43 @@ func (r *ExecutionRepository) FailedRateByProject(ctx context.Context, since tim
 	return out, rows.Err()
 }
 
+// LatencyP95ByProject returns per-project p95 wall-clock duration (seconds)
+// of COMPLETED executions finished at/after `since`. Duration is computed in
+// SQL (julianday diff → seconds); p95 is computed in Go per project.
+func (r *ExecutionRepository) LatencyP95ByProject(ctx context.Context, since time.Time) (map[string]persistence.ExecLatencyStat, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT project_id, (julianday(completed_at) - julianday(started_at)) * 86400.0 AS dur
+		FROM executions
+		WHERE status = 'COMPLETED' AND completed_at IS NOT NULL AND started_at IS NOT NULL
+		      AND completed_at >= ?`, sqliteTime(since.UTC()))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	byProject := make(map[string][]float64)
+	for rows.Next() {
+		var project string
+		var dur float64
+		if err := rows.Scan(&project, &dur); err != nil {
+			return nil, err
+		}
+		if dur < 0 {
+			dur = 0
+		}
+		byProject[project] = append(byProject[project], dur)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]persistence.ExecLatencyStat, len(byProject))
+	for project, durs := range byProject {
+		out[project] = persistence.ExecLatencyStat{
+			P95Seconds: persistence.P95Seconds(durs), Count: int64(len(durs)),
+		}
+	}
+	return out, nil
+}
+
 // List returns executions matching filter, newest-first.
 func (r *ExecutionRepository) List(ctx context.Context, filter persistence.ExecutionFilter) ([]*persistence.Execution, error) {
 	var b strings.Builder

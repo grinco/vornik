@@ -49,3 +49,40 @@ func TestFailedRateByProject(t *testing.T) {
 		t.Errorf("p2: want failed=0 total=1, got %+v", got["p2"])
 	}
 }
+
+// TestLatencyP95ByProject — per-project p95 of COMPLETED execution durations
+// in the window; only COMPLETED with both timestamps count.
+func TestLatencyP95ByProject(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	repo := sqlite.NewExecutionRepository(db.DB)
+	now := time.Now().UTC()
+
+	// p1: 10 completed executions with durations 10s..100s (completed_at
+	// recent). p95 (nearest-rank of 10) = ceil(9.5)=10th = 100s.
+	for i := 1; i <= 10; i++ {
+		start := now.Add(-time.Duration(i) * time.Minute)
+		if err := repo.Create(ctx, &persistence.Execution{
+			ID: "l" + string(rune('a'+i)), TaskID: "t", ProjectID: "p1",
+			Status:      persistence.ExecutionStatusCompleted,
+			CreatedAt:   start,
+			StartedAt:   &start,
+			CompletedAt: ptrTime(start.Add(time.Duration(i*10) * time.Second)),
+		}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	got, err := repo.LatencyP95ByProject(ctx, now.Add(-6*time.Hour))
+	if err != nil {
+		t.Fatalf("LatencyP95ByProject: %v", err)
+	}
+	st := got["p1"]
+	if st.Count != 10 {
+		t.Fatalf("want count 10, got %d", st.Count)
+	}
+	if st.P95Seconds < 99 || st.P95Seconds > 101 {
+		t.Errorf("p95 ≈ 100s expected, got %.2f", st.P95Seconds)
+	}
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }

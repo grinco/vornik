@@ -21,14 +21,14 @@ const (
 	tuneWindow       = 6 * time.Hour
 )
 
-// execFailedRateSource adapts the ExecutionRepository's windowed failed-rate
+// execMetricsSource adapts the ExecutionRepository's windowed failed-rate + latency
 // query to the controlplane.MetricsSource the Tune worker consumes.
-type execFailedRateSource struct {
+type execMetricsSource struct {
 	execs  persistence.ExecutionRepository
 	window time.Duration
 }
 
-func (s execFailedRateSource) FailedTaskRates(ctx context.Context) (map[string]controlplane.RateSample, error) {
+func (s execMetricsSource) FailedTaskRates(ctx context.Context) (map[string]controlplane.RateSample, error) {
 	stats, err := s.execs.FailedRateByProject(ctx, time.Now().Add(-s.window))
 	if err != nil {
 		return nil, err
@@ -44,6 +44,18 @@ func (s execFailedRateSource) FailedTaskRates(ctx context.Context) (map[string]c
 	return out, nil
 }
 
+func (s execMetricsSource) LatencyP95s(ctx context.Context) (map[string]controlplane.LatencySample, error) {
+	stats, err := s.execs.LatencyP95ByProject(ctx, time.Now().Add(-s.window))
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]controlplane.LatencySample, len(stats))
+	for project, st := range stats {
+		out[project] = controlplane.LatencySample{P95Seconds: st.P95Seconds, Count: int(st.Count)}
+	}
+	return out, nil
+}
+
 // startTuneWorker wires + starts the control-plane Tune detector, leader-gated
 // so only one replica scans. Nil-safe: a no-op when the proposal ledger or
 // execution repo isn't wired (minimal harnesses).
@@ -53,7 +65,7 @@ func (c *Container) startTuneWorker(ctx context.Context) {
 	}
 	w := &controlplane.TuneWorker{
 		Proposals: c.repos.Proposals,
-		Metrics:   execFailedRateSource{execs: c.repos.Executions, window: tuneWindow},
+		Metrics:   execMetricsSource{execs: c.repos.Executions, window: tuneWindow},
 		Interval:  tuneScanInterval,
 		Logger:    c.Logger.With().Str("component", "control-plane").Str("worker", "tune").Logger(),
 	}

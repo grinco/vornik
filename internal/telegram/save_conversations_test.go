@@ -25,8 +25,8 @@ func TestSaveConversations_WritesToDisk(t *testing.T) {
 	sessionPath := filepath.Join(dir, "sessions.json")
 	bot.config.SessionPath = sessionPath
 	bot.mu.Lock()
-	bot.conversations[1] = &chat.Conversation{}
-	bot.conversations[2] = &chat.Conversation{}
+	bot.conversations[convKey{chatID: 1}] = &chat.Conversation{}
+	bot.conversations[convKey{chatID: 2}] = &chat.Conversation{}
 	bot.mu.Unlock()
 	bot.saveConversations()
 	info, err := os.Stat(sessionPath)

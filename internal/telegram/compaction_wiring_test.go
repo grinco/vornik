@@ -22,7 +22,7 @@ func TestWithCompactor_TunesNewConversations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}
-	conv := b.getConversation(999)
+	conv := b.getConversation(999, "")
 	for i := 0; i < 12; i++ {
 		conv.AddMessage(chat.Message{Role: "user", Content: strings.Repeat("x", 80)})
 	}
@@ -44,7 +44,7 @@ func TestNoCompactor_LegacyTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}
-	conv := b.getConversation(998)
+	conv := b.getConversation(998, "")
 	for i := 0; i < 12; i++ {
 		conv.AddMessage(chat.Message{Role: "user", Content: strings.Repeat("x", 80)})
 	}

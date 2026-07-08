@@ -107,8 +107,8 @@ func TestActiveChatCount_TracksConversations(t *testing.T) {
 	// HandleMessage path. chat.Conversation is the shared per-chat
 	// state struct the dispatcher reuses across all channels.
 	bot.mu.Lock()
-	bot.conversations[1] = &chat.Conversation{}
-	bot.conversations[2] = &chat.Conversation{}
+	bot.conversations[convKey{chatID: 1}] = &chat.Conversation{}
+	bot.conversations[convKey{chatID: 2}] = &chat.Conversation{}
 	bot.mu.Unlock()
 	if got := bot.ActiveChatCount(); got != 2 {
 		t.Errorf("after seeding: got %d, want 2", got)

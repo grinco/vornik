@@ -162,6 +162,13 @@ type Message struct {
 	// the voice.* tags on ChannelSpecific. Populated by
 	// handleVoiceAttachment on success; zero value otherwise.
 	VoiceTranscript voiceTranscript
+	// ProjectOverride pins this turn to a specific project regardless of the
+	// chat's current /project pin. Set on the synthetic task-completion
+	// followup so it runs against the COMPLETED TASK's project lane + lead
+	// persona, not whatever the operator switched to after scheduling it
+	// (2026-07-08 fix). Empty = use the chat's active project. Carried to the
+	// dispatcher via ChannelSpecific["project_override"].
+	ProjectOverride string
 }
 
 // voiceTranscript mirrors voice.Transcript at the package boundary.
@@ -317,8 +324,14 @@ type Bot struct {
 	// (gpt-oss-20b, gemma-4-26b) are recommended.
 	intentJudgeModel string
 
-	mu             sync.RWMutex
-	conversations  map[int64]*chat.Conversation
+	mu sync.RWMutex
+	// conversations is keyed by (chatID, project): each chat keeps a SEPARATE
+	// history lane per project, so switching projects mid-chat (/project) no
+	// longer mixes or destroys another project's context, and a task-completion
+	// followup runs against ITS task's project lane, not the chat's current one
+	// (2026-07-08 fix). The per-chat "current project" pointer stays in
+	// activeProjects[chatID]; "" (no project pinned) is its own lane.
+	conversations  map[convKey]*chat.Conversation
 	activeProjects map[int64]string
 	receiverLocks  map[int64]*sync.Mutex
 	rateLimits     map[int64]*rateLimitEntry
@@ -1184,9 +1197,10 @@ func (b *Bot) triggerFollowup(task *persistence.Task, success bool, message stri
 		Int64("chat_id", chatID).
 		Msg("auto-resume: routing follow-up through ConversationChannel receiver")
 	go b.handleReceiverTurn(r, &Message{
-		ChatID: chatID,
-		UserID: 0,
-		Text:   syntheticText,
+		ChatID:          chatID,
+		UserID:          0,
+		Text:            syntheticText,
+		ProjectOverride: fu.projectID, // pin to the completed task's project lane
 	})
 }
 
@@ -1281,6 +1295,9 @@ func (b *Bot) deliverCoalescedTurn(turnID string, chatID int64) {
 		b.followupMu.Unlock()
 
 		syntheticText := b.composeSyntheticTurn(outcomes)
+		// Coalesced outcomes share a chat_turn_id — same originating dispatcher
+		// turn, hence the same project. Pin the followup to that project's lane.
+		followupProject := outcomes[0].fu.projectID
 
 		b.logger.Info().
 			Str("chat_turn_id", turnID).
@@ -1290,9 +1307,10 @@ func (b *Bot) deliverCoalescedTurn(turnID string, chatID int64) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), b.effectiveDispatchTimeout())
 		cm := MessageToChannelMessage(&Message{
-			ChatID: chatID,
-			UserID: 0,
-			Text:   syntheticText,
+			ChatID:          chatID,
+			UserID:          0,
+			Text:            syntheticText,
+			ProjectOverride: followupProject,
 		})
 		start := time.Now()
 		err := r.Receive(ctx, cm)
@@ -2068,7 +2086,7 @@ func NewBot(config BotConfig, chatClient chat.Provider, opts ...BotOption) (*Bot
 	b := &Bot{
 		config:           config,
 		llmClient:        chatClient,
-		conversations:    make(map[int64]*chat.Conversation),
+		conversations:    make(map[convKey]*chat.Conversation),
 		activeProjects:   make(map[int64]string),
 		receiverLocks:    make(map[int64]*sync.Mutex),
 		verbosity:        make(map[int64]string),
@@ -2121,7 +2139,8 @@ func (b *Bot) Start(ctx context.Context) error {
 			b.mu.Lock()
 			for chatID, conv := range loaded {
 				b.tuneConversation(conv)
-				b.conversations[chatID] = conv
+				// Legacy disk sessions carry no project → the no-project lane.
+				b.conversations[convKey{chatID: chatID}] = conv
 			}
 			b.mu.Unlock()
 			b.logger.Info().Int("count", len(loaded)).Msg("restored conversations from disk")
@@ -2174,9 +2193,14 @@ func (b *Bot) saveConversations() {
 		return
 	}
 	b.mu.RLock()
+	// Legacy disk format is keyed by chat id; save the ACTIVE lane per chat
+	// (the operator's current conversation). Non-active project lanes are
+	// in-memory-only and don't survive to the disk snapshot.
 	convs := make(map[int64]*chat.Conversation, len(b.conversations))
 	for k, v := range b.conversations {
-		convs[k] = v
+		if k.project == b.activeProjects[k.chatID] {
+			convs[k.chatID] = v
+		}
 	}
 	b.mu.RUnlock()
 
@@ -2952,16 +2976,25 @@ func (b *Bot) setVerbosity(chatID int64, mode string) {
 // getConversation returns or creates a conversation for the given chat ID.
 // If SessionTTL is configured and the conversation has been idle longer than
 // the TTL, it is silently reset before being returned.
-func (b *Bot) getConversation(chatID int64) *chat.Conversation {
+// convKey identifies a per-(chat, project) conversation lane. project "" is the
+// no-project lane (a chat with no /project pinned). Keying by both means a
+// mid-chat /project switch selects a different lane instead of mixing or
+// destroying the previous project's history.
+type convKey struct {
+	chatID  int64
+	project string
+}
+
+func (b *Bot) getConversation(chatID int64, project string) *chat.Conversation {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-
-	if conv, ok := b.conversations[chatID]; ok {
+	key := convKey{chatID: chatID, project: project}
+	if conv, ok := b.conversations[key]; ok {
 		if b.config.SessionTTL > 0 && time.Since(conv.LastUsed()) > b.config.SessionTTL {
-			b.logger.Info().Int64("chat_id", chatID).
+			b.logger.Info().Int64("chat_id", chatID).Str("project", project).
 				Dur("ttl", b.config.SessionTTL).
 				Msg("session expired — starting fresh")
-			delete(b.conversations, chatID)
+			delete(b.conversations, key)
 		} else {
 			return conv
 		}
@@ -2972,21 +3005,18 @@ func (b *Bot) getConversation(chatID int64) *chat.Conversation {
 		maxHistory = 20
 	}
 
-	conv := chat.NewConversation(fmt.Sprintf("telegram-%d", chatID), maxHistory)
+	conv := chat.NewConversation(fmt.Sprintf("telegram-%d-%s", chatID, project), maxHistory)
 	b.tuneConversation(conv)
-	b.conversations[chatID] = conv
+	b.conversations[key] = conv
 	return conv
 }
 
-// resetConversation clears the conversation for the given chat ID.
-// Also drops the persisted row so a replica failover doesn't replay
-// the just-cleared conversation. The DB delete fires after the
-// in-memory clear and is best-effort (logged but doesn't block the
-// caller — the in-memory state is the authoritative truth for the
-// current process).
-func (b *Bot) resetConversation(chatID int64) {
+// resetConversation clears the (chat, project) lane. Also drops the persisted
+// row (keyed by the bare chat id — the active lane) so a replica failover
+// doesn't replay the just-cleared conversation. Best-effort DB delete.
+func (b *Bot) resetConversation(chatID int64, project string) {
 	b.mu.Lock()
-	delete(b.conversations, chatID)
+	delete(b.conversations, convKey{chatID: chatID, project: project})
 	persister := b.sessionPersister
 	b.mu.Unlock()
 	if persister != nil {
@@ -2994,44 +3024,61 @@ func (b *Bot) resetConversation(chatID int64) {
 	}
 }
 
-// hasInMemorySession reports whether the bot's cache already has a
-// conversation for chatID. SessionStore.Load uses it to decide
-// whether to hydrate from the DB on a cache miss — without this
-// check we'd hit the DB on every inbound message instead of only
-// the post-restart / post-failover first one.
-func (b *Bot) hasInMemorySession(chatID int64) bool {
+// resetInMemoryConversation drops ONLY the in-memory (chat, project) lane,
+// leaving any persisted row untouched. SessionStore.Append uses it to clear a
+// lane before replacing it with the authoritative post-turn slice — without
+// deleting the persisted (bare-chat-id) ACTIVE row, which a non-active
+// followup lane must not clobber.
+func (b *Bot) resetInMemoryConversation(chatID int64, project string) {
+	b.mu.Lock()
+	delete(b.conversations, convKey{chatID: chatID, project: project})
+	b.mu.Unlock()
+}
+
+// hasInMemorySession reports whether the cache already has the (chat, project)
+// lane. SessionStore.Load uses it to decide whether to hydrate from the DB on a
+// cache miss (only the post-restart / post-failover first touch).
+func (b *Bot) hasInMemorySession(chatID int64, project string) bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	_, ok := b.conversations[chatID]
+	_, ok := b.conversations[convKey{chatID: chatID, project: project}]
 	return ok
 }
 
-// hydrateSession populates the bot's in-memory cache from a
-// persisted DB row. Called by SessionStore.Load when
-// hasInMemorySession returned false and the persister surfaced a
-// session. Subsequent getConversation / getActiveProject calls
-// then see the rehydrated state transparently.
-func (b *Bot) hydrateSession(chatID int64, messages []chat.Message, activeProject string) {
+// hasAnyInMemorySession reports whether the chat has ANY lane cached — used to
+// gate the one-time post-restart pin+active-lane restore.
+func (b *Bot) hasAnyInMemorySession(chatID int64) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for k := range b.conversations {
+		if k.chatID == chatID {
+			return true
+		}
+	}
+	return false
+}
+
+// hydrateSession populates the (chat, project) lane from a persisted DB row.
+// Called by SessionStore.Load on a cache miss. The active-project pin is
+// restored by the caller (SessionStore), not here.
+func (b *Bot) hydrateSession(chatID int64, project string, messages []chat.Message) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if _, exists := b.conversations[chatID]; exists {
-		// Concurrent inbound message already populated the cache —
-		// don't clobber its (potentially newer) state.
+	key := convKey{chatID: chatID, project: project}
+	if _, exists := b.conversations[key]; exists {
+		// Concurrent inbound already populated the lane — don't clobber it.
 		return
 	}
 	maxHistory := b.config.MaxHistory
 	if maxHistory <= 0 {
 		maxHistory = 20
 	}
-	conv := chat.NewConversation(fmt.Sprintf("telegram-%d", chatID), maxHistory)
+	conv := chat.NewConversation(fmt.Sprintf("telegram-%d-%s", chatID, project), maxHistory)
 	b.tuneConversation(conv)
 	for _, m := range messages {
 		conv.AddMessage(m)
 	}
-	b.conversations[chatID] = conv
-	if activeProject != "" {
-		b.activeProjects[chatID] = activeProject
-	}
+	b.conversations[key] = conv
 }
 
 // sessionPersisterRef returns the wired persister (nil-safe). Read

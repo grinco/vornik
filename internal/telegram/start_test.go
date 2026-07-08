@@ -100,7 +100,7 @@ func TestBotStart_RestoresSessionsFromDisk(t *testing.T) {
 	if got := b.ActiveChatCount(); got != 1 {
 		t.Errorf("active chats after restore: got %d, want 1", got)
 	}
-	conv := b.getConversation(100)
+	conv := b.getConversation(100, "")
 	if conv.Len() != 1 {
 		t.Errorf("restored conv: Len=%d, want 1", conv.Len())
 	}

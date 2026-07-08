@@ -51,7 +51,7 @@ func TestHandleMessage_ContextCommand(t *testing.T) {
 		AllowedUsers: map[int64]UserAccess{42: {Allowed: true, Projects: []string{"*"}}},
 	})
 	// Plant a message so /context has something to report.
-	conv := b.getConversation(100)
+	conv := b.getConversation(100, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "hi"})
 
 	snap := runCommand(t, b, rec, 100, 42, "/context")
@@ -79,7 +79,7 @@ func TestHandleMessage_UndoRemovesLastTurn(t *testing.T) {
 		Token:        "tok",
 		AllowedUsers: map[int64]UserAccess{42: {Allowed: true, Projects: []string{"*"}}},
 	})
-	conv := b.getConversation(100)
+	conv := b.getConversation(100, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "q"})
 	conv.AddMessage(chat.Message{Role: "assistant", Content: "a"})
 
@@ -116,7 +116,7 @@ func TestHandleMessage_ForgetDropsN(t *testing.T) {
 		Token:        "tok",
 		AllowedUsers: map[int64]UserAccess{42: {Allowed: true, Projects: []string{"*"}}},
 	})
-	conv := b.getConversation(100)
+	conv := b.getConversation(100, "")
 	for i := 0; i < 5; i++ {
 		conv.AddMessage(chat.Message{Role: "user", Content: "x"})
 	}
@@ -149,7 +149,7 @@ func TestHandleMessage_PinAddsPinnedMessage(t *testing.T) {
 	if !strings.Contains(snap[0].Text, "Pinned") {
 		t.Errorf("pin: %q", snap[0].Text)
 	}
-	pinned := b.getConversation(100).PinnedMessages()
+	pinned := b.getConversation(100, "").PinnedMessages()
 	if len(pinned) != 1 || !strings.Contains(pinned[0].Content, "be concise") {
 		t.Errorf("pinned: %+v", pinned)
 	}
@@ -195,7 +195,7 @@ func TestHandleMessage_NewCommand(t *testing.T) {
 		Token:        "tok",
 		AllowedUsers: map[int64]UserAccess{42: {Allowed: true, Projects: []string{"*"}}},
 	})
-	conv := b.getConversation(100)
+	conv := b.getConversation(100, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "stuff"})
 
 	snap := runCommand(t, b, rec, 100, 42, "/new")
@@ -215,7 +215,7 @@ func TestHandleMessage_SaveAndLoad(t *testing.T) {
 	b, rec := newBotWithRecorder(t, cfg)
 
 	// Plant some history so /save has content.
-	conv := b.getConversation(100)
+	conv := b.getConversation(100, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "remember this"})
 	conv.AddMessage(chat.Message{Role: "assistant", Content: "ok"})
 
@@ -242,7 +242,7 @@ func TestHandleMessage_SaveDisabledWithoutPath(t *testing.T) {
 		Token:        "tok",
 		AllowedUsers: map[int64]UserAccess{42: {Allowed: true, Projects: []string{"*"}}},
 	})
-	conv := b.getConversation(100)
+	conv := b.getConversation(100, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "x"})
 
 	snap := runCommand(t, b, rec, 100, 42, "/save x")
@@ -430,7 +430,7 @@ func TestHandleMessage_PinDoesNotIncludeCommandPrefix(t *testing.T) {
 	_ = b.HandleMessage(context.Background(), &Message{
 		ID: 1, ChatID: 100, UserID: 42, Text: "/pin Always reply in JSON",
 	})
-	pins := b.getConversation(100).PinnedMessages()
+	pins := b.getConversation(100, "").PinnedMessages()
 	if len(pins) != 1 {
 		t.Fatalf("pin count: got %d, want 1", len(pins))
 	}

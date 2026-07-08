@@ -97,7 +97,7 @@ func TestTelegramSessionStore_Append_WritesThroughToPersister(t *testing.T) {
 	}
 
 	// In-memory state still updated.
-	conv := bot.getConversation(100).GetMessages()
+	conv := bot.getConversation(100, "proj-tg").GetMessages()
 	if len(conv) != 2 || conv[0].Content != "hi" || conv[1].Content != "hello" {
 		t.Errorf("in-memory conv unexpected: %+v", conv)
 	}
@@ -138,7 +138,7 @@ func TestTelegramSessionStore_Load_RehydratesFromPersister(t *testing.T) {
 	bot.sessionPersister = sessionstore.New(repo, "telegram", zerolog.Nop())
 
 	// Pre-condition: cache is empty.
-	if bot.hasInMemorySession(200) {
+	if bot.hasInMemorySession(200, "") {
 		t.Fatal("setup: bot should have no cache entry for chat 200")
 	}
 
@@ -156,7 +156,7 @@ func TestTelegramSessionStore_Load_RehydratesFromPersister(t *testing.T) {
 	}
 
 	// Cache should now report present.
-	if !bot.hasInMemorySession(200) {
+	if !bot.hasInMemorySession(200, "proj-restored") {
 		t.Errorf("bot cache should be populated after hydrate")
 	}
 }
@@ -177,7 +177,7 @@ func TestTelegramSessionStore_Load_SkipsHydrateWhenCacheWarm(t *testing.T) {
 	bot.sessionPersister = sessionstore.New(repo, "telegram", zerolog.Nop())
 	// Warm the cache with FRESHER content (mimics a chat that's
 	// been active in this process since boot).
-	freshConv := bot.getConversation(300)
+	freshConv := bot.getConversation(300, "")
 	freshConv.AddMessage(chat.Message{Role: "user", Content: "fresh-in-memory"})
 
 	store := NewSessionStore(bot, nil)
@@ -216,7 +216,7 @@ func TestTelegramSessionStore_ResetConversation_DeletesPersistedRow(t *testing.T
 		t.Fatalf("DB row should exist before reset; got %v", err)
 	}
 
-	bot.resetConversation(400)
+	bot.resetConversation(400, "")
 
 	if _, err := repo.Load(context.Background(), "telegram", "400"); err == nil {
 		t.Errorf("DB row should be gone after resetConversation")
@@ -238,7 +238,7 @@ func TestTelegramSessionStore_Append_NilPersisterStaysInMemoryOnly(t *testing.T)
 	if err != nil {
 		t.Errorf("nil-persister Append should not error: %v", err)
 	}
-	got := bot.getConversation(500).GetMessages()
+	got := bot.getConversation(500, "").GetMessages()
 	if len(got) != 1 || got[0].Content != "x" {
 		t.Errorf("in-memory state mismatch: %+v", got)
 	}
@@ -267,14 +267,14 @@ func TestBotHydrateSession_ConcurrentDoesNotClobber(t *testing.T) {
 
 	// Pre-populate via the normal path so we know what fresh
 	// content looks like.
-	bot.getConversation(600).AddMessage(chat.Message{Role: "user", Content: "winner"})
+	bot.getConversation(600, "").AddMessage(chat.Message{Role: "user", Content: "winner"})
 
 	// Now attempt to hydrate with DIFFERENT content — the guard
 	// inside hydrateSession should detect the existing entry
 	// and skip.
-	bot.hydrateSession(600, []chat.Message{{Role: "user", Content: "loser"}}, "loser-project")
+	bot.hydrateSession(600, "", []chat.Message{{Role: "user", Content: "loser"}})
 
-	got := bot.getConversation(600).GetMessages()
+	got := bot.getConversation(600, "").GetMessages()
 	if len(got) != 1 || got[0].Content != "winner" {
 		t.Errorf("hydrate clobbered existing cache: %+v", got)
 	}

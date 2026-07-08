@@ -331,6 +331,12 @@ func MessageToChannelMessage(msg *Message) conversation.ChannelMessage {
 			cs["voice.language"] = msg.VoiceTranscript.Language
 		}
 	}
+	// Pin a followup turn to the completed task's project (2026-07-08). The
+	// SessionStore reads this to select the (chat, project) lane + lead persona
+	// instead of the chat's current /project pin.
+	if msg.ProjectOverride != "" {
+		cs["project_override"] = msg.ProjectOverride
+	}
 	var inReplyTo string
 	if msg.ReplyToMessageID != 0 {
 		inReplyTo = strconv.FormatInt(msg.ReplyToMessageID, 10)

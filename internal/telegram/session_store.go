@@ -80,17 +80,24 @@ func (s *SessionStore) Load(ctx context.Context, msg conversation.ChannelMessage
 		return dispatcher.Session{}, fmt.Errorf("telegram: SessionID %q is not a chat_id: %w", msg.SessionID, err)
 	}
 
-	// Restart / replica-failover rehydrate. The first inbound on a
-	// chat after a process boot finds an empty in-memory cache;
-	// pull the persisted history (if any) and populate the bot's
-	// conversations + activeProjects maps before getConversation
-	// runs. Errors are logged inside the persister and ignored
-	// here — a transient DB blip just degrades us to "fresh
-	// session" for this turn, same as the pre-feature behaviour.
-	if persister := s.bot.sessionPersisterRef(); persister != nil && !s.bot.hasInMemorySession(chatID) {
+	// Restart / replica-failover rehydrate. On the first touch of a chat with
+	// no in-memory lane, pull the persisted (bare-chat-id = ACTIVE) row — which
+	// restores BOTH the active-project pin and that lane's history — before we
+	// resolve which lane this turn uses. Errors are logged inside the persister
+	// and ignored here (a transient DB blip just degrades to a fresh session).
+	if persister := s.bot.sessionPersisterRef(); persister != nil && !s.bot.hasAnyInMemorySession(chatID) {
 		if hist, ap, found, err := persister.Load(ctx, msg.SessionID); err == nil && found {
-			s.bot.hydrateSession(chatID, hist, ap)
+			s.bot.setActiveProject(chatID, ap)
+			s.bot.hydrateSession(chatID, ap, hist)
 		}
+	}
+	// A task-completion followup pins this turn to the completed task's project
+	// (ChannelSpecific["project_override"]); otherwise use the chat's active
+	// project. This is what makes T-3641's followup run under ITS project's
+	// lead + lane, not whatever the operator switched to afterward.
+	project := msg.ChannelSpecific["project_override"]
+	if project == "" {
+		project = s.bot.getActiveProject(chatID)
 	}
 	// SpeakerID is optional on synthetic / system inbounds. Only
 	// parse + check when it's present so server-internal callers
@@ -107,13 +114,15 @@ func (s *SessionStore) Load(ctx context.Context, msg conversation.ChannelMessage
 		}
 	}
 
-	conv := s.bot.getConversation(chatID)
+	conv := s.bot.getConversation(chatID, project)
 	// MessagesForLLM applies read-path compaction when a compactor is wired
 	// (overflow turns become a topic gist); without one it returns the same
 	// payload GetMessages() would. Persistence (Append) still stores raw
 	// history — compaction is a send-time view only.
 	history := conv.MessagesForLLM()
-	activeProject := s.bot.getActiveProject(chatID)
+	// The dispatcher runs under THIS turn's project (followup override or the
+	// chat's active pin), which drives the lead persona below.
+	activeProject := project
 	estimatedTokens := conv.EstimateTokens() + len(msg.Text)/approximateCharsPerToken
 
 	sess := dispatcher.Session{
@@ -163,24 +172,37 @@ func (s *SessionStore) Append(ctx context.Context, msg conversation.ChannelMessa
 		return fmt.Errorf("telegram: Append SessionID %q is not a chat_id: %w", msg.SessionID, err)
 	}
 
+	// The project this turn ran under: a followup override, else the chat's
+	// active pin (captured before any switch below).
+	turnProject := msg.ChannelSpecific["project_override"]
+	if turnProject == "" {
+		turnProject = s.bot.getActiveProject(chatID)
+	}
+	// A switch_project within the turn moves the ACTIVE pin and lands the
+	// post-turn history in the destination lane.
+	laneProject := turnProject
 	if result.NewProject != "" && result.NewProject != s.bot.getActiveProject(chatID) {
 		s.bot.setActiveProject(chatID, result.NewProject)
+		laneProject = result.NewProject
 	}
 
-	s.bot.resetConversation(chatID)
-	conv := s.bot.getConversation(chatID)
+	// Replace the lane's in-memory history with the authoritative post-turn
+	// slice. In-memory-only reset so a NON-active followup lane doesn't delete
+	// the persisted active row.
+	s.bot.resetInMemoryConversation(chatID, laneProject)
+	conv := s.bot.getConversation(chatID, laneProject)
 	for _, m := range result.Messages {
 		conv.AddMessage(m)
 	}
 
-	// Write-through to Postgres so a daemon restart or replica
-	// failover doesn't drop this conversation. The DB row is
-	// post-turn-authoritative: full history + active project.
-	// Note: resetConversation above already fired a Delete on the
-	// persisted row; the Save below replaces it with the
-	// post-turn slice — net effect is one upserted row per turn.
-	if persister := s.bot.sessionPersisterRef(); persister != nil {
-		_ = persister.Save(ctx, msg.SessionID, s.bot.getActiveProject(chatID), result.Messages)
+	// Persist ONLY the ACTIVE lane (bare chat id) so a restart restores the
+	// operator's current conversation. A followup to a non-active project
+	// updates its lane in memory but must not clobber the persisted active row.
+	// Save is an upsert (one row per turn).
+	if laneProject == s.bot.getActiveProject(chatID) {
+		if persister := s.bot.sessionPersisterRef(); persister != nil {
+			_ = persister.Save(ctx, msg.SessionID, laneProject, result.Messages)
+		}
 	}
 	return nil
 }

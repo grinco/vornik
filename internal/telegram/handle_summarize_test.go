@@ -53,7 +53,7 @@ func TestHandleSummarize_LLMError(t *testing.T) {
 	bot, calls, cleanup := makeSummarizeBot(t, prov)
 	defer cleanup()
 	// Seed a conversation so we get past the "empty conversation" guard.
-	conv := bot.getConversation(111)
+	conv := bot.getConversation(111, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "hi"})
 	conv.AddMessage(chat.Message{Role: "assistant", Content: "hello"})
 
@@ -77,7 +77,7 @@ func TestHandleSummarize_EmptyChoices(t *testing.T) {
 	}
 	bot, calls, cleanup := makeSummarizeBot(t, prov)
 	defer cleanup()
-	conv := bot.getConversation(111)
+	conv := bot.getConversation(111, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "hi"})
 
 	if err := bot.handleSummarize(context.Background(), 111); err != nil {
@@ -106,7 +106,7 @@ func TestHandleSummarize_Success_ReplacesHistory(t *testing.T) {
 	}
 	bot, calls, cleanup := makeSummarizeBot(t, prov)
 	defer cleanup()
-	conv := bot.getConversation(111)
+	conv := bot.getConversation(111, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "long history"})
 	conv.AddMessage(chat.Message{Role: "assistant", Content: "...messages..."})
 	conv.AddMessage(chat.Message{Role: "user", Content: "more"})

@@ -185,7 +185,7 @@ func TestBot_GetConversation_UsesConfiguredMaxHistory(t *testing.T) {
 	}, chatClient)
 	assert.NoError(t, err)
 
-	conv := bot.getConversation(12345)
+	conv := bot.getConversation(12345, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "1"})
 	conv.AddMessage(chat.Message{Role: "assistant", Content: "2"})
 	conv.AddMessage(chat.Message{Role: "user", Content: "3"})
@@ -225,13 +225,13 @@ func TestHandleNew_ResetsConversation(t *testing.T) {
 	}, nil)
 	assert.NoError(t, err)
 
-	conv := bot.getConversation(12345)
+	conv := bot.getConversation(12345, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "hello"})
 	assert.Equal(t, 1, conv.Len())
 
 	result := handleNew(context.Background(), bot, 12345, 0)
 
-	conv = bot.getConversation(12345)
+	conv = bot.getConversation(12345, "")
 	assert.Equal(t, 0, conv.Len())
 	assert.Contains(t, result, "New session")
 }

@@ -135,7 +135,7 @@ Ask me naturally:
 }
 
 func handleNew(_ context.Context, b *Bot, chatID int64, _ int64) string {
-	b.resetConversation(chatID)
+	b.resetConversation(chatID, b.getActiveProject(chatID))
 	b.saveConversations()
 	return "New session started. How can I help you?"
 }
@@ -416,9 +416,10 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 					"You are not authorized for project '%s'.", projectID))
 			}
 			b.setActiveProject(msg.ChatID, projectID)
-			// Reset conversation — stale tool messages from the previous
-			// persona confuse the new lead.
-			b.resetConversation(msg.ChatID)
+			// Per-project conversation lanes (2026-07-08): switching selects a
+			// SEPARATE (chat, project) lane, so the previous persona's messages
+			// stay in their own lane instead of leaking into the new project —
+			// no destructive reset needed, and switching back resumes that lane.
 			b.saveConversations()
 
 			// Check if the project has a lead agent.
@@ -431,7 +432,7 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 
 		// /context — show session stats.
 		if cmd == "/context" {
-			conv := b.getConversation(msg.ChatID)
+			conv := b.getConversation(msg.ChatID, b.getActiveProject(msg.ChatID))
 			project := b.getActiveProject(msg.ChatID)
 			if project == "" {
 				project = "(none)"
@@ -455,7 +456,7 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 
 		// /undo — remove last user message + assistant response.
 		if cmd == "/undo" {
-			conv := b.getConversation(msg.ChatID)
+			conv := b.getConversation(msg.ChatID, b.getActiveProject(msg.ChatID))
 			removed := conv.Undo()
 			if removed == 0 {
 				return b.sendMessage(ctx, msg.ChatID, "Nothing to undo.")
@@ -473,7 +474,7 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 			if err != nil || n <= 0 {
 				return b.sendMessage(ctx, msg.ChatID, "Usage: /forget <number> (positive integer)")
 			}
-			conv := b.getConversation(msg.ChatID)
+			conv := b.getConversation(msg.ChatID, b.getActiveProject(msg.ChatID))
 			dropped := conv.DropLast(n)
 			b.saveConversations()
 			return b.sendMessage(ctx, msg.ChatID, fmt.Sprintf("Dropped %d message(s). %d remaining.", dropped, conv.Len()))
@@ -485,7 +486,7 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 				return b.sendMessage(ctx, msg.ChatID, "Usage: /pin <message text>")
 			}
 			text := strings.TrimPrefix(msg.Text, "/pin ")
-			conv := b.getConversation(msg.ChatID)
+			conv := b.getConversation(msg.ChatID, b.getActiveProject(msg.ChatID))
 			conv.Pin(chat.Message{Role: "system", Content: text})
 			b.saveConversations()
 			return b.sendMessage(ctx, msg.ChatID, fmt.Sprintf("Pinned: %s\n\nThis instruction persists across /new resets.", text))
@@ -503,7 +504,7 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 				return b.sendMessage(ctx, msg.ChatID, "Session persistence is disabled (no session_path configured).")
 			}
 			name := parts[1]
-			conv := b.getConversation(msg.ChatID)
+			conv := b.getConversation(msg.ChatID, b.getActiveProject(msg.ChatID))
 			if conv.Len() == 0 {
 				return b.sendMessage(ctx, msg.ChatID, "Nothing to save — this conversation is empty.")
 			}
@@ -539,7 +540,8 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 				return b.sendMessage(ctx, msg.ChatID, fmt.Sprintf("Load failed: %v", err))
 			}
 			b.mu.Lock()
-			b.conversations[msg.ChatID] = loaded
+			// Load into the chat's ACTIVE project lane.
+			b.conversations[convKey{chatID: msg.ChatID, project: b.activeProjects[msg.ChatID]}] = loaded
 			b.mu.Unlock()
 			b.saveConversations()
 			return b.sendMessage(ctx, msg.ChatID, fmt.Sprintf("Loaded %q (%d message(s)). Prior conversation discarded.", name, loaded.Len()))
@@ -736,7 +738,7 @@ func (b *Bot) handleSummarize(ctx context.Context, chatID int64) error {
 		return b.sendMessage(ctx, chatID, "LLM client not available.")
 	}
 
-	conv := b.getConversation(chatID)
+	conv := b.getConversation(chatID, b.getActiveProject(chatID))
 	msgs := conv.GetMessages()
 	if len(msgs) == 0 {
 		return b.sendMessage(ctx, chatID, "Nothing to summarize — conversation is empty.")

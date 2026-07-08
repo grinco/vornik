@@ -137,7 +137,7 @@ func TestTelegramSessionStore_Load_ActiveProjectPropagates(t *testing.T) {
 // dispatcher hop.
 func TestTelegramSessionStore_Load_HistoryFromConversation(t *testing.T) {
 	bot := newBareTestBot(t, BotConfig{Token: "t"})
-	conv := bot.getConversation(100)
+	conv := bot.getConversation(100, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "first"})
 	conv.AddMessage(chat.Message{Role: "assistant", Content: "reply"})
 
@@ -201,7 +201,7 @@ func TestTelegramSessionStore_Load_ContextTierEstimated(t *testing.T) {
 		Token:            "t",
 		MaxHistoryTokens: 1000,
 	})
-	conv := bot.getConversation(100)
+	conv := bot.getConversation(100, "")
 	// chars/4 estimator — push tokens above the DEGRADING threshold.
 	conv.AddMessage(chat.Message{Role: "user", Content: string(make([]byte, 4000))})
 
@@ -265,7 +265,7 @@ func TestTelegramSessionStore_Append_SetsActiveProject(t *testing.T) {
 func TestTelegramSessionStore_Append_ReplacesConversation(t *testing.T) {
 	bot := newBareTestBot(t, BotConfig{Token: "t"})
 	// Pre-seed something the Append should overwrite.
-	bot.getConversation(100).AddMessage(chat.Message{Role: "user", Content: "old"})
+	bot.getConversation(100, "").AddMessage(chat.Message{Role: "user", Content: "old"})
 
 	store := NewSessionStore(bot, nil)
 	err := store.Append(context.Background(), msg(100, 42, ""), dispatcher.Result{
@@ -277,7 +277,7 @@ func TestTelegramSessionStore_Append_ReplacesConversation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	got := bot.getConversation(100).GetMessages()
+	got := bot.getConversation(100, "").GetMessages()
 	if len(got) != 2 || got[0].Content != "new" || got[1].Content != "reply" {
 		t.Errorf("conversation = %+v, want new + reply", got)
 	}
@@ -289,14 +289,14 @@ func TestTelegramSessionStore_Append_ReplacesConversation(t *testing.T) {
 // in that case (mirrors githubSessionStore's defensive guard).
 func TestTelegramSessionStore_Append_EmptyMessagesIsNoop(t *testing.T) {
 	bot := newBareTestBot(t, BotConfig{Token: "t"})
-	bot.getConversation(100).AddMessage(chat.Message{Role: "user", Content: "preserved"})
+	bot.getConversation(100, "").AddMessage(chat.Message{Role: "user", Content: "preserved"})
 
 	store := NewSessionStore(bot, nil)
 	err := store.Append(context.Background(), msg(100, 42, ""), dispatcher.Result{})
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	got := bot.getConversation(100).GetMessages()
+	got := bot.getConversation(100, "").GetMessages()
 	if len(got) != 1 || got[0].Content != "preserved" {
 		t.Errorf("history wiped: %+v", got)
 	}

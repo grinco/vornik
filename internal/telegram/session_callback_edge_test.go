@@ -245,7 +245,7 @@ func TestSCE_ForgetMoreThanLengthClamps(t *testing.T) {
 		Token:        "tok",
 		AllowedUsers: map[int64]UserAccess{42: {Allowed: true, Projects: []string{"*"}}},
 	})
-	conv := b.getConversation(100)
+	conv := b.getConversation(100, "")
 	for i := 0; i < 3; i++ {
 		conv.AddMessage(chat.Message{Role: "user", Content: "x"})
 	}
@@ -286,7 +286,7 @@ func TestSCE_PinPreservesExactText(t *testing.T) {
 	})
 	snap := runCommand(t, b, rec, 100, 42, "/pin   Always  reply  in JSON")
 	assert.Contains(t, snap[0].Text, "persists across /new resets")
-	pins := b.getConversation(100).PinnedMessages()
+	pins := b.getConversation(100, "").PinnedMessages()
 	require.Len(t, pins, 1)
 	assert.Equal(t, "system", pins[0].Role, "pinned instructions are pinned as system messages")
 	assert.Equal(t, "  Always  reply  in JSON", pins[0].Content,
@@ -304,7 +304,7 @@ func TestSCE_SaveMultiWordUsesFirstToken(t *testing.T) {
 		SessionPath:  filepath.Join(dir, "s.json"),
 		AllowedUsers: map[int64]UserAccess{42: {Allowed: true, Projects: []string{"*"}}},
 	})
-	conv := b.getConversation(100)
+	conv := b.getConversation(100, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "hi"})
 
 	snap := runCommand(t, b, rec, 100, 42, "/save thread one two")
@@ -341,7 +341,7 @@ func TestSCE_ContextWithActiveProjectAndPin(t *testing.T) {
 		AllowedUsers: map[int64]UserAccess{42: {Allowed: true, Projects: []string{"*"}}},
 	})
 	b.setActiveProject(100, "trader-1")
-	conv := b.getConversation(100)
+	conv := b.getConversation(100, "trader-1")
 	conv.AddMessage(chat.Message{Role: "user", Content: "hello"})
 	conv.Pin(chat.Message{Role: "system", Content: "be terse"})
 
@@ -360,13 +360,13 @@ func TestSCE_NewResetsConversation(t *testing.T) {
 		Token:        "tok",
 		AllowedUsers: map[int64]UserAccess{42: {Allowed: true, Projects: []string{"*"}}},
 	})
-	conv := b.getConversation(100)
+	conv := b.getConversation(100, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "stuff"})
 	require.Positive(t, conv.Len())
 
 	snap := runCommand(t, b, rec, 100, 42, "/new")
 	assert.Contains(t, snap[0].Text, "New session started")
-	assert.Equal(t, 0, b.getConversation(100).Len(),
+	assert.Equal(t, 0, b.getConversation(100, "").Len(),
 		"/new must clear the in-memory conversation")
 }
 
@@ -399,7 +399,7 @@ func TestSCE_SaveWriteFailureReported(t *testing.T) {
 		SessionPath:  filepath.Join(blocker, "sessions.json"),
 		AllowedUsers: map[int64]UserAccess{42: {Allowed: true, Projects: []string{"*"}}},
 	})
-	conv := b.getConversation(100)
+	conv := b.getConversation(100, "")
 	conv.AddMessage(chat.Message{Role: "user", Content: "hi"})
 
 	snap := runCommand(t, b, rec, 100, 42, "/save thread-x")

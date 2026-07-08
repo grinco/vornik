@@ -321,7 +321,8 @@ func TestHandleHelp_ReturnsCommands(t *testing.T) {
 	// Session controls
 	for _, want := range []string{
 		"/new", "/context", "/summarize", "/save", "/load", "/search", "/undo", "/forget", "/pin",
-		"/verbose", "/project", "/autopilot", "/inbox", "/help",
+		"/verbose", "/project", "/autopilot", "/inbox",
+		"/tasks", "/status", "/cancel", "/retry", "/help",
 	} {
 		assert.Contains(t, result, want,
 			"help text must advertise %s — undocumented commands are invisible to operators", want)

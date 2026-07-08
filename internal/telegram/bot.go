@@ -865,6 +865,10 @@ func botMenuCommands() []map[string]string {
 		{"command": "project", "description": "Show or switch project"},
 		{"command": "autopilot", "description": "Enable/disable autonomous mode for active project"},
 		{"command": "inbox", "description": "List tasks awaiting your input"},
+		{"command": "tasks", "description": "List recent tasks (active or named project)"},
+		{"command": "status", "description": "Show a task's status + last step"},
+		{"command": "cancel", "description": "Cancel a task"},
+		{"command": "retry", "description": "Retry a failed/terminal task"},
 		{"command": "help", "description": "Show available commands"},
 	}
 }

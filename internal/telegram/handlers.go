@@ -115,6 +115,12 @@ Projects:
 /autopilot on|off - Enable/disable autonomous mode for active project
 /inbox - List tasks awaiting your input (across projects)
 
+Tasks:
+/tasks [project] - List recent tasks (active or named project)
+/status <id> - Show a task's status + last step
+/cancel <id> - Cancel a task
+/retry <id> - Retry a failed/terminal task
+
 Identity:
 /link - Issue a code to consolidate this chat's profile with another channel
 /link <code> - Claim a code from another channel; merges the two profiles
@@ -610,6 +616,21 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 		// https://docs.vornik.io
 		if cmd == "/link" {
 			return b.handleLinkCommand(ctx, msg.ChatID, parts)
+		}
+
+		// Task-control cluster — deterministic, zero-LLM-spend ops commands.
+		// Each scopes to the user's allowed projects and wraps the task repo.
+		if cmd == "/tasks" {
+			return b.sendMessage(ctx, msg.ChatID, b.handleTasksCmd(ctx, msg.UserID, parts))
+		}
+		if cmd == "/status" {
+			return b.sendMessage(ctx, msg.ChatID, b.handleStatusCmd(ctx, msg.UserID, parts))
+		}
+		if cmd == "/cancel" {
+			return b.sendMessage(ctx, msg.ChatID, b.handleCancelCmd(ctx, msg.UserID, parts))
+		}
+		if cmd == "/retry" {
+			return b.sendMessage(ctx, msg.ChatID, b.handleRetryCmd(ctx, msg.UserID, parts))
 		}
 
 		if handler, ok := commands[cmd]; ok {

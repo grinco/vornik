@@ -405,3 +405,151 @@ func taskTitleFromPayload(payload []byte, maxLen int) string {
 	}
 	return p
 }
+
+// --- Task-control command cluster (/tasks /status /cancel /retry) -----------
+//
+// Deterministic, zero-LLM-spend ops commands. All wrap the task repo the bot
+// already holds (no executor/queue on the bot — the scheduler reaper picks up
+// the DB transition, exactly as the reply-router re-queue does). Every command
+// honours the same per-user project scope /inbox uses.
+
+// handleTasksCmd implements /tasks [project] — recent tasks for the active or
+// named project, scoped to the user's allowed projects.
+func (b *Bot) handleTasksCmd(ctx context.Context, userID int64, parts []string) string {
+	if b.taskRepo == nil {
+		return "Tasks unavailable: task repository not configured."
+	}
+	filter := persistence.TaskFilter{PageSize: 15}
+	if len(parts) > 1 && strings.TrimSpace(parts[1]) != "" {
+		project := strings.TrimSpace(parts[1])
+		if !b.UserCanAccessProject(userID, project) {
+			return fmt.Sprintf("You are not authorized for project '%s'.", project)
+		}
+		filter.ProjectID = &project
+	} else if allowed := b.AllowedProjectsForUser(userID); allowed != nil {
+		// Scoped user, no explicit project: constrain to the allowlist in one
+		// query. An empty allowlist (deny-all) yields no rows.
+		if len(allowed) == 0 {
+			return "📭 No tasks — you have no project access."
+		}
+		filter.ProjectIDs = allowed
+	}
+	tasks, err := b.taskRepo.List(ctx, filter)
+	if err != nil {
+		b.logger.Error().Err(err).Msg("/tasks: list failed")
+		return "Failed to list tasks: " + err.Error()
+	}
+	if len(tasks) == 0 {
+		return "📭 No recent tasks."
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "🗂 %d recent task(s):\n\n", len(tasks))
+	for _, t := range tasks {
+		title := taskTitleFromPayload(t.Payload, 60)
+		if title == "" {
+			title = t.ID
+		}
+		fmt.Fprintf(&sb, "• [%s] %s\n  /status %s\n\n", t.Status, title, t.ID)
+	}
+	return sb.String()
+}
+
+// loadScopedTask fetches a task by id and enforces the caller's project scope.
+// Returns (task, "") on success or (nil, message) with an operator-facing
+// reason (missing id / not found / not authorized) to send back verbatim.
+func (b *Bot) loadScopedTask(ctx context.Context, userID int64, parts []string, usage string) (*persistence.Task, string) {
+	if b.taskRepo == nil {
+		return nil, "Task repository not configured."
+	}
+	if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+		return nil, usage
+	}
+	id := strings.TrimSpace(parts[1])
+	t, err := b.taskRepo.Get(ctx, id)
+	if err != nil || t == nil {
+		return nil, fmt.Sprintf("Task '%s' not found.", id)
+	}
+	// Scope check AFTER load, phrased as not-found so a scoped operator can't
+	// probe the existence of other projects' task IDs.
+	if !b.UserCanAccessProject(userID, t.ProjectID) {
+		return nil, fmt.Sprintf("Task '%s' not found.", id)
+	}
+	return t, ""
+}
+
+// handleStatusCmd implements /status <id> — a task's status + last step,
+// composed from the task row + its current/most-recent execution.
+func (b *Bot) handleStatusCmd(ctx context.Context, userID int64, parts []string) string {
+	t, msg := b.loadScopedTask(ctx, userID, parts, "Usage: /status <task-id>")
+	if t == nil {
+		return msg
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Task %s\n  Project: %s\n  Status: %s", t.ID, t.ProjectID, t.Status)
+	if t.MaxAttempts > 0 {
+		fmt.Fprintf(&sb, "  (attempt %d/%d)", t.Attempt, t.MaxAttempts)
+	}
+	if t.CurrentPhase != nil && *t.CurrentPhase != "" {
+		fmt.Fprintf(&sb, "\n  Phase: %s", *t.CurrentPhase)
+	}
+	if b.execRepo != nil {
+		if exec, err := b.execRepo.GetByTaskID(ctx, t.ID); err == nil && exec != nil {
+			if exec.CurrentStepID != nil && *exec.CurrentStepID != "" {
+				fmt.Fprintf(&sb, "\n  Current step: %s", *exec.CurrentStepID)
+			}
+			if len(exec.CompletedSteps) > 0 {
+				fmt.Fprintf(&sb, "\n  Completed steps: %d", len(exec.CompletedSteps))
+			}
+		}
+	}
+	if t.LastError != nil && *t.LastError != "" {
+		le := *t.LastError
+		if len(le) > 200 {
+			le = le[:200] + "…"
+		}
+		fmt.Fprintf(&sb, "\n  Last error: %s", le)
+	}
+	return sb.String()
+}
+
+// handleCancelCmd implements /cancel <id> — atomic conditional cancel via the
+// task repo (the scheduler/executor reaper tears down any running process).
+func (b *Bot) handleCancelCmd(ctx context.Context, userID int64, parts []string) string {
+	t, msg := b.loadScopedTask(ctx, userID, parts, "Usage: /cancel <task-id>")
+	if t == nil {
+		return msg
+	}
+	moved, err := b.taskRepo.TransitionToCancelled(ctx, t.ID)
+	if err != nil {
+		b.logger.Error().Err(err).Str("task_id", t.ID).Msg("/cancel: transition failed")
+		return "Failed to cancel: " + err.Error()
+	}
+	if !moved {
+		return fmt.Sprintf("Task %s is not in a cancellable state (status %s).", t.ID, t.Status)
+	}
+	if b.rescheduler != nil {
+		b.rescheduler.Wake()
+	}
+	return fmt.Sprintf("🛑 Cancelled task %s.", t.ID)
+}
+
+// handleRetryCmd implements /retry <id> — re-queue a terminal (failed /
+// cancelled / completed) task, bumping its attempt budget.
+func (b *Bot) handleRetryCmd(ctx context.Context, userID int64, parts []string) string {
+	t, msg := b.loadScopedTask(ctx, userID, parts, "Usage: /retry <task-id>")
+	if t == nil {
+		return msg
+	}
+	ok, err := b.taskRepo.RequeueTerminalTask(ctx, t.ID, 1, t.MaxAttempts)
+	if err != nil {
+		b.logger.Error().Err(err).Str("task_id", t.ID).Msg("/retry: requeue failed")
+		return "Failed to retry: " + err.Error()
+	}
+	if !ok {
+		return fmt.Sprintf("Task %s can't be retried in status %s (only failed / cancelled / completed tasks).", t.ID, t.Status)
+	}
+	if b.rescheduler != nil {
+		b.rescheduler.Wake()
+	}
+	return fmt.Sprintf("🔁 Re-queued task %s.", t.ID)
+}

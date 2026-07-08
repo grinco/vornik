@@ -22,6 +22,7 @@ func NewProposalRepository(db DBTX) *ProposalRepository { return &ProposalReposi
 
 const proposalColumns = `id, project_id, kind, blast_radius, title, diff, rationale,
 	evidence, status, proposed_by, approver, pre_apply_snapshot,
+	apply_target, apply_content, applied_by,
 	created_at, decided_at, applied_at`
 
 // Create inserts a new proposal, rejecting an oversized text field.
@@ -37,9 +38,10 @@ func (r *ProposalRepository) Create(ctx context.Context, p *persistence.ControlP
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO control_plane_proposals (`+proposalColumns+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.ID, nullStr(p.ProjectID), p.Kind, p.BlastRadius, p.Title, p.Diff, p.Rationale,
 		p.Evidence, p.Status, p.ProposedBy, p.Approver, p.PreApplySnapshot,
+		p.ApplyTarget, p.ApplyContent, p.AppliedBy,
 		sqliteTime(p.CreatedAt), sqliteTimePtr(p.DecidedAt), sqliteTimePtr(p.AppliedAt),
 	)
 	return err
@@ -130,6 +132,50 @@ func (r *ProposalRepository) SetStatus(ctx context.Context, id, status, actor st
 	return nil
 }
 
+// MarkApplied transitions APPROVED → APPLIED, storing snapshot + applied_by.
+func (r *ProposalRepository) MarkApplied(ctx context.Context, id, appliedBy, snapshot string) error {
+	existing, err := r.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if existing.Status != persistence.ProposalStatusApproved {
+		return persistence.ErrProposalNotApproved
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE control_plane_proposals
+		SET status = ?, applied_by = ?, pre_apply_snapshot = ?, applied_at = ?
+		WHERE id = ? AND status = 'APPROVED'`,
+		persistence.ProposalStatusApplied, appliedBy, snapshot, sqliteTime(time.Now().UTC()), id)
+	if err != nil {
+		return err
+	}
+	if n, aerr := res.RowsAffected(); aerr == nil && n == 0 {
+		return persistence.ErrProposalNotApproved
+	}
+	return nil
+}
+
+// MarkRolledBack transitions APPLIED → ROLLED_BACK.
+func (r *ProposalRepository) MarkRolledBack(ctx context.Context, id string) error {
+	existing, err := r.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if existing.Status != persistence.ProposalStatusApplied {
+		return persistence.ErrProposalNotApplied
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE control_plane_proposals SET status = ? WHERE id = ? AND status = 'APPLIED'`,
+		persistence.ProposalStatusRolledBack, id)
+	if err != nil {
+		return err
+	}
+	if n, aerr := res.RowsAffected(); aerr == nil && n == 0 {
+		return persistence.ErrProposalNotApplied
+	}
+	return nil
+}
+
 func scanProposal(sc skillScanner) (*persistence.ControlPlaneProposal, error) {
 	var (
 		p         persistence.ControlPlaneProposal
@@ -141,6 +187,7 @@ func scanProposal(sc skillScanner) (*persistence.ControlPlaneProposal, error) {
 	if err := sc.Scan(
 		&p.ID, &projectID, &p.Kind, &p.BlastRadius, &p.Title, &p.Diff, &p.Rationale,
 		&p.Evidence, &p.Status, &p.ProposedBy, &p.Approver, &p.PreApplySnapshot,
+		&p.ApplyTarget, &p.ApplyContent, &p.AppliedBy,
 		&createdAt, &decidedAt, &appliedAt,
 	); err != nil {
 		return nil, err

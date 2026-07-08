@@ -5213,4 +5213,21 @@ DROP INDEX IF EXISTS idx_cp_proposals_status;
 DROP TABLE IF EXISTS control_plane_proposals;
 `,
 	},
+	{
+		Version: 118,
+		Name:    "control_plane_proposals_apply_columns",
+		// Phase 2 (gated apply): make a proposal applyable + auditable.
+		// apply_target/apply_content carry the op=replace_file change; the
+		// snapshot column already exists (migration 117). Additive.
+		Up: `
+ALTER TABLE control_plane_proposals ADD COLUMN IF NOT EXISTS apply_target  TEXT NOT NULL DEFAULT '';
+ALTER TABLE control_plane_proposals ADD COLUMN IF NOT EXISTS apply_content TEXT NOT NULL DEFAULT '';
+ALTER TABLE control_plane_proposals ADD COLUMN IF NOT EXISTS applied_by    TEXT NOT NULL DEFAULT '';
+`,
+		Down: `
+ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS applied_by;
+ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS apply_content;
+ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS apply_target;
+`,
+	},
 }

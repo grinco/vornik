@@ -1162,6 +1162,9 @@ CREATE TABLE IF NOT EXISTS control_plane_proposals (
     proposed_by        TEXT NOT NULL DEFAULT '',
     approver           TEXT NOT NULL DEFAULT '',
     pre_apply_snapshot TEXT NOT NULL DEFAULT '',
+    apply_target       TEXT NOT NULL DEFAULT '',
+    apply_content      TEXT NOT NULL DEFAULT '',
+    applied_by         TEXT NOT NULL DEFAULT '',
     created_at         TEXT NOT NULL,
     decided_at         TEXT,
     applied_at         TEXT

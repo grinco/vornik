@@ -77,6 +77,46 @@ func TestCPDecide_PostsDecision(t *testing.T) {
 	}
 }
 
+func TestCPApply_PostsAck(t *testing.T) {
+	var path string
+	var body map[string]any
+	cpHTTPStub(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		_ = json.NewEncoder(w).Encode(cpProposalWire{ID: "cpp_1", Status: "APPLIED"})
+	})
+	cpActor, cpApplyAck = "vadim", true
+	out, err := captureStdoutFn(t, func() error { return runCPApply("cpp_1") })
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if path != "/api/v1/operator/proposals/cpp_1/apply" {
+		t.Errorf("path = %q", path)
+	}
+	if body["ackDaemon"] != true {
+		t.Errorf("ackDaemon not sent: %v", body)
+	}
+	if !strings.Contains(out, "APPLIED") {
+		t.Errorf("output: %q", out)
+	}
+}
+
+func TestCPRollback_Posts(t *testing.T) {
+	var path string
+	cpHTTPStub(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_ = json.NewEncoder(w).Encode(cpProposalWire{ID: "cpp_1", Status: "ROLLED_BACK"})
+	})
+	out, err := captureStdoutFn(t, func() error { return runCPRollback("cpp_1") })
+	if err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if path != "/api/v1/operator/proposals/cpp_1/rollback" || !strings.Contains(out, "ROLLED_BACK") {
+		t.Errorf("path=%q out=%q", path, out)
+	}
+}
+
 func TestCPProposals_ServerError(t *testing.T) {
 	cpHTTPStub(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

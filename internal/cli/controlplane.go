@@ -64,6 +64,20 @@ var cpProposeCmd = &cobra.Command{
 	RunE:  runCPPropose,
 }
 
+var cpApplyCmd = &cobra.Command{
+	Use:   "apply <proposal-id>",
+	Short: "Apply an APPROVED proposal (hot-reload; auto-rolls-back on failure)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  func(_ *cobra.Command, args []string) error { return runCPApply(args[0]) },
+}
+
+var cpRollbackCmd = &cobra.Command{
+	Use:   "rollback <proposal-id>",
+	Short: "Roll an APPLIED proposal back to its pre-apply snapshot",
+	Args:  cobra.ExactArgs(1),
+	RunE:  func(_ *cobra.Command, args []string) error { return runCPRollback(args[0]) },
+}
+
 var (
 	cpListProject string
 	cpListStatus  string
@@ -76,7 +90,8 @@ var (
 	cpProposeDiff      string
 	cpProposeRationale string
 
-	cpActor string
+	cpActor    string
+	cpApplyAck bool
 )
 
 func init() {
@@ -95,7 +110,10 @@ func init() {
 	cpProposeCmd.Flags().StringVar(&cpProposeRationale, "rationale", "", "Why")
 	_ = cpProposeCmd.MarkFlagRequired("title")
 
-	controlPlaneCmd.AddCommand(cpProposalsCmd, cpShowCmd, cpApproveCmd, cpRejectCmd, cpProposeCmd)
+	cpApplyCmd.Flags().StringVar(&cpActor, "author", cpDefaultActor(), "Operator identity applying the change")
+	cpApplyCmd.Flags().BoolVar(&cpApplyAck, "ack-daemon", false, "Acknowledge a daemon-scope change affects every project")
+
+	controlPlaneCmd.AddCommand(cpProposalsCmd, cpShowCmd, cpApproveCmd, cpRejectCmd, cpProposeCmd, cpApplyCmd, cpRollbackCmd)
 	rootCmd.AddCommand(controlPlaneCmd)
 }
 
@@ -212,6 +230,43 @@ func runCPDecide(id, decision string) error {
 	if p.Status == "APPROVED" {
 		fmt.Println("Note: Phase 1 has no auto-apply — action the approved change by hand.")
 	}
+	return nil
+}
+
+func runCPApply(id string) error {
+	client := ClientFromEnv()
+	resp, err := client.Post("/api/v1/operator/proposals/"+id+"/apply",
+		map[string]any{"actor": cpActor, "ackDaemon": cpApplyAck})
+	if err != nil {
+		return fmt.Errorf("apply: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ParseAPIError(resp)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var p cpProposalWire
+	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+	fmt.Printf("Applied %s (%s) — status %s. Rollback with: vornikctl cp rollback %s\n", p.ID, p.Title, p.Status, p.ID)
+	return nil
+}
+
+func runCPRollback(id string) error {
+	client := ClientFromEnv()
+	resp, err := client.Post("/api/v1/operator/proposals/"+id+"/rollback", map[string]any{})
+	if err != nil {
+		return fmt.Errorf("rollback: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return ParseAPIError(resp)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var p cpProposalWire
+	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+	fmt.Printf("Rolled back %s — status %s.\n", p.ID, p.Status)
 	return nil
 }
 

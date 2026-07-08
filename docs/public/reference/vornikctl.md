@@ -88,6 +88,19 @@ raised by the operator or a Tune detector. Phase 1 lets you propose, list,
 show, approve, and reject; applying an approved change is done by hand (gated
 auto-apply is a later phase).
 
+## vornikctl control-plane apply
+
+Apply an APPROVED proposal (hot-reload; auto-rolls-back on failure)
+
+```
+vornikctl control-plane apply <proposal-id> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--ack-daemon` | `false` | Acknowledge a daemon-scope change affects every project |
+| `--author` | `swarm-control` | Operator identity applying the change |
+
 ## vornikctl control-plane approve
 
 Approve a DRAFT proposal (you must not be its proposer)
@@ -142,6 +155,14 @@ vornikctl control-plane reject <proposal-id> [flags]
 | Flag | Default | Description |
 |---|---|---|
 | `--author` | `swarm-control` | Rejecter identity |
+
+## vornikctl control-plane rollback
+
+Roll an APPLIED proposal back to its pre-apply snapshot
+
+```
+vornikctl control-plane rollback <proposal-id>
+```
 
 ## vornikctl control-plane show
 

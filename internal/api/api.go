@@ -17,6 +17,7 @@ import (
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/contracts"
+	"vornik.io/vornik/internal/controlplane"
 	"vornik.io/vornik/internal/conversation/a2a"
 	"vornik.io/vornik/internal/executor/livepubsub"
 	"vornik.io/vornik/internal/extractor"
@@ -764,7 +765,10 @@ type Server struct {
 	skillStore persistence.SkillRepository
 	// proposalStore backs the control-plane proposal ledger (operator
 	// REST surface: propose/list/get/decide). Nil-safe.
-	proposalStore            persistence.ProposalRepository
+	proposalStore persistence.ProposalRepository
+	// proposalApplier is the control-plane apply/rollback engine (Phase 2).
+	// Nil-safe: apply/rollback endpoints return "not wired" when unset.
+	proposalApplier          proposalApplier
 	memoryTitleBackfiller    MemoryTitleBackfiller
 	memoryClassifyBackfiller MemoryClassifyBackfiller
 	// memoryGraphReflagger powers POST /api/v1/memory/regraph —
@@ -1840,6 +1844,28 @@ func WithSkillStore(repo persistence.SkillRepository) ServerOption {
 func WithProposalStore(repo persistence.ProposalRepository) ServerOption {
 	return func(s *Server) {
 		s.proposalStore = repo
+	}
+}
+
+// proposalApplier is the control-plane apply/rollback engine (satisfied by
+// *controlplane.ApplyEngine). An interface here so handler tests can fake it.
+type proposalApplier interface {
+	Apply(ctx context.Context, id, actor string, ackDaemon bool) error
+	Rollback(ctx context.Context, id string) error
+}
+
+// WithProposalApplier wires the Phase-2 apply/rollback engine. Nil (including
+// a typed-nil *controlplane.ApplyEngine) preserves the "not wired" posture so
+// the apply/rollback endpoints return a clear error instead of nil-panicking.
+func WithProposalApplier(a proposalApplier) ServerOption {
+	return func(s *Server) {
+		if e, ok := a.(*controlplane.ApplyEngine); ok && e == nil {
+			return
+		}
+		if a == nil {
+			return
+		}
+		s.proposalApplier = a
 	}
 }
 

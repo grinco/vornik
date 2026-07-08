@@ -62,6 +62,14 @@ const ErrProposalSelfApprove RepositoryError = "control-plane proposal self-appr
 // DRAFT (a decided row is terminal for approve/reject; supersede instead).
 const ErrProposalNotDraft RepositoryError = "control-plane proposal not in DRAFT"
 
+// ErrProposalNotApproved is returned by MarkApplied when the proposal is not
+// APPROVED (only an APPROVED proposal can be applied; idempotent single-apply).
+const ErrProposalNotApproved RepositoryError = "control-plane proposal not APPROVED"
+
+// ErrProposalNotApplied is returned by MarkRolledBack when the proposal is not
+// APPLIED (only an applied change can be rolled back).
+const ErrProposalNotApplied RepositoryError = "control-plane proposal not APPLIED"
+
 // ControlPlaneProposal is one ledger row.
 type ControlPlaneProposal struct {
 	ID string
@@ -80,10 +88,23 @@ type ControlPlaneProposal struct {
 	// from ProposedBy on APPROVED (enforced by SetStatus).
 	ProposedBy string
 	Approver   string
-	// PreApplySnapshot holds the pre-apply config snapshot for rollback. Set
-	// at apply time (Phase 2); unused/empty in Phase 1 but persisted so the
-	// schema is stable.
+	// PreApplySnapshot holds the pre-apply config file bytes for rollback,
+	// captured at apply time (Phase 2). Option A: the REAL bytes (not
+	// redacted at rest) so a rollback can restore exactly; the row is
+	// operator-scope-only. Never surfaced by read handlers.
 	PreApplySnapshot string
+
+	// ApplyTarget / ApplyContent make a proposal APPLYABLE (Phase 2,
+	// op=replace_file): ApplyTarget is the config file path (relative to the
+	// deployed config dir; path-traversal-guarded at apply) and ApplyContent
+	// is the full new file contents. Empty ApplyTarget = review-only (apply
+	// refuses it) — e.g. Tune-detector proposals that describe a problem, not
+	// a specific rewrite.
+	ApplyTarget  string
+	ApplyContent string
+	// AppliedBy is the operator who applied it — set ONLY on a successful
+	// apply (a failed/aborted apply leaves it empty).
+	AppliedBy string
 
 	CreatedAt time.Time
 	DecidedAt *time.Time
@@ -123,4 +144,15 @@ type ProposalRepository interface {
 	// ErrProposalSelfApprove. actor is recorded as the approver. Returns
 	// ErrNotFound for an unknown id.
 	SetStatus(ctx context.Context, id, status, actor string) error
+
+	// MarkApplied transitions an APPROVED proposal to APPLIED, stamping
+	// applied_at + applied_by and storing the pre-apply snapshot (the real
+	// file bytes for rollback). Only APPROVED → APPLIED is allowed
+	// (ErrProposalNotApproved otherwise). Returns ErrNotFound for an unknown
+	// id. Caller writes the snapshot BEFORE the config file (design §Apply).
+	MarkApplied(ctx context.Context, id, appliedBy, snapshot string) error
+
+	// MarkRolledBack transitions an APPLIED proposal to ROLLED_BACK. Only
+	// APPLIED → ROLLED_BACK is allowed (ErrProposalNotApplied otherwise).
+	MarkRolledBack(ctx context.Context, id string) error
 }

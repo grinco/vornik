@@ -55,7 +55,33 @@ vornikctl cp propose --title "bump scraper timeout" \
     --project janka --kind config --blast-radius project \
     --diff '-timeout_seconds: 30
 +timeout_seconds: 90' --rationale "web_fetch timing out"
+
+# Apply an APPROVED, applyable proposal (hot-reload) — and roll it back
+vornikctl cp apply <proposal-id>          # --ack-daemon for daemon-scope
+vornikctl cp rollback <proposal-id>
 ```
+
+## Applying a change (gated, reversible)
+
+An APPROVED proposal that carries a concrete file rewrite can be **applied by
+the daemon** via config hot-reload — no restart:
+
+- **Whole-file replace only** — the proposal carries the full new file
+  contents (no fragile diff-patching); the human-readable diff is for review.
+- **Fail-closed preconditions**: only APPROVED applies (exactly once); a
+  daemon-scope change needs an explicit `--ack-daemon`; apply is **refused
+  while any task in scope is running** (retry in an idle window); the new
+  content is parsed/validated **before** anything is written.
+- **Atomic + snapshotted**: the current file is snapshotted, the new file is
+  written atomically, then reloaded. If the reload **rejects** the config (or
+  times out), the daemon **auto-rolls-back** to the snapshot — it never runs a
+  bad config.
+- **Rollback**: `cp rollback` restores the pre-apply snapshot and reloads.
+
+Proposals from the Tune detector are **review-only** (they describe a problem,
+not a specific rewrite) — you approve them and make the change yourself, or
+attach a concrete rewrite. Auto-apply does not exist: a human always runs
+`cp apply`.
 
 The surface is **operator-scoped** (it works in Community and is never behind
 the Enterprise admin gate). Two safety rules are enforced daemon-side: a
@@ -85,8 +111,8 @@ It never changes anything and exits non-zero if any check fails.
 
 ## What's not here yet
 
-Phase 1 is deliberately mutation-free. Applying an approved proposal
-(hot-reload with a pre-apply snapshot + rollback), the richer diagnostic
-assembler over logs/metrics/traces, config-as-conversation project scaffolding,
-and an operator agent you can just talk to are later phases. See the design
-notes in the repo for the full arc.
+Config + model applies land now (Phase 2). Still ahead: scaffold-apply for new
+projects/workflows, the richer diagnostic assembler over logs/metrics/traces,
+config-as-conversation scaffolding, self-healing incident detection, and an
+operator agent you can just talk to. See the design notes in the repo for the
+full arc.

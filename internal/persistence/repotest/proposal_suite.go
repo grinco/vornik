@@ -23,6 +23,72 @@ func RunProposalSuite(t *testing.T, repo persistence.ProposalRepository) {
 	t.Run("SetStatus_rejects_self_approve", func(t *testing.T) { proposalSelfApprove(t, repo) })
 	t.Run("SetStatus_rejects_non_draft", func(t *testing.T) { proposalNonDraft(t, repo) })
 	t.Run("SetStatus_reject_transition", func(t *testing.T) { proposalReject(t, repo) })
+	t.Run("apply_fields_round_trip", func(t *testing.T) { proposalApplyFields(t, repo) })
+	t.Run("MarkApplied_only_from_approved", func(t *testing.T) { proposalMarkApplied(t, repo) })
+	t.Run("MarkRolledBack_only_from_applied", func(t *testing.T) { proposalMarkRolledBack(t, repo) })
+}
+
+func proposalApplyFields(t *testing.T, repo persistence.ProposalRepository) {
+	ctx := context.Background()
+	p := newTestProposal("af-1", "p1")
+	p.ApplyTarget = "config.yaml"
+	p.ApplyContent = "server:\n  address: :8080\n"
+	mustCreateProposal(t, repo, p)
+	got, err := repo.GetByID(ctx, "af-1")
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.ApplyTarget != "config.yaml" || got.ApplyContent != "server:\n  address: :8080\n" {
+		t.Errorf("apply fields did not round-trip: %+v", got)
+	}
+	if got.AppliedBy != "" || got.AppliedAt != nil {
+		t.Errorf("un-applied proposal must have empty applied_by/at: %+v", got)
+	}
+}
+
+func proposalMarkApplied(t *testing.T, repo persistence.ProposalRepository) {
+	ctx := context.Background()
+	// Not-approved (DRAFT) → refused.
+	mustCreateProposal(t, repo, newTestProposal("ma-draft", "p1"))
+	if err := repo.MarkApplied(ctx, "ma-draft", "vadim", "snap"); !errors.Is(err, persistence.ErrProposalNotApproved) {
+		t.Fatalf("MarkApplied on DRAFT must fail ErrProposalNotApproved, got %v", err)
+	}
+	// Approve, then apply.
+	mustCreateProposal(t, repo, newTestProposal("ma-1", "p1"))
+	if err := repo.SetStatus(ctx, "ma-1", persistence.ProposalStatusApproved, "human"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if err := repo.MarkApplied(ctx, "ma-1", "vadim", "OLD_FILE_BYTES"); err != nil {
+		t.Fatalf("MarkApplied: %v", err)
+	}
+	got, _ := repo.GetByID(ctx, "ma-1")
+	if got.Status != persistence.ProposalStatusApplied || got.AppliedBy != "vadim" ||
+		got.PreApplySnapshot != "OLD_FILE_BYTES" || got.AppliedAt == nil {
+		t.Fatalf("MarkApplied did not record status/appliedBy/snapshot/at: %+v", got)
+	}
+	// Second apply (now APPLIED) → refused (idempotent single-apply).
+	if err := repo.MarkApplied(ctx, "ma-1", "vadim", "snap2"); !errors.Is(err, persistence.ErrProposalNotApproved) {
+		t.Fatalf("re-apply must fail ErrProposalNotApproved, got %v", err)
+	}
+}
+
+func proposalMarkRolledBack(t *testing.T, repo persistence.ProposalRepository) {
+	ctx := context.Background()
+	mustCreateProposal(t, repo, newTestProposal("mr-1", "p1"))
+	// Not applied yet → refused.
+	if err := repo.MarkRolledBack(ctx, "mr-1"); !errors.Is(err, persistence.ErrProposalNotApplied) {
+		t.Fatalf("rollback of non-APPLIED must fail ErrProposalNotApplied, got %v", err)
+	}
+	// Approve → apply → rollback.
+	_ = repo.SetStatus(ctx, "mr-1", persistence.ProposalStatusApproved, "human")
+	_ = repo.MarkApplied(ctx, "mr-1", "vadim", "snap")
+	if err := repo.MarkRolledBack(ctx, "mr-1"); err != nil {
+		t.Fatalf("MarkRolledBack: %v", err)
+	}
+	got, _ := repo.GetByID(ctx, "mr-1")
+	if got.Status != persistence.ProposalStatusRolledBack {
+		t.Errorf("expected ROLLED_BACK, got %s", got.Status)
+	}
 }
 
 func newTestProposal(id, project string) *persistence.ControlPlaneProposal {

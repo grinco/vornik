@@ -3,11 +3,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"vornik.io/vornik/internal/controlplane"
+	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/sqlite"
 )
 
@@ -115,6 +118,97 @@ func TestOperatorProposals_ListAndGet(t *testing.T) {
 	s.OperatorProposals(rec, operatorReq(http.MethodGet, "/api/v1/operator/proposals?project=janka", ""))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "\"count\":2") {
 		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+type fakeApplier struct {
+	applyErr, rollbackErr error
+	lastID                string
+	lastAck               bool
+}
+
+func (f *fakeApplier) Apply(_ context.Context, id, _ string, ack bool) error {
+	f.lastID, f.lastAck = id, ack
+	return f.applyErr
+}
+func (f *fakeApplier) Rollback(_ context.Context, id string) error {
+	f.lastID = id
+	return f.rollbackErr
+}
+
+// seedApproved proposes + approves a proposal, returning its id.
+func seedApproved(t *testing.T, s *Server) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.OperatorProposals(rec, operatorReq(http.MethodPost, "/api/v1/operator/proposals",
+		`{"kind":"config","blastRadius":"project","projectId":"janka","title":"t","proposedBy":"agent"}`))
+	id := decodeProposal(t, rec.Body.String()).ID
+	if err := s.proposalStore.SetStatus(context.Background(), id, "APPROVED", "vadim"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	return id
+}
+
+func TestOperatorApply_Success(t *testing.T) {
+	s := newProposalTestServer(t)
+	fa := &fakeApplier{}
+	s.proposalApplier = fa
+	id := seedApproved(t, s)
+	rec := httptest.NewRecorder()
+	s.OperatorProposalItem(rec, operatorReq(http.MethodPost, "/api/v1/operator/proposals/"+id+"/apply", `{"actor":"vadim","ackDaemon":true}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if fa.lastID != id || !fa.lastAck {
+		t.Errorf("engine not called with id+ack: %+v", fa)
+	}
+}
+
+func TestOperatorApply_ErrorMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"review-only", controlplane.ErrReviewOnly, http.StatusUnprocessableEntity},
+		{"busy", controlplane.ErrBusy, http.StatusConflict},
+		{"daemon-ack", controlplane.ErrDaemonAckRequired, http.StatusConflict},
+		{"not-approved", persistence.ErrProposalNotApproved, http.StatusConflict},
+		{"traversal", controlplane.ErrPathTraversal, http.StatusUnprocessableEntity},
+		{"reload-failed", errors.New("reload rejected"), http.StatusUnprocessableEntity},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := newProposalTestServer(t)
+			s.proposalApplier = &fakeApplier{applyErr: c.err}
+			id := seedApproved(t, s)
+			rec := httptest.NewRecorder()
+			s.OperatorProposalItem(rec, operatorReq(http.MethodPost, "/api/v1/operator/proposals/"+id+"/apply", `{}`))
+			if rec.Code != c.want {
+				t.Fatalf("%s: want %d, got %d: %s", c.name, c.want, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestOperatorApply_NotWired(t *testing.T) {
+	s := newProposalTestServer(t) // no applier
+	rec := httptest.NewRecorder()
+	s.OperatorProposalItem(rec, operatorReq(http.MethodPost, "/api/v1/operator/proposals/x/apply", `{}`))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unwired applier must 503, got %d", rec.Code)
+	}
+}
+
+func TestOperatorRollback_Success(t *testing.T) {
+	s := newProposalTestServer(t)
+	fa := &fakeApplier{}
+	s.proposalApplier = fa
+	id := seedApproved(t, s)
+	rec := httptest.NewRecorder()
+	s.OperatorProposalItem(rec, operatorReq(http.MethodPost, "/api/v1/operator/proposals/"+id+"/rollback", ``))
+	if rec.Code != http.StatusOK || fa.lastID != id {
+		t.Fatalf("rollback: want 200 + engine called, got %d (%s)", rec.Code, fa.lastID)
 	}
 }
 

@@ -13,7 +13,10 @@ import (
 	"vornik.io/vornik/internal/persistence"
 )
 
-const mcpBaseConfig = "# vornik config\nmcp_servers:\n  existing:\n    transport: sse\n    url: http://existing\nserver:\n  address: :8080\n"
+// mcpBaseConfig mirrors the REAL daemon schema: the MCP catalog is the LIST at
+// mcp.servers (config.MCPConfig.Servers, yaml `mcp.servers`), not a
+// mcp_servers.<name> map. The hub edits must target this shape.
+const mcpBaseConfig = "# vornik config\nmcp:\n  servers:\n    - name: existing\n      transport: sse\n      url: http://existing\nserver:\n  address: :8080\n"
 
 func mcpTestServer(t *testing.T) (*Server, persistence.ProposalRepository) {
 	t.Helper()
@@ -61,6 +64,14 @@ func TestMCPAdd_FilesDaemonScopeProposal(t *testing.T) {
 	// for the 2026-07-08 "homeassistant apply keeps failing" report.
 	if !p.LiveApply {
 		t.Error("MCP-hub proposal must be LiveApply=true (skips the busy gate)")
+	}
+	// Shape: the server must be an mcp.servers LIST item, NOT the dead
+	// top-level mcp_servers.<name> map (the 2026-07-08 invisible-server bug).
+	if !strings.Contains(p.ApplyContent, "name: homeassistant") {
+		t.Errorf("new server must be an mcp.servers list item: %s", p.ApplyContent)
+	}
+	if strings.Contains(p.ApplyContent, "mcp_servers:") {
+		t.Errorf("must NOT reintroduce the dead top-level mcp_servers map: %s", p.ApplyContent)
 	}
 	// The edited content adds the new server + keeps the existing one + comments.
 	if !strings.Contains(p.ApplyContent, "homeassistant") || !strings.Contains(p.ApplyContent, "existing") || !strings.Contains(p.ApplyContent, "# vornik config") {

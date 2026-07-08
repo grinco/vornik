@@ -89,6 +89,159 @@ func DeleteYAMLKey(content []byte, dottedKey string) (out []byte, removed bool, 
 	return buf.Bytes(), true, nil
 }
 
+// YAMLListField is one key/value of a list-item mapping, in emit order.
+type YAMLListField struct {
+	Key   string
+	Value any // string | int | bool | []string (per setNodeValue)
+}
+
+// AppendYAMLListItem appends a mapping item built from fields (in order) to the
+// YAML sequence at dottedKey (e.g. "mcp.servers"), preserving comments and
+// ordering elsewhere. Missing intermediate mappings and a missing/empty/null
+// sequence are created. Errors if a path segment exists but is not a mapping,
+// or the target key exists but is a non-empty scalar (not a sequence).
+//
+// This is the list-shaped counterpart to SetYAMLKey: the daemon's MCP catalog
+// lives at `mcp.servers` as a LIST of {name, transport, url, …} items, not a
+// `mcp_servers.<name>` map — see the control-plane hub MCP add path.
+func AppendYAMLListItem(content []byte, dottedKey string, fields []YAMLListField) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return nil, fmt.Errorf("yamledit: unmarshal: %w", err)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil, fmt.Errorf("yamledit: unexpected document structure")
+	}
+	seq, err := ensureSequenceNode(doc.Content[0], strings.Split(dottedKey, "."))
+	if err != nil {
+		return nil, err
+	}
+	item := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for _, f := range fields {
+		kn := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: f.Key}
+		vn := &yaml.Node{Kind: yaml.ScalarNode}
+		if err := setNodeValue(vn, f.Value); err != nil {
+			return nil, err
+		}
+		item.Content = append(item.Content, kn, vn)
+	}
+	seq.Content = append(seq.Content, item)
+	return encodeYAMLDoc(&doc)
+}
+
+// RemoveYAMLListItemByField removes the first mapping item under the sequence at
+// dottedKey whose `field` scalar equals value. removed=false (no error) when the
+// sequence or a matching item is absent.
+func RemoveYAMLListItemByField(content []byte, dottedKey, field, value string) (out []byte, removed bool, err error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return nil, false, fmt.Errorf("yamledit: unmarshal: %w", err)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil, false, fmt.Errorf("yamledit: unexpected document structure")
+	}
+	seq := findSequenceNode(doc.Content[0], strings.Split(dottedKey, "."))
+	if seq == nil {
+		return content, false, nil
+	}
+	for i, item := range seq.Content {
+		if item.Kind != yaml.MappingNode {
+			continue
+		}
+		for j := 0; j+1 < len(item.Content); j += 2 {
+			if item.Content[j].Value == field && item.Content[j+1].Value == value {
+				seq.Content = append(seq.Content[:i], seq.Content[i+1:]...)
+				b, encErr := encodeYAMLDoc(&doc)
+				return b, encErr == nil, encErr
+			}
+		}
+	}
+	return content, false, nil
+}
+
+// ensureSequenceNode walks segments[:len-1] as mappings (creating missing
+// intermediates) then returns the sequence node at the final segment key,
+// creating an empty sequence if the key is absent or holds an empty/null scalar.
+func ensureSequenceNode(node *yaml.Node, segments []string) (*yaml.Node, error) {
+	for i, seg := range segments {
+		if node.Kind != yaml.MappingNode {
+			return nil, fmt.Errorf("yamledit: expected mapping at %q, got kind %d", seg, node.Kind)
+		}
+		last := i == len(segments)-1
+		var val *yaml.Node
+		for k := 0; k+1 < len(node.Content); k += 2 {
+			if node.Content[k].Value == seg {
+				val = node.Content[k+1]
+				break
+			}
+		}
+		if val == nil {
+			kn := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: seg}
+			if last {
+				val = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+			} else {
+				val = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+			}
+			node.Content = append(node.Content, kn, val)
+		}
+		if last {
+			switch {
+			case val.Kind == yaml.SequenceNode:
+				return val, nil
+			case val.Kind == yaml.ScalarNode && (val.Value == "" || val.Tag == "!!null"):
+				val.Kind = yaml.SequenceNode
+				val.Tag = "!!seq"
+				val.Value = ""
+				val.Content = nil
+				return val, nil
+			default:
+				return nil, fmt.Errorf("yamledit: %q is not a sequence (kind %d)", seg, val.Kind)
+			}
+		}
+		node = val
+	}
+	return nil, fmt.Errorf("yamledit: empty path")
+}
+
+// findSequenceNode returns the sequence node at dotted segments, or nil if any
+// segment is absent or the resolved node is not a sequence.
+func findSequenceNode(node *yaml.Node, segments []string) *yaml.Node {
+	for _, seg := range segments {
+		if node.Kind != yaml.MappingNode {
+			return nil
+		}
+		var val *yaml.Node
+		for k := 0; k+1 < len(node.Content); k += 2 {
+			if node.Content[k].Value == seg {
+				val = node.Content[k+1]
+				break
+			}
+		}
+		if val == nil {
+			return nil
+		}
+		node = val
+	}
+	if node.Kind == yaml.SequenceNode {
+		return node
+	}
+	return nil
+}
+
+// encodeYAMLDoc re-encodes a parsed document at 2-space indent.
+func encodeYAMLDoc(doc *yaml.Node) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(doc); err != nil {
+		return nil, fmt.Errorf("yamledit: marshal: %w", err)
+	}
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("yamledit: marshal close: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
 // deleteInNode walks mappings following segments and removes the leaf key/value
 // pair from its parent mapping's Content. Returns removed=false when the key is
 // absent at any level.

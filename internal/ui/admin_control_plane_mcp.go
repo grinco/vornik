@@ -166,9 +166,13 @@ func (s *Server) AdminControlPlaneMCPWrite(w http.ResponseWriter, r *http.Reques
 	redirect("mcp-proposed")
 }
 
-// mcpAddEdit builds the config.yaml content adding/replacing one mcp_servers
-// entry from the form, using the comment-preserving SetYAMLKey. Rejects a bad
-// transport or a secret literal in a field.
+// mcpAddEdit builds the config.yaml content adding (or replacing) one server in
+// the daemon MCP catalog. The catalog is the LIST at `mcp.servers` (a sequence
+// of {name, transport, url|command, …} items) — NOT a `mcp_servers.<name>` map;
+// that was the 2026-07-08 bug where hub-added servers landed under a key the
+// config parser (mcp.servers) never reads, so they were invisible everywhere.
+// Add-or-replace: drop any existing item with this name, then append the new
+// one. Comment-preserving. Rejects a bad transport or a secret literal.
 func (s *Server) mcpAddEdit(current []byte, name string, r *http.Request) ([]byte, string, error) {
 	transport := strings.TrimSpace(r.FormValue("transport"))
 	if !validMCPTransports[transport] {
@@ -185,31 +189,33 @@ func (s *Server) mcpAddEdit(current []byte, name string, r *http.Request) ([]byt
 			return nil, "", errMCPSecretLiteral
 		}
 	}
-	prefix := "mcp_servers." + name + "."
-	out := current
-	var err error
-	set := func(key string, val any) {
-		if err != nil {
-			return
-		}
-		out, _, err = config.SetYAMLKey(out, prefix+key, val)
+	fields := []config.YAMLListField{
+		{Key: "name", Value: name},
+		{Key: "transport", Value: transport},
 	}
-	set("transport", transport)
 	if url != "" {
-		set("url", url)
+		fields = append(fields, config.YAMLListField{Key: "url", Value: url})
 	}
 	if command != "" {
-		set("command", command)
+		fields = append(fields, config.YAMLListField{Key: "command", Value: command})
 	}
+	// Replace semantics: remove an existing entry of the same name first (no-op
+	// if absent), then append the fresh item.
+	out, _, err := config.RemoveYAMLListItemByField(current, "mcp.servers", "name", name)
+	if err != nil {
+		return nil, "", err
+	}
+	out, err = config.AppendYAMLListItem(out, "mcp.servers", fields)
 	if err != nil {
 		return nil, "", err
 	}
 	return out, fmt.Sprintf("MCP: add server %q (%s)", name, transport), nil
 }
 
-// mcpRemoveEdit deletes the mcp_servers.<name> node (comment-preserving).
+// mcpRemoveEdit removes the `mcp.servers` list item with the given name
+// (comment-preserving).
 func mcpRemoveEdit(current []byte, name string) ([]byte, string, error) {
-	out, removed, err := config.DeleteYAMLKey(current, "mcp_servers."+name)
+	out, removed, err := config.RemoveYAMLListItemByField(current, "mcp.servers", "name", name)
 	if err != nil {
 		return nil, "", err
 	}

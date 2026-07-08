@@ -48,6 +48,7 @@ type proposalJSON struct {
 	Status      string  `json:"status"`
 	ProposedBy  string  `json:"proposedBy,omitempty"`
 	Approver    string  `json:"approver,omitempty"`
+	LiveApply   bool    `json:"liveApply,omitempty"`
 	CreatedAt   string  `json:"createdAt"`
 	DecidedAt   *string `json:"decidedAt,omitempty"`
 }
@@ -57,6 +58,7 @@ func toProposalJSON(p *persistence.ControlPlaneProposal) proposalJSON {
 		ID: p.ID, ProjectID: p.ProjectID, Kind: p.Kind, BlastRadius: p.BlastRadius,
 		Title: p.Title, Diff: p.Diff, Rationale: p.Rationale, Evidence: p.Evidence,
 		Status: p.Status, ProposedBy: p.ProposedBy, Approver: p.Approver,
+		LiveApply: p.LiveApply,
 		CreatedAt: p.CreatedAt.UTC().Format(rfc3339),
 	}
 	if p.DecidedAt != nil {

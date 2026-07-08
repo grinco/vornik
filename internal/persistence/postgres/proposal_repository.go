@@ -23,7 +23,7 @@ func NewProposalRepository(db DBTX) *ProposalRepository { return &ProposalReposi
 
 const pgProposalColumns = `id, project_id, kind, blast_radius, title, diff, rationale,
 	evidence, status, proposed_by, approver, pre_apply_snapshot,
-	apply_target, apply_content, apply_ops, applied_by,
+	apply_target, apply_content, apply_ops, applied_by, live_apply,
 	created_at, decided_at, applied_at`
 
 // Create inserts a new proposal, rejecting an oversized text field.
@@ -39,10 +39,10 @@ func (r *ProposalRepository) Create(ctx context.Context, p *persistence.ControlP
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO control_plane_proposals (`+pgProposalColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		p.ID, pgNullStr(p.ProjectID), p.Kind, p.BlastRadius, p.Title, p.Diff, p.Rationale,
 		p.Evidence, p.Status, p.ProposedBy, p.Approver, p.PreApplySnapshot,
-		p.ApplyTarget, p.ApplyContent, p.ApplyOps, p.AppliedBy,
+		p.ApplyTarget, p.ApplyContent, p.ApplyOps, p.AppliedBy, p.LiveApply,
 		p.CreatedAt, p.DecidedAt, p.AppliedAt,
 	)
 	return mapDBError(err)
@@ -117,20 +117,37 @@ func (r *ProposalRepository) SetStatus(ctx context.Context, id, status, actor st
 	if err != nil {
 		return err
 	}
-	if existing.Status != persistence.ProposalStatusDraft {
+	// Approve is DRAFT-only. Reject/withdraw is allowed from DRAFT (reject a
+	// pending proposal) OR APPROVED (withdraw an approved-but-unappliable
+	// proposal — e.g. a daemon-scope change superseded by a re-draft).
+	whereStates := "status = 'DRAFT'"
+	switch status {
+	case persistence.ProposalStatusApproved:
+		if existing.Status != persistence.ProposalStatusDraft {
+			return persistence.ErrProposalNotDraft
+		}
+		if actor != "" && actor == existing.ProposedBy {
+			return persistence.ErrProposalSelfApprove
+		}
+	case persistence.ProposalStatusRejected:
+		if existing.Status != persistence.ProposalStatusDraft && existing.Status != persistence.ProposalStatusApproved {
+			return persistence.ErrProposalNotPending
+		}
+		whereStates = "status IN ('DRAFT','APPROVED')"
+	default:
 		return persistence.ErrProposalNotDraft
-	}
-	if status == persistence.ProposalStatusApproved && actor != "" && actor == existing.ProposedBy {
-		return persistence.ErrProposalSelfApprove
 	}
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE control_plane_proposals SET status = $1, approver = $2, decided_at = $3
-		WHERE id = $4 AND status = 'DRAFT'`,
+		WHERE id = $4 AND `+whereStates,
 		status, actor, time.Now().UTC(), id)
 	if err != nil {
 		return mapDBError(err)
 	}
 	if n, aerr := res.RowsAffected(); aerr == nil && n == 0 {
+		if status == persistence.ProposalStatusRejected {
+			return persistence.ErrProposalNotPending
+		}
 		return persistence.ErrProposalNotDraft
 	}
 	return nil
@@ -190,7 +207,7 @@ func scanPGProposal(sc pgSkillScanner) (*persistence.ControlPlaneProposal, error
 	if err := sc.Scan(
 		&p.ID, &projectID, &p.Kind, &p.BlastRadius, &p.Title, &p.Diff, &p.Rationale,
 		&p.Evidence, &p.Status, &p.ProposedBy, &p.Approver, &p.PreApplySnapshot,
-		&p.ApplyTarget, &p.ApplyContent, &p.ApplyOps, &p.AppliedBy,
+		&p.ApplyTarget, &p.ApplyContent, &p.ApplyOps, &p.AppliedBy, &p.LiveApply,
 		&p.CreatedAt, &decidedAt, &appliedAt,
 	); err != nil {
 		return nil, err

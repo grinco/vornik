@@ -228,10 +228,22 @@ func proposalNonDraft(t *testing.T, repo persistence.ProposalRepository) {
 	if err := repo.SetStatus(ctx, "nd-1", persistence.ProposalStatusApproved, "human-op"); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	// A decided proposal can't be re-decided.
-	err := repo.SetStatus(ctx, "nd-1", persistence.ProposalStatusRejected, "human-op")
-	if !errors.Is(err, persistence.ErrProposalNotDraft) {
-		t.Fatalf("re-deciding a non-DRAFT proposal must fail, got %v", err)
+	// An APPROVED proposal can't be re-APPROVED.
+	if err := repo.SetStatus(ctx, "nd-1", persistence.ProposalStatusApproved, "human-op2"); !errors.Is(err, persistence.ErrProposalNotDraft) {
+		t.Fatalf("re-approving a non-DRAFT proposal must fail, got %v", err)
+	}
+	// But an APPROVED proposal CAN be withdrawn (rejected) — e.g. an approved
+	// change that turned out un-appliable and was superseded by a re-draft.
+	if err := repo.SetStatus(ctx, "nd-1", persistence.ProposalStatusRejected, "human-op"); err != nil {
+		t.Fatalf("withdrawing an APPROVED proposal must succeed, got %v", err)
+	}
+	got, _ := repo.GetByID(ctx, "nd-1")
+	if got.Status != persistence.ProposalStatusRejected {
+		t.Fatalf("withdrawn proposal must be REJECTED, got %s", got.Status)
+	}
+	// A terminal (REJECTED) proposal can't be re-decided.
+	if err := repo.SetStatus(ctx, "nd-1", persistence.ProposalStatusRejected, "human-op"); !errors.Is(err, persistence.ErrProposalNotPending) {
+		t.Fatalf("re-deciding a terminal proposal must fail ErrProposalNotPending, got %v", err)
 	}
 }
 

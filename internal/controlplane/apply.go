@@ -167,12 +167,17 @@ func (e *ApplyEngine) Apply(ctx context.Context, id, actor string, ackDaemon boo
 	// disk (orphans inert). Enforced by the engine, not the generator.
 	orderOps(ops)
 	// Busy check: daemon-scope looks across all projects (""), else the
-	// proposal's project.
-	scope := p.ProjectID
-	if p.BlastRadius == persistence.ProposalScopeDaemon {
-		scope = ""
-	}
-	if e.HasActiveTasks != nil {
+	// proposal's project. SKIPPED when the proposer declared the change
+	// live-apply (non-disruptive to in-flight tasks) — the all-projects gate
+	// never opens on a busy daemon, so a daemon-scope MCP add/remove would
+	// otherwise be un-appliable in production. Everything else below (base-hash,
+	// validate, atomic write, reload+rollback) still runs unchanged. See
+	// https://docs.vornik.io
+	if !p.LiveApply && e.HasActiveTasks != nil {
+		scope := p.ProjectID
+		if p.BlastRadius == persistence.ProposalScopeDaemon {
+			scope = ""
+		}
 		busy, berr := e.HasActiveTasks(ctx, scope)
 		if berr != nil {
 			return fmt.Errorf("busy check failed: %w", berr)

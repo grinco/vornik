@@ -99,7 +99,7 @@ vornikctl control-plane apply <proposal-id> [flags]
 | Flag | Default | Description |
 |---|---|---|
 | `--ack-daemon` | `false` | Acknowledge a daemon-scope change affects every project |
-| `--author` | `swarm-control` | Operator identity applying the change |
+| `--author` |  | Operator identity applying the change (defaults to $USER) |
 
 ## vornikctl control-plane approve
 
@@ -111,7 +111,29 @@ vornikctl control-plane approve <proposal-id> [flags]
 
 | Flag | Default | Description |
 |---|---|---|
-| `--author` | `swarm-control` | Approver identity (must differ from the proposer) |
+| `--author` |  | Approver identity, must differ from the proposer (defaults to $USER) |
+
+## vornikctl control-plane diagnose
+
+Diagnose a project/task from its logs & metrics (read-only unless --propose)
+
+Run a single-shot diagnosis: the daemon assembles an evidence bundle
+(recent failed/successful executions, metrics, logs, known failure patterns)
+and asks the configured LLM for a root cause. Read-only by default; with
+--propose it may file a review-only DRAFT proposal (never auto-applied). Any
+suggested change carrying a secret or an external URL is rejected before a
+proposal is filed.
+
+<focus> is a task id (task_...) or a project id / substring.
+
+```
+vornikctl control-plane diagnose <focus> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | `false` | Emit the raw verdict JSON |
+| `--propose` | `false` | File a review-only DRAFT proposal from the diagnosis (never auto-applied) |
 
 ## vornikctl control-plane proposals
 
@@ -154,7 +176,7 @@ vornikctl control-plane reject <proposal-id> [flags]
 
 | Flag | Default | Description |
 |---|---|---|
-| `--author` | `swarm-control` | Rejecter identity |
+| `--author` |  | Rejecter identity (defaults to $USER) |
 
 ## vornikctl control-plane rollback
 

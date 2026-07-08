@@ -146,12 +146,18 @@ func (s *Server) AdminControlPlaneMCPWrite(w http.ResponseWriter, r *http.Reques
 		BlastRadius:  persistence.ProposalScopeDaemon, // MCP catalog is daemon-scope
 		Title:        title,
 		Diff:         unifiedish(string(current), string(edited)),
-		Rationale:    fmt.Sprintf("MCP server %q %s via the control-plane hub by %s. Review the diff, then apply (daemon-scope — affects every project).", name, action, actor),
+		Rationale:    fmt.Sprintf("MCP server %q %s via the control-plane hub by %s. Review the diff, then apply (daemon-scope — affects every project). Applies live — no idle window needed.", name, action, actor),
 		Evidence:     string(evidence),
 		Status:       persistence.ProposalStatusDraft,
 		ProposedBy:   "operator-ui", // reserved principal — server-stamped, never from input
 		ApplyTarget:  "config.yaml",
 		ApplyContent: string(edited),
+		// LiveApply: adding/removing an MCP server is non-disruptive to in-flight
+		// tasks — the MCP catalog is injected into agent containers at start
+		// (executor writes /app/input/mcp.json once), so a running task never
+		// sees a mid-flight catalog change. Skipping the all-projects busy gate
+		// is what makes this daemon-scope change appliable on a busy prod daemon.
+		LiveApply: true,
 	}
 	if err := s.proposalStore.Create(ctx, p); err != nil {
 		redirect("error")

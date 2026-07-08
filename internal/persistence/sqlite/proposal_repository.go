@@ -22,7 +22,7 @@ func NewProposalRepository(db DBTX) *ProposalRepository { return &ProposalReposi
 
 const proposalColumns = `id, project_id, kind, blast_radius, title, diff, rationale,
 	evidence, status, proposed_by, approver, pre_apply_snapshot,
-	apply_target, apply_content, apply_ops, applied_by,
+	apply_target, apply_content, apply_ops, applied_by, live_apply,
 	created_at, decided_at, applied_at`
 
 // Create inserts a new proposal, rejecting an oversized text field.
@@ -38,10 +38,10 @@ func (r *ProposalRepository) Create(ctx context.Context, p *persistence.ControlP
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO control_plane_proposals (`+proposalColumns+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.ID, nullStr(p.ProjectID), p.Kind, p.BlastRadius, p.Title, p.Diff, p.Rationale,
 		p.Evidence, p.Status, p.ProposedBy, p.Approver, p.PreApplySnapshot,
-		p.ApplyTarget, p.ApplyContent, p.ApplyOps, p.AppliedBy,
+		p.ApplyTarget, p.ApplyContent, p.ApplyOps, p.AppliedBy, p.LiveApply,
 		sqliteTime(p.CreatedAt), sqliteTimePtr(p.DecidedAt), sqliteTimePtr(p.AppliedAt),
 	)
 	return err
@@ -111,22 +111,41 @@ func (r *ProposalRepository) SetStatus(ctx context.Context, id, status, actor st
 	if err != nil {
 		return err
 	}
-	if existing.Status != persistence.ProposalStatusDraft {
+	// Approve is DRAFT-only. Reject/withdraw is allowed from DRAFT (reject a
+	// pending proposal) OR APPROVED (withdraw an approved-but-unappliable
+	// proposal — e.g. a daemon-scope change superseded by a re-draft). The
+	// source-state WHERE below is scoped per target so an approve can't race
+	// onto an already-APPROVED row.
+	whereStates := "status = 'DRAFT'"
+	switch status {
+	case persistence.ProposalStatusApproved:
+		if existing.Status != persistence.ProposalStatusDraft {
+			return persistence.ErrProposalNotDraft
+		}
+		if actor != "" && actor == existing.ProposedBy {
+			return persistence.ErrProposalSelfApprove
+		}
+	case persistence.ProposalStatusRejected:
+		if existing.Status != persistence.ProposalStatusDraft && existing.Status != persistence.ProposalStatusApproved {
+			return persistence.ErrProposalNotPending
+		}
+		whereStates = "status IN ('DRAFT','APPROVED')"
+	default:
 		return persistence.ErrProposalNotDraft
-	}
-	if status == persistence.ProposalStatusApproved && actor != "" && actor == existing.ProposedBy {
-		return persistence.ErrProposalSelfApprove
 	}
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE control_plane_proposals SET status = ?, approver = ?, decided_at = ?
-		WHERE id = ? AND status = 'DRAFT'`,
+		WHERE id = ? AND `+whereStates,
 		status, actor, sqliteTime(time.Now().UTC()), id)
 	if err != nil {
 		return err
 	}
-	// 0 rows = a racing decision flipped it out of DRAFT between our read and
-	// write; report it as not-draft rather than a silent no-op.
+	// 0 rows = a racing decision flipped it out of the allowed source state
+	// between our read and write; report it rather than a silent no-op.
 	if n, aerr := res.RowsAffected(); aerr == nil && n == 0 {
+		if status == persistence.ProposalStatusRejected {
+			return persistence.ErrProposalNotPending
+		}
 		return persistence.ErrProposalNotDraft
 	}
 	return nil
@@ -187,7 +206,7 @@ func scanProposal(sc skillScanner) (*persistence.ControlPlaneProposal, error) {
 	if err := sc.Scan(
 		&p.ID, &projectID, &p.Kind, &p.BlastRadius, &p.Title, &p.Diff, &p.Rationale,
 		&p.Evidence, &p.Status, &p.ProposedBy, &p.Approver, &p.PreApplySnapshot,
-		&p.ApplyTarget, &p.ApplyContent, &p.ApplyOps, &p.AppliedBy,
+		&p.ApplyTarget, &p.ApplyContent, &p.ApplyOps, &p.AppliedBy, &p.LiveApply,
 		&createdAt, &decidedAt, &appliedAt,
 	); err != nil {
 		return nil, err

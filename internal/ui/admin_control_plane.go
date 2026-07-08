@@ -40,11 +40,12 @@ type AdminCPRow struct {
 	Evidence    string
 	// Gates for the action buttons (mirror the daemon state machine).
 	CanApprove  bool // DRAFT
-	CanReject   bool // DRAFT
+	CanReject   bool // DRAFT (reject) or APPROVED (withdraw)
 	CanApply    bool // APPROVED + has an apply target
 	CanRollback bool // APPLIED
 	ReviewOnly  bool // APPROVED but no apply target → "action by hand"
 	IsDaemon    bool // daemon-scope → needs the ack checkbox
+	LiveApply   bool // applies live (skips the busy gate) → no idle wait
 }
 
 // AdminCPTab is a status filter with its live count.
@@ -163,6 +164,7 @@ var cpFlashMessages = map[string]string{
 	"busy":          "Refused: tasks are running in scope — retry when idle.",
 	"ack-required":  "Refused: a daemon-scope change needs the 'affects all projects' checkbox.",
 	"review-only":   "This proposal has no applyable change — action it by hand.",
+	"stale-base":    "Refused: config.yaml changed since this proposal was drafted — re-draft it (nothing was written).",
 	"not-approved":  "Refused: only an APPROVED proposal can be applied.",
 	"apply-failed":  "Apply failed (auto-rolled-back if the config was rejected).",
 	"error":         "That action could not be completed.",
@@ -352,12 +354,15 @@ func (s *Server) buildCPProposals(data *AdminControlPlaneData, all []*persistenc
 			ID: p.ID, Title: p.Title, Status: p.Status, Kind: p.Kind, BlastRadius: p.BlastRadius,
 			ProjectID: p.ProjectID, ProposedBy: p.ProposedBy, Approver: p.Approver, AppliedBy: p.AppliedBy,
 			Rationale: p.Rationale, DiffPreview: skillBodyPreview(p.Diff, 600), Evidence: p.Evidence,
-			CanApprove:  p.Status == persistence.ProposalStatusDraft,
-			CanReject:   p.Status == persistence.ProposalStatusDraft,
+			CanApprove: p.Status == persistence.ProposalStatusDraft,
+			// Reject a DRAFT; withdraw an APPROVED-but-unappliable proposal
+			// (e.g. superseded by a re-draft) — both route to REJECTED.
+			CanReject:   p.Status == persistence.ProposalStatusDraft || p.Status == persistence.ProposalStatusApproved,
 			CanApply:    p.Status == persistence.ProposalStatusApproved && applyable,
 			CanRollback: p.Status == persistence.ProposalStatusApplied,
 			ReviewOnly:  p.Status == persistence.ProposalStatusApproved && !applyable,
 			IsDaemon:    p.BlastRadius == persistence.ProposalScopeDaemon,
+			LiveApply:   p.LiveApply,
 		})
 	}
 }
@@ -455,6 +460,10 @@ func cpApplyOutcome(err error) string {
 		return "ack-required"
 	case errors.Is(err, controlplane.ErrReviewOnly):
 		return "review-only"
+	case errors.Is(err, controlplane.ErrStaleBase):
+		// Refused BEFORE any write (base hash mismatch) — nothing was rolled
+		// back, so the generic "apply-failed" message would mislead.
+		return "stale-base"
 	default:
 		// Validation/reload failures (engine auto-rolled-back).
 		return "apply-failed"

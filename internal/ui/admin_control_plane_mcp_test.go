@@ -56,6 +56,12 @@ func TestMCPAdd_FilesDaemonScopeProposal(t *testing.T) {
 	if p.BlastRadius != persistence.ProposalScopeDaemon || p.ProposedBy != "operator-ui" || p.ApplyTarget != "config.yaml" {
 		t.Fatalf("unexpected proposal shape: %+v", p)
 	}
+	// MCP add/remove is non-disruptive to in-flight tasks → live-apply so the
+	// daemon-scope busy gate (never opens in prod) is skipped. This is the fix
+	// for the 2026-07-08 "homeassistant apply keeps failing" report.
+	if !p.LiveApply {
+		t.Error("MCP-hub proposal must be LiveApply=true (skips the busy gate)")
+	}
 	// The edited content adds the new server + keeps the existing one + comments.
 	if !strings.Contains(p.ApplyContent, "homeassistant") || !strings.Contains(p.ApplyContent, "existing") || !strings.Contains(p.ApplyContent, "# vornik config") {
 		t.Errorf("edited config must add new + preserve existing/comments: %s", p.ApplyContent)

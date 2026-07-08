@@ -1166,6 +1166,7 @@ CREATE TABLE IF NOT EXISTS control_plane_proposals (
     apply_content      TEXT NOT NULL DEFAULT '',
     apply_ops          TEXT NOT NULL DEFAULT '',
     applied_by         TEXT NOT NULL DEFAULT '',
+    live_apply         INTEGER NOT NULL DEFAULT 0,
     created_at         TEXT NOT NULL,
     decided_at         TEXT,
     applied_at         TEXT

@@ -22,6 +22,12 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 |---|---|---|
 | `cluster` | struct | Cluster-diagnostics: expected endpoints + monitor interval. |
 
+## control_plane
+
+| Key | Type | Description |
+|---|---|---|
+| `control_plane` | struct | Control-plane worker knobs (self-healing incident detection). |
+
 ## named_secrets
 
 | Key | Type | Description |

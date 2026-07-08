@@ -37,6 +37,15 @@ import (
 // Reuses an existing Manager across config reloads so the API server and
 // dispatcher (which keep a pointer at init time) don't end up talking
 // to a stale object.
+
+// mcpReconnectBudget bounds the whole MCP reconcile initMCP kicks off. Since
+// SyncProjects now dials concurrently (each server ≤30s), the batch normally
+// finishes in ~one dial; this overall deadline is the backstop that guarantees
+// the reload activator returns and releases the reloader's reloadMu even if
+// several servers are offline. See the initMCP call site + the 2026-07-08
+// watcher-wedge fix.
+const mcpReconnectBudget = 35 * time.Second
+
 func (c *Container) initMCP() {
 	if c.Registry == nil {
 		return
@@ -56,7 +65,19 @@ func (c *Container) initMCP() {
 	// incoming tool call for the duration of the reconnects (bug-sweep
 	// follow-up 2026-06-04).
 	desired := c.mcpDesiredServers()
-	c.mcpManager.SyncProjects(context.Background(), desired)
+	// Bound the whole reconnect. initMCP runs inside the config-reload
+	// activator (SetActivator → initMCP), which holds the reloader's
+	// reloadMu. SyncProjects dials each server serially, each dial bounded at
+	// 30s; with one or more OFFLINE servers (e.g. pagedrop down) the serial
+	// sum can hold reloadMu for minutes. An overall deadline caps that so the
+	// reload cycle always returns and releases reloadMu — the watcher's
+	// bounded TryReload then keeps the scan loop live either way. Root-cause
+	// fix for the 2026-07-08 watcher wedge (offline MCP server stalled the
+	// activator; the deferred initMCP-no-timeout follow-up from the
+	// 2026-07-06 non-blocking-config-save design).
+	ctx, cancel := context.WithTimeout(context.Background(), mcpReconnectBudget)
+	defer cancel()
+	c.mcpManager.SyncProjects(ctx, desired)
 	if len(desired) == 0 {
 		// No project needs MCP. Leave the Manager in place but empty;
 		// the API server's mcpExecutor pointer remains valid and every

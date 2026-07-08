@@ -221,6 +221,25 @@ func TestAdminControlPlane_ApplyAndRollbackDelegate(t *testing.T) {
 	}
 }
 
+func TestCPApplyOutcome_MapsEngineErrors(t *testing.T) {
+	cases := map[error]string{
+		nil:                               "applied",
+		controlplane.ErrBusy:              "busy",
+		controlplane.ErrDaemonAckRequired: "ack-required",
+		controlplane.ErrReviewOnly:        "review-only",
+		controlplane.ErrStaleBase:         "stale-base", // must NOT fall to the misleading "apply-failed"
+	}
+	for err, want := range cases {
+		if got := cpApplyOutcome(err); got != want {
+			t.Errorf("cpApplyOutcome(%v) = %q, want %q", err, got, want)
+		}
+	}
+	// The stale-base token has a distinct, non-misleading flash message.
+	if _, ok := cpFlashMessages["stale-base"]; !ok {
+		t.Error("stale-base flash message must be defined")
+	}
+}
+
 func TestAdminControlPlane_RepoUnwired(t *testing.T) {
 	s := NewServer()
 	rec := httptest.NewRecorder()

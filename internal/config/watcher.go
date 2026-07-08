@@ -272,6 +272,11 @@ type ConfigReloader struct {
 	activator func() error
 	logger    zerolog.Logger
 
+	// reloadBound caps how long a watcher/retry-triggered reload may hold the
+	// scan loop before it returns ReloadDeferred (the cycle then finishes in
+	// the background). Defaults to watchReloadBound; overridable in tests.
+	reloadBound time.Duration
+
 	// reloadMu serializes entire Reload() cycles. Reload has many
 	// concurrent triggers — SIGHUP, POST /config/reload, the 5s file
 	// watcher, retryPendingLoop, the LISTEN/NOTIFY peer broadcast, the
@@ -320,8 +325,9 @@ func (e *ActivationBlockedError) Error() string {
 // NewConfigReloader creates a new reloader.
 func NewConfigReloader(watcher *Watcher, logger zerolog.Logger) *ConfigReloader {
 	return &ConfigReloader{
-		watcher: watcher,
-		logger:  logger,
+		watcher:     watcher,
+		logger:      logger,
+		reloadBound: watchReloadBound,
 	}
 }
 
@@ -362,20 +368,55 @@ func (r *ConfigReloader) SetPostReloadHook(fn func()) {
 	r.postReloadHook = fn
 }
 
+// watchReloadBound caps how long a watcher-triggered reload may hold the scan
+// loop. A healthy reload completes well within this; a slow or wedged reload
+// (e.g. an offline MCP server stalling initMCP inside the activator) returns
+// ReloadDeferred and keeps running in a background goroutine — the scan loop
+// stays live and keeps detecting further edits instead of wedging.
+//
+// This is the fix for the 2026-07-08 watcher wedge: an offline MCP server hung
+// initMCP, the unbounded Reload() called synchronously here never returned, and
+// the scan loop stalled for ~35 min (no live config change applied). The
+// bounded TryReload primitive existed (built for the 2026-07-06 config-save
+// wedge) but was never wired into the watcher's own trigger — only the UI save
+// path. See https://docs.vornik.io
+const watchReloadBound = 10 * time.Second
+
 // Start begins watching and auto-reloading.
 func (r *ConfigReloader) Start(ctx context.Context) error {
-	r.watcher.OnChange(func(changed []string) {
-		r.logger.Info().Strs("files", changed).Msg("config change detected")
-		if err := r.Reload(); err != nil {
-			r.logger.Error().Err(err).Msg("config reload failed")
-		}
-	})
+	r.watcher.OnChange(r.handleWatchedChange)
 	if err := r.watcher.Start(ctx); err != nil {
 		return err
 	}
 
 	go r.retryPendingLoop(ctx)
 	return nil
+}
+
+// handleWatchedChange is the watcher's OnChange callback. It runs ON the scan-
+// loop goroutine, so it MUST NOT block: a synchronous unbounded Reload() here
+// blocks the loop — permanently if the cycle never returns (2026-07-08 wedge:
+// an offline MCP server hung initMCP inside the activator). It uses the bounded
+// TryReload instead; on deferral the cycle finishes (and applies) in a
+// background goroutine while the loop keeps scanning for further edits.
+func (r *ConfigReloader) handleWatchedChange(changed []string) {
+	r.logger.Info().Strs("files", changed).Msg("config change detected")
+	bound := r.reloadBound
+	if bound <= 0 {
+		bound = watchReloadBound
+	}
+	switch outcome, err := r.TryReload(bound); outcome {
+	case ReloadApplied:
+		// finishReloadSuccess already logged "config reloaded successfully".
+	case ReloadDeferred:
+		r.logger.Warn().Dur("bound", bound).
+			Msg("config reload deferred (slow/busy reloader — e.g. an offline MCP server); applying in background, scan loop stays live")
+	case ReloadBlocked:
+		r.logger.Info().Err(err).
+			Msg("config reload activation blocked (e.g. in-flight tasks); retry loop will re-attempt")
+	case ReloadFailed:
+		r.logger.Error().Err(err).Msg("config reload failed")
+	}
 }
 
 // Stop stops the reloader.
@@ -639,7 +680,13 @@ func (r *ConfigReloader) retryPendingLoop(ctx context.Context) {
 				continue
 			}
 			r.logger.Info().Str("reason", status.BlockedReason).Msg("retrying blocked config activation")
-			if err := r.Reload(); err != nil {
+			// Bounded, like the watcher trigger: this retry goroutine must not
+			// wedge on a stalled reload cycle either.
+			bound := r.reloadBound
+			if bound <= 0 {
+				bound = watchReloadBound
+			}
+			if outcome, err := r.TryReload(bound); outcome != ReloadApplied {
 				r.logger.Debug().Err(err).Msg("blocked config activation still pending")
 			}
 		}

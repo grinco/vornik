@@ -5244,4 +5244,19 @@ ALTER TABLE control_plane_proposals ADD COLUMN IF NOT EXISTS apply_ops TEXT NOT 
 ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS apply_ops;
 `,
 	},
+	{
+		Version: 120,
+		Name:    "control_plane_proposals_live_apply",
+		// Live-apply: a proposer-declared flag that lets the apply engine skip
+		// ONLY the all-projects busy gate for changes that are non-disruptive
+		// to in-flight tasks (e.g. MCP server add/remove). Default FALSE keeps
+		// every existing proposal busy-gated. Additive. See
+		// https://docs.vornik.io
+		Up: `
+ALTER TABLE control_plane_proposals ADD COLUMN IF NOT EXISTS live_apply BOOLEAN NOT NULL DEFAULT FALSE;
+`,
+		Down: `
+ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS live_apply;
+`,
+	},
 }

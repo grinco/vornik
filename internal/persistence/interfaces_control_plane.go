@@ -58,9 +58,15 @@ const ErrProposalFieldTooLarge RepositoryError = "control-plane proposal field t
 // the human gate must be a different party from the proposing agent).
 const ErrProposalSelfApprove RepositoryError = "control-plane proposal self-approval forbidden"
 
-// ErrProposalNotDraft is returned by SetStatus when the proposal is not in
-// DRAFT (a decided row is terminal for approve/reject; supersede instead).
+// ErrProposalNotDraft is returned by SetStatus when APPROVE is attempted on a
+// proposal that is not in DRAFT (a decided row can't be re-approved).
 const ErrProposalNotDraft RepositoryError = "control-plane proposal not in DRAFT"
+
+// ErrProposalNotPending is returned by SetStatus when REJECT/withdraw is
+// attempted on a proposal that is neither DRAFT nor APPROVED — i.e. already
+// terminal (REJECTED/APPLIED/ROLLED_BACK). Reject is allowed from DRAFT (reject
+// a pending proposal) or APPROVED (withdraw an approved-but-unappliable one).
+const ErrProposalNotPending RepositoryError = "control-plane proposal not in a pending (DRAFT/APPROVED) state"
 
 // ErrProposalNotApproved is returned by MarkApplied when the proposal is not
 // APPROVED (only an APPROVED proposal can be applied; idempotent single-apply).
@@ -110,6 +116,15 @@ type ControlPlaneProposal struct {
 	// AppliedBy is the operator who applied it — set ONLY on a successful
 	// apply (a failed/aborted apply leaves it empty).
 	AppliedBy string
+	// LiveApply, when true, lets ApplyEngine.Apply skip ONLY the all-projects
+	// busy gate — the change is declared non-disruptive to in-flight tasks by
+	// the proposer (e.g. the MCP-hub add/remove proposer: the MCP catalog is
+	// injected into agent containers at start, so a running task never sees a
+	// mid-flight catalog change). Every other invariant (APPROVED, daemon-ack,
+	// base-hash, validate, atomic write, reload+rollback) still runs. Default
+	// false ⇒ current behavior (busy-gated). See
+	// https://docs.vornik.io
+	LiveApply bool
 
 	CreatedAt time.Time
 	DecidedAt *time.Time

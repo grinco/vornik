@@ -39,6 +39,11 @@ func NewManager(logger zerolog.Logger) *Manager {
 // overridden in tests to inject fake clients without a real transport.
 var connectFn = Connect
 
+// closeFn is the teardown seam for displaced clients — overridden in tests to
+// simulate a Close() that blocks (a stdio subprocess that won't reap, an SSE
+// stream that won't terminate) without a real transport.
+var closeFn = (*Client).Close
+
 // SyncProjects reconciles the manager to exactly the desired
 // per-project server sets. It replaces the previous reload pattern of
 // Close()-then-StartForProject, which wiped every client and then
@@ -57,28 +62,77 @@ var connectFn = Connect
 // partial-success convention, a server that fails to dial is logged
 // and skipped.
 func (m *Manager) SyncProjects(ctx context.Context, desired map[string][]ServerConfig) {
+	// One dial result per server. client==nil means the dial failed (or was
+	// abandoned) — it's simply omitted from the new catalog.
+	type dialResult struct {
+		projectID string
+		name      string
+		client    *Client
+	}
+
 	fresh := make(map[string]map[string]*Client, len(desired))
+	total := 0
 	for projectID, servers := range desired {
 		if projectID == "" {
 			m.logger.Error().Msg("mcp: SyncProjects given empty projectID — ignored")
 			continue
 		}
-		byServer := make(map[string]*Client, len(servers))
-		for _, cfg := range servers {
-			connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			client, err := connectFn(connectCtx, cfg, m.logger.With().Str("project", projectID).Logger())
-			cancel()
-			if err != nil {
-				m.logger.Error().
-					Err(err).
-					Str("project", projectID).
-					Str("server", cfg.Name).
-					Msg("mcp: failed to connect")
-				continue
-			}
-			byServer[cfg.Name] = client
+		fresh[projectID] = make(map[string]*Client, len(servers))
+		total += len(servers)
+	}
+
+	// Dial every server CONCURRENTLY, each bounded at 30s. Results flow back on
+	// a BUFFERED channel (cap = total) so a straggler's late send never blocks
+	// and never touches a shared map — only this function's goroutine writes
+	// `fresh`, so there is no data race with the swap below. Collection stops at
+	// the first of: every dial reported, or `ctx` (the overall reconnect
+	// budget from initMCP) expiring. That second arm is the critical one:
+	// SyncProjects runs INSIDE the config-reload activator holding the
+	// reloader's reloadMu, so a single dial that hangs past its own 30s ctx
+	// (a transport that ignores cancellation) must not stall the whole cycle —
+	// it would wedge live config reloads until a restart. We proceed with
+	// whatever connected and abandon the straggler. 2026-07-08 watcher-wedge
+	// root-cause fix (the initMCP-no-timeout follow-up deferred on 2026-07-06).
+	results := make(chan dialResult, total)
+	for projectID, servers := range desired {
+		if projectID == "" {
+			continue
 		}
-		fresh[projectID] = byServer
+		for _, cfg := range servers {
+			go func(projectID string, cfg ServerConfig) {
+				connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				defer cancel()
+				client, err := connectFn(connectCtx, cfg, m.logger.With().Str("project", projectID).Logger())
+				if err != nil {
+					m.logger.Error().
+						Err(err).
+						Str("project", projectID).
+						Str("server", cfg.Name).
+						Msg("mcp: failed to connect")
+					results <- dialResult{projectID, cfg.Name, nil}
+					return
+				}
+				results <- dialResult{projectID, cfg.Name, client}
+			}(projectID, cfg)
+		}
+	}
+
+	pending := total
+collect:
+	for pending > 0 {
+		select {
+		case r := <-results:
+			if r.client != nil {
+				fresh[r.projectID][r.name] = r.client
+			}
+			pending--
+		case <-ctx.Done():
+			m.logger.Warn().
+				Int("connected", total-pending).
+				Int("total", total).
+				Msg("mcp: reconnect budget exceeded; proceeding with connected servers, slow dials abandoned")
+			break collect
+		}
 	}
 
 	m.mu.Lock()
@@ -86,15 +140,26 @@ func (m *Manager) SyncProjects(ctx context.Context, desired map[string][]ServerC
 	m.clients = fresh
 	m.mu.Unlock()
 
+	// Close the displaced (old-catalog) clients OUT OF BAND. The new catalog is
+	// already live after the swap above, so nothing needs these closes to
+	// finish before SyncProjects returns — and Client.Close() CAN block (stdio
+	// Close does Process.Kill + cmd.Wait; a subprocess that won't reap, or an
+	// SSE stream that won't terminate, hangs it). SyncProjects runs inside the
+	// config-reload activator holding the reloader's reloadMu, so a blocking
+	// Close here would wedge the whole reload cycle — this, not the connect,
+	// was the actual 2026-07-08 activator hang. Detach so a slow Close can't
+	// hold up the reload; a pathological Close leaks one goroutine at worst.
 	for projectID, byServer := range displaced {
 		for name, client := range byServer {
-			if err := client.Close(); err != nil {
-				m.logger.Warn().
-					Err(err).
-					Str("project", projectID).
-					Str("server", name).
-					Msg("mcp: close displaced client")
-			}
+			go func(projectID, name string, client *Client) {
+				if err := closeFn(client); err != nil {
+					m.logger.Warn().
+						Err(err).
+						Str("project", projectID).
+						Str("server", name).
+						Msg("mcp: close displaced client")
+				}
+			}(projectID, name, client)
 		}
 	}
 }

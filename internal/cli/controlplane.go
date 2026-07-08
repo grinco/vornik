@@ -117,8 +117,13 @@ func init() {
 	cpProposalsCmd.Flags().StringVarP(&cpListStatus, "status", "s", "", "Filter by status (DRAFT/APPROVED/REJECTED/APPLIED/ROLLED_BACK)")
 	cpProposalsCmd.Flags().BoolVar(&cpListJSON, "json", false, "Emit JSON")
 
-	cpApproveCmd.Flags().StringVar(&cpActor, "author", cpDefaultActor(), "Approver identity (must differ from the proposer)")
-	cpRejectCmd.Flags().StringVar(&cpActor, "author", cpDefaultActor(), "Rejecter identity")
+	// Default "" (NOT cpDefaultActor()) so --help / generated docs stay
+	// deterministic — baking the live $USER into the flag default made
+	// `make docs-gen` produce host-specific output (swarm-control locally vs
+	// runner in CI → docs/public perpetually "stale"). $USER is resolved at
+	// run time via resolveCPActor() instead.
+	cpApproveCmd.Flags().StringVar(&cpActor, "author", "", "Approver identity, must differ from the proposer (defaults to $USER)")
+	cpRejectCmd.Flags().StringVar(&cpActor, "author", "", "Rejecter identity (defaults to $USER)")
 
 	cpProposeCmd.Flags().StringVarP(&cpProposeProject, "project", "p", "", "Affected project (omit for a daemon-scope proposal)")
 	cpProposeCmd.Flags().StringVar(&cpProposeKind, "kind", "config", "config | model | scaffold")
@@ -128,7 +133,7 @@ func init() {
 	cpProposeCmd.Flags().StringVar(&cpProposeRationale, "rationale", "", "Why")
 	_ = cpProposeCmd.MarkFlagRequired("title")
 
-	cpApplyCmd.Flags().StringVar(&cpActor, "author", cpDefaultActor(), "Operator identity applying the change")
+	cpApplyCmd.Flags().StringVar(&cpActor, "author", "", "Operator identity applying the change (defaults to $USER)")
 	cpApplyCmd.Flags().BoolVar(&cpApplyAck, "ack-daemon", false, "Acknowledge a daemon-scope change affects every project")
 
 	cpDiagnoseCmd.Flags().BoolVar(&cpDiagnosePropose, "propose", false, "File a review-only DRAFT proposal from the diagnosis (never auto-applied)")
@@ -145,6 +150,15 @@ func cpDefaultActor() string {
 	return "operator"
 }
 
+// resolveCPActor returns the --author value, falling back to the OS user at RUN
+// time (not flag-registration time) so generated docs/help stay deterministic.
+func resolveCPActor() string {
+	if cpActor != "" {
+		return cpActor
+	}
+	return cpDefaultActor()
+}
+
 type cpProposalWire struct {
 	ID          string `json:"id"`
 	ProjectID   string `json:"projectId"`
@@ -156,6 +170,7 @@ type cpProposalWire struct {
 	Status      string `json:"status"`
 	ProposedBy  string `json:"proposedBy"`
 	Approver    string `json:"approver"`
+	LiveApply   bool   `json:"liveApply"`
 	CreatedAt   string `json:"createdAt"`
 }
 
@@ -223,6 +238,9 @@ func runCPShow(id string) error {
 	if p.Approver != "" {
 		fmt.Printf("approver:     %s\n", p.Approver)
 	}
+	if p.LiveApply {
+		fmt.Printf("live_apply:   true (skips the busy gate — applies live, no idle window)\n")
+	}
 	if p.Rationale != "" {
 		fmt.Printf("\nrationale:\n%s\n", p.Rationale)
 	}
@@ -235,7 +253,7 @@ func runCPShow(id string) error {
 func runCPDecide(id, decision string) error {
 	client := ClientFromEnv()
 	resp, err := client.Post("/api/v1/operator/proposals/"+id+"/decide",
-		map[string]any{"decision": decision, "actor": cpActor})
+		map[string]any{"decision": decision, "actor": resolveCPActor()})
 	if err != nil {
 		return fmt.Errorf("%s: %w", decision, err)
 	}
@@ -257,7 +275,7 @@ func runCPDecide(id, decision string) error {
 func runCPApply(id string) error {
 	client := ClientFromEnv()
 	resp, err := client.Post("/api/v1/operator/proposals/"+id+"/apply",
-		map[string]any{"actor": cpActor, "ackDaemon": cpApplyAck})
+		map[string]any{"actor": resolveCPActor(), "ackDaemon": cpApplyAck})
 	if err != nil {
 		return fmt.Errorf("apply: %w", err)
 	}

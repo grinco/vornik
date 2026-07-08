@@ -16,6 +16,7 @@ doctor
 memory
 instinct
 knowledge
+control-plane
 models
 mcp
 skill

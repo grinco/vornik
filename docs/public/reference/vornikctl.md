@@ -77,6 +77,80 @@ vornikctl config show [flags]
 |---|---|---|
 | `--json` | `true` | JSON output (the only supported shape — default) |
 
+## vornikctl control-plane
+
+Control-plane proposal ledger (troubleshooting / config proposals)
+
+Review and decide control-plane change proposals.
+
+A proposal is a human-gated suggested change (a config diff, a model swap)
+raised by the operator or a Tune detector. Phase 1 lets you propose, list,
+show, approve, and reject; applying an approved change is done by hand (gated
+auto-apply is a later phase).
+
+## vornikctl control-plane approve
+
+Approve a DRAFT proposal (you must not be its proposer)
+
+```
+vornikctl control-plane approve <proposal-id> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--author` | `swarm-control` | Approver identity (must differ from the proposer) |
+
+## vornikctl control-plane proposals
+
+List control-plane proposals
+
+```
+vornikctl control-plane proposals [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | `false` | Emit JSON |
+| `-p`, `--project` |  | Filter by project ID |
+| `-s`, `--status` |  | Filter by status (DRAFT/APPROVED/REJECTED/APPLIED/ROLLED_BACK) |
+
+## vornikctl control-plane propose
+
+Raise a control-plane proposal (writes a DRAFT for review)
+
+```
+vornikctl control-plane propose [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--blast-radius` | `project` | model \| project \| swarm \| daemon |
+| `--diff` |  | The proposed change (diff / patch text) |
+| `--kind` | `config` | config \| model \| scaffold |
+| `--rationale` |  | Why |
+| `--title` |  | One-line title (required) |
+| `-p`, `--project` |  | Affected project (omit for a daemon-scope proposal) |
+
+## vornikctl control-plane reject
+
+Reject a DRAFT proposal
+
+```
+vornikctl control-plane reject <proposal-id> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--author` | `swarm-control` | Rejecter identity |
+
+## vornikctl control-plane show
+
+Show a single proposal (full diff + rationale)
+
+```
+vornikctl control-plane show <proposal-id>
+```
+
 ## vornikctl doctor
 
 Diagnose and repair common issues
@@ -142,6 +216,7 @@ vornikctl doctor [flags]
 |---|---|---|
 | `--fix` | `false` | Automatically repair detected issues |
 | `--json` | `false` | Output in JSON format |
+| `--offline` | `false` | Run static checks WITHOUT the daemon (config parse, DB reachability, migration state, recent journal errors) — the escape hatch when the daemon won't start |
 
 ## vornikctl doctor feature
 

@@ -761,7 +761,10 @@ type Server struct {
 	// (skill_propose/search/get/list/approve/reject). Nil-safe: those
 	// tools return "skill store not wired on this daemon" when unset,
 	// so minimal harnesses/tests keep working.
-	skillStore               persistence.SkillRepository
+	skillStore persistence.SkillRepository
+	// proposalStore backs the control-plane proposal ledger (operator
+	// REST surface: propose/list/get/decide). Nil-safe.
+	proposalStore            persistence.ProposalRepository
 	memoryTitleBackfiller    MemoryTitleBackfiller
 	memoryClassifyBackfiller MemoryClassifyBackfiller
 	// memoryGraphReflagger powers POST /api/v1/memory/regraph —
@@ -1828,6 +1831,15 @@ func WithMemoryCompanionAdapter(a MemoryCompanionAdapter) ServerOption {
 func WithSkillStore(repo persistence.SkillRepository) ServerOption {
 	return func(s *Server) {
 		s.skillStore = repo
+	}
+}
+
+// WithProposalStore wires the control-plane proposal ledger backing the
+// operator REST surface (/api/v1/operator/proposals). Nil preserves the
+// "not wired" posture (those endpoints return a clear error).
+func WithProposalStore(repo persistence.ProposalRepository) ServerOption {
+	return func(s *Server) {
+		s.proposalStore = repo
 	}
 }
 

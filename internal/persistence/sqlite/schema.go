@@ -1143,6 +1143,33 @@ CREATE INDEX IF NOT EXISTS idx_project_skills_global
     ON project_skills (is_global);
 
 -- ============================================================
+-- control_plane_proposals — human-gated change proposals from the
+-- operator agent / Tune detectors (LLD 2026-07-07-control-plane-design,
+-- Phase 1). Postgres parity: migration 117. Phase 1 writes DRAFT +
+-- approve/reject only; apply is Phase 2 (pre_apply_snapshot unused in P1).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS control_plane_proposals (
+    id                 TEXT PRIMARY KEY,
+    project_id         TEXT,
+    kind               TEXT NOT NULL CHECK (kind IN ('config','model','scaffold')),
+    blast_radius       TEXT NOT NULL CHECK (blast_radius IN ('model','project','swarm','daemon')),
+    title              TEXT NOT NULL,
+    diff               TEXT NOT NULL DEFAULT '',
+    rationale          TEXT NOT NULL DEFAULT '',
+    evidence           TEXT NOT NULL DEFAULT '',
+    status             TEXT NOT NULL DEFAULT 'DRAFT'
+                         CHECK (status IN ('DRAFT','APPROVED','REJECTED','APPLIED','ROLLED_BACK')),
+    proposed_by        TEXT NOT NULL DEFAULT '',
+    approver           TEXT NOT NULL DEFAULT '',
+    pre_apply_snapshot TEXT NOT NULL DEFAULT '',
+    created_at         TEXT NOT NULL,
+    decided_at         TEXT,
+    applied_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cp_proposals_status ON control_plane_proposals (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cp_proposals_project ON control_plane_proposals (project_id);
+
+-- ============================================================
 -- execution_injected_skills — which approved skills were injected
 -- into a role for an execution (LLD 2026-07-07-knowledge-skill-
 -- learning-loop-design §D.2). Read at successful completion to

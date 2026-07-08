@@ -5178,4 +5178,39 @@ DROP INDEX IF EXISTS idx_project_skills_global;
 ALTER TABLE project_skills DROP COLUMN IF EXISTS is_global;
 `,
 	},
+	{
+		Version: 117,
+		Name:    "control_plane_proposals",
+		// Control-plane proposal ledger (LLD 2026-07-07-control-plane-
+		// design, Phase 1). Human-gated change proposals from the operator
+		// agent / Tune detectors. Phase 1 only writes DRAFT + approve/reject;
+		// apply is Phase 2 (pre_apply_snapshot persisted now, unused in P1).
+		Up: `
+CREATE TABLE IF NOT EXISTS control_plane_proposals (
+    id                 TEXT PRIMARY KEY,
+    project_id         TEXT,
+    kind               TEXT NOT NULL CHECK (kind IN ('config','model','scaffold')),
+    blast_radius       TEXT NOT NULL CHECK (blast_radius IN ('model','project','swarm','daemon')),
+    title              TEXT NOT NULL,
+    diff               TEXT NOT NULL DEFAULT '',
+    rationale          TEXT NOT NULL DEFAULT '',
+    evidence           TEXT NOT NULL DEFAULT '',
+    status             TEXT NOT NULL DEFAULT 'DRAFT'
+                         CHECK (status IN ('DRAFT','APPROVED','REJECTED','APPLIED','ROLLED_BACK')),
+    proposed_by        TEXT NOT NULL DEFAULT '',
+    approver           TEXT NOT NULL DEFAULT '',
+    pre_apply_snapshot TEXT NOT NULL DEFAULT '',
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    decided_at         TIMESTAMPTZ,
+    applied_at         TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_cp_proposals_status ON control_plane_proposals (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cp_proposals_project ON control_plane_proposals (project_id);
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_cp_proposals_project;
+DROP INDEX IF EXISTS idx_cp_proposals_status;
+DROP TABLE IF EXISTS control_plane_proposals;
+`,
+	},
 }

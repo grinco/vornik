@@ -281,6 +281,13 @@ func TestSkillRepository_PostgresContract(t *testing.T) {
 	repotest.RunSkillSuite(t, NewSkillRepository(db.DB))
 }
 
+// TestProposalRepository_PostgresContract — the control-plane proposal
+// ledger, the same suite that runs against SQLite.
+func TestProposalRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunProposalSuite(t, NewProposalRepository(db.DB))
+}
+
 // TestExecutionInjectedSkillRepository_PostgresContract — the
 // execution→skill association, same suite the SQLite side runs.
 func TestExecutionInjectedSkillRepository_PostgresContract(t *testing.T) {

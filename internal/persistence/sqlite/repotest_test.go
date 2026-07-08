@@ -44,6 +44,15 @@ func TestSkillRepository_Contract(t *testing.T) {
 	repotest.RunSkillSuite(t, sqlite.NewSkillRepository(db.DB))
 }
 
+// TestProposalRepository_Contract — the control-plane proposal ledger
+// contract (LLD 2026-07-07-control-plane-design, Phase 1): create/get/list,
+// the 64 KiB field cap, guarded DRAFT→APPROVED/REJECTED transitions, and the
+// no-self-approval constraint.
+func TestProposalRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunProposalSuite(t, sqlite.NewProposalRepository(db.DB))
+}
+
 // TestExecutionInjectedSkillRepository_Contract — the execution→skill
 // association backing the maturity engine's "worked" credit.
 func TestExecutionInjectedSkillRepository_Contract(t *testing.T) {

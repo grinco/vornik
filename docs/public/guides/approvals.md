@@ -72,6 +72,25 @@ vornikctl task answer <taskId> --project my-project \
 You can also steer a running task with `vornikctl task directive`, pause/resume
 it, or amend its brief — see the [vornikctl reference](../reference/vornikctl.md).
 
+## How you're notified
+
+When a task needs you (approval or input), vornik pushes a steering
+notification so it doesn't stall unseen (gated by
+`steering_notifications_enabled`, default on):
+
+- **Chat-originated tasks** notify the chat/DM that started them, so the prompt
+  lands where you were already talking to vornik.
+- **Ownerless tasks** — the autonomy loop's own tasks *and the routed
+  sub-tasks they spawn* (which carry no originating chat) — are routed by
+  **project**: the alert goes to the operators who have access to that task's
+  project. On Telegram that's the users in `telegram.allowed_users` whose access
+  covers the project (wildcard users plus users scoped to it) — so an
+  `assistant` task alerts the assistant operators, a `janka` task alerts the
+  janka operators. Configure the channel (and an optional catch-all fallback
+  recipient for projects that resolve to nobody) under `steering_operator_alert`.
+
+Every alert carries a deep link to the task so you can act on it in one tap.
+
 ## Acting on approvals
 
 Approvals and questions are actioned in the Web UI, where they're collected in

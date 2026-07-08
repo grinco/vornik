@@ -26,8 +26,9 @@ type doctorReport struct {
 }
 
 var (
-	doctorFix  bool
-	doctorJSON bool
+	doctorFix     bool
+	doctorJSON    bool
+	doctorOffline bool
 )
 
 var doctorCmd = &cobra.Command{
@@ -91,10 +92,15 @@ because they require operator config changes or external runtime actions.`,
 func init() {
 	doctorCmd.Flags().BoolVar(&doctorFix, "fix", false, "Automatically repair detected issues")
 	doctorCmd.Flags().BoolVar(&doctorJSON, "json", false, "Output in JSON format")
+	doctorCmd.Flags().BoolVar(&doctorOffline, "offline", false,
+		"Run static checks WITHOUT the daemon (config parse, DB reachability, migration state, recent journal errors) — the escape hatch when the daemon won't start")
 	rootCmd.AddCommand(doctorCmd)
 }
 
 func runDoctor(cmd *cobra.Command, args []string) error {
+	if doctorOffline {
+		return runDoctorOffline(cmd)
+	}
 	client := ClientFromEnv()
 
 	path := "/api/v1/doctor"

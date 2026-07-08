@@ -363,6 +363,13 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		// cross-project-global-skills-design.
 		mux.HandleFunc("/api/v1/skills/", server.SkillSetGlobal)
 
+		// Control-plane proposal ledger — operator surface (vornikctl
+		// operator). Human-gated change proposals; Phase 1 is propose/list/
+		// get/decide only (NO apply path). requireOperatorScope-gated, NOT
+		// under /api/v1/admin/ (CE feature). LLD 2026-07-07-control-plane.
+		mux.HandleFunc("/api/v1/operator/proposals", server.OperatorProposals)
+		mux.HandleFunc("/api/v1/operator/proposals/", server.OperatorProposalItem)
+
 		// Continuous-learning instinct layer — read/inspect/retire surfaces.
 		// The list + per-id router go through the normal auth chain (no
 		// admin scope required: instincts are advisory evidence, reading

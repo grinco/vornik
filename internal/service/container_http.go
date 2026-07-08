@@ -177,6 +177,7 @@ func (c *Container) initHTTPServer() error {
 		api.WithWebhookEventRepository(c.repos.Webhooks),
 		api.WithAPIKeyRepository(c.repos.APIKeys),
 		api.WithSkillStore(c.repos.Skills),
+		api.WithProposalStore(c.repos.Proposals),
 		api.WithAPIKeyLimiter(c.apiKeyLimiter),
 		// Per-IP backstop (hardening sub-item 2). Same instance is
 		// shared with the UI subtree's middleware below so a flood

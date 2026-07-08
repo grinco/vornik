@@ -229,7 +229,9 @@ func (s *Server) operatorDecide(w http.ResponseWriter, r *http.Request, id strin
 	case errors.Is(err, persistence.ErrProposalSelfApprove):
 		respondError(w, http.StatusConflict, "SELF_APPROVAL_FORBIDDEN", "the proposer cannot approve their own proposal")
 	case errors.Is(err, persistence.ErrProposalNotDraft):
-		respondError(w, http.StatusConflict, "NOT_DRAFT", "proposal is not in DRAFT (already decided)")
+		respondError(w, http.StatusConflict, "NOT_DRAFT", "proposal is not in DRAFT (cannot re-approve a decided proposal)")
+	case errors.Is(err, persistence.ErrProposalNotPending):
+		respondError(w, http.StatusConflict, "NOT_PENDING", "proposal is terminal (already rejected/applied) — cannot reject/withdraw")
 	case errors.Is(err, persistence.ErrNotFound):
 		respondError(w, http.StatusNotFound, "NOT_FOUND", "proposal not found")
 	default:

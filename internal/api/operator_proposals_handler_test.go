@@ -108,11 +108,22 @@ func TestOperatorDecide_ApproveAndSelfApproveGuard(t *testing.T) {
 		t.Fatal("status should be APPROVED")
 	}
 
-	// Re-deciding a decided proposal is rejected.
+	// An APPROVED proposal CAN be withdrawn (rejected) — e.g. an approved
+	// change that turned out un-appliable and was superseded by a re-draft.
+	rec = httptest.NewRecorder()
+	s.OperatorProposalItem(rec, operatorReq(http.MethodPost, "/api/v1/operator/proposals/"+id+"/decide", `{"decision":"reject","actor":"vadim"}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("withdrawing an APPROVED proposal: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if decodeProposal(t, rec.Body.String()).Status != "REJECTED" {
+		t.Fatal("withdrawn proposal should be REJECTED")
+	}
+
+	// Re-deciding a TERMINAL (REJECTED) proposal is rejected.
 	rec = httptest.NewRecorder()
 	s.OperatorProposalItem(rec, operatorReq(http.MethodPost, "/api/v1/operator/proposals/"+id+"/decide", `{"decision":"reject","actor":"vadim"}`))
 	if rec.Code != http.StatusConflict {
-		t.Fatalf("re-decide must be 409, got %d", rec.Code)
+		t.Fatalf("re-deciding a terminal proposal must be 409, got %d", rec.Code)
 	}
 }
 

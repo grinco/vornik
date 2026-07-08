@@ -365,6 +365,32 @@ func (r *ExecutionRepository) CountByStatus(ctx context.Context, projectID strin
 	return counts, rows.Err()
 }
 
+// FailedRateByProject returns per-project FAILED vs total (COMPLETED+FAILED)
+// terminal executions created at/after `since`. CANCELLED excluded.
+func (r *ExecutionRepository) FailedRateByProject(ctx context.Context, since time.Time) (map[string]persistence.ExecFailedRate, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT project_id,
+		       SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed,
+		       COUNT(*) AS total
+		FROM executions
+		WHERE created_at >= ? AND status IN ('COMPLETED','FAILED')
+		GROUP BY project_id`, sqliteTime(since.UTC()))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[string]persistence.ExecFailedRate)
+	for rows.Next() {
+		var project string
+		var failed, total int64
+		if err := rows.Scan(&project, &failed, &total); err != nil {
+			return nil, err
+		}
+		out[project] = persistence.ExecFailedRate{Failed: failed, Total: total}
+	}
+	return out, rows.Err()
+}
+
 // List returns executions matching filter, newest-first.
 func (r *ExecutionRepository) List(ctx context.Context, filter persistence.ExecutionFilter) ([]*persistence.Execution, error) {
 	var b strings.Builder

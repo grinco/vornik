@@ -253,6 +253,10 @@ func (s *MemoryIngestSubsystem) Start(ctx context.Context) error {
 		go smw.Run(collectorsCtxFrom(ctx, c))
 	}
 
+	// Control-plane Tune detector (leader-gated). Watches per-project
+	// failed-task rate and raises DRAFT proposals; never mutates.
+	c.startTuneWorker(ctx)
+
 	return nil
 }
 

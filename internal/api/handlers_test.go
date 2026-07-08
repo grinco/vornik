@@ -687,6 +687,9 @@ func (m *mockExecutionRepo) SupersedeOrphanPausedExecutions(context.Context) (in
 func (m *mockExecutionRepo) CountByStatus(context.Context, string) (map[persistence.ExecutionStatus]int64, error) {
 	return nil, nil
 }
+func (m *mockExecutionRepo) FailedRateByProject(context.Context, time.Time) (map[string]persistence.ExecFailedRate, error) {
+	return nil, nil
+}
 func (m *mockExecutionRepo) GetRoleQuality(context.Context, string, time.Duration) (map[string]*persistence.RoleQuality, error) {
 	return nil, nil
 }

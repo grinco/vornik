@@ -345,6 +345,33 @@ func (r *ExecutionRepository) CountByStatus(ctx context.Context, projectID strin
 	return counts, rows.Err()
 }
 
+// FailedRateByProject returns per-project FAILED vs total (COMPLETED+FAILED)
+// terminal executions created at/after `since`. CANCELLED excluded.
+func (r *ExecutionRepository) FailedRateByProject(ctx context.Context, since time.Time) (map[string]persistence.ExecFailedRate, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT project_id,
+		       SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END) AS failed,
+		       COUNT(*) AS total
+		FROM executions
+		WHERE created_at >= $1 AND status IN ('COMPLETED','FAILED')
+		GROUP BY project_id
+	`, since.UTC())
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[string]persistence.ExecFailedRate)
+	for rows.Next() {
+		var project string
+		var failed, total int64
+		if err := rows.Scan(&project, &failed, &total); err != nil {
+			return nil, err
+		}
+		out[project] = persistence.ExecFailedRate{Failed: failed, Total: total}
+	}
+	return out, rows.Err()
+}
+
 // GetRoleQuality aggregates per-role output quality stats for a project
 // over a rolling time window. It uses execution_step_outcomes rather than
 // tool_audit_log so roles that produce valid output without calling tools

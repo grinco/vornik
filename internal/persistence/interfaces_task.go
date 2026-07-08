@@ -200,6 +200,13 @@ type ReleaseOptions struct {
 }
 
 // ExecutionRepository defines the interface for execution persistence operations.
+// ExecFailedRate is one project's failed vs total terminal-execution counts
+// over a window (control-plane Tune detector).
+type ExecFailedRate struct {
+	Failed int64
+	Total  int64
+}
+
 type ExecutionRepository interface {
 	// Create inserts a new execution into the database.
 	Create(ctx context.Context, execution *Execution) error
@@ -295,6 +302,13 @@ type ExecutionRepository interface {
 
 	// CountByStatus returns the count of executions in each status for a project.
 	CountByStatus(ctx context.Context, projectID string) (map[ExecutionStatus]int64, error)
+
+	// FailedRateByProject returns, per project, the FAILED count and the total
+	// (COMPLETED+FAILED) terminal executions created at/after `since`.
+	// CANCELLED is excluded (operator/system cancellations aren't failures).
+	// Powers the control-plane Tune detector's failed-task-rate signal.
+	// Projects with no terminal executions in the window are omitted.
+	FailedRateByProject(ctx context.Context, since time.Time) (map[string]ExecFailedRate, error)
 
 	// GetRoleQuality returns per-role output quality stats for a project
 	// within the given time window. Keyed by execution_step_outcomes.role.

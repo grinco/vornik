@@ -260,6 +260,11 @@ func (m *MockExecutionRepository) CountByStatus(ctx context.Context, projectID s
 	return make(map[persistence.ExecutionStatus]int64), nil
 }
 
+// FailedRateByProject implements ExecutionRepository.
+func (m *MockExecutionRepository) FailedRateByProject(_ context.Context, _ time.Time) (map[string]persistence.ExecFailedRate, error) {
+	return map[string]persistence.ExecFailedRate{}, nil
+}
+
 // GetRoleQuality implements ExecutionRepository.
 func (m *MockExecutionRepository) GetRoleQuality(ctx context.Context, projectID string, since time.Duration) (map[string]*persistence.RoleQuality, error) {
 	m.CallCount.GetRoleQuality++

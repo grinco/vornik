@@ -94,6 +94,11 @@ type TaskRepository interface {
 	Delete(ctx context.Context, id string) error
 	UpdateStatus(ctx context.Context, id string, status persistence.TaskStatus) error
 	GetChildren(ctx context.Context, parentTaskID string) ([]*persistence.Task, error)
+	// GetDependents retrieves tasks waiting on a given task to complete
+	// (the DEPENDS_ON relation). Used to cascade-cancel a SEQUENTIAL
+	// delegation tail when an upstream sibling fails, so the delegating
+	// parent doesn't hang in WAITING_FOR_CHILDREN (task_…fefedb).
+	GetDependents(ctx context.Context, taskID string) ([]*persistence.Task, error)
 	// ReleaseLease atomically updates the task status and clears
 	// the lease — used by the recovered-execution self-release
 	// path to flip RUNNING→QUEUED/FAILED without waiting for the

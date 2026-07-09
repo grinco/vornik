@@ -277,6 +277,9 @@ func (f *failingOnNthTaskRepo) Update(ctx context.Context, t *persistence.Task) 
 func (f *failingOnNthTaskRepo) GetChildren(ctx context.Context, parentID string) ([]*persistence.Task, error) {
 	return f.inner.GetChildren(ctx, parentID)
 }
+func (f *failingOnNthTaskRepo) GetDependents(ctx context.Context, taskID string) ([]*persistence.Task, error) {
+	return f.inner.GetDependents(ctx, taskID)
+}
 func (f *failingOnNthTaskRepo) Delete(ctx context.Context, id string) error {
 	return f.inner.Delete(ctx, id)
 }

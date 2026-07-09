@@ -179,6 +179,32 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 			return "", nil, completedSteps, fmt.Errorf("step %s visited %d times (max %d) — likely infinite rework loop", currentStepID, visitCount[currentStepID], maxVisits)
 		}
 
+		// Optional per-step cap, tighter than the global one — bounds a rework
+		// loopback (e.g. issue-fix's review→remediate at 2 rounds). On exceed,
+		// route to the step's on_fail WITHOUT running it, preserving
+		// lastResultMessage/lastResultErr so the terminal carries the prior
+		// step's output (e.g. the final review's rejection). Falls back to a
+		// hard error when no on_fail is wired. See design
+		// 2026-07-09-issue-fix-remediation-loopback.
+		if perStepVisitCapExceeded(step, visitCount[currentStepID]) {
+			e.logger.Warn().
+				Str("task_id", task.ID).
+				Str("execution_id", execution.ID).
+				Str("step", currentStepID).
+				Int("visits", visitCount[currentStepID]).
+				Int("max_visits", step.MaxVisits).
+				Str("on_fail", step.OnFail).
+				Msg("workflow: per-step maxVisits exceeded — routing to on_fail")
+			if step.OnFail == "" {
+				return "", nil, completedSteps, fmt.Errorf("step %s visited %d times (per-step max %d) and has no on_fail", currentStepID, visitCount[currentStepID], step.MaxVisits)
+			}
+			if err := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); err != nil {
+				return "", nil, completedSteps, err
+			}
+			currentStepID = step.OnFail
+			continue
+		}
+
 		// Resolve per-step timeout from workflow YAML. Fall back to the
 		// execution-level timeout (from executor config) if not specified.
 		stepTimeout := timeout
@@ -385,10 +411,26 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 			}
 			lastResultMessage = ""
 			lastResultErr = nil
+			// Set when a step that pins delegated_workflow finished a fresh
+			// pass with zero schedulable subtasks (see the guard below).
+			emptyDelegation := false
 			if len(resultBytes) > 0 {
 				var result agentStepResult
 				if json.Unmarshal(resultBytes, &result) == nil {
 					lastResultMessage = stripReasoning(result.Message)
+
+					// Robustness: recover a delegatedTasks plan the model
+					// emitted as prose (fenced ```json in `message`) into the
+					// structured field the branches below read. Incident
+					// task_20260709102613_79c570a868fefedb.
+					if salvageDelegatedTasksFromMessage(&result) {
+						e.logger.Warn().
+							Str("task_id", task.ID).
+							Str("execution_id", execution.ID).
+							Str("step", currentStepID).
+							Int("delegated_tasks", len(result.DelegatedTasks)).
+							Msg("delegation: salvaged delegatedTasks from message prose (empty structured field)")
+					}
 
 					// Strict adaptive routing (Track-B Phase 4): when the lead
 					// emits {"selected_workflow": "<id>"}, validate/repair the
@@ -418,13 +460,29 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 						}
 						return lastContainerID, lastResult, completedSteps, errExecutionPaused
 					}
+
+					// Loud guard: a delegating step that produced no subtasks on
+					// a fresh pass must route to on_fail with an accurate cause,
+					// not silently advance to on_success (which would hand an
+					// empty worktree to a review that rejects an empty diff).
+					emptyDelegation = emptyDelegationGuardTripped(step, &result, routeAlreadyHandled)
 				}
 			}
 
 			nextStepID := step.OnSuccess
+			if emptyDelegation {
+				next, terminate, guardErr := e.failEmptyDelegation(ctx, execution, currentStepID, step)
+				if terminate {
+					return "", nil, completedSteps, guardErr
+				}
+				nextStepID = next
+				lastResultMessage = guardErr.Error()
+				lastResultErr = guardErr
+			}
 			// If no on_success but gates are defined, evaluate gates on
 			// the agent result. This enables rework patterns where a
-			// reviewer agent routes work back to an earlier step.
+			// reviewer agent routes work back to an earlier step. (Skipped
+			// when the empty-delegation guard above already picked on_fail.)
 			if nextStepID == "" && len(step.Gates) > 0 {
 				var (
 					gateErr   error
@@ -993,6 +1051,99 @@ func (e *Executor) handleDelegatedTasks(ctx context.Context, task *persistence.T
 		return true, err
 	}
 	return true, nil
+}
+
+// salvageDelegatedTasksFromMessage recovers a delegation plan a model emitted
+// as prose into the structured DelegatedTasks/DelegationMode fields the engine
+// actually reads. No-op when DelegatedTasks is already populated or the message
+// carries no parseable delegatedTasks array.
+//
+// Incident task_20260709102613_79c570a868fefedb (headmatch issue #34,
+// 2026-07-09): the issue-fix `decompose` lead reasoned out a correct 7-subtask
+// plan but its file_write to .autonomy/result.json failed ("content is
+// required"), so it dumped the delegatedTasks JSON as a fenced ```json block
+// inside its free-text `message`. The empty structured field made the engine
+// schedule zero subtasks and fail a downstream review on an empty diff. This
+// salvage closes that failure mode (open-weight leads emit fenced JSON even
+// when told not to — the memetic architect strips the same fence for the same
+// reason).
+func salvageDelegatedTasksFromMessage(result *agentStepResult) bool {
+	if len(result.DelegatedTasks) > 0 {
+		return false
+	}
+	s := strings.TrimSpace(result.Message)
+	// Decode the first complete JSON object starting at the first '{'. Using
+	// a streaming decoder (rather than first-'{'..last-'}') tolerates a
+	// ```json fence and any trailing prose after the object, and — crucially —
+	// a TRUNCATED object (the model ran past its output-token cap mid-JSON, as
+	// in the fefedb incident) fails cleanly rather than mis-parsing a partial
+	// span. Truncated output is unrecoverable here by design; the loud
+	// empty-delegation guard turns it into an accurate failure.
+	i := strings.IndexByte(s, '{')
+	if i < 0 {
+		return false
+	}
+	var salvaged struct {
+		DelegatedTasks []delegatedTaskSpec `json:"delegatedTasks"`
+		DelegationMode string              `json:"delegationMode"`
+	}
+	if err := json.NewDecoder(strings.NewReader(s[i:])).Decode(&salvaged); err != nil || len(salvaged.DelegatedTasks) == 0 {
+		return false
+	}
+	result.DelegatedTasks = salvaged.DelegatedTasks
+	if strings.TrimSpace(result.DelegationMode) == "" {
+		result.DelegationMode = salvaged.DelegationMode
+	}
+	return true
+}
+
+// failEmptyDelegation finalizes the empty-delegation outcome and selects the
+// next step for a delegating step that produced no subtasks. It models the
+// miss as a producer schema violation (empty required collection — cf.
+// stepoutcome.SchemaViolation's "lead plan with zero steps") so dashboards
+// blame the right role, then routes to on_fail — skipping the wasted
+// downstream consumer call and reporting the real cause instead of a
+// misleading "failed review". terminate=true (with guardErr) means unwind
+// instead of routing: daemon teardown (runExecution's shuttingDown arm pauses
+// for resume rather than FAILED) or no on_fail wired. Incident
+// task_20260709102613_79c570a868fefedb.
+func (e *Executor) failEmptyDelegation(ctx context.Context, execution *persistence.Execution, stepID string, step registry.WorkflowStep) (next string, terminate bool, guardErr error) {
+	guardErr = fmt.Errorf(
+		"step %q pins delegated_workflow %q but produced no delegatedTasks — "+
+			"the lead returned no schedulable subtasks (its plan may be in prose; "+
+			"expected a non-empty delegatedTasks JSON array as the final message)",
+		stepID, step.DelegatedWorkflow)
+	e.finalizePendingOutcome(ctx, execution.ID, stepID,
+		string(stepoutcome.SchemaViolation), stepoutcome.ClassEmptyDelegation, guardErr.Error(), nil)
+	if e.shuttingDownOrCancelled(ctx) || step.OnFail == "" {
+		return "", true, guardErr
+	}
+	return step.OnFail, false, guardErr
+}
+
+// emptyDelegationGuardTripped reports whether a fresh (non-resume) agent step
+// that pins a delegated_workflow produced zero schedulable subtasks. Such a
+// step must NOT advance to on_success: with no children the worktree is
+// unchanged, so a downstream consumer (e.g. issue-fix's review) sees an empty
+// diff and fails with a misleading cause. Keying on DelegatedWorkflow scopes
+// this to steps that are *contractually* delegators (only issue-fix.decompose
+// today). routeAlreadyHandled is the resume signal — on resume the synthesised
+// result legitimately carries no delegatedTasks (the children already ran), so
+// the guard must not fire. Incident task_20260709102613_79c570a868fefedb.
+func emptyDelegationGuardTripped(step registry.WorkflowStep, result *agentStepResult, routeAlreadyHandled bool) bool {
+	return !routeAlreadyHandled &&
+		strings.TrimSpace(step.DelegatedWorkflow) != "" &&
+		len(result.DelegatedTasks) == 0
+}
+
+// perStepVisitCapExceeded reports whether a step that declares its own
+// MaxVisits has been entered more times than that cap allows. MaxVisits<=0
+// means "no per-step cap" (the workflow-global MaxStepVisits still applies).
+// The cap trips on the (MaxVisits+1)-th entry — visits at or under the cap are
+// allowed. Used to bound rework loopbacks tighter than the global cap (e.g.
+// issue-fix's review→remediate at 2 rounds).
+func perStepVisitCapExceeded(step registry.WorkflowStep, visits int) bool {
+	return step.MaxVisits > 0 && visits > step.MaxVisits
 }
 
 // dispatchAgentStep runs one agent step and returns its container id, result
@@ -2721,6 +2872,18 @@ func (e *Executor) checkParentUnblock(ctx context.Context, task *persistence.Tas
 	if task.ParentTaskID == nil || *task.ParentTaskID == "" {
 		return
 	}
+	// SEQUENTIAL-chain hang fix (incident task_20260709102613_79c570a868fefedb,
+	// headmatch #34): a child that terminates WITHOUT success permanently
+	// blocks any sibling that DEPENDS_ON it — those siblings can never be
+	// leased (their predecessor never reaches COMPLETED), so they sit QUEUED
+	// forever and unblockParentIfChildrenDone never sees allDone → the parent
+	// hangs in WAITING_FOR_CHILDREN indefinitely. Cancel the blocked dependents
+	// first so the cohort reaches all-terminal and the parent fails per the
+	// "any subtask failure → FAILED, no PR" contract.
+	if task.Status == persistence.TaskStatusFailed || task.Status == persistence.TaskStatusCancelled {
+		reason := fmt.Sprintf("cancelled: upstream subtask %s did not complete (status=%s)", task.ID, task.Status)
+		e.cancelBlockedDependents(ctx, task.ID, reason, map[string]bool{task.ID: true})
+	}
 	e.unblockParentIfChildrenDone(ctx, *task.ParentTaskID)
 }
 
@@ -2923,5 +3086,62 @@ func (e *Executor) cancelDescendants(ctx context.Context, parentTaskID string, s
 		// Recurse regardless of whether this child transitioned: it may
 		// already have been terminal yet still have active descendants.
 		e.cancelDescendants(ctx, child.ID, seen)
+	}
+}
+
+// cancelBlockedDependents cancels tasks that DEPENDS_ON a task which terminated
+// without success (FAILED/CANCELLED) and can therefore never be leased, then
+// recurses down the dependency edge. It mirrors cancelDescendants but walks
+// GetDependents (the DEPENDS_ON relation) instead of parent_task_id, so it
+// cascades down a SEQUENTIAL delegation chain (child[i] DEPENDS_ON child[i-1]):
+// a mid-chain failure would otherwise strand the tail QUEUED and hang the
+// delegating parent in WAITING_FOR_CHILDREN forever (incident
+// task_20260709102613_79c570a868fefedb). Idempotent + race-safe: each
+// dependent flips via TransitionConditional gated on the non-terminal
+// statuses, so one that reached a terminal state concurrently keeps it; a
+// RUNNING dependent additionally has its process torn down. The seen set
+// guards against dependency cycles. PARALLEL/FAN_OUT cohorts are unaffected —
+// their siblings carry no DEPENDS_ON edge, so GetDependents returns nothing and
+// they run to natural completion (the parent still fails via anyFailed once all
+// terminate).
+func (e *Executor) cancelBlockedDependents(ctx context.Context, taskID, reason string, seen map[string]bool) {
+	if e == nil || e.taskRepo == nil || taskID == "" {
+		return
+	}
+	dependents, err := e.taskRepo.GetDependents(ctx, taskID)
+	if err != nil {
+		e.logger.Warn().Err(err).Str("task_id", taskID).
+			Msg("dependent cancel: failed to list dependents")
+		return
+	}
+	for _, dep := range dependents {
+		if dep == nil || seen[dep.ID] {
+			continue
+		}
+		seen[dep.ID] = true
+
+		errClass := string(persistence.TaskFailureClassChildFailed)
+		moved, terr := e.taskRepo.TransitionConditional(ctx, dep.ID,
+			cancellableChildStatuses, persistence.TaskStatusCancelled,
+			persistence.TransitionOpts{LastError: &reason, LastErrorClass: &errClass})
+		if terr != nil {
+			e.logger.Warn().Err(terr).Str("dependent_task_id", dep.ID).
+				Msg("dependent cancel: failed to cancel blocked dependent")
+		}
+		if moved {
+			e.logger.Info().
+				Str("dependent_task_id", dep.ID).
+				Str("blocked_on_task_id", taskID).
+				Msg("dependent cancel: cancelled subtask blocked on a failed upstream sibling")
+			if dep.Status == persistence.TaskStatusRunning {
+				if cerr := e.Cancel(dep.ID); cerr != nil {
+					e.logger.Warn().Err(cerr).Str("dependent_task_id", dep.ID).
+						Msg("dependent cancel: failed to tear down running dependent")
+				}
+			}
+		}
+		// Recurse: cancelling this dependent unblocks-by-cancellation its own
+		// downstream dependents (the rest of a SEQUENTIAL tail).
+		e.cancelBlockedDependents(ctx, dep.ID, reason, seen)
 	}
 }

@@ -145,6 +145,12 @@ const (
 	// active period (daily or monthly). Detail field carries the
 	// estimated next-call cost and remaining envelope.
 	ClassBudgetTripwire = "budget_tripwire"
+	// ClassEmptyDelegation — a step that pins delegated_workflow finished a
+	// fresh pass with zero delegatedTasks, so no subtasks were scheduled.
+	// Paired with SchemaViolation (empty required collection). Without the
+	// guard the step would silently advance and a downstream consumer would
+	// fail on an empty diff. Incident task_20260709102613_79c570a868fefedb.
+	ClassEmptyDelegation = "empty_delegation"
 )
 
 // IsTerminal reports whether an outcome value is final — i.e., not

@@ -266,24 +266,37 @@ func TestProjectDetailTiering_StackPanelRefHasOpenChevron(t *testing.T) {
 // values appear OUTSIDE the <script> block (i.e. in the real UI) by slicing
 // the body up to the first <script> tag in the workflow section.
 func TestProjectDetailWorkflowMetadataPreserved(t *testing.T) {
+	proj := &registry.Project{ID: "demo", DefaultWorkflowID: "wf-sentinel"}
+	wf := &registry.Workflow{
+		ID:            "wf-sentinel",
+		Version:       "9.8.7-sentinel",
+		MaxStepVisits: 47,
+		MaxIterations: 83,
+	}
 	data := ProjectDetailData{
 		Title:       "Project: demo",
 		CurrentPage: "projects",
-		Project:     &registry.Project{ID: "demo"},
-		Workflow: &registry.Workflow{
-			ID:            "wf-sentinel",
-			Version:       "9.8.7-sentinel",
-			MaxStepVisits: 47,
-			MaxIterations: 83,
-		},
+		Project:     proj,
+		Workflow:    wf,
+		// The workflow diagram now renders from WorkflowWiring (all wired
+		// workflows), not the single .Workflow — populate it via the real
+		// builder so this metadata-regression guard covers the live path.
+		WorkflowWiring: buildProjectWorkflowWiring(proj, func(id string) *registry.Workflow {
+			if id == wf.ID {
+				return wf
+			}
+			return nil
+		}),
 	}
 	body := renderProjectDetailBody(t, data)
 
-	// Find the workflow <details> block, then strip from the first <script>
-	// so we only look at the visible HTML (not the embedded JSON).
-	wfIdx := strings.Index(body, "wf-sentinel")
+	// Anchor on the per-workflow panel (its "triggered by:" line, unique to the
+	// wiring view and immediately preceding the metadata strip), then strip from
+	// the panel's embedded <script> so we only inspect the visible HTML (not the
+	// toJSON payload).
+	wfIdx := strings.Index(body, "triggered by:")
 	if wfIdx < 0 {
-		t.Fatal("workflow section not found in rendered page (Workflow.ID 'wf-sentinel' missing)")
+		t.Fatal("workflow wiring panel not found in rendered page ('triggered by:' missing)")
 	}
 	// Slice to just the workflow panel up to its embedded <script> block.
 	visibleSection := body[wfIdx:]

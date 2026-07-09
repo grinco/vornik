@@ -1,8 +1,8 @@
 ---
 workflowId: "issue-fix"
 displayName: "Issue Fix"
-description: "Top-level workflow for a labeled GitHub issue. A decompose step splits the issue's full scope into self-contained subtasks and emits them as delegatedTasks (SEQUENTIAL) — the engine schedules and runs each in order, merging to the project clone. On resume a reviewer checks the aggregate diff, then a system step opens a DRAFT PR. Reject / any subtask failure → FAILED, no PR. Writes no vornik-internal files."
-version: "3.0.0"
+description: "Top-level workflow for a labeled GitHub issue. A decompose step splits the issue's full scope into self-contained subtasks and emits them as delegatedTasks (SEQUENTIAL) — the engine schedules and runs each in order, merging to the project clone. On resume a reviewer checks the aggregate diff. On rejection it loops to a remediate step that delegates a surgical fix subtask and re-reviews (max 2 rounds via per-step maxVisits); on approval a system step opens a DRAFT PR. Exhausted rounds / any subtask failure → FAILED, no PR. Writes no vornik-internal files."
+version: "3.1.0"
 resume_after_children: true
 maxStepVisits: 4
 maxIterations: 40
@@ -27,11 +27,33 @@ steps:
 
       Split the issue's FULL scope into the smallest sensible, SELF-CONTAINED
       subtasks and delegate them so the engine schedules each one deterministically.
-      Emit a `delegatedTasks` array with `delegationMode: "SEQUENTIAL"`. Each entry:
+
+      HOW TO EMIT (read this carefully — getting the channel wrong drops every
+      subtask and fails the task):
+        - Return your plan as a SINGLE JSON object that is your FINAL message.
+        - Do NOT call file_write, and do NOT create or write .autonomy/result.json
+          yourself — the engine captures the JSON object from your final message
+          automatically. (Writing files here pollutes the repo and, when the
+          write fails, silently loses your whole plan.)
+        - The object has exactly two keys:
+            {
+              "delegationMode": "SEQUENTIAL",
+              "delegatedTasks": [
+                { "workflow": "issue-subtask", "prompt": "<self-contained instruction for ONE chunk>" }
+              ]
+            }
+        - `delegatedTasks` MUST be a non-empty array. If you cannot form a plan,
+          say why in `message` — do NOT return an empty array.
+
+      Each `delegatedTasks` entry:
         - "workflow": "issue-subtask"
-        - "prompt": a COMPLETE, standalone instruction for ONE chunk — restate
-          exactly what to implement and which test to add. The child does NOT see
-          this issue or your reasoning, so the prompt must stand on its own.
+        - "prompt": a self-contained instruction for ONE chunk — the child does
+          NOT see this issue or your reasoning, so state what to implement and
+          which test to add. Keep it focused: if the issue references a spec/plan
+          file already in the repo (e.g. `https://docs.vornik.io`), the child
+          SHARES the workspace and CAN read it — cite the file + the relevant
+          task/section and summarise the acceptance criteria instead of pasting
+          the whole spec. Do NOT paste large file contents into the prompt.
 
       Rules:
         - If the issue asks for N of something ("test at least 5 functions"), emit
@@ -39,8 +61,9 @@ steps:
         - A genuinely single-step issue is ONE subtask; that's fine.
         - Subtasks run SEQUENTIALLY and each builds on the previous one's merged
           change, so order them sensibly.
-        - Do NOT implement anything here, and do NOT write .autonomy/,
-          CURRENT_TASK.md or BACKLOG.md. Your ONLY output is the delegatedTasks plan.
+        - Do NOT implement anything here and do NOT write any files (no .autonomy/,
+          CURRENT_TASK.md, BACKLOG.md, or result.json). Your ONLY output is the
+          delegatedTasks JSON object described above.
   review:
     type: "agent"
     role: "reviewer"
@@ -53,11 +76,19 @@ steps:
     # matched" → on_fail → failed, i.e. not-approved → no PR).
     on_fail: "failed"
     timeout: "15m"
+    # maxVisits caps the review→remediate loopback: initial review + 2
+    # re-reviews. Paired with remediate.maxVisits=2 (design
+    # 2026-07-09-issue-fix-remediation-loopback). A rejected re-review beyond
+    # this routes on the remediate cap, not here.
+    maxVisits: 3
     gates:
       - condition: "review.approved == true"
         target: "publish"
+      # Rejected → hand the findings to a remediation subtask (was: failed).
+      # The loop is bounded by remediate.maxVisits; exhaustion → failed with
+      # the final review attached.
       - condition: "review.approved == false"
-        target: "failed"
+        target: "remediate"
     prompt: |
       Every subtask has run and merged to the project branch. Review the AGGREGATE
       change against the GitHub issue in your task input. FIRST inspect the real
@@ -74,6 +105,42 @@ steps:
           BACKLOG.md, COVERAGE_REPORT.md).
       Emit review = { approved: <bool>, summary, remaining: [...] }.
       Set approved=true ONLY if the FULL issue is satisfied with tests.
+      ALSO set a top-level `message` field (this is forwarded to the fixer if you
+      reject): when approved=false, `message` MUST contain your concrete findings
+      (what is broken/missing, with file:symbol references) AND the `remaining`
+      items, specific enough to fix without re-reading your reasoning. When
+      approved=true, a one-line summary is enough.
+  remediate:
+    type: "agent"
+    role: "lead"
+    # Deterministically run the fix under issue-subtask (clean coder-only
+    # workflow), same as decompose — never fall back to the project default.
+    delegated_workflow: "issue-subtask"
+    on_success: "review"
+    on_fail: "failed"
+    timeout: "10m"
+    # 2 fix rounds. The 3rd entry (i.e. a 3rd rejection) trips this cap and
+    # routes to on_fail=failed, carrying the final review. See design doc.
+    maxVisits: 2
+    prompt: |
+      The reviewer REJECTED the current branch for the GitHub issue in your task
+      input. Their findings are in `context.previousStepResult` (what is broken or
+      missing, plus the remaining items).
+
+      Emit a `delegatedTasks` array (delegationMode "SEQUENTIAL") with EXACTLY ONE
+      entry that orders a SURGICAL fix of those findings:
+        - "workflow": "issue-subtask"
+        - "prompt": a self-contained instruction that RESTATES the reviewer's
+          findings + remaining items and tells the coder to fix ONLY those, on the
+          code ALREADY on the branch — do NOT re-implement from scratch, do NOT
+          widen scope beyond the findings. Instruct it to re-run the relevant
+          tests. The child shares the workspace and can read any repo file (cite
+          paths rather than pasting large content).
+
+      HOW TO EMIT: return the JSON object as your FINAL message — do NOT call
+      file_write and do NOT write .autonomy/result.json. Emit exactly one
+      delegatedTasks entry (never zero, never a re-decomposition of the whole
+      issue). Do NOT implement anything here yourself.
   publish:
     type: "system"
     handler: "forge.open_change_request"
@@ -102,7 +169,13 @@ caused a self-routing loop when issue-fix was its own auto-route candidate).
 3. On resume (a fresh worktree off the now-updated clone), **`review`** inspects
    the aggregate `origin/HEAD...HEAD` diff. The resume guard stops decompose from
    re-running / re-spawning.
-4. **approved** → **`publish`** (`forge.open_change_request`) opens a **draft** PR;
-   **rejected / any subtask failed** → `FAILED`, no PR.
+4. **approved** → **`publish`** (`forge.open_change_request`) opens a **draft** PR.
+5. **rejected** → **`remediate`** (lead) delegates ONE `issue-subtask` that
+   surgically fixes the reviewer's findings (forwarded via
+   `context.previousStepResult`) on the current branch, then loops back to
+   **`review`**. Bounded to **2 rounds** by per-step `maxVisits` (review 3 /
+   remediate 2); the 3rd rejection trips remediate's cap → `FAILED` with the
+   final review attached. **Any subtask failure** → `FAILED`, no PR.
 
-See `https://docs.vornik.io`.
+See `https://docs.vornik.io` and
+`https://docs.vornik.io`.

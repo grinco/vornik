@@ -15,15 +15,24 @@ roles:
     runtimePolicy: "ephemeral"
     # Strategic planning — GLM-5 via Bedrock (rank 1 on open-LLM
     # leaderboard, $1.00/$3.20). Lead fires once per task and
-    # output is capped at 2048 tokens so the $3.20/M output rate
-    # is bounded. Reverted from Gemini 3.1 Pro 2026-05-07 — the
+    # output is capped so the $3.20/M output rate is bounded.
+    # Reverted from Gemini 3.1 Pro 2026-05-07 — the
     # Vertex `-preview` alias works but emits a "thought_signature
     # missing" tool-call contract error on multi-round agent runs
     # (see exec_20260507153509). Fallback to Kimi K2.5 via
     # Bedrock for outage resilience — different vendor, no GPT.
+    # 2026-07-09: 4096 → 8192. issue-fix's decompose lead emits a
+    # multi-subtask delegatedTasks plan (one entry per scope item);
+    # a 7-item plan overran the 4096 cap and TRUNCATED mid-JSON, so
+    # the engine parsed zero subtasks and the task failed a
+    # downstream review on an empty diff (exec_20260709102613,
+    # task_...fefedb). Raising the ceiling only permits larger plans
+    # when needed — normal small completions cost the same (you pay
+    # per token generated, not per cap). Pair with the issue-fix
+    # prompt's "cite the spec file, don't paste it" rule.
     model: "zai.glm-5"
     modelFallback: "moonshotai.kimi-k2.5"
-    maxTokens: 4096
+    maxTokens: 8192
     runtime:
       image: "localhost/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
@@ -187,6 +196,7 @@ roles:
         - "git_status"
         - "git_log"
         - "current_time"
+        - "backlog_deposit"
       delegationAllowed: false
   - name: "coder"
     description: "Implements focused code changes and commits them"
@@ -197,20 +207,21 @@ roles:
       - "writer"
     count: 1
     runtimePolicy: "ephemeral"
-    # Code generation — GPT-5.5 via codex-subscription (plan-
-    # billed). 2026-05-25 promotion from gpt-5.3-codex: bumped
-    # to the new flagship as part of the dev-swarm codex
-    # consolidation. List rate $5/$30 per 1M (operator-supplied,
-    # 2026-05-25; see configs/pricing.yaml gpt-5.5 entry) — the
-    # ACTUAL bill is subscription-capped, not per-token, so the
-    # higher list rate doesn't directly drive cost. Fallback to
-    # Qwen3 Coder 480B (active 35B, MoE) via Bedrock —
-    # purpose-built for code, $0.60/$1.80, Apache 2 — so a
-    # codex-subscription outage doesn't stall the pipeline.
-    # gpt-5.3-codex remains the older-tier escape hatch via the
-    # router's prefix dispatch if needed.
-    model: "qwen.qwen3-next-80b-a3b"
-    modelFallback: "qwen.qwen3-coder-30b-a3b-v1:0"
+    # Code generation — Kimi K2.5 via Bedrock ($0.60/$6.00, open-
+    # weight). 2026-07-09: flipped from qwen.qwen3-next-80b-a3b
+    # (+ qwen3-coder-30b-a3b fallback). BOTH prior models were A3B
+    # (~3B active params) and too weak for real TDD implementation:
+    # on headmatch #34 (task_…fefedb subtask "Task 2") qwen3
+    # HALLUCINATED a `headmatch/types.py` path (the type it needed,
+    # SweepSpec, actually lives in headmatch/signals.py), failed to
+    # grep for the real definition, and then CHURNED to the 20-min
+    # podman container cap twice on retry instead of failing fast.
+    # Kimi K2.5 is a strong agentic coder; fallback GLM-5 (the lead
+    # model, top open-weight) — both non-A3B, both open-weight per
+    # the OSS-model preference. codex/GPT tiers deliberately avoided
+    # on this hot path.
+    model: "moonshotai.kimi-k2.5"
+    modelFallback: "zai.glm-5"
     maxTokens: 16384
     # outputSchema replaces requiredOutputKeys + prose Output blocks.
     # The coder is invoked at workflow steps that pin different
@@ -261,6 +272,7 @@ roles:
         - "test_run"
         - "lint_run"
         - "typecheck_run"
+        - "backlog_deposit"
       delegationAllowed: false
   - name: "tester"
     description: "Runs focused tests and reports JSON pass/fail"
@@ -359,6 +371,7 @@ roles:
         - "lint_run"
         - "typecheck_run"
         - "current_time"
+        - "backlog_deposit"
       delegationAllowed: false
   - name: "reviewer"
     description: "Reviews the latest code change against the spec"
@@ -368,24 +381,20 @@ roles:
       - "checker"
     count: 1
     runtimePolicy: "ephemeral"
-    # Reviewer — GPT-5.5 via codex-subscription (plan-billed).
-    # 2026-07-09: promoted from moonshotai.kimi-k2.5 to gpt-5.5.
-    # The github-review workflow's `review` step prompt was
-    # hardened into an adversarial rubric (intent → design
-    # challenge → correctness hunt → test adequacy →
-    # security/robustness → an explicit "what would break this"
-    # attempt → severity-ranked verdict) that demands stronger
-    # reasoning than the prior prose review. Trade-off accepted:
-    # with the coder also billed via codex-subscription the
-    # review is now intra-vendor with any codex-billed coder,
-    # but the reasoning-quality lift is judged to outweigh the
-    # cross-vendor diversity that motivated the prior pick.
-    # Fallback to moonshotai.kimi-k2.5 (open-weight) preserves
-    # the Bedrock escape hatch and keeps review flowing through
-    # a codex-subscription outage. See
+    # Reviewer — Kimi K2.5 via Bedrock (open-weight, NO session
+    # limits). 2026-07-09 (evening): reverted from gpt-5.5. The
+    # gpt-5.5 codex-subscription pick ran the hardened adversarial
+    # rubric to 96 tool iterations on ONE PR review (task_…b19f,
+    # PR #35): 3.88M prompt tokens, ~$20, and it exhausted the
+    # operator's ENTIRE codex session limit in a single review
+    # before falling back to Kimi anyway. Bedrock open-weight
+    # models have no session cap, so the reviewer runs on Kimi K2.5
+    # (which handled that same review cleanly in ~16 iterations as
+    # the fallback), with GLM-5 as the cross-vendor fallback.
+    # Paired with the iteration-cap cut below (120 → 40). See
     # https://docs.vornik.io §C3.
-    model: "gpt-5.5"
-    modelFallback: "moonshotai.kimi-k2.5"
+    model: "moonshotai.kimi-k2.5"
+    modelFallback: "zai.glm-5"
     maxTokens: 8192
     # outputSchema pins review.approved:bool because dev-pipeline
     # gates on it (and on review.all_done — also pinned). Optional
@@ -425,16 +434,14 @@ roles:
         # 32 → 80 (2026-05-14). TDD enforcement adds per-pinned-
         # case cross-checking against testing.cases[] + verifying
         # tests landed in the same commit as the implementation.
-        # Roughly 2x the read load of the pre-TDD reviewer.
-        # 80 → 120 (2026-07-09). The hardened adversarial rubric
-        # (design-challenge alternative, per-file correctness
-        # walk, and an explicit break-it attempt before any
-        # approval) reads more of the surrounding codebase per
-        # review than the prior prose review did; the deeper
-        # read budget matches gpt-5.5's stronger-reasoning promo
-        # above. See
+        # 80 → 120 → 40 (2026-07-09). The 120 cap let the hardened
+        # rubric RUN AWAY: gpt-5.5 hit 96 iterations on one PR
+        # review (task_…b19f) — 3.88M prompt tokens, ~$20, the whole
+        # codex session gone. A review converges well under 40 (the
+        # Kimi fallback did that same review in ~16); 40 leaves
+        # headroom for a large diff without a thrash budget. See
         # https://docs.vornik.io §C3.
-        VORNIK_MAX_TOOL_ITERATIONS: "120"
+        VORNIK_MAX_TOOL_ITERATIONS: "40"
     permissions:
       allowedTools:
         - "file_read"
@@ -452,6 +459,7 @@ roles:
         - "lint_run"
         - "typecheck_run"
         - "current_time"
+        - "backlog_deposit"
       delegationAllowed: false
   - name: "scout"
     description: "Writes concise PROJECT_CONTEXT.md for a project"

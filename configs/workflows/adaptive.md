@@ -70,7 +70,17 @@ Read the task's prompt and any context fields. Match the
 shape of the work to the workflow that's best equipped:
 
 - `dev-pipeline`: code changes, bug fixes, refactors
-- `research`: information-gathering, exploration
+- `research`: information-gathering ONLY — findings stay in memory /
+  are returned; NO web page is produced.
+- `research-and-publish`: research that must be PUBLISHED or SHARED as
+  a web page/report. Pick this over `research` WHENEVER the request
+  asks to publish, share, "make a page", "create a webpage/guide/report
+  to share", or otherwise produce a link. If in doubt between this and
+  `research` and the user mentioned publishing/sharing/a page, pick this.
+- `ingest`: the user PROVIDED a document or notes to REMEMBER / store in
+  memory (not to research a topic) — "remember this", "ingest this",
+  "add this to memory", "keep this for reference".
+- `publish`: (re)publish a specific piece of content the user already has.
 - `plan-and-write`: prose deliverables
 - `simple-workflow`: small one-shot tasks
 

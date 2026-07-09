@@ -22,7 +22,7 @@ roles:
       # subscription (plan-billed, different vendor + reasoning
       # chain).
       model: "zai.glm-5"
-      modelFallback: "gpt-5.4"
+      modelFallback: "moonshotai.kimi-k2.5"
       maxTokens: 4096
       requiredOutputKeys: ["plan"]
       runtime:
@@ -46,7 +46,7 @@ roles:
       # on the open-LLM leaderboard, 1M context, $0.30/$1.20.
       # Fallback to GPT-5.4-mini via codex-subscription.
       model: "zai.glm-4.7-flash"
-      modelFallback: "gpt-5.4-mini"
+      modelFallback: "deepseek.v3.2"
       maxTokens: 2048
       # outputSchema replaces requiredOutputKeys + the prose Output
       # block. See configs/swarms/dev-swarm.md's feasibility for
@@ -89,7 +89,7 @@ roles:
       # reasoning the lead uses. Fallback to GPT-5.4 via
       # codex-subscription (plan-billed).
       model: "zai.glm-5"
-      modelFallback: "gpt-5.4"
+      modelFallback: "moonshotai.kimi-k2.5"
       maxTokens: 6144
       # outputSchema replaces requiredOutputKeys + prose Output blocks.
       # See configs/swarms/dev-swarm.md for the rationale.
@@ -107,7 +107,7 @@ roles:
         envVars:
             VORNIK_MAX_TOOL_ITERATIONS: "35"
       permissions:
-        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_log", "current_time"]
+        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_log", "current_time", "backlog_deposit"]
         delegationAllowed: false
     - name: "coder"
       description: "Implements focused code changes and commits them"
@@ -120,7 +120,7 @@ roles:
       # $0.60/$1.80, Apache 2. Fallback to GPT-5.4 via
       # codex-subscription — different vendor, plan-billed.
       model: "qwen.qwen3-coder-480b-a35b-v1:0"
-      modelFallback: "gpt-5.4"
+      modelFallback: "moonshotai.kimi-k2.5"
       maxTokens: 16384
       # outputSchema replaces requiredOutputKeys + prose Output blocks.
       # See configs/swarms/dev-swarm.md's coder for the rationale.
@@ -162,6 +162,7 @@ roles:
             - "test_run"
             - "lint_run"
             - "typecheck_run"
+            - "backlog_deposit"
         delegationAllowed: false
     - name: "tester"
       description: "Runs focused tests and reports JSON pass/fail"
@@ -171,7 +172,7 @@ roles:
       # Rank 9, 1M context fits noisy stack traces without
       # truncation. $0.30/$1.20. Fallback to GPT-5.4-mini.
       model: "zai.glm-4.7-flash"
-      modelFallback: "gpt-5.4-mini"
+      modelFallback: "deepseek.v3.2"
       maxTokens: 8192
       # outputSchema pins testing.passed:bool because workflow gates
       # branch on it. See configs/swarms/dev-swarm.md's tester for
@@ -204,7 +205,7 @@ roles:
         envVars:
             VORNIK_MAX_TOOL_ITERATIONS: "70"
       permissions:
-        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_diff", "git_log", "test_run", "lint_run", "typecheck_run", "current_time"]
+        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_diff", "git_log", "test_run", "lint_run", "typecheck_run", "current_time", "backlog_deposit"]
         delegationAllowed: false
     - name: "reviewer"
       description: "Reviews the latest code change against the spec"
@@ -217,7 +218,7 @@ roles:
       # $0.60/$3.00 (×2 reasoning), Apache 2. Fallback to GPT-5.4
       # via codex-subscription.
       model: "zai.glm-4.7-flash"
-      modelFallback: "gpt-5.4"
+      modelFallback: "moonshotai.kimi-k2.5"
       maxTokens: 8192
       # outputSchema pins review.approved:bool because workflow gates
       # branch on it. See configs/swarms/dev-swarm.md's reviewer
@@ -248,7 +249,7 @@ roles:
         envVars:
             VORNIK_MAX_TOOL_ITERATIONS: "60"
       permissions:
-        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_diff", "git_log", "git_show", "test_run", "lint_run", "typecheck_run", "current_time"]
+        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_diff", "git_log", "git_show", "test_run", "lint_run", "typecheck_run", "current_time", "backlog_deposit"]
         delegationAllowed: false
     - name: "scout"
       description: "Writes concise PROJECT_CONTEXT.md for a project"
@@ -259,7 +260,7 @@ roles:
       # multi-file projects without summarisation. $0.30/$1.20.
       # Fallback to GPT-5.4-mini via codex-subscription.
       model: "zai.glm-4.7-flash"
-      modelFallback: "gpt-5.4-mini"
+      modelFallback: "deepseek.v3.2"
       maxTokens: 4096
       # outputSchema replaces requiredOutputKeys + Output blocks. See
       # configs/swarms/dev-swarm.md's scout for the rationale.
@@ -305,7 +306,7 @@ roles:
       # file edit per run, bounded scope. Fallback to GPT-5.4-mini
       # via codex-subscription — sufficient for the bounded shape.
       model: "zai.glm-4.7-flash"
-      modelFallback: "gpt-5.4-mini"
+      modelFallback: "deepseek.v3.2"
       maxTokens: 4096
       # outputSchema replaces requiredOutputKeys + Output blocks. See
       # configs/swarms/dev-swarm.md's architect for the rationale.

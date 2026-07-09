@@ -219,6 +219,16 @@ type WorkflowStep struct {
 	// Empty = the spec's own workflow, else the project default.
 	DelegatedWorkflow string `yaml:"delegated_workflow,omitempty"`
 
+	// MaxVisits optionally bounds how many times THIS step may be entered,
+	// tighter than the workflow-global MaxStepVisits. On the (MaxVisits+1)-th
+	// entry the executor routes to the step's on_fail (preserving the prior
+	// step's result so the terminal carries it), instead of the global cap's
+	// hard error. 0 / unset = no per-step cap (global cap applies). Used to
+	// bound rework loopbacks — e.g. issue-fix's `remediate` caps the
+	// review→remediate loop at 2 rounds (design
+	// https://docs.vornik.io).
+	MaxVisits int `yaml:"maxVisits,omitempty"`
+
 	// --- call_project step fields (Phase A of inter-project
 	// orchestration; LLD https://docs.vornik.io
 	// orchestration-design.md §6.1) ---

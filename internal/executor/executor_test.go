@@ -526,6 +526,24 @@ func (m *MockTaskRepo) GetChildren(_ context.Context, parentID string) ([]*persi
 	}
 	return out, nil
 }
+
+// GetDependents returns tasks whose Dependencies include taskID (the
+// DEPENDS_ON relation). Mirrors GetChildren's in-memory scan so the shared
+// test double satisfies the executor's TaskRepository interface.
+func (m *MockTaskRepo) GetDependents(_ context.Context, taskID string) ([]*persistence.Task, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*persistence.Task
+	for _, t := range m.tasks {
+		for _, dep := range t.Dependencies {
+			if dep == taskID {
+				out = append(out, t)
+				break
+			}
+		}
+	}
+	return out, nil
+}
 func (m *MockTaskRepo) Delete(_ context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

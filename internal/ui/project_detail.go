@@ -28,8 +28,12 @@ type ProjectDetailData struct {
 	Project     *registry.Project
 	Swarm       *registry.Swarm
 	Workflow    *registry.Workflow
-	Tasks       []*persistence.Task
-	TaskCounts  map[persistence.TaskStatus]int64
+	// WorkflowWiring is every workflow the project is wired to (all triggers,
+	// not just the default) — rendered as a routing legend + per-workflow
+	// graph panels. See project_workflow_wiring.go.
+	WorkflowWiring ProjectWorkflowWiring
+	Tasks          []*persistence.Task
+	TaskCounts     map[persistence.TaskStatus]int64
 	// RoleQuality is per-role output quality stats over the last 30 days,
 	// keyed by role name. Missing entries mean "no data for that role in
 	// the window" — the template shows "no runs yet".
@@ -490,6 +494,7 @@ func (s *Server) ProjectDetail(w http.ResponseWriter, r *http.Request) {
 	if s.projectReg != nil {
 		data.Swarm = s.projectReg.GetSwarm(project.SwarmID)
 		data.Workflow = s.projectReg.GetWorkflow(project.DefaultWorkflowID)
+		data.WorkflowWiring = buildProjectWorkflowWiring(project, s.projectReg.GetWorkflow)
 	}
 
 	// Trading panel — populated when the project has a `broker`

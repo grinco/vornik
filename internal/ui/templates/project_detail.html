@@ -707,31 +707,14 @@
             </details>
             {{end}}
 
-            <!-- Workflow Diagram — panel-ref, closed by default -->
-            {{if .Workflow}}
-            <details class="panel-ref overflow-hidden">
-                <summary>
-                    {{template "sectionHeader" (dict "Title" (printf "Workflow — %s" (or .Workflow.DisplayName .Workflow.ID)))}}
-                </summary>
-                {{/* Workflow metadata strip — Version / MaxStepVisits / MaxIterations.
-                     These fields existed pre-b7b253f8 and were accidentally dropped in
-                     the re-tier. Restored here as a small metadata line at the top of
-                     the panel body, guarded by the same {{if}} checks as before. */}}
-                {{if or .Workflow.Version .Workflow.MaxStepVisits .Workflow.MaxIterations}}
-                <div class="px-5 py-2 border-t border-surface-600/60 flex flex-wrap items-center gap-3 text-xs text-ink-500">
-                    {{if .Workflow.Version}}<span class="font-mono">v{{.Workflow.Version}}</span>{{end}}
-                    {{if .Workflow.MaxStepVisits}}<span>max visits/step: <span class="font-mono text-ink-300">{{.Workflow.MaxStepVisits}}</span></span>{{end}}
-                    {{if .Workflow.MaxIterations}}<span>max iter: <span class="font-mono text-ink-300">{{.Workflow.MaxIterations}}</span></span>{{end}}
-                </div>
-                {{end}}
-                <div class="border-t border-surface-600/60">
-                <div id="workflow-canvas" class="relative overflow-x-auto bg-surface-900 rounded-b-xl" style="min-height:200px"></div>
-                </div>
+            <!-- Workflow Wiring — every workflow this project is wired to + its triggers -->
+            {{if .WorkflowWiring.Workflows}}
             <script>
-            (function(){
-                var wf = {{toJSON .Workflow}};
-                var canvas = document.getElementById('workflow-canvas');
-                if (!wf || !wf.Steps) return;
+            // Reusable per-workflow graph renderer. Was a single-canvas IIFE
+            // (default workflow only); now a named function called once per
+            // wired workflow. canvas + wf are parameters.
+            function renderWorkflowGraph(canvas, wf){
+                if (!canvas || !wf || !wf.Steps) return;
                 var nodes = {};
                 var order = [];
                 var visited = {};
@@ -901,9 +884,49 @@
                     }
                     canvas.appendChild(node);
                 });
-            })();
+            }
             </script>
+            {{/* Routing legend — which entry-point runs which workflow */}}
+            <details class="panel-ref overflow-hidden" open>
+                <summary>{{template "sectionHeader" (dict "Title" "Workflow wiring")}}</summary>
+                <div class="px-5 py-3 border-t border-surface-600/60 space-y-1.5 text-sm">
+                {{range .WorkflowWiring.Triggers}}
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <span class="text-ink-400">{{.Label}}</span>
+                        <span class="text-ink-600">&rarr;</span>
+                        {{if .Unresolved}}<span class="font-mono text-rose-400">{{.WorkflowID}} · unresolved</span>{{else}}<a href="/ui/workflows/{{.WorkflowID}}/edit?projectId={{$.Project.ID}}" class="font-mono text-brand-400 hover:text-brand-300 transition-colors">{{.WorkflowID}}</a>{{end}}
+                    </div>
+                {{end}}
+                </div>
             </details>
+            {{/* Per-workflow graph panels — one per DISTINCT wired workflow */}}
+            {{range .WorkflowWiring.Workflows}}
+            <details class="panel-ref overflow-hidden"{{if .DefaultOpen}} open{{end}}>
+                <summary>
+                    {{template "sectionHeader" (dict "Title" (printf "Workflow — %s" .WorkflowID))}}
+                </summary>
+                <div class="px-5 py-2 border-t border-surface-600/60 text-xs text-ink-500">
+                    triggered by: {{range $i, $l := .TriggerLabels}}{{if $i}}, {{end}}{{$l}}{{end}}
+                </div>
+                {{if .Unresolved}}
+                <div class="px-5 py-3 border-t border-surface-600/60 text-sm text-rose-400">
+                    Referenced but not found in the registry.
+                </div>
+                {{else}}
+                {{if or .Workflow.Version .Workflow.MaxStepVisits .Workflow.MaxIterations}}
+                <div class="px-5 py-2 border-t border-surface-600/60 flex flex-wrap items-center gap-3 text-xs text-ink-500">
+                    {{if .Workflow.Version}}<span class="font-mono">v{{.Workflow.Version}}</span>{{end}}
+                    {{if .Workflow.MaxStepVisits}}<span>max visits/step: <span class="font-mono text-ink-300">{{.Workflow.MaxStepVisits}}</span></span>{{end}}
+                    {{if .Workflow.MaxIterations}}<span>max iter: <span class="font-mono text-ink-300">{{.Workflow.MaxIterations}}</span></span>{{end}}
+                </div>
+                {{end}}
+                <div class="border-t border-surface-600/60">
+                <div id="wf-canvas-{{.WorkflowID}}" class="relative overflow-x-auto bg-surface-900 rounded-b-xl" style="min-height:200px"></div>
+                </div>
+                <script>renderWorkflowGraph(document.getElementById("wf-canvas-{{.WorkflowID}}"), {{toJSON .Workflow}});</script>
+                {{end}}
+            </details>
+            {{end}}
             {{end}}
 
             {{/* Task Status Overview — refactor E (2026-05-26).

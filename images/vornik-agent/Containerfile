@@ -35,7 +35,7 @@ ARG VORNIK_GID
 RUN apt-get update && apt-get install -y --no-install-recommends \
     jq curl coreutils git git-lfs openssh-client bash make \
     python3 python-is-python3 pip python3-venv python3-pytest \
-    python3-numpy python3-scipy \
+    python3-numpy python3-scipy mypy \
     imagemagick \
     pandoc weasyprint fonts-dejavu \
     gcc libc6-dev \
@@ -52,6 +52,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #     can still make a venv when a project needs isolation.
 #   - numpy + scipy pre-bundled (the common scientific base) so the most
 #     frequent imports don't wait on per-task egress installs.
+#   - mypy pre-bundled so the `typecheck_run` tool works on Python projects
+#     (2026-07-09: a hardened github-review on headmatch #34 couldn't run
+#     `python -m mypy` — "mypy is not installed" — and fell back to inspection).
+#     Project-specific runtime deps (e.g. headmatch's soundfile/pyyaml) are NOT
+#     baked here — the coder pip-installs them per task (PIP_BREAK_SYSTEM_PACKAGES).
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 # GitHub CLI (gh) — the github-router workflow uses it for outbound GitHub

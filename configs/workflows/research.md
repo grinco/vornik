@@ -104,6 +104,8 @@ might need a planner step.
 Gather comprehensive information on the topic in the task.
 Write findings to `artifacts/out/research.md` with key facts, sources, and
 caveats. Keep it concise enough for a smaller writer model to reuse.
+Do NOT publish or call any `pagedrop`/publish tool — plain research never
+publishes; publishing a page is the `research-and-publish` workflow's job.
 
 ### write
 
@@ -117,3 +119,6 @@ keys plus a top-level `message` field carrying the 2-3
 sentence summary (the UI and autonomy notifier read that
 field). The role's systemPrompt has the full shape; don't
 replace it with a `{message}`-only response.
+
+Do NOT publish or call any `pagedrop`/publish tool — plain research never
+publishes; publishing a page is the `research-and-publish` workflow's job.

@@ -41,8 +41,11 @@ assert_not_contains() {
     fi
 }
 
+ORIG_PATH="$PATH"
+
 setup() {
     TMP="$(mktemp -d)"
+    export PATH="$ORIG_PATH"
     mkdir -p "$TMP/workspace" "$TMP/workspace/project" "$TMP/input"
     # Allow every builtin tool so the gate doesn't mask bugs in handlers.
     printf '{"config":{"permissions":{"allowedTools":["file_read","file_write","run_shell","current_time","file_edit","read_many_files","grep","glob","git_status","git_diff","git_log","git_show","test_run","lint_run","typecheck_run"]}}}' > "$TMP/input/task.json"
@@ -62,6 +65,7 @@ setup() {
 teardown() {
     rm -rf "$TMP"
     unset WORKSPACE INPUT_FILE OUTPUT_FILE TMP
+    export PATH="$ORIG_PATH"
 }
 
 # ---------- file_edit ----------
@@ -221,6 +225,142 @@ assert_contains "lint_run: reports language=go" "$out" '"language": "go"'
 
 out=$(exec_tool typecheck_run '{}')
 assert_contains "typecheck_run: reports language=go" "$out" '"language": "go"'
+teardown
+
+# ---------- backlog_deposit: allowedTools gating ----------
+setup
+# Default setup() task.json omits backlog_deposit from allowedTools.
+out=$(tool_definitions)
+assert_not_contains "backlog_deposit: not advertised when absent from allowedTools" "$out" '"backlog_deposit"'
+teardown
+
+setup
+printf '{"config":{"permissions":{"allowedTools":["backlog_deposit"]}}}' > "$TMP/input/task.json"
+out=$(tool_definitions)
+assert_contains "backlog_deposit: advertised when present in allowedTools" "$out" '"backlog_deposit"'
+teardown
+
+setup
+printf '{"config":{"permissions":{"allowedTools":["backlog_deposit"]}}}' > "$TMP/input/task.json"
+out=$(exec_tool backlog_deposit '{"kind":"bug","title":"x","detail":"y"}')
+assert_not_contains "backlog_deposit: not gate-blocked when present in allowedTools" "$out" "not allowed for this role"
+teardown
+
+setup
+printf '{"config":{"permissions":{"allowedTools":["file_read"]}}}' > "$TMP/input/task.json"
+out=$(exec_tool backlog_deposit '{"kind":"bug","title":"x","detail":"y"}')
+assert_contains "backlog_deposit: exec_tool blocked when absent from allowedTools" "$out" "not allowed for this role"
+teardown
+
+# ---------- backlog_deposit: handler POST + response passthrough ----------
+mock_curl_setup() {
+    MOCK_BIN="$TMP/mockbin"
+    mkdir -p "$MOCK_BIN"
+    CURL_ARGS_FILE="$TMP/curl_args"
+    CURL_RESPONSE_FILE="$TMP/curl_response"
+    CURL_EXIT_FILE="$TMP/curl_exit"
+    printf '{"status":"accepted"}' > "$CURL_RESPONSE_FILE"
+    printf '0' > "$CURL_EXIT_FILE"
+    cat > "$MOCK_BIN/curl" <<CURL_EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$CURL_ARGS_FILE"
+cat "$CURL_RESPONSE_FILE"
+exit "\$(cat "$CURL_EXIT_FILE")"
+CURL_EOF
+    chmod +x "$MOCK_BIN/curl"
+    export PATH="$MOCK_BIN:$PATH"
+    export CURL_ARGS_FILE CURL_RESPONSE_FILE CURL_EXIT_FILE
+}
+
+setup
+printf '{"projectId":"proj-1","config":{"permissions":{"allowedTools":["backlog_deposit"]}}}' > "$TMP/input/task.json"
+mock_curl_setup
+export VORNIK_API_URL="http://daemon.local"
+export VORNIK_API_KEY="secret-key"
+export VORNIK_TASK_ID="task-1"
+export VORNIK_EXECUTION_ID="exec-1"
+STEP_ID="step-1"
+
+out=$(exec_tool backlog_deposit '{"kind":"bug","title":"parseConfig crashes on empty file","detail":"Empty config.yaml causes a nil pointer panic.","evidence":"config.go:42"}')
+args="$(cat "$CURL_ARGS_FILE")"
+assert_contains "backlog_deposit: POSTs to internal endpoint" "$args" "http://daemon.local/api/v1/internal/backlog-deposit"
+assert_contains "backlog_deposit: sends X-API-Key header" "$args" "X-API-Key: secret-key"
+assert_contains "backlog_deposit: body has project_id" "$args" '"project_id": "proj-1"'
+assert_contains "backlog_deposit: body has task_id" "$args" '"task_id": "task-1"'
+assert_contains "backlog_deposit: body has execution_id" "$args" '"execution_id": "exec-1"'
+assert_contains "backlog_deposit: body has step_id" "$args" '"step_id": "step-1"'
+assert_contains "backlog_deposit: body has kind" "$args" '"kind": "bug"'
+assert_contains "backlog_deposit: body has title" "$args" '"title": "parseConfig crashes on empty file"'
+assert_contains "backlog_deposit: response returned verbatim" "$out" '{"status":"accepted"}'
+unset VORNIK_API_URL VORNIK_API_KEY VORNIK_TASK_ID VORNIK_EXECUTION_ID
+teardown
+
+setup
+printf '{"projectId":"proj-1","config":{"permissions":{"allowedTools":["backlog_deposit"]}}}' > "$TMP/input/task.json"
+mock_curl_setup
+printf '{"status":"rejected","reason":"duplicate of an open item"}' > "$CURL_RESPONSE_FILE"
+export VORNIK_API_URL="http://daemon.local"
+export VORNIK_API_KEY="secret-key"
+export VORNIK_TASK_ID="task-1"
+export VORNIK_EXECUTION_ID="exec-1"
+
+out=$(exec_tool backlog_deposit '{"kind":"bug","title":"dup finding","detail":"already reported"}')
+assert_contains "backlog_deposit: daemon rejection returned verbatim" "$out" '{"status":"rejected","reason":"duplicate of an open item"}'
+unset VORNIK_API_URL VORNIK_API_KEY VORNIK_TASK_ID VORNIK_EXECUTION_ID
+teardown
+
+setup
+printf '{"projectId":"proj-1","config":{"permissions":{"allowedTools":["backlog_deposit"]}}}' > "$TMP/input/task.json"
+mock_curl_setup
+printf '1' > "$CURL_EXIT_FILE"
+printf '' > "$CURL_RESPONSE_FILE"
+export VORNIK_API_URL="http://daemon.local"
+export VORNIK_API_KEY="secret-key"
+export VORNIK_TASK_ID="task-1"
+export VORNIK_EXECUTION_ID="exec-1"
+
+out=$(exec_tool backlog_deposit '{"kind":"bug","title":"x","detail":"y"}')
+assert_contains "backlog_deposit: curl failure returns error JSON" "$out" '{"error":"request failed"}'
+unset VORNIK_API_URL VORNIK_API_KEY VORNIK_TASK_ID VORNIK_EXECUTION_ID
+teardown
+
+# ---------- GH_TOKEN git credential wiring ----------
+setup
+STUB_BIN="$TMP/stubbin"
+mkdir -p "$STUB_BIN"
+GH_CALLS_FILE="$TMP/gh_calls"
+: > "$GH_CALLS_FILE"
+cat > "$STUB_BIN/gh" <<GH_EOF
+#!/usr/bin/env bash
+echo "\$@" >> "$GH_CALLS_FILE"
+exit 0
+GH_EOF
+chmod +x "$STUB_BIN/gh"
+export PATH="$STUB_BIN:$PATH"
+export GH_TOKEN="ghp_faketoken"
+
+setup_gh_git_credentials
+call_count=$(grep -c "^auth setup-git$" "$GH_CALLS_FILE" || true)
+if [ "$call_count" = "1" ]; then
+    PASS=$((PASS+1)); echo "PASS: GH_TOKEN + gh present: setup-git invoked exactly once"
+else
+    FAIL=$((FAIL+1)); FAILURES+=("GH_TOKEN + gh present: expected exactly 1 call, got $call_count"); echo "FAIL: GH_TOKEN + gh present: setup-git invoked exactly once"
+fi
+unset GH_TOKEN
+teardown
+
+setup
+export GH_TOKEN="ghp_faketoken"
+# Restrict PATH to exclude any `gh` binary (e.g. linuxbrew on dev hosts)
+# while keeping the core utils entrypoint.sh needs (bash, jq, curl, python3).
+export PATH="/usr/bin:/bin"
+if command -v gh >/dev/null 2>&1; then
+    echo "SKIP: gh unexpectedly on restricted PATH ($(command -v gh)); skipping no-gh case"
+else
+    out=$(setup_gh_git_credentials)
+    assert_contains "GH_TOKEN without gh: warning logged" "$out" "GH_TOKEN set but gh missing"
+fi
+unset GH_TOKEN
 teardown
 
 # ---------- summary ----------

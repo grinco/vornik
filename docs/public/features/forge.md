@@ -1,7 +1,7 @@
 ---
 sources:
     - path: internal/forge/forge.go
-      sha256: 76698e93cdd44c1cce5bce8535bd141536501a938af874d660b2925addd2cd9e
+      sha256: 4b649b77cea4f293f3302762624d1205c59820576aa73ac2330ffc671dabcfd6
     - path: internal/forge/github/github.go
       sha256: 929ff0572327d1f0bfbe07704a0c0f7a6929a21de6dcbb8575b2d4d6840851b8
 ---
@@ -33,6 +33,36 @@ what to do) and drives two main flows:
   the daemon posts the review back through GitHub's review API.
 
 A bare issue with no label is ignored — only a *labelled* issue is actionable.
+
+## Backlog-origin pull requests
+
+The two flows above are inbound-event-driven: an issue label or an opened PR
+tells Forge what to do and which repo to do it in. A project running
+[backlog autonomy](../guides/autonomy.md#backlog-autonomy-and-agent-deposits)
+opens draft PRs a third way, with no inbound event at all: an item consumed
+from the project's backlog file is dispatched into the `backlog-item`
+workflow (analyze → implement, TDD → test → review → publish), and its
+`publish` step is the same deterministic `forge.open_change_request` handler
+the issue flow uses — pushing the branch and opening the PR daemon-side, no
+agent involved.
+
+A few things differ from the issue-driven flow because there's no issue to
+key off of:
+
+- **Branch naming.** No `fix/issue-<n>` / `feat/issue-<n>` — the branch is
+  named from the backlog item itself (`backlog/<slug>`).
+- **No issue to close.** The PR title and body describe the change; there's
+  no `Fix #<n>` linkage because no issue triggered it.
+- **Always draft, same as the issue flow.** Nothing about backlog origin
+  changes that — every automated PR is opened as a draft regardless of how it
+  was triggered.
+- **The outbound repo comes from config, not the event.** With no webhook
+  payload naming a repository, backlog-origin publishing needs `github.repo`
+  (`owner/repo`) set on the project so the daemon knows where to push.
+
+Once opened, a backlog-origin PR goes through the exact same **pull request
+opened → review** path as any other PR — it isn't special-cased for review,
+only for how it came to exist.
 
 ## The credential model
 
@@ -88,6 +118,16 @@ project and warns you if it can't — so a misconfigured key surfaces immediatel
 not on the first issue.
 
 ## Review behaviour
+
+The reviewer works through the diff in a fixed order — intent, a design
+challenge (is this the right approach, and what's the alternative?), a
+correctness pass that cites `file:line` for every finding, test adequacy,
+security and robustness, and an explicit "what would break this" attempt —
+before reaching a severity-ranked verdict. A problem the reviewer notices
+that the diff didn't introduce doesn't block the PR: it gets recorded with
+the `backlog_deposit` tool (see
+[Backlog autonomy and agent deposits](../guides/autonomy.md#backlog-autonomy-and-agent-deposits))
+instead, so the verdict stays scoped to what's actually in the diff.
 
 By default a posted review is a non-gating comment, even when the reviewer
 approves. Set `gating_reviews: true` on the review step to turn the reviewer's

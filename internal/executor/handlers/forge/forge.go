@@ -65,8 +65,13 @@ func forgeJobFromTask(task *persistence.Task, handler string) (*forgeapi.ForgeJo
 	if j == nil {
 		return nil, fmt.Errorf("%s: no forge job on task — forge_job (or context.forge_job) must be set by the channel/intake step", handler)
 	}
-	if j.Repo == "" || j.Number == 0 {
-		return nil, fmt.Errorf("%s: forge job missing repo/number (%+v)", handler, *j)
+	// A job is publishable in one of two shapes:
+	//   - issue-driven: repo + a positive issue/CR number (today's shape);
+	//   - backlog-origin: repo + kind=="backlog" + a non-empty slug (an
+	//     autonomy BACKLOG.md item with no inbound issue number).
+	valid := j.Repo != "" && (j.Number > 0 || (j.Kind == "backlog" && j.Slug != ""))
+	if !valid {
+		return nil, fmt.Errorf("%s: forge job must be either issue-driven (repo + number>0) or backlog-origin (repo + kind=backlog + slug) (%+v)", handler, *j)
 	}
 	return j, nil
 }
@@ -75,6 +80,12 @@ func forgeJobFromTask(task *persistence.Task, handler string) (*forgeapi.ForgeJo
 // issue number + whether it's a feature, so re-runs produce the same name and
 // the forge-side idempotency (lookup by head) holds.
 func branchForJob(j forgeapi.ForgeJob) string {
+	if j.Kind == "backlog" {
+		// Backlog-origin jobs have no issue number; the deterministic slug
+		// keys the branch instead, so re-dispatching the same item reuses
+		// the same head ref (forge idempotency).
+		return "backlog/" + j.Slug
+	}
 	verb := "fix"
 	if isFeature(j) {
 		verb = "feat"
@@ -97,6 +108,13 @@ func isFeature(j forgeapi.ForgeJob) bool {
 // titleForJob / bodyForJob template the CR title+body from the issue. Never
 // LLM-authored — deterministic so the same job always yields the same CR.
 func titleForJob(j forgeapi.ForgeJob) string {
+	if j.Kind == "backlog" {
+		// No issue number and no fix/feat verb — a backlog item is neither.
+		if t := strings.TrimSpace(j.Title); t != "" {
+			return "Backlog: " + t
+		}
+		return "Backlog: " + j.Slug
+	}
 	verb := "Fix"
 	if isFeature(j) {
 		verb = "Implement"
@@ -108,6 +126,20 @@ func titleForJob(j forgeapi.ForgeJob) string {
 }
 
 func bodyForJob(j forgeapi.ForgeJob) string {
+	if j.Kind == "backlog" {
+		// Backlog-origin: NO "Closes #N" line (there is no issue to close).
+		// Same request framing + 600-char cap + trailer as the issue path,
+		// so the CR still reads as a deterministic, review-before-merge draft.
+		b := ""
+		if s := strings.TrimSpace(j.Body); s != "" {
+			if len(s) > 600 {
+				s = s[:600] + "…"
+			}
+			b += "**Requested:** " + s + "\n\n"
+		}
+		b += "_Opened automatically by vornik. Review the diff against the request above before merging._"
+		return b
+	}
 	b := fmt.Sprintf("Closes #%d.\n\n", j.Number)
 	if s := strings.TrimSpace(j.Body); s != "" {
 		if len(s) > 600 {

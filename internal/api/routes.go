@@ -589,6 +589,14 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		// post-step batch in result.json. Idempotent on audit_id so
 		// the streaming + batch paths can both fire safely.
 		mux.HandleFunc("/api/v1/internal/tool-audit", server.IngestToolAudit)
+		// Backlog-deposit endpoint (Task 5, autonomous-development-loop
+		// design). Agents call this via the backlog_deposit tool to
+		// propose a `- [?]` line in the project's BACKLOG.md; the
+		// handler runs the full guard/validate/scan/dedup/cap pipeline
+		// before appending. Agent-visible outcomes are always HTTP 200
+		// (see backlogDepositResponse) — only auth/validation failures
+		// use respondError's 400/403/404/503.
+		mux.HandleFunc("/api/v1/internal/backlog-deposit", server.BacklogDeposit)
 		// LLM usage streaming. Agent calls this after every iteration
 		// with cumulative numbers; deterministic ID
 		// (`tu_<task>_<step>_<role>`) makes successive calls upsert into

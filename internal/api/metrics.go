@@ -64,6 +64,14 @@ type APIMetrics struct {
 	// (bytes streamed back), labelled by mode.
 	// vornik_support_report_bytes_total.
 	SupportReportBytesTotal *prometheus.CounterVec
+
+	// BacklogDepositsTotal counts POST /api/v1/internal/backlog-deposit
+	// outcomes, labelled by project and outcome. Outcome values:
+	// accepted, duplicate (also covers the regression_required reject
+	// reason — both are dedup-vs-existing-item hits), secret, cap,
+	// cooldown, invalid (field validation failures). vornik_backlog_
+	// deposits_total — autonomous-development-loop design C1.
+	BacklogDepositsTotal *prometheus.CounterVec
 }
 
 // NewAPIMetrics creates and registers API metrics.
@@ -126,9 +134,27 @@ func NewAPIMetrics(reg *prometheus.Registry) *APIMetrics {
 			Name:      "support_report_bytes_total",
 			Help:      "Total bytes of support-report bundles streamed by the daemon, by mode.",
 		}, []string{"mode"}),
+		BacklogDepositsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "vornik",
+			Name:      "backlog_deposits_total",
+			Help:      "backlog-deposit endpoint outcomes, by project and outcome (accepted/duplicate/secret/cap/cooldown/invalid).",
+		}, []string{"project", "outcome"}),
 	}
-	reg.MustRegister(m.RequestsTotal, m.RequestDuration, m.ActiveRequests, m.CostAttributionTotal, m.ExecutionsStuck, m.ApprovalsTotal, m.WebhookRelayReceivedTotal, m.NodeHeartbeatReceivedTotal, m.SupportReportGeneratedTotal, m.SupportReportBytesTotal)
+	reg.MustRegister(m.RequestsTotal, m.RequestDuration, m.ActiveRequests, m.CostAttributionTotal, m.ExecutionsStuck, m.ApprovalsTotal, m.WebhookRelayReceivedTotal, m.NodeHeartbeatReceivedTotal, m.SupportReportGeneratedTotal, m.SupportReportBytesTotal, m.BacklogDepositsTotal)
 	return m
+}
+
+// RecordBacklogDeposit bumps the per-project/outcome backlog-deposit
+// counter. Nil-safe (the metrics registry is optional; the endpoint
+// still works without it).
+func (m *APIMetrics) RecordBacklogDeposit(project, outcome string) {
+	if m == nil || m.BacklogDepositsTotal == nil {
+		return
+	}
+	if project == "" {
+		project = "unknown"
+	}
+	m.BacklogDepositsTotal.WithLabelValues(project, outcome).Inc()
 }
 
 // RecordWebhookRelayReceived bumps the relay-ingress receipt counter. Nil-safe

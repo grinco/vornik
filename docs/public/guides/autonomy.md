@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/autonomy/manager.go
-      sha256: c2a86b17f348cde83afd63fc97f2512aad0ccc8180aa7435dc011fa696b831e8
+      sha256: fd1061f21ec29936071a1c6d01c7b869b42815bd192d594a4f0bf9d31c935e84
     - path: internal/registry/project.go
-      sha256: a6dcb31d5d571eb975281dad60b7a316938e7c61e2db28b6d49e86726f67b53e
+      sha256: 2f1926ed8231a43efa3deca6e46840ad48a78fde731064e1a25ccde6e270dea2
 ---
 # Autonomy — self-running projects
 
@@ -53,6 +53,7 @@ Useful keys:
 | `autonomy.allowedTaskTypes` | restrict what task types autonomy may create |
 | `autonomy.requireApproval` | create tasks as awaiting-approval instead of queued |
 | `autonomy.duplicateWindow` | how long a completed task suppresses an identical one (default `24h`; `0` for cron-style) |
+| `autonomy.workflow_id` | override the workflow a `backlog`-mode tick dispatches into (see [Backlog autonomy and agent deposits](#backlog-autonomy-and-agent-deposits)) |
 
 ## Staying in control
 
@@ -81,6 +82,126 @@ Additional bounds worth knowing:
 
 To stop autonomy, set `autonomy.enabled: false` (or toggle it from the project
 page in the UI) — the loop is cancelled.
+
+## Backlog autonomy and agent deposits
+
+`backlog` mode reads a plain checklist file — `BACKLOG.md` by default
+(`autonomy.backlogFilePath` to point at another workspace-relative path) —
+and fires the first pending line as a task, ticking it off when the task is
+accepted. You can hand-author that file, but agents can feed it too: any role
+permitted to call the `backlog_deposit` tool can record an off-scope finding —
+a bug, an optimisation, an inefficiency, or a refactor candidate it noticed
+while working on something else — without derailing its current task. A
+reviewer, for example, can use it for problems it spots in a diff that aren't
+in scope for that PR's verdict.
+
+### The marker grammar
+
+One consumer owns every read/modify/write of the file, and it recognises four
+markers:
+
+| Marker | Meaning | Written by | Picked up by the next tick? |
+|---|---|---|---|
+| `- [ ]` | Pending, ready to run | You (hand-authored), or you flipping a `- [?]` | Yes — first-in, first-out |
+| `- [?]` | Proposed, awaiting your review | `backlog_deposit` — always | No — inert by construction |
+| `- [x]` | Done | The backlog tick, on successful dispatch | No |
+| `- [!]` | Failed | The next tick's reconcile pass, on a terminal-failed run | No |
+
+Agent-authored deposits always land as `- [?]`, never `- [ ]`, and there's no
+config knob to change that. A deposit's title and detail are agent-authored
+text, and once a `- [ ]` line is consumed it becomes a verbatim task prompt
+with no human in between — so a deposit that could land straight into `- [ ]`
+would let a confused or compromised agent's own words steer a *future*
+autonomous task. The FIFO scan only ever matches `- [ ]`, so a `- [?]` item is
+structurally unreachable by autonomy until you edit the box yourself. That's
+the per-item approval gate: agent-authored text never becomes an autonomous
+prompt without a human decision.
+
+### Granting the deposit tool
+
+```yaml
+permissions:
+  allowedTools:
+    - "backlog_deposit"   # plus the role's usual tools (file_read, run_shell, git_*, ...)
+```
+
+The agent calls it with a `kind` (`bug` | `optimisation` | `inefficiency` |
+`refactor`), a short `title`, a `detail`, and an optional `evidence` string.
+The daemon validates the fields, secret-scans the rendered line (a match is
+blocked, never appended), rate-caps accepted deposits per task with
+`backlogDeposits.maxPerTask` (default **10**), and dedups against existing
+lines — an exact title match or a close paraphrase (fuzzy match) of an open
+item is rejected as a duplicate. A close match against an already-closed
+(`- [x]` / `- [!]`) item needs `regression: true` plus non-empty `evidence`
+to re-open it, and is still refused for 7 days after that item was closed, so
+a flapping check can't spin the same "regression" back in immediately. None
+of these rejections fail the agent's task — it gets a structured reason back
+and moves on:
+
+```yaml
+backlogDeposits:
+  maxPerTask: 10   # default; per-task cap on accepted deposits
+```
+
+### Shipping deposits as draft PRs
+
+`backlog`-mode ticks normally dispatch into the project's default workflow
+(commonly `dev-pipeline`, which commits straight to the local clone — no PR,
+no review). Point backlog mode at the purpose-built delivery pipeline instead
+with `autonomy.workflow_id: "backlog-item"`: it runs the same
+analyze → implement (TDD) → test → review loop, then a deterministic
+`publish` step pushes the branch and opens a **draft pull request** — no
+agent ever runs `git push` or a forge CLI. See
+[Backlog-origin pull requests](../features/forge.md#backlog-origin-pull-requests)
+for what that PR looks like.
+
+That publish step needs an outbound repo to target — there's no inbound
+webhook naming one for backlog-originated work — so `backlog-item` also
+requires `github.repo` (and a working GitHub App installation; see
+[Forge](../features/forge.md)) on the project. Setting `autonomy.workflow_id`
+to a workflow that doesn't exist is loud, not silent: it's flagged at config
+load/reload, and the tick itself skips (recorded, not a silent fallback to
+the default workflow) rather than guessing.
+
+Putting it together, a project with backlog autonomy pointed at draft PRs
+looks like:
+
+```yaml
+github:
+  app_id: 123456
+  installation_id: 78901234
+  private_key_path: /etc/vornik/secrets/forge-app.pem
+  # Outbound repo for work with no inbound event to name one —
+  # backlog-item's draft PRs target this.
+  repo: "your-org/your-repo"
+
+autonomy:
+  enabled: false            # flip on when you're ready for deposits to become PRs
+  mode: "backlog"
+  workflow_id: "backlog-item"
+  maxTasksPerHour: 1
+  pollInterval: "45m"
+  allowedTaskTypes:
+    - "backlog"
+
+permissions:
+  allowedTools:
+    - "backlog_deposit"
+
+backlogDeposits:
+  maxPerTask: 10
+```
+
+With `autonomy.enabled: false`, deposits still flow — any role holding the
+tool can propose `- [?]` items — but nothing consumes them yet. Flip
+`enabled: true` only once you're ready to have hand-approved (`- [ ]`) items
+turn into draft pull requests.
+
+If a `backlog-item` run exhausts its retries or hard-fails a step, it
+terminates with no PR opened. The next tick's reconcile pass finds the
+terminal-failed item and flips its box from `- [x]` to `- [!]` in the backlog
+file, so nothing is silently lost — investigate, then flip it back to
+`- [ ]` to retry, or delete the line if it's not worth retrying.
 
 ## Watching it
 

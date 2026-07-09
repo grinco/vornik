@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 )
@@ -41,7 +42,7 @@ func TestHV_CreateAutonomousTask_NoApproval_DefaultsQueued(t *testing.T) {
 			RequireApproval: false,
 		},
 	}
-	require.NoError(t, m.createAutonomousTask(context.Background(), project, `{"prompt":"do work"}`, time.Now()))
+	require.NoError(t, m.createTaskErr(context.Background(), project, `{"prompt":"do work"}`, time.Now()))
 	tasks := repo.createdTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, persistence.TaskStatusQueued, tasks[0].Status,
@@ -63,7 +64,7 @@ func TestHV_CreateAutonomousTask_ApprovalEmitsAuditOutcome(t *testing.T) {
 			RequireApproval: true,
 		},
 	}
-	require.NoError(t, m.createAutonomousTask(context.Background(), project, `{"prompt":"Do stuff","type":"feature"}`, time.Now()))
+	require.NoError(t, m.createTaskErr(context.Background(), project, `{"prompt":"Do stuff","type":"feature"}`, time.Now()))
 
 	entries := evalRepo.snapshot()
 	require.Len(t, entries, 1)
@@ -85,7 +86,7 @@ func TestHV_CreateAutonomousTask_StampsSourceAndRetries(t *testing.T) {
 	m := New(nil, &registry.Registry{}, repo, nil)
 	project := &registry.Project{ID: "p1", DefaultPriority: 70}
 
-	require.NoError(t, m.createAutonomousTask(context.Background(), project, `{"prompt":"work","type":"feature"}`, time.Now()))
+	require.NoError(t, m.createTaskErr(context.Background(), project, `{"prompt":"work","type":"feature"}`, time.Now()))
 	tasks := repo.createdTasks()
 	require.Len(t, tasks, 1)
 	assert.Equal(t, persistence.TaskCreationSourceAutonomous, tasks[0].CreationSource)
@@ -103,7 +104,7 @@ func TestHV_CreateAutonomousTask_BacklogMode_HasIdempotencyKey(t *testing.T) {
 	m := New(nil, &registry.Registry{}, repo, nil)
 	project := &registry.Project{ID: "p1"} // no DuplicateWindow => 24h default
 
-	require.NoError(t, m.createAutonomousTask(context.Background(), project, `{"prompt":"work","type":"feature"}`, time.Now()))
+	require.NoError(t, m.createTaskErr(context.Background(), project, `{"prompt":"work","type":"feature"}`, time.Now()))
 	tasks := repo.createdTasks()
 	require.Len(t, tasks, 1)
 	require.NotNil(t, tasks[0].IdempotencyKey, "non-cron tasks must carry an idempotency key")
@@ -134,7 +135,7 @@ func TestHV_CreateAutonomousTask_IdempotencyHit(t *testing.T) {
 	m := New(nil, &registry.Registry{}, repo, nil)
 	project := &registry.Project{ID: "p1"}
 
-	require.NoError(t, m.createAutonomousTask(context.Background(), project, `{"prompt":"work","type":"feature"}`, now))
+	require.NoError(t, m.createTaskErr(context.Background(), project, `{"prompt":"work","type":"feature"}`, now))
 	// No new Create call — the pre-existing seeded task is the only one.
 	assert.Len(t, repo.createdTasks(), 1, "matching idempotency key must suppress the duplicate create")
 }
@@ -598,7 +599,7 @@ func TestHV_TickBacklog_FiresItemAndMarksConsumed(t *testing.T) {
 	require.NoError(t, os.WriteFile(backlog, []byte("- [ ] Ship the thing\n- [ ] Later\n"), 0o644))
 
 	repo := &mockTaskRepo{}
-	m := New(nil, &registry.Registry{}, repo, nil, WithWorkspacePath(ws))
+	m := New(nil, &registry.Registry{}, repo, nil, WithWorkspacePath(ws), WithBacklogStore(backlogfile.NewStore()))
 	p := &registry.Project{
 		ID: "p1",
 		Autonomy: registry.ProjectAutonomy{
@@ -610,7 +611,8 @@ func TestHV_TickBacklog_FiresItemAndMarksConsumed(t *testing.T) {
 
 	tasks := repo.createdTasks()
 	require.Len(t, tasks, 1)
-	assert.Equal(t, "Ship the thing", extractPrompt(tasks[0].Payload))
+	assert.Contains(t, extractPrompt(tasks[0].Payload), "Ship the thing",
+		"dispatched prompt wraps the raw item in the framing template")
 
 	got, err := os.ReadFile(backlog)
 	require.NoError(t, err)
@@ -628,7 +630,7 @@ func TestHV_TickBacklog_NoPendingItemsNoOp(t *testing.T) {
 
 	repo := &mockTaskRepo{}
 	evalRepo := &captureEvalRepo{}
-	m := New(nil, &registry.Registry{}, repo, nil, WithWorkspacePath(ws), WithEvaluationRepository(evalRepo))
+	m := New(nil, &registry.Registry{}, repo, nil, WithWorkspacePath(ws), WithEvaluationRepository(evalRepo), WithBacklogStore(backlogfile.NewStore()))
 	p := &registry.Project{ID: "p1", Autonomy: registry.ProjectAutonomy{Mode: registry.AutonomyModeBacklog}}
 
 	require.NoError(t, m.tickBacklog(context.Background(), p, time.Now()))
@@ -646,7 +648,7 @@ func TestHV_TickBacklog_MissingFileNoOp(t *testing.T) {
 
 	repo := &mockTaskRepo{}
 	evalRepo := &captureEvalRepo{}
-	m := New(nil, &registry.Registry{}, repo, nil, WithWorkspacePath(ws), WithEvaluationRepository(evalRepo))
+	m := New(nil, &registry.Registry{}, repo, nil, WithWorkspacePath(ws), WithEvaluationRepository(evalRepo), WithBacklogStore(backlogfile.NewStore()))
 	p := &registry.Project{ID: "p1", Autonomy: registry.ProjectAutonomy{Mode: registry.AutonomyModeBacklog}}
 
 	require.NoError(t, m.tickBacklog(context.Background(), p, time.Now()))

@@ -72,6 +72,7 @@ import (
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/artifacts"
 	"vornik.io/vornik/internal/autonomy"
+	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
@@ -137,7 +138,14 @@ type Container struct {
 	// server so every workspace writer on this node is mutually exclusive
 	// per project ("lock-on-mutation"). Single-node v1; the multi-node
 	// cross-node gate (pg advisory lock) wraps this later — design §4.7.
-	WorkspaceLock    *workspacelock.Locker
+	WorkspaceLock *workspacelock.Locker
+	// BacklogStore is the single process-wide backlogfile.Store — one
+	// per-project mutex serialising every BACKLOG.md read-modify-write
+	// (round-2 F2). Built once in NewContainer alongside WorkspaceLock so
+	// the SAME instance is injected into every writer (the HTTP
+	// backlog-deposit endpoint today; the autonomy manager's backlog tick
+	// joins later) — two Stores would defeat the per-project lock.
+	BacklogStore     *backlogfile.Store
 	Watchdog         *watchdog.Watchdog
 	EffectiveCostMon *budget.EffectiveCostMonitor
 	HTTPServer       *http.Server
@@ -752,6 +760,14 @@ func NewContainer(cfg *config.Config, configPath string, opts ...ContainerOption
 	// container so both passes reuse it.
 	if c.WorkspaceLock == nil {
 		c.WorkspaceLock = workspacelock.New()
+	}
+
+	// Single process-wide backlogfile.Store (round-2 F2) — built here so
+	// every BACKLOG.md writer (HTTP deposit endpoint, later the autonomy
+	// manager's backlog tick) shares the SAME per-project lock instead of
+	// racing through independent Stores.
+	if c.BacklogStore == nil {
+		c.BacklogStore = backlogfile.NewStore()
 	}
 
 	// Phase 1 Step 4: Initialize scheduler (depends on task repository,

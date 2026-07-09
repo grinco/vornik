@@ -369,19 +369,23 @@ roles:
     count: 1
     runtimePolicy: "ephemeral"
     # Reviewer — GPT-5.5 via codex-subscription (plan-billed).
-    # 2026-05-25 flip from zai.glm-5 as part of the dev-swarm
-    # codex consolidation. Code review needs strong reasoning
-    # + correctness sense, so the reviewer gets the same
-    # flagship tier as the coder. Trade-off accepted versus the
-    # prior "different vendor than the coder preserves
-    # cross-vendor review check" rationale: with the coder also
-    # on a GPT-5.x line the review is now intra-vendor, but the
-    # quality lift on review reasoning is judged to outweigh the
-    # cross-vendor diversity. Fallback to zai.glm-5 (the prior
-    # primary, open-weight) preserves the escape path and keeps
-    # review flowing through a codex-subscription outage.
-    model: "moonshotai.kimi-k2.5"
-    modelFallback: "zai.glm-5"
+    # 2026-07-09: promoted from moonshotai.kimi-k2.5 to gpt-5.5.
+    # The github-review workflow's `review` step prompt was
+    # hardened into an adversarial rubric (intent → design
+    # challenge → correctness hunt → test adequacy →
+    # security/robustness → an explicit "what would break this"
+    # attempt → severity-ranked verdict) that demands stronger
+    # reasoning than the prior prose review. Trade-off accepted:
+    # with the coder also billed via codex-subscription the
+    # review is now intra-vendor with any codex-billed coder,
+    # but the reasoning-quality lift is judged to outweigh the
+    # cross-vendor diversity that motivated the prior pick.
+    # Fallback to moonshotai.kimi-k2.5 (open-weight) preserves
+    # the Bedrock escape hatch and keeps review flowing through
+    # a codex-subscription outage. See
+    # https://docs.vornik.io §C3.
+    model: "gpt-5.5"
+    modelFallback: "moonshotai.kimi-k2.5"
     maxTokens: 8192
     # outputSchema pins review.approved:bool because dev-pipeline
     # gates on it (and on review.all_done — also pinned). Optional
@@ -422,7 +426,15 @@ roles:
         # case cross-checking against testing.cases[] + verifying
         # tests landed in the same commit as the implementation.
         # Roughly 2x the read load of the pre-TDD reviewer.
-        VORNIK_MAX_TOOL_ITERATIONS: "80"
+        # 80 → 120 (2026-07-09). The hardened adversarial rubric
+        # (design-challenge alternative, per-file correctness
+        # walk, and an explicit break-it attempt before any
+        # approval) reads more of the surrounding codebase per
+        # review than the prior prose review did; the deeper
+        # read budget matches gpt-5.5's stronger-reasoning promo
+        # above. See
+        # https://docs.vornik.io §C3.
+        VORNIK_MAX_TOOL_ITERATIONS: "120"
     permissions:
       allowedTools:
         - "file_read"

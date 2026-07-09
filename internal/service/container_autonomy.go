@@ -149,6 +149,10 @@ func (c *Container) initAutonomy() {
 		autonomy.WithSteeringNotifier(c.combinedSteeringNotifier()),
 		autonomy.WithEvaluationRepository(evalRepo),
 		autonomy.WithRateLimiter(c.rateLimiter),
+		// Share the single process-wide backlogfile.Store (round-2 F2)
+		// with the HTTP deposit endpoint so backlog-mode ticks and
+		// operator deposits serialise on the same per-project locks.
+		autonomy.WithBacklogStore(c.BacklogStore),
 	}
 	if c.Config.Autonomy.DefaultEvaluateTimeout != "" {
 		if d, err := time.ParseDuration(c.Config.Autonomy.DefaultEvaluateTimeout); err == nil && d > 0 {

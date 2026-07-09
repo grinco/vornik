@@ -47,7 +47,7 @@ func TestCreateAutonomousTask_FenceClosed_SupersededEpoch(t *testing.T) {
 	repo := &mockTaskRepo{}
 	m := New(nil, &registry.Registry{}, repo, nil, WithLeaderGate(fenceGate{verifyOK: false}))
 
-	err := m.createAutonomousTask(context.Background(), fenceTestProject(),
+	err := m.createTaskErr(context.Background(), fenceTestProject(),
 		`{"prompt":"Implement feature X","type":"feature"}`, time.Now())
 
 	require.NoError(t, err, "fence should skip cleanly, not error")
@@ -61,7 +61,7 @@ func TestCreateAutonomousTask_FenceClosed_VerifyError(t *testing.T) {
 	repo := &mockTaskRepo{}
 	m := New(nil, &registry.Registry{}, repo, nil, WithLeaderGate(fenceGate{verifyErr: assert.AnError}))
 
-	err := m.createAutonomousTask(context.Background(), fenceTestProject(),
+	err := m.createTaskErr(context.Background(), fenceTestProject(),
 		`{"prompt":"Implement feature X","type":"feature"}`, time.Now())
 
 	require.NoError(t, err, "fence read error should skip cleanly, not error")
@@ -74,7 +74,7 @@ func TestCreateAutonomousTask_FenceOpen_CurrentEpoch(t *testing.T) {
 	repo := &mockTaskRepo{}
 	m := New(nil, &registry.Registry{}, repo, nil, WithLeaderGate(fenceGate{verifyOK: true}))
 
-	err := m.createAutonomousTask(context.Background(), fenceTestProject(),
+	err := m.createTaskErr(context.Background(), fenceTestProject(),
 		`{"prompt":"Implement feature X","type":"feature"}`, time.Now())
 
 	require.NoError(t, err)
@@ -87,7 +87,7 @@ func TestCreateAutonomousTask_NonVerifierGate(t *testing.T) {
 	repo := &mockTaskRepo{}
 	m := New(nil, &registry.Registry{}, repo, nil, WithLeaderGate(plainLeaderGate{}))
 
-	err := m.createAutonomousTask(context.Background(), fenceTestProject(),
+	err := m.createTaskErr(context.Background(), fenceTestProject(),
 		`{"prompt":"Implement feature X","type":"feature"}`, time.Now())
 
 	require.NoError(t, err)

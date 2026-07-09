@@ -127,6 +127,7 @@ is_builtin_tool() {
         file_edit|read_many_files|grep|glob) return 0 ;;
         git_status|git_diff|git_log|git_show) return 0 ;;
         test_run|lint_run|typecheck_run) return 0 ;;
+        backlog_deposit) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -134,7 +135,7 @@ is_builtin_tool() {
 # Canonical list of built-in tool names — single source of truth used by the
 # allowlist gate in tool_definitions() and by builtin_tool_allowed(). Keep
 # this aligned with is_builtin_tool() above.
-BUILTIN_TOOL_NAMES_JSON='["file_read","file_write","run_shell","current_time","file_edit","read_many_files","grep","glob","git_status","git_diff","git_log","git_show","test_run","lint_run","typecheck_run"]'
+BUILTIN_TOOL_NAMES_JSON='["file_read","file_write","run_shell","current_time","file_edit","read_many_files","grep","glob","git_status","git_diff","git_log","git_show","test_run","lint_run","typecheck_run","backlog_deposit"]'
 
 builtin_tool_allowed() {
     local tool="$1"
@@ -638,6 +639,24 @@ tool_definitions() {
         }
       }
     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "backlog_deposit",
+      "description": "Record an OFF-SCOPE finding (bug, optimisation opportunity, code inefficiency, refactor candidate) into the project backlog WITHOUT changing any code. Use when you notice something worth fixing that is outside your current task's scope. Never use it for work you are currently assigned.",
+      "parameters": {
+        "type": "object",
+        "required": ["kind", "title", "detail"],
+        "properties": {
+          "kind":   {"type": "string", "enum": ["bug", "optimisation", "inefficiency", "refactor"]},
+          "title":  {"type": "string", "maxLength": 140, "description": "Specific, imperative, self-contained (a future task prompt)"},
+          "detail": {"type": "string", "maxLength": 2000, "description": "What is wrong / suboptimal and what better looks like"},
+          "evidence": {"type": "string", "maxLength": 500, "description": "file:line reference(s) plus one-sentence proof"},
+          "regression": {"type": "boolean", "description": "Set ONLY when re-reporting a previously-fixed finding that has returned; requires evidence"}
+        }
+      }
+    }
   }
 ]
 TOOLS_EOF
@@ -815,6 +834,58 @@ handle_memory_search() {
     printf '%s' "$response"
 }
 
+# Handle backlog_deposit tool call (autonomous-dev-loop C1, see
+# https://docs.vornik.io).
+# Mirrors handle_memory_search's shape but POSTs to the daemon's internal
+# backlog endpoint (same auth + URL-resolution pattern as the tool-audit
+# stream POST). The daemon's accepted/rejected JSON is returned verbatim so
+# the model can see why a finding was rejected (dedup, secret-scan, rate
+# cap) and proceed either way — never treated as a fatal tool error.
+handle_backlog_deposit() {
+    local params="$1"
+    local project_id task_id execution_id role
+    local kind title detail evidence regression
+    local body url response
+    project_id=$(jq -r '.projectId // .project_id // ""' "$INPUT_FILE")
+    task_id="${VORNIK_TASK_ID:-}"
+    execution_id="${VORNIK_EXECUTION_ID:-}"
+    role=$(jq -r '.swarm.role // .role // ""' "$INPUT_FILE")
+
+    if [ -z "${VORNIK_API_URL:-}" ] || [ -z "$project_id" ] || [ -z "$task_id" ]; then
+        printf '{"error":"backlog_deposit not available (VORNIK_API_URL=%s project_id=%s task_id=%s)"}' \
+            "${VORNIK_API_URL:-<unset>}" "${project_id:-<unset>}" "${task_id:-<unset>}"
+        return
+    fi
+
+    kind=$(printf '%s' "$params" | jq -r '.kind // ""')
+    title=$(printf '%s' "$params" | jq -r '.title // ""')
+    detail=$(printf '%s' "$params" | jq -r '.detail // ""')
+    evidence=$(printf '%s' "$params" | jq -r '.evidence // ""')
+    regression=$(printf '%s' "$params" | jq -r 'if has("regression") then (.regression == true) else false end')
+
+    body=$(jq -n \
+        --arg pid "$project_id" \
+        --arg tid "$task_id" \
+        --arg eid "$execution_id" \
+        --arg sid "$STEP_ID" \
+        --arg role "$role" \
+        --arg kind "$kind" \
+        --arg title "$title" \
+        --arg detail "$detail" \
+        --arg evidence "$evidence" \
+        --argjson regression "$regression" \
+        '{project_id:$pid, task_id:$tid, execution_id:$eid, step_id:$sid, role:$role, kind:$kind, title:$title, detail:$detail, evidence:$evidence, regression:$regression}')
+
+    vornik_resolve_url "${VORNIK_API_URL%/}/api/v1/internal/backlog-deposit"; url="$VORNIK_URL"
+
+    response=$(curl -sS --max-time 10 $VORNIK_CURL_OPT -X POST \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: ${VORNIK_API_KEY:-}" \
+        --data "$body" \
+        "$url" 2>/dev/null || echo '{"error":"request failed"}')
+    printf '%s' "$response"
+}
+
 # Resolve a path to an absolute path under the workspace.
 # Agents must use workspace-relative paths (e.g. "project/file.txt").
 # Absolute paths within $WORKSPACE are accepted as-is.
@@ -974,6 +1045,9 @@ PY
             ;;
         memory_search)
             handle_memory_search "$arguments"
+            ;;
+        backlog_deposit)
+            handle_backlog_deposit "$arguments"
             ;;
         get_conversation_window)
             handle_get_conversation_window "$arguments"
@@ -1521,10 +1595,30 @@ PY
     esac
 }
 
+# GH_TOKEN → git credential wiring for private-repo pushes/clones over
+# HTTPS (autonomous-dev-loop, forge.open_change_request path). `gh auth
+# setup-git` writes a git credential helper config pointing at GH_TOKEN so
+# git operations against github.com work without the agent ever embedding
+# the token in a remote URL. Idempotent — safe to call at the top of every
+# main() invocation, including repeated calls in warm-container mode.
+# Deliberately NO credential-helper shim fallback when `gh` is missing
+# (security decision, see https://docs.vornik.io):
+# we leave git unauthenticated rather than hand-roll one.
+setup_gh_git_credentials() {
+    if [ -n "${GH_TOKEN:-}" ]; then
+        if command -v gh >/dev/null 2>&1; then
+            gh auth setup-git >/dev/null 2>&1 || log "WARN: gh auth setup-git failed; private-repo git will be unauthenticated"
+        else
+            log "WARN: GH_TOKEN set but gh missing; private-repo git will be unauthenticated"
+        fi
+    fi
+}
+
 main() {
     log "starting (model=$LLM_MODEL)"
     debug "env: LLM_ENDPOINT=$LLM_ENDPOINT LLM_MODEL=$LLM_MODEL API_KEY=${LLM_API_KEY:+set(${#LLM_API_KEY}chars)}"
     CANCELLED=0
+    setup_gh_git_credentials
     # Per-task LLM usage accumulators. Read in write_result and surfaced
     # to the executor via result.json → prom metric. Reset here so warm
     # containers don't carry usage from a prior task.

@@ -92,8 +92,11 @@ The exported metrics cover, in plain terms:
   success, and rates of parse failures, schema violations, refusals, and
   degenerate loops.
 - **Tool calls, autonomy, and cross-project orchestration** — tool invocation
-  counts, autonomy approval resolutions and configured caps, and cross-project
-  call and spawn counts.
+  counts, autonomy approval resolutions and configured caps, cross-project
+  call and spawn counts, and outcomes of agent-recorded
+  [backlog deposits](autonomy.md#backlog-autonomy-and-agent-deposits)
+  (accepted, or rejected as a duplicate, a secret hit, over the per-task cap,
+  or in cooldown).
 - **HTTP and process** — request counts, durations, in-flight requests, plus
   standard Go/process collectors.
 

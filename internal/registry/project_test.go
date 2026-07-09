@@ -827,6 +827,31 @@ func TestProjectGitHubApp_Enabled(t *testing.T) {
 	}
 }
 
+// TestProjectGitHub_ResolveOutboundRepo — the resolution for outbound work
+// not tied to an inbound event (backlog-origin change requests). Lives on
+// ProjectGitHub (the `github:` block) — the SAME struct whose Enabled()
+// gates token minting and the tickBacklog forge-job stamp — so a project
+// configured with only `github:` (the primary consumer shape) resolves.
+func TestProjectGitHub_ResolveOutboundRepo(t *testing.T) {
+	cases := []struct {
+		name string
+		g    ProjectGitHub
+		want string
+	}{
+		{"explicit repo", ProjectGitHub{Repo: "o/primary"}, "o/primary"},
+		{"explicit repo trimmed", ProjectGitHub{Repo: "  o/primary  "}, "o/primary"},
+		{"unset yields empty", ProjectGitHub{}, ""},
+		{"blank yields empty", ProjectGitHub{Repo: "   "}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.g.ResolveOutboundRepo(); got != c.want {
+				t.Errorf("ResolveOutboundRepo() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
 // TestProjectEmail_Validate — every cross-field rule on the email
 // block: required-when-any-set, all-or-nothing SMTP outbound trio.
 func TestProjectEmail_Validate(t *testing.T) {

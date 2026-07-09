@@ -21,6 +21,7 @@ import (
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/ratelimit"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/textsim"
 	"vornik.io/vornik/internal/untrusted"
 )
 
@@ -2334,22 +2335,7 @@ func findRecentDuplicateTask(ctx context.Context, repo persistence.TaskRepositor
 // above, so union = |A| + |B| - intersect ≥ max(|A|,|B|) ≥ 1.
 // No defensive `if union == 0` branch is needed.
 func jaccardTokenSimilarity(a, b string) float64 {
-	if a == "" || b == "" {
-		return 0
-	}
-	tokensA := tokenSet(a)
-	tokensB := tokenSet(b)
-	if len(tokensA) == 0 || len(tokensB) == 0 {
-		return 0
-	}
-	var intersect int
-	for tok := range tokensA {
-		if _, ok := tokensB[tok]; ok {
-			intersect++
-		}
-	}
-	union := len(tokensA) + len(tokensB) - intersect
-	return float64(intersect) / float64(union)
+	return textsim.Jaccard(a, b)
 }
 
 // tokenSet splits s on whitespace, strips leading + trailing
@@ -2361,15 +2347,7 @@ func jaccardTokenSimilarity(a, b string) float64 {
 // is responsible for casing + whitespace normalisation
 // (normalisePromptForDedup handles those).
 func tokenSet(s string) map[string]struct{} {
-	out := map[string]struct{}{}
-	for _, t := range strings.Fields(s) {
-		t = strings.Trim(t, ".,;:!?()[]{}\"'`")
-		if t == "" {
-			continue
-		}
-		out[t] = struct{}{}
-	}
-	return out
+	return textsim.TokenSet(s)
 }
 
 // normalisePromptForDedup folds whitespace, strips surrounding

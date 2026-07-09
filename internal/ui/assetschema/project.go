@@ -55,6 +55,8 @@ func ProjectSchema() AssetSchema {
 					{Path: "autonomy.userContextFilePath", Label: "User context file path", Kind: KindString, Advanced: true},
 					{Path: "autonomy.backlogFilePath", Label: "Backlog file path", Kind: KindString, Advanced: true, Default: "BACKLOG.md"},
 					{Path: "autonomy.cronTaskType", Label: "Cron task type", Kind: KindString, Advanced: true},
+					{Path: "autonomy.workflow_id", Label: "Backlog workflow", Kind: KindString, Advanced: true, Help: "Workflow ID for backlog-mode tasks; empty = project default workflow."},
+					{Path: "backlogDeposits.maxPerTask", Label: "Max deposits/task", Kind: KindInt, Advanced: true, Help: "Cap on backlog_deposit tool calls per task (default 10)."},
 				},
 			},
 			{
@@ -173,9 +175,11 @@ var ProjectDeferredPaths = []string{
 	"github_app.task_labels", "github_app.pr_review_labels", "github_app.sender_allowlist",
 	"github_app.reply_workflow_id", "github_app.pr_review_workflow_id",
 	"github.app_id", "github.installation_id", "github.private_key_path", "github.api_base_url",
+	"github.repo",
 	// Forge automation.
 	"forge.provider", "forge.github.app_id", "forge.github.installation_id",
 	"forge.github.private_key_path", "forge.github.api_base_url",
+	"forge.github.repo",
 	// Email connector (IMAP/SMTP, secrets via env).
 	"email.imap_host", "email.imap_port", "email.imap_username", "email.imap_password_env",
 	"email.imap_mailbox", "email.smtp_host", "email.smtp_port", "email.smtp_username",

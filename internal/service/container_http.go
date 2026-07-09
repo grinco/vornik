@@ -26,6 +26,7 @@ import (
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/admin"
 	"vornik.io/vornik/internal/api"
+	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/conversation/a2a"
@@ -265,6 +266,16 @@ func (c *Container) initHTTPServer() error {
 	if c.secretsDetector != nil {
 		apiOpts = append(apiOpts, api.WithSecrets(c.secretsDetector, c.secretsActions))
 	}
+	// Backlog-deposit endpoint store (Task 5, autonomous-development-loop
+	// design). Shares the container's single process-wide backlogfile.Store
+	// (round-2 F2) — the SAME instance the autonomy manager's backlog tick
+	// will use, so every BACKLOG.md writer serialises through one
+	// per-project lock. Unconditional — the store has no external
+	// dependencies, and the endpoint itself no-ops safely without it.
+	if c.BacklogStore == nil {
+		c.BacklogStore = backlogfile.NewStore()
+	}
+	apiOpts = append(apiOpts, api.WithBacklogStore(c.BacklogStore))
 	if c.Executor != nil {
 		apiOpts = append(apiOpts, api.WithExecutor(c.Executor))
 	}

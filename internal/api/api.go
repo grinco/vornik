@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/auth"
+	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
@@ -977,6 +978,18 @@ type Server struct {
 	secretsDetector secrets.Detector
 	secretsActions  map[string]secrets.Action
 
+	// backlogStore backs POST /api/v1/internal/backlog-deposit (Task 5,
+	// autonomous-development-loop design). nil → the endpoint returns 503.
+	backlogStore *backlogfile.Store
+	// backlogDepositCounts is the in-memory per-task accepted-deposit
+	// counter enforcing ProjectBacklogDeposits.ResolveMaxPerTask (task_id
+	// string -> *int64, incremented only after a successful Append).
+	// Deliberately NOT persisted: a daemon restart resetting every task's
+	// count to zero is an acceptable trade-off — the cap exists to bound a
+	// single runaway task's backlog spam within one daemon lifetime, not to
+	// enforce a durable lifetime quota.
+	backlogDepositCounts sync.Map
+
 	webhookRejectMu        sync.Mutex
 	webhookRejectLog       map[string][]time.Time
 	webhookRejectGCCounter uint64
@@ -1706,8 +1719,9 @@ func WithFillNotifier(n FillNotifier) ServerOption {
 }
 
 // WithSecrets wires the secret-leak detector and per-checkpoint
-// action map into the API surface. Currently only the webhook
-// ingest handler uses it (Phase 2 Block-mode enforcement); other
+// action map into the API surface. Used by the webhook ingest handler
+// (Phase 2 Block-mode enforcement) and the backlog-deposit endpoint
+// (Task 5, CheckpointBacklogDeposit, also Block by default); other
 // API surfaces inherit protection through the executor + memory +
 // artifact paths the daemon already wires elsewhere.
 func WithSecrets(d secrets.Detector, actions map[string]secrets.Action) ServerOption {
@@ -2312,6 +2326,17 @@ func WithForgeClassifier(c ForgeClassifier) ServerOption {
 // SetWebhookRelay is the test-friendly setter mirroring WithWebhookRelay.
 // Production code should use WithWebhookRelay (a ServerOption) instead.
 func (s *Server) SetWebhookRelay(f WebhookForwarder) { s.webhookRelay = f }
+
+// WithBacklogStore wires the shared BACKLOG.md read-modify-write store
+// (Task 5, autonomous-development-loop design) used by the
+// backlog-deposit endpoint. Sharing the SAME *backlogfile.Store instance
+// the autonomy manager's backlog tick uses (once that's wired in a later
+// task) is what makes concurrent writers to one project's BACKLOG.md
+// serialize instead of racing — construction here just needs to point at
+// the same store, not a private one.
+func WithBacklogStore(store *backlogfile.Store) ServerOption {
+	return func(s *Server) { s.backlogStore = store }
+}
 
 // WireDoctorAPIMetrics is the post-Routes hand-off that lets
 // the cost-attribution doctor check read live counter values.

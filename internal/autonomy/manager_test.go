@@ -16,6 +16,15 @@ import (
 	"vornik.io/vornik/internal/registry"
 )
 
+// createTaskErr adapts createAutonomousTask's post-Task-6 (id, err)
+// return to the single error the legacy autonomy tests assert on. Tests
+// that care about the returned task ID call createAutonomousTask
+// directly.
+func (m *Manager) createTaskErr(ctx context.Context, p *registry.Project, args string, start time.Time) error {
+	_, err := m.createAutonomousTask(ctx, p, args, start)
+	return err
+}
+
 // mockTaskRepo is a minimal TaskRepository for autonomy tests.
 type mockTaskRepo struct {
 	PingFunc func(ctx context.Context) error
@@ -33,7 +42,14 @@ func (m *mockTaskRepo) Create(ctx context.Context, task *persistence.Task) error
 	m.tasks = append(m.tasks, task)
 	return nil
 }
-func (m *mockTaskRepo) Get(context.Context, string) (*persistence.Task, error) {
+func (m *mockTaskRepo) Get(_ context.Context, id string) (*persistence.Task, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.tasks {
+		if t.ID == id {
+			return t, nil
+		}
+	}
 	return nil, persistence.ErrNotFound
 }
 func (m *mockTaskRepo) GetByIdempotencyKey(_ context.Context, projectID, idempotencyKey string) (*persistence.Task, error) {
@@ -308,7 +324,7 @@ func TestCreateAutonomousTask_Basic(t *testing.T) {
 	}
 
 	argsJSON := `{"prompt": "Implement feature X", "type": "feature"}`
-	err := m.createAutonomousTask(context.Background(), project, argsJSON, time.Now())
+	err := m.createTaskErr(context.Background(), project, argsJSON, time.Now())
 	require.NoError(t, err)
 
 	tasks := repo.createdTasks()
@@ -344,7 +360,7 @@ func TestCreateAutonomousTask_RequireApproval(t *testing.T) {
 		},
 	}
 
-	err := m.createAutonomousTask(context.Background(), project, `{"prompt":"Do stuff"}`, time.Now())
+	err := m.createTaskErr(context.Background(), project, `{"prompt":"Do stuff"}`, time.Now())
 	require.NoError(t, err)
 
 	tasks := repo.createdTasks()
@@ -402,7 +418,7 @@ roles:
 		},
 	}
 
-	err := m.createAutonomousTask(context.Background(), project, `{"prompt":"Build it","workflow_id":"dev-pipeline"}`, time.Now())
+	err := m.createTaskErr(context.Background(), project, `{"prompt":"Build it","workflow_id":"dev-pipeline"}`, time.Now())
 	require.NoError(t, err)
 
 	tasks := repo.createdTasks()
@@ -416,7 +432,7 @@ func TestCreateAutonomousTask_EmptyPrompt(t *testing.T) {
 	m := New(nil, &registry.Registry{}, repo, nil)
 	project := &registry.Project{ID: "p1"}
 
-	err := m.createAutonomousTask(context.Background(), project, `{"prompt":""}`, time.Now())
+	err := m.createTaskErr(context.Background(), project, `{"prompt":""}`, time.Now())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "prompt is required")
 	assert.Empty(t, repo.createdTasks())
@@ -444,7 +460,7 @@ func TestCreateAutonomousTask_NoActionSentinel(t *testing.T) {
 			m := New(nil, &registry.Registry{}, repo, nil)
 			project := &registry.Project{ID: "p1"}
 
-			err := m.createAutonomousTask(context.Background(), project, tc.args, time.Now())
+			err := m.createTaskErr(context.Background(), project, tc.args, time.Now())
 			require.NoError(t, err, "NO_ACTION sentinel must be suppressed silently, not raise")
 			assert.Empty(t, repo.createdTasks(),
 				"NO_ACTION sentinel must NOT create a task — that's the bug we're fixing")
@@ -462,7 +478,7 @@ func TestCreateAutonomousTask_AllowedTypesRejectsEmptyType(t *testing.T) {
 		},
 	}
 
-	err := m.createAutonomousTask(context.Background(), project, `{"prompt":"Implement feature X"}`, time.Now())
+	err := m.createTaskErr(context.Background(), project, `{"prompt":"Implement feature X"}`, time.Now())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "task type is required")
 	assert.Empty(t, repo.createdTasks())
@@ -473,7 +489,7 @@ func TestCreateAutonomousTask_InvalidJSON(t *testing.T) {
 	m := New(nil, &registry.Registry{}, repo, nil)
 	project := &registry.Project{ID: "p1"}
 
-	err := m.createAutonomousTask(context.Background(), project, `not json`, time.Now())
+	err := m.createTaskErr(context.Background(), project, `not json`, time.Now())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid tool arguments")
 }
@@ -487,7 +503,7 @@ func TestCreateAutonomousTask_CreateError(t *testing.T) {
 	m := New(nil, &registry.Registry{}, repo, nil)
 	project := &registry.Project{ID: "p1"}
 
-	err := m.createAutonomousTask(context.Background(), project, `{"prompt":"test"}`, time.Now())
+	err := m.createTaskErr(context.Background(), project, `{"prompt":"test"}`, time.Now())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create task")
 }
@@ -523,7 +539,7 @@ func TestCreateAutonomousTask_CronMode_NoIdempotencyKey(t *testing.T) {
 	}
 
 	args := `{"prompt":"Run one trading tick","type":"trading"}`
-	require.NoError(t, m.createAutonomousTask(context.Background(), project, args, time.Now()))
+	require.NoError(t, m.createTaskErr(context.Background(), project, args, time.Now()))
 
 	// Mark the first tick as COMPLETED before firing the second.
 	// findAutonomyDuplicate's active-task check (LLD comment on
@@ -540,7 +556,7 @@ func TestCreateAutonomousTask_CronMode_NoIdempotencyKey(t *testing.T) {
 	repo.tasks[0].UpdatedAt = time.Now()
 	repo.mu.Unlock()
 
-	require.NoError(t, m.createAutonomousTask(context.Background(), project, args, time.Now()))
+	require.NoError(t, m.createTaskErr(context.Background(), project, args, time.Now()))
 
 	tasks := repo.createdTasks()
 	require.Len(t, tasks, 2, "cron-mode autonomy must produce a task per tick once the prior task completes, not collapse to one per hour")
@@ -565,7 +581,7 @@ func TestCreateAutonomousTask_SuppressesActiveDuplicate(t *testing.T) {
 	m := New(nil, &registry.Registry{}, repo, nil)
 	project := &registry.Project{ID: "p1"}
 
-	err := m.createAutonomousTask(context.Background(), project, `{"prompt":"Implement feature X","type":"feature"}`, time.Now())
+	err := m.createTaskErr(context.Background(), project, `{"prompt":"Implement feature X","type":"feature"}`, time.Now())
 	require.NoError(t, err)
 	assert.Len(t, repo.createdTasks(), 1)
 }
@@ -595,7 +611,7 @@ func TestCreateAutonomousTask_SuppressesFailureCooldown(t *testing.T) {
 	m := New(nil, &registry.Registry{}, repo, nil)
 	project := &registry.Project{ID: "p1"}
 
-	err := m.createAutonomousTask(context.Background(), project, `{"prompt":"Implement feature X","type":"feature"}`, time.Now())
+	err := m.createTaskErr(context.Background(), project, `{"prompt":"Implement feature X","type":"feature"}`, time.Now())
 	require.NoError(t, err)
 	assert.Len(t, repo.createdTasks(), 2)
 }
@@ -638,7 +654,7 @@ func TestCreateAutonomousTask_SuppressesFuzzyFailureCooldown(t *testing.T) {
 
 	// A third Ghost Mode rephrase — same topic, different surface.
 	prompt3 := `{"prompt":"Implement Ghost Mode: Add ghost-mode behaviour to project/index.html so the snake passes through walls and its own segments. Add a settings toggle.","type":"feature"}`
-	err := m.createAutonomousTask(context.Background(), project, prompt3, time.Now())
+	err := m.createTaskErr(context.Background(), project, prompt3, time.Now())
 	require.NoError(t, err)
 	// Repo's createdTasks slice tracks Create() calls — the cooldown
 	// should have blocked this one before persistence, so the slice
@@ -680,7 +696,7 @@ func TestCreateAutonomousTask_SuppressesCircuitBreaker(t *testing.T) {
 	m := New(nil, &registry.Registry{}, repo, nil)
 	project := &registry.Project{ID: "p1"}
 
-	err := m.createAutonomousTask(context.Background(), project, `{"prompt":"new work","type":"feature"}`, time.Now())
+	err := m.createTaskErr(context.Background(), project, `{"prompt":"new work","type":"feature"}`, time.Now())
 	require.NoError(t, err)
 	assert.Len(t, repo.createdTasks(), 8)
 }

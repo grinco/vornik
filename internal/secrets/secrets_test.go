@@ -403,3 +403,18 @@ func TestResolveAction_MemoryScanNonDisableable(t *testing.T) {
 		t.Errorf("memory detect with escape hatch = %q, want detect", got)
 	}
 }
+
+// TestResolveAction_BacklogDepositDefaultBlock — the backlog_deposit
+// checkpoint defaults to Block — inbound channel where a payload
+// containing a secret usually indicates misconfiguration the operator
+// should fix at the source.
+func TestResolveAction_BacklogDepositDefaultBlock(t *testing.T) {
+	// BacklogDeposit default (no override) is block.
+	if got := ResolveAction(CheckpointBacklogDeposit, nil); got != ActionBlock {
+		t.Errorf("backlog_deposit default = %q, want block", got)
+	}
+	// Override to redact is honored.
+	if got := ResolveAction(CheckpointBacklogDeposit, map[string]Action{CheckpointBacklogDeposit: ActionRedact}); got != ActionRedact {
+		t.Errorf("backlog_deposit redact override = %q, want redact", got)
+	}
+}

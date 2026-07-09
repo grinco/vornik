@@ -212,6 +212,28 @@ func stripInvalidProjects(cfg *ConfigSet) *ValidationError {
 				continue
 			}
 		}
+		// Validate autonomy.workflow_id, when set — but unlike the
+		// checks above, do NOT strip the project. This key only
+		// matters to the Mode="backlog" tick (which falls back to
+		// DefaultWorkflowID when unresolved), so an unknown value is
+		// an operator typo worth shouting about, not a reason to take
+		// the whole project offline. The warning is appended to errs
+		// directly (bypassing projectErrs' delete-on-nonempty rule
+		// below) so it still surfaces through the existing
+		// *ValidationError "loaded with warnings" channel every
+		// caller already logs, while the project keeps loading with
+		// its last-known-good behaviour (old-config-stays-active
+		// semantics). Also printed straight to stderr at the
+		// strongest level this logger-free package supports, so it's
+		// impossible to miss in the daemon log even before a caller
+		// gets around to logging the returned error.
+		if id := strings.TrimSpace(project.Autonomy.WorkflowID); id != "" {
+			if _, ok := cfg.workflows[id]; !ok {
+				msg := fmt.Errorf("project '%s' autonomy.workflow_id references non-existent workflow '%s' (backlog ticks will be SKIPPED — items stay pending until the config is fixed)", projectID, id)
+				errs = append(errs, msg)
+				fmt.Fprintf(os.Stderr, "vornik/registry: ERROR: %s\n", msg)
+			}
+		}
 		roleNames := make(map[string]struct{}, len(swarm.Roles))
 		for _, role := range swarm.Roles {
 			roleNames[role.Name] = struct{}{}

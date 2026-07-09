@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
@@ -727,6 +728,7 @@ func TestTickBacklog_SymlinkTraversalRejected(t *testing.T) {
 	m := New(nil, &registry.Registry{}, &mockTaskRepo{}, nil,
 		WithEvaluationRepository(repo),
 		WithWorkspacePath(ws),
+		WithBacklogStore(backlogfile.NewStore()),
 	)
 
 	// Point backlogFilePath at a leaf under the escape symlink.
@@ -752,6 +754,7 @@ func TestTickBacklog_MissingFileNoAction(t *testing.T) {
 	m := New(nil, &registry.Registry{}, &mockTaskRepo{}, nil,
 		WithEvaluationRepository(repo),
 		WithWorkspacePath(ws),
+		WithBacklogStore(backlogfile.NewStore()),
 	)
 
 	project := &registry.Project{ID: "p-no-file"}
@@ -772,6 +775,7 @@ func TestTickBacklog_EmptyBacklogFile(t *testing.T) {
 	m := New(nil, &registry.Registry{}, &mockTaskRepo{}, nil,
 		WithEvaluationRepository(repo),
 		WithWorkspacePath(ws),
+		WithBacklogStore(backlogfile.NewStore()),
 	)
 	project := &registry.Project{ID: "p1"}
 	err := m.tickBacklog(context.Background(), project, time.Now())
@@ -795,7 +799,7 @@ func TestTickBacklog_ConsumesPendingItemAndDispatches(t *testing.T) {
 		[]byte("# Backlog\n\n- [ ] first pending item\n- [ ] second pending item\n"), 0o644))
 
 	repo := &mockTaskRepo{}
-	m := New(nil, reg, repo, nil, WithWorkspacePath(ws))
+	m := New(nil, reg, repo, nil, WithWorkspacePath(ws), WithBacklogStore(backlogfile.NewStore()))
 
 	project := reg.GetProject("p1")
 	require.NotNil(t, project)

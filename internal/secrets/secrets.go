@@ -72,13 +72,14 @@ func (a Action) IsValid() bool {
 // here, add a default action to DefaultCheckpoints, wire the call
 // site, and document in configs/secrets.yaml.
 const (
-	CheckpointResultJSON    = "result_json"
-	CheckpointToolAudit     = "tool_audit"
-	CheckpointContainerLogs = "container_logs"
-	CheckpointArtifacts     = "artifacts"
-	CheckpointTelegram      = "telegram"
-	CheckpointWebhook       = "webhook"
-	CheckpointMemory        = "memory"
+	CheckpointResultJSON     = "result_json"
+	CheckpointToolAudit      = "tool_audit"
+	CheckpointContainerLogs  = "container_logs"
+	CheckpointArtifacts      = "artifacts"
+	CheckpointTelegram       = "telegram"
+	CheckpointWebhook        = "webhook"
+	CheckpointMemory         = "memory"
+	CheckpointBacklogDeposit = "backlog_deposit"
 )
 
 // DefaultCheckpoints returns the per-channel default action map.
@@ -103,15 +104,19 @@ const (
 //     secret usually indicates a misconfiguration the operator
 //     should fix at the source rather than have us silently rewrite.
 //   - memory: Redact — chunks live forever and surface via search.
+//   - backlog_deposit: Block — inbound channel; a payload containing a
+//     secret usually indicates a misconfiguration the operator should fix
+//     at the source rather than have us silently rewrite.
 func DefaultCheckpoints() map[string]Action {
 	return map[string]Action{
-		CheckpointResultJSON:    ActionRedact,
-		CheckpointToolAudit:     ActionRedact,
-		CheckpointContainerLogs: ActionRedact,
-		CheckpointArtifacts:     ActionRedact,
-		CheckpointTelegram:      ActionRedact,
-		CheckpointWebhook:       ActionBlock,
-		CheckpointMemory:        ActionRedact,
+		CheckpointResultJSON:     ActionRedact,
+		CheckpointToolAudit:      ActionRedact,
+		CheckpointContainerLogs:  ActionRedact,
+		CheckpointArtifacts:      ActionRedact,
+		CheckpointTelegram:       ActionRedact,
+		CheckpointWebhook:        ActionBlock,
+		CheckpointMemory:         ActionRedact,
+		CheckpointBacklogDeposit: ActionBlock,
 	}
 }
 

@@ -55,6 +55,23 @@ type ForgeJob struct {
 	// meaningful title/body instead of a bare "Fix #N".
 	Title string `json:"title,omitempty"`
 	Body  string `json:"body,omitempty"`
+	// Kind discriminates how the job originated, selecting which publish
+	// templates the forge.open_change_request handler applies:
+	//   - "" or "issue" — issue-driven (today's shape): the (Repo, Number)
+	//     pair addresses a real issue/CR and the CR body closes it.
+	//   - "backlog" — an autonomy BACKLOG.md item with NO inbound issue.
+	//     Number is absent; Slug supplies the deterministic branch name and
+	//     the CR body carries no "Closes #N" line. Stamped by the autonomy
+	//     backlog tick (internal/autonomy) for projects with a resolvable
+	//     outbound repo, so a backlog-item workflow can publish a draft PR.
+	Kind string `json:"kind,omitempty"`
+	// Slug is the deterministic branch slug for numberless (backlog-origin)
+	// jobs: with no issue Number to key the publish branch off, the branch is
+	// "backlog/<Slug>". Ignored for issue-driven jobs. Deterministic — the
+	// same backlog item always yields the same slug, so a re-dispatched item
+	// produces the same branch and the forge-side idempotency (lookup by
+	// head) holds.
+	Slug string `json:"slug,omitempty"`
 }
 
 // ChangeRequestSpec describes a pull/merge request to open. Title/Body are

@@ -249,6 +249,37 @@ type Project struct {
 	// project file already has. See
 	// https://docs.vornik.io
 	Lifecycle ProjectLifecycle `yaml:"lifecycle,omitempty"`
+	// BacklogDeposits caps how many BACKLOG.md-style items a
+	// single task may deposit via the backlog-deposit endpoint
+	// (autonomous-development-loop design). Zero-value struct
+	// resolves to the package default via ResolveMaxPerTask.
+	BacklogDeposits ProjectBacklogDeposits `yaml:"backlogDeposits" json:"backlogDeposits,omitempty"`
+}
+
+// ProjectBacklogDeposits caps autonomous backlog-deposit volume
+// per task (autonomous-development-loop design, Task 5's deposit
+// endpoint). Keeping this as its own struct — rather than a bare
+// int on Project — leaves room for future per-deposit knobs
+// (e.g. a dedup window) without another top-level Project field.
+type ProjectBacklogDeposits struct {
+	// MaxPerTask caps how many backlog lines a single task may
+	// append in one deposit call. 0 (unset) resolves to the
+	// package default of 10 via ResolveMaxPerTask — generous
+	// enough for a real planning burst, tight enough that a
+	// runaway loop can't flood BACKLOG.md in one shot.
+	MaxPerTask int `yaml:"maxPerTask" json:"maxPerTask,omitempty"`
+}
+
+// ResolveMaxPerTask returns the effective per-task backlog-
+// deposit cap: the configured value when positive, otherwise the
+// package default of 10. Nil-safe so callers can invoke it on a
+// zero-value ProjectBacklogDeposits without a prior nil check.
+func (b *ProjectBacklogDeposits) ResolveMaxPerTask() int {
+	const defaultMaxPerTask = 10
+	if b == nil || b.MaxPerTask <= 0 {
+		return defaultMaxPerTask
+	}
+	return b.MaxPerTask
 }
 
 // ProjectLifecycle holds the archival state for a project. An
@@ -655,6 +686,23 @@ type ProjectGitHub struct {
 	// APIBaseURL overrides the GitHub REST base (GitHub Enterprise). Empty →
 	// https://api.github.com.
 	APIBaseURL string `yaml:"api_base_url"`
+	// Repo is the primary owner/repo for outbound work not tied to an
+	// inbound event — e.g. backlog-autonomy draft PRs, where no webhook
+	// names the target repo. Lives on this block (not github_app) because
+	// event-less outbound needs exactly what this block provides: a
+	// mintable installation token; the autonomy backlog tick gates its
+	// forge-job stamp on Enabled() + ResolveOutboundRepo(). Empty disables
+	// event-less outbound (inbound-driven flows are unaffected — their
+	// repo comes from the event).
+	Repo string `yaml:"repo"`
+}
+
+// ResolveOutboundRepo returns the owner/repo to target for outbound forge
+// work that has no inbound event to name a repo (backlog-autonomy change
+// requests): the explicit Repo when set, else "" — an unset repo is never
+// guessed, so the caller skips event-less outbound.
+func (g ProjectGitHub) ResolveOutboundRepo() string {
+	return strings.TrimSpace(g.Repo)
 }
 
 // Enabled reports whether the project has complete GitHub App credentials for
@@ -1232,6 +1280,20 @@ type ProjectAutonomy struct {
 	// The cron path doesn't use an LLM to pick a type, so the
 	// operator pins it here.
 	CronTaskType string `yaml:"cronTaskType"`
+
+	// WorkflowID names the workflow the Mode="backlog" tick
+	// dispatches to (autonomous-development-loop design, Task
+	// 6's backlog tick). Empty keeps the existing behaviour of
+	// falling back to the project's DefaultWorkflowID. Set this
+	// when the backlog procedure needs a different workflow than
+	// the project's default (e.g. a lighter-weight review-only
+	// workflow for backlog grooming). An id that doesn't resolve
+	// to a known workflow is a load-time operator typo: it logs
+	// loudly and surfaces as a registry validation warning, but
+	// does NOT strip the project — the tick simply falls back to
+	// DefaultWorkflowID at runtime rather than losing the whole
+	// project over one bad reference.
+	WorkflowID string `yaml:"workflow_id" json:"workflowId,omitempty"`
 }
 
 // AutonomyMode* constants enumerate the legal values of

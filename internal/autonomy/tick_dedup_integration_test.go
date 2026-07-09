@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 )
@@ -145,7 +146,8 @@ func TestTick_BacklogMode_SecondRapidTickSuppressedByActiveGate(t *testing.T) {
 	repo := &mockTaskRepo{}
 	evalRepo := &captureEvalRepo{}
 	m := New(nil, &registry.Registry{}, repo, nil,
-		WithWorkspacePath(ws), WithEvaluationRepository(evalRepo))
+		WithWorkspacePath(ws), WithEvaluationRepository(evalRepo),
+		WithBacklogStore(backlogfile.NewStore()))
 
 	p := &registry.Project{
 		ID: "backlog-proj",
@@ -162,7 +164,8 @@ func TestTick_BacklogMode_SecondRapidTickSuppressedByActiveGate(t *testing.T) {
 		"first backlog tick must create a task without touching the nil LLM")
 	tasks := repo.createdTasks()
 	require.Len(t, tasks, 1, "first backlog tick creates exactly one task")
-	assert.Equal(t, "Ship the first thing", extractPrompt(tasks[0].Payload))
+	assert.Contains(t, extractPrompt(tasks[0].Payload), "Ship the first thing",
+		"dispatched prompt wraps the raw item in the framing template")
 	assert.Equal(t, persistence.TaskStatusQueued, tasks[0].Status)
 
 	// The created task is still QUEUED (active). A rapid second tick

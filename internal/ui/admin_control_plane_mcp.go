@@ -199,13 +199,9 @@ func (s *Server) mcpAddEdit(current []byte, name string, r *http.Request) ([]byt
 	if command != "" {
 		fields = append(fields, config.YAMLListField{Key: "command", Value: command})
 	}
-	// Replace semantics: remove an existing entry of the same name first (no-op
-	// if absent), then append the fresh item.
-	out, _, err := config.RemoveYAMLListItemByField(current, "mcp.servers", "name", name)
-	if err != nil {
-		return nil, "", err
-	}
-	out, err = config.AppendYAMLListItem(out, "mcp.servers", fields)
+	// Add-or-replace via the shared upsert primitive (an existing entry of
+	// the same name is replaced; otherwise the item is appended).
+	out, err := config.UpsertYAMLListItemByField(current, "mcp.servers", "name", fields)
 	if err != nil {
 		return nil, "", err
 	}

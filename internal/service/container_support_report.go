@@ -15,7 +15,7 @@ import (
 // Builds the optional collector adapters the support-report endpoint
 // embeds (doctor diagnosis, /healthz-style snapshot, metrics text) and
 // hands them — plus the judge-verdict + post-mortem repos — to the API
-// server via api.WithSupportReportCollectors. Every adapter is nil-safe:
+// server via SetSupportReportCollectors (post-construction). Every adapter is nil-safe:
 // a deployment missing the DB, the metrics registry, or the doctor
 // handler simply omits that bundle section (best-effort, §7).
 

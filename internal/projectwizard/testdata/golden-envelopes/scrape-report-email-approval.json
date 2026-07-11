@@ -1,0 +1,48 @@
+{
+  "message": "I'll scrape the source, write a report, and show you the draft email for approval before anything is sent.",
+  "tier": 3,
+  "ready_to_commit": false,
+  "bundle": {
+    "project": {
+      "projectId": "competitor-watch",
+      "displayName": "Competitor Watch",
+      "swarmId": "competitor-watch-swarm",
+      "defaultWorkflowId": "scrape-and-report",
+      "autonomy": {"enabled": false},
+      "budget": {"daily_soft_usd": 1.0, "daily_hard_usd": 3.0, "monthly_soft_usd": 15.0, "monthly_hard_usd": 40.0}
+    },
+    "swarm": {
+      "swarmId": "competitor-watch-swarm",
+      "displayName": "Competitor Watch",
+      "leadRole": "researcher",
+      "roles": [
+        {"name": "researcher", "archetypeId": "researcher"},
+        {"name": "writer", "archetypeId": "writer"},
+        {"name": "publisher", "archetypeId": "publisher"}
+      ]
+    },
+    "workflows": [
+      {
+        "workflowId": "scrape-and-report",
+        "description": "Scrape a source, write a report, email it after approval.",
+        "entrypoint": "scrape",
+        "steps": [
+          {"id": "scrape", "type": "agent", "role": "researcher", "next": "report"},
+          {"id": "report", "type": "agent", "role": "writer", "next": "approve-email"},
+          {"id": "approve-email", "type": "approval", "next": "send"},
+          {"id": "send", "type": "agent", "role": "publisher", "terminal": true}
+        ]
+      }
+    ],
+    "plan": {
+      "steps": [
+        "The researcher scrapes the configured source.",
+        "The writer produces a report from what was scraped.",
+        "You approve the draft email before it goes out.",
+        "The publisher sends the approved email."
+      ],
+      "cost_band": "~$0.45 per run (rough estimate)",
+      "approvals": ["Draft email is shown for your approval before sending."]
+    }
+  }
+}

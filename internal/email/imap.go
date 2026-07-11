@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/mail"
 	"net/textproto"
 	"strings"
@@ -70,6 +71,17 @@ type IMAPDialConfig struct {
 	// defaults to "INBOX" at the channel layer; this struct just
 	// passes the operator-supplied value through.
 	Mailbox string
+
+	// Dialer overrides the *net.Dialer emersionIMAPClient.Connect uses to
+	// establish the TCP+TLS connection. Nil (every production email-channel
+	// caller today) preserves prior behavior — go-imap's DialTLS builds its
+	// own default dialer. Populated by the integrations probe layer
+	// (internal/integrations) so a candidate IMAP host a user pastes in is
+	// dialled through the SSRF-guarded DialGuard rather than an unguarded
+	// default dialer — go-imap's imapclient.Options.Dialer is the only public
+	// seam for that; there is no DialFunc/net.Conn injection point on
+	// DialTLS itself.
+	Dialer *net.Dialer
 }
 
 // RawMessage is the IMAPClient's per-message return value. The

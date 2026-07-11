@@ -632,3 +632,7 @@ func TestBudgetStamp_agentVsNonAgent(t *testing.T) {
 		assert.Nil(t, row.ToolCallsUsed, "ToolCallsUsed must be nil (NULL) on non-agent step")
 	})
 }
+
+func (s *stubStepOutcomeRepo) StepLatencyP95ByStep(context.Context, time.Time) ([]persistence.StepLatencyStat, error) {
+	return nil, nil
+}

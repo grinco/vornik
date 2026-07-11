@@ -75,19 +75,28 @@
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/health/leases">Lease audit <span class="text-[10px] text-gray-500">— leader-election state</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/health/watchdog">Watchdog <span class="text-[10px] text-gray-500">— stuck-execution scanner</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/health/mcp">MCP health <span class="text-[10px] text-gray-500">— broker MCP connectivity</span></a></li>
-                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/integrations/mcp">MCP integrations <span class="text-[10px] text-gray-500">— per-project MCP servers</span></a></li>
+                        {{/* MCP integrations intentionally omitted — the
+                             read-only daemon mcp.servers listing is fully
+                             superseded by the control-plane hub's MCP tab
+                             (list + reachability + ledger-gated add/remove);
+                             /ui/admin/integrations/mcp 302s there
+                             (2026-07-11 nav dedupe). */}}
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/integrations/email">Email channels <span class="text-[10px] text-gray-500">— per-project IMAP/SMTP</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/integrations/dispatcher-tools">Dispatcher tools <span class="text-[10px] text-gray-500">— per-key tool allowlist</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/cpc">Cross-project calls <span class="text-[10px] text-gray-500">— inter-project ledger</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/blackbox">Black Box <span class="text-[10px] text-gray-500">— per-task trace + workflow-healing triggers</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/blackbox/overrides">Trigger overrides <span class="text-[10px] text-gray-500">— per-workflow detector thresholds + mute</span></a></li>
-                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/blackbox/candidates">Healing candidates <span class="text-[10px] text-gray-500">— candidate diff + trial scorecard + promote/reject</span></a></li>
+                        {{/* Healing candidates + Workflow proposals
+                             intentionally omitted — both live in the
+                             control-plane hub's unified proposal inbox,
+                             which has its own first-class entry in the
+                             Admin nav; their old list routes 302 there
+                             (2026-07-11 nav dedupe). */}}
                         {{/* API keys intentionally omitted here — it's a
                              first-class item in the Admin nav submenu
                              ("Keys & access"), so listing it again in this
                              grid was a duplicate entry point (2026-07-08 nav
                              dedupe). Canonical home: the nav submenu. */}}
-                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/workflow-proposals">Workflow proposals <span class="text-[10px] text-gray-500">— memetic-architect drafts</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/instincts">Instincts <span class="text-[10px] text-gray-500">— learned-pattern browser</span></a></li>
                     </ul>
                 </div>

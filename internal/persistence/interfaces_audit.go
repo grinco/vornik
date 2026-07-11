@@ -61,6 +61,23 @@ type AdminAuditRepository interface {
 	List(ctx context.Context, filter AdminAuditFilter) ([]*AdminAuditEntry, error)
 }
 
+// SecretRedactionAuditRepository persists redaction events so the
+// secret-leak Phase 3 operator surface (task-detail badge + CLI history)
+// has a durable data source. Phases 1+2 only logged redactions; this
+// records them. Writes are best-effort at the call sites — a Record
+// failure must never fail the step whose output was already redacted.
+type SecretRedactionAuditRepository interface {
+	// Record inserts a batch of redaction events (one per finding type
+	// for a single scan). Empty input is a no-op. IDs and CreatedAt
+	// default when left zero.
+	Record(ctx context.Context, events []SecretRedactionEvent) error
+
+	// CountByTask returns the per-finding-type redaction counts for a
+	// task plus the total, powering the "🔒 N secrets redacted" badge.
+	// A task with no redactions returns an empty map and total 0.
+	CountByTask(ctx context.Context, taskID string) (byType map[string]int, total int, err error)
+}
+
 // ChatAuditRepository persists per-turn dispatcher activity for
 // the `/ui/admin/chat-audit` operator surface. One row per inbound
 // user message processed through the LLM tool loop — system prompt
@@ -86,6 +103,17 @@ type ChatAuditRepository interface {
 	// session across daemon restarts. Populates at least ID, ChatID, UserID,
 	// ProjectID; other fields are best-effort.
 	GetByID(ctx context.Context, id string) (*ChatAuditEntry, error)
+
+	// GetChatAuditsByTurnIDs is the batch sibling of GetByID: it resolves
+	// many chat-audit rows by PK in one round-trip, keyed by ID. turnIDs
+	// absent from chat_audit_log are simply missing from the returned
+	// map (not zero-valued), mirroring TaskRepository.CountChildrenForParents'
+	// map-absent convention. Empty turnIDs returns an empty map without
+	// querying. Added for the Outcome Inbox request card's channel-origin
+	// badge (https://docs.vornik.io §5.5, review
+	// finding 3): resolving N cards' Task.ChatTurnIDs with N GetByID calls
+	// would be an N+1 on every inbox render.
+	GetChatAuditsByTurnIDs(ctx context.Context, turnIDs []string) (map[string]ChatAuditEntry, error)
 
 	// SavePrompt stores a system prompt body keyed by its sha256 hex
 	// digest. Idempotent: a second call with the same hash is a

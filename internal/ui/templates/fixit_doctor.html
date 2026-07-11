@@ -1,0 +1,138 @@
+{{define "fixit_doctor.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-3xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div>
+                <h1 class="text-lg font-semibold text-ink-50">Fix-It Doctor</h1>
+                <p class="text-sm text-ink-400 mt-1">
+                    Repairing <span class="font-mono text-ink-200">{{.Kind}}</span>
+                    / <span class="font-mono text-ink-200">{{.RefID}}</span>
+                </p>
+            </div>
+
+            {{if not .Configured}}
+            <div class="rounded-md border border-amber-700/40 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
+                Fix-It Doctor is not configured on this deployment.
+            </div>
+            {{else}}
+
+            <div id="fixit-transcript">
+                {{template "fixItTranscript" .}}
+            </div>
+
+            <form hx-post="/ui/fixit/{{.Kind}}/{{.RefID}}/message"
+                  hx-target="#fixit-transcript"
+                  hx-swap="innerHTML"
+                  class="space-y-2">
+                <input type="hidden" name="session_id" value="{{.SessionID}}">
+                <input type="hidden" name="project" value="{{.ProjectID}}">
+                <textarea name="message" rows="3" required
+                          placeholder="Describe what's wrong, or ask a follow-up question…"
+                          class="w-full rounded-md border border-ink-700 bg-ink-900 px-3 py-2 text-sm text-ink-100 placeholder:text-ink-500"></textarea>
+                <div class="flex justify-end">
+                    <button type="submit" class="btn btn-primary btn-sm">Send</button>
+                </div>
+            </form>
+
+            {{end}}
+        </div>
+    </main>
+</body>
+</html>
+{{end}}
+
+{{/* fixItTranscript — the HTMX swap target: the full turn-by-turn
+     transcript (user + assistant messages, proposed-action cards) plus
+     any status-poll / notice banner. Expects a FixItPanelData. Rendered
+     both inline on the full page (GET) and as the standalone fragment
+     the POST /message handler returns. */}}
+{{define "fixItTranscript"}}
+{{if .Notice}}
+<div class="rounded-md border border-amber-700/40 bg-amber-950/30 px-4 py-2 text-sm text-amber-200 mb-3">
+    {{.Notice}}
+</div>
+{{end}}
+
+{{if .Turns}}
+<div class="space-y-3 mb-4">
+    {{range .Turns}}
+    <div class="rounded-md border border-ink-800 px-4 py-3 {{if eq .Role "user"}}bg-ink-900{{else}}bg-ink-850{{end}}">
+        <div class="text-[10px] uppercase tracking-wider text-ink-500 mb-1">
+            {{if eq .Role "user"}}You{{else}}Fix-It Doctor{{end}}
+        </div>
+        <div class="text-sm text-ink-100 whitespace-pre-wrap">{{.Content}}</div>
+
+        {{if .Resolved}}
+        <div class="mt-2 text-xs text-emerald-300">The assistant believes this is now resolved.</div>
+        {{end}}
+
+        {{if .Actions}}
+        <div class="mt-3 space-y-2">
+            {{range .Actions}}
+            <div class="rounded border border-ink-700 px-3 py-2 text-xs {{if and (not .Executable) (not .Applyable)}}opacity-70{{end}}">
+                <div class="flex items-center justify-between gap-2">
+                    <span class="font-medium text-ink-100">{{.Label}}</span>
+                    <span class="pill pill-nodot pill-neutral">{{.Kind}}</span>
+                </div>
+                {{if .Executable}}
+                <a href="{{.LinkURL}}" class="mt-1 inline-block text-brand-300 hover:underline">Open →</a>
+                {{else if .Applyable}}
+                    {{if .NeedsSecretValue}}
+                    <form hx-post="/ui/fixit/{{$.Kind}}/{{$.RefID}}/actions/{{.ActionIndex}}/apply"
+                          hx-target="#fixit-transcript" hx-swap="innerHTML"
+                          class="mt-2 flex gap-2">
+                        <input type="hidden" name="session_id" value="{{$.SessionID}}">
+                        <input type="hidden" name="project" value="{{$.ProjectID}}">
+                        <input type="password" name="secret_value" required
+                               placeholder="Secret value"
+                               class="flex-1 rounded border border-ink-700 bg-ink-900 px-2 py-1 text-xs text-ink-100 placeholder:text-ink-500">
+                        <button type="submit" class="btn btn-primary btn-xs">Set secret</button>
+                    </form>
+                    {{else}}
+                    <form hx-post="/ui/fixit/{{$.Kind}}/{{$.RefID}}/actions/{{.ActionIndex}}/apply"
+                          hx-target="#fixit-transcript" hx-swap="innerHTML"
+                          class="mt-2">
+                        <input type="hidden" name="session_id" value="{{$.SessionID}}">
+                        <input type="hidden" name="project" value="{{$.ProjectID}}">
+                        <button type="submit" class="btn btn-primary btn-xs">Apply</button>
+                    </form>
+                    {{end}}
+                {{else}}
+                <div class="mt-1 text-ink-500">No longer applicable — this proposal has been superseded.</div>
+                {{end}}
+            </div>
+            {{end}}
+        </div>
+        {{end}}
+    </div>
+    {{end}}
+</div>
+{{end}}
+
+{{if .RollbackID}}
+<div class="rounded-md border border-ink-700 bg-ink-900 px-4 py-2 text-xs text-ink-300 mb-3">
+    <form hx-post="/ui/fixit/{{.Kind}}/{{.RefID}}/actions/rollback"
+          hx-target="#fixit-transcript" hx-swap="innerHTML"
+          class="flex items-center justify-between gap-3">
+        <input type="hidden" name="session_id" value="{{.SessionID}}">
+        <input type="hidden" name="project" value="{{.ProjectID}}">
+        <input type="hidden" name="proposal_id" value="{{.RollbackID}}">
+        <span>A config change is applied. You can roll it back.</span>
+        <button type="submit" class="btn btn-secondary btn-xs">Rollback</button>
+    </form>
+</div>
+{{end}}
+
+{{if .StatusPoll}}
+<div class="rounded-md border {{if .StatusPoll.Healthy}}border-emerald-700/40 bg-emerald-950/30 text-emerald-200{{else}}border-ink-700 bg-ink-900 text-ink-200{{end}} px-4 py-2 text-sm mb-3">
+    <div class="font-medium">Current status</div>
+    <div>{{.StatusPoll.Summary}}</div>
+    <div class="text-xs text-ink-400 mt-1">This session stays open — close it yourself once you're satisfied.</div>
+</div>
+{{end}}
+{{end}}

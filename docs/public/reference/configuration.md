@@ -231,6 +231,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `chat.api_key` | string | API key for the endpoint. Prefer an environment variable. |
 | `chat.model` | string | Default model identifier when a request does not pin one. |
 | `chat.wizard_model` | string | Model for the project-setup wizard. |
+| `chat.fixit_model` | string | Model for the Fix-It Doctor repair chat. |
 | `chat.timeout` | string | Bound on a single LLM round-trip. |
 | `chat.dispatch_timeout` | string | Bound on one complete interactive (multi-call) turn. |
 | `chat.max_history` | int | Max conversation messages kept. |
@@ -358,4 +359,31 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `node.relay_ingress.server_cert` | string | PEM server cert presented to relaying webhook nodes. |
 | `node.relay_ingress.server_key` | string | PEM server key for the relay ingress. |
 | `node.relay_ingress.client_ca` | string | PEM CA bundle; only client certs it signed are accepted. |
+
+## integrations
+
+| Key | Type | Description |
+|---|---|---|
+| `integrations.allowed_hosts` | list | Hostnames allowed to bypass the Integrations Hub's private-range SSRF guard for probes/saves. Empty = block all private/loopback/link-local destinations (secure default). |
+
+## narrator
+
+| Key | Type | Description |
+|---|---|---|
+| `narrator.enabled` | bool | Activate the narrator worker. |
+| `narrator.model` | string | Model used for narration LLM calls (cheapest tier). |
+| `narrator.debounce` | int | Seconds a step-start line waits before emitting, to collapse into a fast completion. |
+| `narrator.long_tool_threshold` | int | Seconds before a still-running tool call gets a heartbeat line. |
+| `narrator.min_line_interval` | int | Minimum seconds between narration lines for the same execution. |
+| `narrator.max_lines` | int | Per-execution narration line cap. |
+| `narrator.max_cost_usd` | float | Per-execution narrator LLM spend cap in USD; switches to template-only on breach. |
+| `narrator.chat_milestone_kinds` | list | Narration trigger kinds eligible for the chat push (default: step_completed, completion). |
+
+## composer
+
+| Key | Type | Description |
+|---|---|---|
+| `composer.enabled` | bool | Activate the NL automation composer (wizard tier-3). |
+| `composer.max_tier` | int | Highest composer tier allowed (2 disables free-form synthesis; 3 = full). |
+| `composer.max_tier3_turns` | int | Per-session cap on expensive tier-3 composer turns. |
 

@@ -1,0 +1,33 @@
+{{define "integrations_catalog.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-surface-900 text-ink-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-4xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div>
+                <h1 class="text-xl font-semibold text-ink-100">Integrations</h1>
+                <p class="text-ink-500 text-xs mt-0.5">Connect the channels and tools Vornik uses — each one is tested live before it's saved.</p>
+            </div>
+
+            {{if not .Tiles}}
+            <div class="glass rounded-xl border border-surface-600 px-5 py-10 text-center text-ink-500 text-sm">
+                {{if .IsAdmin}}No integrations are registered on this deployment.
+                {{else}}No integrations are available for your project yet.{{end}}
+            </div>
+            {{else}}
+            <div class="space-y-3">
+                {{range .Tiles}}
+                {{template "integrations_tile.html" .}}
+                {{end}}
+            </div>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

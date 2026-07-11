@@ -159,6 +159,128 @@ func RemoveYAMLListItemByField(content []byte, dottedKey, field, value string) (
 	return content, false, nil
 }
 
+// UpsertYAMLListItemByField is the list-shaped upsert counterpart to
+// SetYAMLKey: it replaces the first item in the sequence at dottedKey whose
+// keyField scalar equals fields' own keyField entry, or appends a new item
+// if no item matches. The one reusable add-or-replace primitive for
+// list-shaped config edits — the control-plane hub's MCP-add path
+// (internal/ui/admin_control_plane_mcp.go's mcpAddEdit) builds its
+// ledger-proposal edit through it, so re-adding an existing server name
+// replaces the entry instead of duplicating it.
+//
+// If fields has no entry for keyField, or that entry isn't a string, this
+// falls back to a plain append (there is nothing to match against).
+func UpsertYAMLListItemByField(content []byte, dottedKey, keyField string, fields []YAMLListField) ([]byte, error) {
+	var keyValue string
+	for _, f := range fields {
+		if f.Key != keyField {
+			continue
+		}
+		if s, ok := f.Value.(string); ok {
+			keyValue = s
+		}
+		break
+	}
+	if keyValue != "" {
+		out, _, err := RemoveYAMLListItemByField(content, dottedKey, keyField, keyValue)
+		if err != nil {
+			return nil, err
+		}
+		content = out
+	}
+	return AppendYAMLListItem(content, dottedKey, fields)
+}
+
+// SetYAMLListItemField updates ONE field on ONE list item — the first item in
+// the sequence at dottedKey whose matchField scalar equals matchValue —
+// preserving the item's other fields, comments, and the list order. The field
+// is appended to the item when absent (same posture as SetYAMLKey's
+// missing-leaf append). Unlike UpsertYAMLListItemByField (which replaces the
+// whole item, dropping fields the caller didn't restate), this is the
+// single-field surgical edit the control-plane actionizer needs
+// (steps[].timeout, roles[].model, mcp.servers[].timeout_seconds — LLD
+// 2026-07-11-control-plane-actionable-proposals §4.2).
+//
+// Errors when the sequence is absent (or a scalar), when no item matches, or
+// on an unsupported value type — the actionizer treats every error as
+// "degrade to informational", so absence must be loud, not a silent append.
+func SetYAMLListItemField(content []byte, dottedKey, matchField, matchValue, field string, val any) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return nil, fmt.Errorf("yamledit: unmarshal: %w", err)
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil, fmt.Errorf("yamledit: unexpected document structure")
+	}
+	seq := findSequenceNode(doc.Content[0], strings.Split(dottedKey, "."))
+	if seq == nil {
+		return nil, fmt.Errorf("yamledit: %q is not an existing sequence", dottedKey)
+	}
+	for _, item := range seq.Content {
+		if item.Kind != yaml.MappingNode || !mappingFieldEquals(item, matchField, matchValue) {
+			continue
+		}
+		for j := 0; j+1 < len(item.Content); j += 2 {
+			if item.Content[j].Value == field {
+				if err := setNodeValue(item.Content[j+1], val); err != nil {
+					return nil, err
+				}
+				return encodeYAMLDoc(&doc)
+			}
+		}
+		// Field absent on the matched item — append it.
+		kn := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: field}
+		vn := &yaml.Node{Kind: yaml.ScalarNode}
+		if err := setNodeValue(vn, val); err != nil {
+			return nil, err
+		}
+		item.Content = append(item.Content, kn, vn)
+		return encodeYAMLDoc(&doc)
+	}
+	return nil, fmt.Errorf("yamledit: no item in %q with %s=%q", dottedKey, matchField, matchValue)
+}
+
+// GetYAMLListItemField returns the scalar value of `field` on the first item
+// in the sequence at dottedKey whose matchField equals matchValue. found=false
+// when the sequence, the item, or the field is absent (or content is
+// unparseable) — the read-side counterpart to SetYAMLListItemField.
+func GetYAMLListItemField(content []byte, dottedKey, matchField, matchValue, field string) (value string, found bool) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return "", false
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return "", false
+	}
+	seq := findSequenceNode(doc.Content[0], strings.Split(dottedKey, "."))
+	if seq == nil {
+		return "", false
+	}
+	for _, item := range seq.Content {
+		if item.Kind != yaml.MappingNode || !mappingFieldEquals(item, matchField, matchValue) {
+			continue
+		}
+		for j := 0; j+1 < len(item.Content); j += 2 {
+			if item.Content[j].Value == field && item.Content[j+1].Kind == yaml.ScalarNode {
+				return item.Content[j+1].Value, true
+			}
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// mappingFieldEquals reports whether a mapping node has a scalar field with
+// the given value.
+func mappingFieldEquals(item *yaml.Node, field, value string) bool {
+	for j := 0; j+1 < len(item.Content); j += 2 {
+		if item.Content[j].Value == field && item.Content[j+1].Value == value {
+			return true
+		}
+	}
+	return false
+}
+
 // ensureSequenceNode walks segments[:len-1] as mappings (creating missing
 // intermediates) then returns the sequence node at the final segment key,
 // creating an empty sequence if the key is absent or holds an empty/null scalar.

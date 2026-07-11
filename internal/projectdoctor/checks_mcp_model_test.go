@@ -32,6 +32,12 @@ func TestCheckMCP(t *testing.T) {
 	if got := d.checkMCP(ctx, &registry.Project{}); got.Status != StatusNeutral || got.Required {
 		t.Fatalf("no servers: got %+v", got)
 	}
+	// FixHref deep-links to the control-plane hub's MCP tab regardless of
+	// outcome — the canonical daemon MCP-catalog management surface since
+	// the Integrations Hub MCP kind's 2026-07-10 removal.
+	if got := d.checkMCP(ctx, &registry.Project{}); got.FixHref != "/ui/admin/control-plane?section=mcp" {
+		t.Fatalf("FixHref = %q, want /ui/admin/control-plane?section=mcp", got.FixHref)
+	}
 	// Configured + reachable => green.
 	d = New(Deps{MCP: fakeSnap{{Name: "slack", Reachable: true}}})
 	if got := d.checkMCP(ctx, projWithMCP("slack")); got.Status != StatusGreen {

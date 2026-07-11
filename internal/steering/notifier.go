@@ -22,6 +22,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"vornik.io/vornik/internal/chatorigin"
 	"vornik.io/vornik/internal/conversation"
 	"vornik.io/vornik/internal/persistence"
 )
@@ -34,16 +35,15 @@ import (
 const dedupWindow = 30 * time.Second
 
 // ChatAuditLookup is the narrow read the notifier needs: resolve a task's
-// ChatTurnID to its originating chat row.
-type ChatAuditLookup interface {
-	GetByID(ctx context.Context, id string) (*persistence.ChatAuditEntry, error)
-}
+// ChatTurnID to its originating chat row. Alias of chatorigin.ChatAuditLookup
+// — see internal/chatorigin's package doc for why this chain is shared with
+// the narrator's chat push.
+type ChatAuditLookup = chatorigin.ChatAuditLookup
 
 // ChannelResolver returns the conversation.Channel registered under a name
-// ("telegram"/"slack"/"email"), or nil when that channel isn't wired.
-type ChannelResolver interface {
-	ResolveChannel(name string) conversation.Channel
-}
+// ("telegram"/"slack"/"email"), or nil when that channel isn't wired. Alias
+// of chatorigin.ChannelResolver.
+type ChannelResolver = chatorigin.ChannelResolver
 
 // CheckpointReader fetches a task's open decision checkpoint so the notifier
 // can turn its options into tap-to-answer buttons. Optional — nil disables
@@ -102,6 +102,13 @@ func (n *Notifier) NotifySteeringRequired(ctx context.Context, task *persistence
 	// chat-originated ancestor's (a chat-scheduled task's children carry only
 	// ParentTaskID, not ChatTurnID). Empty ⇒ not chat-originated anywhere in
 	// the lineage (API / autonomy / A2A) — no DM to notify.
+	//
+	// The dedup check sits BETWEEN turn-id resolution and the audit-row /
+	// channel resolution (chatorigin.ResolveForTurn) so a duplicate-transition
+	// fire never pays for the audit lookup — this is why NotifySteeringRequired
+	// calls the two chatorigin halves separately instead of chatorigin.Resolve
+	// in one shot (that combined helper is what the narrator's chat push uses,
+	// since it has no equivalent dedup step to interleave).
 	turnID := chatOriginTurnID(ctx, task, n.tasks)
 	if turnID == "" {
 		return
@@ -110,35 +117,27 @@ func (n *Notifier) NotifySteeringRequired(ctx context.Context, task *persistence
 		return
 	}
 
-	row, err := n.audit.GetByID(ctx, turnID)
-	if err != nil || row == nil {
-		n.logger.Debug().Err(err).Str("task_id", task.ID).Str("chat_turn_id", turnID).
-			Msg("steering: could not resolve originating chat turn; skipping")
-		return
-	}
-
-	channelName, sessionID := decodeChatID(row.ChatID)
-	if channelName == "" || sessionID == "" {
-		return
-	}
-	ch := n.resolver.ResolveChannel(channelName)
-	if ch == nil {
-		// web-chat / a2a / an un-wired channel — nothing to send to.
-		n.logger.Debug().Str("task_id", task.ID).Str("channel", channelName).
-			Msg("steering: originating channel has no outbound; skipping")
+	// SHARED with internal/narrator's chat push via internal/chatorigin — a
+	// future channel-resolution change (e.g. a Phase-5 channel migration)
+	// updates this one call, not two duplicated chains (companion review
+	// finding 5/8 on the narrated-execution design).
+	res, ok := chatorigin.ResolveForTurn(ctx, turnID, n.audit, n.resolver)
+	if !ok {
+		n.logger.Debug().Str("task_id", task.ID).Str("chat_turn_id", turnID).
+			Msg("steering: could not resolve originating channel; skipping")
 		return
 	}
 
 	msg := conversation.ChannelMessage{
-		SessionID: sessionID,
+		SessionID: res.SessionID,
 		Text:      n.composeText(task, state),
 		Buttons:   n.buildSteeringButtons(ctx, task, state),
 	}
 	// Email's Send needs an addressable recipient + subject (it can't always
 	// recover them from an in-memory session after a restart); supply them
 	// from the durable audit row so email works cross-restart like the others.
-	if channelName == "email" {
-		if to := emailAddrFromUserID(row.UserID); to != "" {
+	if res.ChannelName == "email" && res.AuditRow != nil {
+		if to := chatorigin.EmailAddrFromUserID(res.AuditRow.UserID); to != "" {
 			msg.ChannelSpecific = map[string]string{
 				"to":      to,
 				"subject": "vornik: a task needs your attention",
@@ -146,13 +145,13 @@ func (n *Notifier) NotifySteeringRequired(ctx context.Context, task *persistence
 		}
 	}
 
-	if _, err := ch.Send(ctx, msg); err != nil {
-		n.logger.Warn().Err(err).Str("task_id", task.ID).Str("channel", channelName).
+	if _, err := res.Channel.Send(ctx, msg); err != nil {
+		n.logger.Warn().Err(err).Str("task_id", task.ID).Str("channel", res.ChannelName).
 			Msg("steering: outbound send failed")
 		return
 	}
 	n.markSent(task.ID, state)
-	n.logger.Info().Str("task_id", task.ID).Str("channel", channelName).Str("state", state).
+	n.logger.Info().Str("task_id", task.ID).Str("channel", res.ChannelName).Str("state", state).
 		Msg("steering: notified originating operator")
 }
 
@@ -265,35 +264,23 @@ func (n *Notifier) composeText(task *persistence.Task, state string) string {
 	return b.String()
 }
 
-// decodeChatID reverses dispatcher.resolveChatID's encoding:
-//   - a bare decimal string is a legacy Telegram chat_id → ("telegram", id)
-//   - otherwise the form is "<channel>:<native-session-id>" → split on the
-//     FIRST colon (Slack/email session ids may themselves contain colons).
+// decodeChatID forwards to the shared chatorigin.DecodeChatID (kept as a
+// package-local name so existing callers/tests in this package don't need
+// the chatorigin-qualified name). See that function's doc comment for the
+// encoding rules.
 func decodeChatID(chatID string) (channel, session string) {
-	chatID = strings.TrimSpace(chatID)
-	if chatID == "" {
-		return "", ""
-	}
-	if isAllDigits(chatID) {
-		return "telegram", chatID
-	}
-	if i := strings.IndexByte(chatID, ':'); i > 0 && i < len(chatID)-1 {
-		return chatID[:i], chatID[i+1:]
-	}
-	return "", ""
+	return chatorigin.DecodeChatID(chatID)
 }
 
-// emailAddrFromUserID extracts the operator's address from the audit row's
-// UserID, which the channel receiver formats as "<channel>:<speaker>" — for
-// email the speaker IS the From address.
+// emailAddrFromUserID forwards to the shared chatorigin.EmailAddrFromUserID.
 func emailAddrFromUserID(userID string) string {
-	userID = strings.TrimSpace(userID)
-	if i := strings.IndexByte(userID, ':'); i >= 0 && i < len(userID)-1 {
-		return userID[i+1:]
-	}
-	return userID
+	return chatorigin.EmailAddrFromUserID(userID)
 }
 
+// isAllDigits is retained locally (not exported by chatorigin) purely
+// because steering_edgecases_test.go exercises it directly as a package-
+// internal helper unit; DecodeChatID's own behaviour no longer calls this
+// copy.
 func isAllDigits(s string) bool {
 	if s == "" {
 		return false

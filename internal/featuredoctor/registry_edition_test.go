@@ -25,6 +25,7 @@ func TestFeatureEditionMapping(t *testing.T) {
 		"trading-series": version.EditionEnterprise,
 		"auth":           version.EditionCommunity,
 		"memory-rag":     version.EditionCommunity,
+		"composer":       version.EditionEnterprise,
 	}
 	got := map[string]string{}
 	for _, f := range Registry() {

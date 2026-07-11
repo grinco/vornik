@@ -325,3 +325,47 @@ func (r *ExecutionStepOutcomeRepository) CountByRoleModelOutcome(ctx context.Con
 	}
 	return out, rows.Err()
 }
+
+// StepLatencyP95ByStep returns step-duration p95 (seconds) + count per
+// (project, workflow, step, role, model) over rows recorded at/after since —
+// the control-plane latency signal's slowest-step attribution. Mirrors the
+// Postgres backend; p95 computed in Go (persistence.P95Seconds).
+func (r *ExecutionStepOutcomeRepository) StepLatencyP95ByStep(ctx context.Context, since time.Time) ([]persistence.StepLatencyStat, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT o.project_id, e.workflow_id, o.step_id, o.role, o.model, o.duration_ms
+		FROM execution_step_outcomes o
+		JOIN executions e ON e.id = o.execution_id
+		WHERE o.recorded_at >= ? AND o.duration_ms IS NOT NULL AND o.duration_ms >= 0`, sqliteTime(since.UTC()))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	return scanStepLatencyRows(rows)
+}
+
+// scanStepLatencyRows folds (project, workflow, step, role, model, duration_ms)
+// rows into per-key p95 stats.
+func scanStepLatencyRows(rows *sql.Rows) ([]persistence.StepLatencyStat, error) {
+	type key struct{ project, workflow, step, role, model string }
+	byKey := make(map[key][]float64)
+	for rows.Next() {
+		var k key
+		var durMs int64
+		if err := rows.Scan(&k.project, &k.workflow, &k.step, &k.role, &k.model, &durMs); err != nil {
+			return nil, err
+		}
+		byKey[k] = append(byKey[k], float64(durMs)/1000.0)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]persistence.StepLatencyStat, 0, len(byKey))
+	for k, durs := range byKey {
+		out = append(out, persistence.StepLatencyStat{
+			ProjectID: k.project, WorkflowID: k.workflow, StepID: k.step,
+			Role: k.role, Model: k.model,
+			P95Seconds: persistence.P95Seconds(durs), Count: int64(len(durs)),
+		})
+	}
+	return out, nil
+}

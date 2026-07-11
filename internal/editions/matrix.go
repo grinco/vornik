@@ -47,6 +47,7 @@ func Matrix() []Row {
 		{Capability: "Workflows", Community: true, Enterprise: true},
 		{Capability: "Tool access over MCP", Community: true, Enterprise: true},
 		{Capability: "Control CLI (`vornikctl`) + HTTP API", Community: true, Enterprise: true},
+		{Capability: "Guided Integrations Hub (connect channels from the UI)", Community: true, Enterprise: true},
 		{Capability: "Counterfactual replay / “Black Box”", Enterprise: true},
 		{Capability: "Learning / “Instinct” layer (learned budgets)", Enterprise: true, FeatureID: "instinct"},
 		{Capability: "Clustering / horizontal scale", Enterprise: true, FeatureID: "cluster"},
@@ -55,6 +56,7 @@ func Matrix() []Row {
 		{Capability: "OIDC / SSO", Enterprise: true},
 		{Capability: "Log shipping (Logship)", Enterprise: true},
 		{Capability: "Cross-project orchestration (`call_project`)", Enterprise: true},
+		{Capability: "NL Automation Composer (describe-it project setup)", Enterprise: true, FeatureID: "composer"},
 	}
 }
 

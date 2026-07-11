@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/ui/task_conversation.go
-      sha256: 27c22e31861428f3fa537dc0e08d5136d37f3e17065b9ba21474bcd54da2c8a8
+      sha256: 7ed8c3c80471c7e32aaf6be7db449ebf86f03c3f16effc07a5ca50b20ce28610
     - path: internal/registry/project.go
-      sha256: 2f1926ed8231a43efa3deca6e46840ad48a78fde731064e1a25ccde6e270dea2
+      sha256: c9ba2fea024e0142c03eaefbf4790021c1dcf4bfb2d158158c290a437b47579b
 ---
 # Approvals & human-in-the-loop
 
@@ -94,10 +94,14 @@ Every alert carries a deep link to the task so you can act on it in one tap.
 ## Acting on approvals
 
 Approvals and questions are actioned in the Web UI, where they're collected in
-the **Inbox** ("what needs me") — ranked so the things blocking work come first:
-tasks needing approval, then tasks needing input, then failures. Each item links
-to the task, where the **Approve** / **Reject** buttons (for approval-gated
-tasks) and the **Answer** action (for checkpoints) live.
+a pinned "Needs your attention" queue at the top of the **Inbox** ("what needs
+me") — ranked so the things blocking work come first: tasks needing approval,
+then tasks needing input, then failures. The **Approve** / **Reject** buttons
+(for approval-gated tasks), the checkpoint **Answer** control (option buttons
+for a decision, a text box for an open question), and **Retry** / **Help me
+fix this** (for a recent failure) act right there in the queue — no need to
+open the task first. The same actions are also available on the task's own
+page for a closer look at context before deciding.
 
 > Approving or rejecting a *task* is a Web UI action (or a steering reply from a
 > connected chat channel) — there is no `vornikctl approve` command for tasks.

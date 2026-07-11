@@ -73,6 +73,72 @@
                         <h3 class="text-[11px] font-semibold uppercase tracking-wide text-gray-500 mb-1.5">What will be wired</h3>
                         <ul id="wizard-composition-list" class="space-y-1 list-disc list-inside text-gray-300"></ul>
                     </div>
+
+                    <!-- Composer preview (NL Automation Composer, task 1.2a, design
+                         §5.5) — an INVISIBLE tier escalation on this same page: when a
+                         turn's envelope carries a `bundle` (tier 3 — a from-scratch
+                         composed automation), these Plan/Graph/YAML tabs replace the
+                         legacy single preview above. Hidden until then; an ordinary
+                         tier-1/2 turn never shows this panel. -->
+                    <div id="composer-preview" class="hidden border-t border-dark-700/60">
+                        <div class="flex gap-1 px-5 pt-3" role="tablist" aria-label="Composed automation preview">
+                            <button type="button" id="composer-tab-plan" role="tab" aria-selected="true" onclick="switchComposerTab('plan')" class="px-2.5 py-1 text-xs font-medium rounded-t-lg bg-dark-900/60 text-accent-300 border border-b-0 border-dark-700">Plan</button>
+                            <button type="button" id="composer-tab-graph" role="tab" aria-selected="false" onclick="switchComposerTab('graph')" class="px-2.5 py-1 text-xs font-medium rounded-t-lg text-gray-400 hover:text-gray-200">Graph</button>
+                            <button type="button" id="composer-tab-yaml" role="tab" aria-selected="false" onclick="switchComposerTab('yaml')" class="px-2.5 py-1 text-xs font-medium rounded-t-lg text-gray-400 hover:text-gray-200">YAML</button>
+                        </div>
+                        <div class="px-5 py-3 text-xs">
+                            <!-- Plan (default tab): the ComposedPlan narrative. -->
+                            <div id="composer-panel-plan" role="tabpanel" aria-labelledby="composer-tab-plan">
+                                <ol id="composer-plan-steps" class="list-decimal list-inside space-y-1 text-gray-200"></ol>
+
+                                <!-- ApprovalsBypassed — rendered PROMINENTLY per design
+                                     §5.2/§5.4: default approval steps the operator asked
+                                     to remove, e.g. "will send email without asking". -->
+                                <div id="composer-plan-approvals-bypassed" class="hidden mt-3 px-3 py-2 rounded-lg bg-rose-900/30 border border-rose-700/40 text-rose-600 dark:text-rose-200">
+                                    <div class="font-semibold mb-1">⚠ Will proceed WITHOUT asking:</div>
+                                    <ul id="composer-plan-approvals-bypassed-list" class="list-disc list-inside space-y-0.5"></ul>
+                                </div>
+
+                                <div id="composer-plan-approvals-wrap" class="hidden mt-3">
+                                    <div class="text-[11px] uppercase tracking-wide text-gray-500 mb-1">Human in the loop</div>
+                                    <ul id="composer-plan-approvals" class="list-disc list-inside space-y-0.5 text-gray-300"></ul>
+                                </div>
+
+                                <!-- CostBand — always labelled an ESTIMATE (design §5.2). -->
+                                <div class="mt-3 text-gray-400">
+                                    <span class="text-[11px] uppercase tracking-wide text-gray-500">Cost</span>
+                                    <span id="composer-plan-costband" class="ml-1 text-gray-200"></span>
+                                    <span class="text-gray-500"> — estimate only; actual spend depends on run length and model.</span>
+                                </div>
+
+                                <!-- Schedule-confirmation chip (design §5.4): shown iff
+                                     the plan carries a Schedule (autonomy enabled).
+                                     Confirming records schedule_confirmed_at/cron on the
+                                     session via POST .../confirm-schedule; re-confirm if
+                                     a later turn changes the cadence. -->
+                                <div id="composer-schedule-chip" class="hidden mt-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-dark-900/50 border border-dark-700">
+                                    <span id="composer-schedule-text" class="flex-1 text-gray-200"></span>
+                                    <button type="button" id="composer-schedule-confirm-btn" onclick="confirmComposerSchedule()" class="px-2 py-1 rounded bg-accent-600 hover:bg-accent-500 text-white text-[11px] font-medium disabled:opacity-50">Confirm</button>
+                                </div>
+                            </div>
+
+                            <!-- Graph: one control-flow SVG per composed workflow,
+                                 fetched from the server (RegisterTransient/layout/SVG
+                                 pipeline; DeregisterTransient after render — no
+                                 transient leak). -->
+                            <div id="composer-panel-graph" role="tabpanel" aria-labelledby="composer-tab-graph" class="hidden">
+                                <div id="composer-graph-container" class="space-y-4 text-gray-500"></div>
+                            </div>
+
+                            <!-- YAML: raw rendered project/swarm/workflow documents,
+                                 READ-ONLY (a <pre> has no editable affordance). Editing
+                                 lands with the journaled commit path (task 1.2b). -->
+                            <div id="composer-panel-yaml" role="tabpanel" aria-labelledby="composer-tab-yaml" class="hidden">
+                                <pre id="composer-yaml-content" class="whitespace-pre-wrap break-words text-[11px] text-gray-200"></pre>
+                                <p class="mt-2 text-[11px] text-gray-500">Read-only preview. <span class="italic">Open in editor after commit</span> — available once the journaled commit path ships (task 1.2b).</p>
+                            </div>
+                        </div>
+                    </div>
                     <div class="px-5 py-3 border-t border-dark-700/60 flex items-center justify-end gap-2">
                         <button id="wizard-cancel" type="button" onclick="submitWizardCancel()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-300 transition-colors" title="Cancel this session and return to projects">
                             Cancel
@@ -96,6 +162,18 @@
         // draft and "Cancel" had no session to cancel.
         let sessionID = "{{ .ResumeSessionID }}";
         let lastProposal = null;
+        // Set true whenever the latest turn's envelope carries a `bundle`
+        // (tier 3) — the commit button's CLICK handler branches on this
+        // (see submitWizardCommit): committing a composed bundle is a
+        // documented stub until task 1.2b's journaled commit path ships,
+        // even though the button's enabled/disabled STATE still reflects
+        // ready_to_commit exactly like v1/v2 (requirement #3).
+        let lastBundlePending = false;
+        // The autonomy poll-interval cron string last successfully
+        // confirmed via POST .../confirm-schedule, so the chip doesn't
+        // re-offer "Confirm" for a schedule the operator already approved
+        // in this session — reset whenever a turn's schedule changes.
+        let composerConfirmedCron = null;
 
         const els = {
             transcript: document.getElementById('wizard-transcript'),
@@ -109,6 +187,7 @@
             compositionList: document.getElementById('wizard-composition-list'),
             commit: document.getElementById('wizard-commit'),
             cancel: document.getElementById('wizard-cancel'),
+            composerPreview: document.getElementById('composer-preview'),
         };
 
         function appendBubble(role, text) {
@@ -333,10 +412,221 @@
             els.composition.classList.remove('hidden');
         }
 
+        // hideComposerPreview restores the legacy single-preview pane's
+        // default state for a tier-1/2 (non-bundle) turn — called on EVERY
+        // turn that has no env.bundle so a bundle shown on an earlier turn
+        // in the same session doesn't linger once the conversation moves
+        // back to a template-anchored build.
+        function hideComposerPreview() {
+            if (els.composerPreview) els.composerPreview.classList.add('hidden');
+            lastBundlePending = false;
+        }
+
+        // switchComposerTab activates one of the Plan/Graph/YAML tabs;
+        // Plan is the default (design §5.5).
+        window.switchComposerTab = function (tab) {
+            for (const t of ['plan', 'graph', 'yaml']) {
+                const btn = document.getElementById('composer-tab-' + t);
+                const panel = document.getElementById('composer-panel-' + t);
+                const active = t === tab;
+                if (btn) {
+                    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+                    btn.classList.toggle('bg-dark-900/60', active);
+                    btn.classList.toggle('text-accent-300', active);
+                    btn.classList.toggle('text-gray-400', !active);
+                }
+                if (panel) panel.classList.toggle('hidden', !active);
+            }
+        };
+
+        // renderComposerPlan renders the ComposedPlan narrative: numbered
+        // steps, ApprovalsBypassed (prominent), Approvals, and CostBand
+        // (always labelled an estimate in the surrounding markup).
+        function renderComposerPlan(plan) {
+            plan = plan || {};
+            const stepsEl = document.getElementById('composer-plan-steps');
+            stepsEl.replaceChildren();
+            for (const step of (plan.steps || [])) {
+                const li = document.createElement('li');
+                li.textContent = step;
+                stepsEl.appendChild(li);
+            }
+
+            const bypassedWrap = document.getElementById('composer-plan-approvals-bypassed');
+            const bypassedList = document.getElementById('composer-plan-approvals-bypassed-list');
+            bypassedList.replaceChildren();
+            const bypassed = plan.approvals_bypassed || [];
+            if (bypassed.length) {
+                for (const item of bypassed) {
+                    const li = document.createElement('li');
+                    li.textContent = item;
+                    bypassedList.appendChild(li);
+                }
+                bypassedWrap.classList.remove('hidden');
+            } else {
+                bypassedWrap.classList.add('hidden');
+            }
+
+            const approvalsWrap = document.getElementById('composer-plan-approvals-wrap');
+            const approvalsList = document.getElementById('composer-plan-approvals');
+            approvalsList.replaceChildren();
+            const approvals = plan.approvals || [];
+            if (approvals.length) {
+                for (const item of approvals) {
+                    const li = document.createElement('li');
+                    li.textContent = item;
+                    approvalsList.appendChild(li);
+                }
+                approvalsWrap.classList.remove('hidden');
+            } else {
+                approvalsWrap.classList.add('hidden');
+            }
+
+            document.getElementById('composer-plan-costband').textContent = plan.cost_band || '(not estimated)';
+        }
+
+        // renderComposerScheduleChip shows the schedule-confirmation chip
+        // iff bundle.plan.schedule is set (autonomy enabled); the chip
+        // reads the exact cron off bundle.project.autonomy.pollInterval
+        // (the bundle mirrors registry.Project's yaml keys 1:1) so the
+        // confirm POST records the precise value the server compares via
+        // schedulesEquivalent. Already-confirmed-this-session schedules
+        // show a disabled "Confirmed" state instead of re-offering Confirm.
+        function renderComposerScheduleChip(bundle) {
+            const chip = document.getElementById('composer-schedule-chip');
+            const text = document.getElementById('composer-schedule-text');
+            const btn = document.getElementById('composer-schedule-confirm-btn');
+            const schedule = bundle.plan && bundle.plan.schedule;
+            if (!schedule) {
+                chip.classList.add('hidden');
+                return;
+            }
+            text.textContent = schedule;
+            const cron = (bundle.project && bundle.project.autonomy && bundle.project.autonomy.pollInterval) || '';
+            const alreadyConfirmed = !!cron && cron === composerConfirmedCron;
+            btn.textContent = alreadyConfirmed ? 'Confirmed ✓' : 'Confirm';
+            btn.disabled = alreadyConfirmed;
+            chip.dataset.cron = cron;
+            chip.classList.remove('hidden');
+        }
+
+        // confirmComposerSchedule POSTs the schedule chip's confirmation
+        // (design §5.4) — recorded on the session as schedule_confirmed_at
+        // / schedule_confirmed_cron; a later turn re-evaluates
+        // ready_to_commit against it. The commit gate ITSELF is enforced
+        // server-side (composer_engine.go's scheduleConfirmed); this just
+        // wires the confirm action + reflects it in the chip.
+        window.confirmComposerSchedule = async function () {
+            if (!sessionID) return;
+            const chip = document.getElementById('composer-schedule-chip');
+            const cron = chip ? chip.dataset.cron : '';
+            if (!cron) return;
+            const btn = document.getElementById('composer-schedule-confirm-btn');
+            btn.disabled = true;
+            try {
+                const resp = await fetch('/api/v1/projects/wizard/' + encodeURIComponent(sessionID) + '/confirm-schedule', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ cron: cron }),
+                });
+                if (resp.ok) {
+                    composerConfirmedCron = cron;
+                    btn.textContent = 'Confirmed ✓';
+                    return;
+                }
+            } catch (e) { /* fall through to re-enable */ }
+            btn.disabled = false;
+            btn.textContent = 'Confirm';
+        };
+
+        // renderComposerGraphs fetches one rendered SVG per composed
+        // workflow from the server (RegisterTransient/layout/SVG pipeline;
+        // the server deregisters the transient before responding) and
+        // injects the markup. The SVG strings are server-rendered via
+        // html/template (auto-escaped), so innerHTML here is safe.
+        async function renderComposerGraphs(workflows) {
+            const container = document.getElementById('composer-graph-container');
+            container.textContent = 'Loading graph…';
+            try {
+                const resp = await fetch('/ui/projects/new/wizard/graph-preview', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ workflows: workflows || [] }),
+                });
+                if (!resp.ok) {
+                    container.textContent = 'Graph preview unavailable.';
+                    return;
+                }
+                const data = await resp.json();
+                container.replaceChildren();
+                for (const g of (data.graphs || [])) {
+                    const wrap = document.createElement('div');
+                    wrap.innerHTML = g.svg;
+                    container.appendChild(wrap);
+                }
+            } catch (e) {
+                container.textContent = 'Graph preview unavailable.';
+            }
+        }
+
+        // renderComposerYaml renders the raw project/swarm/workflow(s)
+        // documents read-only, reusing the existing renderYaml() emitter
+        // (the same one the legacy proposal preview uses) — the bundle's
+        // maps mirror the on-disk YAML keys 1:1, so this is a faithful
+        // preview even though it isn't the final materialised Markdown.
+        function renderComposerYaml(bundle) {
+            const parts = [];
+            if (bundle.project) parts.push('# project\n' + renderYaml(bundle.project, 0).trimStart());
+            if (bundle.swarm) parts.push('# swarm\n' + renderYaml(bundle.swarm, 0).trimStart());
+            (bundle.workflows || []).forEach(function (wf, i) {
+                parts.push('# workflow ' + (i + 1) + '\n' + renderYaml(wf, 0).trimStart());
+            });
+            document.getElementById('composer-yaml-content').textContent = parts.join('\n');
+        }
+
+        // renderComposerPreview is the tier-3 entry point (design §5.5):
+        // shows the Plan/Graph/YAML tabs, replacing the legacy single
+        // preview pane's content with a pointer to them. ready gates the
+        // commit button exactly like v1/v2 (submitWizardTurn sets
+        // els.commit.disabled from env.ready_to_commit unconditionally);
+        // committing itself posts for real (see submitWizardCommit).
+        function renderComposerPreview(bundle, ready) {
+            lastBundlePending = true;
+            if (els.composition) els.composition.classList.add('hidden'); // v2-only panel
+
+            els.previewStatus.textContent = ready ? 'Ready to create' : 'Draft (custom build)';
+            const note = document.createElement('p');
+            note.className = 'text-gray-500';
+            note.textContent = 'This is a from-scratch composed automation — see the Plan / Graph / YAML tabs below.';
+            els.preview.replaceChildren(note);
+
+            els.composerPreview.classList.remove('hidden');
+            switchComposerTab('plan');
+            renderComposerPlan(bundle.plan);
+            renderComposerScheduleChip(bundle);
+            renderComposerYaml(bundle);
+            renderComposerGraphs(bundle.workflows);
+        }
+
+        // submitWizardCommit posts to the real commit endpoint for EVERY
+        // turn shape — v1 proposal, v2 composition, and (task 1.2b) a
+        // tier-3 composed bundle. The handler routes a bundle session
+        // through the journaled commit path (staging dir + journal +
+        // dependency-ordered rename); a bundle commit can take a little
+        // longer than a template-anchored one (it re-validates the whole
+        // build against the live registry before writing anything), so
+        // lastBundlePending only changes the in-flight status copy below,
+        // never whether the request is sent. On failure the session is
+        // ALWAYS left resumable (the build is never lost) — the error
+        // message is shown and the button re-enabled so the operator can
+        // just retry.
         window.submitWizardCommit = async function () {
             if (!sessionID) return;
             els.error.classList.add('hidden');
             els.commit.disabled = true;
+            const committingText = lastBundlePending ? 'Activating…' : 'Creating…';
+            const originalText = els.commit.textContent;
+            els.commit.textContent = committingText;
             try {
                 const resp = await fetch('/api/v1/projects/wizard/' + encodeURIComponent(sessionID) + '/commit', {
                     method: 'POST',
@@ -359,6 +649,7 @@
                     els.error.textContent = 'Commit failed (' + resp.status + '): ' + detail;
                     els.error.classList.remove('hidden');
                     els.commit.disabled = false;
+                    els.commit.textContent = originalText;
                     return;
                 }
                 const body = await resp.json();
@@ -367,6 +658,7 @@
                 els.error.textContent = 'Network error: ' + e.message;
                 els.error.classList.remove('hidden');
                 els.commit.disabled = false;
+                els.commit.textContent = originalText;
             }
         };
 
@@ -446,8 +738,24 @@
                 const env = body.envelope || {};
                 appendBubble('assistant', env.message || '');
                 renderSuggestions(env.open_questions);
-                renderPreview(env.proposal, env.ready_to_commit);
-                renderComposition(env.composition);
+                if (env.bundle) {
+                    // Tier-3 turn (design §5.1/§5.5) — an INVISIBLE
+                    // escalation on this same page: swap the legacy
+                    // preview for the composer's Plan/Graph/YAML tabs.
+                    renderComposerPreview(env.bundle, env.ready_to_commit);
+                } else {
+                    // Ordinary tier-1/2 turn — unchanged from before the
+                    // composer landed (no regression).
+                    hideComposerPreview();
+                    renderPreview(env.proposal, env.ready_to_commit);
+                    renderComposition(env.composition);
+                }
+                // ready_to_commit gates the commit button exactly as
+                // v1/v2, on EVERY turn shape (task 1.2a requirement #3) —
+                // set unconditionally here rather than relying only on
+                // renderPreview's internal handling, which never runs on
+                // a bundle turn.
+                els.commit.disabled = !env.ready_to_commit;
             } catch (e) {
                 els.error.textContent = 'Network error: ' + e.message;
                 els.error.classList.remove('hidden');

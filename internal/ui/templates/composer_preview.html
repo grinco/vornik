@@ -1,0 +1,42 @@
+{{/* composer_graph_svg.html — read-only control-flow SVG for the NL
+     Automation Composer's Graph tab (task 1.2a, design §5.5). Rendered
+     server-side (ComposerPreviewGraph, internal/ui/composer_preview.go)
+     from a transiently-registered registry.Workflow and returned as an
+     HTML fragment string embedded in the wizard page's converse JSON
+     response — never as a full page. Deliberately simpler than
+     workflow_graph.html's editable graph: no <a> links (the composed
+     workflow isn't committed yet, so /ui/workflows/{id}/... doesn't
+     exist), no topology-editing controls. */}}
+{{define "composer_graph_svg.html"}}
+<div class="composer-graph-svg" data-workflow-id="{{.WorkflowID}}">
+    <div class="text-xs text-gray-500 mb-1.5 font-mono">{{.WorkflowID}}</div>
+    <svg viewBox="0 0 {{.Graph.Width}} {{.Graph.Height}}" width="{{.Graph.Width}}" height="{{.Graph.Height}}" role="img" aria-label="Composed workflow control-flow graph: {{.WorkflowID}}" class="mx-auto">
+        {{range .Graph.Edges}}
+        {{$stroke := "#fbbf24"}}{{if eq .Kind "success"}}{{$stroke = "#34d399"}}{{else if eq .Kind "fail"}}{{$stroke = "#f87171"}}{{end}}
+        {{if .IsBack}}
+        <path d="M {{.X1}} {{.Y1}} Q {{.MidX}} {{sub .Y1 48}} {{.X2}} {{.Y2}}" fill="none"
+              stroke="{{$stroke}}" stroke-width="1.5" opacity="0.7" stroke-dasharray="4 3" />
+        {{else}}
+        <line x1="{{.X1}}" y1="{{.Y1}}" x2="{{.X2}}" y2="{{.Y2}}" stroke="{{$stroke}}" stroke-width="1.5" opacity="0.7" />
+        {{end}}
+        {{if .Label}}<text x="{{.MidX}}" y="{{.MidY}}" fill="#9ca3af" font-size="9" text-anchor="middle">{{.Label}}</text>{{end}}
+        {{end}}
+        {{range .Graph.Nodes}}
+        <g data-node-id="{{.ID}}" data-node-kind="{{.Kind}}">
+            <rect x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}" rx="8"
+                  fill="{{if eq .Kind "terminal"}}{{if .Recovery}}#2a1414{{else}}#06281c{{end}}{{else}}#101826{{end}}"
+                  stroke="{{if .IsEntry}}#60a5fa{{else if .Unreachable}}#a16207{{else}}#334155{{end}}"
+                  stroke-width="{{if .IsEntry}}2{{else}}1{{end}}" />
+            <text x="{{add .X 10}}" y="{{add .Y 22}}" fill="#e5e7eb" font-size="12" font-weight="600">{{.ID}}</text>
+            <text x="{{add .X 10}}" y="{{add .Y 38}}" fill="#94a3b8" font-size="10">{{.Type}}</text>
+            {{if .IsEntry}}<text x="{{add .X 10}}" y="{{add .Y 50}}" fill="#60a5fa" font-size="9">▶ entry</text>{{end}}
+            {{if .Unreachable}}<text x="{{add .X 70}}" y="{{add .Y 50}}" fill="#fbbf24" font-size="9">unreachable</text>{{end}}
+            {{if .NoOutgoing}}<text x="{{add .X 70}}" y="{{add .Y 38}}" fill="#f59e0b" font-size="9">dead-end</text>{{end}}
+        </g>
+        {{end}}
+    </svg>
+    <p class="text-[11px] text-gray-500 mt-1 text-center">
+        Green = on_success · red = on_fail · amber = gate · dashed = loop-back · blue ring = entrypoint. Preview only — not yet committed.
+    </p>
+</div>
+{{end}}

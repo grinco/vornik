@@ -1,0 +1,42 @@
+{{/* integrations_tile.html — one catalog row (design §5.5). Rendered both
+     embedded inside integrations_catalog.html's range loop and standalone
+     as the POST /integrations/{kind}/recheck response (hx-swap outerHTML on
+     this div's own id) — same shape project_setup_check.html uses for its
+     per-check panel. Status is a CHEAP read (config presence + the cached
+     probe store); this template never triggers a probe itself. */}}
+{{define "integrations_tile.html"}}
+<div id="tile-{{.KindID}}{{if .ProjectID}}-{{.ProjectID}}{{end}}" class="glass rounded-xl border border-surface-600 overflow-hidden">
+    <div class="px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+        <div class="min-w-0">
+            <div class="flex items-center gap-2">
+                <a href="{{.FormHref}}" class="text-sm font-semibold text-ink-100 hover:text-brand-400 truncate">{{.DisplayName}}</a>
+                {{if .ProjectBadge}}<span class="pill pill-nodot pill-neutral font-mono">{{if .ProjectID}}{{.ProjectID}}{{else}}no project{{end}}</span>{{end}}
+            </div>
+            <div class="text-[11px] text-ink-500">{{.Category}}</div>
+        </div>
+        <div class="flex items-center gap-2 shrink-0">
+            {{if eq .Status "ok"}}<span class="pill pill-nodot pill-ok">{{template "iconCheck"}}Connected</span>
+            {{else if eq .Status "fail"}}<span class="pill pill-nodot pill-danger">{{template "iconX"}}Invalid</span>
+            {{else if eq .Status "error"}}<span class="pill pill-nodot pill-warn">{{template "iconDot" "bg-amber-400"}}Unreachable</span>
+            {{else if eq .Status "unknown"}}<span class="pill pill-nodot pill-neutral">{{template "iconDot" "bg-gray-400"}}Not checked yet</span>
+            {{else}}<span class="pill pill-nodot pill-neutral">{{template "iconDot" "bg-gray-400"}}Not connected</span>
+            {{end}}
+            {{if .CanRecheck}}
+            <button type="button"
+                    hx-post="{{.RecheckHref}}"
+                    hx-vals='{"project": "{{.ProjectID}}"}'
+                    hx-target="#tile-{{.KindID}}{{if .ProjectID}}-{{.ProjectID}}{{end}}"
+                    hx-swap="outerHTML"
+                    class="text-[11px] text-ink-500 hover:text-ink-300">Re-check</button>
+            {{end}}
+            {{/* task 3.4 (fix-it-doctor-design.md §5.5/§7): hidden entirely
+                 (not shown-then-404) unless a cached probe is red AND the
+                 Fix-It Doctor is wired — see IntegrationTileVM.FixItHref. */}}
+            {{if .FixItHref}}
+            <a href="{{.FixItHref}}" class="text-[11px] text-accent-400 hover:text-accent-300 font-medium">Help me fix this</a>
+            {{end}}
+        </div>
+    </div>
+    {{if .Summary}}<div class="px-4 pb-3 -mt-1 text-xs text-ink-400">{{.Summary}}{{if .CheckedAt}} <span class="text-ink-600">· checked {{.CheckedAt}}</span>{{end}}</div>{{end}}
+</div>
+{{end}}

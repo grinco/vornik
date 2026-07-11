@@ -1,8 +1,8 @@
 ---
 workflowId: "issue-fix"
 displayName: "Issue Fix"
-description: "Top-level workflow for a labeled GitHub issue. A decompose step splits the issue's full scope into self-contained subtasks and emits them as delegatedTasks (SEQUENTIAL) — the engine schedules and runs each in order, merging to the project clone. On resume a reviewer checks the aggregate diff. On rejection it loops to a remediate step that delegates a surgical fix subtask and re-reviews (max 2 rounds via per-step maxVisits); on approval a system step opens a DRAFT PR. Exhausted rounds / any subtask failure → FAILED, no PR. Writes no vornik-internal files."
-version: "3.1.0"
+description: "Top-level workflow for a labeled GitHub issue. A decompose step splits the issue's full scope into self-contained subtasks and emits them as delegatedTasks (SEQUENTIAL) — the engine schedules and runs each in order, merging to the project clone. On resume a tester ACTUALLY RUNS the aggregate test suite (gate testing.passed) before a reviewer checks the aggregate diff. On rejection/red tests it loops to a remediate step that delegates a surgical fix subtask, re-tests and re-reviews (max 2 rounds via per-step maxVisits); on green + approval a system step opens a DRAFT PR. Exhausted rounds / any subtask failure → FAILED, no PR. Writes no vornik-internal files."
+version: "3.2.0"
 resume_after_children: true
 maxStepVisits: 4
 maxIterations: 40
@@ -12,7 +12,7 @@ steps:
   decompose:
     type: "agent"
     role: "lead"
-    on_success: "review"
+    on_success: "test"
     on_fail: "failed"
     timeout: "10m"
     # Deterministically run every delegated subtask under issue-subtask (a clean
@@ -64,6 +64,48 @@ steps:
         - Do NOT implement anything here and do NOT write any files (no .autonomy/,
           CURRENT_TASK.md, BACKLOG.md, or result.json). Your ONLY output is the
           delegatedTasks JSON object described above.
+  test:
+    type: "agent"
+    role: "tester"
+    # NO on_success — an agent step's inline gates are evaluated ONLY when
+    # on_success is empty (workflow.go: `nextStepID := step.OnSuccess`
+    # short-circuits the gate block). Setting it would make the gates dead code
+    # and let a red suite reach review/publish — the exact 2026-07-09 incident
+    # this step guards against (headmatch #36 → red PR #37). The gates decide
+    # routing; on_fail is the hard-error catch-all (tester crashed / emitted no
+    # parseable testing.passed → failed → no PR).
+    on_fail: "failed"
+    timeout: "15m"
+    gates:
+      - condition: "testing.passed == true"
+        target: "review"
+      # Red suite → hand it to the bounded remediation loop, same as a review
+      # rejection. remediate loops back through THIS step, so a fix is always
+      # re-tested before it can be reviewed/published.
+      - condition: "testing.passed == false"
+        target: "remediate"
+    prompt: |
+      Every subtask has run and merged to the project branch. Your ONE job is to
+      RUN THE PROJECT'S TEST SUITE against the aggregate change and report the
+      real result — do NOT judge the diff, do NOT infer pass/fail from the code.
+
+      This is typically a Python project: `python`, `pip` and `pytest` are
+      available. Run the project's actual test command (e.g. `pytest -q`, or the
+      command the repo documents). Capture the summary line.
+
+      Set testing = { passed: <bool>, summary: "<the pytest summary line>" }:
+        - passed=true ONLY if the run is GREEN: zero failures, zero errors, and
+          zero collection/import errors. `xfail`, `xpass`, `skip`, and
+          `deselected` are ACCEPTABLE and do NOT make it red.
+        - passed=false if ANY test FAILS or ERRORS, or the suite fails to collect
+          (ImportError / ModuleNotFoundError / missing symbol the tests import).
+          Tests that reference functions the implementation never added are a
+          RED suite, NOT an intentional "xfail" — the two land together or the
+          suite is red.
+      ALSO set a top-level `message` with the failing test names / import errors
+      and the summary line, so the remediation step can fix exactly those.
+      Do NOT create or modify vornik-internal files (.autonomy/, CURRENT_TASK.md,
+      BACKLOG.md, COVERAGE_REPORT.md).
   review:
     type: "agent"
     role: "reviewer"
@@ -96,10 +138,16 @@ steps:
         `git --no-pager diff origin/HEAD...HEAD`   # all subtask commits vs upstream
       (also `git --no-pager log --oneline origin/HEAD..HEAD`; if git is restricted,
       read the changed files with the file tools).
+      The preceding `test` step already RAN the suite and it was GREEN
+      (testing.passed==true is the only path here); its summary is in
+      `context.previousStepResult`. Do NOT re-litigate pass/fail from the diff.
       Judge ONLY against the issue:
         - SCOPE: every item the issue asked for is delivered (e.g. all 5 functions,
           not 1).
         - Tests cover the change; the diff is relevant and minimal.
+        - A test that references a function the diff never implements is NOT an
+          acceptable "xfail" — the tests and their implementation must land
+          together. REJECT if any required behaviour is tested but unimplemented.
         - REJECT if scope is incomplete, the diff is empty/irrelevant, or it
           contains any vornik-internal file (.autonomy/, CURRENT_TASK.md,
           BACKLOG.md, COVERAGE_REPORT.md).
@@ -116,7 +164,9 @@ steps:
     # Deterministically run the fix under issue-subtask (clean coder-only
     # workflow), same as decompose — never fall back to the project default.
     delegated_workflow: "issue-subtask"
-    on_success: "review"
+    # Re-test after the fix (was: review) — a remediation must pass the test
+    # gate before it can be reviewed/published; it can never skip it.
+    on_success: "test"
     on_fail: "failed"
     timeout: "10m"
     # 2 fix rounds. The 3rd entry (i.e. a 3rd rejection) trips this cap and
@@ -166,16 +216,25 @@ caused a self-routing loop when issue-fix was its own auto-route candidate).
 2. The **delegation engine** runs the serial chain; each subtask merges to the
    project clone before the next. Deterministic — the engine guarantees every
    subtask runs, not a prompt asking the coder to "do all 5".
-3. On resume (a fresh worktree off the now-updated clone), **`review`** inspects
-   the aggregate `origin/HEAD...HEAD` diff. The resume guard stops decompose from
-   re-running / re-spawning.
-4. **approved** → **`publish`** (`forge.open_change_request`) opens a **draft** PR.
-5. **rejected** → **`remediate`** (lead) delegates ONE `issue-subtask` that
-   surgically fixes the reviewer's findings (forwarded via
-   `context.previousStepResult`) on the current branch, then loops back to
-   **`review`**. Bounded to **2 rounds** by per-step `maxVisits` (review 3 /
-   remediate 2); the 3rd rejection trips remediate's cap → `FAILED` with the
-   final review attached. **Any subtask failure** → `FAILED`, no PR.
+3. On resume (a fresh worktree off the now-updated clone), **`test`** (tester)
+   ACTUALLY RUNS the project's test suite on the aggregate change and gates on
+   `testing.passed`. A red suite never reaches review/publish. The resume guard
+   stops decompose from re-running / re-spawning.
+4. **green** → **`review`** inspects the aggregate `origin/HEAD...HEAD` diff for
+   scope/quality (it does not re-run tests — the suite is already green here).
+5. **approved** → **`publish`** (`forge.open_change_request`) opens a **draft** PR.
+6. **red tests OR review rejection** → **`remediate`** (lead) delegates ONE
+   `issue-subtask` that surgically fixes the findings (forwarded via
+   `context.previousStepResult`) on the current branch, then loops back through
+   **`test`** (re-run the suite) → **`review`**. Bounded to **2 rounds** by
+   per-step `maxVisits` (review 3 / remediate 2); the 3rd rejection trips
+   remediate's cap → `FAILED` with the final review attached. **Any subtask
+   failure** → `FAILED`, no PR.
+
+The `test` gate is the regression guard for the 2026-07-09 "red PR" incident
+(headmatch #36 → PR #37): the old path never ran the suite, and the diff-only
+reviewer rationalised 28 hard failures as intentional "xfail" and published. See
+`https://docs.vornik.io`.
 
 See `https://docs.vornik.io` and
 `https://docs.vornik.io`.

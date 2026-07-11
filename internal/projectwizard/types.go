@@ -92,6 +92,63 @@ type Envelope struct {
 	// produced a complete template selection + parameters + addons.
 	// Nil on clarifying-question turns before the build is clear.
 	Composition *Composition `json:"composition,omitempty"`
+
+	// Tier is the composer tier the LLM chose for this turn: 1
+	// (template + params), 2 (+ addons), or 3 (composed bundle). Zero
+	// on legacy turns that predate the composer / omit the field — the
+	// server treats an omitted tier as the historical behaviour (a
+	// Composition-bearing turn is tier 2, otherwise tier 1). The
+	// server has final say and refuses tier-3 output when a template
+	// anchors above threshold (design §5.1); tier arbitration itself
+	// is task 1.1b.
+	Tier int `json:"tier,omitempty"`
+
+	// Bundle is the composer's tier-3 free-form synthesis: a full
+	// project + swarm + workflow(s) + user-facing plan. Nil except on
+	// admissible tier-3 turns. Staged-registry validation of the
+	// bundle is task 1.1b; here it is parsed + shape-checked only.
+	Bundle *ComposedBundle `json:"bundle,omitempty"`
+}
+
+// ComposedBundle is the composer's tier-3 output: on-disk config
+// formats mirrored 1:1 as generic maps (so the composer can iterate
+// the registry schemas without recompiling), plus the user-facing
+// plan. Marshalled to YAML/MD for display and validated via
+// internal/registry before the envelope is returned to the UI (design
+// §5.2). The maps are intentionally loose — the staged registry
+// validation (1.1b) is the authoritative shape check, not this struct.
+type ComposedBundle struct {
+	// Project is the proposed project YAML as a generic map.
+	Project map[string]any `json:"project"`
+	// Swarm is the proposed swarm definition as a generic map.
+	Swarm map[string]any `json:"swarm"`
+	// Workflows are the proposed workflow definitions. 1 <= len <= 2
+	// in v1 (design §5.4 / §11 Q3; the schema pins minItems/maxItems
+	// and the server-side shape check is the enforcement of record).
+	Workflows []map[string]any `json:"workflows"`
+	// Plan is the user-facing contract — what the user approves is
+	// this narrative, not the YAML.
+	Plan ComposedPlan `json:"plan"`
+}
+
+// ComposedPlan is the user-facing plan the operator approves (design
+// §5.2). Fields that gate commit (Schedule, ApprovalsBypassed) are
+// structural rather than prose so the server can enforce the user saw
+// them.
+type ComposedPlan struct {
+	// Steps: numbered plain-language narrative of what will happen.
+	Steps []string `json:"steps"`
+	// Schedule: human-readable cadence + the exact cron/interval the
+	// config will carry. Non-empty iff autonomy is enabled.
+	Schedule string `json:"schedule,omitempty"`
+	// CostBand: rough per-run estimate, always labelled an estimate.
+	CostBand string `json:"cost_band"`
+	// Approvals: where a human is in the loop, step by step.
+	Approvals []string `json:"approvals,omitempty"`
+	// ApprovalsBypassed: default approval steps the user asked to
+	// remove in conversation. Rendered prominently in the preview and
+	// persisted with the session as the audit trail for the removal.
+	ApprovalsBypassed []string `json:"approvals_bypassed,omitempty"`
 }
 
 // ProjectYAML carries the proposed project configuration. It's a

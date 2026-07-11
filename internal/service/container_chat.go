@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -21,6 +22,58 @@ import (
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/version"
 )
+
+// resolveChatHealthConfig turns the operator's chat.router.health block into
+// a chat.HealthConfig + an enabled flag (LLD 2026-07-11-model-health §9).
+// Absent block / nil Enabled → ON with defaults; explicit enabled:false →
+// off. Zero/blank knobs fall back to the design defaults per-field.
+func resolveChatHealthConfig(hc config.ChatHealthConfig) (chat.HealthConfig, bool) {
+	if hc.Enabled != nil && !*hc.Enabled {
+		return chat.HealthConfig{}, false
+	}
+	cfg := chat.DefaultHealthConfig()
+	if d, err := time.ParseDuration(hc.Window); err == nil && d > 0 {
+		cfg.Window = d
+	}
+	if hc.MinSamples > 0 {
+		cfg.MinSamples = hc.MinSamples
+	}
+	if hc.FailureRate > 0 {
+		cfg.FailureRate = hc.FailureRate
+	}
+	if d, err := time.ParseDuration(hc.OpenCooldown); err == nil && d > 0 {
+		cfg.OpenCooldown = d
+	}
+	return cfg, true
+}
+
+// modelHealthStateChangeHook returns the edge-triggered callback the
+// HealthGatedProvider fires on a circuit transition (LLD 2026-07-11-model-
+// health §7): a loud log always, plus an operator alert when a model trips
+// OPEN or recovers to CLOSED. Nil-safe on the notifier. Single-daemon here so
+// no leader gate; the operator-alert notifier is already deduped/rate-capped,
+// and a multi-replica leader gate is a tracked follow-up.
+func (c *Container) modelHealthStateChangeHook() func(route, model, state string) {
+	logger := c.Logger.With().Str("component", "chat").Str("subsystem", "model-health").Logger()
+	return func(route, model, state string) {
+		logger.Warn().Str("route", route).Str("model", model).Str("state", state).
+			Msg("chat: model-health circuit state change")
+		n := c.operatorAlertNotifier()
+		if n == nil {
+			return
+		}
+		switch state {
+		case "open":
+			n.NotifyOperator(context.Background(),
+				"⚠️ model circuit opened",
+				fmt.Sprintf("Model %q on route %q is failing hard — its circuit opened and requests are now routing to the fallback. Investigate the provider; it will half-open probe automatically.", model, route))
+		case "closed":
+			n.NotifyOperator(context.Background(),
+				"✅ model circuit recovered",
+				fmt.Sprintf("Model %q on route %q recovered — its circuit closed and normal routing resumed.", model, route))
+		}
+	}
+}
 
 func (c *Container) initChat() error {
 	cfg := c.Config.Chat
@@ -660,6 +713,29 @@ func (c *Container) initChatRouter(cfg config.ChatConfig) error {
 			sub = chat.NewBoundedRouteProvider(sub, rc.Kind, rc.QueueDepth, timeout, reg)
 		}
 		routes = append(routes, chat.Route{Prefix: rc.Prefix, Suffix: rc.Suffix, Provider: sub, Name: rc.Kind})
+	}
+
+	// Model-health circuit breaker (LLD 2026-07-11-model-health): wrap each
+	// route's provider AND the fallback in a HealthGatedProvider sharing ONE
+	// registry, so every (route, model) across the router has exactly one
+	// breaker. A model that fails hard fast-rejects with *ModelUnhealthyError
+	// (chat-proxy → 503 MODEL_UNHEALTHY; executor → immediate fail-over).
+	// Disabled → no wrap (byte-for-byte today's chain).
+	if healthCfg, ok := resolveChatHealthConfig(rcfg.Health); ok {
+		reg := &sync.Map{}
+		onChange := c.modelHealthStateChangeHook()
+		wrap := func(p chat.Provider, name string) chat.Provider {
+			gated := chat.NewHealthGatedProvider(p, name, reg, healthCfg)
+			if hg, isGate := gated.(*chat.HealthGatedProvider); isGate {
+				return hg.WithStateChangeHook(onChange)
+			}
+			return gated
+		}
+		for i := range routes {
+			routes[i].Provider = wrap(routes[i].Provider, routes[i].Name)
+		}
+		fallback = wrap(fallback, "fallback")
+		c.Logger.Info().Msg("chat: model-health circuit breaker enabled")
 	}
 
 	router, err := chat.NewRouter(fallback, routes,

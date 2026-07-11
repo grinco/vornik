@@ -109,6 +109,9 @@ func (m *mockTaskRepo) CountRecentFailures(context.Context, string, []string, ti
 func (m *mockTaskRepo) GetChildren(context.Context, string) ([]*persistence.Task, error) {
 	return nil, nil
 }
+func (m *mockTaskRepo) OrphanChildren(context.Context, string) (int, error) {
+	return 0, nil
+}
 func (m *mockTaskRepo) CountChildrenForParents(context.Context, []string) (map[string]int, error) {
 	return nil, nil
 }

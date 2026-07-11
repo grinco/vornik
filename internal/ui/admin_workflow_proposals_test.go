@@ -111,67 +111,23 @@ func (s *stubProposalsRepo) UpdateProposalYAML(_ context.Context, id, yaml, edit
 	return nil
 }
 
-// TestAdminWorkflowProposals_NotWired — repo absent, page renders
-// the empty state without 500-ing.
-func TestAdminWorkflowProposals_NotWired(t *testing.T) {
-	s := NewServer()
-	rec := httptest.NewRecorder()
-	s.AdminWorkflowProposals(rec, httptest.NewRequest(http.MethodGet, "/admin/workflow-proposals", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "not wired") {
-		t.Error("empty-state message missing")
-	}
-}
-
-// TestAdminWorkflowProposals_Renders pins the happy-path render:
-// status pills, workflow column, and the filter form are present.
-func TestAdminWorkflowProposals_Renders(t *testing.T) {
-	repo := newStubProposalsRepo()
-	_ = repo.Insert(context.Background(), &persistence.WorkflowProposal{
-		ID: "wpr-pending", WorkflowID: "research",
-		Status:         persistence.WorkflowProposalStatusPending,
-		Motivation:     "found a retry loop in step3",
-		Confidence:     0.78,
-		EvidenceRunIDs: []string{"r-1", "r-2", "r-3"},
-		CreatedAt:      time.Now().UTC(),
-	})
-	s := NewServer(WithWorkflowProposalsRepository(repo))
-	rec := httptest.NewRecorder()
-	s.AdminWorkflowProposals(rec, httptest.NewRequest(http.MethodGet, "/admin/workflow-proposals", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	for _, want := range []string{"research", "pending", "0.78", "retry loop"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("body missing %q", want)
+// Part B fold-in (LLD 2026-07-11 §5.2 #3): the standalone workflow-
+// proposals LIST page is deprecated — it 302s to the unified control-plane
+// inbox pre-sliced to the architect source, wired or not. The /{id} detail
+// pages (and their POST actions) stay.
+func TestAdminWorkflowProposals_RedirectsToHub(t *testing.T) {
+	for name, s := range map[string]*Server{
+		"unwired": NewServer(),
+		"wired":   NewServer(WithWorkflowProposalsRepository(newStubProposalsRepo())),
+	} {
+		rec := httptest.NewRecorder()
+		s.AdminWorkflowProposals(rec, httptest.NewRequest(http.MethodGet, "/admin/workflow-proposals", nil))
+		if rec.Code != http.StatusFound {
+			t.Fatalf("%s: want 302, got %d", name, rec.Code)
 		}
-	}
-}
-
-// TestAdminWorkflowProposals_StatusFilter ensures the "all" status
-// short-circuits filtering and a specific status drives the SQL filter.
-func TestAdminWorkflowProposals_StatusFilter(t *testing.T) {
-	repo := newStubProposalsRepo()
-	_ = repo.Insert(context.Background(), &persistence.WorkflowProposal{
-		ID: "wpr-1", WorkflowID: "wf-a",
-		Status:    persistence.WorkflowProposalStatusPending,
-		CreatedAt: time.Now().UTC(),
-	})
-	s := NewServer(WithWorkflowProposalsRepository(repo))
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet,
-		"/admin/workflow-proposals?status=all&workflow=wf-a", nil)
-	s.AdminWorkflowProposals(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	// Selected option for "all" should be the active dropdown choice.
-	if !strings.Contains(body, `value="all" selected`) {
-		t.Errorf("status=all dropdown not selected, body=%q", body[:min(300, len(body))])
+		if loc := rec.Header().Get("Location"); loc != "/ui/admin/control-plane?section=proposals&source=architect" {
+			t.Errorf("%s: wrong redirect target %q", name, loc)
+		}
 	}
 }
 
@@ -893,10 +849,10 @@ func TestAdminWorkflowProposalsRouter_Dispatch(t *testing.T) {
 	})
 	s := NewServer(WithWorkflowProposalsRepository(repo))
 
-	// list
+	// list — deprecated: 302 to the unified inbox (Part B §5.2 #3).
 	rec := httptest.NewRecorder()
 	s.adminRouter(rec, withAdminUI(httptest.NewRequest(http.MethodGet, "/admin/workflow-proposals", nil)))
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusFound {
 		t.Errorf("list: %d", rec.Code)
 	}
 

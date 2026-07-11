@@ -174,6 +174,36 @@ type ProjectWizardSessionRepository interface {
 	ListByOperator(ctx context.Context, operatorID string, pageSize int) ([]*ProjectWizardSession, error)
 }
 
+// FixItSessionRepository persists Fix-It Doctor repair-chat sessions
+// (https://docs.vornik.io §5.2). One row per
+// operator conversation bound to a single failing object; mirrors
+// ProjectWizardSessionRepository's shape.
+type FixItSessionRepository interface {
+	// Insert creates a brand-new session. The caller stamps the ID
+	// via persistence.GenerateID("fix").
+	Insert(ctx context.Context, s *FixItSession) error
+	// Get returns the session by ID; ErrNotFound when missing.
+	Get(ctx context.Context, id string) (*FixItSession, error)
+	// Update rewrites mutable columns (transcript, last_envelope,
+	// applied_actions). updated_at is bumped server-side. closed_at
+	// flows through Close / CascadeCloseByFailureRef only.
+	Update(ctx context.Context, s *FixItSession) error
+	// ListByOperator returns the operator's sessions newest-first,
+	// capped at pageSize, regardless of open/closed state.
+	ListByOperator(ctx context.Context, operatorID string, pageSize int) ([]*FixItSession, error)
+	// Close stamps closed_at on a session owned by operatorID,
+	// idempotent on an already-closed session (returns nil).
+	// ErrNotFound when missing or owned by another operator (IDOR
+	// guard — same convention as ProjectWizardSessionRepository.Cancel).
+	Close(ctx context.Context, id, operatorID string) error
+	// CascadeCloseByFailureRef closes every OPEN session (any
+	// operator) bound to the given failure kind + ref id — the
+	// cascade-close path run when the underlying failing object (e.g.
+	// a task) is found to no longer exist. Returns the number of
+	// sessions closed; 0 is not an error (nothing was open).
+	CascadeCloseByFailureRef(ctx context.Context, failureKind, failureRefID string) (int, error)
+}
+
 // InstallationOnboardingSessionRepository persists the durable state
 // for the installation-scoped setup guide. The committed row is the
 // source of truth for "already onboarded".

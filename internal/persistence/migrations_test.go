@@ -912,6 +912,19 @@ func TestReleaseOptionsStruct(t *testing.T) {
 // failed every tick on prod with `column "filled_qty" of relation
 // "trading_orders" does not exist` (incident 2026-06-27). Additive,
 // idempotent, and reversible.
+func TestMigration125_ComposerConsecutiveValidationFailures(t *testing.T) {
+	m := findMigration(t, 125)
+	if m.Name != "project_wizard_sessions_composer_consecutive_failures" {
+		t.Errorf("name = %q", m.Name)
+	}
+	if !strings.Contains(m.Up, "ALTER TABLE project_wizard_sessions ADD COLUMN IF NOT EXISTS tier3_consecutive_validation_failures INTEGER NOT NULL DEFAULT 0") {
+		t.Errorf("Up missing the new counter column, got %q", m.Up)
+	}
+	if !strings.Contains(m.Down, "ALTER TABLE project_wizard_sessions DROP COLUMN IF EXISTS tier3_consecutive_validation_failures") {
+		t.Errorf("Down missing the column drop, got %q", m.Down)
+	}
+}
+
 func TestMigration109_TradingExecReconcileColumns(t *testing.T) {
 	m := findMigration(t, 109)
 	if m.Name != "trading_exec_reconcile_columns" {

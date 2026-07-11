@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -80,6 +81,37 @@ func (r *ChatAuditRepository) GetByID(ctx context.Context, id string) (*persiste
 		return nil, mapDBError(err)
 	}
 	return e, nil
+}
+
+// GetChatAuditsByTurnIDs resolves many chat-audit rows by PK in one
+// round-trip, keyed by ID. Mirrors GetByID's column set. Empty input
+// returns an empty map without querying — same short-circuit as
+// CountChildrenForParents, and avoids passing an empty array through
+// pq.Array.
+func (r *ChatAuditRepository) GetChatAuditsByTurnIDs(ctx context.Context, turnIDs []string) (map[string]persistence.ChatAuditEntry, error) {
+	out := make(map[string]persistence.ChatAuditEntry)
+	if len(turnIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, ts, chat_id, user_id, project_id, role_used, model
+		FROM chat_audit_log WHERE id = ANY($1)`, pq.Array(turnIDs),
+	)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var e persistence.ChatAuditEntry
+		if err := rows.Scan(&e.ID, &e.Timestamp, &e.ChatID, &e.UserID, &e.ProjectID, &e.RoleUsed, &e.Model); err != nil {
+			return nil, fmt.Errorf("chat_audit: scan: %w", err)
+		}
+		out[e.ID] = e
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chat_audit: rows: %w", err)
+	}
+	return out, nil
 }
 
 // List returns rows matching the filter, newest first.

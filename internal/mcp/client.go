@@ -92,10 +92,14 @@ func Connect(ctx context.Context, cfg ServerConfig, logger zerolog.Logger) (*Cli
 	if cfg.TimeoutSeconds > 0 {
 		httpTimeout = time.Duration(cfg.TimeoutSeconds) * time.Second
 	}
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: httpTimeout}
+	}
 	c := &Client{
 		config:     cfg,
 		logger:     logger,
-		httpClient: &http.Client{Timeout: httpTimeout},
+		httpClient: httpClient,
 		pending:    make(map[int64]chan stdioResult),
 	}
 

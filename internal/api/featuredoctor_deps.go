@@ -36,16 +36,34 @@ func (s *Server) featureDeps() featuredoctor.Deps {
 	secretsDir := defaultSecretsDir()
 
 	return featuredoctor.Deps{
-		Config:     cr,
-		Instincts:  s.instinctRepo,
-		Outcomes:   nil, // not currently exposed on Server; feature checks degrade gracefully
-		Models:     mp,
-		Embeddings: embeddingProberAdapter{},
-		Tasks:      tl,
-		Trading:    s.featureTradingProbe,
-		SecretsDir: secretsDir,
-		Logger:     s.logger,
+		Config:         cr,
+		Instincts:      s.instinctRepo,
+		Outcomes:       nil, // not currently exposed on Server; feature checks degrade gracefully
+		Models:         mp,
+		Embeddings:     embeddingProberAdapter{},
+		Tasks:          tl,
+		Trading:        s.featureTradingProbe,
+		SecretsDir:     secretsDir,
+		RoleLibraryDir: resolveConfigsDirBestEffort(s.setupConfigPath),
+		Logger:         s.logger,
 	}
+}
+
+// resolveConfigsDirBestEffort derives the daemon's configs root from
+// its resolved config.yaml path (<dir-of-config.yaml>/configs — the
+// primary candidate internal/service's resolveRegistryConfigDir also
+// tries first). A best-effort mirror rather than a shared helper: the
+// full resolver (env override + hasRegistryLayout probing + a bare
+// "configs" fallback) lives in internal/service and isn't reachable
+// from internal/api without introducing an import; this is accurate
+// for the standard deployment layout the composer feature-doctor
+// prereq needs (does role-library/ exist and parse), and degrades to
+// "" (prereq reports not-ok) when setupConfigPath is unset.
+func resolveConfigsDirBestEffort(configPath string) string {
+	if configPath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(configPath), "configs")
 }
 
 // embeddingProberAdapter implements featuredoctor.EmbeddingProber by

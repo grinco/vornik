@@ -878,6 +878,29 @@ CREATE INDEX IF NOT EXISTS idx_admin_audit_principal_ts ON admin_audit(principal
 CREATE INDEX IF NOT EXISTS idx_admin_audit_target      ON admin_audit(target) WHERE target <> '';
 
 -- ============================================================
+-- secret_redaction_audit — migration v126 parity
+--
+-- Secret-leak Phase 3: one row per (checkpoint, finding_type)
+-- redaction event, powering the task-detail badge and the
+-- vornikctl secrets scan-history CLI. task_id/execution_id are
+-- nullable (webhook/backlog/memory sinks have no task). source is
+-- live or scan.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS secret_redaction_audit (
+    id           TEXT PRIMARY KEY,
+    project_id   TEXT NOT NULL,
+    task_id      TEXT,
+    execution_id TEXT,
+    checkpoint   TEXT NOT NULL,
+    finding_type TEXT NOT NULL,
+    count        INTEGER NOT NULL,
+    source       TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_secret_redaction_audit_task    ON secret_redaction_audit(task_id);
+CREATE INDEX IF NOT EXISTS idx_secret_redaction_audit_project ON secret_redaction_audit(project_id, checkpoint, created_at);
+
+-- ============================================================
 -- chat_audit_log + chat_system_prompts — migration v39 parity
 --
 -- Per-turn dispatcher activity. One row per inbound user message
@@ -927,7 +950,22 @@ CREATE TABLE IF NOT EXISTS project_wizard_sessions (
     committed_project_id TEXT,
     committed_at         TEXT,
     cancelled_at         TEXT,
-    composition          TEXT -- migration 112: JSON of the wizard v2 Composition; NULL for v1 sessions
+    composition          TEXT, -- migration 112: JSON of the wizard v2 Composition; NULL for v1 sessions
+    -- migration 123 (composer tier-3 engine, task 1.1b):
+    tier3_turns             INTEGER NOT NULL DEFAULT 0,
+    tier3_unlocked          INTEGER NOT NULL DEFAULT 0,
+    schedule_confirmed_at   TEXT,
+    schedule_confirmed_cron TEXT,
+    bundle                  TEXT, -- JSON of the tier-3 ComposedBundle; NULL except on tier-3 turns
+    -- migration 124 (composer journaled commit, task 1.2b): stamped when
+    -- the staging/journal/rename commit path fails; bundle above is
+    -- NEVER cleared on this path (see internal/projectwizard/bundle_commit.go).
+    bundle_commit_failed_at TEXT,
+    bundle_commit_error     TEXT,
+    -- migration 125 (composer tier-3 validation-failure fallback, task 1.3):
+    -- consecutive (not accepted-turn) bundle-pipeline failures; reset on a
+    -- successful tier-3 composition. See internal/projectwizard/composer_engine.go.
+    tier3_consecutive_validation_failures INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_pw_sessions_operator    ON project_wizard_sessions(operator_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pw_sessions_uncommitted ON project_wizard_sessions(updated_at DESC) WHERE committed_project_id IS NULL;
@@ -1189,4 +1227,63 @@ CREATE TABLE IF NOT EXISTS execution_injected_skills (
 );
 CREATE INDEX IF NOT EXISTS idx_exec_injected_skills_skill
     ON execution_injected_skills (skill_id);
+
+-- ============================================================
+-- execution_narration — the narrator worker's persisted plain-
+-- language story per execution (Narrated Execution Phase 2.1,
+-- narrated-execution-design.md §5.3). Postgres parity: migration
+-- 121. seq is monotonic per execution_id, computed the same way as
+-- the Postgres side (MAX(seq)+1 inside the INSERT). The execution_id
+-- foreign key is declared for documentation/integrity-check parity
+-- with the Postgres schema, but — like every other FK in this file
+-- — it is NOT enforced (foreign_keys pragma OFF, see sqlite.go);
+-- cascade-on-delete is a Postgres-only guarantee here.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS execution_narration (
+    id           TEXT PRIMARY KEY,
+    project_id   TEXT NOT NULL,
+    task_id      TEXT NOT NULL,
+    execution_id TEXT NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
+    seq          INTEGER NOT NULL,
+    step_id      TEXT,
+    kind         TEXT NOT NULL CHECK (kind IN ('step', 'tool', 'milestone', 'completion')),
+    text         TEXT NOT NULL,
+    degraded     INTEGER NOT NULL DEFAULT 0,
+    metadata     TEXT,
+    created_at   TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_narration_execution_seq
+    ON execution_narration (execution_id, seq);
+CREATE INDEX IF NOT EXISTS idx_execution_narration_task
+    ON execution_narration (task_id);
+
+-- ============================================================
+-- fixit_sessions — Fix-It Doctor repair chat sessions (Phase 3.2,
+-- fix-it-doctor-design.md §5.2). Postgres parity: migration 122.
+-- No enforced FK to the failing object — the failure_ref_id's
+-- referent varies by failure_kind (task id / feature id /
+-- integration kind id / empty for daemon-scope), so staleness is
+-- handled by the service's close-on-missing check rather than a
+-- DB-level cascade (same reasoning as narration's un-enforced FK
+-- above: no ON DELETE trigger support here to mirror Postgres CASCADE
+-- even where a real FK existed).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS fixit_sessions (
+    id               TEXT PRIMARY KEY,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    operator_id      TEXT NOT NULL,
+    failure_kind     TEXT NOT NULL,
+    failure_ref_id   TEXT NOT NULL,
+    project_id       TEXT,
+    transcript       TEXT NOT NULL DEFAULT '[]',
+    last_envelope    TEXT,
+    applied_actions  TEXT,
+    status_signal    TEXT,
+    closed_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fixit_sessions_operator
+    ON fixit_sessions (operator_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fixit_sessions_ref_open
+    ON fixit_sessions (failure_kind, failure_ref_id) WHERE closed_at IS NULL;
 `

@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -408,4 +409,43 @@ func TestHandleFailure_SetsFailedWhenBudgetExhausted(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, persistence.TaskStatusFailed, got.Status,
 		"final-attempt failure must set Status to FAILED — handleFailure IS the terminal event")
+}
+
+// TestHandleFailure_DelegatedChildTerminalExhaustsBudget — the retry-storm
+// guard. A delegating (resume_after_children) parent resumed onto a FAILED
+// child with no on_fail target returns errDelegatedChildFailedTerminal.
+// Re-running it can only fast-fail again on the same terminal child, so
+// each attempt burns in milliseconds and the whole budget drains in a
+// burst. handleFailure must treat this class as non-retryable — exhaust
+// the attempt budget so the task finalizes FAILED now instead of looping.
+// Regression for the `task retry` fast-fail storm (backlog item 1).
+func TestHandleFailure_DelegatedChildTerminalExhaustsBudget(t *testing.T) {
+	e, _, er, _, tr := setup()
+	task := &persistence.Task{
+		ID:          "t-deleg",
+		ProjectID:   "p1",
+		Status:      persistence.TaskStatusRunning,
+		Attempt:     1, // budget remains (1 of 3) — a normal failure would retry
+		MaxAttempts: 3,
+		CreatedAt:   time.Now(),
+	}
+	tr.AddTask(task)
+	exec := &persistence.Execution{
+		ID:        "e-deleg-1",
+		TaskID:    task.ID,
+		ProjectID: task.ProjectID,
+		Status:    persistence.ExecutionStatusRunning,
+	}
+	require.NoError(t, er.Create(context.Background(), exec))
+
+	err := fmt.Errorf("%w (step %q)", errDelegatedChildFailedTerminal, "decompose")
+	e.handleFailure(context.Background(), task, exec, err)
+
+	got, gErr := tr.Get(context.Background(), "t-deleg")
+	require.NoError(t, gErr)
+	require.NotNil(t, got)
+	assert.Equal(t, persistence.TaskStatusFailed, got.Status,
+		"a deterministic delegated-child failure must finalize FAILED, not loop through the retry budget")
+	assert.Equal(t, got.MaxAttempts, got.Attempt,
+		"the storm guard must exhaust the attempt budget so the scheduler won't re-queue it")
 }

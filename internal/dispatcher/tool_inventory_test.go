@@ -55,9 +55,10 @@ func TestInventoryTools_AvailabilityReflectsWiring(t *testing.T) {
 	}
 
 	mustNotAvailable := map[string]string{
-		"send_email":     "EmailSender",
-		"memory_search":  "MemorySearcher",
-		"memory_correct": "MemoryCorrector",
+		"send_email":         "EmailSender",
+		"memory_search":      "MemorySearcher",
+		"memory_correct":     "MemoryCorrector",
+		"compose_automation": "ComposerBridge",
 	}
 	for tool, dep := range mustNotAvailable {
 		row, ok := byName[tool]
@@ -112,6 +113,47 @@ func TestInventoryTools_AlwaysAvailableTools(t *testing.T) {
 	if !got["switch_project"] {
 		t.Error("switch_project Available = false, want true on bare Agent")
 	}
+}
+
+// TestInventoryTools_ComposerBridgeRequiresBothBridgeAndEnabled pins
+// the task-1.4 double gate: wiring a bridge alone (composerEnabled
+// still false, the soak default) must NOT flip compose_automation
+// Available — both the bridge AND composer.enabled are required.
+// Setting enabled=true after that flips it.
+func TestInventoryTools_ComposerBridgeRequiresBothBridgeAndEnabled(t *testing.T) {
+	a := &Agent{}
+	a.SetComposerBridge(stubComposerBridgeForInventory{}, false)
+
+	rows := a.InventoryTools()
+	for _, r := range rows {
+		if r.Name == "compose_automation" {
+			if r.Available {
+				t.Error("compose_automation Available = true with composer.enabled=false (bridge wired, soak default)")
+			}
+			break
+		}
+	}
+
+	a.SetComposerBridge(stubComposerBridgeForInventory{}, true)
+	rows = a.InventoryTools()
+	for _, r := range rows {
+		if r.Name == "compose_automation" {
+			if !r.Available {
+				t.Error("compose_automation Available = false after SetComposerBridge(bridge, true)")
+			}
+			return
+		}
+	}
+	t.Fatal("compose_automation not in inventory")
+}
+
+// stubComposerBridgeForInventory satisfies dispatcher.ComposerBridge
+// without doing any work — InventoryTools only checks for
+// nil/non-nil + the composerEnabled flag, not behaviour.
+type stubComposerBridgeForInventory struct{}
+
+func (stubComposerBridgeForInventory) ComposeTurn(context.Context, string, string, string) (string, string, bool, error) {
+	return "", "", true, nil
 }
 
 // stubEmailSenderForInventory satisfies the EmailSender interface

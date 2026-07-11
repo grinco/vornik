@@ -88,3 +88,56 @@ func TestRemoveYAMLListItemByField(t *testing.T) {
 		t.Fatalf("ghost remove: removed=%v err=%v", removed2, err)
 	}
 }
+
+// TestUpsertYAMLListItemByField_ReplacesExistingItem is the review-20260709-cc3e
+// finding-1 regression: re-saving a list item with a keyField value that
+// already exists in the sequence must UPDATE that item in place, not append
+// a duplicate — mirroring internal/ui/admin_control_plane_mcp.go's mcpAddEdit
+// add-or-replace convention (remove-by-field then append), but as one
+// reusable primitive.
+func TestUpsertYAMLListItemByField_ReplacesExistingItem(t *testing.T) {
+	in := []byte("mcp:\n  servers:\n    - name: existing\n      transport: sse\n      url: http://old\n")
+	out, err := UpsertYAMLListItemByField(in, "mcp.servers", "name", []YAMLListField{
+		{Key: "name", Value: "existing"},
+		{Key: "transport", Value: "streamable-http"},
+		{Key: "url", Value: "http://new"},
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	s := string(out)
+	if strings.Contains(s, "http://old") || strings.Contains(s, "sse") {
+		t.Errorf("stale item fields still present:\n%s", s)
+	}
+	if !strings.Contains(s, "http://new") || !strings.Contains(s, "streamable-http") {
+		t.Errorf("updated item fields missing:\n%s", s)
+	}
+	cfg, err := loadFromBytesForTest(t, out)
+	if err != nil {
+		t.Fatalf("reparse: %v", err)
+	}
+	if len(cfg.MCP.Servers) != 1 {
+		t.Fatalf("want exactly 1 mcp.servers item after upsert of an existing name, got %d (%+v)", len(cfg.MCP.Servers), cfg.MCP.Servers)
+	}
+}
+
+// TestUpsertYAMLListItemByField_AppendsWhenAbsent covers the other half: no
+// existing item with this keyField value means a plain append, same as
+// AppendYAMLListItem.
+func TestUpsertYAMLListItemByField_AppendsWhenAbsent(t *testing.T) {
+	in := []byte("mcp:\n  servers:\n    - name: keep\n      transport: sse\n")
+	out, err := UpsertYAMLListItemByField(in, "mcp.servers", "name", []YAMLListField{
+		{Key: "name", Value: "new-one"},
+		{Key: "transport", Value: "stdio"},
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	cfg, err := loadFromBytesForTest(t, out)
+	if err != nil {
+		t.Fatalf("reparse: %v", err)
+	}
+	if len(cfg.MCP.Servers) != 2 {
+		t.Fatalf("want 2 mcp.servers (existing + appended), got %d (%+v)", len(cfg.MCP.Servers), cfg.MCP.Servers)
+	}
+}

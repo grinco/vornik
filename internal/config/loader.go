@@ -141,6 +141,11 @@ func LoadFromPath(path string) (*Config, error) {
 		return nil, err
 	}
 
+	// Fill composer zero-fields from the shipped conservative defaults
+	// so an operator who sets only `composer.enabled: true` still gets
+	// the full default budget + tier caps (§5.4).
+	cfg.Composer.applyDefaults()
+
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("configuration validation failed: %w", err)
@@ -177,6 +182,7 @@ func ValidateBytes(data []byte) error {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return fmt.Errorf("parse: %w", err)
 	}
+	cfg.Composer.applyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validate: %w", err)
 	}
@@ -476,6 +482,25 @@ func DefaultConfig() *Config {
 		Autonomy: AutonomyConfig{
 			ApprovalTimeoutHours: 96,
 		},
+		// Narrator defaults ON with conservative caps (design §9 Q1
+		// — a dark feature helps no one; worst-case spend is a
+		// fraction of a cent per execution). Numeric knobs (debounce,
+		// thresholds, caps) are left at their YAML zero-value here —
+		// internal/narrator resolves 0 → the documented default at
+		// construction time, mirroring MemoryConfig's
+		// ConsolidateIntervalSeconds pattern.
+		Narrator: NarratorConfig{
+			Enabled: true,
+		},
+		// Composer defaults OFF (design §9 — feature-gated until soak
+		// completes). The conservative default budget + tier caps are
+		// filled by applyComposerDefaults at load time so an operator
+		// who only flips `composer.enabled: true` still gets them.
+		Composer: func() ComposerConfig {
+			c := ComposerConfig{}
+			c.applyDefaults()
+			return c
+		}(),
 		Watchdog: WatchdogConfig{
 			// Default on so a fresh deployment gets stuck-execution
 			// surfacing without operator action. Default action
@@ -698,6 +723,16 @@ func (c *Config) Validate() error {
 		}
 	}
 	if err := c.Node.Validate(); err != nil {
+		return err
+	}
+	// Resolve composer zero-fields to their defaults on a copy before
+	// validating, so a Config constructed without the loader (e.g. an
+	// all-zero ComposerConfig in a unit test or a hand-built config)
+	// validates as "unconfigured → defaults", mirroring how the load
+	// path fills them. Validate never mutates c.
+	composer := c.Composer
+	composer.applyDefaults()
+	if err := composer.Validate(); err != nil {
 		return err
 	}
 	return nil

@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/chat"
+	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/rolelibrary"
 	"vornik.io/vornik/internal/templates"
 )
 
@@ -103,6 +105,26 @@ type UsageRecorder interface {
 	Record(ctx context.Context, u *persistence.TaskLLMUsage) error
 }
 
+// Reloader is the narrow hot-reload trigger the journaled bundle-
+// commit path polls once the project file has landed in the live
+// tree (design §5.6 step 5; task 1.2b slice ii). TryReload MUST be
+// bounded by d and MUST NOT block past it — ok=true means the cycle
+// completed and activated cleanly within d; ok=false (with err
+// describing why — timeout, busy/deferred, or a hard
+// validate/activate rejection) means the commit's rollback must run.
+// The concrete implementation (internal/service) adapts
+// *config.ConfigReloader.TryReload, the SAME instance
+// api.NewConfigHandlers and the doctor reloader already wrap — this
+// package never duplicates the reload cycle or reaches for the HTTP
+// endpoint. nil is a documented graceful degradation (CE/minimal
+// wiring without a reloader): the commit still lands its files and
+// does NOT hard-fail; it just relies on the daemon's own watcher/next
+// reload to pick the new project up, exactly like slice i did before
+// this field existed.
+type Reloader interface {
+	TryReload(d time.Duration) (ok bool, err error)
+}
+
 // Validator is the narrow interface the wizard calls to check a
 // proposal before exposing ready_to_commit=true. Implementations
 // return nil when the proposal validates; the returned error's
@@ -193,6 +215,51 @@ type Wizard struct {
 	// time — the same seam ComposeDeps.Resolver fills. Optional; nil
 	// leaves dynamic optionsFrom values unresolved.
 	Resolver templates.OptionsResolver
+
+	// --- NL Automation Composer tier-3 engine (task 1.1b) ---
+
+	// Composer tunes tier arbitration + guardrail defaults
+	// (composer.max_tier, composer.max_tier3_turns,
+	// composer.default_budget). Zero value disables tier-3 entirely
+	// (MaxTier defaults to 0, which is below the tier-3 gate) — the
+	// daemon wiring passes the loaded config.ComposerConfig (already
+	// defaulted) when the composer feature is enabled.
+	Composer config.ComposerConfig
+	// RoleLibrary is the curated archetype set (rolelibrary.Load),
+	// keyed by ArchetypeID, that tier-3 bundle materialization expands
+	// composed roles against. Nil/empty → every tier-3 turn fails
+	// materialization (no archetypes to expand into) — effectively
+	// disabling tier-3 output gracefully.
+	RoleLibrary map[string]*rolelibrary.RoleArchetype
+	// LiveConfigDir is the daemon's deployed configs root
+	// (~/.config/vornik/configs) — staged validation layers a tier-3
+	// bundle's rendered files over this directory so cross-references
+	// to pre-existing swarms/workflows resolve. Empty runs staged
+	// validation against the bundle alone (fine for tests; production
+	// always wires this).
+	LiveConfigDir string
+	// Reloader triggers + bounds-polls the daemon's config hot-reload
+	// once a tier-3 commit's project file lands (design §5.6 step 5).
+	// nil disables the trigger — see the Reloader doc comment for the
+	// exact (documented, non-fatal) degradation.
+	Reloader Reloader
+	// ReloadTimeout bounds the post-commit reload poll (design §5.6
+	// step 5's "30 s deadline"). 0 -> 30s. Overridable so tests never
+	// need a real 30-second wait to exercise the timeout path — the
+	// injected Reloader in a test typically returns immediately
+	// regardless of the duration it's handed, but a shorter default
+	// here keeps any future real-reloader integration test fast too.
+	ReloadTimeout time.Duration
+	// SystemHandlerNames is the daemon executor's registered
+	// system-step handler names (the same Container.systemHandlerNames
+	// snapshot api.DoctorHandlers.SetSystemHandlerNames wires into the
+	// role-library doctor check) — grounds the tier-3 system prompt's
+	// step vocabulary (design §5.3: "agent, gate, approval, and the
+	// registry-enumerated system handlers") so the model only proposes
+	// a `system` step naming a handler that actually exists on this
+	// daemon. Optional — nil/empty still documents the step KINDS, just
+	// without a concrete handler list.
+	SystemHandlerNames []string
 }
 
 // ErrSessionCommitted — the session was already committed; further
@@ -269,7 +336,7 @@ func (w *Wizard) Converse(ctx context.Context, sessionID, operatorID, userMessag
 				}
 			}
 			if active >= maxActive {
-				w.Metrics.recordTurn(turnOutcomeRejected)
+				w.Metrics.recordTurn(tierLabelUnknown, turnOutcomeRejected)
 				return nil, ErrTooManySessions
 			}
 		}
@@ -278,30 +345,30 @@ func (w *Wizard) Converse(ctx context.Context, sessionID, operatorID, userMessag
 			OperatorID: operatorID,
 		}
 		if err := w.Sessions.Insert(callCtx, session); err != nil {
-			w.Metrics.recordTurn(turnOutcomeRejected)
+			w.Metrics.recordTurn(tierLabelUnknown, turnOutcomeRejected)
 			return nil, fmt.Errorf("projectwizard: insert session: %w", err)
 		}
 		sessionInserted = true
 	} else {
 		got, err := w.Sessions.Get(callCtx, sessionID)
 		if err != nil {
-			w.Metrics.recordTurn(turnOutcomeRejected)
+			w.Metrics.recordTurn(tierLabelUnknown, turnOutcomeRejected)
 			return nil, fmt.Errorf("projectwizard: load session: %w", err)
 		}
 		if got == nil {
-			w.Metrics.recordTurn(turnOutcomeRejected)
+			w.Metrics.recordTurn(tierLabelUnknown, turnOutcomeRejected)
 			return nil, persistence.ErrNotFound
 		}
 		if got.CommittedProjectID != nil {
-			w.Metrics.recordTurn(turnOutcomeRejected)
+			w.Metrics.recordTurn(tierLabelUnknown, turnOutcomeRejected)
 			return nil, ErrSessionCommitted
 		}
 		if got.CancelledAt != nil {
-			w.Metrics.recordTurn(turnOutcomeRejected)
+			w.Metrics.recordTurn(tierLabelUnknown, turnOutcomeRejected)
 			return nil, ErrSessionCancelled
 		}
 		if got.OperatorID != operatorID {
-			w.Metrics.recordTurn(turnOutcomeRejected)
+			w.Metrics.recordTurn(tierLabelUnknown, turnOutcomeRejected)
 			return nil, persistence.ErrNotFound
 		}
 		session = got
@@ -318,7 +385,7 @@ func (w *Wizard) Converse(ctx context.Context, sessionID, operatorID, userMessag
 	}
 	userTurns := countUserTurns(transcript)
 	if userTurns >= maxTurns {
-		w.Metrics.recordTurn(turnOutcomeRejected)
+		w.Metrics.recordTurn(tierLabelUnknown, turnOutcomeRejected)
 		return nil, ErrTurnsExhausted
 	}
 	transcript = append(transcript, Turn{
@@ -334,50 +401,95 @@ func (w *Wizard) Converse(ctx context.Context, sessionID, operatorID, userMessag
 	// router enforces the envelope shape (Bedrock injects a
 	// synthetic tool whose schema is the envelope, forces
 	// tool_choice; Anthropic emits a tool call we unwrap).
-	schemaCtx := chat.WithRequestResponseFormatStruct(callCtx, envelopeResponseFormat())
+	//
+	// Whole-branch review C1 fix: when the composer is available for
+	// this turn, hand the superset composerResponseFormat() instead of
+	// the plain tier-1/2 envelopeResponseFormat() — otherwise the model
+	// is structurally incapable of emitting `tier`/`bundle` (Bedrock's
+	// forced synthetic tool enforces exactly the schema handed here),
+	// so the tier-3 engine below (arbitrateTier3 / applyBundle) never
+	// sees a tier-3 envelope in production. responseFormatForTurn keeps
+	// the tier-1/2 contract byte-for-byte unchanged when the composer
+	// isn't available.
+	schemaCtx := chat.WithRequestResponseFormatStruct(callCtx, w.responseFormatForTurn())
 
 	client := pickModel(w.Chat, w.Model)
 	resp, err := client.Complete(schemaCtx, msgs)
 	if err != nil {
-		w.Metrics.recordTurn(turnOutcomeLLMError)
+		w.Metrics.recordTurn(tierLabelUnknown, turnOutcomeLLMError)
 		return nil, fmt.Errorf("projectwizard: chat: %w", err)
 	}
 	if resp == nil || len(resp.Choices) == 0 {
-		w.Metrics.recordTurn(turnOutcomeLLMError)
+		w.Metrics.recordTurn(tierLabelUnknown, turnOutcomeLLMError)
 		return nil, errors.New("projectwizard: empty chat response")
 	}
 	rawContent := resp.Choices[0].Message.Content
 	envelope, err := parseEnvelope(rawContent)
 	if err != nil {
-		w.Metrics.recordTurn(turnOutcomeLLMError)
+		w.Metrics.recordTurn(tierLabelUnknown, turnOutcomeLLMError)
 		return nil, fmt.Errorf("projectwizard: parse envelope: %w", err)
 	}
 
-	// Validate proposal (legacy path) or run Compose against the
-	// structured composition (wizard v2). Failure appends the reason
-	// to the message and resets ready_to_commit so the UI doesn't
-	// show an enabled commit button on an invalid draft.
+	// Tier arbitration (design §5.1): refuses/downgrades tier-3 output
+	// per composer.max_tier / the per-session tier-3 cap / the anchor-
+	// score confidence gate, via a corrective re-prompt (never a
+	// downgrade-in-place of the offending envelope — it is replaced
+	// wholesale, never persisted).
+	//
+	// Usage/cost rows are recorded HERE (one per actual LLM call this
+	// turn — 1, or 2 when the corrective retry fired) rather than once
+	// at the end, so a retry's extra spend is never silently dropped
+	// from the composer's cost dashboards (design §5.8's stated
+	// concern that tier-3 turns are the expensive ones). The original
+	// call's role reflects what was actually asked of the model THIS
+	// call, independent of whether arbitration went on to accept it.
+	originalWasTier3 := envelope.Tier == 3 && envelope.Bundle != nil
+	arbitratedEnvelope, retryResp, arbErr := w.arbitrateTier3(schemaCtx, client, msgs, session, transcript, userMessage, envelope)
+	if arbErr != nil {
+		w.Metrics.recordTurn(tierLabelUnknown, turnOutcomeLLMError)
+		return nil, fmt.Errorf("projectwizard: tier arbitration: %w", arbErr)
+	}
+	originalRole := RoleProjectWizard
+	if originalWasTier3 {
+		originalRole = RoleAutomationComposer
+	}
+	w.recordUsage(ctx, resp, session.ID, originalRole, nil)
+	if retryResp != nil {
+		w.recordUsage(ctx, retryResp, session.ID, RoleAutomationComposer, nil)
+		resp = retryResp
+	}
+	envelope = arbitratedEnvelope
+
+	// Dispatch: tier-3 bundle pipeline (§5.2/§5.4), wizard v2
+	// Compose against the structured composition, or the legacy raw-
+	// proposal validator. Failure at any stage appends the reason to
+	// the message and resets ready_to_commit so the UI doesn't show an
+	// enabled commit button on an invalid draft. Each branch clears
+	// the OTHER two session build fields — the session must track only
+	// the LATEST turn's build (the whole-branch review's Important #1
+	// finding: a stale session.Composition left over from an earlier
+	// turn let Commit silently commit an old build instead of what the
+	// operator is now looking at; the same rule now applies to
+	// session.Bundle).
 	var turnOutcome string
-	if envelope.Composition != nil {
-		turnOutcome = w.applyComposition(callCtx, session, envelope)
-	} else {
-		// Legacy/proposal-only turn (or a bare question with neither) —
-		// the persisted composition must track only the LATEST turn.
-		// Leaving a prior turn's composition in place here is exactly
-		// the bug the whole-branch review's Important #1 finding
-		// caught: Commit's `len(session.Composition) > 0` branch would
-		// silently commit that stale build instead of the proposal the
-		// operator is now looking at (or approving) on this turn.
+	switch {
+	case envelope.Tier == 3 && envelope.Bundle != nil:
 		session.Composition = nil
+		turnOutcome = w.applyBundle(session, transcript, envelope)
+	case envelope.Composition != nil:
+		session.Bundle = nil
+		turnOutcome = w.applyComposition(callCtx, session, envelope)
+	default:
+		session.Composition = nil
+		session.Bundle = nil
 		turnOutcome = w.applyProposal(session, envelope)
 	}
-	if envelope.Proposal == nil && envelope.Composition == nil {
+	if envelope.Proposal == nil && envelope.Composition == nil && envelope.Bundle == nil {
 		envelope.ReadyToCommit = false
 	}
-	w.Metrics.recordTurn(turnOutcome)
+	w.Metrics.recordTurn(tierLabel(envelope), turnOutcome)
 
 	// Append assistant turn + persist.
-	envelopeJSON, _ := json.Marshal(envelope)
 	transcript = append(transcript, Turn{
 		Role:      "assistant",
 		Content:   envelope.Message,
@@ -402,10 +514,6 @@ func (w *Wizard) Converse(ctx context.Context, sessionID, operatorID, userMessag
 		return &Result{SessionID: session.ID, Envelope: envelope},
 			fmt.Errorf("projectwizard: update session: %w", err)
 	}
-
-	// Cost row.
-	w.recordUsage(ctx, resp, session.ID, envelopeJSON)
-	_ = envelopeJSON
 
 	return &Result{SessionID: session.ID, Envelope: envelope}, nil
 }
@@ -467,6 +575,14 @@ func (w *Wizard) applyProposal(session *persistence.ProjectWizardSession, envelo
 func (w *Wizard) buildChatMessages(ctx context.Context, transcript []Turn) []chat.Message {
 	system := fmt.Sprintf(systemPromptTemplate, RenderPriors(w.Priors))
 	system += "\n\n" + BuildGrounding(ctx, w.MCP, w.Models, w.Priors)
+	// Whole-branch review C1 fix: additively ground the model in the
+	// tier-3 "parts bin" (design §5.3 — role library, step vocabulary,
+	// when to return a bundle) ONLY when the composer is actually
+	// available this turn. When it isn't, this is a no-op and the
+	// tier-1/2 prompt is unchanged, byte-for-byte, from before this fix.
+	if w.composerTier3Available() {
+		system += BuildComposerGrounding(w.RoleLibrary, w.SystemHandlerNames)
+	}
 	msgs := []chat.Message{
 		{Role: "system", Content: system},
 	}
@@ -476,9 +592,54 @@ func (w *Wizard) buildChatMessages(ctx context.Context, transcript []Turn) []cha
 	return msgs
 }
 
-func (w *Wizard) recordUsage(ctx context.Context, resp *chat.ChatResponse, sessionID string, _ []byte) {
+// composerTier3Available reports whether this turn should be offered
+// the tier-3 composer contract: the operator pin allows tier 3
+// fleet-wide (composer.max_tier) AND there is a non-empty curated role
+// library to materialize a composed role against (design §5.1/§5.3).
+// Without a role library, materializeBundle fails every tier-3 turn
+// anyway (wizard.go's RoleLibrary doc comment), so there is nothing to
+// gain — and something to lose (prompt bloat, an invitation the model
+// can never legally fulfill) — from advertising tier-3 in that case.
+//
+// This gate decides whether to INVITE a tier-3 answer (response_format
+// + prompt grounding); it is deliberately simpler than arbitrateTier3's
+// runtime downgrade logic (which additionally treats an all-zero,
+// unconfigured-test Composer as permissive) — a real daemon always
+// loads config.ComposerConfig.applyDefaults, which never leaves
+// MaxTier at 0, so that permissive special-case doesn't apply here.
+func (w *Wizard) composerTier3Available() bool {
+	return w.Composer.MaxTier >= 3 && len(w.RoleLibrary) > 0
+}
+
+// responseFormatForTurn selects the response_format handed to the chat
+// client for this turn (whole-branch review C1 fix): the composer
+// superset schema when tier-3 is available, otherwise the unchanged
+// tier-1/2 envelope schema. Extracted as its own function so a test can
+// assert on the selection directly rather than mocking the whole
+// provider.
+func (w *Wizard) responseFormatForTurn() *chat.ResponseFormat {
+	if w.composerTier3Available() {
+		return composerResponseFormat()
+	}
+	return envelopeResponseFormat()
+}
+
+// Usage-attribution roles for the wizard's LLM spend rows. The
+// composer (task 1.1b) records tier-3 turns under
+// RoleAutomationComposer so its spend is distinguishable in the
+// task_llm_usage rollups (design §5.8); everything else stays
+// RoleProjectWizard, preserving the historical attribution.
+const (
+	RoleProjectWizard      = "project_wizard"
+	RoleAutomationComposer = "automation_composer"
+)
+
+func (w *Wizard) recordUsage(ctx context.Context, resp *chat.ChatResponse, sessionID, role string, _ []byte) {
 	if w == nil || w.LLMUsage == nil || resp == nil {
 		return
+	}
+	if role == "" {
+		role = RoleProjectWizard
 	}
 	prompt := resp.Usage.PromptTokens
 	completion := resp.Usage.CompletionTokens
@@ -489,7 +650,7 @@ func (w *Wizard) recordUsage(ctx context.Context, resp *chat.ChatResponse, sessi
 		ID:               persistence.GenerateID("llm"),
 		ProjectID:        "", // no project yet; wizard precedes project creation
 		StepID:           sessionID,
-		Role:             "project_wizard",
+		Role:             role,
 		Model:            firstNonEmpty(resp.Model, w.Model),
 		PromptTokens:     int64(prompt),
 		CompletionTokens: int64(completion),

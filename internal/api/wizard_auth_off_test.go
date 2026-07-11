@@ -19,10 +19,12 @@ import (
 // configured override) and the handler proceeds.
 
 type stubWizard struct {
-	converseCalled func(sessionID, operatorID, msg string)
-	commitCalled   func(sessionID, operatorID string)
-	cancelCalled   func(sessionID, operatorID string)
-	cancelErr      error
+	converseCalled        func(sessionID, operatorID, msg string)
+	commitCalled          func(sessionID, operatorID string)
+	cancelCalled          func(sessionID, operatorID string)
+	cancelErr             error
+	confirmScheduleCalled func(sessionID, operatorID, cron string)
+	confirmScheduleErr    error
 }
 
 func (s *stubWizard) Converse(_ context.Context, sessionID, operatorID, msg string) (*ProjectWizardResult, error) {
@@ -44,6 +46,13 @@ func (s *stubWizard) Cancel(_ context.Context, sessionID, operatorID string) err
 		s.cancelCalled(sessionID, operatorID)
 	}
 	return s.cancelErr
+}
+
+func (s *stubWizard) ConfirmSchedule(_ context.Context, sessionID, operatorID, cron string) error {
+	if s.confirmScheduleCalled != nil {
+		s.confirmScheduleCalled(sessionID, operatorID, cron)
+	}
+	return s.confirmScheduleErr
 }
 
 func TestWizardConverse_AuthOffStampsSingleTenantFallback(t *testing.T) {
@@ -213,5 +222,92 @@ func TestWizardCancel_NotFoundReturns404(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("cancel missing: got %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestWizardConfirmSchedule_HappyPath — the schedule chip's confirm
+// POST (task 1.2a, design §5.4). Routed through projectWizardRouter
+// so the dispatch case is exercised too.
+func TestWizardConfirmSchedule_HappyPath(t *testing.T) {
+	var seenSession, seenOp, seenCron string
+	stub := &stubWizard{confirmScheduleCalled: func(sess, op, cron string) { seenSession, seenOp, seenCron = sess, op, cron }}
+
+	srv := NewServer(
+		WithLogger(zerolog.Nop()),
+		WithProjectWizard(stub),
+	)
+
+	body := strings.NewReader(`{"cron":"24h"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/wizard/sess-1/confirm-schedule", body)
+	req = req.WithContext(context.WithValue(req.Context(), authEnabledKey, false))
+	rec := httptest.NewRecorder()
+
+	srv.projectWizardRouter(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirm-schedule: got %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if seenSession != "sess-1" || seenOp != defaultSingleTenantOperatorID || seenCron != "24h" {
+		t.Fatalf("wizard saw (%q, %q, %q), want (%q, %q, %q)", seenSession, seenOp, seenCron,
+			"sess-1", defaultSingleTenantOperatorID, "24h")
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"schedule_confirmed"`) {
+		t.Fatalf("response missing schedule_confirmed status: %s", rec.Body.String())
+	}
+}
+
+func TestWizardConfirmSchedule_MissingCron_Returns400(t *testing.T) {
+	stub := &stubWizard{}
+	srv := NewServer(
+		WithLogger(zerolog.Nop()),
+		WithProjectWizard(stub),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/wizard/sess-1/confirm-schedule", strings.NewReader(`{}`))
+	req = req.WithContext(context.WithValue(req.Context(), authEnabledKey, false))
+	rec := httptest.NewRecorder()
+
+	srv.ProjectWizardConfirmSchedule(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("confirm-schedule missing cron: got %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWizardConfirmSchedule_CommittedReturns410(t *testing.T) {
+	stub := &stubWizard{confirmScheduleErr: projectwizard.ErrSessionCommitted}
+
+	srv := NewServer(
+		WithLogger(zerolog.Nop()),
+		WithProjectWizard(stub),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/wizard/sess-1/confirm-schedule", strings.NewReader(`{"cron":"24h"}`))
+	req = req.WithContext(context.WithValue(req.Context(), authEnabledKey, false))
+	rec := httptest.NewRecorder()
+
+	srv.ProjectWizardConfirmSchedule(rec, req)
+
+	if rec.Code != http.StatusGone {
+		t.Fatalf("confirm-schedule committed: got %d, want 410; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWizardConfirmSchedule_NotFoundReturns404(t *testing.T) {
+	stub := &stubWizard{confirmScheduleErr: persistence.ErrNotFound}
+
+	srv := NewServer(
+		WithLogger(zerolog.Nop()),
+		WithProjectWizard(stub),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/projects/wizard/sess-1/confirm-schedule", strings.NewReader(`{"cron":"24h"}`))
+	req = req.WithContext(context.WithValue(req.Context(), authEnabledKey, false))
+	rec := httptest.NewRecorder()
+
+	srv.ProjectWizardConfirmSchedule(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("confirm-schedule missing: got %d, want 404; body=%s", rec.Code, rec.Body.String())
 	}
 }

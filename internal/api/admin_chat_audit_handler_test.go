@@ -193,3 +193,6 @@ func TestAdminChatAuditList_RepoError(t *testing.T) {
 func (s *stubChatAuditAdminRepo) GetByID(_ context.Context, _ string) (*persistence.ChatAuditEntry, error) {
 	return nil, persistence.ErrNotFound
 }
+func (s *stubChatAuditAdminRepo) GetChatAuditsByTurnIDs(_ context.Context, _ []string) (map[string]persistence.ChatAuditEntry, error) {
+	return map[string]persistence.ChatAuditEntry{}, nil
+}

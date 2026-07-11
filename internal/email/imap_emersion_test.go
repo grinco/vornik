@@ -2,6 +2,10 @@ package email
 
 import (
 	"context"
+	"errors"
+	"net"
+	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -29,6 +33,35 @@ func TestEmersionIMAPClient_FetchAndMarkBeforeConnect(t *testing.T) {
 	}
 	if err := c.MarkSeen(context.Background(), "1"); err == nil {
 		t.Error("MarkSeen before Connect must error")
+	}
+}
+
+// TestEmersionIMAPClient_Connect_UsesInjectedDialer — cfg.Dialer, when set,
+// must actually be threaded into imapclient.DialTLS's Options rather than
+// Connect silently building its own default dialer. Proven by a Dialer whose
+// Control callback unconditionally rejects: Connect must surface that exact
+// rejection, which is only possible if our Dialer (not go-imap's internal
+// default) ran. This is the seam internal/integrations relies on to route
+// candidate IMAP hosts through the SSRF-guarded DialGuard (regression guard
+// for that wiring — see internal/integrations/dialer.go).
+func TestEmersionIMAPClient_Connect_UsesInjectedDialer(t *testing.T) {
+	sentinel := errors.New("dial guard: sentinel test rejection")
+	dialer := &net.Dialer{
+		Control: func(_, _ string, _ syscall.RawConn) error {
+			return sentinel
+		},
+	}
+	c := NewIMAPClient()
+	err := c.Connect(context.Background(), IMAPDialConfig{
+		Host:   "127.0.0.1",
+		Port:   1,
+		Dialer: dialer,
+	})
+	if err == nil {
+		t.Fatal("Connect with a rejecting Dialer must fail")
+	}
+	if !strings.Contains(err.Error(), sentinel.Error()) {
+		t.Errorf("Connect error = %q, want it to wrap the injected Dialer's rejection %q", err.Error(), sentinel.Error())
 	}
 }
 

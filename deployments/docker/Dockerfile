@@ -37,7 +37,7 @@
 # -----------------------------------------------------------------------
 # Stage 1: build Go binaries (vornik daemon + vornikctl CLI + mcp-bridge)
 # -----------------------------------------------------------------------
-FROM docker.io/library/golang:1.25 AS builder
+FROM docker.io/library/golang:1.25@sha256:d7912cedddfa15b2900a8dfb7187df0af5ec2cb424a371139b5b352fd3e6b740 AS builder
 
 WORKDIR /src
 
@@ -64,7 +64,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="" -o /out/vornik        ./cmd/vo
 # wget is included (tiny busybox-like binary) so compose/k8s healthchecks
 # can probe the /livez liveness endpoint without curl or any heavy client.
 # -----------------------------------------------------------------------
-FROM docker.io/library/debian:12-slim AS thin
+FROM docker.io/library/debian:12-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS thin
 
 ENV DEBIAN_FRONTEND=noninteractive \
     VORNIK_CONFIG=/etc/vornik/config.yaml \
@@ -105,7 +105,7 @@ CMD ["vornik"]
 # This MUST be the last stage so a plain `podman build ... -t vornik:latest .`
 # (no --target) produces the full image — back-compat with Helm + existing CI.
 # -----------------------------------------------------------------------
-FROM docker.io/library/ubuntu:24.04 AS full
+FROM docker.io/library/ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS full
 
 ENV DEBIAN_FRONTEND=noninteractive \
     VORNIK_CONFIG=/etc/vornik/config.yaml \

@@ -108,11 +108,6 @@ func (w *Wizard) Commit(ctx context.Context, sessionID, operatorID string) (*Com
 	if w == nil || w.Sessions == nil {
 		return nil, errors.New("projectwizard: not fully wired")
 	}
-	// A commit needs SOME sink: the ledger proposer (production control-plane
-	// path) or the direct-write ProjectWriter (minimal CE fallback).
-	if w.Writer == nil && w.Proposer == nil {
-		return nil, ErrWriterUnwired
-	}
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, errors.New("projectwizard: session id required")
 	}
@@ -134,10 +129,26 @@ func (w *Wizard) Commit(ctx context.Context, sessionID, operatorID string) (*Com
 		return nil, persistence.ErrNotFound
 	}
 	if session.CommittedProjectID != nil {
-		// Idempotent re-click. On the ledger path the project doesn't exist
-		// yet (a DRAFT proposal is pending review), so its setup URL would
-		// 404 — send the operator to the proposals review list instead. On
-		// the direct-write path the project is live: return its setup URL.
+		// Idempotent re-click. A bundle commit (session.Bundle is never
+		// cleared — see commitBundleSession) never uses the Proposer/
+		// ledger: it lands files directly to the live tree, so the
+		// project is already live and its doctor/setup URL is always
+		// valid — checked AHEAD of the Proposer branch below, since
+		// production EE wires the Proposer independently of the composer
+		// (project_wizard_adapter.go), and without this branch a bundle
+		// re-click would be misrouted to the control-plane Proposals tab
+		// for a project that was never proposed.
+		if session.Bundle != nil {
+			return &CommitResult{
+				SessionID: session.ID,
+				ProjectID: *session.CommittedProjectID,
+				URL:       composerDoctorURL(*session.CommittedProjectID),
+			}, nil
+		}
+		// On the ledger path the project doesn't exist yet (a DRAFT
+		// proposal is pending review), so its setup URL would 404 — send
+		// the operator to the proposals review list instead. On the
+		// direct-write path the project is live: return its setup URL.
 		if w.Proposer != nil {
 			return &CommitResult{
 				SessionID: session.ID,
@@ -153,6 +164,27 @@ func (w *Wizard) Commit(ctx context.Context, sessionID, operatorID string) (*Com
 	}
 	if !session.ReadyToCommit {
 		return nil, ErrNotReadyToCommit
+	}
+
+	// Tier-3 composed bundle (task 1.2b): a fundamentally different
+	// sink from the composition/proposal paths below — a bundle is a
+	// multi-document set (project + swarm + workflow(s)) that lands via
+	// the journaled stager (bundle_commit.go), never through
+	// land()/Proposer/Writer, so it does NOT need either wired. Checked
+	// ahead of session.Composition (and ahead of the writer-required
+	// check below) because Converse already keeps the two mutually
+	// exclusive (each branch clears the other), but a bundle session
+	// must never fall through to the composition/proposal ladder below.
+	if session.Bundle != nil {
+		return w.commitBundleSession(ctx, session)
+	}
+
+	// A commit needs SOME sink: the ledger proposer (production control-
+	// plane path) or the direct-write ProjectWriter (minimal CE
+	// fallback). Bundle sessions (handled above) don't reach this check
+	// — they never use either sink.
+	if w.Writer == nil && w.Proposer == nil {
+		return nil, ErrWriterUnwired
 	}
 
 	// Wizard v2 sessions carry a structured composition (persisted by

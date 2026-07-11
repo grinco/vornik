@@ -52,7 +52,11 @@ func (c *emersionIMAPClient) Connect(ctx context.Context, cfg IMAPDialConfig) er
 	}
 	addr := fmt.Sprintf("%s:%d", cfg.Host, port)
 
-	cli, err := imapclient.DialTLS(addr, nil)
+	var opts *imapclient.Options
+	if cfg.Dialer != nil {
+		opts = &imapclient.Options{Dialer: cfg.Dialer}
+	}
+	cli, err := imapclient.DialTLS(addr, opts)
 	if err != nil {
 		return fmt.Errorf("dial TLS %s: %w", addr, err)
 	}

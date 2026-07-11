@@ -219,6 +219,8 @@ func TestSetupPage_FreshDefaultsAreNotConfigured(t *testing.T) {
 		`id="mem-test-btn" disabled`,
 		`id="mem-save-btn" disabled`,
 		"Create assistant project",
+		`href="/ui/integrations"`,
+		"Connect a channel",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("fresh setup page missing marker %q", want)
@@ -340,6 +342,8 @@ func TestSetupPage_CompletedChatAndMemoryAdvanceToDispatcher(t *testing.T) {
 		`value="assistant"`,
 		`href="/ui/projects/new?slug=personal-assistant"`,
 		"telegram.dispatcher_project_id",
+		`href="/ui/integrations"`,
+		"Connect a channel",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("setup page missing dispatcher-next marker %q", want)

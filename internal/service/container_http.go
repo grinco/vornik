@@ -85,6 +85,14 @@ func (c *Container) initHTTPServer() error {
 	}
 	taskCreator := taskcreate.New(taskCreatorOpts...)
 
+	// Built once and shared by the HTTP-facing wizard adapter below
+	// AND the dispatcher's compose_automation bridge (task 1.4) — both
+	// need the concrete *projectwizard.Wizard (the dispatcher bridge
+	// for typed Envelope.Bundle.Plan access; see composer_bridge.go),
+	// so this single construction feeds both wiring sites instead of
+	// building two independent instances that could drift.
+	projectWizard := buildProjectWizard(c)
+
 	apiOpts := []api.ServerOption{
 		api.WithLogger(c.Logger),
 		api.WithTaskRepository(c.repos.Tasks),
@@ -106,7 +114,7 @@ func (c *Container) initHTTPServer() error {
 		// Wired only when the chat router + sessions repo are
 		// available — bare-bones deployments fall through to the
 		// handler's 503.
-		api.WithProjectWizard(buildProjectWizardOrNil(c)),
+		api.WithProjectWizard(newProjectWizardAdapter(projectWizard)),
 		func() api.ServerOption {
 			var sessions persistence.InstallationOnboardingSessionRepository
 			if c.repos != nil {
@@ -411,15 +419,21 @@ func (c *Container) initHTTPServer() error {
 	}
 	doctorSecrets := projectdoctor.NewEnvSecrets(onboardingSecretsDir(c.ConfigPath))
 	projectDoctor := projectdoctor.New(projectdoctor.Deps{
-		Registry:     doctorRegistry,
-		MCP:          doctorMCP,
-		Model:        modelPinger,
-		Secrets:      doctorSecrets,
-		SecretWriter: doctorSecrets,
-		Smoke:        newSmokeRunner(taskCreator, c.repos.Tasks, c.repos.LLMUsage),
-		Logger:       c.Logger,
+		Registry:         doctorRegistry,
+		MCP:              doctorMCP,
+		Model:            modelPinger,
+		Secrets:          doctorSecrets,
+		SecretWriter:     doctorSecrets,
+		Smoke:            newSmokeRunner(taskCreator, c.repos.Tasks, c.repos.LLMUsage),
+		ComposerRecovery: newComposerRecoveryChecker(c),
+		Logger:           c.Logger,
 	})
 	apiOpts = append(apiOpts, api.WithProjectDoctor(projectDoctor))
+	// Fix-It Doctor repair chat (task 3.2) + its task-3.3 action
+	// dispatcher. Wired here (not in the apiOpts literal above) because
+	// the dispatcher's set_secret pipeline needs projectDoctor, which
+	// doesn't exist until this point in initHTTPServer.
+	apiOpts = append(apiOpts, api.WithFixItDoctor(buildFixItDoctorOrNil(c, projectDoctor)))
 	if reg := c.observabilityRegistry(); reg != nil {
 		if c.rateLimitMetrics == nil {
 			c.rateLimitMetrics = ratelimit.NewMetrics(reg)
@@ -469,6 +483,24 @@ func (c *Container) initHTTPServer() error {
 		// trading subsystem reads c.equityCheckMetrics.Set as its sink.
 		if c.equityCheckMetrics == nil {
 			c.equityCheckMetrics = api.NewTradingEquityCheckMetrics(reg)
+		}
+		// Same pass-2-only rule for the Guided Integrations Hub's probe/
+		// save counters (task 5.4) — ui.WithIntegrationsMetrics reads
+		// c.integrationsMetrics down in the uiOpts block below.
+		if c.integrationsMetrics == nil {
+			c.integrationsMetrics = ui.NewIntegrationsMetrics(reg)
+		}
+		// Same pass-2-only rule for the deliverable-first completion
+		// "send to chat" counter (task 2.4) — ui.WithDeliverableMetrics
+		// reads c.deliverableMetrics down in the uiOpts block below.
+		if c.deliverableMetrics == nil {
+			c.deliverableMetrics = ui.NewDeliverableMetrics(reg)
+		}
+		// Same pass-2-only rule for the Outcome Inbox's views counter
+		// (task 4.4) — ui.WithInboxMetrics reads c.inboxMetrics down in
+		// the uiOpts block below.
+		if c.inboxMetrics == nil {
+			c.inboxMetrics = ui.NewInboxMetrics(reg)
 		}
 		apiOpts = append(apiOpts, api.WithMetricsRegistry(reg))
 		apiOpts = append(apiOpts, api.WithRateLimitMetrics(c.rateLimitMetrics))
@@ -1170,6 +1202,22 @@ func (c *Container) initHTTPServer() error {
 
 	apiServer := api.NewServer(apiOpts...)
 	c.apiServer = apiServer
+
+	// Dispatcher chat entry point for the NL Automation Composer
+	// (task 1.4; design §5.7 Phase 4). Wired here — not in
+	// initDispatcher — because initDispatcher runs before
+	// projectWizard exists (it's built above, inside this same
+	// initHTTPServer pass); SetComposerBridge is the same late-binding
+	// pattern SetEmailSender uses for an analogous ordering
+	// constraint. c.Dispatcher is nil when chat is disabled (no
+	// dispatcher agent at all); this call runs again, harmlessly, on
+	// the post-observability initHTTPServer pass with a projectWizard
+	// that now carries real metrics — see buildProjectWizard's doc
+	// comment on the two-pass rebuild.
+	if c.Dispatcher != nil {
+		bridge := newComposerBridge(projectWizard, c.Config.Telegram.WebUIBaseURL)
+		c.Dispatcher.SetComposerBridge(bridge, c.Config.Composer.Enabled)
+	}
 	// Set config handlers if reloader is available
 	if c.ConfigReloader != nil {
 		api.SetConfigHandlers(api.NewConfigHandlers(c.ConfigReloader))
@@ -1184,8 +1232,22 @@ func (c *Container) initHTTPServer() error {
 		dh.SetServerConfig(c.Config)
 		dh.SetConfigPath(c.ConfigPath)
 		dh.SetPricingPath(resolvePricingPath(c.ConfigPath))
+		// Role-library doctor check (composer task 1.1b concern-2): a
+		// role-library entry's tool may legitimately name a system-step
+		// handler (e.g. "rag.extract") instead of a built-in/mcp__ tool;
+		// validate against what THIS daemon actually registered rather than
+		// a static list. initScheduler runs before initHTTPServer in
+		// NewContainer, so the snapshot is populated by this point.
+		dh.SetSystemHandlerNames(c.systemHandlerNames)
 		if c.repos != nil && c.repos.LeaderLocks != nil {
 			dh.SetLeaderLockRepository(c.repos.LeaderLocks)
+		}
+		// Live model-health circuit line: when the chat router has the
+		// health-gate layer enabled it implements chat.ModelHealthReporter,
+		// so the doctor can surface OPEN/HALF_OPEN circuits alongside the
+		// 24h passive check. A nil client or disabled breaker no-ops.
+		if c.ChatClient != nil {
+			dh.SetChatProvider(c.ChatClient)
 		}
 		api.SetDoctorHandlers(dh)
 		doctorH = dh
@@ -1230,6 +1292,12 @@ func (c *Container) initHTTPServer() error {
 	uiOpts := []ui.ServerOption{
 		ui.WithLogger(c.Logger.With().Str("component", "ui").Logger()),
 		ui.WithTaskRepository(c.repos.Tasks),
+		// Task 5.4: the Guided Integrations Hub's probe/save counters.
+		// c.integrationsMetrics is nil on pass 1 (no observability yet) and
+		// built once the served registry exists (see the pass-2-only block
+		// alongside dryRunMetrics/rateLimitMetrics above) — WithIntegrations
+		// Metrics(nil) is a harmless no-op, same "TWO-PASS TRAP" contract.
+		ui.WithIntegrationsMetrics(c.integrationsMetrics),
 		ui.WithExecutionRepository(c.repos.Executions),
 		ui.WithArtifactRepository(c.repos.Artifacts),
 		// Route UI blob reads (changelog inline render +
@@ -1243,6 +1311,24 @@ func (c *Container) initHTTPServer() error {
 		ui.WithAPIKeyRepository(c.repos.APIKeys),
 		ui.WithLLMUsageRepository(c.repos.LLMUsage),
 		ui.WithStepOutcomeRepository(c.repos.StepOutcomes),
+		// Narrated Execution story panel (task 2.2) — read-only against
+		// the 2.1 narrator's execution_narration store.
+		ui.WithExecutionNarrationRepository(c.repos.ExecutionNarration),
+		// Deliverable-first completion (task 2.4) — "send to chat"
+		// per deliverable card. Shares the chatorigin resolve chain
+		// with the 2.3 chat push: the SAME containerChannelResolver
+		// adapter (container_reminders.go) and the SAME c.repos.ChatAudit
+		// repository container_narrator.go wires as Audit. Deliberately
+		// NOT gated on the Admin provider like WithAdminChatAuditRepository
+		// below — this feature must work on any build the narrator is
+		// wired on, admin surface or not.
+		ui.WithChatAuditRepository(c.repos.ChatAudit),
+		ui.WithChannelResolver(&containerChannelResolver{c: c}),
+		ui.WithDeliverableMetrics(c.deliverableMetrics),
+		// Task 4.4: the Outcome Inbox's views-by-role counter. Same
+		// nil-is-a-noop TWO-PASS TRAP contract as WithIntegrationsMetrics
+		// above.
+		ui.WithInboxMetrics(c.inboxMetrics),
 		ui.WithJudgeVerdictRepository(c.repos.JudgeVerdicts),
 		ui.WithRecoveryEventRepository(c.repos.RecoveryEvents),
 		ui.WithSkillRepository(c.repos.Skills),
@@ -1255,6 +1341,7 @@ func (c *Container) initHTTPServer() error {
 		ui.WithTradingSafetyRepository(c.repos.TradingSafetyEvents),
 		ui.WithTradingFillRepository(c.repos.TradingFills),
 		ui.WithPostMortemRepository(c.repos.PostMortems),
+		ui.WithSecretRedactionRepository(c.repos.SecretRedaction),
 		// Continuous-learning Consumer A (slice 3): advisory "similar
 		// failures here resolved by …" panel on the failed-task page.
 		// Double-gated — instinct.enabled AND
@@ -1598,6 +1685,14 @@ func (c *Container) initHTTPServer() error {
 
 	if c.capabilities().ServeUI {
 		uiServer := ui.NewServer(uiOpts...)
+		// Task 3.4: stored so the Fix-It Doctor's IntegrationProbeProvider/
+		// ReloadStatusProvider/IntegrationReprober adapters (wired earlier
+		// in this function, before uiServer exists — see
+		// buildFixItDoctorOrNil's call site) can read the live probe
+		// cache + reload state lazily at request time. Stored via
+		// atomic.Pointer.Store (companion review 2026-07-10, IMPORTANT
+		// #1) — see the field's doc comment on Container.
+		c.uiServer.Store(uiServer)
 		uiHandler := wrapUIAdminGate(
 			c.Logger.With().Str("component", "ui").Logger(),
 			c.Config.Admin,
@@ -1806,7 +1901,6 @@ func (c *Container) adminUIOptions(deps adminUIDeps) []ui.ServerOption { //nolin
 		ui.WithAdminReadinessProvider(newAdminReadinessFromAPI(deps.apiServer)),
 		ui.WithAdminLeaseAuditSource(newAdminLeaseAudit(c.DB)),
 		ui.WithAdminStuckExecutionSource(newAdminStuckExecs(c.DB)),
-		ui.WithAdminMCPConfigSource(newAdminMCPConfig(c.Registry)),
 		ui.WithRuntimeReadinessSource(newRuntimeReadinessProbe(c.Config)),
 	)
 	// Cluster + worker observability — reads daemon_leader_locks

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 )
@@ -302,7 +303,30 @@ func isModelShapedFailure(err error) bool {
 	if strings.Contains(msg, "PROVIDER_ERROR") {
 		return true
 	}
+	// A circuit-open fast-reject (LLD 2026-07-11-model-health): the primary's
+	// (route, model) breaker is open, so a different model is exactly what to
+	// try. This also makes MODEL_UNHEALTHY a fail-over trigger without waiting
+	// for the retry ladder.
+	if isModelUnhealthyFailure(err) {
+		return true
+	}
 	return false
+}
+
+// isModelUnhealthyFailure reports whether err is (or carries) a model-health
+// circuit-open rejection — the typed chat.ModelUnhealthyError (in-daemon
+// callers) or the agent-emitted "MODEL_UNHEALTHY" marker (the chat proxy
+// returns 503 MODEL_UNHEALTHY, which the agent surfaces in result.json). Such
+// an error means the model's circuit is OPEN: retrying it just fast-rejects,
+// so the executor skips the infra ladder and fails over immediately.
+func isModelUnhealthyFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if chat.IsModelUnhealthy(err) {
+		return true
+	}
+	return strings.Contains(err.Error(), "MODEL_UNHEALTHY")
 }
 
 // isPersistentTimeoutFailure reports whether err is an infra-retry-EXHAUSTED
@@ -550,6 +574,17 @@ func (e *Executor) executeAgentStepWithInfraRetry(
 		}
 		lastCID, lastResult, lastErr = cid, result, err
 
+		// Circuit-open fast-reject (LLD 2026-07-11-model-health §6): the
+		// model's breaker is OPEN, so retrying it inside the ladder just
+		// fast-rejects. Return immediately (on attempt 1 the step never even
+		// reached the model) so the fallback layer fails over to a healthy
+		// model at once instead of burning the ladder. A mid-ladder trip
+		// (the breaker opened under concurrent traffic between attempts) is
+		// handled the same way — retrying a now-open circuit is pointless.
+		if isModelUnhealthyFailure(err) {
+			return cid, result, err
+		}
+
 		if !isInfraFailure(err) {
 			// Non-infra error — kick it back to the caller (shape
 			// retry layer or the workflow loop) without burning more
@@ -615,44 +650,19 @@ func (e *Executor) executeAgentStepWithInfraRetry(
 // when a model writes about a story involving a connection. The
 // curl exit codes and the bracketed tags below are reliably
 // machine-emitted.
-var infraFailureMarkers = []string{
-	// curl exit codes from the agent's chat-proxy call. The agent
-	// surfaces these as "curl failed (exit N): curl: (N) ..." in
-	// the result.json error path.
-	"curl: (6)",  // CURLE_COULDNT_RESOLVE_HOST — DNS
-	"curl: (7)",  // CURLE_COULDNT_CONNECT — connection refused
-	"curl: (28)", // CURLE_OPERATION_TIMEDOUT
-	"curl: (35)", // CURLE_SSL_CONNECT_ERROR
-	"curl: (52)", // CURLE_GOT_NOTHING — empty reply / EOF
-	"curl: (56)", // CURLE_RECV_ERROR — failure receiving network data
-	// Gateway 5xx — bedrock-access-gateway / vertex / claude-sub
-	// errors that sometimes recover within seconds.
-	"gateway error 502",
-	"gateway error 503",
-	"gateway error 504",
-	"PROVIDER_ERROR",
-	// Connection-level errors that show up in agent logs without
-	// the curl: prefix (some chat clients call native HTTP, not
-	// curl, but report the same kernel-level failure modes).
-	"connection refused",
-	"Connection refused",
-	"no such host",
-	"i/o timeout",
-}
-
 // isInfraFailure returns true when err looks like a transient
 // infrastructure failure that's worth retrying with the same inputs.
 //
-// Only matches against agent-emitted error patterns (curl exit
-// codes, gateway 5xx, connection refused) — i.e. failures that
-// happen WHILE the agent container is running and surface via
-// "agent reported FAILED status: ..." in the executor error
-// path. The existing retryableError wrapper that container.go
-// puts on container-start / wait failures is intentionally NOT
-// matched here: those are handled by the task-level retry loop in
-// runExecution, which uses task.attempts as its budget. Layering
-// both a step-level infra retry AND a task-level retry on the
-// same error class would double-count attempts.
+// The upstream/transport vocabulary (curl exit codes, gateway 5xx,
+// connection refused, PROVIDER_ERROR, timeouts) is delegated to the shared
+// chat.IsUpstreamInfraError classifier (audit-free centralize-on-recurrence;
+// the breaker and the executor must agree on "provider is down"). Only the
+// executor-SPECIFIC guard stays local: the retryableError wrapper that
+// container.go puts on container-start / wait failures is intentionally NOT
+// treated as a step-level infra failure — those are handled by the task-level
+// retry loop in runExecution (task.attempts budget); layering both a
+// step-level infra retry AND a task-level retry on the same error class would
+// double-count attempts.
 func isInfraFailure(err error) bool {
 	if err == nil {
 		return false
@@ -663,14 +673,7 @@ func isInfraFailure(err error) bool {
 	if errors.As(err, &transient) {
 		return false
 	}
-	// Match against agent-emitted error messages.
-	msg := err.Error()
-	for _, marker := range infraFailureMarkers {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
+	return chat.IsUpstreamInfraError(err)
 }
 
 // shapeFailureKind tags the flavor of validation failure so the

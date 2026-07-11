@@ -48,13 +48,21 @@ func (r *ProjectWizardSessionRepository) Insert(ctx context.Context, s *persiste
 	if s.ReadyToCommit {
 		readyInt = 1
 	}
+	tier3UnlockedInt := 0
+	if s.Tier3Unlocked {
+		tier3UnlockedInt = 1
+	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO project_wizard_sessions (
 		    id, created_at, updated_at, operator_id,
-		    transcript, current_proposal, suggested_template, ready_to_commit, composition
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    transcript, current_proposal, suggested_template, ready_to_commit, composition,
+		    tier3_turns, tier3_unlocked, schedule_confirmed_at, schedule_confirmed_cron, bundle,
+		    bundle_commit_failed_at, bundle_commit_error, tier3_consecutive_validation_failures
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.ID, sqliteTime(s.CreatedAt), sqliteTime(s.UpdatedAt), s.OperatorID,
 		transcript, nullableSqliteBytes(s.CurrentProposal), nullableSqliteString(s.SuggestedTemplate), readyInt, nullableSqliteBytes(s.Composition),
+		s.Tier3Turns, tier3UnlockedInt, sqliteTimePtr(s.ScheduleConfirmedAt), nullableSqliteString(s.ScheduleConfirmedCron), nullableSqliteBytes(s.Bundle),
+		sqliteTimePtr(s.BundleCommitFailedAt), nullableSqliteString(s.BundleCommitError), s.Tier3ConsecutiveValidationFailures,
 	)
 	return err
 }
@@ -66,7 +74,9 @@ func (r *ProjectWizardSessionRepository) Get(ctx context.Context, id string) (*p
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, created_at, updated_at, operator_id,
 		       transcript, current_proposal, suggested_template, ready_to_commit,
-		       committed_project_id, committed_at, cancelled_at, composition
+		       committed_project_id, committed_at, cancelled_at, composition,
+		       tier3_turns, tier3_unlocked, schedule_confirmed_at, schedule_confirmed_cron, bundle,
+		       bundle_commit_failed_at, bundle_commit_error, tier3_consecutive_validation_failures
 		FROM project_wizard_sessions
 		WHERE id = ?`, id)
 	return scanSqliteWizardSession(row)
@@ -87,6 +97,10 @@ func (r *ProjectWizardSessionRepository) Update(ctx context.Context, s *persiste
 	if s.ReadyToCommit {
 		readyInt = 1
 	}
+	tier3UnlockedInt := 0
+	if s.Tier3Unlocked {
+		tier3UnlockedInt = 1
+	}
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE project_wizard_sessions
 		SET transcript = ?,
@@ -94,10 +108,21 @@ func (r *ProjectWizardSessionRepository) Update(ctx context.Context, s *persiste
 		    suggested_template = ?,
 		    ready_to_commit = ?,
 		    composition = ?,
+		    tier3_turns = ?,
+		    tier3_unlocked = ?,
+		    schedule_confirmed_at = ?,
+		    schedule_confirmed_cron = ?,
+		    bundle = ?,
+		    bundle_commit_failed_at = ?,
+		    bundle_commit_error = ?,
+		    tier3_consecutive_validation_failures = ?,
 		    updated_at = ?
 		WHERE id = ?`,
 		transcript, nullableSqliteBytes(s.CurrentProposal), nullableSqliteString(s.SuggestedTemplate),
-		readyInt, nullableSqliteBytes(s.Composition), sqliteTime(time.Now().UTC()), s.ID,
+		readyInt, nullableSqliteBytes(s.Composition),
+		s.Tier3Turns, tier3UnlockedInt, sqliteTimePtr(s.ScheduleConfirmedAt), nullableSqliteString(s.ScheduleConfirmedCron), nullableSqliteBytes(s.Bundle),
+		sqliteTimePtr(s.BundleCommitFailedAt), nullableSqliteString(s.BundleCommitError), s.Tier3ConsecutiveValidationFailures,
+		sqliteTime(time.Now().UTC()), s.ID,
 	)
 	if err != nil {
 		return err
@@ -196,7 +221,9 @@ func (r *ProjectWizardSessionRepository) ListByOperator(ctx context.Context, ope
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, created_at, updated_at, operator_id,
 		       transcript, current_proposal, suggested_template, ready_to_commit,
-		       committed_project_id, committed_at, cancelled_at, composition
+		       committed_project_id, committed_at, cancelled_at, composition,
+		       tier3_turns, tier3_unlocked, schedule_confirmed_at, schedule_confirmed_cron, bundle,
+		       bundle_commit_failed_at, bundle_commit_error, tier3_consecutive_validation_failures
 		FROM project_wizard_sessions
 		WHERE operator_id = ?
 		ORDER BY updated_at DESC
@@ -218,22 +245,30 @@ func (r *ProjectWizardSessionRepository) ListByOperator(ctx context.Context, ope
 
 func scanSqliteWizardSession(scanner interface{ Scan(dest ...any) error }) (*persistence.ProjectWizardSession, error) {
 	var (
-		s                  persistence.ProjectWizardSession
-		createdAt          sqlTime
-		updatedAt          sqlTime
-		transcript         string
-		currentProposal    sql.NullString
-		suggestedTemplate  sql.NullString
-		readyInt           int
-		committedProjectID sql.NullString
-		committedAt        sqlNullTime
-		cancelledAt        sqlNullTime
-		composition        sql.NullString
+		s                     persistence.ProjectWizardSession
+		createdAt             sqlTime
+		updatedAt             sqlTime
+		transcript            string
+		currentProposal       sql.NullString
+		suggestedTemplate     sql.NullString
+		readyInt              int
+		committedProjectID    sql.NullString
+		committedAt           sqlNullTime
+		cancelledAt           sqlNullTime
+		composition           sql.NullString
+		tier3UnlockedInt      int
+		scheduleConfirmedAt   sqlNullTime
+		scheduleConfirmedCron sql.NullString
+		bundle                sql.NullString
+		bundleCommitFailedAt  sqlNullTime
+		bundleCommitError     sql.NullString
 	)
 	err := scanner.Scan(
 		&s.ID, &createdAt, &updatedAt, &s.OperatorID,
 		&transcript, &currentProposal, &suggestedTemplate, &readyInt,
 		&committedProjectID, &committedAt, &cancelledAt, &composition,
+		&s.Tier3Turns, &tier3UnlockedInt, &scheduleConfirmedAt, &scheduleConfirmedCron, &bundle,
+		&bundleCommitFailedAt, &bundleCommitError, &s.Tier3ConsecutiveValidationFailures,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -264,6 +299,24 @@ func scanSqliteWizardSession(scanner interface{ Scan(dest ...any) error }) (*per
 	}
 	if composition.Valid {
 		s.Composition = []byte(composition.String)
+	}
+	s.Tier3Unlocked = tier3UnlockedInt != 0
+	if scheduleConfirmedAt.Valid {
+		t := scheduleConfirmedAt.Time
+		s.ScheduleConfirmedAt = &t
+	}
+	if scheduleConfirmedCron.Valid {
+		s.ScheduleConfirmedCron = scheduleConfirmedCron.String
+	}
+	if bundle.Valid {
+		s.Bundle = []byte(bundle.String)
+	}
+	if bundleCommitFailedAt.Valid {
+		t := bundleCommitFailedAt.Time
+		s.BundleCommitFailedAt = &t
+	}
+	if bundleCommitError.Valid {
+		s.BundleCommitError = bundleCommitError.String
 	}
 	return &s, nil
 }

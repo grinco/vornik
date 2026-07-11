@@ -139,7 +139,13 @@ func FallbackModelOverrides(sw *registry.Swarm) map[string]string {
 	}
 	out := make(map[string]string, len(sw.Roles))
 	for _, role := range sw.Roles {
-		if fb := strings.TrimSpace(role.ModelFallback); fb != "" {
+		fb := strings.TrimSpace(role.ModelFallback)
+		// A fallback equal to the primary is not a genuine alternative — under
+		// the model-health breaker it resolves to the SAME (route, model)
+		// circuit, so "failing over" would just re-reject (LLD 2026-07-11-
+		// model-health §6, same-model-misconfig guard). Drop it so the role is
+		// treated as having no fallback rather than looping on itself.
+		if fb != "" && fb != strings.TrimSpace(role.Model) {
 			out[role.Name] = fb
 		}
 	}

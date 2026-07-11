@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/chat"
+	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -172,12 +173,18 @@ func (f *fakeChatProvider) Model() string            { return "fake" }
 func (f *fakeChatProvider) SetMetrics(*chat.Metrics) {}
 
 // capturingChatProvider wraps fakeChatProvider and records every system
-// message it receives, so tests can assert on what buildChatMessages
-// actually assembled (grounding block included).
+// message + the per-request response_format it receives, so tests can
+// assert on what buildChatMessages / Converse's response_format
+// selection actually handed the chat client (grounding block +
+// tier/bundle schema fields included) — the "test the REAL contract"
+// gap the whole-branch review's C1 finding named: every prior test
+// hand-fed tier-3 JSON via a fake provider without ever checking the
+// request side ever legally invited it.
 type capturingChatProvider struct {
 	fakeChatProvider
-	mu         sync.Mutex
-	systemMsgs []string
+	mu              sync.Mutex
+	systemMsgs      []string
+	responseFormats []*chat.ResponseFormat
 }
 
 func (c *capturingChatProvider) Complete(ctx context.Context, msgs []chat.Message) (*chat.ChatResponse, error) {
@@ -187,6 +194,7 @@ func (c *capturingChatProvider) Complete(ctx context.Context, msgs []chat.Messag
 			c.systemMsgs = append(c.systemMsgs, m.Content)
 		}
 	}
+	c.responseFormats = append(c.responseFormats, chat.ResponseFormatStructFromContext(ctx))
 	c.mu.Unlock()
 	return c.fakeChatProvider.Complete(ctx, msgs)
 }
@@ -441,6 +449,130 @@ func TestConverse_NilGroundingDepsStillBuildsPrompt(t *testing.T) {
 	}
 	if !strings.Contains(sys, "mcp_server") {
 		t.Errorf("expected the static addon vocabulary to still render, got: %s", sys)
+	}
+}
+
+// TestConverse_ComposerAvailable_UsesUnifiedResponseFormatAndGrounding
+// is the "test the REAL contract" regression the whole-branch review's
+// C1 finding named: every prior tier-3 test hand-fed the fake chat
+// provider a tier-3 JSON reply without ever checking whether the
+// REQUEST actually invited one. With composer.max_tier>=3 and a
+// non-empty role library, the response_format handed to the chat
+// client must carry tier/bundle (AND still proposal/composition — the
+// v2 schema is a superset), and the system prompt must ground the
+// model in the role-library archetype ids + step vocabulary.
+func TestConverse_ComposerAvailable_UsesUnifiedResponseFormatAndGrounding(t *testing.T) {
+	chatStub := &capturingChatProvider{
+		fakeChatProvider: fakeChatProvider{replies: []chatReply{{content: envelopeAskQuestion}}},
+	}
+	w := &Wizard{
+		Sessions:           newFakeStore(),
+		Chat:               chatStub,
+		MaxTurns:           5,
+		Timeout:            time.Second,
+		Composer:           config.ComposerConfig{MaxTier: 3},
+		RoleLibrary:        testArchetypes(),
+		SystemHandlerNames: []string{"rag.extract"},
+	}
+	if _, err := w.Converse(context.Background(), "", "op_1", "build me something custom"); err != nil {
+		t.Fatalf("converse: %v", err)
+	}
+
+	if len(chatStub.responseFormats) != 1 || chatStub.responseFormats[0] == nil {
+		t.Fatal("expected a captured response_format")
+	}
+	rf := chatStub.responseFormats[0]
+	if rf.Type != "json_schema" || rf.JSONSchema == nil {
+		t.Fatalf("expected a json_schema response_format, got %+v", rf)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(rf.JSONSchema.Schema, &schema); err != nil {
+		t.Fatalf("unmarshal response_format schema: %v", err)
+	}
+	props, _ := schema["properties"].(map[string]any)
+	for _, want := range []string{"tier", "bundle", "proposal", "composition"} {
+		if _, ok := props[want]; !ok {
+			t.Errorf("expected the REAL response_format to carry %q, got properties=%v", want, props)
+		}
+	}
+
+	if len(chatStub.systemMsgs) != 1 {
+		t.Fatalf("expected 1 system message, got %d", len(chatStub.systemMsgs))
+	}
+	sys := chatStub.systemMsgs[0]
+	if !strings.Contains(sys, "`researcher`") || !strings.Contains(sys, "`writer`") {
+		t.Errorf("expected the role-library archetype ids in the prompt, got: %s", sys)
+	}
+	if !strings.Contains(sys, "rag.extract") {
+		t.Errorf("expected the step-vocabulary system-handler name in the prompt, got: %s", sys)
+	}
+	if !strings.Contains(sys, "`agent`") || !strings.Contains(sys, "`gate`") || !strings.Contains(sys, "`approval`") {
+		t.Errorf("expected the step-vocabulary kinds in the prompt, got: %s", sys)
+	}
+}
+
+// TestConverse_ComposerUnavailable_PlainEnvelopeSchemaAndPromptUnchanged
+// pins the additive-only constraint: with the composer OFF (default —
+// no RoleLibrary, or MaxTier<3, or MaxTier>=3 but still no RoleLibrary
+// since materializeBundle has nothing to expand into), the
+// response_format handed to the chat client must be byte-for-byte
+// envelopeResponseFormat() and the system prompt must carry no tier-3
+// grounding at all.
+func TestConverse_ComposerUnavailable_PlainEnvelopeSchemaAndPromptUnchanged(t *testing.T) {
+	wantBytes, _ := json.Marshal(envelopeResponseFormat())
+
+	cases := []struct {
+		name string
+		w    func(chat.Provider) *Wizard
+	}{
+		{
+			name: "zero-value composer config, no role library",
+			w: func(c chat.Provider) *Wizard {
+				return &Wizard{Sessions: newFakeStore(), Chat: c, MaxTurns: 5, Timeout: time.Second}
+			},
+		},
+		{
+			name: "max_tier pinned below 3",
+			w: func(c chat.Provider) *Wizard {
+				return &Wizard{
+					Sessions: newFakeStore(), Chat: c, MaxTurns: 5, Timeout: time.Second,
+					Composer:    config.ComposerConfig{MaxTier: 2},
+					RoleLibrary: testArchetypes(),
+				}
+			},
+		},
+		{
+			name: "max_tier>=3 but no role library",
+			w: func(c chat.Provider) *Wizard {
+				return &Wizard{
+					Sessions: newFakeStore(), Chat: c, MaxTurns: 5, Timeout: time.Second,
+					Composer: config.ComposerConfig{MaxTier: 3},
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &capturingChatProvider{
+				fakeChatProvider: fakeChatProvider{replies: []chatReply{{content: envelopeAskQuestion}}},
+			}
+			w := tc.w(stub)
+			if _, err := w.Converse(context.Background(), "", "op_1", "I want a news feed"); err != nil {
+				t.Fatalf("converse: %v", err)
+			}
+			gotBytes, _ := json.Marshal(stub.responseFormats[0])
+			if string(wantBytes) != string(gotBytes) {
+				t.Errorf("composer-off response_format changed:\nwant %s\ngot  %s", wantBytes, gotBytes)
+			}
+			sys := stub.systemMsgs[0]
+			if strings.Contains(sys, "Composer grounding") {
+				t.Errorf("composer-off system prompt must not carry tier-3 grounding, got: %s", sys)
+			}
+			if strings.Contains(sys, "archetypeId") || strings.Contains(sys, "researcher") {
+				t.Errorf("composer-off system prompt must not leak role-library content, got: %s", sys)
+			}
+		})
 	}
 }
 

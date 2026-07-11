@@ -16,6 +16,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/safepath"
 )
 
 // Gated apply/rollback of control-plane proposals (LLD 2026-07-08-control-
@@ -111,7 +112,19 @@ type ApplyEngine struct {
 	// HasActiveTasks reports whether the given project (""=any project, for
 	// daemon-scope) has a RUNNING/LEASED task.
 	HasActiveTasks func(ctx context.Context, projectID string) (bool, error)
-	Logger         zerolog.Logger
+	// ValidateChange semantically re-validates a proposal's typed Evidence
+	// "change" against CURRENT state before any write (actionable-proposals
+	// §4.5: e.g. a model deprecated between draft and apply). Nil → skipped.
+	// Distinct from Validate (per-file syntax): this one sees the proposal.
+	ValidateChange func(ctx context.Context, p *persistence.ControlPlaneProposal) error
+	// Mirror best-effort propagates the final on-disk state of every path
+	// this proposal touched to the source config tree + git (two-trees
+	// discipline, actionable-proposals §4.7). Called ONCE per successful
+	// apply/rollback, after the ledger write; a nil byte slice means the
+	// path was deleted (rollback of a create). Errors only WARN — the
+	// deployed tree is the daemon's source of truth. Nil → no mirroring.
+	Mirror func(proposalID string, files map[string][]byte) error
+	Logger zerolog.Logger
 
 	mu sync.Mutex // global apply lock (serialises all applies + rollbacks)
 }
@@ -119,9 +132,13 @@ type ApplyEngine struct {
 // resolveTarget joins + cleans apply_target under ConfigDir and rejects any
 // path that escapes it.
 func (e *ApplyEngine) resolveTarget(rel string) (string, error) {
-	base := filepath.Clean(e.ConfigDir)
-	full := filepath.Clean(filepath.Join(base, rel))
-	if full != base && !strings.HasPrefix(full, base+string(os.PathSeparator)) {
+	// Route through the canonical symlink-resolving guard (audit 2026-07-09
+	// LOW-4 / F-1): JoinUnder resolves symlinks in the deepest existing
+	// prefix and re-checks containment, so a pre-existing symlink inside the
+	// config tree pointing outside it can't be written through — the lexical
+	// Clean+HasPrefix guard this replaces did not resolve symlinks.
+	full, err := safepath.JoinUnder(e.ConfigDir, rel)
+	if err != nil {
 		return "", ErrPathTraversal
 	}
 	return full, nil
@@ -152,7 +169,10 @@ func (e *ApplyEngine) Apply(ctx context.Context, id, actor string, ackDaemon boo
 	if len(ops) > scaffoldMaxOps {
 		return ErrTooManyOps
 	}
-	if p.BlastRadius == persistence.ProposalScopeDaemon && !ackDaemon {
+	// Daemon scope affects every project; swarm scope affects every project
+	// referencing the swarm file (actionable-proposals §4.5) — both demand
+	// the explicit second ack.
+	if (p.BlastRadius == persistence.ProposalScopeDaemon || p.BlastRadius == persistence.ProposalScopeSwarm) && !ackDaemon {
 		return ErrDaemonAckRequired
 	}
 	total := 0
@@ -221,6 +241,13 @@ func (e *ApplyEngine) Apply(ctx context.Context, id, actor string, ackDaemon boo
 	if berr := verifyBaseHash(p, resolved); berr != nil {
 		return berr
 	}
+	// Semantic re-validation of the typed change against current state
+	// (actionable-proposals §4.5) — after all preconditions, before any write.
+	if e.ValidateChange != nil {
+		if verr := e.ValidateChange(ctx, p); verr != nil {
+			return fmt.Errorf("change re-validation failed: %w", verr)
+		}
+	}
 	// Snapshot: single legacy replace keeps the bare pre-image string (Phase-2a
 	// back-compat); multi-op uses the versioned JSON envelope (§3).
 	snapshot := buildSnapshot(p, resolved)
@@ -251,7 +278,30 @@ func (e *ApplyEngine) Apply(ctx context.Context, id, actor string, ackDaemon boo
 	}
 	e.Logger.Info().Str("proposal_id", id).Int("ops", len(written)).Str("applied_by", actor).
 		Msg("control-plane: proposal applied")
+	// Two-trees mirror (§4.7): once per proposal, final state only, after the
+	// ledger write. Best-effort — a failure leaves the deployed apply intact.
+	e.mirror(id, mirrorSetFromWritten(written))
 	return nil
+}
+
+// mirror invokes the Mirror hook nil-safely, demoting errors to a WARN.
+func (e *ApplyEngine) mirror(proposalID string, files map[string][]byte) {
+	if e.Mirror == nil || len(files) == 0 {
+		return
+	}
+	if err := e.Mirror(proposalID, files); err != nil {
+		e.Logger.Warn().Err(err).Str("proposal_id", proposalID).
+			Msg("control-plane: applied to deployed tree; source-tree mirror failed — sync by hand")
+	}
+}
+
+// mirrorSetFromWritten maps each written op's rel path to its final content.
+func mirrorSetFromWritten(written []resolvedOp) map[string][]byte {
+	files := make(map[string][]byte, len(written))
+	for _, ro := range written {
+		files[ro.op.Path] = []byte(ro.op.Content)
+	}
+	return files
 }
 
 // buildOps derives the ordered op list from a proposal: the multi-op ApplyOps
@@ -402,7 +452,29 @@ func (e *ApplyEngine) Rollback(ctx context.Context, id string) error {
 		return fmt.Errorf("rollback recorded failed: %w", err)
 	}
 	e.Logger.Info().Str("proposal_id", id).Msg("control-plane: proposal rolled back")
+	e.mirror(id, mirrorSetFromSnapshot(p))
 	return nil
+}
+
+// mirrorSetFromSnapshot maps each restored path to its restored content
+// (nil = the rollback deleted a created file).
+func mirrorSetFromSnapshot(p *persistence.ControlPlaneProposal) map[string][]byte {
+	if strings.TrimSpace(p.ApplyOps) == "" {
+		return map[string][]byte{p.ApplyTarget: []byte(p.PreApplySnapshot)}
+	}
+	var env snapshotEnvelope
+	if err := json.Unmarshal([]byte(p.PreApplySnapshot), &env); err != nil {
+		return nil
+	}
+	files := make(map[string][]byte, len(env.Entries))
+	for rel, entry := range env.Entries {
+		if entry.Existed {
+			files[rel] = []byte(entry.Content)
+		} else {
+			files[rel] = nil
+		}
+	}
+	return files
 }
 
 // restoreSnapshot restores a proposal's pre-apply state. A single legacy

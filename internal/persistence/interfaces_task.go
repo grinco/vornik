@@ -122,6 +122,16 @@ type TaskRepository interface {
 	// GetChildren retrieves all child tasks of a parent task.
 	GetChildren(ctx context.Context, parentTaskID string) ([]*Task, error)
 
+	// OrphanChildren clears the parent_task_id of every direct child of
+	// parentTaskID (sets it to NULL), returning the number of rows
+	// affected. It is used by the retry path: re-running a delegating
+	// (resume_after_children) parent must let its entrypoint re-decompose
+	// from scratch, but the resume guard fast-fails the entrypoint while
+	// any prior-attempt children still hang off the parent. Orphaning
+	// detaches those stale children (preserving them as standalone
+	// historical rows) so GetChildren returns empty and decompose re-runs.
+	OrphanChildren(ctx context.Context, parentTaskID string) (int, error)
+
 	// CountChildrenForParents returns the direct-child count keyed by
 	// parent task ID. Parents with zero children are absent from the
 	// result map (not zero-filled). Powers the UI list's "Subtasks (N)"
@@ -221,6 +231,19 @@ type ExecLatencyStat struct {
 type ToolLatencyStat struct {
 	ProjectID  string
 	ToolName   string
+	P95Seconds float64
+	Count      int64
+}
+
+// StepLatencyStat is one (project, workflow, step, role, model)'s step
+// duration p95 over a window — the control-plane latency signal's slowest-
+// step attribution (LLD 2026-07-11-control-plane-actionable-proposals §4.4).
+type StepLatencyStat struct {
+	ProjectID  string
+	WorkflowID string
+	StepID     string
+	Role       string
+	Model      string
 	P95Seconds float64
 	Count      int64
 }
@@ -517,6 +540,13 @@ type ExecutionStepOutcomeRepository interface {
 	// Empty role/model are filtered out at the SQL layer — gate
 	// steps (role="gate") are noise for spend-quality dashboards.
 	CountByRoleModelOutcome(ctx context.Context, outcome string, since, until time.Time, projectID string) ([]RoleModelOutcomeCount, error)
+
+	// StepLatencyP95ByStep returns step-duration p95 (seconds) + count per
+	// (project, workflow, step, role, model) over rows recorded at/after
+	// since — the control-plane latency signal's slowest-step attribution.
+	// Rows without a duration are skipped; the workflow id comes from the
+	// owning execution.
+	StepLatencyP95ByStep(ctx context.Context, since time.Time) ([]StepLatencyStat, error)
 }
 
 // RoleModelOutcomeCount is one row of CountByRoleModelOutcome.

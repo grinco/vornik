@@ -30,6 +30,7 @@
                         {{if .VerifyInboundAuth}}
                         <span class="px-2 py-0.5 text-[10px] uppercase tracking-wider font-mono rounded-md bg-sky-900/40 text-sky-700 dark:text-sky-300 ring-1 ring-sky-700/40">spf/dkim {{.AuthPolicy}}</span>
                         {{end}}
+                        <a href="/ui/integrations/email?project={{.ProjectID}}" class="text-xs text-brand-400 hover:text-brand-300 ml-auto">Edit in hub →</a>
                     </div>
                     <dl class="px-5 py-3 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-xs">
                         <div class="flex gap-2"><dt class="text-gray-500 w-32 shrink-0">IMAP host</dt><dd class="text-gray-200 font-mono break-all">{{.IMAPHost}}{{if .IMAPPort}}:{{.IMAPPort}}{{end}}</dd></div>

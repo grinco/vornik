@@ -12,6 +12,39 @@ import (
 	"vornik.io/vornik/internal/secrets"
 )
 
+// recordRedactionEvents durably persists per-finding-type redaction
+// counts so the task-detail badge + scan-history CLI have a source
+// (secret-leak Phase 3). Best-effort: a nil repo, empty counts, or a
+// record error are all silently tolerated — the redaction already
+// happened and losing the audit row must never fail the step. The error
+// is logged so a silent swallow stays observable.
+func (e *Executor) recordRedactionEvents(ctx context.Context, projectID, taskID, executionID, checkpoint string, counts map[string]int) {
+	if e.secretRedactionAudit == nil || len(counts) == 0 {
+		return
+	}
+	events := make([]persistence.SecretRedactionEvent, 0, len(counts))
+	for ft, n := range counts {
+		if n <= 0 {
+			continue
+		}
+		events = append(events, persistence.SecretRedactionEvent{
+			ProjectID:   projectID,
+			TaskID:      taskID,
+			ExecutionID: executionID,
+			Checkpoint:  checkpoint,
+			FindingType: ft,
+			Count:       n,
+			Source:      "live",
+		})
+	}
+	if err := e.secretRedactionAudit.Record(ctx, events); err != nil {
+		e.logger.Warn().Err(err).
+			Str("task_id", taskID).
+			Str("checkpoint", checkpoint).
+			Msg("secrets: failed to record redaction audit event(s) — badge/history will under-count")
+	}
+}
+
 // isTrustedOutputTool reports whether tool's tool-audit OUTPUT is
 // provenance-trusted — i.e. its output is a daemon-proxied tool response the
 // agent cannot forge, so heuristic (generic_kv/entropy) findings there are
@@ -209,6 +242,7 @@ func (e *Executor) scanResultForSecrets(ctx context.Context, task *persistence.T
 	switch action {
 	case secrets.ActionRedact:
 		logEvent.Msg("secrets: result.json scanned — redacting findings before persist")
+		e.recordRedactionEvents(ctx, task.ProjectID, task.ID, execution.ID, secrets.CheckpointResultJSON, counts)
 		return secrets.Redact(body, findings), nil
 	case secrets.ActionBlock:
 		// Phase 2: SECRET_LEAK failure class is wired. Return the
@@ -217,6 +251,7 @@ func (e *Executor) scanResultForSecrets(ctx context.Context, task *persistence.T
 		// downstream classifier maps "secret_leak: ..." to
 		// TaskFailureClassSecretLeak.
 		logEvent.Msg("secrets: result.json scanned — BLOCK enforced, step will fail with SECRET_LEAK")
+		e.recordRedactionEvents(ctx, task.ProjectID, task.ID, execution.ID, secrets.CheckpointResultJSON, counts)
 		return secrets.Redact(body, findings), fmt.Errorf("%w: %d finding(s)", ErrSecretLeakBlocked, len(findings))
 	default: // ActionDetect
 		logEvent.Msg("secrets: result.json scanned — detect-only, body left intact")
@@ -272,6 +307,7 @@ func (e *Executor) scanToolAuditForSecrets(execution *persistence.Execution, ste
 	switch action {
 	case secrets.ActionRedact:
 		logEvent.Msg("secrets: tool audit scanned — redacting before persist")
+		e.recordRedactionEvents(context.Background(), execution.ProjectID, execution.TaskID, execution.ID, secrets.CheckpointToolAudit, counts)
 		return string(secrets.Redact([]byte(input), inputFindings)),
 			string(secrets.Redact([]byte(output), outputFindings))
 	case secrets.ActionBlock:
@@ -281,6 +317,7 @@ func (e *Executor) scanToolAuditForSecrets(execution *persistence.Execution, ste
 		// brings the SECRET_LEAK failure class). Make both
 		// degradations explicit in the log.
 		logEvent.Msg("secrets: tool audit — BLOCK ACTION NOT YET ENFORCED, degraded to redact")
+		e.recordRedactionEvents(context.Background(), execution.ProjectID, execution.TaskID, execution.ID, secrets.CheckpointToolAudit, counts)
 		return string(secrets.Redact([]byte(input), inputFindings)),
 			string(secrets.Redact([]byte(output), outputFindings))
 	default: // ActionDetect (default for this checkpoint)

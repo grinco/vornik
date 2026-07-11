@@ -1,0 +1,31 @@
+package chat
+
+import (
+	"errors"
+	"fmt"
+	"time"
+)
+
+// ModelUnhealthyError is returned by HealthGatedProvider when a
+// per-(route, model) circuit is OPEN (or its HALF_OPEN probe permit is
+// already taken): the call is rejected WITHOUT reaching the upstream, so it
+// returns in microseconds (LLD 2026-07-11-model-health-circuit-breaker §5.4).
+// The chat proxy maps it to HTTP 503 MODEL_UNHEALTHY; the executor treats it
+// as a signal to skip the retry ladder and fail over immediately.
+type ModelUnhealthyError struct {
+	Route     string
+	Model     string
+	State     string // "open" | "half_open" — which reject path (observability)
+	OpenSince time.Time
+}
+
+func (e *ModelUnhealthyError) Error() string {
+	return fmt.Sprintf("MODEL_UNHEALTHY: model %q on route %q circuit %s (open since %s)",
+		e.Model, e.Route, e.State, e.OpenSince.Format(time.RFC3339))
+}
+
+// IsModelUnhealthy reports whether err is (or wraps) a *ModelUnhealthyError.
+func IsModelUnhealthy(err error) bool {
+	var m *ModelUnhealthyError
+	return errors.As(err, &m)
+}

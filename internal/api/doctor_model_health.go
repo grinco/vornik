@@ -40,6 +40,7 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/registry"
 )
 
@@ -83,6 +84,83 @@ func (h *DoctorHandlers) SetModelHealthSource(src func(ctx context.Context) ([]m
 		return
 	}
 	h.modelHealthSource = src
+}
+
+// SetChatProvider wires the live circuit-breaker reporter for
+// checkModelCircuits. When the provider implements chat.ModelHealthReporter
+// (the router with the health-gate layer enabled), the doctor surfaces a
+// live per-(route, model) circuit line. A plain client or a disabled
+// breaker layer leaves modelCircuits nil and the check skips.
+func (h *DoctorHandlers) SetChatProvider(p chat.Provider) {
+	if h == nil {
+		return
+	}
+	if reporter, ok := p.(chat.ModelHealthReporter); ok {
+		h.modelCircuits = reporter.ModelHealthSnapshot
+	}
+}
+
+// checkModelCircuits surfaces the LIVE model-health circuit-breaker state
+// alongside the 24h passive checkModelHealth. Unlike checkModelHealth (a DB
+// history read that recommends a fallback), this reflects the in-memory
+// breaker registry right now: any OPEN or HALF_OPEN circuit means the chat
+// router is actively shedding a model. Read-only.
+func (h *DoctorHandlers) checkModelCircuits() DoctorCheck {
+	const name = "model_circuits"
+	if h.modelCircuits == nil {
+		return DoctorCheck{Name: name, Status: "OK", Message: "chat health-gate not wired; skipping live circuit check"}
+	}
+	snaps := h.modelCircuits()
+	if len(snaps) == 0 {
+		return DoctorCheck{Name: name, Status: "OK", Message: "no model circuits initialized yet (no chat traffic since boot)"}
+	}
+	// Sort for stable output: open first, then half_open, then by route/model.
+	sort.Slice(snaps, func(i, j int) bool {
+		oi, oj := circuitSeverity(snaps[i].State), circuitSeverity(snaps[j].State)
+		if oi != oj {
+			return oi > oj
+		}
+		if snaps[i].Route != snaps[j].Route {
+			return snaps[i].Route < snaps[j].Route
+		}
+		return snaps[i].Model < snaps[j].Model
+	})
+	var degraded []string
+	worst := "OK"
+	for _, s := range snaps {
+		switch s.State {
+		case "open":
+			worst = "ERROR"
+			degraded = append(degraded, fmt.Sprintf("[ERROR] %s/%s OPEN since %s — router shedding to fallback",
+				s.Route, s.Model, s.OpenSince.Format(time.RFC3339)))
+		case "half_open":
+			if worst != "ERROR" {
+				worst = "WARNING"
+			}
+			degraded = append(degraded, fmt.Sprintf("[WARNING] %s/%s HALF_OPEN — probing recovery", s.Route, s.Model))
+		}
+	}
+	if len(degraded) == 0 {
+		return DoctorCheck{Name: name, Status: "OK", Message: fmt.Sprintf("all %d model circuit(s) closed", len(snaps))}
+	}
+	return DoctorCheck{
+		Name:    name,
+		Status:  worst,
+		Message: fmt.Sprintf("%d of %d model circuit(s) not closed — the chat router is actively degrading", len(degraded), len(snaps)),
+		Items:   degraded,
+	}
+}
+
+// circuitSeverity orders circuit states for stable worst-first output.
+func circuitSeverity(state string) int {
+	switch state {
+	case "open":
+		return 2
+	case "half_open":
+		return 1
+	default:
+		return 0
+	}
 }
 
 // checkModelHealth flags swarm-role models with a poor recent health signal

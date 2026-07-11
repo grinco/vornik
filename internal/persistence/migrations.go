@@ -5259,4 +5259,216 @@ ALTER TABLE control_plane_proposals ADD COLUMN IF NOT EXISTS live_apply BOOLEAN 
 ALTER TABLE control_plane_proposals DROP COLUMN IF EXISTS live_apply;
 `,
 	},
+	{
+		Version: 121,
+		Name:    "execution_narration",
+		// Narrated Execution Phase 2.1 (narrated-execution-design.md
+		// §5.3) — the narrator worker's persisted story. Unlike
+		// execution_live_events (Phase A, migration 59), which is a
+		// live-only cross-replica accelerant, this table is the
+		// SOURCE OF TRUTH: a viewer who opens the task an hour later
+		// still reads the story, and the narrator's persist-then-
+		// publish ordering means storage is always at least as
+		// current as the bus.
+		//
+		// Schema choices:
+		//   - seq is monotonic PER EXECUTION (mirrors the bus seq
+		//     convention) so ordering + incremental fetch are
+		//     trivial; computed via MAX(seq)+1 inside the INSERT
+		//     (same pattern as execution_live_events), so a narrator
+		//     restart can't reuse a seq already on disk.
+		//   - execution_id has ON DELETE CASCADE: narration rows die
+		//     with their execution, same retention story as every
+		//     other execution-scoped row.
+		//   - kind is CHECK-constrained to the four narration kinds
+		//     the design defines.
+		//   - metadata JSONB is a deliberate extensibility hook
+		//     (review finding 11) — later phases (fix-it doctor,
+		//     inbox flags) annotate lines without a migration.
+		Up: `
+CREATE TABLE IF NOT EXISTS execution_narration (
+    id           TEXT PRIMARY KEY,
+    project_id   TEXT NOT NULL,
+    task_id      TEXT NOT NULL,
+    execution_id TEXT NOT NULL REFERENCES executions(id) ON DELETE CASCADE,
+    seq          BIGINT NOT NULL,
+    step_id      TEXT,
+    kind         TEXT NOT NULL CHECK (kind IN ('step', 'tool', 'milestone', 'completion')),
+    text         TEXT NOT NULL,
+    degraded     BOOLEAN NOT NULL DEFAULT FALSE,
+    metadata     JSONB,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_narration_execution_seq
+    ON execution_narration (execution_id, seq);
+CREATE INDEX IF NOT EXISTS idx_execution_narration_task
+    ON execution_narration (task_id);
+`,
+		Down: `
+DROP TABLE IF EXISTS execution_narration;
+`,
+	},
+	{
+		Version: 122,
+		Name:    "create_fixit_sessions",
+		// Fix-It Doctor Phase 3.2 (fix-it-doctor-design.md §5.2) — repair
+		// chat sessions. One row per operator's repair conversation, bound
+		// to a single failing object (failure_kind + failure_ref_id [+
+		// project_id, empty for the daemon-scope failed_reload kind]).
+		// transcript accumulates JSON turns the same way
+		// project_wizard_sessions does; last_envelope caches the most
+		// recent assistant envelope so a re-render doesn't need to
+		// re-decode the tail of transcript. applied_actions is a
+		// placeholder JSONB array task 3.3's action dispatcher appends to
+		// once an action is actually executed — task 3.2 never writes it.
+		// closed_at is stamped either by the operator (after a
+		// Resolved:true turn shows the objective state) or by the
+		// cascade-close path when the underlying failing object (e.g. the
+		// task) no longer exists.
+		Up: `
+CREATE TABLE IF NOT EXISTS fixit_sessions (
+    id               TEXT PRIMARY KEY,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    operator_id      TEXT NOT NULL,
+    failure_kind     TEXT NOT NULL,
+    failure_ref_id   TEXT NOT NULL,
+    project_id       TEXT,
+    transcript       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    last_envelope    JSONB,
+    applied_actions  JSONB,
+    status_signal    TEXT,
+    closed_at        TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_fixit_sessions_operator
+    ON fixit_sessions (operator_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fixit_sessions_ref_open
+    ON fixit_sessions (failure_kind, failure_ref_id) WHERE closed_at IS NULL;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_fixit_sessions_ref_open;
+DROP INDEX IF EXISTS idx_fixit_sessions_operator;
+DROP TABLE IF EXISTS fixit_sessions;
+`,
+	},
+	{
+		Version: 123,
+		Name:    "project_wizard_sessions_composer_tier3",
+		// NL Automation Composer tier-3 engine (task 1.1b,
+		// nl-automation-composer-design.md §5.1/§5.4). Additive nullable/
+		// defaulted columns; pre-existing sessions keep the zero values
+		// (tier3_turns=0, tier3_unlocked=false, no schedule confirmed) —
+		// none of them ever ran a tier-3 turn.
+		//
+		// tier3_turns: per-session count of ACCEPTED tier-3 turns, checked
+		// against composer.max_tier3_turns (default 10) before the next
+		// tier-3 turn is allowed.
+		// tier3_unlocked: set once the operator gives an explicit
+		// affirmative reply to the "confirm a from-scratch automation"
+		// corrective bounce (design §5.1) — overrides the anchor-score
+		// gate for the rest of THIS session only.
+		// schedule_confirmed_at / schedule_confirmed_cron: the structural
+		// schedule-confirmation gate (§5.4) — a bundle with
+		// autonomy.enabled=true is committable only when these match the
+		// bundle's current schedule; re-confirmation is required if a
+		// later turn changes it.
+		Up: `
+ALTER TABLE project_wizard_sessions ADD COLUMN IF NOT EXISTS tier3_turns INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE project_wizard_sessions ADD COLUMN IF NOT EXISTS tier3_unlocked BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE project_wizard_sessions ADD COLUMN IF NOT EXISTS schedule_confirmed_at TIMESTAMPTZ;
+ALTER TABLE project_wizard_sessions ADD COLUMN IF NOT EXISTS schedule_confirmed_cron TEXT;
+ALTER TABLE project_wizard_sessions ADD COLUMN IF NOT EXISTS bundle JSONB;
+`,
+		Down: `
+ALTER TABLE project_wizard_sessions DROP COLUMN IF EXISTS bundle;
+ALTER TABLE project_wizard_sessions DROP COLUMN IF EXISTS schedule_confirmed_cron;
+ALTER TABLE project_wizard_sessions DROP COLUMN IF EXISTS schedule_confirmed_at;
+ALTER TABLE project_wizard_sessions DROP COLUMN IF EXISTS tier3_unlocked;
+ALTER TABLE project_wizard_sessions DROP COLUMN IF EXISTS tier3_turns;
+`,
+	},
+	{
+		Version: 124,
+		Name:    "project_wizard_sessions_bundle_commit_failure",
+		// NL Automation Composer journaled commit (task 1.2b,
+		// nl-automation-composer-design.md §5.6 step 6). Additive
+		// nullable columns; pre-existing sessions keep NULL (no
+		// bundle-commit attempt has ever failed for them).
+		//
+		// bundle_commit_failed_at / bundle_commit_error: stamped when the
+		// journaled stager (stage → journal → dependency-ordered rename)
+		// fails at any step. session.Bundle is NEVER cleared on this
+		// path (see commit.go / bundle_commit.go) — these two columns
+		// are a diagnostic breadcrumb layered on top of that
+		// intact-Bundle resumability, not a replacement for it.
+		Up: `
+ALTER TABLE project_wizard_sessions ADD COLUMN IF NOT EXISTS bundle_commit_failed_at TIMESTAMPTZ;
+ALTER TABLE project_wizard_sessions ADD COLUMN IF NOT EXISTS bundle_commit_error TEXT;
+`,
+		Down: `
+ALTER TABLE project_wizard_sessions DROP COLUMN IF EXISTS bundle_commit_error;
+ALTER TABLE project_wizard_sessions DROP COLUMN IF EXISTS bundle_commit_failed_at;
+`,
+	},
+	{
+		Version: 125,
+		Name:    "project_wizard_sessions_composer_consecutive_failures",
+		// NL Automation Composer tier-3 validation-failure fallback
+		// (task 1.3, nl-automation-composer-design.md §7 row 1).
+		// Additive nullable/defaulted column; pre-existing sessions
+		// keep the zero value (no tier-3 turn has ever failed for
+		// them).
+		//
+		// tier3_consecutive_validation_failures: per-session count of
+		// CONSECUTIVE tier-3 bundle-pipeline failures (shape/
+		// materialize/guardrail/staged-validation), reset on a
+		// successful tier-3 composition. Distinct from tier3_turns
+		// (migration 123), which counts ACCEPTED turns against the
+		// turn-budget cap — this is a quality circuit-breaker: on the
+		// 3rd consecutive failure the composer downgrades to a
+		// tier-2 nearest-template suggestion instead of retrying
+		// tier-3 forever.
+		Up: `
+ALTER TABLE project_wizard_sessions ADD COLUMN IF NOT EXISTS tier3_consecutive_validation_failures INTEGER NOT NULL DEFAULT 0;
+`,
+		Down: `
+ALTER TABLE project_wizard_sessions DROP COLUMN IF EXISTS tier3_consecutive_validation_failures;
+`,
+	},
+	{
+		Version: 126,
+		Name:    "secret_redaction_audit",
+		// Secret-leak detection Phase 3 operator surface
+		// (2026-07-11-secret-leak-phase3-operator-surface-design.md).
+		// Phases 1+2 detect+redact at eight sinks but only LOG the
+		// per-type counts. This table persists one row per (checkpoint,
+		// finding_type) redaction event so the task-detail badge and the
+		// `vornikctl secrets scan-history` CLI have a durable source.
+		//
+		// task_id / execution_id are NULLABLE — the webhook/backlog/memory
+		// sinks have no task context. checkpoint is a literal sink id
+		// ("result_json", "tool_audit", ...), not globally unique; the
+		// (project_id, checkpoint, created_at) index serves the non-task
+		// history queries, while (task_id) serves the badge lookup.
+		// source is "live" (runtime sink) or "scan" (retro-scan). Mirror
+		// added to sqlite/schema.go.
+		Up: `
+CREATE TABLE IF NOT EXISTS secret_redaction_audit (
+    id           TEXT PRIMARY KEY,
+    project_id   TEXT NOT NULL,
+    task_id      TEXT,
+    execution_id TEXT,
+    checkpoint   TEXT NOT NULL,
+    finding_type TEXT NOT NULL,
+    count        INTEGER NOT NULL,
+    source       TEXT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_secret_redaction_audit_task ON secret_redaction_audit (task_id);
+CREATE INDEX IF NOT EXISTS idx_secret_redaction_audit_project ON secret_redaction_audit (project_id, checkpoint, created_at);
+`,
+		Down: `
+DROP TABLE IF EXISTS secret_redaction_audit;
+`,
+	},
 }

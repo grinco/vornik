@@ -220,42 +220,22 @@ func seedCandidate(repo *stubHealingCandidateRepoUI, id string, status persisten
 
 // --- list tests -------------------------------------------------------
 
-func TestAdminBlackBoxCandidates_NotWired(t *testing.T) {
-	s := NewServer()
-	rec := httptest.NewRecorder()
-	s.AdminBlackBoxCandidates(rec, httptest.NewRequest(http.MethodGet, "/ui/admin/blackbox/candidates", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "not wired on this deployment") {
-		t.Errorf("expected not-wired empty state, got: %s", rec.Body.String())
-	}
-}
-
-func TestAdminBlackBoxCandidates_ListAndStatusFilter(t *testing.T) {
-	repo := newStubHealingCandidateRepoUI()
-	seedCandidate(repo, "whc-passed", persistence.HealingCandidateTrialPassed)
-	c2 := seedCandidate(repo, "whc-draft", persistence.HealingCandidateDraft)
-	c2.WorkflowID = "ingest"
-	s := NewServer(WithHealingCandidateRepository(repo))
-
-	// Unfiltered: both rows render.
-	rec := httptest.NewRecorder()
-	s.AdminBlackBoxCandidates(rec, httptest.NewRequest(http.MethodGet, "/ui/admin/blackbox/candidates", nil))
-	body := rec.Body.String()
-	if !strings.Contains(body, "whc-passed") || !strings.Contains(body, "whc-draft") {
-		t.Errorf("unfiltered list missing rows: %s", body)
-	}
-
-	// Filtered to trial_passed: only the passed row renders.
-	rec = httptest.NewRecorder()
-	s.AdminBlackBoxCandidates(rec, httptest.NewRequest(http.MethodGet, "/ui/admin/blackbox/candidates?status=trial_passed", nil))
-	body = rec.Body.String()
-	if !strings.Contains(body, "whc-passed") {
-		t.Errorf("filtered list missing passed row: %s", body)
-	}
-	if strings.Contains(body, "whc-draft") {
-		t.Errorf("filtered list leaked the draft row: %s", body)
+// Part B fold-in (LLD 2026-07-11 §5.2 #3): the standalone candidates LIST
+// page is deprecated — it 302s to the unified control-plane inbox pre-
+// sliced to the healing source, wired or not. Detail pages stay.
+func TestAdminBlackBoxCandidates_RedirectsToHub(t *testing.T) {
+	for name, s := range map[string]*Server{
+		"unwired": NewServer(),
+		"wired":   NewServer(WithHealingCandidateRepository(newStubHealingCandidateRepoUI())),
+	} {
+		rec := httptest.NewRecorder()
+		s.AdminBlackBoxCandidates(rec, httptest.NewRequest(http.MethodGet, "/ui/admin/blackbox/candidates", nil))
+		if rec.Code != http.StatusFound {
+			t.Fatalf("%s: want 302, got %d", name, rec.Code)
+		}
+		if loc := rec.Header().Get("Location"); loc != "/ui/admin/control-plane?section=proposals&source=healing" {
+			t.Errorf("%s: wrong redirect target %q", name, loc)
+		}
 	}
 }
 
@@ -570,7 +550,14 @@ func TestAdminBlackBoxCandidateReject_TerminalBanner(t *testing.T) {
 
 func TestBadgeAndFormatHelpers(t *testing.T) {
 	// status badges — every arm.
-	for _, st := range candidateStatusOptions() {
+	for _, st := range []string{
+		string(persistence.HealingCandidateDraft),
+		string(persistence.HealingCandidateTrialRunning),
+		string(persistence.HealingCandidateTrialPassed),
+		string(persistence.HealingCandidateTrialFailed),
+		string(persistence.HealingCandidatePromoted),
+		string(persistence.HealingCandidateRejected),
+	} {
 		if statusBadgeClass(st) == "" {
 			t.Errorf("empty status badge for %q", st)
 		}
@@ -629,18 +616,26 @@ func TestCandidateDetailURL_Truncation(t *testing.T) {
 	}
 }
 
-func TestAdminBlackBoxCandidates_ListErrorRendersEmpty(t *testing.T) {
-	repo := newStubHealingCandidateRepoUI()
-	repo.getErr = nil // List has no error knob; simulate via a closed-over wrapper below
-	s := NewServer(WithHealingCandidateRepository(&listErrCandidateRepo{}))
+// A candidate-list failure must not break the unified inbox: the hub
+// degrades to architect rows (no healing badge) and still renders 200.
+// Regression cover moved here from the deprecated standalone list page.
+func TestAdminControlPlane_CandidateListErrorDegrades(t *testing.T) {
+	repo := newProposalRepoUI(t)
+	wf := newStubProposalsRepo()
+	seedWorkflowProposal(wf, "wfp-err", "ingest", persistence.WorkflowProposalStatusPending)
+	s := NewServer(
+		WithProposalStore(repo),
+		WithWorkflowProposalsRepository(wf),
+		WithHealingCandidateRepository(&listErrCandidateRepo{}),
+	)
 	rec := httptest.NewRecorder()
-	s.AdminBlackBoxCandidates(rec, httptest.NewRequest(http.MethodGet, "/ui/admin/blackbox/candidates", nil))
+	s.AdminControlPlane(rec, httptest.NewRequest(http.MethodGet, "/ui/admin/control-plane?section=proposals", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code=%d", rec.Code)
 	}
-	// List failed → no rows, but page still renders the table shell / empty state.
-	if !strings.Contains(rec.Body.String(), "No candidates yet") {
-		t.Errorf("list error should degrade to empty state")
+	body := rec.Body.String()
+	if !strings.Contains(body, "wfp-err") || !strings.Contains(body, "architect") {
+		t.Errorf("candidate list error should degrade to architect rows: %s", body)
 	}
 }
 
@@ -796,11 +791,11 @@ func TestAdminRouter_CandidatesDispatch(t *testing.T) {
 		WithHealingCandidatePromoter(&stubPromoterUI{}),
 		WithHealingTrialRunner(&stubTrialRunnerUI{}),
 	)
-	// list
+	// list — deprecated: 302 to the unified inbox (Part B §5.2 #3).
 	rec := httptest.NewRecorder()
 	s.adminRouter(rec, withAdminUI(httptest.NewRequest(http.MethodGet, "/admin/blackbox/candidates", nil)))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "whc-router") {
-		t.Fatalf("list dispatch failed: code=%d", rec.Code)
+	if rec.Code != http.StatusFound || !strings.Contains(rec.Header().Get("Location"), "source=healing") {
+		t.Fatalf("list dispatch should redirect to the hub: code=%d loc=%q", rec.Code, rec.Header().Get("Location"))
 	}
 	// detail
 	rec = httptest.NewRecorder()

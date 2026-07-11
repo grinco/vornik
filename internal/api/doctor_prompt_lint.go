@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"vornik.io/vornik/internal/agenttools"
 	"vornik.io/vornik/internal/registry"
 )
 
@@ -106,29 +107,6 @@ func (h *DoctorHandlers) checkRolePromptSanity() DoctorCheck {
 	return DoctorCheck{Name: name, Status: "WARNING", Message: msg, Items: items}
 }
 
-// knownBuiltinTools are the structured agent tools available inside any
-// agent container. A role may reference these in its prompt even when
-// it isn't explicitly allowed (the executor filters); flagging a
-// missing allowlist entry matters more than missing prompt mentions.
-var knownBuiltinTools = map[string]bool{
-	"file_read":       true,
-	"file_write":      true,
-	"file_edit":       true,
-	"run_shell":       true,
-	"current_time":    true,
-	"read_many_files": true,
-	"grep":            true,
-	"glob":            true,
-	"git_status":      true,
-	"git_diff":        true,
-	"git_log":         true,
-	"git_show":        true,
-	"test_run":        true,
-	"lint_run":        true,
-	"typecheck_run":   true,
-	"memory_search":   true,
-}
-
 // toolReferenceRegexes extracts tool names a prompt body mentions.
 // Matches both inline-code style (`file_read`) and backtick-adjacent
 // quoting styles that role prompts use in this repo.
@@ -184,7 +162,7 @@ func lintRole(sw *registry.Swarm, role registry.SwarmRole, hasStepPrompt bool) [
 	//    aren't in allowedTools.
 	referenced := extractToolReferences(prompt)
 	for tool := range referenced {
-		if !knownBuiltinTools[tool] {
+		if !agenttools.IsBuiltin(tool) {
 			continue // not a known tool name — probably a false match
 		}
 		if !allowed[tool] {

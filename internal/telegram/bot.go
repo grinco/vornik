@@ -2456,27 +2456,6 @@ func (b *Bot) sendChatAction(ctx context.Context, chatID int64, action string) {
 	}
 }
 
-// startTypingLoop sends "typing" every 4 seconds until the returned cancel func is called.
-func (b *Bot) startTypingLoop(ctx context.Context, chatID int64) context.CancelFunc {
-	ctx, cancel := context.WithCancel(ctx)
-	go func() {
-		b.sendChatAction(ctx, chatID, "typing")
-		ticker := time.NewTicker(4 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				b.sendChatAction(ctx, chatID, "typing")
-			}
-		}
-	}()
-	return cancel
-}
-
-var _ = (*Bot).startTypingLoop
-
 // getFile retrieves the file path from Telegram for a given file_id.
 func (b *Bot) getFile(ctx context.Context, fileID string) (string, error) {
 	url := fmt.Sprintf("%s/getFile?file_id=%s", b.baseURL, fileID)

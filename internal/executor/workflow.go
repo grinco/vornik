@@ -22,6 +22,14 @@ import (
 // or waiting for delegated child tasks to complete).
 var errExecutionPaused = errors.New("execution paused awaiting approval")
 
+// errDelegatedChildFailedTerminal marks a failure that re-running the task
+// cannot fix: a delegating parent resumed after a delegated child FAILED,
+// its entrypoint has no on_fail target, so it can only fast-fail again on
+// the same terminal child. handleFailure treats this as non-retryable
+// (exhausts the attempt budget) so the parent doesn't burn every attempt
+// re-hitting the same wall in milliseconds — the retry-storm guard.
+var errDelegatedChildFailedTerminal = errors.New("delegated child failed and the resume step has no on_fail target")
+
 // executeWorkflowAttempt runs through the workflow steps starting from the
 // current position until a terminal is reached or the execution is paused.
 func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence.Task, execution *persistence.Execution, plan *executionPlan, timeout time.Duration) (string, []byte, []string, error) {
@@ -281,7 +289,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 					currentStepID = step.OnFail
 					continue
 				}
-				return "", nil, completedSteps, fmt.Errorf("delegated child failed and step %q has no on_fail target", currentStepID)
+				return "", nil, completedSteps, fmt.Errorf("%w (step %q)", errDelegatedChildFailedTerminal, currentStepID)
 			}
 
 			// Single-candidate auto-route: when the project's adaptive
@@ -2556,6 +2564,24 @@ func (e *Executor) handleFailure(ctx context.Context, task *persistence.Task, ex
 	// freeform message. ClassifyExecutionFailure is defensive — returns
 	// UNKNOWN rather than guessing when the signal is ambiguous.
 	errorClass := ClassifyExecutionFailure(err, errorMsg)
+
+	// Retry-storm guard. A delegating parent that resumed onto a FAILED
+	// child with no on_fail target can only fast-fail again on the same
+	// terminal child — retrying re-hits the wall in milliseconds and
+	// drains the whole budget in a burst. Exhaust the attempt budget so
+	// both this finaliser and the scheduler treat it as terminal now.
+	// (The manual retry path clears the stale children first, so this
+	// only bites the autonomous bubble-up loop.)
+	if errors.Is(err, errDelegatedChildFailedTerminal) && task.MaxAttempts > 0 && task.Attempt < task.MaxAttempts {
+		e.logger.Warn().
+			Str("task_id", task.ID).
+			Int("task_attempt", task.Attempt).
+			Int("task_max_attempts", task.MaxAttempts).
+			Str("error_class", errorClass).
+			Str("decision_path", "handleFailure.delegated_child_terminal").
+			Msg("task: delegated-child failure is non-retryable — exhausting attempt budget to stop the retry storm")
+		task.Attempt = task.MaxAttempts
+	}
 
 	// Sweep any remaining pending_validation rows to "ok": if a step's
 	// output had been bad, the consumer site (plan_step.go, gate eval)

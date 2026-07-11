@@ -52,10 +52,14 @@ func (r *ProjectWizardSessionRepository) Insert(ctx context.Context, s *persiste
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO project_wizard_sessions (
 		    id, created_at, updated_at, operator_id,
-		    transcript, current_proposal, suggested_template, ready_to_commit, composition
-		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)`,
+		    transcript, current_proposal, suggested_template, ready_to_commit, composition,
+		    tier3_turns, tier3_unlocked, schedule_confirmed_at, schedule_confirmed_cron, bundle,
+		    bundle_commit_failed_at, bundle_commit_error, tier3_consecutive_validation_failures
+		) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
 		s.ID, s.CreatedAt, s.UpdatedAt, s.OperatorID,
 		string(transcript), jsonbValue(s.CurrentProposal), nullableStr(s.SuggestedTemplate), s.ReadyToCommit, jsonbValue(s.Composition),
+		s.Tier3Turns, s.Tier3Unlocked, s.ScheduleConfirmedAt, nullableStr(s.ScheduleConfirmedCron), jsonbValue(s.Bundle),
+		s.BundleCommitFailedAt, nullableStr(s.BundleCommitError), s.Tier3ConsecutiveValidationFailures,
 	)
 	return mapDBError(err)
 }
@@ -68,7 +72,9 @@ func (r *ProjectWizardSessionRepository) Get(ctx context.Context, id string) (*p
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, created_at, updated_at, operator_id,
 		       transcript, current_proposal, suggested_template, ready_to_commit,
-		       committed_project_id, committed_at, cancelled_at, composition
+		       committed_project_id, committed_at, cancelled_at, composition,
+		       tier3_turns, tier3_unlocked, schedule_confirmed_at, schedule_confirmed_cron, bundle,
+		       bundle_commit_failed_at, bundle_commit_error, tier3_consecutive_validation_failures
 		FROM project_wizard_sessions
 		WHERE id = $1`, id)
 	return scanProjectWizardSession(row)
@@ -95,9 +101,19 @@ func (r *ProjectWizardSessionRepository) Update(ctx context.Context, s *persiste
 		    suggested_template = $4,
 		    ready_to_commit   = $5,
 		    composition       = $6,
+		    tier3_turns             = $7,
+		    tier3_unlocked          = $8,
+		    schedule_confirmed_at   = $9,
+		    schedule_confirmed_cron = $10,
+		    bundle                  = $11,
+		    bundle_commit_failed_at = $12,
+		    bundle_commit_error     = $13,
+		    tier3_consecutive_validation_failures = $14,
 		    updated_at        = NOW()
 		WHERE id = $1`,
 		s.ID, string(transcript), jsonbValue(s.CurrentProposal), nullableStr(s.SuggestedTemplate), s.ReadyToCommit, jsonbValue(s.Composition),
+		s.Tier3Turns, s.Tier3Unlocked, s.ScheduleConfirmedAt, nullableStr(s.ScheduleConfirmedCron), jsonbValue(s.Bundle),
+		s.BundleCommitFailedAt, nullableStr(s.BundleCommitError), s.Tier3ConsecutiveValidationFailures,
 	)
 	if err != nil {
 		return mapDBError(err)
@@ -206,7 +222,9 @@ func (r *ProjectWizardSessionRepository) ListByOperator(ctx context.Context, ope
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, created_at, updated_at, operator_id,
 		       transcript, current_proposal, suggested_template, ready_to_commit,
-		       committed_project_id, committed_at, cancelled_at, composition
+		       committed_project_id, committed_at, cancelled_at, composition,
+		       tier3_turns, tier3_unlocked, schedule_confirmed_at, schedule_confirmed_cron, bundle,
+		       bundle_commit_failed_at, bundle_commit_error, tier3_consecutive_validation_failures
 		FROM project_wizard_sessions
 		WHERE operator_id = $1
 		ORDER BY updated_at DESC
@@ -230,19 +248,26 @@ func scanProjectWizardSession(scanner interface {
 	Scan(dest ...any) error
 }) (*persistence.ProjectWizardSession, error) {
 	var (
-		s                  persistence.ProjectWizardSession
-		transcriptStr      string
-		currentProposal    sql.NullString
-		suggestedTemplate  sql.NullString
-		committedProjectID sql.NullString
-		committedAt        sql.NullTime
-		cancelledAt        sql.NullTime
-		composition        sql.NullString
+		s                     persistence.ProjectWizardSession
+		transcriptStr         string
+		currentProposal       sql.NullString
+		suggestedTemplate     sql.NullString
+		committedProjectID    sql.NullString
+		committedAt           sql.NullTime
+		cancelledAt           sql.NullTime
+		composition           sql.NullString
+		scheduleConfirmedAt   sql.NullTime
+		scheduleConfirmedCron sql.NullString
+		bundle                sql.NullString
+		bundleCommitFailedAt  sql.NullTime
+		bundleCommitError     sql.NullString
 	)
 	err := scanner.Scan(
 		&s.ID, &s.CreatedAt, &s.UpdatedAt, &s.OperatorID,
 		&transcriptStr, &currentProposal, &suggestedTemplate, &s.ReadyToCommit,
 		&committedProjectID, &committedAt, &cancelledAt, &composition,
+		&s.Tier3Turns, &s.Tier3Unlocked, &scheduleConfirmedAt, &scheduleConfirmedCron, &bundle,
+		&bundleCommitFailedAt, &bundleCommitError, &s.Tier3ConsecutiveValidationFailures,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -270,6 +295,23 @@ func scanProjectWizardSession(scanner interface {
 	}
 	if composition.Valid {
 		s.Composition = []byte(composition.String)
+	}
+	if scheduleConfirmedAt.Valid {
+		t := scheduleConfirmedAt.Time
+		s.ScheduleConfirmedAt = &t
+	}
+	if scheduleConfirmedCron.Valid {
+		s.ScheduleConfirmedCron = scheduleConfirmedCron.String
+	}
+	if bundle.Valid {
+		s.Bundle = []byte(bundle.String)
+	}
+	if bundleCommitFailedAt.Valid {
+		t := bundleCommitFailedAt.Time
+		s.BundleCommitFailedAt = &t
+	}
+	if bundleCommitError.Valid {
+		s.BundleCommitError = bundleCommitError.String
 	}
 	return &s, nil
 }

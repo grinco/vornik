@@ -255,17 +255,19 @@ func TestAdminHealthWatchdog_NoSource(t *testing.T) {
 	}
 }
 
-// TestAdminIntegrationsMCP_NoSource — empty-state shape.
-func TestAdminIntegrationsMCP_NoSource(t *testing.T) {
+// TestAdminIntegrationsMCP_Redirects — the page is deprecated
+// (2026-07-11 nav dedupe): the control-plane hub's MCP tab is the
+// canonical MCP surface; the old route 302s there for bookmarks.
+func TestAdminIntegrationsMCP_Redirects(t *testing.T) {
 	s := NewServer()
-	req := httptest.NewRequest(http.MethodGet, "/admin/integrations/mcp", nil)
+	req := withAdminUI(httptest.NewRequest(http.MethodGet, "/admin/integrations/mcp", nil))
 	rec := httptest.NewRecorder()
-	s.AdminIntegrationsMCP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: want 200, got %d", rec.Code)
+	s.adminRouter(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status: want 302, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Registry not wired") {
-		t.Error("should render 'Registry not wired' empty state")
+	if loc := rec.Header().Get("Location"); loc != "/ui/admin/control-plane?section=mcp" {
+		t.Fatalf("Location: %q", loc)
 	}
 }
 
@@ -283,7 +285,8 @@ func TestAdminRouter_Dispatch(t *testing.T) {
 		{"/admin/health/leases", "Lease audit"},
 		{"/admin/health/watchdog", "Watchdog failures"},
 		{"/admin/health/mcp", "MCP health"},
-		{"/admin/integrations/mcp", "MCP integrations"},
+		// /admin/integrations/mcp is deprecated → 302 to the hub MCP tab
+		// (asserted by TestAdminIntegrationsMCP_Redirects).
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
@@ -489,27 +492,6 @@ func TestAdminHealthMCP_POSTNoRefresher(t *testing.T) {
 	s.AdminHealthMCP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status: want 503, got %d", rec.Code)
-	}
-}
-
-// stubMCPConfig feeds the integrations page.
-type stubMCPConfig struct{ rows []AdminMCPProjectRow }
-
-func (s stubMCPConfig) ConfiguredMCPServers() []AdminMCPProjectRow { return s.rows }
-
-func TestAdminIntegrationsMCP_WithData(t *testing.T) {
-	src := stubMCPConfig{rows: []AdminMCPProjectRow{
-		{ProjectID: "proj-a", Servers: []AdminMCPServerRow{{Name: "broker"}}},
-	}}
-	s := NewServer(WithAdminMCPConfigSource(src))
-	req := httptest.NewRequest(http.MethodGet, "/admin/integrations/mcp", nil)
-	rec := httptest.NewRecorder()
-	s.AdminIntegrationsMCP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: want 200, got %d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "proj-a") {
-		t.Error("project id should render")
 	}
 }
 

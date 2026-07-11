@@ -150,6 +150,14 @@ type restartBannerView struct {
 	Pending bool
 	Reason  string
 	Since   string // preformatted local time, empty when not pending
+	// FixItHref (task 3.4, fix-it-doctor-design.md §5.5) deep-links the
+	// Fix-It Doctor panel when the pending state stems from a genuine
+	// reload validation error (reloadStatusReader.Status().HasErrors) —
+	// as opposed to merely "blocked" (in-flight tasks) or "deferred"
+	// (reloader busy), neither of which is a config PROBLEM the doctor
+	// could ground on. Empty when there's nothing to fix, or the
+	// reloader doesn't expose Status() (test fakes, legacy path).
+	FixItHref string
 }
 
 // restartBanner snapshots the pending-restart state for the persistent banner.
@@ -161,16 +169,27 @@ type restartBannerView struct {
 // reports a fresh success, so the banner correctly persists until restart.
 func (s *Server) restartBanner() restartBannerView {
 	pending, reason, since := s.RestartPending()
+	var status config.ReloadStatus
+	var haveStatus bool
 	if pending {
 		if sr, ok := s.configReloader.(reloadStatusReader); ok {
-			st := sr.Status()
-			if !st.PendingActivation && !st.Blocked && st.LastReload.After(since) {
+			status = sr.Status()
+			haveStatus = true
+			if !status.PendingActivation && !status.Blocked && status.LastReload.After(since) {
 				s.clearRestartPending()
 				pending = false
 			}
 		}
 	}
 	v := restartBannerView{Pending: pending, Reason: reason}
+	if pending && haveStatus && status.HasErrors {
+		// daemon-scope failed_reload sessions carry no meaningful
+		// per-object id (types.go: "empty (daemon-scope) for
+		// failed_reload") — "daemon" is an opaque, non-empty
+		// placeholder so the panel route (which 404s on an empty path
+		// segment) still resolves; the assembler never looks it up.
+		v.FixItHref = "/ui/fixit/failed_reload/daemon"
+	}
 	if pending {
 		v.Since = since.Format("15:04 MST")
 	}

@@ -254,6 +254,15 @@ func (s *Server) applyFallbackModelOverride(ctx context.Context, task *persisten
 // form carries fallback_model=1 (the "Retry on fallback model" button)
 // the task's roles are first switched to their configured fallback
 // models for the next run.
+//
+// Task 4.3 (design §5.6): the scope gate now runs up front against one
+// Get, rather than being re-derived twice (once inside retryOne, once
+// on the not-retriable fallback path) — a scope mismatch always 404s
+// before retryOne runs, whether the caller is the inline attention-
+// queue's HTMX retry button or a plain form post. An HX-Request caller
+// gets the re-rendered attention-queue row fragment instead of the
+// redirect; publishes the existing SSEEvent on a successful requeue so
+// other viewers' queues refresh (§7).
 func (s *Server) TaskRetry(w http.ResponseWriter, r *http.Request, taskID string) {
 	if s.taskRepo == nil {
 		http.Error(w, "task repository not configured", http.StatusServiceUnavailable)
@@ -262,19 +271,30 @@ func (s *Server) TaskRetry(w http.ResponseWriter, r *http.Request, taskID string
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	if err := r.ParseForm(); err == nil && r.FormValue("fallback_model") == "1" {
-		if task, err := s.taskRepo.Get(ctx, taskID); err == nil && task != nil &&
-			(task.ProjectID == "" || api.RequestAllowsProject(r, task.ProjectID)) {
-			s.applyFallbackModelOverride(ctx, task)
-		}
+	task, err := s.taskRepo.Get(ctx, taskID)
+	if err != nil || task == nil {
+		http.Error(w, "Task not found", http.StatusNotFound)
+		return
+	}
+	if !s.uiRequireProjectScope(w, r, task.ProjectID) {
+		return
 	}
 
-	if !s.retryOne(ctx, r, taskID) {
-		t, _ := s.taskRepo.Get(ctx, taskID)
-		if t == nil || (t.ProjectID != "" && !api.RequestAllowsProject(r, t.ProjectID)) {
-			http.Error(w, "Task not found", http.StatusNotFound)
-			return
-		}
+	if err := r.ParseForm(); err == nil && r.FormValue("fallback_model") == "1" {
+		s.applyFallbackModelOverride(ctx, task)
+	}
+
+	retried := s.retryOne(ctx, r, taskID)
+	if retried && s.sseBus != nil {
+		s.sseBus.Publish(taskID, SSEEvent{Kind: "status", Data: "QUEUED"})
+	}
+
+	if r.Header.Get("HX-Request") != "" {
+		s.renderInboxItemFragment(ctx, w, taskID)
+		return
+	}
+
+	if !retried {
 		http.Redirect(w, r, fmt.Sprintf("/ui/tasks/%s?notice=task-not-retriable", taskID), http.StatusSeeOther)
 		return
 	}

@@ -206,6 +206,29 @@ type Pattern struct {
 	Description string
 }
 
+// EffectivePatterns returns the operator's active pattern corpus:
+// DefaultPatterns minus any names in disable, plus custom. This is the
+// single source of truth for "what patterns are actually in force",
+// shared by the detector wiring (buildSecretsDetector) and the
+// `vornikctl secrets list-patterns` CLI so the two never drift.
+func EffectivePatterns(disable []string, custom []Pattern) []Pattern {
+	patterns := DefaultPatterns()
+	if len(disable) > 0 {
+		dropped := make(map[string]struct{}, len(disable))
+		for _, name := range disable {
+			dropped[name] = struct{}{}
+		}
+		filtered := patterns[:0]
+		for _, p := range patterns {
+			if _, drop := dropped[p.Name]; !drop {
+				filtered = append(filtered, p)
+			}
+		}
+		patterns = filtered
+	}
+	return append(patterns, custom...)
+}
+
 // DefaultPatterns returns the curated pattern list shipped with
 // vornik. Operators extend by adding entries to
 // configs/secrets.yaml's patterns.custom section — the loader

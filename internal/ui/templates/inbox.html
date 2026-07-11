@@ -25,31 +25,167 @@
                  hx-swap="outerHTML">
             {{if .Items}}
                 <ul class="space-y-2">
-                    {{range .Items}}
-                    <li class="flex items-center gap-3 rounded-xl border border-dark-600 bg-dark-800 p-3.5">
-                        <span class="text-[11px] font-medium uppercase tracking-wide px-2 py-0.5 rounded-full
-                            {{if eq .Kind "Needs approval"}}bg-amber-500/20 text-amber-700 dark:text-amber-300
-                            {{else if eq .Kind "Needs input"}}bg-sky-500/20 text-sky-700 dark:text-sky-300
-                            {{else if eq .Kind "Failed"}}bg-rose-500/20 text-rose-700 dark:text-rose-300
-                            {{else}}bg-gray-500/20 text-gray-300{{end}}">{{.Kind}}</span>
-                        <div class="min-w-0 flex-1">
-                            <div class="text-sm text-gray-200 truncate font-mono">{{.TaskID}}</div>
-                            <div class="text-[11px] text-gray-500 flex items-center gap-2">
-                                <span>{{.ProjectID}}</span>
-                                {{if .Detail}}<span class="text-rose-800/80 dark:text-rose-400/80">{{.Detail}}</span>{{end}}
-                                <span class="ml-auto">{{.Age}}</span>
-                            </div>
-                        </div>
-                        <a href="{{.Href}}" class="shrink-0 px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors">{{.Action}} →</a>
-                    </li>
-                    {{end}}
+                    {{range .Items}}{{template "inboxItemRow" .}}{{end}}
                 </ul>
             {{else}}
                 {{template "emptyState" (dict "Icon" "tasks" "Title" "All clear" "Hint" "Nothing needs your attention — no approvals, checkpoints, recent failures, or blocked tasks.")}}
             {{end}}
+            {{if .HasMoreAttention}}
+                <p class="text-xs text-amber-600 dark:text-amber-400 mt-2">…and more waiting — showing the first {{.AttentionPageSize}}.</p>
+            {{end}}
+
+            {{/* "Your requests" cards (task 4.2, design §5.3/§5.5): the
+                 attention queue folded to one card per request-root. This
+                 section stays link-out-only — task 4.3's inline actions
+                 (approve/reject/answer/retry/fix-it) live on the pinned
+                 "Needs your attention" queue above, not here. */}}
+            <div class="mt-8 space-y-3">
+                <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wide">Your requests</h2>
+                {{if or .Requests .RecentRequests}}
+                <ul class="space-y-2">
+                    {{range .Requests}}{{template "requestCardItem" .}}{{end}}
+                    {{/* Broader list (task 4.4, design §5.7): recent
+                         requests in ANY status, deduped against .Requests
+                         above (a request pinned there isn't repeated
+                         here) — this is what makes a purely
+                         COMPLETED/RUNNING request (no attention-flagged
+                         descendant) reachable as a card at all. Same
+                         card partial as .Requests — no separate
+                         rendering path. */}}
+                    {{range .RecentRequests}}{{template "requestCardItem" .}}{{end}}
+                </ul>
+                {{if .HasMoreRecent}}
+                <p class="text-xs text-amber-600 dark:text-amber-400 mt-2">…and more requests waiting — showing the most recent {{.RecentRequestsPageSize}}.</p>
+                {{end}}
+                {{else}}
+                {{template "emptyState" (dict "Icon" "tasks" "Title" "Describe what you want and Vornik will set it up" "Hint" "The guided composer is coming soon — for now, start from the project wizard." "CTAHref" "/ui/projects/new" "CTALabel" "Start a project")}}
+                {{end}}
+            </div>
             </div>
         </div>
     </main>
 </body>
 </html>
+{{end}}
+
+{{/* requestCardItem — one "Your requests" card (task 4.2, design
+     §5.3/§5.5). Expects a requestCard. Shared by both the pinned
+     attention-derived cards (.Requests) and the broader recent-requests
+     list (.RecentRequests, task 4.4) so there is exactly one card
+     rendering path — no reimplementation. Link-out-only: task 4.3's
+     inline actions live on the "Needs your attention" row queue above,
+     not on these cards. */}}
+{{define "requestCardItem"}}
+<li class="rounded-xl border border-dark-600 bg-dark-800 p-3.5 space-y-2">
+    <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-[11px] font-medium uppercase tracking-wide px-2 py-0.5 rounded-full
+            {{if eq .Bucket "needs-you"}}bg-amber-500/20 text-amber-700 dark:text-amber-300
+            {{else if eq .Bucket "working"}}bg-sky-500/20 text-sky-700 dark:text-sky-300
+            {{else}}bg-emerald-500/20 text-emerald-700 dark:text-emerald-300{{end}}">{{.BucketLabel}}</span>
+        {{if gt .Subtasks 0}}<span class="text-[10px] px-1.5 py-0.5 rounded-md bg-violet-900/40 text-violet-700 dark:text-violet-300" title="{{.Subtasks}} step(s)">{{.Subtasks}} steps</span>{{end}}
+        {{if .Origin}}<span class="text-[11px] text-gray-500 ml-auto">{{.Origin}}</span>{{end}}
+    </div>
+    <div class="text-sm text-gray-200">{{.StatusLine}}</div>
+    {{if .Deliverables}}
+    <div class="flex flex-wrap gap-2">
+        {{range .Deliverables}}
+        <a href="{{.DownloadURL}}" class="text-[11px] px-2 py-1 rounded-lg bg-dark-700 text-gray-300 hover:bg-dark-600">{{.TypeLabel}}: {{.Name}}</a>
+        {{end}}
+    </div>
+    {{end}}
+    <div class="flex items-center justify-between text-[11px] text-gray-500">
+        <span>{{.Age}}</span>
+        <a href="{{.Href}}" class="text-accent-400 hover:text-accent-300 font-medium">View →</a>
+    </div>
+</li>
+{{end}}
+
+{{/* inboxItemRow — one "Needs your attention" row (task 4.3, design
+     §5.6). Expects an inboxItem. Rendered both inline in the full page
+     (ranged over from .Items above) and standalone as the HTMX
+     partial renderInboxItemFragment returns after an inline action —
+     both call sites must produce byte-identical markup for a given
+     inboxItem, or a post-action swap would visibly differ from a full
+     page load.
+
+     Each action form posts to the existing conversational-lifecycle /
+     retry endpoints (task_conversation.go's TaskConversationAction,
+     task_actions.go's TaskRetry) — htmx's hx-post sends the
+     HX-Request header those handlers check to return this same
+     fragment instead of the legacy 303 redirect. hx-target +
+     hx-swap="outerHTML" replace exactly this <li> in place; an empty
+     response (the row resolved out of the attention set, or the task
+     is gone) removes it — no separate "handle disappearance" branch
+     needed on the client side.
+
+     CSRF posture (task 4.3 review nit, folded into 4.4): these inline
+     forms carry no per-form CSRF token. That is not a gap — this
+     codebase has NO per-form CSRF token anywhere (confirmed in the
+     Phase-5 5.3 review); mutating requests are instead gated by
+     AuthMiddleware's same-origin check (Sec-Fetch-Site / Origin) for
+     cookie-authed sessions. These forms POST to the SAME handlers the
+     non-HTMX task-detail page's forms already use, so they inherit
+     that exact posture — no new surface, nothing to add here. */}}
+{{define "inboxItemRow"}}
+<li id="inbox-item-{{.TaskID}}" class="flex items-center gap-3 rounded-xl border border-dark-600 bg-dark-800 p-3.5 flex-wrap">
+    <span class="text-[11px] font-medium uppercase tracking-wide px-2 py-0.5 rounded-full
+        {{if eq .Kind "Needs approval"}}bg-amber-500/20 text-amber-700 dark:text-amber-300
+        {{else if eq .Kind "Needs input"}}bg-sky-500/20 text-sky-700 dark:text-sky-300
+        {{else if eq .Kind "Failed"}}bg-rose-500/20 text-rose-700 dark:text-rose-300
+        {{else}}bg-gray-500/20 text-gray-300{{end}}">{{.Kind}}</span>
+    <div class="min-w-0 flex-1">
+        <div class="text-sm text-gray-200 truncate font-mono">{{.TaskID}}</div>
+        <div class="text-[11px] text-gray-500 flex items-center gap-2">
+            <span>{{.ProjectID}}</span>
+            {{if .Detail}}<span class="text-rose-800/80 dark:text-rose-400/80">{{.Detail}}</span>{{end}}
+            <span class="ml-auto">{{.Age}}</span>
+        </div>
+    </div>
+
+    <div class="shrink-0 flex items-center gap-1.5">
+    {{if eq .Kind "Needs approval"}}
+        {{/* uiApproveTask / uiRejectTask → uiSimpleFlip. Idempotent:
+             a from-set of [AWAITING_APPROVAL] means a stale second
+             click just re-renders whatever the row looks like now
+             (it will have already disappeared once the first click's
+             fragment swap lands). */}}
+        <form hx-post="/ui/tasks/{{.TaskID}}/approve" hx-target="#inbox-item-{{.TaskID}}" hx-swap="outerHTML" class="contents">
+            <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition-colors">Approve</button>
+        </form>
+        <form hx-post="/ui/tasks/{{.TaskID}}/reject" hx-target="#inbox-item-{{.TaskID}}" hx-swap="outerHTML" class="contents">
+            <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-rose-700/80 hover:bg-rose-600 text-white transition-colors">Reject</button>
+        </form>
+    {{else if eq .Kind "Needs input"}}
+        {{/* uiAnswerCheckpoint. Decision checkpoints get one button per
+             option (choice=<id>); an action-required question (or any
+             checkpoint whose payload didn't parse) gets a free-text
+             box. No open checkpoint (already answered elsewhere,
+             stale row) → no control at all; the row still shows via
+             the badge/link so it isn't silently invisible. */}}
+        {{if .Checkpoint}}
+        <form hx-post="/ui/tasks/{{.TaskID}}/answer" hx-target="#inbox-item-{{.TaskID}}" hx-swap="outerHTML" class="flex flex-wrap items-center gap-1.5">
+            <input type="hidden" name="checkpoint_id" value="{{.CheckpointID}}">
+            {{if eq .Checkpoint.Kind "decision"}}
+                {{range .Checkpoint.Options}}
+                <button type="submit" name="choice" value="{{.ID}}" class="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-colors">{{.Label}}</button>
+                {{end}}
+            {{else}}
+                <input type="text" name="content" placeholder="Your answer…" class="w-40 bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-gray-200">
+                <button type="submit" class="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-colors">Answer</button>
+            {{end}}
+        </form>
+        {{end}}
+    {{else if eq .Kind "Failed"}}
+        {{/* Phase-3 fix-it deep link (plain navigation — the repair
+             chat is its own page) + inline Retry (retryOne via
+             TaskRetry). */}}
+        <a href="{{.FixItURL}}" class="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-violet-700/80 hover:bg-violet-600 text-white transition-colors">Help me fix this</a>
+        <form hx-post="/ui/tasks/{{.TaskID}}/retry" hx-target="#inbox-item-{{.TaskID}}" hx-swap="outerHTML" class="contents">
+            <button type="submit" class="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors">Retry</button>
+        </form>
+    {{else}}
+        <a href="{{.Href}}" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors">{{.Action}} →</a>
+    {{end}}
+    </div>
+</li>
 {{end}}

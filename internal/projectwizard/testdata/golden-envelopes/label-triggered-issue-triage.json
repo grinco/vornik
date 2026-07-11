@@ -1,0 +1,47 @@
+{
+  "message": "When an issue gets the 'triage' label, this automation will analyse it and post a suggested triage comment for your review.",
+  "tier": 3,
+  "ready_to_commit": false,
+  "bundle": {
+    "project": {
+      "projectId": "issue-triage",
+      "displayName": "Issue Triage",
+      "swarmId": "issue-triage-swarm",
+      "defaultWorkflowId": "triage-labelled-issue",
+      "autonomy": {"enabled": false},
+      "budget": {"daily_soft_usd": 1.0, "daily_hard_usd": 3.0, "monthly_soft_usd": 15.0, "monthly_hard_usd": 40.0}
+    },
+    "swarm": {
+      "swarmId": "issue-triage-swarm",
+      "displayName": "Issue Triage",
+      "leadRole": "analyst",
+      "roles": [
+        {"name": "analyst", "archetypeId": "analyst"},
+        {"name": "reviewer", "archetypeId": "reviewer"}
+      ]
+    },
+    "workflows": [
+      {
+        "workflowId": "triage-labelled-issue",
+        "description": "Analyse a labelled issue and post a triage suggestion after review.",
+        "entrypoint": "analyse",
+        "steps": [
+          {"id": "analyse", "type": "agent", "role": "analyst", "next": "review"},
+          {"id": "review", "type": "agent", "role": "reviewer", "next": "approve-comment"},
+          {"id": "approve-comment", "type": "approval", "next": "post"},
+          {"id": "post", "type": "system", "handler": "forge.post_review", "terminal": true}
+        ]
+      }
+    ],
+    "plan": {
+      "steps": [
+        "When an issue is labelled 'triage', the analyst reads it and drafts a triage plan.",
+        "The reviewer checks the draft against the triage criteria.",
+        "You approve the comment before it is posted.",
+        "The approved triage comment is posted to the issue."
+      ],
+      "cost_band": "~$0.35 per run (rough estimate)",
+      "approvals": ["Triage comment is shown for your approval before posting."]
+    }
+  }
+}

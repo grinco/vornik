@@ -1452,6 +1452,19 @@ import os, subprocess, json, shutil, re
 repo = os.environ["REPO_PATH"]
 mode = os.environ["MODE"]
 paths = json.loads(os.environ.get("PATHS_JSON", "[]") or "[]")
+# SECURITY (audit HIGH-1, 2026-07-09): test_run/lint_run/typecheck_run execute
+# the REVIEWED repository's own code — a test suite (conftest.py, build.rs, an
+# npm "test" script) is arbitrary untrusted code, and for a fork/external PR
+# the reviewer agent runs it over the contributor's tree. The daemon injects a
+# push-capable GitHub installation token as GH_TOKEN/GITHUB_TOKEN into the
+# container env for the agent's own gh/git tools; that token must NEVER be
+# visible to the reviewed code's own processes. Build a scrubbed environment
+# (secrets stripped) and pass it to every runner below. The agent's first-class
+# git/gh operations run elsewhere and keep the real env; pushes are performed
+# host-side by the daemon (forge.open_change_request), so stripping the token
+# here cannot break the publish path.
+_SECRET_ENV_KEYS = ("GH_TOKEN", "GITHUB_TOKEN")
+SAFE_ENV = {k: v for k, v in os.environ.items() if k not in _SECRET_ENV_KEYS}
 def have(cmd): return shutil.which(cmd) is not None
 def detect():
     if os.path.isfile(os.path.join(repo, "go.mod")): return "go"
@@ -1472,7 +1485,7 @@ def run_go_test():
         return {"error": "go toolchain not available in agent image", "runner": "go test"}
     args = ["go", "test", "-json", "-count=1"]
     args += paths if paths else ["./..."]
-    r = subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=600)
+    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=600)
     passed = failed = skipped = 0
     failures = []
     for line in r.stdout.splitlines():
@@ -1491,7 +1504,7 @@ def run_go_vet():
     if not have("go"):
         return {"error": "go toolchain not available in agent image", "runner": "go vet"}
     args = ["go", "vet"] + (paths if paths else ["./..."])
-    r = subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=300)
+    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=300)
     issues = []
     for line in r.stderr.splitlines():
         m = re.match(r"([^:]+):(\d+):(?:\d+:)?\s*(.*)", line)
@@ -1503,7 +1516,7 @@ def run_go_build():
     if not have("go"):
         return {"error": "go toolchain not available in agent image", "runner": "go build"}
     args = ["go", "build"] + (paths if paths else ["./..."])
-    r = subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=600)
+    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=600)
     errors = []
     for line in r.stderr.splitlines():
         m = re.match(r"([^:]+):(\d+):(?:\d+:)?\s*(.*)", line)
@@ -1515,7 +1528,7 @@ def run_pytest():
     if not have("pytest"):
         return {"error": "pytest not available in agent image", "runner": "pytest"}
     args = ["pytest", "-q", "--tb=short"] + paths
-    r = subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=600)
+    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=600)
     passed = failed = skipped = 0
     for line in reversed(r.stdout.splitlines()):
         m = re.search(r"(\d+)\s+passed", line);  passed = int(m.group(1)) if m else passed
@@ -1529,7 +1542,7 @@ def run_ruff():
     if not have("ruff"):
         return {"error": "ruff not available in agent image", "runner": "ruff check"}
     args = ["ruff", "check", "--output-format=json"] + (paths if paths else ["."])
-    r = subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=120)
+    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=120)
     issues = []
     try:
         for d in json.loads(r.stdout or "[]"):
@@ -1543,7 +1556,7 @@ def run_mypy():
     if not have("mypy"):
         return {"error": "mypy not available in agent image", "runner": "mypy"}
     args = ["mypy", "--no-color-output"] + (paths if paths else ["."])
-    r = subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=300)
+    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=300)
     errors = []
     for line in r.stdout.splitlines():
         m = re.match(r"([^:]+):(\d+):\s*(error|note):\s*(.*)", line)
@@ -1554,13 +1567,13 @@ def run_mypy():
 def run_node_script(script):
     if not have("npm"):
         return {"error": "node/npm toolchain not available in agent image", "runner": f"npm run {script}"}
-    r = subprocess.run(["npm", "run", script, "--silent"], cwd=repo, capture_output=True, text=True, timeout=600)
+    r = subprocess.run(["npm", "run", script, "--silent"], cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=600)
     return {"runner": f"npm run {script}", "ok": r.returncode == 0,
             "output": cap(r.stdout + r.stderr)}
 def run_cargo(sub):
     if not have("cargo"):
         return {"error": "rust toolchain not available in agent image", "runner": f"cargo {sub}"}
-    r = subprocess.run(["cargo", sub], cwd=repo, capture_output=True, text=True, timeout=900)
+    r = subprocess.run(["cargo", sub], cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=900)
     return {"runner": f"cargo {sub}", "ok": r.returncode == 0,
             "output": cap(r.stdout + r.stderr)}
 if lang == "go":

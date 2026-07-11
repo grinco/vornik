@@ -4,7 +4,10 @@
 // dispatcher and agents.
 package mcp
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"net/http"
+)
 
 // ServerConfig defines how to connect to an MCP server.
 type ServerConfig struct {
@@ -48,6 +51,14 @@ type ServerConfig struct {
 	// counter increment (the throttle still fires; just no
 	// labelled metric).
 	ProjectID string `yaml:"-" json:"-"`
+	// HTTPClient overrides the client Connect uses for sse / streamable-http
+	// transports. Nil (default, and every existing caller) preserves prior
+	// behavior — Connect builds one internally from TimeoutSeconds. Populated
+	// by the integrations probe layer (internal/integrations) so a candidate
+	// MCP server URL a user pastes in is dialled through the SSRF-guarded
+	// DialGuard client rather than an unguarded default client — Connect has
+	// no other seam for that. Ignored by the stdio transport.
+	HTTPClient *http.Client `yaml:"-" json:"-"`
 }
 
 // TaskIDHeaderKey / ExecutionIDHeaderKey carry the originating

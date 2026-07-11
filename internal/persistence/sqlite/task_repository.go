@@ -210,7 +210,32 @@ func (r *TaskRepository) List(ctx context.Context, filter persistence.TaskFilter
 		}
 		b.WriteString(")")
 	}
-	if filter.Status != nil {
+	if len(filter.IDs) > 0 {
+		b.WriteString(" AND id IN (")
+		for i, id := range filter.IDs {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString("?")
+			args = append(args, id)
+		}
+		b.WriteString(")")
+	}
+	// Statuses wins over Status when both are set; an empty non-nil
+	// Statuses is "no constraint from this field" (falls through to
+	// Status), matching the postgres implementation and
+	// TaskFilter.Statuses's documented semantics.
+	if len(filter.Statuses) > 0 {
+		b.WriteString(" AND status IN (")
+		for i, s := range filter.Statuses {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString("?")
+			args = append(args, string(s))
+		}
+		b.WriteString(")")
+	} else if filter.Status != nil {
 		b.WriteString(" AND status = ?")
 		args = append(args, string(*filter.Status))
 	}
@@ -253,7 +278,17 @@ func (r *TaskRepository) Count(ctx context.Context, filter persistence.TaskFilte
 		b.WriteString(" AND project_id = ?")
 		args = append(args, *filter.ProjectID)
 	}
-	if filter.Status != nil {
+	if len(filter.Statuses) > 0 {
+		b.WriteString(" AND status IN (")
+		for i, s := range filter.Statuses {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString("?")
+			args = append(args, string(s))
+		}
+		b.WriteString(")")
+	} else if filter.Status != nil {
 		b.WriteString(" AND status = ?")
 		args = append(args, string(*filter.Status))
 	}
@@ -786,6 +821,21 @@ func (r *TaskRepository) GetChildren(ctx context.Context, parentTaskID string) (
 		tasks = append(tasks, t)
 	}
 	return tasks, rows.Err()
+}
+
+// OrphanChildren detaches every direct child of parentTaskID by setting
+// its parent_task_id to NULL, returning the affected row count. See the
+// interface doc: the retry path uses this so a delegating parent can
+// re-decompose without the resume guard fast-failing on stale children.
+func (r *TaskRepository) OrphanChildren(ctx context.Context, parentTaskID string) (int, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE tasks SET parent_task_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE parent_task_id = ?`,
+		parentTaskID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // CountChildrenForParents returns a map keyed by parent task ID

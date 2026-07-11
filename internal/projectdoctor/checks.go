@@ -85,7 +85,12 @@ func safeID(proj *registry.Project) string {
 // SecretReader is wired. Each declared secret becomes a CheckItem so
 // the UI can render a per-secret masked-input fix.
 func (d *Doctor) checkSecrets(proj *registry.Project) CheckResult {
-	res := CheckResult{Key: "secrets", Title: "Secrets present"}
+	// FixHref deep-links into the Guided Integrations Hub (task 5.4, design
+	// §5.7): most of a project's declared secrets are channel credentials
+	// (email/Slack/GitHub App env vars) the hub's guided forms now write,
+	// so "supply the missing secret" should land there pre-scoped to this
+	// project rather than a bare edit-config page.
+	res := CheckResult{Key: "secrets", Title: "Secrets present", FixHref: "/ui/integrations?project=" + safeID(proj)}
 	names := proj.Permissions.Secrets
 	if len(names) == 0 {
 		res.Status = StatusNeutral
@@ -133,9 +138,16 @@ func (d *Doctor) checkSecrets(proj *registry.Project) CheckResult {
 // required) when the project subscribes to no servers.
 func (d *Doctor) checkMCP(ctx context.Context, proj *registry.Project) CheckResult {
 	res := CheckResult{
-		Key:     "mcp",
-		Title:   "MCP servers",
-		FixHref: "/ui/mcp",
+		Key:   "mcp",
+		Title: "MCP servers",
+		// FixHref deep-links to the control-plane hub's MCP tab — the
+		// canonical MCP-catalog management surface (the Integrations Hub's
+		// MCP kind was removed 2026-07-10; see integrations.Registry's
+		// doc). Fixing this check means editing the DAEMON's mcp.servers
+		// catalog, which is admin-only on any surface, so an admin-only
+		// target is honest; a non-admin sees the check but was never able
+		// to act on it anyway.
+		FixHref: "/ui/admin/control-plane?section=mcp",
 	}
 	servers := proj.MCP.Servers
 	if len(servers) == 0 {
@@ -223,6 +235,34 @@ func (d *Doctor) checkModel(ctx context.Context) CheckResult {
 	}
 	res.Status = StatusGreen
 	res.Detail = "Chat model backend is reachable."
+	return res
+}
+
+// checkComposerCommit surfaces a leftover NL Automation Composer
+// commit journal for this project (design §5.6 step 4's project-
+// doctor leg; task 1.2b slice ii). Never Required — a leftover
+// journal means either the commit already fully landed (cosmetic
+// cleanup pending) or a partial commit that will auto-roll-back on
+// the next restart; neither blocks the project's own completeness,
+// and both self-heal without operator action. Yellow (heads-up) when
+// found so it isn't invisible between two boots; neutral when no
+// checker is wired; green on a clean scan.
+func (d *Doctor) checkComposerCommit(proj *registry.Project) CheckResult {
+	res := CheckResult{Key: "composer_commit", Title: "Composer commit clean", Required: false}
+	if d.deps.ComposerRecovery == nil {
+		res.Status = StatusNeutral
+		res.Detail = "Composer-commit recovery check not available."
+		return res
+	}
+	found, detail := d.deps.ComposerRecovery.LeftoverJournal(proj.ID)
+	if !found {
+		res.Status = StatusGreen
+		res.Detail = "No leftover composer-commit journal."
+		return res
+	}
+	res.Status = StatusYellow
+	res.Detail = detail
+	res.Remediation = "Restart the daemon to trigger automatic recovery (it also runs on every normal restart)."
 	return res
 }
 

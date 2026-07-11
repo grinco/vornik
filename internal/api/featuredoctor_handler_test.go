@@ -39,8 +39,8 @@ func TestFeatureStatusEndpoint_ListsSeedFeatures(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
-	if len(out) != 5 {
-		t.Fatalf("want 5 features, got %d", len(out))
+	if len(out) != len(featuredoctor.Registry()) {
+		t.Fatalf("want %d features, got %d", len(featuredoctor.Registry()), len(out))
 	}
 	// Each entry must have an ID and a status.
 	ids := map[string]bool{}

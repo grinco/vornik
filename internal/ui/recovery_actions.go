@@ -251,6 +251,28 @@ func RecoveryActionsFor(class string, taskID string) []RecoveryAction {
 		)
 	}
 
+	// Universal "Help me fix this" (task 3.4, fix-it-doctor-design.md
+	// §5.5) — opens the Fix-It Doctor repair chat grounded on this
+	// task's failure history (error class, step outcomes, narration
+	// tail). Offered on every class, including the safety classes
+	// above: the doctor never auto-retries, it only proposes actions
+	// the operator still has to click Apply on, so it's a strict
+	// addition to (not a bypass of) the "inspect audit first" rule.
+	// Deliberately NOT gated on Fix-It Doctor being wired on this
+	// deployment — an unconfigured install renders a graceful "not
+	// configured" notice on the panel itself (ui/fixit_doctor.go),
+	// never a 404, so there's no dead-link risk here (unlike the
+	// integrations tile's red_integration link — see integrations.go).
+	actions = append(actions,
+		RecoveryAction{
+			Label:   "Help me fix this",
+			URL:     "/ui/fixit/failed_task/" + taskID,
+			Method:  "GET",
+			Variant: "secondary",
+			Tooltip: "Open a guided repair chat grounded on this failure's history.",
+		},
+	)
+
 	// Universal "Close & won't pursue" — every failed task gets the
 	// option to give up with explanation. Danger variant signals
 	// finality.

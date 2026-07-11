@@ -75,6 +75,9 @@ type MockTaskRepository struct {
 	// GetChildrenFunc is the function called for GetChildren.
 	GetChildrenFunc func(ctx context.Context, parentTaskID string) ([]*persistence.Task, error)
 
+	// OrphanChildrenFunc scripts the retry-path child-detach.
+	OrphanChildrenFunc func(ctx context.Context, parentTaskID string) (int, error)
+
 	// CountChildrenForParentsFunc scripts the bulk direct-child count.
 	// Defaults to (nil, nil) — i.e. "no children for any parent".
 	CountChildrenForParentsFunc func(ctx context.Context, parentTaskIDs []string) (map[string]int, error)
@@ -100,6 +103,7 @@ type MockTaskRepository struct {
 		FindExpiredLeases       int
 		CountByStatus           int
 		GetChildren             int
+		OrphanChildren          int
 		CountChildrenForParents int
 		GetDependencies         int
 		GetDependents           int
@@ -304,6 +308,16 @@ func (m *MockTaskRepository) GetChildren(ctx context.Context, parentTaskID strin
 	return nil, nil
 }
 
+// OrphanChildren implements TaskRepository.
+func (m *MockTaskRepository) OrphanChildren(ctx context.Context, parentTaskID string) (int, error) {
+	m.CallCount.OrphanChildren++
+	m.LastCall.ID = parentTaskID
+	if m.OrphanChildrenFunc != nil {
+		return m.OrphanChildrenFunc(ctx, parentTaskID)
+	}
+	return 0, nil
+}
+
 // CountChildrenForParents implements TaskRepository.
 func (m *MockTaskRepository) CountChildrenForParents(ctx context.Context, parentTaskIDs []string) (map[string]int, error) {
 	m.CallCount.CountChildrenForParents++
@@ -349,6 +363,7 @@ func (m *MockTaskRepository) Reset() {
 		FindExpiredLeases       int
 		CountByStatus           int
 		GetChildren             int
+		OrphanChildren          int
 		CountChildrenForParents int
 		GetDependencies         int
 		GetDependents           int

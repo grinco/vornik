@@ -225,20 +225,3 @@ func TestAdminMCPRefresher_RefreshAll_NoConfig(t *testing.T) {
 		t.Error("expected error from RefreshAll with no manager/registry")
 	}
 }
-
-// TestNewAdminMCPConfig_NilRegistry — same nil-safe shape: no
-// registry means no config to list.
-func TestNewAdminMCPConfig_NilRegistry(t *testing.T) {
-	if got := newAdminMCPConfig(nil); got != nil {
-		t.Errorf("nil registry should yield nil source, got %T", got)
-	}
-}
-
-// TestAdminMCPConfig_ConfiguredMCPServers_NilReceiver — typed-nil
-// safety on the read method.
-func TestAdminMCPConfig_ConfiguredMCPServers_NilReceiver(t *testing.T) {
-	var a *adminMCPConfig
-	if got := a.ConfiguredMCPServers(); got != nil {
-		t.Errorf("nil receiver: expected nil rows, got %v", got)
-	}
-}

@@ -128,14 +128,45 @@
                     </div>
                 </div>
 
-                <!-- Step timeline. JS layer materialises step cards
-                     here as step_started events arrive; the current
-                     step expands by default into the streaming card. -->
+                <!-- Story panel (Narrated Execution, task 2.2 —
+                     narrated-execution-design.md §5.6). Plain-language
+                     narration, server-seeded from execution_narration
+                     (ordered by seq) and extended live over the
+                     existing WebSocket. Always visible — it is the
+                     primary content for non-technical viewers and
+                     stacks above the technical "Step timeline", which
+                     collapses behind a <details> for RoleUser sessions
+                     (see the wrapper below). -->
                 <div class="glass rounded-xl border border-dark-700 overflow-hidden">
                     <div class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-2">
-                        <h2 class="text-sm font-semibold text-gray-200">Step timeline</h2>
-                        <span id="timeline-status" class="text-[10px] text-gray-500">connecting…</span>
+                        <h2 class="text-sm font-semibold text-gray-200">Story</h2>
+                        <span id="story-status" class="text-[10px] text-gray-500">live</span>
                     </div>
+                    <ol id="story-timeline" class="divide-y divide-dark-700/60">
+                        {{range .StoryLines}}
+                        <li class="px-5 py-2.5 text-sm text-gray-200" data-seq="{{.Seq}}" data-seeded="1">
+                            <span>{{.Text}}</span>
+                            {{if .Degraded}}<span class="ml-1.5 text-[10px] text-gray-500" title="Generated from a plain template — the narrator's LLM was unavailable, slow, or over budget.">(simplified)</span>{{end}}
+                        </li>
+                        {{end}}
+                    </ol>
+                    <div id="story-empty" class="px-5 py-8 text-center text-sm text-gray-500 {{if .StoryLines}}hidden{{end}}">
+                        Waiting for the first update…
+                    </div>
+                </div>
+
+                <!-- Step timeline (technical view). JS layer
+                     materialises step cards here as step_started
+                     events arrive; the current step expands by
+                     default into the streaming card. Collapsed by
+                     default for non-admin (RoleUser) viewers — the
+                     Story panel above is their primary surface;
+                     admins keep it open, matching pre-2.2 behaviour. -->
+                <details class="glass rounded-xl border border-dark-700 overflow-hidden" {{if not .IsRoleUser}}open{{end}}>
+                    <summary class="px-5 py-3.5 border-b border-dark-700/60 flex items-center justify-between gap-2 cursor-pointer list-none">
+                        <h2 class="text-sm font-semibold text-gray-200">Show technical details</h2>
+                        <span id="timeline-status" class="text-[10px] text-gray-500">connecting…</span>
+                    </summary>
                     <ol id="timeline" class="divide-y divide-dark-700/60">
                         {{/* Seed from the RECORDED per-attempt outcomes so each
                              attempt shows its OWN status (a failed retry reads
@@ -190,7 +221,7 @@
                     <div id="timeline-empty" class="px-5 py-8 text-center text-sm text-gray-500 {{if or .Outcomes .CompletedSteps}}hidden{{end}}">
                         Waiting for the first step…
                     </div>
-                </div>
+                </details>
             </div>
 
             {{/* Right rail: steering compose + hint history.
@@ -336,6 +367,18 @@
                 {{- if $i -}},{{- end -}}{{$s}}
             {{- end -}}
         ];
+        // Story panel seed (Narrated Execution, task 2.2 —
+        // narrated-execution-design.md §5.6). Server-rendered from
+        // execution_narration, already in seq order and already in
+        // the DOM (as <li data-seeded="1"> rows) by the time this
+        // script runs — html/template's JS-context autoescape quotes
+        // Text safely, mirroring the seededSteps convention above.
+        const seededNarration = [
+            {{- range $i, $l := .StoryLines -}}
+                {{- if $i -}},{{- end -}}
+                {seq: {{$l.Seq}}, kind: {{$l.Kind}}, text: {{$l.Text}}, degraded: {{$l.Degraded}}}
+            {{- end -}}
+        ];
 
         // Reactive state. lastSeq is the server-side cursor we
         // replay from on reconnect; status flips on paused / resumed.
@@ -356,6 +399,38 @@
         let elapsedTimer = null;
         let pendingHintCount = 0;
         const backoffSchedule = [1000, 2000, 4000, 8000, 16000, 30000];
+
+        // Story dual-path merge state (narrated-execution-design.md
+        // §5.6 — "the ordering hazard"). The page seeds the story from
+        // execution_narration (server-rendered, seq order) and then
+        // extends it live over this same WebSocket via narration_line
+        // frames. Two different sources racing to append to the same
+        // list can interleave out of order (a live frame arriving
+        // before the seed finishes rendering, or a live frame that
+        // duplicates an already-seeded line after a reconnect). The
+        // fix: buffer every live narration_line frame until the seed
+        // is confirmed in the DOM, THEN drain the buffer sorted by its
+        // own seq, dropping anything <= the highest seeded seq as a
+        // duplicate. narrationSeedDone flips true at the end of
+        // seedStory() (called synchronously before connect()), so in
+        // practice the buffer only matters if a future change makes
+        // seeding asynchronous — the invariant holds either way.
+        //
+        // NOTE: this seq is NarrationLinePayload.Seq — the
+        // execution_narration row's own per-execution counter — NOT
+        // the outer LiveEvent.seq used by `lastSeq` above (that one is
+        // the multi-kind bus replay cursor for step/tool/etc. events
+        // and is intentionally left untouched here; the two counters
+        // are explicitly documented as distinct in
+        // livepubsub.NarrationLinePayload).
+        let highestSeededNarrationSeq = 0;
+        let narrationSeedDone = false;
+        let narrationBuffer = [];
+        // warnedMalformedNarrationSeq — companion-review
+        // review-20260710-d9af.md finding #1: log the "missing seq"
+        // condition at most once per page load so a misbehaving
+        // narrator doesn't spam the console.
+        let warnedMalformedNarrationSeq = false;
 
         // Steering compose state (Upgrade #3 — 2026-05-26). The
         // scope chip toggle picks one of "step" (default, per-next-
@@ -397,6 +472,7 @@
         startHeartbeat();
         loadHintHistory();
         initSteeringCompose();
+        seedStory();
         connect();
 
         // initSteeringCompose (Upgrade #3 — 2026-05-26) wires:
@@ -762,6 +838,103 @@
             }
         }
 
+        // seedStory renders the server-seeded narration lines (already
+        // sitting in the DOM as <li data-seeded="1"> rows — this just
+        // tracks the high-water seq and un-hides the empty state guard)
+        // then flips narrationSeedDone and drains anything a live frame
+        // managed to queue before this ran. Called once at boot, before
+        // connect() opens the socket, so in the common case the buffer
+        // is empty and this is just bookkeeping.
+        function seedStory() {
+            for (const line of seededNarration) {
+                if (typeof line.seq === 'number' && line.seq > highestSeededNarrationSeq) {
+                    highestSeededNarrationSeq = line.seq;
+                }
+            }
+            narrationSeedDone = true;
+            drainNarrationBuffer();
+        }
+
+        // appendStoryLine renders one narration line into #story-timeline.
+        // `seeded` only affects the data attribute (debugging aid); both
+        // seeded and live rows share the same markup shape.
+        function appendStoryLine(line, seeded) {
+            document.getElementById('story-empty').classList.add('hidden');
+            const li = document.createElement('li');
+            li.className = 'px-5 py-2.5 text-sm text-gray-200';
+            if (typeof line.seq === 'number') li.dataset.seq = String(line.seq);
+            if (seeded) li.dataset.seeded = '1';
+            const text = document.createElement('span');
+            text.textContent = line.text || '';
+            li.appendChild(text);
+            if (line.degraded) {
+                const marker = document.createElement('span');
+                marker.className = 'ml-1.5 text-[10px] text-gray-500';
+                marker.title = "Generated from a plain template — the narrator's LLM was unavailable, slow, or over budget.";
+                marker.textContent = '(simplified)';
+                li.appendChild(marker);
+            }
+            document.getElementById('story-timeline').appendChild(li);
+        }
+
+        // onNarrationLine handles a live narration_line frame. Per the
+        // dual-path merge (design §5.6): buffer until the seed is
+        // confirmed in the DOM, then merge — never append directly
+        // while the seed might still be landing.
+        function onNarrationLine(p) {
+            if (!narrationSeedDone) {
+                narrationBuffer.push(p);
+                return;
+            }
+            mergeNarrationFrame(p);
+        }
+
+        // drainNarrationBuffer flushes any frames queued before
+        // seedStory() ran, sorted by narration seq so the merge below
+        // sees them in order even if the WebSocket delivered them
+        // out of order relative to each other.
+        function drainNarrationBuffer() {
+            if (narrationBuffer.length === 0) return;
+            const buffered = narrationBuffer;
+            narrationBuffer = [];
+            buffered.sort((a, b) => (a.seq || 0) - (b.seq || 0));
+            for (const p of buffered) mergeNarrationFrame(p);
+        }
+
+        // mergeNarrationFrame is the load-bearing ordering fix: a live
+        // frame whose seq is <= the highest seeded seq is a duplicate
+        // (already rendered by the server seed, or already merged)
+        // and is dropped; one beyond is appended and becomes the new
+        // high-water mark. This guarantees the rendered timeline's
+        // seq is always monotonic, regardless of seeding/delivery
+        // timing.
+        //
+        // NOTE (companion-review review-20260710-d9af.md finding #1):
+        // the narrator ALWAYS sets NarrationLinePayload.Seq from the
+        // persisted execution_narration row's own monotonic seq
+        // before publishing (see internal/executor/livepubsub/types.go
+        // NarrationLinePayload and the internal/narrator publish
+        // path) — Seq is guaranteed non-null server-side. A frame
+        // arriving here with no numeric seq is therefore MALFORMED,
+        // not a legitimate live line, and must never bypass the
+        // dedup check below by falling through to an unconditional
+        // append (that would risk a visible duplicate). Drop it.
+        function mergeNarrationFrame(p) {
+            const seq = typeof p.seq === 'number' ? p.seq : null;
+            if (seq === null) {
+                if (!warnedMalformedNarrationSeq) {
+                    warnedMalformedNarrationSeq = true;
+                    console.warn('narration_line frame missing a numeric seq — dropping as malformed', p);
+                }
+                return;
+            }
+            if (seq <= highestSeededNarrationSeq) {
+                return; // duplicate — already seeded or already merged
+            }
+            highestSeededNarrationSeq = seq;
+            appendStoryLine(p, false);
+        }
+
         function handleEventFrame(raw) {
             let evt;
             try { evt = JSON.parse(raw); } catch (e) { return; }
@@ -787,6 +960,7 @@
                 case 'tool_call_finished': onToolCallFinished(payload); break;
                 case 'file_edit':          onFileEdit(payload); break;
                 case 'outcome_recorded':   onOutcomeRecorded(payload); break;
+                case 'narration_line':     onNarrationLine(payload); break;
                 case 'hint_applied':       onHintApplied(payload); break;
                 case 'paused':             onPaused(payload); break;
                 case 'resumed':            onResumed(payload); break;

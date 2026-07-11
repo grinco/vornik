@@ -7,9 +7,21 @@
 
     <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
         <div class="space-y-6">
-            <div class="flex items-center justify-between">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
                 <h1 class="text-xl font-semibold text-ink-100">Dashboard</h1>
-                <span class="htmx-indicator text-xs text-ink-500" role="status" aria-live="polite">refreshing…</span>
+                <div class="flex items-center gap-3">
+                    <span class="htmx-indicator text-xs text-ink-500" role="status" aria-live="polite">refreshing…</span>
+                    <!-- Landing entry point (task 1.2a, design §5.7): the NL
+                         Automation Composer's front door. Dashboard.html is
+                         only ever rendered for admin/non-RoleUser sessions
+                         (Dashboard() redirects RoleUser to /ui/inbox before
+                         reaching this template), so no extra role gate is
+                         needed here. -->
+                    <a href="/ui/projects/new/wizard"
+                       class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors">
+                        ✨ Create an automation
+                    </a>
+                </div>
             </div>
 
             <div id="dashboard-live" class="space-y-6"

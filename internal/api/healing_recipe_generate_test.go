@@ -165,3 +165,7 @@ func TestHealingTriggerGenerateCandidate_NoArchitectNoRecipe(t *testing.T) {
 		t.Fatalf("status = %d, want 503 (no recipe, no architect)", rec.Code)
 	}
 }
+
+func (s *stubStepOutcomeRepo) StepLatencyP95ByStep(context.Context, time.Time) ([]persistence.StepLatencyStat, error) {
+	return nil, nil
+}

@@ -265,3 +265,24 @@ func TestInstallationOnboardingSessionRepository_Contract(t *testing.T) {
 	db := newTestDB(t)
 	repotest.RunInstallationOnboardingSessionSuite(t, sqlite.NewInstallationOnboardingSessionRepository(db.DB))
 }
+func TestFixItSessionRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunFixItSessionSuite(t, sqlite.NewFixItSessionRepository(db.DB))
+}
+
+// TestExecutionNarrationRepository_Contract — the narrator worker's
+// persisted story (Narrated Execution Phase 2.1). Both backends must
+// agree on per-execution seq assignment + list ordering.
+func TestExecutionNarrationRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunExecutionNarrationSuite(t, sqlite.NewExecutionNarrationRepository(db.DB),
+		sqlite.NewExecutionRepository(db.DB), sqlite.NewTaskRepository(db.DB))
+}
+
+func TestStepLatency_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunStepLatencySuite(t,
+		sqlite.NewExecutionStepOutcomeRepository(db.DB),
+		sqlite.NewExecutionRepository(db.DB),
+		sqlite.NewTaskRepository(db.DB))
+}

@@ -28,17 +28,18 @@ func TestNavHelpersRegistered(t *testing.T) {
 
 func TestNavAreaForPage(t *testing.T) {
 	cases := map[string]string{
-		"projects":   "orchestration",
-		"swarms":     "orchestration",
-		"workflows":  "orchestration",
-		"tasks":      "orchestration",
-		"executions": "orchestration", // restored as a dest with the cross-task Executions list (IA completion)
-		"memory":     "memory",
-		"reminders":  "memory",
-		"spend":      "insight",
-		"trading":    "insight",
-		"audit":      "insight",
-		"admin":      "admin",
+		"projects":     "orchestration",
+		"swarms":       "orchestration",
+		"workflows":    "orchestration",
+		"tasks":        "orchestration",
+		"executions":   "orchestration", // restored as a dest with the cross-task Executions list (IA completion)
+		"memory":       "memory",
+		"reminders":    "memory",
+		"integrations": "integrations",
+		"spend":        "insight",
+		"trading":      "insight",
+		"audit":        "insight",
+		"admin":        "admin",
 		// Admin sub-destinations with dedicated panel items must map to the
 		// admin area (2026-07-08 highlight fix — handlers previously passed
 		// the generic "admin" token so these items never lit up).
@@ -60,7 +61,7 @@ func TestNavAreaForPage(t *testing.T) {
 func TestNavModelContract(t *testing.T) {
 	m := navModel()
 	// Areas in display order.
-	wantAreas := []string{"steer", "orchestration", "memory", "insight", "admin"}
+	wantAreas := []string{"steer", "orchestration", "memory", "integrations", "insight", "admin"}
 	if len(m) != len(wantAreas) {
 		t.Fatalf("navModel has %d areas, want %d", len(m), len(wantAreas))
 	}
@@ -198,6 +199,109 @@ func TestNavModelCommunityHidesTrading(t *testing.T) {
 	}
 }
 
+// TestNavModel_InboxRelabelledMyRequests pins the task 4.4 relabel
+// (design §5.7): the "Needs you" nav destination becomes "My requests"
+// now that the inbox is the non-admin default home and carries the
+// broader "Your requests" list, not just what needs attention.
+func TestNavModel_InboxRelabelledMyRequests(t *testing.T) {
+	var steer navAreaDef
+	for _, a := range navModel() {
+		if a.Key == "steer" {
+			steer = a
+		}
+	}
+	var inbox navDest
+	for _, d := range steer.Dests {
+		if d.Key == "inbox" {
+			inbox = d
+		}
+	}
+	if inbox.Label != "My requests" {
+		t.Errorf("inbox dest Label = %q, want %q", inbox.Label, "My requests")
+	}
+}
+
+// --- navModelForPage: the per-request "My requests (N)" badge (task
+// 4.4, design §5.7 Q4) ---
+
+// fakeNavCounter is a minimal navAttentionCounter for testing
+// navModelForPage without depending on InboxData.
+type fakeNavCounter struct{ n int }
+
+func (f fakeNavCounter) NavAttentionCount() int { return f.n }
+
+func TestNavModelForPage_BadgesInboxWhenCounterPositive(t *testing.T) {
+	m := navModelForPage(true)(fakeNavCounter{n: 3})
+	var got int
+	found := false
+	for _, a := range m {
+		for _, d := range a.Dests {
+			if d.Key == "inbox" {
+				got = d.Badge
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("inbox dest not found")
+	}
+	if got != 3 {
+		t.Errorf("inbox dest Badge = %d, want 3", got)
+	}
+}
+
+// TestNavModelForPage_NoCounterNoBadge — a page whose Data doesn't
+// implement navAttentionCounter (every page except InboxData, as of
+// task 4.4) renders no badge — "keep it simple" per the design's hedge.
+func TestNavModelForPage_NoCounterNoBadge(t *testing.T) {
+	for _, data := range []any{nil, "a plain string", struct{ Foo string }{Foo: "bar"}} {
+		m := navModelForPage(true)(data)
+		for _, a := range m {
+			for _, d := range a.Dests {
+				if d.Key == "inbox" && d.Badge != 0 {
+					t.Errorf("data=%#v: inbox dest Badge = %d, want 0 (no counter implemented)", data, d.Badge)
+				}
+			}
+		}
+	}
+}
+
+// TestNavModelForPage_ZeroCounterNoBadge — an implementer reporting 0
+// (or negative) attention items must not render "(0)".
+func TestNavModelForPage_ZeroCounterNoBadge(t *testing.T) {
+	m := navModelForPage(true)(fakeNavCounter{n: 0})
+	for _, a := range m {
+		for _, d := range a.Dests {
+			if d.Key == "inbox" && d.Badge != 0 {
+				t.Errorf("inbox dest Badge = %d, want 0 for a zero count", d.Badge)
+			}
+		}
+	}
+}
+
+// TestNavModelForPage_OnlyInboxDestBadged — the counter must never leak
+// onto an unrelated destination (e.g. "tasks").
+func TestNavModelForPage_OnlyInboxDestBadged(t *testing.T) {
+	m := navModelForPage(true)(fakeNavCounter{n: 5})
+	for _, a := range m {
+		for _, d := range a.Dests {
+			if d.Key != "inbox" && d.Badge != 0 {
+				t.Errorf("dest %q got Badge = %d, want 0 (only inbox should badge)", d.Key, d.Badge)
+			}
+		}
+	}
+}
+
+// TestInboxData_NavAttentionCount — InboxData implements
+// navAttentionCounter via its own Count field.
+func TestInboxData_NavAttentionCount(t *testing.T) {
+	d := InboxData{Count: 7}
+	var counter navAttentionCounter = d
+	if got := counter.NavAttentionCount(); got != 7 {
+		t.Errorf("NavAttentionCount() = %d, want 7", got)
+	}
+}
+
 func navModelHasTrading(m []navAreaDef) bool {
 	for _, a := range m {
 		for _, d := range a.Dests {
@@ -207,4 +311,38 @@ func navModelHasTrading(m []navAreaDef) bool {
 		}
 	}
 	return false
+}
+
+// TestNavModel_MobileLabelsFitTabBar is the 2026-07-10 mobile-nav-overflow
+// regression: the < md bottom bar renders up to 8 flex-1 cells (Home + 6
+// areas + Sign out), which leaves ~47px per cell on a 375px phone. A
+// 10px-font label wider than ~7 characters ("Orchestration",
+// "Integrations") overflows its cell, so every area must expose a mobile
+// label that fits; the template renders MobileLabel(), not Label, in the
+// tab bar.
+func TestNavModel_MobileLabelsFitTabBar(t *testing.T) {
+	const maxMobileLabelLen = 7
+	for _, a := range navModel() {
+		got := a.MobileLabel()
+		if got == "" {
+			t.Errorf("area %q: MobileLabel() is empty", a.Key)
+		}
+		if len(got) > maxMobileLabelLen {
+			t.Errorf("area %q: MobileLabel() = %q (%d chars), want <= %d — it overflows the mobile tab bar",
+				a.Key, got, len(got), maxMobileLabelLen)
+		}
+	}
+}
+
+// MobileLabel falls back to Label when no Short label is set, so a future
+// area with an already-short Label needs no extra field.
+func TestNavAreaDef_MobileLabelFallsBackToLabel(t *testing.T) {
+	a := navAreaDef{Label: "Steer"}
+	if got := a.MobileLabel(); got != "Steer" {
+		t.Errorf("MobileLabel() = %q, want the Label fallback %q", got, "Steer")
+	}
+	a = navAreaDef{Label: "Orchestration", Short: "Tasks"}
+	if got := a.MobileLabel(); got != "Tasks" {
+		t.Errorf("MobileLabel() = %q, want the Short override %q", got, "Tasks")
+	}
 }

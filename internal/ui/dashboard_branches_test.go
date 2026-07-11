@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/mocks"
 )
@@ -217,6 +219,32 @@ func TestDashboard_WithAutonomyEvalRendersETAs(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.Dashboard(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestDashboard_FreshInstallPrecedesRoleUserRedirect pins the task 4.4
+// precedence contract (design §5.7: "the fresh-install /ui/setup redirect
+// stays ahead of both") — a RoleUser session hitting "/" during a fresh
+// install must still land on /ui/setup, not /ui/inbox, even though the
+// RoleUser branch would otherwise redirect it there.
+func TestDashboard_FreshInstallPrecedesRoleUserRedirect(t *testing.T) {
+	srv := NewServer(WithOnboardingDetector(onboarding.Detector{Config: &config.Config{}}))
+	req := setupAuthRequest(http.MethodGet, "/", "user")
+	rec := httptest.NewRecorder()
+	srv.Dashboard(rec, req)
+	require.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, "/ui/setup", rec.Header().Get("Location"))
+}
+
+// TestDashboard_AdminUnaffectedByInboxDefaultHome — task 4.4 only
+// changes the RoleUser redirect target; an admin session hitting "/"
+// still falls through to the operator dashboard, unchanged.
+func TestDashboard_AdminUnaffectedByInboxDefaultHome(t *testing.T) {
+	srv := NewServer(WithOnboardingDetector(alreadyOnboardedDetector()))
+	req := setupAuthRequest(http.MethodGet, "/", "admin")
+	rec := httptest.NewRecorder()
+	srv.Dashboard(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "Dashboard")
 }
 
 // TestDashboard_LimitParamHonoured — ?limit=10 caps the active-tasks

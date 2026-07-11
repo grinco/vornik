@@ -7,7 +7,30 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"vornik.io/vornik/internal/chat"
 )
+
+// fakePlainProvider satisfies chat.Provider but NOT ModelHealthReporter.
+type fakePlainProvider struct{}
+
+func (fakePlainProvider) Complete(context.Context, []chat.Message) (*chat.ChatResponse, error) {
+	return &chat.ChatResponse{}, nil
+}
+func (fakePlainProvider) CompleteWithTools(context.Context, []chat.Message, []chat.Tool) (*chat.ChatResponse, error) {
+	return &chat.ChatResponse{}, nil
+}
+func (fakePlainProvider) CompleteWithToolsStream(context.Context, []chat.Message, []chat.Tool, chat.StreamCallback) (*chat.ChatResponse, error) {
+	return &chat.ChatResponse{}, nil
+}
+func (fakePlainProvider) Model() string            { return "m" }
+func (fakePlainProvider) SetMetrics(*chat.Metrics) {}
+
+// fakeReporterProvider also implements ModelHealthReporter.
+type fakeReporterProvider struct{ fakePlainProvider }
+
+func (fakeReporterProvider) ModelHealthSnapshot() []chat.ModelHealthSnapshot { return nil }
 
 // TestEvalModelHealth_HealthyModelOK: a model with low failure rate and
 // healthy completion tokens produces no finding.
@@ -187,5 +210,68 @@ func TestCheckModelHealth_Integration(t *testing.T) {
 	}
 	if !strings.Contains(joined, "good.model") {
 		t.Errorf("configured fallback good.model should be recommended; items=%v", got.Items)
+	}
+}
+
+// TestCheckModelCircuits_NotWiredSkips: without a live reporter the check
+// degrades to OK/skip. Backlog item 5 (doctor live-circuit line).
+func TestCheckModelCircuits_NotWiredSkips(t *testing.T) {
+	h := &DoctorHandlers{}
+	got := h.checkModelCircuits()
+	if got.Status != "OK" || !strings.Contains(got.Message, "not wired") {
+		t.Errorf("unwired circuits should skip; got %q / %q", got.Status, got.Message)
+	}
+}
+
+// TestCheckModelCircuits_OpenCircuitErrors: an OPEN circuit drives ERROR;
+// a HALF_OPEN drives WARNING; closed circuits are OK.
+func TestCheckModelCircuits_OpenCircuitErrors(t *testing.T) {
+	openAt := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
+	h := &DoctorHandlers{modelCircuits: func() []chat.ModelHealthSnapshot {
+		return []chat.ModelHealthSnapshot{
+			{Route: "route-a", Model: "bad", State: "open", OpenSince: openAt},
+			{Route: "route-b", Model: "probing", State: "half_open"},
+			{Route: "route-c", Model: "good", State: "closed"},
+		}
+	}}
+	got := h.checkModelCircuits()
+	if got.Status != "ERROR" {
+		t.Fatalf("open circuit should drive ERROR, got %q (%q)", got.Status, got.Message)
+	}
+	// Open must sort first and name the model + OpenSince.
+	if len(got.Items) == 0 || !strings.Contains(got.Items[0], "route-a/bad OPEN") {
+		t.Errorf("open circuit should lead the items; got %v", got.Items)
+	}
+}
+
+// TestCheckModelCircuits_AllClosedOK: every circuit closed → OK.
+func TestCheckModelCircuits_AllClosedOK(t *testing.T) {
+	h := &DoctorHandlers{modelCircuits: func() []chat.ModelHealthSnapshot {
+		return []chat.ModelHealthSnapshot{
+			{Route: "r", Model: "m1", State: "closed"},
+			{Route: "r", Model: "m2", State: "closed"},
+		}
+	}}
+	got := h.checkModelCircuits()
+	if got.Status != "OK" || !strings.Contains(got.Message, "2 model circuit(s) closed") {
+		t.Errorf("all-closed should be OK; got %q / %q", got.Status, got.Message)
+	}
+}
+
+// TestSetChatProvider_WiresReporter: a provider implementing
+// ModelHealthReporter installs the live source; a plain provider leaves it nil.
+func TestSetChatProvider_WiresReporter(t *testing.T) {
+	var nilH *DoctorHandlers
+	nilH.SetChatProvider(nil) // must not panic
+
+	h := &DoctorHandlers{}
+	h.SetChatProvider(fakeReporterProvider{})
+	if h.modelCircuits == nil {
+		t.Fatal("reporter provider should install modelCircuits")
+	}
+	h2 := &DoctorHandlers{}
+	h2.SetChatProvider(fakePlainProvider{})
+	if h2.modelCircuits != nil {
+		t.Error("plain provider must not install modelCircuits")
 	}
 }

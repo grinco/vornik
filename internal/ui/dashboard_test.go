@@ -153,6 +153,30 @@ func TestDashboardRendersWithSpend(t *testing.T) {
 	}
 }
 
+// TestDashboard_CreateAnAutomationEntryPoint — the NL Automation
+// Composer's landing-page entry point (task 1.2a, design §5.7): the
+// dashboard carries a "Create an automation" button linking straight
+// to the conversational wizard (the composer is an invisible tier
+// escalation on that same page).
+func TestDashboard_CreateAnAutomationEntryPoint(t *testing.T) {
+	srv := NewServer(WithOnboardingDetector(alreadyOnboardedDetector()))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != 200 {
+		t.Fatalf("dashboard returned %d, body: %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `href="/ui/projects/new/wizard"`) {
+		t.Errorf("dashboard missing Create-an-automation link to the wizard:\n%s", body)
+	}
+	if !strings.Contains(body, "Create an automation") {
+		t.Errorf("dashboard missing the Create-an-automation CTA label:\n%s", body)
+	}
+}
+
 // stubCacheStatsSource is the minimal fake satisfying
 // ResponseCacheStatsSource for the dashboard tile tests below.
 type stubCacheStatsSource struct {

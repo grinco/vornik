@@ -418,3 +418,37 @@ func TestResolveAction_BacklogDepositDefaultBlock(t *testing.T) {
 		t.Errorf("backlog_deposit redact override = %q, want redact", got)
 	}
 }
+
+// TestEffectivePatterns_MergesDisableAndCustom — the single source of
+// truth for the in-force corpus (shared by buildSecretsDetector and
+// vornikctl secrets list-patterns). Backlog item 2 (design L1).
+func TestEffectivePatterns_MergesDisableAndCustom(t *testing.T) {
+	defaults := DefaultPatterns()
+	if len(defaults) == 0 {
+		t.Fatal("DefaultPatterns empty")
+	}
+	dropName := defaults[0].Name
+
+	got := EffectivePatterns([]string{dropName}, []Pattern{
+		{Name: "corp_token", Regex: `corp-[0-9]{8}`, Description: "internal token"},
+	})
+
+	names := map[string]bool{}
+	for _, p := range got {
+		names[p.Name] = true
+	}
+	if names[dropName] {
+		t.Errorf("disabled pattern %q must be dropped", dropName)
+	}
+	if !names["corp_token"] {
+		t.Error("custom pattern must be appended")
+	}
+	if len(got) != len(defaults)-1+1 {
+		t.Errorf("len = %d, want %d (defaults - 1 disabled + 1 custom)", len(got), len(defaults))
+	}
+
+	// Nil disable + nil custom returns the defaults unchanged.
+	if base := EffectivePatterns(nil, nil); len(base) != len(defaults) {
+		t.Errorf("no-op merge len = %d, want %d", len(base), len(defaults))
+	}
+}

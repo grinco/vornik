@@ -7,8 +7,11 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -73,6 +76,19 @@ type ToolLatencySample struct {
 	Count      int
 }
 
+// StepLatencySample is one (project, workflow, step, role, model)'s step
+// p95 (seconds) + count over the window — the latency signal's slowest-step
+// attribution (actionable-proposals design §4.4).
+type StepLatencySample struct {
+	Project    string
+	Workflow   string
+	Step       string
+	Role       string
+	Model      string
+	P95Seconds float64
+	Count      int
+}
+
 // MetricsSource supplies the per-project signals the Tune worker watches.
 // Phase 1 tracks two concrete signals computed from the executions table
 // (failed-task rate + latency p95); an empty-completion signal comes with the
@@ -88,6 +104,12 @@ type MetricsSource interface {
 	// — the operational-instinct tool-timeout signal (Phase 3). An empty slice
 	// (e.g. the query is unavailable) simply means the instinct never fires.
 	ToolLatencies(ctx context.Context) ([]ToolLatencySample, error)
+	// StepLatencies returns per-(project, workflow, step, role, model) step
+	// p95 over the window — consulted only on a latency-breach proposing tick
+	// to attribute the slowest step (actionable-proposals §4.4). An empty
+	// slice means attribution is unavailable and the latency proposal stays
+	// generic.
+	StepLatencies(ctx context.Context) ([]StepLatencySample, error)
 }
 
 // TuneWorker is the leader-gated failed-rate detector.
@@ -115,10 +137,24 @@ type TuneWorker struct {
 	ToolLatencyThresholdSeconds float64
 	MaxSuggestedTimeoutSeconds  float64
 
-	// SkipFailedRate makes scanFailedRate a no-op — set at construction when
-	// the SelfHealWorker owns the failed-rate signal (self-healing design §5).
-	// Unconditional, no per-tick handshake; false = today's behaviour.
-	SkipFailedRate bool
+	// SkipFailedRate makes scanFailedRate a no-op when it returns true — set
+	// when the SelfHealWorker owns the failed-rate signal (self-healing
+	// design §5). A per-tick closure (not a construction-time boolean) so
+	// flipping control_plane.self_heal_enabled + reload hands the signal
+	// back without a daemon restart (actionable-proposals §7 emergency
+	// brake). Nil = false = today's behaviour.
+	SkipFailedRate func() bool
+
+	// Actionize renders concrete applyable changes for the latency +
+	// tool-timeout signals (actionable-proposals §4.4). Nil → every
+	// proposal stays informational (prior behaviour).
+	Actionize *Actionizer
+
+	// TimeoutBindingThreshold: a step's explicit timeout counts as the
+	// binding constraint when observed step p95 ≥ threshold × timeout
+	// (inclusive). 0 → 0.8 — surfaces impending truncation while normal
+	// p95 variance still clears healthy runs (design §4.4).
+	TimeoutBindingThreshold float64
 
 	LeaderGate LeaderGate
 	Logger     zerolog.Logger
@@ -233,8 +269,15 @@ func (w *TuneWorker) tick(ctx context.Context) {
 	w.scanToolLatency(ctx)
 }
 
+func (w *TuneWorker) bindingThreshold() float64 {
+	if w.TimeoutBindingThreshold > 0 {
+		return w.TimeoutBindingThreshold
+	}
+	return 0.8
+}
+
 func (w *TuneWorker) scanFailedRate(ctx context.Context) {
-	if w.SkipFailedRate {
+	if w.SkipFailedRate != nil && w.SkipFailedRate() {
 		return // the SelfHealWorker owns the failed-rate signal
 	}
 	rates, err := w.Metrics.FailedTaskRates(ctx)
@@ -280,14 +323,98 @@ func (w *TuneWorker) scanLatency(ctx context.Context) {
 		if !advanceStreak(w.latencyBreaches, project, breaching, w.breachesToPropose()) {
 			continue
 		}
-		w.propose(ctx, project, tuneLatencyTitle(project),
-			fmt.Sprintf("Execution p95 latency %.0fs (n=%d) over the scan window, sustained for %d consecutive scans — above the %.0fs threshold. Investigate slow steps/tools or consider a faster model or a step-timeout change.",
-				s.P95Seconds, s.Count, w.breachesToPropose(), w.latencyThreshold()),
-			fmt.Sprintf(`{"signal":"latency_p95_seconds","p95":%.1f,"count":%d}`, s.P95Seconds, s.Count),
-			"tune-detector",
-		)
+		w.proposeLatency(ctx, project, s)
 	}
 	resetAbsent(w.latencyBreaches, seen)
+}
+
+// proposeLatency files the latency-breach proposal, attributing the slowest
+// step and rendering a concrete step-timeout change when the step's explicit
+// timeout is the binding constraint (actionable-proposals §4.4). Every
+// fallback path files the informational proposal — a breach never goes
+// silent.
+func (w *TuneWorker) proposeLatency(ctx context.Context, project string, s LatencySample) {
+	generic := fmt.Sprintf("Execution p95 latency %.0fs (n=%d) over the scan window, sustained for %d consecutive scans — above the %.0fs threshold. Investigate slow steps/tools or consider a faster model or a step-timeout change.",
+		s.P95Seconds, s.Count, w.breachesToPropose(), w.latencyThreshold())
+	evidence := fmt.Sprintf(`{"signal":"latency_p95_seconds","p95":%.1f,"count":%d}`, s.P95Seconds, s.Count)
+
+	slow, ok := w.slowestStep(ctx, project)
+	if !ok {
+		w.propose(ctx, project, tuneLatencyTitle(project), generic, evidence, "tune-detector")
+		return
+	}
+	stepEvidence := fmt.Sprintf(`{"signal":"latency_p95_seconds","p95":%.1f,"count":%d,"slowest_step":%q,"workflow":%q,"role":%q,"model":%q,"step_p95":%.1f,"step_count":%d}`,
+		s.P95Seconds, s.Count, slow.Step, slow.Workflow, slow.Role, slow.Model, slow.P95Seconds, slow.Count)
+
+	if w.tryActionableLatency(ctx, project, s, slow, stepEvidence) {
+		return
+	}
+	// Timeout absent / not binding / render declined: informational, but
+	// naming the slow step + model dimension explicitly (design §4.4).
+	rationale := fmt.Sprintf("Execution p95 latency %.0fs (n=%d), sustained for %d consecutive scans — above the %.0fs threshold. Slowest step is %q (workflow %s, role %s, model %s) at p95 %.0fs; its timeout is not the binding constraint. Consider a faster model for role %s — run Diagnose for a specific recommendation.",
+		s.P95Seconds, s.Count, w.breachesToPropose(), w.latencyThreshold(),
+		slow.Step, slow.Workflow, slow.Role, slow.Model, slow.P95Seconds, slow.Role)
+	w.propose(ctx, project, tuneLatencyTitle(project), rationale, stepEvidence, "tune-detector")
+}
+
+// tryActionableLatency renders + files the applyable step-timeout proposal
+// when the slowest step's explicit timeout is the binding constraint
+// (p95 ≥ TimeoutBindingThreshold × current, inclusive). Reports whether a
+// proposal was filed; false → the caller files the informational one.
+func (w *TuneWorker) tryActionableLatency(ctx context.Context, project string, s LatencySample, slow StepLatencySample, stepEvidence string) bool {
+	if w.Actionize == nil {
+		return false
+	}
+	current, explicit, err := w.Actionize.CurrentStepTimeout(slow.Workflow, slow.Step)
+	// The ≥-inclusive boundary with a tiny epsilon: 0.8×current is not exact
+	// in float64, and p95 exactly at the threshold must count as binding
+	// (design §4.4 / round-2 review) rather than lose to representation error.
+	if err != nil || !explicit || slow.P95Seconds+1e-9 < w.bindingThreshold()*current.Seconds() {
+		return false
+	}
+	suggested := time.Duration(math.Ceil(slow.P95Seconds*1.5)) * time.Second
+	rc, rerr := w.Actionize.RenderStepTimeout(slow.Workflow, slow.Step, suggested)
+	if rerr != nil {
+		if !errors.Is(rerr, ErrChangeNotUseful) {
+			w.Logger.Warn().Err(rerr).Str("project", project).Str("step", slow.Step).Msg("tune: step-timeout render failed; filing informational")
+		}
+		return false
+	}
+	clampNote := ""
+	if rc.Clamped {
+		clampNote = fmt.Sprintf(" (clamped; the raw step p95 %.0fs suggests a larger bump — raise it by hand if you truly need more)", slow.P95Seconds)
+		w.Logger.Info().Str("project", project).Str("step", slow.Step).Msg("tune: suggested step timeout clamped to bound")
+	}
+	rationale := fmt.Sprintf("Execution p95 latency %.0fs (n=%d), sustained for %d consecutive scans — above the %.0fs threshold. Slowest step is %q (role %s, model %s) at p95 %.0fs, at/over %.0f%% of its %s timeout — the timeout is the binding constraint. Proposed: %s%s.",
+		s.P95Seconds, s.Count, w.breachesToPropose(), w.latencyThreshold(),
+		slow.Step, slow.Role, slow.Model, slow.P95Seconds, w.bindingThreshold()*100, formatDurationShort(current), rc.Summary, clampNote)
+	w.fileRendered(ctx, project, tuneLatencyTitle(project), rationale, stepEvidence, "tune-detector", rc)
+	return true
+}
+
+// slowestStep picks the breaching project's slowest attributed step with
+// count ≥ MinSamples. Deterministic order: p95 DESC, count DESC, step ASC
+// (review #1).
+func (w *TuneWorker) slowestStep(ctx context.Context, project string) (StepLatencySample, bool) {
+	steps, err := w.Metrics.StepLatencies(ctx)
+	if err != nil {
+		w.Logger.Warn().Err(err).Msg("tune: failed to read step-latency metrics")
+		return StepLatencySample{}, false
+	}
+	var best StepLatencySample
+	found := false
+	for _, st := range steps {
+		if st.Project != project || st.Count < w.minSamples() {
+			continue
+		}
+		if !found || st.P95Seconds > best.P95Seconds ||
+			(st.P95Seconds == best.P95Seconds && (st.Count > best.Count ||
+				(st.Count == best.Count && st.Step < best.Step))) {
+			best = st
+			found = true
+		}
+	}
+	return best, found
 }
 
 // scanToolLatency is the operational-instinct tool-timeout signal (Phase 3):
@@ -316,14 +443,61 @@ func (w *TuneWorker) scanToolLatency(ctx context.Context) {
 			suggested = maxT
 			clamped = fmt.Sprintf(" (clamped to the %0.fs cap; the raw p95 suggests a larger bump — raise it by hand if you truly need more)", maxT)
 		}
-		w.propose(ctx, s.Key.Project, instinctToolTimeoutTitle(s.Key),
-			fmt.Sprintf("Tool %q p95 call latency is %.0fs (n=%d) in project %s, sustained for %d consecutive scans — above the %.0fs threshold. Consider raising this tool's timeout to ~%.0fs%s, or investigate why the tool is slow.",
-				s.Key.Tool, s.P95Seconds, s.Count, s.Key.Project, w.breachesToPropose(), threshold, suggested, clamped),
-			fmt.Sprintf(`{"signal":"tool_latency_p95_seconds","tool":%q,"p95":%.1f,"count":%d,"suggested_timeout_s":%.0f}`, s.Key.Tool, s.P95Seconds, s.Count, suggested),
-			"instinct",
-		)
+		rationale := fmt.Sprintf("Tool %q p95 call latency is %.0fs (n=%d) in project %s, sustained for %d consecutive scans — above the %.0fs threshold. Consider raising this tool's timeout to ~%.0fs%s, or investigate why the tool is slow.",
+			s.Key.Tool, s.P95Seconds, s.Count, s.Key.Project, w.breachesToPropose(), threshold, suggested, clamped)
+		evidence := fmt.Sprintf(`{"signal":"tool_latency_p95_seconds","tool":%q,"p95":%.1f,"count":%d,"suggested_timeout_s":%.0f}`, s.Key.Tool, s.P95Seconds, s.Count, suggested)
+		rc, why := w.renderToolTimeout(s.Key, int(suggested))
+		if rc != nil {
+			w.fileRendered(ctx, s.Key.Project, instinctToolTimeoutTitle(s.Key),
+				rationale+" Proposed: "+rc.Summary+".", evidence, "instinct", rc)
+			continue
+		}
+		if why != "" {
+			// Don't advise a raise the config already exceeds (implementation
+			// review #9) — say what the informational proposal actually means.
+			rationale = fmt.Sprintf("Tool %q p95 call latency is %.0fs (n=%d) in project %s, sustained for %d consecutive scans — above the %.0fs threshold. %s",
+				s.Key.Tool, s.P95Seconds, s.Count, s.Key.Project, w.breachesToPropose(), threshold, why)
+		}
+		w.propose(ctx, s.Key.Project, instinctToolTimeoutTitle(s.Key), rationale, evidence, "instinct")
 	}
 	resetAbsent(w.toolBreaches, seen)
+}
+
+// renderToolTimeout maps an MCP tool's qualified name to its server's
+// timeout_seconds key (daemon-first scope, design §4.4) and renders the
+// raise. rc==nil → the caller files the informational proposal (builtin
+// tool, unknown server, raise-only guard, or render failure); a non-empty
+// `why` replaces the generic raise advice when it would mislead.
+func (w *TuneWorker) renderToolTimeout(key ProjectToolKey, suggestedSeconds int) (rc *RenderedChange, why string) {
+	if w.Actionize == nil {
+		return nil, ""
+	}
+	server, _, isMCP := ParseMCPToolName(key.Tool)
+	if !isMCP {
+		return nil, ""
+	}
+	scope, ok := w.Actionize.FindMCPServerScope(key.Project, server)
+	if !ok {
+		return nil, ""
+	}
+	rendered, err := w.Actionize.RenderMCPServerTimeout(scope, server, suggestedSeconds)
+	if err != nil {
+		if errors.Is(err, ErrChangeNotUseful) {
+			return nil, fmt.Sprintf("The %s server's configured timeout already exceeds the ~%ds this p95 suggests — the timeout is not the constraint; investigate why the tool is slow (or reduce the timeout by hand if reclaiming capacity is the goal).", server, suggestedSeconds)
+		}
+		w.Logger.Warn().Err(err).Str("tool", key.Tool).Msg("tune: tool-timeout render failed; filing informational")
+		return nil, ""
+	}
+	return rendered, ""
+}
+
+// fileRendered files a DRAFT proposal carrying a rendered applyable change:
+// ApplyTarget/ApplyContent/Diff from the render, blast radius + live-apply
+// from the change kind, and Evidence extended with {"base_hash", "change"}
+// so apply re-validates the typed change against current state. Deduped on
+// the open-DRAFT title like every worker proposal.
+func (w *TuneWorker) fileRendered(ctx context.Context, project, title, rationale, evidenceJSON, proposedBy string, rc *RenderedChange) {
+	fileRenderedProposal(ctx, w.Proposals, w.Logger, project, title, rationale, evidenceJSON, proposedBy, rc)
 }
 
 // advanceStreak increments key's consecutive-breach counter and reports whether
@@ -368,14 +542,42 @@ func (w *TuneWorker) propose(ctx context.Context, project, title, rationale, evi
 // the open-DRAFT title. Shared by the Tune worker, the instinct scans, and the
 // self-heal generic fallback.
 func fileProposal(ctx context.Context, proposals persistence.ProposalRepository, logger zerolog.Logger, project, title, rationale, evidence, proposedBy string) {
+	fileRenderedProposal(ctx, proposals, logger, project, title, rationale, evidence, proposedBy, nil)
+}
+
+// fileRenderedProposal is fileProposal plus an optional rendered applyable
+// change (actionable-proposals §4.3). rc == nil files the plain review-only
+// proposal; otherwise ApplyTarget/ApplyContent/Diff, blast radius, and
+// live-apply come from the render and Evidence is extended with
+// {"base_hash", "change"} (the apply engine's staleness gate + apply-time
+// re-validation input).
+func fileRenderedProposal(ctx context.Context, proposals persistence.ProposalRepository, logger zerolog.Logger, project, title, rationale, evidence, proposedBy string, rc *RenderedChange) {
 	existing, err := proposals.List(ctx, persistence.ProposalListFilter{
 		ProjectID: project, Statuses: []string{persistence.ProposalStatusDraft},
 	})
 	if err == nil {
 		for _, p := range existing {
-			if p.Title == title {
+			if p.Title != title {
+				continue
+			}
+			// Applyable upgrade (implementation review #7): a proposal that
+			// started informational and now renders an applyable change
+			// carries the same title — supersede the stale informational
+			// DRAFT (→ REJECTED, actor = the detector) so the operator gets
+			// the row with the Apply button instead of being stranded on
+			// prose. Anything else (same shape, or downgrade) dedups.
+			stale := strings.TrimSpace(p.ApplyTarget) == "" && strings.TrimSpace(p.ApplyOps) == ""
+			if rc == nil || !stale {
 				return
 			}
+			if serr := proposals.SetStatus(ctx, p.ID, persistence.ProposalStatusRejected, proposedBy); serr != nil {
+				logger.Warn().Err(serr).Str("proposal_id", p.ID).
+					Msg("control-plane: failed to supersede informational draft; keeping it")
+				return
+			}
+			logger.Info().Str("proposal_id", p.ID).Str("title", title).
+				Msg("control-plane: superseded informational DRAFT with an applyable render")
+			break
 		}
 	}
 	p := &persistence.ControlPlaneProposal{
@@ -389,12 +591,45 @@ func fileProposal(ctx context.Context, proposals persistence.ProposalRepository,
 		Status:      persistence.ProposalStatusDraft,
 		ProposedBy:  proposedBy,
 	}
+	if rc != nil {
+		p.ApplyTarget = rc.ApplyTarget
+		p.ApplyContent = rc.ApplyContent
+		p.Diff = rc.Diff
+		p.LiveApply = rc.LiveApply
+		if rc.BlastRadius != "" {
+			p.BlastRadius = rc.BlastRadius
+		}
+		if merged, merr := mergeChangeEvidence(evidence, rc); merr == nil {
+			p.Evidence = merged
+		} else {
+			logger.Warn().Err(merr).Str("project", project).Msg("control-plane: evidence merge failed; filing informational")
+			p.ApplyTarget, p.ApplyContent, p.Diff, p.LiveApply = "", "", "", false
+		}
+	}
 	if err := proposals.Create(ctx, p); err != nil {
 		logger.Warn().Err(err).Str("project", project).Msg("control-plane: failed to create proposal")
 		return
 	}
 	logger.Info().Str("project", project).Str("proposal_id", p.ID).Str("title", title).Str("by", proposedBy).
-		Msg("control-plane: raised DRAFT proposal")
+		Bool("applyable", rc != nil).Msg("control-plane: raised DRAFT proposal")
+}
+
+// mergeChangeEvidence folds {"base_hash": …, "change": {…}} into the
+// signal's evidence JSON object.
+func mergeChangeEvidence(evidence string, rc *RenderedChange) (string, error) {
+	m := map[string]any{}
+	if strings.TrimSpace(evidence) != "" {
+		if err := json.Unmarshal([]byte(evidence), &m); err != nil {
+			return "", err
+		}
+	}
+	m["base_hash"] = rc.BaseHash
+	m["change"] = rc.Change
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 func tuneFailedRateTitle(project string) string {

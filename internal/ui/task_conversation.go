@@ -264,9 +264,13 @@ func buildPhaseTracker(sp *persistence.TaskScratchpad) []PhaseEntry {
 //
 // Each action mutates state via the same atomic primitives the
 // API handlers use (TaskMessageRepository + TaskRepository.
-// TransitionConditional). After the mutation, the operator is
-// redirected back to the task detail page with a notice query
-// param so the toast banner explains what happened.
+// TransitionConditional). After the mutation, a non-HTMX caller is
+// redirected back to the task detail page with a notice query param
+// so the toast banner explains what happened (POST-redirect-GET,
+// unchanged since Phase 26+27). An HTMX caller (HX-Request header —
+// the inbox's inline approve/reject/answer controls, task 4.3 design
+// §5.6) instead gets the re-rendered attention-queue row fragment, so
+// the item resolves in place without leaving the page.
 func (s *Server) TaskConversationAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -331,6 +335,18 @@ func (s *Server) TaskConversationAction(w http.ResponseWriter, r *http.Request) 
 		notice = s.uiRejectTask(ctx, task)
 	default:
 		http.Error(w, "unknown action: "+action, http.StatusBadRequest)
+		return
+	}
+
+	// Task 4.3 (design §5.6): an inline attention-queue action arrives
+	// via htmx's hx-post, which always sends HX-Request. Return the
+	// re-rendered row fragment instead of the legacy redirect so the
+	// item resolves in place — the decision happens where it's shown.
+	// Non-HTMX callers (curl, the task-detail page's plain <form>
+	// posts, any future integration) are unaffected: no HX-Request
+	// header, same 303 as before this task.
+	if r.Header.Get("HX-Request") != "" {
+		s.renderInboxItemFragment(ctx, w, taskID)
 		return
 	}
 

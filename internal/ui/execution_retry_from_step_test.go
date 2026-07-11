@@ -655,3 +655,7 @@ func TestExecutionRetryFromStep_FailedResumeStaysPaused(t *testing.T) {
 	assert.Equal(t, persistence.ExecutionStatusPaused, exec.Status)
 	assert.Len(t, exe.resumePaused, 1, "ResumePaused must still have been attempted exactly once")
 }
+
+func (r *retryFromStepFakeOutcomeRepo) StepLatencyP95ByStep(context.Context, time.Time) ([]persistence.StepLatencyStat, error) {
+	return nil, nil
+}

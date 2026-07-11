@@ -316,7 +316,20 @@ type ToolExecutor struct {
 	// operator id. Nil falls back to per-channel behaviour. See
 	// https://docs.vornik.io
 	operatorIdentityLinks persistence.OperatorIdentityLinkRepository
-	logger                zerolog.Logger
+	// composer backs the compose_automation tool (task 1.4; design
+	// §5.7 Phase 4) — a thin bridge into the NL Automation Composer's
+	// tier-3 Converse loop (projectwizard.Wizard), implemented as an
+	// adapter in internal/service so this package never imports
+	// projectwizard directly. Nil disables the tool cleanly ("not
+	// configured" message) regardless of composerEnabled.
+	composer ComposerBridge
+	// composerEnabled mirrors config.ComposerConfig.Enabled (default
+	// false during the Phase 3 soak). The tool is offered only when
+	// BOTH composer != nil AND this is true — a wired-but-disabled
+	// bridge returns a graceful "not enabled yet" message instead of
+	// running a turn, so flipping the flag later needs no rewiring.
+	composerEnabled bool
+	logger          zerolog.Logger
 }
 
 // ReminderKicker is the narrow contract the set_reminder handler
@@ -417,6 +430,8 @@ func (te *ToolExecutor) execute(ctx context.Context, tc chat.ToolCall, activePro
 		return te.readArtifact(ctx, args, allowedProjects)
 	case ToolSearchName:
 		return te.toolSearch(args, activeProject, chatID)
+	case composeAutomationName:
+		return te.composeAutomation(ctx, args, chatID)
 	default:
 		// Route MCP tools (mcp__{server}__{tool}) to the MCP manager,
 		// scoped to the active project so one project's tools can't be
@@ -2195,6 +2210,7 @@ func DispatcherTools() []chat.Tool {
 				}`),
 			},
 		},
+		composeAutomationDescriptor(),
 	}
 }
 

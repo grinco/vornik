@@ -443,6 +443,7 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		mux.HandleFunc("/api/v1/memory/cache-stats", server.MemoryCacheStats)
 		mux.HandleFunc("/api/v1/projects/wizard/converse", server.ProjectWizardConverse)
 		mux.HandleFunc("/api/v1/projects/wizard/", server.projectWizardRouter)
+		mux.HandleFunc("/api/v1/fixit/converse", server.FixItConverse)
 		mux.HandleFunc("/api/v1/setup/status", server.SetupStatus)
 		mux.HandleFunc("/api/v1/setup/models", server.SetupModels)
 		mux.HandleFunc("/api/v1/setup/dispatcher", server.SetupDispatcherCommit)

@@ -3,7 +3,8 @@ package conversation
 import (
 	"sort"
 	"unicode"
-	"unicode/utf8"
+
+	"vornik.io/vornik/internal/textutil"
 )
 
 // ChannelSpecific sanitisation bounds. The map is platform-supplied
@@ -45,33 +46,18 @@ func SanitizeChannelSpecific(m map[string]string) map[string]string {
 		if len(out) >= maxChannelSpecificEntries {
 			break
 		}
-		ck := stripControl(truncateRunes(k, maxChannelSpecificKeyLen))
+		ck := stripControl(textutil.TruncateRunes(k, maxChannelSpecificKeyLen))
 		if ck == "" {
 			// A key that is empty or all-control after cleaning carries
 			// no usable routing information; drop it.
 			continue
 		}
-		out[ck] = stripControl(truncateRunes(m[k], maxChannelSpecificValLen))
+		out[ck] = stripControl(textutil.TruncateRunes(m[k], maxChannelSpecificValLen))
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
-}
-
-// truncateRunes caps s to at most n runes without splitting a rune.
-func truncateRunes(s string, n int) string {
-	if n <= 0 || utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	count := 0
-	for i := range s {
-		if count == n {
-			return s[:i]
-		}
-		count++
-	}
-	return s
 }
 
 // stripControl removes Unicode control characters (C0/C1, DEL) while

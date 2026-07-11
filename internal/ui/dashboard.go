@@ -216,15 +216,23 @@ type DashboardCacheSavings struct {
 
 // Dashboard renders the main dashboard page.
 func (s *Server) Dashboard(w http.ResponseWriter, r *http.Request) {
-	if api.SessionRoleFromContext(r.Context()) == auth.RoleUser {
-		// Project-scoped users get the operator dashboard's instance-wide
-		// aggregates gated away, so land them on Tasks (their day-to-day
-		// surface) rather than an empty dashboard or the Projects list.
-		http.Redirect(w, r, "/ui/tasks", http.StatusFound)
-		return
-	}
+	// Fresh-install stays ahead of BOTH branches below (design
+	// outcome-inbox-design.md §5.7: "the fresh-install /ui/setup redirect
+	// stays ahead of both") — checked first so a not-yet-configured
+	// instance always reaches the setup wizard, even in the edge case of
+	// a RoleUser session existing before setup completes.
 	if r.URL.Path == "/" && s.onboardingDetector.Config != nil && s.setupStatus(r).FreshInstall {
 		http.Redirect(w, r, "/ui/setup", http.StatusFound)
+		return
+	}
+	if api.SessionRoleFromContext(r.Context()) == auth.RoleUser {
+		// Project-scoped users get the operator dashboard's instance-wide
+		// aggregates gated away, so land them on the Outcome Inbox (task
+		// 4.4, design §5.7) — their day-to-day "what needs me / what did
+		// I ask for" surface — rather than an empty dashboard or the
+		// Projects list. Previously /ui/tasks; the inbox supersedes it as
+		// the non-admin default home.
+		http.Redirect(w, r, "/ui/inbox", http.StatusFound)
 		return
 	}
 	s.logger.Debug().

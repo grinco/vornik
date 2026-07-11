@@ -19,12 +19,18 @@ func TestCheckSecrets(t *testing.T) {
 	}
 	// All present => green with per-secret items.
 	d = New(Deps{Secrets: fakeSecrets{"GITHUB_TOKEN": true, "SLACK_TOKEN": true}})
-	proj := &registry.Project{Permissions: registry.ProjectPermissions{
+	proj := &registry.Project{ID: "proj-1", Permissions: registry.ProjectPermissions{
 		Secrets: []string{"GITHUB_TOKEN", "SLACK_TOKEN"},
 	}}
 	got := d.checkSecrets(proj)
 	if got.Status != StatusGreen || !got.Required || len(got.Items) != 2 {
 		t.Fatalf("all present: got %+v", got)
+	}
+	// FixHref deep-links into the Guided Integrations Hub, pre-scoped to
+	// this project (task 5.4, design §5.7) — regardless of outcome, since
+	// most declared secrets are channel credentials the hub now writes.
+	if got.FixHref != "/ui/integrations?project=proj-1" {
+		t.Fatalf("FixHref = %q, want /ui/integrations?project=proj-1", got.FixHref)
 	}
 	// One missing => red, that item red.
 	d = New(Deps{Secrets: fakeSecrets{"GITHUB_TOKEN": true}})

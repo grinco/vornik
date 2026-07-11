@@ -48,6 +48,12 @@ type TaskDetailData struct {
 	// yet. The template gates on this and on whether the
 	// daemon has the explainer wired to decide what to render.
 	PostMortem *persistence.TaskPostMortem
+	// RedactionTotal / RedactionsByType back the "🔒 N secrets
+	// redacted" badge (secret-leak Phase 3). RedactionTotal == 0
+	// (or an unwired repo) hides the badge; RedactionsByType gives
+	// the per-type breakdown (e.g. openai_key → 2) for the tooltip.
+	RedactionTotal   int
+	RedactionsByType map[string]int
 	// Phase 26+27 — conversational task lifecycle. Empty/disabled
 	// when taskMessageRepo isn't wired.
 	Conversation TaskConversationView
@@ -110,6 +116,30 @@ type TaskDetailData struct {
 	// Empty for leaf tasks. Powers the "Subtasks" panel below the
 	// parent block.
 	Children []*persistence.Task
+	// StoryLines seeds the plain-language "story" panel from the
+	// execution_narration store for the task's most recent execution
+	// (task 2.2, narrated-execution-design.md §5.6), ordered by seq
+	// ascending. Empty when the narrator isn't wired or no narration
+	// was recorded for this execution.
+	StoryLines []StoryLineRow
+	// IsRoleUser is true for a project-scoped, non-admin session. The
+	// story panel is always the default-open primary content; this
+	// flag decides whether the "Show technical details" section
+	// defaults open (false — admin/no-session) or collapsed (true —
+	// RoleUser).
+	IsRoleUser bool
+	// Deliverables lists the completed task's final execution's
+	// OUTPUT-class artifacts as lead cards (task 2.4, narrated-
+	// execution-design.md §5.8) — the completion payload, rendered
+	// above the technical execution record. Empty for non-completed
+	// tasks or a completed task whose execution produced no OUTPUT
+	// artifact (see DeliverableFallbackText for that case).
+	Deliverables []DeliverableCard
+	// DeliverableFallbackText is the completion narration line shown
+	// in place of deliverable cards when a COMPLETED task produced no
+	// OUTPUT artifacts ("If none, the story ends with the completion
+	// narration text as the deliverable" — §5.8). Empty otherwise.
+	DeliverableFallbackText string
 }
 
 // TaskJudgeVerdictRow projects a persistence.TaskJudgeVerdict
@@ -258,6 +288,7 @@ func (s *Server) TaskDetail(w http.ResponseWriter, r *http.Request) {
 		CostSort:    costSort,
 		CostDir:     costDir,
 		CostBaseURL: sortBaseURL(r),
+		IsRoleUser:  isStoryDefaultViewer(r),
 	}
 
 	// Get task
@@ -312,6 +343,11 @@ func (s *Server) TaskDetail(w http.ResponseWriter, r *http.Request) {
 			if err == nil && len(execs) > 0 {
 				data.Executions = execs
 				data.Execution = execs[0] // most recent
+				// Story panel seed (task 2.2): read-only against the
+				// 2.1 narrator's execution_narration store, keyed off
+				// the most recent execution. Best-effort — see
+				// storyLines' own nil/error handling.
+				data.StoryLines = s.storyLines(ctx, data.Execution.ID)
 			} else if err != nil {
 				s.logger.Warn().Err(err).Str("task_id", taskID).Msg("failed to load task executions for UI")
 			}
@@ -351,6 +387,16 @@ func (s *Server) TaskDetail(w http.ResponseWriter, r *http.Request) {
 		if s.postMortemRepo != nil {
 			if pm, err := s.postMortemRepo.Get(ctx, taskID); err == nil && pm != nil {
 				data.PostMortem = pm
+			}
+		}
+
+		// Secret-leak Phase 3 badge: how many secrets were redacted
+		// across this task's output. Best-effort — a read error or an
+		// unwired repo just hides the badge (RedactionTotal stays 0).
+		if s.secretRedactionRepo != nil {
+			if byType, total, err := s.secretRedactionRepo.CountByTask(ctx, taskID); err == nil && total > 0 {
+				data.RedactionsByType = byType
+				data.RedactionTotal = total
 			}
 		}
 
@@ -414,6 +460,16 @@ func (s *Server) TaskDetail(w http.ResponseWriter, r *http.Request) {
 				})
 				if err == nil {
 					data.ExecutionArtifacts = execArtifacts
+					// Deliverable-first completion (task 2.4): a COMPLETED
+					// task leads with its OUTPUT-class artifacts as cards.
+					// Falls back to the last recorded story line (the
+					// completion narration) when there are none — §5.8.
+					if data.Task.Status == persistence.TaskStatusCompleted {
+						data.Deliverables = buildDeliverableCards(execArtifacts)
+						if len(data.Deliverables) == 0 && len(data.StoryLines) > 0 {
+							data.DeliverableFallbackText = data.StoryLines[len(data.StoryLines)-1].Text
+						}
+					}
 					for _, a := range execArtifacts {
 						if isChangelogArtifact(a.Name) && a.StoragePath != "" {
 							// Route through the backend-aware Store so this

@@ -500,6 +500,10 @@ func TestInstallationOnboardingSessionRepository_PostgresContract(t *testing.T) 
 	db := newIntegrationDB(t)
 	repotest.RunInstallationOnboardingSessionSuite(t, NewInstallationOnboardingSessionRepository(db.DB))
 }
+func TestFixItSessionRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunFixItSessionSuite(t, NewFixItSessionRepository(db.DB))
+}
 func TestCrossProjectCallRepository_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
 	repotest.RunCrossProjectCallSuite(t, NewCrossProjectCallRepository(db.DB))
@@ -519,4 +523,17 @@ func TestTelegramPollerStateRepository_PostgresContract(t *testing.T) {
 func TestProfileUseAuditRepository_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
 	repotest.RunProfileUseAuditSuite(t, NewProfileUseAuditRepository(db.DB))
+}
+func TestExecutionNarrationRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunExecutionNarrationSuite(t, NewExecutionNarrationRepository(db.DB),
+		NewExecutionRepository(db.DB), NewTaskRepository(db.DB))
+}
+
+func TestStepLatency_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunStepLatencySuite(t,
+		NewExecutionStepOutcomeRepository(db.DB),
+		NewExecutionRepository(db.DB),
+		NewTaskRepository(db.DB))
 }

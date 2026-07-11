@@ -72,6 +72,41 @@ func (r *ChatAuditRepository) GetByID(ctx context.Context, id string) (*persiste
 	return e, nil
 }
 
+// GetChatAuditsByTurnIDs resolves many chat-audit rows by PK in one
+// round-trip, keyed by ID. Mirrors GetByID's column set. Empty input
+// returns an empty map without querying.
+func (r *ChatAuditRepository) GetChatAuditsByTurnIDs(ctx context.Context, turnIDs []string) (map[string]persistence.ChatAuditEntry, error) {
+	out := make(map[string]persistence.ChatAuditEntry)
+	if len(turnIDs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(turnIDs))
+	args := make([]any, len(turnIDs))
+	for i, id := range turnIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, chat_id, user_id, project_id, role_used, model
+		FROM chat_audit_log WHERE id IN (`+strings.Join(placeholders, ", ")+`)`, args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var e persistence.ChatAuditEntry
+		if err := rows.Scan(&e.ID, &e.ChatID, &e.UserID, &e.ProjectID, &e.RoleUsed, &e.Model); err != nil {
+			return nil, fmt.Errorf("chat_audit: scan: %w", err)
+		}
+		out[e.ID] = e
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("chat_audit: rows: %w", err)
+	}
+	return out, nil
+}
+
 func (r *ChatAuditRepository) List(ctx context.Context, filter persistence.ChatAuditFilter) ([]*persistence.ChatAuditEntry, error) {
 	if filter.PageSize <= 0 {
 		return nil, fmt.Errorf("chat_audit: PageSize must be > 0")

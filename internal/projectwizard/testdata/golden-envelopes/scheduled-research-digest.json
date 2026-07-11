@@ -1,0 +1,45 @@
+{
+  "message": "Here's the automation I'll build: a research digest that runs on a schedule, gathers sources, and writes you a summary. Confirm the cadence and I'll set it live.",
+  "tier": 3,
+  "ready_to_commit": false,
+  "open_questions": ["every weekday 07:00?", "email or just save the file?"],
+  "bundle": {
+    "project": {
+      "projectId": "ai-news-digest",
+      "displayName": "AI News Digest",
+      "swarmId": "ai-news-digest-swarm",
+      "defaultWorkflowId": "research-digest",
+      "autonomy": {"enabled": true, "goal": "produce a daily AI-news digest", "pollInterval": "24h"},
+      "budget": {"daily_soft_usd": 1.0, "daily_hard_usd": 3.0, "monthly_soft_usd": 15.0, "monthly_hard_usd": 40.0}
+    },
+    "swarm": {
+      "swarmId": "ai-news-digest-swarm",
+      "displayName": "AI News Digest",
+      "leadRole": "researcher",
+      "roles": [
+        {"name": "researcher", "archetypeId": "researcher"},
+        {"name": "writer", "archetypeId": "writer"}
+      ]
+    },
+    "workflows": [
+      {
+        "workflowId": "research-digest",
+        "description": "Gather AI news then write a digest.",
+        "entrypoint": "gather",
+        "steps": [
+          {"id": "gather", "type": "agent", "role": "researcher", "next": "write"},
+          {"id": "write", "type": "agent", "role": "writer", "terminal": true}
+        ]
+      }
+    ],
+    "plan": {
+      "steps": [
+        "Every weekday at 07:00 Europe/Prague the researcher gathers the day's AI news.",
+        "The writer turns the findings into a short digest saved to your artifacts."
+      ],
+      "schedule": "Runs every weekday 07:00 Europe/Prague",
+      "cost_band": "~$0.30 per run (rough estimate)",
+      "approvals": []
+    }
+  }
+}

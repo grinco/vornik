@@ -62,6 +62,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -82,6 +83,7 @@ import (
 	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/executor/livepubsub"
 	"vornik.io/vornik/internal/extractor"
+	"vornik.io/vornik/internal/fixitdoctor"
 	"vornik.io/vornik/internal/github"
 	"vornik.io/vornik/internal/hallucination"
 	"vornik.io/vornik/internal/httpx/realip"
@@ -90,6 +92,7 @@ import (
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/memory/graph"
 	"vornik.io/vornik/internal/memoryfirewall"
+	"vornik.io/vornik/internal/narrator"
 	"vornik.io/vornik/internal/observability"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
@@ -105,6 +108,7 @@ import (
 	"vornik.io/vornik/internal/slack"
 	"vornik.io/vornik/internal/storage"
 	"vornik.io/vornik/internal/telegram"
+	"vornik.io/vornik/internal/ui"
 	"vornik.io/vornik/internal/voice"
 	"vornik.io/vornik/internal/watchdog"
 	"vornik.io/vornik/internal/workspacelock"
@@ -120,7 +124,13 @@ type Container struct {
 	// Single-threaded within one reload pass (the ConfigReloader serialises
 	// loader→validator→activator), so no lock is needed.
 	stagedConfig *config.Config
-	Logger       zerolog.Logger
+	// cpSelfHealLive is the hot-reloadable live value of
+	// control_plane.self_heal_enabled (actionable-proposals §7 emergency
+	// brake). nil until the first hot-reload stages a value; the control-plane
+	// workers' per-tick closures read it via liveSelfHealEnabled, falling back
+	// to the boot-time c.Config (which hot-reload deliberately never mutates).
+	cpSelfHealLive atomic.Pointer[bool]
+	Logger         zerolog.Logger
 	// DB is the raw *sql.DB used for backend-agnostic call sites
 	// (state collectors, retention sweeper, memory.New, doctor
 	// handlers). backend owns the lifecycle + driver-specific
@@ -166,7 +176,24 @@ type Container struct {
 	// apiServer is the inner data-plane handler that owns the
 	// trading ingest endpoints. Stored so wireComponentMetrics
 	// can attach a Prometheus sink after observability is up.
-	apiServer     *api.Server
+	apiServer *api.Server
+	// uiServer is the dashboard handler, set only on nodes that serve
+	// the UI (c.capabilities().ServeUI) — see container_http.go's
+	// ServeUI-gated construction. Task 3.4 (fix-it-doctor-design.md
+	// §5.5/§7) reads this LAZILY, from adapters built and wired
+	// earlier in initHTTPServer than uiServer itself exists (the
+	// Fix-It Doctor service is constructed before the UI server — see
+	// fixit_doctor_adapter.go's call site comment). It's an
+	// atomic.Pointer (companion review 2026-07-10, IMPORTANT #1) rather
+	// than a plain pointer specifically so no happens-before/sequencing
+	// assumption is required between the initHTTPServer write and a
+	// request goroutine's read — a request racing daemon startup always
+	// observes either nil or a fully-published *ui.Server, never a
+	// torn/unsynchronized value. A nil Load() (no UI on this node, or a
+	// request racing daemon startup before the store) degrades every
+	// adapter to its documented fail-closed/"no result known" branch —
+	// never a panic.
+	uiServer      atomic.Pointer[ui.Server]
 	Observability *observability.Observability
 	// logshipForwarder is the centralised log-forwarding seam
 	// (contracts.LogForwarder over internal/enterprise/logship). Non-nil only
@@ -274,6 +301,14 @@ type Container struct {
 	// ChatClient is unavailable.
 	memoryLLMConsolidateWorker *memory.LLMConsolidateWorker
 
+	// narratorWorker is the Narrated Execution bus subscriber (task
+	// 2.1, https://docs.vornik.io). nil
+	// when narrator.enabled is false or a required collaborator
+	// (live publisher, execution_narration store, ExecutionRepository)
+	// isn't wired — Run() itself is also nil-safe, so this is
+	// belt-and-suspenders against a construction-order bug.
+	narratorWorker *narrator.Narrator
+
 	// memoryClassifyBackfiller drives the LLM-based content-class
 	// backfill triggered by vornikctl memory reclassify --use-llm.
 	// nil when memory.classifier.enabled is false.
@@ -322,6 +357,19 @@ type Container struct {
 	// (Feature #2 Phase C). Wired into the Wizard at construction
 	// so each Converse + Commit attempt ticks the matching outcome.
 	projectWizardMetrics *projectwizard.Metrics
+	// systemHandlerNames snapshots the executor's registered system-step
+	// handler names (executor.SystemHandlerRegistry.Names()) at the point
+	// initScheduler wires the registry into the executor. Retained here
+	// (the registry itself is otherwise a function-local var in
+	// initScheduler) so a later init phase can hand it to the role-library
+	// doctor check (DoctorHandlers.SetSystemHandlerNames) — a tool entry
+	// naming a system handler (e.g. "rag.extract") only validates against
+	// handlers the RUNNING daemon actually registered, not a static list.
+	// Composer task 1.1b concern-2.
+	systemHandlerNames []string
+	// fixItDoctorMetrics holds vornik_fixit_* counters (task 3.2).
+	// Wired into the fixitdoctor.Service at construction.
+	fixItDoctorMetrics *fixitdoctor.Metrics
 	// extractorMetrics holds the vornik_extractions_total /
 	// _extraction_duration_seconds / _extracted_documents_total series
 	// (document-extraction LLD Phase 7). Built at boot in
@@ -497,6 +545,20 @@ type Container struct {
 	chainMetrics         *api.AuthChainMetrics
 	tradingSeriesMetrics *api.TradingSeriesMetrics
 	equityCheckMetrics   *api.TradingEquityCheckMetrics
+	// integrationsMetrics backs the Guided Integrations Hub's Prometheus
+	// counters (task 5.4). Same pass-2-only rule as the metrics above
+	// (see initHTTPServer's "TWO-PASS TRAP" note): built once, on the
+	// served registry, guarded by this field so a second initHTTPServer
+	// call never re-registers the same collector names.
+	integrationsMetrics *ui.IntegrationsMetrics
+	// inboxMetrics backs the Outcome Inbox's vornik_ui_inbox_views_total
+	// counter (task 4.4). Same pass-2-only rule as integrationsMetrics
+	// above.
+	inboxMetrics *ui.InboxMetrics
+	// deliverableMetrics backs the deliverable-first completion "send to
+	// chat" counter (task 2.4, narrated-execution-design.md §5.8/§5.9).
+	// Same pass-2-only rule as integrationsMetrics above.
+	deliverableMetrics *ui.DeliverableMetrics
 	// rateLimiterPostgres holds the postgres-backed limiter when
 	// config selects backend=postgres. Kept on the container so
 	// the periodic sweeper goroutine can call SweepExpired on
@@ -753,6 +815,15 @@ func NewContainer(cfg *config.Config, configPath string, opts ...ContainerOption
 		}
 	}
 
+	// Narrated Execution worker (task 2.1) — constructed here, right
+	// after c.livePub (its Sub/Pub seam) is final, and after
+	// c.ChatClient + c.pricingTable are already set (chat client
+	// initialized above; pricingTable set earlier in this function).
+	// Started later in Run() via startNarratorWorker; a nil
+	// c.narratorWorker (disabled or missing wiring) makes that call a
+	// no-op.
+	c.initNarrator()
+
 	// Build the single process-wide per-project workspace lock BEFORE
 	// the executor (initScheduler) and the HTTP servers (initHTTPServer)
 	// so the SAME instance is injected into all three. initHTTPServer
@@ -778,6 +849,11 @@ func NewContainer(cfg *config.Config, configPath string, opts ...ContainerOption
 		return nil, fmt.Errorf("scheduler initialization: %w", err)
 	}
 	c.Logger.Info().Msg("scheduler initialized")
+
+	// Late-bind the narrator's completion-push artifact lister (task 2.3) —
+	// c.artifactStore is only built above, inside initScheduler, which runs
+	// after c.initNarrator(); this closes that ordering gap.
+	c.wireNarratorArtifacts()
 
 	// Stuck-execution watchdog. Independent of the scheduler — runs as
 	// its own goroutine watching executions.updated_at. Construction
@@ -1430,6 +1506,8 @@ func (c *Container) wireComponentMetrics() {
 	c.replayMetrics = replay.NewMetrics(reg)
 	// Project wizard metrics — Phase C of Feature #2.
 	c.projectWizardMetrics = projectwizard.NewMetrics(reg)
+	// Fix-It Doctor metrics — task 3.2.
+	c.fixItDoctorMetrics = fixitdoctor.NewMetrics(reg)
 	// Document-extraction metrics (LLD Phase 7). Registered at boot so
 	// the series exist regardless of whether the lazily-built extractor
 	// Runner is ever exercised; the Runner picks this up in
@@ -1615,6 +1693,12 @@ func (c *Container) Run(ctx context.Context) error {
 		c.Logger.Info().Msg("node profile: run_workers=false; task scheduler + executor recovery skipped")
 	}
 
+	// NL Automation Composer crash recovery (task 1.2b slice ii, design
+	// §5.6 step 4) — before the scheduler starts touching the same live
+	// config tree. See container_composer_recovery.go for the full
+	// rationale; best-effort, never fails boot.
+	c.recoverComposerCommits(ctx)
+
 	// Trading boot reconciliation + equity sampler now owned by
 	// TradingSubsystem (see subsystem_trading.go); their goroutines
 	// launch during c.startSubsystems(ctx).
@@ -1670,6 +1754,11 @@ func (c *Container) Run(ctx context.Context) error {
 	// counterpart runs during stopSubsystems' drain via the
 	// memoryFirewallStopHook below.
 	c.startMemoryFirewallWriter(ctx)
+	// Narrated Execution worker (task 2.1) — an in-daemon goroutine
+	// subscriber on the live-execution bus, exactly like
+	// LLMConsolidateWorker's own simple `go worker.Run(ctx)` start.
+	// Nil-safe when narrator.enabled=false or wiring is missing.
+	c.startNarratorWorker(ctx)
 
 	// Ratelimit counter sweep now lifecycle-owned by
 	// RateLimitCounterSweepSubsystem (subsystem_ratelimit_sweep.go).

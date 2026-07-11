@@ -149,3 +149,7 @@ func TestTruncateSummary_LongTruncated(t *testing.T) {
 	got := truncateSummary(long, 5)
 	assert.Equal(t, "abcde…", got)
 }
+
+func (f *fakeOutcomeRepo) StepLatencyP95ByStep(context.Context, time.Time) ([]persistence.StepLatencyStat, error) {
+	return nil, nil
+}

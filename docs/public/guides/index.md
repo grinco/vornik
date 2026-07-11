@@ -43,6 +43,9 @@ already have a project up and running — if you don't, start with
   across runs.
 - **[Clustering and the DMZ webhook relay](clustering.md)** — scale the worker
   tier or isolate webhook ingress in a DMZ with a mutual-TLS relay.
+- **[The automation composer ("Describe it")](automation-composer.md)** —
+  describe an automation in plain language and get a validated project +
+  swarm + workflow(s), for requests no gallery template fits.
 
 ## How to read these
 

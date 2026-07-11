@@ -169,6 +169,14 @@ func (f *fakeTaskRepo) GetChildren(_ context.Context, parentID string) ([]*persi
 	return f.children[parentID], nil
 }
 
+func (f *fakeTaskRepo) OrphanChildren(_ context.Context, parentID string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := len(f.children[parentID])
+	delete(f.children, parentID)
+	return n, nil
+}
+
 func (f *fakeTaskRepo) Update(_ context.Context, t *persistence.Task) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

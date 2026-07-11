@@ -133,6 +133,42 @@ func TestProjectsNew_EmptyCatalogFallsBackGracefully(t *testing.T) {
 	assert.Contains(t, rr.Body.String(), "No template catalog installed")
 }
 
+// TestProjectsNew_DescribeItCardLinksToWizard — the NL Automation
+// Composer's gallery entry point (task 1.2a, design §5.7): a
+// first-position "Describe it" card linking to the conversational
+// wizard, which must appear regardless of whether the template
+// catalog is available (the composer doesn't need one).
+func TestProjectsNew_DescribeItCardLinksToWizard(t *testing.T) {
+	srv, _ := templateRig(t)
+	req := httptest.NewRequest(http.MethodGet, "/ui/projects/new", nil)
+	rr := httptest.NewRecorder()
+	srv.ProjectsNew(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, "body=%s", rr.Body.String())
+
+	body := rr.Body.String()
+	assert.Contains(t, body, "Describe it")
+	assert.Contains(t, body, `href="/ui/projects/new/wizard"`)
+
+	// First position: the Describe-it link must appear before any
+	// per-template gallery card in DOM order.
+	describeIdx := strings.Index(body, `href="/ui/projects/new/wizard"`)
+	alphaIdx := strings.Index(body, "Alpha Demo")
+	require.True(t, describeIdx >= 0 && alphaIdx >= 0 && describeIdx < alphaIdx,
+		"Describe-it card must be first in the gallery grid")
+}
+
+// TestProjectsNew_DescribeItCardPresentWithoutCatalog — the entry
+// point must still render when no template catalog is installed
+// (CatalogAvailable=false), since the composer doesn't depend on one.
+func TestProjectsNew_DescribeItCardPresentWithoutCatalog(t *testing.T) {
+	srv := NewServer()
+	req := httptest.NewRequest(http.MethodGet, "/ui/projects/new", nil)
+	rr := httptest.NewRecorder()
+	srv.ProjectsNew(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Contains(t, rr.Body.String(), `href="/ui/projects/new/wizard"`)
+}
+
 // TestProjectsCreateFromTemplate_HappyPath POSTs the form and
 // asserts files land on disk + the success view renders.
 func TestProjectsCreateFromTemplate_HappyPath(t *testing.T) {

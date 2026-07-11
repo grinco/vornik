@@ -1,0 +1,44 @@
+{
+  "message": "I'll set up a docs-to-RAG sync: it fetches your docs, extracts them, and indexes them into project memory so the swarm can search them.",
+  "tier": 3,
+  "ready_to_commit": false,
+  "bundle": {
+    "project": {
+      "projectId": "docs-rag-sync",
+      "displayName": "Docs RAG Sync",
+      "swarmId": "docs-rag-sync-swarm",
+      "defaultWorkflowId": "sync-docs",
+      "autonomy": {"enabled": true, "goal": "keep the docs RAG index fresh", "pollInterval": "6h"},
+      "budget": {"daily_soft_usd": 1.0, "daily_hard_usd": 3.0, "monthly_soft_usd": 15.0, "monthly_hard_usd": 40.0}
+    },
+    "swarm": {
+      "swarmId": "docs-rag-sync-swarm",
+      "displayName": "Docs RAG Sync",
+      "leadRole": "researcher",
+      "roles": [
+        {"name": "researcher", "archetypeId": "researcher"}
+      ]
+    },
+    "workflows": [
+      {
+        "workflowId": "sync-docs",
+        "description": "Fetch docs, extract, and index into RAG.",
+        "entrypoint": "fetch",
+        "steps": [
+          {"id": "fetch", "type": "agent", "role": "researcher", "next": "extract"},
+          {"id": "extract", "type": "system", "handler": "rag.extract", "next": "index"},
+          {"id": "index", "type": "system", "handler": "rag.index", "terminal": true}
+        ]
+      }
+    ],
+    "plan": {
+      "steps": [
+        "Every 6 hours the researcher fetches the latest docs.",
+        "The docs are extracted into chunks.",
+        "The chunks are indexed into project memory for search."
+      ],
+      "schedule": "Runs every 6 hours",
+      "cost_band": "~$0.20 per run (rough estimate)"
+    }
+  }
+}

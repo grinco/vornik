@@ -269,6 +269,33 @@ func TestConnect_HTTPTimeoutFromConfig(t *testing.T) {
 	assert.Equal(t, 30*time.Second, def.httpClient.Timeout, "unset TimeoutSeconds must keep the 30s default")
 }
 
+// TestConnect_HTTPClientOverride: cfg.HTTPClient, when set, is used verbatim
+// instead of Connect building its own client from TimeoutSeconds. This is the
+// seam the integrations probe layer (internal/integrations) relies on to
+// route candidate MCP server URLs through the SSRF-guarded DialGuard client —
+// without it there is no way to enforce the guard on sse/streamable-http
+// probes short of reimplementing the MCP wire protocol.
+func TestConnect_HTTPClientOverride(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.ReadAll(r.Body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0", "id": 1, "result": map[string]any{"tools": []any{}},
+		})
+	}))
+	defer srv.Close()
+
+	override := &http.Client{Timeout: 42 * time.Second}
+	c, err := Connect(context.Background(), ServerConfig{
+		Name: "override", Transport: "sse", URL: srv.URL,
+		TimeoutSeconds: 90, // must be ignored when HTTPClient is set
+		HTTPClient:     override,
+	}, zerolog.Nop())
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+	assert.Same(t, override, c.httpClient, "cfg.HTTPClient must be used verbatim, not wrapped or rebuilt")
+}
+
 func toolNames(ts []Tool) []string {
 	names := make([]string, len(ts))
 	for i, t := range ts {

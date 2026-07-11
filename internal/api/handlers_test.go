@@ -1364,6 +1364,55 @@ func TestServer_RetryTask_ResetAttempts(t *testing.T) {
 	assert.Equal(t, 1, releaseOpts.Attempt)
 }
 
+// TestServer_RetryTask_ResetsDelegationState — regression for the
+// task-retry fast-fail storm (backlog item 1). A delegating
+// (resume_after_children) parent keeps its subtasks as children; on
+// retry the resume guard fast-fails the entrypoint on prior-attempt
+// children instead of re-decomposing. RetryTask must clear that stale
+// delegation state before re-queueing: cancel any still-live children
+// and orphan the rest so GetChildren returns empty and decompose re-runs.
+func TestServer_RetryTask_ResetsDelegationState(t *testing.T) {
+	now := time.Now()
+	var orphanedParent string
+	taskRepo := &mocks.MockTaskRepository{
+		GetFunc: func(_ context.Context, _ string) (*persistence.Task, error) {
+			return &persistence.Task{
+				ID:        "task-1",
+				ProjectID: "project-1",
+				Status:    persistence.TaskStatusFailed,
+				Priority:  50,
+				Attempt:   1,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}, nil
+		},
+		OrphanChildrenFunc: func(_ context.Context, parentTaskID string) (int, error) {
+			orphanedParent = parentTaskID
+			return 2, nil
+		},
+		RequeueTerminalTaskFunc: func(_ context.Context, _ string, _, _ int) (bool, error) {
+			return true, nil
+		},
+	}
+	spy := &cancelNotifySpy{}
+	server := NewServer(
+		WithLogger(zerolog.Nop()),
+		WithTaskRepository(taskRepo),
+		WithExecutor(spy),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/projects/project-1/tasks/task-1/retry", nil)
+	rec := httptest.NewRecorder()
+	server.RetryTask(rec, req)
+
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+	assert.Equal(t, 1, taskRepo.CallCount.OrphanChildren,
+		"retry must orphan prior-attempt children so decompose re-runs fresh")
+	assert.Equal(t, "task-1", orphanedParent)
+	assert.Equal(t, []string{"task-1"}, spy.cascadeCalls,
+		"retry must cancel any still-live children of the superseded attempt")
+}
+
 // TestServer_RetryTask_MalformedBody guards against silently accepting
 // invalid JSON on retry. Before the fix, a parse error was discarded and
 // the handler continued with a zero-valued request, which meant flags like

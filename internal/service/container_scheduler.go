@@ -496,6 +496,12 @@ func (c *Container) initScheduler() error {
 			c.Logger.Error().Err(err).Msg("secrets: detector failed to construct — continuing without secret-leak protection")
 		} else {
 			executorOpts = append(executorOpts, executor.WithSecrets(detector, actions))
+			// Phase 3: durably record redaction events for the task-detail
+			// badge + scan-history CLI. Best-effort at the sinks; nil repo
+			// (SQLite branch may leave it unset) simply skips recording.
+			if c.repos != nil && c.repos.SecretRedaction != nil {
+				executorOpts = append(executorOpts, executor.WithSecretRedactionAudit(c.repos.SecretRedaction))
+			}
 			if len(c.Config.Secrets.TrustedOutputTools) > 0 {
 				executorOpts = append(executorOpts, executor.WithSecretsTrustedOutputTools(c.Config.Secrets.TrustedOutputTools))
 				c.Logger.Info().Strs("trusted_output_tools", c.Config.Secrets.TrustedOutputTools).
@@ -1105,6 +1111,9 @@ func (c *Container) initScheduler() error {
 	if len(sysHandlers.Names()) > 0 {
 		executorOpts = append(executorOpts, executor.WithSystemHandlers(sysHandlers))
 	}
+	// Snapshot the registered handler names for the role-library doctor
+	// check (composer task 1.1b concern-2) — see Container.systemHandlerNames.
+	c.systemHandlerNames = sysHandlers.Names()
 
 	c.Executor = executor.NewWithOptions(
 		runtimeManager,

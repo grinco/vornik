@@ -37,6 +37,13 @@ type SelfHealWorker struct {
 	Alert    func(subject, body string)
 	Interval time.Duration
 
+	// Enabled is the per-tick opt-in gate (control_plane.self_heal_enabled,
+	// read live so a config reload is an immediate emergency brake —
+	// actionable-proposals §7). Nil = enabled. While it returns false the
+	// worker skips its scan entirely (breach streaks reset) and the Tune
+	// worker's mirrored closure files the generic failed-rate proposal.
+	Enabled func() bool
+
 	Threshold           float64 // failed-rate breach (default 0.5)
 	MinSamples          int     // default 5
 	BreachesToOpen      int     // consecutive breaching scans before opening (default 3)
@@ -126,6 +133,14 @@ func (w *SelfHealWorker) Stopped() <-chan struct{} {
 }
 
 func (w *SelfHealWorker) tick(ctx context.Context) {
+	if w.Enabled != nil && !w.Enabled() {
+		// Hot-disabled: drop accumulated streaks so a later re-enable
+		// re-arms from scratch instead of firing off stale counts.
+		for k := range w.breaches {
+			delete(w.breaches, k)
+		}
+		return
+	}
 	rates, err := w.Metrics.FailedTaskRates(ctx)
 	if err != nil {
 		w.Logger.Warn().Err(err).Msg("self-heal: failed to read failed-rate metrics")

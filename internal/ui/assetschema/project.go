@@ -205,4 +205,10 @@ var ProjectDeferredPaths = []string{
 	// Git-over-HTTPS workspace access (Task 3.2). Surfaced in the
 	// project-detail Git-access panel; set via raw YAML.
 	"git.enabled",
+	// Narrated Execution per-project opt-in/opt-out (task 2.3,
+	// https://docs.vornik.io §5.7/§9 Q3).
+	// Mirrors hallucinationJudge.enabled above — a bare bool toggle with
+	// no dedicated form section yet; a project settings UI panel is
+	// future work, not part of task 2.3.
+	"narrator.chat_push", "narrator.no_narration",
 }

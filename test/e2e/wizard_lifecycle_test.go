@@ -174,14 +174,18 @@ func TestWizardCreateCommitLiveDelete(t *testing.T) {
 		ReadyToCommit:     true,
 	})
 
-	// Commit via the API.
+	// Commit via the API. Since PR #41 (ledger-gated scaffold commit,
+	// 2026-07-08) a commit on a daemon with the proposal ledger wired —
+	// which includes this CE e2e daemon — does NOT write files: it files
+	// a DRAFT scaffold proposal the operator must approve + apply.
 	resp, body := doReq(t, http.MethodPost, "/api/v1/projects/wizard/"+sid+"/commit", "", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("commit: HTTP %d, body=%s", resp.StatusCode, body)
 	}
 	var cr struct {
-		ProjectID string `json:"project_id"`
-		URL       string `json:"url"`
+		ProjectID  string `json:"project_id"`
+		ProposalID string `json:"proposal_id"`
+		URL        string `json:"url"`
 	}
 	if err := json.Unmarshal([]byte(body), &cr); err != nil {
 		t.Fatalf("commit body: %v (%s)", err, body)
@@ -189,15 +193,44 @@ func TestWizardCreateCommitLiveDelete(t *testing.T) {
 	if cr.ProjectID != projectID {
 		t.Fatalf("project_id = %q, want %q", cr.ProjectID, projectID)
 	}
+	if cr.ProposalID == "" {
+		t.Fatalf("commit returned no proposal_id — expected the ledger-gated scaffold path (PR #41), body=%s", body)
+	}
 
-	// The template-anchored commit must have written ALL three files
-	// (project + swarm + workflow), not just the project YAML — this is
-	// the swarmId-gap regression guard.
-	for _, rel := range []string{
+	// Ledger invariant: NOTHING lands on disk before the operator
+	// approves + applies. A file appearing here means commit regressed
+	// to a direct write despite the wired ledger.
+	committedFiles := []string{
 		"projects/" + projectID + ".yaml",
 		"swarms/" + projectID + "-swarm.md",
 		"workflows/" + projectID + "-wf.md",
-	} {
+	}
+	for _, rel := range committedFiles {
+		if _, err := os.Stat(filepath.Join(filepath.Dir(dbPath), "configs", rel)); err == nil {
+			t.Errorf("file %s exists before the proposal was applied — commit must not direct-write when the ledger is wired", rel)
+		}
+	}
+
+	// Approve. The actor must differ from the server-stamped proposer
+	// ("operator-ui") or the self-approval gate refuses with 409.
+	resp, decideBody := doReq(t, http.MethodPost, "/api/v1/operator/proposals/"+cr.ProposalID+"/decide",
+		"application/json", strings.NewReader(`{"decision":"approve","actor":"e2e-reviewer"}`))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("approve proposal: HTTP %d, body=%s", resp.StatusCode, decideBody)
+	}
+
+	// Apply — the gated engine creates the files atomically and reloads
+	// the registry synchronously.
+	resp, applyBody := doReq(t, http.MethodPost, "/api/v1/operator/proposals/"+cr.ProposalID+"/apply",
+		"application/json", strings.NewReader(`{"actor":"e2e-reviewer"}`))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("apply proposal: HTTP %d, body=%s", resp.StatusCode, applyBody)
+	}
+
+	// The template-anchored scaffold must have written ALL three files
+	// (project + swarm + workflow), not just the project YAML — this is
+	// the swarmId-gap regression guard.
+	for _, rel := range committedFiles {
 		if _, err := os.Stat(filepath.Join(filepath.Dir(dbPath), "configs", rel)); err != nil {
 			t.Errorf("expected committed file %s: %v", rel, err)
 		}

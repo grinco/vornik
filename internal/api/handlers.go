@@ -1036,6 +1036,29 @@ func (s *Server) RetryTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Reset delegation state before re-queueing. A delegating
+	// (resume_after_children) parent — e.g. an issue-fix `decompose`
+	// step — records its subtasks as children hanging off parent_task_id.
+	// On the next run the resume guard sees those prior-attempt children
+	// and, if any FAILED, routes the entrypoint straight to on_fail
+	// without ever re-running decompose, so the retry fast-fails in
+	// milliseconds and burns the whole budget. Cancel any still-live
+	// children (they belong to the now-superseded attempt) and orphan
+	// the rest so GetChildren returns empty and decompose re-runs fresh.
+	// No-op for non-delegating tasks (they have no children). Best-effort:
+	// a detach failure must not block the retry — worst case the resume
+	// guard still fast-fails, which the storm guard bounds.
+	if s.executor != nil {
+		s.executor.CancelChildren(r.Context(), taskID)
+	}
+	if orphaned, oErr := s.taskRepo.OrphanChildren(r.Context(), taskID); oErr != nil {
+		s.logger.Warn().Err(oErr).Str("taskId", taskID).
+			Msg("retry: failed to orphan prior-attempt children — decompose may fast-fail on stale children")
+	} else if orphaned > 0 {
+		s.logger.Info().Str("taskId", taskID).Int("orphaned_children", orphaned).
+			Msg("retry: detached prior-attempt children so the parent can re-decompose")
+	}
+
 	// Update attempt counter
 	if req.ResetAttempts {
 		task.Attempt = 1
@@ -2451,6 +2474,17 @@ func (s *Server) ProjectWizardCommit(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusServiceUnavailable, "WRITER_DISABLED",
 				"project writer not wired on this deployment")
 			return
+		case strings.Contains(msg, "projectwizard: bundle commit failed"):
+			// The composer's journaled bundle-commit pipeline (task
+			// 1.2b) refused at some defense-in-depth step (live
+			// collision, guardrail, schedule confirmation, staged
+			// registry validation, or the stager itself). The session
+			// is always left resumable on this path (session.Bundle is
+			// never cleared) and the wrapped text is deliberately
+			// plain-language/safe — surface it verbatim so the UI can
+			// show the operator why and re-enable the commit button.
+			respondError(w, http.StatusConflict, "BUNDLE_COMMIT_FAILED", msg)
+			return
 		case strings.Contains(msg, "not found"):
 			respondError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
 			return
@@ -2519,11 +2553,96 @@ func (s *Server) ProjectWizardCancel(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ProjectWizardConfirmScheduleRequest is the body of POST
+// .../wizard/{session_id}/confirm-schedule. cron is the exact
+// registry.ProjectAutonomy.PollInterval value the operator was shown
+// on the schedule chip (task 1.2a, design §5.4).
+type ProjectWizardConfirmScheduleRequest struct {
+	Cron string `json:"cron"`
+}
+
+// ProjectWizardConfirmSchedule handles POST
+// .../wizard/{session_id}/confirm-schedule: the operator clicked
+// "confirm" on the Plan tab's schedule chip. Records the confirmation
+// on the session so a later Converse turn's schedule gate
+// (composer_engine.go's scheduleConfirmed) can see it. The commit
+// ACTION enforcing this gate is task 1.2b; here we only surface +
+// persist the confirmation.
+//
+// Refusals mirror Cancel: wizard unwired → 503; missing session_id or
+// cron → 400; committed → 410 (session read-only); cancelled/not
+// found → 404; cross-operator → 404 (no leak).
+func (s *Server) ProjectWizardConfirmSchedule(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed")
+		return
+	}
+	if s.projectWizard == nil {
+		respondError(w, http.StatusServiceUnavailable, "WIZARD_DISABLED",
+			"project wizard not wired on this deployment")
+		return
+	}
+	sessionID := extractPathSegmentAfter(r, "wizard")
+	sessionID = strings.TrimSuffix(sessionID, "/confirm-schedule")
+	if sessionID == "" {
+		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", "session_id is required")
+		return
+	}
+
+	var body ProjectWizardConfirmScheduleRequest
+	if err := decodeJSONBody(w, r, maxOptionalBodyBytes, &body); err != nil {
+		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR",
+			"request body must be JSON: "+err.Error())
+		return
+	}
+	body.Cron = strings.TrimSpace(body.Cron)
+	if body.Cron == "" {
+		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", "cron is required")
+		return
+	}
+
+	operatorID := RequestOperatorIDOrSingleTenant(r, SingleTenantOperatorIDFromConfig(s.config))
+	if operatorID == "" {
+		respondError(w, http.StatusUnauthorized, "UNAUTHORIZED",
+			"operator identity required (provide an API key or admin Telegram session)")
+		return
+	}
+
+	if err := s.projectWizard.ConfirmSchedule(r.Context(), sessionID, operatorID, body.Cron); err != nil {
+		msg := err.Error()
+		switch {
+		case strings.Contains(msg, "session already committed"):
+			respondError(w, http.StatusGone, "SESSION_COMMITTED",
+				"session already committed; start a new wizard session")
+			return
+		case strings.Contains(msg, "already cancelled"):
+			respondError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
+			return
+		case strings.Contains(msg, "not found"):
+			respondError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
+			return
+		case strings.Contains(msg, "cron is required"),
+			strings.Contains(msg, "session id required"),
+			strings.Contains(msg, "operator id required"):
+			respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
+			return
+		}
+		s.logger.Error().Err(err).Str("session_id", sessionID).Msg("project-wizard confirm-schedule failed")
+		respondError(w, http.StatusInternalServerError, "WIZARD_ERROR", "confirm-schedule failed; see server logs")
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]string{
+		"session_id": sessionID,
+		"status":     "schedule_confirmed",
+	})
+}
+
 // projectWizardRouter dispatches /api/v1/projects/wizard/{...}
 // paths to the appropriate wizard handler. /converse is exact-
 // matched separately on the mux; this prefix router handles
-// /{session_id}/commit and /{session_id}/cancel (the wildcard
-// paths under wizard/).
+// /{session_id}/commit, /{session_id}/cancel, and
+// /{session_id}/confirm-schedule (the wildcard paths under wizard/).
 //
 // Unknown paths under /wizard/ return 404 so a future bad URL
 // doesn't accidentally bind to /converse.
@@ -2541,6 +2660,10 @@ func (s *Server) projectWizardRouter(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasSuffix(path, "/cancel") || strings.HasSuffix(path, "/cancel/") {
 		s.ProjectWizardCancel(w, r)
+		return
+	}
+	if strings.HasSuffix(path, "/confirm-schedule") || strings.HasSuffix(path, "/confirm-schedule/") {
+		s.ProjectWizardConfirmSchedule(w, r)
 		return
 	}
 	http.NotFound(w, r)

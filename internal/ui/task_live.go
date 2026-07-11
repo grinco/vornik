@@ -40,6 +40,19 @@ type LiveTaskPageData struct {
 	// the 2026-07-08 report where every retry attempt showed RUNNING: a failed
 	// attempt now renders "failed", only the live attempt is "running".
 	Outcomes []StepOutcomeRow
+	// StoryLines seeds the plain-language "story" panel from the
+	// execution_narration store (task 2.2, narrated-execution-design.md
+	// §5.6), ordered by seq ascending. Empty when the narrator isn't
+	// wired or the execution has no narration yet — the panel then
+	// renders its empty state and fills in live over the WebSocket.
+	StoryLines []StoryLineRow
+	// IsRoleUser is true for a project-scoped, non-admin session
+	// (api.SessionRoleFromContext == auth.RoleUser). The story panel is
+	// always the default-open primary content; this flag instead
+	// decides whether the technical "Step timeline" section defaults
+	// open (false — admin/no-session, today's behaviour) or collapsed
+	// behind "Show technical details" (true — RoleUser).
+	IsRoleUser bool
 }
 
 // liveStepOutcomes loads the recorded step-outcome rows for an execution and
@@ -183,6 +196,7 @@ func (s *Server) TaskLive(w http.ResponseWriter, r *http.Request, taskID string)
 		CurrentPage: "tasks",
 		Task:        task,
 		Execution:   exec,
+		IsRoleUser:  isStoryDefaultViewer(r),
 	}
 	if exec != nil {
 		data.CompletedSteps = exec.CompletedSteps
@@ -190,6 +204,7 @@ func (s *Server) TaskLive(w http.ResponseWriter, r *http.Request, taskID string)
 			data.CurrentStep = *exec.CurrentStepID
 		}
 		data.Outcomes = s.liveStepOutcomes(ctx, exec.ID)
+		data.StoryLines = s.storyLines(ctx, exec.ID)
 	}
 	s.render(w, "task_live.html", data)
 }
@@ -258,11 +273,13 @@ func (s *Server) ExecutionLive(w http.ResponseWriter, r *http.Request, execID st
 		Task:           task,
 		Execution:      exec,
 		CompletedSteps: exec.CompletedSteps,
+		IsRoleUser:     isStoryDefaultViewer(r),
 	}
 	if exec.CurrentStepID != nil {
 		data.CurrentStep = *exec.CurrentStepID
 	}
 	data.Outcomes = s.liveStepOutcomes(ctx, exec.ID)
+	data.StoryLines = s.storyLines(ctx, exec.ID)
 	s.render(w, "task_live.html", data)
 }
 

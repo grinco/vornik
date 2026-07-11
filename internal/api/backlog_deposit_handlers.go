@@ -8,13 +8,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/safepath"
 	"vornik.io/vornik/internal/secrets"
 	"vornik.io/vornik/internal/textsim"
+	"vornik.io/vornik/internal/textutil"
 )
 
 const (
@@ -368,22 +368,6 @@ func flattenWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// truncateRunes truncates s to at most maxLen bytes without splitting a
-// multi-byte UTF-8 rune. A naive s[:maxLen] byte-slice can land inside
-// a multi-byte rune's encoding, producing an invalid-UTF-8 tail; this
-// walks rune boundaries via utf8.RuneCountInString semantics so the cut
-// always falls on a full rune.
-func truncateRunes(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	cut := maxLen
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut]
-}
-
 // renderBacklogDepositLine builds the exact BACKLOG.md item text
 // (everything after "- [?] "): `**[<kind>]** <title> — <detail>
 // (evidence: <evidence>; via <task_id>, <YYYY-MM-DD>)`. The evidence
@@ -391,7 +375,7 @@ func truncateRunes(s string, maxLen int) string {
 // flattened and truncated to backlogDepositRenderedDetailCap chars.
 func renderBacklogDepositLine(kind, title, detail, evidence, taskID string, now time.Time) string {
 	detail = flattenWhitespace(detail)
-	detail = truncateRunes(detail, backlogDepositRenderedDetailCap)
+	detail = textutil.TruncateBytes(detail, backlogDepositRenderedDetailCap)
 	evidence = flattenWhitespace(evidence)
 	date := now.UTC().Format("2006-01-02")
 

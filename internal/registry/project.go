@@ -254,6 +254,39 @@ type Project struct {
 	// (autonomous-development-loop design). Zero-value struct
 	// resolves to the package default via ResolveMaxPerTask.
 	BacklogDeposits ProjectBacklogDeposits `yaml:"backlogDeposits" json:"backlogDeposits,omitempty"`
+
+	// Narrator configures per-project Narrated Execution behaviour
+	// (task 2.3, https://docs.vornik.io
+	// §5.7/§9 Q3). Zero value keeps the package default: narration ON
+	// (gated globally by the daemon's narrator.enabled), chat push OFF.
+	Narrator ProjectNarrator `yaml:"narrator" json:"narrator,omitempty"`
+}
+
+// ProjectNarrator is the per-project Narrated Execution opt-in/opt-out
+// block. Distinct from config.NarratorConfig (daemon-wide worker knobs:
+// enabled/model/debounce/caps) — this struct holds the two choices the
+// design reserves per PROJECT rather than per daemon: whether milestone
+// lines get pushed to chat (opt-in, more intrusive than the UI story panel)
+// and whether narration runs at all for this project (opt-out, §9 Q3 — some
+// projects may want zero narration regardless of the daemon default).
+type ProjectNarrator struct {
+	// ChatPush opts this project's chat-originated tasks into pushing
+	// milestone narration lines back to the task's originating chat
+	// channel (design §5.7). Default false — chat push is strictly more
+	// intrusive than the UI's default-open story panel, so it must be
+	// chosen explicitly per project. Has no effect when NoNarration is
+	// true (nothing to push) or when the task isn't chat-originated (the
+	// chatorigin resolver returns ok=false; never an error).
+	ChatPush bool `yaml:"chat_push" json:"chat_push,omitempty"`
+
+	// NoNarration suppresses the Narrated Execution worker entirely for
+	// this project (design §9 Q3): no lines are persisted or published,
+	// so the story view falls back to the existing technical view and
+	// ChatPush is moot. Default false (narration on, matching the
+	// daemon's narrator.enabled default). Independent of the daemon-wide
+	// narrator.enabled flag — that gates the whole worker; this gates one
+	// project within an enabled worker.
+	NoNarration bool `yaml:"no_narration" json:"no_narration,omitempty"`
 }
 
 // ProjectBacklogDeposits caps autonomous backlog-deposit volume

@@ -431,6 +431,12 @@ type Executor struct {
 	// Nil disables the layer (tests, opted-out deployments).
 	secretsDetector secrets.Detector
 	secretsActions  map[string]secrets.Action
+	// secretRedactionAudit durably records redaction events (one row per
+	// finding type) so the task-detail badge + `vornikctl secrets
+	// scan-history` have a source (secret-leak Phase 3). Best-effort:
+	// a record failure logs and never fails the step. Nil disables
+	// recording (the redaction still happens; only the audit row is lost).
+	secretRedactionAudit persistence.SecretRedactionAuditRepository
 	// secretsTrustedOutputTools holds tool-name prefixes whose tool-audit
 	// OUTPUT is exempt from HEURISTIC (generic_kv / entropy) redaction. These
 	// are tools whose output is a trusted daemon-proxied response the agent
@@ -830,6 +836,15 @@ func WithSecrets(d secrets.Detector, actions map[string]secrets.Action) Option {
 	return func(e *Executor) {
 		e.secretsDetector = d
 		e.secretsActions = actions
+	}
+}
+
+// WithSecretRedactionAudit wires the redaction-event recorder (secret-leak
+// Phase 3). Optional and additive to WithSecrets — nil leaves recording
+// off (redaction still happens; only the durable audit row is skipped).
+func WithSecretRedactionAudit(repo persistence.SecretRedactionAuditRepository) Option {
+	return func(e *Executor) {
+		e.secretRedactionAudit = repo
 	}
 }
 

@@ -301,7 +301,11 @@
             var color = kind === 'warn'
                 ? 'bg-amber-50 dark:bg-amber-900/90 border-amber-600/50 text-amber-700 dark:text-amber-100'
                 : 'bg-emerald-50 dark:bg-emerald-900/90 border-emerald-600/50 text-emerald-700 dark:text-emerald-100';
-            d.className = 'fixed top-4 right-4 px-4 py-2.5 rounded-lg border shadow-xl text-sm z-50 ' + color;
+            d.className = 'fixed right-4 px-4 py-2.5 rounded-lg border shadow-xl text-sm z-50 ' + color;
+            // Offset below the iOS safe-area (Dynamic Island / status bar) so
+            // a standalone-PWA toast isn't hidden under the battery/network
+            // indicators; env() is 0 elsewhere. Replaces the static top-4.
+            d.style.top = 'calc(1rem + env(safe-area-inset-top))';
             d.style.transition = 'opacity 0.4s, transform 0.4s';
             d.style.opacity = '0';
             d.style.transform = 'translateY(-8px)';
@@ -625,6 +629,22 @@
         .safe-pl { padding-left: env(safe-area-inset-left); }
         .safe-pr { padding-right: env(safe-area-inset-right); }
 
+        /* iOS standalone / add-to-home-screen: with viewport-fit=cover +
+           apple-mobile-web-app-status-bar-style=black-translucent, iOS draws
+           page content UNDER the status bar / Dynamic Island, so the top of
+           every page (title bar, "Create an automation") lands beneath the
+           clock/battery/network and can't be read or tapped. There is no
+           mobile top bar to absorb it (the nav rail is md:+ only; phones use
+           the bottom bar), so inset the whole document by the top safe area.
+           env() resolves to 0 in normal Safari and on non-notched desktops,
+           making this a no-op everywhere it isn't needed. Fixed-position top
+           chrome (the restart banner, toasts) can't inherit body padding, so
+           they carry their own inset below. */
+        body { padding-top: env(safe-area-inset-top); }
+        /* Fixed top chrome sits relative to the viewport, above the inset —
+           push it clear of the island too. */
+        [data-safe-top-fixed] { padding-top: calc(env(safe-area-inset-top) + var(--safe-top-fixed-pad, 0px)); }
+
         /* Bottom-nav-aware spacing — content scroll containers
            reserve room for the nav so the last row isn't hidden
            under the icons. md: removes the reservation since the
@@ -939,6 +959,7 @@
 {{define "navIconTrading"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M7 4v10M7 17v3M7 8h3v6H7zM17 4v3M17 16v4M15.5 7h3v9h-3z"/></svg>{{end}}
 {{define "navIconAudit"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 4 0M8 13l2 2 4-4"/></svg>{{end}}
 {{define "navIconMcp"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path stroke-linecap="round" d="M8 9l3 3-3 3M13 15h3"/></svg>{{end}}
+{{define "navIconIntegrations"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path stroke-linecap="round" d="M8.2 7.3 10.5 16M15.8 7.3 13.5 16"/></svg>{{end}}
 {{define "navIconAdmin"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3l7 3v5c0 4.4-3 8.3-7 10-4-1.7-7-5.6-7-10V6l7-3z"/></svg>{{end}}
 {{define "navIconKey"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="8" r="4"/><path stroke-linecap="round" stroke-linejoin="round" d="M11 11l8 8m-3-3l2-2m-4 0l1.5 1.5"/></svg>{{end}}
 {{define "navIconSkill"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.6.6 1 1.3 1 2.1V16h6v-.4c0-.8.4-1.5 1-2.1A6 6 0 0 0 12 3z"/></svg>{{end}}
@@ -946,7 +967,7 @@
 {{define "navIconProjects"}}<svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M2 8.5A2.5 2.5 0 014.5 6H9l2 2h8.5A2.5 2.5 0 0122 10.5V17a2.5 2.5 0 01-2.5 2.5h-15A2.5 2.5 0 012 17V8.5z"/></svg>{{end}}
 {{/* navIconResolve maps an icon name (from navModel) to its define —
      Go templates can't call a template by dynamic name, so dispatch. */}}
-{{define "navIconResolve"}}{{if eq . "navIconProjects"}}{{template "navIconProjects"}}{{else if eq . "navIconOverview"}}{{template "navIconOverview"}}{{else if eq . "navIconOrchestration"}}{{template "navIconOrchestration"}}{{else if eq . "navIconSwarms"}}{{template "navIconSwarms"}}{{else if eq . "navIconWorkflows"}}{{template "navIconWorkflows"}}{{else if eq . "navIconExecutions"}}{{template "navIconExecutions"}}{{else if eq . "navIconTasks"}}{{template "navIconTasks"}}{{else if eq . "navIconMemory"}}{{template "navIconMemory"}}{{else if eq . "navIconReminders"}}{{template "navIconReminders"}}{{else if eq . "navIconInsight"}}{{template "navIconInsight"}}{{else if eq . "navIconSpend"}}{{template "navIconSpend"}}{{else if eq . "navIconGauge"}}{{template "navIconGauge"}}{{else if eq . "navIconTrading"}}{{template "navIconTrading"}}{{else if eq . "navIconAudit"}}{{template "navIconAudit"}}{{else if eq . "navIconMcp"}}{{template "navIconMcp"}}{{else if eq . "navIconAdmin"}}{{template "navIconAdmin"}}{{else if eq . "navIconKey"}}{{template "navIconKey"}}{{else if eq . "navIconSkill"}}{{template "navIconSkill"}}{{else if eq . "navIconControlPlane"}}{{template "navIconControlPlane"}}{{else if eq . "navIconSteer"}}{{template "navIconSteer"}}{{else if eq . "navIconLive"}}{{template "navIconLive"}}{{else if eq . "navIconInbox"}}{{template "navIconInbox"}}{{end}}{{end}}
+{{define "navIconResolve"}}{{if eq . "navIconProjects"}}{{template "navIconProjects"}}{{else if eq . "navIconOverview"}}{{template "navIconOverview"}}{{else if eq . "navIconOrchestration"}}{{template "navIconOrchestration"}}{{else if eq . "navIconSwarms"}}{{template "navIconSwarms"}}{{else if eq . "navIconWorkflows"}}{{template "navIconWorkflows"}}{{else if eq . "navIconExecutions"}}{{template "navIconExecutions"}}{{else if eq . "navIconTasks"}}{{template "navIconTasks"}}{{else if eq . "navIconMemory"}}{{template "navIconMemory"}}{{else if eq . "navIconReminders"}}{{template "navIconReminders"}}{{else if eq . "navIconInsight"}}{{template "navIconInsight"}}{{else if eq . "navIconSpend"}}{{template "navIconSpend"}}{{else if eq . "navIconGauge"}}{{template "navIconGauge"}}{{else if eq . "navIconTrading"}}{{template "navIconTrading"}}{{else if eq . "navIconAudit"}}{{template "navIconAudit"}}{{else if eq . "navIconMcp"}}{{template "navIconMcp"}}{{else if eq . "navIconAdmin"}}{{template "navIconAdmin"}}{{else if eq . "navIconKey"}}{{template "navIconKey"}}{{else if eq . "navIconSkill"}}{{template "navIconSkill"}}{{else if eq . "navIconControlPlane"}}{{template "navIconControlPlane"}}{{else if eq . "navIconSteer"}}{{template "navIconSteer"}}{{else if eq . "navIconLive"}}{{template "navIconLive"}}{{else if eq . "navIconInbox"}}{{template "navIconInbox"}}{{else if eq . "navIconIntegrations"}}{{template "navIconIntegrations"}}{{end}}{{end}}
 
 {{define "navLogo"}}
 <a href="/ui/" title="Vornik — Dashboard" aria-label="Vornik — Dashboard" class="flex items-center justify-center text-gray-100">
@@ -1061,11 +1082,15 @@
      boot, which is when the pending config actually applies. See
      https://docs.vornik.io */}}
 {{with restartPending}}{{if .Pending}}
-<div role="alert" class="fixed top-0 inset-x-0 z-[90] flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium text-amber-950 bg-amber-300 border-b border-amber-500 shadow">
+<div role="alert" data-safe-top-fixed style="--safe-top-fixed-pad:0.5rem" class="fixed top-0 inset-x-0 z-[90] flex items-center justify-center gap-2 px-4 pb-2 text-sm font-medium text-amber-950 bg-amber-300 border-b border-amber-500 shadow">
     <span aria-hidden="true">⚠</span>
     <span>Configuration saved — restart the daemon to apply pending changes:
     <code class="font-mono bg-amber-200 px-1 rounded">systemctl --user restart vornik</code>{{if .Since}}
-    <span class="opacity-70">· pending since {{.Since}}</span>{{end}}</span>
+    <span class="opacity-70">· pending since {{.Since}}</span>{{end}}
+    {{/* task 3.4 (fix-it-doctor-design.md §5.5): only present when the
+         pending state is a genuine reload validation error, not a
+         merely-blocked/deferred reload. */}}
+    {{if .FixItHref}} · <a href="{{.FixItHref}}" class="underline hover:no-underline">Help me fix this</a>{{end}}</span>
 </div>
 {{end}}{{end}}
 {{/* === Icon rail + contextual panel (md:+) — UI refresh 2026-06-08 ===
@@ -1077,7 +1102,7 @@
      role="navigation" aria-label="Primary">
     {{template "navLogo" .}}
     <div class="flex-1 flex flex-col items-center gap-1 mt-2">
-        {{range navModel}}
+        {{range navModel .}}
         <a href="{{.Href}}" title="{{.Label}}" data-rail="{{.Key}}"
            {{if .AdminOnly}}data-admin-link {{end}}class="{{if and .AdminOnly (not (hasAdminFlag $))}}hidden {{end}}rail-ico{{if eq $activeArea .Key}} rail-ico-active{{end}}"
            {{if eq $activeArea .Key}}aria-current="true"{{end}}>
@@ -1098,13 +1123,13 @@
 {{/* === Contextual panels (md:+) — one per area, stacked in the same fixed
      slot. The ACTIVE area's panel is open by default (.panel-open); hovering
      another rail icon swaps which one shows (script below). === */}}
-{{range navModel}}
+{{range navModel .}}
 <aside data-panel="{{.Key}}" class="contextual-panel fixed inset-y-0 left-14 z-40 w-52 p-3 glass border-r" aria-label="{{.Label}} section">
     <div class="font-display text-xs uppercase tracking-wider text-gray-500 px-2 mb-2 mt-1">{{.Label}}</div>
     {{range .Dests}}
     <a href="{{.Href}}" {{if .AdminOnly}}data-admin-link {{end}}{{if .Cap}}data-cap="{{.Cap}}" {{end}}class="{{if and .AdminOnly (not (hasAdminFlag $))}}hidden {{end}}panel-item{{if eq $.CurrentPage .Key}} panel-item-active{{end}}"
        {{if eq $.CurrentPage .Key}}aria-current="page"{{end}}>
-        {{template "navIconResolve" .Icon}}<span>{{.Label}}</span>
+        {{template "navIconResolve" .Icon}}<span>{{.Label}}{{if gt .Badge 0}} ({{.Badge}}){{end}}</span>
     </a>
     {{end}}
 </aside>
@@ -1154,31 +1179,36 @@
         {{/* Home/Dashboard — a direct link (no submenu). On desktop the logo
              plays this role, but the mobile bar has no logo, so Dashboard
              would otherwise be unreachable. Active when no area matches. */}}
-        <a href="/ui/" class="flex-1 flex flex-col items-center justify-center gap-0.5 tap {{if eq $activeArea ""}}text-brand-300 font-semibold{{else}}text-gray-400{{end}}" aria-label="Dashboard">
+        <a href="/ui/" class="flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 tap {{if eq $activeArea ""}}text-brand-300 font-semibold{{else}}text-gray-400{{end}}" aria-label="Dashboard">
             <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3 11.5 12 4l9 7.5M5.5 10v9h13v-9"/></svg>
-            <span class="text-[10px] leading-none">Home</span>
+            <span class="text-[10px] leading-none max-w-full truncate px-0.5">Home</span>
         </a>
-        {{range navModel}}
+        {{range navModel .}}
+        {{/* MobileLabel, not Label (2026-07-10 overflow fix): up to 8
+             flex-1 cells share this bar, so long area labels
+             ("Orchestration", "Integrations") overflow their ~47px cell
+             on a phone. max-w-full+truncate is the belt-and-braces guard
+             for any future label that still ends up too wide. */}}
         <button type="button" data-nav-tab="{{.Key}}"
-                {{if .AdminOnly}}data-admin-link {{end}}class="{{if and .AdminOnly (not (hasAdminFlag $))}}hidden {{end}}flex-1 flex flex-col items-center justify-center gap-0.5 tap {{if eq $activeArea .Key}}text-brand-300 font-semibold{{else}}text-gray-400{{end}}"
+                {{if .AdminOnly}}data-admin-link {{end}}class="{{if and .AdminOnly (not (hasAdminFlag $))}}hidden {{end}}flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 tap {{if eq $activeArea .Key}}text-brand-300 font-semibold{{else}}text-gray-400{{end}}"
                 aria-label="{{.Label}}">
             {{template "navIconResolve" .Icon}}
-            <span class="text-[10px] leading-none">{{.Label}}</span>
+            <span class="text-[10px] leading-none max-w-full truncate px-0.5">{{.MobileLabel}}</span>
         </button>
         {{end}}
-        <form method="POST" action="/ui/logout" data-signout class="{{if not (hasSessionFlag .)}}hidden {{end}}flex-1" onsubmit="return confirm('Sign out?')">
+        <form method="POST" action="/ui/logout" data-signout class="{{if not (hasSessionFlag .)}}hidden {{end}}flex-1 min-w-0" onsubmit="return confirm('Sign out?')">
             <button type="submit" class="flex flex-col items-center justify-center gap-0.5 tap text-gray-400 w-full h-full" aria-label="Sign out">
                 <svg class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
-                <span class="text-[10px] leading-none">Sign out</span>
+                <span class="text-[10px] leading-none max-w-full truncate px-0.5">Sign out</span>
             </button>
         </form>
     </div>
     {{/* Per-area contextual drawers — hidden until the matching tab is tapped. */}}
-    {{range navModel}}
+    {{range navModel .}}
     <div data-nav-drawer="{{.Key}}" class="hidden fixed inset-x-0 z-40 max-h-[60vh] overflow-y-auto glass menu-solid border-t p-3" role="menu" aria-label="{{.Label}}">
         <div class="text-xs uppercase tracking-wide text-gray-500 px-2 mb-2">{{.Label}}</div>
         {{range .Dests}}
-        <a href="{{.Href}}" {{if .AdminOnly}}data-admin-link {{end}}{{if .Cap}}data-cap="{{.Cap}}" {{end}}class="{{if and .AdminOnly (not (hasAdminFlag $))}}hidden {{end}}panel-item{{if eq $.CurrentPage .Key}} panel-item-active{{end}}">{{template "navIconResolve" .Icon}}<span>{{.Label}}</span></a>
+        <a href="{{.Href}}" {{if .AdminOnly}}data-admin-link {{end}}{{if .Cap}}data-cap="{{.Cap}}" {{end}}class="{{if and .AdminOnly (not (hasAdminFlag $))}}hidden {{end}}panel-item{{if eq $.CurrentPage .Key}} panel-item-active{{end}}">{{template "navIconResolve" .Icon}}<span>{{.Label}}{{if gt .Badge 0}} ({{.Badge}}){{end}}</span></a>
         {{end}}
     </div>
     {{end}}
@@ -1695,6 +1725,17 @@ scanner picks them up. Pass a dict:
     {{if .HrefLabel}}<a href="{{.Href}}" class="text-xs text-ink-500 hover:text-ink-300">{{.HrefLabel}}</a>
     {{else if .MetaText}}<span class="text-xs text-ink-400">{{.MetaText}}</span>{{end}}
 </div>
+{{end}}
+
+{{/* deliverableSendResult — the "Send to chat" inline HTMX confirmation
+     fragment (task 2.4, narrated-execution-design.md §5.8). Expects a
+     deliverableSendResult{Ok bool, Channel, Message string}. Ok=true
+     renders the success line; otherwise Message carries either the
+     "not chat-originated" notice or the send-failure text. */}}
+{{define "deliverableSendResult"}}
+{{if .Ok}}<span class="text-emerald-600 dark:text-emerald-300">Sent to {{.Channel}}.</span>
+{{else}}<span class="text-ink-500">{{.Message}}</span>
+{{end}}
 {{end}}
 
 {{/* statStrip — compact key/value grid. Replaces the repeated

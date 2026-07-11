@@ -171,16 +171,18 @@ func TestMemory_FiltersBySessionProjects(t *testing.T) {
 	assert.NotContains(t, rec.Body.String(), "Beta Project")
 }
 
-func TestDashboard_SessionUserRedirectsToTasks(t *testing.T) {
-	// A project-scoped (RoleUser) session lands on Tasks — their
-	// day-to-day surface — not the operator dashboard (whose
+func TestDashboard_SessionUserRedirectsToInbox(t *testing.T) {
+	// A project-scoped (RoleUser) session lands on the Outcome Inbox
+	// (task 4.4, design §5.7) — their day-to-day "what needs me / what
+	// did I ask for" surface — not the operator dashboard (whose
 	// instance-wide aggregates are gated away) nor the Projects list.
+	// Was /ui/tasks pre-4.4; the inbox supersedes it as the default home.
 	srv := projectsRig(t)
 	req := sessionUserUIRequest(http.MethodGet, "/ui/", []string{"alpha"})
 	rec := httptest.NewRecorder()
 	srv.Dashboard(rec, req)
 	require.Equal(t, http.StatusFound, rec.Code)
-	assert.Equal(t, "/ui/tasks", rec.Header().Get("Location"))
+	assert.Equal(t, "/ui/inbox", rec.Header().Get("Location"))
 }
 
 // projectsRegistryWithDoctor mirrors projectsRig's fixture but

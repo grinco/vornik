@@ -237,6 +237,17 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusServiceUnavailable, "ROUTE_OVERFLOW", err.Error())
 			return
 		}
+		// Circuit breaker open for this (route, model) — the model is failing
+		// hard, so we fast-rejected without an upstream call (LLD 2026-07-11-
+		// model-health). Distinct 503 code so the executor skips its retry
+		// ladder and fails over immediately instead of hammering a dead model.
+		if chat.IsModelUnhealthy(err) {
+			s.logger.Warn().Err(err).
+				Str("client_model", req.Model).
+				Msg("chat proxy: model circuit open — returning 503 MODEL_UNHEALTHY")
+			respondError(w, http.StatusServiceUnavailable, "MODEL_UNHEALTHY", err.Error())
+			return
+		}
 		// 502 rather than 500: from the agent's point of view this is
 		// an upstream failure (Claude rate-limited, CLI subprocess
 		// crashed, gateway 5xx, etc.) — not a bug in vornik's handler.

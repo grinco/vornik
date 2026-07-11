@@ -278,6 +278,140 @@ func RunProjectWizardSessionSuite(t *testing.T, repo persistence.ProjectWizardSe
 		}
 	})
 
+	t.Run("Tier3AndSchedule_round_trip_through_insert_and_update", func(t *testing.T) {
+		// NL Automation Composer tier-3 engine fields (task 1.1b,
+		// migration 123) — same round-trip contract as Composition
+		// above, extended to the 5 new columns.
+		s := newSession(uniqueID("op"))
+		if err := repo.Insert(ctx, s); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+		got, err := repo.Get(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Tier3Turns != 0 || got.Tier3Unlocked || got.ScheduleConfirmedAt != nil || got.ScheduleConfirmedCron != "" || got.Bundle != nil {
+			t.Fatalf("expected zero-value composer fields for a v1 session, got %+v", got)
+		}
+
+		s.Tier3Turns = 3
+		s.Tier3Unlocked = true
+		confirmedAt := time.Now().UTC().Truncate(time.Second)
+		s.ScheduleConfirmedAt = &confirmedAt
+		s.ScheduleConfirmedCron = "24h"
+		s.Bundle = []byte(`{"project":{"projectId":"x"}}`)
+		if err := repo.Update(ctx, s); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		got, err = repo.Get(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("Get after update: %v", err)
+		}
+		if got.Tier3Turns != 3 {
+			t.Errorf("Tier3Turns = %d, want 3", got.Tier3Turns)
+		}
+		if !got.Tier3Unlocked {
+			t.Error("Tier3Unlocked not persisted")
+		}
+		if got.ScheduleConfirmedAt == nil || !got.ScheduleConfirmedAt.Equal(confirmedAt) {
+			t.Errorf("ScheduleConfirmedAt = %v, want %v", got.ScheduleConfirmedAt, confirmedAt)
+		}
+		if got.ScheduleConfirmedCron != "24h" {
+			t.Errorf("ScheduleConfirmedCron = %q, want 24h", got.ScheduleConfirmedCron)
+		}
+		if !jsonSemanticEqual(got.Bundle, s.Bundle) {
+			t.Fatalf("bundle not round-tripped: got %q, want %q", got.Bundle, s.Bundle)
+		}
+	})
+
+	t.Run("BundleCommitFailure_round_trips_through_insert_and_update", func(t *testing.T) {
+		// Journaled bundle-commit failure marker (task 1.2b, migration
+		// 124): a fresh session carries neither field; after a marked
+		// failure, session.Bundle stays intact (the resumability
+		// invariant lives on the untouched Bundle column — this suite
+		// only proves the NEW breadcrumb columns round-trip) while the
+		// two new columns persist across Update, same contract as the
+		// Tier3/Schedule fields above.
+		s := newSession(uniqueID("op"))
+		s.Bundle = []byte(`{"project":{"projectId":"resumable-build"}}`)
+		if err := repo.Insert(ctx, s); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+		got, err := repo.Get(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.BundleCommitFailedAt != nil || got.BundleCommitError != "" {
+			t.Fatalf("expected zero-value commit-failure fields on a fresh session, got %+v", got)
+		}
+
+		failedAt := time.Now().UTC().Truncate(time.Second)
+		s.BundleCommitFailedAt = &failedAt
+		s.BundleCommitError = "registry validation failed: workflow references unknown role"
+		if err := repo.Update(ctx, s); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		got, err = repo.Get(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("Get after update: %v", err)
+		}
+		if got.BundleCommitFailedAt == nil || !got.BundleCommitFailedAt.Equal(failedAt) {
+			t.Errorf("BundleCommitFailedAt = %v, want %v", got.BundleCommitFailedAt, failedAt)
+		}
+		if got.BundleCommitError != s.BundleCommitError {
+			t.Errorf("BundleCommitError = %q, want %q", got.BundleCommitError, s.BundleCommitError)
+		}
+		// session.Bundle itself must still be there — a commit failure
+		// never clears it (that's what makes the session resumable).
+		if !jsonSemanticEqual(got.Bundle, s.Bundle) {
+			t.Fatalf("bundle must stay intact across a commit-failure marker: got %q, want %q", got.Bundle, s.Bundle)
+		}
+	})
+
+	t.Run("Tier3ConsecutiveValidationFailures_round_trips_through_insert_and_update", func(t *testing.T) {
+		// Consecutive tier-3 validation-failure counter (task 1.3,
+		// migration 125, design §7 row 1) — same round-trip contract
+		// as the other composer counters above.
+		s := newSession(uniqueID("op"))
+		if err := repo.Insert(ctx, s); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+		got, err := repo.Get(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Tier3ConsecutiveValidationFailures != 0 {
+			t.Fatalf("expected zero-value counter for a fresh session, got %d", got.Tier3ConsecutiveValidationFailures)
+		}
+
+		s.Tier3ConsecutiveValidationFailures = 2
+		if err := repo.Update(ctx, s); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+		got, err = repo.Get(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("Get after update: %v", err)
+		}
+		if got.Tier3ConsecutiveValidationFailures != 2 {
+			t.Errorf("Tier3ConsecutiveValidationFailures = %d, want 2", got.Tier3ConsecutiveValidationFailures)
+		}
+
+		// The fallback resets it back to 0 on the 3rd consecutive
+		// failure (or on a successful tier-3 composition) — assert the
+		// reset direction round-trips too, not just the increment.
+		s.Tier3ConsecutiveValidationFailures = 0
+		if err := repo.Update(ctx, s); err != nil {
+			t.Fatalf("Update (reset): %v", err)
+		}
+		got, err = repo.Get(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("Get after reset: %v", err)
+		}
+		if got.Tier3ConsecutiveValidationFailures != 0 {
+			t.Errorf("Tier3ConsecutiveValidationFailures after reset = %d, want 0", got.Tier3ConsecutiveValidationFailures)
+		}
+	})
+
 	t.Run("Update_mutates_and_unknown_is_ErrNotFound", func(t *testing.T) {
 		s := newSession(uniqueID("op"))
 		if err := repo.Insert(ctx, s); err != nil {
@@ -355,6 +489,201 @@ func RunProjectWizardSessionSuite(t *testing.T, repo persistence.ProjectWizardSe
 			t.Fatalf("expected 2 sessions, got %d", len(got))
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// FixItSessionRepository — durable on both backends.
+// ---------------------------------------------------------------------------
+
+// RunFixItSessionSuite exercises the Fix-It Doctor repair-chat session
+// contract: insert/get round-trip, mutable update, the operator-scoped
+// close IDOR guard + idempotency, list ordering, and the cascade-close
+// bulk-update used when the underlying failing object is deleted.
+func RunFixItSessionSuite(t *testing.T, repo persistence.FixItSessionRepository) {
+	t.Helper()
+	t.Run("Insert_then_Get_round_trips", func(t *testing.T) { testFixItInsertGetRoundTrip(t, repo) })
+	t.Run("Get_unknown_is_ErrNotFound", func(t *testing.T) { testFixItGetUnknown(t, repo) })
+	t.Run("LastEnvelope_and_AppliedActions_round_trip_through_update", func(t *testing.T) { testFixItUpdateRoundTrip(t, repo) })
+	t.Run("Update_unknown_is_ErrNotFound", func(t *testing.T) { testFixItUpdateUnknown(t, repo) })
+	t.Run("Close_enforces_owner_and_is_idempotent", func(t *testing.T) { testFixItClose(t, repo) })
+	t.Run("Close_unknown_is_ErrNotFound", func(t *testing.T) { testFixItCloseUnknown(t, repo) })
+	t.Run("ListByOperator_newest_first", func(t *testing.T) { testFixItListByOperator(t, repo) })
+	t.Run("CascadeCloseByFailureRef_closes_every_open_session_on_the_ref_across_operators", func(t *testing.T) {
+		testFixItCascadeClose(t, repo)
+	})
+}
+
+// newFixItSession builds a fixture row for the given operator +
+// failure kind/ref, shared by every RunFixItSessionSuite sub-test.
+func newFixItSession(op, kind, refID string) *persistence.FixItSession {
+	return &persistence.FixItSession{
+		ID:           uniqueID("fix"),
+		OperatorID:   op,
+		FailureKind:  kind,
+		FailureRefID: refID,
+		ProjectID:    "proj-1",
+		Transcript:   []byte(`[{"role":"user","content":"help, this task keeps failing"}]`),
+	}
+}
+
+func testFixItInsertGetRoundTrip(t *testing.T, repo persistence.FixItSessionRepository) {
+	ctx := context.Background()
+	s := newFixItSession(uniqueID("op"), "failed_task", uniqueID("task"))
+	if err := repo.Insert(ctx, s); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	got, err := repo.Get(ctx, s.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.OperatorID != s.OperatorID ||
+		got.FailureKind != s.FailureKind ||
+		got.FailureRefID != s.FailureRefID ||
+		got.ProjectID != s.ProjectID ||
+		!jsonSemanticEqual(got.Transcript, s.Transcript) {
+		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+	if got.ClosedAt != nil {
+		t.Fatalf("expected nil ClosedAt on fresh session, got %v", got.ClosedAt)
+	}
+}
+
+func testFixItGetUnknown(t *testing.T, repo persistence.FixItSessionRepository) {
+	if _, err := repo.Get(context.Background(), uniqueID("fix")); !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func testFixItUpdateRoundTrip(t *testing.T, repo persistence.FixItSessionRepository) {
+	ctx := context.Background()
+	s := newFixItSession(uniqueID("op"), "failed_task", uniqueID("task"))
+	if err := repo.Insert(ctx, s); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	s.Transcript = []byte(`[{"role":"user","content":"hi"},{"role":"assistant","content":"looking into it"}]`)
+	s.LastEnvelope = []byte(`{"message":"looking into it","actions":[],"resolved":false}`)
+	s.AppliedActions = []byte(`[{"kind":"retry_task"}]`)
+	if err := repo.Update(ctx, s); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err := repo.Get(ctx, s.ID)
+	if err != nil {
+		t.Fatalf("Get after update: %v", err)
+	}
+	if !jsonSemanticEqual(got.Transcript, s.Transcript) {
+		t.Fatalf("transcript not round-tripped: got %q", got.Transcript)
+	}
+	if !jsonSemanticEqual(got.LastEnvelope, s.LastEnvelope) {
+		t.Fatalf("last_envelope not round-tripped: got %q", got.LastEnvelope)
+	}
+	if !jsonSemanticEqual(got.AppliedActions, s.AppliedActions) {
+		t.Fatalf("applied_actions not round-tripped: got %q", got.AppliedActions)
+	}
+}
+
+func testFixItUpdateUnknown(t *testing.T, repo persistence.FixItSessionRepository) {
+	ghost := newFixItSession(uniqueID("op"), "failed_task", uniqueID("task"))
+	if err := repo.Update(context.Background(), ghost); !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("Update of missing session: expected ErrNotFound, got %v", err)
+	}
+}
+
+func testFixItClose(t *testing.T, repo persistence.FixItSessionRepository) {
+	ctx := context.Background()
+	op := uniqueID("op")
+	s := newFixItSession(op, "failed_task", uniqueID("task"))
+	if err := repo.Insert(ctx, s); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	// Wrong operator → ErrNotFound (IDOR guard).
+	if err := repo.Close(ctx, s.ID, uniqueID("op")); !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("close by non-owner: expected ErrNotFound, got %v", err)
+	}
+	if err := repo.Close(ctx, s.ID, op); err != nil {
+		t.Fatalf("Close by owner: %v", err)
+	}
+	got, err := repo.Get(ctx, s.ID)
+	if err != nil {
+		t.Fatalf("Get after close: %v", err)
+	}
+	if got.ClosedAt == nil {
+		t.Fatalf("expected ClosedAt stamped after Close")
+	}
+	// Idempotent on already-closed.
+	if err := repo.Close(ctx, s.ID, op); err != nil {
+		t.Fatalf("Close idempotent: %v", err)
+	}
+}
+
+func testFixItCloseUnknown(t *testing.T, repo persistence.FixItSessionRepository) {
+	if err := repo.Close(context.Background(), uniqueID("fix"), uniqueID("op")); !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func testFixItListByOperator(t *testing.T, repo persistence.FixItSessionRepository) {
+	ctx := context.Background()
+	op := uniqueID("op")
+	first := newFixItSession(op, "failed_task", uniqueID("task"))
+	if err := repo.Insert(ctx, first); err != nil {
+		t.Fatalf("Insert 1: %v", err)
+	}
+	second := newFixItSession(op, "degraded_feature", uniqueID("feat"))
+	if err := repo.Insert(ctx, second); err != nil {
+		t.Fatalf("Insert 2: %v", err)
+	}
+	got, err := repo.ListByOperator(ctx, op, 10)
+	if err != nil {
+		t.Fatalf("ListByOperator: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(got))
+	}
+}
+
+func testFixItCascadeClose(t *testing.T, repo persistence.FixItSessionRepository) {
+	ctx := context.Background()
+	refID := uniqueID("task")
+	a := newFixItSession(uniqueID("op"), "failed_task", refID)
+	b := newFixItSession(uniqueID("op"), "failed_task", refID)
+	// A session on a DIFFERENT ref must not be touched.
+	other := newFixItSession(uniqueID("op"), "failed_task", uniqueID("task"))
+	for _, s := range []*persistence.FixItSession{a, b, other} {
+		if err := repo.Insert(ctx, s); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+	}
+	n, err := repo.CascadeCloseByFailureRef(ctx, "failed_task", refID)
+	if err != nil {
+		t.Fatalf("CascadeCloseByFailureRef: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 sessions closed, got %d", n)
+	}
+	for _, s := range []*persistence.FixItSession{a, b} {
+		got, err := repo.Get(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.ClosedAt == nil {
+			t.Fatalf("expected %s closed by cascade", s.ID)
+		}
+	}
+	gotOther, err := repo.Get(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("Get other: %v", err)
+	}
+	if gotOther.ClosedAt != nil {
+		t.Fatalf("cascade close touched an unrelated ref's session")
+	}
+	// Idempotent — a second pass with nothing open closes 0.
+	n2, err := repo.CascadeCloseByFailureRef(ctx, "failed_task", refID)
+	if err != nil {
+		t.Fatalf("CascadeCloseByFailureRef (2nd pass): %v", err)
+	}
+	if n2 != 0 {
+		t.Fatalf("expected 0 sessions closed on 2nd pass, got %d", n2)
+	}
 }
 
 // ---------------------------------------------------------------------------

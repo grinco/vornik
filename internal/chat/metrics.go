@@ -57,6 +57,13 @@ type Metrics struct {
 	// refresh token — only a re-login recovers).
 	SubscriptionTokenRefreshTotal *prometheus.CounterVec
 
+	// ModelHealthState is the live circuit-breaker state per (route, model):
+	// 0=closed, 1=half-open, 2=open (LLD 2026-07-11-model-health §7).
+	ModelHealthState *prometheus.GaugeVec
+	// ModelHealthTrips counts circuit-open transitions (closed→open and a
+	// failed half-open probe re-opening) per (route, model).
+	ModelHealthTrips *prometheus.CounterVec
+
 	cacheRatioMu    sync.Mutex
 	cacheRatioState map[string]*cacheRatioState
 }
@@ -156,6 +163,18 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 			Name:      "cache_dollars_saved_total",
 			Help:      "Cumulative USD saved by serving input tokens from cache instead of at full input rate, by model and role.",
 		}, []string{"model", "role"}),
+		ModelHealthState: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "vornik",
+			Subsystem: "chat",
+			Name:      "model_health_state",
+			Help:      "Circuit-breaker state per (route, model): 0=closed, 1=half-open, 2=open.",
+		}, []string{"route", "model"}),
+		ModelHealthTrips: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "vornik",
+			Subsystem: "chat",
+			Name:      "model_health_trips_total",
+			Help:      "Circuit-open transitions per (route, model).",
+		}, []string{"route", "model"}),
 		SubscriptionTokenRefreshTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "vornik",
 			Subsystem: "chat",
@@ -171,6 +190,7 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 		m.CacheCreationTokensTotal, m.CacheReadTokensTotal,
 		m.CacheHitRatio, m.CacheDollarsSavedTotal,
 		m.SubscriptionTokenRefreshTotal,
+		m.ModelHealthState, m.ModelHealthTrips,
 	)
 	return m
 }

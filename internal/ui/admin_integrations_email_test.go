@@ -102,6 +102,8 @@ func TestAdminIntegrationsEmail_HappyPath(t *testing.T) {
 		"2026-05-20 09:30",
 		"3p",
 		"2 entries",
+		`href="/ui/integrations/email?project=ops"`,
+		"Edit in hub",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing fragment %q; body excerpt: %q", want, firstN(body, 800))

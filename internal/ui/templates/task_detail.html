@@ -95,6 +95,15 @@
                     </div>
                     <h1 class="text-xl font-semibold text-ink-100">Task <span class="font-mono text-brand-300 text-base">{{shortID .Task.ID}}</span></h1>
                     <p class="text-ink-500 text-xs font-mono mt-0.5" title="{{.Task.ID}}">{{.Task.ID}}</p>
+                    {{if gt .RedactionTotal 0}}
+                    {{/* Secret-leak Phase 3: this task's output had secret-shaped
+                         values redacted before persist/display. The tooltip
+                         carries the per-type breakdown. */}}
+                    <span class="inline-flex items-center gap-1 mt-1 px-2 py-0.5 text-[11px] font-medium rounded-full bg-amber-900/40 text-amber-300 border border-amber-700/50"
+                          title="{{range $type, $n := .RedactionsByType}}{{$type}}: {{$n}}  {{end}}">
+                        🔒 {{.RedactionTotal}} secret{{if ne .RedactionTotal 1}}s{{end}} redacted
+                    </span>
+                    {{end}}
                 </div>
                 <div class="flex items-center gap-2">
                     {{/* Retry is offered for terminal statuses AND for
@@ -160,6 +169,75 @@
                 {{.Notice}}
             </div>
             {{end}}
+
+            <!-- Story panel (Narrated Execution, task 2.2 —
+                 narrated-execution-design.md §5.6). Plain-language
+                 narration seeded server-side from execution_narration
+                 (seq order) for the task's most recent execution. This
+                 page is not WebSocket-driven (it's the post-hoc /
+                 completed view), so there is no live extension here —
+                 the live page (task_live.html) carries the dual-path
+                 merge; this is a static seed-only render. Always
+                 visible — it's the primary surface for non-technical
+                 viewers, above the technical "Show technical details"
+                 section further down. -->
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                {{template "sectionHeader" (dict "Title" "Story")}}
+                {{if .StoryLines}}
+                <ol class="divide-y divide-surface-600/60">
+                    {{range .StoryLines}}
+                    <li class="px-5 py-2.5 text-sm text-ink-200" data-seq="{{.Seq}}">
+                        <span>{{.Text}}</span>
+                        {{if .Degraded}}<span class="ml-1.5 text-[10px] text-ink-500" title="Generated from a plain template — the narrator's LLM was unavailable, slow, or over budget.">(simplified)</span>{{end}}
+                    </li>
+                    {{end}}
+                </ol>
+                {{else}}
+                <div class="px-5 py-4 text-sm text-ink-500">No story recorded for this task yet.</div>
+                {{end}}
+            </div>
+
+            {{/* Deliverable-first completion (task 2.4, narrated-execution-
+                 design.md §5.8): a COMPLETED task leads with its deliverable
+                 — the final execution's OUTPUT-class artifacts, as cards —
+                 ABOVE the technical execution record. Each card reuses the
+                 existing artifact download/preview affordance (per the
+                 design's non-goal: "no new artifact rendering engine") and
+                 adds a "Send to chat" action that resolves the task's
+                 originating channel via internal/chatorigin. Falls back to
+                 the completion narration text when there's no OUTPUT
+                 artifact. Renders nothing for non-completed tasks — the
+                 technical Artifacts panel further down still lists every
+                 class, for every status, for audit. */}}
+            {{if eq (printf "%s" .Task.Status) "COMPLETED"}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden" id="deliverables-panel">
+                {{template "sectionHeader" (dict "Title" "Deliverable" "MetaText" (printf "%d" (len .Deliverables)))}}
+                {{if .Deliverables}}
+                <div class="px-5 py-4 grid gap-3 sm:grid-cols-2">
+                    {{range .Deliverables}}
+                    <div class="rounded-lg border border-surface-600/60 bg-surface-900 px-4 py-3 space-y-2" data-artifact-id="{{.ID}}">
+                        <div class="flex items-center justify-between gap-2">
+                            <div class="flex items-center gap-2 min-w-0">
+                                <svg class="h-4 w-4 text-brand-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/></svg>
+                                <span class="text-sm text-ink-100 font-medium truncate" title="{{.Name}}">{{.Name}}</span>
+                            </div>
+                            <span class="text-[10px] uppercase tracking-wide text-ink-500 flex-shrink-0">{{.TypeLabel}}</span>
+                        </div>
+                        <div class="flex items-center justify-between gap-2">
+                            <a href="{{.DownloadURL}}" class="text-xs text-brand-400 hover:text-brand-300">Download{{if .SizeBytes}} ({{.SizeBytes}} B){{end}}</a>
+                            <form hx-post="/ui/tasks/{{$.Task.ID}}/artifacts/{{.ID}}/send" hx-target="#deliverable-send-result-{{.ID}}" hx-swap="innerHTML" class="inline">
+                                <button type="submit" class="text-xs px-2 py-1 rounded-md bg-surface-700 hover:bg-surface-600 text-ink-300 transition-colors">Send to chat</button>
+                            </form>
+                        </div>
+                        <div id="deliverable-send-result-{{.ID}}" class="deliverable-send-result text-xs min-h-[1em]"></div>
+                    </div>
+                    {{end}}
+                </div>
+                {{else}}
+                <div class="px-5 py-4 text-sm text-ink-200">{{if .DeliverableFallbackText}}{{.DeliverableFallbackText}}{{else}}No deliverable recorded for this task.{{end}}</div>
+                {{end}}
+            </div>
+            {{end}}{{/* Deliverables */}}
 
             {{if .Conversation.Enabled}}
             {{/* Phase 26+27 — conversational task lifecycle.
@@ -1037,9 +1115,14 @@
             </div>
             {{end}}
 
-            <!-- Lease (reference — closed by default) -->
+            <!-- Lease (task 2.2 — narrated-execution-design.md §5.6:
+                 gated behind "Show technical details" for story-first
+                 consistency with LLM Cost. Collapsed by default for
+                 RoleUser sessions; open for admin/no-session, same as
+                 today's pre-2.2 behaviour. companion-review
+                 review-20260710-d9af.md finding #2. -->
             {{if .Task.LeaseID}}
-            <details class="panel-ref overflow-hidden">
+            <details class="panel-ref overflow-hidden" {{if not .IsRoleUser}}open{{end}}>
                 <summary>{{template "sectionHeader" (dict "Title" "Lease")}}</summary>
                 <div class="px-5 py-4 grid grid-cols-2 sm:grid-cols-4 gap-4">
                     <dl><dt class="text-xs text-ink-500 mb-1">Lease ID</dt><dd class="text-sm text-ink-100 font-mono text-xs">{{.Task.LeaseID}}</dd></dl>
@@ -1127,12 +1210,21 @@
                  a row table (data present), a "no rows
                  captured" hint (cancelled before any persist
                  fired), and a "no LLM activity" note
-                 (legitimate zero-call task). */}}
-            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
-                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between flex-wrap gap-y-2">
+                 (legitimate zero-call task).
+
+                 Task 2.2 — this is one of the "technical tables"
+                 (narrated-execution-design.md §5.6) that moves behind
+                 "Show technical details": the summary (title + totals
+                 + CSV/JSON export) stays glanceable even collapsed;
+                 only the per-step row table is gated. Collapsed by
+                 default for RoleUser sessions; admins keep it open
+                 (today's behaviour, unchanged). */}}
+            <details class="glass rounded-xl border border-surface-600 overflow-hidden panel-ref" {{if not .IsRoleUser}}open{{end}}>
+                <summary class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between flex-wrap gap-y-2 cursor-pointer list-none">
                     <h2 class="text-sm font-semibold text-ink-200 flex items-center gap-2">
                         <svg class="h-4 w-4 text-ink-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                         LLM Cost
+                        <span class="text-[10px] text-ink-500 font-normal normal-case">— Show technical details</span>
                     </h2>
                     {{if .Cost.Rows}}
                     <div class="flex items-center gap-4 text-xs text-ink-500">
@@ -1143,7 +1235,7 @@
                         <a href="?format=json" class="px-2 py-0.5 rounded bg-surface-700 hover:bg-surface-600 text-ink-400 hover:text-ink-200">JSON</a>
                     </div>
                     {{end}}
-                </div>
+                </summary>
                 {{if .Cost.Rows}}
                 <div class="px-5 py-3 overflow-x-auto">
                     <table class="min-w-full text-sm">
@@ -1187,9 +1279,18 @@
                     {{end}}
                 </div>
                 {{end}}
-            </div>
+            </details>
 
-            <!-- Execution Artifacts -->
+            <!-- Execution Artifacts. Intentionally NOT role-gated behind
+                 "Show technical details" (companion-review
+                 review-20260710-d9af.md finding #2 — reviewed and
+                 confirmed as a deliberate exception, unlike Lease and
+                 Execution Attempts above). Task 2.4 (deliverable-first
+                 completion) added the Deliverables panel above (OUTPUT-
+                 class only, with "Send to chat"); this panel remains the
+                 full technical listing (every class, every status) for
+                 audit — some duplication with the Deliverables panel on a
+                 COMPLETED task is expected and intentional. -->
             {{if .ExecutionArtifacts}}
             <div class="glass rounded-xl border border-surface-600 overflow-hidden">
                 {{template "sectionHeader" (dict "Title" "Artifacts" "MetaText" (printf "%d" (len .ExecutionArtifacts)))}}
@@ -1242,10 +1343,15 @@
             </div>
             {{end}}
 
-            <!-- Execution Attempts -->
+            <!-- Execution Attempts (task 2.2 — narrated-execution-design.md
+                 §5.6: gated behind "Show technical details" for
+                 story-first consistency with LLM Cost. Collapsed by
+                 default for RoleUser sessions; open for admin/no-session,
+                 same as today's pre-2.2 behaviour. companion-review
+                 review-20260710-d9af.md finding #2. -->
             {{if .Executions}}
-            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
-                {{template "sectionHeader" (dict "Title" "Execution Attempts" "MetaText" (printf "%d" (len .Executions)))}}
+            <details class="glass rounded-xl border border-surface-600 overflow-hidden panel-ref" {{if not .IsRoleUser}}open{{end}}>
+                <summary>{{template "sectionHeader" (dict "Title" "Execution Attempts" "MetaText" (printf "%d" (len .Executions)))}}</summary>
                 <div class="px-5 py-4 space-y-3">
                     {{range $i, $exec := .Executions}}
                     <div class="bg-surface-900 rounded-lg p-4 border {{if eq $exec.Status "FAILED"}}border-rose-900/50{{else if eq $exec.Status "COMPLETED"}}border-emerald-900/50{{else}}border-surface-600{{end}}">
@@ -1281,7 +1387,7 @@
                     </div>
                     {{end}}
                 </div>
-            </div>
+            </details>
             {{end}}
         </div>
     </main>

@@ -196,3 +196,6 @@ func TestAdminChatAudit_ListErrorStillRenders(t *testing.T) {
 func (f *fakeChatAudit) GetByID(_ context.Context, _ string) (*persistence.ChatAuditEntry, error) {
 	return nil, persistence.ErrNotFound
 }
+func (f *fakeChatAudit) GetChatAuditsByTurnIDs(_ context.Context, _ []string) (map[string]persistence.ChatAuditEntry, error) {
+	return map[string]persistence.ChatAuditEntry{}, nil
+}

@@ -3869,3 +3869,304 @@ func RunIdentityRepositorySuite(t *testing.T, repo persistence.IdentityRepositor
 		}
 	})
 }
+
+// RunExecutionNarrationSuite exercises the
+// persistence.ExecutionNarrationRepository contract: Insert assigns
+// a monotonic per-execution seq (starting at 0), ListByExecution
+// returns rows ordered by seq ascending and scoped to the requested
+// execution only, and the degraded/metadata/step_id fields round-
+// trip. Both backends must agree — a divergence here means the
+// narrator's story would render in a different order on Postgres vs
+// SQLite.
+//
+// It takes an ExecutionRepository and TaskRepository alongside the
+// ExecutionNarrationRepository under test because postgres enforces
+// the execution_narration.execution_id
+// FK to executions(id) (ON DELETE CASCADE — narrated-execution-design
+// .md §5.3), and executions.task_id in turn FKs to tasks(id) — the
+// same two-hop parent chain RunExecutionRepositorySuite seeds via
+// TaskRepository. SQLite builds with FKs off so seeding would be
+// optional there, but the shared suite seeds real parent rows on
+// both backends to enforce the production-shape contract.
+//
+// (Incident 2026-07-09/10: the suite used to call repo.Insert with a
+// bare uniqueID("exec") string and no parent executions row. SQLite
+// silently accepted it; Postgres rejected every Insert with
+// "violates foreign key constraint execution_narration_execution_id_
+// fkey", failing insert_assigns_monotonic_seq_per_execution and
+// list_by_execution_ordered_by_seq_and_scoped in CI while the SQLite
+// run of the identical suite passed. Fixed by seeding a real
+// task+execution row per execution_id before inserting narration.)
+func RunExecutionNarrationSuite(t *testing.T, repo persistence.ExecutionNarrationRepository, execRepo persistence.ExecutionRepository, taskRepo persistence.TaskRepository) {
+	t.Helper()
+	ctx := context.Background()
+
+	// seedExecution creates a task row and an execution row (with ID
+	// execID) so a narration row's execution_id FK resolves on
+	// Postgres. taskRepo seeds the execution's task_id FK in turn.
+	seedExecution := func(t *testing.T, execID, projectID string) {
+		t.Helper()
+		task := newQueuedTask(projectID)
+		if err := taskRepo.Create(ctx, task); err != nil {
+			t.Fatalf("seedExecution: taskRepo.Create: %v", err)
+		}
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		exec := &persistence.Execution{
+			ID:         execID,
+			TaskID:     task.ID,
+			ProjectID:  projectID,
+			WorkflowID: "wf-x",
+			Status:     persistence.ExecutionStatusRunning,
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}
+		if err := execRepo.Create(ctx, exec); err != nil {
+			t.Fatalf("seedExecution: execRepo.Create: %v", err)
+		}
+	}
+
+	t.Run("insert_assigns_monotonic_seq_per_execution", func(t *testing.T) {
+		runNarrationSeqAssignmentCase(ctx, t, repo, seedExecution)
+	})
+	t.Run("list_by_execution_ordered_by_seq_and_scoped", func(t *testing.T) {
+		runNarrationListOrderingCase(ctx, t, repo, seedExecution)
+	})
+	t.Run("list_by_execution_unknown_returns_empty", func(t *testing.T) {
+		rows, err := repo.ListByExecution(ctx, uniqueID("ghost-exec"))
+		if err != nil {
+			t.Fatalf("ListByExecution: %v", err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("unknown execution returned %d rows, want 0", len(rows))
+		}
+	})
+}
+
+// runNarrationSeqAssignmentCase asserts Insert assigns a monotonic,
+// 0-based seq per execution_id, and that a second execution_id gets
+// its own independent counter starting at 0.
+func runNarrationSeqAssignmentCase(ctx context.Context, t *testing.T, repo persistence.ExecutionNarrationRepository, seedExecution func(t *testing.T, execID, projectID string)) {
+	t.Helper()
+	exec := uniqueID("exec")
+	project := uniqueID("proj")
+	task := uniqueID("task")
+	seedExecution(t, exec, project)
+
+	var seqs []int64
+	for i, kind := range []string{
+		persistence.ExecutionNarrationKindStep,
+		persistence.ExecutionNarrationKindTool,
+		persistence.ExecutionNarrationKindCompletion,
+	} {
+		seq, err := repo.Insert(ctx, &persistence.ExecutionNarration{
+			ID:          uniqueID("nar"),
+			ProjectID:   project,
+			TaskID:      task,
+			ExecutionID: exec,
+			StepID:      fmt.Sprintf("s%d", i),
+			Kind:        kind,
+			Text:        fmt.Sprintf("line %d", i),
+		})
+		if err != nil {
+			t.Fatalf("Insert %d: %v", i, err)
+		}
+		seqs = append(seqs, seq)
+	}
+	for i, s := range seqs {
+		if s != int64(i) {
+			t.Errorf("seq[%d] = %d, want %d (0-based monotonic per execution)", i, s, i)
+		}
+	}
+
+	// A second, unrelated execution starts its own seq at 0 — seq is
+	// per-execution, not global.
+	other := uniqueID("exec")
+	seedExecution(t, other, project)
+	seq, err := repo.Insert(ctx, &persistence.ExecutionNarration{
+		ID:          uniqueID("nar"),
+		ProjectID:   project,
+		TaskID:      task,
+		ExecutionID: other,
+		Kind:        persistence.ExecutionNarrationKindMilestone,
+		Text:        "unrelated",
+	})
+	if err != nil {
+		t.Fatalf("Insert (other execution): %v", err)
+	}
+	if seq != 0 {
+		t.Errorf("seq for a fresh execution_id = %d, want 0", seq)
+	}
+}
+
+// runNarrationListOrderingCase asserts ListByExecution returns rows
+// ordered by seq, scoped to the requested execution only, and that
+// degraded/metadata/step_id round-trip.
+func runNarrationListOrderingCase(ctx context.Context, t *testing.T, repo persistence.ExecutionNarrationRepository, seedExecution func(t *testing.T, execID, projectID string)) {
+	t.Helper()
+	exec := uniqueID("exec")
+	project := uniqueID("proj")
+	task := uniqueID("task")
+	seedExecution(t, exec, project)
+	meta := []byte(`{"hint":"read_this"}`)
+
+	texts := []string{"first", "second", "third"}
+	for _, text := range texts {
+		degraded := text == "second"
+		var metaArg []byte
+		if text == "third" {
+			metaArg = meta
+		}
+		if _, err := repo.Insert(ctx, &persistence.ExecutionNarration{
+			ID:          uniqueID("nar"),
+			ProjectID:   project,
+			TaskID:      task,
+			ExecutionID: exec,
+			StepID:      "s1",
+			Kind:        persistence.ExecutionNarrationKindStep,
+			Text:        text,
+			Degraded:    degraded,
+			Metadata:    metaArg,
+		}); err != nil {
+			t.Fatalf("Insert %q: %v", text, err)
+		}
+	}
+	// Noise row under a different execution — must not leak in.
+	noiseExec := uniqueID("exec")
+	seedExecution(t, noiseExec, project)
+	if _, err := repo.Insert(ctx, &persistence.ExecutionNarration{
+		ID:          uniqueID("nar"),
+		ProjectID:   project,
+		TaskID:      task,
+		ExecutionID: noiseExec,
+		Kind:        persistence.ExecutionNarrationKindMilestone,
+		Text:        "noise",
+	}); err != nil {
+		t.Fatalf("Insert (noise): %v", err)
+	}
+
+	rows, err := repo.ListByExecution(ctx, exec)
+	if err != nil {
+		t.Fatalf("ListByExecution: %v", err)
+	}
+	if len(rows) != len(texts) {
+		t.Fatalf("ListByExecution returned %d rows, want %d", len(rows), len(texts))
+	}
+	assertNarrationRowsMatch(t, rows, texts, exec)
+	if !rows[1].Degraded {
+		t.Errorf("row[1] (%q) should be Degraded=true", rows[1].Text)
+	}
+	if rows[0].Degraded || rows[2].Degraded {
+		t.Errorf("only row[1] should be Degraded")
+	}
+	if !jsonEqual(t, rows[2].Metadata, meta) {
+		t.Errorf("row[2].Metadata = %s, want %s", rows[2].Metadata, meta)
+	}
+	if len(rows[0].Metadata) != 0 {
+		t.Errorf("row[0].Metadata should be empty, got %s", rows[0].Metadata)
+	}
+}
+
+func assertNarrationRowsMatch(t *testing.T, rows []*persistence.ExecutionNarration, texts []string, exec string) {
+	t.Helper()
+	for i, row := range rows {
+		if row.Text != texts[i] {
+			t.Errorf("row[%d].Text = %q, want %q (seq order)", i, row.Text, texts[i])
+		}
+		if row.Seq != int64(i) {
+			t.Errorf("row[%d].Seq = %d, want %d", i, row.Seq, i)
+		}
+		if row.ExecutionID != exec {
+			t.Errorf("row[%d].ExecutionID = %q, want %q", i, row.ExecutionID, exec)
+		}
+		if row.StepID != "s1" {
+			t.Errorf("row[%d].StepID = %q, want s1", i, row.StepID)
+		}
+	}
+}
+
+// RunStepLatencySuite — StepLatencyP95ByStep contract: per-(project,
+// workflow, step, role, model) p95 over the window, workflow id joined from
+// the owning execution, durationless rows skipped (LLD 2026-07-11-control-
+// plane-actionable-proposals §4.4). Takes the execution + task repos because
+// the aggregation JOINs executions (and postgres enforces the task FK).
+func RunStepLatencySuite(t *testing.T, outcomes persistence.ExecutionStepOutcomeRepository, execs persistence.ExecutionRepository, tasks persistence.TaskRepository) {
+	t.Helper()
+	ctx := context.Background()
+	project := uniqueID("proj")
+
+	seedExec := func(t *testing.T, workflowID string) string {
+		t.Helper()
+		task := newQueuedTask(project)
+		if err := tasks.Create(ctx, task); err != nil {
+			t.Fatalf("seed task: %v", err)
+		}
+		e := &persistence.Execution{
+			ID: uniqueID("exec"), TaskID: task.ID, ProjectID: project,
+			WorkflowID: workflowID, Status: persistence.ExecutionStatusCompleted,
+			CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+			UpdatedAt: time.Now().UTC().Truncate(time.Millisecond),
+		}
+		if err := execs.Create(ctx, e); err != nil {
+			t.Fatalf("seed execution: %v", err)
+		}
+		return e.ID
+	}
+	record := func(t *testing.T, execID, step, role, model string, durMS int64, at time.Time) {
+		t.Helper()
+		var d *int64
+		if durMS >= 0 {
+			d = &durMS
+		}
+		if err := outcomes.Record(ctx, &persistence.ExecutionStepOutcome{
+			ID: uniqueID("oc"), ProjectID: project, TaskID: uniqueID("t"),
+			ExecutionID: execID, StepID: step, Role: role, Model: model,
+			Outcome: "ok", DurationMS: d, RecordedAt: at,
+		}); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+
+	now := time.Now().UTC()
+	execA := seedExec(t, "wf-a")
+	execB := seedExec(t, "wf-b")
+	// wf-a/implement: 10s, 20s, 30s → p95 = 30s (nearest-rank of 3).
+	record(t, execA, "implement", "coder", "m1", 10_000, now)
+	record(t, execA, "implement", "coder", "m1", 20_000, now)
+	record(t, execA, "implement", "coder", "m1", 30_000, now)
+	// wf-b/review: one row.
+	record(t, execB, "review", "reviewer", "m2", 5_000, now)
+	// Durationless row must be skipped.
+	record(t, execA, "implement", "coder", "m1", -1, now)
+	// Out-of-window row must be excluded.
+	record(t, execA, "implement", "coder", "m1", 999_000, now.Add(-48*time.Hour))
+
+	stats, err := outcomes.StepLatencyP95ByStep(ctx, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("StepLatencyP95ByStep: %v", err)
+	}
+	var implement, review *persistence.StepLatencyStat
+	for i := range stats {
+		s := &stats[i]
+		if s.ProjectID != project {
+			continue // other suites' residue
+		}
+		switch s.StepID {
+		case "implement":
+			implement = s
+		case "review":
+			review = s
+		}
+	}
+	if implement == nil || review == nil {
+		t.Fatalf("missing aggregation rows: %+v", stats)
+	}
+	if implement.WorkflowID != "wf-a" || implement.Role != "coder" || implement.Model != "m1" {
+		t.Errorf("implement attribution wrong: %+v", implement)
+	}
+	if implement.Count != 3 || implement.P95Seconds != 30 {
+		t.Errorf("implement p95/count: got (%v, %d), want (30, 3)", implement.P95Seconds, implement.Count)
+	}
+	if review.WorkflowID != "wf-b" || review.Count != 1 || review.P95Seconds != 5 {
+		t.Errorf("review row wrong: %+v", review)
+	}
+}

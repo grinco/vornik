@@ -326,6 +326,12 @@ type ProjectWizard interface {
 	// when missing/not owned and persistence.ErrInvalidTransition (or
 	// ErrSessionCommitted) when already committed.
 	Cancel(ctx context.Context, sessionID, operatorID string) error
+	// ConfirmSchedule records the operator's explicit confirmation of
+	// the tier-3 bundle's autonomy cadence (design §5.4's schedule-
+	// confirmation gate; task 1.2a's schedule chip). cron is the exact
+	// registry.ProjectAutonomy.PollInterval value shown in the preview.
+	// Same not-found/committed/cancelled error contract as Cancel.
+	ConfirmSchedule(ctx context.Context, sessionID, operatorID, cron string) error
 }
 
 // ProjectWizardCommitResult mirrors projectwizard.CommitResult at
@@ -357,6 +363,15 @@ type ProjectWizardEnvelope struct {
 	SuggestedTemplate string             `json:"suggested_template,omitempty"`
 	OpenQuestions     []string           `json:"open_questions,omitempty"`
 	Composition       *WizardComposition `json:"composition,omitempty"`
+
+	// Bundle mirrors projectwizard.ComposedBundle (the composer's
+	// tier-3 free-form synthesis: project + swarm + workflow(s) + the
+	// user-facing plan) at the API boundary. JSON-generic — same
+	// reasoning as Proposal/WizardComposition above, keeping this
+	// package free of an import on projectwizard. Nil (omitempty) on
+	// every non-tier-3 turn so the wizard-page JS's `if (env.bundle)`
+	// branch stays unreached until a tier-3 bundle actually exists.
+	Bundle map[string]any `json:"bundle,omitempty"`
 }
 
 // WizardComposition mirrors projectwizard.Composition at the API
@@ -371,6 +386,90 @@ type WizardComposition struct {
 	Template string           `json:"template"`
 	Params   map[string]any   `json:"params,omitempty"`
 	Addons   []map[string]any `json:"addons,omitempty"`
+}
+
+// FixItDoctor is the narrow interface POST /api/v1/fixit/converse
+// calls into. Concrete implementation wraps fixitdoctor.Service; this
+// surface keeps the api package free of an import on fixitdoctor
+// (same reasoning as ProjectWizard above).
+type FixItDoctor interface {
+	// Converse runs one repair-chat turn. For a NEW session
+	// (sessionID=="") failureKind/failureRefID/projectID bind the
+	// session to the failing object. For a RESUMED session
+	// (sessionID!="") the implementation ignores these three and uses
+	// the session's OWN persisted ref instead — see SessionScope,
+	// which the handler calls first so it can scope-gate on the
+	// session's real project_id rather than trusting the request body.
+	Converse(ctx context.Context, sessionID, operatorID, failureKind, failureRefID, projectID, userMessage string) (*FixItResult, error)
+	// SessionScope resolves an EXISTING session's own project_id, for
+	// the handler's scope gate — called BEFORE Converse so a caller
+	// can never widen scope by pairing a real session_id with a
+	// different project_id in the request body. ok=false when the
+	// session doesn't exist or isn't owned by operatorID (handler
+	// treats identically to "not found" — no existence leak).
+	SessionScope(ctx context.Context, sessionID, operatorID string) (projectID string, ok bool, err error)
+	// Apply dispatches ONE already-proposed action from sessionID's last
+	// envelope (task 3.3, fix-it-doctor-design.md §5.3/§5.4) —
+	// actionIndex indexes into that envelope's Actions slice. secretValue
+	// is used ONLY for ActionKindSetSecret (the user's masked input) and
+	// ignored for every other kind. Callers MUST scope-gate exactly like
+	// Converse: resolve the session's project via SessionScope first,
+	// check RequestAllowsProject (404 on mismatch), and additionally gate
+	// a daemon-scope session (empty project) to an admin caller before
+	// ever calling Apply — Apply itself does not re-derive HTTP-level
+	// caller identity/admin-ness.
+	Apply(ctx context.Context, sessionID, operatorID string, actionIndex int, secretValue string) (*FixItApplyResult, error)
+	// Rollback drives the §5.4 Rollback affordance for a previously
+	// applied config_apply action, identified by the ControlPlaneProposal
+	// id FixItApplyResult.RollbackID carried. Same scope-gating
+	// obligation as Apply.
+	Rollback(ctx context.Context, sessionID, operatorID, proposalID string) (*FixItApplyResult, error)
+}
+
+// FixItApplyResult mirrors fixitdoctor.DispatchResult at the API
+// boundary. Result is one of "applied" | "rejected" | "failed"
+// (fixitdoctor.ActionResult*). RollbackID is populated only for a
+// successfully applied config_apply — the ControlPlaneProposal id the
+// Rollback affordance targets.
+type FixItApplyResult struct {
+	Kind       string `json:"kind"`
+	Result     string `json:"result"`
+	Detail     string `json:"detail"`
+	Diff       string `json:"diff,omitempty"`
+	RollbackID string `json:"rollback_id,omitempty"`
+}
+
+// FixItResult mirrors fixitdoctor.Result at the API boundary.
+type FixItResult struct {
+	SessionID  string           `json:"session_id"`
+	Envelope   *FixItEnvelope   `json:"envelope"`
+	StatusPoll *FixItStatusPoll `json:"status_poll,omitempty"`
+}
+
+// FixItEnvelope mirrors fixitdoctor.FixItEnvelope at the API boundary.
+type FixItEnvelope struct {
+	Message  string                `json:"message"`
+	Actions  []FixItProposedAction `json:"actions,omitempty"`
+	Resolved bool                  `json:"resolved"`
+}
+
+// FixItProposedAction mirrors fixitdoctor.ProposedAction at the API
+// boundary. Kind stays a plain string (rather than the typed
+// fixitdoctor.ActionKind) — same reasoning as Proposal/Composition
+// above: keeps this package free of an import on fixitdoctor.
+type FixItProposedAction struct {
+	Kind   string            `json:"kind"`
+	Label  string            `json:"label"`
+	Params map[string]string `json:"params,omitempty"`
+}
+
+// FixItStatusPoll mirrors fixitdoctor.StatusPollResult at the API
+// boundary — populated only when the turn's envelope had
+// Resolved:true (the objective state the operator sees instead of an
+// auto-close).
+type FixItStatusPoll struct {
+	Summary string `json:"summary"`
+	Healthy bool   `json:"healthy"`
 }
 
 // ForkExecutor is the narrow interface POST
@@ -412,6 +511,9 @@ type Server struct {
 	// projectWizard backs POST /projects/wizard/converse
 	// (Feature #2). nil → endpoint returns 503.
 	projectWizard ProjectWizard
+	// fixItDoctor backs POST /fixit/converse (Fix-It Doctor task
+	// 3.2). nil → endpoint returns 503.
+	fixItDoctor FixItDoctor
 	// setupDetector backs GET /api/v1/setup/status and the
 	// install-scoped onboarding page. Zero value means the
 	// endpoint renders a conservative "fresh install" heuristic.
@@ -1053,23 +1155,6 @@ type Server struct {
 	supportPostMortemRepo SupportPostMortemReader
 }
 
-// WithSupportReportCollectors wires the optional support-report
-// section collectors (doctor / health / metrics) + the two per-task
-// repos (judge verdict, post-mortem) not otherwise held on the Server.
-// Any nil arg leaves that section to degrade gracefully. See
-// https://docs.vornik.io
-func WithSupportReportCollectors(
-	doctor SupportDoctorRunner,
-	health SupportHealthSource,
-	metrics SupportMetricsSource,
-	judge SupportJudgeReader,
-	postMortem SupportPostMortemReader,
-) ServerOption {
-	return func(s *Server) {
-		s.SetSupportReportCollectors(doctor, health, metrics, judge, postMortem)
-	}
-}
-
 // SetSupportReportCollectors is the post-construction wiring path for
 // the support-report collectors. The doctor + health adapters depend on
 // the fully-built Server (doctor handler, readiness checks), so the
@@ -1187,6 +1272,14 @@ func WithGitReceiveGuards(fn func(ctx context.Context, projectID string) error) 
 func WithProjectWizard(w ProjectWizard) ServerOption {
 	return func(s *Server) {
 		s.projectWizard = w
+	}
+}
+
+// WithFixItDoctor wires the Fix-It Doctor repair chat behind POST
+// /api/v1/fixit/converse. nil keeps the endpoint at 503.
+func WithFixItDoctor(d FixItDoctor) ServerOption {
+	return func(s *Server) {
+		s.fixItDoctor = d
 	}
 }
 

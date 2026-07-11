@@ -80,6 +80,41 @@ func JoinUnder(root string, elems ...string) (string, error) {
 	return candidate, nil
 }
 
+// AssertUnder verifies that an already-absolute path stays under base, with
+// the same symlink discipline as JoinUnder: symlinks are resolved in base and
+// in the deepest existing prefix of path (so a broken symlink whose target
+// does not yet exist can't slip past a lexical-only check — audit 2026-07-09
+// O-3). Empty base disables the check (test scenarios). Used by callers that
+// receive a stored absolute path (e.g. an artifact row) rather than joining
+// components themselves.
+func AssertUnder(base, path string) error {
+	if base == "" {
+		return nil
+	}
+	cleanBase := filepath.Clean(base)
+	if resolved, err := filepath.EvalSymlinks(cleanBase); err == nil {
+		cleanBase = resolved
+	}
+	cleanPath := filepath.Clean(path)
+	// Resolve the deepest EXISTING prefix (not just the full path): a broken
+	// symlink makes EvalSymlinks(cleanPath) fail, which previously left the
+	// lexical path in place and passed the check — then the open followed the
+	// symlink. Resolving the existing prefix closes that edge.
+	if resolved, ok, err := evalExistingPrefix(cleanPath); err != nil {
+		return err
+	} else if ok {
+		cleanPath = resolved
+	}
+	rel, err := filepath.Rel(cleanBase, cleanPath)
+	if err != nil {
+		return fmt.Errorf("resolve path: %w", err)
+	}
+	if rel == ".." || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("path %q outside root %q", cleanPath, cleanBase)
+	}
+	return nil
+}
+
 func evalExistingPrefix(path string) (string, bool, error) {
 	cleaned := filepath.Clean(path)
 	missing := []string{}

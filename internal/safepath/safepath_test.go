@@ -119,3 +119,29 @@ func TestJoinUnderAllowsSymlinkParentResolvingInsideRoot(t *testing.T) {
 		t.Fatalf("JoinUnder symlink parent inside root = %q, want %q", got, want)
 	}
 }
+
+// TestAssertUnder_BrokenSymlinkEdge — audit 2026-07-09 O-3: a symlink inside
+// base whose target does not yet exist must NOT pass the check by falling back
+// to the lexical path (the old artifacts.assertUnderBase bug). AssertUnder
+// resolves the deepest existing prefix, so the planted symlink is caught.
+func TestAssertUnder_BrokenSymlinkEdge(t *testing.T) {
+	base := t.TempDir()
+	outside := t.TempDir()
+	// A symlink base/escape → outside (a real dir), then a not-yet-existing
+	// leaf under it. The leaf path is lexically under base but resolves out.
+	if err := os.Symlink(outside, filepath.Join(base, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	leak := filepath.Join(base, "escape", "newfile") // does not exist yet
+	if err := AssertUnder(base, leak); err == nil {
+		t.Fatal("AssertUnder must reject a path that resolves outside base via a symlinked prefix")
+	}
+	// A genuine in-base path still passes.
+	if err := AssertUnder(base, filepath.Join(base, "sub", "ok")); err != nil {
+		t.Fatalf("in-base path must pass: %v", err)
+	}
+	// Empty base disables the check.
+	if err := AssertUnder("", leak); err != nil {
+		t.Fatalf("empty base must disable the check: %v", err)
+	}
+}

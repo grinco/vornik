@@ -5,7 +5,9 @@ package ui
 // panel (admin_blackbox.go) with the candidate → trial → promotion
 // funnel:
 //
-//   GET  /ui/admin/blackbox/candidates             → list page
+//   GET  /ui/admin/blackbox/candidates             → 302 to the unified
+//        control-plane inbox (?section=proposals&source=healing); the
+//        standalone list is deprecated (Part B fold-in, LLD 2026-07-11).
 //   GET  /ui/admin/blackbox/candidates/{id}         → detail:
 //        candidate diff + motivation + expected effect + risk banner,
 //        evidence run links, the trial SCORECARD rendered
@@ -143,17 +145,6 @@ type TrialSummaryView struct {
 	VerifierFailureRate string
 }
 
-// BlackBoxCandidatesData backs /ui/admin/blackbox/candidates (list).
-type BlackBoxCandidatesData struct {
-	adminCommonData
-	Available      bool
-	Rows           []CandidateRow
-	ActionError    string
-	FilterStatus   string
-	FilterWorkflow string
-	StatusOptions  []string
-}
-
 // BlackBoxCandidateDetailData backs /ui/admin/blackbox/candidates/{id}.
 type BlackBoxCandidateDetailData struct {
 	adminCommonData
@@ -185,20 +176,6 @@ type BlackBoxCandidateDetailData struct {
 	HasRunner   bool
 	HasPromoter bool
 	ActionError string
-}
-
-// candidateStatusOptions powers the list filter + mirrors the
-// persistence status enum. Kept in one place so adding a status only
-// touches the constants and this helper.
-func candidateStatusOptions() []string {
-	return []string{
-		string(persistence.HealingCandidateDraft),
-		string(persistence.HealingCandidateTrialRunning),
-		string(persistence.HealingCandidateTrialPassed),
-		string(persistence.HealingCandidateTrialFailed),
-		string(persistence.HealingCandidatePromoted),
-		string(persistence.HealingCandidateRejected),
-	}
 }
 
 // statusBadgeClass maps a candidate status to a tailwind pill class set.
@@ -423,44 +400,13 @@ func healingTrialToRow(t *persistence.HealingTrial) TrialRow {
 	return row
 }
 
-// AdminBlackBoxCandidates renders /ui/admin/blackbox/candidates — the
-// list of healing candidates with status/risk badges and a filter.
+// AdminBlackBoxCandidates — the standalone LIST page is deprecated in
+// favour of the unified control-plane inbox (Part B, LLD 2026-07-11 §5.2
+// #3): 302 so bookmarks land on the hub pre-sliced to the healing source.
+// The /{id} detail pages below stay — the hub rows link to them for the
+// scorecard depth.
 func (s *Server) AdminBlackBoxCandidates(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	data := BlackBoxCandidatesData{
-		adminCommonData: adminCommonData{
-			Title:       "Healing candidates",
-			CurrentPage: "admin",
-			IsAdmin:     true,
-		},
-		Available:      s.healingCandidateRepo != nil,
-		ActionError:    strings.TrimSpace(q.Get("action_error")),
-		FilterStatus:   strings.TrimSpace(q.Get("status")),
-		FilterWorkflow: strings.TrimSpace(q.Get("workflow")),
-		StatusOptions:  candidateStatusOptions(),
-	}
-	if !data.Available {
-		s.render(w, "admin_blackbox_candidates.html", data)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	filter := persistence.HealingCandidateListFilter{
-		WorkflowID: data.FilterWorkflow,
-		PageSize:   200,
-	}
-	if data.FilterStatus != "" {
-		filter.Status = persistence.HealingCandidateStatus(data.FilterStatus)
-	}
-	rows, err := s.healingCandidateRepo.List(ctx, filter)
-	if err != nil {
-		s.logger.Warn().Err(err).Msg("healing candidate list failed")
-	} else {
-		for _, c := range rows {
-			data.Rows = append(data.Rows, healingCandidateToRow(c))
-		}
-	}
-	s.render(w, "admin_blackbox_candidates.html", data)
+	http.Redirect(w, r, "/ui/admin/control-plane?section=proposals&source=healing", http.StatusFound)
 }
 
 // AdminBlackBoxCandidateDetail renders
@@ -587,22 +533,22 @@ func (s *Server) AdminBlackBoxCandidateRunTrial(w http.ResponseWriter, r *http.R
 			http.NotFound(w, r)
 			return
 		case errors.Is(err, ErrUICandidateTerminal):
-			http.Redirect(w, r, candidateDetailURL(id, "candidate is terminal; cannot run a trial"), http.StatusSeeOther)
+			cpAwareCandidateRedirect(w, r, id, "", "candidate is terminal; cannot run a trial")
 			return
 		case errors.Is(err, ErrUITrialRunning):
-			http.Redirect(w, r, candidateDetailURL(id, "a trial is already running; wait for its verdict before starting another"), http.StatusSeeOther)
+			cpAwareCandidateRedirect(w, r, id, "", "a trial is already running; wait for its verdict before starting another")
 			return
 		case errors.Is(err, ErrUITrialMode):
-			http.Redirect(w, r, candidateDetailURL(id, "unsupported trial mode "+strconv.Quote(mode)), http.StatusSeeOther)
+			cpAwareCandidateRedirect(w, r, id, "", "unsupported trial mode "+strconv.Quote(mode))
 			return
 		default:
 			s.logger.Warn().Err(err).Str("candidate_id", id).Msg("candidate run-trial failed")
-			http.Redirect(w, r, candidateDetailURL(id, "trial run failed: "+err.Error()), http.StatusSeeOther)
+			cpAwareCandidateRedirect(w, r, id, "", "trial run failed: "+err.Error())
 			return
 		}
 	}
 	s.auditCandidate(ctx, r, "blackbox-candidate.trial-run", id, "mode="+mode)
-	http.Redirect(w, r, candidateDetailURL(id, ""), http.StatusSeeOther)
+	cpAwareCandidateRedirect(w, r, id, "trial-started", "")
 }
 
 // AdminBlackBoxCandidatePromote handles
@@ -631,20 +577,26 @@ func (s *Server) AdminBlackBoxCandidatePromote(w http.ResponseWriter, r *http.Re
 			http.NotFound(w, r)
 			return
 		case errors.Is(err, ErrUICandidateNotPromotable):
+			if cpHubReturnRequested(r) {
+				// Hub-facing phrasing (§5.2 review #10); the native detail
+				// banner below keeps its original wording unchanged.
+				http.Redirect(w, r, cpHubProposalsURL("", "promote refused: candidate not trial_passed"), http.StatusSeeOther)
+				return
+			}
 			http.Redirect(w, r, candidateDetailURL(id, "candidate has not cleared a trial; promotion requires status trial_passed"), http.StatusSeeOther)
 			return
 		case errors.Is(err, ErrUICandidateTerminal):
-			http.Redirect(w, r, candidateDetailURL(id, "candidate is already promoted or rejected"), http.StatusSeeOther)
+			cpAwareCandidateRedirect(w, r, id, "", "candidate is already promoted or rejected")
 			return
 		default:
 			s.logger.Warn().Err(err).Str("candidate_id", id).Msg("candidate promote failed")
-			http.Redirect(w, r, candidateDetailURL(id, "promotion failed: "+err.Error()), http.StatusSeeOther)
+			cpAwareCandidateRedirect(w, r, id, "", "promotion failed: "+err.Error())
 			return
 		}
 	}
 	detail := "workflow=" + cand.WorkflowID + " proposal=" + cand.ProposalID
 	s.auditCandidate(ctx, r, "blackbox-candidate.promoted", id, detail)
-	http.Redirect(w, r, candidateDetailURL(id, ""), http.StatusSeeOther)
+	cpAwareCandidateRedirect(w, r, id, "candidate-promoted", "")
 }
 
 // AdminBlackBoxCandidateReject handles
@@ -668,16 +620,16 @@ func (s *Server) AdminBlackBoxCandidateReject(w http.ResponseWriter, r *http.Req
 			http.NotFound(w, r)
 			return
 		case errors.Is(err, ErrUICandidateTerminal):
-			http.Redirect(w, r, candidateDetailURL(id, "candidate is already promoted or rejected"), http.StatusSeeOther)
+			cpAwareCandidateRedirect(w, r, id, "", "candidate is already promoted or rejected")
 			return
 		default:
 			s.logger.Warn().Err(err).Str("candidate_id", id).Msg("candidate reject failed")
-			http.Redirect(w, r, candidateDetailURL(id, "reject failed: "+err.Error()), http.StatusSeeOther)
+			cpAwareCandidateRedirect(w, r, id, "", "reject failed: "+err.Error())
 			return
 		}
 	}
 	s.auditCandidate(ctx, r, "blackbox-candidate.rejected", id, "workflow="+cand.WorkflowID)
-	http.Redirect(w, r, candidateDetailURL(id, ""), http.StatusSeeOther)
+	cpAwareCandidateRedirect(w, r, id, "candidate-rejected", "")
 }
 
 // auditCandidate writes an admin-audit row for a candidate action. Nil

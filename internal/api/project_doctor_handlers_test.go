@@ -93,7 +93,7 @@ func TestProjectDoctor_GetReport_HappyPath(t *testing.T) {
 	var rep projectdoctor.Report
 	require.NoError(t, json.Unmarshal([]byte(rawBody), &rep))
 	assert.Equal(t, "p1", rep.ProjectID)
-	require.Len(t, rep.Checks, 6)
+	require.Len(t, rep.Checks, 7)
 	assert.True(t, rep.Complete, "all declared secrets present, model/mcp healthy => complete")
 
 	// Sanity: raw JSON carries both keys the brief calls out.

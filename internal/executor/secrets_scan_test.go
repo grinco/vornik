@@ -348,3 +348,65 @@ func TestScanToolAudit_TrustedToolInputStillRedacted(t *testing.T) {
 	assert.NotContains(t, gotIn, "injectedSecretValue123",
 		"trusted tool INPUT (agent-supplied) must still be redacted — only OUTPUT is provenance-exempt")
 }
+
+// fakeRedactionAudit captures Record calls for the badge-source tests.
+type fakeRedactionAudit struct {
+	events []persistence.SecretRedactionEvent
+	err    error
+}
+
+func (f *fakeRedactionAudit) Record(_ context.Context, events []persistence.SecretRedactionEvent) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.events = append(f.events, events...)
+	return nil
+}
+func (f *fakeRedactionAudit) CountByTask(context.Context, string) (map[string]int, int, error) {
+	return nil, 0, nil
+}
+
+// TestScanResultForSecrets_RecordsRedactionAudit — the Phase 3 badge
+// data path: a redacting scan persists one event per finding type with
+// the right task/checkpoint/count. Backlog item 2.
+func TestScanResultForSecrets_RecordsRedactionAudit(t *testing.T) {
+	e := newTestExecutorWithSecrets(t, nil)
+	audit := &fakeRedactionAudit{}
+	e.secretRedactionAudit = audit
+
+	body := []byte(`{"message":"key=sk-proj1234567890abcdefghijklmnopqrstuv"}`)
+	_, err := e.scanResultForSecrets(context.Background(),
+		&persistence.Task{ID: "t1", ProjectID: "p1"},
+		&persistence.Execution{ID: "e1"}, "step", body)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, audit.events, "a redaction must persist an audit event")
+	ev := audit.events[0]
+	assert.Equal(t, "t1", ev.TaskID)
+	assert.Equal(t, "p1", ev.ProjectID)
+	assert.Equal(t, secrets.CheckpointResultJSON, ev.Checkpoint)
+	assert.Equal(t, "openai_key", ev.FindingType)
+	assert.Equal(t, 1, ev.Count)
+	assert.Equal(t, "live", ev.Source)
+}
+
+// TestScanResultForSecrets_AuditErrorDoesNotFailStep — best-effort
+// contract (design M2): a Record failure logs but the redaction still
+// succeeds and the step is not failed.
+func TestScanResultForSecrets_AuditErrorDoesNotFailStep(t *testing.T) {
+	e := newTestExecutorWithSecrets(t, nil)
+	e.secretRedactionAudit = &fakeRedactionAudit{err: assertAnErr}
+
+	body := []byte(`{"message":"key=sk-proj1234567890abcdefghijklmnopqrstuv"}`)
+	out, err := e.scanResultForSecrets(context.Background(),
+		&persistence.Task{ID: "t1", ProjectID: "p1"},
+		&persistence.Execution{ID: "e1"}, "step", body)
+	require.NoError(t, err, "an audit-record failure must not fail the redact-mode step")
+	assert.Contains(t, string(out), "[REDACTED:openai_key]", "redaction still happens")
+}
+
+var assertAnErr = errStub("boom")
+
+type errStub string
+
+func (e errStub) Error() string { return string(e) }

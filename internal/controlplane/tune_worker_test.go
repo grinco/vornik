@@ -16,6 +16,11 @@ type fakeMetrics struct {
 	ret   map[string]RateSample
 	lats  map[string]LatencySample
 	tools []ToolLatencySample
+	steps []StepLatencySample
+}
+
+func (f *fakeMetrics) StepLatencies(_ context.Context) ([]StepLatencySample, error) {
+	return f.steps, nil
 }
 
 func (f *fakeMetrics) FailedTaskRates(_ context.Context) (map[string]RateSample, error) {

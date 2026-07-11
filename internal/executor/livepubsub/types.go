@@ -62,6 +62,13 @@ const (
 	KindCrossProjectCallResolved = "cross_project_call_resolved"
 	KindCrossProjectCallReceived = "cross_project_call_received"
 	KindProjectSpawned           = "project_spawned"
+	// KindNarrationLine is republished by the narrator worker
+	// (internal/narrator, Narrated Execution Phase 2.1) after it
+	// persists an execution_narration row (persist-then-publish,
+	// narrated-execution-design.md §5.3). This writer is kind-
+	// agnostic (see execution_live.go) so no WebSocket handler
+	// change was needed to add this kind.
+	KindNarrationLine = "narration_line"
 )
 
 // Payload shapes per event kind. Subscribers know how to decode
@@ -211,4 +218,23 @@ type ProjectSpawnedPayload struct {
 	Template       string `json:"template"`
 	InitialTaskID  string `json:"initial_task_id,omitempty"`
 	StepID         string `json:"step_id,omitempty"`
+}
+
+// NarrationLinePayload is the narrator worker's republished, already
+// -persisted narration line (Narrated Execution Phase 2.1,
+// narrated-execution-design.md §5.3/§5.6). Seq is the
+// execution_narration row's per-execution seq (NOT the same counter
+// as LiveEvent.Seq, which is this event's position in the execution's
+// overall bus stream across every kind) — the story-view client
+// merges/orders narration specifically by this field when seeding
+// from storage then extending live. Kind is one of the
+// persistence.ExecutionNarrationKind* values (step|tool|milestone|
+// completion). Degraded flags a deterministic-fallback line so the
+// UI can render a subtle "simplified" hint.
+type NarrationLinePayload struct {
+	Seq      int64  `json:"seq"`
+	StepID   string `json:"step_id,omitempty"`
+	Kind     string `json:"kind"`
+	Text     string `json:"text"`
+	Degraded bool   `json:"degraded,omitempty"`
 }

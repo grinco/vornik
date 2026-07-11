@@ -1,0 +1,104 @@
+{{/* integrations_form.html — the guided per-kind connect form (design
+     §5.1, §5.4, §5.6). One input per CredentialField; DocHint is always
+     shown (not gated behind Help); a Secret field never carries its
+     current value — only an "already set" badge (design §6: secrets never
+     round-trip to the browser). Test connection (probe, never writes) and
+     Save (re-probes, refuses on failure) both post the same form and swap
+     the shared #probe-result banner. */}}
+{{define "integrations_form.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-surface-900 text-ink-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-2xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                    <h1 class="text-xl font-semibold text-ink-100">{{.DisplayName}}</h1>
+                    <p class="text-ink-500 text-xs mt-0.5">{{.Category}}{{if .ProjectID}} · <span class="font-mono">{{.ProjectID}}</span>{{end}}</p>
+                </div>
+                <a href="/ui/integrations" class="text-xs text-brand-400 hover:text-brand-300">← Integrations</a>
+            </div>
+
+            {{if .DocURL}}<p class="text-xs text-ink-500"><a href="{{.DocURL}}" target="_blank" rel="noreferrer" class="text-brand-400 hover:text-brand-300">Documentation ↗</a></p>{{end}}
+
+            {{if .Error}}
+            <div class="rounded-lg border border-rose-700/40 bg-rose-500/5 px-3 py-2 text-xs text-rose-800 dark:text-rose-300">{{.Error}}</div>
+            {{end}}
+
+            {{if .NeedsProjectPicker}}
+            <div class="glass rounded-xl border border-surface-600 px-5 py-6 space-y-3">
+                <p class="text-sm text-ink-300">Choose a project to connect {{.DisplayName}} for.</p>
+                {{if .ProjectOptions}}
+                <ul class="space-y-1.5">
+                    {{range .ProjectOptions}}
+                    <li><a href="/ui/integrations/{{$.KindID}}?project={{.}}" class="text-sm text-brand-400 hover:text-brand-300 font-mono">{{.}}</a></li>
+                    {{end}}
+                </ul>
+                {{else}}
+                <p class="text-xs text-ink-500">No project available.</p>
+                {{end}}
+            </div>
+            {{else}}
+
+            <form id="integration-form" class="glass rounded-xl border border-surface-600 px-5 py-5 space-y-4">
+                <input type="hidden" name="project" value="{{.ProjectID}}">
+                {{range .Fields}}
+                <div class="space-y-1">
+                    <label class="block text-xs font-medium text-ink-300" for="field-{{.Key}}">
+                        {{.Label}}{{if .Required}} <span class="text-rose-500">*</span>{{end}}
+                    </label>
+                    {{if .Secret}}
+                    {{if .ConfiguredSecret}}<p class="text-[11px] text-ink-500">•••• already set — enter a new value to replace it</p>{{end}}
+                    <input type="password" id="field-{{.Key}}" name="{{.Key}}" autocomplete="off"
+                           class="w-full px-3 py-1.5 text-xs rounded-lg bg-surface-900 border border-surface-600 focus:border-brand-500 focus:outline-none text-ink-200 font-mono"
+                           {{if and .Required (not .ConfiguredSecret)}}required{{end}}>
+                    {{else}}
+                    <input type="text" id="field-{{.Key}}" name="{{.Key}}" value="{{.Value}}"
+                           class="w-full px-3 py-1.5 text-xs rounded-lg bg-surface-900 border border-surface-600 focus:border-brand-500 focus:outline-none text-ink-200 font-mono"
+                           {{if .Required}}required{{end}}>
+                    {{end}}
+                    <div class="flex items-start justify-between gap-2">
+                        {{if .DocHint}}<p class="text-[11px] text-ink-500 flex-1">{{.DocHint}}</p>{{end}}
+                        <button type="button"
+                                hx-post="{{$.AssistHrefBase}}"
+                                hx-vals='{"project": "{{$.ProjectID}}", "field": "{{.Key}}"}'
+                                hx-target="#assist-{{.Key}}"
+                                hx-swap="innerHTML"
+                                class="text-[11px] text-brand-400 hover:text-brand-300 shrink-0">Help</button>
+                    </div>
+                    <div id="assist-{{.Key}}"></div>
+                </div>
+                {{end}}
+
+                <div id="probe-result"></div>
+
+                <div class="flex items-center gap-2 pt-2">
+                    <button type="button"
+                            hx-post="{{.ProbeHref}}"
+                            hx-include="#integration-form"
+                            hx-target="#probe-result"
+                            hx-swap="innerHTML"
+                            class="px-3 py-1.5 text-xs font-medium rounded-lg border border-surface-600 text-ink-200 hover:border-brand-500">
+                        Test connection
+                    </button>
+                    <button type="button"
+                            hx-post="{{.SaveHref}}"
+                            hx-include="#integration-form"
+                            hx-target="#probe-result"
+                            hx-swap="innerHTML"
+                            class="px-3 py-1.5 text-xs font-medium rounded-lg bg-brand-600 hover:bg-brand-500 text-white">
+                        Save
+                    </button>
+                </div>
+            </form>
+            {{end}}
+        </div>
+    </main>
+
+    {{template "pageFooter" .}}
+</body>
+</html>
+{{end}}

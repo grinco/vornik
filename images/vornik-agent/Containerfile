@@ -18,7 +18,7 @@
 ARG VORNIK_UID=1000
 ARG VORNIK_GID=1000
 
-FROM golang:1.25 AS builder
+FROM golang:1.25@sha256:d7912cedddfa15b2900a8dfb7187df0af5ec2cb424a371139b5b352fd3e6b740 AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -26,7 +26,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/mcp-bridge ./cmd/mcp-bridge \
  && CGO_ENABLED=0 GOOS=linux go build -o /bin/vornik-agent-helper ./cmd/agent-helper
 
-FROM ubuntu:latest
+FROM ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
 
 # Re-declare ARGs after FROM — build args don't cross stage boundaries.
 ARG VORNIK_UID

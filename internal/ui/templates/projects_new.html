@@ -48,8 +48,31 @@
             </div>
             {{end}}
 
-            {{if .Templates}}
+            {{/* "Describe it" entry point (task 1.2a, design §5.7) — the NL
+                 Automation Composer's front door. First position, ALWAYS
+                 rendered (even when the template catalog is unavailable),
+                 since it doesn't need a catalog to work: the conversational
+                 wizard escalates to the tier-3 composer invisibly, on the
+                 same page, once the operator's description doesn't anchor
+                 on a template. */}}
             <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                <a href="/ui/projects/new/wizard" class="block group">
+                    <div class="glass rounded-xl border border-accent-600/40 group-hover:border-accent-500/70 transition-all overflow-hidden h-full">
+                        <div class="h-1 bg-gradient-to-r from-accent-500 via-violet-500 to-brand-500"></div>
+                        <div class="p-5">
+                            <div class="flex items-start justify-between mb-2.5">
+                                <h2 class="text-sm font-semibold text-gray-100">✨ Describe it</h2>
+                                <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-accent-600/20 text-accent-300">new</span>
+                            </div>
+                            <p class="text-xs text-gray-400 leading-relaxed">
+                                Tell the wizard what you want in plain language — no template
+                                required. It'll ask a couple of questions and propose a
+                                complete, from-scratch automation.
+                            </p>
+                        </div>
+                    </div>
+                </a>
+                {{if .Templates}}
                 {{range .Templates}}
                 <a href="/ui/projects/new?slug={{.Slug}}{{if $.ActiveDomain}}&domain={{$.ActiveDomain}}{{end}}"
                    class="block group">
@@ -75,12 +98,12 @@
                     </div>
                 </a>
                 {{end}}
+                {{else if .CatalogAvailable}}
+                <div class="sm:col-span-2 lg:col-span-3 glass rounded-xl border border-dark-700 px-6 py-10 text-center text-sm text-gray-400">
+                    No templates match this filter.
+                </div>
+                {{end}}
             </div>
-            {{else if .CatalogAvailable}}
-            <div class="glass rounded-xl border border-dark-700 px-6 py-10 text-center text-sm text-gray-400">
-                No templates match this filter.
-            </div>
-            {{end}}
         </div>
     </main>
 

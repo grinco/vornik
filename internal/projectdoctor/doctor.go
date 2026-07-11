@@ -54,6 +54,24 @@ type SmokeRunner interface {
 	Latest(projectID string) (SmokeStatus, bool)
 }
 
+// ComposerRecovery reports whether the live config tree carries a
+// leftover NL Automation Composer commit journal for a project — the
+// project-doctor's half of design §5.6 step 4's crash-recovery
+// detection (the daemon-boot sweep,
+// projectwizard.RecoverComposerCommits, is the primary recovery
+// mechanism; this check exists so a commit stuck BETWEEN two boots
+// isn't invisible on the project's own setup page). nil disables the
+// check (degrades to neutral, never red — a leftover journal is
+// heads-up, not a hard failure; the boot sweep or a restart resolves
+// it automatically either way).
+type ComposerRecovery interface {
+	// LeftoverJournal reports whether a leftover composer-commit
+	// journal exists for projectID, plus a short human-readable detail
+	// of what was found (safe to show verbatim — never a filesystem
+	// path).
+	LeftoverJournal(projectID string) (found bool, detail string)
+}
+
 // Deps is the doctor's narrow read/act surface. All fields are
 // interfaces so tests inject fakes. A nil field degrades that check
 // to unknown rather than panicking.
@@ -64,7 +82,11 @@ type Deps struct {
 	Secrets      SecretReader
 	SecretWriter SecretWriter
 	Smoke        SmokeRunner
-	Logger       zerolog.Logger
+	// ComposerRecovery surfaces a leftover NL Automation Composer
+	// commit journal for this project (design §5.6 step 4). Optional —
+	// nil degrades the composer_commit check to neutral.
+	ComposerRecovery ComposerRecovery
+	Logger           zerolog.Logger
 }
 
 // Doctor diagnoses one project's readiness.
@@ -95,6 +117,7 @@ func (d *Doctor) Run(ctx context.Context, projectID string) Report {
 		d.checkMCP(ctx, proj),
 		d.checkSchedule(proj),
 		d.checkSmoke(proj),
+		d.checkComposerCommit(proj),
 	}
 	rep.Complete = ComputeComplete(rep.Checks)
 	return rep
@@ -127,6 +150,8 @@ func (d *Doctor) RunOne(ctx context.Context, projectID, key string) (CheckResult
 		return d.checkSchedule(proj), nil
 	case "smoke":
 		return d.checkSmoke(proj), nil
+	case "composer_commit":
+		return d.checkComposerCommit(proj), nil
 	default:
 		return CheckResult{}, fmt.Errorf("unknown check %q", key)
 	}

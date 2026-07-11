@@ -69,5 +69,11 @@ type Deps struct {
 	Tasks      TaskLister
 	Trading    TradingSeriesProbe
 	SecretsDir string
-	Logger     zerolog.Logger
+	// RoleLibraryDir is the daemon's deployed configs root (the same
+	// directory rolelibrary.Load(dir) appends "role-library" onto) —
+	// the composer feature's "≥1 role-library entry" prereq (task
+	// 1.1b) reads it directly rather than through a repository
+	// interface, mirroring the SecretsDir convention above.
+	RoleLibraryDir string
+	Logger         zerolog.Logger
 }

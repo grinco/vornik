@@ -191,6 +191,33 @@ func (r *Router) SetMetrics(m *Metrics) {
 	})
 }
 
+// ModelHealthSnapshot returns the live circuit state for every
+// (route, model) breaker across the router. Sub-providers share one
+// breaker registry, so the first reporting sub-provider yields the full
+// set — but routes wrap distinct HealthGatedProviders around the SAME
+// registry, so we take the union and de-dup by (route, model) to stay
+// robust if that ever changes. Returns nil when no sub-provider reports
+// (breaker layer disabled), so the doctor degrades to "no live data".
+func (r *Router) ModelHealthSnapshot() []ModelHealthSnapshot {
+	seen := make(map[string]struct{})
+	var out []ModelHealthSnapshot
+	r.forEachSubProvider(func(_ string, p Provider) {
+		reporter, ok := p.(ModelHealthReporter)
+		if !ok {
+			return
+		}
+		for _, s := range reporter.ModelHealthSnapshot() {
+			key := s.Route + "\x00" + s.Model
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, s)
+		}
+	})
+	return out
+}
+
 // forEachSubProvider walks the fallback plus every distinct provider
 // referenced by a route, calling fn once per provider. fn sees the
 // route Name where available ("" for the fallback). Visit order: the

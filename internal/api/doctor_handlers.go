@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/featuredoctor"
 	"vornik.io/vornik/internal/persistence"
@@ -46,6 +47,12 @@ type DoctorHandlers struct {
 	pricingPath    string
 	artifactsRoot  string
 	workspacesRoot string
+
+	// systemHandlerNames is the set of system-step handler names the
+	// role-library doctor check accepts as valid tool entries. Wired
+	// from executor.SystemHandlerRegistry.Names() at boot via
+	// SetSystemHandlerNames; nil means built-in + mcp names only.
+	systemHandlerNames []string
 
 	// server is a back-reference to the API server used to build
 	// featuredoctor.Deps. Set via SetServer; nil-safe (feature
@@ -111,6 +118,12 @@ type DoctorHandlers struct {
 	// over execution_step_outcomes + task_llm_usage; tests inject a
 	// fake so the check is exercisable without a database.
 	modelHealthSource func(ctx context.Context) ([]modelHealthStat, error)
+
+	// modelCircuits reports the LIVE per-(route, model) circuit-breaker
+	// state (checkModelCircuits). Wired from the chat router via
+	// SetChatProvider when the router implements chat.ModelHealthReporter;
+	// nil (plain client / breaker disabled / tests) skips the check.
+	modelCircuits func() []chat.ModelHealthSnapshot
 
 	// scraperProfileRoot is the root directory of scraper browser-profile
 	// trees, typically ~/.config/vornik/scraper/profiles/<project>/<profile>/.
@@ -294,6 +307,7 @@ func (h *DoctorHandlers) RunReportReadOnly(ctx context.Context) DoctorReport {
 	report.Checks = append(report.Checks, h.checkBudgetUtilisation(ctx))
 	report.Checks = append(report.Checks, h.checkLeaderLocksHealth())
 	report.Checks = append(report.Checks, h.checkModelHealth(ctx))
+	report.Checks = append(report.Checks, h.checkModelCircuits())
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
 	report.Checks = append(report.Checks, h.checkModelRouteCoverage())
 	report.Checks = append(report.Checks, h.checkScraperProfileFreshness(ctx, fix))
@@ -337,6 +351,7 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkWorkflowOnFailMasking())
 	report.Checks = append(report.Checks, h.checkWorkflowMDShape())
 	report.Checks = append(report.Checks, h.checkRolePromptSanity())
+	report.Checks = append(report.Checks, h.checkRoleLibrary())
 	report.Checks = append(report.Checks, h.checkEvalSuiteLint())
 	report.Checks = append(report.Checks, h.checkDatabaseSchema(ctx))
 	report.Checks = append(report.Checks, h.checkOrphanFKRows(ctx, fix))
@@ -356,6 +371,7 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkCostAttribution())
 	report.Checks = append(report.Checks, h.checkLeaderLocksHealth())
 	report.Checks = append(report.Checks, h.checkModelHealth(ctx))
+	report.Checks = append(report.Checks, h.checkModelCircuits())
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
 	report.Checks = append(report.Checks, h.checkModelRouteCoverage())
 	report.Checks = append(report.Checks, h.checkScraperProfileFreshness(ctx, fix))

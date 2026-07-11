@@ -62,15 +62,6 @@ type MCPRefresher interface {
 	RefreshAll(ctx context.Context) error
 }
 
-// MCPConfigSource returns the daemon-level MCP server inventory
-// from config (the read-only side of the integrations page —
-// edit is slice 3). Names are the per-project server names
-// scoped by project id; the slice 1 implementation just lists
-// what's configured without diffing it against what's connected.
-type MCPConfigSource interface {
-	ConfiguredMCPServers() []AdminMCPProjectRow
-}
-
 // ReadinessProvider runs the same checks /readyz exposes over HTTP
 // but returns them in-process so the admin landing tile doesn't
 // have to self-HTTP-call. Wired in container_http.go alongside the
@@ -273,13 +264,6 @@ type AdminHealthRuntimeData struct {
 type RuntimeReadinessSource interface {
 	VoiceStatus(ctx context.Context) VoiceRuntimeStatus
 	StorageStatus(ctx context.Context) StorageRuntimeStatus
-}
-
-// AdminIntegrationsMCPData backs /ui/admin/integrations/mcp.
-type AdminIntegrationsMCPData struct {
-	adminCommonData
-	Configured []AdminMCPProjectRow
-	Available  bool
 }
 
 // EmailChannelInventory exposes the live per-project email channel
@@ -857,24 +841,6 @@ func (s *Server) AdminIntegrationsDispatcherTools(w http.ResponseWriter, r *http
 	s.render(w, "admin_integrations_dispatcher_tools.html", data)
 }
 
-// AdminIntegrationsMCP renders /ui/admin/integrations/mcp — the
-// read-only listing of the daemon-level mcp.servers block. Edit
-// is slice 3.
-func (s *Server) AdminIntegrationsMCP(w http.ResponseWriter, r *http.Request) {
-	data := AdminIntegrationsMCPData{
-		adminCommonData: adminCommonData{
-			Title:       "Admin Integrations — MCP",
-			CurrentPage: "admin",
-			IsAdmin:     true,
-		},
-		Available: s.adminMCPConfig != nil,
-	}
-	if s.adminMCPConfig != nil {
-		data.Configured = s.adminMCPConfig.ConfiguredMCPServers()
-	}
-	s.render(w, "admin_integrations_mcp.html", data)
-}
-
 // adminRouter dispatches /admin/* requests. Mounted by Handler()
 // when an admin wiring is present.
 func (s *Server) adminRouter(w http.ResponseWriter, r *http.Request) {
@@ -918,7 +884,14 @@ func (s *Server) adminRouter(w http.ResponseWriter, r *http.Request) {
 	case "/health/cluster":
 		s.AdminHealthCluster(w, r)
 	case "/integrations/mcp":
-		s.AdminIntegrationsMCP(w, r)
+		// Deprecated (2026-07-11 nav dedupe): the control-plane hub's MCP
+		// tab is the canonical MCP management surface (daemon catalog:
+		// list + reachability + ledger-gated add/remove + probe), and the
+		// per-project server listing this page rendered read-only is
+		// visible/editable in each project's settings form. 302 so
+		// bookmarks land on the canonical surface — same posture as the
+		// workflow-proposals and healing-candidates list routes.
+		http.Redirect(w, r, "/ui/admin/control-plane?section=mcp", http.StatusFound)
 	case "/integrations/email":
 		s.AdminIntegrationsEmail(w, r)
 	case "/integrations/dispatcher-tools":

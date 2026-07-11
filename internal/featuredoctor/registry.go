@@ -7,7 +7,7 @@ import (
 
 // Registry is the declared set of features. Adding one is a code change.
 func Registry() []Feature {
-	return []Feature{instinctFeature(), authFeature(), memoryRAGFeature(), clusterFeature(), tradingFeature()}
+	return []Feature{instinctFeature(), authFeature(), memoryRAGFeature(), clusterFeature(), tradingFeature(), composerFeature()}
 }
 
 // Diagnosis is the computed report for one feature.

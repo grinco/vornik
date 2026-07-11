@@ -20,6 +20,7 @@ Vornik comes in two editions built from the same core:
 | Workflows | ✅ | ✅ |
 | Tool access over MCP | ✅ | ✅ |
 | Control CLI (`vornikctl`) + HTTP API | ✅ | ✅ |
+| Guided Integrations Hub (connect channels from the UI) | ✅ | ✅ |
 | Counterfactual replay / “Black Box” | — | ✅ |
 | Learning / “Instinct” layer (learned budgets) | — | ✅ |
 | Clustering / horizontal scale | — | ✅ |
@@ -28,6 +29,7 @@ Vornik comes in two editions built from the same core:
 | OIDC / SSO | — | ✅ |
 | Log shipping (Logship) | — | ✅ |
 | Cross-project orchestration (`call_project`) | — | ✅ |
+| NL Automation Composer (describe-it project setup) | — | ✅ |
 
 <!-- END GENERATED editions-matrix -->
 

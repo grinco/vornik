@@ -190,6 +190,49 @@ func TestRecoveryActionsFor_BudgetBlockedSendsToSpend(t *testing.T) {
 	assert.Contains(t, primary.URL, "/spend")
 }
 
+// TestRecoveryActionsFor_HelpMeFixThis — task 3.4 entry point: every
+// failure class (including the safety classes, which never promote
+// retry — TestRecoveryActionsFor_SafetyClassesDoNotPromoteRetry above)
+// offers a "Help me fix this" GET link to the Fix-It Doctor panel,
+// deep-linked on the correct (kind=failed_task, taskID) pair, and it
+// sits BEFORE the universal "Close" action (last position is pinned by
+// TestRecoveryActionsFor_AlwaysIncludesClose).
+func TestRecoveryActionsFor_HelpMeFixThis(t *testing.T) {
+	for _, class := range []string{
+		persistence.TaskFailureClassLLMError,
+		persistence.TaskFailureClassRateLimited,
+		persistence.TaskFailureClassSecretLeak,
+		persistence.TaskFailureClassHallucinatedPlacement,
+		"",
+	} {
+		actions := RecoveryActionsFor(class, "task_x")
+		require.NotEmpty(t, actions)
+
+		var fixIt *RecoveryAction
+		for i := range actions {
+			if actions[i].Label == "Help me fix this" {
+				fixIt = &actions[i]
+				break
+			}
+		}
+		require.NotNilf(t, fixIt, "class %q: expected a \"Help me fix this\" action", class)
+		assert.Equal(t, "/ui/fixit/failed_task/task_x", fixIt.URL)
+		assert.Equal(t, "GET", fixIt.Method)
+		assert.Empty(t, fixIt.Confirm, "a GET navigation link should never fire a confirm prompt")
+
+		last := actions[len(actions)-1]
+		assert.Equal(t, "danger", last.Variant, "Help me fix this must not be the last action — Close stays last")
+	}
+}
+
+// TestRecoveryActionsFor_HelpMeFixThis_EmptyTaskID — mirrors
+// TestRecoveryActionsFor_EmptyTaskIDReturnsNil: an empty taskID must not
+// produce a fix-it link pointing at "/ui/fixit/failed_task/" (no ID).
+func TestRecoveryActionsFor_HelpMeFixThis_EmptyTaskID(t *testing.T) {
+	actions := RecoveryActionsFor(persistence.TaskFailureClassLLMError, "")
+	assert.Nil(t, actions)
+}
+
 // TestRecoveryActionsFor_PostFormsCarryConfirm — destructive POST
 // actions (retry, close) must carry a Confirm string so the
 // template fires a window.confirm() before submission. Stops

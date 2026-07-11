@@ -182,6 +182,186 @@ type Config struct {
 	// built-in default (blackbox.DefaultReplaySafeTools). See
 	// https://docs.vornik.io § Phase C.
 	Blackbox BlackboxConfig `yaml:"blackbox"`
+	// Integrations configures the Guided Integrations Hub (task 5.4). See
+	// https://docs.vornik.io §6.
+	Integrations IntegrationsConfig `yaml:"integrations"`
+	// Narrator configures the Narrated Execution worker (task 2.1). See
+	// https://docs.vornik.io §5.
+	Narrator NarratorConfig `yaml:"narrator"`
+	// Composer configures the NL Automation Composer (wizard tier-3).
+	// Empty / absent → disabled (Enabled defaults false until the
+	// feature completes its soak, design §9). See
+	// https://docs.vornik.io §5.4.
+	Composer ComposerConfig `yaml:"composer"`
+}
+
+// ComposerConfig tunes the NL Automation Composer — the wizard's
+// tier-3 free-form synthesis path. Off by default (design §9); the
+// feature-doctor registry gates activation. See
+// https://docs.vornik.io §5.1/§5.4/§5.8.
+type ComposerConfig struct {
+	// Enabled turns on tier-3 composition. Default false until Phase 3
+	// soak completes.
+	Enabled bool `yaml:"enabled" doc:"Activate the NL automation composer (wizard tier-3)."`
+	// MaxTier caps the tier the composer will emit fleet-wide. Default
+	// 3 (full free-form synthesis); set 2 to disable free-form
+	// synthesis while keeping template+addons composition (§5.1).
+	MaxTier int `yaml:"max_tier" doc:"Highest composer tier allowed (2 disables free-form synthesis; 3 = full)."`
+	// DefaultBudget is the conservative budget block the composer fills
+	// into every composed project when the LLM omits one (§5.4). Zero
+	// values fall back to the shipped defaults at load time.
+	DefaultBudget ComposerBudget `yaml:"default_budget"`
+	// MaxTier3Turns caps the number of expensive tier-3 turns per
+	// session (§5.8). Default 10.
+	MaxTier3Turns int `yaml:"max_tier3_turns" doc:"Per-session cap on expensive tier-3 composer turns."`
+}
+
+// ComposerBudget mirrors the registry ProjectBudget soft/hard caps the
+// composer stamps onto composed projects. Kept as its own type (rather
+// than importing registry.ProjectBudget) so internal/config stays a
+// low-level leaf with no registry dependency; the composer maps this
+// onto ProjectBudget at synthesis time. Zero = uncapped in
+// ProjectBudget semantics, and the composer never emits a zero cap
+// (§5.4), so the loader fills any zero here from the shipped defaults.
+type ComposerBudget struct {
+	DailySoftUSD   float64 `yaml:"daily_soft_usd"`
+	DailyHardUSD   float64 `yaml:"daily_hard_usd"`
+	MonthlySoftUSD float64 `yaml:"monthly_soft_usd"`
+	MonthlyHardUSD float64 `yaml:"monthly_hard_usd"`
+}
+
+// Composer default constants (design §5.4 — deliberately tight).
+const (
+	ComposerDefaultMaxTier        = 3
+	ComposerDefaultMaxTier3Turns  = 10
+	ComposerDefaultDailySoftUSD   = 1.00
+	ComposerDefaultDailyHardUSD   = 3.00
+	ComposerDefaultMonthlySoftUSD = 15.00
+	ComposerDefaultMonthlyHardUSD = 40.00
+)
+
+// applyDefaults fills unset (zero) fields with the shipped defaults.
+// Called at load time so an operator who sets only `composer.enabled:
+// true` still gets the full conservative default budget + caps.
+func (c *ComposerConfig) applyDefaults() {
+	if c.MaxTier == 0 {
+		c.MaxTier = ComposerDefaultMaxTier
+	}
+	if c.MaxTier3Turns == 0 {
+		c.MaxTier3Turns = ComposerDefaultMaxTier3Turns
+	}
+	if c.DefaultBudget.DailySoftUSD == 0 {
+		c.DefaultBudget.DailySoftUSD = ComposerDefaultDailySoftUSD
+	}
+	if c.DefaultBudget.DailyHardUSD == 0 {
+		c.DefaultBudget.DailyHardUSD = ComposerDefaultDailyHardUSD
+	}
+	if c.DefaultBudget.MonthlySoftUSD == 0 {
+		c.DefaultBudget.MonthlySoftUSD = ComposerDefaultMonthlySoftUSD
+	}
+	if c.DefaultBudget.MonthlyHardUSD == 0 {
+		c.DefaultBudget.MonthlyHardUSD = ComposerDefaultMonthlyHardUSD
+	}
+}
+
+// Validate checks the composer config invariants (§5.4). Runs after
+// applyDefaults so the zero-cap rule is meaningful — a composed bundle
+// must never carry a zero (uncapped) budget cap, and soft must not
+// exceed hard.
+func (c ComposerConfig) Validate() error {
+	if c.MaxTier < 1 || c.MaxTier > 3 {
+		return fmt.Errorf("composer.max_tier must be between 1 and 3, got %d", c.MaxTier)
+	}
+	if c.MaxTier3Turns < 0 {
+		return fmt.Errorf("composer.max_tier3_turns cannot be negative")
+	}
+	b := c.DefaultBudget
+	caps := map[string]float64{
+		"composer.default_budget.daily_soft_usd":   b.DailySoftUSD,
+		"composer.default_budget.daily_hard_usd":   b.DailyHardUSD,
+		"composer.default_budget.monthly_soft_usd": b.MonthlySoftUSD,
+		"composer.default_budget.monthly_hard_usd": b.MonthlyHardUSD,
+	}
+	for key, v := range caps {
+		if v < 0 {
+			return fmt.Errorf("%s cannot be negative", key)
+		}
+		if v == 0 {
+			return fmt.Errorf("%s must be > 0 (the composer never emits an uncapped budget, §5.4)", key)
+		}
+	}
+	if b.DailySoftUSD > b.DailyHardUSD {
+		return fmt.Errorf("composer.default_budget.daily_soft_usd cannot exceed daily_hard_usd")
+	}
+	if b.MonthlySoftUSD > b.MonthlyHardUSD {
+		return fmt.Errorf("composer.default_budget.monthly_soft_usd cannot exceed monthly_hard_usd")
+	}
+	return nil
+}
+
+// NarratorConfig tunes the narrator worker — the bus subscriber that
+// turns live execution events into plain-language, persisted, re-
+// published narration lines. All durations are seconds in YAML;
+// zero/absent values fall back to the design's defaults at
+// construction time (see internal/narrator.Narrator + DefaultConfig
+// below), so an empty NarratorConfig{} behaves exactly like the
+// documented defaults.
+type NarratorConfig struct {
+	// Enabled turns the worker on. Default true (§9 Q1 — resolved
+	// on, with conservative caps; worst-case spend is a fraction of
+	// a cent per execution). false ⇒ the daemon never subscribes to
+	// the live bus for narration and the story view has no rows to
+	// seed from beyond what already exists.
+	Enabled bool `yaml:"enabled" doc:"Activate the narrator worker."`
+	// Model is the cheap-tier model used for narration LLM calls.
+	// Empty leaves the chat router's default in place. Recommended
+	// a small OSS / managed model — narration is one short sentence.
+	Model string `yaml:"model" doc:"Model used for narration LLM calls (cheapest tier)."`
+	// DebounceSeconds holds a step-start candidate line before
+	// emitting it, so a fast start→complete pair collapses to the
+	// completion line only. 0 → 2. YAML key matches the design
+	// doc's `narrator.debounce` verbatim (§5.2).
+	DebounceSeconds int `yaml:"debounce" doc:"Seconds a step-start line waits before emitting, to collapse into a fast completion."`
+	// LongToolThresholdSeconds is how long a tool call must still be
+	// running before the one-shot heartbeat line fires. 0 → 10.
+	// YAML key matches `narrator.long_tool_threshold` (§5.2).
+	LongToolThresholdSeconds int `yaml:"long_tool_threshold" doc:"Seconds before a still-running tool call gets a heartbeat line."`
+	// MinLineIntervalSeconds bounds narration to at most one line
+	// per execution per this many seconds. 0 → 3. YAML key matches
+	// `narrator.min_line_interval` (§5.2).
+	MinLineIntervalSeconds int `yaml:"min_line_interval" doc:"Minimum seconds between narration lines for the same execution."`
+	// MaxLines caps lines per execution; beyond it narration stops
+	// entirely for that execution (the hard backstop). 0 → 40.
+	MaxLines int `yaml:"max_lines" doc:"Per-execution narration line cap."`
+	// MaxCostUSD caps the narrator's OWN LLM spend per execution;
+	// beyond it narration switches to deterministic template lines
+	// only (no more LLM calls) for the rest of the execution. 0 (as
+	// a float zero-value) → 0.02.
+	MaxCostUSD float64 `yaml:"max_cost_usd" doc:"Per-execution narrator LLM spend cap in USD; switches to template-only on breach."`
+	// ChatMilestoneKinds selects which narration trigger kinds are
+	// eligible for the chat push (task 2.3, design §5.7) — a COARSER
+	// cadence than the UI story, which shows every line. Values are the
+	// narrator's internal trigger-kind strings: "step_started",
+	// "tool_heartbeat", "step_completed", "completion". Empty (the
+	// default) resolves to ["step_completed", "completion"] at
+	// construction time. This is a daemon-wide cadence/cost knob (like
+	// MaxLines/MaxCostUSD above) — separate from the PER-PROJECT
+	// chat_push opt-in, which lives on registry.Project.Narrator
+	// (whether a project pushes to chat at all, not which lines it
+	// pushes once it does).
+	ChatMilestoneKinds []string `yaml:"chat_milestone_kinds" doc:"Narration trigger kinds eligible for the chat push (default: step_completed, completion)."`
+}
+
+// IntegrationsConfig holds Guided Integrations Hub knobs.
+type IntegrationsConfig struct {
+	// AllowedHosts is an opt-in escape hatch mirroring
+	// integrations.DialGuard.AllowedHosts: hostnames (not IPs — matched
+	// against the dial address's original hostname, not the resolved IP)
+	// permitted to bypass the probe/save SSRF guard's private/loopback/
+	// link-local block, for self-hosted operators who run e.g. an
+	// internal IMAP host or MCP server. Empty/absent (default) blocks
+	// every private range outright — see design §6.
+	AllowedHosts []string `yaml:"allowed_hosts" json:"allowed_hosts" doc:"Hostnames allowed to bypass the Integrations Hub's private-range SSRF guard for probes/saves. Empty = block all private/loopback/link-local destinations (secure default)."`
 }
 
 // BlackboxConfig tunes the counterfactual replay engine.
@@ -1234,7 +1414,12 @@ type ChatConfig struct {
 	// Resolved through the same router prefix-routing as any pinned
 	// model, so a "google/" or "anthropic." prefix routes correctly.
 	WizardModel string `yaml:"wizard_model" doc:"Model for the project-setup wizard."`
-	Timeout     string `yaml:"timeout" doc:"Bound on a single LLM round-trip."`
+	// FixItModel pins the model the Fix-It Doctor repair chat
+	// (internal/fixitdoctor) uses, independent of the dispatcher/
+	// autonomy default in Model. Empty inherits Model, same fallback
+	// convention as WizardModel above.
+	FixItModel string `yaml:"fixit_model" doc:"Model for the Fix-It Doctor repair chat."`
+	Timeout    string `yaml:"timeout" doc:"Bound on a single LLM round-trip."`
 	// DispatchTimeout caps one complete interactive turn (multi-LLM-call,
 	// multi-tool-call) for the dispatcher. Semantically different from
 	// Timeout, which limits a single LLM round-trip. A turn that calls
@@ -1376,6 +1561,30 @@ type ChatRouterConfig struct {
 	//   gemini-  → vertex
 	//   google/  → vertex
 	Routes []ChatRouteConfig `yaml:"routes"`
+
+	// Health tunes the per-(route, model) circuit breaker that stops routing
+	// to a model that is failing hard, so a provider outage fails over
+	// immediately instead of burning the retry ladder (LLD
+	// 2026-07-11-model-health-circuit-breaker). Default on with conservative
+	// thresholds; set enabled:false to disable.
+	Health ChatHealthConfig `yaml:"health"`
+}
+
+// ChatHealthConfig tunes the model-health circuit breaker (LLD
+// 2026-07-11-model-health-circuit-breaker §9). Zero/absent values fall back
+// to the design defaults at resolution time.
+type ChatHealthConfig struct {
+	// Enabled activates the breaker. A pointer so an ABSENT block defaults to
+	// ON (nil → on) while an explicit `enabled: false` disables it.
+	Enabled *bool `yaml:"enabled" doc:"Activate the model-health circuit breaker (default on; false disables)."`
+	// Window is the rolling failure window (Go duration; empty → 60s).
+	Window string `yaml:"window" doc:"Rolling failure window, e.g. 60s (default 60s)."`
+	// MinSamples is the in-window failure floor before tripping (0 → 5).
+	MinSamples int `yaml:"min_samples" doc:"Minimum in-window failures before the breaker can trip (default 5)."`
+	// FailureRate is the trip threshold as a fraction (0 → 0.5).
+	FailureRate float64 `yaml:"failure_rate" doc:"Failure fraction at/above which the breaker trips (default 0.5)."`
+	// OpenCooldown is how long OPEN waits before a HALF_OPEN probe (empty → 30s).
+	OpenCooldown string `yaml:"open_cooldown" doc:"How long the circuit stays open before a half-open probe, e.g. 30s (default 30s)."`
 }
 
 // ChatCLISubConfig describes one CLI-backed sub-provider.

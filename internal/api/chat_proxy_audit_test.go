@@ -319,3 +319,6 @@ func buildChatResponse(model, text string, promptTokens, completionTokens int) *
 func (s *stubChatAuditRepoAPI) GetByID(_ context.Context, _ string) (*persistence.ChatAuditEntry, error) {
 	return nil, persistence.ErrNotFound
 }
+func (s *stubChatAuditRepoAPI) GetChatAuditsByTurnIDs(_ context.Context, _ []string) (map[string]persistence.ChatAuditEntry, error) {
+	return map[string]persistence.ChatAuditEntry{}, nil
+}

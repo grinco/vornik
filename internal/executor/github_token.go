@@ -60,6 +60,17 @@ func (e *Executor) installationToken(ctx context.Context, project *registry.Proj
 // without a token (incident 2026-06-13: github-classifier hit "gh: not logged
 // into any GitHub hosts"). No-op when the project has no github credentials;
 // a mint failure is logged but never fails the step (outbound just degrades).
+//
+// SECURITY (audit HIGH-1, 2026-07-09): this token is push-capable and reaches
+// EVERY agent step, including a reviewer over an external/fork PR's untrusted
+// code. The blast radius is bounded by the agent entrypoint, which strips
+// GH_TOKEN/GITHUB_TOKEN from the environment of the processes that execute the
+// reviewed repo's OWN code (the test_run/lint_run/typecheck_run runners in
+// images/vornik-agent/entrypoint.sh, SAFE_ENV) so untrusted executed code
+// never sees the token. The token remains available to the agent's first-class
+// gh/git tools; branch publishing itself is performed host-side by the daemon
+// (executor/handlers/forge/open_change_request.go → provider.PushBranch), not
+// via this container env, so the two defenses are independent.
 func (e *Executor) injectGitHubToken(ctx context.Context, env map[string]string, project *registry.Project) {
 	tok, err := e.installationToken(ctx, project)
 	if err != nil {

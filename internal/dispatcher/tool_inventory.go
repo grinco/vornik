@@ -69,6 +69,11 @@ func (a *Agent) InventoryTools() []ToolInfo {
 		"send_email":     {"EmailSender", a.emailSender != nil},
 		"memory_search":  {"MemorySearcher", a.memory != nil},
 		"memory_correct": {"MemoryCorrector", a.memoryCorrector != nil},
+		// Doubly gated (task 1.4): the bridge must be wired AND
+		// composer.enabled must be true (default false during the
+		// Phase 3 soak) — a wired-but-disabled bridge still reports
+		// Available=false here so operators see "soak, not broken."
+		"compose_automation": {"ComposerBridge", a.composer != nil && a.composerEnabled},
 
 		// Always available — no external wiring.
 		"switch_project": {"", true},

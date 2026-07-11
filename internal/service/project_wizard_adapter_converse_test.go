@@ -198,4 +198,98 @@ func TestProjectWizardAdapter_Converse_NoCompositionOnLegacyProposalTurn(t *test
 	require.NotNil(t, res)
 	require.NotNil(t, res.Envelope)
 	require.Nil(t, res.Envelope.Composition, "v1 proposal-only turn should not carry a composition")
+	require.Nil(t, res.Envelope.Bundle, "v1 proposal-only turn should not carry a bundle")
+}
+
+// envelopeWithBundle is a canned wizard tier-3 turn: a full composer
+// bundle (project + swarm + one workflow + user-facing plan). The
+// bundle pipeline itself isn't wired in this fixture (no
+// LiveConfigDir/RoleLibrary), so applyBundle bounces the turn — but
+// per wizard.go's applyBundle, envelope.Bundle is only cleared from
+// session.Bundle on a rejection, never from the envelope itself, so
+// this is still the right fixture for a mapping test that only cares
+// about the adapter's bundle-mirroring, exactly like
+// envelopeWithComposition above for Composition.
+const envelopeWithBundle = `{
+	"message": "Here is your custom automation.",
+	"tier": 3,
+	"ready_to_commit": true,
+	"bundle": {
+		"project": {"projectId": "custom-proj", "displayName": "Custom Project"},
+		"swarm": {"swarmId": "custom-swarm"},
+		"workflows": [{"workflowId": "wf1"}],
+		"plan": {
+			"steps": ["Step one", "Step two"],
+			"schedule": "every 6 hours",
+			"cost_band": "$1-5/day",
+			"approvals": ["review before send"],
+			"approvals_bypassed": ["auto-approve small changes"]
+		}
+	}
+}`
+
+func TestProjectWizardAdapter_Converse_MirrorsBundleOntoAPIEnvelope(t *testing.T) {
+	store := newFakeWizardSessionStore()
+	chatStub := &fakeWizardChatProvider{content: envelopeWithBundle}
+	wiz := &projectwizard.Wizard{
+		Sessions: store,
+		Chat:     chatStub,
+		MaxTurns: 5,
+		Timeout:  time.Second,
+	}
+	adapter := newProjectWizardAdapter(wiz)
+	require.NotNil(t, adapter)
+
+	res, err := adapter.Converse(context.Background(), "", "op_1", "build me a fully custom automation")
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.NotNil(t, res.Envelope)
+
+	bundle := res.Envelope.Bundle
+	require.NotNil(t, bundle, "expected bundle to be mirrored onto the API envelope")
+
+	project, ok := bundle["project"].(map[string]any)
+	require.True(t, ok, "bundle.project should be a map, got %T", bundle["project"])
+	require.Equal(t, "custom-proj", project["projectId"])
+
+	swarm, ok := bundle["swarm"].(map[string]any)
+	require.True(t, ok, "bundle.swarm should be a map, got %T", bundle["swarm"])
+	require.Equal(t, "custom-swarm", swarm["swarmId"])
+
+	workflows, ok := bundle["workflows"].([]any)
+	require.True(t, ok, "bundle.workflows should be a slice, got %T", bundle["workflows"])
+	require.Len(t, workflows, 1)
+
+	plan, ok := bundle["plan"].(map[string]any)
+	require.True(t, ok, "bundle.plan should be a map, got %T", bundle["plan"])
+	require.Equal(t, []any{"Step one", "Step two"}, plan["steps"])
+	require.Equal(t, "every 6 hours", plan["schedule"])
+	require.Equal(t, "$1-5/day", plan["cost_band"])
+	require.Equal(t, []any{"review before send"}, plan["approvals"])
+	require.Equal(t, []any{"auto-approve small changes"}, plan["approvals_bypassed"])
+}
+
+// TestProjectWizardAdapter_ConfirmSchedule_Delegates verifies the
+// api.ProjectWizard boundary (task 1.2a's schedule chip) delegates
+// straight through to the underlying *projectwizard.Wizard and its
+// error contract survives the adapter unchanged.
+func TestProjectWizardAdapter_ConfirmSchedule_Delegates(t *testing.T) {
+	store := newFakeWizardSessionStore()
+	session := &persistence.ProjectWizardSession{ID: "pw_1", OperatorID: "op_1"}
+	require.NoError(t, store.Insert(context.Background(), session))
+
+	wiz := &projectwizard.Wizard{Sessions: store}
+	adapter := newProjectWizardAdapter(wiz)
+	require.NotNil(t, adapter)
+
+	require.NoError(t, adapter.ConfirmSchedule(context.Background(), "pw_1", "op_1", "24h"))
+
+	stored, err := store.Get(context.Background(), "pw_1")
+	require.NoError(t, err)
+	require.NotNil(t, stored.ScheduleConfirmedAt)
+	require.Equal(t, "24h", stored.ScheduleConfirmedCron)
+
+	// Not-found propagates unchanged through the adapter.
+	err = adapter.ConfirmSchedule(context.Background(), "pw_missing", "op_1", "24h")
+	require.ErrorIs(t, err, persistence.ErrNotFound)
 }

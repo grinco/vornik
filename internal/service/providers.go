@@ -199,6 +199,15 @@ type ProviderSet struct {
 	// errCrossProjectDisabled and the /api/v1/admin/cpc surface has no ledger.
 	CrossProject bool
 
+	// ControlPlaneDiagnosis gates the LLM-driven control-plane automation:
+	// the Diagnoser (operator diagnose API + hub Diagnose tab) and the
+	// SelfHealWorker (auto-diagnosis on failed-rate breaches). Community
+	// keeps the deterministic Tune detectors + the full ledger-gated
+	// propose/approve/apply/rollback machinery; capability is gated at
+	// GENERATION, not decision, so EE-authored rows in a downgraded ledger
+	// stay actionable (LLD 2026-07-11-control-plane-actionable-proposals §6).
+	ControlPlaneDiagnosis bool
+
 	// Group C — Phase-1c contract interfaces (nil in Community; EE wires real impls in Task 5).
 	//
 	// ReplaySafety is the deny-by-default replay-safety classifier injected from

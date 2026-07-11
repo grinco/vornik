@@ -213,7 +213,29 @@ func (r *TaskRepository) List(ctx context.Context, filter persistence.TaskFilter
 		}
 		query += " AND project_id IN (" + strings.Join(placeholders, ", ") + ")"
 	}
-	if filter.Status != nil {
+	if len(filter.IDs) > 0 {
+		placeholders := make([]string, len(filter.IDs))
+		for i, id := range filter.IDs {
+			placeholders[i] = fmt.Sprintf("$%d", argPos)
+			args = append(args, id)
+			argPos++
+		}
+		query += " AND id IN (" + strings.Join(placeholders, ", ") + ")"
+	}
+	// Statuses wins over Status when both are set (documented
+	// precedence, TaskFilter.Statuses doc comment). An empty non-nil
+	// Statuses is treated as "no constraint from this field" — falls
+	// through to Status — never as an empty IN() that would zero out
+	// the result set.
+	if len(filter.Statuses) > 0 {
+		statusStrings := make([]string, len(filter.Statuses))
+		for i, s := range filter.Statuses {
+			statusStrings[i] = string(s)
+		}
+		query += fmt.Sprintf(" AND status = ANY($%d)", argPos)
+		args = append(args, pq.Array(statusStrings))
+		argPos++
+	} else if filter.Status != nil {
 		query += fmt.Sprintf(" AND status = $%d", argPos)
 		args = append(args, *filter.Status)
 		argPos++
@@ -266,7 +288,14 @@ func (r *TaskRepository) Count(ctx context.Context, filter persistence.TaskFilte
 		args = append(args, *filter.ProjectID)
 		argPos++
 	}
-	if filter.Status != nil {
+	if len(filter.Statuses) > 0 {
+		statusStrings := make([]string, len(filter.Statuses))
+		for i, s := range filter.Statuses {
+			statusStrings[i] = string(s)
+		}
+		query += fmt.Sprintf(" AND status = ANY($%d)", argPos)
+		args = append(args, pq.Array(statusStrings))
+	} else if filter.Status != nil {
 		query += fmt.Sprintf(" AND status = $%d", argPos)
 		args = append(args, *filter.Status)
 	}
@@ -925,6 +954,21 @@ func (r *TaskRepository) GetChildren(ctx context.Context, parentTaskID string) (
 		tasks = append(tasks, task)
 	}
 	return tasks, rows.Err()
+}
+
+// OrphanChildren detaches every direct child of parentTaskID by setting
+// its parent_task_id to NULL, returning the affected row count. See the
+// interface doc: the retry path uses this so a delegating parent can
+// re-decompose without the resume guard fast-failing on stale children.
+func (r *TaskRepository) OrphanChildren(ctx context.Context, parentTaskID string) (int, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE tasks SET parent_task_id = NULL, updated_at = NOW() WHERE parent_task_id = $1`,
+		parentTaskID)
+	if err != nil {
+		return 0, mapDBError(err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // CountChildrenForParents returns the direct-child count keyed by parent

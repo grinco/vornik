@@ -1,0 +1,10 @@
+{{/* integrations_assist.html — the per-field "where do I find this?"
+     helper response (design §5.6). Answer is set only when AssistantLLM is
+     wired and the call succeeded; otherwise the static DocHint is all that
+     renders (degrade path). */}}
+{{define "integrations_assist.html"}}
+<div class="rounded-lg border border-surface-600 bg-surface-800/40 px-3 py-2 text-xs text-ink-300 space-y-1">
+    {{if .Answer}}<p>{{.Answer}}</p>{{end}}
+    {{if .DocHint}}<p class="text-ink-500">{{.DocHint}}</p>{{end}}
+</div>
+{{end}}

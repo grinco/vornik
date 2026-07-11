@@ -19,6 +19,7 @@ import (
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/auth"
 	"vornik.io/vornik/internal/budget"
+	"vornik.io/vornik/internal/chatorigin"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/controlplane"
 	"vornik.io/vornik/internal/onboarding"
@@ -187,11 +188,27 @@ type Server struct {
 	llmUsageRepo     persistence.TaskLLMUsageRepository
 	// apiKeyRepo backs /ui/projects/{id}/keys. Nil disables the
 	// page (renders 503).
-	apiKeyRepo        persistence.APIKeyRepository
-	outcomeRepo       persistence.ExecutionStepOutcomeRepository
-	judgeVerdictRepo  persistence.TaskJudgeVerdictRepository
+	apiKeyRepo       persistence.APIKeyRepository
+	outcomeRepo      persistence.ExecutionStepOutcomeRepository
+	judgeVerdictRepo persistence.TaskJudgeVerdictRepository
+	// narrationRepo backs the Narrated Execution "story" panel on the
+	// live task page and the task-detail page (task 2.2, narrated-
+	// execution-design.md §5.6). Nil-safe: a nil repo just means no
+	// seeded story lines render (the panel shows its empty state); the
+	// technical view is always available regardless.
+	narrationRepo     persistence.ExecutionNarrationRepository
 	recoveryEventRepo persistence.RecoveryEventRepository
 	skillRepo         persistence.SkillRepository
+	// chatAudit + channelResolver + deliverableMetrics back the
+	// deliverable-first completion "send to chat" action (task 2.4,
+	// narrated-execution-design.md §5.8). chatAudit is deliberately
+	// separate from adminChatAudit below (that option is only wired on
+	// Admin-provider builds' admin block); both may point at the same
+	// underlying repository. Nil-safe: without these, the "send to
+	// chat" handler treats every task as not-chat-originated.
+	chatAudit          chatorigin.ChatAuditLookup
+	channelResolver    chatorigin.ChannelResolver
+	deliverableMetrics *DeliverableMetrics
 	// proposalStore + proposalApplier back the EE control-plane console
 	// (/ui/admin/control-plane). Nil-safe: the page renders "not wired".
 	proposalStore   persistence.ProposalRepository
@@ -216,6 +233,10 @@ type Server struct {
 	tradingEnabled      bool
 	postMortemRepo      persistence.TaskPostMortemRepository
 	postMortemExplainer PostMortemExplainer
+	// secretRedactionRepo backs the "🔒 N secrets redacted" badge on the
+	// task-detail page (secret-leak Phase 3). Nil-safe — the badge is
+	// hidden when the repo is unwired or the task had zero redactions.
+	secretRedactionRepo persistence.SecretRedactionAuditRepository
 	// instinctRepo backs the (advisory) "similar failures here resolved
 	// by …" panel on the failed-task page — Consumer A, slice 3. Nil-
 	// safe AND gated: it is consulted only when instinctPlaybooks is
@@ -408,6 +429,12 @@ type Server struct {
 	// being available (chat provider wired). false hides the banner
 	// even when wizardSessions has stale draft rows.
 	wizardEnabled bool
+	// fixItDoctor backs the /fixit/ repair chat panel (task 3.2).
+	// nil-safe — the panel shows a "not configured" state.
+	fixItDoctor api.FixItDoctor
+	// fixItSessions backs transcript resume (?session=) on the /fixit/
+	// panel. nil-safe — resume silently falls back to a fresh page.
+	fixItSessions FixItSessionReader
 	// onboardingDetector backs /ui/setup. Nil falls back to the
 	// same conservative heuristic as the API status endpoint.
 	onboardingDetector onboarding.Detector
@@ -579,7 +606,6 @@ type Server struct {
 	operatorProfileAudit OperatorProfileAuditSource
 	adminMCPSource       MCPInventorySource
 	adminMCPRefresher    MCPRefresher
-	adminMCPConfig       MCPConfigSource
 	// runtimeReadiness powers /ui/admin/health/runtime — voice STT/
 	// TTS provider health + storage backend reachability. Nil-safe;
 	// page renders an "Available: false" placeholder when absent.
@@ -605,6 +631,25 @@ type Server struct {
 	// the route 404s. Wired by WithLogoutHandler to the loginflow
 	// Logout handler so the ui package keeps no auth dependency.
 	logoutHandler http.Handler
+
+	// integrationProbesMu guards integrationProbes — the Guided
+	// Integrations Hub's cached probe store (design §5.5): a small
+	// in-memory map[kind+project]ProbeResult+timestamp populated on
+	// save/recheck and read by the catalog's cheap, no-network tile
+	// badge. No background prober (ships disabled per the LLD).
+	integrationProbesMu sync.Mutex
+	integrationProbes   map[string]integrationProbeCacheEntry
+
+	// integrationsMetrics backs the Guided Integrations Hub's Prometheus
+	// counters (task 5.4, design §5.8: vornik_integration_probe_total /
+	// vornik_integration_save_total). Nil when WithMetricsRegistry was
+	// never called (e.g. most tests) — every Record* call is nil-safe.
+	integrationsMetrics *IntegrationsMetrics
+
+	// inboxMetrics backs the Outcome Inbox's vornik_ui_inbox_views_total
+	// counter (task 4.4, design §5.8). Same nil-safe idiom as
+	// integrationsMetrics above.
+	inboxMetrics *InboxMetrics
 }
 
 // ActiveChatSource exposes a count of live chat sessions for the
@@ -913,6 +958,12 @@ func WithWizardSessionLister(src WizardSessionLister) ServerOption {
 	return func(s *Server) { s.wizardSessions = src }
 }
 
+// WithFixItDoctor wires the Fix-It Doctor repair chat behind the
+// /ui/fixit/ panel. Optional — nil renders a "not configured" state.
+func WithFixItDoctor(d api.FixItDoctor) ServerOption {
+	return func(s *Server) { s.fixItDoctor = d }
+}
+
 // WithWizardEnabled gates the /ui/projects drafts banner on the
 // project-wizard feature being available. The wizard requires a chat
 // provider (its converse turn calls the LLM), so the banner should not
@@ -1194,6 +1245,26 @@ func WithKnowledgeGraphReader(r KnowledgeGraphReader) ServerOption {
 func WithStepOutcomeRepository(repo persistence.ExecutionStepOutcomeRepository) ServerOption {
 	return func(s *Server) {
 		s.outcomeRepo = repo
+	}
+}
+
+// WithExecutionNarrationRepository wires the narrator worker's
+// persisted story lines (task 2.1's execution_narration store) so
+// the live task page + task-detail page can seed the story panel
+// server-side. Nil leaves the panel showing its "no story yet"
+// empty state — the technical view is unaffected either way.
+func WithExecutionNarrationRepository(repo persistence.ExecutionNarrationRepository) ServerOption {
+	return func(s *Server) {
+		s.narrationRepo = repo
+	}
+}
+
+// WithSecretRedactionRepository wires the secret-leak Phase 3 redaction
+// audit repo so the task-detail page can render the "🔒 N secrets
+// redacted" badge. Optional — without it the badge is hidden.
+func WithSecretRedactionRepository(repo persistence.SecretRedactionAuditRepository) ServerOption {
+	return func(s *Server) {
+		s.secretRedactionRepo = repo
 	}
 }
 
@@ -1721,12 +1792,6 @@ func WithAdminMCPRefresher(r MCPRefresher) ServerOption {
 	return func(s *Server) { s.adminMCPRefresher = r }
 }
 
-// WithAdminMCPConfigSource wires the read-only MCP configuration
-// listing for /ui/admin/integrations/mcp.
-func WithAdminMCPConfigSource(src MCPConfigSource) ServerOption {
-	return func(s *Server) { s.adminMCPConfig = src }
-}
-
 // WithRuntimeReadinessSource wires the voice + storage probe
 // surface used by /ui/admin/health/runtime. Without it the page
 // renders an "Available: false" placeholder so operators see the
@@ -1830,7 +1895,10 @@ func NewServer(opts ...ServerOption) *Server {
 	// default navModel func with the edition-aware one here rather than
 	// threading the flag through uiFuncMap (kept edition-agnostic + testable).
 	fm := uiFuncMap()
-	fm["navModel"] = navModelFunc(s.tradingEnabled)
+	// navModelForPage (not the bare navModelFunc) so the "My requests"
+	// nav destination can carry a per-request attention-count badge
+	// (task 4.4, design §5.7 Q4) — see nav_model.go's doc comment.
+	fm["navModel"] = navModelForPage(s.tradingEnabled)
 	// Server-bound so the persistent "restart required" banner reflects live
 	// pending-restart state on every render (see the nav partial).
 	fm["restartPending"] = s.restartBanner
@@ -1880,6 +1948,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/projects/", s.projectRouter)
 	mux.HandleFunc("/setup", s.Setup)
 
+	// Guided Integrations Hub (design doc: integrations-hub-design.md,
+	// task 5.3) — catalog + guided per-kind connect flow. Scope-filtered
+	// server-side (integrationsCaller); daemon-scope kinds (telegram, mcp)
+	// are admin-only, project-scope kinds (email, github_app, slack)
+	// require project scope. Metrics + external deep-links are task 5.4.
+	mux.HandleFunc("/integrations", s.IntegrationsCatalog)
+	mux.HandleFunc("/integrations/", s.integrationsRouter)
+
 	// Swarms — top-level list (IA completion) + editor/create under
 	// the prefix. Exact /swarms hits the list; /swarms/ subtree (incl.
 	// the trailing-slash root) goes through swarmRouter.
@@ -1920,6 +1996,16 @@ func (s *Server) Handler() http.Handler {
 	// Task detail and actions share the /tasks/ prefix.
 	// POST requests with /cancel or /retry suffix are routed to action handlers.
 	mux.HandleFunc("/tasks/", s.taskRouter)
+
+	// Fix-It Doctor repair chat panel (task 3.2). GET renders the
+	// panel (fresh or resumed); POST /message runs one turn and
+	// returns the HTMX transcript partial. Entry-point buttons deep-link
+	// here (task 3.4): the failed-task recovery card
+	// (recovery_actions.go), the integration tile's "Help me fix this"
+	// (integrations.go, flag-gated on Outcome != ok + the doctor being
+	// wired), and the persistent restart banner (config_reload.go) when
+	// a genuine reload validation error is on record.
+	mux.HandleFunc("/fixit/", s.fixItDoctorRouter)
 	// Bulk task actions — separate prefix so the /tasks/{id}/cancel
 	// pattern in taskRouter doesn't shadow them.
 	mux.HandleFunc("/tasks-bulk/cancel", s.TaskBulkCancel)
@@ -2142,6 +2228,10 @@ func (s *Server) projectRouter(w http.ResponseWriter, r *http.Request) {
 	// JS POSTs to /api/v1/projects/wizard/converse.
 	case path == "new/wizard" && r.Method == http.MethodGet:
 		s.ProjectsNewWizard(w, r)
+	// Composer preview Graph tab (task 1.2a) — JS POSTs the latest
+	// tier-3 bundle's workflows here and gets back rendered SVG(s).
+	case path == "new/wizard/graph-preview" && r.Method == http.MethodPost:
+		s.ComposerPreviewGraph(w, r)
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/brief"):
 		projectID := strings.TrimSuffix(path, "/brief")
 		s.ProjectBriefEdit(w, r, projectID)
@@ -2422,6 +2512,11 @@ func (s *Server) taskRouter(w http.ResponseWriter, r *http.Request) {
 		strings.HasSuffix(path, "/reject") ||
 		strings.HasSuffix(path, "/close")):
 		s.TaskConversationAction(w, r)
+	// Deliverable-first completion (task 2.4) — "send to chat" per
+	// deliverable card. First (and so far only) two-ID-segment task
+	// sub-route: /tasks/{id}/artifacts/{artifactID}/send.
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/send") && strings.Contains(path, "/artifacts/"):
+		s.DeliverableSend(w, r)
 	default:
 		s.TaskDetail(w, r)
 	}

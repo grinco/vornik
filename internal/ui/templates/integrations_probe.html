@@ -1,0 +1,27 @@
+{{/* integrations_probe.html — the Outcome-colored result banner shared by
+     POST /integrations/{kind}/probe ("Test connection", never writes) and
+     POST /integrations/{kind}/save (re-probes before writing — design
+     §5.2/§5.4). Copy mirrors the design doc verbatim so OK/fail/error read
+     the same everywhere the hub renders a ProbeResult. */}}
+{{define "integrations_probe.html"}}
+<div id="probe-result" class="rounded-lg border px-3 py-2 text-xs
+     {{if .SaveErr}}border-rose-700/40 bg-rose-500/5 text-rose-800 dark:text-rose-300
+     {{else if eq .Result.Outcome "ok"}}border-emerald-700/40 bg-emerald-500/5 text-emerald-800 dark:text-emerald-300
+     {{else if eq .Result.Outcome "fail"}}border-rose-700/40 bg-rose-500/5 text-rose-800 dark:text-rose-300
+     {{else}}border-amber-700/40 bg-amber-500/5 text-amber-800 dark:text-amber-300{{end}}">
+    {{if .SaveErr}}
+    <p class="font-medium">Save failed: {{.SaveErr}}</p>
+    {{else if eq .Result.Outcome "ok"}}
+    <p class="font-medium">{{if .Saved}}Saved. {{end}}Connected{{if .Result.Summary}} — {{.Result.Summary}}{{end}}</p>
+    {{else if eq .Result.Outcome "fail"}}
+    <p class="font-medium">Invalid — the provider rejected this{{if .Result.Summary}}: {{.Result.Summary}}{{end}}</p>
+    {{else}}
+    <p class="font-medium">Couldn't reach the provider — try again{{if .Result.Detail}}: {{.Result.Detail}}{{end}}</p>
+    {{end}}
+    {{if .Result.Failures}}
+    <ul class="mt-1 space-y-0.5 text-[11px] opacity-80">
+        {{range .Result.Failures}}<li>{{if .Field}}{{.Field}}: {{end}}{{.Reason}}</li>{{end}}
+    </ul>
+    {{end}}
+</div>
+{{end}}

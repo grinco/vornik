@@ -40,19 +40,6 @@ type MemeticArchitectUI interface {
 	Propose(ctx context.Context, workflowID string) (*persistence.WorkflowProposal, error)
 }
 
-// AdminWorkflowProposalsData backs the list page
-// /ui/admin/workflow-proposals.
-type AdminWorkflowProposalsData struct {
-	adminCommonData
-	Available      bool
-	Proposals      []*persistence.WorkflowProposal
-	FilterStatus   string
-	FilterWorkflow string
-	Limit          int
-	LimitOptions   []int
-	StatusOptions  []string
-}
-
 // AdminWorkflowProposalDetailData backs the drill-down page
 // /ui/admin/workflow-proposals/{id}.
 type AdminWorkflowProposalDetailData struct {
@@ -104,51 +91,12 @@ type AdminWorkflowProposalDetailData struct {
 	Baseline *WorkflowBaselineImpact
 }
 
-// AdminWorkflowProposals renders the list page.
+// AdminWorkflowProposals — the standalone LIST page is deprecated in favour
+// of the unified control-plane inbox (Part B, LLD 2026-07-11 §5.2 #3): 302
+// so bookmarks land on the hub pre-sliced to the architect source. The
+// /{id} detail pages below stay — the hub rows link to them for diff depth.
 func (s *Server) AdminWorkflowProposals(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	limit := adminClampLimit(q.Get("limit"))
-	statusFilter := q.Get("status")
-	if statusFilter == "" {
-		statusFilter = "pending"
-	}
-	data := AdminWorkflowProposalsData{
-		adminCommonData: adminCommonData{
-			Title:       "Workflow Proposals",
-			CurrentPage: "admin",
-			IsAdmin:     true,
-		},
-		Available:      s.workflowProposalsRepo != nil,
-		Limit:          limit,
-		LimitOptions:   adminLimitOptions,
-		FilterStatus:   statusFilter,
-		FilterWorkflow: q.Get("workflow"),
-		StatusOptions: []string{
-			"all", "pending", "approved", "rejected", "applied", "rolled_back", "regressed",
-		},
-	}
-	if !data.Available {
-		s.render(w, "admin_workflow_proposals.html", data)
-		return
-	}
-	filter := persistence.WorkflowProposalFilter{
-		WorkflowID: data.FilterWorkflow,
-		PageSize:   limit,
-	}
-	if statusFilter != "all" {
-		filter.Statuses = []persistence.WorkflowProposalStatus{
-			persistence.WorkflowProposalStatus(statusFilter),
-		}
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	proposals, err := s.workflowProposalsRepo.List(ctx, filter)
-	if err != nil {
-		s.logger.Warn().Err(err).Msg("workflow-proposals list failed")
-	} else {
-		data.Proposals = proposals
-	}
-	s.render(w, "admin_workflow_proposals.html", data)
+	http.Redirect(w, r, "/ui/admin/control-plane?section=proposals&source=architect", http.StatusFound)
 }
 
 // AdminWorkflowProposalDetail renders the drill-down page.
@@ -250,6 +198,10 @@ func (s *Server) AdminWorkflowProposalApply(w http.ResponseWriter, r *http.Reque
 		if len(msg) > 200 {
 			msg = msg[:200]
 		}
+		if cpHubReturnRequested(r) { // Part B round-trip (§5.2 #2)
+			http.Redirect(w, r, cpHubProposalsURL("", "apply failed: "+msg), http.StatusSeeOther)
+			return
+		}
 		http.Redirect(w, r,
 			"/ui/admin/workflow-proposals/"+id+"?decide_error="+strings.ReplaceAll(msg, " ", "+"),
 			http.StatusSeeOther)
@@ -265,6 +217,10 @@ func (s *Server) AdminWorkflowProposalApply(w http.ResponseWriter, r *http.Reque
 			IP:        clientIP(r),
 			UserAgent: r.UserAgent(),
 		})
+	}
+	if cpHubReturnRequested(r) {
+		http.Redirect(w, r, cpHubProposalsURL("wf-applied", ""), http.StatusSeeOther)
+		return
 	}
 	http.Redirect(w, r, "/ui/admin/workflow-proposals/"+id, http.StatusSeeOther)
 }
@@ -290,6 +246,10 @@ func (s *Server) AdminWorkflowProposalRollback(w http.ResponseWriter, r *http.Re
 		if len(msg) > 200 {
 			msg = msg[:200]
 		}
+		if cpHubReturnRequested(r) { // Part B round-trip (§5.2 #2)
+			http.Redirect(w, r, cpHubProposalsURL("", "rollback failed: "+msg), http.StatusSeeOther)
+			return
+		}
 		http.Redirect(w, r,
 			"/ui/admin/workflow-proposals/"+id+"?decide_error="+strings.ReplaceAll(msg, " ", "+"),
 			http.StatusSeeOther)
@@ -305,6 +265,10 @@ func (s *Server) AdminWorkflowProposalRollback(w http.ResponseWriter, r *http.Re
 			IP:        clientIP(r),
 			UserAgent: r.UserAgent(),
 		})
+	}
+	if cpHubReturnRequested(r) {
+		http.Redirect(w, r, cpHubProposalsURL("wf-rolled-back", ""), http.StatusSeeOther)
+		return
 	}
 	http.Redirect(w, r, "/ui/admin/workflow-proposals/"+id, http.StatusSeeOther)
 }
@@ -384,6 +348,10 @@ func (s *Server) AdminWorkflowProposalDecide(w http.ResponseWriter, r *http.Requ
 		persistence.WorkflowProposalStatusRejected:
 		// ok
 	default:
+		if cpHubReturnRequested(r) { // Part B round-trip (§5.2 #2)
+			http.Redirect(w, r, cpHubProposalsURL("", "decide failed: status must be approved or rejected"), http.StatusSeeOther)
+			return
+		}
 		http.Redirect(w, r,
 			"/ui/admin/workflow-proposals/"+id+
 				"?decide_error=status+must+be+approved+or+rejected",
@@ -406,6 +374,10 @@ func (s *Server) AdminWorkflowProposalDecide(w http.ResponseWriter, r *http.Requ
 		if len(msg) > 200 {
 			msg = msg[:200]
 		}
+		if cpHubReturnRequested(r) { // Part B round-trip (§5.2 #2)
+			http.Redirect(w, r, cpHubProposalsURL("", "decide failed: "+msg), http.StatusSeeOther)
+			return
+		}
 		http.Redirect(w, r,
 			"/ui/admin/workflow-proposals/"+id+"?decide_error="+strings.ReplaceAll(msg, " ", "+"),
 			http.StatusSeeOther)
@@ -425,6 +397,12 @@ func (s *Server) AdminWorkflowProposalDecide(w http.ResponseWriter, r *http.Requ
 			IP:        clientIP(r),
 			UserAgent: r.UserAgent(),
 		})
+	}
+	if cpHubReturnRequested(r) {
+		// statusRaw is validated above: approved|rejected → the fixed
+		// wf-approved / wf-rejected flash tokens.
+		http.Redirect(w, r, cpHubProposalsURL("wf-"+statusRaw, ""), http.StatusSeeOther)
+		return
 	}
 	http.Redirect(w, r, "/ui/admin/workflow-proposals/"+id, http.StatusSeeOther)
 }

@@ -229,3 +229,7 @@ func TestExecutionDetail_StepOutcomesRenderInExecutionOrder(t *testing.T) {
 			wantOrder[i], wantOrder[i-1], gotPositions)
 	}
 }
+
+func (r *shuffleOutcomeRepo) StepLatencyP95ByStep(context.Context, time.Time) ([]persistence.StepLatencyStat, error) {
+	return nil, nil
+}

@@ -166,3 +166,7 @@ func TestFinalizePendingOutcome_HappyPathEmitsMetric(t *testing.T) {
 	got := testutil.ToFloat64(m.AgentStepOutcomesTotal.WithLabelValues("coder", "model-z", string(stepoutcome.OK)))
 	assert.Equal(t, 1.0, got, "finalizePendingOutcome must emit one RecordFinalOutcome with the actual role+model")
 }
+
+func (f *failingOutcomeRepo) StepLatencyP95ByStep(context.Context, time.Time) ([]persistence.StepLatencyStat, error) {
+	return nil, nil
+}

@@ -579,3 +579,21 @@ func TestRecordChatAPIUsage_NoCacheFieldsSafeWithZeroes(t *testing.T) {
 	assert.Equal(t, int64(0), row.CacheCreationTokens)
 	assert.Equal(t, int64(0), row.CacheReadTokens)
 }
+
+// TestChatCompletions_ModelUnhealthy503 — an open circuit fast-rejects with a
+// distinct 503 MODEL_UNHEALTHY code (LLD 2026-07-11-model-health §6), so the
+// executor can skip its retry ladder and fail over rather than hammer a dead
+// model. Distinct from ROUTE_OVERFLOW (queue full) and PROVIDER_ERROR (502).
+func TestChatCompletions_ModelUnhealthy503(t *testing.T) {
+	stub := &stubProvider{err: &chat.ModelUnhealthyError{Route: "bedrock", Model: "zai.glm-5", State: "open"}}
+	s := &Server{logger: zerolog.Nop(), chatProvider: stub}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions",
+		strings.NewReader(`{"messages":[{"role":"user","content":"x"}]}`))
+	w := httptest.NewRecorder()
+	s.ChatCompletions(w, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Contains(t, w.Body.String(), "MODEL_UNHEALTHY")
+	assert.NotContains(t, w.Body.String(), "ROUTE_OVERFLOW")
+}

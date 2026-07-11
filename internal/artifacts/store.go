@@ -562,27 +562,12 @@ func (s *Store) usesLocalBackend() bool {
 // and Delete to defend against corrupted DB rows pointing outside the
 // artifact root.
 func assertUnderBase(base, path string) error {
-	if base == "" {
-		return nil
-	}
-	cleanBase := filepath.Clean(base)
-	if resolved, err := filepath.EvalSymlinks(cleanBase); err == nil {
-		cleanBase = resolved
-	}
-	cleanPath := filepath.Clean(path)
-	// Resolve symlinks only if the target exists; Retrieve's ReadFile will
-	// surface a clean "file not found" if not.
-	if resolved, err := filepath.EvalSymlinks(cleanPath); err == nil {
-		cleanPath = resolved
-	}
-	rel, err := filepath.Rel(cleanBase, cleanPath)
-	if err != nil {
-		return fmt.Errorf("resolve path: %w", err)
-	}
-	if rel == ".." || rel == "." || (len(rel) >= 3 && rel[:3] == ".."+string(filepath.Separator)) {
-		return fmt.Errorf("path %q outside artifact root %q", cleanPath, cleanBase)
-	}
-	return nil
+	// Canonical guard (audit 2026-07-09 O-3 / F-1): safepath.AssertUnder
+	// resolves the deepest EXISTING prefix, closing the broken-symlink edge
+	// the old inline check had (a symlink whose target didn't exist yet made
+	// EvalSymlinks fail, leaving the lexical path to pass, then the open
+	// followed the link).
+	return safepath.AssertUnder(base, path)
 }
 
 // scanForBackend reads sourcePath into memory, optionally runs the

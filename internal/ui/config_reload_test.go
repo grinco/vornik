@@ -107,6 +107,81 @@ func TestRestartBanner_PersistsWhileReloadWedged(t *testing.T) {
 	}
 }
 
+// TestRestartBanner_FixItHref_WhenReloadHasErrors covers the task 3.4
+// entry point: the persistent banner deep-links the Fix-It Doctor's
+// failed_reload panel ONLY when the wired reloader's Status() reports a
+// genuine validation error (HasErrors), not merely "pending" for a
+// blocked/deferred reason.
+func TestRestartBanner_FixItHref_WhenReloadHasErrors(t *testing.T) {
+	s := NewServer(WithConfigReloader(statusReloader{
+		fakeBoundedReloader: fakeBoundedReloader{outcome: config.ReloadFailed, err: errFakeReload},
+		status:              config.ReloadStatus{HasErrors: true, Errors: []string{"validate: bad llm.timeout"}},
+	}))
+	s.applyConfigEdit("project foo config")
+
+	v := s.restartBanner()
+	if !v.Pending {
+		t.Fatal("expected the banner pending after a failed reload")
+	}
+	if v.FixItHref != "/ui/fixit/failed_reload/daemon" {
+		t.Fatalf("FixItHref = %q, want the failed_reload deep link", v.FixItHref)
+	}
+}
+
+// TestRestartBanner_NoFixItHref_WhenBlockedNotErrored covers the negative:
+// a pending restart caused by in-flight-task blocking (no validation
+// error) must NOT show the fix-it link — there's nothing for the doctor
+// to ground on.
+func TestRestartBanner_NoFixItHref_WhenBlockedNotErrored(t *testing.T) {
+	s := NewServer(WithConfigReloader(statusReloader{
+		fakeBoundedReloader: fakeBoundedReloader{outcome: config.ReloadBlocked, err: errFakeReload},
+		status:              config.ReloadStatus{HasErrors: false, Blocked: true},
+	}))
+	s.applyConfigEdit("project foo config")
+
+	v := s.restartBanner()
+	if !v.Pending {
+		t.Fatal("expected the banner pending after a blocked reload")
+	}
+	if v.FixItHref != "" {
+		t.Fatalf("FixItHref = %q, want empty (no validation error on record)", v.FixItHref)
+	}
+}
+
+// TestRestartBanner_NoFixItHref_WhenNotPending covers the trivial no-op
+// path: nothing pending means no banner and no fix-it link, regardless
+// of reloader state.
+func TestRestartBanner_NoFixItHref_WhenNotPending(t *testing.T) {
+	s := NewServer(WithConfigReloader(statusReloader{
+		status: config.ReloadStatus{HasErrors: true, Errors: []string{"stale error from a prior cycle"}},
+	}))
+
+	v := s.restartBanner()
+	if v.Pending {
+		t.Fatal("expected no pending restart")
+	}
+	if v.FixItHref != "" {
+		t.Fatalf("FixItHref = %q, want empty when nothing is pending", v.FixItHref)
+	}
+}
+
+// TestRestartBanner_NoFixItHref_WithoutStatusReader covers a reloader
+// that doesn't implement reloadStatusReader (legacy fakes, the
+// no-reloader smoke path) — the banner must still degrade gracefully,
+// never panic, and never fabricate a fix-it link it can't back up.
+func TestRestartBanner_NoFixItHref_WithoutStatusReader(t *testing.T) {
+	s := NewServer(WithConfigReloader(fakeBoundedReloader{outcome: config.ReloadFailed, err: errFakeReload}))
+	s.applyConfigEdit("project foo config")
+
+	v := s.restartBanner()
+	if !v.Pending {
+		t.Fatal("expected the banner pending after a failed reload")
+	}
+	if v.FixItHref != "" {
+		t.Fatalf("FixItHref = %q, want empty without a Status()-capable reloader", v.FixItHref)
+	}
+}
+
 func TestApplyConfigEdit_Failed_SetsRestartPendingAndError(t *testing.T) {
 	s := NewServer(WithConfigReloader(fakeBoundedReloader{outcome: config.ReloadFailed, err: errFakeReload}))
 

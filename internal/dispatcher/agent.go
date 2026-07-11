@@ -287,6 +287,16 @@ type Agent struct {
 	// operators see the full set→fire→(cancel?) chain in
 	// /ui/admin/audit. nil disables.
 	adminAuditRepo persistence.AdminAuditRepository
+
+	// composer + composerEnabled back the compose_automation tool
+	// (task 1.4). Late-bound via SetComposerBridge — same chicken-
+	// and-egg reason as SetEmailSender: the container builds the
+	// *projectwizard.Wizard (and wraps it in the ComposerBridge
+	// adapter) at HTTP-server wiring time, which runs after the
+	// dispatcher agent itself is constructed. nil composer disables
+	// the tool cleanly regardless of composerEnabled.
+	composer        ComposerBridge
+	composerEnabled bool
 }
 
 // SetEmailSender wires (or replaces) the email-sender after Agent
@@ -331,6 +341,29 @@ func (a *Agent) SetChannelFollowupRegistrar(channelName string, registrar Channe
 		return
 	}
 	a.toolExecutor.channelFollowupRegistrars[channelName] = registrar
+}
+
+// SetComposerBridge wires (or replaces) the automation-composer
+// bridge after Agent construction, and sets whether the tool is
+// currently enabled (mirrors config.ComposerConfig.Enabled — default
+// false during the Phase 3 soak). Same late-binding pattern as
+// SetEmailSender. Passing a nil bridge disables the compose_automation
+// tool cleanly (it returns a "not configured" message) regardless of
+// enabled; a non-nil bridge with enabled=false returns a graceful
+// "not enabled yet" message instead of running a turn — flipping
+// composer.enabled later needs no rewiring, just a fresh
+// SetComposerBridge(bridge, true) call (or a config reload that redoes
+// the same wiring).
+func (a *Agent) SetComposerBridge(bridge ComposerBridge, enabled bool) {
+	if a == nil {
+		return
+	}
+	a.composer = bridge
+	a.composerEnabled = enabled
+	if a.toolExecutor != nil {
+		a.toolExecutor.composer = bridge
+		a.toolExecutor.composerEnabled = enabled
+	}
 }
 
 // InputArtifactStore is the narrow interface the dispatcher needs to

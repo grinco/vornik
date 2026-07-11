@@ -42,11 +42,11 @@ func TestRun_AssemblesSixChecksAndCompleteness(t *testing.T) {
 		Smoke:    &fakeSmoke{},
 	})
 	rep := d.Run(context.Background(), "p")
-	if len(rep.Checks) != 6 {
-		t.Fatalf("want 6 checks, got %d", len(rep.Checks))
+	if len(rep.Checks) != 7 {
+		t.Fatalf("want 7 checks, got %d", len(rep.Checks))
 	}
 	// canonical order
-	wantOrder := []string{"config_valid", "secrets", "model", "mcp", "schedule", "smoke"}
+	wantOrder := []string{"config_valid", "secrets", "model", "mcp", "schedule", "smoke", "composer_commit"}
 	for i, w := range wantOrder {
 		if rep.Checks[i].Key != w {
 			t.Fatalf("check %d = %q, want %q", i, rep.Checks[i].Key, w)

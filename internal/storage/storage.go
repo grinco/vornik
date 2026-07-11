@@ -45,6 +45,7 @@ type Repositories struct {
 	ExecInjectedSkills persistence.ExecutionInjectedSkillRepository
 	Proposals          persistence.ProposalRepository
 	AdminAudit         persistence.AdminAuditRepository
+	SecretRedaction    persistence.SecretRedactionAuditRepository
 	ChatAudit          persistence.ChatAuditRepository
 	APIKeys            persistence.APIKeyRepository
 	// Identity is the identity-core repository (users, groups,
@@ -96,6 +97,11 @@ type Repositories struct {
 	// first-run setup guide. Migration 111 wires the table; the repo
 	// is nil-safe at every consumer.
 	InstallationOnboardingSessions persistence.InstallationOnboardingSessionRepository
+	// FixItSessions backs the Fix-It Doctor repair-chat sessions
+	// (task 3.2). Migration 122 wires the table; the repo is nil-safe
+	// at every consumer (the converse endpoint short-circuits to 503
+	// when unwired).
+	FixItSessions persistence.FixItSessionRepository
 	// ExecutionHints backs Feature #3 Phase C — operator-injected
 	// hints for live executions. Migration 50 wires the table;
 	// nil-safe consumers.
@@ -213,6 +219,12 @@ type Repositories struct {
 	// own row; the /api/v1/cluster endpoint reads the table.
 	// Both Postgres and SQLite get a real implementation.
 	ClusterNodes persistence.ClusterNodeRepository
+	// ExecutionNarration backs the narrator worker's persisted story
+	// (Narrated Execution Phase 2.1, migration 121). Both Postgres
+	// and SQLite get a real implementation — narration is the story
+	// view's source of truth on every backend, unlike the live-only
+	// cross-replica accelerant (LiveEvents).
+	ExecutionNarration persistence.ExecutionNarrationRepository
 }
 
 // Backend owns the underlying database connection lifecycle.
@@ -279,71 +291,7 @@ func openSQLite(ctx context.Context, cfg config.DatabaseConfig) (*Backend, error
 		return nil, fmt.Errorf("storage: migrate sqlite: %w", err)
 	}
 
-	repos := &Repositories{
-		Tasks:                          sqlite.NewTaskRepository(db.DB),
-		Executions:                     sqlite.NewExecutionRepository(db.DB),
-		Artifacts:                      sqlite.NewArtifactRepository(db.DB),
-		Watchers:                       sqlite.NewTaskWatcherRepository(db.DB),
-		ToolAudit:                      sqlite.NewToolAuditRepository(db.DB),
-		RecoveryEvents:                 sqlite.NewRecoveryEventRepository(db.DB),
-		Skills:                         sqlite.NewSkillRepository(db.DB),
-		ExecInjectedSkills:             sqlite.NewExecutionInjectedSkillRepository(db.DB),
-		Proposals:                      sqlite.NewProposalRepository(db.DB),
-		AdminAudit:                     sqlite.NewAdminAuditRepository(db.DB),
-		ChatAudit:                      sqlite.NewChatAuditRepository(db.DB),
-		APIKeys:                        sqlite.NewAPIKeyRepository(db.DB),
-		Webhooks:                       sqlite.NewWebhookEventRepository(db.DB),
-		Messages:                       sqlite.NewTaskMessageRepository(db.DB),
-		Scratchpads:                    sqlite.NewTaskScratchpadRepository(db.DB),
-		TelegramThreads:                sqlite.NewTelegramThreadRepository(db.DB),
-		AutonomyEvaluations:            sqlite.NewAutonomyEvaluationRepository(db.DB),
-		IntentVerdicts:                 sqlite.NewIntentVerdictRepository(db.DB),
-		JudgeVerdicts:                  sqlite.NewTaskJudgeVerdictRepository(db.DB),
-		PostMortems:                    sqlite.NewTaskPostMortemRepository(db.DB),
-		Instincts:                      sqlite.NewInstinctRepository(db.DB),
-		ProjectWizardSessions:          sqlite.NewProjectWizardSessionRepository(db.DB),
-		InstallationOnboardingSessions: sqlite.NewInstallationOnboardingSessionRepository(db.DB),
-		ExecutionHints:                 sqlite.NewExecutionHintRepository(db.DB),
-		CrossProjectCalls:              sqlite.NewCrossProjectCallRepository(db.DB),
-		ProjectSpawns:                  sqlite.NewProjectSpawnRepository(db.DB),
-		MemoryRetrievalAudit:           sqlite.NewMemoryRetrievalAuditRepository(db.DB),
-		MemoryIngestAudit:              sqlite.NewMemoryIngestAuditRepository(db.DB),
-		// Round 2 — financial.
-		LLMUsage:                sqlite.NewTaskLLMUsageRepository(db.DB),
-		BudgetReservations:      sqlite.NewBudgetReservationRepository(db.DB),
-		A2APushConfigs:          sqlite.NewA2APushConfigRepository(db.DB),
-		TradingOrders:           sqlite.NewTradingOrderRepository(db.DB),
-		TradingFills:            sqlite.NewTradingFillRepository(db.DB),
-		TradingSafetyEvents:     sqlite.NewTradingSafetyEventRepository(db.DB),
-		TradingSnapshots:        sqlite.NewTradingSnapshotRepository(db.DB),
-		ExtractedDocuments:      sqlite.NewExtractedDocumentRepository(db.DB),
-		Reminders:               sqlite.NewReminderRepository(db.DB),
-		HealingTriggers:         sqlite.NewWorkflowHealingTriggerRepository(db.DB),
-		HealingOverrides:        sqlite.NewWorkflowHealingOverrideRepository(db.DB),
-		HealingCandidates:       sqlite.NewWorkflowHealingCandidateRepository(db.DB),
-		HealingTrials:           sqlite.NewWorkflowHealingTrialRepository(db.DB),
-		MemoryPolicyEvaluations: sqlite.NewMemoryPolicyEvaluationRepository(db.DB),
-		LeaderLocks:             sqlite.NewLeaderLockRepository(db.DB),
-		ClusterNodes:            sqlite.NewClusterNodeRepository(db.DB),
-		ChannelSessions:         sqlite.NewChannelSessionRepository(db.DB),
-		LiveEvents:              sqlite.NewExecutionLiveEventRepository(db.DB),
-		OperatorProfiles:        sqlite.NewOperatorProfileRepository(db.DB),
-		OperatorIdentityLinks:   sqlite.NewOperatorIdentityLinkRepository(db.DB),
-		ProfileUseAudit:         sqlite.NewProfileUseAuditRepository(db.DB),
-		TelegramPollerState:     sqlite.NewTelegramPollerStateRepository(db.DB),
-		WorkflowProposals:       sqlite.NewWorkflowProposalRepository(db.DB),
-		// Round 3 — memory + KG.
-		StepOutcomes:         sqlite.NewExecutionStepOutcomeRepository(db.DB),
-		KnowledgeEntities:    sqlite.NewKnowledgeEntityRepository(db.DB),
-		KnowledgeEdges:       sqlite.NewKnowledgeEdgeRepository(db.DB),
-		EntityMentions:       sqlite.NewEntityMentionRepository(db.DB),
-		ChunkGraphExtraction: sqlite.NewChunkGraphExtractionRepository(db.DB),
-		CorpusEpochs:         sqlite.NewCorpusEpochRepository(db.DB),
-		MemoryQuarantine:     sqlite.NewMemoryQuarantineRepository(db.DB),
-		IngestQueue:          sqlite.NewIngestQueueRepository(db.DB),
-		// Scratchpads already wired above; TaskScratchpadRepository
-		// is the only remaining piece (see persistence interfaces).
-	}
+	repos := buildSQLiteRepositories(db.DB)
 	return &Backend{
 		Driver:  "sqlite",
 		DB:      db.DB,
@@ -353,6 +301,81 @@ func openSQLite(ctx context.Context, cfg config.DatabaseConfig) (*Backend, error
 		Migrate: db.Migrate,
 		IsReady: db.IsReady,
 	}, nil
+}
+
+// buildSQLiteRepositories constructs the SQLite-backed Repositories
+// set. Split out of openSQLite (2026-07-10, task 2.1) purely to keep
+// the connect/migrate/construct function under the funlen budget —
+// no behaviour change.
+func buildSQLiteRepositories(db *sql.DB) *Repositories {
+	return &Repositories{
+		Tasks:                          sqlite.NewTaskRepository(db),
+		Executions:                     sqlite.NewExecutionRepository(db),
+		Artifacts:                      sqlite.NewArtifactRepository(db),
+		Watchers:                       sqlite.NewTaskWatcherRepository(db),
+		ToolAudit:                      sqlite.NewToolAuditRepository(db),
+		RecoveryEvents:                 sqlite.NewRecoveryEventRepository(db),
+		Skills:                         sqlite.NewSkillRepository(db),
+		ExecInjectedSkills:             sqlite.NewExecutionInjectedSkillRepository(db),
+		Proposals:                      sqlite.NewProposalRepository(db),
+		AdminAudit:                     sqlite.NewAdminAuditRepository(db),
+		SecretRedaction:                sqlite.NewSecretRedactionAuditRepository(db),
+		ChatAudit:                      sqlite.NewChatAuditRepository(db),
+		APIKeys:                        sqlite.NewAPIKeyRepository(db),
+		Webhooks:                       sqlite.NewWebhookEventRepository(db),
+		Messages:                       sqlite.NewTaskMessageRepository(db),
+		Scratchpads:                    sqlite.NewTaskScratchpadRepository(db),
+		TelegramThreads:                sqlite.NewTelegramThreadRepository(db),
+		AutonomyEvaluations:            sqlite.NewAutonomyEvaluationRepository(db),
+		IntentVerdicts:                 sqlite.NewIntentVerdictRepository(db),
+		JudgeVerdicts:                  sqlite.NewTaskJudgeVerdictRepository(db),
+		PostMortems:                    sqlite.NewTaskPostMortemRepository(db),
+		Instincts:                      sqlite.NewInstinctRepository(db),
+		ProjectWizardSessions:          sqlite.NewProjectWizardSessionRepository(db),
+		InstallationOnboardingSessions: sqlite.NewInstallationOnboardingSessionRepository(db),
+		FixItSessions:                  sqlite.NewFixItSessionRepository(db),
+		ExecutionHints:                 sqlite.NewExecutionHintRepository(db),
+		CrossProjectCalls:              sqlite.NewCrossProjectCallRepository(db),
+		ProjectSpawns:                  sqlite.NewProjectSpawnRepository(db),
+		MemoryRetrievalAudit:           sqlite.NewMemoryRetrievalAuditRepository(db),
+		MemoryIngestAudit:              sqlite.NewMemoryIngestAuditRepository(db),
+		// Round 2 — financial.
+		LLMUsage:                sqlite.NewTaskLLMUsageRepository(db),
+		BudgetReservations:      sqlite.NewBudgetReservationRepository(db),
+		A2APushConfigs:          sqlite.NewA2APushConfigRepository(db),
+		TradingOrders:           sqlite.NewTradingOrderRepository(db),
+		TradingFills:            sqlite.NewTradingFillRepository(db),
+		TradingSafetyEvents:     sqlite.NewTradingSafetyEventRepository(db),
+		TradingSnapshots:        sqlite.NewTradingSnapshotRepository(db),
+		ExtractedDocuments:      sqlite.NewExtractedDocumentRepository(db),
+		Reminders:               sqlite.NewReminderRepository(db),
+		HealingTriggers:         sqlite.NewWorkflowHealingTriggerRepository(db),
+		HealingOverrides:        sqlite.NewWorkflowHealingOverrideRepository(db),
+		HealingCandidates:       sqlite.NewWorkflowHealingCandidateRepository(db),
+		HealingTrials:           sqlite.NewWorkflowHealingTrialRepository(db),
+		MemoryPolicyEvaluations: sqlite.NewMemoryPolicyEvaluationRepository(db),
+		LeaderLocks:             sqlite.NewLeaderLockRepository(db),
+		ClusterNodes:            sqlite.NewClusterNodeRepository(db),
+		ChannelSessions:         sqlite.NewChannelSessionRepository(db),
+		LiveEvents:              sqlite.NewExecutionLiveEventRepository(db),
+		OperatorProfiles:        sqlite.NewOperatorProfileRepository(db),
+		OperatorIdentityLinks:   sqlite.NewOperatorIdentityLinkRepository(db),
+		ProfileUseAudit:         sqlite.NewProfileUseAuditRepository(db),
+		TelegramPollerState:     sqlite.NewTelegramPollerStateRepository(db),
+		WorkflowProposals:       sqlite.NewWorkflowProposalRepository(db),
+		// Round 3 — memory + KG.
+		StepOutcomes:         sqlite.NewExecutionStepOutcomeRepository(db),
+		KnowledgeEntities:    sqlite.NewKnowledgeEntityRepository(db),
+		KnowledgeEdges:       sqlite.NewKnowledgeEdgeRepository(db),
+		EntityMentions:       sqlite.NewEntityMentionRepository(db),
+		ChunkGraphExtraction: sqlite.NewChunkGraphExtractionRepository(db),
+		CorpusEpochs:         sqlite.NewCorpusEpochRepository(db),
+		MemoryQuarantine:     sqlite.NewMemoryQuarantineRepository(db),
+		IngestQueue:          sqlite.NewIngestQueueRepository(db),
+		ExecutionNarration:   sqlite.NewExecutionNarrationRepository(db),
+		// Scratchpads already wired above; TaskScratchpadRepository
+		// is the only remaining piece (see persistence interfaces).
+	}
 }
 
 func openPostgres(ctx context.Context, cfg config.DatabaseConfig) (*Backend, error) {
@@ -402,6 +425,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		ExecInjectedSkills:             postgres.NewExecutionInjectedSkillRepository(dbtx),
 		Proposals:                      postgres.NewProposalRepository(dbtx),
 		AdminAudit:                     postgres.NewAdminAuditRepository(dbtx),
+		SecretRedaction:                postgres.NewSecretRedactionAuditRepository(dbtx),
 		ChatAudit:                      postgres.NewChatAuditRepository(dbtx),
 		APIKeys:                        postgres.NewAPIKeyRepository(dbtx),
 		Identity:                       postgres.NewIdentityRepository(dbtx),
@@ -429,6 +453,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		Instincts:                      postgres.NewInstinctRepository(dbtx),
 		ProjectWizardSessions:          postgres.NewProjectWizardSessionRepository(dbtx),
 		InstallationOnboardingSessions: postgres.NewInstallationOnboardingSessionRepository(dbtx),
+		FixItSessions:                  postgres.NewFixItSessionRepository(dbtx),
 		ExecutionHints:                 postgres.NewExecutionHintRepository(dbtx),
 		CrossProjectCalls:              postgres.NewCrossProjectCallRepository(dbtx),
 		ProjectSpawns:                  postgres.NewProjectSpawnRepository(dbtx),
@@ -453,5 +478,6 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		ProfileUseAudit:                postgres.NewProfileUseAuditRepository(dbtx),
 		TelegramPollerState:            postgres.NewTelegramPollerStateRepository(dbtx),
 		WorkflowProposals:              postgres.NewWorkflowProposalRepository(dbtx),
+		ExecutionNarration:             postgres.NewExecutionNarrationRepository(dbtx),
 	}
 }

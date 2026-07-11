@@ -8,12 +8,73 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/projectdoctor"
 	"vornik.io/vornik/internal/projectwizard"
+	"vornik.io/vornik/internal/rolelibrary"
 	"vornik.io/vornik/internal/templates"
 )
+
+// configReloaderAdapter adapts *config.ConfigReloader.TryReload to the
+// narrow projectwizard.Reloader seam (design §5.6 step 5; task 1.2b
+// slice ii). Maps every non-applied ReloadOutcome to a non-nil error
+// so the commit path's rollback reason is never blank: ReloadBlocked
+// carries the activation-blocked error already returned by TryReload;
+// ReloadDeferred (busy/wedged/timed out — TryReload never blocks past
+// d, see watcher.go's own doc) has no underlying error, so a
+// descriptive one is synthesized; ReloadFailed carries the hard
+// validate/activate error TryReload returned.
+type configReloaderAdapter struct {
+	reloader *config.ConfigReloader
+}
+
+func (a configReloaderAdapter) TryReload(d time.Duration) (bool, error) {
+	outcome, err := a.reloader.TryReload(d)
+	switch outcome {
+	case config.ReloadApplied:
+		return true, nil
+	case config.ReloadDeferred:
+		return false, fmt.Errorf("reload did not complete within %s (daemon busy or a reload was already in flight)", d)
+	default: // config.ReloadBlocked, config.ReloadFailed
+		return false, err
+	}
+}
+
+// composerRecoveryDoctorAdapter adapts projectwizard's leftover-
+// journal scan to the project-doctor's ComposerRecovery seam (design
+// §5.6 step 4's project-doctor surfacing leg — internal/projectdoctor
+// cannot import internal/projectwizard directly without risking an
+// import cycle with the rest of its Deps-only contract, so this
+// narrow adapter lives in the wiring layer instead).
+type composerRecoveryDoctorAdapter struct {
+	liveConfigDir string
+}
+
+func (a composerRecoveryDoctorAdapter) LeftoverJournal(projectID string) (bool, string) {
+	if a.liveConfigDir == "" {
+		return false, ""
+	}
+	lj, found, err := projectwizard.FindLeftoverJournalForProject(a.liveConfigDir, projectID)
+	if err != nil || !found {
+		return false, ""
+	}
+	if lj.ProjectFileLive(a.liveConfigDir) {
+		return true, "A composer commit for this project fully landed, but its staging cleanup was interrupted (a daemon restart, no data at risk). It will finish automatically on the next daemon restart."
+	}
+	return true, "A composer commit for this project was interrupted mid-write and never activated. The next daemon restart will roll it back automatically; the session stays resumable."
+}
+
+// newComposerRecoveryChecker builds the project-doctor's
+// ComposerRecovery dependency from the container's resolved live
+// config dir. Always returns a non-nil checker (degrading to
+// "not found" for every project) when no live config dir is wired, so
+// callers never need a nil-guard around it.
+func newComposerRecoveryChecker(c *Container) projectdoctor.ComposerRecovery {
+	return composerRecoveryDoctorAdapter{liveConfigDir: resolveRegistryConfigDir(c.ConfigPath)}
+}
 
 // resolveWizardModel returns the model the conversational project
 // wizard should use: chat.wizard_model when set, otherwise "" so the
@@ -156,17 +217,37 @@ func newProjectWizardAdapter(w *projectwizard.Wizard) api.ProjectWizard {
 	return &projectWizardAdapter{wizard: w}
 }
 
-// buildProjectWizardOrNil constructs the wizard from the
-// container's existing dependencies. Returns nil (handler 503s)
-// when:
+// buildProjectWizardOrNil constructs the wizard from the container's
+// existing dependencies and wraps it for the api package. Returns nil
+// (handler 503s) exactly when buildProjectWizard returns nil — see
+// its doc comment for the gating conditions.
+func buildProjectWizardOrNil(c *Container) api.ProjectWizard {
+	return newProjectWizardAdapter(buildProjectWizard(c))
+}
+
+// buildProjectWizard constructs the concrete *projectwizard.Wizard
+// from the container's existing dependencies. Returns nil when:
 //   - chat router is missing (no LLM to call)
 //   - project wizard sessions repo is missing (no place to persist)
+//
+// Exported to the service package (not just api-facing) so the
+// dispatcher's compose_automation bridge (task 1.4;
+// composer_bridge.go) can wrap the SAME typed Wizard — with typed
+// access to Envelope.Bundle.Plan — that the HTTP API wraps via
+// buildProjectWizardOrNil above. Both call sites reconstruct a fresh
+// *projectwizard.Wizard from the container's shared repos/config
+// rather than caching one on the Container: the wizard itself holds
+// no per-instance mutable state (every field is a repo/config
+// reference), so two instances behave identically, and this mirrors
+// the pre-existing pattern of initHTTPServer running twice across the
+// pre-/post-observability boot passes (see the "TWO-PASS TRAP" note
+// elsewhere in this package) and rebuilding its own wizard each time.
 //
 // Template priors are loaded best-effort from
 // configs/project-templates/ relative to the daemon's working
 // directory. An empty catalog is fine — the wizard runs without
 // suggested-template hints.
-func buildProjectWizardOrNil(c *Container) api.ProjectWizard {
+func buildProjectWizard(c *Container) *projectwizard.Wizard { //nolint:funlen // pre-existing body moved verbatim from buildProjectWizardOrNil (task 1.4 rename-only refactor); no new complexity added
 	if c == nil || c.repos == nil {
 		return nil
 	}
@@ -218,6 +299,48 @@ func buildProjectWizardOrNil(c *Container) api.ProjectWizard {
 		MaxActiveSessions: 5,
 		MaxTurns:          20,
 	}
+	// NL Automation Composer (task 1.1b) wiring: the tier-3 engine's
+	// staged validation layers a synthesized bundle over the SAME live
+	// configs root the writer/templates above use, and the role library
+	// it materializes composed roles against. composer.enabled is the
+	// feature-doctor gate (internal/featuredoctor/feature_composer.go);
+	// wiring the deps here regardless of that gate is harmless — the
+	// wizard only ever reaches the tier-3 branch when the LLM itself
+	// emits tier=3, and composer.max_tier still caps that fleet-wide.
+	if configsDir := resolveRegistryConfigDir(c.ConfigPath); configsDir != "" {
+		wiz.LiveConfigDir = configsDir
+		if archetypes, err := rolelibrary.Load(configsDir); err == nil {
+			roleLib := make(map[string]*rolelibrary.RoleArchetype, len(archetypes))
+			for _, a := range archetypes {
+				roleLib[a.ArchetypeID] = a
+			}
+			wiz.RoleLibrary = roleLib
+		} else {
+			c.Logger.Warn().Err(err).Msg("composer: role-library load failed; tier-3 turns will fail materialization until fixed")
+		}
+	}
+	if c.Config != nil {
+		wiz.Composer = c.Config.Composer
+	}
+	// Whole-branch review C1 fix: the tier-3 system prompt's step-
+	// vocabulary grounding (design §5.3) names the daemon's actual
+	// registered system-step handlers, not just the agent/gate/approval
+	// kinds. c.systemHandlerNames is set by initScheduler (before this
+	// initHTTPServer pass runs) — the SAME snapshot
+	// api.DoctorHandlers.SetSystemHandlerNames already receives for the
+	// role-library doctor check.
+	wiz.SystemHandlerNames = c.systemHandlerNames
+	// Hot-reload trigger (design §5.6 step 5, task 1.2b slice ii): the
+	// SAME *config.ConfigReloader instance api.NewConfigHandlers and the
+	// doctor reloader already wrap (container_http.go). nil c.ConfigReloader
+	// (CE/minimal wiring, or a boot ordering where the registry never
+	// initialised) leaves wiz.Reloader nil — commitBundleSession's
+	// documented degradation: files still land, no synchronous reload
+	// triggered, no hard failure.
+	if c.ConfigReloader != nil {
+		wiz.Reloader = configReloaderAdapter{reloader: c.ConfigReloader}
+	}
+
 	// Project writer — Phase B commit endpoint. Resolved from the
 	// daemon's configs root; without it Commit returns
 	// ErrWriterUnwired (handler 503s). The reload closure is lazy over
@@ -281,7 +404,7 @@ func buildProjectWizardOrNil(c *Container) api.ProjectWizard {
 		Str("effective_model", effective).
 		Bool("inherits_chat_model", inherited).
 		Msg("project wizard wired")
-	return newProjectWizardAdapter(wiz)
+	return wiz
 }
 
 // catalogTemplateSource adapts the shared templates.Catalog to the
@@ -358,6 +481,10 @@ func (a *projectWizardAdapter) Cancel(ctx context.Context, sessionID, operatorID
 	return a.wizard.Cancel(ctx, sessionID, operatorID)
 }
 
+func (a *projectWizardAdapter) ConfirmSchedule(ctx context.Context, sessionID, operatorID, cron string) error {
+	return a.wizard.ConfirmSchedule(ctx, sessionID, operatorID, cron)
+}
+
 func (a *projectWizardAdapter) Converse(ctx context.Context, sessionID, operatorID, userMessage string) (*api.ProjectWizardResult, error) {
 	res, err := a.wizard.Converse(ctx, sessionID, operatorID, userMessage)
 	if err != nil {
@@ -382,6 +509,9 @@ func (a *projectWizardAdapter) Converse(ctx context.Context, sessionID, operator
 		if res.Envelope.Composition != nil {
 			apiResult.Envelope.Composition = toAPIComposition(res.Envelope.Composition)
 		}
+		if res.Envelope.Bundle != nil {
+			apiResult.Envelope.Bundle = toAPIBundle(res.Envelope.Bundle)
+		}
 	}
 	return apiResult, nil
 }
@@ -403,6 +533,32 @@ func toAPIComposition(c *projectwizard.Composition) *api.WizardComposition {
 	out := &api.WizardComposition{}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return &api.WizardComposition{Template: c.Template}
+	}
+	return out
+}
+
+// toAPIBundle mirrors a projectwizard.ComposedBundle into the API's
+// JSON-generic map[string]any, the same round-trip-through-JSON
+// approach as toAPIComposition (rather than walking each field), so
+// the browser sees the exact nested shape (bundle.project,
+// bundle.swarm, bundle.workflows, bundle.plan.steps,
+// bundle.plan.schedule, bundle.plan.cost_band, bundle.plan.approvals,
+// bundle.plan.approvals_bypassed) that ComposedBundle/ComposedPlan's
+// own json tags define, without this package needing a typed mirror
+// struct. Returns nil (never an empty map) on nil input or a marshal/
+// unmarshal failure so the caller's omitempty keeps the field out of
+// the response rather than emitting a misleading empty object.
+func toAPIBundle(b *projectwizard.ComposedBundle) map[string]any {
+	if b == nil {
+		return nil
+	}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		return nil
+	}
+	out := map[string]any{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
 	}
 	return out
 }

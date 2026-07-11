@@ -32,27 +32,11 @@ import (
 // only with a warning so a config typo doesn't silently disable
 // enforcement.
 func buildSecretsDetector(cfg config.SecretsConfig) (secrets.Detector, map[string]secrets.Action, error) {
-	patterns := secrets.DefaultPatterns()
-	if len(cfg.Patterns.Disable) > 0 {
-		disabled := make(map[string]struct{}, len(cfg.Patterns.Disable))
-		for _, name := range cfg.Patterns.Disable {
-			disabled[name] = struct{}{}
-		}
-		filtered := patterns[:0]
-		for _, p := range patterns {
-			if _, drop := disabled[p.Name]; !drop {
-				filtered = append(filtered, p)
-			}
-		}
-		patterns = filtered
+	custom := make([]secrets.Pattern, 0, len(cfg.Patterns.Custom))
+	for _, c := range cfg.Patterns.Custom {
+		custom = append(custom, secrets.Pattern{Name: c.Name, Regex: c.Regex, Description: c.Description})
 	}
-	for _, custom := range cfg.Patterns.Custom {
-		patterns = append(patterns, secrets.Pattern{
-			Name:        custom.Name,
-			Regex:       custom.Regex,
-			Description: custom.Description,
-		})
-	}
+	patterns := secrets.EffectivePatterns(cfg.Patterns.Disable, custom)
 
 	allowlist := append(secrets.DefaultAllowlist(), cfg.Allowlist...)
 
@@ -198,6 +182,14 @@ func (c *Container) applyHotConfig() {
 	if staged == nil {
 		return
 	}
+	// control_plane.self_heal_enabled hot-applies (actionable-proposals §7):
+	// the tune/self-heal workers read the live value per tick, so flipping
+	// the flag + reload hands the failed-rate signal over/back without a
+	// restart — the operator's emergency brake on auto-diagnosis.
+	sh := staged.ControlPlane.SelfHealEnabled
+	c.cpSelfHealLive.Store(&sh)
+	c.Logger.Info().Bool("self_heal_enabled", sh).
+		Msg("hot-reload: applied control_plane.self_heal_enabled without restart")
 	if c.memoryPipeline != nil {
 		c.memoryPipeline.UpdateGates(
 			staged.Memory.PromptInjectionScan,

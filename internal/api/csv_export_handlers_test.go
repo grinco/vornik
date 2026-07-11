@@ -74,6 +74,9 @@ func (m *mockTaskRepository) CountRecentFailures(ctx context.Context, projectID 
 func (m *mockTaskRepository) GetChildren(ctx context.Context, parentTaskID string) ([]*persistence.Task, error) {
 	return nil, nil
 }
+func (m *mockTaskRepository) OrphanChildren(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
 func (m *mockTaskRepository) CountChildrenForParents(ctx context.Context, parentTaskIDs []string) (map[string]int, error) {
 	return nil, nil
 }

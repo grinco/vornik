@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"vornik.io/vornik/internal/memory"
 )
 
 func fakeProbe(vec []float32, err error) embedProbe {
-	return func(context.Context, string, string, string) ([]float32, error) {
+	return func(context.Context, memory.Config) ([]float32, error) {
 		return vec, err
 	}
 }
@@ -27,6 +29,14 @@ func TestMemoryValidate_DisabledSkips(t *testing.T) {
 func TestMemoryValidate_IncompleteCreds(t *testing.T) {
 	v := NewMemoryValidatorWithProbe(fakeProbe([]float32{0.1}, nil), time.Second)
 	res := v.Validate(context.Background(), MemoryConfigProposal{Enabled: true, EmbeddingModel: "m"})
+	if res.EmbeddingOK || !hasMemFailure(res.Failures, "embedding_incomplete") {
+		t.Fatalf("expected embedding_incomplete failure, got %#v", res)
+	}
+}
+
+func TestMemoryValidate_BedrockRequiresRegion(t *testing.T) {
+	v := NewMemoryValidatorWithProbe(fakeProbe([]float32{0.1}, nil), time.Second)
+	res := v.Validate(context.Background(), MemoryConfigProposal{Enabled: true, EmbeddingProvider: "bedrock", EmbeddingModel: "amazon.titan-embed-text-v2:0"})
 	if res.EmbeddingOK || !hasMemFailure(res.Failures, "embedding_incomplete") {
 		t.Fatalf("expected embedding_incomplete failure, got %#v", res)
 	}

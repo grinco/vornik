@@ -69,7 +69,12 @@ func (d Detector) Detect(ctx context.Context) Status {
 			status.FreshInstall = true
 			status.Reasons = append(status.Reasons, "memory enabled without embedding model")
 		}
-		if strings.TrimSpace(d.Config.Memory.EmbeddingEndpoint) == "" {
+		if strings.EqualFold(strings.TrimSpace(d.Config.Memory.EmbeddingProvider), "bedrock") {
+			if strings.TrimSpace(d.Config.Memory.Bedrock.Region) == "" {
+				status.FreshInstall = true
+				status.Reasons = append(status.Reasons, "memory bedrock enabled without region")
+			}
+		} else if strings.TrimSpace(d.Config.Memory.EmbeddingEndpoint) == "" {
 			status.FreshInstall = true
 			status.Reasons = append(status.Reasons, "memory enabled without embedding endpoint")
 		}

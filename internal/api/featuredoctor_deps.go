@@ -75,15 +75,8 @@ func resolveConfigsDirBestEffort(configPath string) string {
 // network/HTTP error, so an empty result means "not reachable".
 type embeddingProberAdapter struct{}
 
-func (embeddingProberAdapter) ProbeEmbedding(ctx context.Context, endpoint, apiKey, model string) bool {
-	if endpoint == "" || model == "" {
-		return false
-	}
-	emb := memory.NewEmbedder(memory.Config{
-		EmbeddingEndpoint: endpoint,
-		EmbeddingAPIKey:   apiKey,
-		EmbeddingModel:    model,
-	})
+func (embeddingProberAdapter) ProbeEmbedding(ctx context.Context, cfg memory.Config) bool {
+	emb := memory.NewEmbedder(cfg)
 	vecs, _ := emb.Embed(ctx, []string{"vornik embedding reachability probe"})
 	return len(vecs) > 0 && len(vecs[0]) > 0
 }

@@ -158,6 +158,10 @@ func writeMemoryConfig(configPath, secretPath string, p onboarding.MemoryConfigP
 			struct {
 				key string
 				val any
+			}{"memory.embedding_provider", p.EmbeddingProvider},
+			struct {
+				key string
+				val any
 			}{"memory.embedding_endpoint", p.EmbeddingEndpoint},
 			struct {
 				key string
@@ -167,6 +171,10 @@ func writeMemoryConfig(configPath, secretPath string, p onboarding.MemoryConfigP
 				key string
 				val any
 			}{"memory.embedding_dimension", p.EmbeddingDimension},
+			struct {
+				key string
+				val any
+			}{"memory.bedrock.region", p.BedrockRegion},
 		)
 		if strings.TrimSpace(secretPath) != "" {
 			patches = append(patches, struct {
@@ -238,9 +246,11 @@ func decodeSetupMemoryProposal(r *http.Request) (onboarding.MemoryConfigProposal
 	dim, _ := strconv.Atoi(r.FormValue("embedding_dimension"))
 	return onboarding.MemoryConfigProposal{
 		Enabled:            enabled,
+		EmbeddingProvider:  r.FormValue("embedding_provider"),
 		EmbeddingEndpoint:  r.FormValue("embedding_endpoint"),
 		EmbeddingAPIKey:    r.FormValue("embedding_api_key"),
 		EmbeddingModel:     r.FormValue("embedding_model"),
+		BedrockRegion:      r.FormValue("bedrock_region"),
 		EmbeddingDimension: dim,
 	}, force, nil
 }

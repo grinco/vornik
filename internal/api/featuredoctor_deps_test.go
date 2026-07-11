@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"vornik.io/vornik/internal/memory"
 )
 
 // TestEmbeddingProberAdapter_ReachableWhenEndpointServesModel is the
@@ -25,7 +27,7 @@ func TestEmbeddingProberAdapter_ReachableWhenEndpointServesModel(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ok := embeddingProberAdapter{}.ProbeEmbedding(context.Background(), srv.URL, "", "bge-m3:latest")
+	ok := embeddingProberAdapter{}.ProbeEmbedding(context.Background(), memory.Config{EmbeddingEndpoint: srv.URL, EmbeddingModel: "bge-m3:latest"})
 	if !ok {
 		t.Fatal("a model served at the embedding endpoint must probe reachable")
 	}
@@ -43,16 +45,16 @@ func TestEmbeddingProberAdapter_UnreachableOnError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if (embeddingProberAdapter{}).ProbeEmbedding(context.Background(), srv.URL, "", "bge-m3:latest") {
+	if (embeddingProberAdapter{}).ProbeEmbedding(context.Background(), memory.Config{EmbeddingEndpoint: srv.URL, EmbeddingModel: "bge-m3:latest"}) {
 		t.Fatal("a non-2xx embedding endpoint must probe unreachable")
 	}
 }
 
 func TestEmbeddingProberAdapter_EmptyEndpointOrModel(t *testing.T) {
-	if (embeddingProberAdapter{}).ProbeEmbedding(context.Background(), "", "", "bge-m3:latest") {
+	if (embeddingProberAdapter{}).ProbeEmbedding(context.Background(), memory.Config{EmbeddingModel: "bge-m3:latest"}) {
 		t.Fatal("empty endpoint must probe unreachable")
 	}
-	if (embeddingProberAdapter{}).ProbeEmbedding(context.Background(), "http://127.0.0.1:1", "", "") {
+	if (embeddingProberAdapter{}).ProbeEmbedding(context.Background(), memory.Config{EmbeddingEndpoint: "http://127.0.0.1:1"}) {
 		t.Fatal("empty model must probe unreachable")
 	}
 }

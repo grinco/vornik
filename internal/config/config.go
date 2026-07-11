@@ -1998,9 +1998,19 @@ type MemoryRerankerConfig struct {
 	MaxSnippetBytes int    `yaml:"max_snippet_bytes" doc:"Per-candidate snippet sent to the reranker (0 = default 600)."`
 }
 
+type MemoryBedrockConfig struct {
+	// Region is the AWS region used for native Bedrock embeddings.
+	Region string `yaml:"region" doc:"Bedrock embedding region."`
+}
+
 type MemoryConfig struct {
 	// Enabled activates the memory subsystem. Default: false.
 	Enabled bool `yaml:"enabled" doc:"Activate the memory subsystem."`
+
+	// EmbeddingProvider selects the embedding transport. Empty / "openai"
+	// uses an OpenAI-compatible /v1/embeddings endpoint; "bedrock"
+	// uses AWS Bedrock's native InvokeModel API.
+	EmbeddingProvider string `yaml:"embedding_provider" doc:"Embedding transport: openai|bedrock."`
 
 	// Sufficiency governs scored-sufficiency iterative retrieval.
 	Sufficiency MemorySufficiencyConfig `yaml:"sufficiency"`
@@ -2024,6 +2034,10 @@ type MemoryConfig struct {
 	// EmbeddingAPIKey overrides the chat api_key for embedding requests.
 	// Falls back to the resolved agent LLM API key when empty.
 	EmbeddingAPIKey string `yaml:"embedding_api_key" doc:"Override API key for embedding requests."`
+
+	// Bedrock configures the native AWS Bedrock embedding path when
+	// embedding_provider is set to "bedrock".
+	Bedrock MemoryBedrockConfig `yaml:"bedrock"`
 
 	// EmbeddingCacheEnabled turns on the postgres-backed embedding
 	// cache (LLM caching design Phase D). Needs migration 41

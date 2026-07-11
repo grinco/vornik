@@ -611,7 +611,9 @@ func (c *Container) initScheduler() error {
 	if c.Config.Memory.Enabled {
 		memCfg := memory.Config{
 			Enabled:               true,
+			EmbeddingProvider:     c.Config.Memory.EmbeddingProvider,
 			EmbeddingModel:        c.Config.Memory.EmbeddingModel,
+			BedrockRegion:         c.Config.Memory.Bedrock.Region,
 			EmbeddingDimension:    c.Config.Memory.EmbeddingDimension,
 			ChunkTokens:           c.Config.Memory.ChunkTokens,
 			ChunkOverlap:          c.Config.Memory.ChunkOverlap,
@@ -625,16 +627,22 @@ func (c *Container) initScheduler() error {
 		if c.pricingTable != nil {
 			memCfg.PricingFunc = c.pricingTable.CostUSD
 		}
-		// Resolve embedding endpoint/key from memory config, falling back to
-		// the resolved agent LLM config so a single chat: section is sufficient.
-		llmResolved := c.Config.ResolvedAgentLLM()
-		memCfg.EmbeddingEndpoint = c.Config.Memory.EmbeddingEndpoint
-		if memCfg.EmbeddingEndpoint == "" {
-			memCfg.EmbeddingEndpoint = llmResolved.Endpoint
-		}
-		memCfg.EmbeddingAPIKey = c.Config.Memory.EmbeddingAPIKey
-		if memCfg.EmbeddingAPIKey == "" {
-			memCfg.EmbeddingAPIKey = llmResolved.APIKey
+		if strings.EqualFold(strings.TrimSpace(memCfg.EmbeddingProvider), "bedrock") {
+			if memCfg.BedrockRegion == "" {
+				memCfg.BedrockRegion = c.Config.Chat.Router.Bedrock.Region
+			}
+		} else {
+			// Resolve embedding endpoint/key from memory config, falling back to
+			// the resolved agent LLM config so a single chat: section is sufficient.
+			llmResolved := c.Config.ResolvedAgentLLM()
+			memCfg.EmbeddingEndpoint = c.Config.Memory.EmbeddingEndpoint
+			if memCfg.EmbeddingEndpoint == "" {
+				memCfg.EmbeddingEndpoint = llmResolved.Endpoint
+			}
+			memCfg.EmbeddingAPIKey = c.Config.Memory.EmbeddingAPIKey
+			if memCfg.EmbeddingAPIKey == "" {
+				memCfg.EmbeddingAPIKey = llmResolved.APIKey
+			}
 		}
 
 		mgr, err := memory.New(memCfg, c.DB,

@@ -68,6 +68,16 @@ func (p *QueuedProvider) CompleteWithToolsStream(ctx context.Context, messages [
 
 func (p *QueuedProvider) Model() string { return p.provider.Model() }
 
+// ModelHealthSnapshot forwards the live circuit-breaker read through the
+// queue decorator so the doctor can reach the Router's breaker registry
+// even though the Queued/Logging wrappers sit above the Router.
+func (p *QueuedProvider) ModelHealthSnapshot() []ModelHealthSnapshot {
+	if r, ok := p.provider.(ModelHealthReporter); ok {
+		return r.ModelHealthSnapshot()
+	}
+	return nil
+}
+
 // SetMetrics wires Prometheus metrics into both the underlying provider
 // (per-model request counters, durations, tokens, errors) and the queue
 // itself (depth, in-flight, wait time, started/canceled counts). The

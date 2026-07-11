@@ -152,6 +152,11 @@ type AdminControlPlaneData struct {
 	SourceCounts  []AdminCPSourceCount
 	OpenIncidents []AdminCPIncident
 	OpenTotal     int
+	// Black Box open triggers folded into the Overview (item 5 part 3).
+	// Empty in CE / when the healing-trigger repo is unwired.
+	OpenTriggers         []HealingTriggerRow
+	OpenTriggerCount     int
+	TriggerGenerateWired bool // the architect is wired → show Generate candidate
 	// Diagnose section.
 	Diagnose *AdminCPDiagnoseResult
 	// MCP section.
@@ -213,6 +218,9 @@ var cpFlashMessages = map[string]string{
 	"trial-started":      "Trial started — the verdict lands on the candidate's trial history.",
 	"candidate-promoted": "Candidate promoted — the repair was applied via its workflow proposal.",
 	"candidate-rejected": "Candidate rejected — production untouched.",
+	// Black Box trigger actions folded into the Overview (item 5 part 3).
+	"trigger-dismissed":   "Black Box trigger dismissed.",
+	"candidate-generated": "Candidate generated — review it on the Proposals tab.",
 }
 
 // AdminControlPlane renders /ui/admin/control-plane (GET) and applies an
@@ -259,7 +267,7 @@ func (s *Server) AdminControlPlane(w http.ResponseWriter, r *http.Request) {
 	}
 	switch section {
 	case cpSectionOverview:
-		s.buildCPOverview(&data, all)
+		s.buildCPOverview(ctx, &data, all)
 	case cpSectionDiagnose:
 		// GET renders the form; a ?focus= deep-link (latency-row "Diagnose ↗")
 		// pre-fills it. The verdict comes from the POST handler.
@@ -350,7 +358,24 @@ func (s *Server) AdminControlPlaneDiagnose(w http.ResponseWriter, r *http.Reques
 
 // buildCPOverview fills the Overview section: open-DRAFT counts per source +
 // the open self-heal incidents.
-func (s *Server) buildCPOverview(data *AdminControlPlaneData, all []*persistence.ControlPlaneProposal) {
+func (s *Server) buildCPOverview(ctx context.Context, data *AdminControlPlaneData, all []*persistence.ControlPlaneProposal) {
+	// Black Box open triggers — pre-decision signals folded into the hub
+	// Overview so an operator can dismiss them or generate a candidate
+	// without leaving for /ui/admin/blackbox. EE-only surface (nil repo in
+	// CE leaves the panel hidden). The action buttons POST to the existing
+	// blackbox trigger endpoints with return_to=control-plane.
+	if s.healingTriggerRepo != nil {
+		if trigs, err := s.healingTriggerRepo.List(ctx, persistence.HealingTriggerListFilter{
+			Status: persistence.HealingTriggerStatusOpen, PageSize: 20,
+		}); err == nil {
+			for _, t := range trigs {
+				data.OpenTriggers = append(data.OpenTriggers, healingTriggerToRow(t))
+			}
+			data.OpenTriggerCount = len(data.OpenTriggers)
+			data.TriggerGenerateWired = s.blackboxArchitect != nil
+		}
+	}
+
 	bySource := map[string]int{}
 	order := []string{}
 	for _, p := range all {

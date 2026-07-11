@@ -147,6 +147,137 @@
       ],
       "title": "LLM Errors",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "color": "green",
+                  "text": "closed"
+                },
+                "1": {
+                  "color": "yellow",
+                  "text": "half-open"
+                },
+                "2": {
+                  "color": "red",
+                  "text": "open"
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          },
+          "noValue": "no traffic"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 430,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "expr": "vornik_chat_model_health_state",
+          "legendFormat": "{{route}}/{{model}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Model Health \u2014 Circuit State",
+      "type": "stat",
+      "description": "Live per-(route,model) circuit-breaker state from vornik_chat_model_health_state (internal/chat/metrics.go): 0=closed, 1=half-open (probing recovery), 2=open (router shedding to fallback). An open circuit means the model-health breaker has tripped and calls are routing to the fallback."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 431,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (route,model) (rate(vornik_chat_model_health_trips_total[5m]))",
+          "legendFormat": "{{route}}/{{model}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Model Health \u2014 Circuit Trips Rate",
+      "type": "timeseries",
+      "description": "Rate of circuit-open transitions per (route,model) from vornik_chat_model_health_trips_total (internal/chat/metrics.go). A non-zero rate means a model repeatedly crossed the failure threshold and tripped the breaker \u2014 investigate the upstream provider."
     }
   ],
   "refresh": "30s",

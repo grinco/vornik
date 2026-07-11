@@ -227,6 +227,11 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `chat.router.bedrock.enabled` | bool | Enable AWS Bedrock (credentials via the AWS SDK chain). |
 | `chat.router.bedrock.region` | string | Bedrock region. |
 | `chat.router.bedrock.model` | string | Bedrock default model. |
+| `chat.router.health.enabled` | bool | Activate the model-health circuit breaker (default on; false disables). |
+| `chat.router.health.window` | string | Rolling failure window, e.g. 60s (default 60s). |
+| `chat.router.health.min_samples` | int | Minimum in-window failures before the breaker can trip (default 5). |
+| `chat.router.health.failure_rate` | float | Failure fraction at/above which the breaker trips (default 0.5). |
+| `chat.router.health.open_cooldown` | string | How long the circuit stays open before a half-open probe, e.g. 30s (default 30s). |
 | `chat.endpoint` | string | OpenAI-compatible base URL (single-provider mode). |
 | `chat.api_key` | string | API key for the endpoint. Prefer an environment variable. |
 | `chat.model` | string | Default model identifier when a request does not pin one. |

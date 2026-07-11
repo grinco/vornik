@@ -202,6 +202,23 @@ func cpHubProposalsURL(done, errMsg string) string {
 	return u
 }
 
+// cpHubOverviewURL builds the hub Overview-tab redirect target — where the
+// folded Black Box trigger actions live. Same fixed-token discipline as
+// cpHubProposalsURL (never echoes a raw param).
+func cpHubOverviewURL(done, errMsg string) string {
+	u := "/ui/admin/control-plane?section=" + cpSectionOverview
+	if done != "" {
+		u += "&done=" + url.QueryEscape(done)
+	}
+	if errMsg != "" {
+		if len(errMsg) > 200 {
+			errMsg = errMsg[:200]
+		}
+		u += "&action_error=" + url.QueryEscape(errMsg)
+	}
+	return u
+}
+
 // cpAwareCandidateRedirect routes a healing-candidate action outcome either
 // back to the hub Proposals tab (return_to=control-plane) or to the native
 // candidate detail page — the pre-existing behaviour.

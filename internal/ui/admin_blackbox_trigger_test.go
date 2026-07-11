@@ -347,6 +347,29 @@ func TestAdminBlackBoxTriggerDismiss_HappyPath(t *testing.T) {
 	}
 }
 
+// TestAdminBlackBoxTriggerDismiss_ReturnToHub — when the dismiss form
+// carries return_to=control-plane (the folded hub Overview panel), the
+// handler redirects back to the hub Overview with the fixed flash token
+// instead of the standalone trigger detail page. Backlog item 5 part 3.
+func TestAdminBlackBoxTriggerDismiss_ReturnToHub(t *testing.T) {
+	repo := newStubHealingTriggerRepo()
+	_ = repo.Insert(context.Background(), openTrigger("ht-9"))
+	s := NewServer(WithHealingTriggerRepository(repo))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost,
+		"/ui/admin/blackbox/triggers/ht-9/dismiss",
+		strings.NewReader("return_to=control-plane"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.AdminBlackBoxTriggerDismiss(rec, req, "ht-9")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status: %d, want 303", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.Contains(loc, "section=overview") || !strings.Contains(loc, "done=trigger-dismissed") {
+		t.Errorf("return_to must redirect to the hub Overview with the flash token; got %q", loc)
+	}
+}
+
 // TestAdminBlackBoxTriggerDismiss_AlreadyTerminal — repo returns
 // ErrNotFound (its sentinel for missing OR terminal), handler
 // redirects with action_error rather than 404-ing the page.

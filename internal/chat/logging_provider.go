@@ -185,6 +185,18 @@ func (p *LoggingProvider) logResult(ctx context.Context, op string, messages []M
 func (p *LoggingProvider) Model() string         { return p.inner.Model() }
 func (p *LoggingProvider) SetMetrics(m *Metrics) { p.inner.SetMetrics(m) }
 
+// ModelHealthSnapshot forwards the live circuit-breaker read through the
+// decorator so the doctor (which holds the top-of-chain provider) can reach
+// the Router's breaker registry. Without this the assertion to
+// ModelHealthReporter fails on the Logging/Queued wrappers and the live
+// circuit check silently skips (the wrappers sit above the Router).
+func (p *LoggingProvider) ModelHealthSnapshot() []ModelHealthSnapshot {
+	if r, ok := p.inner.(ModelHealthReporter); ok {
+		return r.ModelHealthSnapshot()
+	}
+	return nil
+}
+
 // WithModel returns a logging wrapper around the inner provider's
 // model-pinned clone, so per-request model overrides stay logged.
 func (p *LoggingProvider) WithModel(model string) Provider {

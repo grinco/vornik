@@ -294,3 +294,44 @@ func TestRenderers_RejectPathTraversalIdents(t *testing.T) {
 		t.Fatal("traversal project id must not resolve a scope")
 	}
 }
+
+// TestRenderStepTimeoutReduction — the reclaim-capacity path lowers an
+// over-provisioned timeout, mirrors the raise path's no-op guard, floors
+// at 30s, and requires an explicit timeout. Backlog item 5.
+func TestRenderStepTimeoutReduction(t *testing.T) {
+	a := testActionizer(stdFiles())
+
+	// implement has a 10m timeout; suggest 5m → a real reduction.
+	rc, err := a.RenderStepTimeoutReduction("dev-pipeline", "implement", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("reduction should apply: %v", err)
+	}
+	if !strings.Contains(rc.ApplyContent, `timeout: "5m"`) {
+		t.Fatalf("content must carry the reduced 5m timeout:\n%s", rc.ApplyContent)
+	}
+	if !strings.Contains(rc.ApplyContent, `timeout: "15m"`) {
+		t.Fatal("other steps must be untouched")
+	}
+
+	// Suggested >= current → not a reduction → ErrChangeNotUseful.
+	if _, err := a.RenderStepTimeoutReduction("dev-pipeline", "implement", 10*time.Minute); !errors.Is(err, ErrChangeNotUseful) {
+		t.Fatalf("equal-to-current: want ErrChangeNotUseful, got %v", err)
+	}
+	if _, err := a.RenderStepTimeoutReduction("dev-pipeline", "implement", 20*time.Minute); !errors.Is(err, ErrChangeNotUseful) {
+		t.Fatalf("above current: want ErrChangeNotUseful, got %v", err)
+	}
+
+	// Sub-floor suggestion is clamped up to 30s (still < 10m → applies).
+	rc, err = a.RenderStepTimeoutReduction("dev-pipeline", "implement", 5*time.Second)
+	if err != nil {
+		t.Fatalf("floored reduction should apply: %v", err)
+	}
+	if !strings.Contains(rc.ApplyContent, `timeout: "30s"`) || !rc.Clamped {
+		t.Fatalf("want 30s floor clamped, got clamped=%v content:\n%s", rc.Clamped, rc.ApplyContent)
+	}
+
+	// No explicit timeout → nothing to reduce → error.
+	if _, err := a.RenderStepTimeoutReduction("dev-pipeline", "untimed", 30*time.Second); err == nil {
+		t.Fatal("absent explicit timeout must error")
+	}
+}

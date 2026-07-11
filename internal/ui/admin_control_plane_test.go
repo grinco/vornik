@@ -299,3 +299,28 @@ func TestAdminControlPlaneDiagnose_NotWired(t *testing.T) {
 		t.Fatalf("expected graceful not-wired message, got %d", rec.Code)
 	}
 }
+
+// TestBuildCPOverview_FoldsBlackBoxTriggers — the hub Overview lists open
+// Black Box triggers when the healing-trigger repo is wired, so an operator
+// can action them without leaving for /ui/admin/blackbox. Backlog item 5
+// part 3. CE (no repo) leaves the panel empty.
+func TestBuildCPOverview_FoldsBlackBoxTriggers(t *testing.T) {
+	repo := newStubHealingTriggerRepo()
+	_ = repo.Insert(context.Background(), openTrigger("ht-1"))
+	_ = repo.Insert(context.Background(), openTrigger("ht-2"))
+	s := NewServer(WithHealingTriggerRepository(repo))
+
+	var data AdminControlPlaneData
+	s.buildCPOverview(context.Background(), &data, nil)
+
+	if data.OpenTriggerCount != 2 || len(data.OpenTriggers) != 2 {
+		t.Fatalf("want 2 folded triggers, got count=%d rows=%d", data.OpenTriggerCount, len(data.OpenTriggers))
+	}
+
+	// CE: no repo → no triggers panel.
+	var ce AdminControlPlaneData
+	NewServer().buildCPOverview(context.Background(), &ce, nil)
+	if ce.OpenTriggerCount != 0 || len(ce.OpenTriggers) != 0 {
+		t.Errorf("CE (no repo) must not populate triggers; got %d", ce.OpenTriggerCount)
+	}
+}

@@ -424,6 +424,26 @@
         "refresh": 1,
         "regex": "",
         "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$datasource"
+        },
+        "definition": "label_values(vornik_tasks_count, project_id)",
+        "includeAll": true,
+        "multi": true,
+        "name": "project_id",
+        "query": {
+          "query": "label_values(vornik_tasks_count, project_id)"
+        },
+        "refresh": 2,
+        "type": "query"
       }
     ]
   },

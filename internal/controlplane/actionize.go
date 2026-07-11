@@ -195,6 +195,71 @@ func (a *Actionizer) RenderStepTimeout(workflowID, stepID string, suggested time
 	return a.finishRender(rc, raw, edited)
 }
 
+// RenderStepTimeoutReduction renders a workflow_step_timeout change that
+// LOWERS a step's timeout — the reclaim-capacity counterpart to
+// RenderStepTimeout. It fires when observed p95 sits well below the
+// configured timeout, so the timeout can be tightened to free scheduler
+// headroom without risking healthy-run truncation. Guards:
+//   - explicit timeout required (never authors a first timeout, same as the
+//     raise path);
+//   - suggested is floored at 30s;
+//   - suggested must be strictly BELOW current, else ErrChangeNotUseful —
+//     this is the mirror of the raise path's "> current" guard, so a
+//     suggestion that wouldn't actually reduce is a no-op.
+//
+// The caller computes suggested as ceil(p95 × headroom) so the new timeout
+// still clears observed runs with margin.
+func (a *Actionizer) RenderStepTimeoutReduction(workflowID, stepID string, suggested time.Duration) (*RenderedChange, error) {
+	rel, err := workflowRel(workflowID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := a.ReadFile(rel)
+	if err != nil {
+		return nil, err
+	}
+	current, explicit, err := a.CurrentStepTimeout(workflowID, stepID)
+	if err != nil {
+		return nil, err
+	}
+	if !explicit {
+		return nil, fmt.Errorf("control-plane: step %s has no explicit timeout; nothing to reduce", stepID)
+	}
+	bounded := suggested
+	clamped := false
+	if bounded < 30*time.Second {
+		bounded = 30 * time.Second
+		clamped = true
+	}
+	if bounded >= current {
+		return nil, ErrChangeNotUseful
+	}
+	newVal := formatDurationShort(bounded)
+	edited, err := config.EditFrontmatter(raw, func(fm []byte) ([]byte, error) {
+		out, _, serr := config.SetYAMLKey(fm, "steps."+stepID+".timeout", newVal)
+		return out, serr
+	})
+	if err != nil {
+		return nil, err
+	}
+	if a.ValidateWorkflow != nil {
+		if verr := a.ValidateWorkflow(rel, edited); verr != nil {
+			return nil, fmt.Errorf("control-plane: rendered workflow failed to parse: %w", verr)
+		}
+	}
+	rc := &RenderedChange{
+		ApplyTarget:  rel,
+		ApplyContent: string(edited),
+		BlastRadius:  persistence.ProposalScopeProject,
+		Clamped:      clamped,
+		Summary:      fmt.Sprintf("steps[%s].timeout: %q → %q", stepID, formatDurationShort(current), newVal),
+		Change: map[string]any{
+			"kind": "workflow_step_timeout", "workflow": workflowID, "step": stepID, "timeout": newVal,
+		},
+	}
+	return a.finishRender(rc, raw, edited)
+}
+
 // boundStepTimeout clamps suggested to [30s, max(5m, 2×current)] then to the
 // absolute cap. Reports whether any clamp engaged.
 func boundStepTimeout(suggested, current, absCap time.Duration) (time.Duration, bool) {

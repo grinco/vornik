@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 // fakeInner is a call-counting, scriptable Provider for breaker tests.
@@ -389,3 +391,28 @@ func TestRouterModelHealthSnapshot_DedupsSharedRegistry(t *testing.T) {
 		t.Errorf("expected one entry per circuit, got %+v", keys)
 	}
 }
+
+// TestModelHealthReporter_ForwardsThroughDecorators — the doctor holds the
+// TOP of the chat chain (Logging→Queued→Router), so the decorators must
+// forward ModelHealthSnapshot to reach the Router's breaker registry.
+// Regression for the deploy-time gap where the live circuit check silently
+// skipped because c.ChatClient was a *LoggingProvider, not the raw Router.
+func TestModelHealthReporter_ForwardsThroughDecorators(t *testing.T) {
+	clk := &clock{t: time.Now()}
+	reg := &sync.Map{}
+	inner := newHealthGatedProvider(&fakeInner{model: "m"}, "route-x", reg, testCfg(), clk.now)
+	r := &Router{fallback: inner, routes: []Route{{Name: "route-x", Provider: inner}}}
+	_, _ = inner.Complete(context.Background(), nil) // init the breaker
+
+	// Wrap exactly as the container does: Logging(Queued(Router)).
+	top := NewLoggingProvider(NewQueuedProvider(r, 4), zerologNop())
+	reporter, ok := top.(ModelHealthReporter)
+	if !ok {
+		t.Fatal("top-of-chain provider must implement ModelHealthReporter (decorators must forward)")
+	}
+	if len(reporter.ModelHealthSnapshot()) == 0 {
+		t.Fatal("snapshot must reach the Router's registry through the decorators")
+	}
+}
+
+func zerologNop() zerolog.Logger { return zerolog.Nop() }

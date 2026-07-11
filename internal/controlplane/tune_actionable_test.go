@@ -89,7 +89,10 @@ func TestTune_LatencyBreachNotBindingStaysInformational(t *testing.T) {
 	m := &fakeMetrics{
 		lats: map[string]LatencySample{"janka": {P95Seconds: 400, Count: 12}},
 		steps: []StepLatencySample{
-			{Project: "janka", Workflow: "wf-a", Step: "slow", Role: "coder", Model: "m1", P95Seconds: 100, Count: 9},
+			// 200 is in the neutral band: < 0.8×300s (not binding, so the
+			// latency proposal stays informational) AND > 0.5×300s (not a
+			// reclaim candidate, so no reduction proposal muddies the count).
+			{Project: "janka", Workflow: "wf-a", Step: "slow", Role: "coder", Model: "m1", P95Seconds: 200, Count: 9},
 		},
 	}
 	w := newTuneWorker(repo, m)
@@ -265,8 +268,10 @@ func TestTune_ApplyableUpgradeSupersedesInformationalDraft(t *testing.T) {
 	m := &fakeMetrics{
 		lats: map[string]LatencySample{"janka": {P95Seconds: 936, Count: 12}},
 		steps: []StepLatencySample{
-			// Below the binding threshold first: 100 < 0.8×300s.
-			{Project: "janka", Workflow: "wf-a", Step: "slow", Role: "coder", Model: "m1", P95Seconds: 100, Count: 9},
+			// Neutral band first: 200 is < 0.8×300s (not binding) AND
+			// > 0.5×300s (not a reclaim candidate) — isolates the
+			// informational-latency behavior this test asserts.
+			{Project: "janka", Workflow: "wf-a", Step: "slow", Role: "coder", Model: "m1", P95Seconds: 200, Count: 9},
 		},
 	}
 	w := newTuneWorker(repo, m)
@@ -309,5 +314,60 @@ func TestTune_ApplyableUpgradeSupersedesInformationalDraft(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("continued breaching must not duplicate the applyable draft, got %d open", count)
+	}
+}
+
+// TestTune_TimeoutReclaimFilesReduction — a step whose p95 sits far below
+// its configured timeout, sustained, files an applyable reduction proposal.
+// Backlog item 5 (timeout-reduction detector).
+func TestTune_TimeoutReclaimFilesReduction(t *testing.T) {
+	repo := newTuneTestRepo(t)
+	m := &fakeMetrics{
+		// No latency breach; step p95 50s vs 300s timeout (ratio 0.17 ≤ 0.5).
+		steps: []StepLatencySample{
+			{Project: "janka", Workflow: "wf-a", Step: "slow", Role: "coder", Model: "m1", P95Seconds: 50, Count: 9},
+		},
+	}
+	w := newTuneWorker(repo, m)
+	w.Actionize = testActionizer(actionableFiles())
+	tickN(w, 3)
+
+	ps := drafts(t, repo)
+	if len(ps) != 1 {
+		t.Fatalf("want 1 reclaim proposal, got %d", len(ps))
+	}
+	p := ps[0]
+	if p.ApplyTarget != "configs/workflows/wf-a.md" || p.ApplyContent == "" {
+		t.Fatalf("reclaim proposal must be applyable: target=%q", p.ApplyTarget)
+	}
+	if !strings.Contains(p.Title, "reclaim") {
+		t.Fatalf("title must mark the reclaim: %q", p.Title)
+	}
+	// The slow step's 300s timeout must have been lowered (ceil(50*1.5)=75s).
+	if strings.Contains(p.ApplyContent, `timeout: "300s"`) {
+		t.Fatalf("slow step timeout must be reduced from 300s:\n%s", p.ApplyContent)
+	}
+	if !strings.Contains(p.Rationale, "over-provisioned") {
+		t.Fatalf("rationale must explain the reclaim: %s", p.Rationale)
+	}
+}
+
+// TestTune_TimeoutReclaimSkipsWhenNearTimeout — a step whose p95 is close to
+// its timeout is NOT over-provisioned, so no reduction is proposed (and no
+// oscillation with the raise path).
+func TestTune_TimeoutReclaimSkipsWhenNearTimeout(t *testing.T) {
+	repo := newTuneTestRepo(t)
+	m := &fakeMetrics{
+		// p95 200s vs 300s → ratio 0.67 > 0.5 reclaim threshold.
+		steps: []StepLatencySample{
+			{Project: "janka", Workflow: "wf-a", Step: "slow", Role: "coder", Model: "m1", P95Seconds: 200, Count: 9},
+		},
+	}
+	w := newTuneWorker(repo, m)
+	w.Actionize = testActionizer(actionableFiles())
+	tickN(w, 3)
+
+	if ps := drafts(t, repo); len(ps) != 0 {
+		t.Fatalf("no reclaim expected when p95 is near the timeout; got %d: %+v", len(ps), ps)
 	}
 }

@@ -395,6 +395,10 @@ func (s *Server) AdminBlackBoxTriggerDismiss(w http.ResponseWriter, r *http.Requ
 			UserAgent: r.UserAgent(),
 		})
 	}
+	if cpHubReturnRequested(r) {
+		http.Redirect(w, r, cpHubOverviewURL("trigger-dismissed", ""), http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, blackboxTriggerDetailURL(id, ""), http.StatusSeeOther)
 }
 
@@ -599,6 +603,13 @@ func (s *Server) AdminBlackBoxTriggerGenerateCandidate(w http.ResponseWriter, r 
 			IP:        clientIP(r),
 			UserAgent: r.UserAgent(),
 		})
+	}
+	if cpHubReturnRequested(r) {
+		// Folded-hub flow: the generated proposal is now visible in the hub
+		// Proposals inbox, so keep the operator there rather than bouncing
+		// to the standalone workflow-proposal page.
+		http.Redirect(w, r, cpHubProposalsURL("candidate-generated", ""), http.StatusSeeOther)
+		return
 	}
 	http.Redirect(w, r, "/ui/admin/workflow-proposals/"+url.PathEscape(proposal.ID), http.StatusSeeOther)
 }

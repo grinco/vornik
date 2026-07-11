@@ -159,12 +159,28 @@ type TuneWorker struct {
 	LeaderGate LeaderGate
 	Logger     zerolog.Logger
 
+	// TimeoutReclaimRatio: a step's explicit timeout is a reclaim
+	// candidate when observed step p95 ≤ ratio × timeout, sustained.
+	// 0 → 0.5. Deliberately far below TimeoutBindingThreshold (0.8) so
+	// a raise detector and this reduction detector can't ping-pong on
+	// the same step (design: asymmetric bands + the 3-tick streak).
+	TimeoutReclaimRatio float64
+
 	// per-signal consecutive-breach counters. failed/latency are keyed by
-	// project; tool by the (project, tool) composite (typed, no string join).
+	// project; tool by the (project, tool) composite (typed, no string join);
+	// reclaim by the (workflow, step) composite.
 	failedBreaches  map[string]int
 	latencyBreaches map[string]int
 	toolBreaches    map[ProjectToolKey]int
+	reclaimStreaks  map[WorkflowStepKey]int
 	stopped         chan struct{}
+}
+
+// WorkflowStepKey identifies a step for the timeout-reclaim streak counter.
+type WorkflowStepKey struct {
+	Project  string
+	Workflow string
+	Step     string
 }
 
 func (w *TuneWorker) toolLatencyThreshold() float64 {
@@ -209,6 +225,13 @@ func (w *TuneWorker) breachesToPropose() int {
 	return 3
 }
 
+func (w *TuneWorker) reclaimRatio() float64 {
+	if w.TimeoutReclaimRatio > 0 {
+		return w.TimeoutReclaimRatio
+	}
+	return 0.5
+}
+
 // Run drives the periodic loop until ctx is cancelled or the worker is
 // structurally disabled (nil deps or non-positive Interval).
 func (w *TuneWorker) Run(ctx context.Context) {
@@ -227,6 +250,9 @@ func (w *TuneWorker) Run(ctx context.Context) {
 	}
 	if w.toolBreaches == nil {
 		w.toolBreaches = map[ProjectToolKey]int{}
+	}
+	if w.reclaimStreaks == nil {
+		w.reclaimStreaks = map[WorkflowStepKey]int{}
 	}
 	if w.stopped == nil {
 		w.stopped = make(chan struct{})
@@ -267,6 +293,68 @@ func (w *TuneWorker) tick(ctx context.Context) {
 	w.scanFailedRate(ctx)
 	w.scanLatency(ctx)
 	w.scanToolLatency(ctx)
+	w.scanTimeoutReclaim(ctx)
+}
+
+// scanTimeoutReclaim is the reclaim-capacity counterpart to scanLatency:
+// per (workflow, step) it proposes LOWERING an over-provisioned step
+// timeout when observed p95 sits well below the configured value
+// (p95 ≤ reclaimRatio × current), sustained for BreachesToPropose ticks.
+// Requires the Actionizer (needs to read + rewrite the workflow); a no-op
+// otherwise. Never fires on a step without an explicit timeout. The
+// asymmetric band (0.5 vs the raise path's 0.8) plus the shared 3-tick
+// streak keep the raise and reduce detectors from oscillating on one step.
+func (w *TuneWorker) scanTimeoutReclaim(ctx context.Context) {
+	if w.Actionize == nil {
+		return
+	}
+	if w.reclaimStreaks == nil {
+		w.reclaimStreaks = map[WorkflowStepKey]int{}
+	}
+	steps, err := w.Metrics.StepLatencies(ctx)
+	if err != nil {
+		w.Logger.Warn().Err(err).Msg("tune: failed to read step-latency metrics for reclaim")
+		return
+	}
+	seen := map[WorkflowStepKey]bool{}
+	for _, st := range steps {
+		key := WorkflowStepKey{Project: st.Project, Workflow: st.Workflow, Step: st.Step}
+		current, explicit, cerr := w.Actionize.CurrentStepTimeout(st.Workflow, st.Step)
+		if cerr != nil || !explicit {
+			continue // no timeout to reclaim, or workflow unreadable
+		}
+		seen[key] = true
+		// Candidate when p95 has enough headroom below the configured
+		// timeout AND we have enough samples to trust the p95.
+		candidate := st.Count >= w.minSamples() && st.P95Seconds <= w.reclaimRatio()*current.Seconds()
+		if !advanceStreak(w.reclaimStreaks, key, candidate, w.breachesToPropose()) {
+			continue
+		}
+		w.proposeTimeoutReclaim(ctx, st, current)
+	}
+	resetAbsent(w.reclaimStreaks, seen)
+}
+
+// proposeTimeoutReclaim renders + files the applyable step-timeout
+// reduction. Headroom multiplier 1.5 (same as the raise path) keeps the
+// new timeout comfortably above observed p95. A render that declines
+// (ErrChangeNotUseful — the suggestion wouldn't actually reduce) files
+// nothing: reclaim is an optimisation, not a breach, so unlike the latency
+// path there is no informational fallback.
+func (w *TuneWorker) proposeTimeoutReclaim(ctx context.Context, st StepLatencySample, current time.Duration) {
+	suggested := time.Duration(math.Ceil(st.P95Seconds*1.5)) * time.Second
+	rc, rerr := w.Actionize.RenderStepTimeoutReduction(st.Workflow, st.Step, suggested)
+	if rerr != nil {
+		if !errors.Is(rerr, ErrChangeNotUseful) {
+			w.Logger.Warn().Err(rerr).Str("project", st.Project).Str("step", st.Step).Msg("tune: step-timeout reduction render failed")
+		}
+		return
+	}
+	evidence := fmt.Sprintf(`{"signal":"step_timeout_reclaim","step_p95":%.1f,"step_count":%d,"current_timeout_s":%.0f,"workflow":%q,"role":%q,"model":%q}`,
+		st.P95Seconds, st.Count, current.Seconds(), st.Workflow, st.Role, st.Model)
+	rationale := fmt.Sprintf("Step %q (workflow %s, role %s) has p95 %.0fs against a %s timeout — at/under %.0f%% of the configured value for %d consecutive scans, so the timeout is over-provisioned. Proposed: %s. Reclaiming the headroom tightens scheduling without risking healthy-run truncation.",
+		st.Step, st.Workflow, st.Role, st.P95Seconds, formatDurationShort(current), w.reclaimRatio()*100, w.breachesToPropose(), rc.Summary)
+	w.fileRendered(ctx, st.Project, tuneTimeoutReclaimTitle(st.Project, st.Step), rationale, evidence, "tune-detector", rc)
 }
 
 func (w *TuneWorker) bindingThreshold() float64 {
@@ -638,6 +726,14 @@ func tuneFailedRateTitle(project string) string {
 
 func tuneLatencyTitle(project string) string {
 	return "Tune: high p95 latency on " + project
+}
+
+// tuneTimeoutReclaimTitle keys the reduction proposal per (project, step) so
+// it dedups independently of the raise-side latency proposal (which is keyed
+// per project). A step-scoped title also lets several reclaimable steps in
+// one project coexist as distinct proposals.
+func tuneTimeoutReclaimTitle(project, step string) string {
+	return fmt.Sprintf("Tune: reclaim over-provisioned timeout for %s on %s", step, project)
 }
 
 func instinctToolTimeoutTitle(k ProjectToolKey) string {

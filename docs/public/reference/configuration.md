@@ -278,6 +278,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | Key | Type | Description |
 |---|---|---|
 | `memory.enabled` | bool | Activate the memory subsystem. |
+| `memory.embedding_provider` | string | Embedding transport: empty or openai for an OpenAI-compatible /v1/embeddings endpoint, or bedrock for native AWS Bedrock InvokeModel embeddings. |
 | `memory.sufficiency.enabled` | bool | Widen-and-retry recall when too few high-relevance hits (requires the reranker). |
 | `memory.sufficiency.min_high_rel` | int | Hits at/above score_floor that count as 'enough' (0 = default 3). |
 | `memory.sufficiency.score_floor` | float | Absolute reranker relevance floor in [0,1] (0 = default 0.6). |
@@ -287,12 +288,11 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `memory.reranker.max_candidates` | int | Top-K results scored per recall (0 = default 20). |
 | `memory.reranker.timeout_seconds` | int | Per-recall rerank timeout in seconds (0 = default 15). |
 | `memory.reranker.max_snippet_bytes` | int | Per-candidate snippet sent to the reranker (0 = default 600). |
-| `memory.embedding_provider` | string | Embedding transport: empty/`openai` for OpenAI-compatible `/v1/embeddings`, or `bedrock` for native AWS Bedrock InvokeModel embeddings. |
 | `memory.embedding_model` | string | Embedding model name. Required when enabled. |
 | `memory.embedding_dimension` | int | Vector dimension produced by the model. |
 | `memory.embedding_endpoint` | string | Override endpoint for embedding requests. |
 | `memory.embedding_api_key` | string | Override API key for embedding requests. |
-| `memory.bedrock.region` | string | AWS region for native Bedrock embeddings when `memory.embedding_provider=bedrock`. |
+| `memory.bedrock.region` | string | AWS region for native Bedrock embeddings when memory.embedding_provider=bedrock. |
 | `memory.embedding_cache_enabled` | bool | Cache embeddings to skip repeat API calls. |
 | `memory.response_cache_enabled` | bool | Cache memory-pipeline LLM responses. |
 | `memory.chunk_tokens` | int | Approximate tokens per chunk. |

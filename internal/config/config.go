@@ -1998,9 +1998,11 @@ type MemoryRerankerConfig struct {
 	MaxSnippetBytes int    `yaml:"max_snippet_bytes" doc:"Per-candidate snippet sent to the reranker (0 = default 600)."`
 }
 
+// MemoryBedrockConfig configures the native AWS Bedrock embedding path,
+// used when memory.embedding_provider is "bedrock".
 type MemoryBedrockConfig struct {
 	// Region is the AWS region used for native Bedrock embeddings.
-	Region string `yaml:"region" doc:"Bedrock embedding region."`
+	Region string `yaml:"region" doc:"AWS region for native Bedrock embeddings when memory.embedding_provider=bedrock."`
 }
 
 type MemoryConfig struct {
@@ -2010,7 +2012,7 @@ type MemoryConfig struct {
 	// EmbeddingProvider selects the embedding transport. Empty / "openai"
 	// uses an OpenAI-compatible /v1/embeddings endpoint; "bedrock"
 	// uses AWS Bedrock's native InvokeModel API.
-	EmbeddingProvider string `yaml:"embedding_provider" doc:"Embedding transport: openai|bedrock."`
+	EmbeddingProvider string `yaml:"embedding_provider" doc:"Embedding transport: empty or openai for an OpenAI-compatible /v1/embeddings endpoint, or bedrock for native AWS Bedrock InvokeModel embeddings."`
 
 	// Sufficiency governs scored-sufficiency iterative retrieval.
 	Sufficiency MemorySufficiencyConfig `yaml:"sufficiency"`

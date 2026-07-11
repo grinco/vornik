@@ -320,7 +320,7 @@
         "type": "prometheus",
         "uid": "$datasource"
       },
-      "description": "Effective cost per successful step by role+model. Factors in failure rate: a cheap-but-flaky model costs more per useful outcome than its list price suggests.",
+      "description": "Lifetime cost \u00f7 successful step count per role+model from vornik_executor_model_effective_cost_usd (internal/executor/metrics.go, set only when ok>0). This is $/useful-outcome. Previously this panel re-derived the ratio from rate(cost)/rate(ok) with a 1e-12 divide-by-zero floor, which produced spurious multi-million-dollar values for role+model pairs that had cost but no successes in the window; it now reads the authoritative gauge instead.",
       "fieldConfig": {
         "defaults": {
           "unit": "currencyUSD",
@@ -337,7 +337,7 @@
       "id": 202,
       "targets": [
         {
-          "expr": "sum by (role, model) (rate(vornik_executor_model_cost_usd_total[1h])) / clamp_min(sum by (role, model) (rate(vornik_executor_agent_step_outcomes_total{outcome=\"ok\"}[1h])), 1e-12)",
+          "expr": "vornik_executor_model_effective_cost_usd",
           "legendFormat": "{{role}} / {{model}}",
           "refId": "A"
         }
@@ -5198,6 +5198,6 @@
   "timezone": "",
   "title": "vornik",
   "uid": "vornik-overview",
-  "version": 7,
+  "version": 8,
   "weekStart": ""
 }

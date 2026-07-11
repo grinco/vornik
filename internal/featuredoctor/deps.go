@@ -5,6 +5,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -29,9 +30,9 @@ type ModelPinger interface {
 // probes it via this interface instead.
 type EmbeddingProber interface {
 	// ProbeEmbedding attempts a minimal embedding of a sentinel string
-	// against endpoint/model (apiKey may be empty) and reports whether a
+	// against the effective memory embedding config and reports whether a
 	// non-empty vector came back.
-	ProbeEmbedding(ctx context.Context, endpoint, apiKey, model string) bool
+	ProbeEmbedding(ctx context.Context, cfg memory.Config) bool
 }
 
 // TaskLister reports whether any task is currently RUNNING or LEASED

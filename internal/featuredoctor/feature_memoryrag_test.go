@@ -3,13 +3,15 @@ package featuredoctor
 import (
 	"context"
 	"testing"
+
+	"vornik.io/vornik/internal/memory"
 )
 
 // stubEmbeddingProber stands in for a live probe against the dedicated
 // memory.embedding_endpoint. reachable is what ProbeEmbedding returns.
 type stubEmbeddingProber struct{ reachable bool }
 
-func (s stubEmbeddingProber) ProbeEmbedding(context.Context, string, string, string) bool {
+func (s stubEmbeddingProber) ProbeEmbedding(context.Context, memory.Config) bool {
 	return s.reachable
 }
 
@@ -60,6 +62,21 @@ func TestMemoryRAGPrereq_EmbeddingModelProbesDedicatedEndpoint(t *testing.T) {
 	res := findMemoryRAGPrereq(t, "embedding model reachable").Check(context.Background(), deps)
 	if !res.OK {
 		t.Fatalf("embedding model served at the dedicated endpoint must be reachable, got %+v", res)
+	}
+}
+
+func TestMemoryRAGPrereq_BedrockModelReachable(t *testing.T) {
+	deps := Deps{
+		Config: stubConfig{vals: map[string]any{
+			"memory.embedding_provider": "bedrock",
+			"memory.embedding_model":    "amazon.titan-embed-text-v2:0",
+			"memory.bedrock.region":     "eu-central-1",
+		}},
+		Embeddings: stubEmbeddingProber{reachable: true},
+	}
+	res := findMemoryRAGPrereq(t, "embedding model reachable").Check(context.Background(), deps)
+	if !res.OK {
+		t.Fatalf("bedrock embedding model must probe reachable, got %+v", res)
 	}
 }
 

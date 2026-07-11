@@ -9,15 +9,20 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 )
 
 // maxEmbeddingResponseBytes caps upstream embedding responses so a misbehaving
 // endpoint cannot exhaust daemon memory.
 const maxEmbeddingResponseBytes = 32 * 1024 * 1024
 
-// Embedder calls an OpenAI-compatible embeddings endpoint to produce vectors.
+// Embedder produces vectors from either an OpenAI-compatible embeddings
+// endpoint or AWS Bedrock's native InvokeModel API.
 // When Cache is non-nil, identical (content, model) pairs short-
-// circuit the upstream HTTP call and return the cached vector.
+// circuit the upstream call and return the cached vector.
 type Embedder struct {
 	cfg    Config
 	client *http.Client
@@ -27,16 +32,36 @@ type Embedder struct {
 	// caching — every call hits the upstream endpoint exactly
 	// as in the slice-0 behaviour.
 	Cache EmbedCache
+
+	bedrockClient  bedrockRuntimeEmbedClient
+	bedrockInitErr error
+}
+
+type bedrockRuntimeEmbedClient interface {
+	InvokeModel(ctx context.Context, params *bedrockruntime.InvokeModelInput, optFns ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error)
 }
 
 // NewEmbedder creates an Embedder from the given Config.
 func NewEmbedder(cfg Config) *Embedder {
-	return &Embedder{
+	e := &Embedder{
 		cfg: cfg,
 		client: &http.Client{
 			Timeout: 60 * time.Second,
 		},
 	}
+	if e.usesBedrock() {
+		if strings.TrimSpace(cfg.BedrockRegion) == "" {
+			e.bedrockInitErr = fmt.Errorf("bedrock region is required")
+			return e
+		}
+		awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsconfig.WithRegion(cfg.BedrockRegion))
+		if err != nil {
+			e.bedrockInitErr = err
+			return e
+		}
+		e.bedrockClient = bedrockruntime.NewFromConfig(awsCfg)
+	}
+	return e
 }
 
 // embeddingRequest is the JSON body for the embeddings API.
@@ -56,32 +81,39 @@ type embeddingResponse struct {
 	} `json:"error"`
 }
 
+type bedrockTitanEmbeddingRequest struct {
+	InputText  string `json:"inputText"`
+	Dimensions int    `json:"dimensions,omitempty"`
+}
+
+type bedrockTitanEmbeddingResponse struct {
+	Embedding []float32 `json:"embedding"`
+}
+
 const maxEmbedBatch = 512
 
-// Embed sends texts to the embedding endpoint in batches of up to 512 and
-// returns one []float32 per input text preserving order.
-// Returns nil, nil when the endpoint is empty or any network/HTTP error occurs
-// so callers can degrade gracefully.
-//
-// Cache short-circuit (Phase D): when e.Cache is non-nil, each
-// text is hashed and looked up against (hash, model). Hits are
-// served from cache; misses are batched into the upstream
-// embedBatch call. The result array preserves input order; cache
-// populates run after the upstream returns. Cache errors are
-// best-effort — a broken cache must never block the upstream call.
+func (e *Embedder) usesBedrock() bool {
+	return strings.EqualFold(strings.TrimSpace(e.cfg.EmbeddingProvider), "bedrock")
+}
+
+func (e *Embedder) configured() bool {
+	if e.usesBedrock() {
+		return strings.TrimSpace(e.cfg.EmbeddingModel) != "" && strings.TrimSpace(e.cfg.BedrockRegion) != ""
+	}
+	return strings.TrimSpace(e.cfg.EmbeddingEndpoint) != "" && strings.TrimSpace(e.cfg.EmbeddingModel) != ""
+}
+
+// Embed sends texts to the configured embedding backend in batches of up to
+// 512 and returns one []float32 per input text preserving order.
+// Returns nil, nil when the backend is not configured or any network/HTTP error
+// occurs so callers can degrade gracefully.
 func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
-	if e.cfg.EmbeddingEndpoint == "" || len(texts) == 0 {
+	if !e.configured() || len(texts) == 0 {
 		return nil, nil
 	}
 
 	result := make([][]float32, len(texts))
 
-	// Phase-D cache short-circuit. Compute hashes once, look up
-	// each text; uncached indices land in a contiguous batch sent
-	// to embedBatch. Fresh slices are allocated for misses /
-	// missIndices to avoid aliasing into the caller's texts
-	// argument (append on a re-sliced texts[:0] would mutate the
-	// caller's backing array).
 	var misses []string
 	var missIndices []int
 	if e.Cache != nil && e.cfg.EmbeddingModel != "" {
@@ -96,15 +128,10 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 			misses = append(misses, t)
 			missIndices = append(missIndices, i)
 		}
-		// Every text served from cache → skip the upstream call.
 		if len(misses) == 0 {
 			return result, nil
 		}
 	} else {
-		// No cache → every text is a "miss" (i.e. needs upstream).
-		// Reuse texts directly via index aliasing — the upstream
-		// loop only reads `misses[start:end]`, never writes, so
-		// no caller-visible mutation.
 		misses = texts
 		missIndices = make([]int, len(texts))
 		for i := range texts {
@@ -121,8 +148,6 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 
 		vecs, err := e.embedBatch(ctx, batch)
 		if err != nil {
-			// Degrade gracefully on any error — embedding failures must not
-			// block task completion.
 			return nil, nil
 		}
 		if vecs == nil {
@@ -131,8 +156,6 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 		for i, v := range vecs {
 			outIdx := missIndices[start+i]
 			result[outIdx] = v
-			// Cache populate on success. Best-effort — errors
-			// don't propagate.
 			if e.Cache != nil && len(v) > 0 && e.cfg.EmbeddingModel != "" {
 				_ = e.Cache.Put(ctx, ContentHash(batch[i]), e.cfg.EmbeddingModel, v)
 			}
@@ -142,12 +165,17 @@ func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, erro
 	return result, nil
 }
 
-// embedBatch calls the API for a single batch and returns one vector per text.
+// embedBatch calls the configured backend for a single batch and returns one
+// vector per text.
 func (e *Embedder) embedBatch(ctx context.Context, texts []string) ([][]float32, error) {
-	reqBody := embeddingRequest{
-		Model: e.cfg.EmbeddingModel,
-		Input: texts,
+	if e.usesBedrock() {
+		return e.embedBatchBedrock(ctx, texts)
 	}
+	return e.embedBatchOpenAICompat(ctx, texts)
+}
+
+func (e *Embedder) embedBatchOpenAICompat(ctx context.Context, texts []string) ([][]float32, error) {
+	reqBody := embeddingRequest{Model: e.cfg.EmbeddingModel, Input: texts}
 	b, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal embedding request: %w", err)
@@ -165,12 +193,11 @@ func (e *Embedder) embedBatch(ctx context.Context, texts []string) ([][]float32,
 
 	resp, err := e.client.Do(req)
 	if err != nil {
-		return nil, nil // network error → degrade
+		return nil, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil // non-200 → degrade
+		return nil, nil
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxEmbeddingResponseBytes))
@@ -186,7 +213,6 @@ func (e *Embedder) embedBatch(ctx context.Context, texts []string) ([][]float32,
 		return nil, nil
 	}
 
-	// The API returns items potentially out of order; sort by index.
 	vecs := make([][]float32, len(texts))
 	for _, d := range embResp.Data {
 		if d.Index >= 0 && d.Index < len(vecs) {
@@ -194,4 +220,46 @@ func (e *Embedder) embedBatch(ctx context.Context, texts []string) ([][]float32,
 		}
 	}
 	return vecs, nil
+}
+
+func (e *Embedder) embedBatchBedrock(ctx context.Context, texts []string) ([][]float32, error) {
+	if e.bedrockInitErr != nil || e.bedrockClient == nil {
+		return nil, nil
+	}
+	vecs := make([][]float32, len(texts))
+	for i, text := range texts {
+		vec, err := e.embedOneBedrock(ctx, text)
+		if err != nil || len(vec) == 0 {
+			return nil, nil
+		}
+		vecs[i] = vec
+	}
+	return vecs, nil
+}
+
+func (e *Embedder) embedOneBedrock(ctx context.Context, text string) ([]float32, error) {
+	if !strings.HasPrefix(strings.TrimSpace(e.cfg.EmbeddingModel), "amazon.titan-embed-text") {
+		return nil, fmt.Errorf("unsupported Bedrock embedding model %q", e.cfg.EmbeddingModel)
+	}
+	body, err := json.Marshal(bedrockTitanEmbeddingRequest{
+		InputText:  text,
+		Dimensions: e.cfg.EmbeddingDimension,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out, err := e.bedrockClient.InvokeModel(ctx, &bedrockruntime.InvokeModelInput{
+		ModelId:     aws.String(e.cfg.EmbeddingModel),
+		ContentType: aws.String("application/json"),
+		Accept:      aws.String("application/json"),
+		Body:        body,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var resp bedrockTitanEmbeddingResponse
+	if err := json.Unmarshal(out.Body, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Embedding, nil
 }

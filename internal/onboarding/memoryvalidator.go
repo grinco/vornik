@@ -14,9 +14,11 @@ import (
 // values — the daemon's loaded config is never consulted.
 type MemoryConfigProposal struct {
 	Enabled            bool   `json:"enabled"`
+	EmbeddingProvider  string `json:"embedding_provider"`
 	EmbeddingEndpoint  string `json:"embedding_endpoint"`
 	EmbeddingAPIKey    string `json:"embedding_api_key"`
 	EmbeddingModel     string `json:"embedding_model"`
+	BedrockRegion      string `json:"bedrock_region"`
 	EmbeddingDimension int    `json:"embedding_dimension"`
 }
 
@@ -45,7 +47,7 @@ type MemoryValidationResult struct {
 // embedProbe returns the first embedding vector for a fixed probe string,
 // or an error. The production factory wraps memory.NewEmbedder; tests inject
 // a fake.
-type embedProbe func(ctx context.Context, endpoint, apiKey, model string) ([]float32, error)
+type embedProbe func(ctx context.Context, cfg memory.Config) ([]float32, error)
 
 // MemoryValidatorInterface is the seam the API handlers depend on so they
 // can be tested with a stub instead of a real validator.
@@ -64,12 +66,8 @@ type MemoryValidator struct {
 // endpoint via memory.NewEmbedder with a 15s timeout.
 func NewMemoryValidator() MemoryValidator {
 	return MemoryValidator{
-		probe: func(ctx context.Context, endpoint, apiKey, model string) ([]float32, error) {
-			emb := memory.NewEmbedder(memory.Config{
-				EmbeddingEndpoint: endpoint,
-				EmbeddingAPIKey:   apiKey,
-				EmbeddingModel:    model,
-			})
+		probe: func(ctx context.Context, cfg memory.Config) ([]float32, error) {
+			emb := memory.NewEmbedder(cfg)
 			vecs, err := emb.Embed(ctx, []string{"vornik embedding reachability probe"})
 			if err != nil {
 				return nil, err
@@ -97,7 +95,18 @@ func (v MemoryValidator) Validate(ctx context.Context, p MemoryConfigProposal) M
 	}
 
 	result := MemoryValidationResult{}
-	if strings.TrimSpace(p.EmbeddingEndpoint) == "" || strings.TrimSpace(p.EmbeddingModel) == "" {
+	provider := strings.TrimSpace(p.EmbeddingProvider)
+	if strings.EqualFold(provider, "bedrock") {
+		if strings.TrimSpace(p.BedrockRegion) == "" || strings.TrimSpace(p.EmbeddingModel) == "" {
+			result.Failures = append(result.Failures, CheckFailure{
+				Name:        "embedding_incomplete",
+				Severity:    "blocking",
+				Message:     "bedrock region or model is empty",
+				Remediation: "Enter the Bedrock region and embedding model, or disable memory.",
+			})
+			return result
+		}
+	} else if strings.TrimSpace(p.EmbeddingEndpoint) == "" || strings.TrimSpace(p.EmbeddingModel) == "" {
 		result.Failures = append(result.Failures, CheckFailure{
 			Name:        "embedding_incomplete",
 			Severity:    "blocking",
@@ -109,7 +118,14 @@ func (v MemoryValidator) Validate(ctx context.Context, p MemoryConfigProposal) M
 
 	probeCtx, cancel := context.WithTimeout(ctx, v.timeout)
 	defer cancel()
-	vec, err := v.probe(probeCtx, p.EmbeddingEndpoint, p.EmbeddingAPIKey, p.EmbeddingModel)
+	vec, err := v.probe(probeCtx, memory.Config{
+		EmbeddingProvider:  provider,
+		EmbeddingEndpoint:  p.EmbeddingEndpoint,
+		EmbeddingAPIKey:    p.EmbeddingAPIKey,
+		EmbeddingModel:     p.EmbeddingModel,
+		BedrockRegion:      p.BedrockRegion,
+		EmbeddingDimension: p.EmbeddingDimension,
+	})
 	if err != nil {
 		name := "embedding_unreachable"
 		remediation := "Check the embedding base URL and that it is reachable from the daemon host."

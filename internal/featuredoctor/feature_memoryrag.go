@@ -2,7 +2,9 @@ package featuredoctor
 
 import (
 	"context"
+	"strings"
 
+	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/version"
 )
 
@@ -48,6 +50,22 @@ func memoryRAGFeature() Feature {
 
 			ev, _ := d.Config.GateValue("memory.embedding_endpoint")
 			endpoint, _ := ev.(string)
+			pv, _ := d.Config.GateValue("memory.embedding_provider")
+			provider, _ := pv.(string)
+			if strings.EqualFold(strings.TrimSpace(provider), "bedrock") {
+				if d.Embeddings == nil {
+					return PrereqResult{OK: false, Fixable: false,
+						Detail: id + " not wired (embedding prober unavailable)"}
+				}
+				rv, _ := d.Config.GateValue("memory.bedrock.region")
+				region, _ := rv.(string)
+				if d.Embeddings.ProbeEmbedding(ctx, memory.Config{EmbeddingProvider: provider, EmbeddingModel: id, BedrockRegion: region}) {
+					return PrereqResult{OK: true, Detail: id + " reachable via bedrock in " + region}
+				}
+				return PrereqResult{OK: false, Fixable: false,
+					Detail:      id + " not reachable via bedrock in " + region,
+					Remediation: "ensure memory.embedding_model (" + id + ") is invokable in memory.bedrock.region (" + region + ")"}
+			}
 			if endpoint != "" {
 				if d.Embeddings == nil {
 					return PrereqResult{OK: false, Fixable: false,
@@ -55,7 +73,7 @@ func memoryRAGFeature() Feature {
 				}
 				kv, _ := d.Config.GateValue("memory.embedding_api_key")
 				key, _ := kv.(string)
-				if d.Embeddings.ProbeEmbedding(ctx, endpoint, key, id) {
+				if d.Embeddings.ProbeEmbedding(ctx, memory.Config{EmbeddingEndpoint: endpoint, EmbeddingAPIKey: key, EmbeddingModel: id}) {
 					return PrereqResult{OK: true, Detail: id + " reachable at " + endpoint}
 				}
 				return PrereqResult{OK: false, Fixable: false,

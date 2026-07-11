@@ -8,6 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 )
 
 func TestNewEmbedder_ClientTimeoutWired(t *testing.T) {
@@ -201,5 +204,30 @@ func TestEmbed_TrailingSlashEndpoint(t *testing.T) {
 	_, _ = e.Embed(context.Background(), []string{"t"})
 	if !hit {
 		t.Fatalf("server not hit")
+	}
+}
+
+type fakeBedrockEmbedClient struct {
+	body []byte
+	err  error
+}
+
+func (f fakeBedrockEmbedClient) InvokeModel(context.Context, *bedrockruntime.InvokeModelInput, ...func(*bedrockruntime.Options)) (*bedrockruntime.InvokeModelOutput, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &bedrockruntime.InvokeModelOutput{Body: f.body, ContentType: aws.String("application/json")}, nil
+}
+
+func TestEmbed_BedrockTitanHappyPath(t *testing.T) {
+	e := NewEmbedder(Config{EmbeddingProvider: "bedrock", EmbeddingModel: "amazon.titan-embed-text-v2:0", BedrockRegion: "eu-central-1", EmbeddingDimension: 1024})
+	e.bedrockClient = fakeBedrockEmbedClient{body: []byte(`{"embedding":[0.1,0.2,0.3]}`)}
+	e.bedrockInitErr = nil
+	got, err := e.Embed(context.Background(), []string{"a", "b"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(got) != 2 || len(got[0]) != 3 || got[1][2] != 0.3 {
+		t.Fatalf("unexpected vectors: %v", got)
 	}
 }

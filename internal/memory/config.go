@@ -5,6 +5,11 @@ type Config struct {
 	// Enabled controls whether the memory system is active.
 	Enabled bool
 
+	// EmbeddingProvider selects the embedding transport. Empty / "openai"
+	// keeps the historical OpenAI-compatible /v1/embeddings path.
+	// "bedrock" uses AWS Bedrock's native InvokeModel API.
+	EmbeddingProvider string
+
 	// EmbeddingEndpoint is the OpenAI-compatible base URL for embedding requests.
 	// Falls back to the LLM endpoint (from executor config) when empty.
 	EmbeddingEndpoint string
@@ -14,6 +19,9 @@ type Config struct {
 
 	// EmbeddingModel is the model name to use for embeddings, e.g. "text-embedding-3-small".
 	EmbeddingModel string
+
+	// BedrockRegion is the AWS region used when EmbeddingProvider=="bedrock".
+	BedrockRegion string
 
 	// EmbeddingDimension is the vector dimension produced by the embedding model.
 	// Default: 1536 (matches text-embedding-3-small).

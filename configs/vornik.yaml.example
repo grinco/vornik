@@ -613,13 +613,26 @@ telegram:
 memory:
   enabled: false
 
-  # Embedding endpoint. Any OpenAI-compatible /v1/embeddings server works
-  # (Ollama, vLLM, hosted OpenAI, etc.). For a local CPU-friendly setup,
-  # bge-m3 via Ollama is what the assistant project uses in production.
+  # Embedding transport. Empty / "openai" = historical OpenAI-compatible
+  # /v1/embeddings path. Set to "bedrock" to use AWS Bedrock's native
+  # InvokeModel API for embeddings.
+  # embedding_provider: "bedrock"
+
+  # OpenAI-compatible embedding endpoint. Any /v1/embeddings server works
+  # here (Ollama, vLLM, hosted OpenAI, etc.). For a local CPU-friendly
+  # setup, bge-m3 via Ollama is what the assistant project used first.
   # embedding_endpoint: "http://127.0.0.1:11434"
   # embedding_model: "bge-m3:latest"
   # embedding_dimension: 1024
   # embedding_api_key: "${VORNIK_EMBEDDING_API_KEY}"
+
+  # Native AWS Bedrock embeddings. Titan Text Embeddings V2 returns 1024-dim
+  # vectors and is the practical default for the built-in pgvector schema.
+  # embedding_provider: "bedrock"
+  # embedding_model: "amazon.titan-embed-text-v2:0"
+  # embedding_dimension: 1024
+  # bedrock:
+  #   region: "eu-central-1"
 
   # Per-chunk topic labeller. Runs at ingest AND on a background backfill
   # loop so chunks the inline call missed (LLM timeout, empty response)

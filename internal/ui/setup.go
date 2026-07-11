@@ -97,9 +97,11 @@ func (s *Server) setupMemoryPrefill() onboarding.MemoryConfigProposal {
 	}
 	return onboarding.MemoryConfigProposal{
 		Enabled:            cfg.Memory.Enabled,
+		EmbeddingProvider:  strings.TrimSpace(cfg.Memory.EmbeddingProvider),
 		EmbeddingEndpoint:  strings.TrimSpace(cfg.Memory.EmbeddingEndpoint),
 		EmbeddingAPIKey:    apiKey,
 		EmbeddingModel:     strings.TrimSpace(cfg.Memory.EmbeddingModel),
+		BedrockRegion:      strings.TrimSpace(cfg.Memory.Bedrock.Region),
 		EmbeddingDimension: cfg.Memory.EmbeddingDimension,
 	}
 }

@@ -255,6 +255,9 @@ func (e *Executor) executeAgentStepWithFallback(
 	fallbackPlan.swarm = &fallbackSwarm
 
 	fallbackStepID := stepID + "_model_fallback"
+	// Live-stream announce (see the infra-retry loop for rationale) —
+	// the fallback ladder's attempt 1 is not announced by the loop.
+	e.emitStepStarted(ctx, execution.ID, fallbackStepID, step.Role, roleConfig.ModelFallback, 1)
 	if e.metrics != nil {
 		e.metrics.RecordModelFallback(step.Role, roleConfig.Model, roleConfig.ModelFallback)
 	}
@@ -472,6 +475,10 @@ func (e *Executor) executeAgentStepWithShapeRetry(
 	priorMsg := extractPriorMessage(result)
 
 	retryStepID := stepID + "_shape_retry"
+	// Live-stream announce (see the infra-retry loop for rationale) —
+	// the shape retry's ladder starts at attempt 1, which the loop
+	// itself does not announce.
+	e.emitStepStarted(ctx, execution.ID, retryStepID, step.Role, "", 1)
 	e.logger.Warn().
 		Str("execution_id", execution.ID).
 		Str("step", stepID).
@@ -534,6 +541,19 @@ func shapeFailureMetricKind(err error, kind shapeFailureKind) string {
 // Backoff: infraRetryBaseDelay doubles per attempt, capped at
 // infraRetryMaxDelay. Honours ctx cancellation between attempts so
 // a graceful shutdown doesn't sleep for 8 seconds before unwinding.
+// stepIDForInfraAttempt names one attempt of an infra-retry ladder:
+// attempt 1 keeps the caller's step ID, later attempts append
+// _infra_retryN (N = attempt-1). The per-attempt ID is what keys the
+// audit log, the step-outcome rows, and — since the 2026-07-12
+// live-view fix — the step_started/outcome_recorded live events, so
+// every attempt is individually visible with its own final state.
+func stepIDForInfraAttempt(stepID string, attempt int) string {
+	if attempt <= 1 {
+		return stepID
+	}
+	return fmt.Sprintf("%s_infra_retry%d", stepID, attempt-1)
+}
+
 func (e *Executor) executeAgentStepWithInfraRetry(
 	ctx context.Context,
 	task *persistence.Task,
@@ -553,12 +573,17 @@ func (e *Executor) executeAgentStepWithInfraRetry(
 
 	for attempt := 1; attempt <= infraRetryMaxAttempts; attempt++ {
 		attemptsMade = attempt
-		stepIDForAttempt := stepID
+		// Per-attempt step ID (attempt > 1) so the audit log and
+		// step-outcome rows distinguish the retries from the original.
+		// The UI's timeline picks them up as separate segments.
+		stepIDForAttempt := stepIDForInfraAttempt(stepID, attempt)
 		if attempt > 1 {
-			// Per-attempt step ID so the audit log and step-outcome
-			// rows distinguish the retries from the original. The
-			// UI's timeline picks them up as separate segments.
-			stepIDForAttempt = fmt.Sprintf("%s_infra_retry%d", stepID, attempt-1)
+			// Announce the retry attempt on the live stream. The workflow
+			// loop's step_started covers only the base step id; without
+			// this the retry's card materialises on its first tool call
+			// (or not at all) and never shows as the active attempt
+			// (2026-07-12 deep-research live-view report).
+			e.emitStepStarted(ctx, execution.ID, stepIDForAttempt, step.Role, "", attempt)
 		}
 
 		cid, result, err := e.executeAgentStep(ctx, task, execution, plan, stepIDForAttempt, step, timeout, opts)

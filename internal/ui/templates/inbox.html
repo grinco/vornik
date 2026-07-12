@@ -86,16 +86,27 @@
         {{if .Origin}}<span class="text-[11px] text-gray-500 ml-auto">{{.Origin}}</span>{{end}}
     </div>
     <div class="text-sm text-gray-200">{{.StatusLine}}</div>
+    {{/* Deliverables collapse into a native <details> (2026-07-12
+         mobile-usability pass) — chips ate vertical space on phones.
+         No JS: <details> state survives HTMX list swaps rebuilding the
+         node as collapsed, which is the desired default anyway. */}}
     {{if .Deliverables}}
-    <div class="flex flex-wrap gap-2">
-        {{range .Deliverables}}
-        <a href="{{.DownloadURL}}" class="text-[11px] px-2 py-1 rounded-lg bg-dark-700 text-gray-300 hover:bg-dark-600">{{.TypeLabel}}: {{.Name}}</a>
-        {{end}}
-    </div>
+    <details class="group">
+        <summary class="cursor-pointer select-none text-[11px] text-gray-400 hover:text-gray-300 py-1.5 -my-1">
+            📎 {{len .Deliverables}} file{{if ne (len .Deliverables) 1}}s{{end}} <span class="text-gray-600 group-open:hidden">— tap to show</span>
+        </summary>
+        <div class="flex flex-wrap gap-2 pt-1.5">
+            {{range .Deliverables}}
+            <a href="{{.DownloadURL}}" class="text-[11px] px-2.5 py-1.5 rounded-lg bg-dark-700 text-gray-300 hover:bg-dark-600">{{.TypeLabel}}: {{.Name}}</a>
+            {{end}}
+        </div>
+    </details>
     {{end}}
-    <div class="flex items-center justify-between text-[11px] text-gray-500">
+    <div class="flex items-center justify-between gap-2 text-[11px] text-gray-500">
         <span>{{.Age}}</span>
-        <a href="{{.Href}}" class="text-accent-400 hover:text-accent-300 font-medium">View →</a>
+        {{/* State-specific CTA (mobile-usability pass): the link says
+             what is expected of the user, with a real touch target. */}}
+        <a href="{{.Href}}" class="text-accent-400 hover:text-accent-300 font-medium px-2 py-1.5 -mr-2 rounded-lg">{{.CTALabel}} →</a>
     </div>
 </li>
 {{end}}
@@ -127,22 +138,47 @@
      non-HTMX task-detail page's forms already use, so they inherit
      that exact posture — no new surface, nothing to add here. */}}
 {{define "inboxItemRow"}}
-<li id="inbox-item-{{.TaskID}}" class="flex items-center gap-3 rounded-xl border border-dark-600 bg-dark-800 p-3.5 flex-wrap">
-    <span class="text-[11px] font-medium uppercase tracking-wide px-2 py-0.5 rounded-full
-        {{if eq .Kind "Needs approval"}}bg-amber-500/20 text-amber-700 dark:text-amber-300
-        {{else if eq .Kind "Needs input"}}bg-sky-500/20 text-sky-700 dark:text-sky-300
-        {{else if eq .Kind "Failed"}}bg-rose-500/20 text-rose-700 dark:text-rose-300
-        {{else}}bg-gray-500/20 text-gray-300{{end}}">{{.Kind}}</span>
-    <div class="min-w-0 flex-1">
-        <div class="text-sm text-gray-200 truncate font-mono">{{.TaskID}}</div>
-        <div class="text-[11px] text-gray-500 flex items-center gap-2">
-            <span>{{.ProjectID}}</span>
-            {{if .Detail}}<span class="text-rose-800/80 dark:text-rose-400/80">{{.Detail}}</span>{{end}}
-            <span class="ml-auto">{{.Age}}</span>
-        </div>
+{{/* 2026-07-12 mobile-usability pass: the row is a stacked block
+     (badge line → plain-language headline → the ask → actions) instead
+     of one squeezed horizontal flex line, so it reads top-to-bottom on
+     a phone with no horizontal overflow. The headline is the task's
+     prompt excerpt (Title, via taskSummary) with the raw id demoted to
+     small mono print — a row must say WHAT it is about and WHAT is
+     expected of the user, not just which task id is waiting. */}}
+<li id="inbox-item-{{.TaskID}}" class="rounded-xl border border-dark-600 bg-dark-800 p-3.5 space-y-2.5">
+    <div class="flex items-center gap-2 flex-wrap text-[11px] text-gray-500">
+        <span class="font-medium uppercase tracking-wide px-2 py-0.5 rounded-full
+            {{if eq .Kind "Needs approval"}}bg-amber-500/20 text-amber-700 dark:text-amber-300
+            {{else if eq .Kind "Needs input"}}bg-sky-500/20 text-sky-700 dark:text-sky-300
+            {{else if eq .Kind "Failed"}}bg-rose-500/20 text-rose-700 dark:text-rose-300
+            {{else}}bg-gray-500/20 text-gray-300{{end}}">{{.Kind}}</span>
+        <span>{{.ProjectID}}</span>
+        <span class="ml-auto">{{.Age}}</span>
+    </div>
+    <div class="min-w-0">
+        {{if .Title}}
+        <a href="{{.Href}}" class="text-sm text-gray-200 hover:text-gray-100 line-clamp-2">{{.Title}}</a>
+        <div class="text-[10px] text-gray-600 font-mono truncate">{{.TaskID}}</div>
+        {{else}}
+        <a href="{{.Href}}" class="text-sm text-gray-200 hover:text-gray-100 truncate font-mono block">{{.TaskID}}</a>
+        {{end}}
+        {{if .Detail}}<div class="text-[11px] text-rose-800/80 dark:text-rose-400/80">{{.Detail}}</div>{{end}}
     </div>
 
-    <div class="shrink-0 flex items-center gap-1.5">
+    {{/* The ask itself (mobile-usability pass): a "Needs input" row
+         states the question, its context, when the answer is expected,
+         and what happens without one — CheckpointView already carried
+         all four fields; they were fetched but never rendered. */}}
+    {{if and (eq .Kind "Needs input") .Checkpoint}}
+    <div class="rounded-lg bg-dark-700/60 px-3 py-2 space-y-1">
+        {{if .Checkpoint.TaskForHuman}}<div class="text-[11px] text-gray-500">{{.Checkpoint.TaskForHuman}}</div>{{end}}
+        {{if .Checkpoint.Question}}<div class="text-sm text-gray-100">{{.Checkpoint.Question}}</div>{{end}}
+        {{if .Checkpoint.ExpectedBy}}<div class="text-[11px] text-amber-600 dark:text-amber-400">Answer expected by {{.Checkpoint.ExpectedBy}}</div>{{end}}
+        {{if .Checkpoint.DefaultIfNoResponse}}<div class="text-[11px] text-gray-500">If you don't answer: {{.Checkpoint.DefaultIfNoResponse}}</div>{{end}}
+    </div>
+    {{end}}
+
+    <div class="flex flex-wrap items-center gap-1.5">
     {{if eq .Kind "Needs approval"}}
         {{/* uiApproveTask / uiRejectTask → uiSimpleFlip. Idempotent:
              a from-set of [AWAITING_APPROVAL] means a stale second
@@ -150,10 +186,10 @@
              (it will have already disappeared once the first click's
              fragment swap lands). */}}
         <form hx-post="/ui/tasks/{{.TaskID}}/approve" hx-target="#inbox-item-{{.TaskID}}" hx-swap="outerHTML" class="contents">
-            <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition-colors">Approve</button>
+            <button type="submit" class="flex-1 sm:flex-none px-4 py-2 text-xs font-medium rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition-colors">Approve</button>
         </form>
         <form hx-post="/ui/tasks/{{.TaskID}}/reject" hx-target="#inbox-item-{{.TaskID}}" hx-swap="outerHTML" class="contents">
-            <button type="submit" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-rose-700/80 hover:bg-rose-600 text-white transition-colors">Reject</button>
+            <button type="submit" class="flex-1 sm:flex-none px-4 py-2 text-xs font-medium rounded-lg bg-rose-700/80 hover:bg-rose-600 text-white transition-colors">Reject</button>
         </form>
     {{else if eq .Kind "Needs input"}}
         {{/* uiAnswerCheckpoint. Decision checkpoints get one button per
@@ -163,15 +199,15 @@
              stale row) → no control at all; the row still shows via
              the badge/link so it isn't silently invisible. */}}
         {{if .Checkpoint}}
-        <form hx-post="/ui/tasks/{{.TaskID}}/answer" hx-target="#inbox-item-{{.TaskID}}" hx-swap="outerHTML" class="flex flex-wrap items-center gap-1.5">
+        <form hx-post="/ui/tasks/{{.TaskID}}/answer" hx-target="#inbox-item-{{.TaskID}}" hx-swap="outerHTML" class="flex flex-wrap items-center gap-1.5 w-full">
             <input type="hidden" name="checkpoint_id" value="{{.CheckpointID}}">
             {{if eq .Checkpoint.Kind "decision"}}
                 {{range .Checkpoint.Options}}
-                <button type="submit" name="choice" value="{{.ID}}" class="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-colors">{{.Label}}</button>
+                <button type="submit" name="choice" value="{{.ID}}" class="flex-1 sm:flex-none px-4 py-2 text-xs font-medium rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-colors">{{.Label}}</button>
                 {{end}}
             {{else}}
-                <input type="text" name="content" placeholder="Your answer…" class="w-40 bg-dark-700 border border-dark-600 rounded px-2 py-1 text-xs text-gray-200">
-                <button type="submit" class="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-colors">Answer</button>
+                <input type="text" name="content" placeholder="Your answer…" class="flex-1 min-w-0 bg-dark-700 border border-dark-600 rounded-lg px-3 py-2 text-xs text-gray-200">
+                <button type="submit" class="px-4 py-2 text-xs font-medium rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-colors">Answer</button>
             {{end}}
         </form>
         {{end}}
@@ -179,12 +215,12 @@
         {{/* Phase-3 fix-it deep link (plain navigation — the repair
              chat is its own page) + inline Retry (retryOne via
              TaskRetry). */}}
-        <a href="{{.FixItURL}}" class="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-violet-700/80 hover:bg-violet-600 text-white transition-colors">Help me fix this</a>
+        <a href="{{.FixItURL}}" class="flex-1 sm:flex-none text-center px-4 py-2 text-xs font-medium rounded-lg bg-violet-700/80 hover:bg-violet-600 text-white transition-colors">Help me fix this</a>
         <form hx-post="/ui/tasks/{{.TaskID}}/retry" hx-target="#inbox-item-{{.TaskID}}" hx-swap="outerHTML" class="contents">
-            <button type="submit" class="px-2.5 py-1 text-[11px] font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors">Retry</button>
+            <button type="submit" class="flex-1 sm:flex-none px-4 py-2 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors">Retry</button>
         </form>
     {{else}}
-        <a href="{{.Href}}" class="px-3 py-1.5 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors">{{.Action}} →</a>
+        <a href="{{.Href}}" class="flex-1 sm:flex-none text-center px-4 py-2 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors">{{.Action}} →</a>
     {{end}}
     </div>
 </li>

@@ -131,13 +131,18 @@
                 <a href="/ui/tasks/{{.ID}}"
                    class="tap block glass rounded-xl border border-dark-700 px-4 py-3 active:bg-dark-700/60 transition"
                    style="{{indentStyle $meta.Depth}}"
-                   aria-label="Task {{shortID .ID}} status {{.Status}}{{if gt $meta.Depth 0}} (subtask){{end}}">
+                   aria-label="Task {{shortID .ID}} status {{.Status}}{{if or (gt $meta.Depth 0) $meta.OffPageParent}} (subtask){{end}}">
                     <div class="flex items-center gap-2 mb-1">
-                        {{if gt $meta.Depth 0}}<span class="text-gray-500" aria-hidden="true">↳</span>{{end}}
+                        {{if or (gt $meta.Depth 0) $meta.OffPageParent}}<span class="text-gray-500" aria-hidden="true">↳</span>{{end}}
                         {{statusDot (printf "%s" .Status)}}
                         <span class="font-mono text-sm text-brand-300" title="{{.ID}}">{{shortID .ID}}</span>
                         {{statusPill (printf "%s" .Status)}}
                         {{if gt $meta.ChildCount 0}}<span class="inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-violet-900/40 text-violet-700 dark:text-violet-300 ring-1 ring-violet-700/40" title="{{$meta.ChildCount}} subtask(s)">+{{$meta.ChildCount}}</span>{{end}}
+                        {{/* Off-page parent (2026-07-12 missing-arrow fix):
+                             the card itself is an <a>, so the parent
+                             reference is plain text here — the desktop
+                             table renders it as a real link. */}}
+                        {{if $meta.OffPageParent}}<span class="text-[10px] text-gray-500 truncate" title="{{$meta.OffPageParent}}">subtask of {{shortID $meta.OffPageParent}}</span>{{end}}
                     </div>
                     {{/* Phone card — show the prompt excerpt as the
                          primary visible line so operators can scan
@@ -230,9 +235,12 @@
                                            aria-label="Select task {{shortID .ID}}">
                                 </td>
                                 <td class="px-5 py-3 whitespace-nowrap" style="{{indentStyle $meta.Depth}}">
-                                    {{if gt $meta.Depth 0}}<span class="text-gray-500 mr-1" aria-hidden="true">↳</span>{{end}}
+                                    {{if or (gt $meta.Depth 0) $meta.OffPageParent}}<span class="text-gray-500 mr-1" aria-hidden="true">↳</span>{{end}}
                                     <a href="/ui/tasks/{{.ID}}" class="text-brand-400 hover:text-brand-300 font-mono text-sm" title="{{.ID}}">{{shortID .ID}}</a>
                                     {{if gt $meta.ChildCount 0}}<span class="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-violet-900/40 text-violet-700 dark:text-violet-300 ring-1 ring-violet-700/40" title="{{$meta.ChildCount}} subtask(s)">+{{$meta.ChildCount}}</span>{{end}}
+                                    {{/* Off-page parent (2026-07-12 missing-arrow fix): link
+                                         to the parent the indent can't show. */}}
+                                    {{if $meta.OffPageParent}}<a href="/ui/tasks/{{$meta.OffPageParent}}" class="ml-1.5 text-[10px] text-gray-500 hover:text-gray-300" title="{{$meta.OffPageParent}}">subtask of {{shortID $meta.OffPageParent}}</a>{{end}}
                                 </td>
                                 <td class="px-5 py-3 whitespace-nowrap text-sm text-gray-300"><a href="/ui/projects/{{.ProjectID}}" class="hover:text-gray-100">{{.ProjectID}}</a></td>
                                 <td class="px-5 py-3 whitespace-nowrap">{{template "taskStatusBadge" .Status}}</td>

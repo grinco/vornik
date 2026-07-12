@@ -210,24 +210,28 @@ func (p *dbBackedPublisher) Subscribe(executionID string, fromSeq int64) (<-chan
 	// fromSeq is older, fetch the missing prefix from the DB and
 	// inject it before the live subscribe so the subscriber sees
 	// a continuous stream.
-	if fromSeq > 0 {
-		p.inner.mu.Lock()
-		s, exists := p.inner.streams[executionID]
-		p.inner.mu.Unlock()
-		var oldestInMem int64 = -1
-		if exists {
-			s.mu.Lock()
-			if len(s.ring) > 0 {
-				oldestInMem = s.ring[0].Seq
-			}
-			s.mu.Unlock()
+	//
+	// fromSeq=0 (a fresh page load asking for everything) goes
+	// through the same probe — pre-2026-07-12 it was excluded
+	// (`if fromSeq > 0`), so after a daemon restart (empty ring)
+	// the live page rendered no history at all and its tool-call
+	// list disagreed with the audit log.
+	p.inner.mu.Lock()
+	s, exists := p.inner.streams[executionID]
+	p.inner.mu.Unlock()
+	var oldestInMem int64 = -1
+	if exists {
+		s.mu.Lock()
+		if len(s.ring) > 0 {
+			oldestInMem = s.ring[0].Seq
 		}
-		// "DB might cover the gap" condition: the ring is empty
-		// (fresh subscriber on this replica) OR the oldest ring
-		// entry is newer than fromSeq.
-		if oldestInMem < 0 || fromSeq < oldestInMem {
-			p.replayFromDB(executionID, fromSeq, oldestInMem)
-		}
+		s.mu.Unlock()
+	}
+	// "DB might cover the gap" condition: the ring is empty
+	// (fresh subscriber on this replica) OR the oldest ring
+	// entry is newer than fromSeq.
+	if oldestInMem < 0 || fromSeq < oldestInMem {
+		p.replayFromDB(executionID, fromSeq, oldestInMem)
 	}
 	return p.inner.Subscribe(executionID, fromSeq)
 }

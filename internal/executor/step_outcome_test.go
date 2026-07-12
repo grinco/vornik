@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"vornik.io/vornik/internal/executor/livepubsub"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/stepoutcome"
 )
@@ -635,4 +636,85 @@ func TestBudgetStamp_agentVsNonAgent(t *testing.T) {
 
 func (s *stubStepOutcomeRepo) StepLatencyP95ByStep(context.Context, time.Time) ([]persistence.StepLatencyStat, error) {
 	return nil, nil
+}
+
+// TestStepOutcome_PublishesOutcomeRecordedLiveEvent is the regression test
+// for the 2026-07-12 deep-research live-view report (tasks
+// task_20260712145902_794fee6902cf2722 / _18667395d2826b72): per-attempt
+// outcome rows (research_infra_retryN failed/ok) landed in the DB but no
+// outcome_recorded live event was ever published, so the live page's retry
+// cards — created implicitly by their tool_call events — stayed "running"
+// forever. Recording (and finalizing) an outcome must broadcast it.
+func TestStepOutcome_PublishesOutcomeRecordedLiveEvent(t *testing.T) {
+	task := &persistence.Task{ID: "t1", ProjectID: "p1"}
+	exec := &persistence.Execution{ID: "e-live-outcome"}
+
+	drainOutcomes := func(ch <-chan livepubsub.LiveEvent) []livepubsub.OutcomeRecordedPayload {
+		var out []livepubsub.OutcomeRecordedPayload
+		for {
+			select {
+			case evt := <-ch:
+				if evt.Kind != livepubsub.KindOutcomeRecorded {
+					continue
+				}
+				p, ok := evt.Payload.(livepubsub.OutcomeRecordedPayload)
+				if !ok {
+					t.Fatalf("outcome_recorded payload has unexpected type %T", evt.Payload)
+				}
+				out = append(out, p)
+			case <-time.After(200 * time.Millisecond):
+				return out
+			}
+		}
+	}
+
+	t.Run("record broadcasts per-attempt outcome", func(t *testing.T) {
+		repo := newStubStepOutcomeRepo()
+		pub := livepubsub.New(50)
+		ch, cancel, err := pub.Subscribe(exec.ID, 0)
+		require.NoError(t, err)
+		defer cancel()
+		e := &Executor{outcomeRepo: repo, livePub: pub, logger: zerolog.Nop()}
+
+		e.recordStepOutcome(context.Background(), task, exec, "research_infra_retry1",
+			"researcher", "m", string(stepoutcome.Failed),
+			stepoutcome.ClassContainerNonZeroExit, "boom", nil, nil)
+
+		got := drainOutcomes(ch)
+		require.Len(t, got, 1)
+		assert.Equal(t, "research_infra_retry1", got[0].StepID)
+		assert.Equal(t, string(stepoutcome.Failed), got[0].Class)
+	})
+
+	t.Run("finalize broadcasts the flipped outcome", func(t *testing.T) {
+		repo := newStubStepOutcomeRepo()
+		pub := livepubsub.New(50)
+		e := &Executor{outcomeRepo: repo, livePub: pub, logger: zerolog.Nop()}
+		e.recordStepOutcome(context.Background(), task, exec, "research",
+			"researcher", "m", string(stepoutcome.PendingValidation), "", "", nil, nil)
+
+		ch, cancel, err := pub.Subscribe(exec.ID, 0)
+		require.NoError(t, err)
+		defer cancel()
+		e.finalizePendingOutcome(context.Background(), exec.ID, "research",
+			string(stepoutcome.ParseError), stepoutcome.ClassParseInvalidJSON, "bad", nil)
+
+		got := drainOutcomes(ch)
+		// The pending record event replays too (subscribed after it? no —
+		// subscribed before finalize, after record; record's event is in the
+		// ring and replays). Assert the FINAL event carries the flipped class.
+		require.NotEmpty(t, got)
+		last := got[len(got)-1]
+		assert.Equal(t, "research", last.StepID)
+		assert.Equal(t, string(stepoutcome.ParseError), last.Class)
+	})
+
+	t.Run("nil livePub is a no-op", func(t *testing.T) {
+		repo := newStubStepOutcomeRepo()
+		e := &Executor{outcomeRepo: repo, logger: zerolog.Nop()}
+		require.NotPanics(t, func() {
+			e.recordStepOutcome(context.Background(), task, exec, "research",
+				"researcher", "m", string(stepoutcome.Failed), "x", "y", nil, nil)
+		})
+	})
 }

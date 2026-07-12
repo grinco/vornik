@@ -115,13 +115,19 @@ func TestSubscribe_RingOverflowDropsOldest(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		p.Publish(ctx, "exec_1", KindStepStarted, StepStartedPayload{StepID: "s"})
 	}
-	// Subscribe AFTER overflow. Ring keeps the last 3 (seq 2/3/4).
+	// Subscribe AFTER overflow. Ring keeps the last 3 (seq 2/3/4);
+	// since 2026-07-12 the truncated fromSeq=0 replay is announced
+	// with a leading replay_gap marker.
 	ch, cancel, _ := p.Subscribe("exec_1", 0)
 	defer cancel()
 	got := drainCh(ch, 50*time.Millisecond)
-	if len(got) != 3 {
-		t.Fatalf("expected 3 events in ring, got %d", len(got))
+	if len(got) != 4 {
+		t.Fatalf("expected gap marker + 3 ring events, got %d", len(got))
 	}
+	if got[0].Kind != KindReplayGap {
+		t.Fatalf("truncated replay must lead with a gap marker, got %q", got[0].Kind)
+	}
+	got = got[1:]
 	if got[0].Seq != 2 || got[2].Seq != 4 {
 		t.Errorf("expected seqs 2..4, got %d/%d/%d", got[0].Seq, got[1].Seq, got[2].Seq)
 	}
@@ -226,9 +232,10 @@ func TestPublish_ConcurrentSafe(t *testing.T) {
 	ch, cancel, _ := p.Subscribe("exec_1", 0)
 	defer cancel()
 	got := drainCh(ch, 50*time.Millisecond)
-	// We sent 100 events into a ring of 50; replay should be 50.
-	if len(got) != 50 {
-		t.Errorf("expected ring of 50 after 100 concurrent publishes, got %d", len(got))
+	// We sent 100 events into a ring of 50; replay should be 50 plus
+	// the (post-2026-07-12) gap marker announcing the truncation.
+	if len(got) != 51 || got[0].Kind != KindReplayGap {
+		t.Errorf("expected gap marker + ring of 50 after 100 concurrent publishes, got %d (first kind %q)", len(got), got[0].Kind)
 	}
 }
 
@@ -260,5 +267,69 @@ func TestSubscribe_EmptyExecutionIDErrors(t *testing.T) {
 	p := New(10)
 	if _, _, err := p.Subscribe("", 0); err == nil {
 		t.Error("expected error on empty execution_id")
+	}
+}
+
+// TestSubscribe_FullReplayNotTruncatedByChannelCap is the regression test for
+// the 2026-07-12 deep-research live-view report (tasks
+// task_20260712145902_794fee6902cf2722 / _18667395d2826b72): Subscribe
+// enqueued the ring replay into a fixed 64-capacity channel best-effort, so a
+// fresh page load of an execution with >64 buffered events silently dropped
+// everything after the 64th — the operator saw tool calls only from the first
+// attempt and fewer than the audit log. The replay must be delivered whole.
+func TestSubscribe_FullReplayNotTruncatedByChannelCap(t *testing.T) {
+	p := New(500)
+	ctx := context.Background()
+	const n = 150
+	for i := 0; i < n; i++ {
+		p.Publish(ctx, "exec-full-replay", KindToolCallStarted, ToolCallStartedPayload{StepID: "research"})
+	}
+	ch, cancel, err := p.Subscribe("exec-full-replay", 0)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer cancel()
+	got := drainCh(ch, 2*time.Second)
+	if len(got) != n {
+		t.Fatalf("replay delivered %d events, want %d (truncated by channel capacity)", len(got), n)
+	}
+	for i, e := range got {
+		if e.Seq != int64(i) {
+			t.Fatalf("replay out of order: got[%d].Seq = %d", i, e.Seq)
+		}
+	}
+}
+
+// TestSubscribe_GapMarkerForZeroCursorAfterOverflow: a fromSeq=0 subscriber
+// asking for "everything" on a stream whose ring already dropped the oldest
+// events must get a replay_gap marker — pre-fix the marker fired only for
+// fromSeq>0, so a fresh page load was silently partial (same 2026-07-12
+// incident as above).
+func TestSubscribe_GapMarkerForZeroCursorAfterOverflow(t *testing.T) {
+	p := New(5)
+	ctx := context.Background()
+	for i := 0; i < 10; i++ {
+		p.Publish(ctx, "exec-gap-zero", KindToolCallStarted, nil)
+	}
+	ch, cancel, err := p.Subscribe("exec-gap-zero", 0)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer cancel()
+	got := drainCh(ch, time.Second)
+	if len(got) == 0 {
+		t.Fatal("expected replay, got nothing")
+	}
+	if got[0].Kind != KindReplayGap {
+		t.Fatalf("first frame must be a replay_gap marker, got %q", got[0].Kind)
+	}
+	// A fresh stream with the full history still present must NOT gap.
+	p2 := New(50)
+	p2.Publish(ctx, "exec-no-gap", KindToolCallStarted, nil)
+	ch2, cancel2, _ := p2.Subscribe("exec-no-gap", 0)
+	defer cancel2()
+	got2 := drainCh(ch2, 500*time.Millisecond)
+	if len(got2) != 1 || got2[0].Kind == KindReplayGap {
+		t.Fatalf("intact ring must replay without a gap marker, got %+v", got2)
 	}
 }

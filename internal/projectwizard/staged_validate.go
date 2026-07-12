@@ -94,7 +94,10 @@ func stageBundleForValidation(liveConfigDir string, files map[string]string) (st
 	}()
 
 	for target, body := range files {
-		full := filepath.Join(tempDir, target)
+		full, pathErr := safeComposerPath(tempDir, target)
+		if pathErr != nil {
+			return stagedValidationResult{}, fmt.Errorf("unsafe staged target %s: %w", target, pathErr)
+		}
 		if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
 			return stagedValidationResult{}, fmt.Errorf("mkdir %s: %w", filepath.Dir(full), err)
 		}

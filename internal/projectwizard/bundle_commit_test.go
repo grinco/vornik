@@ -97,6 +97,24 @@ func TestStageAndCommitBundle_NoFiles(t *testing.T) {
 	}
 }
 
+func TestStageAndCommitBundle_RejectsUnsafeSessionID(t *testing.T) {
+	if err := stageAndCommitBundle(t.TempDir(), "../escape", map[string]string{"projects/x.yaml": "x"}); err == nil {
+		t.Fatal("expected unsafe session id to be rejected")
+	}
+}
+
+func TestStageAndCommitBundle_RejectsUnsafeRelPath(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(filepath.Dir(root), "escape.yaml")
+	err := stageAndCommitBundle(root, "sess-safe", map[string]string{"projects/../../escape.yaml": "x"})
+	if err == nil {
+		t.Fatal("expected unsafe rel path to be rejected")
+	}
+	if _, statErr := os.Stat(outside); !os.IsNotExist(statErr) {
+		t.Fatalf("unsafe rel path must not write outside live config dir, stat=%v", statErr)
+	}
+}
+
 // TestStageAndCommitBundle_DependencyOrder_ProjectLast is the design's
 // own assertion (§5.6 step 3 / §8 "journaled commit: dependency
 // order"): by the time the rename sequence reaches the project file,

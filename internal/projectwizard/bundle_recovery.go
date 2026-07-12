@@ -53,7 +53,11 @@ func (j LeftoverJournal) ProjectFileLive(liveConfigDir string) bool {
 	if j.ProjectRelPath == "" {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(liveConfigDir, filepath.FromSlash(j.ProjectRelPath)))
+	projectPath, pathErr := safeComposerPath(liveConfigDir, j.ProjectRelPath)
+	if pathErr != nil {
+		return false
+	}
+	_, err := os.Stat(projectPath)
 	return err == nil
 }
 

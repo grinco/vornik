@@ -869,7 +869,8 @@ type Server struct {
 	// (skill_propose/search/get/list/approve/reject). Nil-safe: those
 	// tools return "skill store not wired on this daemon" when unset,
 	// so minimal harnesses/tests keep working.
-	skillStore persistence.SkillRepository
+	skillStore    persistence.SkillRepository
+	execSkillRepo persistence.ExecutionInjectedSkillRepository
 	// proposalStore backs the control-plane proposal ledger (operator
 	// REST surface: propose/list/get/decide). Nil-safe.
 	proposalStore persistence.ProposalRepository
@@ -1949,6 +1950,17 @@ func WithMemoryCompanionAdapter(a MemoryCompanionAdapter) ServerOption {
 func WithSkillStore(repo persistence.SkillRepository) ServerOption {
 	return func(s *Server) {
 		s.skillStore = repo
+	}
+}
+
+// WithExecutionSkillRepository wires the (execution, skill)
+// association store the SkillFetch endpoint records into, so
+// creditSkillsWorked can later credit "worked" to skills the agent
+// actually fetched (progressive-disclosure injection v2). Nil skips
+// the association; fetches still serve bodies.
+func WithExecutionSkillRepository(repo persistence.ExecutionInjectedSkillRepository) ServerOption {
+	return func(s *Server) {
+		s.execSkillRepo = repo
 	}
 }
 

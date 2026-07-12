@@ -189,7 +189,7 @@ type agentInputOpts struct {
 	// store-design). Empty when the store is unwired or nothing
 	// matches. Populated at workspace-prep time alongside
 	// CanonicalContext.
-	Skills []SkillBlock
+	Skills []SkillIndexEntry
 }
 
 // RecoveryContext carries the failure shape the on_fail handler

@@ -66,6 +66,80 @@ func TestHandleSelectedWorkflowRoute_NotFired(t *testing.T) {
 	}
 }
 
+// TestHandleSelectedWorkflowRoute_DelegatorNotHijacked is the regression test
+// for incident task_20260712143854_429a3500d692d23c (2026-07-12): the first
+// deep-research task on the assistant project. deep-research's decompose is a
+// resume_after_children ENTRYPOINT (so isStrictRouteStep=true) that delegates
+// via delegatedTasks with a pinned delegated_workflow — and the assistant
+// project HAS an adaptiveCandidateWorkflows list. Pre-fix,
+// handleSelectedWorkflowRoute hijacked the step: the lead's delegatedTasks
+// plan carries no selected_workflow → corrective retry forced a pick from the
+// candidate list → the lead picked "deep-research" (the parent's own
+// workflow) → the same-workflow loop guard failed the task on all 3 attempts.
+// A delegator step must report fired=false so handleDelegatedTasks owns it.
+func TestHandleSelectedWorkflowRoute_DelegatorNotHijacked(t *testing.T) {
+	e := &Executor{}
+	task := &persistence.Task{ID: "p1"}
+	exec := &persistence.Execution{ID: "e1"}
+	deepResearch := &registry.Workflow{ID: "deep-research", Entrypoint: "decompose", ResumeAfterChildren: true}
+	plan := &executionPlan{
+		workflow: deepResearch,
+		project:  &registry.Project{AdaptiveCandidateWorkflows: []string{"research", "deep-research", "publish"}},
+	}
+	state := &executionState{}
+
+	cases := []struct {
+		name   string
+		step   registry.WorkflowStep
+		result *agentStepResult
+	}{
+		{
+			name: "pinned delegator with a delegatedTasks plan",
+			step: registry.WorkflowStep{DelegatedWorkflow: "research-subtask"},
+			result: &agentStepResult{
+				DelegationMode: "SEQUENTIAL",
+				DelegatedTasks: []delegatedTaskSpec{{Prompt: "sub-question 1"}},
+			},
+		},
+		{
+			// A lead misfire on a pinned delegator must fall through to the
+			// empty-delegation guard (accurate cause), not a route corrective
+			// retry that forces a bogus workflow pick.
+			name:   "pinned delegator with an empty result must not corrective-retry",
+			step:   registry.WorkflowStep{DelegatedWorkflow: "research-subtask"},
+			result: &agentStepResult{},
+		},
+		{
+			name: "unpinned step whose result carries delegatedTasks",
+			step: registry.WorkflowStep{},
+			result: &agentStepResult{
+				DelegatedTasks: []delegatedTaskSpec{{Prompt: "sub-question 1"}},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fired, cid, res, gotCompleted, err := e.handleSelectedWorkflowRoute(
+				context.Background(), task, exec, plan, "decompose", tc.step,
+				0, &agentInputOpts{}, nil, tc.result, false, state, []string{}, "cid-x", []byte("res-x"),
+			)
+			if fired {
+				t.Fatal("delegator step must not be treated as a strict route, got fired=true")
+			}
+			if cid != "" || res != nil {
+				t.Fatalf("not-fired path must return zero container/result, got cid=%q res=%q", cid, res)
+			}
+			if len(gotCompleted) != 0 {
+				t.Fatalf("completedSteps must be untouched, got %v", gotCompleted)
+			}
+			if err != nil {
+				t.Fatalf("not-fired path must not error, got %v", err)
+			}
+		})
+	}
+}
+
 // TestHandleDelegatedTasks_Empty pins the no-delegation guard: an agent result
 // with no delegatedTasks reports fired=false and creates nothing.
 func TestHandleDelegatedTasks_Empty(t *testing.T) {

@@ -36,3 +36,26 @@ func TestIsStrictRouteStep(t *testing.T) {
 		})
 	}
 }
+
+// TestIsDelegatorStep pins the router/delegator discriminator introduced for
+// incident task_20260712143854_429a3500d692d23c: a step that pins
+// delegated_workflow contractually delegates via delegatedTasks and must be
+// excluded from both selected_workflow spawn paths.
+func TestIsDelegatorStep(t *testing.T) {
+	cases := []struct {
+		name string
+		step registry.WorkflowStep
+		want bool
+	}{
+		{"pinned delegated_workflow", registry.WorkflowStep{DelegatedWorkflow: "research-subtask"}, true},
+		{"whitespace-only pin is no pin", registry.WorkflowStep{DelegatedWorkflow: "  "}, false},
+		{"no pin", registry.WorkflowStep{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isDelegatorStep(tc.step); got != tc.want {
+				t.Errorf("isDelegatorStep(%+v) = %v, want %v", tc.step, got, tc.want)
+			}
+		})
+	}
+}

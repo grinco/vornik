@@ -426,7 +426,7 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// CanonicalContext so an adaptive re-spawn reusing prior opts
 	// doesn't double-load.
 	if len(opts.Skills) == 0 {
-		opts.Skills = e.resolveSkills(ctx, task.ProjectID, step.Role, execution.ID)
+		opts.Skills = e.resolveSkillIndex(ctx, task.ProjectID, step.Role)
 	}
 	input := buildAgentInput(task, execution.ID, plan.workflow.ID, swarmID, stepID, step.Role, step.Prompt, opts)
 	// 0o600 — task.json holds the step prompt + any inline
@@ -762,6 +762,21 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 		if missing := validateRequiredOutputKeys(resultBytes, roleConfig.RequiredOutputKeys); len(missing) > 0 {
 			agentError = fmt.Sprintf("schema violation: role %q result.json is missing required keys: %v",
 				step.Role, missing)
+		}
+	}
+
+	// Output-file contract: a step declaring require_output_glob must
+	// have written at least one matching file DURING this step, or it
+	// fails loud with the "schema violation:" prefix (one corrective
+	// shape retry, then on_fail). Incident
+	// task_20260712143854_429a3500d692d23c: 7 of 8 deep-research
+	// subtasks completed without writing their promised findings file
+	// and the parent chain "succeeded" into an empty publish.
+	if agentError == "" && step.RequireOutputGlob != "" {
+		if !outputGlobSatisfied(workspaceDir, effectiveProjectDir, step.RequireOutputGlob, stepStart) {
+			agentError = fmt.Sprintf(
+				"schema violation: output contract for step %q not met — no file matching %q was written during this step. You MUST write the declared output file before finishing.",
+				stepID, step.RequireOutputGlob)
 		}
 	}
 

@@ -992,6 +992,13 @@ func (s *Server) apiV1ProjectsHandler(w http.ResponseWriter, r *http.Request) {
 			s.MemorySearch(w, r)
 			return
 		}
+	} else if remaining == "/skills/fetch" || remaining == "/skills/fetch/" {
+		// GET /skills/fetch?name=<n>&execution_id=<eid> — the agent's
+		// skill_fetch tool (progressive-disclosure injection v2).
+		if r.Method == http.MethodGet {
+			s.SkillFetch(w, r, projectID)
+			return
+		}
 	} else if remaining == "/memory/feedback" || remaining == "/memory/feedback/" {
 		// GET /memory/feedback?days=<n>&sample=<n>
 		if r.Method == http.MethodGet {

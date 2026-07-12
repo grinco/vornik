@@ -248,6 +248,22 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			respondError(w, http.StatusServiceUnavailable, "MODEL_UNHEALTHY", err.Error())
 			return
 		}
+		// Context-window overflow is a deterministic 400, not an upstream
+		// outage — sanitizing it into PROVIDER_ERROR (as before 2026-07-12)
+		// made the executor infra-retry an identical oversized prompt ~12
+		// times per execution. Return a distinct code so the agent can
+		// compact-and-retry and the retry ladder stays out of it. The
+		// message is generic (no upstream echo) — the code is the signal.
+		if chat.IsContextOverflow(err) {
+			s.logger.Warn().Err(err).
+				Str("client_model", req.Model).
+				Int("message_count", len(req.Messages)).
+				Msg("chat proxy: prompt exceeds model context window — returning 400 CONTEXT_OVERFLOW")
+			s.emitLLMCallFinishedErr(ctx, executionID, req.Model, err, time.Since(auditStart))
+			respondError(w, http.StatusBadRequest, "CONTEXT_OVERFLOW",
+				"prompt exceeds the model's context window — compact the conversation or reduce input")
+			return
+		}
 		// 502 rather than 500: from the agent's point of view this is
 		// an upstream failure (Claude rate-limited, CLI subprocess
 		// crashed, gateway 5xx, etc.) — not a bug in vornik's handler.

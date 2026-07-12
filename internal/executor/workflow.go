@@ -991,6 +991,14 @@ func (e *Executor) handleSelectedWorkflowRoute(
 	if routeAlreadyHandled || !isStrictRouteStep(plan.workflow, currentStepID) || plan.project == nil || len(plan.project.AdaptiveCandidateWorkflows) == 0 {
 		return false, "", nil, completedSteps, nil
 	}
+	// A delegator step (pinned delegated_workflow, or a result already
+	// carrying delegatedTasks) is not a router: handleDelegatedTasks owns it.
+	// Without this, a delegating entrypoint in a project WITH a candidate
+	// list gets corrective-retried into picking a workflow — incident
+	// task_20260712143854_429a3500d692d23c (see isDelegatorStep).
+	if isDelegatorStep(step) || len(result.DelegatedTasks) > 0 {
+		return false, "", nil, completedSteps, nil
+	}
 	badPick := result.SelectedWorkflow != "" && !slices.Contains(plan.project.AdaptiveCandidateWorkflows, result.SelectedWorkflow)
 	emptyPick := result.SelectedWorkflow == ""
 	if badPick || emptyPick {
@@ -1210,7 +1218,12 @@ func (e *Executor) dispatchAgentStep(
 			Msg("resume guard: parent resumed after children — surfacing child outcomes, skipping LLM + spawn")
 		return "", resultBytes, nil
 	}
-	if isStrictRouteStep(plan.workflow, currentStepID) && plan.project != nil && len(plan.project.AdaptiveCandidateWorkflows) == 1 {
+	// Delegator steps (pinned delegated_workflow) are excluded: their LLM pass
+	// produces the delegatedTasks plan, so auto-synthesising a
+	// selected_workflow here would skip the decompose entirely (latent variant
+	// of incident task_20260712143854_429a3500d692d23c on a single-candidate
+	// project).
+	if isStrictRouteStep(plan.workflow, currentStepID) && !isDelegatorStep(step) && plan.project != nil && len(plan.project.AdaptiveCandidateWorkflows) == 1 {
 		only := plan.project.AdaptiveCandidateWorkflows[0]
 		e.logger.Info().
 			Str("task_id", task.ID).

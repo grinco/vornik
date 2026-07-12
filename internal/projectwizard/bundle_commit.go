@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/safepath"
 )
 
 // composerStagingDirName is the subdirectory of LiveConfigDir every
@@ -166,6 +167,9 @@ func stageAndCommitBundle(liveConfigDir, sessionID string, files map[string]stri
 	if strings.TrimSpace(liveConfigDir) == "" {
 		return errors.New("no live config directory wired for bundle commit")
 	}
+	if !isSafeProjectID(sessionID) {
+		return errors.New("unsafe session id for bundle commit")
+	}
 	if len(files) == 0 {
 		return errors.New("no files to commit")
 	}
@@ -191,7 +195,10 @@ func stageAndCommitBundle(liveConfigDir, sessionID string, files map[string]stri
 	order := orderedRelPaths(files)
 	journal := commitJournal{SessionID: sessionID, CreatedAt: time.Now().UTC()}
 	for _, rel := range order {
-		stagingPath := filepath.Join(stageDir, filepath.FromSlash(rel))
+		stagingPath, pathErr := safeComposerPath(stageDir, rel)
+		if pathErr != nil {
+			return fmt.Errorf("render staged file %s: %w", rel, pathErr)
+		}
 		if mkErr := os.MkdirAll(filepath.Dir(stagingPath), 0o700); mkErr != nil {
 			return fmt.Errorf("render staged file %s: %w", rel, mkErr)
 		}
@@ -211,7 +218,11 @@ func stageAndCommitBundle(liveConfigDir, sessionID string, files map[string]stri
 
 	var landed []journalTarget
 	for _, target := range journal.Targets {
-		livePath := filepath.Join(liveConfigDir, filepath.FromSlash(target.RelPath))
+		livePath, pathErr := safeComposerPath(liveConfigDir, target.RelPath)
+		if pathErr != nil {
+			rollbackLandedTargets(liveConfigDir, landed)
+			return fmt.Errorf("prepare live path for %s: %w", target.RelPath, pathErr)
+		}
 		if mkErr := os.MkdirAll(filepath.Dir(livePath), 0o700); mkErr != nil {
 			rollbackLandedTargets(liveConfigDir, landed)
 			return fmt.Errorf("prepare live directory for %s: %w", target.RelPath, mkErr)
@@ -235,12 +246,33 @@ func stageAndCommitBundle(liveConfigDir, sessionID string, files map[string]stri
 // error is what's returned.
 func rollbackLandedTargets(liveConfigDir string, landed []journalTarget) {
 	for i := len(landed) - 1; i >= 0; i-- {
-		path := filepath.Join(liveConfigDir, filepath.FromSlash(landed[i].RelPath))
+		path, pathErr := safeComposerPath(liveConfigDir, landed[i].RelPath)
+		if pathErr != nil {
+			log.Warn().Err(pathErr).Str("rel_path", landed[i].RelPath).
+				Msg("composer: rollback skipped unsafe journal target")
+			continue
+		}
 		if rmErr := removeFn(path); rmErr != nil && !os.IsNotExist(rmErr) {
 			log.Warn().Err(rmErr).Str("path", path).
 				Msg("composer: rollback failed to remove a landed file")
 		}
 	}
+}
+
+func safeComposerPath(root, rel string) (string, error) {
+	rel = filepath.ToSlash(strings.TrimSpace(rel))
+	if rel == "" || filepath.IsAbs(rel) || strings.Contains(rel, "..") || strings.Contains(rel, "\\") ||
+		filepath.Clean(rel) != filepath.FromSlash(rel) {
+		return "", fmt.Errorf("unsafe composer path %q", rel)
+	}
+	switch {
+	case strings.HasPrefix(rel, "projects/") && strings.HasSuffix(rel, ".yaml"):
+	case strings.HasPrefix(rel, "swarms/") && strings.HasSuffix(rel, ".md"):
+	case strings.HasPrefix(rel, "workflows/") && strings.HasSuffix(rel, ".md"):
+	default:
+		return "", fmt.Errorf("unexpected composer path %q", rel)
+	}
+	return safepath.JoinUnder(root, filepath.FromSlash(rel))
 }
 
 // commitBundleSession activates a tier-3 session.Bundle: re-runs the

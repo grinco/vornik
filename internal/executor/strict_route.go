@@ -1,6 +1,10 @@
 package executor
 
-import "vornik.io/vornik/internal/registry"
+import (
+	"strings"
+
+	"vornik.io/vornik/internal/registry"
+)
 
 // isStrictRouteStep reports whether the current step is a strict-adaptive
 // routing step — one that may auto-route / delegate to a child workflow from the
@@ -24,4 +28,28 @@ func isStrictRouteStep(wf *registry.Workflow, stepID string) bool {
 		return true
 	}
 	return wf.ResumeAfterChildren && stepID == wf.Entrypoint
+}
+
+// isDelegatorStep reports whether the step contractually delegates its
+// children via `delegatedTasks` — it pins a step-level `delegated_workflow`
+// (issue-fix's and deep-research's decompose). Such a step is NEVER a
+// strict-adaptive router, even when isStrictRouteStep returns true for it
+// (a resume_after_children entrypoint): its result carries delegatedTasks,
+// not selected_workflow, so the route paths must leave it alone.
+//
+// isStrictRouteStep itself stays broad on purpose — the RESUME guard keys on
+// it and must keep covering delegator entrypoints (re-running issue-fix's
+// decompose on resume would re-spawn its subtasks). Only the two
+// selected_workflow spawn paths (single-candidate auto-route +
+// handleSelectedWorkflowRoute) exclude delegator steps via this check.
+//
+// Incident task_20260712143854_429a3500d692d23c (2026-07-12): the first
+// deep-research run on the assistant project — a project WITH a candidate
+// list — had its decompose step hijacked by handleSelectedWorkflowRoute
+// (the lead's delegatedTasks plan carries no selected_workflow → corrective
+// retry forced a pick → the lead picked "deep-research" → same-workflow
+// loop guard failed the task, 3/3 attempts). issue-fix never hit this
+// because its projects define no adaptiveCandidateWorkflows.
+func isDelegatorStep(step registry.WorkflowStep) bool {
+	return strings.TrimSpace(step.DelegatedWorkflow) != ""
 }

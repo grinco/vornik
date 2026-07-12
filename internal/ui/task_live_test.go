@@ -94,6 +94,12 @@ func TestLiveTask_SeedsPerAttemptOutcomeStatus(t *testing.T) {
 	if !strings.Contains(body, "TIMEOUT") {
 		t.Errorf("failed attempt's error class should surface in the seeded row")
 	}
+	// Seeded rows must carry data-step: the JS layer's ensureStepCard adopts
+	// them by that attribute (2026-07-12 fix — without it a live event for a
+	// seeded step created a duplicate card stuck on "running").
+	if !strings.Contains(body, `data-step="research"`) {
+		t.Errorf("seeded outcome rows must carry data-step for live-card adoption")
+	}
 }
 
 // TestLiveTask_RedirectOnTerminalStatus — visits for COMPLETED /

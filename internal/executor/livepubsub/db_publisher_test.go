@@ -477,3 +477,44 @@ func formatInt(n int64) string {
 	}
 	return string(buf)
 }
+
+// TestDBBackedPublisher_SubscribeZeroFromSeqReplaysFromDB is the regression
+// test for the 2026-07-12 deep-research live-view report: a fresh page load
+// (last_seq=0) skipped the DB replay entirely (`if fromSeq > 0`), so after a
+// daemon restart — empty in-memory ring — the operator saw no history at all,
+// and the live tool-call list disagreed with the audit log. fromSeq=0 must
+// hydrate the ring from the DB like any stale cursor.
+func TestDBBackedPublisher_SubscribeZeroFromSeqReplaysFromDB(t *testing.T) {
+	repo := newFakeLiveEventRepo()
+	for i := 0; i < 3; i++ {
+		pl, _ := json.Marshal(ToolCallStartedPayload{StepID: "research_infra_retry" + itoa(int64(i))})
+		_, _ = repo.Append(context.Background(), "exec-cold-load", "tool_call_started", pl)
+	}
+	pub, shutdown, err := NewDBBacked(context.Background(), NewDBBackedConfig{
+		Repo:   repo,
+		NodeID: "node-cold",
+		Logger: zerolog.Nop(),
+	})
+	if err != nil {
+		t.Fatalf("NewDBBacked: %v", err)
+	}
+	defer shutdown()
+
+	ch, cancel, err := pub.Subscribe("exec-cold-load", 0)
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer cancel()
+
+	got := drainNonBlocking(ch, 200*time.Millisecond, 4)
+	seqs := map[int64]bool{}
+	for _, e := range got {
+		if e.Kind == KindReplayGap {
+			continue
+		}
+		seqs[e.Seq] = true
+	}
+	if !seqs[0] || !seqs[1] || !seqs[2] {
+		t.Errorf("fromSeq=0 must replay the DB-persisted prefix; got seqs %v", seqs)
+	}
+}

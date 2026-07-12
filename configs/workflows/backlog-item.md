@@ -1,8 +1,14 @@
 ---
 workflowId: "backlog-item"
 displayName: "Backlog Item → Draft PR"
-description: "Backlog autonomy's TDD delivery pipeline for ONE framed BACKLOG.md item. v2 mirrors issue-fix's proven shape: a decompose step (lead) splits the item's full scope into self-contained subtasks emitted as delegatedTasks (SEQUENTIAL, each pinned to issue-subtask) — the engine schedules and runs each in a fresh worktree, merging to the project clone — then a tester ACTUALLY RUNS the aggregate suite (gate testing.passed) before a reviewer checks the aggregate diff; rejection/red tests loop through a bounded remediate step; green+approval opens a DRAFT PR (forge, no issue linkage). This replaces the v1 single-container analyze→implement loop, which exhausted its visit/timeout budget on feature-sized items. The dispatched prompt IS the spec — no BACKLOG.md reading or feature selection happens here."
-version: "2.0.0"
+description: "Backlog autonomy's TDD delivery pipeline for ONE framed BACKLOG.md item. v2 mirrors issue-fix's proven shape: a decompose step (lead) splits the item's full scope into self-contained subtasks emitted as delegatedTasks (SEQUENTIAL, each pinned to issue-subtask) — the engine schedules and runs each in a fresh worktree, merging to the project clone — then a tester ACTUALLY RUNS the aggregate suite (gate testing.passed) before a reviewer CODE-REVIEWS the aggregate diff (scope + design fit + correctness + test adequacy + maintainability, severity-classified; blocker/major rejects); rejection/red tests loop through a bounded remediate step; green+approval opens a DRAFT PR (forge, no issue linkage). This replaces the v1 single-container analyze→implement loop, which exhausted its visit/timeout budget on feature-sized items. The dispatched prompt IS the spec — no BACKLOG.md reading or feature selection happens here."
+version: "2.1.0"
+# 2026-07-12 (v2.1): the review step is upgraded from a scope-only check to a
+# real pre-PR code review (design fit / correctness / test adequacy /
+# maintainability, severity-classified) — operator found the autonomy PRs'
+# code quality questionable while the scope-only rubric kept approving them.
+# Only blocker/major findings reject (minor notes are non-blocking) so the
+# bounded remediate loop is spent on material defects, not nitpicks.
 # 2026-07-11: rewritten from the v1 monolithic analyze→implement→test→review
 # loop (which flaked on non-trivial items: one implement container per subtask,
 # maxStepVisits:3, and the autonomy timeout down-scaling killed the coder at
@@ -135,31 +141,53 @@ steps:
       - condition: "review.approved == false"
         target: "remediate"
     prompt: |
-      Every subtask has run and merged to the project branch. Review the AGGREGATE
-      change against the backlog item in your task input. FIRST inspect the real
-      diff (do not review from metadata):
+      Every subtask has run and merged to the project branch. You are the
+      pre-PR CODE REVIEWER — the last gate before a draft PR is opened.
+      Review the AGGREGATE change against the backlog item in your task
+      input, then judge the code itself. FIRST inspect the real diff (do not
+      review from metadata):
         `git --no-pager diff origin/HEAD...HEAD`   # all subtask commits vs upstream
       (also `git --no-pager log --oneline origin/HEAD..HEAD`; if git is restricted,
       read the changed files with the file tools).
       The preceding `test` step already RAN the suite and it was GREEN
       (testing.passed==true is the only path here); its summary is in
       `context.previousStepResult`. Do NOT re-litigate pass/fail from the diff.
-      Judge ONLY against the backlog item:
-        - SCOPE: every part the item asked for is delivered.
-        - Tests cover the change; the diff is relevant and minimal.
-        - A test that references a function the diff never implements is NOT an
-          acceptable "xfail" — the tests and their implementation must land
-          together. REJECT if any required behaviour is tested but unimplemented.
-        - REJECT if scope is incomplete, the diff is empty/irrelevant, or it
-          contains any vornik-internal file (.autonomy/, CURRENT_TASK.md,
-          BACKLOG.md, COVERAGE_REPORT.md).
+      Review dimensions, in order:
+        1. SCOPE — every part the item asked for is delivered; the diff is
+           relevant and minimal. A test that references a function the diff
+           never implements is NOT an acceptable "xfail" — the tests and
+           their implementation must land together; tested-but-unimplemented
+           behaviour is a BLOCKER.
+        2. DESIGN FIT — is this the right approach for THIS codebase? Read
+           the surrounding code (do not guess): does the change follow the
+           project's existing architecture, naming and conventions, or does
+           it bolt on a foreign pattern or duplicate an existing helper?
+        3. CORRECTNESS HUNT — walk EVERY file in the diff. Each finding must
+           cite file:symbol and the concrete failure scenario (inputs/state
+           → wrong outcome). No finding without evidence.
+        4. TEST ADEQUACY — not "tests exist": name the specific edge cases
+           the new tests miss (error paths, boundaries, misuse).
+        5. MAINTAINABILITY — duplication, dead code, misleading names,
+           swallowed errors, commented-out code, debug leftovers.
+      Classify every finding blocker / major / minor:
+        - blocker/major: scope gaps, real bugs, design that fights the
+          codebase, new behaviour without a test.
+        - minor: style, naming, small cleanups.
+      REJECT (approved=false) on ANY blocker or major finding, or if the
+      diff is empty/irrelevant, or it contains any vornik-internal file
+      (.autonomy/, CURRENT_TASK.md, BACKLOG.md, COVERAGE_REPORT.md).
+      Do NOT reject on minor-only findings — list them in `message` as
+      non-blocking notes instead: the fix loop is bounded (2 rounds) and
+      must be spent on material defects, not nitpicks.
       Emit review = { approved: <bool>, summary, remaining: [...] }.
-      Set approved=true ONLY if the FULL item is satisfied with tests.
+      Set approved=true ONLY if the FULL item is satisfied with tests AND no
+      blocker/major finding stands.
       ALSO set a top-level `message` field (forwarded to the fixer on rejection):
       when approved=false, `message` MUST contain your concrete findings (what is
-      broken/missing, with file:symbol references) AND the `remaining` items,
-      specific enough to fix without re-reading your reasoning. When approved=true,
-      a one-line summary is enough.
+      broken/missing, with file:symbol references, each labelled blocker or
+      major) AND the `remaining` items, specific enough to fix without
+      re-reading your reasoning. When approved=true, a one-line summary is
+      enough (append any minor notes there).
   remediate:
     type: "agent"
     role: "lead"

@@ -975,6 +975,17 @@
             opts = opts || {};
             if (stepCards[stepID]) return stepCards[stepID];
             document.getElementById('timeline-empty').classList.add('hidden');
+            // Adopt a server-seeded row for this step, if one exists: the
+            // 2026-07-08 fix renders per-attempt outcome rows as static
+            // <li data-seeded> HTML, but those were never registered in
+            // stepCards — a later live event for the same step id created a
+            // DUPLICATE card stuck on "running" next to the correct seeded
+            // badge (2026-07-12 deep-research report). We build the full
+            // card, replace the seeded row in place (keeping timeline
+            // order), and carry its badge state over unless the caller is
+            // explicitly (re)starting the step.
+            const seededRow = document.querySelector(
+                '#timeline > li[data-step="' + (window.CSS && CSS.escape ? CSS.escape(stepID) : stepID) + '"]');
             const li = document.createElement('li');
             li.className = 'px-5 py-3';
             li.dataset.step = stepID;
@@ -1054,7 +1065,20 @@
             details.appendChild(body);
             li.appendChild(details);
             li.appendChild(nowDoing);
-            document.getElementById('timeline').appendChild(li);
+            if (seededRow) {
+                // Preserve the seeded row's final badge (e.g. "failed")
+                // unless this call marks the step active again.
+                if (!opts.active && !opts.completed) {
+                    const seededBadge = seededRow.querySelector('summary > span:last-of-type');
+                    if (seededBadge && seededBadge.textContent) {
+                        badge.textContent = seededBadge.textContent;
+                        badge.className = seededBadge.className;
+                    }
+                }
+                seededRow.replaceWith(li);
+            } else {
+                document.getElementById('timeline').appendChild(li);
+            }
             const card = {
                 li, details, badge, llmStatus,
                 toolSection, toolList,
@@ -1094,8 +1118,10 @@
 
         function onStepCompleted(p) {
             const sid = p.step_id || '';
-            const card = stepCards[sid];
-            if (!card) return;
+            if (!sid) return;
+            // Create-or-adopt: with DB replay the completion may be the
+            // first event we see for this step (2026-07-12 fix).
+            const card = ensureStepCard(sid, {});
             card.badge.textContent = p.outcome ? p.outcome : 'completed';
             card.badge.className = 'inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded ' +
                 ((p.outcome && p.outcome !== 'ok') ? 'bg-rose-500/10 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300' : 'bg-emerald-500/10 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300');
@@ -1301,12 +1327,22 @@
 
         function onOutcomeRecorded(p) {
             const sid = p.step_id;
-            const card = sid ? stepCards[sid] : null;
-            if (!card) return;
+            if (!sid) return;
+            // Create-or-adopt (2026-07-12 fix): retry attempts
+            // (research_infra_retryN and friends) get no step_completed —
+            // this outcome event is the ONLY thing that flips their card
+            // off "running", so it must not be dropped just because the
+            // card doesn't exist yet.
+            const card = ensureStepCard(sid, {});
             if (p.class) {
-                card.badge.textContent = p.class;
+                // pending_validation is an interim state, not a failure —
+                // amber like the server-side seed, not rose.
+                const pending = p.class === 'pending_validation';
+                card.badge.textContent = pending ? 'pending' : p.class;
                 card.badge.className = 'inline-flex items-center px-1.5 py-0.5 text-[10px] font-medium rounded ' +
-                    (p.class === 'ok' ? 'bg-emerald-500/10 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300' : 'bg-rose-500/10 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300');
+                    (p.class === 'ok' ? 'bg-emerald-500/10 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
+                    : pending ? 'bg-amber-500/10 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
+                    : 'bg-rose-500/10 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300');
             }
         }
 

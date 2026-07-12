@@ -219,6 +219,18 @@ type WorkflowStep struct {
 	// Empty = the spec's own workflow, else the project default.
 	DelegatedWorkflow string `yaml:"delegated_workflow,omitempty"`
 
+	// RequireOutputGlob declares a file-output contract for an agent step:
+	// after a successful run, at least one file matching this glob must
+	// have been written during the step, or the step fails with a
+	// "schema violation:" error (which the shape-retry layer corrects
+	// once before giving up). Globs starting with "project/" resolve
+	// against the task's worktree / persistent project dir; anything else
+	// resolves against the step's ephemeral staging workspace. Incident
+	// task_20260712143854_429a3500d692d23c: 7 of 8 deep-research subtasks
+	// COMPLETED without writing their promised findings file, and the
+	// chain "succeeded" all the way to a publisher holding no deliverable.
+	RequireOutputGlob string `yaml:"require_output_glob,omitempty"`
+
 	// MaxVisits optionally bounds how many times THIS step may be entered,
 	// tighter than the workflow-global MaxStepVisits. On the (MaxVisits+1)-th
 	// entry the executor routes to the step's on_fail (preserving the prior

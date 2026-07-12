@@ -179,12 +179,13 @@ func (s *Server) companionToolSkillSearch(ctx context.Context, key *persistence.
 	}
 	// Search surfaces usable skills by default (active + trusted).
 	skills, err := s.skillStore.List(ctx, key.ProjectID, persistence.SkillListFilter{
-		RepoScope:   effectiveRepoScope(key, args.RepoScope),
-		StrictScope: args.StrictScope,
-		Maturities:  []string{persistence.SkillMaturityActive, persistence.SkillMaturityTrusted},
-		Domain:      strings.TrimSpace(args.Domain),
-		Role:        strings.TrimSpace(args.Role),
-		Limit:       args.Limit,
+		RepoScope:     effectiveRepoScope(key, args.RepoScope),
+		StrictScope:   args.StrictScope,
+		Maturities:    []string{persistence.SkillMaturityActive, persistence.SkillMaturityTrusted},
+		Domain:        strings.TrimSpace(args.Domain),
+		Role:          strings.TrimSpace(args.Role),
+		Limit:         args.Limit,
+		IncludeGlobal: true,
 	})
 	if err != nil {
 		return "", fmt.Errorf("search failed: %w", err)
@@ -217,10 +218,11 @@ func (s *Server) companionToolSkillList(ctx context.Context, key *persistence.AP
 		maturities = []string{m}
 	}
 	skills, err := s.skillStore.List(ctx, key.ProjectID, persistence.SkillListFilter{
-		RepoScope:  effectiveRepoScope(key, args.RepoScope),
-		Maturities: maturities,
-		Domain:     strings.TrimSpace(args.Domain),
-		Limit:      args.Limit,
+		RepoScope:     effectiveRepoScope(key, args.RepoScope),
+		Maturities:    maturities,
+		Domain:        strings.TrimSpace(args.Domain),
+		Limit:         args.Limit,
+		IncludeGlobal: true,
 	})
 	if err != nil {
 		return "", fmt.Errorf("list failed: %w", err)
@@ -353,7 +355,7 @@ func (s *Server) resolveSkill(ctx context.Context, key *persistence.APIKey, id, 
 		if err != nil {
 			return nil, fmt.Errorf("skill not found: %w", err)
 		}
-		if skill.ProjectID != key.ProjectID {
+		if skill.ProjectID != key.ProjectID && !skill.IsGlobal {
 			return nil, errors.New("skill not found in this project")
 		}
 		return skill, nil
@@ -361,11 +363,21 @@ func (s *Server) resolveSkill(ctx context.Context, key *persistence.APIKey, id, 
 	if strings.TrimSpace(name) == "" {
 		return nil, errors.New("either id or name is required")
 	}
-	skill, err := s.skillStore.Get(ctx, key.ProjectID, effectiveRepoScope(key, repoScope), name)
+	list, err := s.skillStore.List(ctx, key.ProjectID, persistence.SkillListFilter{
+		RepoScope:     effectiveRepoScope(key, repoScope),
+		StrictScope:   true,
+		Maturities:    []string{persistence.SkillMaturityActive, persistence.SkillMaturityTrusted},
+		IncludeGlobal: true,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("skill not found: %w", err)
 	}
-	return skill, nil
+	for _, skill := range list {
+		if skill.Name == strings.TrimSpace(name) {
+			return skill, nil
+		}
+	}
+	return nil, errors.New("skill not found")
 }
 
 func taskIDFromContext(ctx context.Context) string {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/executor/livepubsub"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/safepath"
 	"vornik.io/vornik/internal/stepoutcome"
@@ -702,6 +703,14 @@ func (e *Executor) recordStepOutcomeWithSignalsAndBudget(
 			Str("step", stepID).
 			Str("outcome", outcome).
 			Msg("step outcome: failed to persist row")
+	} else {
+		// Broadcast so the live view can flip this attempt's card to its
+		// real state. Retry attempts (stepID_infra_retryN / _shape_retry /
+		// _model_fallback) get NO step_completed event — this is the only
+		// signal that marks them failed/ok instead of "running" forever
+		// (2026-07-12 deep-research live-view report).
+		e.emitLive(ctx, execution.ID, livepubsub.KindOutcomeRecorded,
+			livepubsub.OutcomeRecordedPayload{StepID: stepID, Class: outcome, Notes: errorClass})
 	}
 	// Direct-terminal writes (container failure, timeout, cancelled,
 	// degenerate_loop) bypass finalizePendingOutcome — emit the
@@ -742,6 +751,10 @@ func (e *Executor) finalizePendingOutcome(
 	if e.metrics != nil {
 		e.metrics.RecordFinalOutcome(role, model, outcome)
 	}
+	// Mirror the record-time broadcast: the live view seeded/rendered this
+	// step's card off the pending_validation row and needs the flip.
+	e.emitLive(ctx, executionID, livepubsub.KindOutcomeRecorded,
+		livepubsub.OutcomeRecordedPayload{StepID: stepID, Class: outcome, Notes: errorClass})
 }
 
 // sweepPendingOutcomes finalizes any lingering pending_validation rows

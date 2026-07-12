@@ -186,6 +186,7 @@ func (c *Container) initHTTPServer() error {
 		api.WithWebhookEventRepository(c.repos.Webhooks),
 		api.WithAPIKeyRepository(c.repos.APIKeys),
 		api.WithSkillStore(c.repos.Skills),
+		api.WithExecutionSkillRepository(c.repos.ExecInjectedSkills),
 		api.WithProposalStore(c.repos.Proposals),
 		api.WithProposalApplier(c.newProposalApplier()),
 		api.WithDiagnoser(c.newDiagnoser()),
@@ -433,7 +434,12 @@ func (c *Container) initHTTPServer() error {
 	// dispatcher. Wired here (not in the apiOpts literal above) because
 	// the dispatcher's set_secret pipeline needs projectDoctor, which
 	// doesn't exist until this point in initHTTPServer.
-	apiOpts = append(apiOpts, api.WithFixItDoctor(buildFixItDoctorOrNil(c, projectDoctor)))
+	// Held in a variable because the UI server needs the SAME instance
+	// below (uiOpts) — wiring it into apiOpts only left the /ui/fixit
+	// panel permanently "not configured" (2026-07-12 reload-banner
+	// incident; see container_http_fixit_ui_wiring_test.go).
+	fixItDoctor := buildFixItDoctorOrNil(c, projectDoctor)
+	apiOpts = append(apiOpts, api.WithFixItDoctor(fixItDoctor))
 	if reg := c.observabilityRegistry(); reg != nil {
 		if c.rateLimitMetrics == nil {
 			c.rateLimitMetrics = ratelimit.NewMetrics(reg)
@@ -1466,6 +1472,15 @@ func (c *Container) initHTTPServer() error {
 	// got above, so /ui/projects/{id}/setup and the API's doctor
 	// endpoints (and their shared smoke-task state) never disagree.
 	uiOpts = append(uiOpts, ui.WithProjectDoctor(projectDoctor))
+
+	// Fix-It Doctor repair chat — same instance the API server got
+	// above, so the /ui/fixit panel (the failure surfaces' "Help me
+	// fix this" target) and POST /api/v1/fixit never disagree. The
+	// session reader backs ?session= transcript resume on the panel.
+	uiOpts = append(uiOpts, ui.WithFixItDoctor(fixItDoctor))
+	if c.repos.FixItSessions != nil {
+		uiOpts = append(uiOpts, ui.WithFixItSessionReader(c.repos.FixItSessions))
+	}
 
 	// Retention defaults — surfaced on the per-project page so
 	// operators can see which fields are inherited vs overridden.

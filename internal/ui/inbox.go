@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sort"
 	"time"
@@ -17,10 +18,16 @@ type inboxItem struct {
 	TaskID    string
 	ProjectID string
 	Kind      string // human label: "Needs approval" / "Needs input" / "Failed" / "Blocked"
-	Detail    string // error class for failures, etc.
-	Age       string // "5m ago"
-	Action    string // CTA label, e.g. "Approve / reject"
-	Href      string // where the action lives (task detail)
+	// Title is the plain-language headline — the task's prompt excerpt
+	// (taskSummary, same extractor as the tasks page). Empty when the
+	// payload carries no recognisable prompt; the template then falls
+	// back to the raw TaskID (2026-07-12 mobile-usability pass: a row
+	// must say what it's about, not just its id).
+	Title  string
+	Detail string // error class for failures, etc.
+	Age    string // "5m ago"
+	Action string // CTA label, e.g. "Approve / reject"
+	Href   string // where the action lives (task detail)
 
 	// Inline-action fields (task 4.3, design §5.6). Populated only for the
 	// kinds that carry an inline action; zero-valued (harmless) otherwise.
@@ -143,6 +150,7 @@ func newAttentionItem(t *persistence.Task, c inboxCategory, failedCutoff time.Ti
 		TaskID:    t.ID,
 		ProjectID: t.ProjectID,
 		Kind:      c.kind,
+		Title:     taskSummary(t.Payload),
 		Detail:    detail,
 		Age:       humanizeSince(time.Since(t.CreatedAt)) + " ago",
 		Action:    c.action,
@@ -396,6 +404,13 @@ type requestCard struct {
 	StatusLine  string // latest execution_narration line, or a fallback
 	Age         string // "5m ago", request-root creation age
 
+	// CTALabel is the state-specific call to action the card's link
+	// renders ("Approve or reject", "Answer the question", "Fix or
+	// retry", "Watch progress", "See what you got") — computed from the
+	// rollup winner's status so the card says what is expected of the
+	// USER, not a uniform "View" (2026-07-12 mobile-usability pass).
+	CTALabel string
+
 	// Subtasks is the request-root's direct-child count (the "N steps"
 	// pill). 0 hides the pill (CountChildrenForParents' map-absent
 	// convention — a leaf request has no pill).
@@ -450,6 +465,23 @@ var requestBucketLabels = map[string]string{
 	requestBucketNeedsYou: "Needs you",
 	requestBucketWorking:  "Working",
 	requestBucketDone:     "Done",
+}
+
+// requestCTALabels maps a rollup winner's status to the card's call to
+// action — what the USER is expected to do next (2026-07-12
+// mobile-usability pass). Keyed by winner status (not bucket) because
+// the three needs-you states each demand a different act. A status
+// absent here (can't happen for rollup winners — the table below covers
+// every requestRollupRanks key) falls back to "View" in newRequestCard.
+var requestCTALabels = map[persistence.TaskStatus]string{
+	persistence.TaskStatusAwaitingApproval:   "Approve or reject",
+	persistence.TaskStatusAwaitingInput:      "Answer the question",
+	persistence.TaskStatusFailed:             "Fix or retry",
+	persistence.TaskStatusRunning:            "Watch progress",
+	persistence.TaskStatusQueued:             "Watch progress",
+	persistence.TaskStatusWaitingForChildren: "Watch progress",
+	persistence.TaskStatusCompleted:          "See what you got",
+	persistence.TaskStatusCancelled:          "See details",
 }
 
 // rollupBucketForStatuses is the §5.3 precedence table applied to a raw
@@ -647,6 +679,11 @@ func newRequestCard(rootID string, g *requestGroup, winner *persistence.Task, bu
 		rank:          requestRollupRanks[winner.Status].rank,
 		createdAt:     winner.CreatedAt,
 	}
+	if cta, ok := requestCTALabels[winner.Status]; ok {
+		card.CTALabel = cta
+	} else {
+		card.CTALabel = "View"
+	}
 	if childCounts != nil {
 		card.Subtasks = childCounts[rootID]
 	}
@@ -666,13 +703,24 @@ func finishStatusLines(cards []*requestCard, representative map[string]*persiste
 			continue
 		}
 		rep := representative[card.RequestID]
-		if rep != nil && rep.Status == persistence.TaskStatusFailed {
+		switch {
+		case rep != nil && rep.Status == persistence.TaskStatusFailed:
 			class := ""
 			if rep.LastErrorClass != nil {
 				class = *rep.LastErrorClass
 			}
 			card.StatusLine = playbook.Lookup(class).HumanFriendly()
-		} else {
+		case rep != nil && rep.Status == persistence.TaskStatusCompleted && len(card.Deliverables) > 0:
+			// Outcome summary (2026-07-12 mobile-usability pass): a done
+			// card with files must say so, not just "Completed". Runs only
+			// when no narration line exists — a narrated completion already
+			// reads as an outcome.
+			noun := "files"
+			if len(card.Deliverables) == 1 {
+				noun = "file"
+			}
+			card.StatusLine = fmt.Sprintf("Done — %d %s ready below", len(card.Deliverables), noun)
+		default:
 			card.StatusLine = card.fallbackLabel
 		}
 	}

@@ -71,6 +71,28 @@ func TestDispatchAgentStep_SynthesisedPaths(t *testing.T) {
 			t.Fatalf("auto-route must select the only candidate, got %q", parsed.SelectedWorkflow)
 		}
 	})
+
+	// Latent variant of incident task_20260712143854_429a3500d692d23c: a
+	// delegator entrypoint (pinned delegated_workflow, e.g. deep-research's
+	// decompose) on a single-candidate project must NOT be auto-routed — its
+	// LLM pass produces the delegatedTasks plan. The fall-through to the real
+	// agent path panics on this bare Executor (no runtime), which is exactly
+	// the signal that no synthesis happened.
+	t.Run("delegator entrypoint is not auto-routed", func(t *testing.T) {
+		plan := &executionPlan{
+			workflow: &registry.Workflow{ID: "deep-research", Entrypoint: "decompose", ResumeAfterChildren: true},
+			project:  &registry.Project{AdaptiveCandidateWorkflows: []string{"deep-research"}},
+		}
+		step := registry.WorkflowStep{DelegatedWorkflow: "research-subtask"}
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected fall-through to the agent path (panic on bare Executor); a clean return means the step was auto-routed")
+			}
+		}()
+		cid, res, err := e.dispatchAgentStep(context.Background(), task, execution,
+			plan, "decompose", step, 0, &agentInputOpts{}, nil, false, nil)
+		t.Fatalf("delegator step must not synthesize a route, got cid=%q res=%s err=%v", cid, res, err)
+	})
 }
 
 // TestBuildStepFailureRecovery pins the failure-class mapping extracted in

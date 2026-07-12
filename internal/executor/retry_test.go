@@ -385,3 +385,24 @@ func TestInfraRetry_BackoffSchedule(t *testing.T) {
 		t.Errorf("last delay %v exceeds cap %v", delays[len(delays)-1], infraRetryMaxDelay)
 	}
 }
+
+// TestStepIDForInfraAttempt pins the per-attempt naming contract shared by
+// the audit log, step-outcome rows, and (since the 2026-07-12 live-view fix)
+// the live step_started/outcome_recorded events — the UI matches these ids
+// across all three surfaces, so a drift here desynchronises them.
+func TestStepIDForInfraAttempt(t *testing.T) {
+	cases := []struct {
+		attempt int
+		want    string
+	}{
+		{1, "research"},
+		{2, "research_infra_retry1"},
+		{6, "research_infra_retry5"},
+		{0, "research"}, // defensive: below-range attempt keeps the base id
+	}
+	for _, tc := range cases {
+		if got := stepIDForInfraAttempt("research", tc.attempt); got != tc.want {
+			t.Errorf("stepIDForInfraAttempt(research, %d) = %q, want %q", tc.attempt, got, tc.want)
+		}
+	}
+}

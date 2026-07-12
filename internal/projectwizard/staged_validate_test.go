@@ -363,3 +363,15 @@ func TestStageBundleForValidation_RemoveAllFailure_WarnLoggedNotFatal(t *testing
 		t.Errorf("expected the RemoveAll failure to be warn-logged, got %q", buf.String())
 	}
 }
+
+func TestStageBundleForValidation_RejectsUnsafeTarget(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(filepath.Dir(root), "escape.yaml")
+	_, err := stageBundleForValidation(root, map[string]string{"projects/../../escape.yaml": "x"})
+	if err == nil {
+		t.Fatal("expected unsafe target to be rejected")
+	}
+	if _, statErr := os.Stat(outside); !os.IsNotExist(statErr) {
+		t.Fatalf("unsafe validation target must not write outside staging dir, stat=%v", statErr)
+	}
+}

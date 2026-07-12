@@ -313,3 +313,67 @@ func TestTasks_RejectsUnauthorizedProjectFilter(t *testing.T) {
 		t.Fatalf("status=%d, want 403", rec.Code)
 	}
 }
+
+// TestBuildHierarchyMeta_OffPageParentRecorded — a task whose parent
+// is NOT on the current page must still be identifiable as a subtask.
+// Incident (2026-07-12): a backlog-item parent (WAITING_FOR_CHILDREN)
+// was pushed past DefaultPageSize=20 by its own ten issue-subtask
+// children plus companion noise, so the live chain rendered with no
+// ↳ marker at all — the on-page-only Depth heuristic assumed off-page
+// parents are stale, which is exactly wrong for large active chains.
+func TestBuildHierarchyMeta_OffPageParentRecorded(t *testing.T) {
+	onPageParent := &persistence.Task{ID: "task_root"}
+	nested := &persistence.Task{ID: "task_child", ParentTaskID: stringPtr("task_root")}
+	orphan := &persistence.Task{ID: "task_orphan", ParentTaskID: stringPtr("task_offpage")}
+
+	got := buildHierarchyMeta([]*persistence.Task{onPageParent, nested, orphan})
+	if got["task_orphan"].OffPageParent != "task_offpage" {
+		t.Errorf("orphan OffPageParent = %q, want task_offpage", got["task_orphan"].OffPageParent)
+	}
+	if got["task_child"].OffPageParent != "" {
+		t.Errorf("on-page child must not carry OffPageParent, got %q", got["task_child"].OffPageParent)
+	}
+	if got["task_root"].OffPageParent != "" {
+		t.Errorf("root must not carry OffPageParent, got %q", got["task_root"].OffPageParent)
+	}
+}
+
+// TestTasksHandler_OffPageParentStillMarkedAsSubtask — the rendered
+// row for an off-page-parent child must carry the ↳ marker and a
+// "subtask of" reference to the parent (same 2026-07-12 incident as
+// TestBuildHierarchyMeta_OffPageParentRecorded).
+func TestTasksHandler_OffPageParentStillMarkedAsSubtask(t *testing.T) {
+	now := time.Now().UTC()
+	child := &persistence.Task{ID: "task_lonely_child", ProjectID: "p1", Status: persistence.TaskStatusQueued, ParentTaskID: stringPtr("task_offpage_parent"), CreatedAt: now}
+
+	mockRepo := &mocks.MockTaskRepository{
+		ListFunc: func(_ context.Context, _ persistence.TaskFilter) ([]*persistence.Task, error) {
+			return []*persistence.Task{child}, nil
+		},
+		CountByStatusFunc: func(_ context.Context, _ string) (map[persistence.TaskStatus]int64, error) {
+			return map[persistence.TaskStatus]int64{}, nil
+		},
+		CountChildrenForParentsFunc: func(_ context.Context, _ []string) (map[string]int, error) {
+			return map[string]int{}, nil
+		},
+	}
+
+	srv := NewServer(WithTaskRepository(mockRepo))
+	req := httptest.NewRequest("GET", "/tasks", nil)
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != 200 {
+		t.Fatalf("status %d body: %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "↳") {
+		t.Error("expected ↳ marker on a subtask whose parent is off-page")
+	}
+	if !strings.Contains(body, "subtask of") {
+		t.Error("expected a 'subtask of <parent>' reference on the off-page-parent row")
+	}
+	if !strings.Contains(body, "task_offpage_parent") {
+		t.Error("expected the parent task id (link target / title) on the row")
+	}
+}

@@ -72,6 +72,16 @@ type TasksData struct {
 type TaskHierarchyMeta struct {
 	Depth      int
 	ChildCount int
+	// OffPageParent is the ParentTaskID of a subtask whose parent does
+	// NOT render on the current page — Depth stays 0 (no ancestor chain
+	// to indent under) but the row must still read as a subtask.
+	// Incident (2026-07-12): a backlog-item parent was pushed past
+	// DefaultPageSize by its own ten issue-subtask children, so a LIVE
+	// chain lost every ↳ marker; the "off-page parent means the indent
+	// isn't earning anything" assumption in buildHierarchyMeta's doc
+	// comment is wrong exactly when a chain is big enough to matter.
+	// Empty when the task has no parent or the parent is on-page.
+	OffPageParent string
 }
 
 // Tasks renders the tasks list page.
@@ -330,7 +340,16 @@ func buildHierarchyMeta(tasks []*persistence.Task) map[string]TaskHierarchyMeta 
 			depth++
 			cur = parent
 		}
-		out[t.ID] = TaskHierarchyMeta{Depth: depth}
+		meta := TaskHierarchyMeta{Depth: depth}
+		// A subtask must read as one even when its parent isn't on this
+		// page (see the OffPageParent field comment — the 2026-07-12
+		// missing-arrow incident).
+		if t.ParentTaskID != nil && *t.ParentTaskID != "" {
+			if _, ok := onPage[*t.ParentTaskID]; !ok {
+				meta.OffPageParent = *t.ParentTaskID
+			}
+		}
+		out[t.ID] = meta
 	}
 	return out
 }

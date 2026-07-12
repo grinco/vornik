@@ -156,7 +156,7 @@ func buildAgentContextMap(taskType, prompt string, timeContext currentDateTimeCo
 		// Learned skills are operator-approved, so they ride the trusted
 		// directive channel (system prompt), appended after canonical
 		// context (LLD 2026-07-07-knowledge-skill-store-design §4).
-		sp = composeSystemPromptWithSkills(sp, opts.Skills)
+		sp = composeSystemPromptWithSkillIndex(sp, opts.Skills)
 		contextMap["systemPrompt"] = sp
 	}
 	// Adaptive candidate list — the lead picks a value from this slice

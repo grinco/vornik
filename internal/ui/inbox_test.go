@@ -375,13 +375,14 @@ func TestInbox_BroaderList_DedupedAgainstAttention(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.Inbox(rec, httptest.NewRequest(http.MethodGet, "/ui/inbox", nil))
 	body := rec.Body.String()
-	// The card's own "View →" link, not the attention row's inline
-	// approve/reject hx-post targets (which share the "/ui/tasks/t-approve"
-	// prefix via .../approve and .../reject).
-	const cardLink = `href="/ui/tasks/t-approve"`
-	if got := strings.Count(body, cardLink); got != 1 {
+	// The card's own CTA link ("Approve or reject →") renders ONLY on a
+	// request card — the attention row's headline now also links to
+	// /ui/tasks/<id> (2026-07-12 mobile-usability pass), so a bare href
+	// count would double-count. The CTA string is the card-unique marker.
+	const cardCTA = `Approve or reject →`
+	if got := strings.Count(body, cardCTA); got != 1 {
 		t.Errorf("expected the pinned request's card to render exactly once (deduped from the broader list), got %d occurrences of %s:\n%s",
-			got, cardLink, body)
+			got, cardCTA, body)
 	}
 }
 

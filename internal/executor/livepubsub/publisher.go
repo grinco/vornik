@@ -287,7 +287,22 @@ func (p *inProcessPublisher) Subscribe(executionID string, fromSeq int64) (<-cha
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	sub := &subscription{ch: make(chan LiveEvent, 64)}
+	// Collect the replay BEFORE allocating the channel so its capacity
+	// can hold the whole replay plus live headroom. Pre-2026-07-12 the
+	// channel was a fixed 64 and the replay enqueue below was
+	// best-effort — a fresh subscriber on an execution with >64
+	// buffered events silently lost everything after the 64th (the
+	// deep-research live view showed tool calls only from the first
+	// attempt and fewer than the audit log).
+	replay := make([]LiveEvent, 0, len(s.ring))
+	for _, evt := range s.ring {
+		if evt.Seq < fromSeq {
+			continue
+		}
+		replay = append(replay, evt)
+	}
+
+	sub := &subscription{ch: make(chan LiveEvent, len(replay)+1+64)}
 	cancel := func() {
 		if sub.cancelled.Swap(true) {
 			return
@@ -308,15 +323,18 @@ func (p *inProcessPublisher) Subscribe(executionID string, fromSeq int64) (<-cha
 	}
 	sub.cancelFn = cancel
 
-	// Replay ring entries with seq >= fromSeq.
+	// Replay ring entries with seq >= fromSeq. The channel was sized
+	// for the full replay above, so plain sends cannot drop.
 	oldestSeq := int64(-1)
 	if len(s.ring) > 0 {
 		oldestSeq = s.ring[0].Seq
 	}
-	if oldestSeq >= 0 && fromSeq < oldestSeq && fromSeq > 0 {
-		// Gap marker — subscriber asked for events we've already
-		// dropped. Send one synthetic event then fall through to
-		// stream live.
+	if oldestSeq >= 0 && fromSeq < oldestSeq {
+		// Gap marker — the ring has already dropped events the
+		// subscriber asked for. This includes fromSeq=0 ("give me
+		// everything") on a stream whose ring no longer starts at
+		// seq 0 — pre-2026-07-12 that case was silently partial.
+		// Send one synthetic event then fall through to stream live.
 		sub.ch <- LiveEvent{
 			ExecutionID: executionID,
 			Seq:         -1,
@@ -325,17 +343,8 @@ func (p *inProcessPublisher) Subscribe(executionID string, fromSeq int64) (<-cha
 			Payload:     ReplayGapPayload{OldestSeq: oldestSeq},
 		}
 	}
-	for _, evt := range s.ring {
-		if evt.Seq < fromSeq {
-			continue
-		}
-		// Best-effort enqueue; if the buffer is already full we
-		// drop the historical event (caller's channel is too
-		// slow for replay either way).
-		select {
-		case sub.ch <- evt:
-		default:
-		}
+	for _, evt := range replay {
+		sub.ch <- evt
 	}
 	s.subscribers = append(s.subscribers, sub)
 	return sub.ch, cancel, nil

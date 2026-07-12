@@ -86,7 +86,7 @@ tool_is_cacheable_read() {
         mcp__ta__sma|mcp__ta__ema|mcp__ta__rsi|\
         mcp__ta__macd|mcp__ta__bbands|mcp__ta__atr|\
         mcp__news__news_recent|mcp__news__fundamentals_snapshot|\
-        memory_search|get_conversation_window)
+        memory_search|get_conversation_window|skill_fetch)
             return 0
             ;;
     esac
@@ -173,6 +173,22 @@ sys.stdout.write(
 }
 
 # write_result STATUS MESSAGE RESPONSE DURATION [ERROR]
+# clamp_tool_contents FILE CAP — truncate every tool-role message whose
+# content exceeds CAP bytes in the JSON messages FILE, appending a visible
+# truncation marker. Guarantees the conversation can be brought under the
+# model's context budget no matter how fat individual tool results are —
+# keep-tail compaction alone cannot (2026-07-12 incident: six ~256KB scraper
+# results in the kept tail exceeded glm-5's whole window and every LLM call
+# 400'd deterministically; task_20260712145902_18667395d2826b72).
+clamp_tool_contents() {
+    local file="$1" cap="$2"
+    jq --argjson cap "$cap" '
+        map(if .role == "tool" and ((.content // "") | length) > $cap
+            then .content = (.content[:$cap] + "\n…[tool result truncated to fit the model context window]")
+            else . end)
+    ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
 write_result() {
     local status="$1" message="$2" response="$3" duration="$4" error="${5:-}"
 
@@ -734,6 +750,34 @@ LC_EOF
         extras_gated=$(printf '%s' "$extras_gated" | jq --argjson tools "$lifecycle_tools" '. + $tools')
     fi
 
+    # skill_fetch — progressive-disclosure knowledge skills (LLD
+    # 2026-07-12-skill-progressive-disclosure-design). The system
+    # prompt carries a compact LEARNED SKILLS index; this tool pulls a
+    # listed skill's full instructions on demand. Ungated (like
+    # memory_search): the index only appears when skills exist, and a
+    # fetch without an index entry just 404s harmlessly.
+    if [ -n "${VORNIK_API_URL:-}" ]; then
+        local skill_fetch_tool
+        skill_fetch_tool=$(cat <<'SF_EOF'
+{
+    "type": "function",
+    "function": {
+      "name": "skill_fetch",
+      "description": "Fetch the full instructions of a learned skill listed in the LEARNED SKILLS index of your system prompt. Call this BEFORE doing work a listed skill covers, then follow the returned instructions.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "Exact skill name as shown in the LEARNED SKILLS index"}
+        },
+        "required": ["name"]
+      }
+    }
+  }
+SF_EOF
+)
+        extras_ungated=$(printf '%s' "$extras_ungated" | jq --argjson tool "$skill_fetch_tool" '. + [$tool]')
+    fi
+
     printf '%s' "$base_tools" | jq \
         --argjson ungated "$extras_ungated" \
         --argjson gated "$extras_gated" \
@@ -828,6 +872,35 @@ handle_memory_search() {
     # X-API-Key: required since the 2026-06-06 auth flip. This bare curl
     # was the one straggler the dry-run soak caught (401s on
     # /memory/search from live agents).
+    response=$(curl -sS --max-time 10 $VORNIK_CURL_OPT \
+        -H "X-API-Key: ${VORNIK_API_KEY:-}" \
+        "$url" 2>/dev/null || echo '{"error":"request failed"}')
+    printf '%s' "$response"
+}
+
+# Handle skill_fetch tool call (progressive-disclosure skills, LLD
+# 2026-07-12-skill-progressive-disclosure-design). Pulls a learned
+# skill's full body from the daemon; the daemon records the fired
+# signal + the execution association there, so no telemetry here.
+handle_skill_fetch() {
+    local params="$1"
+    local name project_id url encoded_name response
+    name=$(printf '%s' "$params" | jq -r '.name // ""')
+    project_id=$(jq -r '.projectId // .project_id // ""' "$INPUT_FILE")
+
+    if [ -z "${VORNIK_API_URL:-}" ] || [ -z "$project_id" ] || [ -z "$name" ]; then
+        printf '{"error":"skill fetch not available (VORNIK_API_URL=%s project_id=%s name=%s)"}' \
+            "${VORNIK_API_URL:-<unset>}" "${project_id:-<unset>}" "${name:-<unset>}"
+        return
+    fi
+
+    encoded_name=$(printf '%s' "$name" | jq -Rr @uri)
+    url="${VORNIK_API_URL}/api/v1/projects/${project_id}/skills/fetch?name=${encoded_name}"
+    if [ -n "${VORNIK_EXECUTION_ID:-}" ]; then
+        url="${url}&execution_id=${VORNIK_EXECUTION_ID}"
+    fi
+    vornik_resolve_url "$url"; url="$VORNIK_URL"
+
     response=$(curl -sS --max-time 10 $VORNIK_CURL_OPT \
         -H "X-API-Key: ${VORNIK_API_KEY:-}" \
         "$url" 2>/dev/null || echo '{"error":"request failed"}')
@@ -1045,6 +1118,9 @@ PY
             ;;
         memory_search)
             handle_memory_search "$arguments"
+            ;;
+        skill_fetch)
+            handle_skill_fetch "$arguments"
             ;;
         backlog_deposit)
             handle_backlog_deposit "$arguments"
@@ -1895,17 +1971,33 @@ ${previous_result}
     COMPACT_EVERY=8
     KEEP_RECENT=10
 
-    # Size-based compaction threshold: 80% of the model's context window,
-    # converted from tokens to approximate bytes (4 bytes/token for
-    # JSON-encoded chat messages). Falls back to 28000 bytes when
-    # VORNIK_LLM_CONTEXT_SIZE is not configured.
+    # Size-based compaction threshold, converted from tokens to approximate
+    # bytes. 2026-07-12 incident (glm-5 rejected a 194561-token prompt;
+    # task_20260712145902_18667395d2826b72) hardened the math:
+    #   - reserve the OUTPUT budget (max_tokens) + a safety margin — the
+    #     provider counts input+output against the window, the old formula
+    #     counted input only;
+    #   - estimate 3 bytes/token, not 4 — dense JSON/scraped-web content
+    #     tokenizes short, and the old estimate ran ~20% optimistic;
+    #   - keep the 80% factor on top as slack for the system/tools schema.
+    # Falls back to 28000 bytes when VORNIK_LLM_CONTEXT_SIZE is not set.
     SIZE_KEEP_RECENT=6
     if [ "$LLM_CONTEXT_SIZE" -gt 0 ] 2>/dev/null; then
-        SIZE_COMPACT_THRESHOLD=$(( LLM_CONTEXT_SIZE * 4 * 80 / 100 ))
+        local budget_tokens=$(( LLM_CONTEXT_SIZE - ${LLM_MAX_TOKENS:-8192} - 2048 ))
+        [ "$budget_tokens" -lt 4000 ] && budget_tokens=4000
+        SIZE_COMPACT_THRESHOLD=$(( budget_tokens * 3 * 80 / 100 ))
     else
         SIZE_COMPACT_THRESHOLD=28000
     fi
-    debug "size compaction threshold: $SIZE_COMPACT_THRESHOLD bytes (ctx=$LLM_CONTEXT_SIZE tokens)"
+    # A single tool result must never dominate the window: compaction keeps
+    # the last SIZE_KEEP_RECENT messages verbatim, so cap per-result bytes
+    # at a quarter of the budget (the incident's kept tail alone exceeded
+    # the whole model window at 256 KiB/result).
+    if [ "$TOOL_RESULT_MAX_BYTES" -gt $(( SIZE_COMPACT_THRESHOLD / 4 )) ] 2>/dev/null; then
+        TOOL_RESULT_MAX_BYTES=$(( SIZE_COMPACT_THRESHOLD / 4 ))
+        debug "tool result cap lowered to $TOOL_RESULT_MAX_BYTES bytes (quarter of context budget)"
+    fi
+    debug "size compaction threshold: $SIZE_COMPACT_THRESHOLD bytes (ctx=$LLM_CONTEXT_SIZE tokens, max_tokens=${LLM_MAX_TOKENS:-8192})"
 
     # Tool-calling loop
     local iteration=0
@@ -1985,6 +2077,18 @@ ${previous_result}
                     else [] end) +
                     .[$safe:]
                 ' "$msgs_file" > "$msgs_file.tmp" && mv "$msgs_file.tmp" "$msgs_file"
+            fi
+            # Emergency clamp (2026-07-12): keep-tail compaction preserves the
+            # last $SIZE_KEEP_RECENT messages VERBATIM, so with fat tool
+            # results the compacted conversation can still exceed the model
+            # window — glm-5 then 400s deterministically on every call.
+            # Truncate oversized tool contents until the file is guaranteed
+            # under budget; the model loses old tool detail, not the task.
+            msgs_bytes=$(wc -c < "$msgs_file" 2>/dev/null || echo 0)
+            if [ "$msgs_bytes" -gt "$SIZE_COMPACT_THRESHOLD" ]; then
+                local per_msg_cap=$(( SIZE_COMPACT_THRESHOLD / (SIZE_KEEP_RECENT + 4) ))
+                debug "emergency clamp: $msgs_bytes bytes still over threshold — capping tool contents at $per_msg_cap bytes"
+                clamp_tool_contents "$msgs_file" "$per_msg_cap"
             fi
         fi
 
@@ -2180,6 +2284,40 @@ ${previous_result}
             err_msg=$(printf '%s' "$response" | jq -r '.error.message // empty' 2>/dev/null)
             if [ -z "$err_msg" ]; then
                 err_msg="LLM returned invalid response (no .choices[0]). Raw: $raw_preview"
+            fi
+            # Context-overflow rescue (2026-07-12): the proxy reports a
+            # deterministic prompt-too-large 400 with a distinct code.
+            # Re-sending the same conversation can never succeed — but
+            # shrinking it can. Tighten the budget, force a compaction +
+            # clamp pass, and retry within this container instead of dying
+            # to the executor's retry ladder. Two rescues max: if the
+            # conversation can't fit after that, something is structurally
+            # wrong and failing loud is correct.
+            local err_code
+            err_code=$(printf '%s' "$response" | jq -r '.error.code // empty' 2>/dev/null)
+            if [ "$err_code" = "CONTEXT_OVERFLOW" ] && [ "${OVERFLOW_RESCUES:-0}" -lt 2 ]; then
+                OVERFLOW_RESCUES=$(( ${OVERFLOW_RESCUES:-0} + 1 ))
+                SIZE_COMPACT_THRESHOLD=$(( SIZE_COMPACT_THRESHOLD / 2 ))
+                [ "$SIZE_COMPACT_THRESHOLD" -lt 12000 ] && SIZE_COMPACT_THRESHOLD=12000
+                log "WARN: context overflow from proxy — halving budget to $SIZE_COMPACT_THRESHOLD bytes, compacting and retrying (rescue $OVERFLOW_RESCUES/2)"
+                local rescue_cap=$(( SIZE_COMPACT_THRESHOLD / (SIZE_KEEP_RECENT + 4) ))
+                jq --argjson keep "$SIZE_KEEP_RECENT" '
+                    . as $all |
+                    (length - $keep) as $raw |
+                    (if ($raw > 2) and ($all[$raw] | .role == "tool") then
+                        [range($raw) | . as $i |
+                         if ($all[$i].role == "assistant" and ($all[$i] | has("tool_calls")))
+                         then $i else empty end] |
+                        if length > 0 then last else $raw end
+                    else $raw end) as $safe |
+                    (if $safe > 2 then
+                        [.[0], .[1],
+                         {"role":"user","content":("(Conversation compacted: " + (($safe - 2)|tostring) + " earlier tool exchanges removed to stay within context window. Continue from where you left off.)")}] +
+                        .[$safe:]
+                    else . end)
+                ' "$msgs_file" > "$msgs_file.tmp" && mv "$msgs_file.tmp" "$msgs_file"
+                clamp_tool_contents "$msgs_file" "$rescue_cap"
+                continue
             fi
             log "ERROR: LLM call failed: $err_msg"
             write_result "FAILED" "LLM call failed: $err_msg" "" "$(get_duration)" "$err_msg"

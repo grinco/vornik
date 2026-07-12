@@ -221,6 +221,42 @@ func TestSkillPropose_GlobalStoresFlag(t *testing.T) {
 	}
 }
 
+func TestSkillSearchAndGet_IncludeGlobalSkills(t *testing.T) {
+	s := newSkillTestServer(t)
+	ctx := context.Background()
+	owner := skillKey("p1", true, true)
+	out, err := s.companionToolSkillPropose(ctx, owner, rawArgs(t, map[string]any{
+		"name": "global-runbook", "description": "shared procedure", "body": "# use it",
+		"repo_scope": "github.com/x/a", "global": true,
+	}))
+	if err != nil {
+		t.Fatalf("propose: %v", err)
+	}
+	id := proposeID(t, out)
+	if _, err := s.companionToolSkillApprove(ctx, owner, rawArgs(t, map[string]any{"id": id})); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	reader := skillKey("p2", false, false)
+	sr, err := s.companionToolSkillSearch(ctx, reader, rawArgs(t, map[string]any{
+		"query": "global", "repo_scope": "github.com/x/a", "strict_scope": true,
+	}))
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if !strings.Contains(sr, "global-runbook") {
+		t.Fatalf("global skill should be discoverable cross-project, got %s", sr)
+	}
+
+	gr, err := s.companionToolSkillGet(ctx, reader, rawArgs(t, map[string]any{"id": id}))
+	if err != nil {
+		t.Fatalf("get by id: %v", err)
+	}
+	if !strings.Contains(gr, "# use it") {
+		t.Fatalf("global skill body should be readable cross-project, got %s", gr)
+	}
+}
+
 func TestSkillSetGlobal_RequiresSkillAdmin(t *testing.T) {
 	s := newSkillTestServer(t)
 	ctx := context.Background()

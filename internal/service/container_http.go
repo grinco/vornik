@@ -1300,6 +1300,7 @@ func (c *Container) initHTTPServer() error {
 		ui.WithIntegrationsMetrics(c.integrationsMetrics),
 		ui.WithExecutionRepository(c.repos.Executions),
 		ui.WithArtifactRepository(c.repos.Artifacts),
+		ui.WithTaskCredentialRepository(c.repos.TaskCredentials),
 		// Route UI blob reads (changelog inline render +
 		// /artifacts/{id} download) through the backend-aware
 		// Store. Without this, the S3 backend can't serve any

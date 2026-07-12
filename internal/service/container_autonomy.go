@@ -168,6 +168,10 @@ func (c *Container) initAutonomy() {
 	}
 	if workspacePath != "" {
 		autonomyOpts = append(autonomyOpts, autonomy.WithWorkspacePath(workspacePath))
+		// Refresh each project's workspace to origin/main before every backlog
+		// tick so external contributions (merged PRs) are picked up, preserving
+		// local consumption marks. Only meaningful with a workspace configured.
+		autonomyOpts = append(autonomyOpts, autonomy.WithGitRefresh(autonomy.ExecGitRefresh))
 	}
 	if c.pricingTable != nil {
 		autonomyOpts = append(autonomyOpts, autonomy.WithPricing(c.pricingTable))

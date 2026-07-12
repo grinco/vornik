@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/config/config.go
-      sha256: e4872d8d4c92699f163595f1603abd2c5b2bdd1241be2207daa73318c9e7637d
+      sha256: 6997480c22a4603c8c236904406f5e585c320bf2883803192cf27e93827d8055
     - path: internal/executor/executor.go
-      sha256: 81c27817aa5680ff27cc76c2b0c038a3b6fde8b4a1c7a4070825427daa660a17
+      sha256: d954b0d4505f3401d12d2f89e5ef846d4d2d5e64ee47732a2c46aa0adc96ad79
 ---
 # Named secrets
 
@@ -70,3 +70,72 @@ which overrides a role's static environment.
 
 Named secrets are configured in the daemon configuration only — there is no
 separate command-line surface for managing them.
+
+# Carrying tool-issued credentials to you
+
+Named secrets push credentials *into* an agent. The opposite problem is a
+credential that comes *out* of a tool: some tools mint an access credential for
+the artifact they produce — canonically PageDrop, whose publish tools return a
+**viewing password** for the page. You need that password, but the outbound
+secret-redactor (which scrubs agent chat replies and notifications) treats a
+password-shaped value like any other secret and replaces it with
+`[REDACTED:…]` before it reaches you.
+
+**Credential carryover** closes that gap. The daemon captures the credential
+**deterministically from the trusted tool's own output** — no model decides
+what's a credential — stores it against the task, and surfaces it
+**code-formatted and one-tap-copyable** in the task's completion notification
+(Telegram) and on the task-detail page, instead of redacting it.
+
+## Enabling it
+
+Add a `tool_credentials` mapping under `secrets`. Each entry names a tool (by
+prefix) and how to extract the credential from its output — either a **text
+pattern** (a regexp with one capture group, for tools that return prose) or a
+**JSON field** (a dotted path, for tools that return a JSON object):
+
+```yaml
+secrets:
+  # A capturing tool is implicitly trusted-output for its captured field, but
+  # listing it here too keeps the value un-redacted in the tool-audit log.
+  trusted_output_tools:
+    - "mcp__pagedrop__pagedrop_publish"
+  tool_credentials:
+    # PageDrop returns prose ("View: <url> … Password: <pw>"), so use patterns:
+    - tool: "mcp__pagedrop__pagedrop_"      # prefix — matches publish/republish
+      credential_pattern: "Password:\\s*(\\S+)"
+      artifact_pattern: "View:\\s*(\\S+)"    # optional; links the credential to a URL
+      label: "viewing password"             # operator-facing name
+    # A tool that returns JSON would use field paths instead:
+    # - tool: "mcp__example__publish"
+    #   credential_field: "data.password"   # dotted path; no array indexing
+    #   artifact_field: "url"
+    #   label: "access token"
+```
+
+| Key | Meaning |
+|---|---|
+| `tool` | Tool-name prefix whose output carries the credential. |
+| `credential_pattern` | Regexp (one capture group) extracting the credential from text output. Takes precedence over `credential_field`. |
+| `artifact_pattern` | Optional regexp (one capture group) for the URL the credential unlocks. |
+| `credential_field` | Dotted path into a JSON result to the credential (e.g. `data.password`). No array indexing. |
+| `artifact_field` | Optional dotted path to the artifact URL. |
+| `label` | Operator-facing name shown next to the value (defaults to `credential`). |
+
+With no `tool_credentials` entries (the default) nothing is captured and
+behaviour is unchanged.
+
+## What it does and doesn't do
+
+- **The model is never involved** in deciding what's a credential — capture is
+  driven by the operator-configured tool + field/pattern, reading the tool's
+  daemon-proxied output that an agent cannot forge.
+- **Strong keys are never captured.** A value matching a strong, prefix-anchored
+  pattern (OpenAI / Anthropic / GitHub / AWS / JWT / …) is refused even from a
+  configured tool and always redacts — only the lower-confidence
+  "viewing-password" shape is eligible. So a misconfigured mapping can't turn a
+  real API key into a carryover, and it isn't an exfiltration channel.
+- **Retries don't leak stale credentials.** Only the task's most recent
+  execution's credential is surfaced; an earlier attempt's password is hidden.
+- The value is stored alongside the task for its lifetime (same as the
+  tool-audit row that already holds it) and removed when the task is purged.

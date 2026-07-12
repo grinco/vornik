@@ -511,7 +511,7 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 			if err := chat.SaveNamedConversation(b.config.SessionPath, msg.ChatID, name, conv); err != nil {
 				return b.sendMessage(ctx, msg.ChatID, fmt.Sprintf("Save failed: %v", err))
 			}
-			return b.sendMessage(ctx, msg.ChatID, fmt.Sprintf("Saved %d message(s) as %q. Use /load %s to restore.", conv.Len(), name, name))
+			return b.sendMessage(ctx, msg.ChatID, fmt.Sprintf("Saved %d message(s) as %q. Use `/load %s` to restore.", conv.Len(), name, name))
 		}
 
 		// /load <name> — replace the current conversation with a
@@ -574,7 +574,7 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 				if h.Snippet != "" {
 					fmt.Fprintf(&out, "  %s\n", h.Snippet)
 				}
-				fmt.Fprintf(&out, "  → /load %s\n\n", h.Name)
+				fmt.Fprintf(&out, "  → `/load %s`\n\n", h.Name)
 			}
 			return b.sendMessage(ctx, msg.ChatID, out.String())
 		}

@@ -876,6 +876,18 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 			} else {
 				state.LastResult = []byte(`{}`)
 			}
+			// A system handler can request an AWAITING_INPUT PARK instead of
+			// routing onward (forge.open_change_request when a push is rejected):
+			// the task cannot proceed without operator action, so we hand off
+			// exactly like a lead checkpoint — no failure, no retry, no loop.
+			// Propagate errLeadHandoff straight up (mirrors the plan-step handoff
+			// above) so the retry loop's IsLeadHandoff guard finalizes cleanly.
+			if sig, ok := AsPublishBlocked(sysResult.Result); ok {
+				if hErr := e.handleSystemStepBlocked(ctx, task, execution, currentStepID, sig); hErr != nil {
+					return "", nil, completedSteps, hErr
+				}
+				return "", nil, completedSteps, errLeadHandoff
+			}
 			if err := e.saveCheckpoint(ctx, execution, step.OnSuccess, completedSteps, state); err != nil {
 				return "", nil, completedSteps, err
 			}

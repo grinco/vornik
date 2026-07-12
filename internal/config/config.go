@@ -627,6 +627,74 @@ type SecretsConfig struct {
 	// still redact even for these tools, and the agent-supplied INPUT is always
 	// fully scanned, so this is not a labeled-exfil channel. Empty = no exemption.
 	TrustedOutputTools []string `yaml:"trusted_output_tools" doc:"Tool-name prefixes whose tool-audit OUTPUT is exempt from generic_kv/entropy redaction (strong credential patterns still redact; input always scanned)."`
+	// ToolCredentials maps a trusted tool to a field in its structured output
+	// carrying an operator-facing access credential (e.g. a PageDrop viewing
+	// password). The daemon captures it deterministically — no LLM — stores it
+	// provenance-tagged, and surfaces it code-formatted + copyable in the
+	// completion notification and task detail. A tool listed here is implicitly
+	// trusted-output for its captured field; a value matching a STRONG credential
+	// pattern is never captured (it always redacts). Empty (default) = no capture.
+	// See https://docs.vornik.io
+	ToolCredentials []ToolCredentialConfig `yaml:"tool_credentials" doc:"Map a trusted tool to a credential field in its output to capture and surface code-formatted + copyable (strong-pattern values are never captured)."`
+}
+
+// ToolCredentialConfig is one tool→credential-field capture mapping. Tool and
+// CredentialField are required; ArtifactField and Label are optional (Label
+// defaults to "credential" when unset).
+type ToolCredentialConfig struct {
+	// Tool is the tool-name prefix whose output carries the credential
+	// (e.g. "mcp__pagedrop__pagedrop_publish"). Matched by prefix, like
+	// TrustedOutputTools.
+	Tool string `yaml:"tool"`
+	// CredentialField is a dotted path into the tool result JSON to the
+	// credential value (e.g. "password" or "data.credentials.password"). No
+	// array indexing. A missing key at any level means no capture. Use this
+	// for tools that return a JSON object.
+	CredentialField string `yaml:"credential_field"`
+	// ArtifactField is an optional dotted path to the URL the credential
+	// unlocks, tying the two together in the surfaced output.
+	ArtifactField string `yaml:"artifact_field"`
+	// CredentialPattern is a regexp with one capture group extracting the
+	// credential from a tool's HUMAN-READABLE TEXT output (e.g.
+	// "Password:\\s*(\\S+)" for PageDrop). Use this for tools that return
+	// prose rather than JSON. Takes precedence over CredentialField.
+	CredentialPattern string `yaml:"credential_pattern"`
+	// ArtifactPattern is an optional regexp (one capture group) extracting the
+	// artifact URL from text output (e.g. "View:\\s*(\\S+)").
+	ArtifactPattern string `yaml:"artifact_pattern"`
+	// Label is the operator-facing name for the credential ("viewing password").
+	Label string `yaml:"label"`
+}
+
+// NormalizedToolCredentials returns the capture mappings with invalid entries
+// dropped (Tool or CredentialField empty) and Label defaulted to "credential"
+// when unset. Whitespace is trimmed. It is the single accessor the wiring uses,
+// so a malformed entry silently no-ops rather than breaking config load.
+func (s SecretsConfig) NormalizedToolCredentials() []ToolCredentialConfig {
+	if len(s.ToolCredentials) == 0 {
+		return nil
+	}
+	out := make([]ToolCredentialConfig, 0, len(s.ToolCredentials))
+	for _, tc := range s.ToolCredentials {
+		tc.Tool = strings.TrimSpace(tc.Tool)
+		tc.CredentialField = strings.TrimSpace(tc.CredentialField)
+		tc.ArtifactField = strings.TrimSpace(tc.ArtifactField)
+		tc.CredentialPattern = strings.TrimSpace(tc.CredentialPattern)
+		tc.ArtifactPattern = strings.TrimSpace(tc.ArtifactPattern)
+		tc.Label = strings.TrimSpace(tc.Label)
+		// Need a tool and at least one extractor (JSON field or text pattern).
+		if tc.Tool == "" || (tc.CredentialField == "" && tc.CredentialPattern == "") {
+			continue
+		}
+		if tc.Label == "" {
+			tc.Label = "credential"
+		}
+		out = append(out, tc)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // SecretsPatternsConfig is the patterns substructure: a list of

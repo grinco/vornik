@@ -1,7 +1,7 @@
 ---
 sources:
     - path: internal/autonomy/manager.go
-      sha256: fd1061f21ec29936071a1c6d01c7b869b42815bd192d594a4f0bf9d31c935e84
+      sha256: e33c0e1c2329e99cf107c5756906e18f581f478beb636ccad741e2d2acb28ab8
     - path: internal/registry/project.go
       sha256: c9ba2fea024e0142c03eaefbf4790021c1dcf4bfb2d158158c290a437b47579b
 ---
@@ -95,6 +95,13 @@ while working on something else — without derailing its current task. A
 reviewer, for example, can use it for problems it spots in a diff that aren't
 in scope for that PR's verdict.
 
+Before each tick reads the file, the workspace is refreshed to the tip of
+`origin/main` — so every iteration works against the latest code, picking up
+external contributions (merged PRs) since the last run. Your local `- [x]` /
+`- [!]` consumption marks are preserved across that refresh, so an item is
+never re-run. The refresh is best-effort: if the fetch fails, the tick proceeds
+against the current workspace rather than stalling.
+
 ### The marker grammar
 
 One consumer owns every read/modify/write of the file, and it recognises four
@@ -104,8 +111,21 @@ markers:
 |---|---|---|---|
 | `- [ ]` | Pending, ready to run | You (hand-authored), or you flipping a `- [?]` | Yes — first-in, first-out |
 | `- [?]` | Proposed, awaiting your review | `backlog_deposit` — always | No — inert by construction |
-| `- [x]` | Done | The backlog tick, on successful dispatch | No |
-| `- [!]` | Failed | The next tick's reconcile pass, on a terminal-failed run | No |
+| `- [x]` | Done — the task **completed** (raised its PR) | Marked at dispatch, then confirmed by the reconcile pass when the task completes | No |
+| `- [!]` | Blocked — the task ended unsuccessfully | The reconcile pass (below) | No — flip to `- [ ]` by hand to retry once you've addressed the cause |
+
+An item is only truly *done* when its task **completed** (raised its PR). Each
+tick's reconcile pass checks the dispatched items: a task that ended
+**unsuccessfully** — failed, cancelled, or closed after giving up (e.g. an
+infinite-rework guard trip) — has its line flipped from `- [x]` to `- [!]`
+(blocked). This way the item is neither silently skipped as done nor
+auto-retried into a storm: you flip `- [!]` → `- [ ]` by hand to retry once
+you've addressed the cause (granted a permission, fixed a flaky test, split a
+too-big item), or delete the line if it's not worth retrying. (A task closed
+*after* a clean completion keeps its `- [x]` — only a failure indication flips
+it.) A task that can't **publish** its change — e.g. the forge rejected the
+push — is a separate case: it parks in `AWAITING_INPUT` with a mail-in patch
+attached and keeps its `- [x]`, so it waits on you rather than looping.
 
 Agent-authored deposits always land as `- [?]`, never `- [ ]`, and there's no
 config knob to change that. A deposit's title and detail are agent-authored

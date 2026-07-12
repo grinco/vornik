@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"vornik.io/vornik/internal/forge"
 )
 
 // gitPushToOrigin pushes sha to refs/heads/branch on the local clone's `origin`
@@ -44,7 +46,15 @@ func gitPushToOrigin(ctx context.Context, gitDir, branch, sha, token string) err
 	if err != nil {
 		// git's stderr names the failure (non-fast-forward, auth, etc.); surface
 		// it but keep the token (only in env) out of the message.
-		return fmt.Errorf("forge/github: git push %s: %w: %s", branch, err, strings.TrimSpace(string(out)))
+		output := strings.TrimSpace(string(out))
+		// A REMOTE REJECTION (permission, protected branch, …) is not retry-
+		// fixable as-is: surface it as a typed *forge.PushRejectedError so the
+		// publish step can park the task + hand the operator a patch rather than
+		// looping. Transient/local failures keep the plain wrapped error.
+		if kind := forge.ClassifyPushOutput(output); kind != forge.PushRejectionNone {
+			return &forge.PushRejectedError{Branch: branch, Kind: kind, Output: output, Err: err}
+		}
+		return fmt.Errorf("forge/github: git push %s: %w: %s", branch, err, output)
 	}
 	return nil
 }

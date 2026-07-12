@@ -78,6 +78,22 @@ type SecretRedactionAuditRepository interface {
 	CountByTask(ctx context.Context, taskID string) (byType map[string]int, total int, err error)
 }
 
+// TaskCredentialRepository persists operator-facing access credentials
+// captured from trusted tools' structured output (credential carryover;
+// see https://docs.vornik.io).
+type TaskCredentialRepository interface {
+	// Upsert records a captured credential, overwriting the value in place
+	// on a conflict of (task_id, execution_id, tool, artifact_url) so a
+	// re-publish within one execution doesn't duplicate. ID and CreatedAt
+	// default when left zero.
+	Upsert(ctx context.Context, cred *TaskCredential) error
+
+	// ListByTaskLatestExecution returns the credentials captured by the
+	// task's most recent execution only (so a retry's stale credential is
+	// never surfaced), ordered by created_at. Empty when none.
+	ListByTaskLatestExecution(ctx context.Context, taskID string) ([]*TaskCredential, error)
+}
+
 // ChatAuditRepository persists per-turn dispatcher activity for
 // the `/ui/admin/chat-audit` operator surface. One row per inbound
 // user message processed through the LLM tool loop — system prompt

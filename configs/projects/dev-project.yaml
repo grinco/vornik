@@ -24,7 +24,13 @@ autonomy:
   # dispatches it. Best for operator-curated FIFO of feature work;
   # the natural migration target for THIS template once the
   # operator pre-bakes each backlog item as a full worker prompt.
-  # See https://docs.vornik.io
+  # Pair it with `workflow_id: "backlog-item"` (set under autonomy):
+  # that workflow decomposes each item into a SEQUENTIAL chain of
+  # `issue-subtask`s, runs the tests, reviews the aggregate diff, and
+  # opens a DRAFT PR — the same next-level shape as `issue-fix`, so a
+  # feature-sized backlog item no longer has to fit one container.
+  # See https://docs.vornik.io and
+  # configs/workflows/backlog-item.md.
   mode: llm
   # Prescriptive, numbered procedure. Freeform English goals caused the
   # lead to schedule meta-tasks ("Examine BACKLOG.md to identify the

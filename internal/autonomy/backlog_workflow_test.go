@@ -147,18 +147,36 @@ func TestTickBacklog_WorkflowIDEmpty_FallsThrough(t *testing.T) {
 		"empty workflow_id leaves the task's field nil (DefaultWorkflowID resolved downstream)")
 }
 
-// (e) reconcile flips a FAILED task's consumed [x] line to [!] once,
-// is idempotent, leaves a COMPLETED task's line at [x], and skips an
-// item the operator manually reset to [ ] even if that task FAILED.
-func TestReconcileFailedBacklogItems(t *testing.T) {
+// (e) reconcile flips a consumed [x] line to blocked [!] when its task
+// ended unsuccessfully — FAILED, CANCELLED, or CLOSED WITH a failure
+// error — so the item is neither silently skipped as done nor auto-
+// retried into a storm (operator flips [!]→[ ] to retry). A COMPLETED
+// task's line stays [x] (it succeeded / raised its PR); a CLOSED task
+// with NO failure error (operator closed a success) stays [x]; a non-[x]
+// line and a line without a (task:) annotation are untouched.
+//
+// Regression for the 2026-07-11 headmatch incident: TASK-113 (CLOSED on
+// a rework-loop give-up) and TASK-112 (FAILED) were left marked `[x]`
+// done, silently skipped forever. The `task_closed_err` case pins the
+// CLOSED-with-error → blocked behavior that fixes it.
+func TestReconcileBacklogItems(t *testing.T) {
+	boom := "step implement visited 4 times (max 3) — likely infinite rework loop"
 	content := "" +
 		"- [x] failed one (task: task_fail)\n" +
+		"- [x] cancelled one (task: task_cancel)\n" +
+		"- [x] gaveup one (task: task_closed_err)\n" +
+		"- [x] clean-closed one (task: task_closed_ok)\n" +
 		"- [ ] reset one (task: task_reset)\n" +
 		"- [x] done one (task: task_done)\n" +
 		"- [x] no-annotation item\n"
 
 	repo := &mockTaskRepo{tasks: []*persistence.Task{
 		{ID: "task_fail", Status: persistence.TaskStatusFailed},
+		{ID: "task_cancel", Status: persistence.TaskStatusCancelled},
+		// CLOSED + failure error (e.g. rework-loop give-up) → blocked.
+		{ID: "task_closed_err", Status: persistence.TaskStatusClosed, LastError: &boom},
+		// CLOSED with no error (operator closed a success) → stays done.
+		{ID: "task_closed_ok", Status: persistence.TaskStatusClosed},
 		{ID: "task_reset", Status: persistence.TaskStatusFailed},
 		{ID: "task_done", Status: persistence.TaskStatusCompleted},
 	}}
@@ -172,27 +190,31 @@ func TestReconcileFailedBacklogItems(t *testing.T) {
 		WithWorkspacePath(ws), WithBacklogStore(backlogfile.NewStore()))
 	project := &registry.Project{ID: "p1"}
 
-	m.reconcileFailedBacklogItems(context.Background(), abs, project)
+	m.reconcileBacklogItems(context.Background(), abs, project)
 
 	got, err := os.ReadFile(abs)
 	require.NoError(t, err)
 	want := "" +
-		"- [!] failed one (task: task_fail, failed)\n" +
-		"- [ ] reset one (task: task_reset)\n" + // operator reset: marker ' ' → skipped
+		"- [!] failed one (task: task_fail, failed)\n" + // FAILED → blocked
+		"- [!] cancelled one (task: task_cancel, failed)\n" + // CANCELLED → blocked
+		"- [!] gaveup one (task: task_closed_err, failed)\n" + // CLOSED+err → blocked
+		"- [x] clean-closed one (task: task_closed_ok)\n" + // CLOSED, no err → untouched
+		"- [ ] reset one (task: task_reset)\n" + // already [ ] → skipped by the marker gate
 		"- [x] done one (task: task_done)\n" + // COMPLETED → untouched
 		"- [x] no-annotation item\n" // no (task:) suffix → untouched
 	assert.Equal(t, want, string(got))
 
-	// Idempotent: a second pass leaves the file byte-for-byte identical.
-	m.reconcileFailedBacklogItems(context.Background(), abs, project)
+	// Idempotent: a second pass leaves the file byte-for-byte identical
+	// (the blocked items are now [!], no longer matched by the [x] gate).
+	m.reconcileBacklogItems(context.Background(), abs, project)
 	got2, err := os.ReadFile(abs)
 	require.NoError(t, err)
 	assert.Equal(t, want, string(got2), "reconcile must be idempotent")
 }
 
 // (e cont.) reconcile is best-effort: a task whose lookup fails
-// (pruned by retention) is skipped, not flipped.
-func TestReconcileFailedBacklogItems_SkipsUnknownTask(t *testing.T) {
+// (pruned by retention) is skipped, not touched.
+func TestReconcileBacklogItems_SkipsUnknownTask(t *testing.T) {
 	content := "- [x] orphaned (task: task_gone)\n"
 	ws := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(ws, "p1"), 0o755))
@@ -202,7 +224,7 @@ func TestReconcileFailedBacklogItems_SkipsUnknownTask(t *testing.T) {
 	// Empty repo → every Get returns ErrNotFound.
 	m := New(nil, &registry.Registry{}, &mockTaskRepo{}, nil,
 		WithWorkspacePath(ws), WithBacklogStore(backlogfile.NewStore()))
-	m.reconcileFailedBacklogItems(context.Background(), abs, &registry.Project{ID: "p1"})
+	m.reconcileBacklogItems(context.Background(), abs, &registry.Project{ID: "p1"})
 
 	got, err := os.ReadFile(abs)
 	require.NoError(t, err)
@@ -210,8 +232,9 @@ func TestReconcileFailedBacklogItems_SkipsUnknownTask(t *testing.T) {
 }
 
 // tickBacklog runs the reconcile pass before dispatching: a FAILED
-// consumed item is flipped to [!] and the next pending item still
-// fires, in one tick.
+// consumed item is flipped to blocked [!] (NOT re-dispatched — the
+// operator decides), so the tick dispatches the NEXT pending [ ] item
+// instead, all in one pass.
 func TestTickBacklog_ReconcilesThenDispatches(t *testing.T) {
 	reg := registryWithProject(t, "p1", `autonomy:
   enabled: true
@@ -222,7 +245,7 @@ func TestTickBacklog_ReconcilesThenDispatches(t *testing.T) {
 		"- [x] earlier work (task: task_fail)\n" +
 		"- [ ] next work\n"
 	m, repo, _, abs := seedBacklogTick(t, reg, content)
-	// Seed the earlier task as FAILED so reconcile flips its line.
+	// Seed the earlier task as FAILED so reconcile blocks its line.
 	repo.mu.Lock()
 	repo.tasks = append(repo.tasks, &persistence.Task{ID: "task_fail", Status: persistence.TaskStatusFailed})
 	repo.mu.Unlock()
@@ -232,19 +255,20 @@ func TestTickBacklog_ReconcilesThenDispatches(t *testing.T) {
 
 	got, err := os.ReadFile(abs)
 	require.NoError(t, err)
-	assert.Contains(t, string(got), "- [!] earlier work (task: task_fail, failed)",
-		"reconcile pass must flip the FAILED item")
-	// The next pending item still dispatched + consumed in the same tick.
+	// The failed item is blocked, not re-dispatched; "next work" is the
+	// first pending [ ] item, so it's the one dispatched this tick.
 	created := repo.createdTasks()
-	// createdTasks includes the seeded task_fail plus any newly created.
 	var newTask *persistence.Task
 	for _, task := range created {
 		if task.ID != "task_fail" {
 			newTask = task
 		}
 	}
-	require.NotNil(t, newTask, "the next pending item must still be dispatched")
-	assert.Contains(t, string(got), "- [x] next work (task: "+newTask.ID+")")
+	require.NotNil(t, newTask, "the next pending item must be dispatched")
+	assert.Contains(t, string(got), "- [!] earlier work (task: task_fail, failed)",
+		"reconcile blocks the FAILED item ([x]→[!]); it is NOT re-dispatched")
+	assert.Contains(t, string(got), "- [x] next work (task: "+newTask.ID+")",
+		"the next pending item is dispatched and consumed this tick")
 }
 
 // (g) proposed `- [?]` items are never consumed by a backlog tick —
@@ -352,17 +376,17 @@ func TestTickBacklog_CreateError_LeavesItemPending(t *testing.T) {
 	assert.NotContains(t, string(got), "[x]")
 }
 
-// reconcileFailedBacklogItems short-circuits when its dependencies
+// reconcileBacklogItems short-circuits when its dependencies
 // (the shared store or the task repo) are absent.
 func TestReconcileFailedBacklogItems_NilDeps(t *testing.T) {
 	// nil backlog store.
 	m1 := New(nil, &registry.Registry{}, &mockTaskRepo{}, nil, WithWorkspacePath(t.TempDir()))
-	m1.reconcileFailedBacklogItems(context.Background(), "/nonexistent", &registry.Project{ID: "p1"})
+	m1.reconcileBacklogItems(context.Background(), "/nonexistent", &registry.Project{ID: "p1"})
 
 	// nil task repo (store present).
 	m2 := New(nil, &registry.Registry{}, nil, nil,
 		WithWorkspacePath(t.TempDir()), WithBacklogStore(backlogfile.NewStore()))
-	m2.reconcileFailedBacklogItems(context.Background(), "/nonexistent", &registry.Project{ID: "p1"})
+	m2.reconcileBacklogItems(context.Background(), "/nonexistent", &registry.Project{ID: "p1"})
 	// No panic, no-op — reaching here is the assertion.
 }
 

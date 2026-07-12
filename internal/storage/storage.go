@@ -46,6 +46,7 @@ type Repositories struct {
 	Proposals          persistence.ProposalRepository
 	AdminAudit         persistence.AdminAuditRepository
 	SecretRedaction    persistence.SecretRedactionAuditRepository
+	TaskCredentials    persistence.TaskCredentialRepository
 	ChatAudit          persistence.ChatAuditRepository
 	APIKeys            persistence.APIKeyRepository
 	// Identity is the identity-core repository (users, groups,
@@ -320,6 +321,7 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		Proposals:                      sqlite.NewProposalRepository(db),
 		AdminAudit:                     sqlite.NewAdminAuditRepository(db),
 		SecretRedaction:                sqlite.NewSecretRedactionAuditRepository(db),
+		TaskCredentials:                sqlite.NewTaskCredentialRepository(db),
 		ChatAudit:                      sqlite.NewChatAuditRepository(db),
 		APIKeys:                        sqlite.NewAPIKeyRepository(db),
 		Webhooks:                       sqlite.NewWebhookEventRepository(db),
@@ -426,6 +428,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		Proposals:                      postgres.NewProposalRepository(dbtx),
 		AdminAudit:                     postgres.NewAdminAuditRepository(dbtx),
 		SecretRedaction:                postgres.NewSecretRedactionAuditRepository(dbtx),
+		TaskCredentials:                postgres.NewTaskCredentialRepository(dbtx),
 		ChatAudit:                      postgres.NewChatAuditRepository(dbtx),
 		APIKeys:                        postgres.NewAPIKeyRepository(dbtx),
 		Identity:                       postgres.NewIdentityRepository(dbtx),

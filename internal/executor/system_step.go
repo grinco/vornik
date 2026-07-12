@@ -64,6 +64,42 @@ type SystemStepResult struct {
 	Result json.RawMessage
 }
 
+// SystemStepBlockedState is the sentinel `state` value a system handler sets in
+// its (successful, error-free) result to signal that it could NOT complete
+// deterministically and the task must PARK awaiting operator action — rather
+// than fail (and be retried) or route to on_success. The executor detects it
+// after Execute and drives the same AWAITING_INPUT hand-off the lead uses,
+// surfacing the handler's operator-facing message + any attached artifact. Used
+// by forge.open_change_request when a branch push is rejected (e.g. a missing
+// GitHub App permission): the change is captured as a patch artifact and the
+// operator either grants the permission and resumes, or applies the patch and
+// closes — instead of autonomy looping on an un-pushable task.
+const SystemStepBlockedState = "blocked_awaiting_operator"
+
+// PublishBlockedSignal is the result shape a system handler returns to request
+// the awaiting-operator park. Marshaled into SystemStepResult.Result and parsed
+// by the executor via AsPublishBlocked.
+type PublishBlockedSignal struct {
+	State        string `json:"state"` // must equal SystemStepBlockedState
+	Reason       string `json:"reason,omitempty"`
+	Remediation  string `json:"remediation,omitempty"`
+	ArtifactID   string `json:"patch_artifact_id,omitempty"`
+	ArtifactName string `json:"patch_artifact,omitempty"`
+}
+
+// AsPublishBlocked reports whether a system-step result requests the
+// awaiting-operator park, returning the parsed signal when so.
+func AsPublishBlocked(result json.RawMessage) (*PublishBlockedSignal, bool) {
+	if len(result) == 0 {
+		return nil, false
+	}
+	var s PublishBlockedSignal
+	if err := json.Unmarshal(result, &s); err != nil || s.State != SystemStepBlockedState {
+		return nil, false
+	}
+	return &s, true
+}
+
 // SystemHandlerRegistry is the executor's lookup table for
 // system-typed steps. Constructed at daemon boot, then frozen for
 // the executor's lifetime — handlers are wiring, not runtime

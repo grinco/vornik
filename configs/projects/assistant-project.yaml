@@ -6,9 +6,19 @@ defaultWorkflowId: "adaptive"
 # workflow from this list. Empty/missing list → the selected_workflow
 # value is silently ignored and the workflow terminates at
 # `delegated` without spawning a child task. assistant-swarm ships
-# researcher / planner / writer / vision, so `research` and
-# `plan-and-write` are both runnable; dev-pipeline still requires
-# analyst/coder/tester roles that this swarm does not provide.
+# researcher / planner / writer / vision / publisher, so `research`,
+# `plan-and-write`, and `deep-research` are all runnable; dev-pipeline
+# still requires analyst/coder/tester roles that this swarm does not
+# provide.
+#
+# `deep-research` is the decomposed, long-running research path (mirrors
+# issue-fix): the route lead splits a large/open-ended request into
+# self-contained sub-questions, each dispatched as its own durable
+# `research-subtask`, then synthesizes + publishes. Pick it for a survey or
+# multi-angle investigation that may run for hours or days; a simple ask
+# decomposes to a single subtask and behaves like plain `research`. See
+# https://docs.vornik.io and
+# configs/workflows/deep-research.md.
 #
 # 2026.5.6 (Measure C of the strict-adaptive route loop fix):
 # out-of-list picks no longer silently fall back to
@@ -24,6 +34,7 @@ defaultWorkflowId: "adaptive"
 # lead's prompt needs widening here.
 adaptiveCandidateWorkflows:
   - research
+  - deep-research
   - plan-and-write
 defaultPriority: 50 # 0-100; lower numbers run first
 maxConcurrentTasks: 3   # independent tasks can run in parallel

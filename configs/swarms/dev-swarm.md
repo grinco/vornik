@@ -282,21 +282,19 @@ roles:
       - "verifier"
     count: 1
     runtimePolicy: "ephemeral"
-    # Test authoring + execution — GPT-5.4 via codex-subscription
-    # (plan-billed). 2026-05-25 flip from zai.glm-4.7 as part of
-    # the dev-swarm codex consolidation: tester is code-adjacent
-    # (writes + runs tests, frames failures for the coder) so
-    # consistency with the coder's vendor matters more than the
-    # cross-vendor diversity that used to be the rationale.
-    # gpt-5.4 (NOT gpt-5.5) deliberately — testing is mostly
-    # tool calls + pattern matching, mid-tier is the right size
-    # and saves subscription budget for the coder's flagship use.
-    # Fallback to zai.glm-4.7 (the prior primary) preserves the
-    # open-weight escape hatch the original config valued and
-    # keeps test runs flowing through a codex-subscription
-    # outage.
-    model: "qwen.qwen3-coder-30b-a3b-v1:0"
-    modelFallback: "zai.glm-4.7"
+    # Test authoring + execution — kimi-k2.5 (Bedrock), matching the
+    # coder's model (tester is code-adjacent: writes + runs tests, frames
+    # failures for the coder, so vendor/behaviour consistency helps).
+    # 2026-07-11: moved off qwen.qwen3-coder-30b-a3b — that 3B-active MoE
+    # could not reliably drive the Bedrock tool_calls API (it emitted tool
+    # calls as TEXT every iteration, "nudging" until the 50-iteration limit,
+    # so every test step FAILED → rework loop → execution failed; evidence
+    # task_20260711203744_fc9874bee9417765). The coder/reviewer run the
+    # SAME Bedrock tool path on kimi-k2.5 with no such issue. Fallback
+    # zai.glm-5 (proven — the analyst/lead's model) replaces the flaky
+    # glm-4.7, keeping cross-vendor diversity (moonshotai → zai).
+    model: "moonshotai.kimi-k2.5"
+    modelFallback: "zai.glm-5"
     maxTokens: 8192
     # outputSchema pins testing.passed:bool because every workflow
     # step that uses this role gates on it (dev-pipeline branches

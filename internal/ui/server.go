@@ -182,10 +182,11 @@ type Server struct {
 	// artifactReader (optional) routes blob reads through the
 	// backend-aware Store. Nil falls back to the legacy direct-disk
 	// path — correct only on the filesystem backend.
-	artifactReader   ArtifactReader
-	auditRepo        persistence.ToolAuditRepository
-	webhookEventRepo persistence.WebhookEventRepository
-	llmUsageRepo     persistence.TaskLLMUsageRepository
+	artifactReader     ArtifactReader
+	auditRepo          persistence.ToolAuditRepository
+	taskCredentialRepo persistence.TaskCredentialRepository
+	webhookEventRepo   persistence.WebhookEventRepository
+	llmUsageRepo       persistence.TaskLLMUsageRepository
 	// apiKeyRepo backs /ui/projects/{id}/keys. Nil disables the
 	// page (renders 503).
 	apiKeyRepo       persistence.APIKeyRepository
@@ -725,6 +726,14 @@ func WithTaskLogSource(src TaskLogSource) ServerOption {
 func WithToolAuditRepository(repo persistence.ToolAuditRepository) ServerOption {
 	return func(s *Server) {
 		s.auditRepo = repo
+	}
+}
+
+// WithTaskCredentialRepository wires the store that surfaces tool-issued
+// access credentials (credential carryover) on the task-detail page.
+func WithTaskCredentialRepository(repo persistence.TaskCredentialRepository) ServerOption {
+	return func(s *Server) {
+		s.taskCredentialRepo = repo
 	}
 }
 

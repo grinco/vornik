@@ -2,6 +2,7 @@ package narrator
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,5 +80,29 @@ func TestSweepIdle_NilTasksKeepsExecutionTerminalBehavior(t *testing.T) {
 	row := h.awaitLine(2 * time.Second)
 	if row.Kind != persistence.ExecutionNarrationKindCompletion {
 		t.Fatalf("nil Tasks must keep emitting on execution-terminal; got %q", row.Kind)
+	}
+}
+
+// TestSweepIdle_FailedAttemptNarratedWhileTaskRetrying — the complement to the
+// recovery suppression: a FAILED execution on a still-active (retrying) task
+// MUST be narrated, so the story doesn't end on the last step's "Finished
+// step N" looking like success. Regression for headmatch task ...9417765,
+// where a failed tester rework-loop was narrated as "everything passed".
+func TestSweepIdle_FailedAttemptNarratedWhileTaskRetrying(t *testing.T) {
+	h := newTestHarness(t, func(n *Narrator) {
+		n.Tasks = &fakeTasksNarr{status: persistence.TaskStatusRunning} // task still active (will retry)
+		n.ForceTeardown = 60 * time.Millisecond
+	})
+	seedRunningExecution(h)
+	h.Sub.push(testExecID, livepubsub.KindStepStarted, livepubsub.StepStartedPayload{StepID: "test", Role: "tester"})
+	h.awaitLine(2 * time.Second) // the step-started line
+	// This attempt FAILS while the task runs on (retry pending).
+	h.Executions.set(testExecID, "proj-1", "task-1", persistence.ExecutionStatusFailed)
+	row := h.awaitLine(2 * time.Second)
+	if row.Kind != persistence.ExecutionNarrationKindCompletion {
+		t.Fatalf("Kind = %q, want completion (attempt-failed line)", row.Kind)
+	}
+	if !strings.Contains(row.Text, "problem") {
+		t.Fatalf("attempt-failed line must state the failure, got %q", row.Text)
 	}
 }

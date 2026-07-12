@@ -36,6 +36,14 @@ type PublishSource interface {
 	PublishSource(ctx context.Context, task *persistence.Task) (gitDir, sha string, err error)
 }
 
+// ArtifactStore persists a file as a task OUTPUT artifact and returns its row.
+// Narrow subset of the executor's artifact store, kept here so the publish step
+// can attach a mail-in patch when a push is rejected, and test doubles stay
+// trivial. The concrete internal/artifacts.Store satisfies it.
+type ArtifactStore interface {
+	Store(ctx context.Context, projectID, executionID, taskID, name, sourcePath string) (*persistence.Artifact, error)
+}
+
 // forgePayload is the narrow shape the handlers read out of the task payload.
 // The typed ForgeJob is accepted at the top level (`forge_job`, where the
 // github channel's task creator stamps it — keeping the existing `context`

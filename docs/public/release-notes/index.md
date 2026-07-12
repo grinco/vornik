@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 292ffa050053c0c8b56485a4c659f859fae1bcc5f828b34b1cbb293e9ca21607
+      sha256: e6a4b14acb882a6f58e117a589daac960d0739a74f7d894182a75958d7a9d855
 ---
 # Release Notes
 
@@ -14,6 +14,68 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.7.2
+
+**The operator-experience release: describe an automation in plain language,
+watch tasks narrate themselves, and repair failures from a guided chat.** This
+cycle is built for operators who never want to touch YAML — plus a
+control-plane copilot, a learning loop for knowledge skills, and an
+autonomous backlog-to-PR pipeline for those who do.
+
+- **Automation Composer.** Describe what you want automated in chat and the
+  composer assembles a validated project — roles, workflow, schedule —
+  grounded in your connected MCP servers and models, with a Plan/Graph/YAML
+  preview before anything is committed. Ships **disabled by default**
+  (`composer.enabled`) while quality gates soak; the classic wizard remains
+  the default.
+- **Narrated execution.** Running tasks tell their story on the task pages,
+  and can push progress to the chat channel that started them (opt-in per
+  project). Completion is deliverable-first: output artifacts appear as cards
+  you can send straight to chat.
+- **Fix-It Doctor.** Failed tasks open into a repair chat that gathers the
+  failure context and proposes fixes; every applied action is deny-by-default,
+  audited, and rollback-able.
+- **"My requests" home.** A new Outcome Inbox groups your work into request
+  cards with status rollups and inline actions for anything awaiting you — and
+  it is now the default home page for non-admin users.
+- **Guided Integrations Hub** (Community). Set up Telegram, Slack, email,
+  GitHub App, and MCP integrations through guided forms that **probe the
+  credentials before saving**, with recheck and assisted troubleshooting.
+- **Control-plane copilot** (Enterprise console). Detectors watch for tunable
+  timeouts, failure-rate regressions, and self-healing incidents, and raise
+  **proposals** you can inspect, apply (gated, atomic, rollback-able — live
+  where non-disruptive), or withdraw, from the web console or
+  `vornikctl control-plane`. A diagnose-from-logs engine turns incidents into
+  ready-to-apply config changes.
+- **Knowledge skills learn.** Skills gathered from past work now carry usage
+  signals and mature (or decay) automatically, with distilled new-skill
+  proposals reviewed from Telegram, Slack, or the web inbox — and skills can
+  be promoted to **global**, applying across every project.
+- **Autonomous dev loop.** Agents can deposit work items into a per-project
+  backlog, and autonomy drives open items to **draft pull requests** through
+  an adversarial review loop; failed items are blocked visibly instead of
+  silently skipped.
+- **Model-health circuit breaker.** Unhealthy upstream models trip a breaker
+  and tasks fail over immediately instead of grinding through the retry
+  ladder. **On by default** with conservative thresholds; tune via
+  `chat.router.health.*`.
+- **Credential carryover.** Tools that mint credentials during a task can have
+  them captured (opt-in per tool) and surfaced to you at completion —
+  redaction stays fail-closed throughout.
+- **Telegram task control.** `/tasks`, `/status`, `/cancel`, `/retry`, plus
+  button-driven recovery steering and tap-to-copy command rendering.
+- **Community contribution: AWS Bedrock embeddings.** Native Bedrock embedding
+  support for memory/RAG — the first inbound community contribution.
+- **Quality of life.** Config saves never hang (invalid saves are rejected;
+  restart-required changes show a banner), a unified Artifacts panel, paused
+  tasks can be cancelled, per-MCP-server timeouts, and mobile layout fixes.
+
+!!! note "Restart to pick up new behavior"
+    The model-health circuit breaker and the new detectors start with the
+    daemon; restart after upgrading. All new configuration keys are additive.
 
 ---
 

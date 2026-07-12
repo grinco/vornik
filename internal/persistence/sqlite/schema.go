@@ -901,6 +901,29 @@ CREATE INDEX IF NOT EXISTS idx_secret_redaction_audit_task    ON secret_redactio
 CREATE INDEX IF NOT EXISTS idx_secret_redaction_audit_project ON secret_redaction_audit(project_id, checkpoint, created_at);
 
 -- ============================================================
+-- task_credentials — migration v127 parity
+--
+-- Operator-facing access credentials (e.g. a PageDrop viewing
+-- password) captured from a trusted tool's structured output so they
+-- can be surfaced code-formatted + copyable instead of redacted.
+-- UNIQUE(task_id, execution_id, tool, artifact_url) backs the capture
+-- upsert; artifact_url is NOT NULL DEFAULT '' so "no URL" is a single
+-- key. created_at is TEXT (RFC3339, stamped by the repo).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS task_credentials (
+    id           TEXT PRIMARY KEY,
+    task_id      TEXT NOT NULL,
+    execution_id TEXT NOT NULL,
+    tool         TEXT NOT NULL,
+    label        TEXT NOT NULL,
+    value        TEXT NOT NULL,
+    artifact_url TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    UNIQUE (task_id, execution_id, tool, artifact_url)
+);
+CREATE INDEX IF NOT EXISTS idx_task_credentials_task ON task_credentials(task_id);
+
+-- ============================================================
 -- chat_audit_log + chat_system_prompts — migration v39 parity
 --
 -- Per-turn dispatcher activity. One row per inbound user message

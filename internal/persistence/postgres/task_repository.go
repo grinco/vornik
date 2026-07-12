@@ -323,7 +323,7 @@ func (r *TaskRepository) TransitionToCancelled(ctx context.Context, id string) (
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE tasks SET status = 'CANCELLED', updated_at = NOW()
 		WHERE id = $1
-		  AND status IN ('QUEUED','LEASED','RUNNING','PENDING')
+		  AND status IN ('QUEUED','LEASED','RUNNING','PENDING','PAUSED')
 	`, id)
 	if err != nil {
 		return false, mapDBError(err)

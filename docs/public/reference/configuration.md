@@ -140,6 +140,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `secrets.allowlist` | list | Extra regexes appended to the default allowlist. |
 | `secrets.checkpoints` | map | Map a channel to an action: detect, redact, or block. |
 | `secrets.trusted_output_tools` | list | Tool-name prefixes whose tool-audit OUTPUT is exempt from generic_kv/entropy redaction (strong credential patterns still redact; input always scanned). |
+| `secrets.tool_credentials` | list | Map a trusted tool to a credential field in its output to capture and surface code-formatted + copyable (strong-pattern values are never captured). |
 
 ## retention
 

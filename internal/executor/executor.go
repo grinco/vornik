@@ -447,6 +447,14 @@ type Executor struct {
 	// a labeled-exfil channel. Empty (default) = no exemption. Config:
 	// secrets.trusted_output_tools.
 	secretsTrustedOutputTools []string
+	// toolCredentialMappings maps a trusted tool to a field in its structured
+	// output carrying an operator-facing access credential to capture
+	// (credential carryover; see tool_credentials.go). taskCredentialRepo is
+	// the store. Both must be set (WithToolCredentials) for capture to run;
+	// empty/nil = no capture (default). A value matching a STRONG credential
+	// pattern is never captured — it always redacts.
+	toolCredentialMappings []ToolCredentialMapping
+	taskCredentialRepo     persistence.TaskCredentialRepository
 	// hallucinationDetector scans the agent's result.json prose
 	// after each step against a grounding context built from the
 	// step's tool_audit_log + artifact list. Signals are

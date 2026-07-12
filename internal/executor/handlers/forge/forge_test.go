@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -115,7 +117,7 @@ func TestBranchAndTitle(t *testing.T) {
 
 func TestOpenChangeRequest_HappyPath(t *testing.T) {
 	prov := &fakeProvider{openURL: "https://forge/o/r/pull/15"}
-	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/work/proj", sha: "deadbeef"})
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/work/proj", sha: "deadbeef"}, nil)
 	if h.Name() != "forge.open_change_request" {
 		t.Fatalf("name=%s", h.Name())
 	}
@@ -138,7 +140,7 @@ func TestOpenChangeRequest_HappyPath(t *testing.T) {
 
 func TestOpenChangeRequest_DefaultBaseFallback(t *testing.T) {
 	prov := &fakeProvider{openURL: "u"}
-	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"})
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil)
 	in := executor.SystemStepInput{Task: taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 1, Labels: []string{"bug"}})}
 	if _, err := h.Execute(context.Background(), in); err != nil {
 		t.Fatal(err)
@@ -160,27 +162,27 @@ func TestOpenChangeRequest_Errors(t *testing.T) {
 		t.Error("missing deps should error")
 	}
 	// missing job
-	h := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{}}, fakeSource{})
+	h := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{}}, fakeSource{}, nil)
 	if _, err := h.Execute(ctx, executor.SystemStepInput{Task: &persistence.Task{}}); err == nil {
 		t.Error("missing forge job should error")
 	}
 	// resolver error
-	hr := NewOpenChangeRequestHandler(fakeResolver{err: errors.New("no provider")}, fakeSource{})
+	hr := NewOpenChangeRequestHandler(fakeResolver{err: errors.New("no provider")}, fakeSource{}, nil)
 	if _, err := hr.Execute(ctx, executor.SystemStepInput{Task: good}); err == nil {
 		t.Error("resolver error should propagate")
 	}
 	// source error
-	hs := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{}}, fakeSource{err: errors.New("no worktree")})
+	hs := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{}}, fakeSource{err: errors.New("no worktree")}, nil)
 	if _, err := hs.Execute(ctx, executor.SystemStepInput{Task: good}); err == nil {
 		t.Error("source error should propagate")
 	}
 	// push error
-	hp := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{pushErr: errors.New("push boom")}}, fakeSource{dir: "/d", sha: "s"})
+	hp := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{pushErr: errors.New("push boom")}}, fakeSource{dir: "/d", sha: "s"}, nil)
 	if _, err := hp.Execute(ctx, executor.SystemStepInput{Task: good}); err == nil {
 		t.Error("push error should propagate")
 	}
 	// open error
-	ho := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{openErr: errors.New("open boom")}}, fakeSource{dir: "/d", sha: "s"})
+	ho := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{openErr: errors.New("open boom")}}, fakeSource{dir: "/d", sha: "s"}, nil)
 	if _, err := ho.Execute(ctx, executor.SystemStepInput{Task: good}); err == nil {
 		t.Error("open error should propagate")
 	}
@@ -430,7 +432,7 @@ func TestOpenChangeRequest_NoChangeSkips(t *testing.T) {
 	gitRun(t, dir, "update-ref", "refs/remotes/origin/main", sha)
 
 	prov := &fakeProvider{openURL: "should-not-be-used"}
-	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: dir, sha: sha})
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: dir, sha: sha}, nil)
 	in := executor.SystemStepInput{Task: taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 1, DefaultBranch: "main", Labels: []string{"bug"}})}
 	res, err := h.Execute(context.Background(), in)
 	if err != nil {
@@ -470,6 +472,86 @@ func TestCommitsBeyondBase(t *testing.T) {
 	// Unknown dir → ok=false (publish proceeds).
 	if _, ok := commitsBeyondBase(context.Background(), "/no/such/dir", "main", head); ok {
 		t.Error("nonexistent gitDir should be ok=false")
+	}
+}
+
+// fakeArtifactStore records the Store call and returns a canned artifact,
+// reading back the patch bytes it was asked to persist.
+type fakeArtifactStore struct {
+	project, exec, task, name, path string
+	body                            []byte
+	err                             error
+}
+
+func (f *fakeArtifactStore) Store(_ context.Context, project, execID, taskID, name, sourcePath string) (*persistence.Artifact, error) {
+	f.project, f.exec, f.task, f.name, f.path = project, execID, taskID, name, sourcePath
+	if b, e := os.ReadFile(sourcePath); e == nil {
+		f.body = b
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &persistence.Artifact{ID: "art-1", Name: name}, nil
+}
+
+// TestOpenChangeRequest_PushRejected_ParksWithPatch: when the forge REJECTS the
+// push (typed *forge.PushRejectedError), the handler must NOT error — it returns
+// a PublishBlockedSignal (state=blocked_awaiting_operator) carrying the reason +
+// remediation, and captures the committed change as a mail-in patch artifact so
+// an operator can submit it by hand. Regression for the 2026-07-11 headmatch
+// incident (TASK-112: push rejected because the GitHub App lacked `workflows`).
+func TestOpenChangeRequest_PushRejected_ParksWithPatch(t *testing.T) {
+	if _, err := execLookGit(); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	gitInit(t, dir)
+	gitRun(t, dir, "commit", "--allow-empty", "-m", "base")
+	gitRun(t, dir, "branch", "-M", "main")
+	baseSha := gitOut(t, dir, "rev-parse", "HEAD")
+	gitRun(t, dir, "update-ref", "refs/remotes/origin/main", baseSha)
+	// A real file change beyond base → a non-empty patch to capture.
+	if err := os.WriteFile(filepath.Join(dir, "coverage.yml"), []byte("MIN_COVERAGE: 80\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, dir, "add", ".")
+	gitRun(t, dir, "commit", "-m", "raise coverage gate")
+	head := gitOut(t, dir, "rev-parse", "HEAD")
+
+	rej := &forgeapi.PushRejectedError{
+		Branch: "backlog/task-112",
+		Kind:   forgeapi.PushRejectionPermission,
+		Output: "refusing to allow a GitHub App to create or update workflow without `workflows` permission",
+	}
+	store := &fakeArtifactStore{}
+	h := NewOpenChangeRequestHandler(
+		fakeResolver{p: &fakeProvider{pushErr: rej}},
+		fakeSource{dir: dir, sha: head},
+		store,
+	)
+	in := executor.SystemStepInput{
+		Task:      taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Kind: "backlog", Slug: "task-112", DefaultBranch: "main"}),
+		Execution: &persistence.Execution{ID: "exec-1"},
+	}
+	res, err := h.Execute(context.Background(), in)
+	if err != nil {
+		t.Fatalf("a rejected push must PARK, not error: %v", err)
+	}
+	sig, ok := executor.AsPublishBlocked(res.Result)
+	if !ok {
+		t.Fatalf("result is not a blocked signal: %s", res.Result)
+	}
+	if !strings.Contains(sig.Reason, "workflows") {
+		t.Errorf("reason should carry the rejection detail: %q", sig.Reason)
+	}
+	if sig.Remediation == "" {
+		t.Error("remediation should be set for a permission rejection")
+	}
+	if sig.ArtifactID != "art-1" || sig.ArtifactName == "" {
+		t.Errorf("expected a captured patch artifact, got id=%q name=%q", sig.ArtifactID, sig.ArtifactName)
+	}
+	if len(store.body) == 0 || !strings.Contains(string(store.body), "MIN_COVERAGE") {
+		t.Errorf("captured patch should contain the change; got %d bytes", len(store.body))
 	}
 }
 

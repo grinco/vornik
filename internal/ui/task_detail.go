@@ -14,21 +14,26 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/api"
+	"vornik.io/vornik/internal/chatorigin"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/playbook"
 	"vornik.io/vornik/internal/registry"
 )
 
 type TaskDetailData struct {
-	Title              string
-	CurrentPage        string
-	Task               *persistence.Task
-	Project            *registry.Project
-	Execution          *persistence.Execution   // most recent execution
-	Executions         []*persistence.Execution // all executions (newest first)
-	Artifacts          []*persistence.Artifact
-	ExecutionArtifacts []*persistence.Artifact // artifacts from the latest execution
-	ChangelogContent   string                  // rendered CHANGELOG.md content (if present)
+	Title       string
+	CurrentPage string
+	Task        *persistence.Task
+	Project     *registry.Project
+	Execution   *persistence.Execution   // most recent execution
+	Executions  []*persistence.Execution // all executions (newest first)
+	Artifacts   []*persistence.Artifact
+	// Credentials are tool-issued access credentials (e.g. a PageDrop viewing
+	// password) captured for this task (latest execution only), rendered
+	// code-formatted + copyable in the Artifacts panel. Read server-side from
+	// the trusted store — never agent prose — so it bypasses the chat redactor.
+	Credentials      []*persistence.TaskCredential
+	ChangelogContent string // rendered CHANGELOG.md content (if present)
 	// Cost breakdown for this task. Empty Rows + zero TotalUSD means "no
 	// usage data recorded" — either the task predates 2026.4.11 or the
 	// LLM usage repo isn't wired.
@@ -128,18 +133,13 @@ type TaskDetailData struct {
 	// defaults open (false — admin/no-session) or collapsed (true —
 	// RoleUser).
 	IsRoleUser bool
-	// Deliverables lists the completed task's final execution's
-	// OUTPUT-class artifacts as lead cards (task 2.4, narrated-
-	// execution-design.md §5.8) — the completion payload, rendered
-	// above the technical execution record. Empty for non-completed
-	// tasks or a completed task whose execution produced no OUTPUT
-	// artifact (see DeliverableFallbackText for that case).
-	Deliverables []DeliverableCard
-	// DeliverableFallbackText is the completion narration line shown
-	// in place of deliverable cards when a COMPLETED task produced no
-	// OUTPUT artifacts ("If none, the story ends with the completion
-	// narration text as the deliverable" — §5.8). Empty otherwise.
-	DeliverableFallbackText string
+	// CanSendToChat gates the per-OUTPUT-artifact "Send to chat" action
+	// in the Artifacts panel (folded in from the former Deliverable
+	// panel). True only when the task originated from a chat channel
+	// (its own or an ancestor's ChatTurnID resolves) AND a channel
+	// resolver is wired — so webhook / automation tasks, which have
+	// nowhere to send, never show the offer.
+	CanSendToChat bool
 }
 
 // TaskJudgeVerdictRow projects a persistence.TaskJudgeVerdict
@@ -400,6 +400,12 @@ func (s *Server) TaskDetail(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// "Send to chat" (folded into the Artifacts panel) is offered only
+		// when the task resolves to an originating chat channel — its own or
+		// an ancestor's ChatTurnID — and a channel resolver is wired. Webhook
+		// / automation tasks have no chat origin, so the offer is hidden.
+		data.CanSendToChat = s.channelResolver != nil && chatorigin.TurnID(ctx, data.Task, s.taskRepo) != ""
+
 		// Failure-class playbook: rule-based remediation list for
 		// the task's recorded last_error_class. Always renders for
 		// FAILED tasks with a class set — the corpus is shipped
@@ -450,6 +456,14 @@ func (s *Server) TaskDetail(w http.ResponseWriter, r *http.Request) {
 				data.Artifacts = artifacts
 			}
 
+			// Tool-issued access credentials captured for this task
+			// (credential carryover), latest execution only.
+			if s.taskCredentialRepo != nil {
+				if creds, cerr := s.taskCredentialRepo.ListByTaskLatestExecution(ctx, taskID); cerr == nil {
+					data.Credentials = creds
+				}
+			}
+
 			// For completed/failed tasks, load artifacts from the latest
 			// execution and look for CHANGELOG.md to render inline.
 			if data.Execution != nil && (data.Task.Status == persistence.TaskStatusCompleted || data.Task.Status == persistence.TaskStatusFailed) {
@@ -459,17 +473,6 @@ func (s *Server) TaskDetail(w http.ResponseWriter, r *http.Request) {
 					PageSize:    100,
 				})
 				if err == nil {
-					data.ExecutionArtifacts = execArtifacts
-					// Deliverable-first completion (task 2.4): a COMPLETED
-					// task leads with its OUTPUT-class artifacts as cards.
-					// Falls back to the last recorded story line (the
-					// completion narration) when there are none — §5.8.
-					if data.Task.Status == persistence.TaskStatusCompleted {
-						data.Deliverables = buildDeliverableCards(execArtifacts)
-						if len(data.Deliverables) == 0 && len(data.StoryLines) > 0 {
-							data.DeliverableFallbackText = data.StoryLines[len(data.StoryLines)-1].Text
-						}
-					}
 					for _, a := range execArtifacts {
 						if isChangelogArtifact(a.Name) && a.StoragePath != "" {
 							// Route through the backend-aware Store so this

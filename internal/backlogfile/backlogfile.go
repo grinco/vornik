@@ -183,6 +183,142 @@ func (s *Store) MarkFailed(path, projectID, taskID string) (bool, error) {
 	return false, nil
 }
 
+// taskAnnotationRE strips a trailing " (task: <id>)" / " (task: <id>, failed)"
+// annotation so a consumed/failed line's base item text can be matched against
+// origin's pending line (which carries no annotation).
+var taskAnnotationRE = regexp.MustCompile(`\s*\(task: [^)]+\)\s*$`)
+
+func stripTaskAnnotation(s string) string {
+	return strings.TrimSpace(taskAnnotationRE.ReplaceAllString(s, ""))
+}
+
+// MergeConsumedMarks returns origin's BACKLOG.md content with the local file's
+// consumption marks ([x] done, [!] failed) re-applied to matching items.
+//
+// The workspace-refresh contract (autonomous-dev-loop follow-up): origin is
+// authoritative for the item SET, text, and [ ]/[?] states — operator
+// promotions and external contributions merged to main — while local is
+// authoritative for which items the daemon has already dispatched. An origin
+// `[ ]` item whose base text matches a local `[x]`/`[!]` item (ignoring the
+// `(task: id)` annotation) is re-stamped with the local marker + annotation, so
+// resetting the workspace to origin never re-runs an already-consumed item.
+// Items removed from origin drop out; items new/re-opened on origin keep their
+// origin marker.
+//
+// Matching is by base item text (the line minus its (task: id) annotation) —
+// the same identity the deposit dedup and MarkConsumed use. Two items sharing
+// identical text is therefore ambiguous (last consumed mark wins); in a
+// human-authored backlog distinct items carry distinct text, so this doesn't
+// arise in practice.
+func MergeConsumedMarks(origin, local string) string {
+	type mark struct {
+		marker byte
+		text   string // full text after the "[m] " box, incl. the (task: id) annotation
+	}
+	consumed := map[string]mark{}
+	for _, line := range strings.Split(local, "\n") {
+		m := itemRE.FindStringSubmatch(line)
+		if m == nil || (m[2] != "x" && m[2] != "!") {
+			continue
+		}
+		if base := stripTaskAnnotation(m[3]); base != "" {
+			consumed[base] = mark{marker: m[2][0], text: m[3]}
+		}
+	}
+	if len(consumed) == 0 {
+		return origin
+	}
+	lines := strings.Split(origin, "\n")
+	for i, line := range lines {
+		m := itemRE.FindStringSubmatch(line)
+		if m == nil || m[2] != " " { // only re-stamp still-pending origin items
+			continue
+		}
+		if cm, ok := consumed[stripTaskAnnotation(m[3])]; ok {
+			lines[i] = m[1] + "[" + string(cm.marker) + "] " + cm.text
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// RefreshFromOrigin reconciles the workspace BACKLOG.md with origin under the
+// per-project lock. It snapshots the local consumption marks, runs gitReset
+// (which overwrites the working tree — BACKLOG.md included — with origin/main),
+// then re-applies the local [x]/[!] marks onto origin's version via
+// MergeConsumedMarks and writes the result. Holding the lock across gitReset
+// stops a concurrent deposit / MarkConsumed from racing the reset.
+//
+// Best-effort by contract: a nil gitReset is a no-op, and a gitReset error is
+// returned with the file left as gitReset left it — the caller (autonomy tick)
+// logs and proceeds rather than blocking the loop. When origin carries no
+// BACKLOG.md the local file is restored so a refresh never empties the backlog.
+func (s *Store) RefreshFromOrigin(path, projectID string, gitReset func() error) error {
+	if gitReset == nil {
+		return nil
+	}
+	mu := s.lockFor(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	local, localExisted, err := readFile(path)
+	if err != nil {
+		return err
+	}
+	if err := gitReset(); err != nil {
+		return err
+	}
+	origin, originExisted, err := readFile(path)
+	if err != nil {
+		return err
+	}
+	if !originExisted {
+		if !localExisted || strings.TrimSpace(local) == "" {
+			return nil
+		}
+		return os.WriteFile(path, []byte(local), 0o600)
+	}
+	merged := MergeConsumedMarks(origin, local)
+	if merged == origin {
+		return nil // gitReset already wrote origin's version; nothing to re-apply
+	}
+	return os.WriteFile(path, []byte(merged), 0o600)
+}
+
+// RevertToPending finds the consumed line ('x' or '!' marker) whose text
+// carries "(task: <taskID>)", flips it back to a pending '[ ]' item, and
+// strips the task annotation — so a dispatched item whose task did NOT
+// succeed (failed / cancelled) returns to the queue for another attempt
+// rather than staying marked done and being skipped forever. A '[x]' is
+// reserved for items whose task actually completed. Returns (false, nil)
+// when no matching consumed line exists.
+func (s *Store) RevertToPending(path, projectID, taskID string) (bool, error) {
+	mu := s.lockFor(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	content, existed, err := readFile(path)
+	if err != nil || !existed {
+		return false, err
+	}
+	suffix := fmt.Sprintf("(task: %s)", taskID)
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		m := itemRE.FindStringSubmatch(line)
+		if m == nil || (m[2] != "x" && m[2] != "!") {
+			continue
+		}
+		// Match the task by its annotation — [x] has "(task: id)",
+		// [!] has "(task: id, failed)"; strip either form.
+		base := stripTaskAnnotation(m[3])
+		if !strings.HasSuffix(m[3], suffix) && !strings.Contains(m[3], "(task: "+taskID+",") {
+			continue
+		}
+		lines[i] = m[1] + "[ ] " + base
+		return true, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600)
+	}
+	return false, nil
+}
+
 // readFile reads path, reporting existed=false (with a nil error)
 // when the file is absent so callers can distinguish "empty
 // backlog" from a real I/O failure.

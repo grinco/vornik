@@ -940,6 +940,10 @@ func (e *Executor) persistToolAuditFromResult(ctx context.Context, task *persist
 				Int64("duration_ms", auditEntry.DurationMs).
 				Msg("audit: failed to write audit entry to DB")
 		}
+		// Credential carryover: capture an operator-facing access credential
+		// from this tool's RAW output (not the redacted copy) when the tool
+		// matches a configured mapping. Best-effort; never fails the step.
+		e.captureToolCredential(ctx, task, execution, entry.Tool, entry.Output)
 	}
 	return toolCallCount, loopDetail
 }

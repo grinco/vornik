@@ -14,6 +14,13 @@ const (
 	triggerToolHeartbeat triggerKind = "tool_heartbeat"
 	triggerStepCompleted triggerKind = "step_completed"
 	triggerCompletion    triggerKind = "completion"
+	// triggerAttemptFailed narrates an execution that reached a terminal
+	// FAILED/CANCELLED status while its task is still active (a retry or
+	// recovery is coming). Distinct from triggerCompletion so the story
+	// says "this attempt failed, retrying" rather than ending on the last
+	// step's "Finished step N" (a false-success read) or the terminal
+	// "task didn't complete" (which wrongly implies the task is done).
+	triggerAttemptFailed triggerKind = "attempt_failed"
 )
 
 // allTriggerKinds is the exhaustiveness fixture (design §5.5 / §8):
@@ -21,7 +28,7 @@ const (
 // (plus "" for unknown/system steps) and asserts fallbackTemplate
 // never returns "".
 var allTriggerKinds = []triggerKind{
-	triggerStepStarted, triggerToolHeartbeat, triggerStepCompleted, triggerCompletion,
+	triggerStepStarted, triggerToolHeartbeat, triggerStepCompleted, triggerCompletion, triggerAttemptFailed,
 }
 
 // allKnownRoles is the same fixture's role axis — every role the
@@ -65,6 +72,8 @@ func fallbackTemplate(kind triggerKind, in templateInput) string {
 		return stepCompletedTemplate(in)
 	case triggerCompletion:
 		return completionTemplate(in)
+	case triggerAttemptFailed:
+		return "That attempt ran into a problem — trying again."
 	default:
 		return defaultTemplate(in)
 	}

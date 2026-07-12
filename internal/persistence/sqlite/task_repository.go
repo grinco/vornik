@@ -312,7 +312,7 @@ func (r *TaskRepository) TransitionToCancelled(ctx context.Context, id string) (
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE tasks SET status = 'CANCELLED', updated_at = ?
 		WHERE id = ?
-		  AND status IN ('QUEUED','LEASED','RUNNING','PENDING')`,
+		  AND status IN ('QUEUED','LEASED','RUNNING','PENDING','PAUSED')`,
 		sqliteTime(time.Now().UTC()), id)
 	if err != nil {
 		return false, err

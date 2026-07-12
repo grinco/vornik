@@ -321,6 +321,7 @@ func (c *Container) initTelegram() error {
 		telegram.WithSkillRepository(c.repos.Skills),
 		telegram.WithExecutionRepository(c.repos.Executions),
 		telegram.WithArtifactRepository(c.repos.Artifacts),
+		telegram.WithTaskCredentialRepository(c.repos.TaskCredentials),
 		telegram.WithRegistry(c.Registry),
 		telegram.WithTaskWatcherRepository(c.repos.Watchers),
 	}

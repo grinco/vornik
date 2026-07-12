@@ -5471,4 +5471,39 @@ CREATE INDEX IF NOT EXISTS idx_secret_redaction_audit_project ON secret_redactio
 DROP TABLE IF EXISTS secret_redaction_audit;
 `,
 	},
+	{
+		Version: 127,
+		Name:    "task_credentials",
+		// Tool credential carryover
+		// (2026-07-11-tool-credential-carryover-design.md). One row per
+		// operator-facing access credential (e.g. a PageDrop viewing
+		// password) captured deterministically from a trusted tool's
+		// structured output, so it can be surfaced code-formatted + copyable
+		// instead of being redacted as a generic secret.
+		//
+		// UNIQUE (task_id, execution_id, tool, artifact_url) backs the capture
+		// upsert — a re-publish within one execution overwrites the value.
+		// artifact_url is NOT NULL DEFAULT '' (not nullable) so the unique
+		// constraint treats "no URL" as a single distinct key rather than
+		// letting SQL NULLs slip the conflict check. FK to tasks cascades on
+		// delete (same retention as tool_audit). Mirror added to
+		// sqlite/schema.go.
+		Up: `
+CREATE TABLE IF NOT EXISTS task_credentials (
+    id           TEXT PRIMARY KEY,
+    task_id      TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    execution_id TEXT NOT NULL,
+    tool         TEXT NOT NULL,
+    label        TEXT NOT NULL,
+    value        TEXT NOT NULL,
+    artifact_url TEXT NOT NULL DEFAULT '',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (task_id, execution_id, tool, artifact_url)
+);
+CREATE INDEX IF NOT EXISTS idx_task_credentials_task ON task_credentials (task_id);
+`,
+		Down: `
+DROP TABLE IF EXISTS task_credentials;
+`,
+	},
 }

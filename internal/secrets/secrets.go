@@ -575,6 +575,64 @@ type Span struct {
 // guarantee) and non-overlapping after Scan's dedup pass —
 // callers passing hand-constructed Findings out of order may get
 // truncated output.
+// FilterAllowlisted drops findings that overlap a system-supplied allowlisted
+// value, so a specific, provenance-known value (e.g. a tool-issued access
+// credential captured into task_credentials) can pass the outbound redactor
+// WITHOUT weakening detection for anything else. A finding is dropped when its
+// matched text contains an allowlisted value or is contained by one — robust
+// to however the detector bounds the match (e.g. "password: hunter2" vs
+// "hunter2"). The allowlist MUST be system-supplied and per-call (never
+// agent-controlled): callers populate it only from the trusted store, so an
+// agent cannot use it to smuggle a value it did not legitimately produce.
+// Empty allowlist returns findings unchanged.
+func FilterAllowlisted(findings []Finding, allow [][]byte) []Finding {
+	if len(findings) == 0 || len(allow) == 0 {
+		return findings
+	}
+	out := make([]Finding, 0, len(findings))
+	for _, f := range findings {
+		if allowlistEligible(f) && findingAllowlisted(f.Match, allow) {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// allowlistEligible reports whether a finding MAY be suppressed by the per-call
+// allowlist. Only heuristic findings (generic_kv / entropy) — the class a
+// tool-issued viewing password falls in — are eligible. A strong,
+// prefix-anchored pattern (aws / openai / github / jwt / …) is NEVER eligible,
+// so an allowlisted value can never suppress a real key even if that value
+// happens to be a substring of the key's matched span. This is the security
+// boundary: the allowlist can rescue a credential only from heuristic
+// redaction, never from strong-pattern redaction.
+func allowlistEligible(f Finding) bool {
+	return f.Type == FindingTypeGenericKV || f.Type == FindingTypeEntropy
+}
+
+// minAllowlistLen rejects trivially short allowlist entries, which would match
+// too broadly (a 3-char value appears inside many unrelated findings). Real
+// tool-issued credentials comfortably exceed this.
+const minAllowlistLen = 8
+
+func findingAllowlisted(match string, allow [][]byte) bool {
+	for _, a := range allow {
+		if len(a) < minAllowlistLen {
+			continue
+		}
+		av := string(a)
+		// av inside match: the detector matched "password: <av>"; the value is
+		// a substring of the labelled match. match inside av: the detector
+		// matched a fragment of the credential. Both are safe here because
+		// allowlistEligible already excluded strong-pattern findings.
+		if strings.Contains(match, av) || strings.Contains(av, match) {
+			return true
+		}
+	}
+	return false
+}
+
 func Redact(text []byte, findings []Finding) []byte {
 	if len(findings) == 0 {
 		return text

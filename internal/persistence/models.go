@@ -230,6 +230,30 @@ type Task struct {
 	ResultEnvelope []byte `json:"result_envelope,omitempty"`
 }
 
+// EndedUnsuccessfully reports whether the task has reached a terminal
+// state representing a FAILURE to deliver its work. Used by autonomy
+// backlog reconciliation to decide which consumed (`[x]`) items to flip
+// back to blocked (`[!]`). FAILED and CANCELLED always count. CLOSED is
+// ambiguous — a task can be CLOSED after a clean COMPLETED (operator
+// closed a success) or after giving up (e.g. the rework-loop guard);
+// only the latter carries a LastError/LastErrorClass, so CLOSED counts
+// as unsuccessful ONLY when a failure indicator is present. Non-terminal
+// and success states (COMPLETED, AWAITING_*, PAUSED, active) return false.
+func (t *Task) EndedUnsuccessfully() bool {
+	if t == nil {
+		return false
+	}
+	switch t.Status {
+	case TaskStatusFailed, TaskStatusCancelled:
+		return true
+	case TaskStatusClosed:
+		return (t.LastError != nil && *t.LastError != "") ||
+			(t.LastErrorClass != nil && *t.LastErrorClass != "")
+	default:
+		return false
+	}
+}
+
 // TaskFailureClass enumerates the concrete failure modes a task can
 // land in. Kept as plain strings rather than a DB enum so operators
 // can extend it from the classifier without a schema migration.
@@ -906,6 +930,41 @@ type SecretRedactionEvent struct {
 	// Source is "live" (a sink redacting at runtime) or "scan" (the
 	// vornikctl secrets scan-history retro-scan).
 	Source string `json:"source"`
+	// CreatedAt defaults to NOW() when left zero.
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// TaskCredential is an operator-facing access credential (e.g. a PageDrop
+// viewing password) captured deterministically — no LLM — from a trusted
+// tool's structured output, so it can be surfaced code-formatted + copyable
+// in the completion notification and task detail instead of being redacted as
+// a generic secret. See
+// https://docs.vornik.io
+//
+// One row per (task, execution, tool, artifact_url); a re-publish within the
+// same execution overwrites the value. Surfacing filters to the task's latest
+// execution so a retry's stale credential is never shown.
+type TaskCredential struct {
+	// ID is the row PK. Format: taskcred_<utc-ts>_<hex>. Generated via
+	// persistence.GenerateID("taskcred") when left empty.
+	ID string `json:"id"`
+	// TaskID ties the credential to a task's detail page + notification.
+	TaskID string `json:"task_id"`
+	// ExecutionID is the execution that captured it (provenance + the
+	// latest-execution surfacing filter).
+	ExecutionID string `json:"execution_id"`
+	// Tool is the trusted tool that minted the value (provenance), e.g.
+	// "mcp__pagedrop__pagedrop_publish".
+	Tool string `json:"tool"`
+	// Label is the operator-facing name ("viewing password").
+	Label string `json:"label"`
+	// Value is the credential. Stored plaintext, consistent with the
+	// tool_audit row that already holds it post-exemption (no new at-rest
+	// exposure). Never a strong-pattern secret — those are refused at capture.
+	Value string `json:"value"`
+	// ArtifactURL is the resource the credential unlocks, when the mapping's
+	// artifact_field resolved. Empty otherwise.
+	ArtifactURL string `json:"artifact_url,omitempty"`
 	// CreatedAt defaults to NOW() when left zero.
 	CreatedAt time.Time `json:"created_at"`
 }

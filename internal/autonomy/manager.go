@@ -147,6 +147,13 @@ type Manager struct {
 	metrics        *Metrics
 	workspacePath  string
 	defaultTimeout time.Duration
+	// gitRefresh, when non-nil, fetches origin and hard-resets the given
+	// repo dir to origin/<branch> before a backlog tick reads BACKLOG.md,
+	// so each iteration picks up external contributions merged to main.
+	// Called inside the backlog Store lock (via RefreshFromOrigin) so the
+	// local [x]/[!] consumption marks are preserved across the reset.
+	// nil disables the refresh (the tick reads the workspace as-is).
+	gitRefresh func(ctx context.Context, repoDir string) error
 	// backlog is the process-wide backlogfile.Store shared with the
 	// HTTP deposit endpoint (Container.BacklogStore, round-2 F2). All
 	// BACKLOG.md read-modify-writes for Mode="backlog" ticks go through
@@ -293,6 +300,14 @@ func WithDefaultEvaluateTimeout(d time.Duration) Option {
 // leaves backlog-mode file mutations disabled.
 func WithBacklogStore(s *backlogfile.Store) Option {
 	return func(m *Manager) { m.backlog = s }
+}
+
+// WithGitRefresh wires the workspace-refresh hook a backlog tick runs before
+// reading BACKLOG.md: fetch origin + hard-reset repoDir to origin/<branch>,
+// picking up external contributions merged to main each iteration. nil (the
+// default) leaves the workspace un-refreshed. See execGitRefresh.
+func WithGitRefresh(fn func(ctx context.Context, repoDir string) error) Option {
+	return func(m *Manager) { m.gitRefresh = fn }
 }
 
 // evalRecord carries the shape passed to recordEvaluation. Constructed by
@@ -1258,11 +1273,31 @@ func (m *Manager) tickBacklog(ctx context.Context, project *registry.Project, ev
 		return nil
 	}
 
+	// Workspace refresh (before reading): fetch origin and hard-reset the
+	// project's checkout to origin/main so this iteration picks up external
+	// contributions merged since the last tick, while RefreshFromOrigin
+	// re-applies the local [x]/[!] consumption marks so a consumed item is
+	// never re-run. Best-effort — a git error leaves the workspace as-is and
+	// the tick proceeds. nil gitRefresh (unwired) skips it entirely.
+	if m.gitRefresh != nil {
+		repoDir := filepath.Join(m.workspacePath, project.ID)
+		rctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		if rerr := m.backlog.RefreshFromOrigin(abs, project.ID, func() error {
+			return m.gitRefresh(rctx, repoDir)
+		}); rerr != nil {
+			m.logger.Warn().Err(rerr).
+				Str("project", project.ID).
+				Str("repo_dir", repoDir).
+				Msg("backlog-mode tick: workspace refresh failed — proceeding with the un-refreshed workspace")
+		}
+		cancel()
+	}
+
 	// Reconcile pass (before dispatch): any previously-consumed item
 	// whose task has since FAILED gets flipped `- [x]`→`- [!]` so the
 	// failure is visible in the file itself. Best-effort — a lookup or
 	// write error here must never block dispatching new work below.
-	m.reconcileFailedBacklogItems(ctx, abs, project)
+	m.reconcileBacklogItems(ctx, abs, project)
 
 	prompt, ok, err := m.backlog.PeekNext(abs, project.ID)
 	if err != nil {
@@ -1416,16 +1451,17 @@ func (m *Manager) tickBacklog(ctx context.Context, project *registry.Project, ev
 	return nil
 }
 
-// reconcileFailedBacklogItems scans the project's BACKLOG.md for
+// reconcileBacklogItems scans the project's BACKLOG.md for
 // consumed (`- [x] … (task: <id>)`) items whose task has since
-// transitioned to FAILED, and flips those lines to
+// ended unsuccessfully (FAILED, CANCELLED, or CLOSED carrying a
+// failure), and flips those lines to
 // `- [!] … (task: <id>, failed)` via the shared store. It is
 // best-effort: a missing file, a task-lookup error, or a write error is
 // logged and skipped so reconciliation never blocks dispatching new
 // work. Idempotent by construction — a line already at `- [!]` no
 // longer matches MarkFailed's 'x' search, and an item the operator
 // manually reset to `- [ ]` is skipped here (its marker is not 'x').
-func (m *Manager) reconcileFailedBacklogItems(ctx context.Context, abs string, project *registry.Project) {
+func (m *Manager) reconcileBacklogItems(ctx context.Context, abs string, project *registry.Project) {
 	if m.backlog == nil || m.taskRepo == nil {
 		return
 	}
@@ -1458,21 +1494,33 @@ func (m *Manager) reconcileFailedBacklogItems(ctx context.Context, abs string, p
 				Msg("backlog-mode reconcile: task lookup failed; skipping item")
 			continue
 		}
-		if task == nil || task.Status != persistence.TaskStatusFailed {
+		if task == nil {
+			continue
+		}
+		// A backlog item is only "done" (`[x]`) when its task actually
+		// COMPLETED (raised its PR). A task that ended unsuccessfully left
+		// the item prematurely marked done at dispatch. Flip it to blocked
+		// (`[!]`) — NOT back to pending — so it is neither silently skipped
+		// as done nor auto-retried into a storm: the operator flips
+		// `[!]` → `[ ]` to retry once they've addressed the cause (granted a
+		// permission, fixed a flaky test, split a too-big item). Still-active
+		// tasks (RUNNING/QUEUED/PAUSED) and AWAITING_* parks are left as-is —
+		// the hasActive interlock stops a duplicate dispatch while they run,
+		// and a task parked awaiting operator action (e.g. an unpushable
+		// change) MUST keep its `[x]` so autonomy doesn't loop on it.
+		if !task.EndedUnsuccessfully() {
 			continue
 		}
 		if _, err := m.backlog.MarkFailed(abs, project.ID, taskID); err != nil {
-			m.logger.Warn().
-				Err(err).
-				Str("project", project.ID).
-				Str("task_id", taskID).
-				Msg("backlog-mode reconcile: failed to flip item to failed")
+			m.logger.Warn().Err(err).
+				Str("project", project.ID).Str("task_id", taskID).
+				Msg("backlog-mode reconcile: failed to flip item to blocked")
 			continue
 		}
 		m.logger.Info().
-			Str("project", project.ID).
-			Str("task_id", taskID).
-			Msg("backlog-mode reconcile: flipped consumed item to failed")
+			Str("project", project.ID).Str("task_id", taskID).
+			Str("task_status", string(task.Status)).
+			Msg("backlog-mode reconcile: flipped unsuccessful item to blocked ([!]) for operator")
 	}
 }
 

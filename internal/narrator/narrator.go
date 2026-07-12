@@ -527,6 +527,21 @@ func (n *Narrator) sweepIdle(ctx context.Context, now time.Time) {
 			// sweep re-checks and emits once the task settles, or the state is
 			// force-torn-down after ForceTeardown if a continuation took over.
 			if n.taskStillActive(ctx, st.taskID) {
+				// The task isn't terminal (retry / recovery / continuation).
+				// For a COMPLETED execution this could be a premature-success
+				// false completion (recovery incident) — suppress it. But a
+				// FAILED/CANCELLED execution must still be narrated truthfully:
+				// without it the story ends on the last step's "Finished step N"
+				// and reads as success (headmatch task ...9417765). Emit a
+				// distinct "attempt failed — retrying" line, then tear down so
+				// the retry gets a fresh story.
+				if exec.Status != persistence.ExecutionStatusCompleted {
+					n.emitLine(ctx, execID, st, triggerAttemptFailed,
+						templateInput{Role: st.currentRole, StepIdx: st.stepIdx, StepTotal: st.stepTotal, Success: false},
+						"", "", persistence.ExecutionNarrationKindCompletion)
+					n.teardown(execID)
+					continue
+				}
 				if idle >= n.forceTeardownAfter() {
 					n.teardown(execID)
 				}

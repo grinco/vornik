@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"vornik.io/vornik/internal/executor"
 	forgeapi "vornik.io/vornik/internal/forge"
+	"vornik.io/vornik/internal/persistence"
 )
 
 // OpenChangeRequestHandler implements the "forge.open_change_request" system
@@ -18,12 +21,17 @@ import (
 type OpenChangeRequestHandler struct {
 	resolver ProviderResolver
 	source   PublishSource
+	// store attaches the mail-in patch when a push is rejected. Optional:
+	// nil disables the artifact (the task still parks with the reason).
+	store ArtifactStore
 }
 
-// NewOpenChangeRequestHandler wires the handler. Nil-safe: a missing dependency
-// surfaces a clear error at Execute rather than panicking.
-func NewOpenChangeRequestHandler(resolver ProviderResolver, source PublishSource) *OpenChangeRequestHandler {
-	return &OpenChangeRequestHandler{resolver: resolver, source: source}
+// NewOpenChangeRequestHandler wires the handler. Nil-safe: a missing required
+// dependency (resolver/source) surfaces a clear error at Execute rather than
+// panicking. store is optional (the push-rejected fallback still parks without
+// it, minus the downloadable patch).
+func NewOpenChangeRequestHandler(resolver ProviderResolver, source PublishSource, store ArtifactStore) *OpenChangeRequestHandler {
+	return &OpenChangeRequestHandler{resolver: resolver, source: source, store: store}
 }
 
 // Name implements executor.SystemHandler.
@@ -85,6 +93,13 @@ func (h *OpenChangeRequestHandler) Execute(ctx context.Context, in executor.Syst
 
 	branch := branchForJob(*job)
 	if err := provider.PushBranch(ctx, gitDir, job.Repo, branch, sha); err != nil {
+		// A remote REJECTION (missing permission, protected branch, …) is not
+		// retry-fixable as-is. Rather than fail (→ retry loop / silent skip),
+		// capture the committed change as a mail-in patch and signal the
+		// executor to PARK the task awaiting operator action.
+		if pre, ok := forgeapi.AsPushRejected(err); ok {
+			return h.blockedResult(ctx, in, base, sha, gitDir, branch, pre), nil
+		}
 		return executor.SystemStepResult{}, fmt.Errorf("%s: push branch %s: %w", name, branch, err)
 	}
 
@@ -112,4 +127,53 @@ func (h *OpenChangeRequestHandler) Execute(ctx context.Context, in executor.Syst
 		return executor.SystemStepResult{}, fmt.Errorf("%s: marshal result: %w", name, err)
 	}
 	return executor.SystemStepResult{Result: out}, nil
+}
+
+// blockedResult builds the awaiting-operator PARK signal for an un-pushable
+// change: a one-line reason + a kind-specific remediation, plus (best-effort) a
+// git-am-able patch of the committed change attached as a downloadable OUTPUT
+// artifact so the operator can submit it by hand. The executor turns this signal
+// into an AWAITING_INPUT hand-off (no failure, no retry). Never errors — a park
+// with a reason is always better than failing.
+func (h *OpenChangeRequestHandler) blockedResult(ctx context.Context, in executor.SystemStepInput, base, sha, gitDir, branch string, pre *forgeapi.PushRejectedError) executor.SystemStepResult {
+	sig := executor.PublishBlockedSignal{
+		State:       executor.SystemStepBlockedState,
+		Reason:      fmt.Sprintf("Could not open a change request: branch %q was rejected by the forge (%s). %s", branch, pre.Kind, pre.Output),
+		Remediation: pre.Kind.Remediation(),
+	}
+	if h.store != nil && in.Task != nil && in.Execution != nil {
+		if patch, err := patchFromBase(ctx, gitDir, base, sha); err == nil && len(patch) > 0 {
+			artName := "unpushable-" + strings.ReplaceAll(branch, "/", "-") + ".patch"
+			if art := h.storePatch(ctx, in, artName, patch); art != nil {
+				sig.ArtifactID = art.ID
+				sig.ArtifactName = art.Name
+			}
+		}
+	}
+	out, _ := json.Marshal(sig)
+	return executor.SystemStepResult{Result: out}
+}
+
+// storePatch writes the patch bytes to a temp file and persists it as a task
+// OUTPUT artifact (the store reads from a path). Returns nil on any failure —
+// the caller degrades to a park without the downloadable patch.
+func (h *OpenChangeRequestHandler) storePatch(ctx context.Context, in executor.SystemStepInput, name string, patch []byte) *persistence.Artifact {
+	f, err := os.CreateTemp("", "vornik-patch-*.patch")
+	if err != nil {
+		return nil
+	}
+	tmp := f.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	if _, werr := f.Write(patch); werr != nil {
+		_ = f.Close()
+		return nil
+	}
+	if cerr := f.Close(); cerr != nil {
+		return nil
+	}
+	art, err := h.store.Store(ctx, in.Task.ProjectID, in.Execution.ID, in.Task.ID, name, tmp)
+	if err != nil {
+		return nil
+	}
+	return art
 }

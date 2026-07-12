@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -507,6 +508,45 @@ func (c *Container) initScheduler() error {
 				c.Logger.Info().Strs("trusted_output_tools", c.Config.Secrets.TrustedOutputTools).
 					Msg("secrets: tool-audit OUTPUT exempt from heuristic redaction for these provenance-trusted tools")
 			}
+			// Credential carryover: capture operator-facing access credentials
+			// from trusted tools' output into the store, for code-formatted +
+			// copyable surfacing. Requires both the mappings and the store.
+			if tcs := c.Config.Secrets.NormalizedToolCredentials(); len(tcs) > 0 && c.repos != nil && c.repos.TaskCredentials != nil {
+				mappings := make([]executor.ToolCredentialMapping, 0, len(tcs))
+				for _, tc := range tcs {
+					m := executor.ToolCredentialMapping{
+						Tool:            tc.Tool,
+						CredentialField: tc.CredentialField,
+						ArtifactField:   tc.ArtifactField,
+						Label:           tc.Label,
+					}
+					// Text-mode patterns take precedence; a bad regexp drops
+					// only that mapping (loud, not fatal).
+					if tc.CredentialPattern != "" {
+						re, err := regexp.Compile(tc.CredentialPattern)
+						if err != nil {
+							c.Logger.Warn().Err(err).Str("tool", tc.Tool).
+								Msg("secrets: invalid credential_pattern — skipping this tool_credentials mapping")
+							continue
+						}
+						m.CredRE = re
+						if tc.ArtifactPattern != "" {
+							if are, err := regexp.Compile(tc.ArtifactPattern); err != nil {
+								c.Logger.Warn().Err(err).Str("tool", tc.Tool).
+									Msg("secrets: invalid artifact_pattern — capturing credential without artifact URL")
+							} else {
+								m.ArtRE = are
+							}
+						}
+					}
+					mappings = append(mappings, m)
+				}
+				if len(mappings) > 0 {
+					executorOpts = append(executorOpts, executor.WithToolCredentials(mappings, c.repos.TaskCredentials))
+					c.Logger.Info().Int("tool_credentials", len(mappings)).
+						Msg("secrets: capturing operator-facing credentials from these tools' output (credential carryover)")
+				}
+			}
 			c.secretsDetector = detector
 			c.secretsActions = actions
 			// Phase 2: artifact store was constructed in initScheduler
@@ -596,7 +636,7 @@ func (c *Container) initScheduler() error {
 	sysHandlers := executor.NewSystemHandlerRegistry()
 	if forgeResolver := c.newForgeResolver(); forgeResolver != nil {
 		forgeSrc := &forgePublishSource{workspacePath: executorConfig.ProjectWorkspacePath}
-		sysHandlers.Register(forgeh.NewOpenChangeRequestHandler(forgeResolver, forgeSrc))
+		sysHandlers.Register(forgeh.NewOpenChangeRequestHandler(forgeResolver, forgeSrc, c.artifactStore))
 		sysHandlers.Register(forgeh.NewPostReviewHandler(forgeResolver))
 		sysHandlers.Register(forgeh.NewFetchDiffHandler(forgeResolver))
 		c.Logger.Info().Msg("forge system handlers registered (forge.open_change_request, forge.post_review, forge.fetch_diff)")

@@ -418,3 +418,123 @@ func TestStore_IndependentMutexesPerProject(t *testing.T) {
 		t.Fatalf("expected one item per project, got %d and %d", len(items1), len(items2))
 	}
 }
+
+func TestMergeConsumedMarks_ReAppliesLocalMarksOntoOrigin(t *testing.T) {
+	origin := strings.Join([]string{
+		"# Backlog",
+		"- [ ] TASK-A: do the A thing",
+		"- [ ] TASK-B: do the B thing",
+		"- [ ] TASK-C: do the C thing", // new/still-pending on origin
+		"- [?] TASK-D: proposed idea",  // operator kept proposed
+	}, "\n")
+	// Local: A consumed, B failed, plus a stale item origin no longer has.
+	local := strings.Join([]string{
+		"# Backlog",
+		"- [x] TASK-A: do the A thing (task: t1)",
+		"- [!] TASK-B: do the B thing (task: t2, failed)",
+		"- [ ] TASK-C: do the C thing",
+		"- [?] TASK-D: proposed idea",
+		"- [x] TASK-GONE: removed from origin (task: t9)",
+	}, "\n")
+
+	got := MergeConsumedMarks(origin, local)
+	want := strings.Join([]string{
+		"# Backlog",
+		"- [x] TASK-A: do the A thing (task: t1)",
+		"- [!] TASK-B: do the B thing (task: t2, failed)",
+		"- [ ] TASK-C: do the C thing",
+		"- [?] TASK-D: proposed idea",
+	}, "\n")
+	if got != want {
+		t.Errorf("merge mismatch:\n got=%q\nwant=%q", got, want)
+	}
+}
+
+func TestMergeConsumedMarks_NoLocalMarksReturnsOrigin(t *testing.T) {
+	origin := "- [ ] only pending\n- [?] proposed\n"
+	if got := MergeConsumedMarks(origin, "- [ ] only pending\n- [?] proposed\n"); got != origin {
+		t.Errorf("no consumed marks must return origin unchanged; got %q", got)
+	}
+}
+
+func TestMergeConsumedMarks_OriginPromotionOfConsumedItemStaysPending(t *testing.T) {
+	// If origin shows an item as [x] or [?] already, we never re-stamp it —
+	// only origin [ ] items are eligible.
+	origin := "- [x] TASK-A: done upstream (task: up)\n- [?] TASK-B: demoted\n"
+	local := "- [x] TASK-A: done upstream (task: local)\n- [x] TASK-B: demoted (task: local2)\n"
+	got := MergeConsumedMarks(origin, local)
+	if got != origin {
+		t.Errorf("origin non-pending items must be left as-is; got %q", got)
+	}
+}
+
+func TestRefreshFromOrigin_MergesMarksAfterReset(t *testing.T) {
+	s := NewStore()
+	path := tempBacklogPath(t)
+	// Local workspace file with a consumption mark.
+	local := "- [x] TASK-A: a thing (task: t1)\n- [ ] TASK-B: b thing\n"
+	if err := os.WriteFile(path, []byte(local), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// gitReset simulates `git reset --hard origin/main`: origin re-opened A as
+	// [ ] and added a fresh item C.
+	origin := "- [ ] TASK-A: a thing\n- [ ] TASK-B: b thing\n- [ ] TASK-C: c thing\n"
+	gitReset := func() error { return os.WriteFile(path, []byte(origin), 0o600) }
+
+	if err := s.RefreshFromOrigin(path, "proj", gitReset); err != nil {
+		t.Fatalf("RefreshFromOrigin: %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	want := "- [x] TASK-A: a thing (task: t1)\n- [ ] TASK-B: b thing\n- [ ] TASK-C: c thing\n"
+	if string(got) != want {
+		t.Errorf("post-refresh file mismatch:\n got=%q\nwant=%q", got, want)
+	}
+}
+
+func TestRefreshFromOrigin_NilGitResetIsNoOp(t *testing.T) {
+	s := NewStore()
+	path := tempBacklogPath(t)
+	_ = os.WriteFile(path, []byte("- [ ] x\n"), 0o600)
+	if err := s.RefreshFromOrigin(path, "proj", nil); err != nil {
+		t.Fatalf("nil gitReset must be a no-op, got %v", err)
+	}
+}
+
+func TestRefreshFromOrigin_GitResetErrorPropagates(t *testing.T) {
+	s := NewStore()
+	path := tempBacklogPath(t)
+	_ = os.WriteFile(path, []byte("- [x] a (task: t1)\n"), 0o600)
+	boom := func() error { return fmt.Errorf("fetch failed") }
+	if err := s.RefreshFromOrigin(path, "proj", boom); err == nil {
+		t.Fatal("gitReset error must propagate so the caller can log + skip")
+	}
+}
+
+func TestRevertToPending_StripsAnnotationAndFlipsMarker(t *testing.T) {
+	s := NewStore()
+	path := tempBacklogPath(t)
+	content := "" +
+		"- [x] fix the bug (task: t1)\n" +
+		"- [!] other thing (task: t2, failed)\n" +
+		"- [ ] untouched\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// [x] → [ ], annotation stripped.
+	if ok, err := s.RevertToPending(path, "p", "t1"); err != nil || !ok {
+		t.Fatalf("RevertToPending(t1) = (%v, %v), want (true, nil)", ok, err)
+	}
+	// [!] (failed) → [ ] too.
+	if ok, err := s.RevertToPending(path, "p", "t2"); err != nil || !ok {
+		t.Fatalf("RevertToPending(t2) = (%v, %v), want (true, nil)", ok, err)
+	}
+	got, _ := os.ReadFile(path)
+	want := "- [ ] fix the bug\n- [ ] other thing\n- [ ] untouched\n"
+	if string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	// A second revert of an already-pending item is a no-op.
+	if ok, _ := s.RevertToPending(path, "p", "t1"); ok {
+		t.Error("reverting an already-pending item should be a no-op")
+	}
+}

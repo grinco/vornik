@@ -408,7 +408,11 @@ type Bot struct {
 	artifactRepo  persistence.ArtifactRepository
 	artifactStore dispatcher.InputArtifactStore // optional; enables snapshotting input_files into durable storage
 	watcherRepo   persistence.TaskWatcherRepository
-	registry      *registry.Registry
+	// taskCredentialRepo surfaces tool-issued access credentials (credential
+	// carryover) in the completion notification. Optional; nil = no credentials
+	// section.
+	taskCredentialRepo persistence.TaskCredentialRepository
+	registry           *registry.Registry
 	// Phase 28 — conversational task lifecycle. taskMessageRepo
 	// + rescheduler enable per-task reply routing. notifTracker
 	// maps notification message_id → task_id so replies can find
@@ -735,6 +739,12 @@ func WithLogger(logger zerolog.Logger) BotOption {
 // WithArtifactRepository sets the artifact repository for file sending.
 func WithArtifactRepository(repo persistence.ArtifactRepository) BotOption {
 	return func(b *Bot) { b.artifactRepo = repo }
+}
+
+// WithTaskCredentialRepository wires the store that surfaces tool-issued
+// access credentials (credential carryover) in the completion notification.
+func WithTaskCredentialRepository(repo persistence.TaskCredentialRepository) BotOption {
+	return func(b *Bot) { b.taskCredentialRepo = repo }
 }
 
 // WithArtifactStore wires a store that snapshots user-supplied input
@@ -1536,6 +1546,38 @@ func formatArtifactLine(a *persistence.Artifact, ownerTaskID string) string {
 
 // NotifyTaskCompleted sends a completion message to all chats watching this task.
 // Implements executor.CompletionNotifier.
+// renderCredentialsSection builds the completion-notification block listing
+// the task's tool-issued access credentials (credential carryover), and the
+// per-call redactor allowlist of their exact values. Each credential is
+// rendered as "label: `value`" so renderTelegramHTML turns the backtick span
+// into a tap-to-copy <code>. Returns ("", nil) when the repo is unwired or the
+// task captured no credential (the common case — caller then takes the
+// unchanged send path). Credentials are read from the latest execution only.
+func (b *Bot) renderCredentialsSection(ctx context.Context, task *persistence.Task) (string, [][]byte) {
+	if b.taskCredentialRepo == nil || task == nil {
+		return "", nil
+	}
+	creds, err := b.taskCredentialRepo.ListByTaskLatestExecution(ctx, task.ID)
+	if err != nil {
+		b.logger.Warn().Err(err).Str("task_id", task.ID).Msg("notify: failed to load task credentials")
+		return "", nil
+	}
+	if len(creds) == 0 {
+		return "", nil
+	}
+	var sb strings.Builder
+	allow := make([][]byte, 0, len(creds))
+	sb.WriteString("\n\n🔑 Access credentials:")
+	for _, c := range creds {
+		fmt.Fprintf(&sb, "\n%s: `%s`", c.Label, c.Value)
+		if c.ArtifactURL != "" {
+			sb.WriteString("\n  " + c.ArtifactURL)
+		}
+		allow = append(allow, []byte(c.Value))
+	}
+	return sb.String(), allow
+}
+
 func (b *Bot) NotifyTaskCompleted(_ context.Context, task *persistence.Task, success bool, message string) {
 	// Use a detached context with a generous timeout so the notification
 	// succeeds even when the execution context is already cancelled.
@@ -1703,9 +1745,25 @@ func (b *Bot) NotifyTaskCompleted(_ context.Context, task *persistence.Task, suc
 			if success {
 				text += b.renderDeliverableLinks(ctx, task)
 			}
+			// Credential carryover: surface any tool-issued access
+			// credential (e.g. a PageDrop viewing password) captured for
+			// this task, code-formatted + copyable. Only present when the
+			// task actually captured one, so notifications without
+			// credentials take the unchanged sendMessageGetID path.
+			credSection, credAllow := b.renderCredentialsSection(ctx, task)
 			// Phase 28: track the notification id so replies to it
 			// route to this task's conversation thread.
-			if mid, err := b.sendMessageGetID(ctx, chatID, text); err != nil {
+			var (
+				mid int64
+				err error
+			)
+			if success && credSection != "" {
+				text += credSection
+				mid, err = b.sendMessageGetIDAllow(ctx, chatID, text, credAllow)
+			} else {
+				mid, err = b.sendMessageGetID(ctx, chatID, text)
+			}
+			if err != nil {
 				b.logger.Error().Err(err).Str("task_id", task.ID).Int64("chat_id", chatID).Msg("notify: full send failed")
 			} else if b.notifTracker != nil {
 				b.notifTracker.remember(chatID, mid, task.ID, task.ProjectID)
@@ -2742,105 +2800,92 @@ func (b *Bot) sendMessage(ctx context.Context, chatID int64, text string) error 
 // rides on the same secrets-redact / HTTP / logging pipeline so
 // callers don't get a surprise difference in observability.
 func (b *Bot) sendMessageWithMarkup(ctx context.Context, chatID int64, text string, markup *InlineKeyboardMarkup) error {
+	return b.sendMessageWithMarkupAllow(ctx, chatID, text, markup, nil)
+}
+
+// prepareOutbound applies the outbound secret-redactor (with a per-call
+// allowlist so provenance-known values survive) and then command/backtick
+// rendering, returning the final text and parse mode ("HTML" when anything was
+// wrapped, else ""). The redactor is the backstop for anything that slipped
+// past the upstream checkpoints; rendering runs AFTER it, so a wrapped value
+// is one that legitimately survived (never a bypass).
+func (b *Bot) prepareOutbound(chatID int64, text string, allow [][]byte) (string, string) {
+	if b.secretsDetector != nil {
+		findings := secrets.FilterAllowlisted(b.secretsDetector.Scan([]byte(text)), allow)
+		if len(findings) > 0 {
+			text = string(secrets.Redact([]byte(text), findings))
+			b.logger.Warn().Int64("chat_id", chatID).Int("findings", len(findings)).
+				Msg("telegram sendMessage: redacted secret(s) before transmit")
+		}
+	}
+	if rendered, isHTML := renderTelegramHTML(text); isHTML {
+		return rendered, "HTML"
+	}
+	return text, ""
+}
+
+// sendMessageWithMarkupAllow is sendMessageWithMarkup with a per-call redactor
+// allowlist: findings that overlap an allowlisted value are NOT redacted. Used
+// by credential carryover (NotifyTaskCompleted) to let a provenance-known
+// access credential through the outbound redactor without weakening detection
+// for anything else. The allowlist is system-supplied from the trusted store,
+// never agent-controlled. allow=nil is identical to sendMessageWithMarkup.
+func (b *Bot) sendMessageWithMarkupAllow(ctx context.Context, chatID int64, text string, markup *InlineKeyboardMarkup, allow [][]byte) error {
 	if text == "" {
 		return ErrEmptyMessage
 	}
 
-	// Redact-mode backstop: scan every outbound message and
-	// replace any findings with [REDACTED:<type>] before the bytes
-	// hit the wire. Catches anything that slipped past the
-	// upstream checkpoints (result.json, container logs, audit,
-	// memory) so a leaked secret can't exfiltrate via chat reply.
-	// No-op when no detector is wired or when the message is
-	// clean.
-	if b.secretsDetector != nil {
-		if findings := b.secretsDetector.Scan([]byte(text)); len(findings) > 0 {
-			text = string(secrets.Redact([]byte(text), findings))
-			b.logger.Warn().
-				Int64("chat_id", chatID).
-				Int("findings", len(findings)).
-				Msg("telegram sendMessage: redacted secret(s) before transmit")
-		}
-	}
-
+	text, parseMode := b.prepareOutbound(chatID, text, allow)
 	reqBody := SendMessageRequest{
 		ChatID:      chatID,
 		Text:        text,
+		ParseMode:   parseMode,
 		ReplyMarkup: markup,
 	}
+	_, err := b.doSendMessage(ctx, chatID, reqBody)
+	return err
+}
 
+// doSendMessage marshals reqBody, POSTs it to sendMessage, and parses the
+// response — the shared HTTP round-trip for the send helpers. Returns the
+// Telegram message ID on success.
+func (b *Bot) doSendMessage(ctx context.Context, chatID int64, reqBody SendMessageRequest) (int64, error) {
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
+		return 0, fmt.Errorf("failed to marshal request: %w", err)
 	}
-
-	url := fmt.Sprintf("%s/sendMessage", b.baseURL)
 	start := time.Now()
-	b.logger.Debug().
-		Int64("chat_id", chatID).
-		Int("text_len", len(text)).
-		Msg("telegram sendMessage started")
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/sendMessage", b.baseURL), bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+		return 0, fmt.Errorf("failed to create request: %w", err)
 	}
-
 	req.Header.Set("Content-Type", "application/json")
-
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
-		b.logger.Warn().
-			Str("error", sanitizeTelegramError(err)).
-			Int64("chat_id", chatID).
-			Dur("duration", time.Since(start)).
-			Msg("telegram sendMessage request failed")
-		return fmt.Errorf("failed to send message: %w", err)
+		b.logger.Warn().Str("error", sanitizeTelegramError(err)).Int64("chat_id", chatID).
+			Dur("duration", time.Since(start)).Msg("telegram sendMessage request failed")
+		return 0, fmt.Errorf("failed to send message: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		b.logger.Warn().
-			Err(err).
-			Int64("chat_id", chatID).
-			Int("status_code", resp.StatusCode).
-			Dur("duration", time.Since(start)).
-			Msg("telegram sendMessage response read failed")
-		return fmt.Errorf("failed to read response: %w", err)
+		return 0, fmt.Errorf("failed to read response: %w", err)
 	}
-
-	b.logger.Debug().
-		Int64("chat_id", chatID).
-		Int("status_code", resp.StatusCode).
-		Int("response_bytes", len(respBody)).
-		Dur("duration", time.Since(start)).
-		Msg("telegram sendMessage response received")
-
 	var result SendMessageResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		b.logger.Warn().
-			Err(err).
-			Int64("chat_id", chatID).
+		b.logger.Warn().Err(err).Int64("chat_id", chatID).
 			Str("response_body", truncateTelegramLogString(string(respBody), 512)).
 			Msg("telegram sendMessage response parse failed")
-		return fmt.Errorf("failed to parse response: %w", err)
+		return 0, fmt.Errorf("failed to parse response: %w", err)
 	}
-
 	if !result.OK {
-		b.logger.Warn().
-			Int64("chat_id", chatID).
-			Str("description", result.Description).
+		b.logger.Warn().Int64("chat_id", chatID).Str("description", result.Description).
 			Msg("telegram sendMessage returned not ok")
-		return fmt.Errorf("sendMessage failed: %s", result.Description)
+		return 0, fmt.Errorf("sendMessage failed: %s", result.Description)
 	}
-
-	b.logger.Info().
-		Int64("chat_id", chatID).
-		Int64("message_id", result.Result.MessageID).
-		Dur("duration", time.Since(start)).
-		Msg("telegram message sent")
-
-	return nil
+	b.logger.Info().Int64("chat_id", chatID).Int64("message_id", result.Result.MessageID).
+		Dur("duration", time.Since(start)).Msg("telegram message sent")
+	return result.Result.MessageID, nil
 }
 
 // sendMessageGetID sends a message and returns the Telegram message ID.
@@ -2869,6 +2914,19 @@ func (b *Bot) sendMessageGetID(ctx context.Context, chatID int64, text string) (
 		return 0, fmt.Errorf("sendMessage failed: %s", result.Description)
 	}
 	return result.Result.MessageID, nil
+}
+
+// sendMessageGetIDAllow is sendMessageGetID plus the outbound redactor (with a
+// per-call allowlist) and command/backtick rendering. Used by the credential-
+// carryover completion notification so a captured access credential survives
+// redaction (it's on the system-supplied allowlist) and renders as a tap-to-
+// copy <code> span, while any OTHER secret in the message is still redacted.
+func (b *Bot) sendMessageGetIDAllow(ctx context.Context, chatID int64, text string, allow [][]byte) (int64, error) {
+	if text == "" {
+		return 0, ErrEmptyMessage
+	}
+	text, parseMode := b.prepareOutbound(chatID, text, allow)
+	return b.doSendMessage(ctx, chatID, SendMessageRequest{ChatID: chatID, Text: text, ParseMode: parseMode})
 }
 
 // editMessageText edits a previously sent message.

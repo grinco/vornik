@@ -285,7 +285,8 @@ func TestSCE_PinPreservesExactText(t *testing.T) {
 		AllowedUsers: map[int64]UserAccess{42: {Allowed: true, Projects: []string{"*"}}},
 	})
 	snap := runCommand(t, b, rec, 100, 42, "/pin   Always  reply  in JSON")
-	assert.Contains(t, snap[0].Text, "persists across /new resets")
+	// /new renders as a tap-to-copy <code> span (richtext.go).
+	assert.Contains(t, snap[0].Text, "persists across <code>/new</code> resets")
 	pins := b.getConversation(100, "").PinnedMessages()
 	require.Len(t, pins, 1)
 	assert.Equal(t, "system", pins[0].Role, "pinned instructions are pinned as system messages")

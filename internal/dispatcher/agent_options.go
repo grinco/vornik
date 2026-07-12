@@ -250,6 +250,18 @@ func WithInputArtifactStore(s InputArtifactStore) AgentOption {
 	return func(a *Agent) { a.artifactStore = s }
 }
 
+// WithProjectWorkspacePath tells the dispatcher where per-project
+// persistent workspaces live so create_task's input-confinement gate
+// can allow-list the <path>/<projectID>/uploads/ directory channel
+// attachments (Telegram/webchat) are saved into. Without it those
+// uploads are rejected as "outside allowed roots" whenever an active
+// project is set (incident-telegram-upload-input-roots-20260712).
+// Wire it with the SAME resolved value the executor uses for
+// ProjectWorkspacePath so the two trust boundaries agree.
+func WithProjectWorkspacePath(path string) AgentOption {
+	return func(a *Agent) { a.projectWorkspacePath = path }
+}
+
 // WithAttachmentAutoExtractor wires the document-extraction
 // pipeline into the dispatcher's create_task snapshot loop. Each
 // snapshotted input artifact gets a synchronous extraction pass;

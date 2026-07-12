@@ -249,6 +249,12 @@ func TestBuildLeadSystemPrompt_InboundAttachmentsDirective(t *testing.T) {
 		"ingested into project memory",
 		"extracted_document_id=",
 		"memory_search",
+		// Host-path rule (incident-telegram-upload-input-roots-20260712):
+		// uploads go through input_files; host paths never go in prompts;
+		// rejections are relayed verbatim, not worked around.
+		"NEVER write a host filesystem",
+		"host path into input_files verbatim",
+		"alternative delivery routes",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("lead prompt missing inbound-attachments marker %q", want)

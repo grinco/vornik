@@ -158,6 +158,14 @@ func (c *Container) initDispatcher() {
 	if c.artifactStore != nil {
 		opts = append(opts, dispatcher.WithInputArtifactStore(c.artifactStore))
 	}
+	// Per-project uploads allow-list root for create_task input_files.
+	// Resolved the same way the executor resolves its
+	// ProjectWorkspacePath so the dispatcher's confinement gate and the
+	// executor's staging guard agree on where channel uploads live
+	// (incident-telegram-upload-input-roots-20260712).
+	if pwp := resolveProjectWorkspacePath(c.Config.Runtime.ProjectWorkspacePath); pwp != "" {
+		opts = append(opts, dispatcher.WithProjectWorkspacePath(pwp))
+	}
 	// Scheduled reminders — set_reminder tool. Wired only when the
 	// reminders repo + Runner are available; nil-tolerant for tests.
 	if c.repos != nil && c.repos.Reminders != nil {

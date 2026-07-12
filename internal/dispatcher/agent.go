@@ -191,6 +191,10 @@ type Agent struct {
 	rateLimiter     ratelimit.ProjectLimiter
 	budgetNotifier  budget.Notifier
 	artifactStore   InputArtifactStore
+	// projectWorkspacePath — base dir for per-project workspaces;
+	// lets the ToolExecutor allow-list the per-project uploads/ dir
+	// channel attachments land in. See ToolExecutor.projectWorkspacePath.
+	projectWorkspacePath string
 	// attachmentAutoExtractor is the seam between the dispatcher's
 	// input-file snapshot path and the document-extraction
 	// pipeline. When wired, every snapshotted input artifact runs
@@ -476,6 +480,7 @@ func NewAgent(
 		execRepo:                     execRepo,
 		artifactRepo:                 artifactRepo,
 		artifactStore:                a.artifactStore,
+		projectWorkspacePath:         a.projectWorkspacePath,
 		attachmentAutoExtractor:      a.attachmentAutoExtractor,
 		attachmentAutoExtractTimeout: 60 * time.Second,
 		watchFunc:                    a.watchFunc,

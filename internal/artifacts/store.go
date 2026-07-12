@@ -98,6 +98,21 @@ func WithBackend(b FileBackend) StoreOption {
 	}
 }
 
+// BasePath returns the local filesystem root artifacts live under,
+// or "" when the configured backend is not filesystem-backed (S3 —
+// there is no local root literal paths could legitimately resolve
+// into). The dispatcher's create_task input-confinement gate
+// type-asserts this capability to derive the artifact-store entry of
+// its literal-path allow-list; before this method existed the
+// assertion silently failed and the allow-list collapsed to /tmp
+// (incident-telegram-upload-input-roots-20260712).
+func (s *Store) BasePath() string {
+	if b, ok := s.backend.(*LocalBackend); ok {
+		return b.BasePath()
+	}
+	return ""
+}
+
 // SetSecrets wires the detector after construction. The artifact
 // store is initialized before the secrets detector in the service
 // container's boot sequence, so the detector lands via this setter

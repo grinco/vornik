@@ -206,13 +206,10 @@ func (c *Container) initScheduler() error {
 	executorConfig := executor.DefaultConfig()
 	executorConfig.ArtifactStoragePath = c.Config.Storage.ArtifactsPath
 
-	// Default project workspace from config, then VORNIK_DATA_DIR
-	executorConfig.ProjectWorkspacePath = c.Config.Runtime.ProjectWorkspacePath
-	if executorConfig.ProjectWorkspacePath == "" {
-		if dataDir := os.Getenv("VORNIK_DATA_DIR"); dataDir != "" {
-			executorConfig.ProjectWorkspacePath = filepath.Join(dataDir, "workspaces")
-		}
-	}
+	// Default project workspace from config, then VORNIK_DATA_DIR.
+	// Shared with initDispatcher's WithProjectWorkspacePath — the two
+	// trust boundaries must resolve the same root.
+	executorConfig.ProjectWorkspacePath = resolveProjectWorkspacePath(c.Config.Runtime.ProjectWorkspacePath)
 
 	executorConfig.LogLevel = c.Config.Logging.Level
 

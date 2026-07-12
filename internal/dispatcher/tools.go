@@ -21,6 +21,7 @@ import (
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/ratelimit"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/safepath"
 	"vornik.io/vornik/internal/textsim"
 	"vornik.io/vornik/internal/untrusted"
 )
@@ -41,13 +42,17 @@ type basePathProvider interface {
 // inputFileSourceRoots returns the set of host directories a literal
 // create_task `input_files` path is allowed to live under. When an
 // operator pins allowedInputRoots explicitly that set wins verbatim;
-// otherwise we derive the two always-legitimate roots the dispatcher
-// can see: os.TempDir() (where channel uploads — Telegram/webchat —
-// land) and the artifact store base path (where prior-task artifacts
-// and freshly-snapshotted inputs resolve to). Roots are symlink-
-// resolved so the containment check in confineInputFileSource
-// compares like-for-like, mirroring executor.allowedStagingRoots.
-func (te *ToolExecutor) inputFileSourceRoots() []string {
+// otherwise we derive the always-legitimate roots the dispatcher can
+// see: os.TempDir() (fallback landing spot for channel uploads),
+// <projectWorkspacePath>/<projectID>/uploads/ (where Telegram/webchat
+// uploads land when an active project is set — must mirror both the
+// write side in telegram.handleMessage and the executor's
+// allowedStagingRoots, or channel uploads get rejected at create_task;
+// incident-telegram-upload-input-roots-20260712), and the artifact
+// store base path (where prior-task artifacts and freshly-snapshotted
+// inputs resolve to). Roots are symlink-resolved so the containment
+// check in confineInputFileSource compares like-for-like.
+func (te *ToolExecutor) inputFileSourceRoots(projectID string) []string {
 	if len(te.allowedInputRoots) > 0 {
 		roots := make([]string, 0, len(te.allowedInputRoots))
 		for _, r := range te.allowedInputRoots {
@@ -56,6 +61,16 @@ func (te *ToolExecutor) inputFileSourceRoots() []string {
 		return roots
 	}
 	roots := []string{resolveRootForContainment(os.TempDir())}
+	if te.projectWorkspacePath != "" && projectID != "" {
+		// Same construction as the Telegram upload write path:
+		// CleanPathComponent + JoinUnder, so a hostile projectID can't
+		// widen the root beyond the workspace tree.
+		if safeID, err := safepath.CleanPathComponent(projectID); err == nil {
+			if uploads, err := safepath.JoinUnder(te.projectWorkspacePath, safeID, "uploads"); err == nil {
+				roots = append(roots, resolveRootForContainment(uploads))
+			}
+		}
+	}
 	if bp, ok := te.artifactStore.(basePathProvider); ok {
 		if base := bp.BasePath(); base != "" {
 			roots = append(roots, resolveRootForContainment(base))
@@ -247,6 +262,13 @@ type ToolExecutor struct {
 	// (os.TempDir — where Telegram/webchat uploads land — plus the
 	// artifact store base path). See confineInputFileSource.
 	allowedInputRoots []string
+	// projectWorkspacePath is the base dir for per-project persistent
+	// workspaces. Channel uploads (Telegram/webchat) land under
+	// <projectWorkspacePath>/<projectID>/uploads/ when an active
+	// project is set, so inputFileSourceRoots derives a per-project
+	// allowed root from it. Empty disables that root (uploads then
+	// only pass via the os.TempDir fallback).
+	projectWorkspacePath string
 	// attachmentAutoExtractor runs synchronous extraction after each
 	// StoreInput so non-email channels get the same "document is
 	// already in memory" trailer the email channel produces. nil
@@ -710,7 +732,7 @@ func (te *ToolExecutor) createTask(ctx context.Context, argsJSON string, activeP
 		//     uploads land, + the artifact store base path). Anything
 		//     else (e.g. the secrets dir, /etc/passwd) is rejected here
 		//     and never reaches StoreInput.
-		roots := te.inputFileSourceRoots()
+		roots := te.inputFileSourceRoots(project)
 		paths := make([]string, 0, len(args.InputFiles))
 		for _, src := range args.InputFiles {
 			resolved, fromArtifactID := te.resolveInputFileSourceTracked(ctx, src)
@@ -725,8 +747,12 @@ func (te *ToolExecutor) createTask(ctx context.Context, argsJSON string, activeP
 					Str("project", project).
 					Strs("allowed_roots", roots).
 					Msg("dispatcher: create_task input_files entry outside allowed roots — rejecting")
+				// Name the legitimate locations: the pre-2026-07-12
+				// wording ("arbitrary host paths are not permitted")
+				// taught the LLM that channel uploads were unreachable
+				// and it confabulated workarounds to the operator.
 				return ToolResult{Content: fmt.Sprintf(
-					"Cannot create task: input_files entry %q is not an allowed input. Pass an artifact ID or a file already uploaded through a channel; arbitrary host paths are not permitted.",
+					"Cannot create task: input_files entry %q is not an allowed input. Allowed inputs: an artifact_id (from an [Attached files] block), a channel-upload path under the active project's uploads/ directory, or a file under the system temp dir. Do NOT retry with a bare filename or a path outside those roots.",
 					src)}
 			}
 			paths = append(paths, canonical)

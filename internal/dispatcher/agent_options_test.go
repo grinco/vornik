@@ -270,3 +270,17 @@ func TestSetHallucinationMetrics_AssignsField(t *testing.T) {
 	var aNil *Agent
 	aNil.SetHallucinationMetrics(m)
 }
+
+// TestWithProjectWorkspacePath_ThreadsToToolExecutor — regression for
+// incident-telegram-upload-input-roots-20260712: the per-project
+// uploads root only reaches the create_task input confinement gate if
+// the option lands on the ToolExecutor, not just the Agent.
+func TestWithProjectWorkspacePath_ThreadsToToolExecutor(t *testing.T) {
+	a := newOptionsAgent(WithProjectWorkspacePath("/data/workspaces"))
+	if a.projectWorkspacePath != "/data/workspaces" {
+		t.Fatalf("agent field = %q, want /data/workspaces", a.projectWorkspacePath)
+	}
+	if a.toolExecutor.projectWorkspacePath != "/data/workspaces" {
+		t.Fatalf("toolExecutor field = %q, want /data/workspaces", a.toolExecutor.projectWorkspacePath)
+	}
+}

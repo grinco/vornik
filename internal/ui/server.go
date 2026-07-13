@@ -232,16 +232,24 @@ type Server struct {
 	// false so /trading 404s instead of leaking the dashboard — the nav item's
 	// data-cap is only a client-side, fail-open hint. (2026-06-27.)
 	tradingEnabled bool
-	// authDisabled records that API auth is off (single-operator /
-	// homelab mode, the Community default). The nav renders AdminOnly
-	// entries visible for every caller then: admin.Middleware stamps
-	// IsAdmin on all requests when auth is off, so nothing those links
-	// point at is gated — but neither of the nav's two admin signals
-	// (an IsAdmin field on the page data, set only by /ui/admin
-	// handlers; the vornik_session_ui marker cookie, set only by the
-	// EE login flow) ever fires, which left Swarms/Workflows/Admin
-	// hidden on every non-admin page (2026-07-13 Community report).
-	authDisabled        bool
+	// allUICallersAdmin makes the nav render AdminOnly entries visible
+	// on every page. Set when the deployment cannot produce a non-admin
+	// browser session, so the AdminOnly gate (which exists only to hide
+	// links a project-scoped RoleUser session would 403 on) is
+	// protecting against a case that can't occur. Two triggers, both
+	// wired by the container: (a) no session-login capability — the
+	// SessionBackend + login flow live entirely in internal/enterprise/
+	// identity, so Community NEVER has browser sessions; (b) API auth
+	// off — admin.Middleware then stamps IsAdmin for every caller.
+	//
+	// Root cause it fixes (2026-07-13 Community report): the nav's two
+	// admin signals both require EE. Page-data IsAdmin is set only by
+	// /ui/admin handlers; the vornik_session_ui marker cookie is set
+	// only by the EE login flow. In CE neither ever fires, so
+	// Swarms/Workflows/Admin stayed hidden on every non-admin page
+	// regardless of auth_enabled. (An earlier fix keyed on auth-off
+	// alone missed CE's default auth_enabled=true.)
+	allUICallersAdmin   bool
 	postMortemRepo      persistence.TaskPostMortemRepository
 	postMortemExplainer PostMortemExplainer
 	// secretRedactionRepo backs the "🔒 N secrets redacted" badge on the
@@ -1447,15 +1455,14 @@ func WithTradingEnabled() ServerOption {
 	}
 }
 
-// WithAuthDisabled marks the deployment as running without API auth
-// (api.auth_enabled=false — the Community/single-operator default).
-// The nav then renders AdminOnly entries visible for every page: with
-// auth off every caller is admin-class server-side (admin.Middleware
-// stamps IsAdmin unconditionally and the /ui/admin gate disengages),
-// so hiding those links only obscured reachable surfaces.
-func WithAuthDisabled() ServerOption {
+// WithAllUICallersAdmin makes the nav render AdminOnly entries visible
+// for every page. The container sets it when no non-admin browser
+// session can exist in this deployment — Community (no SessionBackend /
+// login flow) or any deployment with API auth off. See the
+// allUICallersAdmin field doc for the full rationale + the incident.
+func WithAllUICallersAdmin() ServerOption {
 	return func(s *Server) {
-		s.authDisabled = true
+		s.allUICallersAdmin = true
 	}
 }
 
@@ -1930,12 +1937,13 @@ func NewServer(opts ...ServerOption) *Server {
 	// nav destination can carry a per-request attention-count badge
 	// (task 4.4, design §5.7 Q4) — see nav_model.go's doc comment.
 	fm["navModel"] = navModelForPage(s.tradingEnabled)
-	// Auth-off deployments (WithAuthDisabled) treat every caller as
-	// admin-class — mirror that in the nav so AdminOnly entries
-	// (Swarms, Workflows, the Admin area) aren't hidden on pages whose
-	// data structs never learn the caller's admin-ness. See the
-	// authDisabled field doc for the incident this fixes.
-	if s.authDisabled {
+	// Deployments with no non-admin browser sessions (Community, or
+	// auth off) treat every caller as admin-class — mirror that in the
+	// nav so AdminOnly entries (Swarms, Workflows, the Admin area)
+	// aren't hidden on pages whose data structs never learn the
+	// caller's admin-ness. See the allUICallersAdmin field doc for the
+	// incident this fixes.
+	if s.allUICallersAdmin {
 		fm["hasAdminFlag"] = func(any) bool { return true }
 	}
 	// Server-bound so the persistent "restart required" banner reflects live

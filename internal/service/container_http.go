@@ -1437,14 +1437,19 @@ func (c *Container) initHTTPServer() error {
 	if c.providers.Trading != nil {
 		uiOpts = append(uiOpts, ui.WithTradingEnabled())
 	}
-	// Auth-off (Community/single-operator default): every caller is
-	// admin-class, so the nav must not hide the AdminOnly entries
-	// (Swarms, Workflows, Admin/Control plane). Without this the only
-	// unhide signals are the EE login flow's marker cookie and the
-	// /ui/admin handlers' IsAdmin data bit — neither exists on CE
-	// non-admin pages (2026-07-13 report).
-	if !c.Config.API.AuthEnabled {
-		uiOpts = append(uiOpts, ui.WithAuthDisabled())
+	// Show the AdminOnly nav entries (Swarms, Workflows, Admin/Control
+	// plane) when no non-admin browser session can exist — otherwise
+	// they stay hidden on every non-admin page, because the only unhide
+	// signals are the EE login flow's vornik_session_ui marker cookie
+	// and the /ui/admin handlers' IsAdmin data bit. Two cases, both
+	// meaning "every UI caller is admin-class":
+	//   - sessionLogin == nil: no SessionBackend/login flow wired. This
+	//     is ALWAYS true in Community (the identity provider is EE-only),
+	//     so it's the case the 2026-07-13 report hit — CE defaults to
+	//     auth_enabled=true, so an auth-off-only gate missed it.
+	//   - auth off: admin.Middleware stamps IsAdmin for every caller.
+	if sessionLogin == nil || !c.Config.API.AuthEnabled {
+		uiOpts = append(uiOpts, ui.WithAllUICallersAdmin())
 	}
 	if c.archiveSweeper != nil {
 		uiOpts = append(uiOpts, ui.WithArchiveSweeper(c.archiveSweeper))

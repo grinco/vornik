@@ -287,3 +287,37 @@ file keeps unit coverage, and `go test ./...` (not just `go build`) before
 claiming a rename/deletion is safe. Start with `https://docs.vornik.io` and
 `https://docs.vornik.io` for how the pieces fit; user-facing docs live in
 `docs/public/`.
+
+---
+
+## Runbook D — updating an existing install
+
+For a host installed via Runbook A, **upgrade in place** with the update
+script — do NOT re-run the install one-liner to update. It rebuilds the
+binaries in the same ephemeral golang container the quickstart uses (no host
+Go), takes a DB dump + binary/config backup first, and prints exact rollback
+commands.
+
+```bash
+cd ~/vornik/deployments/podman
+./vornik-update.sh --check                  # is a newer tag available? (changes nothing)
+./vornik-update.sh                          # upgrade to the newest tag (asks to confirm)
+./vornik-update.sh --ref origin/main        # or track the tip of main
+./vornik-update.sh --yes                    # skip the prompt (automation)
+```
+
+**Check:** the run ends with `Upgrade complete.` and prints `/readyz : ready`
+plus the `DB migr : vN -> vM` bump.
+
+```bash
+curl -fsS http://localhost:8080/readyz      # ready again (poll ~30s)
+vornikctl doctor
+```
+
+**If not:** the script prints ROLLBACK commands (restore the `*.prev` binaries
+from `~/vornik-upgrade-backup-<UTC>/` and `git checkout` the prior commit) and
+tails the journal. Full step-by-step + the optional daily "update available"
+timer: `deployments/podman/UPDATING.md`.
+
+**Ground rule 1 still applies:** the cutover restarts the service (interrupting
+any running task); the script warns first unless you pass `--yes`.

@@ -231,7 +231,17 @@ type Server struct {
 	// trading capability (c.providers.Trading != nil). Community builds leave it
 	// false so /trading 404s instead of leaking the dashboard — the nav item's
 	// data-cap is only a client-side, fail-open hint. (2026-06-27.)
-	tradingEnabled      bool
+	tradingEnabled bool
+	// authDisabled records that API auth is off (single-operator /
+	// homelab mode, the Community default). The nav renders AdminOnly
+	// entries visible for every caller then: admin.Middleware stamps
+	// IsAdmin on all requests when auth is off, so nothing those links
+	// point at is gated — but neither of the nav's two admin signals
+	// (an IsAdmin field on the page data, set only by /ui/admin
+	// handlers; the vornik_session_ui marker cookie, set only by the
+	// EE login flow) ever fires, which left Swarms/Workflows/Admin
+	// hidden on every non-admin page (2026-07-13 Community report).
+	authDisabled        bool
 	postMortemRepo      persistence.TaskPostMortemRepository
 	postMortemExplainer PostMortemExplainer
 	// secretRedactionRepo backs the "🔒 N secrets redacted" badge on the
@@ -1437,6 +1447,18 @@ func WithTradingEnabled() ServerOption {
 	}
 }
 
+// WithAuthDisabled marks the deployment as running without API auth
+// (api.auth_enabled=false — the Community/single-operator default).
+// The nav then renders AdminOnly entries visible for every page: with
+// auth off every caller is admin-class server-side (admin.Middleware
+// stamps IsAdmin unconditionally and the /ui/admin gate disengages),
+// so hiding those links only obscured reachable surfaces.
+func WithAuthDisabled() ServerOption {
+	return func(s *Server) {
+		s.authDisabled = true
+	}
+}
+
 // PostMortemExplainer is the narrow surface the task-detail
 // page needs from internal/postmortem. Defined here so the ui
 // package doesn't import postmortem (which would pull chat +
@@ -1908,6 +1930,14 @@ func NewServer(opts ...ServerOption) *Server {
 	// nav destination can carry a per-request attention-count badge
 	// (task 4.4, design §5.7 Q4) — see nav_model.go's doc comment.
 	fm["navModel"] = navModelForPage(s.tradingEnabled)
+	// Auth-off deployments (WithAuthDisabled) treat every caller as
+	// admin-class — mirror that in the nav so AdminOnly entries
+	// (Swarms, Workflows, the Admin area) aren't hidden on pages whose
+	// data structs never learn the caller's admin-ness. See the
+	// authDisabled field doc for the incident this fixes.
+	if s.authDisabled {
+		fm["hasAdminFlag"] = func(any) bool { return true }
+	}
 	// Server-bound so the persistent "restart required" banner reflects live
 	// pending-restart state on every render (see the nav partial).
 	fm["restartPending"] = s.restartBanner

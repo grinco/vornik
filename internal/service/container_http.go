@@ -1437,6 +1437,15 @@ func (c *Container) initHTTPServer() error {
 	if c.providers.Trading != nil {
 		uiOpts = append(uiOpts, ui.WithTradingEnabled())
 	}
+	// Auth-off (Community/single-operator default): every caller is
+	// admin-class, so the nav must not hide the AdminOnly entries
+	// (Swarms, Workflows, Admin/Control plane). Without this the only
+	// unhide signals are the EE login flow's marker cookie and the
+	// /ui/admin handlers' IsAdmin data bit — neither exists on CE
+	// non-admin pages (2026-07-13 report).
+	if !c.Config.API.AuthEnabled {
+		uiOpts = append(uiOpts, ui.WithAuthDisabled())
+	}
 	if c.archiveSweeper != nil {
 		uiOpts = append(uiOpts, ui.WithArchiveSweeper(c.archiveSweeper))
 	}

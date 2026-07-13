@@ -1148,6 +1148,12 @@ type AgentLLMConfig struct {
 	// Keyed by model name; applied automatically when a role uses that model.
 	// Example: {"claude-haiku-4-5": {MaxTokens: 4096}, "claude-opus-4-6": {MaxTokens: 32768}}
 	ModelLimits map[string]ModelLimitConfig `yaml:"model_limits"`
+	// Health configures the per-model agent-LLM circuit breaker (LLD
+	// 2026-07-12-agent-llm-health-breaker). Absent/nil Enabled → ON with
+	// agent defaults (MinSamples=3 — containers are expensive); explicit
+	// enabled:false → off (passthrough). Tunes how fast a sick model trips
+	// and fast-fails-over to the role's modelFallback.
+	Health ChatHealthConfig `yaml:"health"`
 }
 
 // ModelLimitConfig holds output and context limits for a specific model.
@@ -2108,6 +2114,17 @@ type MemoryConfig struct {
 	// Bedrock configures the native AWS Bedrock embedding path when
 	// embedding_provider is set to "bedrock".
 	Bedrock MemoryBedrockConfig `yaml:"bedrock"`
+
+	// IngestRequireProducerSuccess gates RAG ingest on the producing task's
+	// success (LLD 2026-07-12-rag-ingest-producer-success-gate). *bool default-
+	// ON (nil → on): a task's OUTPUT artifacts are ingested only when the task
+	// reached COMPLETED; FAILED/CANCELLED/AWAITING_INPUT/AWAITING_EXTERNAL are
+	// skipped (the parked-task case — a dossier that couldn't resolve and
+	// parked — is the incident this fixes). Explicit false → passthrough
+	// (byte-identical to pre-gate behaviour, emits a startup WARN). The gate is
+	// task-level (the in-memory execution.Status is never set to COMPLETED in
+	// the executor — see design §12).
+	IngestRequireProducerSuccess *bool `yaml:"ingest_require_producer_success" doc:"Gate RAG ingest on the producing task reaching COMPLETED (default on)."`
 
 	// EmbeddingCacheEnabled turns on the postgres-backed embedding
 	// cache (LLM caching design Phase D). Needs migration 41

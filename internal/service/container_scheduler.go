@@ -23,6 +23,7 @@ import (
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/executor"
+	"vornik.io/vornik/internal/executor/agenthealth"
 	forgeh "vornik.io/vornik/internal/executor/handlers/forge"
 	"vornik.io/vornik/internal/executor/handlers/rag"
 	"vornik.io/vornik/internal/hallucination"
@@ -219,6 +220,13 @@ func (c *Container) initScheduler() error {
 	// https://docs.vornik.io
 	executorConfig.ToolBudget = c.Config.ToolBudget.Resolved()
 
+	// Producer-success gate (LLD 2026-07-12-rag-ingest-producer-success-gate):
+	// default-on (nil → on); explicit false → passthrough + startup WARN.
+	executorConfig.RequireProducerSuccess = c.Config.Memory.IngestRequireProducerSuccess
+	if c.Config.Memory.IngestRequireProducerSuccess != nil && !*c.Config.Memory.IngestRequireProducerSuccess {
+		c.Logger.Warn().Msg("memory.ingest_require_producer_success=false: failed/parked-task outputs WILL be ingested (re-introduces the recall-pollution failure mode)")
+	}
+
 	// N4 delegation guards — operator-tunable, fall back to executor
 	// defaults (5 / 20) when unset.
 	// See https://docs.vornik.io §3.
@@ -231,6 +239,21 @@ func (c *Container) initScheduler() error {
 
 	// Resolve LLM config for agent containers (AgentLLM with ChatConfig fallback).
 	llm := c.Config.ResolvedAgentLLM()
+	// Topology-2 opt-in nudge (LLD 2026-07-12-agent-llm-health-breaker §8):
+	// when the operator left runtime.agent_llm.endpoint empty, agents
+	// inherit chat.endpoint (the upstream gateway) and curl it DIRECTLY
+	// (topology 1) — bypassing the chat-router HealthGatedProvider. The
+	// executor-side agent breaker (above) still covers them, but only
+	// after N sustained failures; routing agents through the daemon chat
+	// proxy (set runtime.agent_llm.endpoint to the daemon's /api/v1 URL)
+	// gives sub-second fail-over via the existing chat breaker. Log once
+	// at startup so the operator knows the latency trade-off.
+	if c.Config.Runtime.AgentLLM.Endpoint == "" && llm.Endpoint != "" {
+		c.Logger.Info().
+			Str("resolved_endpoint", llm.Endpoint).
+			Msg("agent_llm.endpoint not set: agents route DIRECT to the upstream (topology 1); " +
+				"set runtime.agent_llm.endpoint to the daemon /api/v1 URL for sub-second model fail-over via the chat-router breaker")
+	}
 	if llm.Endpoint != "" {
 		executorConfig.AgentLLMEnv = map[string]string{
 			"VORNIK_LLM_ENDPOINT": llm.Endpoint,
@@ -1160,6 +1183,27 @@ func (c *Container) initScheduler() error {
 	// check (composer task 1.1b concern-2) — see Container.systemHandlerNames.
 	c.systemHandlerNames = sysHandlers.Names()
 
+	// Agent-LLM health breaker (LLD 2026-07-12-agent-llm-health-breaker).
+	// Default-on (nil Enabled → ON with agent defaults, MinSamples=3);
+	// explicit enabled:false → nil registry → passthrough. Metrics wired
+	// after the executor (below) so the gauge/trips land on the same
+	// registerer. Topology-1 (agents curl the upstream directly) gets the
+	// breaker this way; topology-2 (agents via the daemon chat proxy) is
+	// already covered by the chat-router HealthGatedProvider, and the
+	// agent breaker abstains on a chat-breaker MODEL_UNHEALTHY reject to
+	// avoid double-counting.
+	agentHealthReg := func() *agenthealth.Registry {
+		hcfg, ok := resolveAgentHealthConfig(c.Config.Runtime.AgentLLM.Health)
+		if !ok {
+			return nil
+		}
+		return agenthealth.NewRegistry(agenthealth.Config{Health: hcfg, Enabled: true})
+	}()
+	c.agentHealth = agentHealthReg
+	if agentHealthReg != nil {
+		executorOpts = append(executorOpts, executor.WithAgentHealth(agentHealthReg))
+	}
+
 	c.Executor = executor.NewWithOptions(
 		runtimeManager,
 		execRepo,
@@ -1452,6 +1496,11 @@ func (c *Container) rebuildSchedulerMetrics() {
 	if c.Executor != nil {
 		c.Executor.SetMetrics(executor.NewMetrics(reg))
 		c.Logger.Info().Msg("executor metrics wired")
+	}
+
+	if c.agentHealth != nil {
+		c.agentHealth.SetMetrics(agenthealth.NewMetrics(reg))
+		c.Logger.Info().Msg("agent LLM health breaker metrics wired")
 	}
 
 	if c.Scheduler != nil {

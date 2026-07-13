@@ -810,49 +810,13 @@ func TestTickBacklog_ConsumesPendingItemAndDispatches(t *testing.T) {
 	require.Len(t, tasks, 1)
 	assert.Contains(t, string(tasks[0].Payload), "first pending item")
 
-	// File must be rewritten with the consumed item marked done.
+	// File must be rewritten with the dispatched item marked IN-FLIGHT ([~]),
+	// not done ([x]) — the reconciler flips it on the task's terminal.
 	updated, err := os.ReadFile(backlogPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(updated), "- [x] first pending item")
+	assert.Contains(t, string(updated), "- [~] first pending item")
 	assert.Contains(t, string(updated), "- [ ] second pending item",
-		"only the consumed item changes; subsequent items remain pending")
-}
-
-// --------------------------------------------------------------------
-// consumeNextBacklogItem — the pure parser the tick wraps.
-// --------------------------------------------------------------------
-
-func TestConsumeNextBacklogItem_PicksFirstPending(t *testing.T) {
-	content := `# Backlog
-
-- [x] already done
-- [ ] do the first thing
-- [ ] do the second thing
-`
-	prompt, newContent, ok := consumeNextBacklogItem(content)
-	require.True(t, ok)
-	assert.Equal(t, "do the first thing", prompt)
-	assert.Contains(t, newContent, "- [x] do the first thing", "consumed item must be marked done")
-	assert.Contains(t, newContent, "- [ ] do the second thing", "subsequent items must remain pending")
-}
-
-func TestConsumeNextBacklogItem_NoPendingItems(t *testing.T) {
-	content := `# Backlog
-- [x] done one
-- [x] done two
-`
-	prompt, newContent, ok := consumeNextBacklogItem(content)
-	assert.False(t, ok)
-	assert.Empty(t, prompt)
-	assert.Empty(t, newContent, "ok=false must return empty newContent so callers don't overwrite the file")
-}
-
-func TestConsumeNextBacklogItem_BulletVariants(t *testing.T) {
-	// Both `-` and `*` bullets count as pending items.
-	content := "* [ ] star bullet\n- [ ] dash bullet\n"
-	prompt, _, ok := consumeNextBacklogItem(content)
-	require.True(t, ok)
-	assert.Equal(t, "star bullet", prompt, "first match wins")
+		"only the dispatched item changes; subsequent items remain pending")
 }
 
 func TestRecordEvaluation_PersistsRowShape(t *testing.T) {

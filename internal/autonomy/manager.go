@@ -33,17 +33,14 @@ import (
 	"vornik.io/vornik/internal/untrusted"
 )
 
-// backlogPendingRE matches a markdown checklist line whose box is
-// unchecked. Capture group 1 is the bullet prefix (indent + `-`/`*`
-// + space + `[ ]` + space). Capture group 2 is the prompt text — the
-// inline description the operator wrote next to the checkbox.
-var backlogPendingRE = regexp.MustCompile(`^(\s*[-*]\s+\[\s\]\s+)(.*)$`)
-
 // backlogTaskAnnotationRE extracts the task ID from a consumed
 // BACKLOG.md line's "(task: <id>)" suffix (written by
-// backlogfile.Store.MarkConsumed). Anchored at end-of-string because
-// MarkConsumed always appends the annotation last, so an item whose
-// own text happens to contain "(task: …)" earlier is not mis-parsed.
+// backlogfile.Store.MarkInFlight). Anchored at end-of-string because
+// the annotation is always appended last, so an item whose own text
+// happens to contain "(task: …)" earlier is not mis-parsed. For a
+// failed item the suffix is "(task: <id>, failed)"; the `[^)]+` capture
+// then yields "<id>, failed" — harmless, because the reconciler only
+// looks up '~'/'x'-marked items (a '!' item is already terminal).
 var backlogTaskAnnotationRE = regexp.MustCompile(`\(task: ([^)]+)\)$`)
 
 // backlogFramingPrompt wraps a raw BACKLOG.md item before it is
@@ -1426,13 +1423,16 @@ func (m *Manager) tickBacklog(ctx context.Context, project *registry.Project, ev
 		// exists to annotate, so leave the item pending for a later tick.
 		return nil
 	}
-	// Persist the consumed-marker only after the task was accepted. The
-	// RAW item text (not the framed prompt) matches the file line;
-	// MarkConsumed appends " (task: <id>)". Best-effort: the task is
-	// already queued, so a write failure or a no-match (operator edited
-	// the line, or a concurrent consumer won the race) is logged, not
+	// Stamp the item IN-FLIGHT (`[~]`) only after the task was accepted —
+	// NOT done (`[x]`). A task that fails before the next tick's reconcile
+	// must never be misread as done (LLD 2026-07-12-backlog-success-terminal-
+	// stamp): the reconciler flips `[~]` → `[x]` on a successful terminal or
+	// `[~]` → `[!]` on failure. The RAW item text (not the framed prompt)
+	// matches the file line; MarkInFlight appends " (task: <id>)". Best-effort:
+	// the task is already queued, so a write failure or a no-match (operator
+	// edited the line, or a concurrent consumer won the race) is logged, not
 	// fatal.
-	marked, mErr := m.backlog.MarkConsumed(abs, project.ID, prompt, taskID)
+	marked, mErr := m.backlog.MarkInFlight(abs, project.ID, prompt, taskID)
 	switch {
 	case mErr != nil:
 		m.logger.Warn().
@@ -1474,7 +1474,11 @@ func (m *Manager) reconcileBacklogItems(ctx context.Context, abs string, project
 		return
 	}
 	for _, it := range items {
-		if it.Marker != 'x' {
+		// `[~]` (in-flight, stamped at dispatch) and `[x]` (back-compat: the
+		// pre-2026-07-12 optimistic dispatch stamp, and any clone still on the
+		// old code) are the reconcilable markers. `[ ]`/`[?]`/`[!]` are
+		// operator-owned or already-terminal — skip.
+		if it.Marker != '~' && it.Marker != 'x' {
 			continue
 		}
 		mm := backlogTaskAnnotationRE.FindStringSubmatch(it.Text)
@@ -1483,10 +1487,10 @@ func (m *Manager) reconcileBacklogItems(ctx context.Context, abs string, project
 		}
 		taskID := mm[1]
 		task, err := m.taskRepo.Get(ctx, taskID)
-		if err != nil {
-			// Task pruned by retention, or a transient DB error. Only
-			// reconcile items whose failure we can positively confirm;
-			// skip on any lookup failure.
+		notFound := errors.Is(err, persistence.ErrNotFound) || (err == nil && task == nil)
+		if err != nil && !notFound {
+			// Transient DB error (not a positive not-found) — skip and retry
+			// next tick; a lookup that might succeed later must NOT orphan.
 			m.logger.Debug().
 				Err(err).
 				Str("project", project.ID).
@@ -1494,63 +1498,60 @@ func (m *Manager) reconcileBacklogItems(ctx context.Context, abs string, project
 				Msg("backlog-mode reconcile: task lookup failed; skipping item")
 			continue
 		}
-		if task == nil {
-			continue
-		}
-		// A backlog item is only "done" (`[x]`) when its task actually
-		// COMPLETED (raised its PR). A task that ended unsuccessfully left
-		// the item prematurely marked done at dispatch. Flip it to blocked
-		// (`[!]`) — NOT back to pending — so it is neither silently skipped
-		// as done nor auto-retried into a storm: the operator flips
-		// `[!]` → `[ ]` to retry once they've addressed the cause (granted a
-		// permission, fixed a flaky test, split a too-big item). Still-active
-		// tasks (RUNNING/QUEUED/PAUSED) and AWAITING_* parks are left as-is —
-		// the hasActive interlock stops a duplicate dispatch while they run,
-		// and a task parked awaiting operator action (e.g. an unpushable
-		// change) MUST keep its `[x]` so autonomy doesn't loop on it.
-		if !task.EndedUnsuccessfully() {
-			continue
-		}
-		if _, err := m.backlog.MarkFailed(abs, project.ID, taskID); err != nil {
-			m.logger.Warn().Err(err).
+		if notFound {
+			// Task not found (pruned by retention, DB loss, or a bad/empty
+			// annotation). A `[~]`/`[x]` item whose task no longer exists can
+			// never be resolved by a later tick — it would strand forever and
+			// block the FIFO. Flip it to blocked (`[!]`) so it is visible and
+			// the operator decides (LLD §10 B1 orphan recovery). MarkFailed is
+			// idempotent, so this is safe to re-attempt.
+			if _, ferr := m.backlog.MarkFailed(abs, project.ID, taskID); ferr != nil {
+				m.logger.Warn().Err(ferr).
+					Str("project", project.ID).Str("task_id", taskID).
+					Msg("backlog-mode reconcile: failed to flip orphaned item to blocked")
+				continue
+			}
+			m.logger.Warn().
 				Str("project", project.ID).Str("task_id", taskID).
-				Msg("backlog-mode reconcile: failed to flip item to blocked")
+				Msg("backlog-mode reconcile: task not found — flipped orphaned item to blocked ([!]) for operator")
 			continue
 		}
-		m.logger.Info().
-			Str("project", project.ID).Str("task_id", taskID).
-			Str("task_status", string(task.Status)).
-			Msg("backlog-mode reconcile: flipped unsuccessful item to blocked ([!]) for operator")
-	}
-}
 
-// consumeNextBacklogItem finds the first `- [ ]` line in content,
-// returns its inline text as prompt, and emits a new content blob
-// with that line rewritten to `- [x] …`. Returns ok=false when no
-// pending item exists. Whitespace + bullet variants accepted: leading
-// indent, `-`/`*` bullets, `[ ]` (one space inside). Items
-// already `- [x]` are skipped. Blank lines, prose, headers, indented
-// notes under an item are preserved as-is.
-func consumeNextBacklogItem(content string) (prompt, newContent string, ok bool) {
-	lines := strings.Split(content, "\n")
-	pendingRE := backlogPendingRE
-	for i, line := range lines {
-		matches := pendingRE.FindStringSubmatch(line)
-		if matches == nil {
-			continue
+		// Terminal dispatch:
+		//   - unsuccessful (FAILED/CANCELLED, or CLOSED-with-failure) → `[!]`
+		//     blocked, so it is neither silently skipped as done nor
+		//     auto-retried into a storm; the operator flips `[!]` → `[ ]` to
+		//     retry once they've addressed the cause.
+		//   - a `[~]` whose task COMPLETED → `[x]` done (the success stamp the
+		//     dispatch deliberately did NOT make).
+		//   - still-active (RUNNING/QUEUED/PAUSED) and AWAITING_* parks → leave
+		//     `[~]`/`[x]`: the hasActive interlock stops a duplicate dispatch
+		//     while they run, and a parked task awaiting operator action must
+		//     keep its non-pending marker so autonomy doesn't loop on it.
+		switch {
+		case task.EndedUnsuccessfully():
+			if _, err := m.backlog.MarkFailed(abs, project.ID, taskID); err != nil {
+				m.logger.Warn().Err(err).
+					Str("project", project.ID).Str("task_id", taskID).
+					Msg("backlog-mode reconcile: failed to flip item to blocked")
+				continue
+			}
+			m.logger.Info().
+				Str("project", project.ID).Str("task_id", taskID).
+				Str("task_status", string(task.Status)).
+				Msg("backlog-mode reconcile: flipped unsuccessful item to blocked ([!]) for operator")
+		case it.Marker == '~' && task.Status == persistence.TaskStatusCompleted:
+			if _, err := m.backlog.MarkDone(abs, project.ID, taskID); err != nil {
+				m.logger.Warn().Err(err).
+					Str("project", project.ID).Str("task_id", taskID).
+					Msg("backlog-mode reconcile: failed to flip in-flight item to done")
+				continue
+			}
+			m.logger.Info().
+				Str("project", project.ID).Str("task_id", taskID).
+				Msg("backlog-mode reconcile: flipped completed in-flight item to done ([x])")
 		}
-		prompt = strings.TrimSpace(matches[2])
-		if prompt == "" {
-			// Empty checkbox item — skip it; operator typo.
-			continue
-		}
-		// Rewrite by replacing the first `[ ]` with `[x]`. Keep
-		// indent + bullet + the rest of the line so operator
-		// formatting survives round-trip.
-		lines[i] = strings.Replace(line, "[ ]", "[x]", 1)
-		return prompt, strings.Join(lines, "\n"), true
 	}
-	return "", "", false
 }
 
 func (m *Manager) buildStateContext(ctx context.Context, project *registry.Project) (string, bool, error) {

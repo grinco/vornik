@@ -77,10 +77,12 @@ func TestTickBacklog_WorkflowIDValid_CarriedAndFramed(t *testing.T) {
 		"raw item must appear verbatim between the ITEM markers")
 
 	// (d) the file line gains the (task: <id>) annotation with the RAW
-	// item text — NOT the framed prompt.
+	// item text — NOT the framed prompt. Dispatch stamps IN-FLIGHT ([~]),
+	// not done ([x]) — the reconciler flips [~]→[x] on success (LLD
+	// 2026-07-12-backlog-success-terminal-stamp).
 	got, err := os.ReadFile(abs)
 	require.NoError(t, err)
-	assert.Contains(t, string(got), "- [x] fix the parser bug (task: "+tasks[0].ID+")")
+	assert.Contains(t, string(got), "- [~] fix the parser bug (task: "+tasks[0].ID+")")
 	assert.NotContains(t, string(got), "Work ONLY on the following",
 		"the framing wrapper must never leak into the file")
 }
@@ -212,23 +214,73 @@ func TestReconcileBacklogItems(t *testing.T) {
 	assert.Equal(t, want, string(got2), "reconcile must be idempotent")
 }
 
-// (e cont.) reconcile is best-effort: a task whose lookup fails
-// (pruned by retention) is skipped, not touched.
-func TestReconcileBacklogItems_SkipsUnknownTask(t *testing.T) {
+// TestReconcileBacklogItems_InFlightTransitions pins the new in-flight ([~])
+// reconcile paths (LLD 2026-07-12-backlog-success-terminal-stamp): a [~] item
+// whose task COMPLETED → [x] done; whose task ended unsuccessfully → [!]
+// blocked; still RUNNING / AWAITING_INPUT → left [~] (in flight).
+func TestReconcileBacklogItems_InFlightTransitions(t *testing.T) {
+	content := "" +
+		"- [~] completed one (task: task_ok)\n" +
+		"- [~] failed one (task: task_bad)\n" +
+		"- [~] running one (task: task_run)\n" +
+		"- [~] parked one (task: task_park)\n"
+
+	repo := &mockTaskRepo{tasks: []*persistence.Task{
+		{ID: "task_ok", Status: persistence.TaskStatusCompleted},
+		{ID: "task_bad", Status: persistence.TaskStatusFailed},
+		{ID: "task_run", Status: persistence.TaskStatusRunning},
+		{ID: "task_park", Status: persistence.TaskStatusAwaitingInput},
+	}}
+
+	ws := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(ws, "p1"), 0o755))
+	abs := filepath.Join(ws, "p1", "BACKLOG.md")
+	require.NoError(t, os.WriteFile(abs, []byte(content), 0o644))
+
+	m := New(nil, &registry.Registry{}, repo, nil,
+		WithWorkspacePath(ws), WithBacklogStore(backlogfile.NewStore()))
+	project := &registry.Project{ID: "p1"}
+	m.reconcileBacklogItems(context.Background(), abs, project)
+
+	got, err := os.ReadFile(abs)
+	require.NoError(t, err)
+	want := "" +
+		"- [x] completed one (task: task_ok)\n" + // COMPLETED → done
+		"- [!] failed one (task: task_bad, failed)\n" + // FAILED → blocked
+		"- [~] running one (task: task_run)\n" + // RUNNING → still in flight
+		"- [~] parked one (task: task_park)\n" // AWAITING_INPUT → still in flight
+	assert.Equal(t, want, string(got))
+
+	// Idempotent: a second pass is a no-op (done/blocked no longer match, and
+	// the still-running task is unchanged).
+	m.reconcileBacklogItems(context.Background(), abs, project)
+	got2, err := os.ReadFile(abs)
+	require.NoError(t, err)
+	assert.Equal(t, want, string(got2), "reconcile must be idempotent")
+}
+
+// (e cont.) reconcile orphan recovery: a `[~]`/`[x]` item whose task is
+// NOT FOUND (pruned by retention, DB loss, bad annotation) can never be
+// resolved by a later tick — it would strand forever and block the FIFO. So
+// reconcile flips it to blocked `[!]` for the operator (LLD §10 B1). NOTE this
+// differs from a transient lookup ERROR (which IS skipped — see the Get-error
+// path): only a positive not-found triggers the orphan flip.
+func TestReconcileBacklogItems_OrphansUnknownTask(t *testing.T) {
 	content := "- [x] orphaned (task: task_gone)\n"
 	ws := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(ws, "p1"), 0o755))
 	abs := filepath.Join(ws, "p1", "BACKLOG.md")
 	require.NoError(t, os.WriteFile(abs, []byte(content), 0o644))
 
-	// Empty repo → every Get returns ErrNotFound.
+	// Empty repo → every Get returns (nil, nil) = not found.
 	m := New(nil, &registry.Registry{}, &mockTaskRepo{}, nil,
 		WithWorkspacePath(ws), WithBacklogStore(backlogfile.NewStore()))
 	m.reconcileBacklogItems(context.Background(), abs, &registry.Project{ID: "p1"})
 
 	got, err := os.ReadFile(abs)
 	require.NoError(t, err)
-	assert.Equal(t, content, string(got), "a task we can't confirm FAILED must be left alone")
+	assert.Contains(t, string(got), "- [!] orphaned (task: task_gone, failed)",
+		"an orphaned item (task not found) is flipped to blocked [!] so it doesn't strand")
 }
 
 // tickBacklog runs the reconcile pass before dispatching: a FAILED
@@ -267,8 +319,8 @@ func TestTickBacklog_ReconcilesThenDispatches(t *testing.T) {
 	require.NotNil(t, newTask, "the next pending item must be dispatched")
 	assert.Contains(t, string(got), "- [!] earlier work (task: task_fail, failed)",
 		"reconcile blocks the FAILED item ([x]→[!]); it is NOT re-dispatched")
-	assert.Contains(t, string(got), "- [x] next work (task: "+newTask.ID+")",
-		"the next pending item is dispatched and consumed this tick")
+	assert.Contains(t, string(got), "- [~] next work (task: "+newTask.ID+")",
+		"the next pending item is dispatched in-flight ([~]) this tick")
 }
 
 // (g) proposed `- [?]` items are never consumed by a backlog tick —

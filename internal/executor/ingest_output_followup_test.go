@@ -76,7 +76,7 @@ func TestIngestOutputArtifacts_NilIndexer(t *testing.T) {
 	e := &Executor{logger: zerolog.Nop()}
 	require.NotPanics(t, func() {
 		e.ingestOutputArtifacts(context.Background(),
-			&persistence.Task{ID: "t"}, &persistence.Execution{ID: "x"})
+			&persistence.Task{ID: "t", Status: persistence.TaskStatusCompleted}, &persistence.Execution{ID: "x"})
 	})
 }
 
@@ -92,7 +92,7 @@ func TestIngestOutputArtifacts_RepoListError(t *testing.T) {
 	}
 	require.NotPanics(t, func() {
 		e.ingestOutputArtifacts(context.Background(),
-			&persistence.Task{ID: "t"}, &persistence.Execution{ID: "x"})
+			&persistence.Task{ID: "t", Status: persistence.TaskStatusCompleted}, &persistence.Execution{ID: "x"})
 	})
 	assert.Empty(t, mi.calls, "List error must short-circuit ingestion")
 }
@@ -128,7 +128,7 @@ func TestIngestOutputArtifacts_Filters(t *testing.T) {
 		logger:        zerolog.Nop(),
 	}
 	e.ingestOutputArtifacts(context.Background(),
-		&persistence.Task{ID: "task-1", ProjectID: "proj-1"},
+		&persistence.Task{ID: "task-1", ProjectID: "proj-1", Status: persistence.TaskStatusCompleted},
 		&persistence.Execution{ID: "exec-1"})
 
 	// Only the legitimate OUTPUT markdown row passes every filter.
@@ -162,7 +162,7 @@ func TestIngestOutputArtifacts_MissingFile(t *testing.T) {
 		logger:        zerolog.Nop(),
 	}
 	e.ingestOutputArtifacts(context.Background(),
-		&persistence.Task{ID: "t", ProjectID: "p"},
+		&persistence.Task{ID: "t", ProjectID: "p", Status: persistence.TaskStatusCompleted},
 		&persistence.Execution{ID: "x"})
 	require.Len(t, mi.calls, 1, "missing file must not abort ingestion of subsequent valid artifacts")
 	assert.Equal(t, "a-keep", mi.calls[0].artifactID)
@@ -197,7 +197,7 @@ func TestIngestOutputArtifacts_QueuePath(t *testing.T) {
 		logger: zerolog.Nop(),
 	}
 	e.ingestOutputArtifacts(context.Background(),
-		&persistence.Task{ID: "t", ProjectID: "p"},
+		&persistence.Task{ID: "t", ProjectID: "p", Status: persistence.TaskStatusCompleted},
 		&persistence.Execution{ID: "x", WorkflowID: "wf-x", CompletedSteps: []string{"write"}})
 
 	require.Len(t, q.items, 1, "queue path must enqueue one item per artifact")
@@ -235,7 +235,7 @@ func TestIngestOutputArtifacts_QueueErrorFallbackSync(t *testing.T) {
 		logger: zerolog.Nop(),
 	}
 	e.ingestOutputArtifacts(context.Background(),
-		&persistence.Task{ID: "t", ProjectID: "p"},
+		&persistence.Task{ID: "t", ProjectID: "p", Status: persistence.TaskStatusCompleted},
 		&persistence.Execution{ID: "x"})
 
 	require.Len(t, mi.calls, 1, "queue error must fall back to synchronous IngestText")

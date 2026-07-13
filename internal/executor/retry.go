@@ -323,13 +323,7 @@ func isModelShapedFailure(err error) bool {
 // an error means the model's circuit is OPEN: retrying it just fast-rejects,
 // so the executor skips the infra ladder and fails over immediately.
 func isModelUnhealthyFailure(err error) bool {
-	if err == nil {
-		return false
-	}
-	if chat.IsModelUnhealthy(err) {
-		return true
-	}
-	return strings.Contains(err.Error(), "MODEL_UNHEALTHY")
+	return chat.IsModelUnhealthyFailure(err)
 }
 
 // isPersistentTimeoutFailure reports whether err is an infra-retry-EXHAUSTED

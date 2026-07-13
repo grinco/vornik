@@ -152,6 +152,14 @@ type Metrics struct {
 	// operators which models need replacing in role configs.
 	ModelFallbackTotal *prometheus.CounterVec
 
+	// IngestSkippedProducerFailedTotal counts OUTPUT artifacts NOT enqueued
+	// for RAG ingest because the producing task did not reach COMPLETED
+	// (LLD 2026-07-12-rag-ingest-producer-success-gate). `status` is the task
+	// status that triggered the skip (failed/cancelled/awaiting_input/
+	// awaiting_external). Lets operators see the gate working + spot
+	// misclassified executions.
+	IngestSkippedProducerFailedTotal *prometheus.CounterVec
+
 	// ToolBudgetResolvedTotal counts dynamic tool-budget resolutions
 	// per (role, tier) — incremented at every worker spawn where the
 	// tool_budget feature injected a scaled VORNIK_MAX_TOOL_ITERATIONS.
@@ -543,6 +551,15 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 			},
 			[]string{"role", "primary_model", "fallback_model"},
 		),
+		IngestSkippedProducerFailedTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: executorNamespace,
+				Subsystem: executorSubsystem,
+				Name:      "ingest_skipped_producer_failed_total",
+				Help:      "OUTPUT artifacts NOT enqueued for RAG ingest because the producing task did not reach COMPLETED (producer-success gate). status ∈ {failed, cancelled, awaiting_input, awaiting_external}.",
+			},
+			[]string{"project_id", "status"},
+		),
 		ToolBudgetResolvedTotal: promauto.With(registerer).NewCounterVec(
 			prometheus.CounterOpts{
 				Namespace: executorNamespace,
@@ -633,6 +650,16 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 	}
 
 	return m
+}
+
+// RecordIngestSkippedProducerFailed counts one OUTPUT artifact skip at the
+// producer-success gate (LLD 2026-07-12-rag-ingest-producer-success-gate).
+// status is the task status that triggered the skip. Nil-safe.
+func (m *Metrics) RecordIngestSkippedProducerFailed(projectID, status string) {
+	if m == nil || projectID == "" || status == "" {
+		return
+	}
+	m.IngestSkippedProducerFailedTotal.WithLabelValues(projectID, status).Inc()
 }
 
 // RecordRetryFromStep counts one operator-initiated retry-from-step

@@ -47,6 +47,34 @@ func resolveChatHealthConfig(hc config.ChatHealthConfig) (chat.HealthConfig, boo
 	return cfg, true
 }
 
+// resolveAgentHealthConfig turns the operator's runtime.agent_llm.health
+// block into a chat.HealthConfig + an enabled flag (LLD 2026-07-12-agent-llm-
+// health-breaker §6). Absent block / nil Enabled → ON with AGENT defaults
+// (MinSamples=3 — containers are expensive; see §5); explicit enabled:false
+// → off. Zero/blank knobs fall back to the agent defaults per-field. Distinct
+// from resolveChatHealthConfig because the agent path trips faster (3 vs 5
+// sustained failures) — containers cost more than sub-second HTTP calls.
+func resolveAgentHealthConfig(hc config.ChatHealthConfig) (chat.HealthConfig, bool) {
+	if hc.Enabled != nil && !*hc.Enabled {
+		return chat.HealthConfig{}, false
+	}
+	cfg := chat.DefaultHealthConfig()
+	cfg.MinSamples = 3 // agent default (LLD §5); chat breaker keeps 5
+	if d, err := time.ParseDuration(hc.Window); err == nil && d > 0 {
+		cfg.Window = d
+	}
+	if hc.MinSamples > 0 {
+		cfg.MinSamples = hc.MinSamples
+	}
+	if hc.FailureRate > 0 {
+		cfg.FailureRate = hc.FailureRate
+	}
+	if d, err := time.ParseDuration(hc.OpenCooldown); err == nil && d > 0 {
+		cfg.OpenCooldown = d
+	}
+	return cfg, true
+}
+
 // modelHealthStateChangeHook returns the edge-triggered callback the
 // HealthGatedProvider fires on a circuit transition (LLD 2026-07-11-model-
 // health §7): a loud log always, plus an operator alert when a model trips

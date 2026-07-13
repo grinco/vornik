@@ -453,6 +453,28 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	}
 	effectiveModel = e.effectiveRoleModelForTask(task, roleConfig)
 
+	// Agent-LLM health gate (LLD 2026-07-12-agent-llm-health-breaker): a
+	// per-model circuit breaker fed by agent-container call outcomes. When
+	// the model's circuit is OPEN, fast-reject WITHOUT starting a container
+	// — the returned *chat.ModelUnhealthyError flows through
+	// isModelUnhealthyFailure (skip the infra ladder) and
+	// isModelShapedFailure (trigger the role's modelFallback), so a sick
+	// primary flips to the fallback in seconds, not tens of minutes (the
+	// 2026-07-12 ~12-container-starts incident). The Record defer (LIFO,
+	// runs before the outcome defer) folds this step's outcome into the
+	// breaker on return: success/failure via chat.IsUpstreamInfraError,
+	// abstain on a chat-breaker MODEL_UNHEALTHY reject (topology-2
+	// isolation). Nil registry = passthrough.
+	var agentHealthProbe bool
+	if e.agentHealth != nil {
+		permitted, probe, reject := e.agentHealth.Gate(effectiveModel)
+		if !permitted {
+			return "", nil, reject
+		}
+		agentHealthProbe = probe
+		defer func() { e.agentHealth.Record(effectiveModel, agentHealthProbe, err) }()
+	}
+
 	// Warm path: reuse a warm container if the role policy allows it.
 	// Falls back to ephemeral container if the warm pool is exhausted.
 	isReplay := counterfactual.ExtractPayload(task.Payload).IsReplay

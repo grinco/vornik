@@ -190,8 +190,8 @@ func TestTick_BacklogMode_SecondRapidTickSuppressedByActiveGate(t *testing.T) {
 
 	got, err := os.ReadFile(backlog)
 	require.NoError(t, err)
-	assert.Contains(t, string(got), "- [x] Ship the first thing",
-		"first item consumed by tick one")
+	assert.Contains(t, string(got), "- [~] Ship the first thing",
+		"first item dispatched in-flight ([~]) by tick one")
 	assert.Contains(t, string(got), "- [ ] Ship the second thing",
 		"second item must stay pending — the gated tick must not consume it")
 }

@@ -822,6 +822,16 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 						return "", nil, completedSteps, err
 					}
 					completedSteps = append(completedSteps, currentStepID)
+					// Surface the real handler error in the failed-terminal
+					// "reason:" line (LLD 2026-07-12-system-step-handler-error-
+					// terminal). Set lastResultMessage ONLY — NOT lastResultErr —
+					// so resolveTerminalOutcome returns a flat fmt.Errorf("%s")
+					// with no %w chain feeding the task-level failure classifier
+					// (message-only avoids classifier coupling). The prefix names
+					// the handler so an operator doesn't read it as an agent
+					// message. state.LastResult is unchanged (bare error) so a
+					// downstream step's PrevResult sees the same shape as before.
+					lastResultMessage = fmt.Sprintf("system step %s failed: %s", step.Handler, err.Error())
 					state.LastResult = []byte(fmt.Sprintf(`{"error":%q}`, err.Error()))
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
@@ -848,6 +858,13 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 						return "", nil, completedSteps, sysErr
 					}
 					completedSteps = append(completedSteps, currentStepID)
+					// Surface the real handler error in the failed-terminal
+					// "reason:" line (LLD 2026-07-12-system-step-handler-error-
+					// terminal). lastResultMessage ONLY (no lastResultErr → no
+					// %w chain into the failure classifier); prefix names the
+					// handler. state.LastResult keeps the bare error for the
+					// next step's PrevResult (unchanged shape).
+					lastResultMessage = fmt.Sprintf("system step %s failed: %s", step.Handler, sysErr.Error())
 					state.LastResult = []byte(fmt.Sprintf(`{"error":%q}`, sysErr.Error()))
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
@@ -1953,11 +1970,47 @@ func (e *Executor) fireJudgeIfEnabled(task *persistence.Task) {
 	}()
 }
 
+// requireProducerSuccess reports whether the producer-success gate is armed
+// (LLD 2026-07-12-rag-ingest-producer-success-gate). Default-on: a nil
+// config pointer (the operator didn't set memory.ingest_require_producer_success)
+// or an explicit true → gate active; explicit false → passthrough.
+func (e *Executor) requireProducerSuccess() bool {
+	if e == nil || e.config == nil || e.config.RequireProducerSuccess == nil {
+		return true
+	}
+	return *e.config.RequireProducerSuccess
+}
+
 // ingestOutputArtifacts reads OUTPUT-class artifacts for this execution and
 // ingests their content into project memory. Skips *-response.md files (execution
 // transcripts). Errors are logged but do not affect task completion.
 func (e *Executor) ingestOutputArtifacts(ctx context.Context, task *persistence.Task, execution *persistence.Execution) {
 	if e.memoryIndexer == nil {
+		return
+	}
+
+	// Producer-success gate (LLD 2026-07-12-rag-ingest-producer-success-gate
+	// §12): ingest a task's OUTPUT artifacts only when the task reached
+	// COMPLETED. A parked (AWAITING_INPUT/AWAITING_EXTERNAL) or
+	// FAILED/CANCELLED/CLOSED task's outputs are not authoritative — the
+	// dossier task that "couldn't resolve the person → parked" incident is
+	// the case this prevents. CRITICAL ordering invariant: task.Status must
+	// be set to its final value BEFORE this call (true at both call sites —
+	// workflow.go:1812 sets Completed before :1837; the lead_handoff.go
+	// per-outcome handlers set it before :346). The gate is task-level
+	// because the in-memory execution.Status is never set to COMPLETED in
+	// the executor (design §12). `enabled: false`
+	// (memory.ingest_require_producer_success) is a passthrough.
+	if e.requireProducerSuccess() && task.Status != persistence.TaskStatusCompleted {
+		status := strings.ToLower(string(task.Status))
+		if e.metrics != nil {
+			e.metrics.RecordIngestSkippedProducerFailed(task.ProjectID, status)
+		}
+		e.logger.Warn().
+			Str("task_id", task.ID).
+			Str("execution_id", execution.ID).
+			Str("task_status", string(task.Status)).
+			Msg("memory: skipped ingest — producing task did not reach COMPLETED")
 		return
 	}
 

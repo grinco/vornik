@@ -38,7 +38,7 @@ func (s *listingArtifactRepo) List(_ context.Context, _ persistence.ArtifactFilt
 
 func TestIngestOutputArtifacts_NilIndexerIsNoop(t *testing.T) {
 	e := &Executor{logger: zerolog.Nop()} // no memoryIndexer
-	task := &persistence.Task{ID: "t1", ProjectID: "p1"}
+	task := &persistence.Task{ID: "t1", ProjectID: "p1", Status: persistence.TaskStatusCompleted}
 	exec := &persistence.Execution{ID: "exec1"}
 	e.ingestOutputArtifacts(context.Background(), task, exec)
 	// No panic, nothing more to assert.
@@ -52,7 +52,7 @@ func TestIngestOutputArtifacts_ListErrorIsLoggedAndContinues(t *testing.T) {
 		memoryIndexer: idx,
 		artifactRepo:  arts,
 	}
-	task := &persistence.Task{ID: "t1", ProjectID: "p1"}
+	task := &persistence.Task{ID: "t1", ProjectID: "p1", Status: persistence.TaskStatusCompleted}
 	exec := &persistence.Execution{ID: "exec1"}
 	e.ingestOutputArtifacts(context.Background(), task, exec)
 	assert.Empty(t, idx.calls)
@@ -102,7 +102,7 @@ func TestIngestOutputArtifacts_FiltersAndIngestsMarkdown(t *testing.T) {
 		memoryIndexer: idx,
 		artifactRepo:  arts,
 	}
-	task := &persistence.Task{ID: "t1", ProjectID: "proj-1"}
+	task := &persistence.Task{ID: "t1", ProjectID: "proj-1", Status: persistence.TaskStatusCompleted}
 	exec := &persistence.Execution{ID: "exec-1"}
 	e.ingestOutputArtifacts(context.Background(), task, exec)
 
@@ -136,7 +136,7 @@ func TestIngestOutputArtifacts_IndexerErrorIsBestEffort(t *testing.T) {
 		memoryIndexer: idx,
 		artifactRepo:  arts,
 	}
-	task := &persistence.Task{ID: "t1", ProjectID: "p1"}
+	task := &persistence.Task{ID: "t1", ProjectID: "p1", Status: persistence.TaskStatusCompleted}
 	exec := &persistence.Execution{ID: "exec1"}
 	assert.NotPanics(t, func() {
 		e.ingestOutputArtifacts(context.Background(), task, exec)

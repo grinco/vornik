@@ -289,7 +289,11 @@ func companionToolDefs() []mcpToolDef {
 				"with provenance. Use to check what vornik already knows before paying compute for delegate(). " +
 				"By default a scoped query INCLUDES NULL-scoped (uncategorized) chunks via the migration-grace " +
 				"`OR repo_scope IS NULL` clause — use strict_scope=true to drop them and see only properly-tagged " +
-				"results. Each hit's repo_scope field shows the chunk's actual scope (empty string = NULL-scoped).",
+				"results. Each hit's repo_scope field shows the chunk's actual scope (empty string = NULL-scoped). " +
+				"| USAGE: Prefer this BEFORE a deep code dive on design/architecture/roadmap/\"how does X work\" " +
+				"questions — the design/spec/decision-class chunks (LLDs) in project memory are the authoritative " +
+				"design record; read code only to verify a named file/flag/function still matches (RAG freezes " +
+				"facts at write time). Treat research/incident/companion notes as hypotheses to verify, not fact.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

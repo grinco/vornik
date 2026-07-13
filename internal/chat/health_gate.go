@@ -18,7 +18,7 @@ import (
 type HealthGatedProvider struct {
 	inner     Provider
 	routeName string
-	reg       *sync.Map // key(route,model) → *modelBreaker ; SHARED across clones
+	reg       *sync.Map // key(route,model) → *chat.Breaker ; SHARED across clones
 	cfg       HealthConfig
 	now       func() time.Time
 	metrics   *Metrics // set via SetMetrics; nil-safe
@@ -89,7 +89,7 @@ func (h *HealthGatedProvider) ModelHealthSnapshot() []ModelHealthSnapshot {
 	var out []ModelHealthSnapshot
 	h.reg.Range(func(k, v any) bool {
 		key, _ := k.(string)
-		b, ok := v.(*modelBreaker)
+		b, ok := v.(*Breaker)
 		if !ok {
 			return true
 		}
@@ -97,7 +97,7 @@ func (h *HealthGatedProvider) ModelHealthSnapshot() []ModelHealthSnapshot {
 		if i := indexByte0(key); i >= 0 {
 			route, model = key[:i], key[i+1:]
 		}
-		state, openedAt := b.snapshot()
+		state, openedAt := b.Snapshot()
 		out = append(out, ModelHealthSnapshot{Route: route, Model: model, State: state, OpenSince: openedAt})
 		return true
 	})
@@ -117,23 +117,23 @@ func indexByte0(s string) int {
 // breakerFor returns the breaker for (routeName, model), creating it atomically
 // on first use (LoadOrStore — two concurrent first-callers never orphan a
 // breaker).
-func (h *HealthGatedProvider) breakerFor(model string) *modelBreaker {
+func (h *HealthGatedProvider) breakerFor(model string) *Breaker {
 	key := h.routeName + "\x00" + model
 	if v, ok := h.reg.Load(key); ok {
-		return v.(*modelBreaker)
+		return v.(*Breaker)
 	}
-	actual, _ := h.reg.LoadOrStore(key, newModelBreaker(h.cfg, h.now))
-	return actual.(*modelBreaker)
+	actual, _ := h.reg.LoadOrStore(key, NewBreaker(h.cfg, h.now))
+	return actual.(*Breaker)
 }
 
 // gate runs call() behind the breaker for the inner provider's current model.
 func (h *HealthGatedProvider) gate(_ context.Context, call func() (*ChatResponse, error)) (*ChatResponse, error) {
 	model := h.inner.Model()
 	b := h.breakerFor(model)
-	permitted, probe, state := b.allow()
+	permitted, probe, state := b.Allow()
 	if !permitted {
 		h.setStateGauge(model, state)
-		return nil, &ModelUnhealthyError{Route: h.routeName, Model: model, State: state.label(), OpenSince: b.openSince()}
+		return nil, &ModelUnhealthyError{Route: h.routeName, Model: model, State: state.Label(), OpenSince: b.OpenSince()}
 	}
 	resp, err := call()
 	// A call is a health "success" unless it's an upstream infra failure —
@@ -141,18 +141,18 @@ func (h *HealthGatedProvider) gate(_ context.Context, call func() (*ChatResponse
 	// success (the model is reachable). IsUpstreamInfraError already excludes
 	// context.Canceled and includes DeadlineExceeded (§5.3).
 	ok := !IsUpstreamInfraError(err)
-	newState, tripped, changed := b.record(ok, probe)
+	newState, tripped, changed := b.Record(ok, probe)
 	h.setStateGauge(model, newState)
 	if tripped {
 		h.incTrips(model)
 	}
 	if changed && h.onChange != nil {
-		h.onChange(h.routeName, model, newState.label())
+		h.onChange(h.routeName, model, newState.Label())
 	}
 	return resp, err
 }
 
-func (h *HealthGatedProvider) setStateGauge(model string, s circuitState) {
+func (h *HealthGatedProvider) setStateGauge(model string, s CircuitState) {
 	if h.metrics != nil && h.metrics.ModelHealthState != nil {
 		h.metrics.ModelHealthState.WithLabelValues(h.routeName, model).Set(float64(s))
 	}

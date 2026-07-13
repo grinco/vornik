@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/contracts"
+	"vornik.io/vornik/internal/executor/agenthealth"
 	"vornik.io/vornik/internal/executor/livepubsub"
 	"vornik.io/vornik/internal/hallucination"
 	"vornik.io/vornik/internal/observability"
@@ -226,6 +227,12 @@ type Config struct {
 	// their static VORNIK_MAX_TOOL_ITERATIONS. See
 	// https://docs.vornik.io
 	ToolBudget toolbudget.Config
+
+	// RequireProducerSuccess gates RAG ingest on the producing task reaching
+	// COMPLETED (LLD 2026-07-12-rag-ingest-producer-success-gate). *bool default-
+	// ON (nil → on); explicit false → passthrough. The gate is task-level
+	// (see design §12 — the in-memory execution.Status is never COMPLETED).
+	RequireProducerSuccess *bool
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -340,6 +347,12 @@ type Executor struct {
 	// the fallback in a metric without making memory.* a direct
 	// executor dependency.
 	ingestEnqueueFallbackRecorder func(projectID string)
+	// agentHealth (optional) is the per-model circuit breaker for
+	// agent-container LLM calls (LLD 2026-07-12-agent-llm-health-breaker).
+	// Nil = the gate is a passthrough (byte-identical to pre-breaker
+	// behaviour); a non-nil registry fast-fails-over a sick model to the
+	// role's modelFallback instead of burning the infra-retry ladder.
+	agentHealth *agenthealth.Registry
 	// tradingOrderRepo (optional) lets the executor inject a
 	// "recent activity" block into the strategist's prompt so
 	// next-tick reasoning has structured context (last 24h
@@ -1207,6 +1220,16 @@ func WithMemoryIndexer(indexer MemoryIndexer) Option {
 func WithIngestQueue(q IngestQueueEnqueuer) Option {
 	return func(e *Executor) {
 		e.ingestQueue = q
+	}
+}
+
+// WithAgentHealth wires the per-model agent-LLM circuit breaker (LLD
+// 2026-07-12-agent-llm-health-breaker). Nil-safe: a nil registry (or one
+// constructed with Enabled=false) makes the gate a passthrough, byte-identical
+// to pre-breaker behaviour.
+func WithAgentHealth(r *agenthealth.Registry) Option {
+	return func(e *Executor) {
+		e.agentHealth = r
 	}
 }
 

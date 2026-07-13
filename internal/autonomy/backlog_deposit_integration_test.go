@@ -223,9 +223,11 @@ terminals:
 	require.Equal(t, "backlog", payload.ForgeJob.Kind)
 	require.Equal(t, "o/r", payload.ForgeJob.Repo)
 
-	// The consumed line must now be marked "- [x]" with a "(task: ...)"
-	// annotation, matching the design's MarkConsumed contract.
+	// The dispatched line must now be marked "- [~]" in-flight with a
+	// "(task: ...)" annotation (dispatch stamps [~], not [x]; the reconciler
+	// flips it on the task's terminal — LLD 2026-07-12-backlog-success-
+	// terminal-stamp).
 	final, err := os.ReadFile(backlogPath)
 	require.NoError(t, err)
-	require.Contains(t, string(final), "- [x] "+depositResp.Item+" (task: "+task.ID+")")
+	require.Contains(t, string(final), "- [~] "+depositResp.Item+" (task: "+task.ID+")")
 }

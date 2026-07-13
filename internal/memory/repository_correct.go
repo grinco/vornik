@@ -7,6 +7,50 @@ import (
 	"time"
 )
 
+// ListChunkIDsByFailedProducer returns the IDs of every chunk in projectID
+// whose producing EXECUTION ended unsuccessfully (FAILED or CANCELLED) — the
+// retro-clean candidate set for the RAG-ingest producer-success gate (LLD
+// 2026-07-12-rag-ingest-producer-success-gate §5). The join is
+// chunks.artifact_id → artifacts.execution_id → executions.status, so a
+// task's failed-execution chunks are selected while its successfully-retried
+// (COMPLETED) execution's chunks are NOT. Chunks with an empty task_id
+// (companion notes / uploaded docs) have no producer execution and are never
+// selected. Always project-scoped (the IDOR guard). The caller feeds the
+// result to HardEvict, which does the tx-safe cascade + per-chunk audit row.
+func (r *Repository) ListChunkIDsByFailedProducer(ctx context.Context, projectID string) ([]string, error) {
+	if r == nil || r.db == nil {
+		return nil, fmt.Errorf("memory repo: not configured")
+	}
+	if projectID == "" {
+		return nil, fmt.Errorf("memory repo: project id required")
+	}
+	const q = `
+SELECT c.id
+FROM project_memory_chunks c
+JOIN artifacts a ON c.artifact_id = a.id
+JOIN executions e ON a.execution_id = e.id
+WHERE c.project_id = $1
+  AND c.task_id <> ''
+  AND e.status IN ('FAILED', 'CANCELLED')`
+	rows, err := r.db.QueryContext(ctx, q, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("memory repo: list failed-producer chunks: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("memory repo: scan chunk id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("memory repo: iterate failed-producer chunks: %w", err)
+	}
+	return ids, nil
+}
+
 // operatorCorrectionRow is the narrow shape insertOperatorCorrection
 // accepts. Kept private — the public surface (Corrector) builds the
 // row from its own inputs; outside callers should go through

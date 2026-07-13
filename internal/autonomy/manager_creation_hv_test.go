@@ -591,7 +591,9 @@ func TestHV_TickBacklog_NoWorkspaceSkips(t *testing.T) {
 
 // TestHV_TickBacklog_FiresItemAndMarksConsumed — the happy path: read
 // the first pending item, create a task with its text, and rewrite the
-// file marking that line `- [x]` only after the create succeeds.
+// file marking that line `- [~]` in-flight only after the create succeeds
+// (the reconciler flips [~]→[x] on success — LLD 2026-07-12-backlog-success-
+// terminal-stamp).
 func TestHV_TickBacklog_FiresItemAndMarksConsumed(t *testing.T) {
 	ws := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(ws, "p1"), 0o755))
@@ -616,7 +618,7 @@ func TestHV_TickBacklog_FiresItemAndMarksConsumed(t *testing.T) {
 
 	got, err := os.ReadFile(backlog)
 	require.NoError(t, err)
-	assert.Contains(t, string(got), "- [x] Ship the thing")
+	assert.Contains(t, string(got), "- [~] Ship the thing")
 	assert.Contains(t, string(got), "- [ ] Later", "subsequent items stay pending")
 }
 

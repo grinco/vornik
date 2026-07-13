@@ -81,6 +81,7 @@ import (
 	"vornik.io/vornik/internal/dispatcher"
 	"vornik.io/vornik/internal/email"
 	"vornik.io/vornik/internal/executor"
+	"vornik.io/vornik/internal/executor/agenthealth"
 	"vornik.io/vornik/internal/executor/livepubsub"
 	"vornik.io/vornik/internal/extractor"
 	"vornik.io/vornik/internal/fixitdoctor"
@@ -367,6 +368,12 @@ type Container struct {
 	// handlers the RUNNING daemon actually registered, not a static list.
 	// Composer task 1.1b concern-2.
 	systemHandlerNames []string
+	// agentHealth is the per-model agent-LLM circuit breaker registry
+	// (LLD 2026-07-12-agent-llm-health-breaker). Retained here (the
+	// registry is constructed in initScheduler) so the later metrics-
+	// wiring phase can call SetMetrics on the same registerer. Nil when
+	// disabled (enabled:false) — the executor gate is then a passthrough.
+	agentHealth *agenthealth.Registry
 	// fixItDoctorMetrics holds vornik_fixit_* counters (task 3.2).
 	// Wired into the fixitdoctor.Service at construction.
 	fixItDoctorMetrics *fixitdoctor.Metrics

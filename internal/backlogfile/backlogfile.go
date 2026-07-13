@@ -17,20 +17,26 @@ import (
 // FormatHeader is written at the top of a freshly created
 // BACKLOG.md so the marker grammar is self-documenting for an
 // operator opening the file in an editor.
-const FormatHeader = "<!-- vornik backlog v1 — markers: [ ] pending | [?] proposed | [x] done | [!] failed -->"
+const FormatHeader = "<!-- vornik backlog v1 — markers: [ ] pending | [?] proposed | [~] in-flight | [x] done | [!] failed -->"
 
-// itemRE matches any of the four marker states. It is a superset of
+// itemRE matches any of the five marker states. It is a superset of
 // the autonomy package's backlogPendingRE (which matches only the
 // pending `[ ]` box) — that regex MUST remain compatible with this
 // grammar; see internal/autonomy/manager.go's backlogPendingRE.
 //
+// The `~` (in-flight) marker was added 2026-07-12 (LLD 2026-07-12-backlog-
+// success-terminal-stamp): dispatch stamps `[~]`, and the reconciler flips
+// it to `[x]` on success or `[!]` on failure — so a task is never marked done
+// before it is done. The class widening is additive: older parsers that only
+// know `[ ?x!]` treat a `[~]` line as a non-item (safe skip).
+//
 // Capture groups: 1) leading indent + bullet + spaces before `[`,
 // 2) the single marker character, 3) the text after the box.
-var itemRE = regexp.MustCompile(`^(\s*[-*]\s+)\[([ ?x!])\]\s+(.*)$`)
+var itemRE = regexp.MustCompile(`^(\s*[-*]\s+)\[([ ?x!~])\]\s+(.*)$`)
 
 // Item is one parsed checklist line from BACKLOG.md.
 type Item struct {
-	Marker byte   // ' ', '?', 'x', '!'
+	Marker byte   // ' ', '?', '~', 'x', '!'
 	Text   string // text after the marker box
 	Line   int    // 0-based line index in the file
 }
@@ -120,11 +126,86 @@ func (s *Store) PeekNext(path, projectID string) (text string, ok bool, err erro
 	return "", false, nil
 }
 
+// MarkInFlight finds the first line whose marker is pending (' ') and whose
+// text equals text exactly, rewrites its marker to '~' (in-flight), and
+// appends " (task: <taskID>)" to the text. It returns (false, nil) when no
+// line matches — e.g. the operator already hand-edited the line, or a
+// concurrent caller won the race.
+//
+// This is the dispatch-time stamp (LLD 2026-07-12-backlog-success-terminal-
+// stamp): a backlog item is stamped in-flight — NOT done — when its task is
+// dispatched, and the tick reconciler later flips `[~]` → `[x]` on a
+// successful terminal or `[~]` → `[!]` on failure. Stamping `[~]` (which
+// PeekNext skips) is also the file-level double-dispatch interlock that
+// survives a daemon restart. Same body shape as MarkConsumed with a different
+// marker.
+func (s *Store) MarkInFlight(path, projectID, text, taskID string) (bool, error) {
+	mu := s.lockFor(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	content, existed, err := readFile(path)
+	if err != nil {
+		return false, err
+	}
+	if !existed {
+		return false, nil
+	}
+
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		m := itemRE.FindStringSubmatch(line)
+		if m == nil || m[2] != " " || m[3] != text {
+			continue
+		}
+		lines[i] = m[1] + "[~] " + text + fmt.Sprintf(" (task: %s)", taskID)
+		return true, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600)
+	}
+	return false, nil
+}
+
+// MarkDone finds the in-flight ('~') line whose text ends with
+// "(task: <taskID>)" and rewrites its marker to 'x' (done). It returns
+// (false, nil) when no line matches — including on a second call for the same
+// taskID (the marker is then 'x' and no longer matches the '~' search), so it
+// is idempotent. Called by the tick reconciler when the dispatched task
+// reached a successful terminal (LLD 2026-07-12-backlog-success-terminal-stamp).
+func (s *Store) MarkDone(path, projectID, taskID string) (bool, error) {
+	mu := s.lockFor(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	content, existed, err := readFile(path)
+	if err != nil {
+		return false, err
+	}
+	if !existed {
+		return false, nil
+	}
+
+	suffix := fmt.Sprintf("(task: %s)", taskID)
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		m := itemRE.FindStringSubmatch(line)
+		if m == nil || m[2] != "~" || !strings.HasSuffix(m[3], suffix) {
+			continue
+		}
+		lines[i] = m[1] + "[x] " + m[3]
+		return true, os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600)
+	}
+	return false, nil
+}
+
 // MarkConsumed finds the first line whose marker is pending (' ')
 // and whose text equals text exactly, rewrites its marker to 'x',
 // and appends " (task: <taskID>)" to the text. It returns
 // (false, nil) when no line matches — e.g. the operator already
 // hand-edited the line, or it was consumed by a concurrent caller.
+//
+// DEPRECATED for the autonomy dispatch path (superseded by MarkInFlight per
+// LLD 2026-07-12-backlog-success-terminal-stamp — dispatch stamps `[~]`, not
+// `[x]`). Retained for any non-autonomy caller; the live backlog tick no
+// longer uses it.
 func (s *Store) MarkConsumed(path, projectID, text, taskID string) (bool, error) {
 	mu := s.lockFor(projectID)
 	mu.Lock()
@@ -150,12 +231,18 @@ func (s *Store) MarkConsumed(path, projectID, text, taskID string) (bool, error)
 	return false, nil
 }
 
-// MarkFailed finds the line whose marker is 'x' and whose text ends
-// with "(task: <taskID>)", rewrites its marker to '!', and appends
-// ", failed" inside that annotation (producing
-// "(task: <taskID>, failed)"). It returns (false, nil) when no line
-// matches — including on a second call for the same taskID, since
-// the line's marker is then '!' and no longer matches the 'x' search.
+// MarkFailed finds the line whose marker is in-flight ('~') or done ('x') and
+// whose text ends with "(task: <taskID>)", rewrites its marker to '!', and
+// appends ", failed" inside that annotation (producing
+// "(task: <taskID>, failed)"). It returns (false, nil) when no line matches —
+// including on a second call for the same taskID, since the line's marker is
+// then '!' and no longer matches. Idempotent.
+//
+// It matches BOTH markers so it handles the new in-flight path (`[~]` — a task
+// that failed while dispatched) AND back-compat with items stamped `[x]` at
+// dispatch by the pre-2026-07-12 code (the stranded optimistic `[x]`s the
+// original reconciler was built to flip). LLD 2026-07-12-backlog-success-
+// terminal-stamp §5.
 func (s *Store) MarkFailed(path, projectID, taskID string) (bool, error) {
 	mu := s.lockFor(projectID)
 	mu.Lock()
@@ -173,7 +260,7 @@ func (s *Store) MarkFailed(path, projectID, taskID string) (bool, error) {
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
 		m := itemRE.FindStringSubmatch(line)
-		if m == nil || m[2] != "x" || !strings.HasSuffix(m[3], suffix) {
+		if m == nil || (m[2] != "x" && m[2] != "~") || !strings.HasSuffix(m[3], suffix) {
 			continue
 		}
 		newText := strings.TrimSuffix(m[3], ")") + ", failed)"

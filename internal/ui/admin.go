@@ -154,6 +154,24 @@ type AdminLandingData struct {
 	// identity core wired) hides the callout.
 	AwaitingUsers int
 	UsersWired    bool
+	// EnterpriseAdmin gates every EE-only admin surface in the console
+	// (2026-07-13 — hide EE-only admin surfaces in CE). It is the edition
+	// switch c.providers.Admin, true only in Enterprise builds (the
+	// EnterpriseProviders() aggregator sets all EE flags together, so
+	// there is no partial-EE). Used instead of per-dep availability
+	// because two EE features (Instincts, chat audit) have their repo
+	// wired in CE too — repo presence != edition. The two EE tiles
+	// (Daemon health, Recent audit) and every EE quick-link gate on this.
+	// See https://docs.vornik.io
+	EnterpriseAdmin bool
+	// FirewallAvailable gates the Memory-firewall quick-link — the one
+	// genuinely-CE admin surface here (reclassified CE in editions phase2c).
+	// Availability-gated on its own Postgres repo (nil on SQLite).
+	FirewallAvailable bool
+	// AnyQuickLink is true when at least one quick-link is shown. When
+	// false — the Community case where no admin quick-link is wired — the
+	// whole Quick-links tile is omitted rather than an empty-heading shell.
+	AnyQuickLink bool
 }
 
 // AdminAuditData backs /ui/admin/audit.
@@ -406,7 +424,16 @@ func (s *Server) AdminLanding(w http.ResponseWriter, r *http.Request) {
 		AuditAvailable:  s.adminAuditRepo != nil,
 		HealthAvailable: s.adminReadiness != nil,
 		UsersWired:      s.identityRepo != nil,
+		// EE admin surfaces gate on the edition switch, not repo presence
+		// (Instincts/chat-audit repos are wired in CE too). CE = false.
+		EnterpriseAdmin: s.enterpriseAdmin,
+		// Memory firewall is the one CE admin surface here — its own repo.
+		FirewallAvailable: s.memoryPolicyEvaluations != nil,
 	}
+	// AnyQuickLink gates the whole Quick-links tile — true if any link in
+	// it is shown. In CE (EnterpriseAdmin false) only the CE Memory
+	// firewall can survive; when it too is absent the tile is omitted.
+	data.AnyQuickLink = data.EnterpriseAdmin || data.FirewallAvailable
 	// Readiness probes (DB/MCP/storage pings) and the recent-audit query are
 	// independent — run them concurrently so the most-hit admin page blocks on
 	// max(readiness, audit) ≈ 3s rather than their sum.

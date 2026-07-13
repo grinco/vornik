@@ -101,6 +101,11 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `runtime.agent_llm.max_tokens` | int | Max output tokens per call. |
 | `runtime.agent_llm.timeout` | string | Bound on a single LLM call from inside an agent. |
 | `runtime.agent_llm.tool_result_max_bytes` | int | Max bytes of a tool result fed back to the model (0 = agent default 256 KiB). |
+| `runtime.agent_llm.health.enabled` | bool | Activate the model-health circuit breaker (default on; false disables). |
+| `runtime.agent_llm.health.window` | string | Rolling failure window, e.g. 60s (default 60s). |
+| `runtime.agent_llm.health.min_samples` | int | Minimum in-window failures before the breaker can trip (default 5). |
+| `runtime.agent_llm.health.failure_rate` | float | Failure fraction at/above which the breaker trips (default 0.5). |
+| `runtime.agent_llm.health.open_cooldown` | string | How long the circuit stays open before a half-open probe, e.g. 30s (default 30s). |
 | `runtime.warm_pool.enabled` | bool | Reuse warm containers for faster task start. |
 | `runtime.warm_pool.idle_timeout` | string | How long an idle warm container is kept. |
 | `runtime.warm_pool.max_per_role` | int | Max warm containers per project and role. |
@@ -294,6 +299,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `memory.embedding_endpoint` | string | Override endpoint for embedding requests. |
 | `memory.embedding_api_key` | string | Override API key for embedding requests. |
 | `memory.bedrock.region` | string | AWS region for native Bedrock embeddings when memory.embedding_provider=bedrock. |
+| `memory.ingest_require_producer_success` | bool | Gate RAG ingest on the producing task reaching COMPLETED (default on). |
 | `memory.embedding_cache_enabled` | bool | Cache embeddings to skip repeat API calls. |
 | `memory.response_cache_enabled` | bool | Cache memory-pipeline LLM responses. |
 | `memory.chunk_tokens` | int | Approximate tokens per chunk. |

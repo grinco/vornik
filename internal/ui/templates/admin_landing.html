@@ -23,7 +23,11 @@
             {{end}}
 
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {{/* Daemon health tile — re-uses /readyz checks in-process */}}
+                {{/* Daemon health tile — re-uses /readyz checks in-process.
+                     EE-only (adminReadiness wired under providers.Admin); the
+                     whole tile is omitted in CE rather than showing "not
+                     wired" (2026-07-13 CE admin-console gating). */}}
+                {{if .EnterpriseAdmin}}
                 <div class="glass rounded-xl border border-dark-700 p-5">
                     <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Daemon health</h2>
                     {{if .Readiness}}
@@ -40,8 +44,11 @@
                     <p class="text-gray-500 text-sm">No readiness probes wired.</p>
                     {{end}}
                 </div>
+                {{end}}
 
-                {{/* Recent audit tile */}}
+                {{/* Recent audit tile — EE-only (adminAuditRepo wired under
+                     providers.Admin); omitted entirely in CE. */}}
+                {{if .EnterpriseAdmin}}
                 <div class="glass rounded-xl border border-dark-700 p-5">
                     <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Recent admin actions</h2>
                     {{if .RecentAudit}}
@@ -55,22 +62,31 @@
                         {{end}}
                     </ul>
                     <div class="mt-3"><a class="text-brand-400 hover:text-brand-300 text-xs" href="/ui/admin/audit">View all →</a></div>
-                    {{else if not .AuditAvailable}}
-                    <p class="text-gray-500 text-sm">Audit repository not wired.</p>
                     {{else}}
                     <p class="text-gray-500 text-sm">No admin actions yet.</p>
                     {{end}}
                 </div>
+                {{end}}
 
-                {{/* Quick links tile */}}
+                {{/* Quick links tile — omitted when no link is wired (extreme
+                     CE case), else shows only the wired links. */}}
+                {{if .AnyQuickLink}}
                 <div class="glass rounded-xl border border-dark-700 p-5">
                     <h2 class="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">Quick links</h2>
+                    {{/* Memory firewall is the one genuinely-CE admin
+                         surface here (reclassified CE, editions phase2c) —
+                         gated on its own Postgres repo. Everything else is an
+                         EE surface, gated as one block on .EnterpriseAdmin so
+                         Community hides them all. Repo presence is NOT the
+                         signal (Instincts/chat-audit repos are wired in CE
+                         too); edition is. (2026-07-13 CE admin-console gating.) */}}
                     <ul class="space-y-2 text-sm">
-                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/users">Users <span class="text-[10px] text-gray-500">— approve logins, roles, project access</span>{{if and .UsersWired (gt .AwaitingUsers 0)}} <span class="px-1.5 py-0.5 text-[10px] font-mono rounded bg-amber-900/60 text-amber-600 dark:text-amber-200">{{.AwaitingUsers}} awaiting</span>{{end}}</a></li>
+                        {{if .FirewallAvailable}}<li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/memory/firewall">Memory firewall <span class="text-[10px] text-gray-500">— policy evaluations + per-chunk edit</span></a></li>{{end}}
+                        {{if .EnterpriseAdmin}}
+                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/users">Users <span class="text-[10px] text-gray-500">— approve logins, roles, project access</span>{{if gt .AwaitingUsers 0}} <span class="px-1.5 py-0.5 text-[10px] font-mono rounded bg-amber-900/60 text-amber-600 dark:text-amber-200">{{.AwaitingUsers}} awaiting</span>{{end}}</a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/audit">Audit log <span class="text-[10px] text-gray-500">— admin-initiated mutations</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/chat-audit">Chat audit <span class="text-[10px] text-gray-500">— dispatcher turn ledger</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/memory-audit">Memory audit <span class="text-[10px] text-gray-500">— retrieval + ingest</span></a></li>
-                        <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/memory/firewall">Memory firewall <span class="text-[10px] text-gray-500">— policy evaluations + per-chunk edit</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/health/">Health <span class="text-[10px] text-gray-500">— daemon + subsystem status</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/health/leases">Lease audit <span class="text-[10px] text-gray-500">— leader-election state</span></a></li>
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/health/watchdog">Watchdog <span class="text-[10px] text-gray-500">— stuck-execution scanner</span></a></li>
@@ -98,8 +114,10 @@
                              grid was a duplicate entry point (2026-07-08 nav
                              dedupe). Canonical home: the nav submenu. */}}
                         <li><a class="text-brand-400 hover:text-brand-300" href="/ui/admin/instincts">Instincts <span class="text-[10px] text-gray-500">— learned-pattern browser</span></a></li>
+                        {{end}}
                     </ul>
                 </div>
+                {{end}}
             </div>
         </div>
     </main>

@@ -249,7 +249,14 @@ type Server struct {
 	// Swarms/Workflows/Admin stayed hidden on every non-admin page
 	// regardless of auth_enabled. (An earlier fix keyed on auth-off
 	// alone missed CE's default auth_enabled=true.)
-	allUICallersAdmin   bool
+	allUICallersAdmin bool
+	// enterpriseAdmin is the edition switch c.providers.Admin, surfaced to
+	// the admin console so EE-only surfaces (Black Box, instincts, audit,
+	// health, …) are hidden in Community. True only in Enterprise builds.
+	// Used instead of per-dep availability because some EE features have
+	// their repo wired in CE too (repo presence != edition). See
+	// https://docs.vornik.io
+	enterpriseAdmin     bool
 	postMortemRepo      persistence.TaskPostMortemRepository
 	postMortemExplainer PostMortemExplainer
 	// secretRedactionRepo backs the "🔒 N secrets redacted" badge on the
@@ -1452,6 +1459,16 @@ func WithTradingFillRepository(repo persistence.TradingFillRepository) ServerOpt
 func WithTradingEnabled() ServerOption {
 	return func(s *Server) {
 		s.tradingEnabled = true
+	}
+}
+
+// WithAllEEAdmin marks the build as Enterprise for the admin console, so
+// EE-only admin surfaces (Black Box, instincts, audit, health, users, …) are
+// shown. The container sets it from c.providers.Admin; Community leaves it
+// unset so those surfaces are hidden (the operator's 2026-07-13 decision).
+func WithAllEEAdmin() ServerOption {
+	return func(s *Server) {
+		s.enterpriseAdmin = true
 	}
 }
 

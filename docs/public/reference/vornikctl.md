@@ -1075,6 +1075,47 @@ vornikctl memory prune-candidates [flags]
 | `--since` | `720h0m0s` | Retrieval lookback window (default 30d) |
 | `-p`, `--project` |  | Project ID (required) |
 
+## vornikctl memory purge-producer-failed
+
+Retro-clean RAG chunks produced by failed/cancelled executions
+
+Hard-evict every memory chunk whose PRODUCING EXECUTION ended
+unsuccessfully (FAILED or CANCELLED). This is the retro-clean half of the
+RAG-ingest producer-success gate (LLD 2026-07-12-rag-ingest-producer-success-
+gate §5): the gate stops NEW failed-task outputs from being ingested; this
+command removes the PRE-GATE garbage already in the store — e.g. the
+2026-07-12 person-dossier incident where a failed research task's wrong-people
+candidates were ingested and now surface on recall as if they were findings.
+
+Candidate selection joins chunks → artifacts → executions and filters on
+executions.status IN ('FAILED','CANCELLED'), so:
+  - a task's failed-execution chunks ARE selected;
+  - a task's successfully-retried (COMPLETED) execution's chunks are NOT;
+  - companion notes / uploaded docs (empty task_id) are never selected.
+
+Deletion reuses the audited hard-evict path (per-chunk memory_eviction_audit
+tombstone). It is DESTRUCTIVE and IRREVERSIBLE — restore needs a DB restore.
+
+Safety flow (stricter than a single --confirm, because this is a bulk op):
+  1. Run --dry-run first: prints the candidate chunk IDs + count.
+  2. Re-run with --confirm --expect-count=N, where N is the dry-run count.
+     A mismatch (the set changed between runs) aborts without deleting.
+
+Examples:
+  vornikctl memory purge-producer-failed --project assistant --dry-run
+  vornikctl memory purge-producer-failed --project assistant --confirm --expect-count 17
+
+```
+vornikctl memory purge-producer-failed [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--confirm` | `false` | REQUIRED (with --expect-count) to actually delete |
+| `--dry-run` | `false` | List candidate chunk IDs + count without deleting |
+| `--expect-count` | `-1` | The count from your --dry-run; a mismatch aborts (bulk-op safety) |
+| `-p`, `--project` |  | Project ID (required) |
+
 ## vornikctl memory reassign
 
 Move memory chunks from one project to another

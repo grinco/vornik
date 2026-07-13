@@ -1693,6 +1693,10 @@ func (c *Container) initHTTPServer() error {
 	// they stay unchanged. The outer c.providers.Admin gate is the
 	// edition-level switch that Community builds keep false.
 	if c.providers.Admin {
+		// Edition signal for the admin console: hide EE-only admin
+		// surfaces (Black Box, instincts, audit, health, …) in Community.
+		// Community leaves this unset. (2026-07-13 CE admin-console gating.)
+		uiOpts = append(uiOpts, ui.WithAllEEAdmin())
 		uiOpts = append(uiOpts, c.adminUIOptions(adminUIDeps{
 			apiServer:          apiServer,
 			workflowApplier:    workflowApplier,

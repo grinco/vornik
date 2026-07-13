@@ -89,6 +89,7 @@ func TestAdminLanding_Renders(t *testing.T) {
 		Principal: "sk-admin", Source: "ui", Action: "mcp.refresh", Target: "p-alpha",
 	})
 	s := NewServer(
+		WithAllEEAdmin(), // EE build — the console shows EE tiles/links
 		WithAdminAuditRepository(audit),
 		WithAdminReadinessProvider(stubReadiness{}),
 	)
@@ -274,7 +275,7 @@ func TestAdminIntegrationsMCP_Redirects(t *testing.T) {
 // TestAdminRouter_Dispatch confirms the /admin/* router dispatches
 // to the right handler for each path.
 func TestAdminRouter_Dispatch(t *testing.T) {
-	s := NewServer()
+	s := NewServer(WithAllEEAdmin()) // EE build so the landing renders its EE tiles
 	cases := []struct {
 		path     string
 		wantBody string

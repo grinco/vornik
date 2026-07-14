@@ -14,6 +14,7 @@
 
 # Build output directory
 /bin/
+/.bin/
 
 # Packaging artifacts — rpm/deb/checksums live only in dist/ (ignored below) or
 # as release assets; they are NEVER committed. scripts/check-no-binaries.sh

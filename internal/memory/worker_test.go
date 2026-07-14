@@ -243,6 +243,58 @@ func TestProcessBatch_StoreFailureMovesToDLQ(t *testing.T) {
 	w.processBatch(context.Background())
 }
 
+func TestProcessBatch_BatchFailureFallsBackToPerChunk(t *testing.T) {
+	r, mock, cleanup := newRepo(t)
+	defer cleanup()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req embeddingRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if len(req.Input) > 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if len(req.Input) == 1 && req.Input[0] == "bad" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		resp := embeddingResponse{Data: []struct {
+			Index     int       `json:"index"`
+			Embedding []float32 `json:"embedding"`
+		}{{Index: 0, Embedding: []float32{1, 2, 3}}}}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+	w := NewWorker(Config{EmbeddingEndpoint: srv.URL, EmbeddingModel: "m", EmbeddingDimension: 3}, r, NewEmbedder(Config{EmbeddingEndpoint: srv.URL, EmbeddingModel: "m", EmbeddingDimension: 3}), zerolog.Nop())
+
+	mock.ExpectQuery("FROM memory_embed_dlq").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"chunk_id", "project_id", "reason", "last_error",
+			"retry_count", "retry_after", "first_failed_at", "last_failed_at",
+		}))
+	mock.ExpectBegin()
+	mock.ExpectQuery("DELETE FROM memory_embed_queue").
+		WithArgs(workerBatchSize).
+		WillReturnRows(sqlmock.NewRows([]string{"chunk_id"}).AddRow("c1").AddRow("c2"))
+	mock.ExpectQuery("SELECT id, project_id").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "project_id", "task_id", "artifact_id", "source_name",
+			"chunk_index", "content", "content_hash", "created_at",
+		}).
+			AddRow("c1", "p", "", "", "s", 0, "ok", "h1", time.Now()).
+			AddRow("c2", "p", "", "", "s", 1, "bad", "h2", time.Now()))
+	mock.ExpectCommit()
+	mock.ExpectExec("UPDATE project_memory_chunks SET embedding").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectBegin()
+	mock.ExpectExec("DELETE FROM memory_embed_queue").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO memory_embed_dlq").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	w.processBatch(context.Background())
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProcessBatch_DequeueErrorReturns(t *testing.T) {
 	r, mock, cleanup := newRepo(t)
 	defer cleanup()
@@ -288,6 +340,9 @@ func TestReplayDueDLQ_MovesRows(t *testing.T) {
 			"retry_count", "retry_after", "first_failed_at", "last_failed_at",
 		}).AddRow("c1", "p", "r", "e", 1, time.Now(), time.Now(), time.Now()))
 	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT chunk_id, project_id FROM memory_embed_dlq").
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"chunk_id", "project_id"}).AddRow("c1", "p"))
 	mock.ExpectExec("INSERT INTO memory_embed_queue").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM memory_embed_dlq").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

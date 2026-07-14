@@ -2177,15 +2177,49 @@ func (r *Repository) DLQReplay(ctx context.Context, chunkIDs []string) (int, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	rows, err := tx.QueryContext(ctx,
+		`SELECT chunk_id, project_id FROM memory_embed_dlq WHERE chunk_id = ANY($1)`,
+		pq.Array(chunkIDs),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("dlq replay select: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type replayRow struct {
+		chunkID   string
+		projectID string
+	}
+	replayRows := make([]replayRow, 0, len(chunkIDs))
+	found := make(map[string]struct{}, len(chunkIDs))
+	for rows.Next() {
+		var rr replayRow
+		if err := rows.Scan(&rr.chunkID, &rr.projectID); err != nil {
+			return 0, fmt.Errorf("dlq replay scan: %w", err)
+		}
+		replayRows = append(replayRows, rr)
+		found[rr.chunkID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("dlq replay rows: %w", err)
+	}
+	if len(replayRows) == 0 {
+		return 0, fmt.Errorf("dlq replay insert: no matching DLQ rows")
+	}
+	for _, id := range chunkIDs {
+		if _, ok := found[id]; !ok {
+			return 0, fmt.Errorf("dlq replay insert: chunk_id %s not found in DLQ", id)
+		}
+	}
+
 	// Re-insert into the embed queue. ON CONFLICT is a no-op because a
 	// chunk can only ever be in one place — if it's already queued, the
 	// DLQ row is stale and we just drop it.
-	placeholders := make([]string, len(chunkIDs))
-	args := make([]any, 0, len(chunkIDs)*2)
-	for i, id := range chunkIDs {
-		placeholders[i] = fmt.Sprintf("($%d, (SELECT project_id FROM memory_embed_dlq WHERE chunk_id = $%d))",
-			2*i+1, 2*i+2)
-		args = append(args, id, id)
+	placeholders := make([]string, len(replayRows))
+	args := make([]any, 0, len(replayRows)*2)
+	for i, row := range replayRows {
+		placeholders[i] = fmt.Sprintf("($%d, $%d)", 2*i+1, 2*i+2)
+		args = append(args, row.chunkID, row.projectID)
 	}
 	insertQuery := `INSERT INTO memory_embed_queue (chunk_id, project_id) VALUES ` +
 		strings.Join(placeholders, ", ") +
@@ -2195,8 +2229,12 @@ func (r *Repository) DLQReplay(ctx context.Context, chunkIDs []string) (int, err
 	}
 
 	// Delete from DLQ.
+	replayedIDs := make([]string, len(replayRows))
+	for i, row := range replayRows {
+		replayedIDs[i] = row.chunkID
+	}
 	deleteQuery := `DELETE FROM memory_embed_dlq WHERE chunk_id = ANY($1)`
-	res, err := tx.ExecContext(ctx, deleteQuery, pq.Array(chunkIDs))
+	res, err := tx.ExecContext(ctx, deleteQuery, pq.Array(replayedIDs))
 	if err != nil {
 		return 0, fmt.Errorf("dlq replay delete: %w", err)
 	}

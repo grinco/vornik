@@ -138,6 +138,14 @@ func (w *Worker) processBatch(ctx context.Context) {
 	embedStart := time.Now()
 	vecs, err := w.embedder.Embed(ctx, texts)
 	if err != nil || vecs == nil {
+		if len(chunks) > 1 {
+			w.logger.Warn().
+				Err(err).
+				Int("batch_size", len(chunks)).
+				Msg("memory worker: batch embed failed — retrying chunks individually")
+			w.processIndividually(ctx, chunks)
+			return
+		}
 		if w.metrics != nil {
 			w.metrics.EmbedBatchesTotal.WithLabelValues("error").Inc()
 		}
@@ -248,6 +256,81 @@ func (w *Worker) processBatch(ctx context.Context) {
 	w.logger.Debug().
 		Int("embedded", len(chunks)).
 		Msg("memory worker: batch embedded")
+}
+
+func (w *Worker) processIndividually(ctx context.Context, chunks []MemoryChunk) {
+	for _, c := range chunks {
+		text := applyEmbedContext(c.SourceName, c.Content)
+		vecs, err := w.embedder.Embed(ctx, []string{text})
+		if err != nil || len(vecs) == 0 || len(vecs[0]) == 0 {
+			if w.metrics != nil {
+				w.metrics.EmbedBatchesTotal.WithLabelValues("error").Inc()
+			}
+			errMsg := "embedder returned no vectors"
+			if err != nil {
+				errMsg = err.Error()
+			}
+			retryAfter := time.Now().Add(w.dlqBackoff(0))
+			if derr := w.repo.DLQMove(ctx, c.ID, c.ProjectID, "embedding_failed", errMsg, retryAfter); derr != nil {
+				w.logger.Warn().Err(derr).Str("chunk_id", c.ID).Msg("memory worker: DLQ move failed")
+			}
+			continue
+		}
+		w.persistEmbeddedChunk(ctx, c, vecs[0])
+	}
+}
+
+func (w *Worker) persistEmbeddedChunk(ctx context.Context, c MemoryChunk, vec []float32) {
+	dim := w.cfg.EmbeddingDimension
+	if dim <= 0 {
+		dim = 1536
+	}
+	if len(vec) != dim {
+		w.logger.Warn().
+			Int("got", len(vec)).
+			Int("expected", dim).
+			Str("model", w.cfg.EmbeddingModel).
+			Str("chunk_id", c.ID).
+			Msg("memory worker: embedding dimension mismatch — parking in DLQ")
+		retryAfter := time.Now().Add(24 * time.Hour)
+		msg := fmt.Sprintf("embedder returned dim=%d, expected=%d (model=%s)",
+			len(vec), dim, w.cfg.EmbeddingModel)
+		if derr := w.repo.DLQMove(ctx, c.ID, c.ProjectID, "dimension_mismatch", msg, retryAfter); derr != nil {
+			w.logger.Warn().Err(derr).Str("chunk_id", c.ID).Msg("memory worker: DLQ move (dim) failed")
+		}
+		_ = w.repo.DLQPark(ctx, c.ID)
+		return
+	}
+	if err := w.repo.UpdateEmbedding(ctx, c.ID, vec); err != nil {
+		w.logger.Warn().
+			Err(err).
+			Str("chunk_id", c.ID).
+			Msg("memory worker: failed to store embedding — moving to DLQ")
+		retryAfter := time.Now().Add(w.dlqBackoff(0))
+		if derr := w.repo.DLQMove(ctx, c.ID, c.ProjectID, "store_failed", err.Error(), retryAfter); derr != nil {
+			w.logger.Warn().Err(derr).Str("chunk_id", c.ID).Msg("memory worker: DLQ move (store) failed")
+		}
+		return
+	}
+	if w.metrics != nil {
+		w.metrics.EmbeddingsStoredTotal.WithLabelValues(c.ProjectID).Inc()
+	}
+	if w.titler != nil {
+		title, err := w.titler.Title(ctx, c.Content, c.ProjectID, c.ID)
+		if err != nil {
+			w.logger.Debug().
+				Err(err).
+				Str("chunk_id", c.ID).
+				Msg("memory worker: title generation failed — leaving NULL")
+		} else if title != "" {
+			if uerr := w.repo.UpdateContentTitle(ctx, c.ID, title); uerr != nil {
+				w.logger.Warn().
+					Err(uerr).
+					Str("chunk_id", c.ID).
+					Msg("memory worker: content_title persist failed")
+			}
+		}
+	}
 }
 
 // dlqBackoff returns the retry delay for a DLQ row with the given

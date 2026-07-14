@@ -415,6 +415,26 @@ chat:
   #     # title: ""                  # X-Title; default "vornik"
   #     max_tokens: 0                # 0 = inherit chat.max_tokens
   #
+  #   # Ollama Cloud (OpenAI-compat) — Ollama's hosted large open-weight
+  #   # models (gpt-oss, qwen3-coder, glm-*, kimi-k2*, etc.), accessed via
+  #   # https://ollama.com/v1 with an API key from
+  #   # https://ollama.com/settings/keys.
+  #   #
+  #   # UNLIKE every other sub-provider above, this one gets NO auto-added
+  #   # default route. Ollama Cloud's catalogue re-hosts other vendors'
+  #   # models under their own bare names — e.g. "gpt-oss" collides with
+  #   # the "gpt-" default above (real OpenAI, via codex-subscription) and
+  #   # "gemini-3-flash-preview" collides with "gemini-" (real Vertex).
+  #   # Reach it via `default: ollama_cloud` below, or an explicit route
+  #   # (see the routes example further down) — never a bare prefix guess.
+  #   # See https://docs.vornik.io
+  #   ollama_cloud:
+  #     enabled: false
+  #     api_key: "${OLLAMA_API_KEY}"
+  #     model: "gpt-oss:120b"        # default; the REAL Ollama Cloud model ID
+  #     # endpoint: ""               # override; default https://ollama.com/v1
+  #     max_tokens: 0                # 0 = inherit chat.max_tokens
+  #
   #   # AWS Bedrock native (Converse API + SigV4). NOT
   #   # OpenAI-compat — the provider handles the wire-format
   #   # translation internally so callers pass OpenAI-shaped
@@ -452,6 +472,14 @@ chat:
   #     - { prefix: "codex",     kind: "codex-subscription" }
   #     - { prefix: "gemini-",   kind: "vertex" }
   #     - { prefix: "google/",   kind: "vertex" }
+  #     # Ollama Cloud has NO default route (see the ollama_cloud block
+  #     # above for why) — list explicit routes for the models you use.
+  #     # An explicit route always wins over a same-prefix default, even
+  #     # one listed above (e.g. "gpt-oss" here beats the generic "gpt-"
+  #     # -> codex-subscription default for that specific model):
+  #     - { prefix: "gpt-oss",      kind: "ollama_cloud" }
+  #     - { prefix: "qwen3-coder",  kind: "ollama_cloud" }
+  #     - { prefix: "glm-",         kind: "ollama_cloud" }
   #     # Bedrock-native marketplace prefixes — point these at
   #     # `kind: "bedrock"` once the provider is enabled.
   #     - { prefix: "anthropic.", kind: "bedrock" }

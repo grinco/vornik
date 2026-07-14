@@ -1614,6 +1614,12 @@ type ChatRouterConfig struct {
 	// against accidental paid spend via free_only. Route ":free" models
 	// here with a suffix route — see ChatRouteConfig.Suffix.
 	OpenRouter ChatOpenRouterSubConfig `yaml:"openrouter"`
+	// OllamaCloud configures the Ollama Cloud sub-provider — Ollama's
+	// hosted large open-weight models (gpt-oss, qwen3-coder, glm-*,
+	// kimi-k2*, etc.) accessed via Ollama's OpenAI-compat endpoint.
+	// Deliberately has no auto-added default route — see
+	// ChatOllamaCloudSubConfig and the design doc for why.
+	OllamaCloud ChatOllamaCloudSubConfig `yaml:"ollama_cloud"`
 	// Bedrock configures the AWS Bedrock Converse API as a native
 	// sub-provider. Separate from HTTP because Bedrock isn't
 	// OpenAI-compat: the wire shape is Converse (system + messages
@@ -1760,6 +1766,40 @@ type ChatOpenRouterSubConfig struct {
 	// Title sets the X-Title header (app display name). Empty defaults to
 	// "vornik".
 	Title string `yaml:"title"`
+	// MaxTokens caps per-call output tokens. 0 inherits chat.max_tokens.
+	MaxTokens int `yaml:"max_tokens"`
+}
+
+// ChatOllamaCloudSubConfig describes the Ollama Cloud sub-provider.
+// Requests land on Ollama Cloud's OpenAI-compatibility endpoint
+// (https://ollama.com/v1), so the wire shape matches the HTTP
+// sub-provider exactly — what differs is the baked-in endpoint and,
+// per the design doc, the deliberate ABSENCE of any auto-added
+// default route. Ollama Cloud's catalogue re-hosts other vendors'
+// models under their own bare names (e.g. "gpt-oss" collides with the
+// OpenAI "gpt-" default prefix; "gemini-3-flash-preview" collides
+// with the Vertex "gemini-" default prefix), so a hardcoded prefix
+// table would risk silently stealing traffic from real GPT/Gemini
+// requests the next time Ollama Cloud adds a rehosted family. Reach
+// this sub-provider via `router.default: ollama_cloud` or explicit
+// `router.routes` entries — both already fully supported by the
+// existing routing config, no new primitive needed. See
+// https://docs.vornik.io
+type ChatOllamaCloudSubConfig struct {
+	Enabled bool `yaml:"enabled" doc:"Enable the Ollama Cloud sub-provider."`
+	// APIKey is the Ollama Cloud API key (from
+	// https://ollama.com/settings/keys), carried as `Authorization:
+	// Bearer <key>`. Required when Enabled.
+	APIKey string `yaml:"api_key" doc:"Ollama Cloud API key."`
+	// Endpoint overrides the OpenAI-compat base URL. Empty defaults to
+	// https://ollama.com/v1. Set only for a proxy/preview.
+	Endpoint string `yaml:"endpoint"`
+	// Model is the default model ID used when no per-request override
+	// is supplied, e.g. "gpt-oss:120b" or "glm-5.2:cloud". This is the
+	// REAL Ollama Cloud model ID as published in the catalogue — no
+	// vornik-specific prefix or rewriting happens anywhere in this
+	// sub-provider.
+	Model string `yaml:"model" doc:"Ollama Cloud default model, e.g. gpt-oss:120b."`
 	// MaxTokens caps per-call output tokens. 0 inherits chat.max_tokens.
 	MaxTokens int `yaml:"max_tokens"`
 }

@@ -71,7 +71,7 @@ func TestGitMergeE2E_S7a_OperatorThenWorktree_CleanMerge(t *testing.T) {
 	mustGit(t, wt, "git", "add", "-A")
 	mustGit(t, wt, "git", "commit", "-q", "-m", "agent edit")
 
-	if err := mergeWorktree(ctx, repo, wt, taskID, log); err != nil {
+	if err := mergeWorktree(ctx, repo, wt, taskID, "", log); err != nil {
 		t.Fatalf("S7a: expected clean merge (agent descends from operator), got error: %v", err)
 	}
 	got := gitOut(t, repo, "git", "show", "main:X")
@@ -121,7 +121,7 @@ func TestGitMergeE2E_S7b_SameFileTrueConflict_Aborts(t *testing.T) {
 	mustGit(t, wt, "git", "add", "-A")
 	mustGit(t, wt, "git", "commit", "-q", "-m", "agent edit")
 
-	mergeErr := mergeWorktree(ctx, repo, wt, taskID, log)
+	mergeErr := mergeWorktree(ctx, repo, wt, taskID, "", log)
 	if mergeErr == nil {
 		t.Fatal("S7b: expected modify/modify conflict to FAIL the merge, got nil error")
 	}

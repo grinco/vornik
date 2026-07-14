@@ -2797,6 +2797,42 @@ func RunExecutionRepositorySuite(t *testing.T, repo persistence.ExecutionReposit
 		}
 	})
 
+	t.Run("SupersedeStaleForTaskStart_sweeps_previous_run", func(t *testing.T) {
+		// Reproduce the 2026-07-14 "one paused task, three PAUSED badges"
+		// incident: a NON-terminal task (parked on an operator checkpoint)
+		// carries the PAUSED execution its previous run left behind. Starting
+		// a new run must finalize it — the terminal cascade never fires for a
+		// task that keeps parking and resuming, so the row would otherwise
+		// linger as a phantom card on the fleet view.
+		taskID := uniqueID("task")
+		seedTask(t, taskID, "p") // stays non-terminal
+		stale := newExecForTask(taskID, "p", persistence.ExecutionStatusPaused)
+		_ = repo.Create(ctx, stale)
+
+		n, err := repo.SupersedeStaleForTaskStart(ctx, taskID)
+		if err != nil {
+			t.Fatalf("SupersedeStaleForTaskStart: %v", err)
+		}
+		if n != 1 {
+			t.Errorf("expected 1 row superseded, got %d", n)
+		}
+		got, _ := repo.Get(ctx, stale.ID)
+		if got.Status != persistence.ExecutionStatusCancelled {
+			t.Errorf("stale exec status = %s, want CANCELLED", got.Status)
+		}
+		if got.ErrorCode == nil || *got.ErrorCode != "superseded_by_new_run" {
+			t.Errorf("stale exec error_code = %v, want superseded_by_new_run", got.ErrorCode)
+		}
+		if got.CompletedAt == nil {
+			t.Error("stale exec completed_at must be set")
+		}
+		// Idempotent — a task starting a run with no leftovers sweeps nothing.
+		n2, _ := repo.SupersedeStaleForTaskStart(ctx, taskID)
+		if n2 != 0 {
+			t.Errorf("second sweep should be idempotent, swept %d", n2)
+		}
+	})
+
 	t.Run("SupersedeOrphanPausedExecutions_global_backstop", func(t *testing.T) {
 		// Orphan: PAUSED exec whose parent task is already terminal — must
 		// be finalized regardless of which path stranded it.

@@ -443,6 +443,16 @@ func (m *MockExecRepo) RecordFailure(ctx context.Context, id string, msg, code s
 // CANCELLED with the standard error_code marker. Returns the
 // count for assertion convenience.
 func (m *MockExecRepo) SupersedeNonTerminalForTask(_ context.Context, taskID string) (int64, error) {
+	return m.supersedeNonTerminal(taskID, "superseded_by_terminal_task")
+}
+
+// SupersedeStaleForTaskStart mirrors the start-of-run sweep: the same
+// non-terminal rows, stamped with the start-of-run marker.
+func (m *MockExecRepo) SupersedeStaleForTaskStart(_ context.Context, taskID string) (int64, error) {
+	return m.supersedeNonTerminal(taskID, "superseded_by_new_run")
+}
+
+func (m *MockExecRepo) supersedeNonTerminal(taskID, errorCode string) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var n int64
@@ -457,7 +467,7 @@ func (m *MockExecRepo) SupersedeNonTerminalForTask(_ context.Context, taskID str
 			continue
 		}
 		e.Status = persistence.ExecutionStatusCancelled
-		code := "superseded_by_terminal_task"
+		code := errorCode
 		e.ErrorCode = &code
 		n++
 	}

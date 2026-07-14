@@ -1528,6 +1528,15 @@ func (m *Manager) reconcileBacklogItems(ctx context.Context, abs string, project
 		//     `[~]`/`[x]`: the hasActive interlock stops a duplicate dispatch
 		//     while they run, and a parked task awaiting operator action must
 		//     keep its non-pending marker so autonomy doesn't loop on it.
+		//
+		// PRECONDITION (workspace-state-hygiene design §4.6 / R4): the
+		// executor's discardFailedTaskResidue + prelude checkpoint
+		// (internal/executor/worktree.go) rely on this reconcile pass NOT
+		// running while a task for this project is active (the hasActive
+		// gate above). If a future change lets the reconciler run during an
+		// active task, add a shared lock (give the manager the executor's
+		// wsLock, or have the prelude acquire the backlogfile.Store
+		// per-project mutex) before weakening this gate.
 		switch {
 		case task.EndedUnsuccessfully():
 			if _, err := m.backlog.MarkFailed(abs, project.ID, taskID); err != nil {

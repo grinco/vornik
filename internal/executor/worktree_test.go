@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/rs/zerolog"
 )
 
@@ -229,7 +231,7 @@ func TestMergeWorktree_AutoCommitsLeftoverChanges(t *testing.T) {
 		t.Fatalf("write PROJECT_CONTEXT.md: %v", err)
 	}
 
-	if err := mergeWorktree(ctx, projectDir, wtDir, taskID, logger); err != nil {
+	if err := mergeWorktree(ctx, projectDir, wtDir, taskID, "", logger); err != nil {
 		t.Fatalf("mergeWorktree: %v", err)
 	}
 
@@ -333,7 +335,7 @@ func TestMergeWorktree_ResolvesAddAddConflictTakingTheirs(t *testing.T) {
 	mustGit("commit", "-m", "prior task output")
 
 	// add/add must auto-resolve (take theirs), not fail.
-	if err := mergeWorktree(ctx, projectDir, wtDir, taskID, logger); err != nil {
+	if err := mergeWorktree(ctx, projectDir, wtDir, taskID, "", logger); err != nil {
 		t.Fatalf("mergeWorktree must auto-resolve add/add conflict, got: %v", err)
 	}
 	got, err := exec.Command("git", "-C", projectDir, "show", "HEAD:artifacts/out/research.md").Output()
@@ -384,7 +386,7 @@ func TestMergeWorktree_PreservesGenuineContentConflict(t *testing.T) {
 	mustGit("add", "-A")
 	mustGit("commit", "-m", "master edit")
 
-	err = mergeWorktree(ctx, projectDir, wtDir, taskID, logger)
+	err = mergeWorktree(ctx, projectDir, wtDir, taskID, "", logger)
 	if err == nil {
 		t.Fatal("mergeWorktree must FAIL on a genuine modify/modify conflict, not auto-resolve it")
 	}
@@ -424,7 +426,7 @@ func TestMergeWorktree_RefusesDirtyMainWithoutResettingIt(t *testing.T) {
 		t.Fatalf("write dirty main file: %v", err)
 	}
 
-	err = mergeWorktree(ctx, projectDir, wtDir, taskID, logger)
+	err = mergeWorktree(ctx, projectDir, wtDir, taskID, "", logger)
 	if err == nil || !strings.Contains(err.Error(), "main workspace has uncommitted changes") {
 		t.Fatalf("mergeWorktree error = %v, want dirty-main refusal", err)
 	}
@@ -503,7 +505,7 @@ func TestMergeWorktree_RescuesStrandedStagedTrackedChange(t *testing.T) {
 	// Pre-fix this would error with "main workspace has uncommitted
 	// changes". Post-fix: auto-commit the stranded change, then
 	// merge cleanly.
-	if err := mergeWorktree(ctx, projectDir, wtDir, taskID, logger); err != nil {
+	if err := mergeWorktree(ctx, projectDir, wtDir, taskID, "", logger); err != nil {
 		t.Fatalf("mergeWorktree must rescue stranded staged tracked change, got: %v", err)
 	}
 
@@ -524,8 +526,8 @@ func TestMergeWorktree_RescuesStrandedStagedTrackedChange(t *testing.T) {
 		t.Fatalf("git log: %v", err)
 	}
 	logText := string(logOut)
-	if !strings.Contains(logText, "auto-commit: workspace-root prelude") {
-		t.Errorf("workspace-prelude commit missing from log:\n%s", logText)
+	if !strings.Contains(logText, "rescue: stranded tracked changes before task_test_stranded_1") {
+		t.Errorf("workspace-prelude rescue commit missing from log:\n%s", logText)
 	}
 
 	// Worktree must be cleaned up — the merge ran successfully so
@@ -682,7 +684,7 @@ func TestMergeWorktree_SucceedsWithoutRepoIdentity(t *testing.T) {
 	// The fix: mergeWorktree passes -c user.name -c user.email inline,
 	// so the merge commit succeeds even though the repo has no configured
 	// identity.
-	if err := mergeWorktree(ctx, projectDir, wtDir, taskID, logger); err != nil {
+	if err := mergeWorktree(ctx, projectDir, wtDir, taskID, "", logger); err != nil {
 		t.Fatalf("mergeWorktree returned error despite inline identity: %v", err)
 	}
 
@@ -745,7 +747,7 @@ func TestMergeWorktree_ErrorSignalsFailureToCaller(t *testing.T) {
 	must(projectDir, "git", "add", "-A")
 	must(projectDir, "git", "commit", "-m", "master edit")
 
-	if err := mergeWorktree(ctx, projectDir, wtDir, taskID, logger); err == nil {
+	if err := mergeWorktree(ctx, projectDir, wtDir, taskID, "", logger); err == nil {
 		t.Fatalf("expected merge to fail on conflict, but got nil error")
 	}
 
@@ -777,7 +779,7 @@ func TestMergeWorktree_NoopMergeWhenNothingChanged(t *testing.T) {
 	// Do not touch the worktree — simulate a role that read some files
 	// and returned without writing anything (e.g. a planner that output
 	// only JSON to /app/output, never touched project/).
-	if err := mergeWorktree(ctx, projectDir, wtDir, taskID, logger); err != nil {
+	if err := mergeWorktree(ctx, projectDir, wtDir, taskID, "", logger); err != nil {
 		t.Fatalf("mergeWorktree (noop): %v", err)
 	}
 
@@ -1263,5 +1265,551 @@ func TestCreateWorktree_SelfCleansOnHookFailure(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(branchOut)); got != "" {
 		t.Fatalf("branch survived createWorktree error: %q", got)
+	}
+}
+
+// TestDiscardFailedTaskResidue_RestoresNonBacklogLeavesMarker — pins the
+// 2026-07-11 headmatch incident's working-tree half (diagnostic
+// companion_20260711235052). A failed task left a stranded tracked file
+// (coverage.yml) AND the backlog marker dirty in the shared clone; pre-fix
+// the next prelude swept both into one commit attributed to the wrong task.
+// Post-fix: discardFailedTaskResidue restores the non-backlog file to HEAD
+// and leaves the backlog marker dirty for honest checkpointing.
+func TestDiscardFailedTaskResidue_RestoresNonBacklogLeavesMarker(t *testing.T) {
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir)
+	backlogPath := filepath.Join(projectDir, "BACKLOG.md")
+
+	// Track both files at HEAD.
+	for _, name := range []string{"coverage.yml", "BACKLOG.md"} {
+		if err := os.WriteFile(filepath.Join(projectDir, name), []byte("base\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		if out, err := exec.Command("git", "-C", projectDir, "add", name).CombinedOutput(); err != nil {
+			t.Fatalf("git add %s: %v: %s", name, err, out)
+		}
+	}
+	if out, err := exec.Command("git", "-C", projectDir,
+		"-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit base: %v: %s", err, out)
+	}
+
+	// Strand: dirty both (staged residue, dirty marker).
+	if err := os.WriteFile(filepath.Join(projectDir, "coverage.yml"), []byte("stranded edit\n"), 0o644); err != nil {
+		t.Fatalf("write coverage.yml: %v", err)
+	}
+	if err := os.WriteFile(backlogPath, []byte("base [~] in-flight\n"), 0o644); err != nil {
+		t.Fatalf("write BACKLOG.md: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "coverage.yml").CombinedOutput(); err != nil {
+		t.Fatalf("git add coverage.yml (staged residue): %v: %s", err, out)
+	}
+
+	discardFailedTaskResidue(context.Background(), projectDir, backlogPath, "task_fail_1", "proj-1", nil, zerolog.Nop())
+
+	// Residue restored to HEAD.
+	got, err := os.ReadFile(filepath.Join(projectDir, "coverage.yml"))
+	if err != nil {
+		t.Fatalf("read coverage.yml: %v", err)
+	}
+	if string(got) != "base\n" {
+		t.Errorf("residue not restored to HEAD: got %q", string(got))
+	}
+	// Staged residue also cleared (index matches HEAD).
+	stagedOut, err := exec.Command("git", "-C", projectDir, "diff", "--cached", "--name-only").Output()
+	if err != nil {
+		t.Fatalf("git diff --cached: %v: %s", err, stagedOut)
+	}
+	if strings.TrimSpace(string(stagedOut)) != "" {
+		t.Errorf("staged residue not cleared from index: %s", string(stagedOut))
+	}
+	// Backlog marker left dirty.
+	gotBL, err := os.ReadFile(backlogPath)
+	if err != nil {
+		t.Fatalf("read BACKLOG.md: %v", err)
+	}
+	if string(gotBL) != "base [~] in-flight\n" {
+		t.Errorf("backlog marker should be left untouched: got %q", string(gotBL))
+	}
+}
+
+// TestDiscardFailedTaskResidue_NoBacklogFile_DiscardsAll — when no backlog
+// file is configured (non-autonomy project), every tracked dirty file is
+// residue and is restored.
+func TestDiscardFailedTaskResidue_NoBacklogFile_DiscardsAll(t *testing.T) {
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir)
+	if err := os.WriteFile(filepath.Join(projectDir, "a.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "a.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", projectDir,
+		"-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "a.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty: %v", err)
+	}
+
+	discardFailedTaskResidue(context.Background(), projectDir, "", "task_fail_2", "proj-2", nil, zerolog.Nop())
+
+	got, _ := os.ReadFile(filepath.Join(projectDir, "a.txt"))
+	if string(got) != "base\n" {
+		t.Errorf("no-backlog case should discard all tracked dirty: got %q", string(got))
+	}
+}
+
+func TestDiscardFailedTaskResidue_RestoresStagedRename(t *testing.T) {
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir)
+	if err := os.WriteFile(filepath.Join(projectDir, "old.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write old.txt: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "old.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add old.txt: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", projectDir,
+		"-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+	if err := os.Rename(filepath.Join(projectDir, "old.txt"), filepath.Join(projectDir, "new.txt")); err != nil {
+		t.Fatalf("rename old.txt -> new.txt: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "-A").CombinedOutput(); err != nil {
+		t.Fatalf("git add -A rename: %v: %s", err, out)
+	}
+
+	discardFailedTaskResidue(context.Background(), projectDir, "", "task_fail_rename", "proj-rename", nil, zerolog.Nop())
+
+	got, err := os.ReadFile(filepath.Join(projectDir, "old.txt"))
+	if err != nil {
+		t.Fatalf("old.txt should be restored: %v", err)
+	}
+	if string(got) != "base\n" {
+		t.Errorf("old.txt = %q, want base", string(got))
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "new.txt")); !os.IsNotExist(err) {
+		t.Errorf("new.txt should be removed, got err %v", err)
+	}
+	statusOut, err := exec.Command("git", "-C", projectDir, "status", "--porcelain", "-uno").Output()
+	if err != nil {
+		t.Fatalf("git status: %v: %s", err, statusOut)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Errorf("rename residue should leave workspace clean, got:\n%s", statusOut)
+	}
+}
+
+// TestDiscardFailedTaskResidue_StagedBacklogMarkerLeftInPlace — a staged
+// backlog marker is NOT unstaged or restored (B re-stages current content).
+func TestDiscardFailedTaskResidue_StagedBacklogMarkerLeftInPlace(t *testing.T) {
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir)
+	backlogPath := filepath.Join(projectDir, "BACKLOG.md")
+	for _, name := range []string{"BACKLOG.md", "other.txt"} {
+		if err := os.WriteFile(filepath.Join(projectDir, name), []byte("base\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "BACKLOG.md", "other.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", projectDir,
+		"-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+	// Stage a backlog marker change; dirty a non-backlog file (unstaged).
+	if err := os.WriteFile(backlogPath, []byte("base [~] in-flight\n"), 0o644); err != nil {
+		t.Fatalf("write BACKLOG.md: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "BACKLOG.md").CombinedOutput(); err != nil {
+		t.Fatalf("git add BACKLOG.md (staged): %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "other.txt"), []byte("residue\n"), 0o644); err != nil {
+		t.Fatalf("write other.txt: %v", err)
+	}
+
+	discardFailedTaskResidue(context.Background(), projectDir, backlogPath, "task_fail_3", "proj-3", nil, zerolog.Nop())
+
+	// other.txt restored; BACKLOG.md staged content preserved.
+	got, _ := os.ReadFile(filepath.Join(projectDir, "other.txt"))
+	if string(got) != "base\n" {
+		t.Errorf("non-backlog residue not restored: got %q", string(got))
+	}
+	stagedOut, err := exec.Command("git", "-C", projectDir, "diff", "--cached", "--name-only").Output()
+	if err != nil {
+		t.Fatalf("git diff --cached: %v: %s", err, stagedOut)
+	}
+	if !strings.Contains(string(stagedOut), "BACKLOG.md") {
+		t.Errorf("staged backlog marker should remain staged, got: %s", string(stagedOut))
+	}
+}
+
+// TestDiscardFailedTaskResidue_UntrackedAndGitignoredUntouched —
+// .worktrees/, .autonomy/, CURRENT_TASK.md are gitignored bookkeeping and
+// must NOT be enumerated (-uno) or removed.
+func TestDiscardFailedTaskResidue_UntrackedAndGitignoredUntouched(t *testing.T) {
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir)
+	for _, p := range []string{".worktrees/x", ".autonomy/y", "CURRENT_TASK.md"} {
+		full := filepath.Join(projectDir, p)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(full), err)
+		}
+		if err := os.WriteFile(full, []byte("scratch\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+	// gitignore the bookkeeping (mirrors excludeVornikInternalPaths).
+	if err := os.WriteFile(filepath.Join(projectDir, ".gitignore"), []byte(".worktrees/\n.autonomy/\nCURRENT_TASK.md\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", ".gitignore").CombinedOutput(); err != nil {
+		t.Fatalf("git add .gitignore: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", projectDir,
+		"-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+
+	discardFailedTaskResidue(context.Background(), projectDir, "", "task_fail_4", "proj-4", nil, zerolog.Nop())
+
+	for _, p := range []string{".worktrees/x", ".autonomy/y", "CURRENT_TASK.md"} {
+		if _, err := os.Stat(filepath.Join(projectDir, p)); err != nil {
+			t.Errorf("gitignored bookkeeping %s should be untouched: %v", p, err)
+		}
+	}
+}
+
+// TestDiscardFailedTaskResidue_CommittedChildMergePreserved — delegating
+// parent resume: a child's merged commit in projectDir is committed state;
+// A restores only uncommitted dirty, never committed work (design §6 /
+// Finding 3.2).
+func TestDiscardFailedTaskResidue_CommittedChildMergePreserved(t *testing.T) {
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir)
+	if err := os.WriteFile(filepath.Join(projectDir, "childwork.txt"), []byte("child-merged\n"), 0o644); err != nil {
+		t.Fatalf("write childwork.txt: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "childwork.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", projectDir,
+		"-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "child merge").CombinedOutput(); err != nil {
+		t.Fatalf("git commit child merge: %v: %s", err, out)
+	}
+	// An uncommitted residue from the failed parent.
+	if err := os.WriteFile(filepath.Join(projectDir, "parent_residue.txt"), []byte("residue\n"), 0o644); err != nil {
+		t.Fatalf("write parent_residue.txt: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "parent_residue.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add residue: %v: %s", err, out)
+	}
+
+	discardFailedTaskResidue(context.Background(), projectDir, "", "task_fail_5", "proj-5", nil, zerolog.Nop())
+
+	// childwork.txt (committed) preserved; parent_residue.txt (uncommitted) gone.
+	if got, _ := os.ReadFile(filepath.Join(projectDir, "childwork.txt")); string(got) != "child-merged\n" {
+		t.Errorf("committed child merge must be preserved: got %q", string(got))
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, "parent_residue.txt")); !os.IsNotExist(err) {
+		t.Errorf("uncommitted residue should be discarded: %v", err)
+	}
+}
+
+// TestDiscardFailedTaskResidue_ConcurrentReconcilerWriteBacklogSurvives —
+// the reconciler writes the backlog file via os.WriteFile (not a git op)
+// concurrently with A; A leaves the backlog file regardless, and the
+// reconciler's write survives. Asserts the §4.6 disjoint-file invariant.
+func TestDiscardFailedTaskResidue_ConcurrentReconcilerWriteBacklogSurvives(t *testing.T) {
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir)
+	backlogPath := filepath.Join(projectDir, "BACKLOG.md")
+	if err := os.WriteFile(filepath.Join(projectDir, "coverage.yml"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write coverage.yml: %v", err)
+	}
+	if err := os.WriteFile(backlogPath, []byte("base [~] in-flight\n"), 0o644); err != nil {
+		t.Fatalf("write BACKLOG.md: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "coverage.yml", "BACKLOG.md").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", projectDir,
+		"-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "coverage.yml"), []byte("residue\n"), 0o644); err != nil {
+		t.Fatalf("write coverage.yml: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Simulate the reconciler writing [!] mid-discard.
+		_ = os.WriteFile(backlogPath, []byte("base [!] failed\n"), 0o644)
+	}()
+
+	discardFailedTaskResidue(context.Background(), projectDir, backlogPath, "task_fail_6", "proj-6", nil, zerolog.Nop())
+	<-done
+
+	// coverage.yml restored; BACKLOG.md holds whatever the reconciler wrote
+	// (not restored to HEAD — A never touches the backlog file).
+	got, _ := os.ReadFile(filepath.Join(projectDir, "coverage.yml"))
+	if string(got) != "base\n" {
+		t.Errorf("residue not restored: got %q", string(got))
+	}
+	if gotBL, _ := os.ReadFile(backlogPath); string(gotBL) == "base\n" {
+		t.Errorf("backlog marker was restored to HEAD — A must not touch the backlog file")
+	}
+}
+
+// TestDiscardFailedTaskResidue_IncrementsMetric — a discarded non-backlog
+// file increments vornik_executor_residue_discard_total{project}; the
+// backlog marker is NOT counted. Also gives discardFailedTaskResidue a
+// non-nil metrics caller so the metric path is exercised.
+func TestDiscardFailedTaskResidue_IncrementsMetric(t *testing.T) {
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir)
+	backlogPath := filepath.Join(projectDir, "BACKLOG.md")
+	for _, name := range []string{"coverage.yml", "BACKLOG.md"} {
+		if err := os.WriteFile(filepath.Join(projectDir, name), []byte("base\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "coverage.yml", "BACKLOG.md").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", projectDir,
+		"-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "coverage.yml"), []byte("residue\n"), 0o644); err != nil {
+		t.Fatalf("write coverage.yml: %v", err)
+	}
+	if err := os.WriteFile(backlogPath, []byte("base [~]\n"), 0o644); err != nil {
+		t.Fatalf("write BACKLOG.md: %v", err)
+	}
+
+	m := NewMetrics(prometheus.NewRegistry())
+	discardFailedTaskResidue(context.Background(), projectDir, backlogPath, "task_fail_7", "proj-7", m, zerolog.Nop())
+
+	// coverage.yml counted once; BACKLOG.md not counted.
+	if got := testutil.ToFloat64(m.ResidueDiscardTotal.WithLabelValues("proj-7")); got != 1 {
+		t.Errorf("residue_discard_total{proj-7} = %v, want 1 (only coverage.yml; marker excluded)", got)
+	}
+}
+
+// TestAutoCommitTrackedChangesOnly_OnlyBacklog_CheckpointMessage — when the
+// only dirty tracked file is the backlog file, B commits it as a marker
+// checkpoint (working-tree hygiene), NOT a "prelude before <task>" commit,
+// and with no dependence on the marker's (task: <id>) annotation.
+func TestAutoCommitTrackedChangesOnly_OnlyBacklog_CheckpointMessage(t *testing.T) {
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir)
+	backlogPath := filepath.Join(projectDir, "BACKLOG.md")
+	if err := os.WriteFile(backlogPath, []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write BACKLOG.md: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "BACKLOG.md").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", projectDir,
+		"-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+	if err := os.WriteFile(backlogPath, []byte("base [~] in-flight (task: abc)\n"), 0o644); err != nil {
+		t.Fatalf("write BACKLOG.md: %v", err)
+	}
+
+	autoCommitTrackedChangesOnly(context.Background(), projectDir, "task-B1", backlogPath, zerolog.Nop())
+
+	logOut, err := exec.Command("git", "-C", projectDir, "log", "--format=%s", "-3").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	logText := string(logOut)
+	if !strings.Contains(logText, "backlog: marker checkpoint before task-B1") {
+		t.Errorf("expected checkpoint message, got:\n%s", logText)
+	}
+	if strings.Contains(logText, "prelude before") || strings.Contains(logText, "rescue:") {
+		t.Errorf("checkpoint must not use prelude/rescue wording, got:\n%s", logText)
+	}
+}
+
+// TestAutoCommitTrackedChangesOnly_BacklogPlusOther_TwoCommits — backlog
+// marker + a stranded non-backlog file → two commits, checkpoint first then
+// rescue, both preserved.
+func TestAutoCommitTrackedChangesOnly_BacklogPlusOther_TwoCommits(t *testing.T) {
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir)
+	backlogPath := filepath.Join(projectDir, "BACKLOG.md")
+	for _, name := range []string{"BACKLOG.md", "stranded.txt"} {
+		if err := os.WriteFile(filepath.Join(projectDir, name), []byte("base\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "BACKLOG.md", "stranded.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", projectDir,
+		"-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+	if err := os.WriteFile(backlogPath, []byte("base [~]\n"), 0o644); err != nil {
+		t.Fatalf("write BACKLOG.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "stranded.txt"), []byte("stranded\n"), 0o644); err != nil {
+		t.Fatalf("write stranded.txt: %v", err)
+	}
+
+	autoCommitTrackedChangesOnly(context.Background(), projectDir, "task-B2", backlogPath, zerolog.Nop())
+
+	logOut, err := exec.Command("git", "-C", projectDir, "log", "--format=%s", "-5").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	logText := string(logOut)
+	if !strings.Contains(logText, "backlog: marker checkpoint before task-B2") {
+		t.Errorf("checkpoint commit missing:\n%s", logText)
+	}
+	if !strings.Contains(logText, "rescue: stranded tracked changes before task-B2") {
+		t.Errorf("rescue commit missing:\n%s", logText)
+	}
+	// Design §4.3: checkpoint committed FIRST (older), rescue SECOND (newer).
+	// In newest-first `git log`, rescue therefore appears above checkpoint.
+	cpIdx := strings.Index(logText, "backlog: marker checkpoint")
+	resIdx := strings.Index(logText, "rescue: stranded tracked changes")
+	if cpIdx < 0 || resIdx < 0 || cpIdx < resIdx {
+		t.Errorf("checkpoint must be committed before rescue (appear below it in newest-first log):\n%s", logText)
+	}
+}
+
+// TestAutoCommitTrackedChangesOnly_OnlyOther_RescueMessage — no backlog
+// file configured, only a stranded non-backlog file → single rescue commit.
+func TestAutoCommitTrackedChangesOnly_OnlyOther_RescueMessage(t *testing.T) {
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir)
+	if err := os.WriteFile(filepath.Join(projectDir, "stranded.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write stranded.txt: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "stranded.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", projectDir,
+		"-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "stranded.txt"), []byte("stranded\n"), 0o644); err != nil {
+		t.Fatalf("write stranded.txt: %v", err)
+	}
+
+	autoCommitTrackedChangesOnly(context.Background(), projectDir, "task-B3", "", zerolog.Nop())
+
+	logOut, err := exec.Command("git", "-C", projectDir, "log", "--format=%s", "-3").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	logText := string(logOut)
+	if !strings.Contains(logText, "rescue: stranded tracked changes before task-B3") {
+		t.Errorf("expected rescue message, got:\n%s", logText)
+	}
+	if strings.Contains(logText, "backlog: marker checkpoint") {
+		t.Errorf("no-backlog case must not emit a checkpoint commit, got:\n%s", logText)
+	}
+}
+
+// TestCleanupWorktree_FailurePath_Composition — the cleanupWorktree(false)
+// branch is removeWorktree + discardFailedTaskResidue. Assert that
+// composition directly: a failed task's residue is gone, marker kept, and
+// the worktree dir is removed. (The closure itself is exercised by the
+// executor e2e suite; this pins the composition it performs.)
+func TestCleanupWorktree_FailurePath_Composition(t *testing.T) {
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir)
+	backlogPath := filepath.Join(projectDir, "BACKLOG.md")
+	for _, name := range []string{"BACKLOG.md", "residue.txt"} {
+		if err := os.WriteFile(filepath.Join(projectDir, name), []byte("base\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "BACKLOG.md", "residue.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", projectDir,
+		"-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "residue.txt"), []byte("stranded\n"), 0o644); err != nil {
+		t.Fatalf("write residue.txt: %v", err)
+	}
+	if err := os.WriteFile(backlogPath, []byte("base [~]\n"), 0o644); err != nil {
+		t.Fatalf("write BACKLOG.md: %v", err)
+	}
+
+	taskID := "task_failcomp_1"
+	wtDir, err := createWorktree(context.Background(), projectDir, taskID, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("createWorktree: %v", err)
+	}
+
+	// cleanupWorktree(false) composition: remove the worktree, then discard.
+	removeWorktree(context.Background(), projectDir, wtDir, taskID, zerolog.Nop())
+	discardFailedTaskResidue(context.Background(), projectDir, backlogPath, taskID, "proj-c", nil, zerolog.Nop())
+
+	if got, _ := os.ReadFile(filepath.Join(projectDir, "residue.txt")); string(got) != "base\n" {
+		t.Errorf("residue should be restored to HEAD: got %q", string(got))
+	}
+	if got, _ := os.ReadFile(backlogPath); string(got) != "base [~]\n" {
+		t.Errorf("backlog marker should be left dirty: got %q", string(got))
+	}
+	if _, err := os.Stat(wtDir); !os.IsNotExist(err) {
+		t.Errorf("worktree dir should be removed: %v", err)
+	}
+}
+
+// TestMergeWorktree_SuccessPath_CheckpointsBacklogMarker — the success path
+// (mergeWorktree, cleanupWorktree(true)) does NOT discard; it merges the
+// worktree AND checkpoints a dirty backlog marker via the prelude. Park uses
+// the same true-branch path, so this also covers "park does not discard".
+func TestMergeWorktree_SuccessPath_CheckpointsBacklogMarker(t *testing.T) {
+	projectDir := t.TempDir()
+	initGitRepo(t, projectDir)
+	backlogPath := filepath.Join(projectDir, "BACKLOG.md")
+	if err := os.WriteFile(backlogPath, []byte("base\n"), 0o644); err != nil {
+		t.Fatalf("write BACKLOG.md: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "BACKLOG.md").CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v: %s", err, out)
+	}
+	if out, err := exec.Command("git", "-C", projectDir,
+		"-c", "user.name=test", "-c", "user.email=test@test", "commit", "-m", "base").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
+	// Dirty the marker (as dispatch's MarkInFlight would).
+	if err := os.WriteFile(backlogPath, []byte("base [~] in-flight\n"), 0o644); err != nil {
+		t.Fatalf("write BACKLOG.md: %v", err)
+	}
+
+	taskID := "task_succ_1"
+	wtDir, err := createWorktree(context.Background(), projectDir, taskID, zerolog.Nop())
+	if err != nil {
+		t.Fatalf("createWorktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wtDir, "WORKTREE_NEW.md"), []byte("work\n"), 0o644); err != nil {
+		t.Fatalf("write worktree file: %v", err)
+	}
+
+	if err := mergeWorktree(context.Background(), projectDir, wtDir, taskID, backlogPath, zerolog.Nop()); err != nil {
+		t.Fatalf("mergeWorktree: %v", err)
+	}
+
+	logOut, err := exec.Command("git", "-C", projectDir, "log", "--format=%s", "-5").Output()
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(string(logOut), "backlog: marker checkpoint before task_succ_1") {
+		t.Errorf("success path should checkpoint the dirty marker, got:\n%s", string(logOut))
 	}
 }

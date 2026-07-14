@@ -27,6 +27,7 @@ import (
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/replay"
 	"vornik.io/vornik/internal/runtime"
+	"vornik.io/vornik/internal/safepath"
 	"vornik.io/vornik/internal/secrets"
 	"vornik.io/vornik/internal/toolbudget"
 	"vornik.io/vornik/internal/workspacelock"
@@ -78,6 +79,7 @@ type ExecutionRepository interface {
 	RecordCompletion(ctx context.Context, id string, result []byte) error
 	RecordFailure(ctx context.Context, id string, errorMessage, errorCode string) error
 	SupersedeNonTerminalForTask(ctx context.Context, taskID string) (int64, error)
+	SupersedeStaleForTaskStart(ctx context.Context, taskID string) (int64, error)
 }
 
 // ArtifactRepository is the interface for artifact operations.
@@ -646,6 +648,32 @@ type WorkflowResolver interface {
 
 // Option is a functional option for configuring the Executor.
 type Option func(*Executor)
+
+// resolveBacklogFile returns the abs path of the project's configured backlog
+// file (the protected shared-state file discardFailedTaskResidue leaves
+// untouched and autoCommitTrackedChangesOnly checkpoints), or "" when the
+// project has no backlog file / is non-autonomy / the path is invalid. Reuses
+// the autonomy manager's traversal-safe resolution verbatim
+// (manager.go:1228-1257): ResolveBacklogFilePath + safepath.JoinUnder — never
+// a raw filepath.Join on a config string (design R3, registry.go:318).
+func resolveBacklogFile(workflows WorkflowResolver, workspacePath, projectID string) string {
+	if workflows == nil || projectID == "" || workspacePath == "" {
+		return ""
+	}
+	proj := workflows.GetProject(projectID)
+	if proj == nil {
+		return ""
+	}
+	rel := proj.ResolveBacklogFilePath()
+	if rel == "" {
+		return ""
+	}
+	abs, err := safepath.JoinUnder(workspacePath, projectID, rel)
+	if err != nil {
+		return "" // traversal rejected — fall back to "no protected file"
+	}
+	return abs
+}
 
 // WithWarmPool sets the warm container pool for the executor.
 func WithWarmPool(pool WarmPool) Option {
@@ -1637,6 +1665,18 @@ func (e *Executor) ExecuteWithContext(ctx context.Context, taskID string) error 
 		return fmt.Errorf("failed to get task %s: %w", taskID, err)
 	}
 
+	// A task has at most one live execution. Anything non-terminal still
+	// hanging off this task is from a previous run of it — the resume of a
+	// parked task (AWAITING_INPUT checkpoint, WAITING_FOR_CHILDREN unblock)
+	// re-queues the task and lands back here, which mints a FRESH execution
+	// rather than resuming the parked row. Pre-fix those rows were only swept
+	// when the TASK went terminal (cascadeOrphanExecutions), so a task that
+	// parked and resumed three times left three orphan PAUSED executions, each
+	// of which the fleet "Now Running" view rendered as its own live card.
+	// Sweeping here — before the new row exists, so it can't sweep itself —
+	// keeps the invariant true at every start, not just at the end.
+	e.supersedeStaleExecutions(ctx, taskID)
+
 	// Create execution record. Use a placeholder workflow ID here;
 	// resolveExecutionPlan will update it with the actual resolved
 	// workflow before the execution starts.
@@ -1947,6 +1987,12 @@ func (e *Executor) runExecution(ctx context.Context, task *persistence.Task, exe
 	if e.config.ProjectWorkspacePath != "" && task.ProjectID != "" {
 		projectDir = filepath.Join(e.config.ProjectWorkspacePath, task.ProjectID)
 	}
+	// Resolve the protected backlog file (the shared-state file
+	// discardFailedTaskResidue leaves untouched and the prelude checkpoints)
+	// once per task via the manager's traversal-safe resolution. "" when the
+	// project has no backlog file / is non-autonomy / the path is invalid.
+	// Design §4.4.
+	backlogFile := resolveBacklogFile(e.workflows, e.config.ProjectWorkspacePath, task.ProjectID)
 
 	// Bootstrap: ensure the project workspace is a git repo with at least
 	// one commit. This lets us unconditionally use worktree isolation +
@@ -2070,9 +2116,12 @@ func (e *Executor) runExecution(ctx context.Context, task *persistence.Task, exe
 		var mergeErr error
 		unlockCleanup := e.wsLock().Lock(task.ProjectID)
 		if success {
-			mergeErr = mergeWorktree(cleanupCtx, projectDir, plan.worktreeDir, task.ID, e.logger)
+			mergeErr = mergeWorktree(cleanupCtx, projectDir, plan.worktreeDir, task.ID, backlogFile, e.logger)
 		} else {
 			removeWorktree(cleanupCtx, projectDir, plan.worktreeDir, task.ID, e.logger)
+			// Discard the failed task's non-worktree tracked-file residue
+			// (the backlog marker is left for honest checkpointing). Design §4.2.
+			discardFailedTaskResidue(cleanupCtx, projectDir, backlogFile, task.ID, task.ProjectID, e.metrics, e.logger)
 		}
 		unlockCleanup()
 		// Clear the pointer only when we actually removed the worktree.

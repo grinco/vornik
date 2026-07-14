@@ -1440,10 +1440,22 @@ func TestDLQReplay_Empty(t *testing.T) {
 	}
 }
 
+// dlqReplayLookupRows models the chunk_id/project_id lookup DLQReplay runs
+// before re-queueing, so it replays each row under its own stored project.
+func dlqReplayLookupRows(chunkIDs ...string) *sqlmock.Rows {
+	rows := sqlmock.NewRows([]string{"chunk_id", "project_id"})
+	for _, id := range chunkIDs {
+		rows.AddRow(id, "p")
+	}
+	return rows
+}
+
 func TestDLQReplay_Happy(t *testing.T) {
 	r, mock, cleanup := newRepo(t)
 	defer cleanup()
 	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT chunk_id, project_id FROM memory_embed_dlq").
+		WillReturnRows(dlqReplayLookupRows("c1", "c2"))
 	mock.ExpectExec("INSERT INTO memory_embed_queue").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM memory_embed_dlq").
@@ -1452,6 +1464,51 @@ func TestDLQReplay_Happy(t *testing.T) {
 	n, err := r.DLQReplay(context.Background(), []string{"c1", "c2"})
 	if err != nil || n != 2 {
 		t.Fatalf("got %d %v", n, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDLQReplay_SelectErr(t *testing.T) {
+	r, mock, cleanup := newRepo(t)
+	defer cleanup()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT chunk_id, project_id FROM memory_embed_dlq").
+		WillReturnError(errors.New("x"))
+	mock.ExpectRollback()
+	if _, err := r.DLQReplay(context.Background(), []string{"c1"}); err == nil {
+		t.Fatal("want err")
+	}
+}
+
+// A chunk_id with no DLQ row (unknown or already replayed) must abort the whole
+// replay rather than silently re-queueing the rows that did match.
+func TestDLQReplay_UnknownChunkIDAborts(t *testing.T) {
+	r, mock, cleanup := newRepo(t)
+	defer cleanup()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT chunk_id, project_id FROM memory_embed_dlq").
+		WillReturnRows(dlqReplayLookupRows("c1")) // "c2" is missing
+	mock.ExpectRollback()
+	_, err := r.DLQReplay(context.Background(), []string{"c1", "c2"})
+	if err == nil || !strings.Contains(err.Error(), "c2") {
+		t.Fatalf("want error naming the missing chunk, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err) // no INSERT/DELETE may have run
+	}
+}
+
+func TestDLQReplay_NoMatchingRows(t *testing.T) {
+	r, mock, cleanup := newRepo(t)
+	defer cleanup()
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT chunk_id, project_id FROM memory_embed_dlq").
+		WillReturnRows(dlqReplayLookupRows())
+	mock.ExpectRollback()
+	if _, err := r.DLQReplay(context.Background(), []string{"gone"}); err == nil {
+		t.Fatal("want err")
 	}
 }
 
@@ -1468,6 +1525,8 @@ func TestDLQReplay_InsertErr(t *testing.T) {
 	r, mock, cleanup := newRepo(t)
 	defer cleanup()
 	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT chunk_id, project_id FROM memory_embed_dlq").
+		WillReturnRows(dlqReplayLookupRows("c1"))
 	mock.ExpectExec("INSERT INTO memory_embed_queue").WillReturnError(errors.New("x"))
 	mock.ExpectRollback()
 	if _, err := r.DLQReplay(context.Background(), []string{"c1"}); err == nil {
@@ -1479,6 +1538,8 @@ func TestDLQReplay_DeleteErr(t *testing.T) {
 	r, mock, cleanup := newRepo(t)
 	defer cleanup()
 	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT chunk_id, project_id FROM memory_embed_dlq").
+		WillReturnRows(dlqReplayLookupRows("c1"))
 	mock.ExpectExec("INSERT INTO memory_embed_queue").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM memory_embed_dlq").WillReturnError(errors.New("x"))
@@ -1492,6 +1553,8 @@ func TestDLQReplay_CommitErr(t *testing.T) {
 	r, mock, cleanup := newRepo(t)
 	defer cleanup()
 	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT chunk_id, project_id FROM memory_embed_dlq").
+		WillReturnRows(dlqReplayLookupRows("c1"))
 	mock.ExpectExec("INSERT INTO memory_embed_queue").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM memory_embed_dlq").

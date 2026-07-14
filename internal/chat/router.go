@@ -335,7 +335,7 @@ func (r *Router) WithModel(model string) Provider {
 // pass through" so we don't regress the historical CLI behaviour.
 func (r *Router) fallbackPassesModelThrough() bool {
 	switch r.fallbackName {
-	case "bedrock", "http", "vertex", "openrouter":
+	case "bedrock", "http", "vertex", "openrouter", "ollama_cloud":
 		return true
 	default:
 		return false

@@ -343,6 +343,27 @@ type ExecutionRepository interface {
 	// are terminal returns 0 without error.
 	SupersedeNonTerminalForTask(ctx context.Context, taskID string) (int64, error)
 
+	// SupersedeStaleForTaskStart sweeps every non-terminal execution for
+	// the given task at the moment the task starts a NEW run. A task has
+	// at most one live execution, so anything still non-terminal when a
+	// fresh one is about to be created belongs to a previous run of it.
+	//
+	// Background: resuming a parked task (AWAITING_INPUT checkpoint,
+	// WAITING_FOR_CHILDREN unblock) re-queues the task, and the executor's
+	// start path mints a FRESH execution rather than resuming the parked
+	// row. The per-task cascade above only fires when the TASK goes
+	// terminal, so a task that parked and resumed three times without ever
+	// completing kept three orphan PAUSED executions — and the fleet
+	// "Now Running" view renders one card per non-terminal EXECUTION, so a
+	// single paused task showed three PAUSED badges (2026-07-14).
+	//
+	// Same effect as SupersedeNonTerminalForTask but stamped
+	// error_code='superseded_by_new_run' so audits and metrics can tell
+	// start-of-run sweeps from terminal cascades. Must be called BEFORE the
+	// new execution row is created, or it would sweep that row too.
+	// Returns the count finalized. Idempotent.
+	SupersedeStaleForTaskStart(ctx context.Context, taskID string) (int64, error)
+
 	// SupersedeOrphanPausedExecutions is the GLOBAL backstop for the
 	// orphan-PAUSED leak: it finalizes EVERY PAUSED execution whose
 	// parent task has already reached a terminal status, regardless of

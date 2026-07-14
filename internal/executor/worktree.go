@@ -474,7 +474,7 @@ func createWorktree(ctx context.Context, projectDir, taskID string, logger zerol
 // Returns nil when the merge succeeds OR when the branch had no commits
 // to merge (the no-op path — nothing was lost because there was nothing
 // to merge in the first place).
-func mergeWorktree(ctx context.Context, projectDir, worktreeDir, taskID string, logger zerolog.Logger) error {
+func mergeWorktree(ctx context.Context, projectDir, worktreeDir, taskID, backlogFile string, logger zerolog.Logger) error {
 	branch := worktreeBranch(taskID)
 
 	// Auto-commit any leftover dirty state in the worktree. Some roles
@@ -499,7 +499,7 @@ func mergeWorktree(ctx context.Context, projectDir, worktreeDir, taskID string, 
 	// be committed. Using `git add -u` instead of `-A` captures
 	// modifications to already-tracked files while leaving untracked
 	// state alone.
-	autoCommitTrackedChangesOnly(ctx, projectDir, taskID+"-workspace-prelude", logger)
+	autoCommitTrackedChangesOnly(ctx, projectDir, taskID, backlogFile, logger)
 
 	// Refuse to merge into a dirty main checkout. Resetting here would
 	// make the merge succeed by destroying unrelated operator changes in
@@ -758,21 +758,53 @@ func autoCommitLeftoverChanges(ctx context.Context, worktreeDir, taskID string, 
 // `git add -u` is the load-bearing difference vs the standard helper:
 // it stages modifications and deletions of already-tracked paths
 // only. New files (untracked) stay unstaged.
-func autoCommitTrackedChangesOnly(ctx context.Context, dir, taskID string, logger zerolog.Logger) {
+// autoCommitTrackedChangesOnly is autoCommitLeftoverChanges's tracked-only
+// sibling. Used for the workspace-root cleanup pass where we want to keep
+// the working tree clean so mergeWorktree's dirty-check passes, with honest
+// commit attribution:
+//
+//   - if the backlog file is dirty (the manager-side marker write), commit
+//     it as "backlog: marker checkpoint before <taskID>" — working-tree
+//     hygiene, NOT reconciliation. The reconciler remains the sole
+//     authority on marker content.
+//   - any OTHER dirty tracked file is stranded residue (crash-mid-merge
+//     recovery, or residue discardFailedTaskResidue failed to catch):
+//     preserve it (never destroy in the prelude) as
+//     "rescue: stranded tracked changes before <taskID>".
+//   - both → two commits, checkpoint first then rescue.
+//
+// backlogFile is the abs path of the protected backlog file (or "" when
+// unset/invalid/non-autonomy → no checkpoint branch, pure rescue). `git add
+// -u` is the load-bearing difference vs autoCommitLeftoverChanges: it stages
+// modifications/deletions of already-tracked paths only (untracked
+// .worktrees/ stays out).
+func autoCommitTrackedChangesOnly(ctx context.Context, dir, taskID, backlogFile string, logger zerolog.Logger) {
 	if dir == "" || !isGitRepo(dir) {
 		return
 	}
 
-	// Quick check: if there's no tracked change either staged or in
-	// the working tree, return without attempting to commit. Avoids
-	// a no-op commit attempt that would surface as a confusing
-	// "nothing to commit" warn line.
+	// Quick check: if there's no tracked change either staged or in the
+	// working tree, return without attempting to commit. Avoids a no-op
+	// commit attempt surfacing as a confusing "nothing to commit" warn.
 	if _, headDirty := gitExec.combined(ctx, "-C", dir, "diff", "--quiet", "HEAD"); headDirty == nil {
 		if _, cachedDirty := gitExec.combined(ctx, "-C", dir, "diff", "--cached", "--quiet"); cachedDirty == nil {
 			return
 		}
 	}
 
+	// Resolve the backlog file to a repo-relative path for classification.
+	var backlogRel string
+	if backlogFile != "" {
+		if rel, err := filepath.Rel(dir, backlogFile); err == nil && !strings.HasPrefix(rel, "..") {
+			backlogRel = filepath.ToSlash(rel)
+		}
+	}
+
+	checkpointMsg := "backlog: marker checkpoint before " + taskID
+	rescueMsg := "rescue: stranded tracked changes before " + taskID
+
+	// Stage all tracked modifications, then classify the staged set so the
+	// backlog marker can be committed separately from rescued residue.
 	if out, err := gitExec.combined(ctx, "-C", dir, "add", "-u"); err != nil {
 		logger.Warn().
 			Str("task_id", taskID).
@@ -783,17 +815,90 @@ func autoCommitTrackedChangesOnly(ctx context.Context, dir, taskID string, logge
 		return
 	}
 
-	msg := "auto-commit: workspace-root prelude before " + taskID
+	backlogStaged := false
+	otherStaged := false
+	if statusOut, err := gitExec.output(ctx, "-C", dir, "diff", "--cached", "--name-only"); err == nil {
+		for _, name := range bytes.Split(statusOut, []byte("\n")) {
+			p := filepath.ToSlash(strings.TrimSpace(string(name)))
+			if p == "" {
+				continue
+			}
+			if p == backlogRel {
+				backlogStaged = true
+			} else {
+				otherStaged = true
+			}
+		}
+	}
+
+	// Commit 1: backlog marker checkpoint (declutter the tree first).
+	if backlogStaged {
+		commitBacklogCheckpoint(ctx, dir, backlogRel, checkpointMsg, taskID, logger)
+	}
+	// Commit 2: rescue the remaining stranded tracked changes. Also fires
+	// when classification parsed nothing (status error) so we never strand
+	// data — a "nothing to commit" result is a benign no-op.
+	if otherStaged || (!backlogStaged && !otherStaged) {
+		commitAllStaged(ctx, dir, rescueMsg, taskID, logger)
+	}
+}
+
+// commitBacklogCheckpoint commits exactly the backlog file as its own commit
+// so the marker is not bundled with rescued residue. It unstages everything,
+// re-stages only the backlog path, commits, then re-stages the rest so the
+// subsequent rescue commit picks them up.
+func commitBacklogCheckpoint(ctx context.Context, dir, backlogRel, msg, taskID string, logger zerolog.Logger) {
+	if out, err := gitExec.combined(ctx, "-C", dir, "reset"); err != nil { // unstage all (mixed → HEAD)
+		logger.Warn().
+			Str("task_id", taskID).
+			Str("dir", dir).
+			Str("output", strings.TrimSpace(string(out))).
+			Err(err).
+			Msg("workspace-prelude checkpoint: git reset (unstage) failed")
+		return
+	}
+	if out, err := gitExec.combined(ctx, "-C", dir, "add", "--", backlogRel); err != nil {
+		logger.Warn().
+			Str("task_id", taskID).
+			Str("dir", dir).
+			Str("output", strings.TrimSpace(string(out))).
+			Err(err).
+			Msg("workspace-prelude checkpoint: git add <backlog> failed")
+		return
+	}
 	out, err := gitExec.combined(ctx, "-C", dir,
 		"-c", "user.name=vornik-agent",
 		"-c", "user.email=agent@vornik.io",
 		"commit", "-m", msg)
 	if err != nil {
-		// If commit failed because there was nothing to commit
-		// (race between the diff check and add — e.g. file was
-		// only modified in the working tree but `git add -u`
-		// staged nothing because it was already at HEAD), that's
-		// a benign no-op. Anything else is logged.
+		text := strings.TrimSpace(string(out))
+		if !strings.Contains(text, "nothing to commit") {
+			logger.Warn().
+				Str("task_id", taskID).
+				Str("dir", dir).
+				Str("output", text).
+				Err(err).
+				Msg("workspace-prelude checkpoint: git commit failed")
+		}
+		return
+	}
+	// Re-stage the rest for the rescue commit.
+	_, _ = gitExec.combined(ctx, "-C", dir, "add", "-u")
+	logger.Info().
+		Str("task_id", taskID).
+		Str("dir", dir).
+		Msg("workspace-prelude: committed backlog marker checkpoint before merge")
+}
+
+// commitAllStaged commits whatever is currently staged with msg. Best-effort:
+// a "nothing to commit" result is a benign no-op (race between diff check
+// and add).
+func commitAllStaged(ctx context.Context, dir, msg, taskID string, logger zerolog.Logger) {
+	out, err := gitExec.combined(ctx, "-C", dir,
+		"-c", "user.name=vornik-agent",
+		"-c", "user.email=agent@vornik.io",
+		"commit", "-m", msg)
+	if err != nil {
 		text := strings.TrimSpace(string(out))
 		if !strings.Contains(text, "nothing to commit") {
 			logger.Warn().
@@ -809,6 +914,147 @@ func autoCommitTrackedChangesOnly(ctx context.Context, dir, taskID string, logge
 		Str("task_id", taskID).
 		Str("dir", dir).
 		Msg("workspace-prelude auto-commit: rescued stranded tracked changes before merge")
+}
+
+// discardFailedTaskResidue restores non-backlog tracked files (staged AND
+// unstaged) in the shared workspace-root clone to HEAD at a failed/cancelled
+// task terminal. Per-task code work lives in the worktree (discarded by
+// removeWorktree); the only intended manager-side write to the clone is the
+// backlog marker, which is left untouched (B checkpoints it). Every other
+// tracked-dirty file at a non-success terminal is residue from a direct-to-
+// clone write and is restored to HEAD — `git checkout HEAD -- <path>`
+// restores both the index and the working tree in one step.
+//
+// Untracked / gitignored bookkeeping (.worktrees/, .autonomy/,
+// CURRENT_TASK.md) is never enumerated (`-uno`) and never removed.
+//
+// Best-effort: git failures log + continue (same contract as the auto-commit
+// helpers). metrics may be nil (tests); when non-nil, each discarded path
+// increments vornik_executor_residue_discard_total{project} — a non-zero
+// count flags a worktree-contract violation (design §9 R1).
+//
+// Incident: 2026-07-11 headmatch (companion_20260711235052) — failed tasks'
+// stranded tracked edits were swept into the next task's prelude commit.
+func discardFailedTaskResidue(ctx context.Context, projectDir, backlogFile, taskID, projectID string, metrics *Metrics, logger zerolog.Logger) {
+	if projectDir == "" || !isGitRepo(projectDir) {
+		return
+	}
+
+	// Tracked dirty only; -uno excludes untracked so gitignored bookkeeping
+	// is never enumerated.
+	statusOut, err := gitExec.output(ctx, "-C", projectDir, "status", "--porcelain", "-uno")
+	if err != nil {
+		logger.Warn().
+			Str("task_id", taskID).
+			Str("project_dir", projectDir).
+			Err(err).
+			Msg("residue-discard: git status failed — stranded residue may persist")
+		return
+	}
+	if len(bytes.TrimSpace(statusOut)) == 0 {
+		return
+	}
+
+	// Normalize the protected backlog path to a repo-relative form for
+	// comparison (status lines are repo-relative).
+	var backlogRel string
+	if backlogFile != "" {
+		if rel, rErr := filepath.Rel(projectDir, backlogFile); rErr == nil && !strings.HasPrefix(rel, "..") {
+			backlogRel = filepath.ToSlash(rel)
+		}
+	}
+
+	for _, line := range bytes.Split(statusOut, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) < 3 {
+			continue
+		}
+		// Porcelain v1: XY<space>path (rename shows "XY orig -> path" —
+		// take the dest after " -> "). X (line[0]) is the staged/index status.
+		x := line[0]
+		path := strings.TrimSpace(string(line[2:]))
+		if i := strings.Index(path, " -> "); i >= 0 {
+			oldPath := filepath.ToSlash(strings.TrimSpace(path[:i]))
+			newPath := filepath.ToSlash(strings.TrimSpace(path[i+4:]))
+			if oldPath == "" || newPath == "" || oldPath == backlogRel || newPath == backlogRel {
+				continue
+			}
+			restoreOK := true
+			if out, gErr := gitExec.combined(ctx, "-C", projectDir, "checkout", "HEAD", "--", oldPath); gErr != nil {
+				restoreOK = false
+				logger.Warn().
+					Str("task_id", taskID).
+					Str("path", oldPath).
+					Str("output", strings.TrimSpace(string(out))).
+					Err(gErr).
+					Msg("residue-discard: git checkout HEAD -- failed for renamed source")
+			}
+			if out, gErr := gitExec.combined(ctx, "-C", projectDir, "rm", "-f", "--", newPath); gErr != nil {
+				restoreOK = false
+				logger.Warn().
+					Str("task_id", taskID).
+					Str("path", newPath).
+					Str("output", strings.TrimSpace(string(out))).
+					Err(gErr).
+					Msg("residue-discard: git rm -f failed for renamed destination")
+			}
+			if !restoreOK {
+				continue
+			}
+			logger.Warn().
+				Str("task_id", taskID).
+				Str("path", oldPath+" -> "+newPath).
+				Msg("residue-discard: restored non-backlog tracked file to HEAD after failed task (possible worktree-contract violation)")
+			if metrics != nil && metrics.ResidueDiscardTotal != nil {
+				metrics.ResidueDiscardTotal.WithLabelValues(projectID).Inc()
+			}
+			continue
+		}
+		path = filepath.ToSlash(path)
+		if path == "" || path == backlogRel {
+			continue // backlog marker: leave it (B checkpoints it).
+		}
+
+		// "Restore to HEAD" means two things depending on whether the file
+		// exists at HEAD: a MODIFIED/DELETED tracked file is restored via
+		// `git checkout HEAD -- <path>` (index + worktree); a NEWLY-ADDED
+		// staged file (X='A', not in HEAD) is removed via `git rm -f`. The
+		// latter's `checkout HEAD --` would fail ("pathspec did not match")
+		// because HEAD has no such path, so route adds to `git rm -f`. If
+		// checkout fails for any other reason, fall back to `git rm -f`
+		// (also safe for adds). Best-effort: log + continue.
+		if x == 'A' {
+			if out, gErr := gitExec.combined(ctx, "-C", projectDir, "rm", "-f", "--", path); gErr != nil {
+				logger.Warn().
+					Str("task_id", taskID).
+					Str("path", path).
+					Str("output", strings.TrimSpace(string(out))).
+					Err(gErr).
+					Msg("residue-discard: git rm -f failed for stranded new file")
+				continue
+			}
+		} else if out, gErr := gitExec.combined(ctx, "-C", projectDir, "checkout", "HEAD", "--", path); gErr != nil {
+			// Fallback: a path not in HEAD (e.g. an add recorded under a
+			// different X) — remove it instead of leaving it stranded.
+			if rmOut, rmErr := gitExec.combined(ctx, "-C", projectDir, "rm", "-f", "--", path); rmErr != nil {
+				logger.Warn().
+					Str("task_id", taskID).
+					Str("path", path).
+					Str("output", strings.TrimSpace(string(out))).
+					Err(gErr).
+					Msg("residue-discard: git checkout HEAD -- failed for stranded file")
+				_ = rmOut
+				continue
+			}
+		}
+		logger.Warn().
+			Str("task_id", taskID).
+			Str("path", path).
+			Msg("residue-discard: restored non-backlog tracked file to HEAD after failed task (possible worktree-contract violation)")
+		if metrics != nil && metrics.ResidueDiscardTotal != nil {
+			metrics.ResidueDiscardTotal.WithLabelValues(projectID).Inc()
+		}
+	}
 }
 
 // removeWorktree forcibly removes the worktree directory and deletes the branch.

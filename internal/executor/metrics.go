@@ -77,6 +77,13 @@ type Metrics struct {
 	// view.
 	AgentStepOutcomesTotal *prometheus.CounterVec
 
+	// ResidueDiscardTotal counts non-backlog tracked files restored to HEAD
+	// at a failed/cancelled task terminal (discardFailedTaskResidue). A
+	// non-zero count for a project means an agent wrote a tracked file
+	// directly to the shared clone instead of its worktree — a worktree-
+	// contract violation worth investigating (design §9 R1).
+	ResidueDiscardTotal *prometheus.CounterVec
+
 	// ModelSuccessRate is success / (success+failed+timeout) per (role, model).
 	// Cancelled outcomes are excluded: a user-initiated cancel should not
 	// penalise the model. Exposed as a native gauge so dashboards can read
@@ -460,6 +467,15 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 				Help:      "Agent-step outcomes by role+model, for model-effectiveness analysis. Successful usable output is outcome=\"ok\".",
 			},
 			[]string{"role", "model", "outcome"},
+		),
+		ResidueDiscardTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: executorNamespace,
+				Subsystem: executorSubsystem,
+				Name:      "residue_discard_total",
+				Help:      "Non-backlog tracked files restored to HEAD at a failed/cancelled task terminal. Non-zero = worktree-contract violation (agent wrote to the shared clone directly).",
+			},
+			[]string{"project"},
 		),
 		ModelSuccessRate: promauto.With(registerer).NewGaugeVec(
 			prometheus.GaugeOpts{

@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: e6a4b14acb882a6f58e117a589daac960d0739a74f7d894182a75958d7a9d855
+      sha256: 096e2dac11576442f34fa803de1984076f8bf411723b7d98d27cfcc47fa54340
 ---
 # Release Notes
 
@@ -14,6 +14,30 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.7.3
+
+**A hardening release closing the working-tree half of the 2026-07-11
+autonomy workspace-state-hygiene incident.** Failed/cancelled tasks no
+longer strand tracked-file residue in the shared workspace clone, and the
+prelude auto-commit attributes honestly instead of blaming the next task.
+
+- **Failed-task residue discarded.** At a non-success terminal, non-backlog
+  tracked files (staged + unstaged) are restored to HEAD, leaving the
+  backlog marker. The marker-state half shipped in 2026.7.2; this ships the
+  working-tree half.
+- **Honest prelude attribution.** The backlog marker is committed as
+  `backlog: marker checkpoint before <task>` and stranded changes as
+  `rescue: stranded tracked changes before <task>` — replacing the old blind
+  `auto-commit: workspace-root prelude before <task>`. **Scripts grepping
+  that message must update.**
+- **New metric** `vornik_executor_residue_discard_total{project}` flags
+  worktree-contract violations (an agent writing tracked files directly to
+  the shared clone).
+
+See `docs/release-notes/2026.7.3.md`.
 
 ---
 

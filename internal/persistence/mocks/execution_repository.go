@@ -246,6 +246,11 @@ func (m *MockExecutionRepository) SupersedeNonTerminalForTask(_ context.Context,
 	return 0, nil
 }
 
+// SupersedeStaleForTaskStart implements ExecutionRepository.
+func (m *MockExecutionRepository) SupersedeStaleForTaskStart(_ context.Context, _ string) (int64, error) {
+	return 0, nil
+}
+
 // SupersedeOrphanPausedExecutions implements ExecutionRepository.
 func (m *MockExecutionRepository) SupersedeOrphanPausedExecutions(_ context.Context) (int64, error) {
 	return 0, nil

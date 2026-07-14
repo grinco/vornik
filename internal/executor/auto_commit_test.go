@@ -70,13 +70,13 @@ func TestAutoCommitLeftoverChanges_EmptyDirIsNoop(t *testing.T) {
 func TestAutoCommitTrackedChangesOnly_NonRepoIsNoop(t *testing.T) {
 	tmp := t.TempDir()
 	assert.NotPanics(t, func() {
-		autoCommitTrackedChangesOnly(context.Background(), tmp, "task-1", zerolog.Nop())
+		autoCommitTrackedChangesOnly(context.Background(), tmp, "task-1", "", zerolog.Nop())
 	})
 }
 
 func TestAutoCommitTrackedChangesOnly_EmptyDirIsNoop(t *testing.T) {
 	assert.NotPanics(t, func() {
-		autoCommitTrackedChangesOnly(context.Background(), "", "task-1", zerolog.Nop())
+		autoCommitTrackedChangesOnly(context.Background(), "", "task-1", "", zerolog.Nop())
 	})
 }
 
@@ -127,7 +127,7 @@ func TestAutoCommitTrackedChangesOnly_CommitsTrackedModification(t *testing.T) {
 	untracked := filepath.Join(dir, "untracked.txt")
 	require.NoError(t, os.WriteFile(untracked, []byte("new"), 0o600))
 
-	autoCommitTrackedChangesOnly(context.Background(), dir, "task-Z", zerolog.Nop())
+	autoCommitTrackedChangesOnly(context.Background(), dir, "task-Z", "", zerolog.Nop())
 
 	// Verify the commit landed.
 	logOut, err := exec.Command("git", "-C", dir, "log", "-1", "--pretty=%s").CombinedOutput()
@@ -146,7 +146,7 @@ func TestAutoCommitTrackedChangesOnly_CleanRepoIsNoop(t *testing.T) {
 	dir := initGitRepoForTest(t)
 	before, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").CombinedOutput()
 	require.NoError(t, err)
-	autoCommitTrackedChangesOnly(context.Background(), dir, "task-W", zerolog.Nop())
+	autoCommitTrackedChangesOnly(context.Background(), dir, "task-W", "", zerolog.Nop())
 	after, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").CombinedOutput()
 	require.NoError(t, err)
 	assert.Equal(t, string(before), string(after))

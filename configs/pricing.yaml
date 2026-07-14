@@ -71,6 +71,80 @@ models:
     output: 3.00
     reasoning_multiplier: 2.0
 
+  # Ollama Cloud (https://ollama.com) — native (non-Bedrock) pricing,
+  # used when chat.router.ollama_cloud is enabled — AND the http
+  # sub-provider (local Ollama at 192.168.192.168:11434), grouped
+  # together here since both serve the same bare Ollama-tag model IDs
+  # (no vornik-added namespace — see
+  # https://docs.vornik.io). Most rates are
+  # priced at the equivalent model's rate on openrouter.ai — for the
+  # http (local) entries this means the cost metric reflects what the
+  # workload would cost on a metered API instead of understating spend
+  # just because it happens to run on self-hosted hardware. Researched
+  # 2026-07-13; per-line source noted. A handful have no public listing
+  # anywhere (custom fine-tunes, embedding models) — those are marked
+  # ESTIMATE with the reasoning, per operator instruction to use
+  # judgment rather than leave them unpriced.
+  glm-5.2:cloud: { input: 0.93, output: 3.00 } # openrouter.ai/z-ai/glm-5.2 (identical to Ollama's own price)
+  glm-5.2:                { input: 0.93, output: 3.00 } # same model, bare-tag alias
+  glm-5.1:                { input: 0.97, output: 3.04 } # openrouter.ai/z-ai/glm-5.1
+  glm-5:                  { input: 1.00, output: 3.20 } # matches zai.glm-5 (Bedrock)
+  glm-4.7:                { input: 0.60, output: 2.20 } # matches zai.glm-4.7 (Bedrock)
+  "glm-4.7-flash:latest":   { input: 0.07, output: 0.40 } # matches zai.glm-4.7-flash (Bedrock)
+  "kimi-k2.5":             { input: 0.60, output: 3.00, reasoning_multiplier: 2.0 } # matches moonshotai.kimi-k2.5 (Bedrock)
+  "kimi-k2.6":             { input: 0.66, output: 3.41 } # openrouter.ai/moonshotai/kimi-k2.6 (paid; the :free variant is a different id)
+  "kimi-k2.7-code":        { input: 0.72, output: 3.49 } # openrouter.ai/moonshotai/kimi-k2.7-code
+  "deepseek-v3.1:671b":    { input: 0.25, output: 0.95 } # openrouter.ai/deepseek/deepseek-chat-v3.1
+  "deepseek-v3.2":         { input: 0.62, output: 1.85 } # matches deepseek.v3.2 (Bedrock)
+  "deepseek-v4-flash":     { input: 0.10, output: 0.20 } # openrouter.ai/deepseek/deepseek-v4-flash
+  "deepseek-v4-pro":       { input: 0.44, output: 0.87 } # openrouter.ai/deepseek/deepseek-v4-pro
+  "devstral-2:123b":       { input: 0.40, output: 2.00 } # openrouter.ai/mistralai/devstral-2512
+  "devstral-small-2:24b":  { input: 0.10, output: 0.30 } # openrouter.ai (Devstral Small 2)
+  "devstral-small-2:latest": { input: 0.10, output: 0.30 } # same as devstral-small-2:24b
+  "gemini-3-flash-preview": { input: 0.50, output: 3.00 } # openrouter.ai/google/gemini-3-flash-preview (bare ollama_cloud id — distinct key from vertex's "google/gemini-3-flash-preview")
+  "gemma3:4b":             { input: 0.04, output: 0.08 } # matches google.gemma-3-4b-it (Bedrock)
+  "gemma3:12b":            { input: 0.09, output: 0.29 } # matches google.gemma-3-12b-it (Bedrock)
+  "gemma3:27b":            { input: 0.23, output: 0.38 } # matches google.gemma-3-27b-it (Bedrock)
+  "gemma4:12b":            { input: 0.09, output: 0.29 } # ESTIMATE — no Gemma 4 12B SKU found on OpenRouter (only 4B/26B-A4B/31B); reused Gemma 3 12B's rate as same size class
+  "gemma4:26b":            { input: 0.06, output: 0.30 } # openrouter.ai/google/gemma-4-26b-a4b-it
+  "gemma4:31b":            { input: 0.12, output: 0.35 } # openrouter.ai/google/gemma-4-31b-it
+  "gpt-oss:20b":           { input: 0.029, output: 0.14 } # openrouter.ai/openai/gpt-oss-20b
+  "gpt-oss:120b":          { input: 0.15, output: 0.60 } # matches openai.gpt-oss-120b-1:0 (Bedrock) — clean OpenRouter paid listing not found
+  "gpt-oss:latest":        { input: 0.029, output: 0.14 } # assumed :latest = 20b size
+  "minimax-m2.1":          { input: 0.30, output: 1.20 } # matches minimax.minimax-m2.1 (Bedrock)
+  "minimax-m2.5":          { input: 0.30, output: 1.20 } # matches minimax.minimax-m2.5 (Bedrock)
+  "minimax-m2.7":          { input: 0.24, output: 0.96 } # openrouter.ai/minimax/minimax-m2.7
+  "minimax-m3":            { input: 0.30, output: 1.20 } # openrouter.ai/minimax/minimax-m3 (promotional "50% off" rate at time of lookup — re-verify once the promo ends)
+  "ministral-3:3b":        { input: 0.10, output: 0.10 } # matches mistral.ministral-3-3b-instruct (Bedrock)
+  "ministral-3:8b":        { input: 0.15, output: 0.15 } # matches mistral.ministral-3-8b-instruct (Bedrock)
+  "ministral-3:14b":       { input: 0.20, output: 0.20 } # matches mistral.ministral-3-14b-instruct (Bedrock)
+  "mistral-large-3:675b":  { input: 0.50, output: 1.50 } # openrouter.ai/mistralai/mistral-large-2512
+  "mistral-nemo:latest":   { input: 0.02, output: 0.03 } # openrouter.ai/mistralai/mistral-nemo
+  "magistral:latest":      { input: 0.10, output: 0.30 } # openrouter.ai (Magistral Medium 2509) — assumed Medium is the ":latest" default
+  "lfm2:latest":           { input: 0.03, output: 0.12 } # ESTIMATE — no exact ":latest" tag match on OpenRouter; used flagship LFM2-24B-A2B's rate as best reference, actual served size may differ
+  "nemotron-3-nano:30b":   { input: 0.05, output: 0.20 } # openrouter.ai/nvidia/nemotron-3-nano-30b-a3b
+  "nemotron-3-super":      { input: 0.08, output: 0.45 } # openrouter.ai/nvidia/nemotron-3-super-120b-a12b (distinct id from nvidia.nemotron-super-3-120b's 0.20/0.85 — different model)
+  "nemotron-3-ultra":      { input: 0.50, output: 2.20 } # openrouter.ai/nvidia/nemotron-3-ultra-550b-a55b
+  "qwen3-coder-next":      { input: 0.11, output: 0.80 } # openrouter.ai/qwen/qwen3-coder-next (distinct from qwen.qwen3-next-80b-a3b, a different/older model)
+  "qwen3-coder:480b":      { input: 0.22, output: 1.80 } # openrouter.ai/qwen/qwen3-coder paid tier (the Bedrock qwen.qwen3-coder-480b-a35b-v1:0 entry was a rough estimate; this is the real number)
+  "qwen3.5:397b":          { input: 0.39, output: 2.45 } # openrouter.ai/qwen/qwen3.5-397b-a17b
+  "qwen3.5:27b":           { input: 0.20, output: 1.56 } # openrouter.ai/qwen/qwen3.5-27b
+  "qwen3.5:9b":            { input: 0.10, output: 0.15 } # openrouter.ai/qwen/qwen3.5-9b
+  "qwen3.6:35b":           { input: 0.14, output: 1.00 } # openrouter.ai/qwen/qwen3.6-35b-a3b
+  "qwen3-vl:8b":           { input: 0.12, output: 0.46 } # openrouter.ai/qwen/qwen3-vl-8b-instruct
+  # Embedding models — served via /api/embeddings, not chat completions.
+  # "output" doesn't apply (no completion tokens); left at 0.
+  "bge-m3:latest":                    { input: 0.01, output: 0.0 } # openrouter.ai/baai/bge-m3
+  "nomic-embed-text-v2-moe:latest":   { input: 0.02, output: 0.0 } # ESTIMATE — Nomic v2 MoE has no commercial API tier (open-weight, self-host-only); reused OpenAI text-embedding-3-small as a comparable-class reference
+  # Home Assistant voice-control fine-tunes (acon96/Home-3B-v3, a
+  # StableLM-3B derivative) — no public pricing anywhere for a custom
+  # fine-tune. Both entries are the SAME underlying model under two
+  # different tags (Ollama library re-publish vs. raw HF repo alias).
+  # ESTIMATE based on Llama-3.2-3B-Instruct as a comparable ~3B-class
+  # reference (openrouter.ai/meta-llama/llama-3.2-3b-instruct).
+  "fixt/home-3b-v3:latest":              { input: 0.05, output: 0.34 }
+  "hf.co/acon96/Home-3B-v3-GGUF:latest": { input: 0.05, output: 0.34 }
+
   # Anthropic Claude — native (non-Bedrock) pricing, used when
   # chat.provider: claude-cli. IDs are the hyphenated forms the
   # `claude --model <ID>` flag accepts. Source:
@@ -163,36 +237,54 @@ models:
   "google/gemini-2.5-pro":             { input: 1.25, output: 10.00 }
   "google/gemini-2.5-flash":           { input: 0.30, output: 2.50 }
   "google/gemini-2.5-flash-lite":      { input: 0.10, output: 0.40 }
-  # Gemini 3.x — only the `-preview` aliases resolve on Vertex
-  # today (2026-05-07; bare names return HTTP 404). The bare-name
-  # rows below are forward-compat: they cost the same and the
-  # lookup is keyed on whatever the chat call actually sends, so
-  # leaving them in costs nothing and avoids a config edit when
-  # Vertex GAs the canonical names.
-  "google/gemini-3.1-pro-preview":      { input: 2.00, output: 12.00 }
-  "google/gemini-3.1-flash-preview":    { input: 0.50, output: 3.00 }
-  "google/gemini-3.1-flash-lite-preview": { input: 0.25, output: 1.50 }
+  # Gemini 3.x — trimmed to ONLY the model IDs empirically confirmed
+  # live on this Vertex project (it-lt-trial-197631, global) via
+  # direct chat-completions probes on 2026-07-13. The prior version
+  # of this list kept every plausible "-preview" and bare/GA name as
+  # a "forward-compat, costs nothing" placeholder — that reasoning
+  # was WRONG: this pricing table doubles as the Vertex model
+  # catalog (chatModelCatalogFromPricing in container_chat.go feeds
+  # it straight into vornikctl models list / the Ollama-proxy's
+  # /api/tags), so a bogus entry doesn't just sit unused — it gets
+  # surfaced to real clients as a selectable model. Root-caused a
+  # production incident this way: Home Assistant's Ollama
+  # integration (192.168.192.168, via /api/chat) picked
+  # "google/gemini-3-pro" off the catalog and got a 404 loop. The
+  # "-preview resolves, bare doesn't" rule from the old comment also
+  # turned out to be FALSE for several IDs (e.g. bare
+  # gemini-3.1-flash-lite works; -preview gemini-3.1-flash-preview
+  # doesn't) — don't re-derive a naming rule, re-probe empirically
+  # before adding an entry back.
+  #
+  # CONFIRMED WORKING (2026-07-13 probe):
+  "google/gemini-3.1-pro-preview":        { input: 2.00, output: 12.00 }
+  "google/gemini-3.1-flash-lite":         { input: 0.25, output: 1.50 }
   "google/gemini-3.1-flash-image-preview": { input: 0.50, output: 3.00 }
-  "google/gemini-3-pro-preview":        { input: 2.00, output: 12.00 }
-  "google/gemini-3-pro-image-preview":  { input: 2.00, output: 12.00 }
-  "google/gemini-3-flash-preview":      { input: 0.50, output: 3.00 }
-  "google/gemini-3-flash-lite-preview": { input: 0.25, output: 1.50 }
-  "google/gemini-3.1-pro":             { input: 2.00, output: 12.00 }
-  "google/gemini-3.1-flash":           { input: 0.50, output: 3.00 }
-  "google/gemini-3.1-flash-lite":      { input: 0.25, output: 1.50 }
-  "google/gemini-3-pro":               { input: 2.00, output: 12.00 }
-  "google/gemini-3-flash":             { input: 0.50, output: 3.00 }
-  "google/gemini-3-flash-lite":        { input: 0.25, output: 1.50 }
+  "google/gemini-3-pro-image-preview":    { input: 2.00, output: 12.00 }
+  "google/gemini-3-flash-preview":        { input: 0.50, output: 3.00 }
+  #
+  # CONFIRMED 404 on this project as of 2026-07-13 — do not re-add
+  # without re-probing: gemini-3-pro, gemini-3-pro-preview,
+  # gemini-3.1-pro, gemini-3.1-flash-preview,
+  # gemini-3.1-flash-lite-preview, gemini-3-flash-lite-preview,
+  # gemini-3.1-flash, gemini-3-flash, gemini-3-flash-lite.
 
   # OpenRouter free tier ($0 in/out). Routed to the openrouter
   # sub-provider via the ":free" suffix route. OpenRouter's free
   # catalogue rotates — this list mirrors `vornikctl models list`
-  # output as of 2026-06-03; an unlisted ":free" model falls through to
-  # `default` below (which would OVER-count a zero-cost call), so keep
-  # it aligned with what the gateway actually serves. Free models are
-  # rate-limited (per-minute + daily cap → 429); throttle via per-route
-  # queue_depth if autonomy bursts trip the limit.
+  # output as of 2026-07-13 (refreshed from the 2026-06-03 baseline —
+  # cohere/north-mini-code, nvidia/nemotron-3-ultra-550b-a55b,
+  # nvidia/nemotron-3.5-content-safety, poolside/laguna-xs-2.1, and
+  # tencent/hy3 are new; liquid/lfm-2.5-*, moonshotai/kimi-k2.6, and
+  # z-ai/glm-4.5-air have since rotated out of the live catalogue but
+  # are left here — a stale $0 row is harmless, unlike a missing one);
+  # an unlisted ":free" model falls through to `default` below (which
+  # would OVER-count a zero-cost call), so keep it aligned with what
+  # the gateway actually serves. Free models are rate-limited
+  # (per-minute + daily cap → 429); throttle via per-route queue_depth
+  # if autonomy bursts trip the limit.
   "cognitivecomputations/dolphin-mistral-24b-venice-edition:free": { input: 0.0, output: 0.0 }
+  "cohere/north-mini-code:free":                     { input: 0.0, output: 0.0 }
   "google/gemma-4-26b-a4b-it:free":                  { input: 0.0, output: 0.0 }
   "google/gemma-4-31b-it:free":                      { input: 0.0, output: 0.0 }
   "liquid/lfm-2.5-1.2b-instruct:free":               { input: 0.0, output: 0.0 }
@@ -204,14 +296,18 @@ models:
   "nvidia/nemotron-3-nano-30b-a3b:free":             { input: 0.0, output: 0.0 }
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": { input: 0.0, output: 0.0 }
   "nvidia/nemotron-3-super-120b-a12b:free":          { input: 0.0, output: 0.0 }
+  "nvidia/nemotron-3-ultra-550b-a55b:free":          { input: 0.0, output: 0.0 }
+  "nvidia/nemotron-3.5-content-safety:free":         { input: 0.0, output: 0.0 }
   "nvidia/nemotron-nano-12b-v2-vl:free":             { input: 0.0, output: 0.0 }
   "nvidia/nemotron-nano-9b-v2:free":                 { input: 0.0, output: 0.0 }
   "openai/gpt-oss-120b:free":                        { input: 0.0, output: 0.0 }
   "openai/gpt-oss-20b:free":                         { input: 0.0, output: 0.0 }
   "poolside/laguna-m.1:free":                        { input: 0.0, output: 0.0 }
   "poolside/laguna-xs.2:free":                       { input: 0.0, output: 0.0 }
+  "poolside/laguna-xs-2.1:free":                     { input: 0.0, output: 0.0 }
   "qwen/qwen3-coder:free":                           { input: 0.0, output: 0.0 }
   "qwen/qwen3-next-80b-a3b-instruct:free":           { input: 0.0, output: 0.0 }
+  "tencent/hy3:free":                                { input: 0.0, output: 0.0 }
   "z-ai/glm-4.5-air:free":                           { input: 0.0, output: 0.0 }
 
 # Fallback for unknown models. Conservative ceiling so an unknown

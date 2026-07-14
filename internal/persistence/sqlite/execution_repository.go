@@ -269,17 +269,35 @@ func (r *ExecutionRepository) RecordCompletion(ctx context.Context, id string, r
 // parent task has reached a terminal status. See the interface
 // doc for the full motivation.
 func (r *ExecutionRepository) SupersedeNonTerminalForTask(ctx context.Context, taskID string) (int64, error) {
+	return r.supersedeNonTerminal(ctx, taskID,
+		"superseded_by_terminal_task",
+		"execution superseded when parent task reached terminal status")
+}
+
+// SupersedeStaleForTaskStart finalizes the executions a task left behind when
+// it starts a new run. See the interface doc for the motivation (the resumed-
+// parked-task orphan leak). Same sweep as the terminal cascade, different
+// audit marker.
+func (r *ExecutionRepository) SupersedeStaleForTaskStart(ctx context.Context, taskID string) (int64, error) {
+	return r.supersedeNonTerminal(ctx, taskID,
+		"superseded_by_new_run",
+		"execution superseded when the task started a new run")
+}
+
+// supersedeNonTerminal is the shared sweep both per-task supersede entry
+// points delegate to; they differ only in the audit marker they stamp.
+func (r *ExecutionRepository) supersedeNonTerminal(ctx context.Context, taskID, errorCode, errorMessage string) (int64, error) {
 	now := sqliteTime(time.Now().UTC())
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE executions
 		SET status = 'CANCELLED',
-		    error_code = 'superseded_by_terminal_task',
-		    error_message = COALESCE(error_message, 'execution superseded when parent task reached terminal status'),
+		    error_code = ?,
+		    error_message = COALESCE(error_message, ?),
 		    completed_at = COALESCE(completed_at, ?),
 		    updated_at = ?
 		WHERE task_id = ?
 		  AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')`,
-		now, now, taskID,
+		errorCode, errorMessage, now, now, taskID,
 	)
 	if err != nil {
 		return 0, err

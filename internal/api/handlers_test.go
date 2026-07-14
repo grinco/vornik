@@ -681,6 +681,10 @@ func (m *mockExecutionRepo) SupersedeNonTerminalForTask(context.Context, string)
 	return 0, nil
 }
 
+func (m *mockExecutionRepo) SupersedeStaleForTaskStart(context.Context, string) (int64, error) {
+	return 0, nil
+}
+
 func (m *mockExecutionRepo) SupersedeOrphanPausedExecutions(context.Context) (int64, error) {
 	return 0, nil
 }

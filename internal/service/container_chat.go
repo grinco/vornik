@@ -599,6 +599,29 @@ func (c *Container) initChatRouter(cfg config.ChatConfig) error {
 		}
 		subs["openrouter"] = orProvider
 	}
+	if rcfg.OllamaCloud.Enabled {
+		if rcfg.OllamaCloud.APIKey == "" {
+			return fmt.Errorf("chat.router.ollama_cloud: api_key is required when ollama_cloud sub-provider is enabled")
+		}
+		if rcfg.OllamaCloud.Model == "" && cfg.Model == "" {
+			c.Logger.Warn().Msg("chat.router.ollama_cloud: model unset and chat.model unset — naked ollama_cloud calls will fail with ErrEmptyModel")
+		}
+		endpoint := resolveOllamaCloudEndpoint(rcfg.OllamaCloud.Endpoint)
+		opts := []chat.ClientOption{
+			chat.WithLogger(c.Logger.With().Str("component", "chat").Str("provider", "ollama_cloud").Logger()),
+		}
+		if timeout > 0 {
+			opts = append(opts, chat.WithTimeout(timeout))
+		}
+		maxTokens := rcfg.OllamaCloud.MaxTokens
+		if maxTokens == 0 {
+			maxTokens = cfg.MaxTokens
+		}
+		if maxTokens > 0 {
+			opts = append(opts, chat.WithMaxTokens(maxTokens))
+		}
+		subs["ollama_cloud"] = chat.NewClient(endpoint, rcfg.OllamaCloud.APIKey, rcfg.OllamaCloud.Model, opts...)
+	}
 	if rcfg.Bedrock.Enabled {
 		if rcfg.Bedrock.Region == "" {
 			return fmt.Errorf("chat.router.bedrock: region is required when bedrock sub-provider is enabled")
@@ -653,7 +676,12 @@ func (c *Container) initChatRouter(cfg config.ChatConfig) error {
 		// codex-subscription → claude-cli → codex-cli. http first
 		// because the current deployment leans on it heavily; the
 		// subscription paths are there for plan-billed calls.
-		for _, k := range []string{"http", "claude-subscription", "codex-subscription", "vertex", "openrouter", "claude-cli", "codex-cli"} {
+		// ollama_cloud is listed last (before the CLI subprocess kinds)
+		// deliberately — see ChatOllamaCloudSubConfig: it has no
+		// auto-added default route, so it should never become an
+		// *implicit* daemon-wide default either. An operator who wants
+		// it must set router.default: ollama_cloud explicitly.
+		for _, k := range []string{"http", "claude-subscription", "codex-subscription", "vertex", "openrouter", "ollama_cloud", "claude-cli", "codex-cli"} {
 			if _, ok := subs[k]; ok {
 				defaultKind = k
 				break
@@ -864,6 +892,18 @@ func defaultRouterRoutesForSubs(subs map[string]chat.Provider) []config.ChatRout
 	add("stability.", "bedrock")
 	add("writer.", "bedrock")
 	add("zai.", "bedrock")
+	// Deliberately NO default route for "ollama_cloud" here, even when
+	// it's enabled. Ollama Cloud's catalogue re-hosts other vendors'
+	// models under their own bare names — e.g. "gpt-oss" (collides
+	// with the "gpt-" default above → codex-subscription) and
+	// "gemini-3-flash-preview" (collides with "gemini-" → vertex,
+	// literally Google's own model under Google's own name). A
+	// hardcoded default here would risk silently stealing traffic from
+	// real GPT/Gemini requests the next time Ollama Cloud adds a
+	// rehosted family with a colliding prefix. Operators reach
+	// ollama_cloud via router.default or explicit router.routes
+	// entries instead — see ChatOllamaCloudSubConfig and
+	// https://docs.vornik.io §2.2/§4.
 	return out
 }
 
@@ -928,6 +968,20 @@ const defaultOpenRouterEndpoint = "https://openrouter.ai/api/v1"
 func resolveOpenRouterEndpoint(endpoint string) string {
 	if endpoint == "" {
 		return defaultOpenRouterEndpoint
+	}
+	return endpoint
+}
+
+// defaultOllamaCloudEndpoint is Ollama Cloud's OpenAI-compatibility base
+// URL. normalizeEndpoint (inside chat.NewClient) tolerates the trailing
+// path.
+const defaultOllamaCloudEndpoint = "https://ollama.com/v1"
+
+// resolveOllamaCloudEndpoint returns the operator's endpoint override or
+// the baked-in Ollama Cloud default when unset.
+func resolveOllamaCloudEndpoint(endpoint string) string {
+	if endpoint == "" {
+		return defaultOllamaCloudEndpoint
 	}
 	return endpoint
 }

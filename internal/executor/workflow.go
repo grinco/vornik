@@ -2892,6 +2892,38 @@ func (e *Executor) cascadeOrphanExecutions(ctx context.Context, taskID string) {
 	}
 }
 
+// supersedeStaleExecutions finalizes the executions a task left behind before
+// it starts a new run. Sibling of cascadeOrphanExecutions: same sweep, fired at
+// the other end of the lifecycle. The cascade only runs when the TASK reaches a
+// terminal status, which never happens for a task that keeps parking
+// (AWAITING_INPUT / WAITING_FOR_CHILDREN) and being resumed — each resume mints
+// a fresh execution and stranded the previous PAUSED row, which the fleet "Now
+// Running" view then rendered as a live card (2026-07-14: one paused task, three
+// PAUSED badges).
+//
+// Best-effort, exactly like the cascade: a DB error here is logged, not fatal.
+// A missed sweep leaves a phantom card, and the watchdog's global backstop still
+// catches it once the task goes terminal.
+func (e *Executor) supersedeStaleExecutions(ctx context.Context, taskID string) {
+	if e.execRepo == nil || taskID == "" {
+		return
+	}
+	n, err := e.execRepo.SupersedeStaleForTaskStart(ctx, taskID)
+	if err != nil {
+		e.logger.Warn().
+			Err(err).
+			Str("task_id", taskID).
+			Msg("supersede-stale-executions: sweep failed; a stale execution row may linger as a phantom live card")
+		return
+	}
+	if n > 0 {
+		e.logger.Info().
+			Str("task_id", taskID).
+			Int64("stale_swept", n).
+			Msg("supersede-stale-executions: finalized executions left behind by a previous run of this task")
+	}
+}
+
 // shouldRetry determines if an error should trigger a retry.
 func (e *Executor) shouldRetry(err error) bool {
 	if err == nil {

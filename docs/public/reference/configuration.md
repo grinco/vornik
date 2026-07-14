@@ -230,6 +230,9 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `chat.router.openrouter.api_key` | string | OpenRouter API key. |
 | `chat.router.openrouter.model` | string | OpenRouter default model. |
 | `chat.router.openrouter.free_only` | bool | Reject any non-:free model — a hard guard against accidental spend. |
+| `chat.router.ollama_cloud.enabled` | bool | Enable the Ollama Cloud sub-provider. |
+| `chat.router.ollama_cloud.api_key` | string | Ollama Cloud API key. |
+| `chat.router.ollama_cloud.model` | string | Ollama Cloud default model, e.g. gpt-oss:120b. |
 | `chat.router.bedrock.enabled` | bool | Enable AWS Bedrock (credentials via the AWS SDK chain). |
 | `chat.router.bedrock.region` | string | Bedrock region. |
 | `chat.router.bedrock.model` | string | Bedrock default model. |

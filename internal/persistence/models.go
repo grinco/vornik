@@ -1704,6 +1704,15 @@ const (
 	// own workflow_step attribution shape. role = "task_narrator".
 	// See https://docs.vornik.io §5.1.
 	TaskLLMUsageSourceTaskNarrator = "task_narrator"
+	// TaskLLMUsageSourceInstinctDistiller — one row per LLM call made
+	// by the instinct distiller (internal/enterprise/instinct/engine)
+	// to distill a recurring task-failure signal into an advisory
+	// remediation sentence. role = "instinct_distiller". Before this
+	// existed the distiller mis-stamped Source = "memory_titler", so
+	// its spend was double-counted under the memory-titler rollup on
+	// the source breakdown (role column was always correct). Fixed
+	// 2026-07-15.
+	TaskLLMUsageSourceInstinctDistiller = "instinct_distiller"
 )
 
 // TaskLLMUsageFilter defines filtering options for LLM usage queries.

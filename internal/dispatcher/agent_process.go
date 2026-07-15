@@ -89,20 +89,31 @@ func (a *Agent) recordLLMUsage(ctx context.Context, projectID string, chatID int
 // since there's no session to anchor the expanded set to. tier
 // signals the session's context-budget headroom — when DEGRADING
 // or worse, deferral is forced regardless of catalog size.
-func (a *Agent) allTools(projectID string, chatID int64, tier chat.ContextTier) []chat.Tool {
+//
+// systemPrompt is the effective prompt for this turn: MCP tools it
+// names explicitly are pinned always-visible so deferral can never
+// hide a tool the operator documented (2026-07-15 pagedrop incident —
+// see extractPinnedMCPTools). a.deferredToolThreshold overrides the
+// package default when non-zero; negative disables deferral entirely.
+func (a *Agent) allTools(projectID string, chatID int64, tier chat.ContextTier, systemPrompt string) []chat.Tool {
 	builtin := DispatcherTools()
 	var mcp []chat.Tool
 	if a.mcpManager != nil && projectID != "" {
 		mcp = a.mcpManager.Tools(projectID)
 	}
-	if a.toolExecutor == nil || a.toolExecutor.expanded == nil || chatID == 0 {
-		// No session state to track expansions, or no expanded-
-		// store wired — preserve legacy "everything visible"
-		// behaviour. Sub-agent / per-task paths land here.
+	if a.toolExecutor == nil || a.toolExecutor.expanded == nil || chatID == 0 || a.deferredToolThreshold < 0 {
+		// No session state to track expansions, no expanded-store
+		// wired, or the operator disabled deferral — preserve legacy
+		// "everything visible" behaviour. Sub-agent / per-task paths
+		// land here too.
 		return append(append(make([]chat.Tool, 0, len(builtin)+len(mcp)), builtin...), mcp...)
 	}
-	threshold := effectiveDeferralThreshold(DefaultDeferredToolThreshold, tier)
-	return applyDeferredLoading(builtin, mcp, a.toolExecutor.expanded, chatID, threshold)
+	base := a.deferredToolThreshold
+	if base == 0 {
+		base = DefaultDeferredToolThreshold
+	}
+	threshold := effectiveDeferralThreshold(base, tier)
+	return applyDeferredLoading(builtin, mcp, a.toolExecutor.expanded, chatID, threshold, extractPinnedMCPTools(systemPrompt))
 }
 
 // Process runs one complete conversation turn:
@@ -143,7 +154,7 @@ func (a *Agent) Process(ctx context.Context, req Request) (result Result) {
 	}
 	audit.captureRequest(systemPrompt, userMsg, roleLabel)
 	defer func() { audit.finish(ctx, req, result) }()
-	tools := a.allTools(req.Project, req.ChatID, req.ContextTier)
+	tools := a.allTools(req.Project, req.ChatID, req.ContextTier, systemPrompt)
 	a.metrics.recordContextTier(req.Project, req.ContextTier, req.ContextHeadroomPct)
 
 	// Work on a local copy so the caller's slice is not mutated.
@@ -346,7 +357,7 @@ func (a *Agent) ProcessStreaming(ctx context.Context, req Request, onText chat.S
 	}
 	audit.captureRequest(systemPrompt, userMsg, roleLabel)
 	defer func() { audit.finish(ctx, req, result) }()
-	tools := a.allTools(req.Project, req.ChatID, req.ContextTier)
+	tools := a.allTools(req.Project, req.ChatID, req.ContextTier, systemPrompt)
 	a.metrics.recordContextTier(req.Project, req.ContextTier, req.ContextHeadroomPct)
 
 	msgs := make([]chat.Message, len(req.Messages))

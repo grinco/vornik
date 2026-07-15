@@ -137,10 +137,15 @@ func TestDisplaySource_FriendlyLabels(t *testing.T) {
 		"memory_classifier": "Memory content classification",
 		// New (customer-rename request): underscored / abbreviated
 		// raw sources get operator-facing names on the spend page.
-		"_authoring":    "Config assistant",
-		"external_api":  "3rd-party requests",
-		"":              "Unattributed",
-		"future_source": "future_source",
+		"_authoring":         "Config assistant",
+		"external_api":       "3rd-party requests",
+		"memory_narrative":   "Memory project narrative",
+		"task_narrator":      "Execution narration",
+		"fix_it_doctor":      "Fix-it doctor",
+		"project_wizard":     "Project setup wizard",
+		"instinct_distiller": "Instinct distiller",
+		"":                   "Unattributed",
+		"future_source":      "future_source",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, displaySource(in), "displaySource(%q)", in)
@@ -152,14 +157,23 @@ func TestDisplaySource_FriendlyLabels(t *testing.T) {
 // service-name label so the spend tables don't show raw column data.
 func TestDisplayRole_FriendlyLabels(t *testing.T) {
 	cases := map[string]string{
-		"kg_extractor":      "Memory · Entity Extractor",
-		"kg_resolver":       "Memory · Entity Resolver",
-		"kg_relationship":   "Memory · Relationship Extractor",
-		"kg_validator":      "Memory · Faithfulness Validator",
-		"memory_titler":     "Memory · Topic Titler",
-		"memory_classifier": "Memory · Content Classifier",
-		"judge":             "Hallucination Judge",
-		"researcher":        "researcher", // workflow role names pass through
+		"kg_extractor":        "Memory · Entity Extractor",
+		"kg_resolver":         "Memory · Entity Resolver",
+		"kg_relationship":     "Memory · Relationship Extractor",
+		"kg_validator":        "Memory · Faithfulness Validator",
+		"memory_titler":       "Memory · Topic Titler",
+		"memory_classifier":   "Memory · Content Classifier",
+		"memory_narrative":    "Memory · Project Narrator",
+		"rag-ingester":        "Memory · RAG Ingester",
+		"task_narrator":       "Execution Narrator",
+		"post_mortem":         "Post-mortem Explainer",
+		"fix_it_doctor":       "Fix-It Doctor",
+		"instinct_distiller":  "Instinct Distiller",
+		"project_wizard":      "Project Setup Wizard",
+		"automation_composer": "Automation Composer",
+		"judge":               "Hallucination Judge",
+		"researcher":          "researcher", // workflow role names pass through
+		"coder":               "coder",      // workflow role names pass through
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, displayRole(in), "displayRole(%q)", in)

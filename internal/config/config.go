@@ -1509,12 +1509,20 @@ type ChatConfig struct {
 	// when enabled, older turns that don't fit the per-payload token budget
 	// are condensed into one deterministic topic-summary message instead of
 	// being dropped silently. Default off → legacy truncation.
-	Compaction            ChatCompactionConfig `yaml:"compaction"`
-	MaxToolIterations     int                  `yaml:"max_tool_iterations" doc:"Tool-call loop cap per dispatcher turn."`              // dispatcher tool-call loop cap; 0 = default (30)
-	MaxConcurrentRequests int                  `yaml:"max_concurrent_requests" doc:"Max in-flight chat backend calls; excess queues."` // max in-flight chat backend calls; less-urgent requests queue
-	SystemPrompt          string               `yaml:"system_prompt"`
-	ContextSize           int                  `yaml:"context_size" doc:"Context-window tokens."`    // context window tokens; 0 = provider default
-	MaxTokens             int                  `yaml:"max_tokens" doc:"Max output tokens per call."` // max output tokens per call; 0 = provider default
+	Compaction        ChatCompactionConfig `yaml:"compaction"`
+	MaxToolIterations int                  `yaml:"max_tool_iterations" doc:"Tool-call loop cap per dispatcher turn."` // dispatcher tool-call loop cap; 0 = default (30)
+	// DeferredToolThreshold tunes F12 deferred tool loading: when a
+	// project's MCP tool catalog exceeds this count, chat sessions see
+	// tool_search instead of the full catalog (tools the system prompt
+	// names explicitly stay pinned visible). 0 = default (20); negative
+	// = never defer. Added after the 2026-07-15 pagedrop incident where
+	// the assistant catalog crossed the fixed threshold and the
+	// dispatcher declared it had "no access" to a documented tool.
+	DeferredToolThreshold int    `yaml:"deferred_tool_threshold" doc:"MCP catalog size above which chat sessions defer MCP tools behind tool_search. 0 = default (20); negative = never defer."`
+	MaxConcurrentRequests int    `yaml:"max_concurrent_requests" doc:"Max in-flight chat backend calls; excess queues."` // max in-flight chat backend calls; less-urgent requests queue
+	SystemPrompt          string `yaml:"system_prompt"`
+	ContextSize           int    `yaml:"context_size" doc:"Context-window tokens."`    // context window tokens; 0 = provider default
+	MaxTokens             int    `yaml:"max_tokens" doc:"Max output tokens per call."` // max output tokens per call; 0 = provider default
 	// Thinking/reasoning is configured PER SUBPROVIDER under the router
 	// (claude_subscription.thinking_budget, codex_subscription.effort_level,
 	// claude_cli.effort_level), not as a top-level chat knob — a top-level

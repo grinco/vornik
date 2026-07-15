@@ -52,11 +52,18 @@ func (e *Executor) recordRedactionEvents(ctx context.Context, projectID, taskID,
 // operator-configured secretsTrustedOutputTools (empty = nothing trusted).
 func (e *Executor) isTrustedOutputTool(tool string) bool {
 	for _, prefix := range e.secretsTrustedOutputTools {
-		if prefix != "" && strings.HasPrefix(tool, prefix) {
+		if toolNameMatchesPrefix(tool, prefix) {
 			return true
 		}
 	}
 	return false
+}
+
+func toolNameMatchesPrefix(tool, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	return tool == prefix || strings.HasPrefix(tool, prefix+"_")
 }
 
 // dropHeuristicFindings removes the "weak" finding classes (generic_kv +

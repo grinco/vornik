@@ -673,6 +673,16 @@ func displaySource(s string) string {
 		return "Memory topic labels"
 	case "memory_classifier":
 		return "Memory content classification"
+	case "memory_narrative":
+		return "Memory project narrative"
+	case "task_narrator":
+		return "Execution narration"
+	case "fix_it_doctor":
+		return "Fix-it doctor"
+	case "project_wizard":
+		return "Project setup wizard"
+	case "instinct_distiller":
+		return "Instinct distiller"
 	case "_authoring":
 		// Web-authoring assistant — "AI Assist" buttons on
 		// the swarm / workflow / brief editors. Underscore
@@ -712,6 +722,25 @@ func displayRole(s string) string {
 		return "Memory · Topic Titler"
 	case "memory_classifier":
 		return "Memory · Content Classifier"
+	case "memory_narrative":
+		return "Memory · Project Narrator"
+	case "rag-ingester":
+		// Swarm role (companion-example-swarm) whose whole job is async
+		// ingestion into RAG memory — group it with the Memory family
+		// rather than let the raw hyphenated identifier fall through.
+		return "Memory · RAG Ingester"
+	case "task_narrator":
+		return "Execution Narrator"
+	case "post_mortem":
+		return "Post-mortem Explainer"
+	case "fix_it_doctor":
+		return "Fix-It Doctor"
+	case "instinct_distiller":
+		return "Instinct Distiller"
+	case "project_wizard":
+		return "Project Setup Wizard"
+	case "automation_composer":
+		return "Automation Composer"
 	case "judge":
 		return "Hallucination Judge"
 	default:

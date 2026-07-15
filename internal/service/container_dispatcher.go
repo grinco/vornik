@@ -35,6 +35,9 @@ func (c *Container) initDispatcher() {
 	opts := []dispatcher.AgentOption{
 		dispatcher.WithLogger(c.Logger.With().Str("component", "dispatcher").Logger()),
 	}
+	if c.Config.Chat.DeferredToolThreshold != 0 {
+		opts = append(opts, dispatcher.WithDeferredToolThreshold(c.Config.Chat.DeferredToolThreshold))
+	}
 
 	// Tool-iteration cap: Telegram-specific override wins, then the
 	// chat-wide setting. Mirrors the precedence in initTelegram so

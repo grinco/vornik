@@ -355,7 +355,7 @@ func (s *Server) resolveSkill(ctx context.Context, key *persistence.APIKey, id, 
 		if err != nil {
 			return nil, fmt.Errorf("skill not found: %w", err)
 		}
-		if skill.ProjectID != key.ProjectID && !skill.IsGlobal {
+		if !skillReadableByKey(skill, key, repoScope) {
 			return nil, errors.New("skill not found in this project")
 		}
 		return skill, nil
@@ -378,6 +378,23 @@ func (s *Server) resolveSkill(ctx context.Context, key *persistence.APIKey, id, 
 		}
 	}
 	return nil, errors.New("skill not found")
+}
+
+func skillReadableByKey(skill *persistence.Skill, key *persistence.APIKey, repoScope string) bool {
+	if skill == nil || key == nil {
+		return false
+	}
+	if skill.ProjectID != key.ProjectID && !skill.IsGlobal {
+		return false
+	}
+	if skill.Maturity != persistence.SkillMaturityActive && skill.Maturity != persistence.SkillMaturityTrusted {
+		return false
+	}
+	scope := effectiveRepoScope(key, repoScope)
+	if scope == "" {
+		return true
+	}
+	return skill.RepoScope == scope || skill.RepoScope == "*"
 }
 
 func taskIDFromContext(ctx context.Context) string {

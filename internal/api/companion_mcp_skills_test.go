@@ -257,6 +257,54 @@ func TestSkillSearchAndGet_IncludeGlobalSkills(t *testing.T) {
 	}
 }
 
+func TestSkillGetByID_GlobalStillRequiresApprovedMaturity(t *testing.T) {
+	s := newSkillTestServer(t)
+	ctx := context.Background()
+	owner := skillKey("p1", true, true)
+	out, err := s.companionToolSkillPropose(ctx, owner, rawArgs(t, map[string]any{
+		"name": "draft-global", "description": "shared draft", "body": "# not approved",
+		"global": true,
+	}))
+	if err != nil {
+		t.Fatalf("propose: %v", err)
+	}
+
+	reader := skillKey("p2", false, false)
+	_, err = s.companionToolSkillGet(ctx, reader, rawArgs(t, map[string]any{"id": proposeID(t, out)}))
+	if err == nil {
+		t.Fatal("global draft must not be readable by id from another project")
+	}
+}
+
+func TestSkillGetByID_RespectsExplicitRepoScope(t *testing.T) {
+	s := newSkillTestServer(t)
+	ctx := context.Background()
+	owner := skillKey("p1", true, true)
+	out, err := s.companionToolSkillPropose(ctx, owner, rawArgs(t, map[string]any{
+		"name": "scoped-global", "description": "shared procedure", "body": "# body",
+		"repo_scope": "github.com/x/a", "global": true,
+	}))
+	if err != nil {
+		t.Fatalf("propose: %v", err)
+	}
+	id := proposeID(t, out)
+	if _, err := s.companionToolSkillApprove(ctx, owner, rawArgs(t, map[string]any{"id": id})); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	reader := skillKey("p2", false, false)
+	if _, err := s.companionToolSkillGet(ctx, reader, rawArgs(t, map[string]any{
+		"id": id, "repo_scope": "github.com/x/other",
+	})); err == nil {
+		t.Fatal("global skill with explicit mismatched repo_scope must not be readable by id")
+	}
+	if _, err := s.companionToolSkillGet(ctx, reader, rawArgs(t, map[string]any{
+		"id": id, "repo_scope": "github.com/x/a",
+	})); err != nil {
+		t.Fatalf("matching repo_scope should read global skill by id: %v", err)
+	}
+}
+
 func TestSkillSetGlobal_RequiresSkillAdmin(t *testing.T) {
 	s := newSkillTestServer(t)
 	ctx := context.Background()

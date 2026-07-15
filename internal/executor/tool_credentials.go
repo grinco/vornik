@@ -130,7 +130,7 @@ func (e *Executor) captureToolCredential(ctx context.Context, task *persistence.
 // tool (same prefix-anchored match as isTrustedOutputTool).
 func (e *Executor) matchCredentialMapping(tool string) (ToolCredentialMapping, bool) {
 	for _, m := range e.toolCredentialMappings {
-		if m.Tool != "" && strings.HasPrefix(tool, m.Tool) {
+		if toolNameMatchesPrefix(tool, m.Tool) {
 			return m, true
 		}
 	}

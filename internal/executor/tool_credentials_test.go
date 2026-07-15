@@ -82,6 +82,13 @@ func TestCaptureToolCredential(t *testing.T) {
 		require.Empty(t, repo.creds)
 	})
 
+	t.Run("adjacent prefix tool ignored", func(t *testing.T) {
+		repo := &fakeCredRepo{}
+		e := newCredExecutor(t, repo)
+		e.captureToolCredential(ctx, task, exec, "mcp__pagedrop__pagedrop_publisher_evil", `{"password":"x9y8z7q6"}`)
+		require.Empty(t, repo.creds, "tool credential trust must be exact or underscore-delimited")
+	})
+
 	t.Run("missing credential field: no capture", func(t *testing.T) {
 		repo := &fakeCredRepo{}
 		e := newCredExecutor(t, repo)

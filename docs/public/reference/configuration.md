@@ -253,6 +253,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `chat.compaction.enabled` | bool | Summarize overflow turns into a topic gist instead of dropping them. |
 | `chat.compaction.max_gist_terms` | int | Topics retained in the compaction gist (0 = default 24). |
 | `chat.max_tool_iterations` | int | Tool-call loop cap per dispatcher turn. |
+| `chat.deferred_tool_threshold` | int | MCP catalog size above which chat sessions defer MCP tools behind tool_search. 0 = default (20); negative = never defer. |
 | `chat.max_concurrent_requests` | int | Max in-flight chat backend calls; excess queues. |
 | `chat.context_size` | int | Context-window tokens. |
 | `chat.max_tokens` | int | Max output tokens per call. |

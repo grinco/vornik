@@ -154,19 +154,24 @@ type Result struct {
 
 // Agent is the dispatcher. It owns the tool-calling loop and system prompt.
 type Agent struct {
-	chatClient      chat.Provider
-	toolExecutor    *ToolExecutor
-	logger          zerolog.Logger
-	metrics         *Metrics
-	mcpManager      MCPExecutor
-	maxIterations   int
-	watchFunc       TaskWatchFunc
-	auditRepo       AuditRepository
-	memory          MemorySearcher
-	graphSearcher   GraphSearcher
-	memoryCorrector MemoryCorrector
-	llmUsageRepo    persistence.TaskLLMUsageRepository
-	reservRepo      persistence.BudgetReservationRepository
+	chatClient    chat.Provider
+	toolExecutor  *ToolExecutor
+	logger        zerolog.Logger
+	metrics       *Metrics
+	mcpManager    MCPExecutor
+	maxIterations int
+	// deferredToolThreshold overrides DefaultDeferredToolThreshold for
+	// the F12 deferred-tool-loading gate. 0 = package default (20);
+	// negative = never defer (full MCP catalog always visible). Set via
+	// WithDeferredToolThreshold from chat.deferred_tool_threshold.
+	deferredToolThreshold int
+	watchFunc             TaskWatchFunc
+	auditRepo             AuditRepository
+	memory                MemorySearcher
+	graphSearcher         GraphSearcher
+	memoryCorrector       MemoryCorrector
+	llmUsageRepo          persistence.TaskLLMUsageRepository
+	reservRepo            persistence.BudgetReservationRepository
 	// operatorProfiles (optional) DB-backs the per-operator
 	// preferences + notes the dispatcher injects into the
 	// system prompt at the start of every turn. Nil keeps the

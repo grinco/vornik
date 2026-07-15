@@ -232,12 +232,24 @@ func (r *Registry) refreshOne(ctx context.Context, cfg ServerConfig) {
 		// back into our stored snapshot.
 		tools := client.Tools()
 		snap.Tools = append([]Tool(nil), tools...)
-		_ = client.Close()
 	}
 
+	// Publish BEFORE closing the client. Close() of a stdio server can
+	// stall on subprocess teardown (bounded these days, but it hung
+	// indefinitely on 2026-07-15 when pagedrop's tsx grandchild held the
+	// stderr pipe) — and while refreshOne was stuck between connect and
+	// publish, the catalog kept serving the pre-seeded "not yet
+	// refreshed" row for a server that had connected fine, RefreshAll's
+	// WaitGroup never finished, and the spawnRefresh dedup entry blocked
+	// every future refresh. A successful discovery must land in the
+	// catalog no matter what teardown does.
 	r.mu.Lock()
 	r.catalog[cfg.Name] = snap
 	r.mu.Unlock()
+
+	if err == nil {
+		_ = client.Close()
+	}
 }
 
 // shortenError caps the error string at 256 bytes so a hostile MCP

@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -65,6 +66,35 @@ func effectiveDeferralThreshold(threshold int, tier chat.ContextTier) int {
 // search the MCP catalog. Exported because the Telegram
 // onboarding hints reference it.
 const ToolSearchName = "tool_search"
+
+// mcpToolNameRe matches a fully-qualified MCP tool name
+// (mcp__<server>__<tool>) mentioned in prose. Wildcards like
+// "mcp__*" don't match — '*' is outside the class — so allowlist
+// snippets pasted into a prompt can't pin the whole catalog.
+var mcpToolNameRe = regexp.MustCompile(`\bmcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+`)
+
+// extractPinnedMCPTools scans a chat system prompt for explicitly
+// documented MCP tool names. Tools the operator names in the prompt are
+// treated as pinned: deferred loading never hides them.
+//
+// Regression guard for the 2026-07-15 pagedrop incident: the assistant
+// project's system prompt documented mcp__pagedrop__pagedrop_protect by
+// name, but the catalog had crossed the deferral threshold so the tool
+// was absent from the advertised function list — and the model refused
+// ("I don't have access to the MCP") without calling tool_search. A
+// prompt that names a tool is an operator statement that the model must
+// see it.
+func extractPinnedMCPTools(systemPrompt string) map[string]struct{} {
+	matches := mcpToolNameRe.FindAllString(systemPrompt, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	pinned := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		pinned[m] = struct{}{}
+	}
+	return pinned
+}
 
 // expandedToolStore is the per-session "I've already
 // uncovered these MCP tools via tool_search" set. Lives on
@@ -158,7 +188,7 @@ func toolSearchDescriptor() chat.Tool {
 //
 // Pure-ish: reads from the expanded-set store but never
 // writes. tool_search execution does the writing.
-func applyDeferredLoading(builtin, mcp []chat.Tool, store *expandedToolStore, chatID int64, threshold int) []chat.Tool {
+func applyDeferredLoading(builtin, mcp []chat.Tool, store *expandedToolStore, chatID int64, threshold int, pinned map[string]struct{}) []chat.Tool {
 	if threshold <= 0 {
 		threshold = DefaultDeferredToolThreshold
 	}
@@ -172,15 +202,17 @@ func applyDeferredLoading(builtin, mcp []chat.Tool, store *expandedToolStore, ch
 		return append(append(make([]chat.Tool, 0, len(builtin)+len(mcp)), builtin...), mcp...)
 	}
 	// Above threshold: hide MCP tools by default, surface the
-	// search helper, expand whatever the session has uncovered.
+	// search helper, expand whatever the session has uncovered —
+	// plus any tool the operator pinned by naming it in the system
+	// prompt (see extractPinnedMCPTools; 2026-07-15 pagedrop
+	// incident). Pinned visibility must not depend on the store:
+	// it applies even when no expansion tracking is wired.
 	out := make([]chat.Tool, 0, len(builtin)+1+len(mcp))
 	out = append(out, builtin...)
 	out = append(out, toolSearchDescriptor())
-	if store == nil {
-		return out
-	}
 	for _, t := range mcp {
-		if store.contains(chatID, t.Function.Name) {
+		_, isPinned := pinned[t.Function.Name]
+		if isPinned || store.contains(chatID, t.Function.Name) {
 			out = append(out, t)
 		}
 	}

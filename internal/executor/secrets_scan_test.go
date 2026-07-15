@@ -317,6 +317,17 @@ func TestScanToolAudit_TrustedToolPasswordSurvives(t *testing.T) {
 		"trusted publish tool OUTPUT must keep its viewing password (generic_kv exempt by provenance)")
 }
 
+func TestScanToolAudit_TrustedToolPrefixRequiresDelimiter(t *testing.T) {
+	e := newTestExecutorWithTrustedOutputs(t,
+		map[string]secrets.Action{secrets.CheckpointToolAudit: secrets.ActionRedact},
+		[]string{"mcp__pagedrop__pagedrop_publish"})
+	out := "Password: salt8fog6marrytrip — adjacent tool name must not inherit trust."
+	_, gotOut := e.scanToolAuditForSecrets(&persistence.Execution{ID: "e1"}, "publish", "mcp__pagedrop__pagedrop_publisher_evil", "", out)
+	assert.NotContains(t, gotOut, "salt8fog6marrytrip",
+		"trusted-output prefix must be exact or underscore-delimited")
+	assert.Contains(t, gotOut, "[REDACTED:generic_kv]")
+}
+
 func TestScanToolAudit_UntrustedToolPasswordRedacted(t *testing.T) {
 	e := newTestExecutorWithTrustedOutputs(t,
 		map[string]secrets.Action{secrets.CheckpointToolAudit: secrets.ActionRedact},

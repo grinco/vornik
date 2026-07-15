@@ -56,6 +56,11 @@ func (s *Server) SkillFetch(w http.ResponseWriter, r *http.Request, projectID st
 		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", "query parameter 'name' is required")
 		return
 	}
+	role := r.URL.Query().Get("role")
+	if role == "" {
+		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", "query parameter 'role' is required")
+		return
+	}
 
 	// List with the index's exact eligibility filter, then match by
 	// name — this keeps fetchability and index visibility from ever
@@ -63,6 +68,7 @@ func (s *Server) SkillFetch(w http.ResponseWriter, r *http.Request, projectID st
 	// project-OR-global + maturity predicates duplicated).
 	skills, err := s.skillStore.List(r.Context(), projectID, persistence.SkillListFilter{
 		Maturities:    []string{persistence.SkillMaturityActive, persistence.SkillMaturityTrusted},
+		Role:          role,
 		IncludeGlobal: true,
 	})
 	if err != nil {

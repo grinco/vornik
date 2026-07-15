@@ -884,18 +884,20 @@ handle_memory_search() {
 # signal + the execution association there, so no telemetry here.
 handle_skill_fetch() {
     local params="$1"
-    local name project_id url encoded_name response
+    local name project_id role url encoded_name encoded_role response
     name=$(printf '%s' "$params" | jq -r '.name // ""')
     project_id=$(jq -r '.projectId // .project_id // ""' "$INPUT_FILE")
+    role=$(jq -r '.swarm.role // .role // ""' "$INPUT_FILE")
 
-    if [ -z "${VORNIK_API_URL:-}" ] || [ -z "$project_id" ] || [ -z "$name" ]; then
-        printf '{"error":"skill fetch not available (VORNIK_API_URL=%s project_id=%s name=%s)"}' \
-            "${VORNIK_API_URL:-<unset>}" "${project_id:-<unset>}" "${name:-<unset>}"
+    if [ -z "${VORNIK_API_URL:-}" ] || [ -z "$project_id" ] || [ -z "$role" ] || [ -z "$name" ]; then
+        printf '{"error":"skill fetch not available (VORNIK_API_URL=%s project_id=%s role=%s name=%s)"}' \
+            "${VORNIK_API_URL:-<unset>}" "${project_id:-<unset>}" "${role:-<unset>}" "${name:-<unset>}"
         return
     fi
 
     encoded_name=$(printf '%s' "$name" | jq -Rr @uri)
-    url="${VORNIK_API_URL}/api/v1/projects/${project_id}/skills/fetch?name=${encoded_name}"
+    encoded_role=$(printf '%s' "$role" | jq -Rr @uri)
+    url="${VORNIK_API_URL}/api/v1/projects/${project_id}/skills/fetch?name=${encoded_name}&role=${encoded_role}"
     if [ -n "${VORNIK_EXECUTION_ID:-}" ]; then
         url="${url}&execution_id=${VORNIK_EXECUTION_ID}"
     fi

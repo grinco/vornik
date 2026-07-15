@@ -78,14 +78,14 @@ func TestApplyDeferredLoading_DegradedTierShrinksVisibleSetEvenBelowThreshold(t 
 
 	// PEAK tier: threshold honored → everything visible.
 	peakThreshold := effectiveDeferralThreshold(DefaultDeferredToolThreshold, chat.TierPeak)
-	peakResult := applyDeferredLoading(builtin, mcp, store, 99, peakThreshold)
+	peakResult := applyDeferredLoading(builtin, mcp, store, 99, peakThreshold, nil)
 	if !containsToolByName(peakResult, "mcp__a__one") {
 		t.Errorf("PEAK tier should leave 5-tool catalog fully visible: %v", peakResult)
 	}
 
 	// DEGRADING tier: threshold clamped to 1 → deferral kicks in.
 	degradedThreshold := effectiveDeferralThreshold(DefaultDeferredToolThreshold, chat.TierDegrading)
-	degradedResult := applyDeferredLoading(builtin, mcp, store, 99, degradedThreshold)
+	degradedResult := applyDeferredLoading(builtin, mcp, store, 99, degradedThreshold, nil)
 	if !containsToolByName(degradedResult, ToolSearchName) {
 		t.Errorf("DEGRADING tier must inject tool_search; got %v", degradedResult)
 	}
@@ -103,7 +103,7 @@ func TestApplyDeferredLoading_BelowThresholdReturnsEverything(t *testing.T) {
 	builtin := []chat.Tool{makeMCPTool("list_projects", "list")}
 	mcp := []chat.Tool{makeMCPTool("mcp__a__one", "x"), makeMCPTool("mcp__a__two", "y")}
 	store := newExpandedToolStore()
-	got := applyDeferredLoading(builtin, mcp, store, 99, 20)
+	got := applyDeferredLoading(builtin, mcp, store, 99, 20, nil)
 	if len(got) != 3 {
 		t.Fatalf("len = %d, want 3 (builtin + every MCP tool)", len(got))
 	}
@@ -125,7 +125,7 @@ func TestApplyDeferredLoading_AboveThresholdHidesMCPAndSurfacesSearch(t *testing
 		mcp[i] = makeMCPTool("mcp__a__"+string(rune('a'+i%26)), "x")
 	}
 	store := newExpandedToolStore()
-	got := applyDeferredLoading(builtin, mcp, store, 99, 20)
+	got := applyDeferredLoading(builtin, mcp, store, 99, 20, nil)
 	if !containsToolByName(got, "list_projects") {
 		t.Error("built-in tools must remain visible above threshold")
 	}
@@ -153,7 +153,7 @@ func TestApplyDeferredLoading_ExpandedToolsSurface(t *testing.T) {
 	store := newExpandedToolStore()
 	store.expand(42, []string{"mcp__a__a", "mcp__a__c"})
 
-	got := applyDeferredLoading(builtin, mcp, store, 42, 20)
+	got := applyDeferredLoading(builtin, mcp, store, 42, 20, nil)
 	if !containsToolByName(got, "mcp__a__a") || !containsToolByName(got, "mcp__a__c") {
 		t.Error("expanded MCP tools must surface in the visible set for subsequent turns")
 	}
@@ -175,7 +175,7 @@ func TestApplyDeferredLoading_ChatIDZeroSkipsDeferral(t *testing.T) {
 	}
 	store := newExpandedToolStore()
 	// Even above threshold, chatID=0 should disable deferral.
-	got := applyDeferredLoading(builtin, mcp, store, 0, 20)
+	got := applyDeferredLoading(builtin, mcp, store, 0, 20, nil)
 	for _, m := range mcp {
 		if !containsToolByName(got, m.Function.Name) {
 			t.Errorf("chatID=0 must see every MCP tool; %q missing", m.Function.Name)

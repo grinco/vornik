@@ -5,7 +5,7 @@ sources:
     - path: internal/dispatcher/tools.go
       sha256: 649b38e180f055badbc4e7901e0b8f153f79ecebe6d15037d7258e3479bf0006
     - path: internal/dispatcher/agent.go
-      sha256: 84b5bcbe46b7a9f3e28922c0cc429425d506d223daca49d94c5196dbcc63075b
+      sha256: 63cedb225b4550ea15a817954c10e9662ba4fb725e2a6545aedecfaf0d612d34
     - path: internal/email/channel.go
       sha256: f79eef8120d028866e172af25d8cf0355800a1e9ac7a3c585e50f3e8e7032fb0
 ---

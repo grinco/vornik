@@ -30,7 +30,7 @@ func (f *fakeMCPExecutor) Execute(_ context.Context, _, _, _ string) (string, er
 
 func TestAllTools_BaseDispatcherToolsOnly(t *testing.T) {
 	a := &Agent{}
-	tools := a.allTools("", 0, chat.TierPeak)
+	tools := a.allTools("", 0, chat.TierPeak, "")
 	// Built-ins surface even when nothing else is wired.
 	assert.NotEmpty(t, tools)
 	// builtin "list_projects" must be present.
@@ -52,7 +52,7 @@ func TestAllTools_MCPMergedWhenProjectIDSet(t *testing.T) {
 		},
 	}}
 	a := &Agent{mcpManager: mcp}
-	tools := a.allTools("p1", 0, chat.TierPeak)
+	tools := a.allTools("p1", 0, chat.TierPeak, "")
 	names := map[string]struct{}{}
 	for _, tl := range tools {
 		names[tl.Function.Name] = struct{}{}
@@ -66,7 +66,7 @@ func TestAllTools_EmptyProjectIDSkipsMCP(t *testing.T) {
 		"p1": {{Type: "function", Function: chat.ToolFunction{Name: "mcp__server__op1"}}},
 	}}
 	a := &Agent{mcpManager: mcp}
-	tools := a.allTools("", 0, chat.TierPeak)
+	tools := a.allTools("", 0, chat.TierPeak, "")
 	for _, tl := range tools {
 		assert.NotEqual(t, "mcp__server__op1", tl.Function.Name)
 	}
@@ -76,7 +76,7 @@ func TestAllTools_ChatIDZeroBypassesDeferredLoading(t *testing.T) {
 	// Even with an expanded store wired, chatID=0 forces the legacy
 	// "everything visible" path — important for sub-agent contexts.
 	a := &Agent{toolExecutor: &ToolExecutor{expanded: newExpandedToolStore()}}
-	tools := a.allTools("p1", 0, chat.TierPeak)
+	tools := a.allTools("p1", 0, chat.TierPeak, "")
 	assert.NotEmpty(t, tools)
 }
 

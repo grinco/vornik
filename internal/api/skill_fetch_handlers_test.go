@@ -30,12 +30,12 @@ func newSkillFetchServer(t *testing.T) (*Server, persistence.ExecutionInjectedSk
 	}, execSkills
 }
 
-func mkFetchSkill(t *testing.T, s *Server, id, proj, name, maturity string, global bool) {
+func mkFetchSkill(t *testing.T, s *Server, id, proj, name, maturity string, global bool, roles ...string) {
 	t.Helper()
 	if err := s.skillStore.Create(context.Background(), &persistence.Skill{
 		ID: id, ProjectID: proj, RepoScope: "github.com/x/a", Name: name,
 		Description: "when to use " + name, Body: "BODY of " + name, BodySHA256: "h-" + id,
-		Maturity: maturity, IsGlobal: global,
+		Maturity: maturity, IsGlobal: global, Roles: roles,
 	}); err != nil {
 		t.Fatalf("create %s: %v", id, err)
 	}
@@ -57,7 +57,7 @@ func TestSkillFetch_ServesBodyAndRecordsUsage(t *testing.T) {
 	s, execSkills := newSkillFetchServer(t)
 	mkFetchSkill(t, s, "s1", "p1", "person-dossier", persistence.SkillMaturityTrusted, false)
 
-	rec := doFetch(s, "?name=person-dossier&execution_id=exec-9")
+	rec := doFetch(s, "?name=person-dossier&role=researcher&execution_id=exec-9")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -84,7 +84,7 @@ func TestSkillFetch_ExecutionAssociationRequiresSameProject(t *testing.T) {
 	mkFetchSkill(t, s, "s1", "p1", "person-dossier", persistence.SkillMaturityTrusted, false)
 	s.executionRepo = &stubExecRepoForFork{exec: &persistence.Execution{ID: "exec-other", ProjectID: "p2"}}
 
-	rec := doFetch(s, "?name=person-dossier&execution_id=exec-other")
+	rec := doFetch(s, "?name=person-dossier&role=researcher&execution_id=exec-other")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -107,13 +107,28 @@ func TestSkillFetch_EligibilityMirrorsIndex(t *testing.T) {
 	mkFetchSkill(t, s, "s-global", "p2", "global-skill", persistence.SkillMaturityActive, true)
 
 	for _, name := range []string{"draft-skill", "retired-skill", "other-project", "does-not-exist"} {
-		rec := doFetch(s, "?name="+name)
+		rec := doFetch(s, "?name="+name+"&role=researcher")
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("%s: expected 404, got %d", name, rec.Code)
 		}
 	}
-	if rec := doFetch(s, "?name=global-skill"); rec.Code != http.StatusOK {
+	if rec := doFetch(s, "?name=global-skill&role=researcher"); rec.Code != http.StatusOK {
 		t.Errorf("global skill from another project must fetch, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSkillFetch_RequiresRoleAndFiltersLikeIndex(t *testing.T) {
+	s, _ := newSkillFetchServer(t)
+	mkFetchSkill(t, s, "s1", "p1", "research-only", persistence.SkillMaturityTrusted, false, "researcher")
+
+	if rec := doFetch(s, "?name=research-only"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing role must 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := doFetch(s, "?name=research-only&role=writer"); rec.Code != http.StatusNotFound {
+		t.Fatalf("wrong role must not fetch role-scoped skill, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := doFetch(s, "?name=research-only&role=researcher"); rec.Code != http.StatusOK {
+		t.Fatalf("matching role should fetch, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

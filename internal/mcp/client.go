@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -237,14 +238,47 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 }
 
 // Close shuts down the connection.
+//
+// Stdio teardown kills the whole PROCESS GROUP, not just the direct
+// child. Launchers like tsx (pagedrop) and npx fork a grandchild that
+// inherits our stdio pipes; killing only the wrapper left that
+// grandchild alive holding the stderr write end, so cmd.Wait() blocked
+// on pipe EOF indefinitely — the 2026-07-15 pagedrop registry hang
+// (refreshOne wedged in Close, /ui/mcp badge stuck at "not yet
+// refreshed", one orphaned node process leaked per refresh attempt).
+// startStdio puts the child in its own process group (Setpgid) so the
+// group kill reaches every descendant, and sets cmd.WaitDelay as a
+// backstop for descendants that escape the group (setsid).
 func (c *Client) Close() error {
 	if c.cmd != nil && c.cmd.Process != nil {
-		if err := c.cmd.Process.Kill(); err != nil {
+		if err := c.killProcessGroup(); err != nil {
 			c.logger.Debug().Err(err).Str("server", c.config.Name).Msg("mcp: process kill error")
 		}
 		if err := c.waitForSubprocess(); err != nil {
 			c.logger.Debug().Err(err).Str("server", c.config.Name).Msg("mcp: wait error on close")
 		}
+	}
+	return nil
+}
+
+// killProcessGroup SIGKILLs the stdio subprocess's process group
+// (startStdio ran it with Setpgid, so pgid == child pid), falling back
+// to a single-process kill when the group signal fails (e.g. the group
+// is already gone, or the process was started without Setpgid).
+func (c *Client) killProcessGroup() error {
+	if c.cmd == nil || c.cmd.Process == nil {
+		return nil
+	}
+	// Refuse degenerate PIDs: negating Pid 0 signals the DAEMON'S OWN
+	// process group (kill(0, SIGKILL) = self-DoS) and a released
+	// process's Pid -1 would negate to kill(1). Neither can follow a
+	// successful Start, but the blast radius of getting this wrong is
+	// the whole daemon — guard unconditionally.
+	if c.cmd.Process.Pid <= 0 {
+		return nil
+	}
+	if err := syscall.Kill(-c.cmd.Process.Pid, syscall.SIGKILL); err != nil {
+		return c.cmd.Process.Kill()
 	}
 	return nil
 }
@@ -319,8 +353,23 @@ func (c *Client) startStdio(ctx context.Context) error {
 		args[i] = expandSafe(a)
 	}
 
-	c.cmd = exec.CommandContext(ctx, c.config.Command, args...)
+	// Deliberately NOT exec.CommandContext: the ctx passed here bounds
+	// the CONNECT handshake, but the subprocess must live as long as the
+	// client — project clients are connected under a bounded startup ctx
+	// and then held for hours. Binding the process to that ctx killed
+	// every long-lived stdio client ~30s after boot (2026-07-15 deploy;
+	// the pre-group-kill code had the same wiring and "worked" only
+	// because tsx's orphaned grandchild kept serving the inherited pipes
+	// after the wrapper died). Teardown is exclusively Close()'s job.
+	c.cmd = exec.Command(c.config.Command, args...)
 	c.cmd.Env = env
+	// Own process group + bounded Wait: Close()'s group kill reaches
+	// every descendant the launcher forks (tsx, npx — see the Close()
+	// doc comment), and WaitDelay releases cmd.Wait (with ErrWaitDelay)
+	// if some descendant that escaped the group still holds the stderr
+	// pipe open after the process itself is gone.
+	c.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	c.cmd.WaitDelay = 10 * time.Second
 	// Pin cwd to "/" so the MCP subprocess can't read files via
 	// relative paths against the daemon's working directory. The
 	// daemon may be running from a config tree that contains

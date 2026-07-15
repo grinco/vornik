@@ -107,6 +107,14 @@ func WithMCPManager(m MCPExecutor) AgentOption {
 	return func(a *Agent) { a.mcpManager = m }
 }
 
+// WithDeferredToolThreshold overrides the F12 deferred-tool-loading
+// threshold (chat.deferred_tool_threshold). 0 keeps the package default
+// (DefaultDeferredToolThreshold); a negative value disables deferral so
+// the full MCP catalog is always advertised to chat sessions.
+func WithDeferredToolThreshold(n int) AgentOption {
+	return func(a *Agent) { a.deferredToolThreshold = n }
+}
+
 // WithLLMUsageRepository wires the per-step LLM usage repo into the
 // dispatcher. When set, create_task calls run a budget check before
 // scheduling new work and refuse with a user-facing message when the

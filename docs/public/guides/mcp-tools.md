@@ -3,7 +3,7 @@ sources:
     - path: internal/registry/project.go
       sha256: c9ba2fea024e0142c03eaefbf4790021c1dcf4bfb2d158158c290a437b47579b
     - path: internal/mcp/client.go
-      sha256: 2c12bd14a3717d505c897be6fec94b064333da7bd01c01a1c98113e1b0c69556
+      sha256: c734527b60d345ec9c028b4ad73b85af568cd9c17f142ee3b669e0e423d9ac83
     - path: internal/mcp/ratelimit.go
       sha256: 19ad0c64e2abd9d25e95971e1ba5e3cfe91f34852edeca6e4f9c70825b2e901d
     - path: internal/cli/mcp.go
@@ -53,7 +53,10 @@ There are two transports:
 - **`stdio`** — the daemon launches `command` (with `args`) as a child process
   and speaks MCP over its stdin/stdout. Use this for tools you ship alongside
   vornik. `env` values support `${VAR}` expansion from the daemon's own
-  environment, so secrets stay out of the project file.
+  environment, so secrets stay out of the project file. On disconnect the
+  daemon terminates the server's whole process group, so launchers that fork
+  a worker process (`npx`, `tsx`, shell wrappers) are cleaned up with it —
+  don't rely on an MCP subprocess outliving its connection.
 - **`sse`** — the daemon connects to a long-running server at `url` over HTTP.
   Use this for tools that run as their own service.
 

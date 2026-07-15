@@ -171,6 +171,7 @@ func TestDisplayRole_FriendlyLabels(t *testing.T) {
 		"instinct_distiller":  "Instinct Distiller",
 		"project_wizard":      "Project Setup Wizard",
 		"automation_composer": "Automation Composer",
+		"dispatcher":          "Chat Dispatcher",
 		"judge":               "Hallucination Judge",
 		"researcher":          "researcher", // workflow role names pass through
 		"coder":               "coder",      // workflow role names pass through

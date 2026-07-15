@@ -741,6 +741,8 @@ func displayRole(s string) string {
 		return "Project Setup Wizard"
 	case "automation_composer":
 		return "Automation Composer"
+	case "dispatcher":
+		return "Chat Dispatcher"
 	case "judge":
 		return "Hallucination Judge"
 	default:

@@ -47,9 +47,12 @@ func TestSparklinePoints(t *testing.T) {
 // Only the methods Dashboard touches are implemented; the rest panic
 // loudly so a regression that calls a new method shows up clearly.
 type stubLLMUsageRepo struct {
-	rows  []*persistence.TaskLLMUsage
-	sum   float64
-	roles []persistence.RoleModelSpend
+	rows     []*persistence.TaskLLMUsage
+	sum      float64
+	roles    []persistence.RoleModelSpend
+	roles24h []persistence.RoleModelSpend
+	roles7d  []persistence.RoleModelSpend
+	roles30d []persistence.RoleModelSpend
 }
 
 func (s *stubLLMUsageRepo) Record(context.Context, *persistence.TaskLLMUsage) error { return nil }
@@ -63,8 +66,17 @@ func (s *stubLLMUsageRepo) SumCost(context.Context, time.Time, time.Time) (float
 func (s *stubLLMUsageRepo) SumCostByProject(context.Context, string, time.Time, time.Time) (float64, error) {
 	return 0, nil
 }
-func (s *stubLLMUsageRepo) AggregateByRoleModel(context.Context, time.Time, time.Time, int, string) ([]persistence.RoleModelSpend, error) {
-	return s.roles, nil
+func (s *stubLLMUsageRepo) AggregateByRoleModel(_ context.Context, since, _ time.Time, _ int, _ string) ([]persistence.RoleModelSpend, error) {
+	if len(s.roles24h) == 0 && len(s.roles7d) == 0 && len(s.roles30d) == 0 {
+		return s.roles, nil
+	}
+	if time.Since(since) < 48*time.Hour {
+		return s.roles24h, nil
+	}
+	if time.Since(since) < 8*24*time.Hour {
+		return s.roles7d, nil
+	}
+	return s.roles30d, nil
 }
 
 // Aggregations added by the spend deep-dive. Stubs return nil so
@@ -150,6 +162,57 @@ func TestDashboardRendersWithSpend(t *testing.T) {
 	// The headline figure must be there too.
 	if !strings.Contains(body, "$12.34") {
 		t.Errorf("dashboard body missing 24h spend headline $12.34:\n%s", body)
+	}
+}
+
+func TestDashboard_LeaderboardWindowsPreloadForInstantSwitch(t *testing.T) {
+	repo := &stubLLMUsageRepo{
+		roles24h: []persistence.RoleModelSpend{{
+			Role:             "role-1d",
+			Model:            "model-1d",
+			StepCount:        3,
+			PromptTokens:     1200,
+			CompletionTokens: 400,
+			CostUSD:          0.12,
+		}},
+		roles7d: []persistence.RoleModelSpend{{
+			Role:             "role-7d",
+			Model:            "model-7d",
+			StepCount:        6,
+			PromptTokens:     2200,
+			CompletionTokens: 700,
+			CostUSD:          0.56,
+		}},
+		roles30d: []persistence.RoleModelSpend{{
+			Role:             "role-30d",
+			Model:            "model-30d",
+			StepCount:        9,
+			PromptTokens:     3200,
+			CompletionTokens: 900,
+			CostUSD:          0.98,
+		}},
+	}
+	srv := NewServer(WithLLMUsageRepository(repo), WithOnboardingDetector(alreadyOnboardedDetector()))
+
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/?window=30d", nil))
+	if rr.Code != 200 {
+		t.Fatalf("dashboard returned %d, body: %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if strings.Count(body, ">Model Leaderboard <span") != 1 {
+		t.Fatalf("expected one leaderboard, got body:\n%s", body)
+	}
+	for _, window := range []string{"1d", "7d", "30d"} {
+		if !strings.Contains(body, `data-leaderboard-window="`+window+`"`) ||
+			!strings.Contains(body, `data-leaderboard-panel="`+window+`"`) {
+			t.Errorf("dashboard missing preloaded %s leaderboard panel", window)
+		}
+	}
+	for _, model := range []string{"model-1d", "model-7d", "model-30d"} {
+		if !strings.Contains(body, model) {
+			t.Errorf("dashboard missing preloaded leaderboard model %s", model)
+		}
 	}
 }
 

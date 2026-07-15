@@ -93,6 +93,7 @@ func TestSpend_RendersHTMXWindowButtons(t *testing.T) {
 	assert.Contains(t, body, `hx-get="/ui/spend"`)
 	assert.Contains(t, body, `hx-target="#spend-results"`)
 	assert.Contains(t, body, `hx-select="#spend-results"`)
+	assert.Contains(t, body, `tab.classList.toggle("bg-brand-600/80", active)`)
 	for _, window := range []string{"24h", "7d", "30d"} {
 		assert.Contains(t, body, `data-spend-window="`+window+`"`)
 	}

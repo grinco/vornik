@@ -531,6 +531,15 @@
         var windowSelect = form.querySelector('select[name="window"]');
         if (!windowSelect) return;
         windowSelect.value = button.getAttribute("data-spend-window");
+        form.querySelectorAll("[data-spend-window]").forEach(function (tab) {
+          var active = tab === button;
+          tab.setAttribute("aria-pressed", active ? "true" : "false");
+          tab.classList.toggle("bg-brand-600/80", active);
+          tab.classList.toggle("text-white", active);
+          tab.classList.toggle("text-gray-400", !active);
+          tab.classList.toggle("hover:bg-dark-700", !active);
+          tab.classList.toggle("hover:text-gray-200", !active);
+        });
         windowSelect.dispatchEvent(new Event("change", { bubbles: true }));
       });
     </script>

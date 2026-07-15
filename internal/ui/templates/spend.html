@@ -12,12 +12,19 @@
                     <h1 class="text-xl font-semibold text-gray-100">Spend</h1>
                     <p class="text-xs text-gray-500 mt-0.5">Where the LLM dollars go — drill down by project, source, task, role, or model.</p>
                 </div>
-                <form method="get" action="/ui/spend" class="flex items-center gap-2">
-                    <select name="window" class="text-sm bg-dark-800 border border-dark-700 text-gray-200 rounded-md px-2 py-1.5">
+                <form method="get" action="/ui/spend" class="flex items-center gap-2"
+                      hx-get="/ui/spend" hx-target="#spend-results" hx-select="#spend-results"
+                      hx-push-url="true" hx-trigger="change, submit">
+                    <select name="window" class="sr-only" aria-label="Spend window">
                         <option value="24h" {{if eq .WindowDays 1}}selected{{end}}>Last 24 hours</option>
                         <option value="7d"  {{if eq .WindowDays 7}}selected{{end}}>Last 7 days</option>
                         <option value="30d" {{if eq .WindowDays 30}}selected{{end}}>Last 30 days</option>
                     </select>
+                    <div class="inline-flex items-center gap-1 rounded-lg border border-dark-700 bg-dark-800 p-0.5" role="group" aria-label="Spend window">
+                        <button type="button" data-spend-window="24h" aria-pressed="{{if eq .WindowDays 1}}true{{else}}false{{end}}" class="px-2.5 py-1 text-xs rounded-md transition-colors {{if eq .WindowDays 1}}bg-brand-600/80 text-white{{else}}text-gray-400 hover:bg-dark-700 hover:text-gray-200{{end}}">1d</button>
+                        <button type="button" data-spend-window="7d" aria-pressed="{{if eq .WindowDays 7}}true{{else}}false{{end}}" class="px-2.5 py-1 text-xs rounded-md transition-colors {{if eq .WindowDays 7}}bg-brand-600/80 text-white{{else}}text-gray-400 hover:bg-dark-700 hover:text-gray-200{{end}}">7d</button>
+                        <button type="button" data-spend-window="30d" aria-pressed="{{if eq .WindowDays 30}}true{{else}}false{{end}}" class="px-2.5 py-1 text-xs rounded-md transition-colors {{if eq .WindowDays 30}}bg-brand-600/80 text-white{{else}}text-gray-400 hover:bg-dark-700 hover:text-gray-200{{end}}">30d</button>
+                    </div>
                     <select name="project" class="text-sm bg-dark-800 border border-dark-700 text-gray-200 rounded-md px-2 py-1.5">
                         <option value="">{{if .AllAccess}}All projects{{else}}All my projects{{end}}</option>
                         {{range .ProjectsList}}
@@ -28,6 +35,7 @@
                 </form>
             </div>
 
+            <div id="spend-results" class="space-y-6">
             {{/* Headline cards: total $, total tokens (with input ratio), call count, calls per task. */}}
             <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 <div class="glass rounded-xl border border-dark-700 overflow-hidden">
@@ -506,10 +514,26 @@
             </div>
             {{end}}
 
+            </div>
         </div>
     </main>
 
     {{template "pageFooter" .}}
+    <script>
+      // The data-heavy spend dashboard is refreshed through HTMX. Window
+      // buttons only change the form's existing query value, then trigger a
+      // partial update of #spend-results — the page shell remains in place.
+      document.addEventListener("click", function (event) {
+        var button = event.target.closest("[data-spend-window]");
+        if (!button) return;
+        var form = button.closest("form");
+        if (!form) return;
+        var windowSelect = form.querySelector('select[name="window"]');
+        if (!windowSelect) return;
+        windowSelect.value = button.getAttribute("data-spend-window");
+        windowSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    </script>
 </body>
 </html>
 {{end}}

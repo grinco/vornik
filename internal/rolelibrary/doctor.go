@@ -78,11 +78,26 @@ func CheckLibrary(archetypes []*RoleArchetype, systemHandlers []string) []Findin
 	}
 
 	var findings []Finding
+	// Duplicate archetypeId detection — the composer selects by ID, so two
+	// archetypes sharing an ID make the selection ambiguous (review-20260716-7e65).
+	idFiles := map[string][]string{}
 	for _, a := range archetypes {
 		if a == nil {
 			continue
 		}
+		if id := strings.TrimSpace(a.ArchetypeID); id != "" {
+			idFiles[id] = append(idFiles[id], a.SourceFile)
+		}
 		findings = append(findings, checkArchetype(a, handlerSet)...)
+	}
+	for id, files := range idFiles {
+		if len(files) > 1 {
+			findings = append(findings, Finding{
+				ArchetypeID: id,
+				Severity:    SeverityError,
+				Message:     fmt.Sprintf("duplicate archetypeId %q defined in %d files: %s", id, len(files), strings.Join(files, ", ")),
+			})
+		}
 	}
 
 	sort.SliceStable(findings, func(i, j int) bool {
@@ -107,6 +122,12 @@ func checkArchetype(a *RoleArchetype, handlerSet map[string]bool) []Finding {
 
 	if strings.TrimSpace(id) == "" {
 		out = append(out, Finding{ArchetypeID: a.SourceFile, Severity: SeverityError, Message: "archetypeId is empty"})
+	}
+
+	// Prompt body is the role's system prompt — an empty/whitespace body
+	// composes a role with no instructions (review-20260716-7e65).
+	if strings.TrimSpace(a.Prompt) == "" {
+		out = append(out, add(SeverityError, "prompt body is empty (the Markdown body IS the role's system prompt)"))
 	}
 
 	// Tool allowlist membership.

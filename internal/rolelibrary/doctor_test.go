@@ -47,6 +47,31 @@ func TestCheckLibraryCleanArchetype(t *testing.T) {
 	}
 }
 
+func TestCheckEmptyPromptBody(t *testing.T) {
+	// review-20260716-7e65: an empty/whitespace body composes a role with NO
+	// system prompt, yet passed the doctor clean.
+	a := goodArchetype()
+	a.Prompt = "   \n\t "
+	a.PromptParams = nil // no splice points, else undeclared-field noise
+	fs := CheckLibrary([]*RoleArchetype{a}, nil)
+	if !hasError(fs, "prompt") {
+		t.Errorf("expected empty-prompt error, got %v", fs)
+	}
+}
+
+func TestCheckDuplicateArchetypeID(t *testing.T) {
+	// review-20260716-7e65: two files with the same archetypeId both loaded and
+	// passed clean, leaving the composer's select-by-ID ambiguous.
+	a := goodArchetype()
+	a.SourceFile = "widget-a.md"
+	b := goodArchetype()
+	b.SourceFile = "widget-b.md"
+	fs := CheckLibrary([]*RoleArchetype{a, b}, nil)
+	if !hasError(fs, "duplicate") {
+		t.Errorf("expected duplicate-archetypeId error, got %v", fs)
+	}
+}
+
 func TestCheckUnknownTool(t *testing.T) {
 	a := goodArchetype()
 	a.Tools = []string{"file_read", "totally_made_up_tool"}

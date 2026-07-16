@@ -526,7 +526,18 @@ func (n *Narrator) sweepIdle(ctx context.Context, now time.Time) {
 			// a lagging terminal-flip (exec terminal, task not yet): a later
 			// sweep re-checks and emits once the task settles, or the state is
 			// force-torn-down after ForceTeardown if a continuation took over.
-			if n.taskStillActive(ctx, st.taskID) {
+			active, known := n.taskStillActive(ctx, st.taskID)
+			if !known {
+				// Transient task-lookup error: we can't tell if this is a
+				// genuine completion or a mid-recovery execution-terminal.
+				// Emitting here risks a false completion — suppress and retry
+				// on the next tick (force-teardown remains the backstop).
+				if idle >= n.forceTeardownAfter() {
+					n.teardown(execID)
+				}
+				continue
+			}
+			if active {
 				// The task isn't terminal (retry / recovery / continuation).
 				// For a COMPLETED execution this could be a premature-success
 				// false completion (recovery incident) — suppress it. But a
@@ -600,15 +611,24 @@ func isTerminalTaskStatus(s persistence.TaskStatus) bool {
 // getter isn't wired or a lookup errors, it returns false so the sweep keeps
 // its prior "emit on execution-terminal" behavior (never suppress a real
 // completion on uncertainty).
-func (n *Narrator) taskStillActive(ctx context.Context, taskID string) bool {
+// Returns (active, known). known is false ONLY when a task lookup errored —
+// a TRANSIENT failure where we cannot tell if the task is terminal, so the
+// caller must NOT emit a (possibly false) completion; it retries next tick
+// (review-20260716-cea0). nil-Tasks / empty-taskID / not-found are deterministic
+// "not active" but KNOWN, preserving the legacy emit-on-execution-terminal
+// behavior when task status can't be consulted by design.
+func (n *Narrator) taskStillActive(ctx context.Context, taskID string) (active, known bool) {
 	if n.Tasks == nil || taskID == "" {
-		return false
+		return false, true
 	}
 	t, err := n.Tasks.Get(ctx, taskID)
-	if err != nil || t == nil {
-		return false
+	if err != nil {
+		return false, false // transient lookup error — unknown
 	}
-	return !isTerminalTaskStatus(t.Status)
+	if t == nil {
+		return false, true // not found — deterministically not active
+	}
+	return !isTerminalTaskStatus(t.Status), true
 }
 
 // emitLine is the single choke point every trigger funnels through:

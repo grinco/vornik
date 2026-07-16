@@ -2,6 +2,7 @@ package narrator
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,9 +13,15 @@ import (
 
 // fakeTasksNarr is a TaskGetter returning a scripted task status — lets the
 // sweep consult whether the TASK (not just the execution) is terminal.
-type fakeTasksNarr struct{ status persistence.TaskStatus }
+type fakeTasksNarr struct {
+	status persistence.TaskStatus
+	err    error // when set, Get returns this error (transient lookup failure)
+}
 
 func (f *fakeTasksNarr) Get(_ context.Context, id string) (*persistence.Task, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
 	return &persistence.Task{ID: id, ProjectID: "proj-1", Status: f.status}, nil
 }
 
@@ -45,6 +52,23 @@ func TestSweepIdle_NoCompletionWhileTaskStillActive(t *testing.T) {
 func TestSweepIdle_NoCompletionWhileTaskPaused(t *testing.T) {
 	h := newTestHarness(t, func(n *Narrator) {
 		n.Tasks = &fakeTasksNarr{status: persistence.TaskStatusPaused}
+		n.ForceTeardown = 60 * time.Millisecond
+	})
+	seedRunningExecution(h)
+	h.Sub.push(testExecID, livepubsub.KindStepStarted, livepubsub.StepStartedPayload{StepID: "recover", Role: "worker"})
+	h.awaitLine(2 * time.Second)
+	h.Executions.set(testExecID, "proj-1", "task-1", persistence.ExecutionStatusCompleted)
+	h.expectNoLine(300 * time.Millisecond)
+}
+
+// review-20260716-cea0: a TRANSIENT Tasks.Get error must NOT be treated as
+// "task not active" — that fail-open path narrated a false "completed
+// successfully" for an execution whose task was actually still running (the
+// recovery false-completion the guard exists to prevent). On a lookup error the
+// sweep suppresses and retries next tick.
+func TestSweepIdle_NoCompletionOnTaskLookupError(t *testing.T) {
+	h := newTestHarness(t, func(n *Narrator) {
+		n.Tasks = &fakeTasksNarr{err: errors.New("db blip")}
 		n.ForceTeardown = 60 * time.Millisecond
 	})
 	seedRunningExecution(h)

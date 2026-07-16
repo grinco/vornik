@@ -206,15 +206,25 @@ func (s *Service) RollbackConfigApply(ctx context.Context, sessionID, operatorID
 		return nil, err
 	}
 	result := &DispatchResult{Kind: ActionKindConfigApply, RollbackID: proposalID}
-	if s.ConfigProposals == nil {
+	switch {
+	case s.ConfigProposals == nil:
 		result.Result = ActionResultFailed
 		result.Detail = "config_apply rollback is not configured on this deployment"
-	} else if err := s.ConfigProposals.Rollback(ctx, proposalID); err != nil {
-		result.Result = ActionResultFailed
-		result.Detail = err.Error()
-	} else {
-		result.Result = ActionResultApplied
-		result.Detail = "config change rolled back"
+	case !sessionAppliedProposal(session, proposalID):
+		// Ownership gate (review-20260716-d95b): resumeSession proves the
+		// operator owns the SESSION, but not that this proposal was applied
+		// BY this session. Refuse rolling back a proposal the session never
+		// applied — otherwise an operator could roll back any proposal id.
+		result.Result = ActionResultRejected
+		result.Detail = "no matching applied config_apply for this proposal in this session"
+	default:
+		if err := s.ConfigProposals.Rollback(ctx, proposalID); err != nil {
+			result.Result = ActionResultFailed
+			result.Detail = err.Error()
+		} else {
+			result.Result = ActionResultApplied
+			result.Detail = "config change rolled back"
+		}
 	}
 
 	s.Metrics.recordAction("config_apply_rollback", result.Result)
@@ -430,6 +440,26 @@ func (s *Service) auditRollback(ctx context.Context, ref FailureRef, operatorID,
 // recordAppliedAction appends one appliedActionRecord to the session's
 // applied_actions JSONB column and streams the result into the
 // transcript as a system turn, then persists both in one Update call.
+// sessionAppliedProposal reports whether this session has an applied
+// config_apply action whose RollbackID matches proposalID — the ownership
+// gate for RollbackConfigApply. A corrupt AppliedActions blob decodes to an
+// empty list (fail-closed: no ownership proven → rollback refused).
+func sessionAppliedProposal(session *persistence.FixItSession, proposalID string) bool {
+	if session == nil || proposalID == "" || len(session.AppliedActions) == 0 {
+		return false
+	}
+	var records []appliedActionRecord
+	if err := json.Unmarshal(session.AppliedActions, &records); err != nil {
+		return false
+	}
+	for _, r := range records {
+		if r.Kind == ActionKindConfigApply && r.Result == ActionResultApplied && r.RollbackID == proposalID {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) recordAppliedAction(ctx context.Context, session *persistence.FixItSession, result *DispatchResult) error {
 	var records []appliedActionRecord
 	if len(session.AppliedActions) > 0 {

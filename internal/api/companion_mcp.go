@@ -671,6 +671,22 @@ const (
 	companionCostEstimateWindowDays = 30
 )
 
+// reviewClassWorkflows are the read-only, no-egress review workflows whose
+// uploaded input artifacts are exempted from ingress secret redaction (LLD
+// 2026-07-16). Their consuming agent (the `reviewer` role) has no egress tools,
+// so raw content cannot leave the daemon. This is a CLOSED server-side set — a
+// caller cannot obtain the exemption except by naming one of these, and only via
+// the companion-authed delegate. Adding an entry requires confirming that
+// workflow's consuming role has no egress tools.
+var reviewClassWorkflows = map[string]bool{
+	"companion-architectural-review": true,
+	"companion-doc-review":           true,
+}
+
+func isReviewClassWorkflow(workflow string) bool {
+	return reviewClassWorkflows[strings.TrimSpace(workflow)]
+}
+
 // estimateWorkflowCost returns the cost_estimate sub-object for a
 // (project, workflow) pair, or nil when no estimate can be produced
 // (usage repo unwired, query error, or no prior-run sample). The
@@ -836,7 +852,19 @@ func (s *Server) companionToolDelegate(ctx context.Context, key *persistence.API
 		// read and burns its iteration budget globbing. Observed 2026-05-28
 		// on task_20260528134611, B-10.
 		results, err := s.processInputArtifactsWithOpts(ctx, key.ProjectID, args.InputArtifacts,
-			processInputArtifactsOpts{SkipAutoExtract: args.SkipAutoExtract})
+			processInputArtifactsOpts{
+				SkipAutoExtract: args.SkipAutoExtract,
+				// Scoped ingress-redaction exemption (LLD 2026-07-16): a
+				// review-class workflow's uploaded artifact (e.g. a diff for
+				// companion-architectural-review) is stored verbatim so the
+				// no-egress review agent reads faithful content. This decision
+				// is made SERVER-SIDE from an allowlist of workflow names and is
+				// only reachable via the companion-authed delegate — the caller
+				// cannot request it by setting a field (review M1). Safe today
+				// because the reviewer role has no egress tools; the durable
+				// egress control is a tracked follow-up (https://docs.vornik.io).
+				SkipSecretRedaction: isReviewClassWorkflow(args.Workflow),
+			})
 		if err != nil {
 			return "", fmt.Errorf("inputArtifacts: %w", err)
 		}

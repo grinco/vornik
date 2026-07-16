@@ -86,7 +86,7 @@ func slackFailureSummary(outcome Outcome) string {
 func classifySlackErr(err error) (Outcome, []CheckFailure) {
 	var authErr *slack.AuthTestError
 	if errors.As(err, &authErr) && slack.IsKnownInvalidAuth(authErr.Code) {
-		return OutcomeFail, []CheckFailure{{Field: "bot_token", Reason: authErr.Code}}
+		return OutcomeFail, []CheckFailure{{Field: "bot_token_env", Reason: authErr.Code}}
 	}
 	return OutcomeError, nil
 }

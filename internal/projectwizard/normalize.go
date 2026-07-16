@@ -37,12 +37,13 @@ func normalizeComposition(c *Composition, meta TemplateMetaLookup, fallbackModel
 		return nil, "", nil
 	}
 	var (
-		spec []TemplateParam
-		base BaseAutonomy
+		spec          []TemplateParam
+		base          BaseAutonomy
+		specAvailable bool
 	)
 	if meta != nil {
 		if p, b, ok := meta(c.Template); ok {
-			spec, base = p, b
+			spec, base, specAvailable = p, b, true
 		}
 	}
 	var notes []RepairNote
@@ -53,6 +54,14 @@ func normalizeComposition(c *Composition, meta TemplateMetaLookup, fallbackModel
 	c.Addons = merged
 	notes = append(notes, mnotes...)
 
+	// Param repair only runs when the template's declared param set is
+	// KNOWN (§4.2: "if the spec is unavailable, param repair is skipped").
+	// Running it with a nil spec would treat every param as undeclared and
+	// drop them all — wrong when we simply don't have the template's
+	// contract (no TemplateMeta wired, or an unresolved slug).
+	if !specAvailable {
+		return notes, "", nil
+	}
 	if c.Params == nil {
 		c.Params = map[string]ParamValue{}
 	}

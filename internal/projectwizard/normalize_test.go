@@ -317,3 +317,34 @@ func TestWizardConvergence_20260716Incident(t *testing.T) {
 		t.Errorf("composed project missing llm autonomy block:\n%s", proj)
 	}
 }
+
+// TestNormalizeComposition_NilMetaPreservesParams: when no TemplateMeta is
+// wired (spec unavailable), param repair must be SKIPPED — params are left
+// untouched rather than dropped as "undeclared" (§4.2). Regression for the
+// wizard-adapter converse test that a composition's params survive when the
+// wizard runs without a template catalog.
+func TestNormalizeComposition_NilMetaPreservesParams(t *testing.T) {
+	c := &Composition{
+		Template: "python-scraper",
+		Params:   map[string]ParamValue{"schedule": pv("daily")},
+		Addons: []Addon{
+			addon(t, map[string]any{"type": "schedule", "interval": "24h", "goal": "scrape"}),
+		},
+	}
+	notes, question, cerr := normalizeComposition(c, nil, "")
+	if cerr != nil {
+		t.Fatalf("unexpected error: %v", cerr)
+	}
+	if question != "" {
+		t.Errorf("unexpected question: %q", question)
+	}
+	if len(notes) != 0 {
+		t.Errorf("no repairs when spec unavailable, got %v", notes)
+	}
+	if got := c.Params["schedule"]; len(got) != 1 || got[0] != "daily" {
+		t.Errorf("params must survive when spec unknown: schedule=%v", got)
+	}
+	if len(c.Addons) != 1 {
+		t.Errorf("single autonomy addon is a merge no-op, got %d addons", len(c.Addons))
+	}
+}

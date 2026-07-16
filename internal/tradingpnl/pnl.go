@@ -177,11 +177,28 @@ func matchClose(
 //
 // Open lots with no matching close are not emitted (unrealized; captured by
 // EquityCurve).
+//
+// FIFO pairing depends on chronological order: an opening fill must be seen
+// before its closing fill. Callers must NOT be trusted to pre-sort — the
+// trading fill repo returns fills newest-first (ORDER BY filled_at DESC),
+// which processed a SELL before its opening BUY and paired round-trips
+// backwards, dating the exit to the earlier fill (2026-07-16 dashboard
+// regression). We sort a COPY ascending by FilledAt here so the function is
+// correct regardless of caller order and the caller's slice is untouched.
 func PairRoundTrips(fills []*persistence.TradingFill, sideByOrderID map[string]string) []ClosedTrade {
 	queues := make(map[string]*symbolQueues)
 	var trades []ClosedTrade
 
-	for _, f := range fills {
+	ordered := make([]*persistence.TradingFill, len(fills))
+	copy(ordered, fills)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i] == nil || ordered[j] == nil {
+			return ordered[j] == nil // nils sort last, stably
+		}
+		return ordered[i].FilledAt.Before(ordered[j].FilledAt)
+	})
+
+	for _, f := range ordered {
 		if f == nil {
 			continue // defensive: fill lists may carry nil rows (see UI panel)
 		}

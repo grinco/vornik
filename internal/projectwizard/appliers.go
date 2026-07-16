@@ -9,6 +9,56 @@ import (
 	"vornik.io/vornik/internal/registry"
 )
 
+// autonomyApplier writes a single llm-mode autonomy block wholesale. It
+// is the sole writer for the normalizer's merged autonomy directive
+// (§4.1); the `autonomy` addon type is emitted only by
+// mergeAutonomyAddons, never offered in the LLM addon vocabulary. Base
+// reconciliation (§3.2): a cron-enabled base is rejected (we never
+// silently override a base's declared cron schedule); a disabled or
+// llm-enabled base is set/overwritten in place (no duplicate block, F6).
+type autonomyApplier struct{}
+
+type autonomyArgs struct {
+	Mode         string `json:"mode"`
+	PollInterval string `json:"poll_interval"`
+	Goal         string `json:"goal"`
+}
+
+func (autonomyApplier) Apply(cp *composedProject, args json.RawMessage) error {
+	var in autonomyArgs
+	if err := json.Unmarshal(args, &in); err != nil {
+		return &ComposeError{AddonType: "autonomy", Field: "args", Message: err.Error()}
+	}
+	// The normalizer only ever emits llm mode; guard anyway so a
+	// mis-emitted directive fails loudly rather than writing a cron block
+	// through the wrong door.
+	if in.Mode != registry.AutonomyModeLLM {
+		return &ComposeError{AddonType: "autonomy", Field: "mode",
+			Message: fmt.Sprintf("must be %q (the merged multi-cadence loop is llm-mode)", registry.AutonomyModeLLM)}
+	}
+	if in.Goal == "" {
+		return &ComposeError{AddonType: "autonomy", Field: "goal", Message: "required"}
+	}
+	dur, err := time.ParseDuration(in.PollInterval)
+	if err != nil || dur <= 0 {
+		return &ComposeError{AddonType: "autonomy", Field: "poll_interval",
+			Message: fmt.Sprintf("%q is not a positive Go duration", in.PollInterval)}
+	}
+	// Base reconciliation. A cron-enabled base owns an incompatible
+	// autonomy style — reject with an actionable steer rather than
+	// clobber it. A disabled or llm-mode base is overwritten in place so
+	// exactly one autonomy block exists.
+	if cp.Project.Autonomy.Enabled && cp.Project.Autonomy.Mode == registry.AutonomyModeCron {
+		return &ComposeError{AddonType: "autonomy", Field: "mode",
+			Message: "this request needs an llm-autonomy base; the personal-assistant template supports it"}
+	}
+	cp.Project.Autonomy.Enabled = true
+	cp.Project.Autonomy.Mode = registry.AutonomyModeLLM
+	cp.Project.Autonomy.Goal = in.Goal
+	cp.Project.Autonomy.PollInterval = in.PollInterval
+	return nil
+}
+
 type mcpServerApplier struct{ known map[string]bool }
 
 type mcpServerArgs struct {

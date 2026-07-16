@@ -277,3 +277,69 @@ func TestRagSourceApplier_RejectsDifferentModeConflict(t *testing.T) {
 }
 
 var _ = json.Marshal // keep import if unused after edits
+
+// TestAutonomyApplier covers the internal `autonomy` addon (normalizer-
+// emitted only): sets an llm-mode autonomy block wholesale, overwrites an
+// llm-enabled base's block without duplicating it, and rejects a
+// cron-enabled base rather than silently overriding it. 2026-07-16
+// wizard-convergence hardening (F1/F6).
+func TestAutonomyApplier(t *testing.T) {
+	valid := `{"type":"autonomy","mode":"llm","poll_interval":"5m","goal":"ingest + digest"}`
+
+	t.Run("disabled base sets block", func(t *testing.T) {
+		cp := newCP()
+		if err := (autonomyApplier{}).Apply(cp, []byte(valid)); err != nil {
+			t.Fatalf("valid: %v", err)
+		}
+		a := cp.Project.Autonomy
+		if !a.Enabled || a.Mode != registry.AutonomyModeLLM || a.PollInterval != "5m" || a.Goal != "ingest + digest" {
+			t.Fatalf("autonomy not set wholesale: %+v", a)
+		}
+	})
+
+	t.Run("llm-enabled base overwritten, not duplicated", func(t *testing.T) {
+		cp := newCP()
+		cp.Project.Autonomy.Enabled = true
+		cp.Project.Autonomy.Mode = registry.AutonomyModeLLM
+		cp.Project.Autonomy.Goal = "old goal"
+		cp.Project.Autonomy.PollInterval = "1h"
+		if err := (autonomyApplier{}).Apply(cp, []byte(valid)); err != nil {
+			t.Fatalf("llm base: %v", err)
+		}
+		a := cp.Project.Autonomy
+		if a.Mode != registry.AutonomyModeLLM || a.Goal != "ingest + digest" || a.PollInterval != "5m" {
+			t.Fatalf("llm base not overwritten: %+v", a)
+		}
+	})
+
+	t.Run("cron-enabled base rejected", func(t *testing.T) {
+		cp := newCP()
+		cp.Project.Autonomy.Enabled = true
+		cp.Project.Autonomy.Mode = registry.AutonomyModeCron
+		cp.Project.Autonomy.Goal = "cron goal"
+		err := (autonomyApplier{}).Apply(cp, []byte(valid))
+		if err == nil {
+			t.Fatal("expected reject on cron-enabled base")
+		}
+		ce, ok := err.(*ComposeError)
+		if !ok || ce.AddonType != "autonomy" {
+			t.Fatalf("want *ComposeError autonomy, got %T %v", err, err)
+		}
+	})
+
+	t.Run("empty goal rejected", func(t *testing.T) {
+		cp := newCP()
+		err := (autonomyApplier{}).Apply(cp, []byte(`{"type":"autonomy","mode":"llm","poll_interval":"5m","goal":""}`))
+		if err == nil {
+			t.Fatal("expected reject on empty goal")
+		}
+	})
+
+	t.Run("non-positive interval rejected", func(t *testing.T) {
+		cp := newCP()
+		err := (autonomyApplier{}).Apply(cp, []byte(`{"type":"autonomy","mode":"llm","poll_interval":"0s","goal":"g"}`))
+		if err == nil {
+			t.Fatal("expected reject on non-positive interval")
+		}
+	})
+}

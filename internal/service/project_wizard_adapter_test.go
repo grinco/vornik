@@ -93,3 +93,55 @@ files:
 	require.Contains(t, renderedFile, "- https://b.example", "feed b should be rendered")
 	require.Contains(t, renderedFile, "id: p1", "projectId should be rendered")
 }
+
+func TestNewTemplateMetaLookup(t *testing.T) {
+	dir := t.TempDir()
+	tdir := filepath.Join(dir, "personal-assistant")
+	require.NoError(t, os.MkdirAll(tdir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(tdir, "template.yaml"), []byte(`displayName: "PA"
+description: "d"
+parameters:
+  - name: projectId
+    type: string
+    required: true
+  - name: displayName
+    type: string
+    required: true
+  - name: llmModel
+    type: string
+    required: true
+    default: zai.glm-5
+files:
+  - source: project.yaml.tmpl
+    target: projects/{{.projectId}}.yaml
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tdir, "project.yaml.tmpl"), []byte(`projectId: "{{.projectId}}"
+displayName: "{{.displayName}}"
+autonomy:
+  enabled: false
+  goal: |
+    (disabled)
+  mode: llm
+`), 0o644))
+
+	cat, err := templates.Load(dir)
+	require.NoError(t, err)
+	lookup := newTemplateMetaLookup(cat, dir)
+	require.NotNil(t, lookup)
+
+	params, base, ok := lookup("personal-assistant")
+	require.True(t, ok)
+	names := map[string]projectwizard.TemplateParam{}
+	for _, p := range params {
+		names[p.Name] = p
+	}
+	require.Contains(t, names, "projectId")
+	require.Contains(t, names, "llmModel")
+	require.Equal(t, "zai.glm-5", names["llmModel"].Default)
+	require.True(t, names["llmModel"].Required)
+	require.False(t, base.Enabled, "personal-assistant ships autonomy disabled")
+	require.Equal(t, "llm", base.Mode)
+
+	_, _, ok = lookup("nope")
+	require.False(t, ok)
+}

@@ -53,9 +53,13 @@ Rules:
    custom-base instead. Only reference MCP servers and tools that
    appear in the live grounding below — never invent one that
    isn't listed. Addons must match the documented vocabulary and
-   field shapes exactly. Never combine a "schedule" addon with a
+   field shapes exactly. A project has exactly ONE autonomy style: never combine a "schedule" addon with a
    "rag_source" addon in the same composition — they're mutually
-   exclusive.
+   exclusive. For a multi-cadence need (frequent ingestion AND a daily
+   digest), use ONE llm-mode loop whose goal manages both cadences.
+7. In the composition "params", only use params the chosen base template
+   declares (shown per-template in the grounding above) - never invent a
+   param such as "topic". ALWAYS set projectId (a slug).
 
 %s
 
@@ -64,8 +68,8 @@ set suggested_template — the project is built from that template, so
 the proposal only needs to carry the template's key fields and the
 operator gets the same vetted swarm + workflow the gallery ships.
 
-The proposal's "raw" object must include at minimum: projectId (slug),
-displayName, and a topic (a short phrase naming what to track or do).
+The proposal's "raw" object must include at minimum: projectId (slug)
+and displayName (projectId is always required).
 When no template fits, also include either an autonomy block (for
 scheduled work) or a roles block (for human-driven work), and use
 existing role names from the templates above when possible.`
@@ -215,6 +219,11 @@ type Wizard struct {
 	// time — the same seam ComposeDeps.Resolver fills. Optional; nil
 	// leaves dynamic optionsFrom values unresolved.
 	Resolver templates.OptionsResolver
+
+	// TemplateMeta resolves a base template's declared params + autonomy
+	// block for the convergence normalizer (normalizeComposition). Optional;
+	// nil skips base-aware behavior and derives only projectId.
+	TemplateMeta TemplateMetaLookup
 
 	// --- NL Automation Composer tier-3 engine (task 1.1b) ---
 
@@ -524,6 +533,26 @@ func (w *Wizard) Converse(ctx context.Context, sessionID, operatorID, userMessag
 // message (and resetting ready_to_commit) on failure. Returns the
 // turn outcome for the metrics counter.
 func (w *Wizard) applyComposition(ctx context.Context, session *persistence.ProjectWizardSession, envelope *Envelope) string {
+	// Deterministic convergence pass (2026-07-16): merge ≥2 autonomy
+	// addons into one llm-mode loop and repair template params BEFORE the
+	// composition is composed or persisted, so the previewed and committed
+	// composition are the normalized one. A merge that can't converge
+	// (e.g. cron-enabled base) surfaces as a steer.
+	notes, question, nerr := normalizeComposition(envelope.Composition, w.TemplateMeta, w.Model)
+	if nerr != nil {
+		envelope.Message += "\n\n(composition: " + strings.TrimPrefix(nerr.Error(), "composition: ") + ")"
+		envelope.ReadyToCommit = false
+		w.retainLastGoodComposition(session, envelope)
+		return turnOutcomeValidationError
+	}
+	for _, n := range notes {
+		envelope.Message += "\n\n(" + string(n) + ")"
+	}
+	if question != "" {
+		envelope.Message += "\n\n" + question
+		envelope.ReadyToCommit = false
+	}
+
 	if _, _, cerr := w.composeFromEnvelope(ctx, envelope); cerr != nil {
 		// ComposeError.Error() already self-prefixes "composition: "
 		// on structural (AddonIndex<0) failures; don't double it up —
@@ -533,13 +562,39 @@ func (w *Wizard) applyComposition(ctx context.Context, session *persistence.Proj
 		if !strings.HasPrefix(msg, "composition:") {
 			msg = "composition: " + msg
 		}
-		envelope.Message = envelope.Message + "\n\n(" + msg + ")"
+		envelope.Message += "\n\n(" + msg + ")"
 		envelope.ReadyToCommit = false
+		w.retainLastGoodComposition(session, envelope)
+		return turnOutcomeValidationError
+	}
+	if question != "" {
+		// Composition is structurally valid but a required param is still
+		// unanswered — keep it as the preview, but don't mark committable.
+		compositionBytes, _ := json.Marshal(envelope.Composition)
+		session.Composition = compositionBytes
 		return turnOutcomeValidationError
 	}
 	compositionBytes, _ := json.Marshal(envelope.Composition)
 	session.Composition = compositionBytes
 	return turnOutcomeAssistantReply
+}
+
+// retainLastGoodComposition prevents a failed turn from blanking the
+// preview to "No proposal yet" (2026-07-16 §4.3): when this turn's
+// composition couldn't be applied but the session still holds a prior
+// valid one, surface that prior composition on the envelope so the UI
+// keeps showing the last-good draft (still not committable — the caller
+// has already set ReadyToCommit=false).
+func (w *Wizard) retainLastGoodComposition(session *persistence.ProjectWizardSession, envelope *Envelope) {
+	if len(session.Composition) == 0 {
+		return // no prior valid draft to fall back to
+	}
+	var prior Composition
+	if err := json.Unmarshal(session.Composition, &prior); err != nil {
+		return
+	}
+	envelope.Composition = &prior
+	envelope.Message += "\n\n(kept your previous valid draft; the latest change couldn't be applied)"
 }
 
 // applyProposal validates the legacy raw-proposal path, folding a
@@ -558,7 +613,7 @@ func (w *Wizard) applyProposal(session *persistence.ProjectWizardSession, envelo
 		slug = session.SuggestedTemplate
 	}
 	if verr := w.validateProposal(envelope.Proposal, slug); verr != nil {
-		envelope.Message = envelope.Message + "\n\n(validation: " + verr.Error() + ")"
+		envelope.Message += "\n\n(validation: " + verr.Error() + ")"
 		envelope.ReadyToCommit = false
 		return turnOutcomeValidationError
 	}
@@ -924,9 +979,10 @@ func (w *Wizard) composeFromEnvelope(ctx context.Context, env *Envelope) (map[st
 		Addons:       comp.Addons,
 	}
 	deps := ComposeDeps{
-		Templates: mat,
-		Resolver:  w.Resolver,
-		KnownMCP:  knownMCP,
+		Templates:    mat,
+		Resolver:     w.Resolver,
+		KnownMCP:     knownMCP,
+		TemplateMeta: w.TemplateMeta,
 	}
 	return Compose(in, deps)
 }

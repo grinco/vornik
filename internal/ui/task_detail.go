@@ -171,8 +171,13 @@ type TaskCostBreakdown struct {
 // agent-step record. Default sort is CostUSD desc so the biggest spenders
 // surface first; the user can re-sort by clicking column headers.
 type TaskCostStepRow struct {
-	StepID           string
+	StepID string
+	// Role is the operator-facing display label (via displayRole) for
+	// the HTML table. RoleRaw is the machine-readable identifier used by
+	// the CSV/JSON exports so downstream tooling keys on stable values,
+	// not the humanized label.
 	Role             string
+	RoleRaw          string
 	Model            string
 	PromptTokens     int64
 	CompletionTokens int64
@@ -519,6 +524,7 @@ func (s *Server) TaskDetail(w http.ResponseWriter, r *http.Request) {
 				bk.Rows = append(bk.Rows, TaskCostStepRow{
 					StepID:           r.StepID,
 					Role:             displayRole(r.Role),
+					RoleRaw:          r.Role,
 					Model:            r.Model,
 					PromptTokens:     r.PromptTokens,
 					CompletionTokens: r.CompletionTokens,
@@ -540,7 +546,7 @@ func (s *Server) TaskDetail(w http.ResponseWriter, r *http.Request) {
 		out := [][]string{header}
 		for _, row := range data.Cost.Rows {
 			out = append(out, []string{
-				row.StepID, row.Role, row.Model,
+				row.StepID, row.RoleRaw, row.Model,
 				strconv.FormatInt(row.PromptTokens, 10),
 				strconv.FormatInt(row.CompletionTokens, 10),
 				strconv.Itoa(row.Iterations),

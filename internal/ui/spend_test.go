@@ -173,8 +173,16 @@ func TestDisplayRole_FriendlyLabels(t *testing.T) {
 		"automation_composer": "Automation Composer",
 		"dispatcher":          "Chat Dispatcher",
 		"judge":               "Hallucination Judge",
-		"researcher":          "researcher", // workflow role names pass through
-		"coder":               "coder",      // workflow role names pass through
+		"github-classifier":   "GitHub Classifier", // curated (operator-editable, may go stale)
+		// User-defined swarm role names return UNCHANGED — cosmetic
+		// capitalization happens in the HTML template via CSS, never in
+		// this function (they're free text the operator controls).
+		"reviewer":     "reviewer",
+		"researcher":   "researcher",
+		"coder":        "coder",
+		"risk-officer": "risk-officer",
+		"MLops":        "MLops", // free-text casing must survive verbatim
+		"":             "",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, displayRole(in), "displayRole(%q)", in)

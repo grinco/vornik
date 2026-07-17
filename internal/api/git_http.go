@@ -10,31 +10,19 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/safepath"
 )
-
-// gitSafeJoinUnder joins base+rel and returns ("", error) if the result
-// escapes base (e.g. via `..`).  Symlinks are not followed.
-// Mirrors internal/executor.safeJoinUnder but is unexported there.
-func gitSafeJoinUnder(base, rel string) (string, error) {
-	cleanBase := filepath.Clean(base)
-	joined := filepath.Clean(filepath.Join(cleanBase, rel))
-	if joined == cleanBase {
-		return "", fmt.Errorf("gitSafeJoinUnder: %q resolves to base", rel)
-	}
-	if !strings.HasPrefix(joined, cleanBase+string(os.PathSeparator)) {
-		return "", fmt.Errorf("gitSafeJoinUnder: %q escapes base %q", rel, base)
-	}
-	return joined, nil
-}
 
 // gitWorkspaceRoot resolves the on-disk workspace directory for projectID.
 // It sanitizes the project ID first (404-safe rejection of traversal), then
-// joins it under Config.Runtime.ProjectWorkspacePath.
+// confines it under Config.Runtime.ProjectWorkspacePath via safepath.JoinUnder.
+// The returned path is only os.Stat'd (existence check) — the git subprocess
+// uses the raw configured ProjectWorkspacePath + a PATH_INFO from the URL — so
+// JoinUnder's symlink resolution of the return value is harmless here.
 func (s *Server) gitWorkspaceRoot(projectID string) (string, error) {
 	id, err := sanitizeGitProjectID(projectID)
 	if err != nil {
@@ -43,7 +31,7 @@ func (s *Server) gitWorkspaceRoot(projectID string) (string, error) {
 	if s.config == nil || s.config.Runtime.ProjectWorkspacePath == "" {
 		return "", fmt.Errorf("gitWorkspaceRoot: ProjectWorkspacePath not configured")
 	}
-	return gitSafeJoinUnder(s.config.Runtime.ProjectWorkspacePath, id)
+	return safepath.JoinUnder(s.config.Runtime.ProjectWorkspacePath, id)
 }
 
 // countingResponseWriter wraps an http.ResponseWriter and counts the bytes

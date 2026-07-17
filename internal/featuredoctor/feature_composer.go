@@ -26,6 +26,24 @@ func composerFeature() Feature {
 		Edition: version.EditionEnterprise,
 		Apply:   RestartRequired,
 		Gates:   []Gate{{Key: "composer.enabled", EnableTo: true}},
+		// Verify answers "is the enabled composer actually working?" — without it,
+		// ComputeStatus (status.go) can never return StatusOK and an enabled,
+		// healthy composer reports a permanent false [degraded] (2026-07-16). The
+		// composer's load-bearing runtime dependency is a loadable role library to
+		// ground tier-3 synthesis; re-confirm it (the prereq screens at config
+		// time, this confirms the enabled feature can still ground a composition).
+		// Scope note (review-20260717-21f4 #1): Verify covers ONLY the role library
+		// on purpose — ComputeStatus (status.go) already re-evaluates every Prereq
+		// (allPrereqOK && verify.OK), so the chat-provider config prereq still gates
+		// [degraded]; and a chat provider that is configured-but-DOWN at runtime is
+		// surfaced by the chat model-health circuit breaker, not this doctor Verify.
+		Verify: func(_ context.Context, d Deps) PrereqResult {
+			r := checkRoleLibraryPrereq(d)
+			if !r.OK {
+				return r
+			}
+			return PrereqResult{OK: true, Detail: "composer ready — " + r.Detail}
+		},
 		Prereqs: []Prereq{
 			{
 				Name: "chat provider configured",
@@ -107,9 +125,14 @@ func checkRoleLibraryPrereq(d Deps) PrereqResult {
 		return PrereqResult{OK: false, Detail: "role-library load failed: " + err.Error()}
 	}
 	if len(archetypes) == 0 {
+		// Last-hop drift message (design §5, 2026-07-16): this prereq reads the
+		// DEPLOYED tree, so an empty role-library is almost always a deploy gap
+		// (repo has configs/role-library/*.md, deployed tree doesn't) — the exact
+		// 2026-07-16 incident. Name the subtree + manifest class + the check so the
+		// failure points straight at the fix instead of "seed some files".
 		return PrereqResult{OK: false, Fixable: false,
-			Detail:      "no role-library entries found",
-			Remediation: "seed configs/role-library/*.md (see design §5.3) before enabling the composer"}
+			Detail:      fmt.Sprintf("no role-library archetypes in the deployed tree (%s/role-library)", d.RoleLibraryDir),
+			Remediation: "role-library is likely not deployed: run `make config-diff` (it's a CONFIG_DEPLOYABLE_DIRS subtree) and sync configs/role-library/*.md into the deployed tree, then reload — before enabling the composer"}
 	}
 	findings := rolelibrary.CheckLibrary(archetypes, nil)
 	erroredIDs := map[string]bool{}

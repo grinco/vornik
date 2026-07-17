@@ -202,7 +202,10 @@ func stageAndCommitBundle(liveConfigDir, sessionID string, files map[string]stri
 		if mkErr := os.MkdirAll(filepath.Dir(stagingPath), 0o700); mkErr != nil {
 			return fmt.Errorf("render staged file %s: %w", rel, mkErr)
 		}
-		if wErr := os.WriteFile(stagingPath, []byte(files[rel]), 0o600); wErr != nil {
+		// fsync the staged file: a crash after the activating rename must not
+		// surface a zero-length/partial file that recovery's ProjectFileLive
+		// check would then treat as fully landed (review-20260716-8f22 #3).
+		if wErr := writeFileSync(stagingPath, []byte(files[rel])); wErr != nil {
 			return fmt.Errorf("render staged file %s: %w", rel, wErr)
 		}
 		journal.Targets = append(journal.Targets, journalTarget{RelPath: rel, StagingPath: stagingPath})
@@ -212,11 +215,19 @@ func stageAndCommitBundle(liveConfigDir, sessionID string, files map[string]stri
 	if jErr != nil {
 		return fmt.Errorf("marshal commit journal: %w", jErr)
 	}
-	if wErr := os.WriteFile(journalPathFor(liveConfigDir, sessionID), journalBytes, 0o600); wErr != nil {
+	if wErr := writeFileSync(journalPathFor(liveConfigDir, sessionID), journalBytes); wErr != nil {
 		return fmt.Errorf("write commit journal: %w", wErr)
 	}
+	// fsync the staging dir (the journal's parent) so the journal's directory
+	// entry is durable BEFORE any file lands. Recovery keys off the journal to
+	// roll back a partial commit, so the journal must be at least as durable as
+	// the target files it tracks — otherwise a crash could persist orphan
+	// swarm/workflow files while losing the journal that would clean them up
+	// (review-20260717-f696 #1).
+	syncDir(stagingDirFor(liveConfigDir, sessionID))
 
 	var landed []journalTarget
+	destDirs := make(map[string]struct{})
 	for _, target := range journal.Targets {
 		livePath, pathErr := safeComposerPath(liveConfigDir, target.RelPath)
 		if pathErr != nil {
@@ -232,9 +243,48 @@ func stageAndCommitBundle(liveConfigDir, sessionID string, files map[string]stri
 			return fmt.Errorf("land %s: %w", target.RelPath, rErr)
 		}
 		landed = append(landed, target)
+		destDirs[filepath.Dir(livePath)] = struct{}{}
+	}
+
+	// fsync each destination directory so the renames themselves are durable
+	// (a rename is only guaranteed persisted after the parent dir is fsynced).
+	// Best-effort — a dir-fsync failure doesn't unwind a successful commit.
+	for dir := range destDirs {
+		syncDir(dir)
 	}
 
 	return nil
+}
+
+// writeFileSync writes data to path (0o600, O_TRUNC) and fsyncs the file before
+// returning, so the bytes are durable before the commit's activating rename.
+func writeFileSync(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, wErr := f.Write(data); wErr != nil {
+		_ = f.Close()
+		return wErr
+	}
+	if sErr := f.Sync(); sErr != nil {
+		_ = f.Close()
+		return sErr
+	}
+	return f.Close()
+}
+
+// syncDir fsyncs a directory so a rename into it is durable. Best-effort: on
+// filesystems/platforms where a directory Sync is a no-op or unsupported, the
+// error is ignored (the rename still happened; durability degrades to the FS's
+// own guarantees).
+func syncDir(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	_ = d.Sync()
+	_ = d.Close()
 }
 
 // rollbackLandedTargets removes every file that made it into the live
@@ -287,6 +337,18 @@ func safeComposerPath(root, rel string) (string, error) {
 // leaves the live tree in a state where the project file's presence
 // exactly signals full success (it lands last).
 func (w *Wizard) commitBundleSession(ctx context.Context, session *persistence.ProjectWizardSession) (*CommitResult, error) {
+	// Serialise the whole check-and-land: the collision check below and the
+	// journaled rename in stageAndCommitBundle are otherwise a non-atomic
+	// read-then-write, so two concurrent commits with colliding IDs could both
+	// pass the check and clobber each other's landed files (review-20260716-8f22).
+	// The lock deliberately spans the ENTIRE method (validation, staging, all
+	// renames, AND the bounded hot-reload) — do NOT narrow it to just
+	// check→rename, or the collision re-check and the land stop being atomic and
+	// the TOCTOU reopens. Holding across the reload is acceptable: it is bounded
+	// by ReloadTimeout (default 30s) and this is a rare, operator-driven path.
+	w.commitMu.Lock()
+	defer w.commitMu.Unlock()
+
 	var bundle ComposedBundle
 	if err := json.Unmarshal(session.Bundle, &bundle); err != nil {
 		return nil, w.failBundleCommit(ctx, session, "the saved build is no longer readable — please start a fresh session")

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 // --- pipeline fakes ------------------------------------------------------
 
 type fakeGatePipeline struct {
+	mu         sync.Mutex // guards the call slices; Dispatch now runs pipelines concurrently
 	planCalls  []string
 	applyCalls []string
 	applyErr   error
@@ -33,12 +35,16 @@ type fakeGatePipeline struct {
 }
 
 func (f *fakeGatePipeline) Plan(_ context.Context, key string) (string, error) {
+	f.mu.Lock()
 	f.planCalls = append(f.planCalls, key)
+	f.mu.Unlock()
 	return f.diff, nil
 }
 
 func (f *fakeGatePipeline) Apply(_ context.Context, key string) (string, error) {
+	f.mu.Lock()
 	f.applyCalls = append(f.applyCalls, key)
+	f.mu.Unlock()
 	if f.applyErr != nil {
 		return "", f.applyErr
 	}

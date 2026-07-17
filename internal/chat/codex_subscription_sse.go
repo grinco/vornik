@@ -134,9 +134,19 @@ func parseCodexResponsesSSE(r io.Reader, onText StreamCallback) (*ChatResponse, 
 			if len(envelope.Response) > 0 {
 				var final struct {
 					Usage *struct {
-						InputTokens  int `json:"input_tokens"`
-						OutputTokens int `json:"output_tokens"`
-						TotalTokens  int `json:"total_tokens"`
+						InputTokens        int `json:"input_tokens"`
+						OutputTokens       int `json:"output_tokens"`
+						TotalTokens        int `json:"total_tokens"`
+						InputTokensDetails *struct {
+							// cached_tokens is the subset of input_tokens the
+							// Responses API served from its automatic prompt
+							// cache (>1024-token prefixes). It is a subset of
+							// InputTokens, not additive — surfaced for cost
+							// observability, matching the chat-completions
+							// prompt_tokens_details.cached_tokens handling in
+							// stream.go.
+							CachedTokens int `json:"cached_tokens"`
+						} `json:"input_tokens_details"`
 					} `json:"usage"`
 					ID string `json:"id"`
 				}
@@ -147,6 +157,9 @@ func parseCodexResponsesSSE(r io.Reader, onText StreamCallback) (*ChatResponse, 
 						resp.Usage.TotalTokens = final.Usage.TotalTokens
 						if resp.Usage.TotalTokens == 0 {
 							resp.Usage.TotalTokens = resp.Usage.PromptTokens + resp.Usage.CompletionTokens
+						}
+						if final.Usage.InputTokensDetails != nil {
+							resp.Usage.CacheReadTokens = final.Usage.InputTokensDetails.CachedTokens
 						}
 					}
 					if final.ID != "" && resp.ID == "" {

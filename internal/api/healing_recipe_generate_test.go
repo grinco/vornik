@@ -22,9 +22,6 @@ type stubStepOutcomeRepo struct {
 func (s *stubStepOutcomeRepo) Record(context.Context, *persistence.ExecutionStepOutcome) error {
 	return nil
 }
-func (s *stubStepOutcomeRepo) Finalize(context.Context, string, string, string, string, *string) error {
-	return nil
-}
 func (s *stubStepOutcomeRepo) FinalizePending(context.Context, string, string, string, string, string, *string) (string, string, error) {
 	return "", "", nil
 }

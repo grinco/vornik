@@ -16,6 +16,7 @@ import (
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/memetic"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/safepath"
 )
 
 // workflowApplierAdapter bridges *memetic.Applier (returns the
@@ -52,13 +53,15 @@ func (w *fsWorkflowWriter) Write(_ context.Context, workflowID string, body []by
 	if w.deployedConfigDir == "" {
 		return "", fmt.Errorf("fsWorkflowWriter: deployedConfigDir not set")
 	}
-	// Defend against operator-supplied IDs containing path
-	// separators. Same hardening as fsWorkflowSource.
-	if strings.ContainsAny(workflowID, "/\\") || strings.Contains(workflowID, "..") {
-		return "", fmt.Errorf("fsWorkflowWriter: workflowID contains path separators")
+	// Defend against operator-supplied IDs containing path separators or
+	// traversal. CleanPathComponent rejects "", ".", "..", and any separator —
+	// tighter and less overbroad than the previous Contains("..") check.
+	safeID, err := safepath.CleanPathComponent(workflowID)
+	if err != nil {
+		return "", fmt.Errorf("fsWorkflowWriter: invalid workflowID: %w", err)
 	}
 
-	deployedPath, err := w.writeToTree(w.deployedConfigDir, workflowID, body)
+	deployedPath, err := w.writeToTree(w.deployedConfigDir, safeID, body)
 	if err != nil {
 		return "", fmt.Errorf("write deployed tree: %w", err)
 	}
@@ -75,7 +78,7 @@ func (w *fsWorkflowWriter) Write(_ context.Context, workflowID string, body []by
 	if info, err := os.Stat(sourceWorkflowsDir); err != nil || !info.IsDir() {
 		return "", nil
 	}
-	sourcePath, err := w.writeToTree(w.sourceConfigDir, workflowID, body)
+	sourcePath, err := w.writeToTree(w.sourceConfigDir, safeID, body)
 	if err != nil {
 		return "", fmt.Errorf("write source tree: %w", err)
 	}
@@ -83,10 +86,9 @@ func (w *fsWorkflowWriter) Write(_ context.Context, workflowID string, body []by
 }
 
 func (w *fsWorkflowWriter) writeToTree(configDir, workflowID string, body []byte) (string, error) {
-	workflowsDir := filepath.Join(configDir, "workflows")
-	candidate := filepath.Clean(filepath.Join(workflowsDir, workflowID+".md"))
-	if !strings.HasPrefix(candidate, workflowsDir+string(filepath.Separator)) {
-		return "", fmt.Errorf("workflowID escapes workflows directory")
+	candidate, err := safepath.JoinUnder(filepath.Join(configDir, "workflows"), workflowID+".md")
+	if err != nil {
+		return "", fmt.Errorf("workflowID escapes workflows directory: %w", err)
 	}
 	// Best-effort atomic: write to <name>.md.tmp then rename.
 	// os.Rename on the same filesystem is atomic on POSIX.

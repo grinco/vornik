@@ -25,9 +25,6 @@ type failingOutcomeRepo struct {
 func (f *failingOutcomeRepo) Record(ctx context.Context, o *persistence.ExecutionStepOutcome) error {
 	return f.inner.Record(ctx, o)
 }
-func (f *failingOutcomeRepo) Finalize(ctx context.Context, id, outcome, errorClass, errorDetail string, attr *string) error {
-	return f.inner.Finalize(ctx, id, outcome, errorClass, errorDetail, attr)
-}
 func (f *failingOutcomeRepo) FinalizePending(ctx context.Context, executionID, stepID, outcome, errorClass, errorDetail string, attr *string) (string, string, error) {
 	return f.inner.FinalizePending(ctx, executionID, stepID, outcome, errorClass, errorDetail, attr)
 }

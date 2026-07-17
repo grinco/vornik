@@ -20,6 +20,7 @@ package rolelibrary
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -167,15 +168,41 @@ func splitFrontmatter(content []byte, filename string) (frontmatter, body []byte
 // errors abort the load so a malformed file can't be silently
 // skipped.
 func Load(configsDir string) ([]*RoleArchetype, error) {
+	// Preserves the original abort-on-first-bad-file contract for callers that
+	// want a single error (the feature-doctor prereq, the wizard adapter). The
+	// doctor report uses LoadWithFindings to ENUMERATE instead.
+	//
+	// NOTE (contract narrowing, review-20260717-21f4 #2): the returned error is a
+	// flat errors.New(<message>) — it no longer wraps the underlying os/parse
+	// error, so errors.Is/As against it won't match. No current caller unwraps it;
+	// if one needs to, have LoadWithFindings carry the underlying error per finding.
+	out, findings, err := LoadWithFindings(configsDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(findings) > 0 {
+		return nil, errors.New(findings[0].Message)
+	}
+	return out, nil
+}
+
+// LoadWithFindings walks the library, parsing every *.md archetype. A per-file
+// read/parse failure is collected as a SeverityError Finding (attributed to the
+// filename) instead of aborting, so the doctor can report the WHOLE library in
+// one pass (review-20260716-7e65 #1 — Load's abort-on-first defeated the doctor's
+// enumerate-everything purpose). err is returned only for a directory-level read
+// failure (a missing dir is not an error — returns empty).
+func LoadWithFindings(configsDir string) ([]*RoleArchetype, []Finding, error) {
 	dir := filepath.Join(configsDir, LibraryDirName)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("read role-library dir: %w", err)
+		return nil, nil, fmt.Errorf("read role-library dir: %w", err)
 	}
 	var out []*RoleArchetype
+	var findings []Finding
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
@@ -189,14 +216,16 @@ func Load(configsDir string) ([]*RoleArchetype, error) {
 		}
 		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
-			return nil, fmt.Errorf("read role-library file %s: %w", e.Name(), err)
+			findings = append(findings, Finding{ArchetypeID: e.Name(), Severity: SeverityError, Message: fmt.Sprintf("role-library %s: read failed: %v", e.Name(), err)})
+			continue
 		}
 		a, err := ParseArchetype(data, e.Name())
 		if err != nil {
-			return nil, err
+			findings = append(findings, Finding{ArchetypeID: e.Name(), Severity: SeverityError, Message: err.Error()})
+			continue
 		}
 		out = append(out, a)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ArchetypeID < out[j].ArchetypeID })
-	return out, nil
+	return out, findings, nil
 }

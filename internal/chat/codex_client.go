@@ -446,6 +446,10 @@ func parseCodexStream(r io.Reader, onText StreamCallback) (*ChatResponse, error)
 			if u := evt.Usage; u != nil {
 				finalResp.Usage.PromptTokens = u.InputTokens
 				finalResp.Usage.CompletionTokens = u.OutputTokens
+				// cached_input_tokens is the subset of input_tokens served from
+				// codex's automatic prompt cache — surface it for cost
+				// observability (was parsed into codexUsage but dropped).
+				finalResp.Usage.CacheReadTokens = u.CachedInputTokens
 			}
 		case "error":
 			if evt.Message != "" {

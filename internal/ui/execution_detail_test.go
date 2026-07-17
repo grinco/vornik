@@ -28,9 +28,6 @@ type shuffleOutcomeRepo struct {
 func (r *shuffleOutcomeRepo) Record(_ context.Context, _ *persistence.ExecutionStepOutcome) error {
 	return nil
 }
-func (r *shuffleOutcomeRepo) Finalize(_ context.Context, _, _, _, _ string, _ *string) error {
-	return nil
-}
 func (r *shuffleOutcomeRepo) FinalizePending(_ context.Context, _, _, _, _, _ string, _ *string) (string, string, error) {
 	return "", "", nil
 }

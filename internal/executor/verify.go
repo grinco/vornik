@@ -182,8 +182,15 @@ func resolveClaimedPath(claim, workspaceDir, projectDir string) string {
 }
 
 // safeJoinUnder joins base+rel and returns "" if the result escapes base
-// (e.g. via `..`). Symlinks are not followed — we want to catch the path
+// (e.g. via `..`). Symlinks are NOT followed — we want to catch the path
 // claim at the level the agent made it, not wherever a link points.
+//
+// Intentional divergence from safepath.JoinUnder (audit F-1): that helper
+// symlink-resolves the result, which is the right posture for write/delete
+// paths but wrong here — this is a READ-ONLY verification stat, and resolving
+// would (a) verify a different file than the agent claimed and (b) break the
+// incident-be7e projectDir fallback below, whose prefix check compares against
+// the LITERAL workspaceDir. Kept lexical by design; do not migrate.
 func safeJoinUnder(base, rel string) string {
 	cleanBase := filepath.Clean(base)
 	joined := filepath.Clean(filepath.Join(cleanBase, rel))

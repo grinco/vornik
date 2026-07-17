@@ -509,19 +509,14 @@ type TaskLLMUsageRepository interface {
 // ExecutionStepOutcomeRepository persists per-step outcome classifications.
 // Writes come from the executor at two points:
 //   - Record: when a step completes, with Outcome="pending_validation".
-//   - Finalize / FinalizePending: when the downstream consumer knows
-//     whether the output was usable (Outcome="ok" or one of the
-//     error classes).
+//   - FinalizePending: when the downstream consumer knows whether the
+//     output was usable (Outcome="ok" or one of the error classes).
 //
 // SweepPending runs at execution-terminal time to finalize anything the
 // consumer chain never finalized (e.g. the last step has no consumer).
 type ExecutionStepOutcomeRepository interface {
 	// Record inserts one outcome row. Used on step completion.
 	Record(ctx context.Context, o *ExecutionStepOutcome) error
-
-	// Finalize sets the outcome and related fields by the row's primary
-	// key. Used when the caller has a specific row ID.
-	Finalize(ctx context.Context, id, outcome, errorClass, errorDetail string, attributedToStepID *string) error
 
 	// FinalizePending finds the most recent pending_validation row for
 	// (executionID, stepID) and finalizes it. Used by downstream consumers

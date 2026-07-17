@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"vornik.io/vornik/internal/config"
@@ -73,6 +74,18 @@ func (c Caller) Authorized(scope Scope, projectID string) bool {
 type ReloadStatusChecker interface {
 	Status() config.ReloadStatus
 }
+
+// saveMu serialises Save's config-file read-modify-write transaction (backup →
+// patch → write → validate → reload). FileConfigWriter is atomic per-write
+// (temp+rename, no corruption) but does NOT prevent a lost update: two
+// concurrent Saves each back up the current config, patch their own copy, and
+// the second Write clobbers the first's just-landed keys (review-20260716-b1ab).
+// One coarse package mutex is adequate for this rare, admin-only, low-volume
+// path. NOTE: this serialises integrations Saves against each other only — it is
+// NOT shared with featuredoctor's applyMu, so a concurrent integrations Save and
+// a feature-doctor gate-enable can still race on config.yaml; a shared
+// config-write lock is the durable cross-subsystem fix (deferred).
+var saveMu sync.Mutex
 
 // SaveDeps bundles the injectable seams Save needs. Production wiring
 // (5.3) supplies the real ConfigDir + featuredoctor.FileConfigWriter (via
@@ -201,6 +214,12 @@ func Save(ctx context.Context, kind IntegrationKind, target SaveTarget, cand Can
 	if probe.Outcome != OutcomeOK {
 		return SaveResult{Probe: probe, Saved: false}, nil
 	}
+
+	// Serialise the mutating transaction (see saveMu). The read-only probe
+	// above stays unlocked so a slow provider round-trip doesn't stall other
+	// saves; from here on we read-modify-write the config file.
+	saveMu.Lock()
+	defer saveMu.Unlock()
 
 	// Step 2 (field-split) + Step 3 (place secrets first).
 	patches, placedSecretFiles, err := splitAndPlaceFields(kind, target, cand, deps)
@@ -559,14 +578,29 @@ func pollReloadStatus(ctx context.Context, checker ReloadStatusChecker, deadline
 	deadlineAt := time.Now().Add(deadline)
 	for {
 		st := checker.Status()
-		if !st.Blocked && !st.HasErrors {
+		// Success requires POSITIVE evidence a reload completed and activated,
+		// not merely the ABSENCE of block/error flags: a zero-value ReloadStatus
+		// (reload not reflected yet / a stale-or-uninitialised checker) has
+		// Blocked=false && HasErrors=false and would otherwise false-succeed
+		// (review-20260716-b1ab). Require a non-zero LastReload (a reload
+		// actually finished) and no pending activation (a reload staged behind
+		// in-flight tasks isn't active yet).
+		if !st.LastReload.IsZero() && !st.Blocked && !st.HasErrors && !st.PendingActivation {
 			return nil
 		}
 		if time.Now().After(deadlineAt) {
-			if st.Blocked {
+			switch {
+			case st.Blocked:
 				return fmt.Errorf("reload blocked: %s", st.BlockedReason)
+			case st.HasErrors:
+				return fmt.Errorf("reload reported errors: %v", st.Errors)
+			case st.PendingActivation:
+				return errors.New("reload staged but activation is still pending")
+			case st.LastReload.IsZero():
+				return errors.New("reload did not report completion within the deadline")
+			default:
+				return errors.New("reload did not complete within the deadline")
 			}
-			return fmt.Errorf("reload reported errors: %v", st.Errors)
 		}
 		select {
 		case <-ctx.Done():

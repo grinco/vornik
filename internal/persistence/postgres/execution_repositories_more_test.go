@@ -251,20 +251,6 @@ func TestExecutionStepOutcomeRepositoryRecordFinalizeListAndCounts(t *testing.T)
 		t.Fatalf("Record() error = %v", err)
 	}
 
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE execution_step_outcomes")).
-		WithArgs("ok", "", "", sqlmock.AnyArg(), "out-1").
-		WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := repo.Finalize(context.Background(), "out-1", "ok", "", "", nil); err != nil {
-		t.Fatalf("Finalize() error = %v", err)
-	}
-
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE execution_step_outcomes")).
-		WithArgs("ok", "", "", sqlmock.AnyArg(), "missing").
-		WillReturnResult(sqlmock.NewResult(0, 0))
-	if err := repo.Finalize(context.Background(), "missing", "ok", "", "", nil); err != persistence.ErrNotFound {
-		t.Fatalf("Finalize(missing) error = %v, want ErrNotFound", err)
-	}
-
 	mock.ExpectQuery(regexp.QuoteMeta("UPDATE execution_step_outcomes")).
 		WithArgs("ok", "", "", sqlmock.AnyArg(), "exec-1", "step-1").
 		WillReturnRows(sqlmock.NewRows([]string{"role", "model"}).AddRow("coder", "gpt-test"))

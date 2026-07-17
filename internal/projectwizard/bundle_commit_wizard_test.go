@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,42 @@ import (
 
 	"vornik.io/vornik/internal/persistence"
 )
+
+// TestCommit_Bundle_ConcurrentSameID_OnlyOneLands is the review-20260716-8f22
+// Finding-1 regression: two sessions committing bundles with the SAME project id
+// concurrently must NOT both land (the collision-check→rename was a non-atomic
+// read-then-write). Wizard.commitMu serialises the check-and-land, so exactly
+// one wins and the other fails its (now-populated) collision check.
+func TestCommit_Bundle_ConcurrentSameID_OnlyOneLands(t *testing.T) {
+	w, store, liveDir := wizardForBundleCommit(t)
+	sessA := pinReadyBundleSession(t, store, validComposedBundle())
+	sessB := pinReadyBundleSession(t, store, validComposedBundle()) // same project id
+
+	ids := []string{sessA, sessB}
+	results := make([]error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for i := range ids {
+		go func(i int) {
+			defer wg.Done()
+			_, results[i] = w.Commit(context.Background(), ids[i], "op_1")
+		}(i)
+	}
+	wg.Wait()
+
+	ok := 0
+	for _, err := range results {
+		if err == nil {
+			ok++
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("expected exactly ONE concurrent commit to succeed, got %d (results: %v)", ok, results)
+	}
+	if _, statErr := os.Stat(filepath.Join(liveDir, "projects", "ai-news-digest.yaml")); statErr != nil {
+		t.Fatalf("the winning commit's project file must be present: %v", statErr)
+	}
+}
 
 // pinReadyBundleSession seeds a session carrying a persisted tier-3
 // bundle (the JSON shape applyBundle stores on session.Bundle once a

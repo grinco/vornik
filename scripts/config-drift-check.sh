@@ -16,6 +16,13 @@
 # scripts/config-deployable.sh (the single source of truth), so a new config
 # subtree is covered the moment it is added to the manifest.
 #
+# Symlink policy: deployed config entries are treated as drift, even when a
+# symlink target has matching bytes. The deployed tree is the daemon's authority;
+# following symlinks would let the diagnostic bless config state whose real
+# storage lives outside that tree. Operators who want shared config should copy
+# the file into the deployed tree or make the whole configs directory a real
+# mount point before this script runs.
+#
 # Usage:  scripts/config-drift-check.sh [deployed-configs-dir]
 # Env:    VORNIK_REPO_CONFIGS_DIR   override the repo-side configs/ root (tests)
 #         VORNIK_CONFIGS_DIR        deployed tree (if arg omitted)
@@ -35,6 +42,7 @@ if [ ! -d "$DEPLOYED" ]; then
 fi
 
 drift=0
+canonical_drift=0   # MISSING/DRIFT of a non-tunable canonical asset (role-library, pricing)
 
 # --- deployable directories (from the manifest) ---
 # Extension-agnostic + recursive: the installer copies EVERY file (any
@@ -50,12 +58,15 @@ for sub in "${CONFIG_DEPLOYABLE_DIRS[@]}"; do
 	while IFS= read -r rel; do
 		rel="${rel#./}"
 		dep="$DEPLOYED/$sub/$rel"
-		if [ ! -f "$dep" ]; then
+		if [ -L "$dep" ]; then
+			echo "SYMLINK (refusing deployed symlink): $sub/$rel [$tag]"
+			drift=1; [ "$tag" = canonical ] && canonical_drift=1
+		elif [ ! -f "$dep" ]; then
 			echo "MISSING (in repo, not deployed): $sub/$rel [$tag]"
-			drift=1
+			drift=1; [ "$tag" = canonical ] && canonical_drift=1
 		elif ! diff -q "$src/$rel" "$dep" >/dev/null 2>&1; then
 			echo "DRIFT: $sub/$rel [$tag]"
-			drift=1
+			drift=1; [ "$tag" = canonical ] && canonical_drift=1
 		fi
 	done < <(cd "$src" && find . -type f)
 	# reverse: deployed files with no repo counterpart (host-only or orphaned)
@@ -72,12 +83,15 @@ for file in "${CONFIG_DEPLOYABLE_FILES[@]}"; do
 	src="$REPO_CONFIGS/$file"
 	[ -f "$src" ] || continue
 	dep="$DEPLOYED/$file"
-	if [ ! -f "$dep" ]; then
+	if [ -L "$dep" ]; then
+		echo "SYMLINK (refusing deployed symlink): $file [canonical]"
+		drift=1; canonical_drift=1
+	elif [ ! -f "$dep" ]; then
 		echo "MISSING (in repo, not deployed): $file [canonical]"
-		drift=1
+		drift=1; canonical_drift=1
 	elif ! diff -q "$src" "$dep" >/dev/null 2>&1; then
 		echo "DRIFT: $file [canonical]"
-		drift=1
+		drift=1; canonical_drift=1
 	fi
 done
 
@@ -89,10 +103,19 @@ done
 
 if [ "$drift" -eq 0 ]; then
 	echo "config-drift-check: repo configs in sync with $DEPLOYED"
-else
-	echo ""
-	echo "config-drift-check: drift found. Review with:  diff configs/<path> $DEPLOYED/<path>"
-	echo "If the repo copy is canonical, sync it into the deployed tree and reload; if the"
-	echo "deployed copy is intentional host tuning, fold the change back into the repo."
+	exit 0
+fi
+echo ""
+echo "config-drift-check: drift found. Review with:  diff configs/<path> $DEPLOYED/<path>"
+echo "If the repo copy is canonical, sync it into the deployed tree and reload; if the"
+echo "deployed copy is intentional host tuning, fold the change back into the repo."
+
+# Strict tier (design §4.4): DRIFT/MISSING of a non-tunable CANONICAL asset
+# (role-library, pricing.yaml) is FATAL (exit 3) under STRICT_CONFIG_DEPLOY=1 —
+# those must never diverge. Tunable-dir drift (swarms/workflows/templates) stays
+# exit 1 (warn) so an operator's legitimate tuning doesn't fail a strict deploy.
+if [ "${STRICT_CONFIG_DEPLOY:-0}" = "1" ] && [ "$canonical_drift" -eq 1 ]; then
+	echo "config-drift-check: STRICT_CONFIG_DEPLOY=1 and a CANONICAL asset drifted — failing." >&2
+	exit 3
 fi
 exit "$drift"

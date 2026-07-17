@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/safepath"
 )
 
 // workflowEffectiveWorkspaceDir resolves the absolute workspace dir
@@ -83,7 +84,11 @@ func applyWorkflowArtifactCleanup(workspaceDir string, wf *registry.Workflow, lo
 			res.Skipped = append(res.Skipped, rel)
 			continue
 		}
-		if !isSafeWorkspacePath(rel) {
+		// Confine the entry under the workspace via the canonical helper:
+		// JoinUnderRel rejects absolute entries (JoinUnder would collapse a
+		// leading "/"), `..` traversal, and symlink escape (an entry that
+		// resolves outside workspaceDir errors → Skipped).
+		if _, err := safepath.JoinUnderRel(workspaceDir, rel); err != nil {
 			logger.Warn().
 				Str("workflow_id", wf.ID).
 				Str("path", rel).
@@ -91,6 +96,12 @@ func applyWorkflowArtifactCleanup(workspaceDir string, wf *registry.Workflow, lo
 			res.Skipped = append(res.Skipped, rel)
 			continue
 		}
+		// Operate on the entry AS NAMED (lexical join), NOT JoinUnderRel's
+		// symlink-resolved return: os.Lstat + os.Remove then target the symlink
+		// itself, so a cleanup entry that is an in-workspace symlink removes the
+		// LINK (matching the pre-safepath behavior) rather than the file it
+		// points at. The JoinUnderRel check above already rejected any entry
+		// that escapes the workspace.
 		abs := filepath.Join(workspaceDir, rel)
 		info, err := os.Lstat(abs)
 		if err != nil {
@@ -132,32 +143,4 @@ func applyWorkflowArtifactCleanup(workspaceDir string, wf *registry.Workflow, lo
 		res.Deleted = append(res.Deleted, rel)
 	}
 	return res
-}
-
-// isSafeWorkspacePath rejects absolute paths and `..` traversal so
-// the cleanup helper can never reach outside the workspace dir.
-// Empty / `.` paths are also rejected — both would resolve to the
-// workspace root which the helper refuses to delete.
-func isSafeWorkspacePath(rel string) bool {
-	if rel == "" {
-		return false
-	}
-	if filepath.IsAbs(rel) {
-		return false
-	}
-	clean := filepath.Clean(rel)
-	if clean == "." || clean == "" {
-		return false
-	}
-	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return false
-	}
-	// Defensive: reject embedded `..` segments even after Clean
-	// removes them in the common cases.
-	for _, seg := range strings.Split(clean, string(filepath.Separator)) {
-		if seg == ".." {
-			return false
-		}
-	}
-	return true
 }

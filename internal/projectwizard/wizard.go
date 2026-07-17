@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"vornik.io/vornik/internal/chat"
@@ -269,6 +270,15 @@ type Wizard struct {
 	// daemon. Optional — nil/empty still documents the step KINDS, just
 	// without a concrete handler list.
 	SystemHandlerNames []string
+
+	// commitMu serialises the check-and-land critical section of a tier-3
+	// bundle commit (collision-check → journaled rename) so two concurrent
+	// commits with colliding IDs can't both pass the check and then clobber
+	// each other's landed files (review-20260716-8f22 TOCTOU). One coarse mutex
+	// is adequate for this low-volume path (commits are rare, operator-driven);
+	// a multi-daemon deployment would still need a DB/advisory lock on the
+	// live-config tree — deferred with the other multi-instance items.
+	commitMu sync.Mutex
 }
 
 // ErrSessionCommitted — the session was already committed; further

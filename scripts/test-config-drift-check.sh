@@ -111,6 +111,68 @@ else
 	fail "nested template MISSING should exit 1 naming the nested file (rc=$rc); got: $out"
 fi
 
+run_drift_strict() { VORNIK_REPO_CONFIGS_DIR="$REPO" STRICT_CONFIG_DEPLOY=1 "$DRIFT" "$DEP" 2>&1; }
+
+# --- Case 8 (strict tier): a CANONICAL (non-tunable) asset drift is FATAL (exit 3)
+# under STRICT_CONFIG_DEPLOY=1 — role-library/pricing must never diverge. ---
+build_fixture
+rm -f "$DEP/role-library/coder.md"   # canonical MISSING
+out="$(run_drift_strict)"; rc=$?
+if [ "$rc" -eq 3 ] && printf '%s' "$out" | grep -q "role-library/coder.md" \
+	&& printf '%s' "$out" | grep -q "STRICT_CONFIG_DEPLOY=1 and a CANONICAL asset drifted"; then
+	pass "strict: canonical (role-library) drift is fatal (exit 3) + fatal banner emitted"
+else
+	fail "strict canonical drift should exit 3 with the fatal banner (rc=$rc); got: $out"
+fi
+
+# --- Case 9 (strict tier): TUNABLE-only drift stays exit 1 (warn), NOT fatal —
+# operator sovereignty over swarms/workflows tuning. ---
+build_fixture
+echo "dev swarm TUNED" > "$DEP/swarms/dev-swarm.md"   # tunable DRIFT only
+out="$(run_drift_strict)"; rc=$?
+if [ "$rc" -eq 1 ]; then
+	pass "strict: tunable-only drift stays warn (exit 1, not fatal)"
+else
+	fail "strict tunable-only drift should exit 1 (rc=$rc); got: $out"
+fi
+
+# --- Case 10: non-strict canonical drift is unchanged (exit 1 backstop). ---
+build_fixture
+rm -f "$DEP/role-library/coder.md"
+out="$(run_drift)"; rc=$?
+if [ "$rc" -eq 1 ]; then
+	pass "non-strict canonical drift stays exit 1 (unchanged)"
+else
+	fail "non-strict canonical drift should exit 1 (rc=$rc); got: $out"
+fi
+
+# --- Case 11 (security): a deployed symlink in a canonical config slot is
+# drift, even if its target has matching content. The checker must not diff
+# through symlinks and accidentally bless a config tree that points outside
+# itself. ---
+build_fixture
+outside="$TMP/outside-role.md"; cp "$REPO/role-library/coder.md" "$outside"
+rm -f "$DEP/role-library/coder.md"
+ln -s "$outside" "$DEP/role-library/coder.md"
+out="$(run_drift)"; rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "SYMLINK" && printf '%s' "$out" | grep -q "role-library/coder.md"; then
+	pass "deployed canonical symlink is reported as drift"
+else
+	fail "canonical symlink should be drift (rc=$rc); got: $out"
+fi
+
+# --- Case 12 (strict): the same canonical symlink is fatal under strict. ---
+build_fixture
+outside="$TMP/outside-pricing.yaml"; cp "$REPO/pricing.yaml" "$outside"
+rm -f "$DEP/pricing.yaml"
+ln -s "$outside" "$DEP/pricing.yaml"
+out="$(run_drift_strict)"; rc=$?
+if [ "$rc" -eq 3 ] && printf '%s' "$out" | grep -q "SYMLINK" && printf '%s' "$out" | grep -q "pricing.yaml"; then
+	pass "strict: deployed canonical symlink is fatal"
+else
+	fail "strict canonical symlink should exit 3 (rc=$rc); got: $out"
+fi
+
 echo ""
 if [ "$fails" -eq 0 ]; then echo "test-config-drift-check: ALL PASS"; exit 0; fi
 echo "test-config-drift-check: $fails case(s) failed"; exit 1

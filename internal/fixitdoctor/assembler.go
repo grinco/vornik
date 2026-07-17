@@ -421,10 +421,18 @@ func (a *Assembler) assembleFailedReload(ctx context.Context, ref FailureRef) (G
 		// secret-shaped key path (e.g. "telegram.bot_token") never
 		// carries its raw value into the bundle. RedactConfig walks
 		// map[string]any, so wrap the single key/value in one.
-		masked := secrets.RedactConfig(map[string]any{
+		// ,ok guard (review-20260716-d95b #1): RedactConfig returns `any`;
+		// a future change to its return shape must not panic here. On a
+		// non-map result, fall back to a fully-redacted placeholder rather
+		// than crash — never carry the raw value through.
+		maskedValue := "[redacted]"
+		if masked, ok := secrets.RedactConfig(map[string]any{
 			rv.OffendingKeyPath: rv.OffendingValue,
-		}).(map[string]any)
-		maskedValue, _ := masked[rv.OffendingKeyPath].(string)
+		}).(map[string]any); ok {
+			if mv, ok := masked[rv.OffendingKeyPath].(string); ok {
+				maskedValue = mv
+			}
+		}
 		f := untrusted(maskedValue)
 		bundle.OffendingValue = &f
 	}

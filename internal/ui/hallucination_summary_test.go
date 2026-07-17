@@ -21,9 +21,6 @@ type fakeOutcomeRepo struct {
 func (f *fakeOutcomeRepo) Record(context.Context, *persistence.ExecutionStepOutcome) error {
 	return nil
 }
-func (f *fakeOutcomeRepo) Finalize(context.Context, string, string, string, string, *string) error {
-	return nil
-}
 func (f *fakeOutcomeRepo) FinalizePending(context.Context, string, string, string, string, string, *string) (string, string, error) {
 	return "", "", nil
 }

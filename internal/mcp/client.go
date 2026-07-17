@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"vornik.io/vornik/internal/safepath"
 )
 
 // Client is a connection to a single MCP server.
@@ -920,14 +922,12 @@ func validateLauncher(cmd string) error {
 	if !filepath.IsAbs(candidate) {
 		return fmt.Errorf("command %q is not in the allowlist of safe launchers (uvx, npx, python3, etc.) or standard system paths (/usr/bin, etc.)", cmd)
 	}
-	if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
-		candidate = resolved
-	}
-	candidate = filepath.Clean(candidate)
-
+	// safepath.AssertUnder resolves symlinks in both the allowed dir and the
+	// candidate's existing prefix, so "/usr/bin/../../tmp/x" or an allowed-dir
+	// symlink cannot escape the trusted launcher roots. Accept on the first
+	// root that contains the candidate.
 	for _, dir := range allowedDirs {
-		cleanDir := filepath.Clean(dir)
-		if candidate == cleanDir || strings.HasPrefix(candidate, cleanDir+string(filepath.Separator)) {
+		if err := safepath.AssertUnder(dir, candidate); err == nil {
 			return nil
 		}
 	}

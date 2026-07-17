@@ -30,7 +30,44 @@ if [ -z "$TARGET" ]; then
 	exit 1
 fi
 DEST="$TARGET/configs"
+if [ -L "$DEST" ]; then
+	echo "config-deploy: refusing symlinked deployed configs dir: $DEST" >&2
+	exit 1
+fi
 mkdir -p "$DEST"
+
+# Strict policy: deployed config paths must be real directories/files, not
+# symlinks. The daemon reads the deployed tree as configuration authority; a
+# symlink can redirect a copy or validation check outside that tree. This
+# portable shell guard narrows accidental/misconfigured trees, but it is not an
+# openat/O_NOFOLLOW implementation. The deployment target is expected to be an
+# operator-owned config directory, not a concurrently attacker-writable tree.
+path_has_symlink_component() {
+	local path="$1" rel cur part
+	rel="${path#"$DEST"}"
+	rel="${rel#/}"
+	cur="$DEST"
+	[ -L "$cur" ] && return 0
+	[ -z "$rel" ] && return 1
+	local IFS='/'
+	for part in $rel; do
+		cur="$cur/$part"
+		[ -L "$cur" ] && return 0
+	done
+	return 1
+}
+
+refuse_unsafe_dest_path() {
+	local path="$1"
+	if [ -L "$path" ]; then
+		echo "config-deploy: refusing symlinked deployed path: $path" >&2
+		exit 1
+	fi
+	if path_has_symlink_component "$(dirname "$path")"; then
+		echo "config-deploy: refusing deployed path with symlinked parent: $path" >&2
+		exit 1
+	fi
+}
 
 # --- copy deployable directories (portable per-file recursive, preserve-existing) ---
 # Per-file rather than `cp -rn`: BusyBox cp has no -n (would error and, with
@@ -42,10 +79,16 @@ mkdir -p "$DEST"
 for dir in "${CONFIG_DEPLOYABLE_DIRS[@]}"; do
 	src="$REPO_CONFIGS/$dir"
 	[ -d "$src" ] || continue
+	refuse_unsafe_dest_path "$DEST/$dir"
+	if [ -e "$DEST/$dir" ] && [ ! -d "$DEST/$dir" ]; then
+		echo "config-deploy: refusing non-directory deployed path: $DEST/$dir" >&2
+		exit 1
+	fi
 	mkdir -p "$DEST/$dir"
 	while IFS= read -r rel; do
 		rel="${rel#./}"
 		dest="$DEST/$dir/$rel"
+		refuse_unsafe_dest_path "$dest"
 		if [ ! -e "$dest" ]; then
 			mkdir -p "$(dirname "$dest")"
 			cp "$src/$rel" "$dest" || echo "WARN: cp failed: $dir/$rel" >&2
@@ -57,6 +100,7 @@ done
 for file in "${CONFIG_DEPLOYABLE_FILES[@]}"; do
 	src="$REPO_CONFIGS/$file"
 	[ -f "$src" ] || continue
+	refuse_unsafe_dest_path "$DEST/$file"
 	[ -f "$DEST/$file" ] || cp "$src" "$DEST/$file" || echo "WARN: cp failed: $file" >&2
 done
 
@@ -78,12 +122,14 @@ for dir in "${CONFIG_DEPLOYABLE_DIRS[@]}"; do
 	else
 		while IFS= read -r rel; do
 			rel="${rel#./}"
+			refuse_unsafe_dest_path "$DEST/$dir/$rel"
 			[ -f "$DEST/$dir/$rel" ] || missing="$missing $dir/$rel"
 		done < <(cd "$REPO_CONFIGS/$dir" && find . -type f)
 	fi
 done
 for file in "${CONFIG_DEPLOYABLE_FILES[@]}"; do
 	[ -f "$REPO_CONFIGS/$file" ] || continue
+	refuse_unsafe_dest_path "$DEST/$file"
 	[ -f "$DEST/$file" ] || missing="$missing $file"
 done
 

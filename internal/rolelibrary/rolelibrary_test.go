@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -111,15 +112,54 @@ func TestLoadFromDir(t *testing.T) {
 	}
 }
 
+// TestLoadWithFindings — the doctor path must ENUMERATE every malformed file as
+// a finding (not abort on the first), so the operator sees the full picture
+// (review-20260716-7e65 #1). Valid archetypes still load.
+func TestLoadWithFindings(t *testing.T) {
+	dir := t.TempDir()
+	libDir := filepath.Join(dir, LibraryDirName)
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(libDir, "researcher.md"), validArchetype)
+	writeFile(t, filepath.Join(libDir, "bad1.md"), "no frontmatter here\n")
+	writeFile(t, filepath.Join(libDir, "bad2.md"), "also broken\n")
+
+	got, findings, err := LoadWithFindings(dir)
+	if err != nil {
+		t.Fatalf("LoadWithFindings must not return a hard error for per-file parse failures: %v", err)
+	}
+	if len(got) != 1 || got[0].ArchetypeID != "researcher" {
+		t.Fatalf("expected the 1 valid archetype, got %+v", got)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 parse-error findings (bad1.md, bad2.md), got %d: %+v", len(findings), findings)
+	}
+	for _, f := range findings {
+		if f.Severity != SeverityError {
+			t.Errorf("parse-error finding must be SeverityError, got %q", f.Severity)
+		}
+	}
+}
+
 func TestLoadParseErrorAborts(t *testing.T) {
 	dir := t.TempDir()
 	libDir := filepath.Join(dir, LibraryDirName)
 	if err := os.MkdirAll(libDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(libDir, "bad.md"), "no frontmatter here\n")
-	if _, err := Load(dir); err == nil {
-		t.Error("Load should abort on a malformed file")
+	// Two malformed files: Load aborts on the FIRST by sorted filename
+	// (os.ReadDir order), so the surfaced error must name aaa-bad.md, not
+	// zzz-bad.md (review-20260717-21f4 #3 — lock the ordering so a future
+	// iteration-order change can't silently swap which error surfaces).
+	writeFile(t, filepath.Join(libDir, "zzz-bad.md"), "no frontmatter here\n")
+	writeFile(t, filepath.Join(libDir, "aaa-bad.md"), "also broken\n")
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("Load should abort on a malformed file")
+	}
+	if !strings.Contains(err.Error(), "aaa-bad.md") {
+		t.Errorf("Load must surface the first-sorted bad file (aaa-bad.md), got: %v", err)
 	}
 }
 

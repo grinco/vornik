@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"vornik.io/vornik/internal/persistence"
@@ -185,10 +186,35 @@ func (s *Service) Dispatch(ctx context.Context, sessionID, operatorID string, ac
 	if result.Result == ActionResultApplied {
 		s.auditApplied(ctx, ref, operatorID, action, result)
 	}
+	// Best-effort recording (review-20260716-d95b): the action's outcome is
+	// already decided (result.Result). A failure to persist the applied-actions
+	// record + transcript must NOT surface as a Dispatch error, or the operator
+	// sees "Apply failed" for a fix that actually applied (mirrors auditApplied's
+	// best-effort posture). Surface it as a note on the detail and return the
+	// true result with no error.
 	if err := s.recordAppliedAction(ctx, session, result); err != nil {
-		return result, fmt.Errorf("fixitdoctor: record applied action: %w", err)
+		result.Detail = noteRecordFailure(result.Detail, result.Result)
 	}
 	return result, nil
+}
+
+// noteRecordFailure appends a concise operator-facing note that an action's
+// applied-actions/transcript record could not be persisted. The wording depends
+// on the outcome: for an APPLIED action the consequence is that rollback
+// tracking may be incomplete (the mutation still happened via its own pipeline
+// ledger); for a non-applied action it is only that the attempt wasn't logged.
+// The underlying error is deliberately NOT interpolated (it can carry DB
+// connection internals — review-20260717-c377); the pipeline's own ledger and
+// the returned result remain the source of truth.
+func noteRecordFailure(detail string, resultKind string) string {
+	note := "(note: this action's attempt could not be recorded)"
+	if resultKind == ActionResultApplied {
+		note = "(note: this action applied, but recording it for rollback failed — rollback tracking may be incomplete)"
+	}
+	if strings.TrimSpace(detail) == "" {
+		return note
+	}
+	return strings.TrimSpace(detail) + " " + note
 }
 
 // RollbackConfigApply drives the §5.4 Rollback affordance for a
@@ -229,8 +255,10 @@ func (s *Service) RollbackConfigApply(ctx context.Context, sessionID, operatorID
 
 	s.Metrics.recordAction("config_apply_rollback", result.Result)
 	s.auditRollback(ctx, ref, operatorID, proposalID, result)
+	// Best-effort record, same posture as Dispatch: the rollback already ran;
+	// a record failure must not make it look failed.
 	if err := s.recordAppliedAction(ctx, session, result); err != nil {
-		return result, fmt.Errorf("fixitdoctor: record rollback: %w", err)
+		result.Detail = noteRecordFailure(result.Detail, result.Result)
 	}
 	return result, nil
 }
@@ -461,9 +489,26 @@ func sessionAppliedProposal(session *persistence.FixItSession, proposalID string
 }
 
 func (s *Service) recordAppliedAction(ctx context.Context, session *persistence.FixItSession, result *DispatchResult) error {
+	// Serialise the read-append-write against concurrent applies on the same
+	// session (review-20260716-d95b lost-update). The lock is held ONLY across
+	// this short fresh-read → append → write window — NOT across the
+	// pipeline/audit IO in Dispatch/RollbackConfigApply — so a slow or hung
+	// apply can't stall every other dispatch (review-20260717-c377 blast-radius
+	// finding). A FRESH Get under the lock is what makes the append atomic: the
+	// caller's `session` snapshot was read before the pipeline ran and may be
+	// stale relative to a concurrent apply that landed in between. (Single-daemon
+	// scope; a multi-daemon deployment would still need a DB advisory lock.)
+	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
+
+	fresh, err := s.Sessions.Get(ctx, session.ID)
+	if err != nil {
+		return err
+	}
+
 	var records []appliedActionRecord
-	if len(session.AppliedActions) > 0 {
-		_ = json.Unmarshal(session.AppliedActions, &records) // best-effort; corrupt blob starts a fresh list rather than failing the apply
+	if len(fresh.AppliedActions) > 0 {
+		_ = json.Unmarshal(fresh.AppliedActions, &records) // best-effort; corrupt blob starts a fresh list rather than failing the apply
 	}
 	records = append(records, appliedActionRecord{
 		Kind:       result.Kind,
@@ -476,9 +521,9 @@ func (s *Service) recordAppliedAction(ctx context.Context, session *persistence.
 	if err != nil {
 		return err
 	}
-	session.AppliedActions = recordsJSON
+	fresh.AppliedActions = recordsJSON
 
-	transcript, err := decodeTranscript(session.Transcript)
+	transcript, err := decodeTranscript(fresh.Transcript)
 	if err != nil {
 		transcript = nil // corrupt transcript degrades to "start fresh" rather than blocking the apply
 	}
@@ -487,9 +532,9 @@ func (s *Service) recordAppliedAction(ctx context.Context, session *persistence.
 	if err != nil {
 		return err
 	}
-	session.Transcript = transcriptJSON
+	fresh.Transcript = transcriptJSON
 
-	return s.Sessions.Update(ctx, session)
+	return s.Sessions.Update(ctx, fresh)
 }
 
 // lastProposedAction returns the actionIndex'th action from envelopeJSON

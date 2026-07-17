@@ -104,6 +104,32 @@ else
 	fi
 fi
 
+# --- Case 5 (security): deployed config entries must not be symlinks. A
+# symlinked destination file would make deploy follow/validate an arbitrary
+# target outside the config tree. Refuse even outside strict mode. ---
+build_repo
+TGT="$TMP/t5"; rm -rf "$TGT"; mkdir -p "$TGT/configs/role-library"
+outside="$TMP/outside-coder.md"; echo "outside" > "$outside"
+ln -s "$outside" "$TGT/configs/role-library/coder.md"
+out="$(run_deploy)"; rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "refusing symlinked deployed path"; then
+	pass "refuses symlinked deployed file destination"
+else
+	fail "symlinked deployed file should be refused (rc=$rc); got: $out"
+fi
+
+# --- Case 6 (security): symlinked deployed directories are refused before
+# mkdir/cp can follow them and write outside the target config tree. ---
+build_repo
+TGT="$TMP/t6"; rm -rf "$TGT"; mkdir -p "$TGT/configs" "$TMP/outside-role-library"
+ln -s "$TMP/outside-role-library" "$TGT/configs/role-library"
+out="$(run_deploy)"; rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "refusing symlinked deployed path"; then
+	pass "refuses symlinked deployed directory destination"
+else
+	fail "symlinked deployed directory should be refused (rc=$rc); got: $out"
+fi
+
 echo ""
 if [ "$fails" -eq 0 ]; then echo "test-config-deploy: ALL PASS"; exit 0; fi
 echo "test-config-deploy: $fails case(s) failed"; exit 1

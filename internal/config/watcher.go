@@ -146,6 +146,32 @@ func (w *Watcher) loop(ctx context.Context, stopCh <-chan struct{}) {
 	}
 }
 
+// watchedConfigExts are the file extensions the watcher tracks for hot reload.
+// projects/*.yaml are the classic case; swarms/workflows are SWARM.md/
+// WORKFLOW.md and the role library is *.md, so .md must be tracked too (before
+// 2026-07-17 only YAML was, so a swarm/workflow .md edit didn't reload — see
+// commit ce804dd7 / backlog 2026-07-08).
+//
+// Safe because a re-stage is idempotent, coalesced (one onChange per scan tick)
+// and reloadMu-serialised. Two edge notes: (a) a stray non-config .md under
+// swarms//workflows/ would fail to parse — the loaders skip README.md and
+// otherwise fail closed (keep-last-good), which is intended; (b) role-library
+// is read FRESH at every eval (rolelibrary.Load, no in-memory cache), so a
+// role-library .md edit needs no reload to take effect — tracking it just fires
+// a harmless no-op re-stage (the registry re-stage doesn't read role-library).
+var watchedConfigExts = map[string]struct{}{
+	".yaml": {},
+	".yml":  {},
+	".md":   {},
+}
+
+// isWatchedConfigExt reports whether the file's extension is one the watcher
+// tracks for hot reload.
+func isWatchedConfigExt(path string) bool {
+	_, ok := watchedConfigExts[strings.ToLower(filepath.Ext(path))]
+	return ok
+}
+
 // scan checks all watched paths for modifications.
 func (w *Watcher) scan() []string {
 	var changed []string
@@ -165,8 +191,7 @@ func (w *Watcher) scan() []string {
 				if err != nil || fi.IsDir() {
 					return nil
 				}
-				ext := strings.ToLower(filepath.Ext(filePath))
-				if ext != ".yaml" && ext != ".yml" {
+				if !isWatchedConfigExt(filePath) {
 					return nil
 				}
 				currentFiles[filePath] = struct{}{}

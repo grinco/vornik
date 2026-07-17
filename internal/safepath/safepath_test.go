@@ -71,6 +71,35 @@ func TestJoinUnderRejectsSyntacticEscape(t *testing.T) {
 	}
 }
 
+func TestJoinUnderRel_RejectsAbsoluteElem(t *testing.T) {
+	root := t.TempDir()
+	// JoinUnder would collapse the leading "/" and confine (no error)...
+	if got, err := JoinUnder(root, "/etc/passwd"); err != nil {
+		t.Fatalf("JoinUnder(abs) unexpectedly errored: %v", err)
+	} else if got != filepath.Join(root, "etc/passwd") {
+		t.Fatalf("JoinUnder(abs) = %q, want it confined under root", got)
+	}
+	// ...JoinUnderRel must REJECT it instead.
+	if _, err := JoinUnderRel(root, "/etc/passwd"); err == nil {
+		t.Fatal("JoinUnderRel(abs) must reject an absolute element")
+	}
+	// A relative element still works and still enforces containment.
+	if _, err := JoinUnderRel(root, "sub/file.md"); err != nil {
+		t.Fatalf("JoinUnderRel(relative) = %v, want ok", err)
+	}
+	if _, err := JoinUnderRel(root, "../escape"); err == nil {
+		t.Fatal("JoinUnderRel must still reject traversal")
+	}
+	// Multi-element: an absolute LATER element (which filepath.Join would
+	// collapse) is rejected by the per-elem screen.
+	if _, err := JoinUnderRel(root, "a", "/b"); err == nil {
+		t.Fatal("JoinUnderRel must reject an absolute later element")
+	}
+	if _, err := JoinUnderRel(root, "a", "b"); err != nil {
+		t.Fatalf("JoinUnderRel(root, \"a\", \"b\") = %v, want ok", err)
+	}
+}
+
 func TestJoinUnderRejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

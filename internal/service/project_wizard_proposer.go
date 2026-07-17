@@ -11,6 +11,7 @@ import (
 
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/projectwizard"
+	"vornik.io/vornik/internal/safepath"
 )
 
 // scaffoldProposer routes a project-wizard commit through the control-plane
@@ -78,15 +79,18 @@ func (p *scaffoldProposer) ProposeScaffold(ctx context.Context, projectID string
 	var diff strings.Builder
 	for _, key := range keys {
 		opPath := filepath.ToSlash(filepath.Join(rel, key))
-		target := filepath.Clean(filepath.Join(base, filepath.FromSlash(opPath)))
 		// Defense-in-depth path containment (review finding #7): a composed
-		// file key must resolve strictly under the config dir. The apply
-		// engine's resolveTarget guards this too, but rejecting a traversal
-		// key here means a bad key never becomes a filed proposal. Keys are
-		// internally rendered (not raw user input), so this should never fire
-		// — it's a belt-and-suspenders guard.
-		if target != base && !strings.HasPrefix(target, base+string(os.PathSeparator)) {
-			return "", "", fmt.Errorf("scaffold: file key %q escapes the config dir", key)
+		// file key must resolve strictly under the config dir, via the canonical
+		// helper. The apply engine's resolveTarget guards this too, but rejecting
+		// a traversal key here means a bad key never becomes a filed proposal.
+		// Keys are internally rendered (not raw user input), so this should never
+		// fire — belt-and-suspenders. (JoinUnderRel, not AssertUnder: a key
+		// resolving to the config dir itself stays allowed, matching the prior
+		// target==base carve-out; JoinUnderRel additionally rejects an absolute
+		// opPath, which would only arise from an internal rendering bug.)
+		target, err := safepath.JoinUnderRel(base, filepath.FromSlash(opPath))
+		if err != nil {
+			return "", "", fmt.Errorf("scaffold: file key %q escapes the config dir: %w", key, err)
 		}
 		// Pre-flight collision check so a duplicate project id fails at propose
 		// time with the same "already exists" signal the direct-write path

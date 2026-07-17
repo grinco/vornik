@@ -19,6 +19,9 @@ import (
 type fakeFixItSessionStore struct {
 	mu   sync.Mutex
 	rows map[string]*persistence.FixItSession
+	// updateErr, when set, makes Update fail — used to exercise the
+	// best-effort recordAppliedAction path.
+	updateErr error
 }
 
 func newFakeFixItStore() *fakeFixItSessionStore {
@@ -47,6 +50,9 @@ func (f *fakeFixItSessionStore) Get(_ context.Context, id string) (*persistence.
 func (f *fakeFixItSessionStore) Update(_ context.Context, s *persistence.FixItSession) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.updateErr != nil {
+		return f.updateErr
+	}
 	if _, ok := f.rows[s.ID]; !ok {
 		return persistence.ErrNotFound
 	}

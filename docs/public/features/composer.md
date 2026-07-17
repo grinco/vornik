@@ -1,7 +1,7 @@
 ---
 sources:
     - path: internal/featuredoctor/feature_composer.go
-      sha256: dba6596510c0a99d3cf8dd29f9eba462e8a2a3f91a805e26633a37599d4ff33b
+      sha256: fab8e4c41115ab4a2edfa76013e0834c925255db3ab2b66f97eb6b551849d14e
 ---
 # NL Automation Composer
 

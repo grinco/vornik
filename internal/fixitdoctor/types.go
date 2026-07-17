@@ -26,6 +26,18 @@ const (
 	FailureKindFailedReload    FailureKind = "failed_reload"
 )
 
+// isKnownFailureKind reports whether k is one of the four enumerated failure
+// surfaces. Used to reject an arbitrary caller-supplied Kind at the new-session
+// boundary before it reaches the assembler / grounding (review-20260717-c377).
+func isKnownFailureKind(k FailureKind) bool {
+	switch k {
+	case FailureKindFailedTask, FailureKindDegradedFeature, FailureKindRedIntegration, FailureKindFailedReload:
+		return true
+	default:
+		return false
+	}
+}
+
 // FailureRef identifies the one failing object a repair session
 // grounds on. ID's meaning is kind-specific: a task ID for
 // failed_task, a featuredoctor.Feature.ID for degraded_feature, an

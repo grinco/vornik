@@ -297,7 +297,7 @@ func (s *Store) Store(ctx context.Context, projectID, executionID, taskID, name,
 	// persistAndScan helper still owns the read/scan/redact logic;
 	// it returns the bytes to write, then we hand them to the
 	// backend in a single Put.
-	hash, size, body, err := s.scanForBackend(sourcePath, mimeType, projectID, taskID, safeName)
+	hash, size, body, err := s.scanForBackend(sourcePath, mimeType, projectID, taskID, safeName, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan artifact: %w", err)
 	}
@@ -353,6 +353,21 @@ func (s *Store) Store(ctx context.Context, projectID, executionID, taskID, name,
 // source-of-truth for retries — the two paths can diverge if the
 // workspace upload is later cleaned up.
 func (s *Store) StoreInput(ctx context.Context, projectID, name, sourcePath string) (*persistence.Artifact, error) {
+	return s.storeInput(ctx, projectID, name, sourcePath, true)
+}
+
+// StoreInputRaw is StoreInput WITHOUT the ingress secret-leak scan — the bytes
+// are stored verbatim. Reserved for the scoped review-class upload exemption
+// (LLD 2026-07-16-secret-egress-control-and-scoped-ingress-exemption): redaction
+// is an egress control, and masking an operator-uploaded artifact on ingress
+// provides no leak protection while corrupting content the (no-egress) review
+// agent must read faithfully. Callers MUST gate this on an auth-scoped
+// review-class workflow — never expose it to arbitrary uploads.
+func (s *Store) StoreInputRaw(ctx context.Context, projectID, name, sourcePath string) (*persistence.Artifact, error) {
+	return s.storeInput(ctx, projectID, name, sourcePath, false)
+}
+
+func (s *Store) storeInput(ctx context.Context, projectID, name, sourcePath string, scan bool) (*persistence.Artifact, error) {
 	artifactID := persistence.GenerateID("artifact")
 
 	safeProjectID, err := safepath.CleanPathComponent(projectID)
@@ -378,7 +393,7 @@ func (s *Store) StoreInput(ctx context.Context, projectID, name, sourcePath stri
 	storageKey := filepath.ToSlash(filepath.Join(safeProjectID, "inputs", safeArtifactID, safeName))
 
 	mimeType := detectMimeType(name)
-	hash, size, body, err := s.scanForBackend(sourcePath, mimeType, projectID, "", safeName)
+	hash, size, body, err := s.scanForBackend(sourcePath, mimeType, projectID, "", safeName, scan)
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan input artifact: %w", err)
 	}
@@ -598,12 +613,17 @@ func assertUnderBase(base, path string) error {
 // directly to a destination filesystem path. The shape change is
 // what lets S3 (and any future blob driver) ride the same scan
 // pipeline without the helper knowing what storage it's writing to.
-func (s *Store) scanForBackend(srcPath, mimeType, projectID, taskID, name string) (string, int64, []byte, error) {
+// scan=false skips the secret-leak scan entirely (bytes stored verbatim) — used
+// only by StoreInputRaw for the scoped ingress exemption (LLD 2026-07-16:
+// redaction is an egress control; masking an operator-uploaded review artifact
+// on the way IN provides no leak protection and corrupts the content). All other
+// callers pass scan=true.
+func (s *Store) scanForBackend(srcPath, mimeType, projectID, taskID, name string, scan bool) (string, int64, []byte, error) {
 	body, err := os.ReadFile(srcPath)
 	if err != nil {
 		return "", 0, nil, fmt.Errorf("read source: %w", err)
 	}
-	if s.secretsDetector != nil && shouldScanBody(mimeType, body) {
+	if scan && s.secretsDetector != nil && shouldScanBody(mimeType, body) {
 		findings := s.secretsDetector.Scan(body)
 		if len(findings) > 0 {
 			action := secrets.ResolveAction(secrets.CheckpointArtifacts, s.secretsActions)

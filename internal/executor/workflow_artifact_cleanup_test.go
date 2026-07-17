@@ -171,26 +171,91 @@ func TestApplyWorkflowArtifactCleanup_NilWorkflowIsNoop(t *testing.T) {
 	}
 }
 
-// TestIsSafeWorkspacePath_TableDriven pins the path-safety guard.
-func TestIsSafeWorkspacePath_TableDriven(t *testing.T) {
-	cases := []struct {
-		path string
-		safe bool
-	}{
-		{"artifacts/out/research.md", true},
-		{"./artifacts/out/research.md", true},
-		{"a/b/c.txt", true},
-		{"", false},
-		{".", false},
-		{"..", false},
-		{"../outside", false},
-		{"x/../../outside", false},
-		{"/etc/passwd", false},
+// TestApplyWorkflowArtifactCleanup_RejectsSymlinkEscape is the regression for
+// the safepath migration (replacing the lexical isSafeWorkspacePath guard): a
+// cleanup entry that is a symlink pointing OUTSIDE the workspace must be Skipped
+// — safepath.JoinUnder resolves the link and rejects the escape — and the
+// link's target must survive untouched.
+func TestApplyWorkflowArtifactCleanup_RejectsSymlinkEscape(t *testing.T) {
+	ws := makeWorkspace(t)
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("keep me"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		got := isSafeWorkspacePath(tc.path)
-		if got != tc.safe {
-			t.Errorf("isSafeWorkspacePath(%q) = %v, want %v", tc.path, got, tc.safe)
-		}
+	if err := os.Symlink(outside, filepath.Join(ws, "escape-link")); err != nil {
+		t.Fatal(err)
+	}
+	wf := &registry.Workflow{
+		ID:               "research",
+		CleanupArtifacts: []string{"escape-link"},
+	}
+	res := applyWorkflowArtifactCleanup(ws, wf, zerolog.Nop())
+	if len(res.Skipped) != 1 || len(res.Deleted) != 0 {
+		t.Fatalf("expected the escaping symlink to be skipped, got %+v", res)
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("symlink target outside workspace was wrongly removed: %v", err)
+	}
+}
+
+// TestApplyWorkflowArtifactCleanup_InWorkspaceSymlinkRemovesLinkNotTarget pins
+// that a cleanup entry which is an IN-workspace symlink removes the LINK itself,
+// not the file it points at (review-20260717-a07c #2). Operating on the lexical
+// path — not JoinUnderRel's symlink-resolved return — preserves the pre-safepath
+// os.Lstat+os.Remove behavior, so a symlink artifact never deletes a shared
+// target.
+func TestApplyWorkflowArtifactCleanup_InWorkspaceSymlinkRemovesLinkNotTarget(t *testing.T) {
+	ws := makeWorkspace(t, "artifacts/out/real.md")
+	target := filepath.Join(ws, "artifacts/out/real.md")
+	link := filepath.Join(ws, "artifacts/out/alias.md")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	wf := &registry.Workflow{
+		ID:               "research",
+		CleanupArtifacts: []string{"artifacts/out/alias.md"},
+	}
+	res := applyWorkflowArtifactCleanup(ws, wf, zerolog.Nop())
+	if len(res.Deleted) != 1 {
+		t.Fatalf("expected the symlink to be deleted, got %+v", res)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("symlink still present after cleanup: %v", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("in-workspace symlink target was wrongly removed: %v", err)
+	}
+}
+
+// TestApplyWorkflowArtifactCleanup_SymlinkAbsorbedDotDotStaysConfined pins the
+// review-20260717-8acd #2 concern: an in-workspace symlink combined with `..`
+// (rel "down/../../SENTINEL", down -> ws/sub) must NOT let the lexical delete
+// path escape the workspace. JoinUnder cleans the joined path lexically BEFORE
+// symlink resolution, so the entry cleans to <root>/SENTINEL and is rejected at
+// the syntactic Rel check — proving the lexical abs is always contained when
+// JoinUnderRel passes (no separate lexical guard needed).
+func TestApplyWorkflowArtifactCleanup_SymlinkAbsorbedDotDotStaysConfined(t *testing.T) {
+	root := t.TempDir()
+	ws := filepath.Join(root, "ws")
+	if err := os.MkdirAll(filepath.Join(ws, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(ws, "sub"), filepath.Join(ws, "down")); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(root, "SENTINEL") // OUTSIDE ws, inside root
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wf := &registry.Workflow{
+		ID:               "research",
+		CleanupArtifacts: []string{"down/../../SENTINEL"},
+	}
+	res := applyWorkflowArtifactCleanup(ws, wf, zerolog.Nop())
+	if len(res.Skipped) != 1 || len(res.Deleted) != 0 {
+		t.Fatalf("expected the symlink-absorbed .. entry Skipped, got %+v", res)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("out-of-workspace sentinel was touched: %v", err)
 	}
 }

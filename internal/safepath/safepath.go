@@ -80,6 +80,26 @@ func JoinUnder(root string, elems ...string) (string, error) {
 	return candidate, nil
 }
 
+// JoinUnderRel is JoinUnder for elements that must be RELATIVE. It rejects any
+// elem that is an absolute path, then delegates to JoinUnder.
+//
+// Why this exists: filepath.Join("/root", "/etc/passwd") == "/root/etc/passwd"
+// (the leading separator is stripped), so JoinUnder(root, "/etc/passwd") does
+// NOT error — it silently confines the absolute element under root. That is safe
+// against escape but wrong when the element is externally supplied and an
+// absolute value should be REJECTED (it re-targets the operation to
+// root/<basename> instead of failing). Use JoinUnderRel wherever the joined
+// element comes from operator/model/task input; JoinUnder stays for trusted or
+// relative-by-construction callers.
+func JoinUnderRel(root string, elems ...string) (string, error) {
+	for _, e := range elems {
+		if filepath.IsAbs(e) {
+			return "", fmt.Errorf("path element %q must be relative", e)
+		}
+	}
+	return JoinUnder(root, elems...)
+}
+
 // AssertUnder verifies that an already-absolute path stays under base, with
 // the same symlink discipline as JoinUnder: symlinks are resolved in base and
 // in the deepest existing prefix of path (so a broken symlink whose target

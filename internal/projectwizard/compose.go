@@ -98,7 +98,17 @@ type ComposeDeps struct {
 	// (from the MCP registry snapshot). The mcp_server applier rejects
 	// any server not in this set.
 	KnownMCP map[string]bool
+	// TemplateMeta returns a base template's declared params and its
+	// declared autonomy block, read from the template files. Consumed by
+	// normalizeComposition for param repair (§4.2) and base-autonomy
+	// reconciliation (§3.2). Nil is tolerated: normalization then skips
+	// base-aware behavior and derives only projectId.
+	TemplateMeta TemplateMetaLookup
 }
+
+// TemplateMetaLookup resolves a base template slug to its declared params
+// and autonomy block. ok=false for an unknown slug.
+type TemplateMetaLookup func(slug string) (params []TemplateParam, base BaseAutonomy, ok bool)
 
 // ComposeError is a structured composition failure. AddonIndex/AddonType
 // are set for applier failures; AddonIndex = -1 for
@@ -252,7 +262,10 @@ func countBySuffix(files map[string]string, prefix, suffix string) int {
 // injecting deps where an applier needs them (mcp_server needs KnownMCP).
 func newApplierRegistry(deps ComposeDeps) map[string]AddonApplier {
 	return map[string]AddonApplier{
-		"mcp_server":         mcpServerApplier{known: deps.KnownMCP},
+		"mcp_server": mcpServerApplier{known: deps.KnownMCP},
+		// autonomy: normalizer-emitted only (mergeAutonomyAddons); NOT in
+		// the LLM addon vocabulary/grounding.
+		"autonomy":           autonomyApplier{},
 		"schedule":           scheduleApplier{},
 		"rag_source":         ragSourceApplier{},
 		"chat_tools":         chatToolsApplier{},

@@ -714,6 +714,15 @@ func LoadWorkflows(dir string) (map[string]*Workflow, error) {
 		if !strings.HasSuffix(name, ".md") {
 			continue
 		}
+		// A README.md documenting the workflows/ dir is not a workflow
+		// definition; skip it (mirrors rolelibrary.Load + LoadSwarms). Without
+		// this, a plain-prose README would fail frontmatter parse and abort the
+		// ENTIRE registry reload (keep-last-good) — and since 2026-07-17 the
+		// config watcher tracks .md, so a stray README edit would trigger that
+		// abort and block a real concurrent workflow edit from applying.
+		if strings.EqualFold(name, "README.md") {
+			continue
+		}
 
 		path := filepath.Join(workflowsDir, name)
 		data, err := os.ReadFile(path)

@@ -22,11 +22,11 @@ import (
 	"io"
 	"math"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/safepath"
 )
 
 // Severity classifies a Violation's blast radius. SeverityFail is
@@ -1023,6 +1023,14 @@ func verifyMustContainURL(cfg Config, in Input) (*Violation, error) {
 		if e == nil {
 			continue
 		}
+		// ToolName is part of the corpus so a target that is a TOOL NAME
+		// (e.g. ibkr-trader's order_placed_when_approved → mcp__broker__place_order)
+		// matches when that tool was called — the name lives in ToolName, not in
+		// the call's input/output (2026-07-17: a genuine place_order was
+		// false-flagged "absent" because only input+output were scanned). Web-URL
+		// targets still match via ToolInput (the fetch arg), unchanged.
+		corpus.WriteString(e.ToolName)
+		corpus.WriteString("\n")
 		corpus.WriteString(e.ToolInput)
 		corpus.WriteString("\n")
 		corpus.WriteString(e.ToolOutput)
@@ -1589,16 +1597,14 @@ func resolveResumeFromFile(params map[string]any, projectDir string) string {
 	if resumeFile == "" || projectDir == "" {
 		return ""
 	}
-	// Safe-join: clean the candidate path and ensure it stays under
-	// projectDir. filepath.Join already calls filepath.Clean, but we
-	// need to verify the result explicitly.
-	candidate := filepath.Join(projectDir, resumeFile)
-	// filepath.Clean removes any ".." sequences. Verify prefix.
-	// Add a path separator suffix to projectDir to avoid the
-	// "/foo/bar" prefix matching "/foo/barbaz".
-	cleanRoot := filepath.Clean(projectDir)
-	if !strings.HasPrefix(candidate, cleanRoot+string(filepath.Separator)) {
-		// Path escapes projectDir — reject silently (abstain).
+	// Safe-join: confine the candidate under projectDir via the canonical
+	// helper. JoinUnderRel rejects "../" escapes, an absolute resume_file (which
+	// JoinUnder would collapse under projectDir rather than reject), and
+	// symlink-resolves the existing prefix. resume_file is params-supplied, so
+	// the absolute reject matters. Any escape → abstain silently. A relative
+	// multi-segment path (e.g. ".autonomy/RESUME.md") is still allowed.
+	candidate, err := safepath.JoinUnderRel(projectDir, resumeFile)
+	if err != nil {
 		return ""
 	}
 	f, err := os.Open(candidate)

@@ -728,3 +728,44 @@ func TestTrading_RendersSafetyEventDetail(t *testing.T) {
 	assert.Contains(t, body, "requested_usd", "safety event detail key must render")
 	assert.Contains(t, body, "3000", "safety event detail value must render")
 }
+
+// TestTradingPerf_TodaySellRendersAndYAxisLabeled is the 2026-07-16
+// end-to-end regression for both dashboard bugs, driven through the real
+// handler + template with fills in the repo's NEWEST-FIRST order:
+//
+//	A) a sell filled today (opening buy 10d ago) must show as a closed
+//	   trade in the 7d window — previously the backwards FIFO pairing
+//	   dated the round-trip to the open day and it vanished from 7d/24h.
+//	B) the daily P&L SVG must carry Y-axis value labels (realized scale).
+func TestTradingPerf_TodaySellRendersAndYAxisLabeled(t *testing.T) {
+	broker := brokerCapsServer(t, true)
+	defer broker.Close()
+	reg := brokerEnabledRegistry(t, "trader", broker.URL)
+
+	now := time.Now().UTC()
+	// Newest-first, exactly as TradingFillRepository.List returns them.
+	fills := []*persistence.TradingFill{
+		{ID: "sell", OrderID: "os", ProjectID: "trader", Symbol: "AAPL", Qty: 5, Price: 331.52, FilledAt: now.Add(-1 * time.Hour)},
+		{ID: "buy", OrderID: "ob", ProjectID: "trader", Symbol: "AAPL", Qty: 5, Price: 295.16, FilledAt: now.Add(-10 * 24 * time.Hour)},
+	}
+	orders := []*persistence.TradingOrder{
+		{ID: "os", ProjectID: "trader", Symbol: "AAPL", Action: "SELL", OrderType: "MKT", Qty: 5, Status: "filled", SubmittedAt: now.Add(-1 * time.Hour)},
+		{ID: "ob", ProjectID: "trader", Symbol: "AAPL", Action: "BUY", OrderType: "MKT", Qty: 5, Status: "filled", SubmittedAt: now.Add(-10 * 24 * time.Hour)},
+	}
+	srv := NewServer(WithProjectRegistry(reg),
+		WithTradingFillRepository(&fakeFillRepo{rows: fills}),
+		WithTradingOrderRepository(&fakeOrderRepo{rows: orders}))
+	rec := httptest.NewRecorder()
+	srv.Trading(rec, httptest.NewRequest(http.MethodGet, "/trading?window=7d", nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+
+	// A) the round-trip is attributed to today's exit → visible in 7d.
+	assert.NotContains(t, body, "No closed trades",
+		"today's sell (open 10d ago) must pair into a closed trade in the 7d window")
+
+	// B) the daily P&L chart carries Y-axis value labels.
+	assert.Contains(t, body, ">$0<", "zero baseline Y-axis label must render")
+	assert.Contains(t, body, "$182</text>", "realized ±max Y-axis label must render (gross $181.80)")
+}

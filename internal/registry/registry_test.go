@@ -141,6 +141,57 @@ roles:
 	}
 }
 
+// TestLoadSwarms_SkipsReadme is the regression for review-20260717-1467 #1: a
+// README.md in swarms/ must be skipped, not parsed. Without the skip, its plain
+// prose fails frontmatter parse and LoadSwarms hard-fails — aborting the entire
+// registry reload (worse now that the config watcher tracks .md, so a stray
+// README edit would trigger the abort and block a real swarm edit).
+func TestLoadSwarms_SkipsReadme(t *testing.T) {
+	tmpDir := t.TempDir()
+	swarmsDir := filepath.Join(tmpDir, "swarms")
+	if err := os.Mkdir(swarmsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	valid := "---\nswarmId: \"s1\"\ndisplayName: \"S\"\nroles:\n  - name: \"coder\"\n    runtime:\n      image: \"test:latest\"\n---\n"
+	if err := os.WriteFile(filepath.Join(swarmsDir, "s1.md"), []byte(valid), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Plain-prose README with no frontmatter — would abort the load if parsed.
+	if err := os.WriteFile(filepath.Join(swarmsDir, "README.md"), []byte("# Swarms\n\nNot a swarm.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	swarms, err := LoadSwarms(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadSwarms must skip README.md, got error: %v", err)
+	}
+	if len(swarms) != 1 || swarms["s1"] == nil {
+		t.Fatalf("expected exactly [s1], got %v", swarms)
+	}
+}
+
+// TestLoadWorkflows_SkipsReadme mirrors the swarm case (review-20260717-1467 #1).
+func TestLoadWorkflows_SkipsReadme(t *testing.T) {
+	tmpDir := t.TempDir()
+	workflowsDir := filepath.Join(tmpDir, "workflows")
+	if err := os.Mkdir(workflowsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	valid := "---\nworkflowId: \"w1\"\ndisplayName: \"W\"\nentrypoint: \"step1\"\nsteps:\n  step1:\n    type: \"agent\"\n    role: \"coder\"\n    prompt: \"do\"\n    on_success: \"done\"\nterminals:\n  done:\n    status: \"COMPLETED\"\n---\n"
+	if err := os.WriteFile(filepath.Join(workflowsDir, "w1.md"), []byte(valid), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowsDir, "README.md"), []byte("# Workflows\n\nNot a workflow.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workflows, err := LoadWorkflows(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadWorkflows must skip README.md, got error: %v", err)
+	}
+	if len(workflows) != 1 || workflows["w1"] == nil {
+		t.Fatalf("expected exactly [w1], got %v", workflows)
+	}
+}
+
 func TestLoadWorkflows(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "registry-test")
 	if err != nil {

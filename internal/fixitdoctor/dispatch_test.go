@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -24,6 +26,7 @@ import (
 // --- pipeline fakes ------------------------------------------------------
 
 type fakeGatePipeline struct {
+	mu         sync.Mutex // guards the call slices; Dispatch now runs pipelines concurrently
 	planCalls  []string
 	applyCalls []string
 	applyErr   error
@@ -32,12 +35,16 @@ type fakeGatePipeline struct {
 }
 
 func (f *fakeGatePipeline) Plan(_ context.Context, key string) (string, error) {
+	f.mu.Lock()
 	f.planCalls = append(f.planCalls, key)
+	f.mu.Unlock()
 	return f.diff, nil
 }
 
 func (f *fakeGatePipeline) Apply(_ context.Context, key string) (string, error) {
+	f.mu.Lock()
 	f.applyCalls = append(f.applyCalls, key)
+	f.mu.Unlock()
 	if f.applyErr != nil {
 		return "", f.applyErr
 	}
@@ -418,12 +425,34 @@ func TestDispatch_ConfigApply_ApplyConflict_Rejected(t *testing.T) {
 
 // --- RollbackConfigApply (§5.4 rollback affordance) ------------------------
 
+// seedAppliedConfigApply records an applied config_apply for proposalID on the
+// session, so a subsequent rollback of that proposal passes the ownership gate
+// (review-20260716-d95b: rollback must target a proposal THIS session applied).
+func seedAppliedConfigApply(t *testing.T, store *fakeFixItSessionStore, sid, proposalID string) {
+	t.Helper()
+	s, err := store.Get(context.Background(), sid)
+	if err != nil {
+		t.Fatalf("seedAppliedConfigApply get: %v", err)
+	}
+	recs, err := json.Marshal([]appliedActionRecord{{
+		Kind: ActionKindConfigApply, Result: ActionResultApplied, RollbackID: proposalID, AppliedAt: time.Now().UTC(),
+	}})
+	if err != nil {
+		t.Fatalf("seedAppliedConfigApply marshal: %v", err)
+	}
+	s.AppliedActions = recs
+	if err := store.Update(context.Background(), s); err != nil {
+		t.Fatalf("seedAppliedConfigApply update: %v", err)
+	}
+}
+
 func TestRollbackConfigApply_Applied(t *testing.T) {
 	svc, store, sid := newDispatchTestService(t, testRef, nil)
 	proposals := &fakeConfigProposalPipeline{}
 	svc.ConfigProposals = proposals
 	audit := &fakeAuditRecorder{}
 	svc.Audit = audit
+	seedAppliedConfigApply(t, store, sid, "prop_1") // this session applied prop_1
 
 	res, err := svc.RollbackConfigApply(context.Background(), sid, "op-1", "prop_1")
 	if err != nil {
@@ -443,8 +472,31 @@ func TestRollbackConfigApply_Applied(t *testing.T) {
 	}
 	row, _ := store.Get(context.Background(), sid)
 	var records []appliedActionRecord
-	if err := json.Unmarshal(row.AppliedActions, &records); err != nil || len(records) != 1 {
+	// 2 records: the seeded config_apply + the rollback just recorded.
+	if err := json.Unmarshal(row.AppliedActions, &records); err != nil || len(records) != 2 {
 		t.Fatalf("applied_actions decode: err=%v records=%+v", err, records)
+	}
+}
+
+func TestRollbackConfigApply_RejectsUnownedProposal(t *testing.T) {
+	// review-20260716-d95b: RollbackConfigApply validated the operator (IDOR) but
+	// not that the proposal belongs to this session — an operator could roll back
+	// any proposal id. Rolling back a proposal this session never applied must be
+	// REJECTED, and the underlying pipeline Rollback must NOT be called.
+	svc, _, sid := newDispatchTestService(t, testRef, nil) // no applied actions
+	proposals := &fakeConfigProposalPipeline{}
+	svc.ConfigProposals = proposals
+	svc.Audit = &fakeAuditRecorder{}
+
+	res, err := svc.RollbackConfigApply(context.Background(), sid, "op-1", "prop_stranger")
+	if err != nil {
+		t.Fatalf("RollbackConfigApply: %v", err)
+	}
+	if res.Result != ActionResultRejected {
+		t.Fatalf("Result = %q, want rejected for an unowned proposal", res.Result)
+	}
+	if len(proposals.rollbackCalls) != 0 {
+		t.Fatalf("pipeline Rollback must not be called for an unowned proposal; calls = %v", proposals.rollbackCalls)
 	}
 }
 
@@ -466,10 +518,11 @@ func TestRollbackConfigApply_NotConfigured(t *testing.T) {
 // which audited but a failure did not (review-20260710-5a1b.md,
 // Important finding).
 func TestRollbackConfigApply_PipelineError_Failed(t *testing.T) {
-	svc, _, sid := newDispatchTestService(t, testRef, nil)
+	svc, store, sid := newDispatchTestService(t, testRef, nil)
 	svc.ConfigProposals = &fakeConfigProposalPipeline{rollbackErr: errors.New("snapshot missing")}
 	audit := &fakeAuditRecorder{}
 	svc.Audit = audit
+	seedAppliedConfigApply(t, store, sid, "prop_1") // owned, so we reach the pipeline
 
 	res, err := svc.RollbackConfigApply(context.Background(), sid, "op-1", "prop_1")
 	if err != nil {

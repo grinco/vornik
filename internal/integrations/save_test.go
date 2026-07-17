@@ -474,14 +474,16 @@ func TestSave_BackupRestoreOnEachFailurePoint(t *testing.T) {
 		deps.Reloader = &fakeReloader{}
 		deps.ReloadStatus = &fakeReloadStatusChecker{statuses: []config.ReloadStatus{
 			{Blocked: true, BlockedReason: "busy"},
-			{Blocked: false},
+			// A genuine success sets LastReload — the poll now requires that
+			// positive completion signal, not merely !Blocked.
+			{Blocked: false, LastReload: time.Now()},
 		}}
 		res, err := Save(context.Background(), kind, target, cand, adminCaller(), deps)
 		if err != nil {
 			t.Fatalf("Save: %v", err)
 		}
 		if !res.Saved {
-			t.Error("Saved = false, want true once the poll observes an unblocked status")
+			t.Error("Saved = false, want true once the poll observes a completed reload")
 		}
 		if w.restored {
 			t.Error("writer.Restore was called despite an eventual reload success")
@@ -858,5 +860,39 @@ func TestPollReloadStatus_ContextCancelled(t *testing.T) {
 	err := pollReloadStatus(ctx, checker, time.Second)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
+	}
+}
+
+// TestPollReloadStatus_ZeroValueDoesNotFalseSucceed is the review-20260716-b1ab
+// regression: a zero-value ReloadStatus (reload not reflected / stale checker)
+// must NOT be treated as success merely because Blocked/HasErrors are false —
+// success requires positive LastReload evidence.
+func TestPollReloadStatus_ZeroValueDoesNotFalseSucceed(t *testing.T) {
+	checker := &fakeReloadStatusChecker{statuses: []config.ReloadStatus{{}}}
+	err := pollReloadStatus(context.Background(), checker, 20*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "did not report completion") {
+		t.Fatalf("err = %v, want a completion-timeout error (no false success)", err)
+	}
+}
+
+// TestPollReloadStatus_PendingActivationDoesNotSucceed: a reload staged behind
+// in-flight tasks (PendingActivation) isn't active yet — the poll must not
+// report success even with LastReload set.
+func TestPollReloadStatus_PendingActivationDoesNotSucceed(t *testing.T) {
+	checker := &fakeReloadStatusChecker{statuses: []config.ReloadStatus{
+		{LastReload: time.Now(), PendingActivation: true},
+	}}
+	err := pollReloadStatus(context.Background(), checker, 20*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "activation is still pending") {
+		t.Fatalf("err = %v, want an activation-pending error", err)
+	}
+}
+
+// TestPollReloadStatus_CompletedSucceeds: a completed, activated reload
+// (LastReload set; not blocked/errored/pending) succeeds.
+func TestPollReloadStatus_CompletedSucceeds(t *testing.T) {
+	checker := &fakeReloadStatusChecker{statuses: []config.ReloadStatus{{LastReload: time.Now()}}}
+	if err := pollReloadStatus(context.Background(), checker, time.Second); err != nil {
+		t.Fatalf("completed reload should succeed: %v", err)
 	}
 }

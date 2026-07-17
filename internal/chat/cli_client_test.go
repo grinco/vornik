@@ -181,6 +181,22 @@ func TestParseStreamJSON(t *testing.T) {
 		"onText should receive monotonically-growing accumulated text")
 }
 
+// TestParseStreamJSON_CacheReadTokens pins that claude-cli's
+// cache_read_input_tokens (Anthropic prompt cache) is surfaced as
+// CacheReadTokens for cost observability.
+func TestParseStreamJSON_CacheReadTokens(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"assistant","message":{"id":"msg_c","role":"assistant","content":[{"type":"text","text":"hi"}]}}`,
+		`{"type":"result","subtype":"success","usage":{"input_tokens":5000,"output_tokens":12,"cache_read_input_tokens":4096}}`,
+		"",
+	}, "\n")
+	resp, err := parseStreamJSON(strings.NewReader(stream), nil)
+	require.NoError(t, err)
+	assert.Equal(t, 5000, resp.Usage.PromptTokens)
+	assert.Equal(t, 12, resp.Usage.CompletionTokens)
+	assert.Equal(t, 4096, resp.Usage.CacheReadTokens, "cache_read_input_tokens surfaced as CacheReadTokens")
+}
+
 func TestParseStreamJSON_NoText(t *testing.T) {
 	// Stream without any assistant text should return an error — otherwise
 	// the dispatcher would receive an empty ChatResponse and try to

@@ -381,7 +381,7 @@
                         <tbody class="divide-y divide-dark-700/30">
                             {{range .TopRoleModels}}
                             <tr class="hover:bg-dark-700/40">
-                                <td class="px-4 py-1.5 text-gray-300">{{.Role}}</td>
+                                <td class="px-4 py-1.5 text-gray-300 capitalize">{{.Role}}</td>
                                 <td class="px-4 py-1.5 text-gray-500 font-mono text-xs">{{.Model}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{.StepCount}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{fmtTokens .PromptTokens}} / {{fmtTokens .CompletionTokens}}</td>
@@ -437,7 +437,7 @@
                         <tbody class="divide-y divide-dark-700/30">
                             {{range .Phase1Cohorts}}
                             <tr class="hover:bg-dark-700/40">
-                                <td class="px-4 py-1.5 text-gray-300">{{if .Role}}{{.Role}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-1.5 text-gray-300 capitalize">{{if .Role}}{{.Role}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
                                 <td class="px-4 py-1.5 text-gray-500 font-mono text-xs">{{if .Model}}{{.Model}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-300 tabular-nums">{{.StepsAffected}}</td>
                                 <td class="px-4 py-1.5 text-right tabular-nums {{if gt .SignalsHigh 0}}text-rose-800 dark:text-rose-400 font-semibold{{else}}text-gray-500{{end}}">{{.SignalsHigh}}</td>
@@ -488,7 +488,7 @@
                         <tbody class="divide-y divide-dark-700/30">
                             {{range .HallucinationRollup}}
                             <tr class="hover:bg-dark-700/40">
-                                <td class="px-4 py-1.5 text-gray-300">{{if .Role}}{{.Role}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
+                                <td class="px-4 py-1.5 text-gray-300 capitalize">{{if .Role}}{{.Role}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
                                 <td class="px-4 py-1.5 text-gray-500 font-mono text-xs">{{if .Model}}{{.Model}}{{else}}<span class="text-gray-600">—</span>{{end}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-300 tabular-nums">{{.Total}}</td>
                                 <td class="px-4 py-1.5 text-right tabular-nums {{if lt .PassRatePct 50.0}}text-rose-800 dark:text-rose-400{{else if lt .PassRatePct 75.0}}text-amber-800 dark:text-amber-400{{else}}text-emerald-800 dark:text-emerald-400{{end}}">{{printf "%.0f" .PassRatePct}}%</td>

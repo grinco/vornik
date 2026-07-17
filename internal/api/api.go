@@ -1482,6 +1482,9 @@ func WithExtractorPipeline(
 // dependency graph stays one-way.
 type InputArtifactStore interface {
 	StoreInput(ctx context.Context, projectID, name, sourcePath string) (*persistence.Artifact, error)
+	// StoreInputRaw stores the input WITHOUT ingress secret redaction — used
+	// only for the auth-scoped review-class upload exemption (LLD 2026-07-16).
+	StoreInputRaw(ctx context.Context, projectID, name, sourcePath string) (*persistence.Artifact, error)
 }
 
 // ArtifactOpener is the backend-aware artifact byte source used by the

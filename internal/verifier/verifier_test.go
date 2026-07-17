@@ -181,6 +181,37 @@ func TestNoStatus429_RatioToleratesPartialFailure(t *testing.T) {
 	assert.Nil(t, v, "1/30 blocked with max_block_ratio=0.2 must pass")
 }
 
+// TestMustContainURL_MatchesToolName — a must_contain_url whose target is a
+// TOOL NAME (e.g. ibkr-trader's order_placed_when_approved → mcp__broker__place_order)
+// must be satisfied by a tool call with that ToolName, even when the name never
+// appears in the call's input/output. Regression for 2026-07-17: place_order's
+// input is order params and output is the fill — the tool name is only in the
+// ToolName field, so scanning input+output alone false-failed genuine placements.
+func TestMustContainURL_MatchesToolName(t *testing.T) {
+	cfg := Config{Type: "must_contain_url", Params: map[string]any{"urls": []string{"mcp__broker__place_order"}}}
+	entries := []*persistence.ToolAuditEntry{
+		{ToolName: "current_time", ToolInput: `{}`, ToolOutput: `"2026-07-17T16:30:00Z"`},
+		{ToolName: "mcp__broker__place_order",
+			ToolInput:  `{"symbol":"AAPL","action":"BUY","qty":4,"limit_price":331.89}`,
+			ToolOutput: `{"broker_order_id":"539586038","filled_qty":0}`},
+	}
+	v, err := Run(context.Background(), cfg, Input{AuditEntries: entries})
+	require.NoError(t, err)
+	assert.Nil(t, v, "a called tool must satisfy must_contain_url via its ToolName even when absent from input/output")
+}
+
+// TestMustContainURL_MissingToolStillFails — the guard still fails when the tool
+// was NOT called (no ToolName match, no input/output match).
+func TestMustContainURL_MissingToolStillFails(t *testing.T) {
+	cfg := Config{Type: "must_contain_url", Params: map[string]any{"urls": []string{"mcp__broker__place_order"}}}
+	entries := []*persistence.ToolAuditEntry{
+		{ToolName: "mcp__broker__get_quote", ToolInput: `{"symbol":"AAPL"}`, ToolOutput: `{"last":331.9}`},
+	}
+	v, err := Run(context.Background(), cfg, Input{AuditEntries: entries})
+	require.NoError(t, err)
+	require.NotNil(t, v, "an uncalled tool must still fail the verifier")
+}
+
 // TestNoStatus429_RatioStillFailsWhenAboveThreshold — ensure the
 // threshold is real, not a no-op: 3 blocked / 4 total = 0.75 must
 // exceed a 0.5 ratio.

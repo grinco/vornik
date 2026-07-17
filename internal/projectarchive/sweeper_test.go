@@ -399,7 +399,9 @@ func TestAssertWithinRoot(t *testing.T) {
 		{filepath.Join(tmp, "projects", "foo.yaml"), tmp, true},
 		{filepath.Join(tmp, "..", "elsewhere"), tmp, false},
 		{"/etc/passwd", tmp, false},
-		{tmp, tmp, true},
+		// path == root is now rejected (safepath.AssertUnder treats rel=="." as
+		// outside): real callers only ever pass <root>/projects/<id>… sub-paths.
+		{tmp, tmp, false},
 	}
 	for _, tc := range cases {
 		err := assertWithinRoot(tc.path, tc.root)

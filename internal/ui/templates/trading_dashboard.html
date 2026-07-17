@@ -116,11 +116,23 @@
                          aria-label="Daily P&amp;L chart" role="img"
                          class="overflow-visible">
 
-                        {{/* Zero baseline at mid-canvas. */}}
-                        <line x1="0" y1="{{.PerfChartBaseline}}"
-                              x2="{{.PerfChart.SVGWidth}}"
+                        {{/* Zero baseline, spanning the plot area (between the axis gutters). */}}
+                        <line x1="{{.PerfChart.PlotLeft}}" y1="{{.PerfChartBaseline}}"
+                              x2="{{.PerfChart.PlotRight}}"
                               y2="{{.PerfChartBaseline}}"
                               stroke="#374151" stroke-width="1"/>
+
+                        {{/* Y-axis value labels: realized P&L (left), equity (right). */}}
+                        {{range .PerfChart.YAxisLeft}}
+                        <text x="{{.X}}" y="{{add .Y 3}}" font-size="8" fill="#6b7280"
+                              text-anchor="{{.Anchor}}"
+                              font-family="ui-monospace,monospace">{{.Label}}</text>
+                        {{end}}
+                        {{range .PerfChart.YAxisRight}}
+                        <text x="{{.X}}" y="{{add .Y 3}}" font-size="8" fill="#818cf8"
+                              text-anchor="{{.Anchor}}"
+                              font-family="ui-monospace,monospace">{{.Label}}</text>
+                        {{end}}
 
                         {{/* Realized P&L bars. */}}
                         {{range .PerfChart.Points}}

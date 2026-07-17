@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/secrets"
 )
 
@@ -165,4 +166,34 @@ func TestSetSecrets_PostConstruction(t *testing.T) {
 	stored, err := os.ReadFile(art.StoragePath)
 	require.NoError(t, err)
 	assert.Contains(t, string(stored), "[REDACTED:openai_key]")
+}
+
+// TestStoreInput_RedactsByDefault — the baseline: a normal input upload
+// (Telegram/webchat/API) still runs the ingress scan and redacts, so
+// StoreInputRaw is the ONLY exemption.
+func TestStoreInput_RedactsByDefault(t *testing.T) {
+	store := newTestStoreWithSecrets(t, nil)
+	src := writeTempSource(t, "in.md", "key=sk-proj1234567890abcdefghijklmnopqrstuv\nkeep")
+	art, err := store.StoreInput(context.Background(), "p1", "in.md", src)
+	require.NoError(t, err)
+	stored, err := os.ReadFile(art.StoragePath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(stored), "sk-proj1234567890", "default StoreInput must still redact")
+	assert.Contains(t, string(stored), "[REDACTED:openai_key]")
+}
+
+// TestStoreInputRaw_SkipsRedaction — the scoped exemption (review-class
+// uploads, LLD 2026-07-16). Ingress redaction is an egress control misapplied
+// to ingress; a review diff must land verbatim so the (no-egress) review agent
+// sees real content. Stored bytes equal the source, secret intact.
+func TestStoreInputRaw_SkipsRedaction(t *testing.T) {
+	store := newTestStoreWithSecrets(t, nil)
+	body := "func TestFoo(t *testing.T) {}\nkey=sk-proj1234567890abcdefghijklmnopqrstuv\n"
+	src := writeTempSource(t, "diff.md", body)
+	art, err := store.StoreInputRaw(context.Background(), "p1", "diff.md", src)
+	require.NoError(t, err)
+	stored, err := os.ReadFile(art.StoragePath)
+	require.NoError(t, err)
+	assert.Equal(t, body, string(stored), "StoreInputRaw must store the input verbatim (no ingress redaction)")
+	assert.Equal(t, persistence.ArtifactClassInput, art.ArtifactClass)
 }

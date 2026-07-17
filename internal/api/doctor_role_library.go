@@ -44,15 +44,20 @@ func (h *DoctorHandlers) checkRoleLibrary() DoctorCheck {
 	if h.configDir == "" {
 		return DoctorCheck{Name: name, Status: "OK", Message: "no config dir; skipping"}
 	}
-	archetypes, err := rolelibrary.Load(h.configDir)
+	// LoadWithFindings enumerates every malformed file as a finding instead of
+	// aborting on the first, so the report shows the WHOLE library in one pass
+	// (review-20260716-7e65 #1). err is only a directory-level read failure.
+	archetypes, parseFindings, err := rolelibrary.LoadWithFindings(h.configDir)
 	if err != nil {
 		return DoctorCheck{Name: name, Status: "ERROR", Message: fmt.Sprintf("load role library: %v", err)}
 	}
-	if len(archetypes) == 0 {
+	if len(archetypes) == 0 && len(parseFindings) == 0 {
 		return DoctorCheck{Name: name, Status: "OK", Message: "no role-library entries configured"}
 	}
 
-	findings := rolelibrary.CheckLibrary(archetypes, h.systemHandlerNames)
+	// Parse-failure findings are surfaced alongside the structural ones.
+	findings := parseFindings
+	findings = append(findings, rolelibrary.CheckLibrary(archetypes, h.systemHandlerNames)...)
 
 	var errors, flags []string
 	for _, f := range findings {

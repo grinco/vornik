@@ -25,6 +25,7 @@ import (
 	"vornik.io/vornik/internal/memetic"
 	"vornik.io/vornik/internal/observability"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/safepath"
 	"vornik.io/vornik/internal/workflowtelemetry"
 )
 
@@ -127,15 +128,13 @@ func (s *fsWorkflowSource) Load(_ context.Context, workflowID string) ([]byte, e
 	if s.configDir == "" {
 		return nil, fmt.Errorf("fsWorkflowSource: configDir not set")
 	}
-	// Anchored join. workflowID is operator-supplied at the admin
-	// endpoint, so we defend against `..` traversal — Clean
-	// catches the obvious cases, then the prefix check pins the
-	// final path inside workflowsDir even if Clean produced
-	// something weird (Windows-style separator, NUL byte).
-	workflowsDir := filepath.Join(s.configDir, "workflows")
-	candidate := filepath.Clean(filepath.Join(workflowsDir, workflowID+".md"))
-	if !strings.HasPrefix(candidate, workflowsDir+string(filepath.Separator)) {
-		return nil, fmt.Errorf("fsWorkflowSource: workflowID escapes workflows directory")
+	// Anchored join via the canonical helper. workflowID is operator-supplied
+	// at the admin endpoint, so JoinUnderRel defends against `..` traversal,
+	// symlink escape, AND an absolute workflowID (which JoinUnder would collapse
+	// under workflowsDir rather than reject), pinning the path inside workflowsDir.
+	candidate, err := safepath.JoinUnderRel(filepath.Join(s.configDir, "workflows"), workflowID+".md")
+	if err != nil {
+		return nil, fmt.Errorf("fsWorkflowSource: workflowID escapes workflows directory: %w", err)
 	}
 	data, err := os.ReadFile(candidate)
 	if err != nil {

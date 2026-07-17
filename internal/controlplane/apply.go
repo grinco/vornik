@@ -137,7 +137,11 @@ func (e *ApplyEngine) resolveTarget(rel string) (string, error) {
 	// prefix and re-checks containment, so a pre-existing symlink inside the
 	// config tree pointing outside it can't be written through — the lexical
 	// Clean+HasPrefix guard this replaces did not resolve symlinks.
-	full, err := safepath.JoinUnder(e.ConfigDir, rel)
+	//
+	// rel is proposal-authored, so absolute paths must be rejected rather than
+	// silently re-targeted under ConfigDir. JoinUnderRel keeps that input-shape
+	// contract while preserving JoinUnder's containment checks.
+	full, err := safepath.JoinUnderRel(e.ConfigDir, rel)
 	if err != nil {
 		return "", ErrPathTraversal
 	}
@@ -552,5 +556,20 @@ func atomicWrite(target string, data []byte) error {
 		_ = os.Remove(tmpName)
 		return err
 	}
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("sync parent dir: %w", err)
+	}
 	return nil
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return err
+	}
+	return d.Close()
 }

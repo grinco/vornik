@@ -34,6 +34,37 @@ func TestWatcher_Scan(t *testing.T) {
 	assert.Contains(t, changed, configFile)
 }
 
+// TestWatcher_ScanDetectsMarkdownEdit is the regression for the 2026-07-08
+// footgun: swarms and workflows are SWARM.md / WORKFLOW.md, but the watcher
+// tracked only .yaml/.yml, so editing a swarm/workflow .md never triggered a
+// hot reload — the change needed an unrelated .yaml touch or a daemon restart.
+func TestWatcher_ScanDetectsMarkdownEdit(t *testing.T) {
+	tmpDir := t.TempDir()
+	swarmsDir := filepath.Join(tmpDir, "swarms")
+	require.NoError(t, os.MkdirAll(swarmsDir, 0o755))
+	swarmFile := filepath.Join(swarmsDir, "researcher.md")
+	require.NoError(t, os.WriteFile(swarmFile, []byte("---\nswarmId: r\n---\nbody\n"), 0o644))
+
+	w := NewWatcher([]string{tmpDir}, WithWatchLogger(zerolog.Nop()))
+
+	assert.Empty(t, w.scan(), "first scan records baseline, no change")
+
+	time.Sleep(20 * time.Millisecond)
+	require.NoError(t, os.WriteFile(swarmFile, []byte("---\nswarmId: r\n---\nedited body\n"), 0o644))
+
+	changed := w.scan()
+	assert.Contains(t, changed, swarmFile, "an edited swarm .md must be detected")
+}
+
+func TestIsWatchedConfigExt(t *testing.T) {
+	for _, p := range []string{"a.yaml", "a.yml", "swarms/x.md", "A.MD", "b.YAML"} {
+		assert.True(t, isWatchedConfigExt(p), "%s should be watched", p)
+	}
+	for _, p := range []string{"a.json", "a.txt", "a.go", "noext", "a.md.bak"} {
+		assert.False(t, isWatchedConfigExt(p), "%s should NOT be watched", p)
+	}
+}
+
 func TestWatcher_OnChange(t *testing.T) {
 	tmpDir := t.TempDir()
 	configFile := filepath.Join(tmpDir, "config.yaml")

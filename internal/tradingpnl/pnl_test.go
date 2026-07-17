@@ -445,3 +445,39 @@ func TestPairRoundTrips_SkipsNilFills(t *testing.T) {
 		t.Fatalf("expected 1 closed trade despite the nil fill, got %d", len(got))
 	}
 }
+
+// TestPairRoundTrips_DescendingInputSortedInternally is the 2026-07-16
+// trading-dashboard regression: the fill repo returns fills newest-first
+// (ORDER BY filled_at DESC), and the UI handed them straight to
+// PairRoundTrips. Fed newest-first, a SELL was processed before its
+// opening BUY — pairing "backwards" so the round-trip's ExitAt was dated
+// to the earlier (open) fill instead of the real exit, dropping today's
+// sell out of the 7d/24h windows. PairRoundTrips must sort ascending by
+// FilledAt itself so it's correct regardless of caller order.
+func TestPairRoundTrips_DescendingInputSortedInternally(t *testing.T) {
+	// Newest-first, as the repo returns them: SELL (exit) before BUY (open).
+	fills := []*persistence.TradingFill{
+		{OrderID: "sell", Symbol: "AAPL", Qty: 5, Price: 331.52, FilledAt: day(16)},
+		{OrderID: "buy", Symbol: "AAPL", Qty: 5, Price: 295.16, FilledAt: day(1)},
+	}
+	trades := tradingpnl.PairRoundTrips(fills, map[string]string{"buy": "BUY", "sell": "SELL"})
+	require.Len(t, trades, 1, "one long round-trip")
+	tr := trades[0]
+	assert.Equal(t, "long", tr.Side, "BUY opened, SELL closed — a long, not a phantom short")
+	assert.Equal(t, day(1), tr.EntryAt, "entry = the BUY fill")
+	assert.Equal(t, day(16), tr.ExitAt, "exit MUST be the SELL fill's day, not the earlier open")
+	assert.InDelta(t, 295.16, tr.EntryPx, 1e-9)
+	assert.InDelta(t, 331.52, tr.ExitPx, 1e-9)
+	assert.InDelta(t, (331.52-295.16)*5, tr.RealizedUSD, 1e-9)
+}
+
+// The caller's slice must not be mutated by the internal sort.
+func TestPairRoundTrips_DoesNotMutateCallerSlice(t *testing.T) {
+	fills := []*persistence.TradingFill{
+		{OrderID: "sell", Symbol: "AAPL", Qty: 5, Price: 331.52, FilledAt: day(16)},
+		{OrderID: "buy", Symbol: "AAPL", Qty: 5, Price: 295.16, FilledAt: day(1)},
+	}
+	_ = tradingpnl.PairRoundTrips(fills, map[string]string{"buy": "BUY", "sell": "SELL"})
+	assert.Equal(t, "sell", fills[0].OrderID, "input slice order must be preserved for the caller")
+	assert.Equal(t, "buy", fills[1].OrderID)
+}

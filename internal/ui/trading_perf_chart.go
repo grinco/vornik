@@ -21,8 +21,23 @@ const (
 	perfChartTop     = 10  // top padding above bars
 	perfChartColW    = 40  // column width per day
 	perfChartBarW    = 26  // bar width (centred in column)
-	perfChartLeftPad = 6   // left margin
+	perfChartLeftPad = 6   // left margin (inside the plot area)
+	// Axis gutters (px) reserved OUTSIDE the plot area for the Y-axis
+	// value labels: realized P&L on the left, equity on the right
+	// (2026-07-16). The plot area is shifted right by perfChartLeftGutter.
+	perfChartLeftGutter  = 48
+	perfChartRightGutter = 52
 )
+
+// perfAxisTick is one Y-axis value label. Anchor is the SVG
+// text-anchor ("end" for the left/realized axis, "start" for the
+// right/equity axis).
+type perfAxisTick struct {
+	X      int
+	Y      int
+	Label  string
+	Anchor string
+}
 
 // perfBarPoint is one day's bar + optional equity-line vertex for the SVG.
 type perfBarPoint struct {
@@ -58,6 +73,15 @@ type perfChartData struct {
 	PolylinePoints string
 	HasEquity      bool
 	HasBars        bool
+	// Y-axis value labels (2026-07-16). YAxisLeft is the realized-P&L
+	// scale (+max / $0 / -max around the baseline); YAxisRight is the
+	// equity scale (max / min), empty when there's no equity data.
+	YAxisLeft  []perfAxisTick
+	YAxisRight []perfAxisTick
+	// PlotLeft/PlotRight bound the plotting area (x) between the axis
+	// gutters — the zero baseline spans this range, not the full width.
+	PlotLeft  int
+	PlotRight int
 }
 
 // perfExtents holds the axis-scaling values derived from the daily series.
@@ -147,12 +171,13 @@ func layoutPerfChart(daily []tradingpnl.DailyPoint) perfChartData {
 	ext := computePerfExtents(daily)
 	baseline := perfChartTop + perfChartH/2
 	labelY := perfChartTop + perfChartH + 16
+	plotLeft := perfChartLeftGutter
 
 	points := make([]perfBarPoint, n)
 	polyParts := make([]string, 0, n)
 
 	for i, d := range daily {
-		x := perfChartLeftPad + i*perfChartColW
+		x := plotLeft + perfChartLeftPad + i*perfChartColW
 		cx := x + perfChartColW/2
 		dateStr := d.Day.Format("2006-01-02")
 
@@ -170,13 +195,60 @@ func layoutPerfChart(daily []tradingpnl.DailyPoint) perfChartData {
 		points[i] = p
 	}
 
+	svgWidth := plotLeft + perfChartLeftPad + n*perfChartColW + perfChartRightGutter
+	plotRight := svgWidth - perfChartRightGutter
+
 	return perfChartData{
 		Points:         points,
-		SVGWidth:       perfChartLeftPad + n*perfChartColW,
+		SVGWidth:       svgWidth,
 		SVGHeight:      perfChartTop + perfChartH + 22,
 		PolylinePoints: strings.Join(polyParts, " "),
 		HasEquity:      ext.hasEquity,
 		HasBars:        ext.hasBars,
+		YAxisLeft:      buildRealizedAxis(ext, baseline, plotLeft),
+		YAxisRight:     buildEquityAxis(ext, svgWidth),
+		PlotLeft:       plotLeft,
+		PlotRight:      plotRight,
+	}
+}
+
+// buildRealizedAxis emits the left Y-axis ticks for the realized-P&L bars:
+// +max at the top, $0 at the baseline, -max at the bottom. Right-anchored
+// just inside the left gutter.
+func buildRealizedAxis(ext perfExtents, baseline, plotLeft int) []perfAxisTick {
+	x := plotLeft - 6
+	return []perfAxisTick{
+		{X: x, Y: perfChartTop, Label: "+" + fmtAxisUSD(ext.maxAbsRealized), Anchor: "end"},
+		{X: x, Y: baseline, Label: "$0", Anchor: "end"},
+		{X: x, Y: perfChartTop + perfChartH, Label: "-" + fmtAxisUSD(ext.maxAbsRealized), Anchor: "end"},
+	}
+}
+
+// buildEquityAxis emits the right Y-axis ticks for the equity line: max at
+// the top, min at the bottom. Left-anchored just inside the right gutter.
+// Empty when there's no equity data (broker-offline / no snapshots).
+func buildEquityAxis(ext perfExtents, svgWidth int) []perfAxisTick {
+	if !ext.hasEquity {
+		return nil
+	}
+	x := svgWidth - perfChartRightGutter + 6
+	return []perfAxisTick{
+		{X: x, Y: perfChartTop, Label: fmtAxisUSD(ext.maxEquity), Anchor: "start"},
+		{X: x, Y: perfChartTop + perfChartH, Label: fmtAxisUSD(ext.minEquity), Anchor: "start"},
+	}
+}
+
+// fmtAxisUSD renders a compact USD axis label: "$1.2k", "$12.3k", "$1.2M",
+// or "$182" for small magnitudes. Sign is applied by the caller.
+func fmtAxisUSD(v float64) string {
+	a := math.Abs(v)
+	switch {
+	case a >= 1_000_000:
+		return fmt.Sprintf("$%.1fM", a/1_000_000)
+	case a >= 1_000:
+		return fmt.Sprintf("$%.1fk", a/1_000)
+	default:
+		return fmt.Sprintf("$%.0f", a)
 	}
 }
 

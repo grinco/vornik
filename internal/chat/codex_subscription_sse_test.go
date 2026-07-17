@@ -147,6 +147,38 @@ data: {"response":{"id":"resp-second","usage":{"input_tokens":9,"output_tokens":
 	assert.Equal(t, 17, resp.Usage.TotalTokens)
 }
 
+// TestParseCodexResponsesSSE_CachedTokens pins the Responses-API cache
+// observation: usage.input_tokens_details.cached_tokens (a subset of
+// input_tokens served from the automatic prompt cache) is surfaced as
+// CacheReadTokens for cost observability.
+func TestParseCodexResponsesSSE_CachedTokens(t *testing.T) {
+	sseInput := `event: response.completed
+data: {"response":{"id":"resp-c","usage":{"input_tokens":2048,"output_tokens":10,"total_tokens":2058,"input_tokens_details":{"cached_tokens":1536}}}}
+
+`
+	resp, err := parseCodexResponsesSSE(strings.NewReader(sseInput), nil)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	assert.Equal(t, 2048, resp.Usage.PromptTokens, "prompt tokens include the cached subset")
+	assert.Equal(t, 1536, resp.Usage.CacheReadTokens, "cached_tokens surfaced as CacheReadTokens")
+	assert.Equal(t, 10, resp.Usage.CompletionTokens)
+}
+
+// TestParseCodexResponsesSSE_NoCacheDetails: absent input_tokens_details leaves
+// CacheReadTokens zero (no cache attribution), not a parse failure.
+func TestParseCodexResponsesSSE_NoCacheDetails(t *testing.T) {
+	sseInput := `event: response.completed
+data: {"response":{"id":"resp-n","usage":{"input_tokens":100,"output_tokens":5}}}
+
+`
+	resp, err := parseCodexResponsesSSE(strings.NewReader(sseInput), nil)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, 0, resp.Usage.CacheReadTokens)
+	assert.Equal(t, 100, resp.Usage.PromptTokens)
+}
+
 func TestParseCodexResponsesSSE_FunctionCallDoneWithoutCallIDDoesNotAppend(t *testing.T) {
 	sseInput := `event: response.output_item.added
 data: {"item":{"type":"function_call","name":"tool_without_id"}}

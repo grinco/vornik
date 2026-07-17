@@ -28,13 +28,9 @@ func TestExecutionStepOutcome_FinalizeAndList(t *testing.T) {
 		}
 	}
 
-	// Finalize o1 to ok.
-	if err := repo.Finalize(ctx, "o1", "ok", "", "", nil); err != nil {
-		t.Fatalf("Finalize: %v", err)
-	}
-	// Finalize missing id → ErrNotFound.
-	if err := repo.Finalize(ctx, "missing", "ok", "", "", nil); err != persistence.ErrNotFound {
-		t.Errorf("Finalize missing err = %v, want ErrNotFound", err)
+	// Finalize o1 (the pending row for e1/s1) to ok via FinalizePending.
+	if _, _, err := repo.FinalizePending(ctx, "e1", "s1", "ok", "", "", nil); err != nil {
+		t.Fatalf("FinalizePending o1: %v", err)
 	}
 
 	// FinalizePending picks the most-recent pending for the step and

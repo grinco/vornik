@@ -741,9 +741,22 @@ func displayRole(s string) string {
 		return "Project Setup Wizard"
 	case "automation_composer":
 		return "Automation Composer"
+	case "dispatcher":
+		return "Chat Dispatcher"
 	case "judge":
 		return "Hallucination Judge"
+	case "github-classifier":
+		// Proper-noun casing CSS capitalize can't infer. NOTE: this and
+		// "rag-ingester" are operator-editable swarm role names — if
+		// they're renamed in the swarm config these curated labels go
+		// stale and the role falls through to raw + CSS capitalize.
+		return "GitHub Classifier"
 	default:
+		// Operator-configured swarm roles (coder, lead, reviewer,
+		// risk-officer, …) are free text — return them UNCHANGED. The
+		// templates apply CSS `text-transform: capitalize` for cosmetic
+		// beautification in the rendered HTML only, so a user-defined
+		// name is never mutated in code (and exports stay verbatim).
 		return s
 	}
 }

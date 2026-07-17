@@ -1216,7 +1216,7 @@
                             {{range .Cost.Rows}}
                             <tr>
                                 <td class="px-2 py-1.5 text-ink-400 font-mono text-xs">{{.StepID}}</td>
-                                <td class="px-2 py-1.5 text-ink-300">{{.Role}}</td>
+                                <td class="px-2 py-1.5 text-ink-300 capitalize">{{.Role}}</td>
                                 <td class="px-2 py-1.5 text-ink-500 font-mono text-xs">{{.Model}}</td>
                                 <td class="px-2 py-1.5 text-right text-ink-400 tabular-nums">{{fmtTokens .PromptTokens}}</td>
                                 <td class="px-2 py-1.5 text-right text-ink-400 tabular-nums">{{fmtTokens .CompletionTokens}}</td>

@@ -3,6 +3,7 @@ package api
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +92,26 @@ func TestCheckRoleLibraryBrokenIsError(t *testing.T) {
 	}
 	if len(got.Items) == 0 {
 		t.Error("expected findings in Items")
+	}
+}
+
+// TestCheckRoleLibraryEnumeratesParseFailures — review-20260717-21f4 #8: the
+// doctor must report EVERY malformed file (parse failures alongside structural
+// findings) in one pass, not abort on the first. Locks the load-bearing glue
+// (LoadWithFindings → prepend parseFindings → CheckLibrary).
+func TestCheckRoleLibraryEnumeratesParseFailures(t *testing.T) {
+	dir := t.TempDir()
+	writeRoleLibFile(t, dir, "researcher.md", cleanRoleLibEntry)
+	writeRoleLibFile(t, dir, "bad1.md", "no frontmatter here\n")
+	writeRoleLibFile(t, dir, "bad2.md", "also broken\n")
+	h := &DoctorHandlers{configDir: dir}
+	got := h.checkRoleLibrary()
+	if got.Status != "ERROR" {
+		t.Fatalf("status = %q, want ERROR (malformed files present)", got.Status)
+	}
+	joined := strings.Join(got.Items, "\n")
+	if !strings.Contains(joined, "bad1.md") || !strings.Contains(joined, "bad2.md") {
+		t.Fatalf("both malformed files must be enumerated; Items = %v", got.Items)
 	}
 }
 

@@ -78,34 +78,6 @@ func nullableJSONB(b []byte) any {
 	return b
 }
 
-// Finalize sets outcome + related fields on a specific row by its
-// primary key. Idempotent: finalizing an already-finalized row is a
-// no-op if the values match, and overwrites otherwise (we keep the
-// latest finalizer wins semantics — attribution chains don't revisit).
-func (r *ExecutionStepOutcomeRepository) Finalize(ctx context.Context, id, outcome, errorClass, errorDetail string, attributedToStepID *string) error {
-	res, err := r.db.ExecContext(ctx, `
-		UPDATE execution_step_outcomes
-		SET outcome = $1,
-		    error_class = $2,
-		    error_detail = $3,
-		    attributed_to_step_id = $4,
-		    finalized_at = NOW()
-		WHERE id = $5`,
-		outcome, errorClass, errorDetail, nullableString(attributedToStepID), id,
-	)
-	if err != nil {
-		return mapDBError(err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	}
-	if n == 0 {
-		return persistence.ErrNotFound
-	}
-	return nil
-}
-
 // FinalizePending finalizes the most recent pending_validation row for
 // (executionID, stepID) and returns that row's (role, model) so callers
 // can emit per-outcome metrics. Returns ErrNotFound when there is no

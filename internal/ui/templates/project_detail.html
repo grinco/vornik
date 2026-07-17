@@ -1151,7 +1151,7 @@
                             <tr class="hover:bg-surface-700/40
                                 {{if and .HasBaseline (gt .Ratio 2.0)}}bg-rose-900/10
                                 {{else if and .HasBaseline (lt .Ratio 0.7)}}bg-emerald-900/10{{end}}">
-                                <td class="px-4 py-1.5 text-ink-300">{{.Role}}</td>
+                                <td class="px-4 py-1.5 text-ink-300 capitalize">{{.Role}}</td>
                                 <td class="px-4 py-1.5 text-ink-500 font-mono text-xs">{{.Model}}</td>
                                 <td class="px-4 py-1.5 text-right text-ink-300 tabular-nums" title="{{fmtUSD2 .CurrentSpendUSD}} over {{.CurrentOks}} successes">{{fmtUSD .CurrentUSDPerOk}}</td>
                                 <td class="px-4 py-1.5 text-right text-ink-500 tabular-nums">

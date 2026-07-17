@@ -212,6 +212,15 @@ does not exist.
     tools, role instructions) and builds the project, swarm, and workflow
     for you.
 
+    A project runs **one** autonomy style. If you describe a need with two
+    cadences — say, "ingest my mail every 5 minutes **and** produce a daily
+    digest" — the wizard builds a single scheduled loop whose goal handles
+    both (frequent ingestion each tick; the digest when the day's elapsed),
+    rather than two conflicting schedules. Set `chat.wizard_model` to a
+    capable model (a strong Bedrock chat model works well) if you want
+    higher-quality drafts; the wizard still converges on a valid project
+    regardless of the model.
+
 Confirm the daemon has loaded your project:
 
 ```bash

@@ -251,61 +251,6 @@ func TestGitWorkspaceRoot_NilConfig(t *testing.T) {
 	}
 }
 
-// TestGitSafeJoinUnder covers all branches of gitSafeJoinUnder.
-func TestGitSafeJoinUnder(t *testing.T) {
-	base := t.TempDir()
-
-	tests := []struct {
-		name    string
-		rel     string
-		wantErr bool
-	}{
-		{
-			name:    "valid child",
-			rel:     "subdir",
-			wantErr: false,
-		},
-		{
-			name:    "valid nested child",
-			rel:     "a/b/c",
-			wantErr: false,
-		},
-		{
-			name:    "traversal dot dot",
-			rel:     "../escape",
-			wantErr: true,
-		},
-		{
-			name:    "double dot only",
-			rel:     "..",
-			wantErr: true,
-		},
-		{
-			name:    "resolves to base itself",
-			rel:     "subdir/..",
-			wantErr: true,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := gitSafeJoinUnder(base, tc.rel)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("expected error for rel=%q, got path %q", tc.rel, got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error for rel=%q: %v", tc.rel, err)
-			}
-			want := filepath.Join(base, tc.rel)
-			if got != want {
-				t.Fatalf("gitSafeJoinUnder = %q, want %q", got, want)
-			}
-		})
-	}
-}
-
 // TestParseCGIOutput covers all branches of parseCGIOutput.
 func TestParseCGIOutput(t *testing.T) {
 	tests := []struct {

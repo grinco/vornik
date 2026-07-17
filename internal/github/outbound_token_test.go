@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,29 @@ func TestMintInstallationToken_HTTPError(t *testing.T) {
 	_, _, err := MintInstallationToken(context.Background(), srv.Client(), srv.URL, 1, 1, key)
 	if err == nil || !strings.Contains(err.Error(), "HTTP 404") {
 		t.Errorf("err = %v, want an HTTP 404 error", err)
+	}
+}
+
+// TestMintInstallationToken_ErrorFormat_PinsClassifierAnchor pins the EXACT
+// substring internal/integrations' classifyGitHubMintErr regex-matches
+// ("installation-token HTTP <code>") to recover the status and map 401/403/404 →
+// OutcomeFail (review-20260716-b1ab). If this format is reworded, this test
+// fails HERE — before the classifier silently degrades a "bad credentials" 401
+// into a "couldn't reach GitHub" OutcomeError. See the COUPLING comment in
+// outbound.go.
+func TestMintInstallationToken_ErrorFormat_PinsClassifierAnchor(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"message":"nope"}`))
+		}))
+		_, _, err := MintInstallationToken(context.Background(), srv.Client(), srv.URL, 1, 1, key)
+		srv.Close()
+		want := "installation-token HTTP " + strconv.Itoa(status)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("status %d: err = %v, want it to contain %q (classifier anchor)", status, err, want)
+		}
 	}
 }
 

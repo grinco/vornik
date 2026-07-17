@@ -114,8 +114,13 @@ func confineInputFileSource(src string, roots []string) (string, bool) {
 	if err != nil {
 		cleanSrc = filepath.Clean(absSrc)
 	}
+	// Confine under any allowed root via the canonical helper. We keep the
+	// EvalSymlinks canonicalization above because the caller needs the resolved
+	// path back (it hands cleanSrc to StoreInput, closing the TOCTOU window);
+	// AssertUnder only validates, so the loop returns cleanSrc on the first
+	// root that contains it.
 	for _, r := range roots {
-		if cleanSrc == r || strings.HasPrefix(cleanSrc, r+string(filepath.Separator)) {
+		if safepath.AssertUnder(r, cleanSrc) == nil {
 			return cleanSrc, true
 		}
 	}

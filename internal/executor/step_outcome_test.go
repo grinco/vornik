@@ -44,21 +44,6 @@ func (s *stubStepOutcomeRepo) Record(_ context.Context, o *persistence.Execution
 	return nil
 }
 
-func (s *stubStepOutcomeRepo) Finalize(_ context.Context, id, outcome, errorClass, errorDetail string, attr *string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, r := range s.rows {
-		if r.ID == id {
-			r.Outcome = outcome
-			r.ErrorClass = errorClass
-			r.ErrorDetail = errorDetail
-			r.AttributedToStepID = attr
-			return nil
-		}
-	}
-	return persistence.ErrNotFound
-}
-
 func (s *stubStepOutcomeRepo) FinalizePending(_ context.Context, executionID, stepID, outcome, errorClass, errorDetail string, attr *string) (string, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

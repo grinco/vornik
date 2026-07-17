@@ -264,6 +264,7 @@ func buildProjectWizard(c *Container) *projectwizard.Wizard { //nolint:funlen //
 	// without suggested-template hints.
 	var priors []projectwizard.TemplatePrior
 	var templateSource projectwizard.TemplateSource
+	var templateMeta projectwizard.TemplateMetaLookup
 	templatesDir := ""
 	if configsDir := resolveRegistryConfigDir(c.ConfigPath); configsDir != "" {
 		templatesDir = filepath.Join(configsDir, "project-templates")
@@ -279,6 +280,7 @@ func buildProjectWizard(c *Container) *projectwizard.Wizard { //nolint:funlen //
 			// gallery one (project.yaml + swarm.md), so it loads and runs
 			// rather than depending on the LLM to author a valid swarmId.
 			templateSource = catalogTemplateSource{cat: cat}
+			templateMeta = newTemplateMetaLookup(cat, templatesDir)
 		}
 	}
 
@@ -295,6 +297,7 @@ func buildProjectWizard(c *Container) *projectwizard.Wizard { //nolint:funlen //
 		LLMUsage:          c.repos.LLMUsage,
 		Validator:         projectwizard.RegistryValidator{},
 		Templates:         templateSource,
+		TemplateMeta:      templateMeta,
 		Metrics:           c.projectWizardMetrics,
 		MaxActiveSessions: 5,
 		MaxTurns:          20,
@@ -414,6 +417,84 @@ func buildProjectWizard(c *Container) *projectwizard.Wizard { //nolint:funlen //
 // concrete types directly.
 type catalogTemplateSource struct {
 	cat *templates.Catalog
+}
+
+// newTemplateMetaLookup builds the convergence normalizer's TemplateMeta
+// dependency: a base template slug → its declared params (from the
+// manifest) + its declared autonomy block (scanned from the projects/*.yaml
+// template source). Returns nil when no catalog is loaded. baseAutonomy
+// degrades to disabled when the autonomy block can't be read — the safe
+// default that lets the common (disabled-base) case compose.
+func newTemplateMetaLookup(cat *templates.Catalog, templatesDir string) projectwizard.TemplateMetaLookup {
+	if cat == nil {
+		return nil
+	}
+	return func(slug string) ([]projectwizard.TemplateParam, projectwizard.BaseAutonomy, bool) {
+		m, ok := cat.Get(slug)
+		if !ok {
+			return nil, projectwizard.BaseAutonomy{}, false
+		}
+		params := make([]projectwizard.TemplateParam, 0, len(m.Parameters))
+		for _, p := range m.Parameters {
+			params = append(params, projectwizard.TemplateParam{
+				Name:     p.Name,
+				Required: p.Required,
+				Default:  p.Default,
+			})
+		}
+		return params, readBaseAutonomy(templatesDir, slug, m), true
+	}
+}
+
+// readBaseAutonomy scans a template's project YAML source for its declared
+// autonomy `enabled`/`mode`. The source is a Go text/template (contains
+// `{{ }}`), so it can't be yaml-parsed wholesale; the autonomy enabled/mode
+// values are literals in practice, so a small block scan is robust. Missing
+// or unreadable → zero value (disabled), the safe default.
+func readBaseAutonomy(templatesDir, slug string, m templates.Manifest) projectwizard.BaseAutonomy {
+	var src string
+	for _, f := range m.Files {
+		if strings.Contains(f.Target, "projects/") && strings.HasSuffix(f.Target, ".yaml") {
+			src = f.Source
+			break
+		}
+	}
+	if src == "" || templatesDir == "" {
+		return projectwizard.BaseAutonomy{}
+	}
+	body, err := os.ReadFile(filepath.Join(templatesDir, slug, src))
+	if err != nil {
+		return projectwizard.BaseAutonomy{}
+	}
+	return scanAutonomyBlock(string(body))
+}
+
+// scanAutonomyBlock extracts enabled/mode from a top-level `autonomy:`
+// mapping in project-YAML template text, tolerating interleaved
+// `{{ }}`-templated lines it doesn't understand.
+func scanAutonomyBlock(body string) projectwizard.BaseAutonomy {
+	var out projectwizard.BaseAutonomy
+	inBlock := false
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !inBlock {
+			if trimmed == "autonomy:" {
+				inBlock = true
+			}
+			continue
+		}
+		// A non-indented, non-empty line ends the block.
+		if line != "" && line[0] != ' ' && line[0] != '\t' {
+			break
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "enabled:"):
+			out.Enabled = strings.TrimSpace(strings.TrimPrefix(trimmed, "enabled:")) == "true"
+		case strings.HasPrefix(trimmed, "mode:"):
+			out.Mode = strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "mode:")), `"'`)
+		}
+	}
+	return out
 }
 
 func (s catalogTemplateSource) Lookup(slug string) (projectwizard.TemplateSpec, bool) {

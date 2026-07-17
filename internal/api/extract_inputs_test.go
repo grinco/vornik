@@ -28,11 +28,12 @@ import (
 // interface — narrow on purpose so tests don't drag the full
 // artifacts.Store into the test binary.
 type stubInputArtifactStore struct {
-	baseDir string
-	calls   []string
-	nextID  int
-	failOn  string // when set, errors when name == failOn
-	mimeFor map[string]string
+	baseDir  string
+	calls    []string
+	rawCalls []string // names stored via StoreInputRaw (redaction-exempt path)
+	nextID   int
+	failOn   string // when set, errors when name == failOn
+	mimeFor  map[string]string
 }
 
 func (s *stubInputArtifactStore) StoreInput(_ context.Context, projectID, name, sourcePath string) (*persistence.Artifact, error) {
@@ -61,6 +62,41 @@ func (s *stubInputArtifactStore) StoreInput(_ context.Context, projectID, name, 
 		StoragePath: dest,
 		MimeType:    &mime,
 	}, nil
+}
+
+func (s *stubInputArtifactStore) StoreInputRaw(ctx context.Context, projectID, name, sourcePath string) (*persistence.Artifact, error) {
+	s.rawCalls = append(s.rawCalls, name)
+	return s.StoreInput(ctx, projectID, name, sourcePath)
+}
+
+// TestProcessInputArtifacts_SkipSecretRedaction routes staging through
+// StoreInputRaw when opts.SkipSecretRedaction is set (the review-class ingress
+// exemption, LLD 2026-07-16); default routes through the redacting StoreInput.
+func TestProcessInputArtifacts_SkipSecretRedaction(t *testing.T) {
+	enc := base64.StdEncoding.EncodeToString([]byte("diff body with sk-proj1234567890abcdefghijklmnop"))
+	inputs := []InputArtifact{{Name: "review.md", Content: enc}}
+
+	t.Run("skip=true uses StoreInputRaw", func(t *testing.T) {
+		srv, store, _ := fixtureServerWithExtractor(t)
+		_, err := srv.processInputArtifactsWithOpts(context.Background(), "p", inputs,
+			processInputArtifactsOpts{SkipSecretRedaction: true})
+		if err != nil {
+			t.Fatalf("processInputArtifactsWithOpts: %v", err)
+		}
+		if len(store.rawCalls) != 1 || store.rawCalls[0] != "review.md" {
+			t.Fatalf("rawCalls = %v; want [review.md]", store.rawCalls)
+		}
+	})
+	t.Run("default redacts (no raw)", func(t *testing.T) {
+		srv, store, _ := fixtureServerWithExtractor(t)
+		_, err := srv.processInputArtifacts(context.Background(), "p", inputs)
+		if err != nil {
+			t.Fatalf("processInputArtifacts: %v", err)
+		}
+		if len(store.rawCalls) != 0 {
+			t.Fatalf("default path must NOT use StoreInputRaw; rawCalls = %v", store.rawCalls)
+		}
+	})
 }
 
 // fixtureEPUBBytes builds a small valid EPUB byte slice for the

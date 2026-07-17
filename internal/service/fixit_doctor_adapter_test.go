@@ -178,7 +178,13 @@ func TestFixItDoctorAdapter_Apply_PropagatesResult(t *testing.T) {
 
 func TestFixItDoctorAdapter_Rollback_PropagatesResult(t *testing.T) {
 	sessions := newFakeFixItSessions()
-	sessions.rows["fix-1"] = &persistence.FixItSession{ID: "fix-1", OperatorID: "op1"}
+	// Seed an applied config_apply for cpp_1 so it passes the rollback-ownership
+	// gate (fixitdoctor: rollback must target a proposal THIS session applied) —
+	// this test exercises result PROPAGATION, not the gate itself.
+	sessions.rows["fix-1"] = &persistence.FixItSession{
+		ID: "fix-1", OperatorID: "op1",
+		AppliedActions: []byte(`[{"kind":"config_apply","result":"applied","rollback_id":"cpp_1"}]`),
+	}
 	svc := &fixitdoctor.Service{
 		Sessions:        sessions,
 		Metrics:         fixitdoctor.NewMetrics(prometheus.NewRegistry()),

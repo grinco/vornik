@@ -55,6 +55,10 @@ type processInputArtifactsOpts struct {
 	// stages the raw file into the agent container's
 	// /app/workspace/artifacts/in/ instead of bypassing it.
 	SkipAutoExtract bool
+	// SkipSecretRedaction stores each input via StoreInputRaw (no ingress
+	// secret scan). Set ONLY by the companion delegate for an auth-scoped
+	// review-class workflow (LLD 2026-07-16); never for general uploads.
+	SkipSecretRedaction bool
 }
 
 // processInputArtifacts decodes each inline InputArtifact, writes
@@ -114,7 +118,11 @@ func (s *Server) processInputArtifactsWithOpts(ctx context.Context, projectID st
 		if err := os.WriteFile(tmpPath, decoded, 0o600); err != nil {
 			return nil, fmt.Errorf("inputArtifacts[%d]: write temp: %w", i, err)
 		}
-		art, err := s.inputArtifactStore.StoreInput(ctx, projectID, safeName, tmpPath)
+		storeInput := s.inputArtifactStore.StoreInput
+		if opts.SkipSecretRedaction {
+			storeInput = s.inputArtifactStore.StoreInputRaw
+		}
+		art, err := storeInput(ctx, projectID, safeName, tmpPath)
 		if err != nil {
 			return nil, fmt.Errorf("inputArtifacts[%d]: store: %w", i, err)
 		}

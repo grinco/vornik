@@ -29,6 +29,7 @@ func TestParseCodexStream(t *testing.T) {
 	assert.Equal(t, 42, resp.Usage.PromptTokens)
 	assert.Equal(t, 9, resp.Usage.CompletionTokens)
 	assert.Equal(t, 51, resp.Usage.TotalTokens)
+	assert.Equal(t, 20, resp.Usage.CacheReadTokens, "cached_input_tokens surfaced for cost observability")
 	assert.Equal(t, []string{"Hello", "Hello, world"}, chunks)
 }
 

@@ -519,6 +519,11 @@ type cliContentPart struct {
 type cliEventUsage struct {
 	InputTokens  int `json:"input_tokens,omitempty"`
 	OutputTokens int `json:"output_tokens,omitempty"`
+	// CacheReadInputTokens is Claude Code's count of input tokens served from
+	// the Anthropic prompt cache (a subset of InputTokens). Surfaced for cost
+	// observability — Anthropic caching is effective, unlike the Bedrock-OSS
+	// models, so this is a real signal.
+	CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
 }
 
 // parseStreamJSON reads newline-delimited JSON events from r and
@@ -573,6 +578,7 @@ func parseStreamJSON(r io.Reader, onText StreamCallback) (*ChatResponse, error) 
 			if u := evt.Message.Usage; u != nil {
 				finalResp.Usage.PromptTokens += u.InputTokens
 				finalResp.Usage.CompletionTokens += u.OutputTokens
+				finalResp.Usage.CacheReadTokens += u.CacheReadInputTokens
 			}
 		case "result":
 			if evt.Error != "" {
@@ -586,6 +592,9 @@ func parseStreamJSON(r io.Reader, onText StreamCallback) (*ChatResponse, error) 
 				}
 				if u.OutputTokens > 0 {
 					finalResp.Usage.CompletionTokens = u.OutputTokens
+				}
+				if u.CacheReadInputTokens > 0 {
+					finalResp.Usage.CacheReadTokens = u.CacheReadInputTokens
 				}
 			}
 		}

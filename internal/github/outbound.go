@@ -178,6 +178,13 @@ func MintInstallationToken(ctx context.Context, httpClient *http.Client, apiBase
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxOutboundResponseBytes))
 	if resp.StatusCode != http.StatusCreated {
+		// COUPLING (review-20260716-b1ab): the substring "installation-token HTTP
+		// <code>" is a load-bearing contract — internal/integrations'
+		// classifyGitHubMintErr regex-matches it to recover the status and map
+		// 401/403/404 → OutcomeFail. Do NOT reword this without updating that
+		// classifier (and its format-pinning test, TestMintInstallationToken_
+		// ErrorFormat_PinsClassifierAnchor). A typed error would be the durable
+		// fix (tracked follow-up).
 		return "", time.Time{}, fmt.Errorf("github-app: installation-token HTTP %d: %s",
 			resp.StatusCode, truncateErrorBody(string(body)))
 	}

@@ -375,6 +375,7 @@ func TestCompanionMCP_Delegate_BudgetCapAllowsUnderCap(t *testing.T) {
 // path can complete without touching real disk. Test-only.
 type fakeInputArtifactStore struct {
 	stored []struct{ Project, Name string }
+	raw    []string // names stored via StoreInputRaw (redaction-exempt path)
 }
 
 func (f *fakeInputArtifactStore) StoreInput(_ context.Context, projectID, name, _ string) (*persistence.Artifact, error) {
@@ -385,6 +386,11 @@ func (f *fakeInputArtifactStore) StoreInput(_ context.Context, projectID, name, 
 		Name:        name,
 		StoragePath: "/fake/storage/" + name,
 	}, nil
+}
+
+func (f *fakeInputArtifactStore) StoreInputRaw(ctx context.Context, projectID, name, sourcePath string) (*persistence.Artifact, error) {
+	f.raw = append(f.raw, name)
+	return f.StoreInput(ctx, projectID, name, sourcePath)
 }
 
 // TestCompanionMCP_Delegate_InputArtifacts_FoldsIntoContext — the
@@ -440,6 +446,18 @@ func TestCompanionMCP_Delegate_InputArtifacts_FoldsIntoContext(t *testing.T) {
 	// must not stomp the existing payload shape.
 	companion, _ := taskCtx["companion"].(map[string]any)
 	require.NotNil(t, companion, "companion marker must survive the inputArtifacts merge")
+}
+
+// TestIsReviewClassWorkflow — the closed server-side allowlist that gates the
+// ingress-redaction exemption (LLD 2026-07-16). Only read-only, no-egress review
+// workflows are exempt; everything else (incl. rag-ingest) stays redacted.
+func TestIsReviewClassWorkflow(t *testing.T) {
+	for _, wf := range []string{"companion-architectural-review", "companion-doc-review", " companion-doc-review "} {
+		require.True(t, isReviewClassWorkflow(wf), "%q should be review-class", wf)
+	}
+	for _, wf := range []string{"companion-rag-ingest", "wf-alpha", "", "architectural-review", "companion-research-gather"} {
+		require.False(t, isReviewClassWorkflow(wf), "%q must NOT be review-class", wf)
+	}
 }
 
 // TestCompanionMCP_Delegate_SkipAutoExtract — skip_auto_extract: true

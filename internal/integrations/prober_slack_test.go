@@ -57,7 +57,12 @@ func TestSlackProber_Probe_InvalidAuth(t *testing.T) {
 		t.Fatalf("res = %+v, want !OK/OutcomeFail for invalid_auth", res)
 	}
 	if len(res.Failures) == 0 {
-		t.Error("expected at least one CheckFailure")
+		t.Fatal("expected at least one CheckFailure")
+	}
+	// review-20260716-b1ab: the failure must name the catalog Key so the UI can
+	// highlight the right field. The key was renamed bot_token -> bot_token_env.
+	if got := res.Failures[0].Field; got != "bot_token_env" {
+		t.Errorf("CheckFailure.Field = %q, want %q (catalog Key)", got, "bot_token_env")
 	}
 }
 

@@ -7,6 +7,33 @@ import (
 	"testing"
 )
 
+// TestWriteFileSync writes, fsyncs, and truncates prior content — the durable
+// write used for staged files + the commit journal (review-20260716-8f22 #3).
+func TestWriteFileSync(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "f.txt")
+	if err := writeFileSync(p, []byte("hello world")); err != nil {
+		t.Fatalf("writeFileSync: %v", err)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hello world" {
+		t.Fatalf("content = %q, want %q", got, "hello world")
+	}
+	// Overwrite with shorter content — O_TRUNC must not leave a tail.
+	if err := writeFileSync(p, []byte("hi")); err != nil {
+		t.Fatalf("writeFileSync overwrite: %v", err)
+	}
+	got, _ = os.ReadFile(p)
+	if string(got) != "hi" {
+		t.Fatalf("after overwrite content = %q, want %q", got, "hi")
+	}
+	// syncDir on a real dir must not panic/error-out the caller.
+	syncDir(dir)
+}
+
 func TestOrderedRelPaths_ProjectFileLast(t *testing.T) {
 	files := map[string]string{
 		"projects/x.yaml":   "proj",

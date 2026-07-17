@@ -92,6 +92,30 @@ func TestCheckRoleLibraryPrereq(t *testing.T) {
 	})
 }
 
+// TestComposerVerify — the composer MUST define a Verify, else ComputeStatus
+// (status.go) can never return StatusOK for it and an enabled+healthy composer
+// reports a permanent false [degraded] (found 2026-07-16 after enabling it).
+func TestComposerVerify(t *testing.T) {
+	f := composerFeature()
+	if f.Verify == nil {
+		t.Fatal("composerFeature must define a Verify (nil Verify => permanent [degraded] when enabled)")
+	}
+	t.Run("valid role library => OK", func(t *testing.T) {
+		dir := t.TempDir()
+		writeArchetype(t, dir, "researcher", true)
+		res := f.Verify(context.Background(), Deps{RoleLibraryDir: dir})
+		if !res.OK {
+			t.Errorf("expected OK verify with a valid role library, got %+v", res)
+		}
+	})
+	t.Run("no role library => not OK", func(t *testing.T) {
+		res := f.Verify(context.Background(), Deps{})
+		if res.OK {
+			t.Error("expected not-ok verify when the role library can't ground a composition")
+		}
+	})
+}
+
 func TestChatProviderConfigured(t *testing.T) {
 	cases := []struct {
 		name string

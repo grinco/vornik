@@ -27,6 +27,7 @@ import (
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/safepath"
 )
 
 // DefaultTickInterval is the cadence between automatic sweeps.
@@ -356,9 +357,18 @@ func safeRemoveAll(path, root string) error {
 // guard catches accidental misconfiguration ("ConfigDir=/" would
 // otherwise wipe the entire filesystem).
 func assertWithinRoot(path, root string) error {
+	// Keep the explicit empty-root guard: safepath.AssertUnder is fail-OPEN on
+	// an empty base (returns nil), which would defeat the "ConfigDir=/" misconfig
+	// protection this helper exists for.
 	if root == "" {
 		return fmt.Errorf("empty root")
 	}
+	// AssertUnder does not Abs its inputs, so pre-absolutize (sweeper roots are
+	// absolute in deployment; this keeps the behavior for a relative root/path).
+	// AssertUnder then symlink-resolves base + the path's existing prefix — a
+	// strict improvement over the prior lexical check for a delete path. Note it
+	// also rejects path==root (rel=="."), which the old check allowed; real
+	// callers always pass <root>/projects/<id>… sub-paths, never the root itself.
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return fmt.Errorf("abs root: %w", err)
@@ -367,16 +377,7 @@ func assertWithinRoot(path, root string) error {
 	if err != nil {
 		return fmt.Errorf("abs path: %w", err)
 	}
-	absRoot = filepath.Clean(absRoot)
-	absPath = filepath.Clean(absPath)
-	rel, err := filepath.Rel(absRoot, absPath)
-	if err != nil {
-		return fmt.Errorf("rel: %w", err)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return fmt.Errorf("path %q escapes root %q", absPath, absRoot)
-	}
-	return nil
+	return safepath.AssertUnder(absRoot, absPath)
 }
 
 // audit best-effort writes an admin-audit row. Nil-safe.

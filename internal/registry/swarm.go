@@ -427,6 +427,15 @@ func LoadSwarms(dir string) (map[string]*Swarm, error) {
 		if !strings.HasSuffix(name, ".md") {
 			continue
 		}
+		// A README.md documenting the swarms/ dir is not a swarm definition;
+		// skip it (mirrors rolelibrary.Load). Without this, a plain-prose
+		// README would fail frontmatter parse and abort the ENTIRE registry
+		// reload (keep-last-good) — since 2026-07-17 the config watcher tracks
+		// .md, so a stray README edit would otherwise trigger that abort and
+		// silently block a real concurrent swarm edit from applying.
+		if strings.EqualFold(name, "README.md") {
+			continue
+		}
 
 		path := filepath.Join(swarmsDir, name)
 		data, err := os.ReadFile(path)

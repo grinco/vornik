@@ -19,7 +19,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
@@ -169,6 +172,17 @@ type Service struct {
 	// own ledger, e.g. ControlPlaneProposal), so a failed audit insert
 	// must not make an already-applied fix look like it failed.
 	Audit AuditRecorder
+
+	// dispatchMu serialises the fresh-read→append→write of a session's
+	// AppliedActions inside recordAppliedAction, so two concurrent applies
+	// (double-click, future automation) can't lost-update the record
+	// (review-20260716-d95b). It is held ONLY across that short window — never
+	// across the pipeline/audit IO — so a slow apply can't stall other
+	// dispatches (review-20260717-c377). A single coarse mutex is adequate for
+	// this low-volume admin surface and avoids a per-session keyed-lock map that
+	// would leak entries; a multi-daemon deployment would need a DB advisory
+	// lock instead — deferred with the other multi-instance items.
+	dispatchMu sync.Mutex
 }
 
 // Converse appends the operator's message to the session transcript,
@@ -211,6 +225,17 @@ func (s *Service) Converse(ctx context.Context, sessionID, operatorID string, re
 	}()
 
 	if sessionID == "" {
+		// Validate the caller-supplied ref and budget-gate BEFORE creating the
+		// session, so a malformed ref or a budget-blocked request never inserts
+		// (and then immediately closes) an orphan session row
+		// (review-20260716-d95b). A resumed session skips this: its ref is the
+		// store's own, and no new row is created.
+		if err := validateFailureRef(ref); err != nil {
+			return nil, err
+		}
+		if blocked, reason := s.budgetBlocked(callCtx, ref.ProjectID); blocked {
+			return nil, fmt.Errorf("fixitdoctor: budget exceeded: %s", reason)
+		}
 		newSession, err := s.startSession(callCtx, operatorID, ref)
 		if err != nil {
 			return nil, err
@@ -223,6 +248,10 @@ func (s *Service) Converse(ctx context.Context, sessionID, operatorID string, re
 			return nil, err
 		}
 		session, ref = gotSession, gotRef
+		// Resumed: ref is now the store's authoritative value — budget-gate here.
+		if blocked, reason := s.budgetBlocked(callCtx, ref.ProjectID); blocked {
+			return nil, fmt.Errorf("fixitdoctor: budget exceeded: %s", reason)
+		}
 	}
 
 	// Cascade-close check: has the underlying object vanished since
@@ -245,10 +274,6 @@ func (s *Service) Converse(ctx context.Context, sessionID, operatorID string, re
 		return nil, ErrTurnsExhausted
 	}
 	transcript = append(transcript, Turn{Role: "user", Content: userMessage, CreatedAt: time.Now().UTC()})
-
-	if blocked, reason := s.budgetBlocked(callCtx, ref.ProjectID); blocked {
-		return nil, fmt.Errorf("fixitdoctor: budget exceeded: %s", reason)
-	}
 
 	envelope, resp, newSignal, err := s.runTurn(callCtx, ref, session, transcript)
 	if err != nil {
@@ -368,6 +393,50 @@ func validateConverseInputs(s *Service, operatorID, userMessage string) error {
 	}
 	if operatorID == "" {
 		return errors.New("fixitdoctor: operator id required")
+	}
+	return nil
+}
+
+// maxFailureRefFieldLen bounds a FailureRef's ID/ProjectID at the public
+// boundary. These flow into grounding SQL lookups (parameterised) and the audit
+// Target field; a real task/execution/integration id or feature key is short.
+const maxFailureRefFieldLen = 256
+
+// validateFailureRef bounds + character-set-checks the CALLER-supplied ref
+// before a NEW session is created (review-20260716-d95b). A resumed session's
+// ref comes from the store and is already trusted. The charset rule is
+// deliberately a denylist (no control chars, no whitespace, valid UTF-8) rather
+// than an allowlist, so it rejects abuse (oversized / binary / newline-injected
+// ids) without over-blocking legitimate slug/id charsets we don't fully enumerate.
+func validateFailureRef(ref FailureRef) error {
+	if ref.Kind == "" || ref.ID == "" {
+		return ErrFailureRefRequired
+	}
+	if !isKnownFailureKind(ref.Kind) {
+		return fmt.Errorf("fixitdoctor: unknown failure ref kind %q", ref.Kind)
+	}
+	if err := validRefField("id", ref.ID); err != nil {
+		return err
+	}
+	if ref.ProjectID != "" {
+		if err := validRefField("project id", ref.ProjectID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validRefField(name, v string) error {
+	if len(v) > maxFailureRefFieldLen {
+		return fmt.Errorf("fixitdoctor: failure ref %s exceeds %d bytes", name, maxFailureRefFieldLen)
+	}
+	if !utf8.ValidString(v) {
+		return fmt.Errorf("fixitdoctor: failure ref %s is not valid UTF-8", name)
+	}
+	for _, r := range v {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return fmt.Errorf("fixitdoctor: failure ref %s contains an invalid character", name)
+		}
 	}
 	return nil
 }

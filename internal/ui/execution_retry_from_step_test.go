@@ -84,9 +84,6 @@ type supersedeCall struct {
 func (r *retryFromStepFakeOutcomeRepo) Record(_ context.Context, _ *persistence.ExecutionStepOutcome) error {
 	return nil
 }
-func (r *retryFromStepFakeOutcomeRepo) Finalize(_ context.Context, _, _, _, _ string, _ *string) error {
-	return nil
-}
 func (r *retryFromStepFakeOutcomeRepo) FinalizePending(_ context.Context, _, _, _, _, _ string, _ *string) (string, string, error) {
 	return "", "", nil
 }

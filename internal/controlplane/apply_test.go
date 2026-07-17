@@ -187,6 +187,28 @@ func TestApply_PathTraversalRefused(t *testing.T) {
 	}
 }
 
+func TestApply_AbsolutePathRefused(t *testing.T) {
+	e, repo, _, _ := approvedProposal(t, persistence.ProposalScopeProject)
+	np := &persistence.ControlPlaneProposal{
+		ID: persistence.GenerateID("cpp"), ProjectID: "janka",
+		Kind: persistence.ProposalKindConfig, BlastRadius: persistence.ProposalScopeProject,
+		Title: "absolute", ApplyTarget: "/tmp/evil.yaml", ApplyContent: "x",
+		Status: persistence.ProposalStatusDraft, ProposedBy: "x",
+	}
+	if err := repo.Create(context.Background(), np); err != nil {
+		t.Fatalf("create proposal: %v", err)
+	}
+	if err := repo.SetStatus(context.Background(), np.ID, persistence.ProposalStatusApproved, "vadim"); err != nil {
+		t.Fatalf("approve proposal: %v", err)
+	}
+	if err := e.Apply(context.Background(), np.ID, "vadim", false); !errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("absolute apply target must be refused, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(e.ConfigDir, "tmp", "evil.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("absolute target must not be silently retargeted under config dir, stat err=%v", err)
+	}
+}
+
 func TestRollback_RestoresSnapshot(t *testing.T) {
 	e, repo, id, file := approvedProposal(t, persistence.ProposalScopeProject)
 	if err := e.Apply(context.Background(), id, "vadim", false); err != nil {
@@ -204,5 +226,11 @@ func TestRollback_RestoresSnapshot(t *testing.T) {
 	p, _ := repo.GetByID(context.Background(), id)
 	if p.Status != persistence.ProposalStatusRolledBack {
 		t.Errorf("expected ROLLED_BACK, got %s", p.Status)
+	}
+}
+
+func TestSyncDir_MissingDirReturnsError(t *testing.T) {
+	if err := syncDir(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("syncDir must surface open/sync failures")
 	}
 }

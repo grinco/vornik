@@ -351,8 +351,8 @@ func mirrorOneFile(sourceRoot, sourceConfigsDir, rel string, content []byte, log
 	// VERBATIM — local uncommitted edits to a mirrored file are overwritten
 	// by design (deployed reality wins; the git commit preserves history).
 	rel = filepath.Clean(rel)
-	if strings.Contains(rel, "..") {
-		return "", false, fmt.Errorf("mirror: %q contains dot-dot", rel)
+	if filepath.IsAbs(rel) || strings.Contains(rel, "..") {
+		return "", false, fmt.Errorf("mirror: %q is not a safe relative path", rel)
 	}
 	// Map the deployed rel path to its source-tree home, then containment-check
 	// through the canonical symlink-resolving guard (audit 2026-07-09 F-1):
@@ -361,9 +361,9 @@ func mirrorOneFile(sourceRoot, sourceConfigsDir, rel string, content []byte, log
 	// the tree — the lexical Clean+HasPrefix guard this replaces did not.
 	var clean string
 	if strings.HasPrefix(rel, "configs/") {
-		clean, err = safepath.JoinUnder(sourceConfigsDir, strings.TrimPrefix(rel, "configs/"))
+		clean, err = safepath.JoinUnderRel(sourceConfigsDir, strings.TrimPrefix(rel, "configs/"))
 	} else {
-		clean, err = safepath.JoinUnder(sourceRoot, rel)
+		clean, err = safepath.JoinUnderRel(sourceRoot, rel)
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("mirror: %q escapes the source tree: %w", rel, err)

@@ -63,30 +63,6 @@ func (r *ExecutionStepOutcomeRepository) Record(ctx context.Context, o *persiste
 	return err
 }
 
-func (r *ExecutionStepOutcomeRepository) Finalize(ctx context.Context, id, outcome, errorClass, errorDetail string, attributedToStepID *string) error {
-	res, err := r.db.ExecContext(ctx, `
-		UPDATE execution_step_outcomes
-		SET outcome = ?,
-		    error_class = ?,
-		    error_detail = ?,
-		    attributed_to_step_id = ?,
-		    finalized_at = ?
-		WHERE id = ?`,
-		outcome, errorClass, errorDetail, attributedToStepID,
-		sqliteTime(time.Now().UTC()), id)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return persistence.ErrNotFound
-	}
-	return nil
-}
-
 func (r *ExecutionStepOutcomeRepository) FinalizePending(ctx context.Context, executionID, stepID, outcome, errorClass, errorDetail string, attributedToStepID *string) (string, string, error) {
 	// Two-step: locate the most recent pending row, then CAS-UPDATE it.
 	// The UPDATE re-asserts outcome = 'pending_validation' and checks

@@ -187,6 +187,31 @@ func TestTrading_DefaultsToFirstEnabledProjectAndRendersPanel(t *testing.T) {
 	assert.Contains(t, body, ">live<")
 }
 
+// TestTrading_RendersHTMXWindowButtons — the trading dashboard's period +
+// project selector mirror the spend dashboard (grinco/vornik PR #5): the
+// window dropdown is replaced by a 1d/7d/30d button group, and the filter form
+// refreshes only #trading-results through HTMX (no full page reload).
+func TestTrading_RendersHTMXWindowButtons(t *testing.T) {
+	broker := brokerCapsServer(t, true)
+	defer broker.Close()
+	srv := NewServer(WithProjectRegistry(brokerEnabledRegistry(t, "trader", broker.URL)))
+	rec := httptest.NewRecorder()
+	srv.Trading(rec, httptest.NewRequest(http.MethodGet, "/trading?window=7d", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, `id="trading-results"`)
+	assert.Contains(t, body, `hx-get="/ui/trading"`)
+	assert.Contains(t, body, `hx-target="#trading-results"`)
+	assert.Contains(t, body, `hx-select="#trading-results"`)
+	assert.Contains(t, body, `tab.classList.toggle("bg-brand-600/80", active)`)
+	for _, window := range []string{"24h", "7d", "30d"} {
+		assert.Contains(t, body, `data-trading-window="`+window+`"`)
+	}
+	// The active window (7d) button is pressed; the others are not.
+	assert.Contains(t, body, `data-trading-window="7d" aria-pressed="true"`)
+	assert.Contains(t, body, `data-trading-window="24h" aria-pressed="false"`)
+}
+
 // TestTrading_ExplicitNonEnabledProjectRejected — an explicit ?project=
 // that isn't trading-enabled is refused rather than silently ignored.
 func TestTrading_ExplicitNonEnabledProjectRejected(t *testing.T) {

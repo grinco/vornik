@@ -83,6 +83,22 @@ func TestSpend_HappyPathWith7DayWindow(t *testing.T) {
 	assert.Contains(t, body, "task_a", "top task id should render")
 }
 
+func TestSpend_RendersHTMXWindowButtons(t *testing.T) {
+	srv := NewServer(WithLLMUsageRepository(&extendedLLMUsageRepo{}))
+	rec := httptest.NewRecorder()
+	srv.Spend(rec, httptest.NewRequest(http.MethodGet, "/spend?window=7d", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.Contains(t, body, `id="spend-results"`)
+	assert.Contains(t, body, `hx-get="/ui/spend"`)
+	assert.Contains(t, body, `hx-target="#spend-results"`)
+	assert.Contains(t, body, `hx-select="#spend-results"`)
+	assert.Contains(t, body, `tab.classList.toggle("bg-brand-600/80", active)`)
+	for _, window := range []string{"24h", "7d", "30d"} {
+		assert.Contains(t, body, `data-spend-window="`+window+`"`)
+	}
+}
+
 func TestSpend_DefaultsScopedKeyToVisibleProject(t *testing.T) {
 	repo := &extendedLLMUsageRepo{
 		bySource: []persistence.SourceSpend{{Source: "agent", CostUSD: 1}},

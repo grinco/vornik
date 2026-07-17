@@ -23,8 +23,13 @@ type DashboardData struct {
 	TaskCounts   map[persistence.TaskStatus]int64
 	// 2026.4.11+ financial + model-performance summary. Zero values
 	// when task_llm_usage is empty or the repo isn't wired (old deployments).
-	Spend     DashboardSpend
-	TopModels []persistence.RoleModelSpend // top 10 by 30d cost
+	Spend        DashboardSpend
+	WindowDays   int                          // active leaderboard window: 1, 7, or 30
+	WindowLabel  string                       // operator-facing label: "1 day", "7 days", "30 days"
+	WindowParam  string                       // query value: "1d", "7d", or "30d"
+	TopModels1d  []persistence.RoleModelSpend // top 10 by 1-day cost
+	TopModels7d  []persistence.RoleModelSpend // top 10 by 7-day cost
+	TopModels30d []persistence.RoleModelSpend // top 10 by 30-day cost
 
 	// Landing-page tiles (2026-04-30). Pulls in-flight signals into
 	// one front door so operators don't have to bookmark per-page
@@ -248,10 +253,28 @@ func (s *Server) Dashboard(w http.ResponseWriter, r *http.Request) {
 		Title:        "Dashboard",
 		CurrentPage:  "dashboard",
 		TaskCounts:   make(map[persistence.TaskStatus]int64),
+		WindowDays:   7,
+		WindowLabel:  "7 days",
+		WindowParam:  "7d",
 		Limit:        limit,
 		LimitOptions: PageSizeOptions,
 		// Show the logout button for browser-session logins.
 		IsSession: api.SessionRoleFromContext(r.Context()) != "",
+	}
+
+	switch r.URL.Query().Get("window") {
+	case "24h", "1d":
+		data.WindowDays = 1
+		data.WindowLabel = "1 day"
+		data.WindowParam = "1d"
+	case "30d":
+		data.WindowDays = 30
+		data.WindowLabel = "30 days"
+		data.WindowParam = "30d"
+	case "7d":
+		data.WindowDays = 7
+		data.WindowLabel = "7 days"
+		data.WindowParam = "7d"
 	}
 
 	// Get project count
@@ -294,17 +317,32 @@ func (s *Server) Dashboard(w http.ResponseWriter, r *http.Request) {
 				w.setter(v)
 			}
 		}
-		if rows, err := s.llmUsageRepo.AggregateByRoleModel(ctx, now.Add(-30*24*time.Hour), time.Time{}, 10, ""); err == nil {
+		loadLeaderboard := func(since time.Time, setter func([]persistence.RoleModelSpend), label string) {
+			rows, err := s.llmUsageRepo.AggregateByRoleModel(ctx, since, time.Time{}, 10, "")
+			if err != nil {
+				s.logger.Warn().Err(err).Str("window", label).Msg("failed to load model leaderboard for dashboard")
+				return
+			}
 			// Replace raw role identifiers (kg_extractor, judge, ...)
 			// with operator-facing labels for display. The DB rows
 			// stay raw — this is a render-side transform only.
 			for i := range rows {
 				rows[i].Role = displayRole(rows[i].Role)
 			}
-			data.TopModels = rows
-		} else {
-			s.logger.Warn().Err(err).Msg("failed to load model leaderboard for dashboard")
+			setter(rows)
 		}
+		// Preload all three small result sets. The dashboard switches between
+		// them client-side, so the operator gets an instant tab change rather
+		// than a full page reload or another round-trip.
+		loadLeaderboard(now.Add(-24*time.Hour), func(rows []persistence.RoleModelSpend) {
+			data.TopModels1d = rows
+		}, "1d")
+		loadLeaderboard(now.Add(-7*24*time.Hour), func(rows []persistence.RoleModelSpend) {
+			data.TopModels7d = rows
+		}, "7d")
+		loadLeaderboard(now.Add(-30*24*time.Hour), func(rows []persistence.RoleModelSpend) {
+			data.TopModels30d = rows
+		}, "30d")
 
 		// Hourly buckets for the 24h sparkline. We bucket client-side
 		// from the raw rows because the repo doesn't expose a bucketed

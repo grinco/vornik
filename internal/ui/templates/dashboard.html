@@ -28,7 +28,7 @@
                  aria-live="polite" aria-atomic="false"
                  hx-ext="sse"
                  sse-connect="/api/v1/live/fleet"
-                 hx-get="/ui/"
+                 hx-get="/ui/?window={{.WindowParam}}&limit={{.Limit}}"
                  hx-trigger="sse:fleet-changed, every 30s"
                  hx-select="#dashboard-live"
                  hx-target="this"
@@ -220,7 +220,7 @@
                                  /ui/audit, /ui/tasks, /ui/memory, /ui/projects,
                                  /ui/spend. Lands the operator back on / with
                                  the new ?limit=N. */}}
-                            {{template "pageSizeSelector" (dict "Action" "/ui/" "Current" .Limit "Options" .LimitOptions "Hidden" (dict))}}
+                            {{template "pageSizeSelector" (dict "Action" "/ui/" "Current" .Limit "Options" .LimitOptions "Hidden" (dict "window" .WindowParam))}}
                         </div>
                     </div>
                     {{if .ActiveTasks}}
@@ -415,13 +415,22 @@
 
             </div>
 
-            <!-- Model Leaderboard (top 10 role+model combos by 30-day cost).
-                 Effective-cost view is on the Grafana dashboard; here we just
-                 show the raw spend + step count so operators see who's
-                 driving the bill. -->
-            {{if .TopModels}}
-            <div class="glass rounded-xl border border-surface-600 overflow-hidden">
-                {{template "sectionHeader" (dict "Title" "Model Leaderboard · last 30 days" "MetaText" "ranked by total cost")}}
+            <!-- Model Leaderboard (top 10 role+model combos per window).
+                 All three small result sets are rendered once; JS swaps tbody
+                 visibility locally so 1d/7d/30d changes are instant. -->
+            {{if or .TopModels1d .TopModels7d .TopModels30d}}
+            <div class="glass rounded-xl border border-surface-600 overflow-hidden" data-leaderboard data-limit="{{.Limit}}">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                        <h2 class="text-sm font-semibold text-ink-200">Model Leaderboard <span class="text-ink-500 font-normal">· last {{.WindowLabel}}</span></h2>
+                        <p class="text-xs text-ink-500 mt-0.5">ranked by total cost</p>
+                    </div>
+                    <div class="inline-flex items-center gap-1 rounded-lg border border-surface-600/70 bg-surface-800/60 p-0.5" role="group" aria-label="Leaderboard window">
+                        <button type="button" data-leaderboard-window="1d" aria-pressed="{{if eq .WindowParam "1d"}}true{{else}}false{{end}}" class="px-2.5 py-1 text-xs rounded-md transition-colors {{if eq .WindowParam "1d"}}bg-accent-500/20 text-accent-300{{else}}text-ink-400 hover:bg-surface-700/70 hover:text-ink-200{{end}}">1d</button>
+                        <button type="button" data-leaderboard-window="7d" aria-pressed="{{if eq .WindowParam "7d"}}true{{else}}false{{end}}" class="px-2.5 py-1 text-xs rounded-md transition-colors {{if eq .WindowParam "7d"}}bg-accent-500/20 text-accent-300{{else}}text-ink-400 hover:bg-surface-700/70 hover:text-ink-200{{end}}">7d</button>
+                        <button type="button" data-leaderboard-window="30d" aria-pressed="{{if eq .WindowParam "30d"}}true{{else}}false{{end}}" class="px-2.5 py-1 text-xs rounded-md transition-colors {{if eq .WindowParam "30d"}}bg-accent-500/20 text-accent-300{{else}}text-ink-400 hover:bg-surface-700/70 hover:text-ink-200{{end}}">30d</button>
+                    </div>
+                </div>
                 <div class="overflow-x-auto">
                     <table class="min-w-full text-sm">
                         <thead><tr class="border-b border-surface-600/60">
@@ -433,8 +442,34 @@
                             <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-ink-500 uppercase tracking-wider">Tokens out</th>
                             <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-ink-500 uppercase tracking-wider">Cost</th>
                         </tr></thead>
-                        <tbody class="divide-y divide-surface-600/30">
-                            {{range $i, $r := .TopModels}}
+                        <tbody data-leaderboard-panel="1d" class="divide-y divide-surface-600/30" {{if ne .WindowParam "1d"}}hidden{{end}}>
+                            {{range $i, $r := .TopModels1d}}
+                            <tr class="hover:bg-surface-700/40 transition-colors">
+                                <td class="px-4 py-1.5 text-ink-500 tabular-nums">{{add $i 1}}</td>
+                                <td class="px-4 py-1.5 text-ink-300">{{$r.Role}}</td>
+                                <td class="px-4 py-1.5 text-ink-500 font-mono text-xs">{{$r.Model}}</td>
+                                <td class="px-4 py-1.5 text-right text-ink-400 tabular-nums">{{$r.StepCount}}</td>
+                                <td class="px-4 py-1.5 text-right text-ink-400 tabular-nums">{{fmtTokens $r.PromptTokens}}</td>
+                                <td class="px-4 py-1.5 text-right text-ink-400 tabular-nums">{{fmtTokens $r.CompletionTokens}}</td>
+                                <td class="px-4 py-1.5 text-right text-accent-400 font-semibold tabular-nums">{{fmtUSD $r.CostUSD}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                        <tbody data-leaderboard-panel="7d" class="divide-y divide-surface-600/30" {{if ne .WindowParam "7d"}}hidden{{end}}>
+                            {{range $i, $r := .TopModels7d}}
+                            <tr class="hover:bg-surface-700/40 transition-colors">
+                                <td class="px-4 py-1.5 text-ink-500 tabular-nums">{{add $i 1}}</td>
+                                <td class="px-4 py-1.5 text-ink-300">{{$r.Role}}</td>
+                                <td class="px-4 py-1.5 text-ink-500 font-mono text-xs">{{$r.Model}}</td>
+                                <td class="px-4 py-1.5 text-right text-ink-400 tabular-nums">{{$r.StepCount}}</td>
+                                <td class="px-4 py-1.5 text-right text-ink-400 tabular-nums">{{fmtTokens $r.PromptTokens}}</td>
+                                <td class="px-4 py-1.5 text-right text-ink-400 tabular-nums">{{fmtTokens $r.CompletionTokens}}</td>
+                                <td class="px-4 py-1.5 text-right text-accent-400 font-semibold tabular-nums">{{fmtUSD $r.CostUSD}}</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                        <tbody data-leaderboard-panel="30d" class="divide-y divide-surface-600/30" {{if ne .WindowParam "30d"}}hidden{{end}}>
+                            {{range $i, $r := .TopModels30d}}
                             <tr class="hover:bg-surface-700/40 transition-colors">
                                 <td class="px-4 py-1.5 text-ink-500 tabular-nums">{{add $i 1}}</td>
                                 <td class="px-4 py-1.5 text-ink-300 capitalize">{{$r.Role}}</td>
@@ -469,6 +504,37 @@
          Page Visibility API: only ticks when the tab is visible
          to avoid wasted setInterval cycles in background tabs. -->
     <script>
+      // The leaderboard result sets are preloaded in the page. Delegate the
+      // click handler so it also works after the dashboard's HTMX live swap.
+      document.addEventListener("click", function (event) {
+        var button = event.target.closest("[data-leaderboard-window]");
+        if (!button) return;
+        var leaderboard = button.closest("[data-leaderboard]");
+        if (!leaderboard) return;
+
+        var windowName = button.getAttribute("data-leaderboard-window");
+        leaderboard.querySelectorAll("[data-leaderboard-panel]").forEach(function (panel) {
+          panel.hidden = panel.getAttribute("data-leaderboard-panel") !== windowName;
+        });
+        leaderboard.querySelectorAll("[data-leaderboard-window]").forEach(function (tab) {
+          var active = tab === button;
+          tab.setAttribute("aria-pressed", active ? "true" : "false");
+          tab.classList.toggle("bg-accent-500/20", active);
+          tab.classList.toggle("text-accent-300", active);
+          tab.classList.toggle("text-ink-400", !active);
+          tab.classList.toggle("hover:bg-surface-700/70", !active);
+          tab.classList.toggle("hover:text-ink-200", !active);
+        });
+
+        // Persist the selected tab for a refresh, browser navigation, and the
+        // dashboard's periodic HTMX update without requesting a new page now.
+        var url = new URL(window.location.href);
+        url.searchParams.set("window", windowName);
+        window.history.replaceState(null, "", url);
+        var live = document.getElementById("dashboard-live");
+        if (live) live.setAttribute("hx-get", "/ui/?window=" + windowName + "&limit=" + leaderboard.dataset.limit);
+      });
+
       (function () {
         function fmt(deltaSec) {
           if (deltaSec <= 0) return "due now";

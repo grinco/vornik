@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 096e2dac11576442f34fa803de1984076f8bf411723b7d98d27cfcc47fa54340
+      sha256: 3b2a341033613fd682cf9f66785aab9435520200b5a42759cdf79091fa6311ba
 ---
 # Release Notes
 
@@ -19,23 +19,42 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
 
 ## 2026.7.3
 
-**A hardening release closing the working-tree half of the 2026-07-11
-autonomy workspace-state-hygiene incident.** Failed/cancelled tasks no
-longer strand tracked-file residue in the shared workspace clone, and the
-prelude auto-commit attributes honestly instead of blaming the next task.
+**A hardening + security release.** The headline is a full security pass over
+the code base, alongside autonomy workspace-state hygiene, a manifest-driven
+config installer, wizard composition convergence, an Ollama Cloud chat
+provider, and a broad fix batch.
 
-- **Failed-task residue discarded.** At a non-success terminal, non-backlog
-  tracked files (staged + unstaged) are restored to HEAD, leaving the
-  backlog marker. The marker-state half shipped in 2026.7.2; this ships the
-  working-tree half.
-- **Honest prelude attribution.** The backlog marker is committed as
-  `backlog: marker checkpoint before <task>` and stranded changes as
-  `rescue: stranded tracked changes before <task>` — replacing the old blind
-  `auto-commit: workspace-root prelude before <task>`. **Scripts grepping
-  that message must update.**
-- **New metric** `vornik_executor_residue_discard_total{project}` flags
-  worktree-contract violations (an agent writing tracked files directly to
-  the shared clone).
+- **Security hardening.** A sweep of the static-analysis backlog: path handling
+  for user-supplied project/swarm/workflow identifiers is centralised on one
+  confinement primitive; e-mail envelope addresses reject control-character
+  injection; result pre-allocations are bounded; a webhook echo is HTML-escaped;
+  admin redirects are constrained to same-origin; and session/chat cookies set
+  `Secure` automatically when served over HTTPS (without breaking plain-HTTP
+  deployments). Additional trust-scope and config-path hardening also landed.
+- **Autonomy workspace hygiene.** Failed/cancelled tasks no longer strand
+  tracked-file residue in the shared workspace clone; the prelude auto-commit
+  now attributes honestly (`backlog: marker checkpoint` / `rescue: stranded
+  tracked changes`) instead of blaming the next task. **Scripts grepping the
+  old `auto-commit: workspace-root prelude` message must update.** A new
+  `vornik_executor_residue_discard_total{project}` metric flags workspace
+  contract violations.
+- **RAG-ingest quality gating.** A task's output is ingested into memory only
+  once the producing task succeeds, so failed runs no longer deposit garbage;
+  `vornikctl memory purge-producer-failed` retro-cleans older residue. Backlog
+  items are marked done at the success terminal, not at dispatch.
+- **Agent LLM circuit breaker.** Per-agent model calls now get the same
+  circuit-breaker / fast fail-over as the chat router.
+- **Manifest-driven config tree.** A single manifest drives what installs into
+  the deployed config tree, with drift-checking across all deployable subtrees.
+- **Ollama Cloud provider.** A new chat sub-provider for Ollama's hosted
+  open-weight models, separate from the local Ollama route; pricing refreshed.
+- **Wizard convergence.** The project wizard normalises and repairs
+  compositions (dropping undeclared params, defaulting required ones) and
+  retains the last good build.
+- **Quality-of-life.** Progressive-disclosure skill injection; friendlier
+  internal-role labels on the spend dashboards; the Fix-It Doctor link now works
+  on every deployment; an inbox mobile pass; and a turnkey in-place update
+  script for Community quickstart installs.
 
 See `docs/release-notes/2026.7.3.md`.
 

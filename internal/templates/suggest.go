@@ -3,7 +3,8 @@ package templates
 import (
 	"fmt"
 	"os"
-	"path/filepath"
+
+	"vornik.io/vornik/internal/safepath"
 )
 
 // SuggestFreeProjectID returns projectID when no
@@ -15,8 +16,18 @@ import (
 // from the same projectId, so a free project file implies a free
 // file set for the shipped templates.
 func SuggestFreeProjectID(configsRoot, projectID string) string {
+	// CodeQL go/path-injection (2026-07-18): validate the id as a single safe
+	// path component before joining it into the config tree; candidates below
+	// are derived from it ("<id>-N") so they inherit the guarantee.
+	if _, err := safepath.CleanPathComponent(projectID); err != nil {
+		return ""
+	}
 	free := func(id string) bool {
-		_, err := os.Stat(filepath.Join(configsRoot, "projects", id+".yaml"))
+		p, err := safepath.JoinUnder(configsRoot, "projects", id+".yaml")
+		if err != nil {
+			return false
+		}
+		_, err = os.Stat(p)
 		return os.IsNotExist(err)
 	}
 	if free(projectID) {

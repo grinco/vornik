@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,6 +23,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/safepath"
 	"vornik.io/vornik/internal/ui/assetschema"
 )
 
@@ -213,7 +213,12 @@ func (s *Server) swarmSchemaConfigData(swarmID string) SwarmSchemaConfigData {
 		CurrentPage: "swarms",
 		SwarmID:     swarmID,
 	}
-	if swarmID == "" || strings.Contains(swarmID, "/") || strings.Contains(swarmID, string(os.PathSeparator)) {
+	// CodeQL go/path-injection (2026-07-18): confine the user-supplied id under
+	// the config tree via the safepath primitive, replacing the old
+	// strings.Contains guard which was not a recognised barrier. This also
+	// confines the path handed to the shared saveSchemaAsset read sink.
+	cleanID, err := safepath.CleanPathComponent(swarmID)
+	if err != nil {
 		data.Error = "Invalid swarm id"
 		return data
 	}
@@ -226,12 +231,17 @@ func (s *Server) swarmSchemaConfigData(swarmID string) SwarmSchemaConfigData {
 		data.Error = "Project registry not configured"
 		return data
 	}
-	sw := s.projectReg.GetSwarm(swarmID)
+	sw := s.projectReg.GetSwarm(cleanID)
 	if sw == nil {
 		data.Error = "Swarm not found"
 		return data
 	}
-	data.SwarmPath = filepath.Join(configDir, "swarms", swarmID+".md")
+	swarmPath, err := safepath.JoinUnder(configDir, "swarms", cleanID+".md")
+	if err != nil {
+		data.Error = "Invalid swarm id"
+		return data
+	}
+	data.SwarmPath = swarmPath
 	if _, err := os.Stat(data.SwarmPath); err != nil {
 		data.Error = "Swarm file not found: " + err.Error()
 		return data

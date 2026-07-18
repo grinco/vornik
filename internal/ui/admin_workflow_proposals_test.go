@@ -295,6 +295,33 @@ func TestAdminWorkflowProposalDecide_PostApprove(t *testing.T) {
 	}
 }
 
+// TestAdminWorkflowProposalDecide_HubRedirectSameOrigin pins the
+// go/unvalidated-url-redirection fix at admin_workflow_proposals.go:404: with
+// return_to=control-plane the hub redirect must be a same-origin relative path
+// whose done token is a FIXED constant derived from the validated status —
+// never the raw request value concatenated into Location.
+func TestAdminWorkflowProposalDecide_HubRedirectSameOrigin(t *testing.T) {
+	repo := newStubProposalsRepo()
+	_ = repo.Insert(context.Background(), &persistence.WorkflowProposal{
+		ID: "wpr-1", WorkflowID: "wf-a",
+		Status:    persistence.WorkflowProposalStatusPending,
+		CreatedAt: time.Now().UTC(),
+	})
+	s := NewServer(WithWorkflowProposalsRepository(repo))
+	form := strings.NewReader("status=approved&return_to=control-plane")
+	req := httptest.NewRequest(http.MethodPost, "/admin/workflow-proposals/wpr-1/decide", form)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.AdminWorkflowProposalDecide(rec, req, "wpr-1")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("want 303, got %d", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if loc != "/ui/admin/control-plane?section=proposals&done=wf-approved" {
+		t.Fatalf("hub redirect not same-origin/constant: %q", loc)
+	}
+}
+
 // stubWorkflowSourceUI is a fixed-YAML WorkflowSourceUI for the
 // diff-panel tests.
 type stubWorkflowSourceUI struct {

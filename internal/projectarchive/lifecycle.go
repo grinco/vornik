@@ -19,7 +19,23 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"vornik.io/vornik/internal/safepath"
 )
+
+// projectYAMLPath validates projectID as a single safe path component and
+// returns the confined <ConfigDir>/projects/<id>.yaml path. CodeQL
+// go/path-injection barrier (2026-07-18): the shared builder for this service's
+// project-file paths, replacing the ad-hoc strings.ContainsAny guard + raw
+// filepath.Join at the call sites (which CodeQL did not recognise as barriers
+// and which missed the ".." form).
+func (s *LifecycleService) projectYAMLPath(projectID string) (string, error) {
+	cleanID, err := safepath.CleanPathComponent(projectID)
+	if err != nil {
+		return "", fmt.Errorf("invalid project id %q: %w", projectID, err)
+	}
+	return safepath.JoinUnder(s.ConfigDir, "projects", cleanID+".yaml")
+}
 
 // DefaultGraceDuration is the archive-flow grace window when the
 // caller doesn't pass a duration. Matches the operator-requested
@@ -234,10 +250,10 @@ func (s *LifecycleService) checkPrereqs(projectID string) error {
 	if s.Patcher == nil {
 		return fmt.Errorf("yaml patcher not wired")
 	}
-	if projectID == "" || strings.ContainsAny(projectID, `/\`) {
-		return fmt.Errorf("invalid project id %q", projectID)
+	path, err := s.projectYAMLPath(projectID)
+	if err != nil {
+		return err
 	}
-	path := filepath.Join(s.ConfigDir, "projects", projectID+".yaml")
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("project %q not found", projectID)
@@ -251,7 +267,10 @@ func (s *LifecycleService) checkPrereqs(projectID string) error {
 // atomically. Uses os.Rename for the swap so a crash mid-write
 // leaves either the old or the new content — never a partial.
 func (s *LifecycleService) applyPatches(projectID string, patches []PatchOp) error {
-	path := filepath.Join(s.ConfigDir, "projects", projectID+".yaml")
+	path, err := s.projectYAMLPath(projectID)
+	if err != nil {
+		return err
+	}
 	existing, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read project yaml: %w", err)

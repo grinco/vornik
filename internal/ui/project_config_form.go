@@ -30,6 +30,7 @@ import (
 
 	"vornik.io/vornik/internal/fieldguard"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/safepath"
 )
 
 // commonTaskTypeSuggestions seeds the chip row above the Allowed
@@ -426,7 +427,12 @@ func (s *Server) projectConfigFormData(projectID string) ProjectConfigFormData {
 		TimezoneOptions:     commonTimezones,
 		TaskTypeSuggestions: commonTaskTypeSuggestions,
 	}
-	if projectID == "" || strings.Contains(projectID, "/") || strings.Contains(projectID, string(os.PathSeparator)) {
+	// CodeQL go/path-injection (2026-07-18): confine the user-supplied id under
+	// the config tree via the safepath primitive, replacing the old
+	// strings.Contains guard + string concatenation which were not a
+	// recognised barrier.
+	cleanID, err := safepath.CleanPathComponent(projectID)
+	if err != nil {
 		data.Error = "Invalid project id"
 		return data
 	}
@@ -435,7 +441,12 @@ func (s *Server) projectConfigFormData(projectID string) ProjectConfigFormData {
 		data.Error = "Registry config directory is not configured"
 		return data
 	}
-	data.ConfigPath = configDir + "/projects/" + projectID + ".yaml"
+	configPath, err := safepath.JoinUnder(configDir, "projects", cleanID+".yaml")
+	if err != nil {
+		data.Error = "Invalid project id"
+		return data
+	}
+	data.ConfigPath = configPath
 	if _, err := os.Stat(data.ConfigPath); err != nil {
 		data.Error = "Project config not found: " + err.Error()
 		return data

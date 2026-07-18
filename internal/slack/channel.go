@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"sort"
@@ -256,9 +257,18 @@ func (c *Channel) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	// URL-verification handshake: Slack POSTs this once when the
 	// endpoint is registered. Echo the challenge back as text/plain
 	// so the endpoint-registration UI confirms.
+	//
+	// The challenge is request-derived (attacker-controllable on an
+	// unsigned probe — this branch runs before the event_callback
+	// routing but the signature IS verified above). It is HTML-escaped
+	// before it reaches the response body so a crafted challenge can
+	// never be reflected as live markup (go/reflected-xss); real Slack
+	// challenges are opaque alphanumeric nonces, so escaping is a no-op
+	// on the genuine handshake. The text/plain content type is kept as
+	// defence in depth.
 	if payload.Type == "url_verification" {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte(payload.Challenge))
+		_, _ = w.Write([]byte(html.EscapeString(payload.Challenge)))
 		return
 	}
 

@@ -118,6 +118,38 @@ func TestHandleWebhook_URLVerification(t *testing.T) {
 	}
 }
 
+// TestHandleWebhook_URLVerification_EscapesChallenge — regression for the
+// go/reflected-xss alert (grinco/vornik #7/#8): the url_verification handler
+// echoes the request-derived challenge, which flows (via the access-log /
+// git response-writer wrappers CodeQL dedups the sink onto) into the HTTP
+// response. A challenge carrying HTML must NOT be reflected as live markup:
+// it is HTML-escaped, and the response stays text/plain. Genuine Slack
+// challenges are opaque alphanumeric nonces, so escaping is a no-op on them.
+func TestHandleWebhook_URLVerification_EscapesChallenge(t *testing.T) {
+	cfg := validConfig()
+	now := time.Unix(1700000000, 0)
+	ch := makeChannel(t, cfg, now)
+
+	const payload = `"><img src=x onerror=alert(1)><script>alert('xss')</script>`
+	w := postSignedJSON(t, ch, cfg.SigningSecret, now, map[string]any{
+		"type":      "url_verification",
+		"challenge": payload,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%q", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "<script>") || strings.Contains(body, "<img") {
+		t.Errorf("challenge reflected unescaped (reflected-xss): body=%q", body)
+	}
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Errorf("challenge not HTML-escaped: body=%q", body)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("Content-Type = %q, want text/plain", ct)
+	}
+}
+
 // TestHandleWebhook_BadSignature_Returns401 — the signature gate
 // is the first line of defence; a tampered body must fail before
 // any payload-parse logic runs.

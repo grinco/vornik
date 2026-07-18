@@ -399,9 +399,16 @@ func (s *Server) AdminWorkflowProposalDecide(w http.ResponseWriter, r *http.Requ
 		})
 	}
 	if cpHubReturnRequested(r) {
-		// statusRaw is validated above: approved|rejected → the fixed
-		// wf-approved / wf-rejected flash tokens.
-		http.Redirect(w, r, cpHubProposalsURL("wf-"+statusRaw, ""), http.StatusSeeOther)
+		// statusRaw is validated above (approved|rejected). Map it to a
+		// FIXED flash token rather than concatenating the request value
+		// into the redirect target — the latter tainted the Location with
+		// user input (go/unvalidated-url-redirection); the constant token
+		// keeps the hub URL built purely from compile-time constants.
+		done := "wf-rejected"
+		if persistence.WorkflowProposalStatus(statusRaw) == persistence.WorkflowProposalStatusApproved {
+			done = "wf-approved"
+		}
+		http.Redirect(w, r, cpHubProposalsURL(done, ""), http.StatusSeeOther)
 		return
 	}
 	http.Redirect(w, r, "/ui/admin/workflow-proposals/"+id, http.StatusSeeOther)

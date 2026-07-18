@@ -222,12 +222,41 @@ func cpHubOverviewURL(done, errMsg string) string {
 // cpAwareCandidateRedirect routes a healing-candidate action outcome either
 // back to the hub Proposals tab (return_to=control-plane) or to the native
 // candidate detail page — the pre-existing behaviour.
+//
+// The targets embed request-derived free text (the errMsg action-banner and
+// the candidate id). Both builders prepend a constant in-app path and
+// url-escape the dynamic parts, but the target is passed through
+// safeSameOriginPath before http.Redirect so a value that somehow resolved to
+// an absolute or scheme-relative URL collapses to a fixed in-app fallback
+// rather than redirecting the browser off-site (go/unvalidated-url-redirection).
 func cpAwareCandidateRedirect(w http.ResponseWriter, r *http.Request, id, done, errMsg string) {
 	if cpHubReturnRequested(r) {
-		http.Redirect(w, r, cpHubProposalsURL(done, errMsg), http.StatusSeeOther)
+		target := safeSameOriginPath(cpHubProposalsURL(done, errMsg),
+			"/ui/admin/control-plane?section="+cpSectionProposals)
+		http.Redirect(w, r, target, http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, candidateDetailURL(id, errMsg), http.StatusSeeOther)
+	target := safeSameOriginPath(candidateDetailURL(id, errMsg), "/ui/admin/blackbox")
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+// safeSameOriginPath returns target only when it is a same-origin RELATIVE
+// path: it must begin with a single "/" and carry no scheme or host, so a
+// crafted "http://evil", "//evil.com", "https:/evil" or "/\evil" can never
+// redirect the browser off-site (go/unvalidated-url-redirection). Anything
+// else collapses to fallback (a fixed in-app path). Belt-and-suspenders: an
+// explicit prefix guard plus a net/url parse that rejects any host component.
+func safeSameOriginPath(target, fallback string) string {
+	if !strings.HasPrefix(target, "/") ||
+		strings.HasPrefix(target, "//") ||
+		strings.HasPrefix(target, "/\\") {
+		return fallback
+	}
+	u, err := url.Parse(target)
+	if err != nil || u.IsAbs() || u.Host != "" || u.Hostname() != "" {
+		return fallback
+	}
+	return target
 }
 
 // --- applyable-row polish (§4.4 latency signal → Diagnose deep-link) ------

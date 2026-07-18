@@ -187,7 +187,10 @@ func TestArchive_MissingPatcher(t *testing.T) {
 func TestArchive_InvalidProjectID(t *testing.T) {
 	patcher := &passthroughPatcher{}
 	svc, _ := newServiceFixture(t, "good", patcher)
-	for _, id := range []string{"", "a/b", `a\b`} {
+	// CodeQL go/path-injection (2026-07-18): "..", ".", and "../escape" are the
+	// regression cases the old strings.ContainsAny(id, `/\`) guard let through
+	// (no separator); safepath.CleanPathComponent refuses them.
+	for _, id := range []string{"", "a/b", `a\b`, "..", ".", "../escape"} {
 		_, err := svc.Archive(context.Background(), id, ArchiveInput{})
 		if err == nil || !strings.Contains(err.Error(), "invalid project id") {
 			t.Errorf("id %q: want invalid project id error, got %v", id, err)

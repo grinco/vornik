@@ -309,13 +309,29 @@ func (s *Server) ensureChatCookie(w http.ResponseWriter, r *http.Request, data *
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		// CodeQL go/cookie-secure-not-set (2026-07-18): Secure only over HTTPS.
+		// The daemon serves plain HTTP for the LAN preview and behind a
+		// TLS-terminating proxy (see the doc comment above), so an
+		// unconditional Secure would drop the cookie there; gate it on the
+		// detected scheme instead.
+		Secure: uiRequestIsHTTPS(r),
 		// 30 days — long enough for an operator to come back to a
 		// half-finished investigation across a weekend; short
 		// enough that abandoned sessions eventually clear from
 		// the in-memory store on browser side.
 		MaxAge: 30 * 24 * 3600,
 	})
-	_ = r // r reserved for future TLS / forwarded-proto checks.
+}
+
+// uiRequestIsHTTPS reports whether the request reached the client over HTTPS —
+// directly (r.TLS set) or via a TLS-terminating proxy that forwards the
+// original scheme in X-Forwarded-Proto. Gates the Secure cookie attribute so
+// it is set on real HTTPS without breaking the plain-HTTP LAN preview.
+func uiRequestIsHTTPS(r *http.Request) bool {
+	if r != nil && r.TLS != nil {
+		return true
+	}
+	return r != nil && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 // chatStoreFor returns the per-project SessionStore, allocating it

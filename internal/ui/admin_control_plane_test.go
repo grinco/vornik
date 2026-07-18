@@ -176,6 +176,48 @@ func TestAdminControlPlane_ApprovePost(t *testing.T) {
 	}
 }
 
+// TestNormalizeCPFilter_ReturnsConstantsOnly pins the go/unvalidated-url-
+// redirection fix: the decide redirect's `back` URL is assembled from the
+// status filter, so normalizeCPFilter must yield a fixed status CONSTANT
+// (trimmed) or "" — never the raw request value that tainted the Location.
+func TestNormalizeCPFilter_ReturnsConstantsOnly(t *testing.T) {
+	// Whitespace-padded valid filters normalise to the exact constant.
+	if got := normalizeCPFilter("  " + persistence.ProposalStatusApproved + "\t"); got != persistence.ProposalStatusApproved {
+		t.Errorf("padded APPROVED = %q, want %q", got, persistence.ProposalStatusApproved)
+	}
+	// Attacker-controlled / non-whitelisted input collapses to "".
+	for _, in := range []string{"https://evil.com", "//evil.com", "javascript:alert(1)", "bogus", ""} {
+		if got := normalizeCPFilter(in); got != "" {
+			t.Errorf("normalizeCPFilter(%q) = %q, want \"\"", in, got)
+		}
+	}
+}
+
+// TestAdminControlPlane_DecideRedirectSameOrigin drives adminCPDecide with a
+// crafted `status` field and asserts the resulting redirect stays a
+// same-origin relative path — no attacker host leaks into Location
+// (go/unvalidated-url-redirection).
+func TestAdminControlPlane_DecideRedirectSameOrigin(t *testing.T) {
+	repo := newProposalRepoUI(t)
+	seedProposal(t, repo, "d1", "t", persistence.ProposalStatusDraft, false, "agent")
+	s := NewServer(WithProposalStore(repo))
+	form := url.Values{"id": {"d1"}, "action": {"approve"}, "status": {"https://evil.com/x"}}
+	req := httptest.NewRequest(http.MethodPost, "/admin/control-plane", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.AdminControlPlane(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("want 303, got %d", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/ui/admin/control-plane") {
+		t.Fatalf("redirect not same-origin relative: %q", loc)
+	}
+	if strings.Contains(loc, "evil.com") {
+		t.Fatalf("attacker host leaked into redirect: %q", loc)
+	}
+}
+
 func TestAdminControlPlane_SelfApprovalFlash(t *testing.T) {
 	repo := newProposalRepoUI(t)
 	// Proposed by web-admin (the console's fallback actor) → self-approval.

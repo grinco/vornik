@@ -502,12 +502,25 @@ func (s *Server) cpLedgerRow(p *persistence.ControlPlaneProposal) AdminCPRow {
 	return row
 }
 
+// normalizeCPFilter maps a request-supplied status filter onto one of the
+// fixed proposal-status CONSTANTS (or "" for "all"). It returns the matched
+// constant — never the raw input — so the value threaded into the decide
+// redirect target cannot carry attacker-controlled text (defuses
+// go/unvalidated-url-redirection: the back URL is now built entirely from
+// compile-time constants). Trimming the returned value also fixes a latent
+// filter mismatch when the query param arrived with surrounding whitespace.
 func normalizeCPFilter(v string) string {
 	switch strings.TrimSpace(v) {
-	case persistence.ProposalStatusDraft, persistence.ProposalStatusApproved,
-		persistence.ProposalStatusApplied, persistence.ProposalStatusRejected,
-		persistence.ProposalStatusRolledBack:
-		return v
+	case persistence.ProposalStatusDraft:
+		return persistence.ProposalStatusDraft
+	case persistence.ProposalStatusApproved:
+		return persistence.ProposalStatusApproved
+	case persistence.ProposalStatusApplied:
+		return persistence.ProposalStatusApplied
+	case persistence.ProposalStatusRejected:
+		return persistence.ProposalStatusRejected
+	case persistence.ProposalStatusRolledBack:
+		return persistence.ProposalStatusRolledBack
 	default:
 		return ""
 	}

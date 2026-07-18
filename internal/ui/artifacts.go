@@ -396,10 +396,18 @@ func listArtifactFiles(workspaceRoot, projectID string) ([]ProjectArtifactRow, e
 	if workspaceRoot == "" {
 		return nil, fmt.Errorf("workspace root is empty")
 	}
-	if err := validateProjectIDComponent(projectID); err != nil {
+	// CodeQL go/path-injection (2026-07-18): validate + confine the
+	// request-derived project id under the workspace tree. CleanPathComponent
+	// is the recognised barrier feeding JoinUnder; validateProjectIDComponent
+	// discarded the cleaned value so it was not itself a barrier.
+	cleanID, err := safepath.CleanPathComponent(projectID)
+	if err != nil {
 		return nil, err
 	}
-	base := filepath.Join(workspaceRoot, projectID, "artifacts")
+	base, err := safepath.JoinUnder(workspaceRoot, cleanID, "artifacts")
+	if err != nil {
+		return nil, err
+	}
 	info, err := os.Stat(base)
 	if err != nil {
 		if os.IsNotExist(err) {

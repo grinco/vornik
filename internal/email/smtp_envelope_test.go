@@ -10,7 +10,10 @@
 // The chat audit log showed replies the recipient never received.
 package email
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestEnvelopeAddress_BareEmailPassThrough — a plain address
 // (already in envelope form) returns unchanged.
@@ -67,6 +70,29 @@ func TestEnvelopeAddress_MalformedFallsBackToInput(t *testing.T) {
 		got := envelopeAddress(in)
 		if got != in {
 			t.Errorf("malformed %q: got %q, want %q (fall-through)", in, got, in)
+		}
+	}
+}
+
+// TestEnvelopeAddress_RejectsCRLFInjection — regression for CodeQL
+// go/email-injection #19 (2026-07-18). A CR/LF in the address must never
+// survive into the SMTP envelope: net/smtp would otherwise let an attacker
+// inject extra SMTP commands (a smuggled RCPT TO) or message headers. The
+// pre-fix code returned the raw string verbatim on parse failure, passing the
+// newline straight through. envelopeAddress must cut at the first control char
+// in EVERY path, including the parse-failure fallback.
+func TestEnvelopeAddress_RejectsCRLFInjection(t *testing.T) {
+	cases := []string{
+		"foo@example.com\r\nRCPT TO:<evil@example.com>",
+		"foo@example.com\nData: injected",
+		"\"x\" <foo@example.com>\r\nBcc: evil@example.com",
+		"foo@example.com\rMAIL FROM:<evil>",
+		"foo@example.com\x00nul",
+	}
+	for _, in := range cases {
+		got := envelopeAddress(in)
+		if strings.ContainsAny(got, "\r\n\x00") {
+			t.Errorf("envelopeAddress(%q) = %q — must not contain CR/LF/NUL", in, got)
 		}
 	}
 }

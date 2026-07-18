@@ -398,9 +398,31 @@ func envelopeAddress(raw string) string {
 	if trimmed == "" {
 		return raw
 	}
+	// SECURITY (CodeQL go/email-injection #19, 2026-07-18): a CR/LF (or any
+	// control char) in the envelope address lets an attacker inject extra SMTP
+	// commands (a smuggled RCPT TO) or message headers once this value reaches
+	// smtp.SendMail's MAIL FROM / RCPT TO. Cut at the first control char in
+	// every return path — including the parse-failure fallback, which
+	// previously passed the raw string through verbatim. Cutting (vs. rejecting)
+	// keeps the benign-malformed fall-through behaviour: the valid prefix still
+	// flows and the SMTP server surfaces a real error on the remainder.
+	trimmed = cutAtControlChar(trimmed)
+	if trimmed == "" {
+		return ""
+	}
 	addr, err := mail.ParseAddress(trimmed)
 	if err != nil || addr == nil {
-		return raw
+		return trimmed
 	}
-	return addr.Address
+	return cutAtControlChar(addr.Address)
+}
+
+// cutAtControlChar returns s truncated at the first ASCII control character
+// (CR, LF, NUL, tab, etc.). Control characters are never valid in an SMTP
+// envelope address and are the vector for header/command injection.
+func cutAtControlChar(s string) string {
+	if i := strings.IndexFunc(s, func(r rune) bool { return r < 0x20 }); i >= 0 {
+		return s[:i]
+	}
+	return s
 }

@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/safepath"
 )
 
 // ProjectBriefData backs the brief editor template.
@@ -155,7 +156,11 @@ func (s *Server) projectBriefData(projectID string) ProjectBriefData {
 		CurrentPage: "projects",
 		ProjectID:   projectID,
 	}
-	if projectID == "" || strings.Contains(projectID, "/") || strings.Contains(projectID, string(os.PathSeparator)) {
+	// CodeQL go/path-injection (2026-07-18): confine the user-supplied id under
+	// the config tree via the safepath primitive, replacing the old
+	// strings.Contains guard which was not a recognised barrier.
+	cleanID, err := safepath.CleanPathComponent(projectID)
+	if err != nil {
 		data.Error = "Invalid project id"
 		return data
 	}
@@ -164,11 +169,16 @@ func (s *Server) projectBriefData(projectID string) ProjectBriefData {
 		data.Error = "Registry config directory is not configured"
 		return data
 	}
-	if s.projectReg == nil || s.projectReg.GetProject(projectID) == nil {
+	if s.projectReg == nil || s.projectReg.GetProject(cleanID) == nil {
 		data.Error = "Project not found"
 		return data
 	}
-	data.BriefPath = filepath.Join(configDir, "projects", projectID+".md")
+	briefPath, err := safepath.JoinUnder(configDir, "projects", cleanID+".md")
+	if err != nil {
+		data.Error = "Invalid project id"
+		return data
+	}
+	data.BriefPath = briefPath
 	if existing, err := os.ReadFile(data.BriefPath); err == nil {
 		if parsed, err := registry.ParseProjectMarkdown(existing, filepath.Base(data.BriefPath)); err == nil {
 			data.HasExisting = true

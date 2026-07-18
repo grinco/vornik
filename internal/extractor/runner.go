@@ -190,7 +190,14 @@ func (r *Runner) Run(ctx context.Context, projectID, sourceArtifactID string, ex
 		return nil, fmt.Errorf("runner: invalid extracted-document id %q: %w", docID, err)
 	}
 
-	storageDir := filepath.Join(r.BasePath, safeProjectID, "extracted", safeDocID)
+	// CodeQL go/path-injection (2026-07-18): safeProjectID/safeDocID are already
+	// CleanPathComponent-checked, but build the storage dir via JoinUnder so the
+	// containment under BasePath is a recognised barrier for the MkdirAll /
+	// WriteFile sinks below.
+	storageDir, err := safepath.JoinUnder(r.BasePath, safeProjectID, "extracted", safeDocID)
+	if err != nil {
+		return nil, fmt.Errorf("runner: build storage dir: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Join(storageDir, "sections"), 0o700); err != nil {
 		return nil, fmt.Errorf("runner: mkdir storage: %w", err)
 	}

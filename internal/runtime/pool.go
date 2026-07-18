@@ -13,6 +13,13 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// maxWarmEnvVars caps the pre-allocated capacity of a warm container's
+// merged env-var map. Env-var counts flow from task-submitted role
+// config, so the capacity hint is clamped to bound the pre-allocation
+// (CodeQL go/uncontrolled-allocation-size); the map still grows past
+// this for any legitimate config.
+const maxWarmEnvVars = 4096
+
 // PoolKey identifies a class of warm containers.
 type PoolKey struct {
 	ProjectID string
@@ -279,7 +286,7 @@ func (p *WarmPool) StartWarm(ctx context.Context, key PoolKey, envOverrides map[
 	}
 
 	// Merge env vars: pool defaults → role overrides → warm mode flag.
-	envVars := make(map[string]string, len(p.envVars)+len(envOverrides)+1)
+	envVars := make(map[string]string, min(len(p.envVars)+len(envOverrides)+1, maxWarmEnvVars))
 	for k, v := range p.envVars {
 		envVars[k] = v
 	}

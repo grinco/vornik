@@ -202,3 +202,19 @@ terminals:
 `), 0o644))
 	return root
 }
+
+// TestValidateProjectConfigEdit_RejectsPathTraversal — regression for CodeQL
+// go/path-injection (CE alerts #33 etc., 2026-07-18). A projectID that is not a
+// single safe path component must be rejected before it is joined into the
+// (temp) config tree, so a crafted id cannot write outside projects/.
+func TestValidateProjectConfigEdit_RejectsPathTraversal(t *testing.T) {
+	root := writeUIRegistryFixture(t)
+	for _, id := range []string{"..", "../escape", "with/slash", `back\slash`, "", "."} {
+		t.Run(id, func(t *testing.T) {
+			err := validateProjectConfigEdit(root, id, []byte("id: x\n"))
+			if err == nil {
+				t.Errorf("id=%q: expected rejection, got nil error", id)
+			}
+		})
+	}
+}

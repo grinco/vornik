@@ -14,6 +14,15 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// maxPodmanArgs is a hard ceiling on the pre-allocated capacity of a
+// podman argv slice. The real arg count is a small multiple of the
+// container's env-var and mount counts (well under 100 in practice),
+// but those counts are influenced by task-submitted config, so the
+// capacity hint is clamped to keep an attacker-inflated config from
+// driving an unbounded pre-allocation (CodeQL go/uncontrolled-allocation-size).
+// append still grows the slice past this bound for any legitimate size.
+const maxPodmanArgs = 4096
+
 // PodmanNotAvailableError is returned when podman is not found or not running.
 type PodmanNotAvailableError struct {
 	Err error
@@ -426,7 +435,7 @@ func (m *Manager) StartContainer(ctx context.Context, config *ContainerConfig) (
 	// attempt (no auto-fallback — they know what they want).  If the failure
 	// is the pause-process issue, try "podman system migrate" once and retry.
 	if m.userNSMode != "" {
-		args := make([]string, 0, len(preImageArgs)+3)
+		args := make([]string, 0, min(len(preImageArgs)+3, maxPodmanArgs))
 		args = append(args, preImageArgs...)
 		args = append(args, "--userns", m.userNSMode, config.Image)
 		id, err := m.runStartAttempt(ctx, config, args, m.userNSMode, start)
@@ -451,7 +460,7 @@ func (m *Manager) StartContainer(ctx context.Context, config *ContainerConfig) (
 	}
 
 	for i, try := range tries {
-		args := make([]string, 0, len(preImageArgs)+3)
+		args := make([]string, 0, min(len(preImageArgs)+3, maxPodmanArgs))
 		args = append(args, preImageArgs...)
 		if try.userns != "" {
 			args = append(args, "--userns", try.userns)
@@ -482,7 +491,7 @@ func (m *Manager) StartContainer(ctx context.Context, config *ContainerConfig) (
 			// pause process, run "podman system migrate" and retry the
 			// last mode once more before giving up.
 			if m.tryMigrateOnPauseError(ctx, output) {
-				retryArgs := make([]string, 0, len(preImageArgs)+3)
+				retryArgs := make([]string, 0, min(len(preImageArgs)+3, maxPodmanArgs))
 				retryArgs = append(retryArgs, preImageArgs...)
 				if try.userns != "" {
 					retryArgs = append(retryArgs, "--userns", try.userns)

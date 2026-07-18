@@ -35,6 +35,7 @@ import (
 
 	"vornik.io/vornik/internal/fieldguard"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/safepath"
 )
 
 // wizardRepointGuard is the field-allowlist for the wizard's
@@ -84,11 +85,15 @@ func (s *Server) WizardGenerate(w http.ResponseWriter, r *http.Request, projectI
 		writeWizardJSON(w, http.StatusInternalServerError, wizardResponse{Error: "project registry not configured"})
 		return
 	}
-	if projectID == "" || strings.Contains(projectID, "/") || strings.Contains(projectID, string(os.PathSeparator)) {
+	// CodeQL go/path-injection (2026-07-18): confine the user-supplied id under
+	// the config tree via the safepath primitive, replacing the old
+	// strings.Contains guard which was not a recognised barrier.
+	cleanProjectID, err := safepath.CleanPathComponent(projectID)
+	if err != nil {
 		writeWizardJSON(w, http.StatusNotFound, wizardResponse{Error: "invalid project id"})
 		return
 	}
-	proj := s.projectReg.GetProject(projectID)
+	proj := s.projectReg.GetProject(cleanProjectID)
 	if proj == nil {
 		writeWizardJSON(w, http.StatusNotFound, wizardResponse{Error: "project not found"})
 		return
@@ -148,8 +153,30 @@ func (s *Server) WizardGenerate(w http.ResponseWriter, r *http.Request, projectI
 		writeWizardJSON(w, http.StatusInternalServerError, wizardResponse{Error: "config dir not configured"})
 		return
 	}
-	swarmPath := filepath.Join(configDir, "swarms", swarmID+".md")
-	wfPath := filepath.Join(configDir, "workflows", wfID+".md")
+	// CodeQL go/path-injection (2026-07-18): confine the request-derived
+	// artifact ids under the config tree. safeWizardArtifactID already rejected
+	// traversal/separators/NUL above; CleanPathComponent is the recognised
+	// barrier feeding JoinUnder.
+	cleanSwarmID, err := safepath.CleanPathComponent(swarmID)
+	if err != nil {
+		writeWizardJSON(w, http.StatusBadRequest, wizardResponse{Error: "invalid swarm id"})
+		return
+	}
+	cleanWfID, err := safepath.CleanPathComponent(wfID)
+	if err != nil {
+		writeWizardJSON(w, http.StatusBadRequest, wizardResponse{Error: "invalid workflow id"})
+		return
+	}
+	swarmPath, err := safepath.JoinUnder(configDir, "swarms", cleanSwarmID+".md")
+	if err != nil {
+		writeWizardJSON(w, http.StatusBadRequest, wizardResponse{Error: "invalid swarm id"})
+		return
+	}
+	wfPath, err := safepath.JoinUnder(configDir, "workflows", cleanWfID+".md")
+	if err != nil {
+		writeWizardJSON(w, http.StatusBadRequest, wizardResponse{Error: "invalid workflow id"})
+		return
+	}
 	if _, err := os.Stat(swarmPath); err == nil {
 		writeWizardJSON(w, http.StatusConflict, wizardResponse{Error: "swarm already exists: " + swarmID})
 		return
@@ -200,7 +227,13 @@ func (s *Server) WizardGenerate(w http.ResponseWriter, r *http.Request, projectI
 	}
 
 	// Repoint project.yaml at the new artifacts.
-	projectPath := filepath.Join(configDir, "projects", projectID+".yaml")
+	// CodeQL go/path-injection (2026-07-18): reuse the cleaned project id
+	// validated above and confine it under the config tree.
+	projectPath, err := safepath.JoinUnder(configDir, "projects", cleanProjectID+".yaml")
+	if err != nil {
+		writeWizardJSON(w, http.StatusInternalServerError, wizardResponse{Error: "repoint refused: " + err.Error()})
+		return
+	}
 	existing, err := os.ReadFile(projectPath)
 	if err != nil {
 		writeWizardJSON(w, http.StatusInternalServerError, wizardResponse{Error: "read project: " + err.Error()})

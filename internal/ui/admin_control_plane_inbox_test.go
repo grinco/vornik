@@ -567,3 +567,30 @@ func TestAdminControlPlane_HubFlashAndActionError(t *testing.T) {
 		t.Fatal("action_error rendered unescaped — XSS hole")
 	}
 }
+
+// TestSafeSameOriginPath pins the go/unvalidated-url-redirection guard used
+// by cpAwareCandidateRedirect: only single-slash same-origin relative paths
+// survive; absolute, scheme-relative, backslash-tricked or scheme-bearing
+// targets collapse to the fixed in-app fallback.
+func TestSafeSameOriginPath(t *testing.T) {
+	const fb = "/ui/admin/control-plane?section=proposals"
+	// Legit relative targets pass through unchanged.
+	for _, ok := range []string{
+		"/ui/admin/control-plane?section=proposals&done=trial-started",
+		"/ui/admin/blackbox/candidates/cand_1?action_error=nope",
+		"/",
+	} {
+		if got := safeSameOriginPath(ok, fb); got != ok {
+			t.Errorf("safeSameOriginPath(%q) = %q, want unchanged", ok, got)
+		}
+	}
+	// Off-site / crafted targets must fall back.
+	for _, bad := range []string{
+		"https://evil.com/x", "http://evil.com", "//evil.com/path",
+		"/\\evil.com", "javascript:alert(1)", "ftp://x", "", "mailto:a@b",
+	} {
+		if got := safeSameOriginPath(bad, fb); got != fb {
+			t.Errorf("safeSameOriginPath(%q) = %q, want fallback %q", bad, got, fb)
+		}
+	}
+}

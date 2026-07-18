@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/safepath"
 )
 
 // ProjectConfigData backs the project YAML editor.
@@ -96,7 +96,8 @@ func (s *Server) projectConfigData(projectID string) ProjectConfigData {
 		CurrentPage: "projects",
 		ProjectID:   projectID,
 	}
-	if projectID == "" || strings.Contains(projectID, "/") || strings.Contains(projectID, string(filepath.Separator)) {
+	cleanID, err := safepath.CleanPathComponent(projectID)
+	if err != nil {
 		data.Error = "Invalid project id"
 		return data
 	}
@@ -105,7 +106,15 @@ func (s *Server) projectConfigData(projectID string) ProjectConfigData {
 		data.Error = "Registry config directory is not configured"
 		return data
 	}
-	path := filepath.Join(configDir, "projects", projectID+".yaml")
+	// CodeQL go/path-injection (2026-07-18): confine the user-supplied id under
+	// the config tree. CleanPathComponent already rejects separators/./.. so
+	// JoinUnder cannot escape; this replaces the old strings.Contains guard,
+	// which was not a recognised barrier and missed backslash/".." cases.
+	path, err := safepath.JoinUnder(configDir, "projects", cleanID+".yaml")
+	if err != nil {
+		data.Error = "Invalid project id"
+		return data
+	}
 	data.ConfigPath = path
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -127,6 +136,12 @@ func validateProjectConfigEdit(configDir, projectID string, content []byte) erro
 	if configDir == "" {
 		return fmt.Errorf("registry config directory is not configured")
 	}
+	// CodeQL go/path-injection (2026-07-18): validate the user-supplied id as a
+	// single path component before it is joined into the (temp) config tree.
+	cleanID, err := safepath.CleanPathComponent(projectID)
+	if err != nil {
+		return fmt.Errorf("invalid project id: %w", err)
+	}
 	tmp, err := os.MkdirTemp("", "vornik-project-config-*")
 	if err != nil {
 		return err
@@ -138,7 +153,10 @@ func validateProjectConfigEdit(configDir, projectID string, content []byte) erro
 			return err
 		}
 	}
-	path := filepath.Join(tmp, "projects", projectID+".yaml")
+	path, err := safepath.JoinUnder(tmp, "projects", cleanID+".yaml")
+	if err != nil {
+		return err
+	}
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		return err
 	}
@@ -146,8 +164,8 @@ func validateProjectConfigEdit(configDir, projectID string, content []byte) erro
 	if err := reg.Load(tmp); err != nil {
 		return err
 	}
-	if reg.GetProject(projectID) == nil {
-		return fmt.Errorf("edited config does not define project %q", projectID)
+	if reg.GetProject(cleanID) == nil {
+		return fmt.Errorf("edited config does not define project %q", cleanID)
 	}
 	return nil
 }

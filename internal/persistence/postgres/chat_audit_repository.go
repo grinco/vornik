@@ -12,6 +12,14 @@ import (
 	"vornik.io/vornik/internal/persistence"
 )
 
+// maxChatAuditPrealloc caps the pre-allocated capacity of a chat-audit
+// result slice. filter.PageSize is caller-supplied (reaching here via
+// an HTTP query parameter), so the capacity hint is clamped to bound
+// the pre-allocation (CodeQL go/uncontrolled-allocation-size). The SQL
+// LIMIT still uses the true PageSize and append grows the slice past
+// this hint, so no rows are dropped for legitimate page sizes.
+const maxChatAuditPrealloc = 1000
+
 // ChatAuditRepository implements persistence.ChatAuditRepository
 // against PostgreSQL. Mirrors AdminAuditRepository's shape — the
 // two surfaces (operator config-change audit vs per-turn chat
@@ -156,7 +164,7 @@ func (r *ChatAuditRepository) List(ctx context.Context, filter persistence.ChatA
 		return nil, mapDBError(err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := make([]*persistence.ChatAuditEntry, 0, filter.PageSize)
+	out := make([]*persistence.ChatAuditEntry, 0, min(filter.PageSize, maxChatAuditPrealloc))
 	for rows.Next() {
 		var e persistence.ChatAuditEntry
 		if err := rows.Scan(

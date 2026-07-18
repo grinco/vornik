@@ -15,6 +15,14 @@ import (
 	"vornik.io/vornik/internal/persistence"
 )
 
+// maxActiveTasksPrealloc caps the pre-allocated capacity of the
+// dashboard "active tasks" slice. `limit` is derived from the ?limit=N
+// query parameter; parsePageSize whitelists it to the PageSizeOptions
+// set (max 100), but that equality-whitelist isn't a recognizable
+// upper bound at the allocation site, so the capacity hint is clamped
+// here to bound the pre-allocation (CodeQL go/uncontrolled-allocation-size).
+const maxActiveTasksPrealloc = 1000
+
 // DashboardData holds data for the dashboard template.
 type DashboardData struct {
 	Title        string
@@ -389,7 +397,7 @@ func (s *Server) Dashboard(w http.ResponseWriter, r *http.Request) {
 	if s.taskRepo != nil {
 		nowActive := time.Now().UTC()
 		_ = nowActive
-		active := make([]*persistence.Task, 0, limit)
+		active := make([]*persistence.Task, 0, min(limit, maxActiveTasksPrealloc))
 		for _, status := range []persistence.TaskStatus{
 			persistence.TaskStatusRunning,
 			persistence.TaskStatusLeased,

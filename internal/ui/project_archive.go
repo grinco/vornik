@@ -13,13 +13,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"vornik.io/vornik/internal/fieldguard"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/safepath"
 )
 
 // defaultArchiveGraceDuration is the per-project grace window
@@ -255,7 +255,12 @@ func (s *Server) applyLifecyclePatches(projectID string, patches []yamlPatch) er
 // caller passes lifecyclePatchGuard, the git toggle passes gitPatchGuard —
 // so a stray patch can never ride one path into another path's fields.
 func (s *Server) applyProjectPatches(projectID string, guard *fieldguard.Guard, patches []yamlPatch) error {
-	if projectID == "" || strings.Contains(projectID, "/") || strings.Contains(projectID, string(filepath.Separator)) {
+	// CodeQL go/path-injection (2026-07-18): confine the user-supplied id under
+	// the config tree via the safepath primitive, replacing the old
+	// strings.Contains guard which was not a recognised barrier (missed
+	// backslash / ".." cases).
+	cleanID, err := safepath.CleanPathComponent(projectID)
+	if err != nil {
 		return fmt.Errorf("invalid project id")
 	}
 	configDir := s.configDir()
@@ -267,7 +272,10 @@ func (s *Server) applyProjectPatches(projectID string, guard *fieldguard.Guard, 
 	if err := guard.Check(topLevelPatchKeys(patches)); err != nil {
 		return fmt.Errorf("project patch refused: %w", err)
 	}
-	path := filepath.Join(configDir, "projects", projectID+".yaml")
+	path, err := safepath.JoinUnder(configDir, "projects", cleanID+".yaml")
+	if err != nil {
+		return fmt.Errorf("invalid project id")
+	}
 	existing, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read project yaml: %w", err)
@@ -291,8 +299,17 @@ func (s *Server) applyProjectPatches(projectID string, guard *fieldguard.Guard, 
 // prune doesn't fail the unarchive (the registry already treats
 // an empty lifecycle as active).
 func (s *Server) removeEmptyLifecycleMap(projectID string) error {
+	// CodeQL go/path-injection (2026-07-18): validate the id before joining it
+	// into the config tree; this best-effort prune had no guard of its own.
+	cleanID, err := safepath.CleanPathComponent(projectID)
+	if err != nil {
+		return fmt.Errorf("invalid project id")
+	}
 	configDir := s.configDir()
-	path := filepath.Join(configDir, "projects", projectID+".yaml")
+	path, err := safepath.JoinUnder(configDir, "projects", cleanID+".yaml")
+	if err != nil {
+		return err
+	}
 	existing, err := os.ReadFile(path)
 	if err != nil {
 		return err

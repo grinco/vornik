@@ -14,6 +14,18 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// Capacity ceilings for result-slice pre-allocation. The `limit`
+// arguments to the List* methods are caller-supplied and, on some
+// paths, reach these functions before an upper bound is applied, so
+// the pre-allocation capacity hint is clamped to bound the allocation
+// (CodeQL go/uncontrolled-allocation-size). The SQL `LIMIT` still uses
+// the true limit and append grows the slice past the hint, so results
+// are never truncated by these caps.
+const (
+	maxRecentChunkPrealloc   = 50
+	maxChunkContentsPrealloc = 10000
+)
+
 // Repository handles all database operations for the memory system.
 // It uses database/sql with lib/pq and speaks directly to pgvector via
 // text-literal vector syntax rather than importing a pgvector-go driver.
@@ -1873,7 +1885,7 @@ LIMIT $2`
 		return nil, fmt.Errorf("ListRecentChunks: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := make([]RecentChunkRow, 0, limit)
+	out := make([]RecentChunkRow, 0, min(limit, maxRecentChunkPrealloc))
 	for rows.Next() {
 		var row RecentChunkRow
 		if err := rows.Scan(&row.ChunkID, &row.TaskID, &row.SourceName, &row.ContentClass, &row.Content, &row.CreatedAt, &row.RepoScope, &row.HasEmbedding); err != nil {
@@ -1908,7 +1920,7 @@ LIMIT $2`
 		return nil, fmt.Errorf("list chunk contents: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := make([]string, 0, limit)
+	out := make([]string, 0, min(limit, maxChunkContentsPrealloc))
 	for rows.Next() {
 		var s string
 		if err := rows.Scan(&s); err != nil {

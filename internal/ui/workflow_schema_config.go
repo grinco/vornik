@@ -20,13 +20,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/safepath"
 	"vornik.io/vornik/internal/ui/assetschema"
 )
 
@@ -150,7 +150,12 @@ func (s *Server) workflowSchemaConfigData(workflowID string) WorkflowSchemaConfi
 		CurrentPage: "workflows",
 		WorkflowID:  workflowID,
 	}
-	if workflowID == "" || strings.Contains(workflowID, "/") || strings.Contains(workflowID, string(os.PathSeparator)) {
+	// CodeQL go/path-injection (2026-07-18): confine the user-supplied id under
+	// the config tree via the safepath primitive, replacing the old
+	// strings.Contains guard which was not a recognised barrier. This also
+	// confines the path handed to the shared saveSchemaAsset read sink.
+	cleanID, err := safepath.CleanPathComponent(workflowID)
+	if err != nil {
 		data.Error = "Invalid workflow id"
 		return data
 	}
@@ -163,12 +168,17 @@ func (s *Server) workflowSchemaConfigData(workflowID string) WorkflowSchemaConfi
 		data.Error = "Project registry not configured"
 		return data
 	}
-	wf := s.projectReg.GetWorkflow(workflowID)
+	wf := s.projectReg.GetWorkflow(cleanID)
 	if wf == nil {
 		data.Error = "Workflow not found"
 		return data
 	}
-	data.WorkflowPath = filepath.Join(configDir, "workflows", workflowID+".md")
+	workflowPath, err := safepath.JoinUnder(configDir, "workflows", cleanID+".md")
+	if err != nil {
+		data.Error = "Invalid workflow id"
+		return data
+	}
+	data.WorkflowPath = workflowPath
 	if _, err := os.Stat(data.WorkflowPath); err != nil {
 		data.Error = "Workflow file not found: " + err.Error()
 		return data

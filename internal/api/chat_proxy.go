@@ -210,6 +210,13 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		ctx = chat.WithRequestCacheStrategy(ctx, &chat.CacheStrategy{Mode: s.promptCacheMode})
 	}
 
+	// This is the agent-container entry: MODEL_UNHEALTHY on these calls is
+	// owned by the executor's role modelFallback + both-down→PARK recovery, so
+	// the router-level non-swarm FallbackProvider must NOT also fire here.
+	// Marking the ctx keeps the two fallback mechanisms from overlapping (LLD
+	// 2026-07-18-nonswarm-llm-fallback-design.md §4).
+	ctx = chat.WithoutModelFallback(ctx)
+
 	// Pass through to whichever Provider is wired. CompleteWithTools
 	// is the universal method — an empty tools slice makes it
 	// equivalent to Complete(), so we always go through this path to

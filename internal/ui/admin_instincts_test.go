@@ -84,6 +84,9 @@ func (s *stubInstinctRepo) Retire(_ context.Context, id string) error {
 	}
 	return persistence.ErrNotFound
 }
+func (s *stubInstinctRepo) UnretireTo(context.Context, string, string) error {
+	panic("not used by ui tests")
+}
 func (s *stubInstinctRepo) RecordApplication(context.Context, *persistence.InstinctApplication) error {
 	panic("not used by ui tests")
 }
@@ -111,6 +114,48 @@ func (s *stubInstinctRepo) ListApplicationCounts(_ context.Context, ids []string
 		}
 	}
 	return out, nil
+}
+
+// stubInstinctLiftRepo backs the true-lift column tests. Implements only
+// GetLiftSnapshots — the method the UI handlers touch; the rest panic so
+// surface drift shows up in tests.
+type stubInstinctLiftRepo struct {
+	snapshots map[string]*persistence.InstinctLiftSnapshot
+	err       error
+}
+
+func (s *stubInstinctLiftRepo) UpsertLiftSnapshot(context.Context, *persistence.InstinctLiftSnapshot) error {
+	panic("not used by ui tests")
+}
+func (s *stubInstinctLiftRepo) GetLiftSnapshots(_ context.Context, ids []string) (map[string]*persistence.InstinctLiftSnapshot, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	out := map[string]*persistence.InstinctLiftSnapshot{}
+	for _, id := range ids {
+		if snap, ok := s.snapshots[id]; ok {
+			out[id] = snap
+		}
+	}
+	return out, nil
+}
+func (s *stubInstinctLiftRepo) RecoveryAppliedOutcomes(context.Context, string, time.Time) (persistence.LiftOutcomes, error) {
+	panic("not used by ui tests")
+}
+func (s *stubInstinctLiftRepo) RecoveryComplementOutcomes(context.Context, string, string, string, string, time.Time) (persistence.LiftOutcomes, error) {
+	panic("not used by ui tests")
+}
+func (s *stubInstinctLiftRepo) BudgetAppliedOutcomes(context.Context, string, time.Time) (persistence.LiftOutcomes, error) {
+	panic("not used by ui tests")
+}
+func (s *stubInstinctLiftRepo) BudgetComplementOutcomes(context.Context, string, string, string, time.Time) (persistence.LiftOutcomes, error) {
+	panic("not used by ui tests")
+}
+func (s *stubInstinctLiftRepo) ArchitectAppliedOutcomes(context.Context, string, time.Time) (persistence.LiftOutcomes, error) {
+	panic("not used by ui tests")
+}
+func (s *stubInstinctLiftRepo) ArchitectComplementOutcomes(context.Context, string, time.Time) (persistence.LiftOutcomes, error) {
+	panic("not used by ui tests")
 }
 
 func seedInstincts() []*persistence.Instinct {
@@ -208,7 +253,7 @@ func TestInstinctRowToAdminRow_Shape(t *testing.T) {
 		Confidence: 0.666, SupportCount: 4, ContradictCount: 2, Source: "observer",
 		Status: "active", LastSeenAt: now.Add(-2 * time.Minute),
 	}
-	row := instinctRowToAdminRow(in, now, nil)
+	row := instinctRowToAdminRow(in, now, nil, nil)
 	if row.Confidence != "0.67" {
 		t.Errorf("confidence = %q, want 0.67", row.Confidence)
 	}
@@ -229,7 +274,7 @@ func TestInstinctRowToAdminRow_Shape(t *testing.T) {
 		t.Errorf("last seen ago = %q", row.LastSeenAgo)
 	}
 
-	retired := instinctRowToAdminRow(&persistence.Instinct{ID: "r", Status: "retired", LastSeenAt: now}, now, nil)
+	retired := instinctRowToAdminRow(&persistence.Instinct{ID: "r", Status: "retired", LastSeenAt: now}, now, nil, nil)
 	if !retired.IsRetired {
 		t.Errorf("retired row should be flagged")
 	}
@@ -336,7 +381,7 @@ func TestInstinctRowToAdminRow_LiftFields(t *testing.T) {
 	now := time.Now()
 	in := &persistence.Instinct{ID: "ins_x", Status: "active", LastSeenAt: now}
 	counts := &persistence.InstinctApplicationCounts{InstinctID: "ins_x", Succeeded: 7, Failed: 3, Ignored: 2}
-	row := instinctRowToAdminRow(in, now, counts)
+	row := instinctRowToAdminRow(in, now, counts, nil)
 	if row.AppSucceeded != 7 || row.AppFailed != 3 || row.AppIgnored != 2 {
 		t.Errorf("lift fields = (%d,%d,%d), want (7,3,2)", row.AppSucceeded, row.AppFailed, row.AppIgnored)
 	}
@@ -382,6 +427,185 @@ func TestAdminInstincts_BadMinConfidence(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "min_confidence") {
 		t.Errorf("body missing min_confidence error")
+	}
+}
+
+// TestAdminInstincts_TrueLiftColumnRendered asserts a row with a lift
+// snapshot renders "+12%" and the helping badge class.
+func TestAdminInstincts_TrueLiftColumnRendered(t *testing.T) {
+	instinctRepo := &stubInstinctRepo{rows: seedInstincts()}
+	liftRepo := &stubInstinctLiftRepo{snapshots: map[string]*persistence.InstinctLiftSnapshot{
+		"ins_1": {
+			InstinctID: "ins_1", Domain: "recovery", Lift: 0.12, Verdict: persistence.LiftVerdictHelping,
+			TreatmentN: 12, TreatmentSucc: 9, BaselineN: 14, BaselineSucc: 5,
+		},
+	}}
+	s := NewServer(WithInstinctPlaybooks(instinctRepo, false), WithInstinctLiftRepository(liftRepo))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/instincts?domain=recovery", nil)
+	rec := httptest.NewRecorder()
+	s.adminRouter(rec, withAdminUI(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	// html/template HTML-escapes "+" to "&#43;" in text nodes.
+	if !strings.Contains(body, "&#43;12%") {
+		t.Errorf("body missing true-lift value +12%%; body=%s", body)
+	}
+	if !strings.Contains(body, "pill-ok") {
+		t.Errorf("body missing helping (pill-ok) badge class; body=%s", body)
+	}
+	if !strings.Contains(body, "t 9/12") || !strings.Contains(body, "b 5/14") {
+		t.Errorf("body missing true-lift detail line; body=%s", body)
+	}
+}
+
+// TestAdminInstincts_TrueLiftAbsentIsDash asserts a row with no lift
+// snapshot renders the "—" placeholder rather than blank or a crash.
+func TestAdminInstincts_TrueLiftAbsentIsDash(t *testing.T) {
+	instinctRepo := &stubInstinctRepo{rows: seedInstincts()}
+	liftRepo := &stubInstinctLiftRepo{snapshots: map[string]*persistence.InstinctLiftSnapshot{}}
+	s := NewServer(WithInstinctPlaybooks(instinctRepo, false), WithInstinctLiftRepository(liftRepo))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/instincts?domain=recovery", nil)
+	rec := httptest.NewRecorder()
+	s.adminRouter(rec, withAdminUI(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "—") {
+		t.Errorf("body missing the true-lift dash placeholder; body=%s", rec.Body.String())
+	}
+}
+
+// TestAdminInstincts_TrueLiftLowLiftBadge asserts a low_lift verdict gets
+// the warning badge class.
+func TestAdminInstincts_TrueLiftLowLiftBadge(t *testing.T) {
+	instinctRepo := &stubInstinctRepo{rows: seedInstincts()}
+	liftRepo := &stubInstinctLiftRepo{snapshots: map[string]*persistence.InstinctLiftSnapshot{
+		"ins_1": {
+			InstinctID: "ins_1", Domain: "recovery", Lift: -0.03, Verdict: persistence.LiftVerdictLowLift,
+			TreatmentN: 20, TreatmentSucc: 8, BaselineN: 20, BaselineSucc: 9,
+		},
+	}}
+	s := NewServer(WithInstinctPlaybooks(instinctRepo, false), WithInstinctLiftRepository(liftRepo))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/instincts?domain=recovery", nil)
+	rec := httptest.NewRecorder()
+	s.adminRouter(rec, withAdminUI(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "pill-warn") {
+		t.Errorf("body missing low_lift (pill-warn) badge class; body=%s", body)
+	}
+	if !strings.Contains(body, "-3%") {
+		t.Errorf("body missing true-lift value -3%%; body=%s", body)
+	}
+}
+
+// TestAdminInstincts_TrueLiftRepoNil asserts the page renders without the
+// lift repo wired (CE / not configured): the column is all dashes, no panic.
+func TestAdminInstincts_TrueLiftRepoNil(t *testing.T) {
+	instinctRepo := &stubInstinctRepo{rows: seedInstincts()}
+	s := NewServer(WithInstinctPlaybooks(instinctRepo, false)) // no WithInstinctLiftRepository
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/instincts", nil)
+	rec := httptest.NewRecorder()
+	s.adminRouter(rec, withAdminUI(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "—") {
+		t.Errorf("body missing dash placeholders with nil lift repo; body=%s", rec.Body.String())
+	}
+}
+
+// TestAdminInstincts_TrueLiftSnapshotsFail asserts a GetLiftSnapshots error
+// fails soft: the page still renders (list itself succeeded).
+func TestAdminInstincts_TrueLiftSnapshotsFail(t *testing.T) {
+	instinctRepo := &stubInstinctRepo{rows: seedInstincts()}
+	liftRepo := &stubInstinctLiftRepo{err: context.DeadlineExceeded}
+	s := NewServer(WithInstinctPlaybooks(instinctRepo, false), WithInstinctLiftRepository(liftRepo))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/instincts?domain=recovery", nil)
+	rec := httptest.NewRecorder()
+	s.adminRouter(rec, withAdminUI(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (lift-snapshot error must fail soft); body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "ins_1") {
+		t.Errorf("page should still render rows when lift snapshots fail; body=%s", rec.Body.String())
+	}
+}
+
+func TestInstinctTrueLiftFields(t *testing.T) {
+	lift, detail, verdict := instinctTrueLiftFields(nil)
+	if lift != "—" || detail != "—" || verdict != "" {
+		t.Errorf("nil snapshot = (%q,%q,%q), want (—,—,\"\")", lift, detail, verdict)
+	}
+
+	snap := &persistence.InstinctLiftSnapshot{
+		Lift: 0.12, Verdict: persistence.LiftVerdictHelping,
+		TreatmentN: 12, TreatmentSucc: 9, BaselineN: 14, BaselineSucc: 5,
+	}
+	lift, detail, verdict = instinctTrueLiftFields(snap)
+	if lift != "+12%" {
+		t.Errorf("lift = %q, want +12%%", lift)
+	}
+	if detail != "t 9/12 · b 5/14" {
+		t.Errorf("detail = %q, want %q", detail, "t 9/12 · b 5/14")
+	}
+	if verdict != persistence.LiftVerdictHelping {
+		t.Errorf("verdict = %q, want %q", verdict, persistence.LiftVerdictHelping)
+	}
+
+	neg := &persistence.InstinctLiftSnapshot{Lift: -0.08, Verdict: persistence.LiftVerdictLowLift}
+	lift, _, _ = instinctTrueLiftFields(neg)
+	if lift != "-8%" {
+		t.Errorf("negative lift = %q, want -8%%", lift)
+	}
+}
+
+func TestInstinctLiftBadgeClass(t *testing.T) {
+	if got := instinctLiftBadgeClass(persistence.LiftVerdictHelping); got != "pill pill-ok" {
+		t.Errorf("helping badge = %q, want pill pill-ok", got)
+	}
+	if got := instinctLiftBadgeClass(persistence.LiftVerdictLowLift); got != "pill pill-warn" {
+		t.Errorf("low_lift badge = %q, want pill pill-warn", got)
+	}
+	if got := instinctLiftBadgeClass(persistence.LiftVerdictUnknown); got != "pill pill-neutral" {
+		t.Errorf("unknown badge = %q, want pill pill-neutral", got)
+	}
+	if got := instinctLiftBadgeClass(persistence.LiftVerdictNotMeasurable); got != "pill pill-neutral" {
+		t.Errorf("not_measurable badge = %q, want pill pill-neutral", got)
+	}
+	if got := instinctLiftBadgeClass(""); got != "" {
+		t.Errorf("empty verdict badge = %q, want empty", got)
+	}
+}
+
+func TestInstinctRowToAdminRow_TrueLiftFields(t *testing.T) {
+	now := time.Now()
+	in := &persistence.Instinct{ID: "ins_x", Status: "active", LastSeenAt: now}
+	snap := &persistence.InstinctLiftSnapshot{
+		Lift: 0.12, Verdict: persistence.LiftVerdictHelping,
+		TreatmentN: 12, TreatmentSucc: 9, BaselineN: 14, BaselineSucc: 5,
+	}
+	row := instinctRowToAdminRow(in, now, nil, snap)
+	if row.TrueLift != "+12%" {
+		t.Errorf("TrueLift = %q, want +12%%", row.TrueLift)
+	}
+	if row.TrueLiftBadge != "pill pill-ok" {
+		t.Errorf("TrueLiftBadge = %q, want pill pill-ok", row.TrueLiftBadge)
+	}
+
+	// nil snapshot -> dash placeholder, no panic.
+	rowNil := instinctRowToAdminRow(in, now, nil, nil)
+	if rowNil.TrueLift != "—" || rowNil.TrueLiftBadge != "" {
+		t.Errorf("nil snapshot row = (TrueLift=%q, Badge=%q), want (—, \"\")", rowNil.TrueLift, rowNil.TrueLiftBadge)
 	}
 }
 

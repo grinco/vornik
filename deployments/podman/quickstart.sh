@@ -2,7 +2,18 @@
 #
 # Vornik Community Edition — one-command quickstart.
 #
-#   curl -fsSL https://raw.githubusercontent.com/grinco/vornik/main/deployments/podman/quickstart.sh | bash
+# Verified install (recommended) — pin a release and check the script against
+# its published checksum before running it. This catches tampering in transit
+# or a compromised get.vornik.io redirect; it is NOT a signature (someone who
+# controls the tag could rewrite both files together), so also skim the script:
+#   REF=<release>  # a tag from github.com/grinco/vornik/releases that ships quickstart.sh.sha256
+#   base="https://raw.githubusercontent.com/grinco/vornik/$REF/deployments/podman"
+#   curl -fsSLO "$base/quickstart.sh" && curl -fsSLO "$base/quickstart.sh.sha256"
+#   sha256sum -c quickstart.sh.sha256 && VORNIK_REF="$REF" bash quickstart.sh
+#
+# Convenience one-liner (trusts TLS + GitHub; no checksum step). It pins to the
+# release tag baked in below, NOT to a moving branch:
+#   curl -fsSL https://get.vornik.io | bash
 #
 # Topology: the Vornik daemon runs ON THE HOST as a rootless
 # `systemctl --user` service; only PostgreSQL+pgvector (and, in Enterprise,
@@ -29,7 +40,7 @@
 # Re-running is safe (idempotent; existing config is never clobbered).
 # Tunables via environment:
 #   VORNIK_REPO_URL   git URL to clone            (default: https://github.com/grinco/vornik)
-#   VORNIK_REF        branch/tag to check out      (default: main)
+#   VORNIK_REF        branch/tag to check out      (default: pinned release tag; 'main' for bleeding-edge)
 #   VORNIK_DIR        where to place the checkout  (default: $HOME/vornik)
 #   VORNIK_SKIP_FETCH 1 = use VORNIK_DIR as-is, no clone/pull (offline/dev)
 #   VORNIK_HTTP_PORT  host port for the UI/API     (default: 8080)
@@ -42,7 +53,12 @@ else
 fi
 
 REPO_URL="${VORNIK_REPO_URL:-https://github.com/grinco/vornik}"
-REF="${VORNIK_REF:-main}"
+# DEFAULT_VORNIK_REF is stamped to the release tag at release/export time
+# (`make quickstart-stamp-ref REF=<tag>`), so the PUBLISHED installer pins a
+# concrete release rather than a moving branch. Keep it a real, recent tag in
+# the repo. Override at runtime with VORNIK_REF (e.g. VORNIK_REF=main).
+DEFAULT_VORNIK_REF="2026.7.3"
+REF="${VORNIK_REF:-$DEFAULT_VORNIK_REF}"
 DIR="${VORNIK_DIR:-$HOME/vornik}"
 HTTP_PORT="${VORNIK_HTTP_PORT:-8080}"
 PG_PORT="${POSTGRES_PORT:-5432}"
@@ -226,12 +242,14 @@ elif [ -d "$DIR/.git" ]; then
     warn "could not update $DIR cleanly — re-cloning"
     require_safe_checkout_dir "$DIR"
     rm -rf "$DIR"
-    git clone --depth 1 --branch "$REF" "$REPO_URL" "$DIR"
+    git clone --depth 1 --branch "$REF" "$REPO_URL" "$DIR" \
+    || die "Could not check out '$REF' from $REPO_URL. If a release was just cut, its tag may not be published yet — retry in a moment, or set VORNIK_REF=main to install from latest source."
   fi
 else
   log "Cloning $REPO_URL ($REF) -> $DIR"
   require_safe_checkout_dir "$DIR"
-  git clone --depth 1 --branch "$REF" "$REPO_URL" "$DIR"
+  git clone --depth 1 --branch "$REF" "$REPO_URL" "$DIR" \
+    || die "Could not check out '$REF' from $REPO_URL. If a release was just cut, its tag may not be published yet — retry in a moment, or set VORNIK_REF=main to install from latest source."
 fi
 
 # ---------------------------------------------------------------------------

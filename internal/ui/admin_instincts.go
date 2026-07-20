@@ -13,6 +13,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -50,6 +51,22 @@ type AdminInstinctRow struct {
 	// LiftSummary is the compact (<20-char) rendering of the tally,
 	// "-" when no applications have been recorded.
 	LiftSummary string
+
+	// True-lift measurement (migration 128, task 2/9) — NOT the same thing
+	// as LiftSummary above: LiftSummary is the applied-side feedback tally
+	// (slice 7), TrueLift is the measured treatment-vs-baseline lift. The
+	// two columns are shown side by side in the template so they are never
+	// conflated.
+	//
+	// TrueLift renders the measured lift snapshot ("+12%", "−8%", "—" when
+	// absent). TrueLiftDetail is the hover/secondary line "t 9/12 · b 5/14".
+	// TrueLiftVerdict ∈ {helping, low_lift, unknown, not_measurable, ""}.
+	// TrueLiftBadge is the precomputed pill class for TrueLiftVerdict
+	// (mirrors the StatusBadge idiom above); "" when there is no verdict.
+	TrueLift        string
+	TrueLiftDetail  string
+	TrueLiftVerdict string
+	TrueLiftBadge   string
 }
 
 // AdminInstinctsData backs the /ui/admin/instincts template.
@@ -154,13 +171,28 @@ func (s *Server) AdminInstincts(w http.ResponseWriter, r *http.Request) {
 					counts = c
 				}
 			}
+			// True-lift snapshots (migration 128, task 11): same fail-soft
+			// batch pattern as the application counts above. Nil-safe on
+			// two axes — the repo may be unwired (CE / not configured) or
+			// the batch call may error — either way the map stays nil and
+			// the Lift column renders "—" for every row rather than
+			// blocking the page.
+			var liftSnaps map[string]*persistence.InstinctLiftSnapshot
+			if s.instinctLiftRepo != nil && len(ids) > 0 {
+				ls, lerr := s.instinctLiftRepo.GetLiftSnapshots(ctx, ids)
+				if lerr != nil {
+					s.logger.Warn().Err(lerr).Msg("admin instincts lift snapshots failed; rendering without true lift")
+				} else {
+					liftSnaps = ls
+				}
+			}
 			data.Rows = make([]AdminInstinctRow, 0, len(rows))
 			now := time.Now()
 			for _, in := range rows {
 				if in == nil {
 					continue
 				}
-				data.Rows = append(data.Rows, instinctRowToAdminRow(in, now, counts[in.ID]))
+				data.Rows = append(data.Rows, instinctRowToAdminRow(in, now, counts[in.ID], liftSnaps[in.ID]))
 			}
 		}
 	}
@@ -228,7 +260,9 @@ func (s *Server) AdminInstinctRetire(w http.ResponseWriter, r *http.Request, id 
 // template-friendly admin shape. Pure — no I/O, easy to unit test.
 // counts may be nil (no applications recorded for this instinct, or the
 // counts query failed) — that yields zero buckets and a "-" LiftSummary.
-func instinctRowToAdminRow(in *persistence.Instinct, now time.Time, counts *persistence.InstinctApplicationCounts) AdminInstinctRow {
+// liftSnap may be nil (no snapshot yet, lift repo unwired, or the batch
+// call failed) — that yields the "—" true-lift placeholder, never a panic.
+func instinctRowToAdminRow(in *persistence.Instinct, now time.Time, counts *persistence.InstinctApplicationCounts, liftSnap *persistence.InstinctLiftSnapshot) AdminInstinctRow {
 	row := AdminInstinctRow{
 		ID:              in.ID,
 		Scope:           in.Scope,
@@ -255,7 +289,42 @@ func instinctRowToAdminRow(in *persistence.Instinct, now time.Time, counts *pers
 		row.AppIgnored = counts.Ignored
 	}
 	row.LiftSummary = instinctLiftSummary(row.AppSucceeded, row.AppFailed, row.AppIgnored)
+	row.TrueLift, row.TrueLiftDetail, row.TrueLiftVerdict = instinctTrueLiftFields(liftSnap)
+	row.TrueLiftBadge = instinctLiftBadgeClass(row.TrueLiftVerdict)
 	return row
+}
+
+// instinctTrueLiftFields renders a true-lift snapshot (migration 128) into
+// the three display strings shared by every true-lift surface (the admin
+// instincts table and the tool-budget insights advisory). snap nil — no
+// snapshot recorded yet for this instinct, the lift repo isn't wired, or a
+// batch fetch failed — yields the "—" placeholder pair and an empty
+// verdict, never a panic. Pure — no I/O.
+func instinctTrueLiftFields(snap *persistence.InstinctLiftSnapshot) (lift, detail, verdict string) {
+	if snap == nil {
+		return "—", "—", ""
+	}
+	lift = fmt.Sprintf("%+.0f%%", snap.Lift*100)
+	detail = fmt.Sprintf("t %d/%d · b %d/%d", snap.TreatmentSucc, snap.TreatmentN, snap.BaselineSucc, snap.BaselineN)
+	verdict = snap.Verdict
+	return lift, detail, verdict
+}
+
+// instinctLiftBadgeClass picks the tailwind pill class for a true-lift
+// verdict, reusing instinctStatusBadgeClass's badge idiom: helping is the
+// page's "ok" green, low_lift is the warning amber, and
+// unknown/not_measurable/"" (no snapshot) fall back to neutral gray.
+func instinctLiftBadgeClass(verdict string) string {
+	switch verdict {
+	case persistence.LiftVerdictHelping:
+		return "pill pill-ok"
+	case persistence.LiftVerdictLowLift:
+		return "pill pill-warn"
+	case persistence.LiftVerdictUnknown, persistence.LiftVerdictNotMeasurable:
+		return "pill pill-neutral"
+	default:
+		return ""
+	}
 }
 
 // instinctLiftSummary renders an application-feedback tally as a compact

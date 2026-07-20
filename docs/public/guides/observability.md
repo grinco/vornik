@@ -4,6 +4,8 @@ sources:
       sha256: 71ab1bc0f72aea69510677c929b401a7ab7030c1371905197f6504c5a71c120b
     - path: internal/ui/spend.go
       sha256: ee090eb1f9793aee5286f54f68ff4355b9141d08575811a0dab388c2432e6396
+    - path: internal/reminders/metrics.go
+      sha256: bb22804ef50c44d048082968c16e51c5d729f4dafe5b1b892fe9719d0fc0fec6
 ---
 # Observability
 
@@ -97,6 +99,12 @@ The exported metrics cover, in plain terms:
   [backlog deposits](autonomy.md#backlog-autonomy-and-agent-deposits)
   (accepted, or rejected as a duplicate, a secret hit, over the per-task cap,
   or in cooldown).
+- **Scheduled updates (task-kind reminders)** — task-kind fires per project,
+  outcome deliveries by success/failure, fires skipped because the prior run
+  was still going, delivery-time channel-send failures, and stuck-`firing`
+  rows the crash-recovery sweep reclaims. See the
+  [vornikctl reference](../reference/vornikctl.md) (`reminders` group) for the
+  `text` vs `task` kinds and pause/resume.
 - **HTTP and process** — request counts, durations, in-flight requests, plus
   standard Go/process collectors.
 

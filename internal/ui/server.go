@@ -271,6 +271,13 @@ type Server struct {
 	// gate off the failed-task page is byte-for-byte unchanged.
 	instinctRepo      persistence.InstinctRepository
 	instinctPlaybooks bool
+	// instinctLiftRepo backs the true-lift measurement surfaces (migration
+	// 128, task 11): the Lift column on /ui/admin/instincts and the
+	// "Learned-tier lift" line on /ui/insights/tool-budget. Nil-safe and
+	// ungated (unlike instinctRepo above, there is no separate consumer
+	// gate) — without it (CE / not wired) both surfaces render "—" for
+	// every row rather than panicking.
+	instinctLiftRepo persistence.InstinctLiftRepository
 	// reminderRepo backs the per-project upcoming-reminders tile.
 	// Nil-safe — when unwired the tile renders empty.
 	reminderRepo persistence.ReminderRepository
@@ -1526,6 +1533,17 @@ func WithInstinctPlaybooks(repo persistence.InstinctRepository, enabled bool) Se
 	}
 }
 
+// WithInstinctLiftRepository wires the true-lift measurement repository
+// (migration 128) so /ui/admin/instincts can show the measured Lift column
+// and /ui/insights/tool-budget can show the "Learned-tier lift" line.
+// Nil-safe and ungated: without it (CE / not wired on this deployment)
+// both surfaces render "—" for every row instead of panicking.
+func WithInstinctLiftRepository(repo persistence.InstinctLiftRepository) ServerOption {
+	return func(s *Server) {
+		s.instinctLiftRepo = repo
+	}
+}
+
 // WithPostMortemExplainer wires the LLM-backed explainer so
 // the operator's "Explain this failure" button has something
 // to call. Optional — without it the button isn't rendered
@@ -2145,6 +2163,16 @@ func (s *Server) Handler() http.Handler {
 		if strings.HasSuffix(path, "/delete") {
 			id := strings.TrimSuffix(path, "/delete")
 			s.ReminderDelete(w, r, id)
+			return
+		}
+		if strings.HasSuffix(path, "/pause") {
+			id := strings.TrimSuffix(path, "/pause")
+			s.ReminderPause(w, r, id)
+			return
+		}
+		if strings.HasSuffix(path, "/resume") {
+			id := strings.TrimSuffix(path, "/resume")
+			s.ReminderResume(w, r, id)
 			return
 		}
 		// Trailing slash with no suffix → render the dashboard

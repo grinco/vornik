@@ -57,6 +57,10 @@ permissions:
     - "memory_search"
     - "memory_correct"
     - "send_artifact"
+    - "set_reminder"
+    - "cancel_reminder"
+    - "update_reminder"
+    - "update_operator_profile"
 
 # ---------------------------------------------------------------
 # Budget — soft caps log warnings; hard caps block new work. All

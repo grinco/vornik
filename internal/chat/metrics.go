@@ -63,6 +63,11 @@ type Metrics struct {
 	// ModelHealthTrips counts circuit-open transitions (closed→open and a
 	// failed half-open probe re-opening) per (route, model).
 	ModelHealthTrips *prometheus.CounterVec
+	// ModelFallbackTotal counts router-level non-swarm model fallbacks (the
+	// FallbackProvider retried an unhealthy primary on its configured twin).
+	// Label names mirror vornik_executor_model_fallback_total for cross-source
+	// dashboard aggregation.
+	ModelFallbackTotal *prometheus.CounterVec
 
 	cacheRatioMu    sync.Mutex
 	cacheRatioState map[string]*cacheRatioState
@@ -76,6 +81,15 @@ func (m *Metrics) RecordSubscriptionTokenRefresh(provider, outcome string) {
 		return
 	}
 	m.SubscriptionTokenRefreshTotal.WithLabelValues(provider, outcome).Inc()
+}
+
+// RecordModelFallback counts one router-level non-swarm model fallback. Nil-safe
+// (the FallbackProvider may hold a nil *Metrics in tests / unwired deployments).
+func (m *Metrics) RecordModelFallback(primaryModel, fallbackModel string) {
+	if m == nil || m.ModelFallbackTotal == nil {
+		return
+	}
+	m.ModelFallbackTotal.WithLabelValues(primaryModel, fallbackModel).Inc()
 }
 
 // cacheRatioState tracks the running read/creation token totals per
@@ -175,6 +189,12 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 			Name:      "model_health_trips_total",
 			Help:      "Circuit-open transitions per (route, model).",
 		}, []string{"route", "model"}),
+		ModelFallbackTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "vornik",
+			Subsystem: "chat",
+			Name:      "model_fallback_total",
+			Help:      "Router-level non-swarm model fallbacks (unhealthy primary retried on its configured twin).",
+		}, []string{"primary_model", "fallback_model"}),
 		SubscriptionTokenRefreshTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "vornik",
 			Subsystem: "chat",
@@ -190,7 +210,7 @@ func NewMetrics(reg *prometheus.Registry) *Metrics {
 		m.CacheCreationTokensTotal, m.CacheReadTokensTotal,
 		m.CacheHitRatio, m.CacheDollarsSavedTotal,
 		m.SubscriptionTokenRefreshTotal,
-		m.ModelHealthState, m.ModelHealthTrips,
+		m.ModelHealthState, m.ModelHealthTrips, m.ModelFallbackTotal,
 	)
 	return m
 }

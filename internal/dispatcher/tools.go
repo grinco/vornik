@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"vornik.io/vornik/internal/apigateway"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/idfmt"
@@ -319,6 +320,11 @@ type ToolExecutor struct {
 	// supplies an adapter over the service container's per-project
 	// email channels. See [EmailSender] for the contract.
 	emailSender EmailSender
+	// apiClient backs the query_api tool. Nil disables the tool (the
+	// dispatch returns "not configured"); production wiring supplies the
+	// DialGuard-pinned gateway client built from config. See
+	// [apigateway.Client] and https://docs.vornik.io
+	apiClient apigateway.Client
 	// reminderRepo backs the set_reminder tool. Nil disables it
 	// (the tool returns a "not configured on this daemon" message).
 	// reminderKicker is the optional sweeper kick — set_reminder
@@ -441,12 +447,20 @@ func (te *ToolExecutor) execute(ctx context.Context, tc chat.ToolCall, activePro
 		return te.renderDocument(ctx, args, fs)
 	case "send_email":
 		return te.sendEmail(ctx, args, activeProject, allowedProjects)
+	case "query_api":
+		return te.queryAPI(ctx, args, activeProject, allowedProjects)
+	case "list_apis":
+		return te.listAPIs(ctx, args, activeProject, allowedProjects)
 	case "set_reminder":
-		return te.setReminder(ctx, args, chatID, activeProject)
+		return te.setReminder(ctx, args, chatID, activeProject, allowedProjects)
 	case "cancel_reminder":
 		return te.cancelReminderTool(ctx, args, chatID)
 	case "update_reminder":
-		return te.updateReminderTool(ctx, args, chatID)
+		return te.updateReminderTool(ctx, args, chatID, activeProject, allowedProjects)
+	case "pause_reminder":
+		return te.pauseReminderTool(ctx, args, chatID)
+	case "resume_reminder":
+		return te.resumeReminderTool(ctx, args, chatID)
 	case "update_operator_profile":
 		return te.updateOperatorProfile(ctx, args)
 	case "memory_search":
@@ -2161,14 +2175,46 @@ func DispatcherTools() []chat.Tool {
 			Type: "function",
 			Function: chat.ToolFunction{
 				Name:        "update_reminder",
-				Description: "Reschedule a pending reminder or change its body. Pass the reminder_id + either fire_at (RFC3339) OR fire_in_seconds for a new time, and/or content to change the body. Omit both time fields to leave the existing fire_at intact and only update content. Refuses if the reminder is no longer pending or belongs to a different operator. Audit row recorded.",
+				Description: "Reschedule a pending reminder or change its body / cadence / project. Pass the reminder_id + any of: fire_at (RFC3339) OR fire_in_seconds for a one-shot time; cron to change the recurring cadence (recomputes the next fire, wins over fire_at); content to change the body/prompt; project to move a task-kind reminder to another project (re-checked against your session's project access). Omit all schedule fields to keep the existing fire_at. Refuses if the reminder is no longer pending, belongs to a different operator, or (for project) the reminder is text-kind or the project is outside your access. Audit row recorded.",
 				Parameters: json.RawMessage(`{
 					"type":"object",
 					"properties":{
 						"reminder_id":{"type":"string","description":"The reminder id (rem_…) returned by set_reminder."},
 						"fire_at":{"type":"string","description":"Absolute new fire time in RFC3339. Use when you know the target timezone."},
 						"fire_in_seconds":{"type":"integer","description":"Positive integer seconds-from-now for the new fire time."},
+						"cron":{"type":"string","description":"New 5-field POSIX cron expression for a recurring reminder (e.g. \"0 9 * * *\"). Recomputes the next fire time and wins over fire_at/fire_in_seconds. Empty leaves the existing schedule."},
 						"content":{"type":"string","description":"Optional new message body (≤ 2000 chars). Empty leaves the existing body."},
+						"project":{"type":"string","description":"Optional new project for a TASK-kind reminder (the project its task runs in). Re-checked against your session's project access; rejected on text-kind reminders. Empty leaves the existing project."},
+						"rationale":{"type":"string","description":"Short reason — persisted in the audit log."}
+					},
+					"required":["reminder_id","rationale"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: chat.ToolFunction{
+				Name:        "pause_reminder",
+				Description: "Pause a recurring or pending reminder so it stops firing until resumed. Pass the reminder_id + a short rationale. Refuses if the reminder is mid-run (a task-kind fire is currently executing) or not in a pending state — retry once the current run finishes. Belongs-to-caller enforced. Audit row recorded.",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"reminder_id":{"type":"string","description":"The reminder id (rem_…) returned by set_reminder."},
+						"rationale":{"type":"string","description":"Short reason — persisted in the audit log."}
+					},
+					"required":["reminder_id","rationale"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: chat.ToolFunction{
+				Name:        "resume_reminder",
+				Description: "Resume a paused recurring reminder. Recomputes the next fire time from the reminder's cron expression as of now. Refuses one-shot reminders (they can't be paused/resumed — create a new one) and refuses if the reminder isn't currently paused. Belongs-to-caller enforced. Audit row recorded.",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"reminder_id":{"type":"string","description":"The reminder id (rem_…) returned by set_reminder."},
 						"rationale":{"type":"string","description":"Short reason — persisted in the audit log."}
 					},
 					"required":["reminder_id","rationale"]
@@ -2179,13 +2225,16 @@ func DispatcherTools() []chat.Tool {
 			Type: "function",
 			Function: chat.ToolFunction{
 				Name:        "set_reminder",
-				Description: "Schedule a future reminder. The bot will message the operator at the specified time with the supplied content. Supply EITHER fire_at (RFC3339 timestamp, e.g. '2026-05-25T09:00:00+02:00') OR fire_in_seconds (positive integer offset from now). For relative times the operator asks for ('in 2 hours', 'tomorrow 9am'), compute the offset in seconds or the absolute RFC3339 string yourself before calling — the tool does NOT parse natural language. v1 fires on Telegram only.\n\nSTRONG PREFERENCE: use fire_at, not fire_in_seconds. fire_at is RFC3339 with explicit timezone; the model + the tool agree on exactly which wall-clock moment will fire. fire_in_seconds requires the model to add an offset to CURRENT TIME (in the system prompt) and is the source of every 'why did it fire at the wrong time?' bug — most commonly when the user says 'tomorrow' near midnight and the model confuses calendar days. Use fire_in_seconds ONLY for explicit durations the user said ('remind me in 30 minutes', 'check back in 2 hours').\n\nWHEN THE USER ASKS FOR A SPECIFIC TIME ('tomorrow at 9am', 'next Tuesday 14:00', 'this Friday morning'): construct fire_at by taking CURRENT TIME from the system prompt + applying the user's words. 'tomorrow' means CURRENT_DATE + 1 day in the operator's timezone. 'morning' means 08:00 unless the user specified otherwise. If the result is already past, ASK the user instead of guessing — don't silently shift to the next day. Confirm the resolved date back to the user in your reply ('Set for Tuesday 26 May at 09:00 CEST') so they can spot a mis-parse.",
+				Description: "Schedule a future reminder OR a recurring scheduled task-update. Two modes, selected by `kind`:\n\n1) kind=\"text\" (default): a one-shot or recurring message. The bot messages the operator with `content` verbatim at the resolved time. Supply EITHER fire_at (RFC3339 timestamp, e.g. '2026-05-25T09:00:00+02:00') OR fire_in_seconds (positive integer offset from now) for a one-shot; supply `cron` instead for a recurring text reminder (e.g. \"remind me every Monday at 9am\").\n\n2) kind=\"task\": a scheduled UPDATE — `content` is used as a task prompt that actually runs (e.g. \"daily news digest\", \"weekly plan every Monday\") in the given `project`, and the bot delivers the task's outcome here when it completes. Requires a `project` — pass `project` explicitly, or rely on the session's active project if there is one. `cron` (a 5-field POSIX expression) is OPTIONAL but typical: supply it for a recurring update (\"daily\", \"every Monday\"); omit it (and use fire_at/fire_in_seconds instead, same as kind=\"text\") for a one-shot task-kind run. Capped per operator (ask the operator to cancel one if refused for being at the cap).\n\nFor relative times the operator asks for ('in 2 hours', 'tomorrow 9am'), compute the offset in seconds or the absolute RFC3339 string yourself before calling — the tool does NOT parse natural language, and neither does `cron` (translate 'every weekday morning' to '0 8 * * 1-5' yourself). v1 fires on Telegram only.\n\nSTRONG PREFERENCE for one-shot text reminders: use fire_at, not fire_in_seconds. fire_at is RFC3339 with explicit timezone; the model + the tool agree on exactly which wall-clock moment will fire. fire_in_seconds requires the model to add an offset to CURRENT TIME (in the system prompt) and is the source of every 'why did it fire at the wrong time?' bug — most commonly when the user says 'tomorrow' near midnight and the model confuses calendar days. Use fire_in_seconds ONLY for explicit durations the user said ('remind me in 30 minutes', 'check back in 2 hours').\n\nWHEN THE USER ASKS FOR A SPECIFIC TIME ('tomorrow at 9am', 'next Tuesday 14:00', 'this Friday morning'): construct fire_at by taking CURRENT TIME from the system prompt + applying the user's words. 'tomorrow' means CURRENT_DATE + 1 day in the operator's timezone. 'morning' means 08:00 unless the user specified otherwise. If the result is already past, ASK the user instead of guessing — don't silently shift to the next day. Confirm the resolved date back to the user in your reply ('Set for Tuesday 26 May at 09:00 CEST') so they can spot a mis-parse.",
 				Parameters: json.RawMessage(`{
 					"type":"object",
 					"properties":{
-						"fire_at":{"type":"string","description":"Absolute fire time in RFC3339 (e.g. '2026-05-24T09:00:00+02:00'). Use this when you know the target timezone."},
-						"fire_in_seconds":{"type":"integer","description":"Positive integer seconds-from-now offset. Use this when the operator said 'in 2 hours' / 'in 30 minutes' — easier than computing the absolute timestamp."},
-						"content":{"type":"string","description":"The message body the reminder will deliver. ≤ 2000 chars. The bot prepends a small '⏰ Reminder:' marker on its own."}
+						"fire_at":{"type":"string","description":"Absolute fire time in RFC3339 (e.g. '2026-05-24T09:00:00+02:00'). Use this when you know the target timezone. One-shot only; omit when using cron."},
+						"fire_in_seconds":{"type":"integer","description":"Positive integer seconds-from-now offset. Use this when the operator said 'in 2 hours' / 'in 30 minutes' — easier than computing the absolute timestamp. One-shot only; omit when using cron."},
+						"content":{"type":"string","description":"For kind=\"text\": the message body delivered verbatim. For kind=\"task\": the task prompt that will actually run. ≤ 2000 chars."},
+						"kind":{"type":"string","enum":["text","task"],"description":"\"text\" (default) delivers content verbatim. \"task\" runs content as a task in project on the given schedule and delivers its outcome — use this for 'daily digest' / 'weekly report' style requests, not just a text ping."},
+						"cron":{"type":"string","description":"5-field POSIX cron expression (\"min hour dom mon dow\", e.g. \"0 7 * * *\" for daily 7am, \"0 9 * * 1\" for Monday 9am). Makes the reminder recurring. Optional for both kinds — typical/recommended for a recurring kind=\"task\" update, but a one-shot task-kind run (via fire_at/fire_in_seconds) is also supported; for kind=\"text\" it makes a recurring text reminder."},
+						"project":{"type":"string","description":"Project the task-kind update runs in. Required for kind=\"task\" unless the session already has an active project (then it's used as the default). Ignored for kind=\"text\" unless you want to override the active project."}
 					},
 					"required":["content"]
 				}`),
@@ -2242,6 +2291,37 @@ func DispatcherTools() []chat.Tool {
 			},
 		},
 		composeAutomationDescriptor(),
+		{
+			Type: "function",
+			Function: chat.ToolFunction{
+				Name:        "query_api",
+				Description: "Query a registered third-party HTTP API by name (e.g. maps). Call list_apis first to discover available providers and their capabilities. Read-only (GET/HEAD) by default. The daemon injects authentication server-side; never include API keys or tokens in arguments. Returns the raw API response body.",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"provider":{"type":"string","description":"Registered provider name, e.g. \"maps\"."},
+						"method":{"type":"string","description":"HTTP method. GET or HEAD unless the provider allows writes. Defaults to GET."},
+						"path":{"type":"string","description":"Path under the provider (e.g. \"/geocode/json\")."},
+						"query":{"type":"object","description":"Optional query parameters (key/value)."},
+						"body":{"type":"object","description":"Optional JSON request body (only for write methods)."}
+					},
+					"required":["provider","path"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: chat.ToolFunction{
+				Name:        "list_apis",
+				Description: "List the third-party HTTP API providers registered and enabled for the active project — name, description, allowed methods, whether writes are enabled, and example requests. Call this before query_api to discover what's available instead of guessing provider names.",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"query":{"type":"string","description":"Optional case-insensitive filter over provider name/description."}
+					}
+				}`),
+			},
+		},
 	}
 }
 

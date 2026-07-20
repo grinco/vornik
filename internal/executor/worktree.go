@@ -188,10 +188,27 @@ func backupLocalOnlyCommits(ctx context.Context, projectDir, branch string, logg
 // the issue-fix workflow prompt telling the agent not to write them.
 var vornikInternalPaths = []string{".autonomy/", "CURRENT_TASK.md", "BACKLOG.md", "COVERAGE_REPORT.md"}
 
-// excludeVornikInternalPaths appends vornikInternalPaths to the project clone's
-// .git/info/exclude (idempotently). Daemon-side (the executor has rw on the
-// clone's .git); covers worktrees too since they share the main repo's exclude.
-func excludeVornikInternalPaths(projectDir string, logger zerolog.Logger) {
+// ephemeralArtifactOutputPaths is the ephemeral agent-output tier. Every role's
+// deliverables are written under a worktree's top-level artifacts/out/ and
+// HARVESTED to the durable store by persistArtifacts (a filesystem walk,
+// independent of git tracking). Committing them to the project's shared default
+// branch is the leak-accumulation vector — prior jobs' outputs pile up there
+// and can bleed cross-task. Durable cross-task handoff goes through the store
+// (the stage_child_artifacts primitive), never the shared branch, so
+// artifacts/out/ has no reason to be git-tracked. Repo-wide (not per-workflow):
+// applies to every git project via ensureGitRepo so the assistant/deep-research
+// (non-forge) accumulation vector is closed too (design v4 §3.5).
+var ephemeralArtifactOutputPaths = []string{"artifacts/out/"}
+
+// appendGitInfoExclude idempotently appends the not-yet-present patterns to
+// <projectDir>/.git/info/exclude under a header comment. Daemon-side (the
+// executor has rw on the clone's .git); worktrees inherit the main repo's
+// exclude (they share $GIT_COMMON_DIR/info/exclude). Shared by
+// excludeVornikInternalPaths (forge-internal bookkeeping) and
+// excludeEphemeralArtifactOutputs (the artifacts/out output tier). A gitignore
+// exclude only affects UNTRACKED files, so paths a project already tracks are
+// unaffected — this can never strip an existing tracked file from a commit.
+func appendGitInfoExclude(projectDir, header string, patterns []string, logger zerolog.Logger) {
 	if !isGitRepo(projectDir) {
 		return
 	}
@@ -199,7 +216,7 @@ func excludeVornikInternalPaths(projectDir string, logger zerolog.Logger) {
 	existing, _ := os.ReadFile(excludePath)
 	body := string(existing)
 	var add []string
-	for _, p := range vornikInternalPaths {
+	for _, p := range patterns {
 		if !strings.Contains("\n"+body, "\n"+p) {
 			add = append(add, p)
 		}
@@ -210,16 +227,32 @@ func excludeVornikInternalPaths(projectDir string, logger zerolog.Logger) {
 	if len(body) > 0 && !strings.HasSuffix(body, "\n") {
 		body += "\n"
 	}
-	body += "# vornik-internal — never publish to a forge:\n" + strings.Join(add, "\n") + "\n"
+	body += header + "\n" + strings.Join(add, "\n") + "\n"
 	if err := os.MkdirAll(filepath.Dir(excludePath), 0o755); err != nil {
 		return
 	}
 	if err := os.WriteFile(excludePath, []byte(body), 0o644); err != nil {
-		logger.Debug().Err(err).Str("project_dir", projectDir).Msg("forge: could not write .git/info/exclude")
+		logger.Debug().Err(err).Str("project_dir", projectDir).Msg("could not write .git/info/exclude")
 		return
 	}
 	logger.Debug().Str("project_dir", projectDir).Strs("patterns", add).
-		Msg("forge: excluded vornik-internal paths from git tracking")
+		Msg("added git-exclude patterns")
+}
+
+// excludeVornikInternalPaths appends vornikInternalPaths to the project clone's
+// .git/info/exclude (idempotently). Daemon-side (the executor has rw on the
+// clone's .git); covers worktrees too since they share the main repo's exclude.
+func excludeVornikInternalPaths(projectDir string, logger zerolog.Logger) {
+	appendGitInfoExclude(projectDir, "# vornik-internal — never publish to a forge:", vornikInternalPaths, logger)
+}
+
+// excludeEphemeralArtifactOutputs appends ephemeralArtifactOutputPaths to the
+// project clone's .git/info/exclude (idempotently). Called from ensureGitRepo
+// for EVERY git project so agent outputs under artifacts/out/ are never
+// committed/merged to the shared default branch — harvesting to the store is a
+// filesystem walk and keeps working regardless (design v4 §3.5).
+func excludeEphemeralArtifactOutputs(projectDir string, logger zerolog.Logger) {
+	appendGitInfoExclude(projectDir, "# vornik ephemeral output tier — harvested to the store, never committed to the shared branch:", ephemeralArtifactOutputPaths, logger)
 }
 
 // isGitRepo returns true if dir contains a .git directory.
@@ -340,6 +373,9 @@ func ensureGitRepo(ctx context.Context, dir string, logger zerolog.Logger) error
 		return fmt.Errorf("ensure project dir: %w", err)
 	}
 	if isGitRepo(dir) {
+		// Keep the ephemeral output tier (artifacts/out/) out of git for
+		// every project — see excludeEphemeralArtifactOutputs. Idempotent.
+		excludeEphemeralArtifactOutputs(dir, logger)
 		// Guards must be applied on every call (idempotent): older repos
 		// predate this change and a hand-tampered repo must be re-guarded.
 		return EnsureReceiveGuards(ctx, dir, logger)
@@ -384,6 +420,10 @@ func ensureGitRepo(ctx context.Context, dir string, logger zerolog.Logger) error
 		"commit", "-m", "bootstrap: vornik-managed project"); err != nil {
 		return fmt.Errorf("git commit (bootstrap): %w: %s", err, strings.TrimSpace(string(out)))
 	}
+
+	// Keep the ephemeral output tier (artifacts/out/) out of git from the
+	// first commit onward — see excludeEphemeralArtifactOutputs.
+	excludeEphemeralArtifactOutputs(dir, logger)
 
 	logger.Info().Str("project_dir", dir).Msg("bootstrap: git repo initialized with seed commit")
 	return EnsureReceiveGuards(ctx, dir, logger)

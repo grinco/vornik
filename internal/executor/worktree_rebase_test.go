@@ -240,3 +240,79 @@ func TestExcludeVornikInternalPaths(t *testing.T) {
 		t.Errorf(".autonomy/ should be ignored; git status:\n%s", out)
 	}
 }
+
+// TestExcludeEphemeralArtifactOutputs asserts the artifacts/out ephemeral
+// output tier is added to .git/info/exclude so agent outputs written under a
+// worktree never accumulate on the project's shared default branch (design
+// v4 §3.5 defense-in-depth). Harvesting to the store is filesystem-based and
+// unaffected by this exclude.
+func TestExcludeEphemeralArtifactOutputs(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	log := zerolog.Nop()
+
+	// Non-git dir → no-op (no panic, no file).
+	excludeEphemeralArtifactOutputs(t.TempDir(), log)
+
+	dir := t.TempDir()
+	mustGit(t, dir, "git", "init")
+	excludeStr := func() string {
+		b, _ := os.ReadFile(filepath.Join(dir, ".git", "info", "exclude"))
+		return string(b)
+	}
+	excludeEphemeralArtifactOutputs(dir, log)
+	got := excludeStr()
+	if !strings.Contains(got, "artifacts/out/") {
+		t.Errorf("exclude missing artifacts/out/; have:\n%s", got)
+	}
+	// Idempotent: a second call must not duplicate the entry.
+	excludeEphemeralArtifactOutputs(dir, log)
+	if n := strings.Count(excludeStr(), "artifacts/out/"); n != 1 {
+		t.Errorf("not idempotent — artifacts/out/ appears %d times", n)
+	}
+	// A real artifacts/out/ file in the worktree must now be git-ignored.
+	if err := os.MkdirAll(filepath.Join(dir, "artifacts", "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "artifacts", "out", "deliverable.md"), []byte("x"), 0o644)
+	out, _ := exec.Command("git", "-C", dir, "status", "--porcelain", "--ignored").Output()
+	if !strings.Contains(string(out), "!! artifacts/") {
+		t.Errorf("artifacts/out/ should be ignored; git status:\n%s", out)
+	}
+}
+
+// TestEnsureGitRepoExcludesArtifactsOut asserts the repo setup path lands the
+// artifacts/out exclude for EVERY git project (not just forge tasks): both the
+// already-a-repo path and the freshly-initialized path. This is the guarantee
+// that the assistant/deep-research (non-forge) accumulation vector is closed.
+func TestEnsureGitRepoExcludesArtifactsOut(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	log := zerolog.Nop()
+	ctx := context.Background()
+	excludeOf := func(dir string) string {
+		b, _ := os.ReadFile(filepath.Join(dir, ".git", "info", "exclude"))
+		return string(b)
+	}
+
+	// Already-a-repo path.
+	existing := t.TempDir()
+	mustGit(t, existing, "git", "init")
+	if err := ensureGitRepo(ctx, existing, log); err != nil {
+		t.Fatalf("ensureGitRepo(existing): %v", err)
+	}
+	if !strings.Contains(excludeOf(existing), "artifacts/out/") {
+		t.Errorf("existing-repo path: exclude missing artifacts/out/; have:\n%s", excludeOf(existing))
+	}
+
+	// Freshly-initialized path (empty dir → git init inside ensureGitRepo).
+	fresh := filepath.Join(t.TempDir(), "proj")
+	if err := ensureGitRepo(ctx, fresh, log); err != nil {
+		t.Fatalf("ensureGitRepo(fresh): %v", err)
+	}
+	if !strings.Contains(excludeOf(fresh), "artifacts/out/") {
+		t.Errorf("fresh-repo path: exclude missing artifacts/out/; have:\n%s", excludeOf(fresh))
+	}
+}

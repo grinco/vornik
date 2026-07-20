@@ -58,6 +58,14 @@ func (s *RemindersSubsystem) Start(ctx context.Context) error {
 			c.remindersElector.BootstrapAcquire(ctx)
 			go c.remindersElector.Run(ctx)
 		}
+		// Task-kind reminders (Task 7): the shared task-creation core
+		// (c.taskCreator) is built later in the boot sequence than this
+		// runner, so it's wired here — the first point in the lifecycle
+		// where both exist. nil taskCreator leaves the task-kind path
+		// disabled; text-kind reminders are unaffected either way.
+		if c.taskCreator != nil {
+			s.runner.SetCreator(&containerTaskCreator{creator: c.taskCreator})
+		}
 	}
 	go s.runner.Run(ctx)
 	s.logger.Info().Msg("reminders heartbeat started")

@@ -76,7 +76,7 @@
                 <p class="text-[11px] text-gray-500 mb-3">Per-role over/under-provisioning signals mined by the instinct layer from historical step outcomes.</p>
                 <table class="w-full text-sm">
                     <thead><tr class="text-left text-gray-500 text-xs">
-                        <th class="py-1 pr-4">Role</th><th class="py-1 pr-4">Direction</th><th class="py-1 pr-4">Confidence</th><th class="py-1">Evidence</th>
+                        <th class="py-1 pr-4">Role</th><th class="py-1 pr-4">Direction</th><th class="py-1 pr-4">Confidence</th><th class="py-1 pr-4">Evidence</th><th class="py-1" title="Measured lift: applied success rate vs a matched baseline (migration 128)">Learned-tier lift</th>
                     </tr></thead>
                     <tbody>
                     {{range .Advisory.Rows}}
@@ -84,7 +84,10 @@
                             <td class="py-1.5 pr-4 font-mono text-gray-200">{{.Role}}</td>
                             <td class="py-1.5 pr-4 text-gray-300">{{.Label}}</td>
                             <td class="py-1.5 pr-4 text-gray-300">{{.Confidence}}</td>
-                            <td class="py-1.5 text-gray-400">{{.SupportCount}} tasks</td>
+                            <td class="py-1.5 pr-4 text-gray-400">{{.SupportCount}} tasks</td>
+                            <td class="py-1.5 font-mono text-gray-200" title="{{.LiftDetail}}">
+                                {{.Lift}}{{if .LiftVerdict}} <span class="{{.LiftBadge}}">{{.LiftVerdict}}</span>{{end}}
+                            </td>
                         </tr>
                     {{end}}
                     </tbody>

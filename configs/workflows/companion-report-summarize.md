@@ -3,6 +3,8 @@ workflowId: "companion-report-summarize"
 displayName: "Companion: Report summarize"
 description: "Distills a long input into an executive brief. Host LLM delegates when it has a verbose source (transcript, log, report) and only wants the signal."
 version: "1.0.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "summarize"
 maxStepVisits: 1
 maxIterations: 6

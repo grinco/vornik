@@ -3,6 +3,8 @@ workflowId: "github-router"
 displayName: "GitHub Router"
 description: "Deterministic issue→change-request router. The forge_job is classified at webhook time; the entrypoint auto-delegates dev-pipeline (single candidate, no LLM), then on resume the forge.open_change_request system step pushes the branch and opens the PR/MR daemon-side. No agent runs git or gh."
 version: "1.0.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 resume_after_children: true
 maxStepVisits: 6
 maxIterations: 30

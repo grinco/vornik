@@ -165,11 +165,24 @@ func tierReference() []tierRef {
 // "Learned provisioning flags" advisory block on the tool-budget insights page.
 // Direction is "over_provisioned" or "under_provisioned".
 type budgetAdvisoryRow struct {
+	InstinctID   string // used to batch-fetch the true-lift snapshot below; never rendered
 	Role         string
 	Direction    string
 	Confidence   string // "0.74"
 	SupportCount int
 	Label        string // human-friendly direction label
+
+	// True-lift measurement (migration 128, task 11) — the "Learned-tier
+	// lift" line next to this row's provisioning advisory. Populated by
+	// attachBudgetLift after loadBudgetAdvisory; "—"/"" placeholders until
+	// then (or permanently, when the lift repo isn't wired / has no
+	// snapshot for this instinct yet). Same three-field shape as
+	// AdminInstinctRow's TrueLift* fields, computed by the same pure
+	// instinctTrueLiftFields helper.
+	Lift        string
+	LiftDetail  string
+	LiftVerdict string
+	LiftBadge   string
 }
 
 // budgetAdvisoryBlock is the full advisory section passed to the template.
@@ -242,12 +255,18 @@ func loadBudgetAdvisory(ctx context.Context, repo persistence.InstinctRepository
 			continue
 		}
 		label := directionLabel(trig.Signal)
+		lift, detail, verdict := instinctTrueLiftFields(nil) // dash placeholder until attachBudgetLift runs
 		rows = append(rows, budgetAdvisoryRow{
+			InstinctID:   in.ID,
 			Role:         trig.Role,
 			Direction:    trig.Signal,
 			Confidence:   fmt.Sprintf("%.2f", in.Confidence),
 			SupportCount: in.SupportCount,
 			Label:        label,
+			Lift:         lift,
+			LiftDetail:   detail,
+			LiftVerdict:  verdict,
+			LiftBadge:    instinctLiftBadgeClass(verdict),
 		})
 	}
 
@@ -263,6 +282,39 @@ func loadBudgetAdvisory(ctx context.Context, repo persistence.InstinctRepository
 		return rows[i].Direction < rows[j].Direction
 	})
 	return &budgetAdvisoryBlock{Rows: rows}
+}
+
+// attachBudgetLift populates the "Learned-tier lift" fields on an already
+// loaded advisory block, batch-fetching snapshots for every row's instinct
+// id in one call (same GetLiftSnapshots batch pattern as the admin
+// instincts page). Nil-safe on every axis: a nil block is a no-op, a nil
+// repo (CE / not wired) leaves the "—" placeholders loadBudgetAdvisory
+// already set, and a fetch error fails soft the same way — the advisory
+// table still renders, just without measured lift values.
+func attachBudgetLift(ctx context.Context, repo persistence.InstinctLiftRepository, block *budgetAdvisoryBlock) {
+	if block == nil || repo == nil {
+		return
+	}
+	ids := make([]string, 0, len(block.Rows))
+	for _, r := range block.Rows {
+		if r.InstinctID != "" {
+			ids = append(ids, r.InstinctID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	snaps, err := repo.GetLiftSnapshots(ctx, ids)
+	if err != nil {
+		return // fail-soft: rows keep the dash placeholders from loadBudgetAdvisory
+	}
+	for i := range block.Rows {
+		lift, detail, verdict := instinctTrueLiftFields(snaps[block.Rows[i].InstinctID])
+		block.Rows[i].Lift = lift
+		block.Rows[i].LiftDetail = detail
+		block.Rows[i].LiftVerdict = verdict
+		block.Rows[i].LiftBadge = instinctLiftBadgeClass(verdict)
+	}
 }
 
 // directionLabel returns a human-friendly label for an over/under signal.
@@ -347,6 +399,7 @@ func (s *Server) InsightsToolBudget(w http.ResponseWriter, r *http.Request) {
 	// inside loadBudgetAdvisory. Uses the explicit project (advisory is
 	// per-project; for the All view it stays daemon/global as before).
 	data.Advisory = loadBudgetAdvisory(ctx, s.instinctRepo, data.ProjectID)
+	attachBudgetLift(ctx, s.instinctLiftRepo, data.Advisory)
 
 	s.render(w, "insights_tool_budget.html", data)
 }

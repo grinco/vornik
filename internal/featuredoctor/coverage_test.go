@@ -48,6 +48,9 @@ func (s *stubInstinctRepo) CountActiveProjects(ctx context.Context, triggerKey s
 	return 0, nil
 }
 func (s *stubInstinctRepo) Retire(ctx context.Context, id string) error { return nil }
+func (s *stubInstinctRepo) UnretireTo(context.Context, string, string) error {
+	return nil
+}
 func (s *stubInstinctRepo) RecordApplication(ctx context.Context, app *persistence.InstinctApplication) error {
 	return nil
 }

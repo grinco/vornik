@@ -20,7 +20,17 @@ const (
 	ProposalKindConfig   = "config"
 	ProposalKindModel    = "model"
 	ProposalKindScaffold = "scaffold"
+	// ProposalKindInstinctRetire is a KindApplier-managed kind (2026-07-19-
+	// instinct-lift-measurement-design.md §4.5): applying it retires an
+	// instinct via InstinctRepository rather than rewriting a config file.
+	ProposalKindInstinctRetire = "instinct_retire"
 )
+
+// KindApplierManaged reports whether this kind is applied by a registered
+// state-mutating KindApplier (internal/controlplane) rather than the
+// file-based apply path — such proposals are applyable even with empty
+// ApplyTarget/ApplyOps.
+func KindApplierManaged(kind string) bool { return kind == ProposalKindInstinctRetire }
 
 // Proposal blast-radius levels (model ⊂ project ⊂ swarm ⊂ daemon). A
 // daemon-scope change needs an explicit second operator acknowledgement at

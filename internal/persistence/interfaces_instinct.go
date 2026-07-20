@@ -103,6 +103,14 @@ type InstinctRepository interface {
 	// when no row matches.
 	Retire(ctx context.Context, id string) error
 
+	// UnretireTo restores a retired instinct to priorStatus ("candidate" |
+	// "active" | "promoted"). Guarded: the UPDATE matches only status='retired',
+	// so an instinct the operator has since re-scored is never blindly
+	// overwritten — ErrNotFound signals the fail-safe refusal. Backs the
+	// instinct_retire proposal kind's Rollback
+	// (2026-07-19-instinct-lift-measurement-design.md §4.5).
+	UnretireTo(ctx context.Context, id, priorStatus string) error
+
 	// RecordApplication appends one application/feedback row. No
 	// consumer writes this in slice 1; the method lands with the
 	// schema so the consumer slices build on a stable contract.

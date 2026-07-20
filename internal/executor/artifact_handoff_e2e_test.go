@@ -255,3 +255,107 @@ func TestArtifactHandoff_StagesIntoArtifactsOut_e9a5(t *testing.T) {
 		"prior-step output must be staged into the writer's artifacts/OUT, not artifacts/in")
 	assert.Equal(t, researcherContent, staged[1]["research.md"])
 }
+
+// TestArtifactHandoff_ModelFallbackUsesFallbackOutputs guards the
+// 2026-07-19 model-fallback handoff incident: a successful fallback attempt
+// must publish ITS harvested artifacts to the workflow loop. The primary
+// attempt fails after writing an error artifact on the original plan; the
+// fallback succeeds on a cloned plan. Without copying the fallback clone's
+// stepOutputArtifacts back, the writer receives the primary error artifact
+// instead of the fallback's real research product.
+func TestArtifactHandoff_ModelFallbackUsesFallbackOutputs(t *testing.T) {
+	const (
+		primaryErrorContent = "PRIMARY-ERROR-SENTINEL: upstream provider returned an error"
+		fallbackContent     = "FALLBACK-RESEARCH-SENTINEL: real deliverable from backup model"
+	)
+
+	storeBase := t.TempDir()
+	store, err := artifacts.New(artifacts.WithBasePath(storeBase))
+	require.NoError(t, err)
+
+	rt := NewMockRuntime()
+	rt.outputJSONSequence = []string{
+		`{"status":"FAILED","message":"Tool iteration limit reached","outputArtifacts":[{"name":"primary-error.md","path":"/app/workspace/artifacts/out/primary-error.md"}]}`,
+		`{"status":"COMPLETED","message":"researched on fallback","outputArtifacts":[{"name":"research.md","path":"/app/workspace/artifacts/out/research.md"}]}`,
+		`{"status":"COMPLETED","message":"wrote"}`,
+	}
+	rt.artifactFilesSequence = []map[string]string{
+		{"primary-error.md": primaryErrorContent},
+		{"research.md": fallbackContent},
+		{},
+	}
+
+	er := NewMockExecRepo()
+	tr := NewMockTaskRepo()
+	ar := &stubArtifactRepo{}
+
+	e := NewWithOptions(rt, er, ar, tr, nil, WithArtifactStore(store))
+	e.config.RetryDelay = 0
+	e.config.ArtifactStoragePath = storeBase
+
+	judgeDone := make(chan struct{})
+	e.judgeRunner = &stubJudgeRunner{done: judgeDone}
+
+	e.SetWorkflowResolver(&MockWorkflowResolver{
+		projects: map[string]*registry.Project{
+			"p1": {
+				ID:                 "p1",
+				SwarmID:            "s1",
+				DefaultWorkflowID:  "wf1",
+				HallucinationJudge: registry.ProjectHallucinationJudge{Enabled: true},
+			},
+		},
+		swarms: map[string]*registry.Swarm{
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{
+				{
+					Name:          "researcher",
+					Model:         "primary-model",
+					ModelFallback: "backup-model",
+					Runtime:       registry.SwarmRoleRuntime{Image: "fake-agent:latest"},
+				},
+				{Name: "writer", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
+			}},
+		},
+		workflows: map[string]*registry.Workflow{
+			"wf1": {
+				ID:         "wf1",
+				Entrypoint: "research",
+				Steps: map[string]registry.WorkflowStep{
+					"research": {Type: "agent", Role: "researcher", OnSuccess: "write"},
+					"write":    {Type: "agent", Role: "writer", OnSuccess: "done"},
+				},
+				Terminals: map[string]registry.WorkflowTerminal{"done": {Status: "COMPLETED"}},
+			},
+		},
+	})
+
+	const taskID = "t-fallback-artifact-handoff"
+	tr.AddTask(&persistence.Task{
+		ID:          taskID,
+		ProjectID:   "p1",
+		Status:      persistence.TaskStatusLeased,
+		Attempt:     1,
+		MaxAttempts: 1,
+		Payload:     []byte(`{"context":{"prompt":"research then write"}}`),
+		CreatedAt:   time.Now(),
+	})
+
+	require.NoError(t, e.Execute(taskID))
+	select {
+	case <-judgeDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("judge never fired — workflow did not reach the success tail")
+	}
+
+	require.Equal(t, 3, rt.StartCalls(), "primary attempt, fallback attempt, then writer")
+	assert.Equal(t, []string{"primary-model", "backup-model", ""}, rt.LLMModelsLaunched())
+
+	staged := rt.StagedInputsSeen()
+	require.Len(t, staged, 3)
+	writerStaged := staged[2]
+	require.Contains(t, writerStaged, "research.md",
+		"writer must receive the fallback attempt's real output artifact")
+	assert.Equal(t, fallbackContent, writerStaged["research.md"])
+	assert.NotContains(t, writerStaged, "primary-error.md",
+		"writer must not receive the failed primary attempt's error artifact after fallback success")
+}

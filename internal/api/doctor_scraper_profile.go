@@ -24,20 +24,23 @@ const defaultScraperLoginCadence = 30 * 24 * time.Hour
 //	<scraperProfileRoot>/<project>/<profile>/Default/Network/Cookies
 //	<scraperProfileRoot>/<project>/<profile>/Default/Cookies  (fallback)
 //
-// The check is nil-safe: when scraperProfileRoot is empty (not configured)
-// it returns OK immediately.
+// The check is nil-safe: when scraperProfileRoot is empty it returns SKIPPED
+// (the proactive freshness path is dormant — see SetScraperProfileRoot; the
+// active path is the reactive scraper.block_notify → Telegram loop). SKIPPED is
+// treated as non-degrading by the report aggregator, so a dormant check never
+// makes `vornikctl doctor` look unhealthy.
 func (h *DoctorHandlers) checkScraperProfileFreshness(_ context.Context, _ bool) DoctorCheck {
 	name := "scraper_profile_freshness"
 
 	if h.scraperProfileRoot == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "scraper profiles not configured"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "scraper profile freshness not configured (dormant; reactive path is scraper.block_notify — see SetScraperProfileRoot)"}
 	}
 
 	// Walk <root>/<project>/<profile> — two directory levels deep.
 	projectEntries, err := os.ReadDir(h.scraperProfileRoot)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return DoctorCheck{Name: name, Status: "OK", Message: "scraper profile root does not exist; skipping"}
+			return DoctorCheck{Name: name, Status: "SKIPPED", Message: "scraper profile root does not exist; skipping"}
 		}
 		return DoctorCheck{Name: name, Status: "WARNING", Message: fmt.Sprintf("cannot read scraper profile root: %v", err)}
 	}
@@ -132,7 +135,20 @@ func (h *DoctorHandlers) checkScraperProfileFreshness(_ context.Context, _ bool)
 }
 
 // SetScraperProfileRoot wires the scraper profile root directory and login
-// cadence map at boot. Called from the service container. Nil-safe.
+// cadence map so checkScraperProfileFreshness can judge session staleness.
+//
+// DORMANT (verified 2026-07-19): nothing currently calls this. The freshness
+// check is registered and runs on every `vornikctl doctor`, but with the root
+// unset it reports SKIPPED and never inspects a profile. It stays inert on
+// purpose — the ACTIVE, self-calibrating path for a stale/blocked session is
+// the reactive scraper.block_notify → Telegram loop
+// (https://docs.vornik.io),
+// which fires on a REAL block with the exact re-login command and needs no
+// per-portal cadence guess. Reviving this proactive check means (a) calling
+// this at startup with SCRAPER_PROFILE_ROOT + a login-required.yaml cadence
+// loader, and (b) ideally unifying its portal list with
+// scraper.block_notify.portals rather than maintaining a second hand-curated
+// file. Nil-safe.
 func (h *DoctorHandlers) SetScraperProfileRoot(root string, cadences map[string]time.Duration) {
 	if h == nil {
 		return

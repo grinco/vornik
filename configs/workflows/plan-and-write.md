@@ -3,6 +3,8 @@ workflowId: "plan-and-write"
 displayName: "Research, Plan, and Write"
 description: "Three-step linear pipeline (research → plan → write) for prose deliverables: gather material, draft a structured plan, then produce the final document."
 version: "1.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "research"
 maxStepVisits: 2
 maxIterations: 15

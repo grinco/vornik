@@ -35,6 +35,7 @@ var reservedProposers = map[string]bool{
 	"instinct":      true,
 	"diagnose":      true,
 	"self-heal":     true,
+	"instinct-lift": true,
 }
 
 // IsReservedProposer reports whether a ProposedBy value is a reserved

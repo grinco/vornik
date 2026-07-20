@@ -3,6 +3,8 @@ workflowId: "simple-workflow"
 displayName: "Simple Development Workflow"
 description: "Lightweight plan → implement → review pipeline for small one-shot development tasks; the reviewer can loop the coder once if the work isn't approved."
 version: "1.1.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 # Loop protection: max times any step can be revisited (rework cycles)
 maxStepVisits: 3
 # Hard ceiling on wall-clock duration. Linear plan → implement →

@@ -73,10 +73,51 @@ func (r *ReminderRepository) Delete(context.Context, string) error {
 	return ErrSQLiteRemindersUnsupported
 }
 
-func (r *ReminderRepository) UpdateFields(context.Context, string, time.Time, string) error {
+// UpdateFields is unsupported on the SQLite stub (Postgres-only feature).
+func (r *ReminderRepository) UpdateFields(context.Context, string, persistence.ReminderFieldUpdate) error {
 	return ErrSQLiteRemindersUnsupported
 }
 
 func (r *ReminderRepository) CountPendingByOperator(context.Context, string) (int, error) {
 	return 0, ErrSQLiteRemindersUnsupported
+}
+
+// MarkTaskSpawned is unsupported on SQLite; task-kind reminders are
+// Postgres-only in v1.
+func (r *ReminderRepository) MarkTaskSpawned(context.Context, string, string, *time.Time) error {
+	return ErrSQLiteRemindersUnsupported
+}
+
+// ClaimDelivery is unsupported on SQLite; task-kind reminders are
+// Postgres-only in v1.
+func (r *ReminderRepository) ClaimDelivery(context.Context, string) (*persistence.Reminder, bool, error) {
+	return nil, false, ErrSQLiteRemindersUnsupported
+}
+
+// FinalizeDelivery is unsupported on SQLite; task-kind reminders are
+// Postgres-only in v1.
+func (r *ReminderRepository) FinalizeDelivery(context.Context, string, string, bool) error {
+	return ErrSQLiteRemindersUnsupported
+}
+
+// CountTaskByOperator is unsupported on SQLite; task-kind reminders
+// are Postgres-only in v1.
+func (r *ReminderRepository) CountTaskByOperator(context.Context, string) (int, error) {
+	return 0, ErrSQLiteRemindersUnsupported
+}
+
+// Pause is unsupported on SQLite; reminders are Postgres-only in v1.
+func (r *ReminderRepository) Pause(context.Context, string) error {
+	return ErrSQLiteRemindersUnsupported
+}
+
+// Resume is unsupported on SQLite; reminders are Postgres-only in v1.
+func (r *ReminderRepository) Resume(context.Context, string, time.Time) error {
+	return ErrSQLiteRemindersUnsupported
+}
+
+// ReclaimStuckFiring is unsupported on SQLite; reminders are
+// Postgres-only in v1.
+func (r *ReminderRepository) ReclaimStuckFiring(context.Context, time.Time, int) ([]*persistence.Reminder, error) {
+	return nil, ErrSQLiteRemindersUnsupported
 }

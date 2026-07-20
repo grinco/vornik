@@ -84,6 +84,15 @@ type executionPlan struct {
 type agentInputOpts struct {
 	// InputArtifacts lists files from the previous step's output.
 	InputArtifacts []map[string]string
+	// InputArtifactsSummary, when non-nil, is the deterministic
+	// completeness report produced alongside a stage_child_artifacts
+	// gather (expected/staged/missing/empty). Set ONLY when the step
+	// declares stage_child_artifacts and staging fired on resume;
+	// surfaced to the agent as context.inputArtifactsSummary so the
+	// consuming prompt can note any missing/empty child rather than
+	// silently proceeding. nil for every non-opting step. See
+	// https://docs.vornik.io §3.4.
+	InputArtifactsSummary *childArtifactSummary
 	// PreviousResult is the message from the preceding step's result.json.
 	PreviousResult string
 	// SystemPrompt overrides the default system prompt for this role.

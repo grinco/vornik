@@ -6,6 +6,7 @@ import (
 	"vornik.io/vornik/internal/intentjudge"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/registry"
 )
 
 // initDispatcher constructs the daemon's shared dispatcher.Agent
@@ -207,6 +208,33 @@ func (c *Container) initDispatcher() {
 				c.Logger.With().Str("component", "dispatcher-extractor").Logger(),
 			),
 		))
+	}
+
+	// query_api gateway client — built from config, fail-closed. A nil
+	// client (disabled/unauthenticated) leaves the tool reporting "not
+	// configured"; a config error disables it with a warning rather than
+	// failing boot.
+	if gwClient, err := newGatewayClient(c.Config.Gateway); err != nil {
+		c.Logger.Warn().Err(err).Msg("query_api gateway client disabled: config error")
+	} else if gwClient != nil {
+		opts = append(opts, dispatcher.WithAPIClient(gwClient))
+	}
+
+	// Boot-time diagnostic (query_api provider-discovery design §4.3,
+	// cross-task item from Task 2): warn on every project whose
+	// permissions.api_providers allowlist names a provider absent from the
+	// configured gateway.providers set. Deliberately independent of
+	// whether newGatewayClient above returned a usable client — a
+	// disabled/misconfigured gateway shouldn't suppress the drift warning
+	// for an operator who's mid-way through wiring up providers. Nil-safe
+	// on c.Registry for the early-init fixture paths that construct a
+	// Container before the registry is loaded.
+	if c.Registry != nil {
+		knownProviders := make(map[string]bool, len(c.Config.Gateway.Providers))
+		for name := range c.Config.Gateway.Providers {
+			knownProviders[name] = true
+		}
+		registry.WarnUnknownAPIProviders(c.Logger, c.Registry.ListProjects(), knownProviders)
 	}
 
 	// dispatcher.NewAgent accepts nil for any of the three repos;

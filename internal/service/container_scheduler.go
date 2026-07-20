@@ -37,6 +37,7 @@ import (
 	"vornik.io/vornik/internal/secrets"
 	"vornik.io/vornik/internal/storage"
 	"vornik.io/vornik/internal/templates"
+	"vornik.io/vornik/internal/toolbudget"
 	"vornik.io/vornik/internal/verifier"
 	"vornik.io/vornik/internal/watchdog"
 )
@@ -1212,6 +1213,32 @@ func (c *Container) initScheduler() error {
 		executorConfig,
 		executorOpts...,
 	)
+
+	// Item 2 (dynamic-tool-budget follow-ups §2, 2026-07-18): surface tool-budget
+	// config foot-guns ONCE at startup when the feature is enabled — a warm role
+	// (its budgets stay static by design) or a role with no base
+	// VORNIK_MAX_TOOL_ITERATIONS (falls back to the daemon default before
+	// scaling). Advisory WARN only; never fatal. Deduped across swarms.
+	if c.Config != nil && c.Config.ToolBudget.Enabled && c.Registry != nil {
+		var views []toolbudget.RoleLintView
+		for _, sw := range c.Registry.ListSwarms() {
+			for _, role := range sw.Roles {
+				views = append(views, toolbudget.RoleLintView{
+					Name:          role.Name,
+					RuntimePolicy: role.RuntimePolicy,
+					HasBaseLimit:  strings.TrimSpace(role.Runtime.EnvVars["VORNIK_MAX_TOOL_ITERATIONS"]) != "",
+				})
+			}
+		}
+		seen := map[string]bool{}
+		for _, w := range toolbudget.LintRoles(toolbudget.Config{Enabled: true}, views) {
+			if seen[w] {
+				continue
+			}
+			seen[w] = true
+			c.Logger.Warn().Msg(w)
+		}
+	}
 
 	// Startup visibility for the instinct auto-apply gate (the "is it armed?"
 	// kill-switch signal). A single INFO line is the right surface for this

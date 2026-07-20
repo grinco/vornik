@@ -1108,13 +1108,13 @@ func RunReminderSuite(t *testing.T, repo persistence.ReminderRepository) {
 		if err := repo.Insert(ctx, r); err != nil {
 			t.Fatalf("Insert: %v", err)
 		}
-		if err := repo.UpdateFields(ctx, r.ID, now.Add(2*time.Hour), "new body"); err != nil {
+		if err := repo.UpdateFields(ctx, r.ID, persistence.ReminderFieldUpdate{FireAt: now.Add(2 * time.Hour), Content: "new body"}); err != nil {
 			t.Fatalf("UpdateFields on pending: %v", err)
 		}
 		if err := repo.Cancel(ctx, r.ID); err != nil {
 			t.Fatalf("Cancel: %v", err)
 		}
-		if err := repo.UpdateFields(ctx, r.ID, now.Add(3*time.Hour), "later"); !errors.Is(err, persistence.ErrNotFound) {
+		if err := repo.UpdateFields(ctx, r.ID, persistence.ReminderFieldUpdate{FireAt: now.Add(3 * time.Hour), Content: "later"}); !errors.Is(err, persistence.ErrNotFound) {
 			t.Fatalf("UpdateFields on cancelled: expected ErrNotFound, got %v", err)
 		}
 	})

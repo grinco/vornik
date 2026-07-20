@@ -3,6 +3,8 @@ workflowId: "companion-rag-ingest"
 displayName: "Companion: RAG ingest"
 description: "Deterministic async ingestion of source documents into the project's RAG memory. The host LLM stages files as base64 INPUT artifacts (via /vornik-rag-ingest or /vornik-upload); the executor's handleSuccess hook deposits each staged input artifact DIRECTLY into RAG via the IngestText pipeline — no agent in the copy loop. Bypasses the 64 KiB-per-call cap of the synchronous remember() MCP tool."
 version: "2.0.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "done"
 require_input_artifacts: true
 ingest_input_artifacts: true

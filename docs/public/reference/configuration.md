@@ -213,6 +213,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `chat.enabled` | bool | Turn the chat client on. |
 | `chat.provider` | string | http (OpenAI-compatible) or router (multi-provider). |
 | `chat.router.default` | string | Sub-provider used when no route matches. Required for router. |
+| `chat.router.model_fallbacks` | map | Non-swarm per-model fallback map (primary model -> fallback model), used when the primary's circuit is open. Empty disables non-swarm fallback. |
 | `chat.router.claude_cli.effort_level` | string | CLI reasoning effort: low\|medium\|high\|xhigh\|max (default low); honored by claude-cli, ignored by codex-cli. |
 | `chat.router.claude_subscription.thinking_budget` | int | Anthropic extended-thinking budget_tokens; 0 disables (router subprovider). |
 | `chat.router.codex_cli.effort_level` | string | CLI reasoning effort: low\|medium\|high\|xhigh\|max (default low); honored by claude-cli, ignored by codex-cli. |
@@ -330,10 +331,16 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `instinct.consumers.architect_priors` | bool | Feed workflow instincts to the architect as priors. |
 | `instinct.consumers.memory_hygiene` | bool | Feed retrieval instincts to memory sweepers. |
 | `instinct.consumers.tool_budget` | bool | Let learned budget instincts fill an absent complexity tier (default off). |
+| `instinct.consumers.lift_eval` | bool | Measure true instinct lift and propose retiring instincts that do not help (default off). |
 | `instinct.consumers.auto_apply.enabled` | bool | Promote high-confidence recovery instincts to a prompt-level directive (default off). |
 | `instinct.consumers.auto_apply.min_confidence` | float | Confidence floor for auto-apply (default 0.85). |
 | `instinct.consumers.auto_apply.min_clean_support` | int | Min clean (zero-contradiction) supports for auto-apply; 0 = off. |
 | `instinct.consumers.auto_apply.allowed_error_classes` | list | Failure classes eligible for auto-apply; empty = all. |
+| `instinct.lift.min_treatment` | int | Minimum applied outcomes before lift is measured (0 = 8). |
+| `instinct.lift.min_baseline` | int | Minimum baseline outcomes before lift is measured (0 = 8). |
+| `instinct.lift.margin` | float | Propose retirement only when lift <= -margin (0 = 0.05). |
+| `instinct.lift.reeval_cooldown_hours` | int | Suppress re-proposing a rejected instinct for this many hours (0 = 168). |
+| `instinct.lift.window_hours` | int | Measurement window in hours (0 = the confidence model's evidence-freshness horizon, else the decay half-life). |
 
 ## auth
 
@@ -404,4 +411,14 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `composer.enabled` | bool | Activate the NL automation composer (wizard tier-3). |
 | `composer.max_tier` | int | Highest composer tier allowed (2 disables free-form synthesis; 3 = full). |
 | `composer.max_tier3_turns` | int | Per-session cap on expensive tier-3 composer turns. |
+
+## gateway
+
+| Key | Type | Description |
+|---|---|---|
+| `gateway.enabled` | bool | Turn the query_api gateway integration on. |
+| `gateway.address` | string | Base URL the daemon uses to reach the local gateway, e.g. http://127.0.0.1:8010. |
+| `gateway.token` | string | Internal daemon↔gateway key-auth secret (prefer token_file). |
+| `gateway.token_file` | string | Path to a file holding the gateway token (preferred over inline token). |
+| `gateway.providers` | map | Registered API providers the agent may call by name. |
 

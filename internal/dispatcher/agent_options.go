@@ -6,6 +6,7 @@ package dispatcher
 
 import (
 	"github.com/rs/zerolog"
+	"vornik.io/vornik/internal/apigateway"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/hallucination"
 	"vornik.io/vornik/internal/persistence"
@@ -295,6 +296,14 @@ func WithChatAuditRepo(r persistence.ChatAuditRepository) AgentOption {
 // email.Channel; see internal/service.
 func WithEmailSender(s EmailSender) AgentOption {
 	return func(a *Agent) { a.emailSender = s }
+}
+
+// WithAPIClient enables the query_api tool by injecting the gateway client.
+// nil disables the tool (each call returns a "not configured" message).
+// Production wiring passes the DialGuard-pinned client built from
+// config.Gateway; see internal/service.
+func WithAPIClient(c apigateway.Client) AgentOption {
+	return func(a *Agent) { a.apiClient = c }
 }
 
 // WithReminderRepository enables the set_reminder tool. nil leaves

@@ -84,6 +84,13 @@ const (
 	// state machine is its own thing and the message helps the
 	// API surface a clear 409 to the operator.
 	ErrInvalidProposalTransition RepositoryError = "invalid workflow proposal state transition"
+
+	// ErrInvalidInstinctStatus indicates InstinctRepository.UnretireTo
+	// was asked to restore an instinct to a status outside
+	// {candidate, active, promoted} — the only valid post-retirement
+	// resting states. Guards a typo'd rollback target from silently
+	// writing garbage into the status column.
+	ErrInvalidInstinctStatus RepositoryError = "invalid instinct status"
 )
 
 func (e RepositoryError) Error() string {

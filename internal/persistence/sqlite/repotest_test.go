@@ -116,6 +116,15 @@ func TestInstinctRepository_Contract(t *testing.T) {
 	repotest.RunInstinctSuite(t, sqlite.NewInstinctRepository(db.DB))
 }
 
+// TestInstinctLiftRepository_Contract — lift-measurement snapshot store
+// (migration 128). Both backends must agree on the upsert/get round-trip
+// and the empty-input no-SQL short circuit.
+func TestInstinctLiftRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunInstinctLiftSuite(t, sqlite.NewInstinctLiftRepository(db.DB), sqlite.NewInstinctRepository(db.DB),
+		sqlite.NewExecutionStepOutcomeRepository(db.DB), sqlite.NewTaskRepository(db.DB), sqlite.NewWorkflowProposalRepository(db.DB))
+}
+
 // TestTradingOrderRepository_Contract — broker audit channel +
 // load-bearing identity-mismatch safeguard against the NVDA
 // corruption class.

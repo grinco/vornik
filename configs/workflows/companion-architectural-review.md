@@ -3,6 +3,8 @@ workflowId: "companion-architectural-review"
 displayName: "Companion: Architectural review"
 description: "Reviews an attached document, diff, or PR for architectural issues. Host LLM clients (Claude Code etc.) delegate this when they want a second opinion without burning their own context. Attach the artifact under review as an input file — the reviewer reads the staged content, never project memory."
 version: "1.1.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "review"
 maxStepVisits: 1
 maxIterations: 8

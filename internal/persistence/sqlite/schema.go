@@ -1212,7 +1212,7 @@ CREATE INDEX IF NOT EXISTS idx_project_skills_global
 CREATE TABLE IF NOT EXISTS control_plane_proposals (
     id                 TEXT PRIMARY KEY,
     project_id         TEXT,
-    kind               TEXT NOT NULL CHECK (kind IN ('config','model','scaffold')),
+    kind               TEXT NOT NULL CHECK (kind IN ('config','model','scaffold','instinct_retire')),
     blast_radius       TEXT NOT NULL CHECK (blast_radius IN ('model','project','swarm','daemon')),
     title              TEXT NOT NULL,
     diff               TEXT NOT NULL DEFAULT '',
@@ -1309,4 +1309,26 @@ CREATE INDEX IF NOT EXISTS idx_fixit_sessions_operator
     ON fixit_sessions (operator_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_fixit_sessions_ref_open
     ON fixit_sessions (failure_kind, failure_ref_id) WHERE closed_at IS NULL;
+
+-- ============================================================
+-- instinct_lift (migration 128) — latest true-lift snapshot per
+-- instinct (2026-07-19-instinct-lift-measurement-design.md §4.3).
+-- Snapshot, not event log — upserted each lift_eval pass. No
+-- COMMENT ON support in SQLite; see migration 128's Postgres Up
+-- for the verdict enum and std_error caveat.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS instinct_lift (
+    instinct_id     TEXT PRIMARY KEY REFERENCES instincts(id) ON DELETE CASCADE,
+    domain          TEXT NOT NULL,
+    lift            REAL NOT NULL DEFAULT 0,
+    treatment_n     INTEGER NOT NULL DEFAULT 0,
+    treatment_succ  INTEGER NOT NULL DEFAULT 0,
+    baseline_n      INTEGER NOT NULL DEFAULT 0,
+    baseline_succ   INTEGER NOT NULL DEFAULT 0,
+    std_error       REAL NOT NULL DEFAULT 0,
+    verdict         TEXT NOT NULL,
+    computed_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_role_error_time
+    ON execution_step_outcomes (role, error_class, recorded_at);
 `

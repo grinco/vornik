@@ -169,6 +169,8 @@ func statusIcon(status string) string {
 		return "!! "
 	case "ERROR":
 		return "ERR"
+	case "SKIPPED":
+		return "-- "
 	default:
 		return "?  "
 	}

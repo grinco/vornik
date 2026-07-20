@@ -66,9 +66,37 @@ func (a *Agent) InventoryTools() []ToolInfo {
 		// Option-gated: nil reflects missing wiring. These are
 		// the ones admin ops actually care about — every gap
 		// here is a "the bot can't do X" report waiting to happen.
-		"send_email":     {"EmailSender", a.emailSender != nil},
+		"send_email": {"EmailSender", a.emailSender != nil},
+		"query_api":  {"APIClient", te != nil && te.apiClient != nil},
+		// list_apis is stricter than query_api: it's advertised only
+		// when the wired client also satisfies the optional
+		// ProviderLister capability (design §5.5), so an operator
+		// sees the true "discovery available" state rather than a
+		// tool that always answers "not available on this daemon."
+		"list_apis":      {"APIClient", te != nil && te.apiClient != nil && implementsProviderLister(te.apiClient)},
 		"memory_search":  {"MemorySearcher", a.memory != nil},
 		"memory_correct": {"MemoryCorrector", a.memoryCorrector != nil},
+		"set_reminder":   {"ReminderRepository", te != nil && te.reminderRepo != nil},
+		"cancel_reminder": {
+			"ReminderRepository",
+			te != nil && te.reminderRepo != nil,
+		},
+		"update_reminder": {
+			"ReminderRepository",
+			te != nil && te.reminderRepo != nil,
+		},
+		"pause_reminder": {
+			"ReminderRepository",
+			te != nil && te.reminderRepo != nil,
+		},
+		"resume_reminder": {
+			"ReminderRepository",
+			te != nil && te.reminderRepo != nil,
+		},
+		"update_operator_profile": {
+			"OperatorProfileRepository",
+			te != nil && te.operatorProfiles != nil,
+		},
 		// Doubly gated (task 1.4): the bridge must be wired AND
 		// composer.enabled must be true (default false during the
 		// Phase 3 soak) — a wired-but-disabled bridge still reports

@@ -18,6 +18,10 @@ type stubReminderRepo struct {
 	rows      []*persistence.Reminder
 	pending   int
 	insertErr error
+	// taskCount/taskCountErr drive CountTaskByOperator for Task 8's
+	// task-kind cap tests.
+	taskCount    int
+	taskCountErr error
 }
 
 func (s *stubReminderRepo) Insert(_ context.Context, r *persistence.Reminder) error {
@@ -52,11 +56,37 @@ func (s *stubReminderRepo) MarkErrored(_ context.Context, _, _ string) error {
 }
 func (s *stubReminderRepo) Cancel(_ context.Context, _ string) error { panic("not used") }
 func (s *stubReminderRepo) Delete(_ context.Context, _ string) error { panic("not used") }
-func (s *stubReminderRepo) UpdateFields(_ context.Context, _ string, _ time.Time, _ string) error {
+func (s *stubReminderRepo) UpdateFields(_ context.Context, _ string, _ persistence.ReminderFieldUpdate) error {
 	panic("not used")
 }
 func (s *stubReminderRepo) CountPendingByOperator(_ context.Context, _ string) (int, error) {
 	return s.pending, nil
+}
+
+// The following four satisfy the Task 4 additions to
+// persistence.ReminderRepository (task-spawn/claim/finalize). Not
+// exercised by set_reminder tests yet — compile stubs only.
+func (s *stubReminderRepo) MarkTaskSpawned(_ context.Context, _, _ string, _ *time.Time) error {
+	panic("not used")
+}
+func (s *stubReminderRepo) ClaimDelivery(_ context.Context, _ string) (*persistence.Reminder, bool, error) {
+	panic("not used")
+}
+func (s *stubReminderRepo) FinalizeDelivery(_ context.Context, _, _ string, _ bool) error {
+	panic("not used")
+}
+func (s *stubReminderRepo) CountTaskByOperator(_ context.Context, _ string) (int, error) {
+	return s.taskCount, s.taskCountErr
+}
+func (s *stubReminderRepo) Pause(_ context.Context, _ string) error { panic("not used") }
+func (s *stubReminderRepo) Resume(_ context.Context, _ string, _ time.Time) error {
+	panic("not used")
+}
+
+// ReclaimStuckFiring is Task 14's crash-recovery sweep addition. Not
+// exercised by set_reminder tests — compile stub only.
+func (s *stubReminderRepo) ReclaimStuckFiring(_ context.Context, _ time.Time, _ int) ([]*persistence.Reminder, error) {
+	panic("not used")
 }
 
 type stubKicker struct{ called int }
@@ -88,7 +118,7 @@ func TestSetReminder_HappyPath_FireInSeconds(t *testing.T) {
 		context.Background(),
 		`{"fire_in_seconds": 7200, "content": "check deploy"}`,
 		1234, // Telegram chat id
-		"assistant",
+		"assistant", nil,
 	)
 	if !strings.Contains(res.Content, "Reminder rem_") {
 		t.Errorf("response should include reminder id; got %q", res.Content)
@@ -122,7 +152,7 @@ func TestSetReminder_RFC3339Path(t *testing.T) {
 	res := te.setReminder(
 		context.Background(),
 		`{"fire_at":"`+fire+`","content":"x"}`,
-		1, "p",
+		1, "p", nil,
 	)
 	if !strings.Contains(res.Content, "Reminder rem_") {
 		t.Errorf("response: %s", res.Content)
@@ -141,7 +171,7 @@ func TestSetReminder_RejectsPast(t *testing.T) {
 	res := te.setReminder(
 		context.Background(),
 		`{"fire_at":"`+past+`","content":"x"}`,
-		1, "p",
+		1, "p", nil,
 	)
 	if !strings.Contains(res.Content, "past") {
 		t.Errorf("expected past-rejection; got %q", res.Content)
@@ -159,7 +189,7 @@ func TestSetReminder_RejectsBeyondCap(t *testing.T) {
 	res := te.setReminder(
 		context.Background(),
 		`{"fire_in_seconds": 99999999999, "content": "x"}`,
-		1, "p",
+		1, "p", nil,
 	)
 	if !strings.Contains(res.Content, "future") {
 		t.Errorf("expected future-cap rejection; got %q", res.Content)
@@ -175,7 +205,7 @@ func TestSetReminder_RefusesNonTelegram(t *testing.T) {
 	res := te.setReminder(
 		context.Background(),
 		`{"fire_in_seconds": 60, "content": "x"}`,
-		0, "p",
+		0, "p", nil,
 	)
 	if !strings.Contains(res.Content, "Telegram") {
 		t.Errorf("expected Telegram-only message; got %q", res.Content)
@@ -190,7 +220,7 @@ func TestSetReminder_EnforcesPendingCap(t *testing.T) {
 	res := te.setReminder(
 		context.Background(),
 		`{"fire_in_seconds": 60, "content": "x"}`,
-		1, "p",
+		1, "p", nil,
 	)
 	if !strings.Contains(res.Content, "cap") {
 		t.Errorf("expected cap rejection; got %q", res.Content)
@@ -208,7 +238,7 @@ func TestSetReminder_RepoUnwired(t *testing.T) {
 	res := te.setReminder(
 		context.Background(),
 		`{"fire_in_seconds": 60, "content": "x"}`,
-		1, "p",
+		1, "p", nil,
 	)
 	if !strings.Contains(res.Content, "not configured") {
 		t.Errorf("expected unwired message; got %q", res.Content)
@@ -243,7 +273,7 @@ func TestSetReminder_AuditEmitted(t *testing.T) {
 	res := te.setReminder(
 		context.Background(),
 		`{"fire_in_seconds": 60, "content": "deploy check"}`,
-		1234, "assistant",
+		1234, "assistant", nil,
 	)
 	if !strings.Contains(res.Content, "Reminder rem_") {
 		t.Fatalf("happy path expected; got %q", res.Content)
@@ -278,7 +308,7 @@ func TestSetReminder_AuditSkippedOnFailure(t *testing.T) {
 	res := te.setReminder(
 		context.Background(),
 		`{"fire_in_seconds": 60, "content": "x"}`,
-		1234, "p",
+		1234, "p", nil,
 	)
 	if !strings.Contains(res.Content, "insert failed") {
 		t.Fatalf("expected insert-failed response; got %q", res.Content)

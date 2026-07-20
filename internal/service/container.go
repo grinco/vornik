@@ -108,6 +108,7 @@ import (
 	"vornik.io/vornik/internal/secrets"
 	"vornik.io/vornik/internal/slack"
 	"vornik.io/vornik/internal/storage"
+	"vornik.io/vornik/internal/taskcreate"
 	"vornik.io/vornik/internal/telegram"
 	"vornik.io/vornik/internal/ui"
 	"vornik.io/vornik/internal/voice"
@@ -402,6 +403,16 @@ type Container struct {
 	// registry. Nil-safe — set_reminder tool surfaces a "not
 	// configured" message when this isn't wired.
 	reminderRunner *reminders.Runner
+
+	// taskCreator mirrors the shared task-creation core built as a
+	// local in initHTTPServer (container_http.go). initReminders()
+	// constructs reminderRunner before initHTTPServer runs, so the
+	// runner can't take the creator at construction time; instead
+	// RemindersSubsystem.Start (which runs after both initHTTPServer
+	// passes, once the daemon calls Run()) reads this field and wires
+	// it in via Runner.SetCreator. Task 7 wiring — see
+	// container_reminders.go / subsystem_reminders.go.
+	taskCreator *taskcreate.Creator
 
 	// subsystems is the Subsystem-pattern registry. Populated by
 	// registerSubsystems() near the end of New + iterated through
@@ -933,6 +944,17 @@ func NewContainer(cfg *config.Config, configPath string, opts ...ContainerOption
 			}
 			if p := c.a2aPushNotifier(); p != nil {
 				notifiers = append(notifiers, p)
+			}
+			// Reminders completion notifier (Task 7): rides the same
+			// hook as the A2A push above so deployments without email
+			// channels (EmailChannelsSubsystem.Start never runs -- see
+			// its early SubsystemSkipped return) still get task-kind
+			// reminder notifications when a task finishes. The email
+			// subsystem re-adds the same notifier alongside its own
+			// channels when email IS configured (its Start always runs
+			// later and wins).
+			if n := c.reminderCompletionNotifier(); n != nil {
+				notifiers = append(notifiers, n)
 			}
 			if multi := newMultiCompletionNotifier(notifiers...); multi != nil {
 				c.Executor.SetCompletionNotifier(multi)

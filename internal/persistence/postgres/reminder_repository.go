@@ -29,7 +29,7 @@ func NewReminderRepository(db DBTX) *ReminderRepository {
 
 const reminderColumns = `id, operator_id, channel, channel_ref, project_id, fire_at, content,
     status, created_at, fired_at, cancelled_at, created_via, error_count, last_error,
-    cron_expr, recurrence_until`
+    cron_expr, recurrence_until, kind, last_task_id, last_delivered_task_id`
 
 // Insert writes a new pending row. ID generated when empty.
 func (r *ReminderRepository) Insert(ctx context.Context, rem *persistence.Reminder) error {
@@ -49,17 +49,22 @@ func (r *ReminderRepository) Insert(ctx context.Context, rem *persistence.Remind
 	projectID := emptyToNullString(rem.ProjectID)
 	cronExpr := emptyToNullString(rem.CronExpr)
 	recurrenceUntil := nullableTime(rem.RecurrenceUntil)
+	kind := rem.Kind
+	if kind == "" {
+		kind = persistence.ReminderKindText
+	}
 
 	_, err := r.db.ExecContext(ctx, `
 INSERT INTO dispatcher_reminders (
     id, operator_id, channel, channel_ref, project_id,
     fire_at, content, status, created_at, created_via,
-    cron_expr, recurrence_until
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    cron_expr, recurrence_until, kind, last_task_id, last_delivered_task_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 `,
 		rem.ID, rem.OperatorID, rem.Channel, rem.ChannelRef, projectID,
 		rem.FireAt.UTC(), rem.Content, string(rem.Status), rem.CreatedAt.UTC(), rem.CreatedVia,
-		cronExpr, recurrenceUntil,
+		cronExpr, recurrenceUntil, string(kind),
+		emptyToNullString(rem.LastTaskID), emptyToNullString(rem.LastDeliveredTaskID),
 	)
 	if err != nil {
 		return fmt.Errorf("reminder_repository: insert: %w", err)
@@ -236,17 +241,20 @@ WHERE id = $1
 	return nil
 }
 
-// UpdateFields mutates a PENDING row's fire_at + content.
-// Refuses non-pending rows so the dispatcher tool can tell
-// the operator "your reminder is already firing". content==""
-// preserves the existing body via the SQL COALESCE.
-func (r *ReminderRepository) UpdateFields(ctx context.Context, id string, fireAt time.Time, content string) error {
+// UpdateFields mutates a PENDING row's fire_at + content + cron_expr +
+// project_id. Refuses non-pending rows so the dispatcher tool can tell
+// the operator "your reminder is already firing". Empty-string fields
+// (content / cron_expr / project_id) preserve the existing column via
+// the SQL COALESCE — so a fire_at-only edit leaves the rest intact.
+func (r *ReminderRepository) UpdateFields(ctx context.Context, id string, upd persistence.ReminderFieldUpdate) error {
 	res, err := r.db.ExecContext(ctx, `
 UPDATE dispatcher_reminders
 SET fire_at = $2,
-    content = COALESCE(NULLIF($3, ''), content)
+    content = COALESCE(NULLIF($3, ''), content),
+    cron_expr = COALESCE(NULLIF($4, ''), cron_expr),
+    project_id = COALESCE(NULLIF($5, ''), project_id)
 WHERE id = $1 AND status = 'pending'
-`, id, fireAt.UTC(), content)
+`, id, upd.FireAt.UTC(), upd.Content, upd.CronExpr, upd.ProjectID)
 	if err != nil {
 		return fmt.Errorf("reminder_repository: update_fields: %w", err)
 	}
@@ -317,26 +325,211 @@ WHERE operator_id = $1 AND status = 'pending'
 	return n, nil
 }
 
+// CountTaskByOperator returns the number of NON-terminal task-kind
+// reminders for one operator (pending, firing, awaiting_task, paused).
+// Backs the per-operator task cap (design §6). Uses
+// idx_dispatcher_reminders_operator_kind_status.
+func (r *ReminderRepository) CountTaskByOperator(ctx context.Context, operatorID string) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM dispatcher_reminders
+WHERE operator_id = $1 AND kind = 'task'
+  AND status IN ('pending','firing','awaiting_task','paused')
+`, operatorID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("reminder_repository: count_task: %w", err)
+	}
+	return n, nil
+}
+
+// Pause mutes a pending reminder. Refuses non-pending rows so an
+// in-flight (firing/awaiting_task) reminder can't be paused mid-run —
+// ErrNotFound surfaces that to the operator. Design §5.4.
+func (r *ReminderRepository) Pause(ctx context.Context, id string) error {
+	res, err := r.db.ExecContext(ctx, `
+UPDATE dispatcher_reminders SET status = 'paused'
+WHERE id = $1 AND status = 'pending'`, id)
+	if err != nil {
+		return fmt.Errorf("reminder_repository: pause: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil
+	}
+	if n == 0 {
+		return persistence.ErrNotFound
+	}
+	return nil
+}
+
+// Resume re-arms a paused reminder with a fresh fire_at. Refuses
+// non-paused rows — ErrNotFound.
+func (r *ReminderRepository) Resume(ctx context.Context, id string, nextFireAt time.Time) error {
+	res, err := r.db.ExecContext(ctx, `
+UPDATE dispatcher_reminders SET status = 'pending', fire_at = $2
+WHERE id = $1 AND status = 'paused'`, id, nextFireAt.UTC())
+	if err != nil {
+		return fmt.Errorf("reminder_repository: resume: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil
+	}
+	if n == 0 {
+		return persistence.ErrNotFound
+	}
+	return nil
+}
+
+// MarkTaskSpawned transitions a firing task-kind row to
+// awaiting_task, stamps last_task_id, and — when nextFireAt is
+// non-nil (recurring) — arms fire_at to the next slot in the same
+// statement. Guarded on status='firing' so a crash between task
+// creation and this call leaves the row firing (recoverable by the
+// stuck-firing sweep) rather than silently corrupting state.
+func (r *ReminderRepository) MarkTaskSpawned(ctx context.Context, id, taskID string, nextFireAt *time.Time) error {
+	res, err := r.db.ExecContext(ctx, `
+UPDATE dispatcher_reminders
+SET status = 'awaiting_task',
+    last_task_id = $2,
+    fire_at = COALESCE($3, fire_at)
+WHERE id = $1 AND status = 'firing'
+`, id, taskID, nullableTime(nextFireAt))
+	if err != nil {
+		return fmt.Errorf("reminder_repository: mark_task_spawned: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil
+	}
+	if n == 0 {
+		return persistence.ErrNotFound
+	}
+	return nil
+}
+
+// ClaimDelivery atomically claims delivery of a completed task's
+// outcome. The conditional UPDATE...WHERE is the at-most-once
+// serialization point: only the row whose last_task_id matches AND
+// whose last_delivered_task_id hasn't already been stamped with this
+// taskID transitions awaiting_task -> firing. A duplicate/HA-racing
+// completion callback for the same task finds zero matching rows
+// (RETURNING yields no rows) and gets (nil,false,nil) — never an
+// error, since "lost the race" is an expected outcome, not a fault.
+func (r *ReminderRepository) ClaimDelivery(ctx context.Context, taskID string) (*persistence.Reminder, bool, error) {
+	// fired_at is refreshed to NOW() here (not just at the initial
+	// firing/spawn) so a long-running task delivery gets a fresh
+	// FiringGrace window. Without this, a delivery that outlives
+	// FiringGrace (routine for a slow digest task) re-enters
+	// 'firing' with a stale fired_at, and a concurrent
+	// sweepStuckFiring tick can falsely reclaim the row mid-delivery
+	// (spurious Reschedule/MarkErrored + false firing_reclaimed_total).
+	row := r.db.QueryRowContext(ctx, `
+UPDATE dispatcher_reminders
+SET status = 'firing', fired_at = NOW()
+WHERE last_task_id = $1
+  AND status = 'awaiting_task'
+  AND (last_delivered_task_id IS DISTINCT FROM $1)
+RETURNING `+reminderColumns, taskID)
+	rem, err := scanReminder(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil // nothing to claim (dup / already delivered)
+		}
+		return nil, false, fmt.Errorf("reminder_repository: claim_delivery: %w", err)
+	}
+	return rem, true, nil
+}
+
+// FinalizeDelivery completes a claimed delivery: stamps
+// last_delivered_task_id and moves the row off firing — fired when
+// terminal (one-shot, or a recurring row past its RecurrenceUntil
+// bound), pending when not (recurring; fire_at was already armed at
+// MarkTaskSpawned time). Guarded on status='firing' so a duplicate
+// finalize call (e.g. a retried webhook) surfaces as ErrNotFound
+// rather than silently double-stamping fired_at.
+func (r *ReminderRepository) FinalizeDelivery(ctx context.Context, id, taskID string, terminal bool) error {
+	newStatus := "pending"
+	if terminal {
+		newStatus = "fired"
+	}
+	res, err := r.db.ExecContext(ctx, `
+UPDATE dispatcher_reminders
+SET status = $2, last_delivered_task_id = $3, fired_at = NOW()
+WHERE id = $1 AND status = 'firing'
+`, id, newStatus, taskID)
+	if err != nil {
+		return fmt.Errorf("reminder_repository: finalize_delivery: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil
+	}
+	if n == 0 {
+		return persistence.ErrNotFound
+	}
+	return nil
+}
+
+// ReclaimStuckFiring returns 'firing' rows whose fired_at < olderThan —
+// the crash-recovery sweep's read side (design §9). FOR UPDATE SKIP
+// LOCKED mirrors LeaseDue's HA-safety precedent so concurrent sweepers
+// get disjoint batches, but this query does NOT mutate the rows; the
+// runner decides per row whether to re-arm or mark errored (a plain
+// SELECT keeps this method's contract identical for both the task-kind
+// and text-kind stuck cases, rather than baking one outcome in here).
+func (r *ReminderRepository) ReclaimStuckFiring(ctx context.Context, olderThan time.Time, limit int) ([]*persistence.Reminder, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	q := `
+SELECT ` + reminderColumns + `
+FROM dispatcher_reminders
+WHERE status = 'firing' AND fired_at < $1
+ORDER BY fired_at ASC
+LIMIT $2
+FOR UPDATE SKIP LOCKED
+`
+	rows, err := r.db.QueryContext(ctx, q, olderThan.UTC(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("reminder_repository: reclaim_stuck_firing: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*persistence.Reminder
+	for rows.Next() {
+		rem, err := scanReminder(rows)
+		if err != nil {
+			return nil, fmt.Errorf("reminder_repository: reclaim_stuck_firing scan: %w", err)
+		}
+		out = append(out, rem)
+	}
+	return out, rows.Err()
+}
+
 // scanReminder reads one row from either *sql.Row or *sql.Rows.
 // Mirrors the column order in reminderColumns.
 func scanReminder(scanner interface {
 	Scan(dest ...interface{}) error
 }) (*persistence.Reminder, error) {
 	var (
-		rem             persistence.Reminder
-		projectID       sql.NullString
-		firedAt         sql.NullTime
-		cancelledAt     sql.NullTime
-		lastError       sql.NullString
-		status          string
-		cronExpr        sql.NullString
-		recurrenceUntil sql.NullTime
+		rem                 persistence.Reminder
+		projectID           sql.NullString
+		firedAt             sql.NullTime
+		cancelledAt         sql.NullTime
+		lastError           sql.NullString
+		status              string
+		cronExpr            sql.NullString
+		recurrenceUntil     sql.NullTime
+		kind                string
+		lastTaskID          sql.NullString
+		lastDeliveredTaskID sql.NullString
 	)
 	if err := scanner.Scan(
 		&rem.ID, &rem.OperatorID, &rem.Channel, &rem.ChannelRef, &projectID,
 		&rem.FireAt, &rem.Content, &status, &rem.CreatedAt, &firedAt, &cancelledAt,
 		&rem.CreatedVia, &rem.ErrorCount, &lastError,
 		&cronExpr, &recurrenceUntil,
+		&kind, &lastTaskID, &lastDeliveredTaskID,
 	); err != nil {
 		return nil, err
 	}
@@ -361,6 +554,16 @@ func scanReminder(scanner interface {
 	if recurrenceUntil.Valid {
 		t := recurrenceUntil.Time
 		rem.RecurrenceUntil = &t
+	}
+	if kind == "" {
+		kind = string(persistence.ReminderKindText)
+	}
+	rem.Kind = persistence.ReminderKind(kind)
+	if lastTaskID.Valid {
+		rem.LastTaskID = lastTaskID.String
+	}
+	if lastDeliveredTaskID.Valid {
+		rem.LastDeliveredTaskID = lastDeliveredTaskID.String
 	}
 	return &rem, nil
 }

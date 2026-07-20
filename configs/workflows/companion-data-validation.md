@@ -3,6 +3,8 @@ workflowId: "companion-data-validation"
 displayName: "Companion: Data validation"
 description: "Validates a dataset against a stated schema. Returns anomaly list, distribution summary, and an integrity verdict the host LLM can use to decide whether to act on the data."
 version: "1.0.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "validate"
 maxStepVisits: 1
 maxIterations: 10

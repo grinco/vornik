@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"vornik.io/vornik/internal/apigateway"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/hallucination"
@@ -283,6 +284,12 @@ type Agent struct {
 	// receiver, channels feed the email sender).
 	emailSender EmailSender
 
+	// apiClient backs the query_api tool (authenticated third-party APIs
+	// LLD). nil disables the tool cleanly (handler returns "not
+	// configured"). Wired via WithAPIClient; the container builds the
+	// DialGuard-pinned gateway client from config.Gateway.
+	apiClient apigateway.Client
+
 	// reminderRepo + reminderKicker back the set_reminder tool
 	// (2026.7.0 — scheduled-reminders LLD). Both nil-safe; the
 	// tool handler degrades to a "not configured on this daemon"
@@ -507,6 +514,7 @@ func NewAgent(
 		// can short-circuit via chatID=0.
 		expanded:              newExpandedToolStore(),
 		emailSender:           a.emailSender,
+		apiClient:             a.apiClient,
 		reminderRepo:          a.reminderRepo,
 		reminderKicker:        a.reminderKicker,
 		adminAuditRepo:        a.adminAuditRepo,

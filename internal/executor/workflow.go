@@ -230,7 +230,10 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 		// See https://docs.vornik.io §6/§7.
 		if e.config.ToolBudget.Enabled {
 			roleConfig, _ := findSwarmRole(plan.swarm, step.Role)
-			autonomous := task.CreationSource != persistence.TaskCreationSourceUser
+			// Item 5 (2026-07-18): same origin-resolving autonomous determination
+			// as the iteration budget (container.go) — the two budgets MUST move
+			// together (parent design §6.1), so both front e.budgetAutonomous.
+			autonomous := e.budgetAutonomous(ctx, task)
 			stepTimeout = applyStepTimeoutBudget(stepTimeout, roleConfig, state.ComplexityTier, autonomous, e.config.ToolBudget)
 		}
 
@@ -291,6 +294,17 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 				}
 				return "", nil, completedSteps, fmt.Errorf("%w (step %q)", errDelegatedChildFailedTerminal, currentStepID)
 			}
+
+			// F1 staging gate (design §3.2): if THIS step declares
+			// stage_child_artifacts and we are resuming after its delegated
+			// children ran, deterministically stage the children's durable
+			// output artifacts onto this step's inputs + inject the
+			// completeness summary. No-op for every other step/pass.
+			resumeWorkflowID := ""
+			if plan.workflow != nil {
+				resumeWorkflowID = plan.workflow.ID
+			}
+			e.stageResumeChildArtifacts(ctx, task, step, opts, resumeWorkflowID)
 
 			// Single-candidate auto-route: when the project's adaptive
 			// candidate list has exactly one entry, the lead has nothing
@@ -1347,6 +1361,81 @@ func (e *Executor) resolveResumeGuard(ctx context.Context, task *persistence.Tas
 		}
 	}
 	return true, false, children
+}
+
+// stageResumeChildArtifacts applies the F1 graph-keyed staging gate (design
+// §3.1–§3.4). When ALL of the following hold, it deterministically gathers the
+// step's delegated children's durable output artifacts and stages them onto
+// the step's agent input, injecting the completeness summary as
+// inputArtifactsSummary:
+//
+//   - step.StageChildArtifacts — the step DECLARES the flag (a workflow-graph
+//     property: only the consumer step that runs after a delegatedTasks fan-out
+//     sets it), so staging fires for that step and no other;
+//   - routeAlreadyHandled — this is a resume-after-children re-entry (the guard
+//     is false on the initial decompose pass, so staging never fires before the
+//     children exist);
+//   - len(resumeChildren) > 0 — there is at least one detected child to gather.
+//
+// gatherChildArtifacts itself filters to delegation-engine children
+// (DelegationMode != nil), so checkpoint retries and call_project/spawn_project
+// callees never contribute. The append (not replace) preserves any task-input
+// artifacts already on opts.InputArtifacts. Idempotent per pass: the loop
+// rebuilds opts on every step entry, so a re-resume re-stages from scratch with
+// no accumulation. A no-op unless the gate holds, so a flag-off step, the
+// initial decompose pass, and every non-declaring step stay byte-identical to
+// today (I2).
+// stageResumeChildArtifacts stages the parent's delegated children's output
+// artifacts into a declaring consumer step's inputs. It fires whenever the
+// step declares stage_child_artifacts and the parent has children — NOT gated
+// on routeAlreadyHandled. Rationale (bug fixed 2026-07-20, T-06b5 follow-up):
+// routeAlreadyHandled is true ONLY at the resume_after_children entrypoint
+// (isStrictRouteStep keys on wf.Entrypoint), but the flag lives on the CONSUMER
+// step (e.g. deep-research's `synthesize`, which is decompose.on_success), so
+// the two were mutually exclusive and the gate never fired in production — the
+// findings were harvested to the store but never staged into artifacts/in/.
+// The placement lint (registry.validateStageChildArtifacts) guarantees the flag
+// only sits on a post-fan-out step of a resume_after_children workflow, so by
+// the time that step runs its delegated children have completed; fetching them
+// directly here is the correct, deterministic trigger. gatherChildArtifacts
+// filters to delegation-engine children (DelegationMode != nil), so a
+// checkpoint/call_project child can never be staged.
+func (e *Executor) stageResumeChildArtifacts(
+	ctx context.Context,
+	task *persistence.Task,
+	step registry.WorkflowStep,
+	opts *agentInputOpts,
+	workflowID string,
+) {
+	if opts == nil || task == nil || !step.StageChildArtifacts || e.taskRepo == nil {
+		return
+	}
+	children, err := e.taskRepo.GetChildren(ctx, task.ID)
+	if err != nil {
+		e.logger.Warn().Err(err).Str("task_id", task.ID).
+			Msg("stage_child_artifacts: GetChildren failed; staging skipped")
+		return
+	}
+	if len(children) == 0 {
+		return
+	}
+	arts, summary := e.gatherChildArtifacts(ctx, children)
+	if summary.Expected == 0 {
+		// No delegation-engine children after filtering — nothing to stage.
+		return
+	}
+	opts.InputArtifacts = append(opts.InputArtifacts, arts...)
+	summaryCopy := summary
+	opts.InputArtifactsSummary = &summaryCopy
+	e.logger.Info().
+		Int("expected", summary.Expected).
+		Int("staged", summary.Staged).
+		Int("missing", len(summary.Missing)).
+		Int("empty", len(summary.Empty)).
+		Msg("stage_child_artifacts: staged delegated children onto resuming step")
+	// Observability (design §5): staged / missing / empty counters keyed by
+	// the resuming workflow id. empty is the T-06b5 recurrence signal.
+	e.metrics.RecordChildArtifactStaging(workflowID, summary.Staged, len(summary.Missing), len(summary.Empty))
 }
 
 // prepareAgentStepInput builds the agentInputOpts for an agent step and

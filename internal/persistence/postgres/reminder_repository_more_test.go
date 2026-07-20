@@ -16,8 +16,10 @@ import (
 
 // reminderRow is a small helper for the columns scanReminder
 // expects. Used to make the AddRow lines below readable instead
-// of a 16-value mess. cron_expr + recurrence_until default to
+// of a 19-value mess. cron_expr + recurrence_until default to
 // NULL so callers can write one-shot rows without naming them.
+// kind/last_task_id/last_delivered_task_id (migration 130) default
+// to a plain text reminder with no task linkage.
 func reminderRow(id, operator, status string, now time.Time) []driver.Value {
 	return []driver.Value{
 		id, operator, "telegram", "42",
@@ -25,6 +27,7 @@ func reminderRow(id, operator, status string, now time.Time) []driver.Value {
 		now, "remind me", status, now,
 		sql.NullTime{}, sql.NullTime{}, "chat", 0, sql.NullString{},
 		sql.NullString{}, sql.NullTime{}, // cron_expr, recurrence_until
+		"text", sql.NullString{}, sql.NullString{}, // kind, last_task_id, last_delivered_task_id
 	}
 }
 
@@ -44,6 +47,7 @@ func TestReminder_Get_Found(t *testing.T) {
 			"fire_at", "content", "status", "created_at", "fired_at",
 			"cancelled_at", "created_via", "error_count", "last_error",
 			"cron_expr", "recurrence_until",
+			"kind", "last_task_id", "last_delivered_task_id",
 		}).AddRow(row...))
 
 	got, err := repo.Get(context.Background(), "rem_1")
@@ -115,6 +119,7 @@ func TestReminder_List_BasicFilter(t *testing.T) {
 			"fire_at", "content", "status", "created_at", "fired_at",
 			"cancelled_at", "created_via", "error_count", "last_error",
 			"cron_expr", "recurrence_until",
+			"kind", "last_task_id", "last_delivered_task_id",
 		}).
 			AddRow(reminderRow("rem_a", "telegram:42", "pending", now)...).
 			AddRow(reminderRow("rem_b", "telegram:42", "pending", now.Add(time.Minute))...))
@@ -147,7 +152,7 @@ func TestReminder_List_DefaultsLimit50(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "operator_id", "channel", "channel_ref", "project_id",
 			"fire_at", "content", "status", "created_at", "fired_at",
 			"cancelled_at", "created_via", "error_count", "last_error",
-			"cron_expr", "recurrence_until"}))
+			"cron_expr", "recurrence_until", "kind", "last_task_id", "last_delivered_task_id"}))
 
 	if _, err := repo.List(context.Background(), persistence.ReminderListFilter{}); err != nil {
 		t.Errorf("List: %v", err)
@@ -166,7 +171,7 @@ func TestReminder_List_CapsLimitAt500(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "operator_id", "channel", "channel_ref", "project_id",
 			"fire_at", "content", "status", "created_at", "fired_at",
 			"cancelled_at", "created_via", "error_count", "last_error",
-			"cron_expr", "recurrence_until"}))
+			"cron_expr", "recurrence_until", "kind", "last_task_id", "last_delivered_task_id"}))
 
 	if _, err := repo.List(context.Background(), persistence.ReminderListFilter{PageSize: 9999}); err != nil {
 		t.Errorf("List: %v", err)
@@ -304,6 +309,9 @@ func TestReminder_Insert_PersistsCronFields(t *testing.T) {
 			"chat",
 			sql.NullString{Valid: true, String: "0 9 * * 1"},
 			sql.NullTime{Valid: true, Time: until},
+			"text",           // kind defaults to text
+			sql.NullString{}, // last_task_id
+			sql.NullString{}, // last_delivered_task_id
 		).WillReturnResult(sqlmock.NewResult(0, 1))
 
 	rem := &persistence.Reminder{

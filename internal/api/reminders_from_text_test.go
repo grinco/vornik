@@ -62,6 +62,11 @@ type reminderRepoSpy struct {
 	deleted     []string
 	insertErr   error
 	lastListArg persistence.ReminderListFilter
+	paused      []string
+	pauseErr    error
+	resumed     []string
+	resumeArgs  []time.Time
+	resumeErr   error
 }
 
 func (r *reminderRepoSpy) Insert(_ context.Context, rem *persistence.Reminder) error {
@@ -107,6 +112,18 @@ func (r *reminderRepoSpy) Reschedule(_ context.Context, _ string, _ time.Time) e
 	return nil
 }
 func (r *reminderRepoSpy) MarkExpired(_ context.Context, _ string) error { return nil }
+func (r *reminderRepoSpy) MarkTaskSpawned(_ context.Context, _, _ string, _ *time.Time) error {
+	return nil
+}
+func (r *reminderRepoSpy) ClaimDelivery(_ context.Context, _ string) (*persistence.Reminder, bool, error) {
+	return nil, false, nil
+}
+func (r *reminderRepoSpy) FinalizeDelivery(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
+func (r *reminderRepoSpy) CountTaskByOperator(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
 func (r *reminderRepoSpy) Cancel(_ context.Context, id string) error {
 	r.cancelled = append(r.cancelled, id)
 	return nil
@@ -118,8 +135,40 @@ func (r *reminderRepoSpy) Delete(_ context.Context, id string) error {
 func (r *reminderRepoSpy) CountPendingByOperator(_ context.Context, _ string) (int, error) {
 	return 0, nil
 }
-func (r *reminderRepoSpy) UpdateFields(_ context.Context, _ string, _ time.Time, _ string) error {
+func (r *reminderRepoSpy) UpdateFields(_ context.Context, _ string, _ persistence.ReminderFieldUpdate) error {
 	return nil
+}
+func (r *reminderRepoSpy) Pause(_ context.Context, id string) error {
+	if r.pauseErr != nil {
+		return r.pauseErr
+	}
+	r.paused = append(r.paused, id)
+	if r.rows != nil {
+		if row, ok := r.rows[id]; ok {
+			row.Status = persistence.ReminderStatusPaused
+		}
+	}
+	return nil
+}
+func (r *reminderRepoSpy) Resume(_ context.Context, id string, nextFireAt time.Time) error {
+	if r.resumeErr != nil {
+		return r.resumeErr
+	}
+	r.resumed = append(r.resumed, id)
+	r.resumeArgs = append(r.resumeArgs, nextFireAt)
+	if r.rows != nil {
+		if row, ok := r.rows[id]; ok {
+			row.Status = persistence.ReminderStatusPending
+			row.FireAt = nextFireAt
+		}
+	}
+	return nil
+}
+
+// ReclaimStuckFiring is Task 14's crash-recovery sweep addition. Not
+// exercised by the from-text extraction tests — compile stub only.
+func (r *reminderRepoSpy) ReclaimStuckFiring(_ context.Context, _ time.Time, _ int) ([]*persistence.Reminder, error) {
+	return nil, nil
 }
 
 // validParserBody is the canonical happy-path LLM response —

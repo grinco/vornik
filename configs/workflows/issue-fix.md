@@ -3,6 +3,8 @@ workflowId: "issue-fix"
 displayName: "Issue Fix"
 description: "Top-level workflow for a labeled GitHub issue. A decompose step splits the issue's full scope into self-contained subtasks and emits them as delegatedTasks (SEQUENTIAL) — the engine schedules and runs each in order, merging to the project clone. On resume a tester ACTUALLY RUNS the aggregate test suite (gate testing.passed) before a reviewer checks the aggregate diff. On rejection/red tests it loops to a remediate step that delegates a surgical fix subtask, re-tests and re-reviews (max 2 rounds via per-step maxVisits); on green + approval a system step opens a DRAFT PR. Exhausted rounds / any subtask failure → FAILED, no PR. Writes no vornik-internal files."
 version: "3.2.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 resume_after_children: true
 maxStepVisits: 4
 maxIterations: 40

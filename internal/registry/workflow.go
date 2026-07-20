@@ -231,6 +231,22 @@ type WorkflowStep struct {
 	// chain "succeeded" all the way to a publisher holding no deliverable.
 	RequireOutputGlob string `yaml:"require_output_glob,omitempty"`
 
+	// StageChildArtifacts, when true on the step that runs AFTER a
+	// `delegatedTasks` fan-out (a resume_after_children consumer step),
+	// makes the executor deterministically gather this step's delegated
+	// children's output artifacts from the durable store and stage them
+	// into the step's `artifacts/in/` on resume — plus inject an
+	// `inputArtifactsSummary` (expected/staged/missing/empty) into the
+	// step's agent input context. The gate is a GRAPH property keyed on the
+	// declaring step: staging fires ONLY for that consumer step, ONLY on a
+	// resume-after-children re-entry, and ONLY when ≥1 delegation-engine
+	// child exists — NEVER on the initial decompose pass (no children yet)
+	// and NEVER on a non-declaring step. Default false → behaviour is
+	// byte-identical to today (I2). Workflow-agnostic: deep-research is the
+	// first adopter, but any aggregating workflow opts in with this one flag.
+	// See https://docs.vornik.io §3.1–§3.5.
+	StageChildArtifacts bool `yaml:"stage_child_artifacts,omitempty"`
+
 	// MaxVisits optionally bounds how many times THIS step may be entered,
 	// tighter than the workflow-global MaxStepVisits. On the (MaxVisits+1)-th
 	// entry the executor routes to the step's on_fail (preserving the prior
@@ -631,7 +647,133 @@ func (w *Workflow) Validate(filename string) error {
 		return err
 	}
 
+	// Structural placement guard for stage_child_artifacts (§3.3).
+	if err := w.validateStageChildArtifacts(filename); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// validateStageChildArtifacts enforces the structural placement guard for the
+// stage_child_artifacts step flag (delegated-child-artifact-handoff design
+// §3.3; Task 3 Part B). It is defense-in-depth on top of the step-level opt-in.
+//
+// WHY a STRUCTURAL lint and NOT a "git-merge-back-typed" refusal: the design and
+// review originally framed the guard as "refuse stage_child_artifacts on
+// git-merge-back workflows" — to protect issue-fix's diff-based review from
+// being perturbed by staged child artifacts. But EVERY project workspace is a
+// git repo (ensureGitRepo) and every task runs in a per-task worktree merged
+// back onto the single default branch, so ALL workflows are effectively
+// "git-merge-back-typed". It is NOT a clean, statically detectable workflow
+// property, and any heuristic approximating it would be fragile and misleading.
+// The real, implementable protection is two-fold: (1) the flag is a step-level
+// opt-in, so a git/diff workflow like issue-fix is protected simply by never
+// declaring it; (2) this lint refuses the flag anywhere it is structurally
+// nonsensical. Together they make it impossible for a future author to
+// accidentally perturb a git workflow by mis-placing the flag.
+//
+// The flag is valid ONLY on a step that is the post-delegation resume consumer:
+//   - the workflow must be resume_after_children — the only mode in which a
+//     parent pauses for delegated children and later resumes to consume them
+//     (this alone refuses leaf / non-aggregating workflows); AND
+//   - the declaring step must be reachable AFTER a fan-out origin (the
+//     resume_after_children entrypoint, or any step pinning delegated_workflow)
+//     and must NOT itself be a fan-out origin — a decompose / router step spawns
+//     the children, it is never the consumer that reads them back.
+//
+// This refuses the three real footguns — the flag on a leaf workflow, on the
+// decompose/delegator step, and on the entrypoint — while imposing nothing on
+// the git workflows that never declare it.
+func (w *Workflow) validateStageChildArtifacts(filename string) error {
+	// Cheap pre-scan: skip all graph work unless some step opts in.
+	var declared bool
+	for _, step := range w.Steps {
+		if step.StageChildArtifacts {
+			declared = true
+			break
+		}
+	}
+	if !declared {
+		return nil
+	}
+
+	origins := w.fanOutOrigins()
+	reachedAfterFanOut := w.stepsReachableAfterOrigins(origins)
+
+	for stepID, step := range w.Steps {
+		if !step.StageChildArtifacts {
+			continue
+		}
+		if !w.ResumeAfterChildren {
+			return WorkflowValidationError{
+				File:    filename,
+				Field:   fmt.Sprintf("steps.%s.stage_child_artifacts", stepID),
+				Message: "stage_child_artifacts is only valid on a resume_after_children workflow (it stages a resuming step's delegated children's artifacts; a leaf/non-aggregating workflow has no such children)",
+			}
+		}
+		if origins[stepID] {
+			return WorkflowValidationError{
+				File:    filename,
+				Field:   fmt.Sprintf("steps.%s.stage_child_artifacts", stepID),
+				Message: "stage_child_artifacts must not be set on a fan-out step (the entrypoint / a delegated_workflow decompose step spawns the children) — set it on the post-delegation consumer step that runs after the children complete",
+			}
+		}
+		if !reachedAfterFanOut[stepID] {
+			return WorkflowValidationError{
+				File:    filename,
+				Field:   fmt.Sprintf("steps.%s.stage_child_artifacts", stepID),
+				Message: "stage_child_artifacts must be set on a step reachable after a delegation fan-out (the post-delegation resume consumer), not on a step outside the delegation path",
+			}
+		}
+	}
+	return nil
+}
+
+// fanOutOrigins returns the set of step IDs that spawn delegated children: the
+// entrypoint of a resume_after_children workflow (which is the strict-adaptive
+// router / decompose, per isStrictRouteStep) and any step that pins
+// delegated_workflow (the deterministic delegator marker, per isDelegatorStep).
+// These are the origins from which a post-delegation consumer must be reachable
+// — and are themselves never valid consumers.
+func (w *Workflow) fanOutOrigins() map[string]bool {
+	origins := make(map[string]bool)
+	if w.ResumeAfterChildren && w.Entrypoint != "" {
+		if _, ok := w.Steps[w.Entrypoint]; ok {
+			origins[w.Entrypoint] = true
+		}
+	}
+	for id, step := range w.Steps {
+		if strings.TrimSpace(step.DelegatedWorkflow) != "" {
+			origins[id] = true
+		}
+	}
+	return origins
+}
+
+// stepsReachableAfterOrigins returns the set of step IDs reachable via a
+// forward transition FROM any fan-out origin (i.e. the origins' successors and
+// everything downstream), which is exactly the set of "post-delegation" steps.
+// An origin itself is included only if it is reachable from another origin;
+// callers additionally exclude origins from being valid consumers.
+func (w *Workflow) stepsReachableAfterOrigins(origins map[string]bool) map[string]bool {
+	reached := make(map[string]bool)
+	for originID := range origins {
+		step, ok := w.Steps[originID]
+		if !ok {
+			continue
+		}
+		if step.OnSuccess != "" {
+			w.reachableFrom(step.OnSuccess, reached)
+		}
+		if step.OnFail != "" {
+			w.reachableFrom(step.OnFail, reached)
+		}
+		for _, gate := range step.Gates {
+			w.reachableFrom(gate.Target, reached)
+		}
+	}
+	return reached
 }
 
 // validateTransition checks that a transition target exists

@@ -3,6 +3,8 @@ workflowId: "ingest"
 displayName: "Ingest to memory"
 description: "Structure a user-provided document into clean, retrieval-friendly notes and store them in project memory — WITHOUT web research. The ingestor reads the document, organises its facts, and writes an output artifact that the executor auto-ingests into memory. Route document/notes 'remember this' or 'ingest this' requests here instead of the research workflow."
 version: "1.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "ingest"
 maxStepVisits: 2
 maxIterations: 6

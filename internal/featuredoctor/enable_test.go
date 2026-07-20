@@ -65,6 +65,8 @@ func (f *fakeConfigWriter) Restore(backup string) error {
 	return f.restoreErr
 }
 
+func (f *fakeConfigWriter) ConfigPath() string { return "/fake/config.yaml" }
+
 func (f *fakeConfigWriter) Validate() error {
 	f.validateCalled = true
 	return f.validateErr

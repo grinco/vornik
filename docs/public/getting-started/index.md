@@ -1,7 +1,7 @@
 ---
 sources:
     - path: README.md
-      sha256: 70bf1d490a9a4603e7ecb031fd593e7e2c0320ffb3e197da986e06a754e38606
+      sha256: 31edbc73bb392131d73c6294c0eea34a09d801c518d48b55b1246c14aaf4232c
 ---
 # Getting Started
 
@@ -71,6 +71,18 @@ service that spawns agent containers via your rootless Podman:
 
 ```bash
 curl -fsSL https://get.vornik.io | bash
+```
+
+This pins the **release tag baked into the script** (not a moving branch); set
+`VORNIK_REF=main` for bleeding-edge. To verify the script against its published
+checksum before piping it to a shell (catches transit/redirect tampering — not
+a signature), fetch both first:
+
+```bash
+REF=<release>  # a tag from github.com/grinco/vornik/releases that ships quickstart.sh.sha256
+base="https://raw.githubusercontent.com/grinco/vornik/$REF/deployments/podman"
+curl -fsSLO "$base/quickstart.sh" && curl -fsSLO "$base/quickstart.sh.sha256"
+sha256sum -c quickstart.sh.sha256 && VORNIK_REF="$REF" bash quickstart.sh
 ```
 
 The daemon creates and migrates its own schema on first boot, so all you supply

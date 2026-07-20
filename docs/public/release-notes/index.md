@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 3b2a341033613fd682cf9f66785aab9435520200b5a42759cdf79091fa6311ba
+      sha256: 251886dcfa87b9ebba6f802a8b13a01488fc9b77a324b7342960a469e0c68fab
 ---
 # Release Notes
 
@@ -14,6 +14,46 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.7.4
+
+**A model-resilience release.** Your non-swarm LLM paths now fail over and
+recover automatically, tool budgets got safer defaults and clearer warnings, and
+model-health is fully visible in the doctor.
+
+- **Automatic model fallback for non-swarm paths.** A new
+  `chat.router.model_fallbacks` map (primary model → fallback model) lets the
+  chat/dispatcher/autonomy/wizard path and the built-in workers (narrator,
+  memory consolidation, titler, classifier, judge, …) fail over to a configured
+  twin when a model's circuit opens — and return to the primary automatically
+  when it recovers. Previously only swarm-role agents had this; an upstream
+  outage would stall the rest. Empty map = unchanged behavior.
+- **Model health is fully observable.** `vornik doctor` now reports **both**
+  circuit breakers — the chat-router breaker (`model_circuits`) and the
+  agent-container breaker (`agent_model_circuits`) — as separate checks, so an
+  open circuit is visible where you look. The troubleshooting guide explains the
+  two breakers and why an open agent circuit can leave the chat one showing
+  closed.
+- **Tool-budget refinements.** An operator-started task keeps its full tool
+  budget across a crash-and-resume (instead of dropping to the tighter
+  autonomous cap); startup warns when a role's tool-budget config won't take
+  effect (a warm role, or a role with no base limit); and the `standard`
+  complexity tier now downscales to 0.5× of a role's configured budget (the base
+  is reserved for genuinely complex work) — **note this behavior change** if you
+  relied on `standard` running at the full configured budget.
+- **Scheduled updates.** Reminders can now run a task on a cadence and deliver
+  its outcome, not just static text — ask the bot for a recurring digest or
+  weekly plan ("every Monday at 7, plan my week") and it will spawn the task
+  and message you the result when it's done. Pause and resume it from chat, the
+  CLI, or the web UI's reminders table, and edit a recurring reminder's cadence
+  or project in place from chat instead of recreating it. A slow run never
+  overlaps itself, and an interrupted daemon can't lose or double-send an
+  outcome. See [vornikctl reminders](../reference/vornikctl.md) and
+  [Observability](../guides/observability.md) for the new metrics.
+
+See `docs/release-notes/2026.7.4.md`.
 
 ---
 

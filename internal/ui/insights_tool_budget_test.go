@@ -217,6 +217,146 @@ func TestLoadBudgetAdvisory_SkipsMissingTriggerFields(t *testing.T) {
 	assert.Equal(t, "planner", result.Rows[0].Role)
 }
 
+// TestInsightsToolBudget_LearnedTierLiftRendered asserts that when the
+// lift repo has a snapshot for a budget instinct, the "Learned-tier lift"
+// column shows the measured value and verdict badge next to that row's
+// provisioning advisory.
+func TestInsightsToolBudget_LearnedTierLiftRendered(t *testing.T) {
+	auditRepo := &fakeToolAuditRepo{rows: mkAuditEntries(map[string]int{"e1": 3})}
+	instinctRepo := &stubInstinctRepo{rows: seedBudgetInstincts()}
+	liftRepo := &stubInstinctLiftRepo{snapshots: map[string]*persistence.InstinctLiftSnapshot{
+		"bud_1": {
+			InstinctID: "bud_1", Domain: persistence.InstinctDomainBudget, Lift: 0.12,
+			Verdict: persistence.LiftVerdictHelping, TreatmentN: 12, TreatmentSucc: 9,
+			BaselineN: 14, BaselineSucc: 5,
+		},
+	}}
+	srv := NewServer(
+		WithToolAuditRepository(auditRepo),
+		WithInstinctPlaybooks(instinctRepo, false),
+		WithInstinctLiftRepository(liftRepo),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/insights/tool-budget", nil)
+	rec := httptest.NewRecorder()
+	srv.InsightsToolBudget(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	body := rec.Body.String()
+	assert.Contains(t, body, "Learned-tier lift", "learned-tier lift column header missing")
+	assert.Contains(t, body, "&#43;12%", "measured lift value missing (html-escaped +)")
+	assert.Contains(t, body, "pill-ok", "helping badge class missing")
+}
+
+// TestInsightsToolBudget_LearnedTierLiftAbsentIsDash asserts a budget
+// instinct with no lift snapshot renders the "—" placeholder.
+func TestInsightsToolBudget_LearnedTierLiftAbsentIsDash(t *testing.T) {
+	auditRepo := &fakeToolAuditRepo{rows: mkAuditEntries(map[string]int{"e1": 3})}
+	instinctRepo := &stubInstinctRepo{rows: seedBudgetInstincts()}
+	liftRepo := &stubInstinctLiftRepo{snapshots: map[string]*persistence.InstinctLiftSnapshot{}}
+	srv := NewServer(
+		WithToolAuditRepository(auditRepo),
+		WithInstinctPlaybooks(instinctRepo, false),
+		WithInstinctLiftRepository(liftRepo),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/insights/tool-budget", nil)
+	rec := httptest.NewRecorder()
+	srv.InsightsToolBudget(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "—", "missing dash placeholder for unmeasured budget instinct")
+}
+
+// TestInsightsToolBudget_LearnedTierLiftNilRepo asserts the advisory block
+// (and page) still renders cleanly with no lift repo wired — dashes only,
+// never a panic.
+func TestInsightsToolBudget_LearnedTierLiftNilRepo(t *testing.T) {
+	auditRepo := &fakeToolAuditRepo{rows: mkAuditEntries(map[string]int{"e1": 3})}
+	instinctRepo := &stubInstinctRepo{rows: seedBudgetInstincts()}
+	srv := NewServer(
+		WithToolAuditRepository(auditRepo),
+		WithInstinctPlaybooks(instinctRepo, false),
+		// no WithInstinctLiftRepository
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/ui/insights/tool-budget", nil)
+	rec := httptest.NewRecorder()
+	srv.InsightsToolBudget(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	body := rec.Body.String()
+	assert.Contains(t, body, "Learned provisioning flags")
+	assert.Contains(t, body, "—", "missing dash placeholder with nil lift repo")
+}
+
+// TestAttachBudgetLift_NilBlock asserts the helper no-ops on a nil block.
+func TestAttachBudgetLift_NilBlock(_ *testing.T) {
+	attachBudgetLift(context.Background(), &stubInstinctLiftRepo{}, nil) // must not panic
+}
+
+// TestAttachBudgetLift_NilRepo asserts a nil lift repo leaves the
+// loadBudgetAdvisory dash placeholders untouched.
+func TestAttachBudgetLift_NilRepo(t *testing.T) {
+	repo := &stubInstinctRepo{rows: seedBudgetInstincts()}
+	block := loadBudgetAdvisory(context.Background(), repo, "")
+	require.NotNil(t, block)
+	attachBudgetLift(context.Background(), nil, block)
+	for _, row := range block.Rows {
+		assert.Equal(t, "—", row.Lift)
+		assert.Equal(t, "", row.LiftVerdict)
+	}
+}
+
+// TestAttachBudgetLift_PopulatesFromSnapshot asserts a wired repo with a
+// matching snapshot populates the lift fields on the right row (by
+// InstinctID) and leaves the other row's dash placeholder untouched.
+func TestAttachBudgetLift_PopulatesFromSnapshot(t *testing.T) {
+	repo := &stubInstinctRepo{rows: seedBudgetInstincts()}
+	block := loadBudgetAdvisory(context.Background(), repo, "")
+	require.NotNil(t, block)
+	require.Len(t, block.Rows, 2)
+
+	liftRepo := &stubInstinctLiftRepo{snapshots: map[string]*persistence.InstinctLiftSnapshot{
+		"bud_2": {
+			InstinctID: "bud_2", Lift: -0.05, Verdict: persistence.LiftVerdictLowLift,
+			TreatmentN: 20, TreatmentSucc: 8, BaselineN: 20, BaselineSucc: 9,
+		},
+	}}
+	attachBudgetLift(context.Background(), liftRepo, block)
+
+	var analyst, coder *budgetAdvisoryRow
+	for i := range block.Rows {
+		switch block.Rows[i].InstinctID {
+		case "bud_2":
+			analyst = &block.Rows[i]
+		case "bud_1":
+			coder = &block.Rows[i]
+		}
+	}
+	require.NotNil(t, analyst)
+	require.NotNil(t, coder)
+	assert.Equal(t, "-5%", analyst.Lift)
+	assert.Equal(t, "pill pill-warn", analyst.LiftBadge)
+	// bud_1 has no snapshot -> unchanged dash placeholder.
+	assert.Equal(t, "—", coder.Lift)
+	assert.Equal(t, "", coder.LiftVerdict)
+}
+
+// TestAttachBudgetLift_SnapshotFetchFails asserts a GetLiftSnapshots error
+// fails soft: rows keep the dash placeholders rather than blocking.
+func TestAttachBudgetLift_SnapshotFetchFails(t *testing.T) {
+	repo := &stubInstinctRepo{rows: seedBudgetInstincts()}
+	block := loadBudgetAdvisory(context.Background(), repo, "")
+	require.NotNil(t, block)
+
+	liftRepo := &stubInstinctLiftRepo{err: context.DeadlineExceeded}
+	attachBudgetLift(context.Background(), liftRepo, block)
+	for _, row := range block.Rows {
+		assert.Equal(t, "—", row.Lift)
+	}
+}
+
 // TestAdminInstincts_DomainDropdownIncludesBudget asserts that the budget
 // domain appears in the DomainOptions for the admin instincts page, verifying
 // the dropdown change (Slice 3 requirement 1).

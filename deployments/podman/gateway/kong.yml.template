@@ -1,0 +1,41 @@
+_format_version: "3.0"
+_transform: true
+
+# NOTE: this is a TEMPLATE. The gateway container renders it at start-up by
+# substituting __VORNIK_GATEWAY_TOKEN__ and __GOOGLE_MAPS_API_KEY__ from the
+# mounted gateway.env (see gateway.compose.yaml's entrypoint) into
+# /tmp/kong.yml, which KONG_DECLARATIVE_CONFIG points at. We render with sed
+# rather than Kong's ${VAR}/vault interpolation because plain ${VAR} is NOT
+# interpolated by Kong (it loads the literal string) and vault refs are not
+# honored on request-transformer querystring values.
+
+services:
+  - name: google-maps
+    url: https://maps.googleapis.com/maps/api
+    routes:
+      - name: google-maps-route
+        paths:
+          - /maps
+        methods:
+          - GET
+          - HEAD
+        strip_path: true
+    plugins:
+      # Inject the Google Maps API key; the LLM/daemon never sees it.
+      - name: request-transformer
+        config:
+          add:
+            querystring:
+              - "key:__GOOGLE_MAPS_API_KEY__"
+
+consumers:
+  - username: vornik-daemon
+    keyauth_credentials:
+      - key: "__VORNIK_GATEWAY_TOKEN__"
+
+plugins:
+  # Global key-auth: every route requires the internal apikey header.
+  - name: key-auth
+    config:
+      key_names:
+        - apikey

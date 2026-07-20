@@ -210,3 +210,7 @@ permissions:
     - "file_read"
     - "file_write"
     - "memory_search"
+    - "set_reminder"
+    - "cancel_reminder"
+    - "update_reminder"
+    - "update_operator_profile"

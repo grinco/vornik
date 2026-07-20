@@ -25,6 +25,18 @@ type Manager struct {
 	mu      sync.RWMutex
 	clients map[string]map[string]*Client // projectID → serverName → client
 	logger  zerolog.Logger
+	// blockNotifier, when set, gets a post-hook on every successful tool
+	// result to push an operator Telegram alert for a solvable scraper block
+	// on a curated portal. Nil (default) → no notification. See block_notify.go.
+	blockNotifier *BlockNotifier
+}
+
+// SetBlockNotifier wires the scraper-block → Telegram notify hook. Nil-safe;
+// pass nil (or never call) to leave notification off.
+func (m *Manager) SetBlockNotifier(bn *BlockNotifier) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.blockNotifier = bn
 }
 
 // NewManager creates an MCP manager. Call StartForProject once per project.
@@ -291,6 +303,10 @@ func (m *Manager) Execute(ctx context.Context, projectID, qualifiedName, argsJSO
 	if result.IsError {
 		return fmt.Sprintf("MCP error: %s", text), nil
 	}
+	// Post-hook: a solvable scraper block on a curated portal fires an
+	// operator notification. Nil-safe, non-blocking, all work deferred to a
+	// background worker — this must never affect the result just returned.
+	m.blockNotifier.MaybeNotify(projectID, toolName, argsJSON, text)
 	return text, nil
 }
 

@@ -19,6 +19,8 @@ func resetReminderFlags() {
 	remindersListLimit, remindersListJSON = 50, false
 	remindersShowJSON = false
 	remindersCancelJSON = false
+	remindersPauseJSON = false
+	remindersResumeJSON = false
 	remindersDeleteYes, remindersDeleteJSON = false, false
 	remindersScheduleOperator, remindersScheduleChannel, remindersScheduleChannelRef = "", "", ""
 	remindersScheduleProject, remindersScheduleTimezone = "", ""
@@ -54,7 +56,7 @@ func TestRunRemindersList_TableForwardsFilters(t *testing.T) {
 			t.Errorf("filters not forwarded: %s", r.URL.RawQuery)
 		}
 		_ = json.NewEncoder(w).Encode(reminderListResponse{Entries: []reminderEntry{
-			{ID: "rem-1", Status: "pending", FireAt: "2026-06-20T09:00:00Z", OperatorID: "telegram:42", ProjectID: "snake", Content: "stand-up"},
+			{ID: "rem-1", Status: "pending", Kind: "task", FireAt: "2026-06-20T09:00:00Z", OperatorID: "telegram:42", ProjectID: "snake", Content: "stand-up"},
 		}})
 	}))
 	defer srv.Close()
@@ -72,6 +74,12 @@ func TestRunRemindersList_TableForwardsFilters(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("table missing %q in:\n%s", want, out)
 		}
+	}
+	if !strings.Contains(out, "KIND") {
+		t.Errorf("table header missing KIND column:\n%s", out)
+	}
+	if !strings.Contains(out, "task") {
+		t.Errorf("table row missing kind value 'task':\n%s", out)
 	}
 }
 
@@ -150,6 +158,83 @@ func TestRunRemindersCancel_Success(t *testing.T) {
 	}
 	if !strings.Contains(out, "Cancelled rem-c") || !strings.Contains(out, "cancelled") {
 		t.Errorf("cancel output unexpected:\n%s", out)
+	}
+}
+
+func TestRunRemindersPause_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/pause") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(reminderEntry{ID: "rem-p", Status: "paused"})
+	}))
+	defer srv.Close()
+	t.Setenv("VORNIK_API_URL", srv.URL)
+	t.Setenv("VORNIK_API_KEY", "sk-dev")
+	resetReminderFlags()
+
+	out, err := captureStdoutFunc(t, func() error { return runRemindersPause(remindersPauseCmd, []string{"rem-p"}) })
+	if err != nil {
+		t.Fatalf("runRemindersPause: %v", err)
+	}
+	if !strings.Contains(out, "Paused rem-p") || !strings.Contains(out, "paused") {
+		t.Errorf("pause output unexpected:\n%s", out)
+	}
+}
+
+// Regression (Task 12): the daemon returns 409 when a reminder isn't
+// pausable (mid-run or already terminal). The CLI must surface that
+// as an error, not silently succeed.
+func TestRunRemindersPause_ConflictIsAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "not pausable"})
+	}))
+	defer srv.Close()
+	t.Setenv("VORNIK_API_URL", srv.URL)
+	t.Setenv("VORNIK_API_KEY", "sk-dev")
+	resetReminderFlags()
+
+	if _, err := captureStdoutFunc(t, func() error { return runRemindersPause(remindersPauseCmd, []string{"rem-p"}) }); err == nil {
+		t.Fatal("expected error on 409, got nil")
+	}
+}
+
+func TestRunRemindersResume_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/resume") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(reminderEntry{ID: "rem-r", Status: "pending", FireAt: "2026-07-21T09:00:00Z"})
+	}))
+	defer srv.Close()
+	t.Setenv("VORNIK_API_URL", srv.URL)
+	t.Setenv("VORNIK_API_KEY", "sk-dev")
+	resetReminderFlags()
+
+	out, err := captureStdoutFunc(t, func() error { return runRemindersResume(remindersResumeCmd, []string{"rem-r"}) })
+	if err != nil {
+		t.Fatalf("runRemindersResume: %v", err)
+	}
+	if !strings.Contains(out, "Resumed rem-r") || !strings.Contains(out, "2026-07-21T09:00:00Z") {
+		t.Errorf("resume output unexpected:\n%s", out)
+	}
+}
+
+// Resuming a one-shot reminder is refused daemon-side; the CLI must
+// surface it as an error rather than pretending success.
+func TestRunRemindersResume_OneShotIsAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "one-shot reminders can't be resumed"})
+	}))
+	defer srv.Close()
+	t.Setenv("VORNIK_API_URL", srv.URL)
+	t.Setenv("VORNIK_API_KEY", "sk-dev")
+	resetReminderFlags()
+
+	if _, err := captureStdoutFunc(t, func() error { return runRemindersResume(remindersResumeCmd, []string{"rem-r"}) }); err == nil {
+		t.Fatal("expected error on 400, got nil")
 	}
 }
 

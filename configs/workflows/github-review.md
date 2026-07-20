@@ -3,6 +3,8 @@ workflowId: "github-review"
 displayName: "GitHub PR Review"
 description: "Deterministic-bracketed change-request review: the daemon fetches the diff (forge.fetch_diff), a reviewer agent writes the review prose + verdict, then forge.post_review submits it as a REAL forge review (APPROVE / REQUEST_CHANGES). No agent runs git or gh."
 version: "1.0.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 maxStepVisits: 4
 maxIterations: 20
 entrypoint: "fetch_diff"

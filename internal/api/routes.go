@@ -411,10 +411,10 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		// dispatches /{id} + /{id}/{action} by suffix.
 		mux.HandleFunc("/api/v1/admin/workflow-healing/candidates/", server.adminHealingCandidatesItem)
 
-		// Scheduled reminders surface — read + cancel only. Creation
-		// is driven by the dispatcher's set_reminder tool, not the
-		// REST API (the LLM-side contract is where reminders are
-		// born in v1). See https://docs.vornik.io
+		// Scheduled reminders surface — read + cancel/pause/resume.
+		// Creation is driven by the dispatcher's set_reminder tool,
+		// not the REST API (the LLM-side contract is where reminders
+		// are born in v1). See https://docs.vornik.io
 		mux.HandleFunc("/api/v1/reminders", server.ListReminders)
 		mux.HandleFunc("/api/v1/reminders/", server.remindersRouter)
 

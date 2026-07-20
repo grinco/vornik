@@ -809,7 +809,19 @@ func (c *Container) initChatRouter(cfg config.ChatConfig) error {
 	if err != nil {
 		return fmt.Errorf("chat.router: %w", err)
 	}
-	c.ChatClient = router
+	// Non-swarm model fallback (LLD 2026-07-18-nonswarm-llm-fallback-design.md):
+	// wrap the router so an in-daemon caller (dispatcher/autonomy/wizard +
+	// pinned workers) hitting an open circuit (MODEL_UNHEALTHY) retries once on
+	// the configured per-model twin, then auto-returns to the primary when its
+	// circuit recloses. Agent calls are scoped out via WithoutModelFallback (set
+	// by the chat proxy). Only wrap when a map is configured — otherwise the
+	// router is used directly (no extra layer).
+	if len(cfg.Router.ModelFallbacks) > 0 {
+		c.ChatClient = chat.NewFallbackProvider(router, cfg.Router.ModelFallbacks,
+			c.Logger.With().Str("component", "chat").Str("provider", "fallback").Logger())
+	} else {
+		c.ChatClient = router
+	}
 
 	enabledKinds := make([]string, 0, len(subs))
 	for k := range subs {

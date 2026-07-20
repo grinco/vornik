@@ -3,6 +3,8 @@ workflowId: "document-ingest"
 displayName: "Document ingest (deterministic, no-LLM)"
 description: "Deterministic ingest of operator-uploaded files into project RAG memory. Two no-LLM system steps: rag.extract dispatches each input artifact to its MIME-matched extractor (text / markdown / pdf / epub / html / audio / image); rag.index chunks the extracted sections into project_memory_chunks. Bypasses the rag-ingester agent role for files whose content the extractor pipeline can already handle — zero LLM tokens spent on the mechanical work."
 version: "1.0.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "extract"
 maxStepVisits: 1
 maxIterations: 4

@@ -51,6 +51,10 @@ func (w *serializingWriter) Backup() (string, error) { return "bak", nil }
 func (w *serializingWriter) Restore(string) error    { return nil }
 func (w *serializingWriter) Validate() error         { return nil }
 
+// Fixed path so both writers in the concurrency test share ONE keyed lock and
+// still serialize (path-keyed LockConfigFile replaced the old global applyMu).
+func (w *serializingWriter) ConfigPath() string { return "/fake/serializing-config.yaml" }
+
 // TestApplyEnable_SerializesConcurrentApplies is the regression for the
 // backup/restore race: two simultaneous enables must not interleave their
 // backup→write windows (one's rollback could revert the other's committed

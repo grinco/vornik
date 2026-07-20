@@ -54,6 +54,10 @@ permissions:
     - "file_edit"
     - "memory_search"
     - "current_time"
+    - "set_reminder"
+    - "cancel_reminder"
+    - "update_reminder"
+    - "update_operator_profile"
 
 # ---------------------------------------------------------------
 # Budget — cheap LLM model + few items per tick = low daily spend.

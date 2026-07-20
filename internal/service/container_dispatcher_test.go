@@ -1,6 +1,10 @@
 package service
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -8,6 +12,7 @@ import (
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/ratelimit"
+	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/storage"
 )
 
@@ -124,5 +129,115 @@ func TestInitDispatcher_NilReposGuard(t *testing.T) {
 	c.initDispatcher()
 	if c.Dispatcher == nil {
 		t.Fatal("c.Dispatcher nil with nil repos guard")
+	}
+}
+
+// setupProjectRegistryForBootWarnTest stages+activates a registry containing
+// a single project with the given api_providers allowlist, without needing
+// matching swarm/workflow fixtures — Stage/ActivateStaged (unlike Load)
+// skips cross-reference validation, and LoadProjects/LoadSwarms/LoadWorkflows
+// all tolerate a missing directory, so this is the minimal fixture that gets
+// the project into Registry.ListProjects().
+func setupProjectRegistryForBootWarnTest(t *testing.T, apiProvidersYAML string) *registry.Registry {
+	t.Helper()
+	dir := t.TempDir()
+	projectsDir := filepath.Join(dir, "projects")
+	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	yamlSrc := "projectId: \"janka\"\n" +
+		"swarmId: \"test-swarm\"\n" +
+		"defaultWorkflowId: \"test-workflow\"\n" +
+		apiProvidersYAML
+	if err := os.WriteFile(filepath.Join(projectsDir, "janka.yaml"), []byte(yamlSrc), 0o644); err != nil {
+		t.Fatalf("write project: %v", err)
+	}
+
+	reg := registry.New()
+	if err := reg.Stage(dir); err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if err := reg.ActivateStaged(); err != nil {
+		t.Fatalf("ActivateStaged: %v", err)
+	}
+	return reg
+}
+
+// TestInitDispatcher_WarnsUnknownAPIProviders covers the boot-time wiring of
+// registry.WarnUnknownAPIProviders (query_api provider-discovery design
+// §4.3, cross-task item from Task 2): a project's permissions.api_providers
+// naming a provider absent from gateway.providers must log a warning during
+// initDispatcher, fed by Registry.ListProjects() and the configured
+// gateway.providers name set.
+func TestInitDispatcher_WarnsUnknownAPIProviders(t *testing.T) {
+	reg := setupProjectRegistryForBootWarnTest(t, "permissions:\n  api_providers:\n    - \"maps\"\n    - \"headmatch-ats\"\n")
+
+	buf := &bytes.Buffer{}
+	logger := zerolog.New(buf).Level(zerolog.WarnLevel)
+
+	c := &Container{
+		Logger:     logger,
+		ChatClient: chat.NewClient("https://api.example.com", "test-key", "gpt-4"),
+		Registry:   reg,
+		Config: &config.Config{
+			Gateway: config.GatewayConfig{
+				Providers: map[string]config.ProviderConfig{"maps": {}},
+			},
+		},
+	}
+	c.initDispatcher()
+
+	out := buf.String()
+	if !strings.Contains(out, "headmatch-ats") {
+		t.Fatalf("expected boot warning naming the unknown provider %q, got log: %s", "headmatch-ats", out)
+	}
+	if !strings.Contains(out, "janka") {
+		t.Fatalf("expected boot warning to name the offending project %q, got log: %s", "janka", out)
+	}
+}
+
+// TestInitDispatcher_NoWarnWhenAllProvidersKnown pins the no-noise case at
+// boot: a registry whose only project's allowlist matches the configured
+// gateway providers produces no boot warning.
+func TestInitDispatcher_NoWarnWhenAllProvidersKnown(t *testing.T) {
+	reg := setupProjectRegistryForBootWarnTest(t, "permissions:\n  api_providers:\n    - \"maps\"\n")
+
+	buf := &bytes.Buffer{}
+	logger := zerolog.New(buf).Level(zerolog.WarnLevel)
+
+	c := &Container{
+		Logger:     logger,
+		ChatClient: chat.NewClient("https://api.example.com", "test-key", "gpt-4"),
+		Registry:   reg,
+		Config: &config.Config{
+			Gateway: config.GatewayConfig{
+				Providers: map[string]config.ProviderConfig{"maps": {}},
+			},
+		},
+	}
+	c.initDispatcher()
+
+	// Note: buf may carry unrelated warnings from other initDispatcher steps
+	// (e.g. the extractor's "ArtifactsPath unset" diagnostic, which fires
+	// whenever c.Registry is non-nil regardless of this feature) — so assert
+	// on the specific api_providers diagnostic message, not an empty buffer.
+	if strings.Contains(buf.String(), "api_providers names a provider absent") {
+		t.Errorf("expected no api_providers boot warning when every allowlisted provider is known, got: %s", buf.String())
+	}
+}
+
+// TestInitDispatcher_NilRegistryNoWarnNoPanic pins that the boot-time
+// diagnostic degrades gracefully when c.Registry is nil (an early-init
+// fixture path some tests use) — it must never panic, matching
+// WarnUnknownAPIProviders' own nil-safety contract.
+func TestInitDispatcher_NilRegistryNoWarnNoPanic(t *testing.T) {
+	c := &Container{
+		Logger:     zerolog.Nop(),
+		ChatClient: chat.NewClient("https://api.example.com", "test-key", "gpt-4"),
+		Config:     &config.Config{},
+	}
+	c.initDispatcher()
+	if c.Dispatcher == nil {
+		t.Fatal("c.Dispatcher nil despite ChatClient being configured")
 	}
 }

@@ -356,6 +356,14 @@ func TestInstinctRepository_PostgresContract(t *testing.T) {
 	repotest.RunInstinctSuite(t, NewInstinctRepository(db.DB))
 }
 
+// TestInstinctLiftRepository_PostgresContract — lift-measurement snapshot
+// store (migration 128). Same suite that runs against SQLite.
+func TestInstinctLiftRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunInstinctLiftSuite(t, NewInstinctLiftRepository(db.DB), NewInstinctRepository(db.DB),
+		NewExecutionStepOutcomeRepository(db.DB), NewTaskRepository(db.DB), NewWorkflowProposalRepository(db.DB))
+}
+
 // TestTradingOrderRepository_PostgresContract — broker audit
 // channel + identity-mismatch safeguard. Same suite that pinned
 // the SQLite-side equivalent.

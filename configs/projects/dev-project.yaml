@@ -107,6 +107,10 @@ permissions:
     - "test_run"
     - "lint_run"
     - "typecheck_run"
+    - "set_reminder"
+    - "cancel_reminder"
+    - "update_reminder"
+    - "update_operator_profile"
 
 # mcp:
 #   # Each server's tools are namespaced mcp__{name}__{tool} and visible

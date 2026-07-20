@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
@@ -105,13 +107,12 @@ func (r configGateReader) GateValue(key string) (any, bool) {
 	return config.LookupByPath(r.cfg, key)
 }
 
-// modelPingerAdapter implements featuredoctor.ModelPinger by consulting
-// the daemon's chat provider's model catalog. Reachable returns true
-// when the model ID appears in the discovered catalog.
-//
-// Fallback note: if model discovery fails, the model is considered
-// not-reachable — the operator should diagnose and fix the discovery
-// issue rather than the feature doctor assuming it's fine.
+// modelPingerAdapter implements featuredoctor.ModelPinger for chat models.
+// It first consults the daemon's model catalog; when catalog discovery is
+// incomplete, it falls back to the same per-model completion path runtime
+// callers use (for example instinct.distiller with chat.WithModel). Some
+// providers, notably Bedrock deployments without ListFoundationModels/static
+// catalog coverage, can complete successfully while returning no list rows.
 type modelPingerAdapter struct {
 	provider chat.Provider
 }
@@ -143,7 +144,30 @@ func (m modelPingerAdapter) Reachable(ctx context.Context, modelID string) bool 
 			return true
 		}
 	}
-	return false
+	return m.probeCompletion(ctx, modelID)
+}
+
+func (m modelPingerAdapter) probeCompletion(ctx context.Context, modelID string) bool {
+	provider := m.provider
+	if provider == nil || modelID == "" {
+		return false
+	}
+	if overridable, ok := provider.(chat.ModelOverridable); ok {
+		provider = overridable.WithModel(modelID)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	resp, err := provider.Complete(ctx, []chat.Message{
+		{Role: "system", Content: "You are a model reachability probe. Reply with only ok."},
+		{Role: "user", Content: "ok"},
+	})
+	if err != nil || resp == nil {
+		return false
+	}
+	if len(resp.Choices) == 0 {
+		return false
+	}
+	return strings.TrimSpace(resp.Choices[0].Message.Content) != ""
 }
 
 // taskListerAdapter implements featuredoctor.TaskLister via

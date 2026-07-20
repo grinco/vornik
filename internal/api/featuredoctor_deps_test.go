@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/memory"
 )
 
@@ -56,5 +58,74 @@ func TestEmbeddingProberAdapter_EmptyEndpointOrModel(t *testing.T) {
 	}
 	if (embeddingProberAdapter{}).ProbeEmbedding(context.Background(), memory.Config{EmbeddingEndpoint: "http://127.0.0.1:1"}) {
 		t.Fatal("empty model must probe unreachable")
+	}
+}
+
+type featureDoctorProbeProvider struct {
+	models      []chat.ModelInfo
+	listErr     error
+	completeErr error
+	model       string
+	completed   bool
+}
+
+func (p *featureDoctorProbeProvider) Complete(context.Context, []chat.Message) (*chat.ChatResponse, error) {
+	p.completed = true
+	if p.completeErr != nil {
+		return nil, p.completeErr
+	}
+	resp := &chat.ChatResponse{}
+	resp.Choices = append(resp.Choices, struct {
+		Index        int          `json:"index"`
+		Message      chat.Message `json:"message"`
+		FinishReason string       `json:"finish_reason"`
+	}{Message: chat.Message{Role: "assistant", Content: "ok"}})
+	return resp, nil
+}
+
+func (p *featureDoctorProbeProvider) CompleteWithTools(ctx context.Context, _ []chat.Message, _ []chat.Tool) (*chat.ChatResponse, error) {
+	return p.Complete(ctx, nil)
+}
+
+func (p *featureDoctorProbeProvider) CompleteWithToolsStream(ctx context.Context, _ []chat.Message, _ []chat.Tool, _ chat.StreamCallback) (*chat.ChatResponse, error) {
+	return p.Complete(ctx, nil)
+}
+
+func (p *featureDoctorProbeProvider) Model() string            { return p.model }
+func (p *featureDoctorProbeProvider) SetMetrics(*chat.Metrics) {}
+
+func (p *featureDoctorProbeProvider) WithModel(model string) chat.Provider {
+	cp := *p
+	cp.model = model
+	return &cp
+}
+
+func (p *featureDoctorProbeProvider) ListModels(context.Context) ([]chat.ModelInfo, error) {
+	return p.models, p.listErr
+}
+
+func TestModelPingerAdapter_CatalogHitSkipsCompletionProbe(t *testing.T) {
+	provider := &featureDoctorProbeProvider{
+		models: []chat.ModelInfo{{ID: "openai.gpt-oss-20b-1:0"}},
+	}
+	if !((modelPingerAdapter{provider: provider}).Reachable(context.Background(), "openai.gpt-oss-20b-1:0")) {
+		t.Fatal("catalog-listed model should be reachable")
+	}
+	if provider.completed {
+		t.Fatal("catalog hit should not spend a completion probe")
+	}
+}
+
+func TestModelPingerAdapter_CompletionProbeWhenCatalogMisses(t *testing.T) {
+	provider := &featureDoctorProbeProvider{}
+	if !((modelPingerAdapter{provider: provider}).Reachable(context.Background(), "openai.gpt-oss-20b-1:0")) {
+		t.Fatal("model with successful completion probe should be reachable even when catalog is empty")
+	}
+}
+
+func TestModelPingerAdapter_CompletionProbeFailureIsUnreachable(t *testing.T) {
+	provider := &featureDoctorProbeProvider{completeErr: errors.New("provider down")}
+	if (modelPingerAdapter{provider: provider}).Reachable(context.Background(), "openai.gpt-oss-20b-1:0") {
+		t.Fatal("model with failed catalog and failed completion probe should be unreachable")
 	}
 }

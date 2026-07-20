@@ -470,7 +470,11 @@ func (s *Server) buildCPProposals(ctx context.Context, data *AdminControlPlaneDa
 
 // cpLedgerRow renders one control-plane ledger proposal as a hub row.
 func (s *Server) cpLedgerRow(p *persistence.ControlPlaneProposal) AdminCPRow {
-	applyable := strings.TrimSpace(p.ApplyTarget) != "" || strings.TrimSpace(p.ApplyOps) != ""
+	// KindApplierManaged kinds (e.g. instinct_retire) are applied by a
+	// registered state-mutating KindApplier, not the file-based path — they
+	// are applyable even with empty ApplyTarget/ApplyOps.
+	applyable := strings.TrimSpace(p.ApplyTarget) != "" || strings.TrimSpace(p.ApplyOps) != "" ||
+		persistence.KindApplierManaged(p.Kind)
 	row := AdminCPRow{
 		ID: p.ID, Title: p.Title, Status: p.Status, Kind: p.Kind, BlastRadius: p.BlastRadius,
 		ProjectID: p.ProjectID, ProposedBy: p.ProposedBy, Approver: p.Approver, AppliedBy: p.AppliedBy,

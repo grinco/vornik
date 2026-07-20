@@ -126,6 +126,12 @@ type ApplyEngine struct {
 	Mirror func(proposalID string, files map[string][]byte) error
 	Logger zerolog.Logger
 
+	// KindAppliers routes proposal Kinds that mutate application state
+	// directly (rather than a deployed config file) to a registered
+	// KindApplier — see kind_applier.go. Nil/absent-kind falls through to
+	// the file-based apply path unchanged.
+	KindAppliers map[string]KindApplier
+
 	mu sync.Mutex // global apply lock (serialises all applies + rollbacks)
 }
 
@@ -162,6 +168,24 @@ func (e *ApplyEngine) Apply(ctx context.Context, id, actor string, ackDaemon boo
 	}
 	if p.Status != persistence.ProposalStatusApproved {
 		return persistence.ErrProposalNotApproved
+	}
+	if ka := e.kindApplier(p.Kind); ka != nil {
+		// Same daemon-ack gate as the file path below (apply.go's
+		// ProposalScopeDaemon/ProposalScopeSwarm check) — a kind-applier
+		// proposal is still subject to the blast-radius acknowledgement.
+		if (p.BlastRadius == persistence.ProposalScopeDaemon || p.BlastRadius == persistence.ProposalScopeSwarm) && !ackDaemon {
+			return ErrDaemonAckRequired
+		}
+		snap, aerr := ka.Apply(ctx, p)
+		if aerr != nil {
+			return aerr
+		}
+		if merr := e.Proposals.MarkApplied(ctx, id, actor, snap); merr != nil {
+			return fmt.Errorf("apply recorded failed: %w", merr)
+		}
+		e.Logger.Info().Str("proposal_id", id).Str("kind", p.Kind).
+			Msg("control-plane: kind-applier proposal applied")
+		return nil
 	}
 	ops, err := e.buildOps(p)
 	if err != nil {
@@ -438,6 +462,17 @@ func (e *ApplyEngine) Rollback(ctx context.Context, id string) error {
 	}
 	if p.Status != persistence.ProposalStatusApplied {
 		return persistence.ErrProposalNotApplied
+	}
+	if ka := e.kindApplier(p.Kind); ka != nil {
+		if err := ka.Rollback(ctx, p); err != nil {
+			return err
+		}
+		if err := e.Proposals.MarkRolledBack(ctx, id); err != nil {
+			return fmt.Errorf("rollback recorded failed: %w", err)
+		}
+		e.Logger.Info().Str("proposal_id", id).Str("kind", p.Kind).
+			Msg("control-plane: kind-applier proposal rolled back")
+		return nil
 	}
 	if p.PreApplySnapshot == "" {
 		return ErrSnapshotMissing

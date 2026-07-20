@@ -17,6 +17,8 @@ type uiReminderRepo struct {
 	rows      map[string]*persistence.Reminder
 	cancelled []string
 	deleted   []string
+	paused    []string
+	resumed   []string
 }
 
 func (r *uiReminderRepo) Insert(context.Context, *persistence.Reminder) error { return nil }
@@ -60,8 +62,50 @@ func (r *uiReminderRepo) Delete(_ context.Context, id string) error {
 func (r *uiReminderRepo) CountPendingByOperator(context.Context, string) (int, error) {
 	return 0, nil
 }
-func (r *uiReminderRepo) UpdateFields(context.Context, string, time.Time, string) error {
+func (r *uiReminderRepo) UpdateFields(context.Context, string, persistence.ReminderFieldUpdate) error {
 	return nil
+}
+func (r *uiReminderRepo) MarkTaskSpawned(context.Context, string, string, *time.Time) error {
+	return nil
+}
+func (r *uiReminderRepo) ClaimDelivery(context.Context, string) (*persistence.Reminder, bool, error) {
+	return nil, false, nil
+}
+func (r *uiReminderRepo) FinalizeDelivery(context.Context, string, string, bool) error {
+	return nil
+}
+func (r *uiReminderRepo) CountTaskByOperator(context.Context, string) (int, error) {
+	return 0, nil
+}
+
+// Pause/Resume mirror the real Postgres repository's state-machine
+// guards (pending->paused, paused->pending) so handler tests can
+// exercise both the happy path and the ErrNotFound "wrong state"
+// rejection the way the real repo would.
+func (r *uiReminderRepo) Pause(_ context.Context, id string) error {
+	rem, ok := r.rows[id]
+	if !ok || rem.Status != persistence.ReminderStatusPending {
+		return persistence.ErrNotFound
+	}
+	r.paused = append(r.paused, id)
+	rem.Status = persistence.ReminderStatusPaused
+	return nil
+}
+func (r *uiReminderRepo) Resume(_ context.Context, id string, next time.Time) error {
+	rem, ok := r.rows[id]
+	if !ok || rem.Status != persistence.ReminderStatusPaused {
+		return persistence.ErrNotFound
+	}
+	r.resumed = append(r.resumed, id)
+	rem.Status = persistence.ReminderStatusPending
+	rem.FireAt = next
+	return nil
+}
+
+// ReclaimStuckFiring is Task 14's crash-recovery sweep addition. Not
+// exercised by the UI scope tests — compile stub only.
+func (r *uiReminderRepo) ReclaimStuckFiring(context.Context, time.Time, int) ([]*persistence.Reminder, error) {
+	return nil, nil
 }
 
 func TestUIReminders_FiltersByScopedAPIKey(t *testing.T) {

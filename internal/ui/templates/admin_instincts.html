@@ -99,7 +99,8 @@
                             <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                             <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Confidence</th>
                             <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">+ / −</th>
-                            <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="Application feedback: ↑ succeeded · ↓ failed/rejected · … surfaced-but-unresolved">Lift</th>
+                            <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="Application feedback: ↑ succeeded · ↓ failed/rejected · … surfaced-but-unresolved">Applications</th>
+                            <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="Measured lift: applied success rate vs a matched baseline (migration 128)">Lift</th>
                             <th scope="col" class="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Last seen</th>
                             <th scope="col" class="px-4 py-2.5 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                         </tr></thead>
@@ -126,6 +127,9 @@
                                     <span class="text-rose-700 dark:text-rose-300">{{.ContradictCount}}</span>
                                 </td>
                                 <td class="px-4 py-2 whitespace-nowrap text-right text-[11px] font-mono text-gray-300" title="{{.AppSucceeded}} succeeded · {{.AppFailed}} failed/rejected · {{.AppIgnored}} unresolved">{{.LiftSummary}}</td>
+                                <td class="px-4 py-2 whitespace-nowrap text-right text-[11px] font-mono" title="{{.TrueLiftDetail}}">
+                                    <span class="{{.TrueLiftBadge}}">{{.TrueLift}}</span>
+                                </td>
                                 <td class="px-4 py-2 whitespace-nowrap text-[11px] text-gray-400 font-mono" title="{{.LastSeenAt}}">
                                     <div>{{.LastSeenAt}}</div>
                                     <div class="text-[10px] text-gray-600">{{.LastSeenAgo}}</div>

@@ -177,6 +177,7 @@ type workflowMDFrontmatterShape struct {
 	Author      string    `yaml:"author"`
 	License     string    `yaml:"license"`
 	Metadata    yaml.Node `yaml:"metadata"`
+	Validation  yaml.Node `yaml:"validation"`
 }
 
 // relatedSkills extracts the optional metadata.related_skills
@@ -219,6 +220,25 @@ func (s *workflowMDFrontmatterShape) relatedSkills() ([]string, bool) {
 	return nil, true
 }
 
+// allowLargeFile suppresses the 15k soft-size warning for workflows
+// whose large inline prompt contracts are intentional. The 100k hard
+// cap still applies.
+func (s *workflowMDFrontmatterShape) allowLargeFile() bool {
+	if s.Validation.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(s.Validation.Content); i += 2 {
+		k := s.Validation.Content[i]
+		v := s.Validation.Content[i+1]
+		if k.Value != "allowLargeFile" {
+			continue
+		}
+		var b bool
+		return v.Decode(&b) == nil && b
+	}
+	return false
+}
+
 // ValidateWorkflowMarkdown runs every SKILL.md-shape rule
 // against a WORKFLOW.md file's raw bytes and returns the full
 // report. Never returns a Go error for a content problem — all
@@ -236,28 +256,6 @@ func (s *workflowMDFrontmatterShape) relatedSkills() ([]string, bool) {
 // "validation failed" string from the other.
 func ValidateWorkflowMarkdown(content []byte, filename string) *WorkflowMDValidationReport {
 	report := &WorkflowMDValidationReport{Filename: filename}
-
-	// Size cap: applied to the RAW bytes, not the post-strip
-	// content, so a 200KB file padded with trailing whitespace
-	// still trips the cap. The 100 000-char limit is generous
-	// (the agentskills.io spec quotes the same figure); the
-	// 15 000-char soft target follows the same source.
-	size := len(content)
-	if size > workflowMDHardSizeLimit {
-		report.Findings = append(report.Findings, WorkflowMDFinding{
-			Severity: SeverityError,
-			Code:     "file_size_hard",
-			Message:  fmt.Sprintf("file is %d chars; max is %d. Split into smaller skills or move docs out of the workflow file.", size, workflowMDHardSizeLimit),
-		})
-		// Keep going — operators want to see every problem in
-		// one pass, not "fix size, then run again, fix next".
-	} else if size > workflowMDSoftSizeLimit {
-		report.Findings = append(report.Findings, WorkflowMDFinding{
-			Severity: SeverityWarning,
-			Code:     "file_size_soft",
-			Message:  fmt.Sprintf("file is %d chars; target ≤%d. Consider moving long prose to a separate doc.", size, workflowMDSoftSizeLimit),
-		})
-	}
 
 	// Frontmatter split: reuse the phase-1 helper so the same
 	// "marker on its own line, BOM-tolerant" semantics apply.
@@ -292,6 +290,30 @@ func ValidateWorkflowMarkdown(content []byte, filename string) *WorkflowMDValida
 			Message:  fmt.Sprintf("frontmatter is not valid YAML: %v", err),
 		})
 		return report
+	}
+
+	// Size cap: applied to the RAW bytes, not the post-strip
+	// content, so a 200KB file padded with trailing whitespace
+	// still trips the cap. The 100 000-char limit is generous
+	// (the agentskills.io spec quotes the same figure); the
+	// 15 000-char soft target follows the same source. Large
+	// prompt-heavy workflows may explicitly waive only the soft
+	// warning via validation.allowLargeFile.
+	size := len(content)
+	if size > workflowMDHardSizeLimit {
+		report.Findings = append(report.Findings, WorkflowMDFinding{
+			Severity: SeverityError,
+			Code:     "file_size_hard",
+			Message:  fmt.Sprintf("file is %d chars; max is %d. Split into smaller skills or move docs out of the workflow file.", size, workflowMDHardSizeLimit),
+		})
+		// Keep going — operators want to see every problem in
+		// one pass, not "fix size, then run again, fix next".
+	} else if size > workflowMDSoftSizeLimit && !shape.allowLargeFile() {
+		report.Findings = append(report.Findings, WorkflowMDFinding{
+			Severity: SeverityWarning,
+			Code:     "file_size_soft",
+			Message:  fmt.Sprintf("file is %d chars; target ≤%d. Consider moving long prose to a separate doc, or set validation.allowLargeFile when long inline prompts are intentional.", size, workflowMDSoftSizeLimit),
+		})
 	}
 
 	// --- Required fields ---------------------------------------------------

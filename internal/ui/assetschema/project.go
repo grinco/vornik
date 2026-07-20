@@ -159,6 +159,7 @@ var ProjectDeferredPaths = []string{
 	// Permissions — security-sensitive (tool/secret allowlists).
 	"permissions.secrets",
 	"permissions.allowedTools",
+	"permissions.api_providers",
 	// MCP server wiring — complex nested blocks.
 	"mcp.servers",
 	"mcp.toolRateLimits",

@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"vornik.io/vornik/internal/config"
@@ -75,17 +74,13 @@ type ReloadStatusChecker interface {
 	Status() config.ReloadStatus
 }
 
-// saveMu serialises Save's config-file read-modify-write transaction (backup →
-// patch → write → validate → reload). FileConfigWriter is atomic per-write
-// (temp+rename, no corruption) but does NOT prevent a lost update: two
-// concurrent Saves each back up the current config, patch their own copy, and
-// the second Write clobbers the first's just-landed keys (review-20260716-b1ab).
-// One coarse package mutex is adequate for this rare, admin-only, low-volume
-// path. NOTE: this serialises integrations Saves against each other only — it is
-// NOT shared with featuredoctor's applyMu, so a concurrent integrations Save and
-// a feature-doctor gate-enable can still race on config.yaml; a shared
-// config-write lock is the durable cross-subsystem fix (deferred).
-var saveMu sync.Mutex
+// Save's config-file read-modify-write transaction is serialised by the SHARED
+// path-keyed lock featuredoctor.LockConfigFile (taken in Save below), which
+// featuredoctor.ApplyEnable also takes — so an integrations Save and a
+// feature-doctor gate-enable on the SAME config.yaml now serialise instead of
+// lost-updating each other (the cross-subsystem fix; review-20260717-92ec,
+// LLD 2026-07-18-config-write-lock-design.md). FileConfigWriter's temp+rename
+// stops corruption; the lock stops lost-updates.
 
 // SaveDeps bundles the injectable seams Save needs. Production wiring
 // (5.3) supplies the real ConfigDir + featuredoctor.FileConfigWriter (via
@@ -215,11 +210,19 @@ func Save(ctx context.Context, kind IntegrationKind, target SaveTarget, cand Can
 		return SaveResult{Probe: probe, Saved: false}, nil
 	}
 
-	// Serialise the mutating transaction (see saveMu). The read-only probe
-	// above stays unlocked so a slow provider round-trip doesn't stall other
-	// saves; from here on we read-modify-write the config file.
-	saveMu.Lock()
-	defer saveMu.Unlock()
+	// Resolve the target config path up front so we can take the SHARED
+	// path-keyed write lock on it (featuredoctor.LockConfigFile) — the same lock
+	// featuredoctor.ApplyEnable takes, closing the cross-subsystem lost-update on
+	// config.yaml. The read-only probe above stayed unlocked so a slow provider
+	// round-trip doesn't stall other saves; from here on we read-modify-write the
+	// config file. Same file serializes; different files (a project config vs the
+	// daemon config.yaml) don't block each other.
+	configPath, err := target.ConfigFile(deps.ConfigDir, cand.ProjectID)
+	if err != nil {
+		return SaveResult{Probe: probe}, fmt.Errorf("integrations: resolve config path: %w", err)
+	}
+	unlock := featuredoctor.LockConfigFile(configPath)
+	defer unlock()
 
 	// Step 2 (field-split) + Step 3 (place secrets first).
 	patches, placedSecretFiles, err := splitAndPlaceFields(kind, target, cand, deps)
@@ -229,11 +232,6 @@ func Save(ctx context.Context, kind IntegrationKind, target SaveTarget, cand Can
 	}
 
 	// Step 4: patch config transactionally.
-	configPath, err := target.ConfigFile(deps.ConfigDir, cand.ProjectID)
-	if err != nil {
-		removeSecretFiles(placedSecretFiles)
-		return SaveResult{Probe: probe}, fmt.Errorf("integrations: resolve config path: %w", err)
-	}
 	writer := deps.newWriter(configPath, target.Scope)
 
 	backup, err := writer.Backup()

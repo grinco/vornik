@@ -259,3 +259,39 @@ func TestGate_RejectsFastAcrossSteps(t *testing.T) {
 		t.Fatalf("all 10 subsequent gate calls must fast-reject; got %d", calls)
 	}
 }
+
+// TestModelHealthSnapshot pins the doctor-facing accessor (unify-observability
+// LLD 2026-07-18): every agent breaker is reported with Route=="agent" and its
+// live state, so the doctor can surface the agent breaker alongside the chat one.
+func TestModelHealthSnapshot(t *testing.T) {
+	r := newReg(agentCfg(), true)
+	// Drive "m" OPEN via 3 sustained infra failures (MinSamples=3).
+	for i := 0; i < 3; i++ {
+		r.Record("m", false, fmt.Errorf("PROVIDER_ERROR: upstream provider returned an error"))
+	}
+	// A healthy breaker (a success record creates it, closed).
+	r.Record("healthy", false, nil)
+
+	snaps := r.ModelHealthSnapshot()
+	byModel := map[string]chat.ModelHealthSnapshot{}
+	for _, s := range snaps {
+		if s.Route != "agent" {
+			t.Errorf("snapshot %+v: Route=%q, want \"agent\"", s, s.Route)
+		}
+		byModel[s.Model] = s
+	}
+	if byModel["m"].State != "open" {
+		t.Errorf("model m: State=%q, want open (snaps=%v)", byModel["m"].State, snaps)
+	}
+	if s, ok := byModel["healthy"]; !ok || s.State != "closed" {
+		t.Errorf("healthy breaker: got %+v (ok=%v), want closed", s, ok)
+	}
+}
+
+// TestModelHealthSnapshot_NilRegistry pins the nil-safety invariant (review M1).
+func TestModelHealthSnapshot_NilRegistry(t *testing.T) {
+	var r *Registry
+	if got := r.ModelHealthSnapshot(); got != nil {
+		t.Errorf("nil registry ModelHealthSnapshot() = %v, want nil", got)
+	}
+}

@@ -89,6 +89,11 @@ type Repositories struct {
 	// worker (internal/instinct) is gated behind instinct.enabled
 	// (default off), so the repo sits idle until an operator opts in.
 	Instincts persistence.InstinctRepository
+	// InstinctLift backs the true-lift measurement layer (migration
+	// 128): the latest snapshot store plus (in later tasks) the
+	// per-domain treatment/complement outcome queries. Wired on both
+	// backends.
+	InstinctLift persistence.InstinctLiftRepository
 	// ProjectWizardSessions backs Feature #2 — the conversational
 	// project-setup wizard. Migration 49 wires the table; the
 	// repo is nil-safe at every consumer (handler short-circuits
@@ -333,6 +338,7 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		JudgeVerdicts:                  sqlite.NewTaskJudgeVerdictRepository(db),
 		PostMortems:                    sqlite.NewTaskPostMortemRepository(db),
 		Instincts:                      sqlite.NewInstinctRepository(db),
+		InstinctLift:                   sqlite.NewInstinctLiftRepository(db),
 		ProjectWizardSessions:          sqlite.NewProjectWizardSessionRepository(db),
 		InstallationOnboardingSessions: sqlite.NewInstallationOnboardingSessionRepository(db),
 		FixItSessions:                  sqlite.NewFixItSessionRepository(db),
@@ -454,6 +460,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		JudgeVerdicts:                  postgres.NewTaskJudgeVerdictRepository(dbtx),
 		PostMortems:                    postgres.NewTaskPostMortemRepository(dbtx),
 		Instincts:                      postgres.NewInstinctRepository(dbtx),
+		InstinctLift:                   postgres.NewInstinctLiftRepository(dbtx),
 		ProjectWizardSessions:          postgres.NewProjectWizardSessionRepository(dbtx),
 		InstallationOnboardingSessions: postgres.NewInstallationOnboardingSessionRepository(dbtx),
 		FixItSessions:                  postgres.NewFixItSessionRepository(dbtx),

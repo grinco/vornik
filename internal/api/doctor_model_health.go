@@ -100,6 +100,18 @@ func (h *DoctorHandlers) SetChatProvider(p chat.Provider) {
 	}
 }
 
+// SetAgentHealthReporter wires the live AGENT-container circuit-breaker reporter
+// for checkAgentModelCircuits. The agenthealth.Registry implements
+// chat.ModelHealthReporter; a nil reporter leaves agentCircuits nil and the
+// check skips. (ModelHealthSnapshot is itself nil-safe, so a typed-nil registry
+// is also fine.)
+func (h *DoctorHandlers) SetAgentHealthReporter(r chat.ModelHealthReporter) {
+	if h == nil || r == nil {
+		return
+	}
+	h.agentCircuits = r.ModelHealthSnapshot
+}
+
 // checkModelCircuits surfaces the LIVE model-health circuit-breaker state
 // alongside the 24h passive checkModelHealth. Unlike checkModelHealth (a DB
 // history read that recommends a fallback), this reflects the in-memory
@@ -147,6 +159,54 @@ func (h *DoctorHandlers) checkModelCircuits() DoctorCheck {
 		Name:    name,
 		Status:  worst,
 		Message: fmt.Sprintf("%d of %d model circuit(s) not closed — the chat router is actively degrading", len(degraded), len(snaps)),
+		Items:   degraded,
+	}
+}
+
+// checkAgentModelCircuits surfaces the LIVE agent-container circuit-breaker
+// state — the breaker that gates agent-step LLM calls BEFORE the chat router, so
+// an open agent circuit can leave the chat-router circuit CLOSED (the two-breaker
+// gotcha, 2026-07-18). Distinct from checkModelCircuits (the chat-router
+// breaker). Read-only.
+func (h *DoctorHandlers) checkAgentModelCircuits() DoctorCheck {
+	const name = "agent_model_circuits"
+	if h.agentCircuits == nil {
+		return DoctorCheck{Name: name, Status: "OK", Message: "agent health-gate not wired; skipping live agent circuit check"}
+	}
+	snaps := h.agentCircuits()
+	if len(snaps) == 0 {
+		return DoctorCheck{Name: name, Status: "OK", Message: "no agent model circuits initialized yet (no agent LLM calls since boot)"}
+	}
+	// Sort worst-first, then by model (the agent breaker's route is always "agent").
+	sort.Slice(snaps, func(i, j int) bool {
+		oi, oj := circuitSeverity(snaps[i].State), circuitSeverity(snaps[j].State)
+		if oi != oj {
+			return oi > oj
+		}
+		return snaps[i].Model < snaps[j].Model
+	})
+	var degraded []string
+	worst := "OK"
+	for _, s := range snaps {
+		switch s.State {
+		case "open":
+			worst = "ERROR"
+			degraded = append(degraded, fmt.Sprintf("[ERROR] agent/%s OPEN since %s — agent steps failing over to role modelFallback",
+				s.Model, s.OpenSince.Format(time.RFC3339)))
+		case "half_open":
+			if worst != "ERROR" {
+				worst = "WARNING"
+			}
+			degraded = append(degraded, fmt.Sprintf("[WARNING] agent/%s HALF_OPEN — probing recovery", s.Model))
+		}
+	}
+	if len(degraded) == 0 {
+		return DoctorCheck{Name: name, Status: "OK", Message: fmt.Sprintf("all %d agent model circuit(s) closed", len(snaps))}
+	}
+	return DoctorCheck{
+		Name:    name,
+		Status:  worst,
+		Message: fmt.Sprintf("%d of %d agent model circuit(s) not closed — the agent LLM path is actively degrading", len(degraded), len(snaps)),
 		Items:   degraded,
 	}
 }

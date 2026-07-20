@@ -3,6 +3,8 @@ workflowId: "publish"
 displayName: "Publish"
 description: "Render EXPLICIT content into a single self-contained, Vornik-themed HTML page and publish it via PageDrop, returning a shareable link. Standalone counterpart to research-and-publish: the task prompt must supply the content to publish — a workspace file path (e.g. a committed report) or the text inline. The publisher renders exactly that (never a memory/RAG search). Use it to (re)publish a specific document on demand; for fresh research use research-and-publish instead."
 version: "1.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "publish"
 maxStepVisits: 2
 maxIterations: 6

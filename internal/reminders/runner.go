@@ -12,6 +12,9 @@ package reminders
 
 import (
 	"context"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,12 +35,64 @@ const DefaultTickInterval = 30 * time.Second
 // daemon was down for an hour and 50,000 reminders are due).
 const DefaultBatchSize = 100
 
+// DefaultFiringGrace is how long a row may sit in 'firing' before
+// sweepStuckFiring reclaims it (crash recovery, design §9).
+// Overridable via VORNIK_REMINDERS_FIRING_GRACE (a Go duration
+// string, e.g. "5m"); an unparseable or non-positive value falls
+// back to this default rather than disabling the sweep.
+const DefaultFiringGrace = 15 * time.Minute
+
+// firingGraceEnvVar is the operator override for DefaultFiringGrace.
+const firingGraceEnvVar = "VORNIK_REMINDERS_FIRING_GRACE"
+
+// legacyFiringGraceEnvVar is the pre-rename name. It shipped to main +
+// prod under the SWARMD_ prefix before the reminder knobs were migrated
+// to the codebase-standard VORNIK_ scheme; read as a fallback so a
+// deployment that set the old name keeps working. Remove once no
+// deployment references it.
+const legacyFiringGraceEnvVar = "SWARMD_REMINDERS_FIRING_GRACE"
+
+// taskTypeEnvVar overrides the default task type a task-kind reminder
+// spawns (Config.DefaultTaskType). Falls back to "research" when neither
+// the Config field nor this env var is set.
+const taskTypeEnvVar = "VORNIK_REMINDERS_TASK_TYPE"
+
+// defaultReminderTaskType is the task type handed to the creator when
+// neither Config.DefaultTaskType nor taskTypeEnvVar is set.
+const defaultReminderTaskType = "research"
+
+// sweepEveryNTicks gates sweepStuckFiring to a slower cadence than the
+// main due-lease tick. Stuck-firing rows are a rare crash-recovery
+// case, not something that needs sub-minute polling. At
+// DefaultTickInterval (30s), 10 ticks ≈ 5 minutes — comfortably under
+// DefaultFiringGrace (15m) so a row crossing the grace threshold gets
+// swept within one cycle rather than waiting a full grace window.
+const sweepEveryNTicks = 10
+
 // ChannelResolver returns the conversation.Channel registered
 // for a given channel name (e.g. "telegram"). Returns nil when
 // the channel isn't wired on this deployment — Runner records
 // the row as errored rather than crashing.
 type ChannelResolver interface {
 	ResolveChannel(name string) conversation.Channel
+}
+
+// ScheduledTaskParams is the narrow shape the runner hands the task
+// creator at fire time. Keeps the reminders package decoupled from
+// taskcreate.Params (the container adapter maps between them).
+type ScheduledTaskParams struct {
+	ProjectID      string
+	Prompt         string
+	TaskType       string
+	IdempotencyKey string
+	ReminderID     string
+}
+
+// TaskCreator creates the task a task-kind reminder fires. The
+// container adapts *taskcreate.Creator to this (see
+// container_reminders.go). Returns the new task id.
+type TaskCreator interface {
+	CreateScheduledTask(ctx context.Context, p ScheduledTaskParams) (string, error)
 }
 
 // Config wires the Runner. Repo + Resolver are required;
@@ -55,6 +110,18 @@ type Config struct {
 	// (single-process default) runs every tick. See
 	// https://docs.vornik.io §3.
 	LeaderGate LeaderGate
+	// Creator spawns the task for task-kind reminders. nil disables
+	// the task-kind path (text-kind still works).
+	Creator TaskCreator
+	// DefaultTaskType is the TaskType handed to the creator (project's
+	// default workflow handles it). Empty defaults to "research", or the
+	// VORNIK_REMINDERS_TASK_TYPE override, resolved at New time.
+	DefaultTaskType string
+	// FiringGrace is how long a row may sit in 'firing' before
+	// sweepStuckFiring reclaims it. Zero defaults to
+	// DefaultFiringGrace (or the VORNIK_REMINDERS_FIRING_GRACE
+	// override) at New time.
+	FiringGrace time.Duration
 }
 
 // LeaderGate is the narrow contract the heartbeat consults
@@ -79,6 +146,11 @@ type Runner struct {
 	// transition.
 	mu       sync.Mutex
 	inflight bool
+
+	// tickCount drives sweepEveryNTicks — the stuck-firing sweep's
+	// slower cadence. Only touched from within tickOnce, which the
+	// inflight guard already serialises, so no separate lock needed.
+	tickCount uint64
 }
 
 // New constructs a Runner with defaults applied. Nil Repo /
@@ -94,7 +166,36 @@ func New(cfg Config) *Runner {
 	if cfg.Clock == nil {
 		cfg.Clock = time.Now
 	}
+	if cfg.DefaultTaskType == "" {
+		cfg.DefaultTaskType = defaultReminderTaskType
+		if v := strings.TrimSpace(os.Getenv(taskTypeEnvVar)); v != "" {
+			cfg.DefaultTaskType = v
+			// The value is taken verbatim (there's no task-type registry
+			// to validate against here) — a typo makes every task-kind
+			// fire fail at task creation, so surface the override loudly.
+			cfg.Logger.Info().Str("task_type", v).Str("env", taskTypeEnvVar).
+				Msg("reminders: task-kind task type overridden via env; ensure it is a valid task type")
+		}
+	}
+	if cfg.FiringGrace <= 0 {
+		cfg.FiringGrace = DefaultFiringGrace
+		if v := firingGraceOverride(); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d > 0 {
+				cfg.FiringGrace = d
+			}
+		}
+	}
 	return &Runner{cfg: cfg, kickCh: make(chan struct{}, 1)}
+}
+
+// firingGraceOverride reads the firing-grace override, preferring the
+// VORNIK_ name and falling back to the legacy SWARMD_ name (which shipped
+// to prod before the reminder knobs were migrated to the VORNIK_ scheme).
+func firingGraceOverride() string {
+	if v := strings.TrimSpace(os.Getenv(firingGraceEnvVar)); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv(legacyFiringGraceEnvVar))
 }
 
 // Run blocks on a ticker until ctx is cancelled. Each tick (and
@@ -128,6 +229,21 @@ func (r *Runner) SetLeaderGate(g LeaderGate) {
 	r.cfg.LeaderGate = g
 }
 
+// SetCreator attaches the task creator after construction, enabling the
+// task-kind reminder path. Mirrors SetLeaderGate: the service container
+// builds the Runner (initReminders) before the shared task-creation core
+// exists (initHTTPServer, later in the boot sequence), so the container
+// wires this in once the creator is available — see
+// internal/service/subsystem_reminders.go. Safe to call before Run; nil
+// creator leaves the task-kind path disabled (text-kind reminders are
+// unaffected).
+func (r *Runner) SetCreator(creator TaskCreator) {
+	if r == nil {
+		return
+	}
+	r.cfg.Creator = creator
+}
+
 // Kick forces an out-of-band sweep. Used after a fresh insert
 // when the reminder is due immediately ("remind me in 30
 // seconds"). Idempotent — overlapping calls collapse.
@@ -158,6 +274,15 @@ func (r *Runner) tickOnce(ctx context.Context) {
 		r.mu.Unlock()
 	}()
 
+	// Stuck-firing reclaim sweep runs on a slower cadence than the
+	// main due-lease pass below — gated here, ahead of LeaseDue, so it
+	// still fires on ticks with no due work (an idle heartbeat is
+	// exactly when a crash-orphaned row would otherwise sit unnoticed).
+	r.tickCount++
+	if r.tickCount%sweepEveryNTicks == 0 {
+		r.sweepStuckFiring(ctx)
+	}
+
 	due, err := r.cfg.Repo.LeaseDue(ctx, r.cfg.Clock(), r.cfg.BatchSize)
 	if err != nil {
 		r.cfg.Logger.Error().Err(err).Msg("reminders: lease_due failed")
@@ -171,7 +296,73 @@ func (r *Runner) tickOnce(ctx context.Context) {
 		if rem == nil {
 			continue
 		}
+		if rem.IsTaskKind() {
+			r.deliverTask(ctx, rem)
+			continue
+		}
 		r.deliver(ctx, rem)
+	}
+}
+
+// sweepStuckFiring reclaims rows stuck in 'firing' past cfg.FiringGrace
+// — the crash-recovery pass design §9 names: (a) a crash between
+// LeaseDue and MarkTaskSpawned (task-kind spawn interrupted), (b) a
+// crash between Send/ClaimDelivery and FinalizeDelivery (delivery
+// interrupted), and (c) the pre-existing text-kind case where a failed
+// Send leaves the row firing forever. Recurring rows re-arm via the
+// same cron/bound logic as finalize (§4.1/§4.2's re-arm path);
+// one-shot rows get MarkErrored — which, by design, does not itself
+// change status off 'firing' (see MarkErrored's doc comment), so a
+// permanently-broken one-shot row is re-flagged (error_count bumped,
+// metric incremented) on every subsequent sweep cycle until an
+// operator cancels it. That matches the existing accepted behavior for
+// a failed text-kind send; this sweep just makes it periodic /
+// observable instead of silent. ReclaimStuckFiring never returns
+// 'awaiting_task' rows, so a genuinely long-running task is never
+// touched here.
+func (r *Runner) sweepStuckFiring(ctx context.Context) {
+	cutoff := r.cfg.Clock().Add(-r.cfg.FiringGrace)
+	stuck, err := r.cfg.Repo.ReclaimStuckFiring(ctx, cutoff, r.cfg.BatchSize)
+	if err != nil {
+		r.cfg.Logger.Error().Err(err).Msg("reminders: reclaim_stuck_firing failed")
+		return
+	}
+	if len(stuck) == 0 {
+		return
+	}
+	r.cfg.Logger.Warn().Int("count", len(stuck)).Msg("reminders: reclaiming stuck-firing rows")
+	for _, rem := range stuck {
+		if rem == nil {
+			continue
+		}
+		metricFiringReclaimed.Inc()
+		if !rem.IsRecurring() {
+			if err := r.cfg.Repo.MarkErrored(ctx, rem.ID, "reclaimed: stuck in firing after crash"); err != nil {
+				r.cfg.Logger.Warn().Err(err).Str("reminder_id", rem.ID).
+					Msg("reminders: stuck-firing reclaim mark_errored failed")
+			}
+			continue
+		}
+		next, nerr := NextFireAt(rem.CronExpr, r.cfg.Clock())
+		if nerr != nil {
+			_ = r.cfg.Repo.MarkErrored(ctx, rem.ID, "reclaimed: re-arm cron invalid: "+nerr.Error())
+			r.cfg.Logger.Warn().Err(nerr).Str("reminder_id", rem.ID).Str("cron_expr", rem.CronExpr).
+				Msg("reminders: stuck-firing reclaim cron parse failed; marked errored")
+			continue
+		}
+		if rem.RecurrenceUntil != nil && next.After(*rem.RecurrenceUntil) {
+			// Past the operator-named bound — terminate cleanly,
+			// same as finalize's terminal-when-bound-hit branch.
+			if err := r.cfg.Repo.MarkFired(ctx, rem.ID); err != nil {
+				r.cfg.Logger.Warn().Err(err).Str("reminder_id", rem.ID).
+					Msg("reminders: stuck-firing reclaim mark_fired (bound past) failed")
+			}
+			continue
+		}
+		if err := r.cfg.Repo.Reschedule(ctx, rem.ID, next); err != nil {
+			r.cfg.Logger.Warn().Err(err).Str("reminder_id", rem.ID).
+				Msg("reminders: stuck-firing reclaim reschedule failed")
+		}
 	}
 }
 
@@ -224,6 +415,68 @@ func (r *Runner) deliver(ctx context.Context, rem *persistence.Reminder) {
 			Msg("reminders: finalize failed after successful send")
 	}
 	r.audit(ctx, rem)
+}
+
+// deliverTask handles a task-kind fire: create the task, then atomically
+// re-arm + record it. The row is already 'firing' (leased), so no other
+// tick can touch it. A crash before MarkTaskSpawned leaves it 'firing'
+// (recoverable by the Phase-C sweep) — the fire is never silently lost.
+// See design §4.1.
+func (r *Runner) deliverTask(ctx context.Context, rem *persistence.Reminder) {
+	if r.cfg.Creator == nil {
+		_ = r.cfg.Repo.MarkErrored(ctx, rem.ID, "task creator not wired")
+		r.cfg.Logger.Warn().Str("reminder_id", rem.ID).Msg("reminders: no task creator wired — row marked errored")
+		return
+	}
+	// Idempotency: rem.ID + fire slot. A re-leased slot returns the same task.
+	idem := rem.ID + ":" + strconv.FormatInt(rem.FireAt.Unix(), 10)
+	taskID, err := r.cfg.Creator.CreateScheduledTask(ctx, ScheduledTaskParams{
+		ProjectID:      rem.ProjectID,
+		Prompt:         rem.Content,
+		TaskType:       r.cfg.DefaultTaskType,
+		IdempotencyKey: idem,
+		ReminderID:     rem.ID,
+	})
+	if err != nil {
+		_ = r.cfg.Repo.MarkErrored(ctx, rem.ID, "task creation failed: "+err.Error())
+		r.cfg.Logger.Warn().Err(err).Str("reminder_id", rem.ID).Msg("reminders: task-kind spawn failed")
+		return
+	}
+	var nextFireAt *time.Time
+	if rem.IsRecurring() {
+		next, nerr := NextFireAt(rem.CronExpr, r.cfg.Clock())
+		if nerr != nil {
+			_ = r.cfg.Repo.MarkErrored(ctx, rem.ID, "re-arm cron invalid: "+nerr.Error())
+			r.cfg.Logger.Warn().Err(nerr).Str("reminder_id", rem.ID).Str("cron_expr", rem.CronExpr).
+				Msg("reminders: task-kind re-arm cron parse failed; task created but row marked errored")
+			return
+		}
+		if rem.RecurrenceUntil == nil || !next.After(*rem.RecurrenceUntil) {
+			nextFireAt = &next
+		}
+		// If bounded and past the bound, leave nextFireAt nil so the row
+		// terminalizes at delivery (FinalizeDelivery terminal=true).
+	}
+	if err := r.cfg.Repo.MarkTaskSpawned(ctx, rem.ID, taskID, nextFireAt); err != nil {
+		r.cfg.Logger.Warn().Err(err).Str("reminder_id", rem.ID).Msg("reminders: mark_task_spawned failed after task create")
+		return
+	}
+	metricTaskSpawned.WithLabelValues(rem.ProjectID).Inc()
+	r.auditTask(ctx, rem, taskID, "reminder.task_spawned")
+}
+
+// auditTask writes the spawn/deliver audit row (mirrors audit()).
+func (r *Runner) auditTask(ctx context.Context, rem *persistence.Reminder, taskID, action string) {
+	if r.cfg.AuditRepo == nil {
+		return
+	}
+	_ = r.cfg.AuditRepo.Insert(ctx, &persistence.AdminAuditEntry{
+		Principal: rem.OperatorID,
+		Source:    "reminder-heartbeat",
+		Action:    action,
+		Target:    rem.ID,
+		After:     `{"task_id":"` + taskID + `","project_id":"` + rem.ProjectID + `"}`,
+	})
 }
 
 // finalize transitions a row that just delivered to its next

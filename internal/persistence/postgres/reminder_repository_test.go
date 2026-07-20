@@ -31,6 +31,9 @@ func TestReminder_Insert_StampsDefaults(t *testing.T) {
 			"chat",
 			sqlmock.AnyArg(), // cron_expr NullString
 			sqlmock.AnyArg(), // recurrence_until NullTime
+			"text",           // kind defaults to text
+			sqlmock.AnyArg(), // last_task_id NullString
+			sqlmock.AnyArg(), // last_delivered_task_id NullString
 		).WillReturnResult(sqlmock.NewResult(0, 1))
 
 	rem := &persistence.Reminder{
@@ -68,11 +71,13 @@ func TestReminder_LeaseDue(t *testing.T) {
 		"fire_at", "content", "status", "created_at", "fired_at",
 		"cancelled_at", "created_via", "error_count", "last_error",
 		"cron_expr", "recurrence_until",
+		"kind", "last_task_id", "last_delivered_task_id",
 	}).AddRow(
 		"rem_001", "telegram:42", "telegram", "1234", nil,
 		now.Add(-1*time.Minute), "go check the deploy", "firing", now.Add(-10*time.Minute), nil,
 		nil, "chat", 0, nil,
 		nil, nil,
+		"text", nil, nil,
 	)
 	mock.ExpectQuery(regexp.QuoteMeta("FOR UPDATE SKIP LOCKED")).
 		WithArgs(sqlmock.AnyArg(), 10).

@@ -145,6 +145,13 @@ func buildAgentContextMap(taskType, prompt string, timeContext currentDateTimeCo
 	if len(opts.InputArtifacts) > 0 {
 		contextMap["inputArtifacts"] = opts.InputArtifacts
 	}
+	// inputArtifactsSummary rides alongside inputArtifacts only when a
+	// stage_child_artifacts step gathered its delegated children on resume
+	// (nil otherwise). Lets the consuming prompt surface missing/empty
+	// children instead of silently proceeding (design §3.4).
+	if opts.InputArtifactsSummary != nil {
+		contextMap["inputArtifactsSummary"] = opts.InputArtifactsSummary
+	}
 	if opts.PreviousResult != "" {
 		contextMap["previousStepResult"] = opts.PreviousResult
 	}

@@ -40,6 +40,42 @@ func TestNewInstinctMetrics_NonNil(t *testing.T) {
 	if m.GlobalConflictsTotal == nil {
 		t.Error("GlobalConflictsTotal is nil")
 	}
+	if m.LiftEvaluatedTotal == nil {
+		t.Error("LiftEvaluatedTotal is nil")
+	}
+	if m.RetireProposalsTotal == nil {
+		t.Error("RetireProposalsTotal is nil")
+	}
+}
+
+// TestNewInstinctMetrics_LiftAndRetireNames verifies LiftEvaluatedTotal and
+// RetireProposalsTotal register under their exact fully-qualified metric
+// names, so lld-contracts lint can resolve them to code.
+func TestNewInstinctMetrics_LiftAndRetireNames(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := observability.NewInstinctMetrics(reg)
+
+	m.LiftEvaluatedTotal.WithLabelValues("budget", "helping").Inc()
+	m.RetireProposalsTotal.WithLabelValues("budget", "created").Inc()
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	want := map[string]bool{
+		"vornik_instinct_lift_evaluated_total":   false,
+		"vornik_instinct_retire_proposals_total": false,
+	}
+	for _, mf := range mfs {
+		if _, ok := want[mf.GetName()]; ok {
+			want[mf.GetName()] = true
+		}
+	}
+	for name, found := range want {
+		if !found {
+			t.Errorf("metric %s not found in registry", name)
+		}
+	}
 }
 
 // TestNewInstinctMetrics_NilRegisterer verifies that passing nil falls back
@@ -71,6 +107,8 @@ func TestInstinctMetrics_Emit(t *testing.T) {
 	m.DistillationsTotal.Inc()
 	m.ApplicationsTotal.WithLabelValues("lead_recovery", "accepted").Inc()
 	m.GlobalConflictsTotal.WithLabelValues("budget", "replaced").Inc()
+	m.LiftEvaluatedTotal.WithLabelValues("budget", "helping").Inc()
+	m.RetireProposalsTotal.WithLabelValues("budget", "created").Inc()
 
 	// Gather to confirm metrics were registered and updated.
 	mfs, err := reg.Gather()

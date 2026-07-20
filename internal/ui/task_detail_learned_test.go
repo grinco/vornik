@@ -51,7 +51,8 @@ func (s *uiStubInstinctRepo) CountActiveProjects(context.Context, string) (int, 
 func (s *uiStubInstinctRepo) CountByDomainStatus(context.Context) ([]persistence.InstinctDomainStatusCount, error) {
 	return nil, nil
 }
-func (s *uiStubInstinctRepo) Retire(context.Context, string) error { return nil }
+func (s *uiStubInstinctRepo) Retire(context.Context, string) error             { return nil }
+func (s *uiStubInstinctRepo) UnretireTo(context.Context, string, string) error { return nil }
 func (s *uiStubInstinctRepo) RecordApplication(context.Context, *persistence.InstinctApplication) error {
 	return nil
 }

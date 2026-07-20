@@ -6,9 +6,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
 	"vornik.io/vornik/internal/forge"
 )
@@ -1629,6 +1631,15 @@ type ProjectPermissions struct {
 	Secrets []string `yaml:"secrets"`
 	// AllowedTools restricts which tools agents can use
 	AllowedTools []string `yaml:"allowedTools"`
+	// APIProviders is the project's allowlist of query_api/list_apis
+	// provider names (matched against the daemon's gateway.providers
+	// config). Unset/empty (nil) means the project may discover + call
+	// ALL globally registered providers — the same empty-means-all
+	// convention as AllowedTools/AllowedProjects elsewhere. A non-empty
+	// list restricts the project to exactly the named providers. This
+	// field is currently inert data: dispatcher enforcement lands in a
+	// later task (query_api provider-discovery design §4.2).
+	APIProviders []string `yaml:"api_providers"`
 }
 
 // ProjectValidationError represents a validation error for a project
@@ -1942,6 +1953,48 @@ func LoadProjects(dir string) (map[string]*Project, error) {
 	}
 
 	return projects, nil
+}
+
+// WarnUnknownAPIProviders logs a WARNING (never an error) for every
+// (project, provider) pair where a project's permissions.api_providers
+// allowlist names a provider absent from knownProviders — the set of names
+// currently registered under the daemon's gateway.providers config.
+// query_api provider-discovery design §4.3: this is diagnostic only. The
+// named provider may simply not be added yet, and a missing name is never
+// surfaced to the agent as an error — it is silently filtered out of
+// discovery/dispatch at call time (a later task wires that enforcement).
+// The daemon must still boot on a stale or typo'd allowlist entry, so this
+// function has no error return and is nil-safe on every argument.
+//
+// projects takes a []*Project (not map[string]*Project) — Registry.ListProjects
+// already returns projects sorted by ID as a slice, so the caller passes that
+// straight through with no map adapter (Task-2 review finding).
+//
+// Projects and their allowlist entries are each walked in sorted order so
+// output — and therefore test assertions on it — is deterministic, even if
+// the caller passes an unsorted slice.
+func WarnUnknownAPIProviders(logger zerolog.Logger, projects []*Project, knownProviders map[string]bool) {
+	sorted := make([]*Project, 0, len(projects))
+	for _, p := range projects {
+		if p != nil {
+			sorted = append(sorted, p)
+		}
+	}
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+
+	for _, p := range sorted {
+		providers := append([]string(nil), p.Permissions.APIProviders...)
+		sort.Strings(providers)
+		for _, provider := range providers {
+			if knownProviders[provider] {
+				continue
+			}
+			logger.Warn().
+				Str("project", p.ID).
+				Str("provider", provider).
+				Msg("permissions.api_providers names a provider absent from gateway.providers")
+		}
+	}
 }
 
 // attachProjectBriefs scans projectsDir for `*.md` PROJECT.md

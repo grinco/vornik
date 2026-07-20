@@ -115,6 +115,7 @@ func workflowStepItemSchema() AssetSchema {
 					{Path: "handler", Label: "Handler", Kind: KindString, Help: "SystemHandler name for system-typed steps (e.g. rag.index)."},
 					{Path: "maxVisits", Label: "Max visits", Kind: KindInt, Help: "Per-step visit cap, tighter than the workflow-global maxStepVisits. On the (N+1)-th entry the engine routes to on_fail. 0 = no per-step cap. Used to bound rework loopbacks (e.g. review→remediate)."},
 					{Path: "delegated_workflow", Label: "Delegated workflow", Kind: KindString, Help: "Pins the workflow delegated tasks from this step run under."},
+					{Path: "stage_child_artifacts", Label: "Stage child artifacts", Kind: KindBool, Help: "On a resume-after-children consumer step: stage this job's delegated children's output artifacts into artifacts/in/ (job-scoped by task lineage). For aggregating workflows like deep-research."},
 					{Path: "require_output_glob", Label: "Required output glob", Kind: KindString, Help: "Output-file contract: a file matching this glob must be freshly written during the step or it fails (one corrective retry). Prefix project/ to check the task worktree; otherwise the ephemeral staging workspace is checked."},
 					{Path: "gating_reviews", Label: "Gating reviews", Kind: KindBool, Help: "On forge.post_review: post a real APPROVE/REQUEST_CHANGES review."},
 					{Path: "cancel_on_timeout", Label: "Cancel callee on timeout", Kind: KindBool, Help: "call_project: cascade-cancel the callee on timeout."},

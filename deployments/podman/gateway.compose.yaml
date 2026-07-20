@@ -1,0 +1,56 @@
+# Local API gateway (Kong DB-less) fronting authenticated third-party HTTP APIs.
+# See https://docs.vornik.io
+#
+# Bring up alongside the deps (operator step; NOT run automatically):
+#   podman compose -f deployments/podman/gateway.compose.yaml up -d
+#
+# The host daemon reaches the gateway over loopback (127.0.0.1:8010). Kong owns
+# the provider credential (Google Maps api_key) and injects it via
+# request-transformer; the daemon holds zero third-party secrets and presents
+# only the internal apikey (key-auth) token. Nothing is exposed on 0.0.0.0 —
+# this mirrors the loopback-publish idiom in trading.compose.yaml.
+services:
+  gateway:
+    image: docker.io/kong:3.7
+    container_name: vornik-gateway
+    labels:
+      vornik.managed: "true"
+      vornik.component: gateway
+      vornik.layer: application
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: "/tmp/kong.yml"
+      KONG_PROXY_LISTEN: "0.0.0.0:8000"
+      KONG_ADMIN_LISTEN: "off"
+    env_file:
+      # gateway.env holds VORNIK_GATEWAY_TOKEN + GOOGLE_MAPS_API_KEY (mode 0600).
+      # Compose does NOT expand a literal ~, so default to the absolute path.
+      - ${VORNIK_CONFIG_DIR:-/opt/vornik/.config/vornik}/secrets/gateway.env
+    # Render kong.yml.template → /tmp/kong.yml at start, substituting the two
+    # secrets from the env-file. Kong does NOT interpolate ${VAR} in declarative
+    # config (it loads literals), so we render with sed before Kong starts.
+    # NOTE the `$$` escaping: compose interpolates a single `$VAR` at PARSE time
+    # from the HOST env (unset → empty). `$$VAR` passes a literal `$VAR` through
+    # to the CONTAINER shell, which expands it from the env-file. The `|`
+    # delimiter is safe: the token (hex) and Google key (alnum/-/_) have no `|`.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'sed -e "s|__VORNIK_GATEWAY_TOKEN__|$$VORNIK_GATEWAY_TOKEN|g" -e "s|__GOOGLE_MAPS_API_KEY__|$$GOOGLE_MAPS_API_KEY|g" /kong/kong.yml.template > /tmp/kong.yml && exec /docker-entrypoint.sh kong docker-start'
+    volumes:
+      - ./gateway/kong.yml.template:/kong/kong.yml.template:ro,Z
+    ports:
+      # Loopback-only: reachable by the host-side daemon, never the network.
+      - "127.0.0.1:8010:8000"
+    networks:
+      - gateway
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+networks:
+  gateway:
+    driver: bridge

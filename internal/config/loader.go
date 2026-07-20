@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"reflect"
@@ -138,6 +139,11 @@ func LoadFromPath(path string) (*Config, error) {
 
 	// Resolve the trading-auth HMAC secret file → inline Secret.
 	if err := resolveTradingSecret(cfg); err != nil {
+		return nil, err
+	}
+
+	// Resolve the gateway key-auth token file → inline Token.
+	if err := resolveGatewaySecret(cfg); err != nil {
 		return nil, err
 	}
 
@@ -440,6 +446,18 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("VORNIK_RUNTIME_RUN_AS_USER"); v != "" {
 		cfg.Runtime.RunAsUser = v
 	}
+
+	if v := os.Getenv("VORNIK_GATEWAY_ENABLED"); v != "" {
+		if on, ok := parseEnvBool(v); ok {
+			cfg.Gateway.Enabled = on
+		}
+	}
+	if v := os.Getenv("VORNIK_GATEWAY_ADDRESS"); v != "" {
+		cfg.Gateway.Address = v
+	}
+	if v := os.Getenv("VORNIK_GATEWAY_TOKEN"); v != "" {
+		cfg.Gateway.Token = v
+	}
 }
 
 // DefaultConfig returns a configuration with sensible defaults.
@@ -621,6 +639,24 @@ func (c *Config) Validate() error {
 	if c.Trading.Auth.Enabled && strings.TrimSpace(c.Trading.Auth.Secret) == "" && c.Trading.Auth.SecretFile == "" {
 		return fmt.Errorf("trading.auth.secret (or secret_file) is required when trading.auth.enabled is true")
 	}
+	if c.Gateway.Enabled && strings.TrimSpace(c.Gateway.Token) == "" && c.Gateway.TokenFile == "" {
+		return fmt.Errorf("gateway.token (or gateway.token_file) is required when gateway.enabled is true")
+	}
+	if c.Gateway.Enabled {
+		// The gateway is a local Kong sidecar published loopback-only; the
+		// daemon reaches it over 127.0.0.1 and the concrete gateway client
+		// pins egress to the gateway host. A non-loopback gateway.address is
+		// therefore misconfiguration that would defeat the SSRF host-pin
+		// (design §5, C2 / review B1+F1). Refuse to boot rather than trust an
+		// arbitrary host as "the gateway".
+		gu, err := url.Parse(c.Gateway.Address)
+		if err != nil {
+			return fmt.Errorf("gateway.address %q is not a valid URL: %w", c.Gateway.Address, err)
+		}
+		if !isLoopbackHost(gu.Hostname()) {
+			return fmt.Errorf("gateway.address must be a loopback host (127.0.0.1/localhost/::1) when gateway.enabled is true, got %q", c.Gateway.Address)
+		}
+	}
 	if c.Trading.Auth.ClockSkew != "" {
 		if _, err := time.ParseDuration(c.Trading.Auth.ClockSkew); err != nil {
 			return fmt.Errorf("invalid trading.auth.clock_skew %q: %w", c.Trading.Auth.ClockSkew, err)
@@ -747,6 +783,20 @@ var ErrVersionRequested = fmt.Errorf("version requested")
 // from "operator wrote enabled: false" (pointer overwritten to false).
 func boolPtr(v bool) *bool { return &v }
 
+// isLoopbackHost reports whether host (a bare URL hostname, no port) is a
+// loopback destination: the literal "localhost" or any IP in the loopback
+// range (127.0.0.0/8, ::1). Used to enforce that gateway.address points at the
+// local gateway sidecar and nowhere else (design §5, C2 / review B1+F1).
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
 // validateExternalBaseURL checks that the supplied URL has a http/https
 // scheme, a non-empty host, no path (or only a bare "/"), no query, and
 // no fragment. This is the shape required for an OAuth callback origin.
@@ -816,5 +866,23 @@ func resolveTradingSecret(cfg *Config) error {
 	}
 	cfg.Trading.Auth.Secret = strings.TrimSpace(string(data))
 	cfg.Trading.Auth.SecretFile = ""
+	return nil
+}
+
+// resolveGatewaySecret reads gateway.token_file into gateway.token
+// (whitespace trimmed) and clears the path, so downstream code only
+// consults Token. An unreadable path is a fatal startup error — fail
+// closed rather than booting with gateway auth silently mis-keyed.
+func resolveGatewaySecret(cfg *Config) error {
+	if cfg == nil || cfg.Gateway.TokenFile == "" {
+		return nil
+	}
+	path := cfg.Gateway.TokenFile
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("gateway.token_file %q: %w", path, err)
+	}
+	cfg.Gateway.Token = strings.TrimSpace(string(data))
+	cfg.Gateway.TokenFile = ""
 	return nil
 }

@@ -275,3 +275,43 @@ func TestSetChatProvider_WiresReporter(t *testing.T) {
 		t.Error("plain provider must not install modelCircuits")
 	}
 }
+
+// TestCheckAgentModelCircuits mirrors the chat-circuit tests for the distinct
+// agent-container breaker doctor check (unify-observability LLD 2026-07-18).
+func TestCheckAgentModelCircuits_NotWiredSkips(t *testing.T) {
+	h := &DoctorHandlers{}
+	got := h.checkAgentModelCircuits()
+	if got.Status != "OK" || !strings.Contains(got.Message, "not wired") {
+		t.Errorf("unwired agent circuits should skip; got %q / %q", got.Status, got.Message)
+	}
+}
+
+func TestCheckAgentModelCircuits_OpenCircuitErrors(t *testing.T) {
+	openAt := time.Date(2026, 7, 18, 13, 0, 0, 0, time.UTC)
+	h := &DoctorHandlers{agentCircuits: func() []chat.ModelHealthSnapshot {
+		return []chat.ModelHealthSnapshot{
+			{Route: "agent", Model: "glm-5.2", State: "open", OpenSince: openAt},
+			{Route: "agent", Model: "zai.glm-5", State: "closed"},
+		}
+	}}
+	got := h.checkAgentModelCircuits()
+	if got.Status != "ERROR" {
+		t.Fatalf("open agent circuit should drive ERROR, got %q (%q)", got.Status, got.Message)
+	}
+	if len(got.Items) == 0 || !strings.Contains(got.Items[0], "agent/glm-5.2 OPEN") {
+		t.Errorf("open agent circuit should lead the items; got %v", got.Items)
+	}
+	if !strings.Contains(got.Message, "agent LLM path is actively degrading") {
+		t.Errorf("message should name the agent LLM path; got %q", got.Message)
+	}
+}
+
+func TestCheckAgentModelCircuits_AllClosedOK(t *testing.T) {
+	h := &DoctorHandlers{agentCircuits: func() []chat.ModelHealthSnapshot {
+		return []chat.ModelHealthSnapshot{{Route: "agent", Model: "m1", State: "closed"}}
+	}}
+	got := h.checkAgentModelCircuits()
+	if got.Status != "OK" || !strings.Contains(got.Message, "1 agent model circuit(s) closed") {
+		t.Errorf("all-closed agent should be OK; got %q / %q", got.Status, got.Message)
+	}
+}

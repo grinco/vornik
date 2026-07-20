@@ -334,13 +334,15 @@ func TestCheckScraperProfileFreshness_FreshIsOK(t *testing.T) {
 	require.Equal(t, "OK", got.Status)
 }
 
-// TestCheckScraperProfileFreshness_NoRootIsOK — when scraperProfileRoot is
-// unset, the check must return OK (not configured).
-func TestCheckScraperProfileFreshness_NoRootIsOK(t *testing.T) {
+// TestCheckScraperProfileFreshness_NoRootIsSkipped — when scraperProfileRoot is
+// unset (the dormant default), the check must return SKIPPED (not OK), so it's
+// honest that nothing was inspected and the report aggregator doesn't count it
+// as an issue. The active path is the reactive scraper.block_notify loop.
+func TestCheckScraperProfileFreshness_NoRootIsSkipped(t *testing.T) {
 	h := &DoctorHandlers{}
 	got := h.checkScraperProfileFreshness(context.Background(), false)
 	require.Equal(t, "scraper_profile_freshness", got.Name)
-	require.Equal(t, "OK", got.Status)
+	require.Equal(t, "SKIPPED", got.Status)
 	require.Contains(t, got.Message, "not configured")
 }
 

@@ -3,6 +3,10 @@ workflowId: "dev-pipeline"
 displayName: "Development Pipeline"
 description: "Full TDD development pipeline: analyst breaks the work into subtasks with pinned test_cases, coder writes tests-first, tester validates each pinned case, reviewer enforces tests-and-impl-in-same-commit."
 version: "2.1.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
+validation:
+  allowLargeFile: true
 # 2026-05-14: TDD rework. Analyst pins concrete test_cases per
 # subtask; coder writes tests-first; tester validates each pinned
 # case by id; reviewer enforces "tests AND impl in same commit".

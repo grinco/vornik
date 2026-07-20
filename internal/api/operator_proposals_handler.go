@@ -144,7 +144,7 @@ func (s *Server) operatorPropose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.TrimSpace(req.Title) == "" || !validProposalKind(req.Kind) || !validProposalScope(req.BlastRadius) {
-		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", "title required; kind in {config,model,scaffold}; blastRadius in {model,project,swarm,daemon}")
+		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", "title required; kind in {config,model,scaffold,instinct_retire}; blastRadius in {model,project,swarm,daemon}")
 		return
 	}
 	proposedBy := strings.TrimSpace(req.ProposedBy)
@@ -348,7 +348,8 @@ func (s *Server) OperatorDiagnose(w http.ResponseWriter, r *http.Request) {
 
 func validProposalKind(k string) bool {
 	switch k {
-	case persistence.ProposalKindConfig, persistence.ProposalKindModel, persistence.ProposalKindScaffold:
+	case persistence.ProposalKindConfig, persistence.ProposalKindModel, persistence.ProposalKindScaffold,
+		persistence.ProposalKindInstinctRetire:
 		return true
 	}
 	return false

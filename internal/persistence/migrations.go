@@ -5506,4 +5506,117 @@ CREATE INDEX IF NOT EXISTS idx_task_credentials_task ON task_credentials (task_i
 DROP TABLE IF EXISTS task_credentials;
 `,
 	},
+	{
+		Version: 128,
+		Name:    "instinct_lift_snapshots",
+		Up: `
+CREATE TABLE IF NOT EXISTS instinct_lift (
+    instinct_id     TEXT PRIMARY KEY REFERENCES instincts(id) ON DELETE CASCADE,
+    domain          TEXT NOT NULL,
+    lift            REAL NOT NULL DEFAULT 0,
+    treatment_n     INTEGER NOT NULL DEFAULT 0,
+    treatment_succ  INTEGER NOT NULL DEFAULT 0,
+    baseline_n      INTEGER NOT NULL DEFAULT 0,
+    baseline_succ   INTEGER NOT NULL DEFAULT 0,
+    std_error       REAL NOT NULL DEFAULT 0,
+    verdict         TEXT NOT NULL,
+    computed_at     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE instinct_lift IS 'Latest true-lift snapshot per instinct (2026-07-19-instinct-lift-measurement-design.md §4.3): applied-success-rate minus matched concurrent-complement baseline. Snapshot, not event log — upserted each lift_eval pass. verdict ∈ {not_measurable, unknown, helping, low_lift}; std_error stored for operator judgment, NOT used for gating in v1.';
+
+-- Recovery-complement scan path (LLD §5): (role, error_class, recorded_at).
+-- Added up front — a global-scope instinct drops the project filter and
+-- would otherwise seq-scan execution_step_outcomes across all projects.
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_role_error_time
+    ON execution_step_outcomes (role, error_class, recorded_at);
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_step_outcomes_role_error_time;
+DROP TABLE IF EXISTS instinct_lift;
+`,
+	},
+	{
+		Version: 129,
+		Name:    "control_plane_proposals_kind_instinct_retire",
+		// instinct_retire (2026-07-19-instinct-lift-measurement-design.md
+		// §4.5): the first non-file, DB-mutating proposal kind, dispatched
+		// through the new KindApplier seam (internal/controlplane) instead of
+		// the file-based ApplyEngine. Relaxes the kind CHECK added by
+		// migration 117. Constraint name is Postgres's default for an
+		// unnamed inline column CHECK (<table>_<column>_check).
+		Up: `
+ALTER TABLE control_plane_proposals DROP CONSTRAINT IF EXISTS control_plane_proposals_kind_check;
+ALTER TABLE control_plane_proposals ADD CONSTRAINT control_plane_proposals_kind_check
+    CHECK (kind IN ('config','model','scaffold','instinct_retire'));
+`,
+		Down: `
+ALTER TABLE control_plane_proposals DROP CONSTRAINT IF EXISTS control_plane_proposals_kind_check;
+ALTER TABLE control_plane_proposals ADD CONSTRAINT control_plane_proposals_kind_check
+    CHECK (kind IN ('config','model','scaffold'));
+`,
+	},
+	{
+		Version: 130,
+		Name:    "reminders_task_kind",
+		// Task-kind scheduled reminders. See
+		// https://docs.vornik.io §2.1.
+		Up: `
+ALTER TABLE dispatcher_reminders
+    ADD COLUMN IF NOT EXISTS kind                   TEXT NOT NULL DEFAULT 'text',
+    ADD COLUMN IF NOT EXISTS last_task_id           TEXT NULL,
+    ADD COLUMN IF NOT EXISTS last_delivered_task_id TEXT NULL;
+
+ALTER TABLE dispatcher_reminders DROP CONSTRAINT IF EXISTS chk_reminder_kind;
+ALTER TABLE dispatcher_reminders ADD CONSTRAINT chk_reminder_kind
+    CHECK (kind IN ('text','task'));
+
+ALTER TABLE dispatcher_reminders DROP CONSTRAINT IF EXISTS chk_task_reminder_has_project;
+ALTER TABLE dispatcher_reminders ADD CONSTRAINT chk_task_reminder_has_project
+    CHECK (kind <> 'task' OR (project_id IS NOT NULL AND project_id <> ''));
+
+CREATE INDEX IF NOT EXISTS idx_dispatcher_reminders_last_task
+    ON dispatcher_reminders(last_task_id)
+    WHERE last_task_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_dispatcher_reminders_operator_kind_status
+    ON dispatcher_reminders(operator_id, kind, status)
+    WHERE kind = 'task';
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_dispatcher_reminders_operator_kind_status;
+DROP INDEX IF EXISTS idx_dispatcher_reminders_last_task;
+ALTER TABLE dispatcher_reminders DROP CONSTRAINT IF EXISTS chk_task_reminder_has_project;
+ALTER TABLE dispatcher_reminders DROP CONSTRAINT IF EXISTS chk_reminder_kind;
+ALTER TABLE dispatcher_reminders
+    DROP COLUMN IF EXISTS last_delivered_task_id,
+    DROP COLUMN IF EXISTS last_task_id,
+    DROP COLUMN IF EXISTS kind;
+`,
+	},
+	{
+		Version: 131,
+		Name:    "reminders_status_awaiting_task_paused",
+		// Migration 130 added the `kind`/`last_task_id`/`last_delivered_task_id`
+		// columns and the domain layer (internal/persistence/reminder.go)
+		// already defines ReminderStatusAwaitingTask ("awaiting_task") and
+		// ReminderStatusPaused ("paused"), but 130 never widened the
+		// original dispatcher_reminders_status_check CHECK — discovered
+		// live during Task 4 (MarkTaskSpawned) when the very first
+		// firing->awaiting_task UPDATE was rejected by Postgres with
+		// "violates check constraint dispatcher_reminders_status_check".
+		// Without this widening, task-kind reminders can never leave the
+		// firing state. See https://docs.vornik.io
+		// task-notifications-design.md §2.3.
+		Up: `
+ALTER TABLE dispatcher_reminders DROP CONSTRAINT IF EXISTS dispatcher_reminders_status_check;
+ALTER TABLE dispatcher_reminders ADD CONSTRAINT dispatcher_reminders_status_check
+    CHECK (status IN ('pending','firing','fired','cancelled','expired','awaiting_task','paused'));
+`,
+		Down: `
+ALTER TABLE dispatcher_reminders DROP CONSTRAINT IF EXISTS dispatcher_reminders_status_check;
+ALTER TABLE dispatcher_reminders ADD CONSTRAINT dispatcher_reminders_status_check
+    CHECK (status IN ('pending','firing','fired','cancelled','expired'));
+`,
+	},
 }

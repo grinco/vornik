@@ -6,8 +6,11 @@ package ui
 //                                    (row stays in the list)
 //   POST /ui/reminders/{id}/delete — physically removes the row
 //                                    (B-12, for stale-row cleanup)
+//   POST /ui/reminders/{id}/pause  — pending -> paused (mutes it)
+//   POST /ui/reminders/{id}/resume — paused -> pending, re-arms
+//                                    fire_at from the cron expr
 //
-// Both redirect to Referer or /ui/projects if the request didn't
+// All redirect to Referer or /ui/projects if the request didn't
 // carry one. Listing is rendered inline on /ui/projects/{id} via
 // the data loader in project_detail.go; this file owns the
 // mutations.
@@ -15,6 +18,7 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -23,6 +27,7 @@ import (
 	"vornik.io/vornik/internal/admin"
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/reminders"
 )
 
 // uiRefererDest returns a safe same-origin redirect target derived from the
@@ -94,6 +99,11 @@ type ReminderListRow struct {
 	CronExpr        string // 5-field POSIX cron; "" for one-shot
 	RecurrenceUntil string // human-readable bound; "" for unbounded
 	IsRecurring     bool   // drives the cron badge in the row
+	Kind            string // "text" or "task" — empty Kind normalizes to "text"
+	IsTaskKind      bool   // drives the last-task link + kind badge styling
+	LastTaskID      string // task-kind only; "" until the first spawn
+	CanPause        bool   // Status == pending — drives the Pause button
+	CanResume       bool   // Status == paused — drives the Resume button
 }
 
 // Reminders renders /ui/reminders — the per-operator dashboard
@@ -149,6 +159,11 @@ func (s *Server) Reminders(w http.ResponseWriter, r *http.Request) {
 			Countdown:   reminderCountdown(rem, now),
 			CronExpr:    rem.CronExpr,
 			IsRecurring: rem.IsRecurring(),
+			Kind:        reminderKindLabel(rem.Kind),
+			IsTaskKind:  rem.IsTaskKind(),
+			LastTaskID:  rem.LastTaskID,
+			CanPause:    rem.Status == persistence.ReminderStatusPending,
+			CanResume:   rem.Status == persistence.ReminderStatusPaused,
 		}
 		if rem.RecurrenceUntil != nil {
 			row.RecurrenceUntil = rem.RecurrenceUntil.Local().Format("2006-01-02 15:04 MST")
@@ -245,6 +260,16 @@ func reminderStatusBadge(s persistence.ReminderStatus) string {
 	}
 }
 
+// reminderKindLabel normalizes a Reminder.Kind for display: empty
+// (pre-migration-130 rows, or zero-value in tests that don't stamp
+// Kind) reads as the shipped default "text" rather than a blank cell.
+func reminderKindLabel(k persistence.ReminderKind) string {
+	if k == "" {
+		return string(persistence.ReminderKindText)
+	}
+	return string(k)
+}
+
 // reminderCountdown renders the human-readable status-dependent
 // duration label. Pending → "in 6h 12m" / "due now"; fired →
 // "fired 3m ago"; cancelled → "cancelled 1d ago".
@@ -325,6 +350,132 @@ func (s *Server) ReminderCancel(w http.ResponseWriter, r *http.Request, id strin
 	}
 	// Return to the page the operator was on (safe-listed to local /ui/
 	// paths), else the projects dashboard.
+	http.Redirect(w, r, uiRefererDest(r, "/ui/projects"), http.StatusSeeOther)
+}
+
+// ReminderPause mutes a pending reminder and redirects back. POST
+// /ui/reminders/{id}/pause. Mirrors ReminderCancel's shape; the
+// interesting case is repo.Pause returning ErrNotFound, which means
+// the row wasn't in 'pending' state (mid-run, already paused,
+// terminal, etc.) — surfaced as a friendly error rather than the
+// generic "not found" cancel/delete use, since the row does exist.
+func (s *Server) ReminderPause(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.reminderRepo == nil {
+		http.Error(w, "reminders not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if id == "" || strings.ContainsAny(id, `/\`) {
+		http.Error(w, "invalid reminder id", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	rem, err := s.reminderRepo.Get(ctx, id)
+	if err != nil {
+		s.logger.Warn().Err(err).Str("reminder_id", id).Msg("ui: load reminder before pause failed")
+		http.Error(w, "reminder not found", http.StatusNotFound)
+		return
+	}
+	if !reminderVisibleToUIRequest(r, rem) {
+		http.Error(w, "access denied to reminder", http.StatusForbidden)
+		return
+	}
+	if err := s.reminderRepo.Pause(ctx, id); err != nil {
+		if errors.Is(err, persistence.ErrNotFound) {
+			http.Error(w, "can't pause — mid-run or not pending", http.StatusConflict)
+			return
+		}
+		s.logger.Warn().Err(err).Str("reminder_id", id).Msg("ui: pause reminder failed")
+		http.Error(w, "pause failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if s.adminAuditRepo != nil {
+		principal := adminPrincipal(r)
+		if principal == "" || principal == "unknown" {
+			principal = "ui-anonymous"
+		}
+		afterJSON, _ := json.Marshal(map[string]any{"reminder_id": id})
+		_ = s.adminAuditRepo.Insert(ctx, &persistence.AdminAuditEntry{
+			Principal: principal,
+			Source:    "ui",
+			Action:    "reminder.paused",
+			Target:    id,
+			After:     string(afterJSON),
+			IP:        clientIP(r),
+			UserAgent: r.UserAgent(),
+		})
+	}
+	http.Redirect(w, r, uiRefererDest(r, "/ui/projects"), http.StatusSeeOther)
+}
+
+// ReminderResume re-arms a paused reminder and redirects back. POST
+// /ui/reminders/{id}/resume. One-shot reminders (no cron_expr) have
+// no recurrence rule to re-derive fire_at from, so they're refused
+// with a friendly error rather than attempting NextFireAt on an
+// empty expression.
+func (s *Server) ReminderResume(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.reminderRepo == nil {
+		http.Error(w, "reminders not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if id == "" || strings.ContainsAny(id, `/\`) {
+		http.Error(w, "invalid reminder id", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	rem, err := s.reminderRepo.Get(ctx, id)
+	if err != nil {
+		s.logger.Warn().Err(err).Str("reminder_id", id).Msg("ui: load reminder before resume failed")
+		http.Error(w, "reminder not found", http.StatusNotFound)
+		return
+	}
+	if !reminderVisibleToUIRequest(r, rem) {
+		http.Error(w, "access denied to reminder", http.StatusForbidden)
+		return
+	}
+	if rem.CronExpr == "" {
+		http.Error(w, "one-shot can't be resumed", http.StatusBadRequest)
+		return
+	}
+	next, err := reminders.NextFireAt(rem.CronExpr, time.Now())
+	if err != nil {
+		http.Error(w, "cannot compute next fire time: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.reminderRepo.Resume(ctx, id, next); err != nil {
+		if errors.Is(err, persistence.ErrNotFound) {
+			http.Error(w, "reminder is not paused", http.StatusConflict)
+			return
+		}
+		s.logger.Warn().Err(err).Str("reminder_id", id).Msg("ui: resume reminder failed")
+		http.Error(w, "resume failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if s.adminAuditRepo != nil {
+		principal := adminPrincipal(r)
+		if principal == "" || principal == "unknown" {
+			principal = "ui-anonymous"
+		}
+		afterJSON, _ := json.Marshal(map[string]any{"reminder_id": id, "next_fire_at": next.UTC().Format(time.RFC3339)})
+		_ = s.adminAuditRepo.Insert(ctx, &persistence.AdminAuditEntry{
+			Principal: principal,
+			Source:    "ui",
+			Action:    "reminder.resumed",
+			Target:    id,
+			After:     string(afterJSON),
+			IP:        clientIP(r),
+			UserAgent: r.UserAgent(),
+		})
+	}
 	http.Redirect(w, r, uiRefererDest(r, "/ui/projects"), http.StatusSeeOther)
 }
 

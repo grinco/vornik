@@ -3,6 +3,8 @@ workflowId: "companion-research-gather"
 displayName: "Companion: Research gather"
 description: "Gathers sourced information on a topic. Host LLM delegates when it needs context it doesn't already have, without spending its own tokens browsing."
 version: "1.0.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "gather"
 maxStepVisits: 1
 maxIterations: 15

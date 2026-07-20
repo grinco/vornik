@@ -7,18 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sync"
 	"syscall"
 
 	"vornik.io/vornik/internal/config"
 )
-
-// applyMu serializes ApplyEnable's backup→write→reload→verify transaction
-// so two concurrent feature-enable calls can't interleave and have one's
-// rollback clobber the other's committed gate change. Process-wide: vornik
-// is a single deployable unit, so there is no second writer to guard
-// against beyond this process.
-var applyMu sync.Mutex
 
 // EnablePlan is the result of a dry-run PlanEnable call: the set of gate
 // changes required to enable a feature plus the apply mechanism.
@@ -48,6 +40,9 @@ type ConfigWriter interface {
 	// loader's parse+validate pipeline.  Must be callable immediately after
 	// Write without any global state mutation (no flag.Parse).
 	Validate() error
+	// ConfigPath is the file this writer operates on — ApplyEnable uses it to
+	// take the shared path-keyed write lock (LockConfigFile). Must be stable.
+	ConfigPath() string
 }
 
 // Reloader triggers a daemon config reload and waits for the result.
@@ -111,16 +106,15 @@ func PlanEnable(ctx context.Context, f Feature, deps Deps) (*EnablePlan, error) 
 // ReloadHot sequence: Backup → patch YAML → Write → Reload → Verify.
 // On any step-failure: Restore(backup) then return the error.
 func ApplyEnable(ctx context.Context, f Feature, deps Deps, plan *EnablePlan, w ConfigWriter, r Reloader) (PrereqResult, error) {
-	// Serialize the whole backup→write→reload→verify transaction. The
-	// individual Write is atomic (temp+rename), but the backup/restore
-	// WINDOW is not: two concurrent enables could each snapshot the same
-	// pre-state and then one's rollback would revert the other's committed
-	// gate change. A single in-process mutex is sufficient — vornik is one
-	// deployable unit (no second writer process) and enables are rare,
-	// operator-driven mutations. Held across Reload/Verify so a hot-apply
-	// can't race a second enable's write either.
-	applyMu.Lock()
-	defer applyMu.Unlock()
+	// Serialize the whole backup→write→reload→verify transaction on the target
+	// config file. The individual Write is atomic (temp+rename), but the
+	// backup/restore WINDOW is not, and OTHER subsystems (integrations.Save)
+	// also write config.yaml — so this takes the SHARED path-keyed lock
+	// (LockConfigFile) instead of a featuredoctor-private mutex, closing the
+	// cross-subsystem lost-update. Same file serializes; different files don't.
+	// Covers fixit too (it routes through ApplyEnable).
+	unlock := LockConfigFile(w.ConfigPath())
+	defer unlock()
 
 	if len(plan.Changes) == 0 {
 		// Nothing to write — skip backup/write/reload and go straight to verify.
@@ -237,9 +231,15 @@ func runVerify(ctx context.Context, f Feature, deps Deps) (PrereqResult, error) 
 
 // FileConfigWriter is the production ConfigWriter that operates on the
 // daemon's config.yaml path.
+//
+// NOTE: the exported field is `Path`; ConfigPath() (below) exposes it for the
+// write lock. Do NOT add a Path() method — it would collide with the field.
 type FileConfigWriter struct {
 	Path string
 }
+
+// ConfigPath returns the file this writer operates on (for LockConfigFile).
+func (w *FileConfigWriter) ConfigPath() string { return w.Path }
 
 // Read returns the raw bytes of the config file.
 func (w *FileConfigWriter) Read() ([]byte, error) {

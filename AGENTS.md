@@ -29,6 +29,14 @@ daemon as a rootless `systemctl --user` service. It may `sudo`-install
 missing prerequisites — warn your user first (rule 1):
 
 ```bash
+# Recommended for agents — verify the installer's checksum before running it:
+REF=<release>  # a tag from github.com/grinco/vornik/releases that ships quickstart.sh.sha256
+base="https://raw.githubusercontent.com/grinco/vornik/$REF/deployments/podman"
+curl -fsSLO "$base/quickstart.sh" && curl -fsSLO "$base/quickstart.sh.sha256"
+sha256sum -c quickstart.sh.sha256 && VORNIK_REF="$REF" bash quickstart.sh
+
+# Or the convenience one-liner (pins the release tag baked into the script;
+# set VORNIK_REF=main for bleeding-edge):
 curl -fsSL https://get.vornik.io | bash
 # Already inside a Vornik checkout? Use it as the build context instead:
 VORNIK_SKIP_FETCH=1 VORNIK_DIR="$PWD" bash deployments/podman/quickstart.sh

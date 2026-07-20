@@ -39,6 +39,18 @@ PostgreSQL + pgvector in a container, and runs the daemon as a rootless
 curl -fsSL https://get.vornik.io | bash
 ```
 
+This pins the **release tag baked into the script** (not a moving branch); set
+`VORNIK_REF=main` for bleeding-edge. To verify the script against its published
+checksum before running it (catches transit/redirect tampering — not a
+signature), fetch both first:
+
+```sh
+REF=<release>  # a tag from github.com/grinco/vornik/releases that ships quickstart.sh.sha256
+base="https://raw.githubusercontent.com/grinco/vornik/$REF/deployments/podman"
+curl -fsSLO "$base/quickstart.sh" && curl -fsSLO "$base/quickstart.sh.sha256"
+sha256sum -c quickstart.sh.sha256 && VORNIK_REF="$REF" bash quickstart.sh
+```
+
 When it finishes, open <http://localhost:8080/ui> — a first-run **setup
 guide** walks you through connecting an LLM endpoint and key, optional
 memory/RAG, and creating your first project. Details and tunables:

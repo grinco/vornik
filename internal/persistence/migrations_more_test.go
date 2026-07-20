@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -321,6 +322,24 @@ func TestMigrationRunner_Run_GetVersionFails(t *testing.T) {
 	runner.migrations = []Migration{{Version: 1, Name: "x", Up: "SELECT 1", Down: "SELECT 1"}}
 	if err := runner.Run(context.Background()); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+// TestMigration128InstinctLift verifies the instinct_lift snapshot table
+// (2026-07-19-instinct-lift-measurement-design.md §4.3) migrates up and down.
+func TestMigration128InstinctLift(t *testing.T) {
+	m := findMigration(t, 128)
+	if m.Name != "instinct_lift_snapshots" {
+		t.Errorf("name = %q", m.Name)
+	}
+	if !strings.Contains(m.Up, "CREATE TABLE IF NOT EXISTS instinct_lift") {
+		t.Fatalf("migration 128 Up does not create instinct_lift")
+	}
+	if !strings.Contains(m.Up, "CREATE INDEX IF NOT EXISTS idx_step_outcomes_role_error_time") {
+		t.Fatalf("migration 128 Up does not create idx_step_outcomes_role_error_time")
+	}
+	if !strings.Contains(m.Down, "DROP TABLE IF EXISTS instinct_lift") {
+		t.Fatalf("migration 128 Down does not drop instinct_lift")
 	}
 }
 

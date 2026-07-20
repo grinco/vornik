@@ -89,7 +89,8 @@ func (f *fakeConfigWriter) Restore(_ string) error {
 	f.content = append([]byte(nil), f.backup...)
 	return nil
 }
-func (f *fakeConfigWriter) Validate() error { return f.validateErr }
+func (f *fakeConfigWriter) Validate() error    { return f.validateErr }
+func (f *fakeConfigWriter) ConfigPath() string { return "/fake/integrations-config.yaml" }
 
 // minimalDaemonConfig is a config.yaml fixture that satisfies
 // config.Config.Validate() (sqlite driver sidesteps the postgres

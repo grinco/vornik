@@ -3,6 +3,8 @@ workflowId: "issue-subtask"
 displayName: "Issue Subtask"
 description: "Implement ONE self-contained subtask of an issue fix plus its test. Used as the SEQUENTIAL child workflow that issue-fix's decompose step delegates to — each child merges its change to the project clone before the next subtask starts."
 version: "1.0.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 maxStepVisits: 2
 maxIterations: 30
 entrypoint: "implement"

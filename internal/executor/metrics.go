@@ -245,6 +245,26 @@ type Metrics struct {
 	// LLD: https://docs.vornik.io §3.
 	DelegationGuardRejectionsTotal *prometheus.CounterVec
 
+	// --- Delegated child->parent artifact handoff (LLD
+	// 2026-07-20-delegated-child-artifact-handoff-design.md §5) ---
+
+	// ChildArtifactsStagedTotal counts child artifact entries staged onto a
+	// resuming parent step by the F1 staging gate, labelled by the resuming
+	// workflow id. Incremented by summary.Staged each time the gate stages.
+	ChildArtifactsStagedTotal *prometheus.CounterVec
+
+	// ChildArtifactsMissingTotal counts delegation-engine children that had
+	// NO COMPLETED execution at resume (nothing to stage), labelled by the
+	// resuming workflow id. Incremented by len(summary.Missing).
+	ChildArtifactsMissingTotal *prometheus.CounterVec
+
+	// ChildArtifactsEmptyTotal counts delegation-engine children whose latest
+	// COMPLETED execution produced ZERO artifacts — the T-06b5 recurrence
+	// signal (a child that "succeeded" but contributed nothing). Labelled by
+	// the resuming workflow id; incremented by len(summary.Empty). Operators
+	// can alert on any non-zero rate.
+	ChildArtifactsEmptyTotal *prometheus.CounterVec
+
 	// registry is the Prometheus registerer used for registering metrics.
 	registry prometheus.Registerer
 
@@ -663,6 +683,30 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 			},
 			[]string{"reason"},
 		),
+		ChildArtifactsStagedTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "vornik",
+				Name:      "delegated_child_artifacts_staged_total",
+				Help:      "Child artifact entries staged onto a resuming parent step by the F1 staging gate, by resuming workflow id.",
+			},
+			[]string{"workflow"},
+		),
+		ChildArtifactsMissingTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "vornik",
+				Name:      "delegated_child_artifacts_missing_total",
+				Help:      "Delegation-engine children with NO COMPLETED execution at resume (nothing to stage), by resuming workflow id.",
+			},
+			[]string{"workflow"},
+		),
+		ChildArtifactsEmptyTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "vornik",
+				Name:      "delegated_child_artifacts_empty_total",
+				Help:      "Delegation-engine children whose latest COMPLETED execution produced ZERO artifacts (the T-06b5 recurrence signal), by resuming workflow id. Alert on any non-zero rate.",
+			},
+			[]string{"workflow"},
+		),
 	}
 
 	return m
@@ -707,6 +751,29 @@ func (m *Metrics) RecordDelegationGuardRejection(reason string) {
 		return
 	}
 	m.DelegationGuardRejectionsTotal.WithLabelValues(reason).Inc()
+}
+
+// RecordChildArtifactStaging records one F1 staging-gate pass: staged is the
+// number of child artifact entries staged onto the resuming parent step,
+// missing the number of delegation children with no COMPLETED execution, and
+// empty the number whose latest COMPLETED execution produced zero artifacts
+// (the T-06b5 recurrence signal). workflow is the resuming workflow id (metric
+// label). Each bucket is only incremented when > 0 so a zero count doesn't
+// mint a permanent series. Nil-safe so executors built without metrics
+// (tests) are a no-op.
+func (m *Metrics) RecordChildArtifactStaging(workflow string, staged, missing, empty int) {
+	if m == nil {
+		return
+	}
+	if staged > 0 {
+		m.ChildArtifactsStagedTotal.WithLabelValues(workflow).Add(float64(staged))
+	}
+	if missing > 0 {
+		m.ChildArtifactsMissingTotal.WithLabelValues(workflow).Add(float64(missing))
+	}
+	if empty > 0 {
+		m.ChildArtifactsEmptyTotal.WithLabelValues(workflow).Add(float64(empty))
+	}
 }
 
 // RecordCrossProjectCallStarted fires once at CPC creation

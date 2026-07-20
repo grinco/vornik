@@ -571,7 +571,11 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 		// regardless of whether the tool-budget feature is enabled (LLD §4).
 		// When a learned tier was applied, stamp it so the extractor mines it.
 		agentStamp.ComplexityTier = budgetTier
-		autonomousTask := task.CreationSource != persistence.TaskCreationSourceUser
+		// Item 5 (2026-07-18): resolve the ORIGIN creation source through the
+		// checkpoint chain so an operator task keeps operator budget headroom on
+		// a checkpoint-retry (not the tighter autonomy cap). Coupled with the
+		// step-timeout twin in workflow.go via the same helper.
+		autonomousTask := e.budgetAutonomous(ctx, task)
 		if eff, inject := resolveRoleToolBudget(roleConfig, toolbudget.Tier(budgetTier),
 			autonomousTask, e.config.ToolBudget); inject {
 			extraEnv["VORNIK_MAX_TOOL_ITERATIONS"] = strconv.Itoa(eff)

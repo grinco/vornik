@@ -234,3 +234,157 @@ func TestSyncDir_MissingDirReturnsError(t *testing.T) {
 		t.Fatal("syncDir must surface open/sync failures")
 	}
 }
+
+// --- KindApplier dispatch (2026-07-19-instinct-lift-measurement-design.md
+// §4.5): the engine routes a registered kind straight to the applier and
+// never touches buildOps/validate/reload/mirror. ---------------------------
+
+const fakeManagedKind = "instinct_retire"
+
+// fakeKindApplier is a recording KindApplier double, independent of the real
+// InstinctRetireApplier, so these tests exercise ApplyEngine's dispatch logic
+// in isolation.
+type fakeKindApplier struct {
+	kind string
+
+	applyCalls    int
+	applySnapshot string
+	applyErr      error
+
+	rollbackCalls int
+	rollbackErr   error
+}
+
+func (f *fakeKindApplier) Kind() string { return f.kind }
+
+func (f *fakeKindApplier) Apply(_ context.Context, _ *persistence.ControlPlaneProposal) (string, error) {
+	f.applyCalls++
+	if f.applyErr != nil {
+		return "", f.applyErr
+	}
+	return f.applySnapshot, nil
+}
+
+func (f *fakeKindApplier) Rollback(_ context.Context, _ *persistence.ControlPlaneProposal) error {
+	f.rollbackCalls++
+	return f.rollbackErr
+}
+
+// kindDispatchProposal seeds a DRAFT proposal of the given kind/scope in dir
+// (no ApplyTarget/ApplyOps — a kind-managed proposal never needs one) and
+// returns its id.
+func kindDispatchProposal(t *testing.T, repo persistence.ProposalRepository, kind, scope string) string {
+	t.Helper()
+	p := &persistence.ControlPlaneProposal{
+		ID: persistence.GenerateID("cpp"), ProjectID: "janka",
+		Kind: kind, BlastRadius: scope, Title: "retire i1",
+		Evidence: `{"instinct_id":"i1"}`, Status: persistence.ProposalStatusDraft, ProposedBy: "operator",
+	}
+	if err := repo.Create(context.Background(), p); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := repo.SetStatus(context.Background(), p.ID, persistence.ProposalStatusApproved, "vadim"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	return p.ID
+}
+
+func TestApply_KindDispatch(t *testing.T) {
+	repo := newApplyRepo(t)
+	dir := t.TempDir()
+	id := kindDispatchProposal(t, repo, fakeManagedKind, persistence.ProposalScopeProject)
+	fake := &fakeKindApplier{kind: fakeManagedKind, applySnapshot: `{"instinct_id":"i1","prior_status":"active"}`}
+	e := &ApplyEngine{
+		Proposals: repo, ConfigDir: dir, Logger: zerolog.Nop(),
+		Reload:       func() error { t.Fatal("kind-applier path must not reload"); return nil },
+		KindAppliers: map[string]KindApplier{fakeManagedKind: fake},
+	}
+
+	if err := e.Apply(context.Background(), id, "vadim", false); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if fake.applyCalls != 1 {
+		t.Errorf("applier.Apply calls = %d, want 1", fake.applyCalls)
+	}
+	p, err := repo.GetByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if p.Status != persistence.ProposalStatusApplied || p.AppliedBy != "vadim" {
+		t.Errorf("ledger not recorded via MarkApplied: %+v", p)
+	}
+	if p.PreApplySnapshot != fake.applySnapshot {
+		t.Errorf("snapshot = %q, want %q", p.PreApplySnapshot, fake.applySnapshot)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Errorf("kind-applier path must not touch the file tree, found %d entries", len(entries))
+	}
+}
+
+func TestRollback_KindDispatch(t *testing.T) {
+	repo := newApplyRepo(t)
+	dir := t.TempDir()
+	id := kindDispatchProposal(t, repo, fakeManagedKind, persistence.ProposalScopeProject)
+	if err := repo.MarkApplied(context.Background(), id, "vadim", `{"instinct_id":"i1","prior_status":"active"}`); err != nil {
+		t.Fatalf("seed applied: %v", err)
+	}
+	fake := &fakeKindApplier{kind: fakeManagedKind}
+	e := &ApplyEngine{
+		Proposals: repo, ConfigDir: dir, Logger: zerolog.Nop(),
+		Reload:       func() error { t.Fatal("kind-applier rollback must not reload"); return nil },
+		KindAppliers: map[string]KindApplier{fakeManagedKind: fake},
+	}
+
+	if err := e.Rollback(context.Background(), id); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if fake.rollbackCalls != 1 {
+		t.Errorf("applier.Rollback calls = %d, want 1", fake.rollbackCalls)
+	}
+	p, err := repo.GetByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if p.Status != persistence.ProposalStatusRolledBack {
+		t.Errorf("expected ROLLED_BACK via MarkRolledBack, got %s", p.Status)
+	}
+}
+
+func TestApply_KindDispatchDaemonAck(t *testing.T) {
+	repo := newApplyRepo(t)
+	dir := t.TempDir()
+	id := kindDispatchProposal(t, repo, fakeManagedKind, persistence.ProposalScopeDaemon)
+	fake := &fakeKindApplier{kind: fakeManagedKind, applySnapshot: `{"instinct_id":"i1","prior_status":"active"}`}
+	e := &ApplyEngine{
+		Proposals: repo, ConfigDir: dir, Logger: zerolog.Nop(),
+		Reload:       func() error { return nil },
+		KindAppliers: map[string]KindApplier{fakeManagedKind: fake},
+	}
+
+	if err := e.Apply(context.Background(), id, "vadim", false); !errors.Is(err, ErrDaemonAckRequired) {
+		t.Fatalf("daemon-scope kind-managed apply without ack must fail ErrDaemonAckRequired, got %v", err)
+	}
+	if fake.applyCalls != 0 {
+		t.Errorf("applier must not run before the ack gate, got %d calls", fake.applyCalls)
+	}
+	if err := e.Apply(context.Background(), id, "vadim", true); err != nil {
+		t.Fatalf("daemon-scope kind-managed apply with ack must succeed, got %v", err)
+	}
+	if fake.applyCalls != 1 {
+		t.Errorf("applier.Apply calls = %d, want 1 after ack", fake.applyCalls)
+	}
+}
+
+func TestApply_UnregisteredKindFallsThrough(t *testing.T) {
+	// A KindAppliers map populated with OTHER kinds must not intercept a
+	// plain config-kind proposal — it still takes the file-based path.
+	e, _, id, file := approvedProposal(t, persistence.ProposalScopeProject)
+	e.KindAppliers = map[string]KindApplier{fakeManagedKind: &fakeKindApplier{kind: fakeManagedKind}}
+	if err := e.Apply(context.Background(), id, "vadim", false); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got := readFile(t, file); got != newContent {
+		t.Errorf("file-based apply must still run for an unregistered kind, got %q", got)
+	}
+}

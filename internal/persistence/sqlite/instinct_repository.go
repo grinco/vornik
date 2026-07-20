@@ -387,6 +387,30 @@ func (r *InstinctRepository) Retire(ctx context.Context, id string) error {
 	return nil
 }
 
+// UnretireTo restores a retired instinct to priorStatus. Guarded: the
+// UPDATE matches only status='retired', so an instinct re-scored since
+// retirement is never blindly overwritten — ErrNotFound signals the
+// fail-safe refusal. See persistence.InstinctRepository.UnretireTo.
+func (r *InstinctRepository) UnretireTo(ctx context.Context, id, priorStatus string) error {
+	switch priorStatus {
+	case persistence.InstinctStatusCandidate, persistence.InstinctStatusActive, persistence.InstinctStatusPromoted:
+	default:
+		return persistence.ErrInvalidInstinctStatus
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE instincts SET status = ?, updated_at = ?
+		WHERE id = ? AND status = 'retired'
+	`, priorStatus, sqliteTime(time.Now().UTC()), id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return persistence.ErrNotFound
+	}
+	return nil
+}
+
 // RecordApplication appends one application/feedback row.
 func (r *InstinctRepository) RecordApplication(ctx context.Context, app *persistence.InstinctApplication) error {
 	if app == nil {

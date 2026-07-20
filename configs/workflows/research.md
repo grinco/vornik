@@ -3,6 +3,8 @@ workflowId: "research"
 displayName: "Research and Write"
 description: "Two-step research workflow: a researcher gathers information into research.md, then a writer turns it into a polished deliverable."
 version: "1.1"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "research"
 maxStepVisits: 2
 maxIterations: 10

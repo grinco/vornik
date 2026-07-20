@@ -7,8 +7,13 @@ package service
 // See https://docs.vornik.io
 
 import (
+	"context"
+
 	"vornik.io/vornik/internal/conversation"
+	"vornik.io/vornik/internal/executor"
+	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/reminders"
+	"vornik.io/vornik/internal/taskcreate"
 	"vornik.io/vornik/internal/telegram"
 )
 
@@ -90,5 +95,64 @@ func (c *Container) initReminders() *reminders.Runner {
 		Resolver:  &containerChannelResolver{c: c},
 		AuditRepo: c.repos.AdminAudit,
 		Logger:    c.Logger.With().Str("component", "reminders").Logger(),
+		// Creator is deliberately left nil here — c.taskCreator doesn't
+		// exist yet at this point in the boot sequence (initReminders
+		// runs before initHTTPServer constructs it). Task-kind
+		// reminders are enabled later, once the creator exists, by
+		// RemindersSubsystem.Start calling Runner.SetCreator. See the
+		// taskCreator field comment on Container.
 	})
+}
+
+// containerTaskCreator adapts *taskcreate.Creator to reminders.TaskCreator
+// so the reminders package stays decoupled from taskcreate.Params. Mirrors
+// a2aTaskCreatorAdapter (container_a2a.go), the existing precedent for
+// wrapping the shared task-creation core for a narrow consumer interface.
+type containerTaskCreator struct {
+	creator interface {
+		Create(context.Context, taskcreate.Params) (*persistence.Task, error)
+	}
+}
+
+// CreateScheduledTask implements reminders.TaskCreator. Maps the runner's
+// narrow ScheduledTaskParams onto taskcreate.Params, tagging the task with
+// CreationSource=SCHEDULED and threading the reminder id through
+// ExtraContext so downstream consumers (audit, UI) can trace which
+// reminder fired it.
+func (a *containerTaskCreator) CreateScheduledTask(ctx context.Context, p reminders.ScheduledTaskParams) (string, error) {
+	task, err := a.creator.Create(ctx, taskcreate.Params{
+		ProjectID:      p.ProjectID,
+		TaskType:       p.TaskType,
+		Prompt:         p.Prompt,
+		CreationSource: persistence.TaskCreationSourceScheduled,
+		IdempotencyKey: p.IdempotencyKey,
+		ExtraContext:   map[string]any{"scheduled_reminder_id": p.ReminderID},
+	})
+	if err != nil {
+		return "", err
+	}
+	return task.ID, nil
+}
+
+// reminderCompletionNotifier builds the reminders completion notifier when
+// its dependencies are wired: Postgres-backed repo + admin audit repo.
+// Registered into the executor's completion-notifier fan-out from two
+// call sites (container.go's Telegram-fallback block and
+// EmailChannelsSubsystem.Start) — see subsystem_email_channels.go for
+// why both exist. Returns nil (not registered) when reminders aren't
+// available on this deployment.
+func (c *Container) reminderCompletionNotifier() executor.CompletionNotifier {
+	if c == nil || c.repos == nil || c.repos.Reminders == nil {
+		return nil
+	}
+	if c.Config == nil || c.Config.Database.Driver != "postgres" {
+		return nil
+	}
+	return reminders.NewCompletionNotifier(
+		c.repos.Reminders,
+		&containerChannelResolver{c: c},
+		c.repos.AdminAudit,
+		c.Logger.With().Str("component", "reminders-notify").Logger(),
+		nil,
+	)
 }

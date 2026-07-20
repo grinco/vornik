@@ -3,6 +3,10 @@ workflowId: "backlog-item"
 displayName: "Backlog Item → Draft PR"
 description: "Backlog autonomy's TDD delivery pipeline for ONE framed BACKLOG.md item. v2 mirrors issue-fix's proven shape: a decompose step (lead) splits the item's full scope into self-contained subtasks emitted as delegatedTasks (SEQUENTIAL, each pinned to issue-subtask) — the engine schedules and runs each in a fresh worktree, merging to the project clone — then a tester ACTUALLY RUNS the aggregate suite (gate testing.passed) before a reviewer CODE-REVIEWS the aggregate diff (scope + design fit + correctness + test adequacy + maintainability, severity-classified; blocker/major rejects); rejection/red tests loop through a bounded remediate step; green+approval opens a DRAFT PR (forge, no issue linkage). This replaces the v1 single-container analyze→implement loop, which exhausted its visit/timeout budget on feature-sized items. The dispatched prompt IS the spec — no BACKLOG.md reading or feature selection happens here."
 version: "2.1.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
+validation:
+  allowLargeFile: true
 # 2026-07-12 (v2.1): the review step is upgraded from a scope-only check to a
 # real pre-PR code review (design fit / correctness / test adequacy /
 # maintainability, severity-classified) — operator found the autonomy PRs'

@@ -503,6 +503,24 @@ func (c *Container) initTelegram() error {
 	}
 
 	c.TelegramBot = bot
+
+	// Wire the scraper-block → Telegram notify hook (design 2026-07-19). Inert
+	// unless enabled with at least one curated portal. Runs on a daemon-lifetime
+	// context; a portal/cooldown change needs a restart (MVP). Requires the MCP
+	// manager (the hook lives at Manager.Execute) and the bot as the sink.
+	if bnCfg := c.Config.Scraper.BlockNotify; bnCfg.Enabled && len(bnCfg.Portals) > 0 && c.mcpManager != nil {
+		cooldown, _ := time.ParseDuration(bnCfg.Cooldown) // 0 on empty/invalid → defaults to 6h
+		bn := mcp.NewBlockNotifier(
+			bnCfg.Portals, cooldown, bot,
+			c.Logger.With().Str("component", "scraper-block-notify").Logger(),
+		)
+		bn.Start(context.Background())
+		c.mcpManager.SetBlockNotifier(bn)
+		c.Logger.Info().
+			Int("portals", len(bnCfg.Portals)).
+			Str("cooldown", cooldown.String()).
+			Msg("scraper block-notify: enabled")
+	}
 	return nil
 }
 

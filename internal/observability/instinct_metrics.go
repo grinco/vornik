@@ -73,6 +73,14 @@ type InstinctMetrics struct {
 	// resolution ∈ {replaced, kept_incumbent}. Stays at zero until
 	// promote_projects ≥ 2 actually mints cross-project globals.
 	GlobalConflictsTotal *prometheus.CounterVec
+
+	// LiftEvaluatedTotal counts lift-pass evaluations by (domain, verdict).
+	// verdict ∈ {not_measurable, unknown, helping, low_lift}.
+	LiftEvaluatedTotal *prometheus.CounterVec
+
+	// RetireProposalsTotal counts retire-proposal emission attempts by
+	// (domain, result). result ∈ {created, deduped, cooled}.
+	RetireProposalsTotal *prometheus.CounterVec
 }
 
 // NewInstinctMetrics registers and returns the instinct worker metrics. A nil
@@ -136,5 +144,17 @@ func NewInstinctMetrics(registerer prometheus.Registerer) *InstinctMetrics {
 			Name:      "global_conflicts_total",
 			Help:      "Cross-project promotion conflicts (W6) by domain and resolution (replaced|kept_incumbent): two projects promoted contradictory actions for one trigger_key.",
 		}, []string{"domain", "resolution"}),
+		LiftEvaluatedTotal: pa.NewCounterVec(prometheus.CounterOpts{
+			Namespace: instNamespace,
+			Subsystem: instSubsystem,
+			Name:      "lift_evaluated_total",
+			Help:      "Lift-pass evaluations by domain and verdict (not_measurable|unknown|helping|low_lift).",
+		}, []string{"domain", "verdict"}),
+		RetireProposalsTotal: pa.NewCounterVec(prometheus.CounterOpts{
+			Namespace: instNamespace,
+			Subsystem: instSubsystem,
+			Name:      "retire_proposals_total",
+			Help:      "Retire-proposal emission attempts by domain and result (created|deduped|cooled).",
+		}, []string{"domain", "result"}),
 	}
 }

@@ -205,6 +205,61 @@ func RunInstinctSuite(t *testing.T, repo persistence.InstinctRepository) {
 		}
 	})
 
+	t.Run("UnretireToRestores", func(t *testing.T) {
+		id, err := repo.Upsert(ctx, &persistence.Instinct{
+			ProjectID: uniqueID("proj"), Domain: persistence.InstinctDomainRecovery,
+			TriggerKey: uniqueID("tk"), Action: "a",
+		})
+		if err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if err := repo.Retire(ctx, id); err != nil {
+			t.Fatalf("Retire: %v", err)
+		}
+		if err := repo.UnretireTo(ctx, id, persistence.InstinctStatusActive); err != nil {
+			t.Fatalf("UnretireTo: %v", err)
+		}
+		got, err := repo.Get(ctx, id)
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if got.Status != persistence.InstinctStatusActive {
+			t.Errorf("status = %q, want active", got.Status)
+		}
+	})
+
+	t.Run("UnretireToGuard", func(t *testing.T) {
+		// Instinct is status=candidate (NOT retired) — UnretireTo must
+		// refuse rather than blindly overwrite a row the operator has
+		// since re-scored.
+		id, err := repo.Upsert(ctx, &persistence.Instinct{
+			ProjectID: uniqueID("proj"), Domain: persistence.InstinctDomainRecovery,
+			TriggerKey: uniqueID("tk"), Action: "a",
+		})
+		if err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if err := repo.UnretireTo(ctx, id, persistence.InstinctStatusActive); err != persistence.ErrNotFound {
+			t.Errorf("UnretireTo(non-retired) = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("UnretireToValidates", func(t *testing.T) {
+		id, err := repo.Upsert(ctx, &persistence.Instinct{
+			ProjectID: uniqueID("proj"), Domain: persistence.InstinctDomainRecovery,
+			TriggerKey: uniqueID("tk"), Action: "a",
+		})
+		if err != nil {
+			t.Fatalf("Upsert: %v", err)
+		}
+		if err := repo.Retire(ctx, id); err != nil {
+			t.Fatalf("Retire: %v", err)
+		}
+		if err := repo.UnretireTo(ctx, id, "bogus"); err == nil {
+			t.Error("UnretireTo(bogus status) should error")
+		}
+	})
+
 	t.Run("Applications_round_trip", func(t *testing.T) {
 		id, _ := repo.Upsert(ctx, &persistence.Instinct{
 			ProjectID: uniqueID("proj"), Domain: persistence.InstinctDomainRecovery,

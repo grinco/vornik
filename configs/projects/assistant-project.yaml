@@ -83,6 +83,10 @@ permissions:
     - "read_many_files"
     - "grep"
     - "glob"
+    - "set_reminder"
+    - "cancel_reminder"
+    - "update_reminder"
+    - "update_operator_profile"
 
 # ============================================================================
 # Budget — caps LLM spend for this project. All values USD, per project.

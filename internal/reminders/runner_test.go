@@ -21,6 +21,35 @@ type stubRepo struct {
 	fired       []string
 	rescheduled []rescheduleCall
 	errored     map[string]string
+
+	// spawned* capture the args of the most recent MarkTaskSpawned
+	// call — the task-kind fire path's atomic re-arm (Task 5).
+	spawnedID     string
+	spawnedTaskID string
+	spawnedNext   *time.Time
+	// spawnedCalls counts MarkTaskSpawned invocations. Review finding 1:
+	// the crash-safety guarantee (design §4.1) hinges on MarkTaskSpawned
+	// NEVER being reached on the creator-error / re-arm-cron-error
+	// branches — a zero count is a direct assertion of that, rather
+	// than inferring "not called" from spawnedID staying "".
+	spawnedCalls int
+
+	// claim/finalized* back Task 6's CompletionNotifier tests.
+	// claim is the row ClaimDelivery hands out; consumed exactly
+	// once (set to nil after the first successful claim) to prove
+	// the at-most-once guard a second call would lose.
+	claim             *persistence.Reminder
+	finalized         bool
+	finalizedTerminal bool
+
+	// stuckQueue backs ReclaimStuckFiring — the Task 14 crash-recovery
+	// sweep. Consumed once per call (drained to nil) so a test can
+	// assert the sweep doesn't re-process the same batch twice.
+	stuckQueue []*persistence.Reminder
+	// reclaimCalls/reclaimOlderThan capture ReclaimStuckFiring's args so
+	// a test can pin the grace-window cutoff the runner computes.
+	reclaimCalls     int
+	reclaimOlderThan time.Time
 }
 
 type rescheduleCall struct {
@@ -67,11 +96,65 @@ func (s *stubRepo) MarkErrored(_ context.Context, id, msg string) error {
 }
 func (s *stubRepo) Cancel(_ context.Context, _ string) error { panic("not used") }
 func (s *stubRepo) Delete(_ context.Context, _ string) error { panic("not used") }
-func (s *stubRepo) UpdateFields(_ context.Context, _ string, _ time.Time, _ string) error {
+func (s *stubRepo) UpdateFields(_ context.Context, _ string, _ persistence.ReminderFieldUpdate) error {
 	panic("not used")
 }
 func (s *stubRepo) CountPendingByOperator(_ context.Context, _ string) (int, error) {
 	panic("not used")
+}
+
+// The following four satisfy the Task 4 additions to
+// persistence.ReminderRepository (task-spawn/claim/finalize). Real
+// behavior lands in Tasks 5/6 when Runner grows task-kind dispatch;
+// compile stubs only for now.
+func (s *stubRepo) MarkTaskSpawned(_ context.Context, id, taskID string, next *time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.spawnedID, s.spawnedTaskID, s.spawnedNext = id, taskID, next
+	s.spawnedCalls++
+	return nil
+}
+
+// ClaimDelivery hands out s.claim exactly once (Task 6's at-most-once
+// delivery guard). A second call after the first successful claim
+// returns (nil,false,nil), same as a real duplicate/HA-racing callback.
+func (s *stubRepo) ClaimDelivery(_ context.Context, _ string) (*persistence.Reminder, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.claim == nil {
+		return nil, false, nil
+	}
+	c := s.claim
+	s.claim = nil
+	return c, true, nil
+}
+func (s *stubRepo) FinalizeDelivery(_ context.Context, _, _ string, terminal bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.finalized, s.finalizedTerminal = true, terminal
+	return nil
+}
+func (s *stubRepo) CountTaskByOperator(_ context.Context, _ string) (int, error) {
+	panic("not used")
+}
+func (s *stubRepo) Pause(_ context.Context, _ string) error { panic("not used") }
+func (s *stubRepo) Resume(_ context.Context, _ string, _ time.Time) error {
+	panic("not used")
+}
+
+// ReclaimStuckFiring hands out s.stuckQueue exactly once (mirrors the
+// real query returning a bounded batch), then drains it — a second
+// sweep call with no new stuck rows sees an empty result, same as the
+// real FOR UPDATE SKIP LOCKED query would after the first sweep
+// reclaimed them.
+func (s *stubRepo) ReclaimStuckFiring(_ context.Context, olderThan time.Time, _ int) ([]*persistence.Reminder, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reclaimCalls++
+	s.reclaimOlderThan = olderThan
+	out := s.stuckQueue
+	s.stuckQueue = nil
+	return out, nil
 }
 
 // enqueue swaps the pending queue under the same mutex LeaseDue

@@ -55,10 +55,15 @@ func TestInventoryTools_AvailabilityReflectsWiring(t *testing.T) {
 	}
 
 	mustNotAvailable := map[string]string{
-		"send_email":         "EmailSender",
-		"memory_search":      "MemorySearcher",
-		"memory_correct":     "MemoryCorrector",
-		"compose_automation": "ComposerBridge",
+		"send_email":              "EmailSender",
+		"memory_search":           "MemorySearcher",
+		"memory_correct":          "MemoryCorrector",
+		"set_reminder":            "ReminderRepository",
+		"cancel_reminder":         "ReminderRepository",
+		"update_reminder":         "ReminderRepository",
+		"update_operator_profile": "OperatorProfileRepository",
+		"compose_automation":      "ComposerBridge",
+		"list_apis":               "APIClient",
 	}
 	for tool, dep := range mustNotAvailable {
 		row, ok := byName[tool]
@@ -72,6 +77,44 @@ func TestInventoryTools_AvailabilityReflectsWiring(t *testing.T) {
 		if row.BackingService != dep {
 			t.Errorf("tool %q BackingService = %q, want %q", tool, row.BackingService, dep)
 		}
+	}
+}
+
+// TestInventoryTools_ReminderAndProfileReposToggle pins the admin
+// inventory rows for dispatcher write tools whose descriptors are
+// always registered but whose calls require repository wiring.
+func TestInventoryTools_ReminderAndProfileReposToggle(t *testing.T) {
+	a := NewAgent(nil, nil, nil, nil, nil,
+		WithReminderRepository(&stubReminderRepo{}),
+		WithOperatorProfileRepository(&stubOpProfileRepo{}),
+	)
+
+	rows := a.InventoryTools()
+	byName := map[string]ToolInfo{}
+	for _, r := range rows {
+		byName[r.Name] = r
+	}
+	for _, tool := range []string{"set_reminder", "cancel_reminder", "update_reminder"} {
+		row, ok := byName[tool]
+		if !ok {
+			t.Fatalf("tool %q missing from inventory", tool)
+		}
+		if row.BackingService != "ReminderRepository" {
+			t.Errorf("%s BackingService = %q, want ReminderRepository", tool, row.BackingService)
+		}
+		if !row.Available {
+			t.Errorf("%s Available = false after WithReminderRepository", tool)
+		}
+	}
+	row, ok := byName["update_operator_profile"]
+	if !ok {
+		t.Fatal("update_operator_profile missing from inventory")
+	}
+	if row.BackingService != "OperatorProfileRepository" {
+		t.Errorf("update_operator_profile BackingService = %q, want OperatorProfileRepository", row.BackingService)
+	}
+	if !row.Available {
+		t.Error("update_operator_profile Available = false after WithOperatorProfileRepository")
 	}
 }
 
@@ -145,6 +188,48 @@ func TestInventoryTools_ComposerBridgeRequiresBothBridgeAndEnabled(t *testing.T)
 		}
 	}
 	t.Fatal("compose_automation not in inventory")
+}
+
+// TestInventoryTools_ListAPIsRequiresProviderLister pins the
+// stricter list_apis gate (design §5.5): unlike query_api, which is
+// available as soon as any apiClient is wired, list_apis must ALSO
+// have that client satisfy the optional ProviderLister capability —
+// a Call-only fake must NOT flip it Available, but a fake that also
+// implements ListProviders must.
+func TestInventoryTools_ListAPIsRequiresProviderLister(t *testing.T) {
+	a := NewAgent(nil, nil, nil, nil, nil, WithAPIClient(&fakeAPIClient{}))
+	rows := a.InventoryTools()
+	byName := map[string]ToolInfo{}
+	for _, r := range rows {
+		byName[r.Name] = r
+	}
+
+	queryRow, ok := byName["query_api"]
+	if !ok || !queryRow.Available {
+		t.Fatalf("query_api should be Available with a Call-only client, got %+v (ok=%v)", queryRow, ok)
+	}
+	listRow, ok := byName["list_apis"]
+	if !ok {
+		t.Fatal("list_apis missing from inventory")
+	}
+	if listRow.Available {
+		t.Error("list_apis Available = true with a Call-only client that does NOT implement ProviderLister")
+	}
+
+	b := NewAgent(nil, nil, nil, nil, nil, WithAPIClient(&fakeListerClient{}))
+	var listRow2 ToolInfo
+	var found bool
+	for _, r := range b.InventoryTools() {
+		if r.Name == "list_apis" {
+			listRow2, found = r, true
+		}
+	}
+	if !found {
+		t.Fatal("list_apis missing from inventory (lister client)")
+	}
+	if !listRow2.Available {
+		t.Error("list_apis Available = false with a client that DOES implement ProviderLister")
+	}
 }
 
 // stubComposerBridgeForInventory satisfies dispatcher.ComposerBridge

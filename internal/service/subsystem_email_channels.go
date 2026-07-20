@@ -148,6 +148,14 @@ func (s *EmailChannelsSubsystem) Start(ctx context.Context) error {
 	if p := c.a2aPushNotifier(); p != nil {
 		notifiers = append(notifiers, p)
 	}
+	// Reminders completion notifier (Task 7): re-added here (alongside
+	// the Telegram-fallback wiring in container.go) because this
+	// subsystem's Start rebuilds the whole multiplexer from scratch —
+	// without this, an email-configured deployment would silently drop
+	// task-kind reminder notifications the moment email channels start.
+	if n := c.reminderCompletionNotifier(); n != nil {
+		notifiers = append(notifiers, n)
+	}
 	if multi := newMultiCompletionNotifier(notifiers...); multi != nil && c.Executor != nil {
 		c.Executor.SetCompletionNotifier(multi)
 	}

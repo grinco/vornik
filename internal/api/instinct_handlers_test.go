@@ -94,6 +94,7 @@ func (s *stubInstinctRepo) Retire(_ context.Context, id string) error {
 	}
 	return persistence.ErrNotFound
 }
+func (s *stubInstinctRepo) UnretireTo(context.Context, string, string) error { return nil }
 func (s *stubInstinctRepo) RecordApplication(context.Context, *persistence.InstinctApplication) error {
 	return nil
 }

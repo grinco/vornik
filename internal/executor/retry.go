@@ -273,6 +273,12 @@ func (e *Executor) executeAgentStepWithFallback(
 
 	cid2, result2, err2 := e.executeAgentStepWithShapeRetry(ctx, task, execution, &fallbackPlan, fallbackStepID, step, timeout, opts)
 	if err2 == nil {
+		// executeAgentStep records harvested output artifacts on the plan so
+		// workflow.go can stage them for the next step. The fallback attempt
+		// runs on a cloned plan to swap the role model without mutating the
+		// shared swarm, so copy the successful fallback harvest back to the
+		// original plan before returning.
+		plan.stepOutputArtifacts = cloneArtifactHandoffEntries(fallbackPlan.stepOutputArtifacts)
 		e.logger.Info().
 			Str("execution_id", execution.ID).
 			Str("step", stepID).
@@ -286,6 +292,21 @@ func (e *Executor) executeAgentStepWithFallback(
 	// so operators see the full chain.
 	return cid2, result2, fmt.Errorf("%w (primary model %q also failed: %s)",
 		err2, roleConfig.Model, truncateForPrompt(err.Error(), 200))
+}
+
+func cloneArtifactHandoffEntries(in []map[string]string) []map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]map[string]string, 0, len(in))
+	for _, entry := range in {
+		cp := make(map[string]string, len(entry))
+		for k, v := range entry {
+			cp[k] = v
+		}
+		out = append(out, cp)
+	}
+	return out
 }
 
 // isModelShapedFailure returns true when the error class is one

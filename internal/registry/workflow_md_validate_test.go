@@ -267,6 +267,19 @@ func TestValidateWorkflowMarkdown_FileSizeSoftWarning(t *testing.T) {
 	}
 }
 
+func TestValidateWorkflowMarkdown_FileSizeSoftWaiver(t *testing.T) {
+	withWaiver := strings.Replace(minimalValid, "license: Apache-2.0\n",
+		"license: Apache-2.0\nvalidation:\n  allowLargeFile: true\n", 1)
+	src := withWaiver + "\n" + strings.Repeat("a", workflowMDSoftSizeLimit+10)
+	report := ValidateWorkflowMarkdown([]byte(src), "demo.md")
+	if _, ok := findingByCode(report, "file_size_soft"); ok {
+		t.Fatalf("validation.allowLargeFile should suppress soft-size warning; got %v", report.Findings)
+	}
+	if report.HasErrors() {
+		t.Fatalf("soft-cap waiver should not introduce errors; got %v", report.Findings)
+	}
+}
+
 func TestValidateWorkflowMarkdown_FrontmatterMissing(t *testing.T) {
 	// A body-only file lacking the opening marker.
 	src := "# Just a doc\n\nHello.\n"

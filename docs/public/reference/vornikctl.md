@@ -1593,6 +1593,35 @@ only operators (no chat session) and for cleaning up stuck rows.
 
 Calls are served by the daemon's /api/v1/reminders endpoints.
 
+Two kinds:
+  text  (default) — deliver the stored content verbatim.
+  task  — at fire time, run the content as a task prompt in a project
+          and deliver that task's outcome instead of static text
+          ("scheduled updates" — a daily digest, a weekly plan, a
+          recurring report). The KIND column in 'list'/'show'
+          distinguishes the two; a task-kind row also shows the
+          last task it spawned.
+
+Task-kind reminders are created from chat (set_reminder with
+kind="task", plus cron and project) — this CLI's 'schedule' command
+only produces text-kind reminders via the natural-language parser.
+Once created, task-kind rows are inspected, paused, resumed, and
+cancelled here exactly like text-kind ones.
+
+Limits: at most 20 concurrent task-kind reminders per operator
+(override VORNIK_REMINDERS_MAX_TASK_PER_OPERATOR), and each spawned task
+runs as a "research" task type (override VORNIK_REMINDERS_TASK_TYPE).
+A row stuck in 'firing' past a grace window (default 15m, override
+VORNIK_REMINDERS_FIRING_GRACE) — e.g. a crash between lease and task
+creation, or between send and finalize — is reclaimed automatically by
+a background sweep.
+
+Pause/resume works the same from three places: chat (the
+pause_reminder / resume_reminder tools), this CLI ('reminders
+pause' / 'reminders resume'), and the web UI's reminders table —
+all three drive the same daemon state machine, so pausing from one
+surface is immediately visible from the others.
+
 ## vornikctl reminders cancel
 
 Cancel a pending reminder
@@ -1660,6 +1689,42 @@ vornikctl reminders list [flags]
 | `--status` |  | Filter by status (pending\|firing\|fired\|cancelled\|expired) |
 | `-n`, `--limit` | `50` | Maximum rows to return (1-500) |
 
+## vornikctl reminders pause
+
+Mute a pending reminder
+
+Flip a pending dispatcher_reminders row to status=paused.
+The heartbeat skips paused rows; use 'resume' to re-arm.
+
+Refuses rows that aren't pending (firing, awaiting_task, already
+terminal) — the daemon returns a 409 in that case.
+
+```
+vornikctl reminders pause <id> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | `false` | Output JSON instead of human-readable |
+
+## vornikctl reminders resume
+
+Re-arm a paused reminder
+
+Flip a paused dispatcher_reminders row back to status=pending,
+recomputing fire_at from the row's cron expression relative to now.
+
+Only recurring reminders (cron_expr set) can be resumed; one-shot
+reminders have no schedule to re-derive fire_at from.
+
+```
+vornikctl reminders resume <id> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | `false` | Output JSON instead of human-readable |
+
 ## vornikctl reminders schedule
 
 Create a one-shot or recurring reminder from natural language
@@ -1681,6 +1746,11 @@ Examples:
 
 By default the CLI prints the parsed reminder, asks for y/N confirmation,
 then commits. Pass --yes to skip the prompt (scripted use).
+
+This command always creates a text-kind reminder (static content,
+delivered verbatim). For a task-kind "scheduled update" — one that
+runs a task on a cadence and delivers its outcome — ask the bot in
+chat instead (set_reminder with kind="task").
 
 ```
 vornikctl reminders schedule <natural-language text> [flags]

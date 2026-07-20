@@ -198,3 +198,38 @@ func TestToolBudget_EndToEnd_DisabledKeepsStatic(t *testing.T) {
 	defer rt.mu.Unlock()
 	assert.Equal(t, "250", rt.lastConfig.EnvVars["VORNIK_MAX_TOOL_ITERATIONS"])
 }
+
+// TestResolveRoleToolBudget_FallbackCloneInheritsResolvedBudget — item 4
+// regression (dynamic-tool-budget follow-ups §4, 2026-07-18).
+// executeAgentStepWithFallback re-runs a failed step on a CLONE of the role with
+// only Model/ModelFallback swapped; the budget base (Runtime.EnvVars
+// VORNIK_MAX_TOOL_ITERATIONS) is untouched, so the fallback attempt resolves to
+// the SAME effective (tier-scaled) budget as the primary — never the raw base.
+// Pins the invariant so a future refactor of the fallback path can't silently
+// drop the injected budget (the concern in review-20260608-18ed).
+func TestResolveRoleToolBudget_FallbackCloneInheritsResolvedBudget(t *testing.T) {
+	cfg := enabledBudgetCfg()
+	primary := roleWithBudget("250")
+	primary.Model = "glm-5.2"
+	primary.ModelFallback = "zai.glm-5"
+
+	// Mirror executeAgentStepWithFallback's clone exactly (retry.go).
+	fallback := *primary
+	fallback.Model = primary.ModelFallback
+	fallback.ModelFallback = ""
+
+	tier := toolbudget.TierOpenEnded // scales (2.5x, capped) — not 1.0, so a
+	// "fell back to raw base" regression is observable.
+	effPrimary, injP := resolveRoleToolBudget(primary, tier, false, cfg)
+	effFallback, injF := resolveRoleToolBudget(&fallback, tier, false, cfg)
+
+	if !injP || !injF {
+		t.Fatalf("expected injection on both attempts (primary=%v fallback=%v)", injP, injF)
+	}
+	if effFallback != effPrimary {
+		t.Errorf("fallback budget %d != primary %d — the fallback must inherit the resolved budget", effFallback, effPrimary)
+	}
+	if effFallback == roleToolBudgetBase(&fallback) {
+		t.Errorf("fallback budget %d equals the raw base — tier scaling was lost on the fallback path", effFallback)
+	}
+}

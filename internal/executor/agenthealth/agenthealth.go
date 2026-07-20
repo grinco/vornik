@@ -66,6 +66,38 @@ func NewRegistry(cfg Config) *Registry {
 // executor's SetMetrics timing.
 func (r *Registry) SetMetrics(m MetricsSink) { r.metrics = m }
 
+// ModelHealthSnapshot returns the live state of every agent-LLM breaker,
+// implementing chat.ModelHealthReporter so the doctor surfaces the agent
+// breaker through the SAME interface as the chat-router breaker. Route is the
+// constant "agent" (this breaker is not per-route). Iteration is point-in-time
+// per breaker (each Snapshot is atomic; state may shift across the Range) —
+// acceptable for a diagnostic read. Nil-safe.
+func (r *Registry) ModelHealthSnapshot() []chat.ModelHealthSnapshot {
+	if r == nil || r.reg == nil {
+		return nil
+	}
+	var out []chat.ModelHealthSnapshot
+	r.reg.Range(func(k, v any) bool {
+		model, _ := k.(string)
+		b, ok := v.(*chat.Breaker)
+		if !ok {
+			return true
+		}
+		state, openedAt := b.Snapshot()
+		out = append(out, chat.ModelHealthSnapshot{
+			Route:     "agent",
+			Model:     model,
+			State:     state,
+			OpenSince: openedAt,
+		})
+		return true
+	})
+	return out
+}
+
+// Registry implements chat.ModelHealthReporter (consumed by the doctor).
+var _ chat.ModelHealthReporter = (*Registry)(nil)
+
 func (r *Registry) breakerFor(model string) *chat.Breaker {
 	if v, ok := r.reg.Load(model); ok {
 		return v.(*chat.Breaker)

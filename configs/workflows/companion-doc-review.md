@@ -3,6 +3,8 @@ workflowId: "companion-doc-review"
 displayName: "Companion: Doc review"
 description: "Reviews documentation for freshness, clarity, link rot, and divergence from the code it describes. Host LLM delegates when it touches docs or before a release."
 version: "1.0.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "review"
 maxStepVisits: 1
 maxIterations: 10

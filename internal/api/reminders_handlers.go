@@ -6,6 +6,8 @@ package api
 //   GET  /api/v1/reminders          — list (filter by status, operator, project)
 //   GET  /api/v1/reminders/{id}     — show one
 //   POST /api/v1/reminders/{id}/cancel — flip to status='cancelled'
+//   POST /api/v1/reminders/{id}/pause  — pending -> paused
+//   POST /api/v1/reminders/{id}/resume — paused -> pending (recurring only)
 //
 // No create endpoint in v1 — reminders are LLM-driven via the
 // dispatcher's set_reminder tool. A future v2 may expose POST
@@ -21,6 +23,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/reminders"
 )
 
 // ReminderEntryJSON is the wire shape for one row. Times are
@@ -35,6 +38,7 @@ type ReminderEntryJSON struct {
 	FireAt          string `json:"fire_at"`
 	Content         string `json:"content"`
 	Status          string `json:"status"`
+	Kind            string `json:"kind"`
 	CreatedAt       string `json:"created_at"`
 	FiredAt         string `json:"fired_at,omitempty"`
 	CancelledAt     string `json:"cancelled_at,omitempty"`
@@ -186,6 +190,141 @@ func (s *Server) CancelReminder(w http.ResponseWriter, r *http.Request, id strin
 	respondJSON(w, http.StatusOK, reminderToJSON(updated))
 }
 
+// PauseReminder handles POST /api/v1/reminders/{id}/pause. Mutes a
+// pending reminder (pending -> paused) — the heartbeat skips paused
+// rows entirely. Refuses any row that isn't pending (firing,
+// awaiting_task, already paused, terminal) with 409 Conflict since
+// those aren't states the operator can safely mute from here.
+func (s *Server) PauseReminder(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "POST only")
+		return
+	}
+	if s.reminderRepo == nil {
+		respondError(w, http.StatusServiceUnavailable, "REMINDERS_DISABLED", "reminders repository not wired")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	rem, err := s.reminderRepo.Get(ctx, id)
+	if err != nil {
+		if errors.Is(err, persistence.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "NOT_FOUND", "reminder not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "INTERNAL", "fetch failed")
+		return
+	}
+	if !s.reminderVisibleToRequest(r, rem) {
+		respondError(w, http.StatusForbidden, "FORBIDDEN", "access denied to reminder")
+		return
+	}
+	if err := s.reminderRepo.Pause(ctx, id); err != nil {
+		if errors.Is(err, persistence.ErrNotFound) {
+			respondError(w, http.StatusConflict, "NOT_PAUSABLE",
+				"reminder is not pausable — mid-run or not pending")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "INTERNAL", "pause failed: "+err.Error())
+		return
+	}
+	if s.adminAuditRepo != nil {
+		principal := apiArchivePrincipal(r)
+		if principal == "" {
+			principal = "api-anonymous"
+		}
+		afterJSON, _ := json.Marshal(map[string]any{"reminder_id": id})
+		_ = s.adminAuditRepo.Insert(ctx, &persistence.AdminAuditEntry{
+			Principal: principal,
+			Source:    "api",
+			Action:    "reminder.paused",
+			Target:    id,
+			After:     string(afterJSON),
+			IP:        clientIPFromRequest(r),
+			UserAgent: r.UserAgent(),
+		})
+	}
+	updated, err := s.reminderRepo.Get(ctx, id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "INTERNAL", "re-fetch failed")
+		return
+	}
+	respondJSON(w, http.StatusOK, reminderToJSON(updated))
+}
+
+// ResumeReminder handles POST /api/v1/reminders/{id}/resume. Re-arms
+// a paused reminder (paused -> pending), recomputing fire_at from the
+// row's cron expression relative to now. One-shot reminders (no
+// cron_expr) have no schedule to resume onto and are refused with
+// 400 — pausing a one-shot doesn't happen from this API (Pause
+// itself would also apply to one-shots, but resuming one is
+// meaningless since there's no recurrence rule to re-derive fire_at
+// from).
+func (s *Server) ResumeReminder(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		respondError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "POST only")
+		return
+	}
+	if s.reminderRepo == nil {
+		respondError(w, http.StatusServiceUnavailable, "REMINDERS_DISABLED", "reminders repository not wired")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	rem, err := s.reminderRepo.Get(ctx, id)
+	if err != nil {
+		if errors.Is(err, persistence.ErrNotFound) {
+			respondError(w, http.StatusNotFound, "NOT_FOUND", "reminder not found")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "INTERNAL", "fetch failed")
+		return
+	}
+	if !s.reminderVisibleToRequest(r, rem) {
+		respondError(w, http.StatusForbidden, "FORBIDDEN", "access denied to reminder")
+		return
+	}
+	if rem.CronExpr == "" {
+		respondError(w, http.StatusBadRequest, "NOT_RECURRING", "one-shot reminders can't be resumed")
+		return
+	}
+	next, err := reminders.NextFireAt(rem.CronExpr, time.Now())
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "INVALID_CRON", "cannot compute next fire time: "+err.Error())
+		return
+	}
+	if err := s.reminderRepo.Resume(ctx, id, next); err != nil {
+		if errors.Is(err, persistence.ErrNotFound) {
+			respondError(w, http.StatusConflict, "NOT_PAUSED", "reminder is not paused")
+			return
+		}
+		respondError(w, http.StatusInternalServerError, "INTERNAL", "resume failed: "+err.Error())
+		return
+	}
+	if s.adminAuditRepo != nil {
+		principal := apiArchivePrincipal(r)
+		if principal == "" {
+			principal = "api-anonymous"
+		}
+		afterJSON, _ := json.Marshal(map[string]any{"reminder_id": id, "next_fire_at": next.UTC().Format(time.RFC3339)})
+		_ = s.adminAuditRepo.Insert(ctx, &persistence.AdminAuditEntry{
+			Principal: principal,
+			Source:    "api",
+			Action:    "reminder.resumed",
+			Target:    id,
+			After:     string(afterJSON),
+			IP:        clientIPFromRequest(r),
+			UserAgent: r.UserAgent(),
+		})
+	}
+	updated, err := s.reminderRepo.Get(ctx, id)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "INTERNAL", "re-fetch failed")
+		return
+	}
+	respondJSON(w, http.StatusOK, reminderToJSON(updated))
+}
+
 // DeleteReminder handles DELETE /api/v1/reminders/{id}. Physically
 // removes the row — distinct from Cancel which preserves the row
 // for audit. Intended for operator cleanup of stale rows that
@@ -269,6 +408,26 @@ func (s *Server) remindersRouter(w http.ResponseWriter, r *http.Request) {
 		s.CancelReminder(w, r, id)
 		return
 	}
+	// {id}/pause
+	if strings.HasSuffix(path, "/pause") {
+		id := strings.TrimSuffix(path, "/pause")
+		if strings.Contains(id, "/") {
+			respondError(w, http.StatusNotFound, "NOT_FOUND", "unknown reminder path")
+			return
+		}
+		s.PauseReminder(w, r, id)
+		return
+	}
+	// {id}/resume
+	if strings.HasSuffix(path, "/resume") {
+		id := strings.TrimSuffix(path, "/resume")
+		if strings.Contains(id, "/") {
+			respondError(w, http.StatusNotFound, "NOT_FOUND", "unknown reminder path")
+			return
+		}
+		s.ResumeReminder(w, r, id)
+		return
+	}
 	// Plain {id}
 	if strings.Contains(path, "/") {
 		respondError(w, http.StatusNotFound, "NOT_FOUND", "unknown reminder path")
@@ -295,6 +454,7 @@ func reminderToJSON(r *persistence.Reminder) ReminderEntryJSON {
 		FireAt:     r.FireAt.UTC().Format(time.RFC3339),
 		Content:    r.Content,
 		Status:     string(r.Status),
+		Kind:       string(r.Kind),
 		CreatedAt:  r.CreatedAt.UTC().Format(time.RFC3339),
 		CreatedVia: r.CreatedVia,
 		ErrorCount: r.ErrorCount,

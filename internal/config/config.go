@@ -193,6 +193,61 @@ type Config struct {
 	// feature completes its soak, design §9). See
 	// https://docs.vornik.io §5.4.
 	Composer ComposerConfig `yaml:"composer"`
+	// Scraper groups daemon-side scraper features (the scraper itself is a
+	// separate MCP service). See
+	// https://docs.vornik.io
+	Scraper ScraperConfig `yaml:"scraper"`
+	// Gateway configures the local API gateway (Kong DB-less) that fronts
+	// authenticated third-party HTTP APIs for the query_api tool. See
+	// https://docs.vornik.io
+	Gateway GatewayConfig `yaml:"gateway" json:"gateway"`
+}
+
+// GatewayConfig configures the local API gateway (Kong DB-less) that fronts
+// authenticated third-party HTTP APIs. See
+// https://docs.vornik.io
+type GatewayConfig struct {
+	Enabled   bool                      `yaml:"enabled" json:"enabled" doc:"Turn the query_api gateway integration on."`
+	Address   string                    `yaml:"address" json:"address" doc:"Base URL the daemon uses to reach the local gateway, e.g. http://127.0.0.1:8010."`
+	Token     string                    `yaml:"token" json:"token" doc:"Internal daemon↔gateway key-auth secret (prefer token_file)."`
+	TokenFile string                    `yaml:"token_file" json:"token_file" doc:"Path to a file holding the gateway token (preferred over inline token)."`
+	Providers map[string]ProviderConfig `yaml:"providers" json:"providers" doc:"Registered API providers the agent may call by name."`
+}
+
+// ProviderConfig is one registered upstream provider. The gateway route set is
+// the authoritative allowlist; this is a conservative daemon-side pre-filter.
+type ProviderConfig struct {
+	BasePath       string   `yaml:"base_path" json:"base_path" doc:"Path prefix under the gateway for this provider's routes."`
+	AllowedMethods []string `yaml:"allowed_methods" json:"allowed_methods" doc:"HTTP methods permitted; GET/HEAD always allowed, writes require writes_enabled."`
+	WritesEnabled  bool     `yaml:"writes_enabled" json:"writes_enabled" doc:"When false (default) only GET/HEAD are permitted regardless of allowed_methods."`
+	Description    string   `yaml:"description" json:"description" doc:"Human/LLM-facing description of what this provider offers."`
+	// Examples surfaces optional endpoint hints via the list_apis dispatcher
+	// tool (query_api provider-discovery design §4.1). Omit for well-known
+	// public APIs the model already understands; add a couple for internal/
+	// custom APIs so the agent can discover how to call them.
+	Examples []string `yaml:"examples" json:"examples" doc:"Optional endpoint hints surfaced by list_apis, e.g. \"/geocode/json?address= — geocode an address\". Omit for APIs the model already knows."`
+}
+
+// ScraperConfig groups daemon-side scraper-adjacent behaviour.
+type ScraperConfig struct {
+	// BlockNotify pushes a proactive Telegram alert when the scraper hits a
+	// solvable gate (captcha/login_wall/auth_required) on a curated portal.
+	BlockNotify BlockNotifyConfig `yaml:"block_notify"`
+}
+
+// BlockNotifyConfig — proactive operator notification on a scraper block.
+// Off by default; inert unless Enabled and Portals is non-empty. See the
+// block→Telegram notify design (2026-07-19).
+type BlockNotifyConfig struct {
+	// Enabled turns the Manager.Execute notify hook on. Default false → inert.
+	Enabled bool `yaml:"enabled"`
+	// Cooldown is the minimum gap between notifications for the same
+	// (project, portal), as a Go duration string ("6h"). Empty/invalid → 6h.
+	Cooldown string `yaml:"cooldown"`
+	// Portals is the curated host allowlist — only a block on one of these
+	// hosts (or a subdomain) fires a notification. Empty → nothing fires
+	// (no noise until the operator curates the list).
+	Portals []string `yaml:"portals"`
 }
 
 // ComposerConfig tunes the NL Automation Composer — the wizard's
@@ -1585,6 +1640,15 @@ type ChatRouterConfig struct {
 	// Required when Provider=="router".
 	Default string `yaml:"default" doc:"Sub-provider used when no route matches. Required for router."`
 
+	// ModelFallbacks maps a primary model to a fallback ("twin") model for the
+	// NON-swarm chat paths (dispatcher/autonomy/wizard + pinned workers). When a
+	// primary's circuit is open, the router-level FallbackProvider retries once
+	// on the mapped model. Both keys and values route by prefix like any pinned
+	// model. Empty = no non-swarm fallback (swarm agents use their role
+	// modelFallback regardless). See
+	// https://docs.vornik.io
+	ModelFallbacks map[string]string `yaml:"model_fallbacks" doc:"Non-swarm per-model fallback map (primary model -> fallback model), used when the primary's circuit is open. Empty disables non-swarm fallback."`
+
 	// ClaudeCLI configures the subprocess-backed Claude Code sub-provider.
 	// Deprecated: prefer ClaudeSubscription — the CLI adds ~200ms
 	// subprocess startup and uses a tool-call prompt-engineering shim
@@ -2379,6 +2443,19 @@ type InstinctConfig struct {
 	// Consumers gates each behaviour-affecting consumer independently.
 	// All default false; all inert in slice 1.
 	Consumers InstinctConsumersConfig `yaml:"consumers"`
+
+	// Lift tunes the lift_eval pass (gated by Consumers.LiftEval). All
+	// zero → design defaults; inert while Consumers.LiftEval is false.
+	Lift InstinctLiftConfig `yaml:"lift"`
+}
+
+// InstinctLiftConfig tunes the lift_eval pass (all zero → design defaults).
+type InstinctLiftConfig struct {
+	MinTreatment        int     `yaml:"min_treatment" doc:"Minimum applied outcomes before lift is measured (0 = 8)."`
+	MinBaseline         int     `yaml:"min_baseline" doc:"Minimum baseline outcomes before lift is measured (0 = 8)."`
+	Margin              float64 `yaml:"margin" doc:"Propose retirement only when lift <= -margin (0 = 0.05)."`
+	ReevalCooldownHours int     `yaml:"reeval_cooldown_hours" doc:"Suppress re-proposing a rejected instinct for this many hours (0 = 168)."`
+	WindowHours         int     `yaml:"window_hours" doc:"Measurement window in hours (0 = the confidence model's evidence-freshness horizon, else the decay half-life)."`
 }
 
 // InstinctConsumersConfig gates the instinct layer's behaviour-
@@ -2410,6 +2487,13 @@ type InstinctConsumersConfig struct {
 	// caps still bound the result. Default false → budget instincts are mined
 	// and surfaced advisory but never change a budget.
 	ToolBudget bool `yaml:"tool_budget" doc:"Let learned budget instincts fill an absent complexity tier (default off)."`
+
+	// LiftEval runs the true-lift measurement pass in the extraction worker
+	// tick: applied-success-rate vs the matched not-applied baseline, an
+	// advisory lift column, and operator-approved instinct_retire proposals
+	// for non-positive-lift instincts. Default false → the pass is a no-op
+	// (no queries, no snapshots, no proposals).
+	LiftEval bool `yaml:"lift_eval" doc:"Measure true instinct lift and propose retiring instincts that do not help (default off)."`
 
 	// AutoApply (v2) promotes high-confidence recovery instincts from an
 	// ADVISORY overlay to a prompt-level DIRECTIVE in the lead's recovery

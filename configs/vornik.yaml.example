@@ -860,5 +860,30 @@ tool_budget:
 #       args: [-m, mcp_server_linter]
 #       env:
 #         LINTER_CONFIG: /etc/linter.yaml
+# Local API gateway (Kong DB-less) for authenticated third-party APIs.
+# Credentials live in the gateway, never the daemon; the LLM never sees them.
+# The daemon reaches the gateway over loopback and presents only an internal
+# key-auth token (VORNIK_GATEWAY_TOKEN, or the token_file below). See the
+# operator guide at deployments/podman/gateway/README.md.
+gateway:
+  # Turn the query_api gateway integration on. Off by default.
+  enabled: false
+  # Base URL the daemon uses to reach the local gateway.
+  address: "http://127.0.0.1:8010"
+  # Path to a file holding the daemon<->gateway key-auth token (preferred over
+  # an inline `token:`). Also settable via the VORNIK_GATEWAY_TOKEN env var —
+  # which is what the mounted secrets/gateway.env provides.
+  # token_file: "/home/you/.config/vornik/secrets/gateway.token"
+  # Registered providers the agent may call by name. The gateway route/method
+  # allowlist is authoritative; this is a conservative daemon-side pre-filter.
+  providers:
+    maps:
+      base_path: "/maps"
+      allowed_methods: ["GET", "HEAD"]
+      # Read-only by default: when false, only GET/HEAD are permitted regardless
+      # of allowed_methods. Writes require this true AND the method listed.
+      writes_enabled: false
+      description: "Google Maps API (geocoding, places, directions)."
+
 mcp:
   servers: []

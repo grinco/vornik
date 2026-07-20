@@ -410,7 +410,7 @@ func (c *Container) newProposalApplier() *controlplane.ApplyEngine {
 		return nil
 	}
 	actionizer := c.newActionizer()
-	return &controlplane.ApplyEngine{
+	engine := &controlplane.ApplyEngine{
 		// Apply-time semantic re-validation of actionized proposals
 		// (actionable-proposals §4.5): existence + model universe against
 		// CURRENT state; base-hash covers content drift.
@@ -447,6 +447,16 @@ func (c *Container) newProposalApplier() *controlplane.ApplyEngine {
 		},
 		Logger: c.Logger.With().Str("component", "control-plane").Str("engine", "apply").Logger(),
 	}
+	// instinct_retire (2026-07-19-instinct-lift-measurement-design.md §4.5)
+	// is a KindApplier-managed kind — retiring/unretiring an instinct
+	// directly rather than rewriting a config file. Registered only when the
+	// instinct repository is wired.
+	if c.repos.Instincts != nil {
+		engine.KindAppliers = map[string]controlplane.KindApplier{
+			persistence.ProposalKindInstinctRetire: &controlplane.InstinctRetireApplier{Instincts: c.repos.Instincts},
+		}
+	}
+	return engine
 }
 
 // Control-plane server-side workers (LLD 2026-07-07-control-plane-design,

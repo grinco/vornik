@@ -142,6 +142,10 @@ const (
 	// surfaces (budget caps, workflow allowlists, client kind).
 	// See https://docs.vornik.io
 	TaskCreationSourceCompanion TaskCreationSource = "COMPANION"
+	// TaskCreationSourceScheduled marks tasks spawned by a task-kind
+	// scheduled reminder's heartbeat. Distinct from AUTONOMOUS so the
+	// audit/metric attribution separates the two schedulers.
+	TaskCreationSourceScheduled TaskCreationSource = "SCHEDULED"
 )
 
 // DelegationMode specifies how a parent task waits for child tasks.

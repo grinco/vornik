@@ -3,6 +3,8 @@ workflowId: "adaptive"
 displayName: "Adaptive Workflow Router"
 description: "Routes a task to one of the project's configured candidate workflows by asking the lead to classify the task, then delegates the real work to a child task running the picked workflow."
 version: "3.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "route"
 maxStepVisits: 1
 maxIterations: 5

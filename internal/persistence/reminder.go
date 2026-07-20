@@ -27,6 +27,15 @@ const (
 	// ReminderStatusExpired — past fire_at but channel
 	// unavailable and v1's no-retry policy gave up. Terminal.
 	ReminderStatusExpired ReminderStatus = "expired"
+	// ReminderStatusAwaitingTask — a task-kind fire created a task and
+	// is waiting for it to complete. Non-terminal and NOT leasable
+	// (LeaseDue filters status='pending'), which is what structurally
+	// enforces the skip-if-still-running policy. See
+	// https://docs.vornik.io §2.3.
+	ReminderStatusAwaitingTask ReminderStatus = "awaiting_task"
+	// ReminderStatusPaused — operator-muted; reachable only from
+	// 'pending'. Not leasable. resume recomputes fire_at.
+	ReminderStatusPaused ReminderStatus = "paused"
 )
 
 // IsTerminal reports whether the status is end-of-life. The
@@ -39,6 +48,18 @@ func (s ReminderStatus) IsTerminal() bool {
 		return false
 	}
 }
+
+// ReminderKind discriminates a static-text reminder from a task-kind
+// reminder that spawns a task and delivers its outcome.
+type ReminderKind string
+
+const (
+	// ReminderKindText delivers Content verbatim (the shipped behavior).
+	ReminderKindText ReminderKind = "text"
+	// ReminderKindTask runs a task from Content (the prompt) in
+	// ProjectID and delivers its outcome.
+	ReminderKindTask ReminderKind = "task"
+)
 
 // Reminder is one dispatcher_reminders row. Mirrors the schema
 // shape one-for-one; the API/UI/CLI layers project subsets via
@@ -67,6 +88,16 @@ type Reminder struct {
 	// computed fire_at exceeds this time the runner marks the row
 	// 'fired' terminally. nil = unbounded.
 	RecurrenceUntil *time.Time
+	// Kind is "text" (default) or "task". See migration 130.
+	Kind ReminderKind
+	// LastTaskID is the most recent spawned task (task-kind only). Set
+	// at spawn; OVERWRITTEN by the next fire, never cleared — points to
+	// the in-flight task while one runs, else the last-completed task.
+	LastTaskID string
+	// LastDeliveredTaskID is the task whose outcome was already
+	// delivered. The (LastTaskID != LastDeliveredTaskID) pair is the
+	// at-most-once delivery guard.
+	LastDeliveredTaskID string
 }
 
 // IsRecurring reports whether the reminder re-arms on fire. A
@@ -75,6 +106,10 @@ type Reminder struct {
 func (r *Reminder) IsRecurring() bool {
 	return r != nil && r.CronExpr != ""
 }
+
+// IsTaskKind reports whether firing this reminder spawns a task rather
+// than sending Content verbatim.
+func (r *Reminder) IsTaskKind() bool { return r != nil && r.Kind == ReminderKindTask }
 
 // ReminderListFilter drives ReminderRepository.List. Zero-value
 // fields are "any"; PageSize defaults to 50 at the impl, capped
@@ -90,6 +125,22 @@ type ReminderListFilter struct {
 	// FireAfter mirrors FireBefore.
 	FireAfter time.Time
 	PageSize  int
+}
+
+// ReminderFieldUpdate carries the mutable fields of an update_reminder
+// edit. It is applied only to a pending row (UpdateFields refuses others).
+// FireAt is always written — the dispatcher tool resolves it up front
+// (from an explicit timestamp, an offset, a cron-recomputed next-fire, or
+// the row's current value). The three string fields follow "empty ==
+// leave unchanged" semantics (COALESCE), matching the pre-existing content
+// behavior; there is deliberately no way to CLEAR cron_expr or project_id
+// through an edit (converting a recurring reminder back to one-shot, or
+// unsetting a task-kind project, is a cancel-and-recreate operation).
+type ReminderFieldUpdate struct {
+	FireAt    time.Time
+	Content   string // "" leaves the existing body unchanged
+	CronExpr  string // "" leaves the existing schedule unchanged
+	ProjectID string // "" leaves the existing project unchanged
 }
 
 // ReminderRepository persists dispatcher_reminders rows. The
@@ -136,14 +187,15 @@ type ReminderRepository interface {
 	// 'firing' until an operator cancels.
 	MarkErrored(ctx context.Context, id, errorMessage string) error
 
-	// UpdateFields mutates a pending row's fire_at + content.
-	// Refuses non-pending rows (the heartbeat may be mid-fire)
-	// — zero rows-affected surfaces as ErrNotFound so the
-	// dispatcher tool can tell the operator the reminder
-	// already left the gate. content="" leaves content
-	// unchanged via COALESCE; passing the empty string is
-	// otherwise indistinguishable from "delete the body".
-	UpdateFields(ctx context.Context, id string, fireAt time.Time, content string) error
+	// UpdateFields mutates a pending row's fire_at + content +
+	// cron_expr + project_id (see ReminderFieldUpdate). Refuses
+	// non-pending rows (the heartbeat may be mid-fire) — zero
+	// rows-affected surfaces as ErrNotFound so the dispatcher tool
+	// can tell the operator the reminder already left the gate.
+	// Each string field's empty value means "leave the column
+	// unchanged" (COALESCE); there is deliberately no way to CLEAR a
+	// column through this call (see ReminderFieldUpdate).
+	UpdateFields(ctx context.Context, id string, upd ReminderFieldUpdate) error
 
 	// Cancel transitions a non-terminal row to status=cancelled.
 	// Idempotent — already-terminal rows return nil with no
@@ -164,4 +216,55 @@ type ReminderRepository interface {
 	// reminders for one operator. Drives the per-operator cap
 	// the set_reminder tool enforces.
 	CountPendingByOperator(ctx context.Context, operatorID string) (int, error)
+
+	// MarkTaskSpawned transitions a firing task-kind row to
+	// awaiting_task, stamps last_task_id, and — when nextFireAt is
+	// non-nil (recurring) — arms fire_at to the next slot. Called
+	// AFTER the task is created so a crash before this leaves the row
+	// firing (recoverable, no lost fire). ErrNotFound if not firing.
+	MarkTaskSpawned(ctx context.Context, id, taskID string, nextFireAt *time.Time) error
+
+	// ClaimDelivery atomically claims delivery of a completed task's
+	// outcome: awaiting_task -> firing for the row whose last_task_id
+	// = taskID and last_delivered_task_id != taskID. Returns
+	// (row,true,nil) to the single winner; (nil,false,nil) for a
+	// duplicate/HA-racing callback. The at-most-once guard.
+	ClaimDelivery(ctx context.Context, taskID string) (*Reminder, bool, error)
+
+	// FinalizeDelivery completes a claimed delivery: stamps
+	// last_delivered_task_id and moves the row off firing —
+	// firing->fired when terminal (one-shot or past recurrence bound),
+	// else firing->pending (recurring; fire_at already armed at spawn).
+	// ErrNotFound if not firing.
+	FinalizeDelivery(ctx context.Context, id, taskID string, terminal bool) error
+
+	// CountTaskByOperator counts non-terminal task-kind reminders for
+	// the per-operator task cap.
+	CountTaskByOperator(ctx context.Context, operatorID string) (int, error)
+
+	// Pause mutes a pending reminder: pending -> paused. Refuses any
+	// non-pending row (firing/awaiting_task/etc.) so an in-flight
+	// reminder can't be paused mid-run — ErrNotFound surfaces that
+	// to the operator. Design §5.4.
+	Pause(ctx context.Context, id string) error
+
+	// Resume re-arms a paused reminder: paused -> pending, and stamps
+	// fire_at = nextFireAt. Refuses non-paused rows — ErrNotFound.
+	Resume(ctx context.Context, id string, nextFireAt time.Time) error
+
+	// ReclaimStuckFiring returns rows stuck in 'firing' whose fired_at
+	// (stamped when LeaseDue/ClaimDelivery flipped the row to firing) is
+	// older than olderThan. Covers the three crash-recovery gaps design
+	// §9 names: (a) a crash between LeaseDue and MarkTaskSpawned
+	// (task-kind spawn interrupted), (b) a crash between Send/claim and
+	// FinalizeDelivery (delivery interrupted), and (c) the pre-existing
+	// text-kind case where a failed Send leaves the row firing forever
+	// (MarkErrored deliberately doesn't change status — see its doc
+	// comment). Uses FOR UPDATE SKIP LOCKED so concurrent sweepers
+	// (future HA, per LeaseDue's precedent) claim disjoint batches, but
+	// performs NO mutation itself — the caller (Runner.sweepStuckFiring)
+	// decides per row whether to re-arm (recurring) or mark errored
+	// (one-shot). Never returns 'awaiting_task' rows — that's the
+	// long-running-task state, not stuck.
+	ReclaimStuckFiring(ctx context.Context, olderThan time.Time, limit int) ([]*Reminder, error)
 }

@@ -3,6 +3,8 @@ workflowId: "research-and-publish"
 displayName: "Research, Write & Publish"
 description: "Three-step pipeline in one task: a researcher gathers information into research.md, a writer turns it into a polished deliverable, and a publisher renders that deliverable into a self-contained, Vornik-themed HTML page and publishes it via PageDrop — returning a shareable link. The publisher reads the writer's fresh deliverable in the same workspace (never RAG), so the published page reflects exactly this run's validated research."
 version: "1.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "research"
 maxStepVisits: 2
 maxIterations: 14

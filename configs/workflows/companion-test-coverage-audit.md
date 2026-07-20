@@ -3,6 +3,8 @@ workflowId: "companion-test-coverage-audit"
 displayName: "Companion: Test coverage audit"
 description: "Audits test coverage on a set of touched files. Returns missing-test list, untested branches, and a coverage-delta summary the host LLM can act on."
 version: "1.0.0"
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: "audit"
 maxStepVisits: 1
 maxIterations: 10

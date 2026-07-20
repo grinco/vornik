@@ -84,6 +84,12 @@ func (c *Container) initHTTPServer() error {
 		taskCreatorOpts = append(taskCreatorOpts, taskcreate.WithBudgetNotifier(c.TelegramBot))
 	}
 	taskCreator := taskcreate.New(taskCreatorOpts...)
+	// Mirror onto the container so RemindersSubsystem.Start (which runs
+	// long after initHTTPServer, once Run() begins) can wire task-kind
+	// reminders into the runner via Runner.SetCreator — the runner is
+	// constructed earlier in initReminders(), before this local exists.
+	// See the taskCreator field comment on Container (Task 7 wiring).
+	c.taskCreator = taskCreator
 
 	// Built once and shared by the HTTP-facing wizard adapter below
 	// AND the dispatcher's compose_automation bridge (task 1.4) — both
@@ -1245,6 +1251,7 @@ func (c *Container) initHTTPServer() error {
 		// a static list. initScheduler runs before initHTTPServer in
 		// NewContainer, so the snapshot is populated by this point.
 		dh.SetSystemHandlerNames(c.systemHandlerNames)
+		dh.SetGatewayURL(c.Config.Gateway.Address) // empty when unconfigured → SKIPPED
 		if c.repos != nil && c.repos.LeaderLocks != nil {
 			dh.SetLeaderLockRepository(c.repos.LeaderLocks)
 		}
@@ -1254,6 +1261,13 @@ func (c *Container) initHTTPServer() error {
 		// 24h passive check. A nil client or disabled breaker no-ops.
 		if c.ChatClient != nil {
 			dh.SetChatProvider(c.ChatClient)
+		}
+		// The agent-container breaker is a DISTINCT registry from the chat
+		// router's — surface it as its own doctor check so an open agent
+		// circuit is visible (it gates before the chat router, so it can
+		// leave the chat circuit closed). Nil-safe.
+		if c.agentHealth != nil {
+			dh.SetAgentHealthReporter(c.agentHealth)
 		}
 		api.SetDoctorHandlers(dh)
 		doctorH = dh
@@ -1358,6 +1372,13 @@ func (c *Container) initHTTPServer() error {
 			c.repos.Instincts,
 			c.Config != nil && c.Config.Instinct.Enabled && c.Config.Instinct.Consumers.FailurePlaybooks,
 		),
+		// True-lift measurement surfaces (migration 128, task 11): the Lift
+		// column on /ui/admin/instincts and the "Learned-tier lift" line on
+		// /ui/insights/tool-budget. Ungated (unlike the playbook panel
+		// above) — wired whenever the repo is, since it is read-only and
+		// advisory; nil-safe when c.repos.InstinctLift is nil (CE / SQLite
+		// before migration 128 / not configured).
+		ui.WithInstinctLiftRepository(c.repos.InstinctLift),
 		// Phase C — multi-hop replay tree dependencies.
 		ui.WithCrossProjectCallRepository(c.crossProjectCallRepo()),
 		ui.WithReminderRepository(c.repos.Reminders),

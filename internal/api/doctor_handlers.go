@@ -47,6 +47,7 @@ type DoctorHandlers struct {
 	pricingPath    string
 	artifactsRoot  string
 	workspacesRoot string
+	gatewayURL     string
 
 	// systemHandlerNames is the set of system-step handler names the
 	// role-library doctor check accepts as valid tool entries. Wired
@@ -124,6 +125,12 @@ type DoctorHandlers struct {
 	// SetChatProvider when the router implements chat.ModelHealthReporter;
 	// nil (plain client / breaker disabled / tests) skips the check.
 	modelCircuits func() []chat.ModelHealthSnapshot
+
+	// agentCircuits reports the LIVE per-model AGENT-container circuit-breaker
+	// state (checkAgentModelCircuits) — a distinct breaker from modelCircuits.
+	// Wired from the agenthealth registry via SetAgentHealthReporter; nil
+	// (agent breaker disabled / tests) skips the check.
+	agentCircuits func() []chat.ModelHealthSnapshot
 
 	// scraperProfileRoot is the root directory of scraper browser-profile
 	// trees, typically ~/.config/vornik/scraper/profiles/<project>/<profile>/.
@@ -308,12 +315,14 @@ func (h *DoctorHandlers) RunReportReadOnly(ctx context.Context) DoctorReport {
 	report.Checks = append(report.Checks, h.checkLeaderLocksHealth())
 	report.Checks = append(report.Checks, h.checkModelHealth(ctx))
 	report.Checks = append(report.Checks, h.checkModelCircuits())
+	report.Checks = append(report.Checks, h.checkAgentModelCircuits())
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
 	report.Checks = append(report.Checks, h.checkModelRouteCoverage())
 	report.Checks = append(report.Checks, h.checkScraperProfileFreshness(ctx, fix))
+	report.Checks = append(report.Checks, h.checkGatewayHealthy(ctx, fix))
 	issues := 0
 	for _, c := range report.Checks {
-		if c.Status != "OK" {
+		if c.Status != "OK" && c.Status != "SKIPPED" {
 			issues++
 		}
 	}
@@ -372,14 +381,16 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkLeaderLocksHealth())
 	report.Checks = append(report.Checks, h.checkModelHealth(ctx))
 	report.Checks = append(report.Checks, h.checkModelCircuits())
+	report.Checks = append(report.Checks, h.checkAgentModelCircuits())
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
 	report.Checks = append(report.Checks, h.checkModelRouteCoverage())
 	report.Checks = append(report.Checks, h.checkScraperProfileFreshness(ctx, fix))
+	report.Checks = append(report.Checks, h.checkGatewayHealthy(ctx, fix))
 
 	issues := 0
 	fixed := 0
 	for _, c := range report.Checks {
-		if c.Status != "OK" {
+		if c.Status != "OK" && c.Status != "SKIPPED" {
 			issues++
 		}
 		fixed += c.Fixed

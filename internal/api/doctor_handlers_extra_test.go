@@ -562,7 +562,7 @@ func TestRunDoctor_ReturnsReportShape(t *testing.T) {
 	// Every check must have a non-empty name and a known status.
 	for _, c := range report.Checks {
 		assert.NotEmpty(t, c.Name)
-		assert.Contains(t, []string{"OK", "WARNING", "ERROR"}, c.Status, "check %q: invalid status %q", c.Name, c.Status)
+		assert.Contains(t, []string{"OK", "WARNING", "ERROR", "SKIPPED"}, c.Status, "check %q: invalid status %q", c.Name, c.Status)
 	}
 }
 

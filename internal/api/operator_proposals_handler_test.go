@@ -52,7 +52,7 @@ func TestOperatorPropose_WritesDraft(t *testing.T) {
 
 func TestOperatorPropose_RejectsReservedProposer(t *testing.T) {
 	s := newProposalTestServer(t)
-	for _, reserved := range []string{"operator-ui", "tune-detector", "instinct", "diagnose", "self-heal"} {
+	for _, reserved := range []string{"operator-ui", "tune-detector", "instinct", "diagnose", "self-heal", "instinct-lift"} {
 		rec := httptest.NewRecorder()
 		body := `{"kind":"config","blastRadius":"project","projectId":"janka","title":"forge","proposedBy":"` + reserved + `"}`
 		s.OperatorProposals(rec, operatorReq(http.MethodPost, "/api/v1/operator/proposals", body))

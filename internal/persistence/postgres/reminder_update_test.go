@@ -25,10 +25,33 @@ func TestReminder_UpdateFields_AppliesBothFireAtAndContent(t *testing.T) {
 
 	newFire := time.Date(2026, 5, 24, 9, 0, 0, 0, time.UTC)
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE dispatcher_reminders")).
-		WithArgs("rem_x", newFire.UTC(), "new content").
+		WithArgs("rem_x", newFire.UTC(), "new content", "", "").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
-	if err := repo.UpdateFields(context.Background(), "rem_x", newFire, "new content"); err != nil {
+	if err := repo.UpdateFields(context.Background(), "rem_x", persistence.ReminderFieldUpdate{FireAt: newFire, Content: "new content"}); err != nil {
+		t.Errorf("UpdateFields: %v", err)
+	}
+}
+
+// TestReminder_UpdateFields_AppliesCronAndProject: editing a
+// recurring task-kind reminder's schedule + target project in one
+// operation (update_reminder cron/project support). The new
+// cron_expr / project_id columns ride the same COALESCE(NULLIF...)
+// keep-if-empty semantics as content.
+func TestReminder_UpdateFields_AppliesCronAndProject(t *testing.T) {
+	db, mock, cleanup := newMockDBTX(t)
+	defer cleanup()
+	repo := NewReminderRepository(db)
+
+	newFire := time.Date(2026, 5, 24, 9, 0, 0, 0, time.UTC)
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE dispatcher_reminders")).
+		WithArgs("rem_x", newFire.UTC(), "", "0 9 * * *", "news").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := repo.UpdateFields(context.Background(), "rem_x", persistence.ReminderFieldUpdate{
+		FireAt: newFire, CronExpr: "0 9 * * *", ProjectID: "news",
+	})
+	if err != nil {
 		t.Errorf("UpdateFields: %v", err)
 	}
 }
@@ -46,7 +69,7 @@ func TestReminder_UpdateFields_RefusesIfNotPending(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE dispatcher_reminders")).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
-	err := repo.UpdateFields(context.Background(), "rem_x", time.Now(), "x")
+	err := repo.UpdateFields(context.Background(), "rem_x", persistence.ReminderFieldUpdate{FireAt: time.Now(), Content: "x"})
 	if !errors.Is(err, persistence.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound on non-pending row", err)
 	}
@@ -63,7 +86,7 @@ func TestReminder_UpdateFields_DriverErrorPropagates(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE dispatcher_reminders")).
 		WillReturnError(sql.ErrConnDone)
 
-	if err := repo.UpdateFields(context.Background(), "rem_x", time.Now(), "x"); err == nil {
+	if err := repo.UpdateFields(context.Background(), "rem_x", persistence.ReminderFieldUpdate{FireAt: time.Now(), Content: "x"}); err == nil {
 		t.Errorf("driver error should propagate")
 	}
 }

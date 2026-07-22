@@ -497,7 +497,6 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 
 	// Region 3: A2A protocol surface — only on ServeAPI nodes.
 	if caps.ServeAPI {
-
 		// A2A protocol surface. Card endpoints under /.well-known/
 		// are public (per spec — clients fetch before they have
 		// credentials); task submit + SSE under /a2a/v1/agents/ go
@@ -509,7 +508,6 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 			mux.HandleFunc("/.well-known/agent.json/", server.a2aHandler.HandleWellKnown)
 			mux.HandleFunc("/a2a/v1/agents/", server.a2aHandler.HandleAgentRoute)
 		}
-
 	} // end region 3: ServeAPI
 
 	// Region 4: provider-webhook ingress (GitHub App, Slack) — on ServeAPI OR ServeWebhooks.
@@ -986,6 +984,21 @@ func (s *Server) apiV1ProjectsHandler(w http.ResponseWriter, r *http.Request) {
 			s.ListWebhookEvents(w, r)
 			return
 		}
+	} else if remaining == "/api/query" || remaining == "/api/query/" {
+		// POST /api/query — agent-facing query_api (design
+		// 2026-07-21-query-api-task-agents-design.md §2). Project scope
+		// from the PATH; all agent-path controls applied server-side.
+		if r.Method == http.MethodPost {
+			s.AgentQueryAPI(w, r)
+			return
+		}
+	} else if remaining == "/api/providers" || remaining == "/api/providers/" {
+		// GET /api/providers — agent-facing list_apis (discovery). In
+		// budget + audited (kind=list).
+		if r.Method == http.MethodGet {
+			s.AgentListAPIProviders(w, r)
+			return
+		}
 	} else if remaining == "/memory/search" || remaining == "/memory/search/" {
 		// GET /memory/search?q=<query>&limit=<n>
 		if r.Method == http.MethodGet {
@@ -1282,7 +1295,8 @@ func BuildAuthConfig(cfg *config.Config, opts ...AuthConfigOption) AuthConfig {
 func applyMiddleware(handler http.Handler, cfg *config.Config, server *Server) http.Handler {
 	var opts []AuthConfigOption
 	if server != nil && server.apiKeyRepo != nil {
-		opts = append(opts,
+		opts = append(
+			opts,
 			WithAPIKeyLookup(server.apiKeyRepo),
 			WithAPIKeyToucher(server.apiKeyRepo),
 		)

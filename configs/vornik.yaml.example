@@ -860,6 +860,54 @@ tool_budget:
 #       args: [-m, mcp_server_linter]
 #       env:
 #         LINTER_CONFIG: /etc/linter.yaml
+# Supervised web write actions (web_submit) — daemon-wide gate.
+# The scraper can fill + submit a single-page web form only when a human has
+# approved the exact request in /inbox. This block is the DAEMON half of the
+# authorization; the per-PROJECT write_allowlist (below) is the other half.
+# See https://docs.vornik.io
+# and the "Supervised Web Write Actions" section of https://docs.vornik.io.
+web:
+  # Web write mode. Off by default — web_submit is refused daemon-wide.
+  #   off      — writes refused (default; empty ≡ off).
+  #   on       — writes permitted, each gated by the target project's
+  #              web.write_allowlist (deny-by-default; empty allowlist = no
+  #              writes for that project).
+  #   insecure — bypasses the per-project write_allowlist so ANY host may be
+  #              targeted. DEV / TESTING ONLY. It bypasses ONLY the allowlist;
+  #              every other gate still applies (human approval in /inbox, SSRF
+  #              hardening, request-body interception, no-evasion) and every such
+  #              write is audited insecure_bypass=true. While active the daemon
+  #              reports a persistent degraded doctor/health signal. Requires the
+  #              insecure_ack co-flag below — a single value can't enable it.
+  # Quote the value — bare off/on are YAML booleans; this is a string enum.
+  writes: "off"
+  # Must be true to activate writes: insecure. A deliberate second flag so the
+  # allowlist bypass cannot be turned on by one innocuous-looking value.
+  insecure_ack: false
+  # web_submit capability secret (shared C1 contract). Attached as daemon_auth
+  # on every daemon→scraper web_submit call; the scraper (env
+  # SCRAPER_WEB_SUBMIT_SECRET — set to the SAME value) rejects any web_submit
+  # whose daemon_auth does not match. This is what stops an agent calling
+  # mcp__scraper__web_submit directly and bypassing the /inbox approval gate —
+  # only the daemon holds the secret. REQUIRED when writes is on/insecure.
+  # Prefer submit_secret_file (a secrets-dir path) over an inline value; the
+  # VORNIK_WEB_SUBMIT_SECRET env var overrides both.
+  # submit_secret_file: /etc/vornik/secrets/web-submit-secret.txt
+# The per-PROJECT write allowlist lives in each project's config
+# (configs/projects/*.yaml), NOT here — it is deny-by-default:
+#
+#   web:
+#     write_allowlist:
+#       - claims.airline.com      # exact host
+#       - "*.airline.com"         # label-anchored wildcard: subdomains only
+#
+# Matching is STRICT (stricter than the read-side navigation matcher, because a
+# write is higher-stakes): exact host, or an explicit "*.domain" wildcard that
+# covers subdomains but NOT the apex. There is NO apex/www equivalence — listing
+# www.airline.com does NOT permit airline.com (or vice-versa); bare "*" is
+# rejected. Hosts are punycode-normalized and mixed-script/homograph hosts are
+# rejected. An empty (or absent) write_allowlist means the project may perform
+# NO web writes even when web.writes is "on".
 # Local API gateway (Kong DB-less) for authenticated third-party APIs.
 # Credentials live in the gateway, never the daemon; the LLM never sees them.
 # The daemon reaches the gateway over loopback and presents only an internal
@@ -874,6 +922,24 @@ gateway:
   # an inline `token:`). Also settable via the VORNIK_GATEWAY_TOKEN env var —
   # which is what the mounted secrets/gateway.env provides.
   # token_file: "/home/you/.config/vornik/secrets/gateway.token"
+  #
+  # agent_writes — daemon-wide policy for query_api writes issued from WITHIN a
+  # task (the agent surface). Independent of the operator-chat direct path, and
+  # AND-gated with each provider's writes_enabled below (a write needs BOTH).
+  #   off  (default) — task-originated writes refused. Zero change on upgrade.
+  #   user           — permit only when the task's request-ROOT (topmost parent)
+  #                    has creation_source USER, i.e. the whole tree came from a
+  #                    human chat request. Autonomous / scheduled / route-rooted
+  #                    trees stay read-only. This is what lets the bot fulfil a
+  #                    chat "post to X" by SPAWNING a task and have that task
+  #                    write (the 2026-07-22 …fdd2 case). An incomplete/ambiguous
+  #                    lineage (deleted parent, cycle, or a tree deeper than 25)
+  #                    fails closed = refused.
+  #   all            — any task-originated write permitted. BROAD: a prompt-
+  #                    injected autonomous agent can then write to every
+  #                    writes_enabled provider. Emits a startup warning.
+  # agent_writes: off
+  #
   # Registered providers the agent may call by name. The gateway route/method
   # allowlist is authoritative; this is a conservative daemon-side pre-filter.
   providers:
@@ -882,6 +948,15 @@ gateway:
       allowed_methods: ["GET", "HEAD"]
       # Read-only by default: when false, only GET/HEAD are permitted regardless
       # of allowed_methods. Writes require this true AND the method listed.
+      #
+      # IMPORTANT — writes_enabled gates the GATEWAY, but a SECOND gate applies to
+      # task-executing agents: gateway.agent_writes (above). writes_enabled: true
+      # always lets the operator-chat dispatcher write DIRECTLY in its own turn.
+      # Whether a query_api call executed from within a TASK (the agent surface)
+      # may also write is governed by gateway.agent_writes — the two are
+      # AND-gated. With gateway.agent_writes: off (the default) task-originated
+      # writes stay read-only regardless of this flag; set agent_writes: user (or
+      # all) to let tasks write to providers whose writes_enabled is true.
       writes_enabled: false
       description: "Google Maps API (geocoding, places, directions)."
 

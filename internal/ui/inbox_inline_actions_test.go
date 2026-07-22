@@ -52,6 +52,38 @@ func newStatefulTaskRepo(task *persistence.Task) *mocks.MockTaskRepository {
 	return repo
 }
 
+// TestTaskRetry_HX_RendersRetryingRow pins the honest-retry behaviour
+// (fix/retry/dismiss design 2026-07-22): an inline Retry requeues the task AND
+// keeps the row visible as an informational "Retrying…" row, instead of the
+// requeue emptying the fragment (row removed) as if the failure were resolved.
+func TestTaskRetry_HX_RendersRetryingRow(t *testing.T) {
+	task := &persistence.Task{ID: "t1", ProjectID: "p1", Status: persistence.TaskStatusFailed, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	repo := newStatefulTaskRepo(task)
+	srv := NewServer(WithTaskRepository(repo))
+
+	req := httptest.NewRequest(http.MethodPost, "/ui/tasks/t1/retry", nil)
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	srv.TaskRetry(rec, req, "t1")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if task.Status != persistence.TaskStatusQueued {
+		t.Fatalf("retry must requeue the task; got %s", task.Status)
+	}
+	body := rec.Body.String()
+	if body == "" {
+		t.Fatal("retry must render the Retrying row in place, not an empty (removed) fragment")
+	}
+	if !strings.Contains(body, "Retrying") {
+		t.Errorf("expected the informational Retrying row, got:\n%s", body)
+	}
+	if strings.Contains(body, "/ui/tasks/t1/retry") || strings.Contains(body, "/ui/tasks/t1/close") {
+		t.Error("the Retrying row must be buttonless (no inline retry/close action)")
+	}
+}
+
 // --- TaskConversationAction: HTMX fragment path (approve/reject) ----
 
 func TestTaskConversationAction_HXApprove_ReturnsFragmentAndFlipsState(t *testing.T) {
@@ -324,8 +356,12 @@ func TestTaskRetry_HXRequest_ReturnsFragmentAndPublishesSSE(t *testing.T) {
 	if task.Status != persistence.TaskStatusQueued {
 		t.Errorf("retry must requeue the failed task; got %s", task.Status)
 	}
-	if body := rec.Body.String(); body != "" {
-		t.Errorf("resolved row (now QUEUED) should render empty, got %q", body)
+	// Honest retry (fix/retry/dismiss design 2026-07-22): the row STAYS as an
+	// informational "Retrying…" row — it does NOT render empty (removed) as if
+	// the failure were resolved. (Row-content specifics are pinned by
+	// TestTaskRetry_HX_RendersRetryingRow.)
+	if body := rec.Body.String(); !strings.Contains(body, "Retrying") {
+		t.Errorf("retried row should render the Retrying state, got %q", body)
 	}
 	select {
 	case ev := <-sub.Events():

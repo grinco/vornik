@@ -67,6 +67,11 @@ func (a *Agent) InventoryTools() []ToolInfo {
 		// the ones admin ops actually care about — every gap
 		// here is a "the bot can't do X" report waiting to happen.
 		"send_email": {"EmailSender", a.emailSender != nil},
+		// web_submit is a nil-wiring HARD gate: it needs BOTH the scraper
+		// write client and the pending-write store. Reflects true
+		// availability so operators see "the bot can't submit forms" when
+		// either half is missing.
+		"web_submit": {"ScraperWriteClient", te != nil && te.scraperWriteClient != nil && te.webWriteRepo != nil},
 		"query_api":  {"APIClient", te != nil && te.apiClient != nil},
 		// list_apis is stricter than query_api: it's advertised only
 		// when the wired client also satisfies the optional

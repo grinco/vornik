@@ -160,6 +160,9 @@ var ProjectDeferredPaths = []string{
 	"permissions.secrets",
 	"permissions.allowedTools",
 	"permissions.api_providers",
+	// Web write-action allowlist — deny-by-default security gate for supervised
+	// web writes; YAML-only like the other allowlists (no casual form field).
+	"web.write_allowlist",
 	// MCP server wiring — complex nested blocks.
 	"mcp.servers",
 	"mcp.toolRateLimits",

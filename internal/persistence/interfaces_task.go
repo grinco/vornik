@@ -67,6 +67,17 @@ type TaskRepository interface {
 	// have stayed terminal.
 	RequeueTerminalTask(ctx context.Context, id string, attempt, maxAttempts int) (bool, error)
 
+	// ListRetryInFlight returns tasks an operator retried/requeued — any surface
+	// that calls RequeueTerminalTask (inbox Retry, API /retry, chat
+	// course-correction, Telegram, Fix-It Doctor) stamps retry_requested_at;
+	// autonomous/scheduler requeues do NOT — that are now back in flight: status
+	// QUEUED, LEASED, or RUNNING with a retry_requested_at at or after `since`.
+	// Scoped to projectIDs when non-empty (all projects when empty). Powers the
+	// Outcome Inbox's "Retrying…" row, which keeps a retried failure visible
+	// until the re-run reaches a terminal outcome instead of the requeue making
+	// the row vanish as if resolved.
+	ListRetryInFlight(ctx context.Context, projectIDs []string, since time.Time) ([]*Task, error)
+
 	// TransitionConditional atomically updates a task's status
 	// only when it currently sits in one of `from`. Returns
 	// (true, nil) when the row transitioned, (false, nil) when no

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -158,6 +159,9 @@ func (r *retryTaskRepo) Get(_ context.Context, _ string) (*persistence.Task, err
 func (r *retryTaskRepo) RequeueTerminalTask(_ context.Context, _ string, attempt, maxAttempts int) (bool, error) {
 	r.requeueAttempt, r.requeueMaxAtt = attempt, maxAttempts
 	return r.transitioned, r.requeueErr
+}
+func (r *retryTaskRepo) ListRetryInFlight(context.Context, []string, time.Time) ([]*persistence.Task, error) {
+	return nil, nil
 }
 
 func TestFixitTaskRetrier_NotFound(t *testing.T) {

@@ -128,7 +128,45 @@ func (s *Server) FixItDoctorPanel(w http.ResponseWriter, r *http.Request, kind, 
 		return
 	}
 
+	// Fresh session (no resumed transcript): open WITH the diagnosis visible
+	// instead of a blank prompt. A deterministic grounding summary (no LLM, no
+	// session created) rendered as the doctor's opening turn — before this the
+	// operator had to re-ask for what the failure alert already told them
+	// (2026-07-22). Best-effort: any error leaves the blank panel unchanged.
+	//
+	// Scope: a non-empty ProjectID was already RequestAllowsProject-checked by
+	// uiRequireProjectScope above, and the assembler additionally verifies the
+	// task belongs to that project. An EMPTY ProjectID bypasses that gate
+	// (uiRequireProjectScope short-circuits to true), so — mirroring the
+	// apply/message daemon-scope gate — the opening summary is fetched for an
+	// unscoped ProjectID only when the caller is admin-class. Otherwise the
+	// panel opens blank, exactly as before this fix.
+	if data.Configured && data.SessionID == "" && len(data.Turns) == 0 &&
+		(data.ProjectID != "" || fixItCallerIsAdmin(r)) {
+		if summary := s.fixItOpeningSummary(r, data.Kind, data.RefID, data.ProjectID); summary != "" {
+			data.Turns = []fixItTurnView{{Role: "assistant", Content: summary}}
+		}
+	}
+
 	s.render(w, "fixit_doctor.html", data)
+}
+
+// fixItOpeningSummary fetches the no-LLM grounding preview for a fresh repair
+// session, or "" when the doctor is unwired or grounding fails (logged, never
+// fatal — the panel still opens, just without the opening turn).
+func (s *Server) fixItOpeningSummary(r *http.Request, kind, refID, projectID string) string {
+	if s.fixItDoctor == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	summary, err := s.fixItDoctor.OpeningSummary(ctx, kind, refID, projectID)
+	if err != nil {
+		s.logger.Warn().Err(err).Str("kind", kind).Str("ref", refID).
+			Msg("fixit: opening-summary grounding failed; panel opens without it")
+		return ""
+	}
+	return summary
 }
 
 // populateFixItResume seeds data for a resumed session, but ONLY when

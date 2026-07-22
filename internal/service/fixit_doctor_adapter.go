@@ -113,6 +113,18 @@ func (a *fixItDoctorAdapter) Converse(ctx context.Context, sessionID, operatorID
 	return toAPIFixItResult(res), nil
 }
 
+// OpeningSummary satisfies api.FixItDoctor — the no-LLM grounding preview the
+// /ui/fixit panel renders as the doctor's opening turn. Translates the
+// api-boundary strings to a fixitdoctor.FailureRef and delegates.
+func (a *fixItDoctorAdapter) OpeningSummary(ctx context.Context, failureKind, failureRefID, projectID string) (string, error) {
+	ref := fixitdoctor.FailureRef{
+		Kind:      fixitdoctor.FailureKind(failureKind),
+		ID:        failureRefID,
+		ProjectID: projectID,
+	}
+	return a.svc.OpeningSummary(ctx, ref)
+}
+
 // Apply satisfies api.FixItDoctor's task-3.3 addition — one deny-by-
 // default dispatch call against sessionID's last proposed actions. See
 // fixitdoctor.Service.Dispatch (dispatch.go) for the actual routing;

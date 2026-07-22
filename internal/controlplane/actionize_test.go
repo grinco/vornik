@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"vornik.io/vornik/internal/persistence"
 )
 
 // Actionizer tests (LLD 2026-07-11-control-plane-actionable-proposals §4).
@@ -194,6 +196,77 @@ func TestRenderRoleModel(t *testing.T) {
 	// Missing role.
 	if _, err := a.RenderRoleModel("dev-swarm", "ghost", "new-model"); err == nil {
 		t.Fatal("missing role must error")
+	}
+}
+
+func TestRenderRoleEnv(t *testing.T) {
+	swarm := `swarmId: "assistant-swarm"
+roles:
+    - name: "researcher"
+      runtime:
+        envVars:
+            VORNIK_MAX_TOOL_ITERATIONS: "25"
+    - name: "writer"
+      runtime:
+        envVars:
+            VORNIK_MAX_TOOL_ITERATIONS: "50"
+`
+	a := testActionizer(map[string]string{"configs/swarms/assistant-swarm.md": swarm})
+
+	rc, err := a.RenderRoleEnv("assistant-swarm", "researcher", "VORNIK_STEP_PROMPT_TOKEN_BUDGET", "900000")
+	if err != nil {
+		t.Fatalf("RenderRoleEnv: %v", err)
+	}
+	if rc.ApplyTarget != "configs/swarms/assistant-swarm.md" {
+		t.Errorf("ApplyTarget = %q", rc.ApplyTarget)
+	}
+	if rc.BlastRadius != persistence.ProposalScopeSwarm {
+		t.Errorf("BlastRadius = %q, want swarm", rc.BlastRadius)
+	}
+	if !rc.LiveApply {
+		t.Errorf("LiveApply = false, want true (env injected at container start; non-disruptive)")
+	}
+	if !strings.Contains(rc.ApplyContent, `VORNIK_STEP_PROMPT_TOKEN_BUDGET: "900000"`) {
+		t.Errorf("ApplyContent missing the new key:\n%s", rc.ApplyContent)
+	}
+	if rc.BaseHash == "" || rc.Diff == "" {
+		t.Errorf("finishRender did not stamp BaseHash/Diff")
+	}
+
+	// Setting an already-present value is a no-op → ErrChangeNotUseful.
+	if _, err := a.RenderRoleEnv("assistant-swarm", "researcher", "VORNIK_MAX_TOOL_ITERATIONS", "25"); !errors.Is(err, ErrChangeNotUseful) {
+		t.Errorf("no-op render err = %v, want ErrChangeNotUseful", err)
+	}
+	// Unknown role errors.
+	if _, err := a.RenderRoleEnv("assistant-swarm", "ghost", "K", "v"); err == nil {
+		t.Error("unknown role must error")
+	}
+}
+
+// The apply engine re-validates a proposal's typed change before writing; the
+// swarm_role_env kind must be in the allowlist (live apply bug 2026-07-21: the
+// default branch rejected it and every apply auto-rolled-back).
+func TestRevalidateChange_RoleEnv(t *testing.T) {
+	// Real SWARM.md files carry a --- frontmatter fence (revalidate reads it via
+	// config.EditFrontmatter, like revalidateRoleModel).
+	swarm := `---
+swarmId: "assistant-swarm"
+roles:
+    - name: "researcher"
+      runtime:
+        envVars:
+            VORNIK_MAX_TOOL_ITERATIONS: "25"
+---
+`
+	a := testActionizer(map[string]string{"configs/swarms/assistant-swarm.md": swarm})
+
+	ev := `{"change":{"kind":"swarm_role_env","swarm":"assistant-swarm","role":"researcher","key":"VORNIK_STEP_PROMPT_TOKEN_BUDGET","value":"900000"}}`
+	if err := a.RevalidateChange("", ev); err != nil {
+		t.Errorf("valid swarm_role_env revalidation failed: %v", err)
+	}
+	evGhost := `{"change":{"kind":"swarm_role_env","swarm":"assistant-swarm","role":"ghost","key":"K","value":"v"}}`
+	if err := a.RevalidateChange("", evGhost); err == nil {
+		t.Error("swarm_role_env for a vanished role should fail revalidation")
 	}
 }
 

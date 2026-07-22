@@ -44,6 +44,10 @@ type MockTaskRepository struct {
 	// transition. Defaults to (true, nil) when nil.
 	RequeueTerminalTaskFunc func(ctx context.Context, id string, attempt, maxAttempts int) (bool, error)
 
+	// ListRetryInFlightFunc scripts the retry-in-flight query. Defaults to
+	// (nil, nil) when nil.
+	ListRetryInFlightFunc func(ctx context.Context, projectIDs []string, since time.Time) ([]*persistence.Task, error)
+
 	// TransitionConditionalFunc scripts atomic status transitions
 	// for the conversational task lifecycle. Defaults to (true, nil)
 	// when nil.
@@ -213,6 +217,14 @@ func (m *MockTaskRepository) RequeueTerminalTask(ctx context.Context, id string,
 		return m.RequeueTerminalTaskFunc(ctx, id, attempt, maxAttempts)
 	}
 	return true, nil
+}
+
+// ListRetryInFlight implements TaskRepository.
+func (m *MockTaskRepository) ListRetryInFlight(ctx context.Context, projectIDs []string, since time.Time) ([]*persistence.Task, error) {
+	if m.ListRetryInFlightFunc != nil {
+		return m.ListRetryInFlightFunc(ctx, projectIDs, since)
+	}
+	return nil, nil
 }
 
 // TransitionConditional implements TaskRepository.

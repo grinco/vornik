@@ -85,6 +85,7 @@ func (c *Container) collectStateMetrics() {
 			c.collectPodmanState()
 			c.collectTableStats()
 			c.collectUISessionCounts()
+			c.refreshQualityMetrics()
 			if c.autonomyManager != nil && c.stateCollector != nil {
 				c.stateCollector.RecordAutonomyActiveLoops(c.autonomyManager.ActiveLoops())
 			}

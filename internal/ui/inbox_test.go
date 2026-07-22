@@ -86,6 +86,58 @@ func TestInbox_RanksAndFiltersItems(t *testing.T) {
 	}
 }
 
+// TestInbox_RetryingRowRendered pins the fix/retry/dismiss design (2026-07-22):
+// a task an operator retried, back in flight, renders as an informational
+// "Retrying…" row (so the requeue no longer vanishes as if resolved), and it
+// carries NO inline action; the Failed row gains a Dismiss (close) action.
+func TestInbox_RetryingRowRendered(t *testing.T) {
+	now := time.Now()
+	failed := &persistence.Task{ID: "t-failed", ProjectID: "p1", Status: persistence.TaskStatusFailed, CreatedAt: now.Add(-10 * time.Minute), UpdatedAt: now}
+	retrying := &persistence.Task{ID: "t-retrying", ProjectID: "p1", Status: persistence.TaskStatusQueued, CreatedAt: now.Add(-2 * time.Minute), UpdatedAt: now}
+	taskRepo := &mocks.MockTaskRepository{
+		ListFunc: func(_ context.Context, f persistence.TaskFilter) ([]*persistence.Task, error) {
+			return mocks.FilterTasks([]*persistence.Task{failed}, f), nil
+		},
+		ListRetryInFlightFunc: func(_ context.Context, _ []string, _ time.Time) ([]*persistence.Task, error) {
+			return []*persistence.Task{retrying}, nil
+		},
+	}
+	srv := NewServer(WithTaskRepository(taskRepo))
+
+	rec := httptest.NewRecorder()
+	srv.Inbox(rec, httptest.NewRequest(http.MethodGet, "/ui/inbox", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "t-retrying") || !strings.Contains(body, "Retrying") {
+		t.Fatalf("expected an informational Retrying row for the retried task:\n%s", body)
+	}
+	// The Failed row now offers Dismiss (uiCloseTask via the /close route).
+	if !strings.Contains(body, "/ui/tasks/t-failed/close") {
+		t.Error("failed row must offer a Dismiss (close) action alongside Fix + Retry")
+	}
+	// The Retrying row is informational — no inline retry/close form targets it.
+	if strings.Contains(body, "/ui/tasks/t-retrying/retry") || strings.Contains(body, "/ui/tasks/t-retrying/close") {
+		t.Error("the Retrying row must be buttonless (no inline retry/close action)")
+	}
+}
+
+// TestCountActionableItems_ExcludesRetrying pins that the informational
+// Retrying rows never inflate the "needs you" badge.
+func TestCountActionableItems_ExcludesRetrying(t *testing.T) {
+	items := []inboxItem{
+		{Kind: inboxKindFailed},
+		{Kind: inboxKindNeedsApproval},
+		{Kind: inboxKindRetrying},
+		{Kind: inboxKindRetrying},
+	}
+	if got := countActionableItems(items); got != 2 {
+		t.Fatalf("Retrying rows must be excluded from the actionable count; got %d want 2", got)
+	}
+}
+
 // TestInbox_ScopedUserSeesOwnRowsPastGlobalCap pins the cross-project
 // visibility scope audit follow-up: a project-scoped session must query
 // its own project(s) directly, not

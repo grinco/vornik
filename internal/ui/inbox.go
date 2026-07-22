@@ -89,6 +89,15 @@ type InboxData struct {
 	// discipline extended to this section) — logged + surfaced as a note.
 	HasMoreRecent          bool
 	RecentRequestsPageSize int
+
+	// WebWrites are the pending supervised web-write approvals
+	// (supervised-web-write-actions Task 6): each is a "Needs approval" card
+	// whose detail renders the filled-form screenshot, the read-only field
+	// table (name + value + provenance), the target host and the submission
+	// id. Approve/reject are authenticated CSRF POSTs to
+	// /ui/inbox/web-write/{id}/{approve|reject}; approve mints the capability
+	// token. Empty when the web-write repo is unwired or no row is pending.
+	WebWrites []webWriteCard
 }
 
 // NavAttentionCount implements navAttentionCounter (nav_model.go) so the
@@ -114,7 +123,59 @@ const (
 	inboxKindNeedsInput    = "Needs input"
 	inboxKindFailed        = "Failed"
 	inboxKindBlocked       = "Blocked on children"
+	// inboxKindRetrying is an INFORMATIONAL row (no inline action): a task the
+	// operator retried that is back in flight. It renders in the queue so a
+	// requeue stays visible until the re-run terminates, but does NOT count
+	// toward the "needs you" badge (Inbox sets Count excluding this kind).
+	inboxKindRetrying = "Retrying"
 )
+
+// retryingRank sorts the informational "Retrying…" rows after every
+// actionable category (ranks 1–4) — they progress on their own, nothing is
+// blocked on them.
+const retryingRank = 5
+
+// isRetryInFlightStatus reports whether a status is one a retried task passes
+// through before terminating — the states ListRetryInFlight returns.
+func isRetryInFlightStatus(s persistence.TaskStatus) bool {
+	switch s {
+	case persistence.TaskStatusQueued, persistence.TaskStatusLeased, persistence.TaskStatusRunning:
+		return true
+	default:
+		return false
+	}
+}
+
+// countActionableItems counts the attention rows a human is actually blocked
+// on — every kind EXCEPT the informational "Retrying…" rows, which render in
+// the queue but must not inflate the "needs you" badge.
+func countActionableItems(items []inboxItem) int {
+	n := 0
+	for _, it := range items {
+		if it.Kind != inboxKindRetrying {
+			n++
+		}
+	}
+	return n
+}
+
+// newRetryingItem builds the informational "Retrying…" row for a task an
+// operator retried that is back in flight. No inline action, no FixItURL — the
+// re-run's outcome (COMPLETED → row clears; FAILED → row returns as "Failed")
+// is what resolves it, not an operator click.
+func newRetryingItem(t *persistence.Task) inboxItem {
+	return inboxItem{
+		TaskID:    t.ID,
+		ProjectID: t.ProjectID,
+		Kind:      inboxKindRetrying,
+		Title:     taskSummary(t.Payload),
+		Age:       humanizeSince(time.Since(t.CreatedAt)) + " ago",
+		Action:    "Retrying…",
+		Href:      "/ui/tasks/" + t.ID,
+		rank:      retryingRank,
+		createdAt: t.CreatedAt,
+	}
+}
 
 // inboxCategories is the fixed set backing the attention queue: a human
 // is blocked on AWAITING_APPROVAL/AWAITING_INPUT (ranked first), then
@@ -288,6 +349,24 @@ func (s *Server) Inbox(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// "Retrying…" rows (fix/retry/dismiss design 2026-07-22): tasks an
+		// operator retried that are back in flight (RequeueTerminalTask stamped
+		// retry_requested_at). Kept visible until the re-run terminates so a
+		// requeue no longer vanishes as if resolved. Fetched separately from the
+		// status-filtered attention query (they're QUEUED/LEASED/RUNNING, not one
+		// of the four attention statuses) and NOT folded into request cards —
+		// buildRequestCards ran on `filtered` above, which excludes them.
+		if retrying, err := s.taskRepo.ListRetryInFlight(ctx, queryIDs, failedCutoff); err != nil {
+			s.logger.Warn().Err(err).Msg("inbox: retry-in-flight query failed; Retrying rows suppressed")
+		} else {
+			for _, t := range retrying {
+				if t == nil || !api.RequestAllowsProject(r, t.ProjectID) || !isRetryInFlightStatus(t.Status) {
+					continue
+				}
+				data.Items = append(data.Items, newRetryingItem(t))
+			}
+		}
+
 		data.Requests = s.buildRequestCards(ctx, filtered)
 
 		// Broader "Your requests" list (task 4.4, design §5.7 — the gap
@@ -346,6 +425,12 @@ func (s *Server) Inbox(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Pending supervised web-write approvals (Task 6). Independent of the
+	// task-queue block above (a web-write is its own actionable row, keyed by
+	// submission_id, not a task status) — loaded whenever the web-write repo
+	// is wired regardless of taskRepo.
+	data.WebWrites = s.loadPendingWebWrites(r)
+
 	// Rank by urgency, then oldest-first within a category.
 	sort.SliceStable(data.Items, func(i, j int) bool {
 		if data.Items[i].rank != data.Items[j].rank {
@@ -353,7 +438,11 @@ func (s *Server) Inbox(w http.ResponseWriter, r *http.Request) {
 		}
 		return data.Items[i].createdAt.Before(data.Items[j].createdAt)
 	})
-	data.Count = len(data.Items)
+	// Count is the "needs you" badge total: actionable attention rows +
+	// pending web-write approvals (both are things a human is blocked on).
+	// The informational "Retrying…" rows render in the queue but are excluded
+	// — nothing is blocked on them, so they must not inflate the badge.
+	data.Count = countActionableItems(data.Items) + len(data.WebWrites)
 
 	// vornik_ui_inbox_views_total{role} (design §5.8) — every inbox
 	// render, regardless of whether taskRepo is wired (a view is a

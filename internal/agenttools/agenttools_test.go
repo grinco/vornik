@@ -7,7 +7,7 @@ import (
 )
 
 func TestIsBuiltin(t *testing.T) {
-	for _, name := range []string{"file_read", "run_shell", "memory_search", "git_show"} {
+	for _, name := range []string{"file_read", "run_shell", "memory_search", "git_show", "tool_result_read", "query_api", "list_apis"} {
 		if !IsBuiltin(name) {
 			t.Errorf("IsBuiltin(%q) = false, want true", name)
 		}

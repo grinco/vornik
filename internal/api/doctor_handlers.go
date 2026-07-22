@@ -48,6 +48,9 @@ type DoctorHandlers struct {
 	artifactsRoot  string
 	workspacesRoot string
 	gatewayURL     string
+	// webWritesMode is the resolved daemon web.writes mode (off|on|insecure) at
+	// boot. "insecure" surfaces a persistent degraded doctor signal (LLD I2).
+	webWritesMode string
 
 	// systemHandlerNames is the set of system-step handler names the
 	// role-library doctor check accepts as valid tool entries. Wired
@@ -203,6 +206,7 @@ func (h *DoctorHandlers) SetServerConfig(cfg *config.Config) {
 	h.apiKeys = append(h.apiKeys[:0], cfg.API.APIKeys...)
 	h.artifactsRoot = cfg.Storage.ArtifactsPath
 	h.workspacesRoot = cfg.Runtime.ProjectWorkspacePath
+	h.webWritesMode, _ = cfg.Web.WritesMode() // invalid values fail Validate() at startup
 
 	// Snapshot secret-bearing fields for checkConfigSecretHygiene.
 	// Keep the VALUES (not the whole struct) so a future hot-reload
@@ -320,6 +324,7 @@ func (h *DoctorHandlers) RunReportReadOnly(ctx context.Context) DoctorReport {
 	report.Checks = append(report.Checks, h.checkModelRouteCoverage())
 	report.Checks = append(report.Checks, h.checkScraperProfileFreshness(ctx, fix))
 	report.Checks = append(report.Checks, h.checkGatewayHealthy(ctx, fix))
+	report.Checks = append(report.Checks, h.checkWebWritesInsecure(ctx, fix))
 	issues := 0
 	for _, c := range report.Checks {
 		if c.Status != "OK" && c.Status != "SKIPPED" {
@@ -386,6 +391,7 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkModelRouteCoverage())
 	report.Checks = append(report.Checks, h.checkScraperProfileFreshness(ctx, fix))
 	report.Checks = append(report.Checks, h.checkGatewayHealthy(ctx, fix))
+	report.Checks = append(report.Checks, h.checkWebWritesInsecure(ctx, fix))
 
 	issues := 0
 	fixed := 0

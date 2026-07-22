@@ -143,10 +143,53 @@ func (t *chatAuditTurn) recordToolCall(name, args, result, errStr string) {
 	}
 	t.toolCalls = append(t.toolCalls, chatAuditToolCall{
 		Name:   name,
-		Args:   truncateForAudit(args, 1024),
+		Args:   truncateForAudit(redactSensitiveToolArgs(args), 1024),
 		Result: truncateForAudit(result, 1024),
 		Error:  truncateForAudit(errStr, 512),
 	})
+}
+
+// sensitiveToolArgKeys are tool-argument field names whose values are
+// capability tokens / secrets and must never land in the chat-audit trail
+// (surfaced on /ui/admin/chat-audit). web_submit's approval_token is a one-time
+// capability bound to a stored row (LLD: "the raw token is never rendered in
+// the UI"); the audit records the LLM's ORIGINAL tool-call args, so redaction
+// happens here rather than in the tool.
+var sensitiveToolArgKeys = map[string]struct{}{
+	"approval_token": {},
+	"daemon_auth":    {}, // web_submit daemon-only capability secret (C1)
+}
+
+// redactSensitiveToolArgs replaces sensitive values in a tool-call args JSON
+// object with "[redacted]" before the args are persisted to the audit log. If
+// args is not a JSON object it is returned unchanged (nothing to key on).
+func redactSensitiveToolArgs(args string) string {
+	trimmed := strings.TrimSpace(args)
+	if !strings.HasPrefix(trimmed, "{") {
+		return args
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &m); err != nil {
+		return args
+	}
+	changed := false
+	for k := range m {
+		if _, ok := sensitiveToolArgKeys[k]; ok {
+			// Only redact a present, non-empty string value.
+			if s := string(m[k]); s != `""` && s != "null" {
+				m[k] = json.RawMessage(`"[redacted]"`)
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return args
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return args
+	}
+	return string(out)
 }
 
 // finish persists the audit row. Pass the Request (for chat_id +

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
+	"os"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -70,6 +71,11 @@ type ControlPlaneConfig struct {
 	SystemProjectID string `yaml:"system_project_id" json:"system_project_id" doc:"Project id the self-healer must never diagnose (loop-safety). Usually empty."`
 	// MaxIncidentsPerHour globally caps auto-opened incidents (0 → default 3).
 	MaxIncidentsPerHour int `yaml:"max_incidents_per_hour" json:"max_incidents_per_hour" doc:"Global cap on self-heal incidents opened per rolling hour. 0 means 3."`
+
+	// CostTuningEnabled turns on the propose-only cost/quality prompt-token-
+	// budget detector (LLD 2026-07-21-cost-quality-tuning-loop). It files
+	// human-gated DRAFT proposals only; it never applies. Opt-in; default false.
+	CostTuningEnabled bool `yaml:"cost_tuning_enabled" json:"cost_tuning_enabled" doc:"Enable the propose-only cost/quality prompt-token-budget detector (files review-only DRAFT proposals). Opt-in; default false."`
 }
 
 type Config struct {
@@ -197,6 +203,9 @@ type Config struct {
 	// separate MCP service). See
 	// https://docs.vornik.io
 	Scraper ScraperConfig `yaml:"scraper"`
+	// Web gates supervised web write actions (form fill+submit) daemon-wide.
+	// See https://docs.vornik.io
+	Web WebDaemonConfig `yaml:"web"`
 	// Gateway configures the local API gateway (Kong DB-less) that fronts
 	// authenticated third-party HTTP APIs for the query_api tool. See
 	// https://docs.vornik.io
@@ -212,6 +221,31 @@ type GatewayConfig struct {
 	Token     string                    `yaml:"token" json:"token" doc:"Internal daemon↔gateway key-auth secret (prefer token_file)."`
 	TokenFile string                    `yaml:"token_file" json:"token_file" doc:"Path to a file holding the gateway token (preferred over inline token)."`
 	Providers map[string]ProviderConfig `yaml:"providers" json:"providers" doc:"Registered API providers the agent may call by name."`
+	// AgentWrites is the daemon-wide tri-state policy for query_api writes
+	// issued from WITHIN a task (the agent surface), independent of the
+	// operator-chat direct path. See AgentWritesMode + LLD
+	// 2026-07-22-agent-query-api-write-policy-design.md.
+	AgentWrites string `yaml:"agent_writes" json:"agent_writes" doc:"Tri-state policy for query_api writes from task-executing agents: off (default; task-originated writes refused — chat-direct writes unaffected), user (permit only when the task's request-root creation_source is USER, i.e. a human-initiated tree; autonomous/scheduled/route-rooted trees stay read-only), all (any task-originated write permitted). Always AND-gated by the provider's writes_enabled and the gateway route allowlist. 'all' is broad (a prompt-injected autonomous agent can write to every writes_enabled provider) and emits a load-time warning."`
+}
+
+// AgentWritesMode validates gateway.agent_writes and returns the
+// normalized mode (off|user|all). Single validation path for both the
+// YAML value and the VORNIK_GATEWAY_AGENT_WRITES env override: the value
+// is trimmed + lowercased, so "User ", "ALL" normalize; empty ≡ off; any
+// other value (including "true"/"1"/"yes") is a hard load error, never a
+// silent fall-through to off (review I2). LLD
+// 2026-07-22-agent-query-api-write-policy-design.md §5.1.
+func (c GatewayConfig) AgentWritesMode() (string, error) {
+	switch strings.ToLower(strings.TrimSpace(c.AgentWrites)) {
+	case "", "off":
+		return "off", nil
+	case "user":
+		return "user", nil
+	case "all":
+		return "all", nil
+	default:
+		return "", fmt.Errorf("gateway.agent_writes: unknown value %q (want off|user|all)", c.AgentWrites)
+	}
 }
 
 // ProviderConfig is one registered upstream provider. The gateway route set is
@@ -219,7 +253,7 @@ type GatewayConfig struct {
 type ProviderConfig struct {
 	BasePath       string   `yaml:"base_path" json:"base_path" doc:"Path prefix under the gateway for this provider's routes."`
 	AllowedMethods []string `yaml:"allowed_methods" json:"allowed_methods" doc:"HTTP methods permitted; GET/HEAD always allowed, writes require writes_enabled."`
-	WritesEnabled  bool     `yaml:"writes_enabled" json:"writes_enabled" doc:"When false (default) only GET/HEAD are permitted regardless of allowed_methods."`
+	WritesEnabled  bool     `yaml:"writes_enabled" json:"writes_enabled" doc:"When false (default) only GET/HEAD are permitted regardless of allowed_methods. When true, writes are permitted for query_api calls the operator-chat dispatcher makes directly in its own turn; whether a call executed from WITHIN a task (the agent surface) may also write is governed by the separate daemon-wide gateway.agent_writes policy (off|user|all) — this per-provider flag and gateway.agent_writes are AND-gated, so a write needs BOTH. With gateway.agent_writes: off (the default) task-originated writes stay read-only regardless of this flag."`
 	Description    string   `yaml:"description" json:"description" doc:"Human/LLM-facing description of what this provider offers."`
 	// Examples surfaces optional endpoint hints via the list_apis dispatcher
 	// tool (query_api provider-discovery design §4.1). Omit for well-known
@@ -233,6 +267,72 @@ type ScraperConfig struct {
 	// BlockNotify pushes a proactive Telegram alert when the scraper hits a
 	// solvable gate (captcha/login_wall/auth_required) on a curated portal.
 	BlockNotify BlockNotifyConfig `yaml:"block_notify"`
+}
+
+// WebDaemonConfig gates supervised web write actions daemon-wide (LLD
+// 2026-07-21-supervised-web-write-actions). Read-egress is agent-controlled, so
+// write authorization is an INDEPENDENT operator gate — this daemon toggle plus
+// each project's deny-by-default Web.WriteAllowlist.
+//
+//	off      — writes refused daemon-wide (default; empty ≡ off).
+//	on       — writes permitted, gated by the per-project WriteAllowlist.
+//	insecure — bypasses the WriteAllowlist (dev/testing ONLY); every OTHER gate
+//	           (human approval, SSRF, request interception, no-evasion) still
+//	           applies, each such write is audited insecure_bypass=true. Requires
+//	           the separate InsecureAck co-flag so it can't be set by one value.
+type WebDaemonConfig struct {
+	Writes      string `yaml:"writes" doc:"Web write-action mode: off (default), on (per-project write_allowlist), or insecure (bypass the allowlist — dev only, requires insecure_ack)."`
+	InsecureAck bool   `yaml:"insecure_ack" doc:"Must be true to activate web.writes=insecure. A deliberate second flag so the allowlist bypass cannot be enabled by a single value."`
+
+	// SubmitSecret is the daemon↔scraper web_submit capability secret (shared
+	// C1 contract). The daemon attaches it as `daemon_auth` on every web_submit
+	// MCP call (preview + submit); the scraper (env SCRAPER_WEB_SUBMIT_SECRET)
+	// rejects any web_submit whose daemon_auth does not match. This is what stops
+	// an agent from calling mcp__scraper__web_submit directly and bypassing the
+	// human approval gate — only the daemon knows the secret. Prefer
+	// submit_secret_file (a secrets-dir path) over an inline value.
+	// json:"-": the resolved secret must never serialize outward via the config
+	// API (defense-in-depth alongside the redaction layer).
+	SubmitSecret     string `yaml:"submit_secret" json:"-" doc:"Daemon↔scraper web_submit capability secret attached as daemon_auth (prefer submit_secret_file). Required when web.writes is on/insecure."`
+	SubmitSecretFile string `yaml:"submit_secret_file" json:"submit_secret_file" doc:"Path to a file holding the web_submit capability secret (preferred over inline submit_secret)."`
+}
+
+// ResolvedSubmitSecret returns the daemon↔scraper web_submit capability secret:
+// the inline SubmitSecret when set, otherwise the trimmed contents of
+// SubmitSecretFile. Returns ("", nil) when neither is configured (the caller
+// decides whether that is an error — see Config.Validate). An unreadable
+// SubmitSecretFile is a hard error so the daemon fails closed rather than
+// booting with the capability secret silently unset.
+func (c WebDaemonConfig) ResolvedSubmitSecret() (string, error) {
+	if s := strings.TrimSpace(c.SubmitSecret); s != "" {
+		return s, nil
+	}
+	if c.SubmitSecretFile == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(c.SubmitSecretFile)
+	if err != nil {
+		return "", fmt.Errorf("web.submit_secret_file %q: %w", c.SubmitSecretFile, err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+// WritesMode validates web.writes and enforces the insecure co-flag. Returns
+// the normalized mode (off|on|insecure) or an error the daemon fails startup on.
+func (c WebDaemonConfig) WritesMode() (string, error) {
+	switch c.Writes {
+	case "", "off":
+		return "off", nil
+	case "on":
+		return "on", nil
+	case "insecure":
+		if !c.InsecureAck {
+			return "", fmt.Errorf("web.writes=insecure requires web.insecure_ack: true")
+		}
+		return "insecure", nil
+	default:
+		return "", fmt.Errorf("web.writes: unknown value %q (want off|on|insecure)", c.Writes)
+	}
 }
 
 // BlockNotifyConfig — proactive operator notification on a scraper block.
@@ -922,6 +1022,15 @@ type RetentionConfig struct {
 	// keep forever (which grows unbounded on busy deployments —
 	// 30d is the recommended setting).
 	ResponseCacheDays int `yaml:"response_cache_days" doc:"Days to keep cached LLM responses (30d recommended on busy deployments)."`
+	// EmbeddingCacheDays evicts rows from embedding_cache (LLM caching
+	// Phase D) whose last_hit_at is older than the window. Global table
+	// — not scoped by project — swept once per cycle alongside
+	// llm_response_cache. Default 0 → keep forever. Embeddings are
+	// deterministic per (content, model) so a hit is always exact; this
+	// window only bounds unbounded growth by dropping cold entries (they
+	// re-embed on next use). Set a window on deployments where the table
+	// grows large; 30d mirrors the response-cache recommendation.
+	EmbeddingCacheDays int `yaml:"embedding_cache_days" doc:"Days to keep cached embeddings before evicting cold entries (0 = keep forever; 30d recommended if the table grows large)."`
 }
 
 // ServerConfig holds HTTP server configuration.

@@ -5619,4 +5619,70 @@ ALTER TABLE dispatcher_reminders ADD CONSTRAINT dispatcher_reminders_status_chec
     CHECK (status IN ('pending','firing','fired','cancelled','expired'));
 `,
 	},
+	{
+		Version: 132,
+		Name:    "create_web_write_actions",
+		Up: `
+CREATE TABLE IF NOT EXISTS web_write_actions (
+    submission_id       TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL,
+    task_id             TEXT,
+    agent_run_id        TEXT,
+    target_url          TEXT NOT NULL,
+    target_host         TEXT NOT NULL,
+    payload_json        JSONB NOT NULL,
+    selector_bindings   JSONB NOT NULL,
+    field_table_json    JSONB NOT NULL,
+    volatile_fields     JSONB NOT NULL DEFAULT '[]',
+    screenshot_ref      TEXT,
+    confirmation_ref    TEXT,
+    status              TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending','approved','submitting','submitted','rejected','expired','failed','unknown')),
+    approval_token_hash TEXT,
+    token_consumed_at   TIMESTAMPTZ,
+    insecure_bypass     BOOLEAN NOT NULL DEFAULT false,
+    approver            TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    decided_at          TIMESTAMPTZ,
+    submitted_at        TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_web_write_actions_project_status ON web_write_actions (project_id, status);
+CREATE INDEX IF NOT EXISTS idx_web_write_actions_created ON web_write_actions (created_at);
+`,
+		Down: `DROP TABLE IF EXISTS web_write_actions;`,
+	},
+	{
+		Version: 133,
+		Name:    "tasks_retry_requested_at",
+		Up: `
+-- retry_requested_at marks a task an operator retried/requeued from ANY
+-- operator surface (RequeueTerminalTask — the inbox Retry, the API /retry, a
+-- chat course-correction of a failed task, the Telegram retry, the Fix-It
+-- Doctor's retry_task), so the Outcome Inbox can keep the row visible as
+-- "Retrying…" until the re-run reaches a terminal outcome — instead of the
+-- requeue silently making the row vanish as if resolved. It is NOT set by
+-- autonomous/scheduler requeues (those don't call RequeueTerminalTask).
+-- Additive + nullable: safe on a live table.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS retry_requested_at TIMESTAMPTZ;`,
+		Down: `ALTER TABLE tasks DROP COLUMN IF EXISTS retry_requested_at;`,
+	},
+	{
+		Version: 134,
+		Name:    "task_creation_source_add_scheduled_checkpoint_fork",
+		Up: `
+-- The Go model (internal/persistence/models.go) defines task creation sources
+-- SCHEDULED (reminder kind=task fires), CHECKPOINT, and FORK, but the
+-- task_creation_source enum was never migrated to include them. A scheduled
+-- daily-digest reminder therefore failed at task insert with
+-- "invalid input value for enum task_creation_source: SCHEDULED" every fire and
+-- never delivered (incident 2026-07-22). Add the missing values so the enum
+-- matches the Go model. Idempotent; ADD VALUE only extends the enum (the value
+-- is not used in this migration, so it is transaction-safe on PostgreSQL 12+).
+ALTER TYPE task_creation_source ADD VALUE IF NOT EXISTS 'SCHEDULED';
+ALTER TYPE task_creation_source ADD VALUE IF NOT EXISTS 'CHECKPOINT';
+ALTER TYPE task_creation_source ADD VALUE IF NOT EXISTS 'FORK';`,
+		// Postgres enum values cannot be removed; down is a no-op (the extra
+		// labels are harmless if a later version rolls back).
+		Down: ``,
+	},
 }

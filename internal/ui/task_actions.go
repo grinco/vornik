@@ -290,6 +290,21 @@ func (s *Server) TaskRetry(w http.ResponseWriter, r *http.Request, taskID string
 	}
 
 	if r.Header.Get("HX-Request") != "" {
+		// On a successful requeue render the informational "Retrying…" row in
+		// place, so the row STAYS visible (honest) instead of vanishing as if
+		// resolved — the re-run's outcome is what resolves it (COMPLETED → gone,
+		// FAILED → back as "Failed"). A fresh Get reflects the now-QUEUED state;
+		// if it already left the retry-in-flight states, or the retry was a
+		// no-op/raced, fall back to the standard status re-render.
+		if retried {
+			if t, gerr := s.taskRepo.Get(ctx, taskID); gerr == nil && t != nil && isRetryInFlightStatus(t.Status) {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				if terr := s.templates.ExecuteTemplate(w, "inboxItemRow", newRetryingItem(t)); terr != nil {
+					s.logger.Warn().Err(terr).Str("task_id", taskID).Msg("TaskRetry: retrying-row render failed")
+				}
+				return
+			}
+		}
 		s.renderInboxItemFragment(ctx, w, taskID)
 		return
 	}

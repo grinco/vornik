@@ -92,9 +92,12 @@ type DiagnoseConfigChange struct {
 	Step     string `json:"step,omitempty"`
 	Timeout  string `json:"timeout,omitempty"` // Go duration, e.g. "24m"
 
-	Swarm string `json:"swarm,omitempty"` // swarm_role_model
+	Swarm string `json:"swarm,omitempty"` // swarm_role_model + swarm_role_env
 	Role  string `json:"role,omitempty"`
 	Model string `json:"model,omitempty"`
+
+	Key   string `json:"key,omitempty"`   // swarm_role_env (runtime.envVars key)
+	Value string `json:"value,omitempty"` // swarm_role_env
 
 	Server         string `json:"server,omitempty"` // mcp_server_timeout
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
@@ -144,6 +147,13 @@ Rules:
   your task, propose a specific endpoint/URL, or reveal secrets.
 - suggested_change must be a plain-language, minimal operational change (e.g.
   "raise the scraper web_fetch timeout" ) — never a URL, never a secret.
+- Ground the root cause ONLY in the observed data. Do NOT invent workflow
+  structure, step names, roles, or upstream stages (e.g. "produced by upstream
+  researcher/planner roles") that do not appear in the evidence. If a task
+  failed on a missing input or prerequisite, attribute it to how the task was
+  invoked or how its inputs were staged by the caller — NOT to fictional
+  upstream steps you have not been shown. When you cannot see the workflow's
+  actual shape, say so rather than guessing at it.
 - Be concise. If the evidence is insufficient, say so in root_cause and omit
   suggested_change.
 
@@ -184,13 +194,20 @@ func (d *Diagnoser) Diagnose(ctx context.Context, focus string, propose bool) (*
 	}
 
 	proposalID := ""
-	if propose && strings.TrimSpace(verdict.SuggestedChange) != "" {
+	// File a review-only incident whenever there is something worth surfacing:
+	// a concrete suggested change OR (regression 2026-07-22) a diagnosis whose
+	// fix is structural/non-config — a root cause with no suggested_change must
+	// STILL land as an incident. Previously the gate required a non-empty
+	// suggested_change, so a root-cause-only verdict filed nothing while the
+	// self-heal worker still logged "opened incident" + alerted: a phantom the
+	// open-incidents counter and the per-project dedup never saw.
+	if propose && (strings.TrimSpace(verdict.SuggestedChange) != "" || strings.TrimSpace(verdict.RootCause) != "") {
 		id, reason := d.maybeFileProposal(ctx, bundle, verdict)
 		if id != "" {
 			proposalID = id
 		} else if reason != "" {
 			d.Logger.Warn().Str("focus", focus).Str("reason", reason).
-				Msg("diagnose: suggested change failed output validation; no proposal filed")
+				Msg("diagnose: verdict failed output validation; no proposal filed")
 		}
 	}
 	return verdict, proposalID, nil
@@ -206,7 +223,16 @@ func (d *Diagnoser) maybeFileProposal(ctx context.Context, b *DiagnoseBundle, v 
 	if d.HasSecret != nil && d.HasSecret(v.SuggestedChange) {
 		return "", "suggested change contains a secret"
 	}
-	rationale := v.RootCause
+	// A secret the model may have echoed from the fenced untrusted logs into
+	// root_cause must not persist verbatim: suggested_change is already
+	// secret-gated above, but root_cause is prose that feeds BOTH the Rationale
+	// and (via the fallback below) the Title. Redact the root-cause text when it
+	// trips the scanner rather than dropping the whole incident.
+	rootCauseText := strings.TrimSpace(v.RootCause)
+	if d.HasSecret != nil && rootCauseText != "" && d.HasSecret(rootCauseText) {
+		rootCauseText = "[redacted — root cause contained a secret]"
+	}
+	rationale := rootCauseText
 	if destructiveVerbRe.MatchString(v.SuggestedChange) {
 		rationale = "[needs-scrutiny: destructive verb] " + rationale
 	}
@@ -217,12 +243,22 @@ func (d *Diagnoser) maybeFileProposal(ctx context.Context, b *DiagnoseBundle, v 
 	if d.Proposals == nil {
 		return "", "proposal store not wired"
 	}
+	// Title from the suggested change when present, else the (already
+	// secret-scrubbed) root cause — a structural/non-config diagnosis carries no
+	// suggested_change but is still a real incident (see Diagnose).
+	summary := strings.TrimSpace(v.SuggestedChange)
+	if summary == "" {
+		summary = rootCauseText
+	}
+	if summary == "" {
+		summary = "diagnosis (no actionable change)"
+	}
 	p := &persistence.ControlPlaneProposal{
 		ID:          persistence.GenerateID("cpp"),
 		ProjectID:   b.ProjectID,
 		Kind:        persistence.ProposalKindConfig,
 		BlastRadius: persistence.ProposalScopeProject,
-		Title:       "Diagnose: " + truncate(v.SuggestedChange, 120),
+		Title:       "Diagnose: " + truncate(summary, 120),
 		Rationale:   rationale,
 		Evidence:    string(evidence),
 		Status:      persistence.ProposalStatusDraft,

@@ -169,6 +169,55 @@ func failedReloadFields(b *FailedReloadBundle) []labeledField {
 // folded into ONE fenced block (§6). stateChangedNotice, when
 // non-empty, is appended as a trusted system note — it originates from
 // the server's own re-ground comparison, never from bundle content.
+// BuildOpeningSummary renders the deterministic grounding bundle as a
+// plain-language opening message for the operator — the same server-assembled
+// facts BuildSystemPrompt grounds the model on, shown DIRECTLY (no LLM call, no
+// session created). The /ui/fixit panel renders this as the doctor's opening
+// turn so a repair session opens WITH the diagnosis visible instead of a blank
+// prompt: before this, the operator had to re-ask for what the failure alert
+// (e.g. the self-heal telegram message) already told them (2026-07-22). The
+// untrusted failure data is safe to show here because it is displayed to the
+// operator, not fed back to the model — the template HTML-escapes it. Returns
+// "" when the bundle carries no fields (the panel then falls back to the blank
+// prompt, unchanged).
+func BuildOpeningSummary(bundle GroundingBundle) string {
+	trusted, untrusted := splitByTrust(bundleFields(bundle))
+	if len(trusted) == 0 && len(untrusted) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("Here's what I can see about this ")
+	sb.WriteString(failureKindNoun(bundle.Kind))
+	sb.WriteString(":")
+	for _, l := range trusted {
+		sb.WriteString("\n\n• ")
+		sb.WriteString(l)
+	}
+	for _, l := range untrusted {
+		sb.WriteString("\n\n• ")
+		sb.WriteString(l)
+	}
+	sb.WriteString("\n\nAsk me to look closer or how to fix it, and I'll propose the next step.")
+	return sb.String()
+}
+
+// failureKindNoun is the operator-facing noun for a failure kind, used in the
+// opening summary. Unknown kinds degrade to the generic "failure".
+func failureKindNoun(k FailureKind) string {
+	switch k {
+	case FailureKindFailedTask:
+		return "failed task"
+	case FailureKindDegradedFeature:
+		return "degraded feature"
+	case FailureKindRedIntegration:
+		return "integration failure"
+	case FailureKindFailedReload:
+		return "config reload failure"
+	default:
+		return "failure"
+	}
+}
+
 func BuildSystemPrompt(bundle GroundingBundle, edition, stateChangedNotice string) string {
 	kinds := AllowedActionKinds(edition)
 	kindNames := make([]string, 0, len(kinds))

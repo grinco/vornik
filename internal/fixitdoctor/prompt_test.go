@@ -55,6 +55,39 @@ func TestBuildSystemPrompt_FencesUntrustedContentInOneBlock(t *testing.T) {
 	}
 }
 
+// BuildOpeningSummary renders the grounding as an operator-facing message (no
+// LLM) so the /ui/fixit panel opens WITH the diagnosis instead of a blank
+// prompt (2026-07-22 fix).
+func TestBuildOpeningSummary_RendersGroundingFacts(t *testing.T) {
+	bundle := GroundingBundle{
+		Kind: FailureKindFailedTask,
+		FailedTask: &FailedTaskBundle{
+			ErrorClass:   trusted("timeout"),
+			Cause:        trusted("Upstream service was slow."),
+			StepOutcomes: []StepOutcomeRow{{StepID: untrusted("step-1"), Outcome: trusted("failed"), ErrorDetail: untrusted("web_fetch timed out after 45s")}},
+		},
+	}
+	summary := BuildOpeningSummary(bundle)
+	if !strings.Contains(summary, "failed task") {
+		t.Errorf("summary should name the failure kind: %q", summary)
+	}
+	for _, want := range []string{"Upstream service was slow.", "web_fetch timed out after 45s"} {
+		if !strings.Contains(summary, want) {
+			t.Errorf("summary missing grounding fact %q:\n%s", want, summary)
+		}
+	}
+}
+
+// An empty bundle yields "" so the panel falls back to its blank prompt.
+func TestBuildOpeningSummary_EmptyBundleIsEmpty(t *testing.T) {
+	if got := BuildOpeningSummary(GroundingBundle{}); got != "" {
+		t.Errorf("empty bundle must produce no opening summary, got %q", got)
+	}
+	if got := BuildOpeningSummary(GroundingBundle{Kind: FailureKindFailedTask, FailedTask: &FailedTaskBundle{}}); got != "" {
+		t.Errorf("a bundle with no non-empty fields must produce no summary, got %q", got)
+	}
+}
+
 func TestBuildSystemPrompt_ActionVocabularyReflectsEdition(t *testing.T) {
 	bundle := GroundingBundle{Kind: FailureKindFailedTask, FailedTask: &FailedTaskBundle{ErrorClass: trusted("x")}}
 

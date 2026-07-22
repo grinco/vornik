@@ -234,6 +234,10 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// it to override pending_validation with budget_tripwire so the
 	// quality view doesn't credit a tripwire bail as a clean step.
 	var budgetTripwireDetail string
+	// promptTokenBudgetDetail is the prompt-token analogue of the
+	// dollar budget tripwire: clean agent exit, but not an unconstrained
+	// OK because the wrapper forced a tool-free finalization answer.
+	var promptTokenBudgetDetail string
 	// agentStamp carries the migration-106 budget columns stamped on the
 	// outcome row for agent steps only. Populated from the resolved budget
 	// (resolveRoleToolBudget) and the tool-audit count (persistToolAuditFromResult);
@@ -311,6 +315,15 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 			outcome = string(stepoutcome.BudgetTripwire)
 			errClass = stepoutcome.ClassBudgetTripwire
 			errDetail = budgetTripwireDetail
+		} else if promptTokenBudgetDetail != "" {
+			// Agent voluntarily stopped the tool loop before prompt
+			// replay crossed the configured per-step token ceiling.
+			// The wrapper already made one tool-free finalization call,
+			// so the workflow may continue, but metrics should not
+			// count it as an unconstrained OK.
+			outcome = string(stepoutcome.PromptTokenBudget)
+			errClass = stepoutcome.ClassPromptTokenBudget
+			errDetail = promptTokenBudgetDetail
 		}
 		durMS := time.Since(stepStartedAt).Milliseconds()
 		e.recordStepOutcomeWithSignalsAndBudget(ctx, task, execution, stepID, step.Role, effectiveModel, outcome, errClass, errDetail, nil, &durMS, hallucinationSignalsBlob, agentStamp)
@@ -753,17 +766,20 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 			if agentError == "" && resultStatus.Status == "FAILED" {
 				agentError = "agent reported FAILED status: " + resultStatus.Message
 			}
-			// Agent-emitted outcome override. Currently only
-			// budget_tripwire uses this channel — clean exit
-			// (status=COMPLETED) but the agent chose to stop early to
-			// stay within budget, and the per-step quality row needs to
-			// reflect that. Other outcome strings are accepted for
-			// future use but only budget_tripwire is currently mapped
-			// to a closure variable the defer reads.
-			if resultStatus.Outcome == string(stepoutcome.BudgetTripwire) {
+			// Agent-emitted outcome override. Clean exit
+			// (status=COMPLETED), but the agent chose to stop early for
+			// a budget guard and the per-step quality row needs to
+			// reflect that instead of being terminal-swept to OK.
+			switch resultStatus.Outcome {
+			case string(stepoutcome.BudgetTripwire):
 				budgetTripwireDetail = resultStatus.OutcomeDetail
 				if budgetTripwireDetail == "" {
 					budgetTripwireDetail = "agent self-aborted on budget tripwire (no detail provided)"
+				}
+			case string(stepoutcome.PromptTokenBudget):
+				promptTokenBudgetDetail = resultStatus.OutcomeDetail
+				if promptTokenBudgetDetail == "" {
+					promptTokenBudgetDetail = "agent self-finalized on prompt-token budget (no detail provided)"
 				}
 			}
 		}

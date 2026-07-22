@@ -1619,3 +1619,139 @@ func TestServerPublicBaseURL(t *testing.T) {
 		}
 	})
 }
+
+// --- web write-action authZ (LLD 2026-07-21-supervised-web-write-actions) ---
+
+func TestWebWritesMode_Valid(t *testing.T) {
+	for in, want := range map[string]string{"": "off", "off": "off", "on": "on"} {
+		got, err := WebDaemonConfig{Writes: in}.WritesMode()
+		if err != nil || got != want {
+			t.Fatalf("WritesMode(%q) = %q, %v; want %q, nil", in, got, err, want)
+		}
+	}
+}
+
+func TestWebWritesMode_RejectsUnknown(t *testing.T) {
+	if _, err := (WebDaemonConfig{Writes: "yes"}).WritesMode(); err == nil {
+		t.Fatal("expected error on unknown web.writes value")
+	}
+}
+
+// TestGatewayAgentWritesMode_NormalizesValid — off|user|all parse; empty ≡ off;
+// value is trimmed + lowercased so a stray-cased env override ("User ", "ALL")
+// still resolves (review I2 single normalize+validate path).
+func TestGatewayAgentWritesMode_NormalizesValid(t *testing.T) {
+	cases := map[string]string{
+		"":      "off",
+		"off":   "off",
+		"user":  "user",
+		"all":   "all",
+		"User ": "user",
+		" ALL":  "all",
+		"OFF":   "off",
+	}
+	for in, want := range cases {
+		got, err := GatewayConfig{AgentWrites: in}.AgentWritesMode()
+		if err != nil || got != want {
+			t.Fatalf("AgentWritesMode(%q) = %q, %v; want %q, nil", in, got, err, want)
+		}
+	}
+}
+
+// TestGatewayAgentWritesMode_RejectsUnknown — a truthy-looking value is a HARD
+// load error, never a silent fall-through to off (review I2). This is the guard
+// against an operator writing `agent_writes: true` and getting `all` or `off` by
+// accident.
+func TestGatewayAgentWritesMode_RejectsUnknown(t *testing.T) {
+	for _, bad := range []string{"true", "1", "yes", "on", "USER,ALL", "enabled"} {
+		if _, err := (GatewayConfig{AgentWrites: bad}).AgentWritesMode(); err == nil {
+			t.Errorf("AgentWritesMode(%q): expected a load error, got nil", bad)
+		}
+	}
+}
+
+// TestValidate_RejectsInvalidAgentWrites — an invalid gateway.agent_writes value
+// fails startup Validate (fail-closed), same posture as web.writes.
+func TestValidate_RejectsInvalidAgentWrites(t *testing.T) {
+	c := baseValidConfig()
+	c.Gateway.AgentWrites = "sometimes"
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate must reject an invalid gateway.agent_writes value")
+	}
+	c.Gateway.AgentWrites = "user"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate must accept gateway.agent_writes=user: %v", err)
+	}
+}
+
+func TestWebWritesMode_InsecureRequiresAck(t *testing.T) {
+	if _, err := (WebDaemonConfig{Writes: "insecure"}).WritesMode(); err == nil {
+		t.Fatal("insecure without insecure_ack must be a config error")
+	}
+	got, err := (WebDaemonConfig{Writes: "insecure", InsecureAck: true}).WritesMode()
+	if err != nil || got != "insecure" {
+		t.Fatalf("insecure+ack = %q, %v; want insecure, nil", got, err)
+	}
+}
+
+func TestValidate_RejectsInsecureWithoutAck(t *testing.T) {
+	c := baseValidConfig()
+	// A submit secret is required whenever writes are enabled (C1); supply one so
+	// this test isolates the insecure/ack rule.
+	c.Web = WebDaemonConfig{Writes: "insecure", SubmitSecret: "cap-secret"}
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate must reject web.writes=insecure without insecure_ack")
+	}
+	c.Web.InsecureAck = true
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate must accept insecure+ack: %v", err)
+	}
+}
+
+// TestValidate_RequiresSubmitSecretWhenWritesEnabled locks the C1 rule: with web
+// writes on/insecure the daemon↔scraper web_submit capability secret is
+// mandatory (else an agent could call mcp__scraper__web_submit directly and
+// bypass the approval gate), while writes=off needs no secret.
+func TestValidate_RequiresSubmitSecretWhenWritesEnabled(t *testing.T) {
+	c := baseValidConfig()
+	c.Web = WebDaemonConfig{Writes: "on"}
+	if err := c.Validate(); err == nil {
+		t.Fatal("Validate must reject web.writes=on without a submit secret")
+	}
+	c.Web.SubmitSecret = "cap-secret"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate must accept web.writes=on with a submit secret: %v", err)
+	}
+	// writes=off needs no secret.
+	c.Web = WebDaemonConfig{Writes: "off"}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate must accept web.writes=off with no secret: %v", err)
+	}
+}
+
+// TestResolvedSubmitSecret covers the inline / file / empty resolution paths.
+func TestResolvedSubmitSecret(t *testing.T) {
+	// Inline wins.
+	got, err := WebDaemonConfig{SubmitSecret: "  inline-sec  "}.ResolvedSubmitSecret()
+	if err != nil || got != "inline-sec" {
+		t.Fatalf("inline: got %q, %v; want inline-sec, nil", got, err)
+	}
+	// Empty when neither set.
+	got, err = WebDaemonConfig{}.ResolvedSubmitSecret()
+	if err != nil || got != "" {
+		t.Fatalf("empty: got %q, %v; want \"\", nil", got, err)
+	}
+	// File is read and trimmed.
+	f := filepath.Join(t.TempDir(), "sec.txt")
+	if werr := os.WriteFile(f, []byte("file-sec\n"), 0o600); werr != nil {
+		t.Fatal(werr)
+	}
+	got, err = WebDaemonConfig{SubmitSecretFile: f}.ResolvedSubmitSecret()
+	if err != nil || got != "file-sec" {
+		t.Fatalf("file: got %q, %v; want file-sec, nil", got, err)
+	}
+	// Unreadable file is a hard error.
+	if _, err := (WebDaemonConfig{SubmitSecretFile: filepath.Join(t.TempDir(), "nope.txt")}).ResolvedSubmitSecret(); err == nil {
+		t.Fatal("missing submit_secret_file must error")
+	}
+}

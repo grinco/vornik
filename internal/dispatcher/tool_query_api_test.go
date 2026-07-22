@@ -74,6 +74,25 @@ func TestQueryAPI_ProviderAllowlist(t *testing.T) {
 	})
 }
 
+// TestQueryAPI_NonEmptyAllowlistBlocksNonAllowlistedProvider_Regression
+// guards the design §7 requirement that the refactor to the apiaccess
+// adapter does NOT regress the discovery allowlist: a chat session on a
+// project with a NON-EMPTY api_providers must still be blocked from a
+// provider that is not on the allowlist, before the gateway is called.
+func TestQueryAPI_NonEmptyAllowlistBlocksNonAllowlistedProvider_Regression(t *testing.T) {
+	reg := loadListAPIsTestRegistry(t, "proj", []string{"weather"}) // non-empty, excludes maps
+	fc := &fakeAPIClient{resp: apigateway.Response{Status: 200, Body: "ok"}}
+	te := &ToolExecutor{apiClient: fc, registry: reg}
+	res := te.queryAPI(context.Background(), `{"provider":"maps","method":"GET","path":"/x"}`, "proj", []string{"*"})
+	want := `query_api: provider "maps" is not enabled for project "proj".`
+	if res.Content != want {
+		t.Errorf("content = %q, want %q", res.Content, want)
+	}
+	if fc.called {
+		t.Error("gateway must not be called for a provider outside a non-empty allowlist")
+	}
+}
+
 type fakeAPIClient struct {
 	resp   apigateway.Response
 	err    error

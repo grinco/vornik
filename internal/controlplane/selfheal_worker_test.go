@@ -120,10 +120,62 @@ func TestSelfHeal_DiagnoserErrorFilesGenericProposal(t *testing.T) {
 	w.tick(ctx)
 	w.tick(ctx)
 	w.tick(ctx)
-	// No diagnosis proposal, but the generic failed-rate proposal must exist.
+	// No diagnosis proposal, but the generic failed-rate proposal must exist —
+	// tagged "self-heal" (not "tune-detector") so the open-incidents counter
+	// reflects it and the worker's own dedup matches on re-arm.
 	ps, _ := repo.List(ctx, persistence.ProposalListFilter{ProjectID: "janka"})
-	if len(ps) != 1 || ps[0].ProposedBy != "tune-detector" || ps[0].Title != tuneFailedRateTitle("janka") {
-		t.Fatalf("diagnoser error must fall back to the generic failed-rate proposal, got %+v", ps)
+	if len(ps) != 1 || ps[0].ProposedBy != "self-heal" || ps[0].Title != tuneFailedRateTitle("janka") {
+		t.Fatalf("diagnoser error must fall back to the generic self-heal failed-rate proposal, got %+v", ps)
+	}
+}
+
+// noProposalDiagnoser scripts a diagnosis that SUCCEEDS (no error) but files
+// nothing — proposalID "". In production this happens when the Diagnoser's
+// output-validation gate refuses the verdict (a URL/secret smuggled into the
+// suggested change, or the proposal store rejects the create); parseVerdict
+// requires a non-empty root_cause, so a truly-empty verdict errors instead.
+type noProposalDiagnoser struct{ calls int }
+
+func (d *noProposalDiagnoser) Diagnose(_ context.Context, _ string, _ bool) (*DiagnoseVerdict, string, error) {
+	d.calls++
+	return &DiagnoseVerdict{RootCause: "rejected verdict"}, "", nil
+}
+
+// Regression 2026-07-22: self-heal logged "opened incident (auto-diagnosis)"
+// with an EMPTY proposal_id when the diagnosis filed nothing. No
+// control_plane_proposals row existed → the "open self-heal incidents" counter
+// showed 0 and hasOpenIncident() dedup never matched, so the worker re-opened +
+// re-alerted on every re-armed scan. A successful-but-non-filing diagnosis must
+// fall back to the generic self-heal-tagged coverage proposal (which also
+// alerts once + counts against the rate cap), and dedup must then hold.
+func TestSelfHeal_SuccessButNoProposalStillCovers(t *testing.T) {
+	repo := newTuneTestRepo(t)
+	diag := &noProposalDiagnoser{}
+	w := newSelfHeal(t, diag, repo)
+	alerts := 0
+	w.Alert = func(_, _ string) { alerts++ }
+	w.Metrics.(*fakeMetrics).ret = breach("janka")
+	ctx := context.Background()
+	w.tick(ctx)
+	w.tick(ctx)
+	w.tick(ctx)
+	ps, _ := repo.List(ctx, persistence.ProposalListFilter{ProjectID: "janka"})
+	if len(ps) != 1 || ps[0].ProposedBy != "self-heal" {
+		t.Fatalf("a successful-but-non-filing diagnosis must file exactly one self-heal coverage proposal, got %+v", ps)
+	}
+	if diag.calls != 1 {
+		t.Fatalf("expected one diagnosis, got %d", diag.calls)
+	}
+	if alerts != 1 {
+		t.Fatalf("a coverage incident must push exactly one operator alert, got %d", alerts)
+	}
+	// The coverage proposal is a self-heal DRAFT, so dedup must suppress
+	// further diagnoses even as the breach continues.
+	w.tick(ctx)
+	w.tick(ctx)
+	w.tick(ctx)
+	if diag.calls != 1 {
+		t.Fatalf("the coverage incident must dedup further diagnoses, got %d calls", diag.calls)
 	}
 }
 

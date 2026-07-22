@@ -352,6 +352,7 @@ func TestConverse_StateChangedNoticeInjectedOnStatusChange(t *testing.T) {
 
 func TestConverse_TamperedRef_IgnoredOnResume_UsesSessionsOwnRef(t *testing.T) {
 	taskA := failedTaskWith(persistence.TaskStatusFailed)
+	taskA.tasks["t1"].ProjectID = "proj-a" // the task must live in the session's own project (IDOR guard)
 	svc, _, _ := newTestService(t, taskA, svcChatReply{content: envOK}, svcChatReply{content: envOK})
 	lookup := &fakeProjectLookup{projects: map[string]*registry.Project{
 		"proj-a": {ID: "proj-a"},

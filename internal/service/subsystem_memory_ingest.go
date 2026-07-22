@@ -259,6 +259,9 @@ func (s *MemoryIngestSubsystem) Start(ctx context.Context) error {
 	// Control-plane self-healing (leader-gated, opt-in). On a sustained
 	// failed-rate breach it auto-diagnoses + files a review-only incident.
 	c.startSelfHealWorker(ctx)
+	// Control-plane cost/quality prompt-token-budget detector (opt-in,
+	// default off). Files review-only DRAFT budget proposals; never mutates.
+	c.startCostQualityWorker(ctx)
 
 	return nil
 }

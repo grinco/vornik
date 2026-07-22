@@ -160,8 +160,12 @@ func (w *SelfHealWorker) tick(ctx context.Context) {
 
 // open attempts to open an incident for a breaching project: skip the system
 // project (loop-safety), skip if an open self-heal DRAFT already exists (dedup),
-// enforce the global rate cap, then run the diagnoser. On a diagnoser error it
-// files the generic failed-rate proposal instead (guaranteed coverage).
+// enforce the global rate cap, then run the diagnoser. Every opened incident is
+// backed by BOTH a persisted self-heal proposal AND one operator alert — a
+// specific diagnosis proposal when the diagnoser produces a fileable one, else
+// the generic failed-rate coverage proposal (diagnoser error, or a verdict the
+// output-validation gate refused to file). recordOpen + alert happen on every
+// opened path so the rate cap and the operator notification stay consistent.
 func (w *SelfHealWorker) open(ctx context.Context, project string, s RateSample) {
 	if w.SystemProjectID != "" && project == w.SystemProjectID {
 		return // never self-diagnose the control plane's own project
@@ -178,10 +182,20 @@ func (w *SelfHealWorker) open(ctx context.Context, project string, s RateSample)
 	}
 	verdict, proposalID, err := w.Diagnose.Diagnose(ctx, project, true)
 	if err != nil {
-		// Coverage guarantee: the operator still hears about the breach via the
-		// generic failed-rate proposal (shared helper, no duplicated logic).
-		w.Logger.Warn().Err(err).Str("project", project).Msg("self-heal: diagnosis failed; filing generic failed-rate proposal")
-		FileFailedRateProposal(ctx, w.Proposals, w.Logger, project, s, w.breachesToOpen(), w.threshold())
+		// Coverage: the diagnoser is unavailable (LLM down, ambiguous focus).
+		w.Logger.Warn().Err(err).Str("project", project).Msg("self-heal: diagnosis failed; filing generic failed-rate proposal for coverage")
+		w.fileCoverageIncident(ctx, project, s)
+		return
+	}
+	if proposalID == "" {
+		// Coverage (regression 2026-07-22): the diagnosis SUCCEEDED but filed
+		// nothing — the output-validation gate refused the verdict (a URL/secret
+		// smuggled into the suggested change, or the proposal store rejected the
+		// create). Without a persisted proposal the incident is a phantom: the
+		// open-incidents counter shows 0 and hasOpenIncident() dedup never
+		// matches, so the worker re-opens + re-alerts on every re-armed scan.
+		w.Logger.Warn().Str("project", project).Msg("self-heal: diagnosis produced no fileable proposal; filing generic failed-rate proposal for coverage")
+		w.fileCoverageIncident(ctx, project, s)
 		return
 	}
 	w.recordOpen()
@@ -191,11 +205,24 @@ func (w *SelfHealWorker) open(ctx context.Context, project string, s RateSample)
 	}
 	w.Logger.Info().Str("project", project).Str("proposal_id", proposalID).Msg("self-heal: opened incident (auto-diagnosis)")
 	if w.Alert != nil {
-		body := fmt.Sprintf("Project %s: %s.", project, rootCause)
-		if proposalID != "" {
-			body += " Review the proposed fix: control-plane proposal " + proposalID + "."
-		}
-		w.Alert("🩺 vornik self-heal opened an incident", body)
+		w.Alert("🩺 vornik self-heal opened an incident",
+			fmt.Sprintf("Project %s: %s. Review the proposed fix: control-plane proposal %s.", project, rootCause, proposalID))
+	}
+}
+
+// fileCoverageIncident files the generic self-heal failed-rate proposal, counts
+// it against the rate cap (recordOpen), and pushes one operator alert — the
+// guaranteed-coverage path shared by the diagnoser-error and non-fileable-
+// verdict branches, so an opened incident is never a silent DRAFT and never
+// escapes the per-hour cap (self-healing design §4.5 + §6). Tagged "self-heal"
+// so the open-incidents counter reflects it and hasOpenIncident() dedup matches
+// it on re-arm.
+func (w *SelfHealWorker) fileCoverageIncident(ctx context.Context, project string, s RateSample) {
+	FileFailedRateProposal(ctx, w.Proposals, w.Logger, project, s, w.breachesToOpen(), w.threshold(), "self-heal")
+	w.recordOpen()
+	if w.Alert != nil {
+		w.Alert("🩺 vornik self-heal opened an incident",
+			fmt.Sprintf("Project %s is breaching its failed-task rate; automatic diagnosis was unavailable, so a generic review-only incident was filed. Review it in the control-plane proposals.", project))
 	}
 }
 

@@ -241,6 +241,12 @@ type GlobalCounts struct {
 	// retention window. Zero when ResponseCacheDays is 0 (disabled)
 	// or nothing matched.
 	ResponseCache int
+	// EmbeddingCache is the count of rows evicted from embedding_cache
+	// whose last_hit_at fell outside the retention window. Zero when
+	// EmbeddingCacheDays is 0 (disabled) or nothing matched. Embeddings
+	// are deterministic per (content, model), so eviction never changes
+	// an answer — a dropped cold entry simply re-embeds on next use.
+	EmbeddingCache int
 	// UISessions is the count of expired/revoked browser login
 	// sessions hard-deleted from ui_sessions (github-login phase 3).
 	// No config knob — a fixed 7-day grace keeps recent rows for
@@ -310,17 +316,17 @@ func (s *Sweeper) Preview(ctx context.Context, p Policy) (Counts, error) {
 // per cycle, regardless of the project count. Returns counts +
 // best-effort error — a failure in one cache doesn't abort the
 // others.
-func (s *Sweeper) SweepGlobal(ctx context.Context, responseCacheDays int) (GlobalCounts, error) {
-	return s.runGlobal(ctx, responseCacheDays, false)
+func (s *Sweeper) SweepGlobal(ctx context.Context, responseCacheDays, embeddingCacheDays int) (GlobalCounts, error) {
+	return s.runGlobal(ctx, responseCacheDays, embeddingCacheDays, false)
 }
 
 // PreviewGlobal counts what SweepGlobal would prune without
 // deleting. Used by the operator-facing preview surface.
-func (s *Sweeper) PreviewGlobal(ctx context.Context, responseCacheDays int) (GlobalCounts, error) {
-	return s.runGlobal(ctx, responseCacheDays, true)
+func (s *Sweeper) PreviewGlobal(ctx context.Context, responseCacheDays, embeddingCacheDays int) (GlobalCounts, error) {
+	return s.runGlobal(ctx, responseCacheDays, embeddingCacheDays, true)
 }
 
-func (s *Sweeper) runGlobal(ctx context.Context, responseCacheDays int, previewOnly bool) (GlobalCounts, error) {
+func (s *Sweeper) runGlobal(ctx context.Context, responseCacheDays, embeddingCacheDays int, previewOnly bool) (GlobalCounts, error) {
 	if s == nil || s.db == nil {
 		return GlobalCounts{}, nil
 	}
@@ -337,6 +343,19 @@ func (s *Sweeper) runGlobal(ctx context.Context, responseCacheDays int, previewO
 			}
 		} else {
 			counts.ResponseCache = n
+		}
+	}
+
+	if embeddingCacheDays > 0 {
+		threshold := time.Now().UTC().AddDate(0, 0, -embeddingCacheDays)
+		n, err := s.pruneEmbeddingCache(ctx, threshold, previewOnly)
+		if err != nil {
+			s.warn("embedding_cache", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		} else {
+			counts.EmbeddingCache = n
 		}
 	}
 
@@ -396,9 +415,10 @@ func (s *Sweeper) runGlobal(ctx context.Context, responseCacheDays int, previewO
 // rejects anything else so the table name (interpolated into SQL) can never
 // be attacker-influenced, mirroring pruneOlderThan's P0 allowlist.
 var globalCleanupTables = map[string]bool{
-	"ui_sessions": true,
-	"api_keys":    true,
-	"link_codes":  true,
+	"ui_sessions":     true,
+	"api_keys":        true,
+	"link_codes":      true,
+	"embedding_cache": true,
 }
 
 // pruneGlobalByThreshold hard-deletes rows from a global table whose rows match
@@ -497,6 +517,18 @@ func (s *Sweeper) pruneResponseCache(ctx context.Context, threshold time.Time, p
 		return 0, fmt.Errorf("rows affected for llm_response_cache: %w", err)
 	}
 	return int(aff), nil
+}
+
+// pruneEmbeddingCache evicts cold rows from embedding_cache. Like
+// llm_response_cache the table is global (keyed on content_hash +
+// model, no project_id), and last_hit_at is the eviction key — a row
+// still served on every replay stays warm indefinitely. Eviction is
+// always quality-safe: embeddings are deterministic per (content,
+// model), so a dropped cold entry simply re-embeds on next use rather
+// than returning a stale value. last_hit_at is NOT NULL DEFAULT NOW()
+// (migration 41), so `last_hit_at < $1` can't silently skip rows.
+func (s *Sweeper) pruneEmbeddingCache(ctx context.Context, threshold time.Time, previewOnly bool) (int, error) {
+	return s.pruneGlobalByThreshold(ctx, "embedding_cache", "last_hit_at < $1", threshold, previewOnly)
 }
 
 func (s *Sweeper) run(ctx context.Context, p Policy, previewOnly bool) (Counts, error) {

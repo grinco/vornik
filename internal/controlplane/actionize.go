@@ -26,6 +26,7 @@ import (
 
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/swarmenv"
 )
 
 // ErrChangeNotUseful means the computed change would not improve on the
@@ -336,6 +337,58 @@ func (a *Actionizer) RenderRoleModel(swarmID, role, model string) (*RenderedChan
 	return a.finishRender(rc, raw, edited)
 }
 
+// RenderRoleEnv renders a runtime.envVars key change on a swarm role (Phase-2
+// cost/quality tuning — e.g. VORNIK_STEP_PROMPT_TOKEN_BUDGET). Whole-file
+// replace through the shipped apply engine; the edit is comment-preserving via
+// swarmenv.SetRoleEnv. BlastRadius is swarm (a shared swarm's env is shared by
+// all its projects — the caller records the sharing projects in Evidence).
+// Returns ErrChangeNotUseful when the key is already at value (no-op render).
+func (a *Actionizer) RenderRoleEnv(swarmID, role, key, value string) (*RenderedChange, error) {
+	if !safeIdent(swarmID) {
+		return nil, fmt.Errorf("control-plane: invalid swarm id %q", swarmID)
+	}
+	if !safeIdent(role) {
+		return nil, fmt.Errorf("control-plane: invalid role %q", role)
+	}
+	rel, err := swarmRel(swarmID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := a.ReadFile(rel)
+	if err != nil {
+		return nil, err
+	}
+	editedStr, err := swarmenv.SetRoleEnv(string(raw), role, key, value)
+	if err != nil {
+		return nil, err
+	}
+	if editedStr == string(raw) {
+		return nil, ErrChangeNotUseful
+	}
+	edited := []byte(editedStr)
+	if a.ValidateSwarm != nil {
+		if verr := a.ValidateSwarm(rel, edited); verr != nil {
+			return nil, fmt.Errorf("control-plane: rendered swarm failed to parse: %w", verr)
+		}
+	}
+	rc := &RenderedChange{
+		ApplyTarget:  rel,
+		ApplyContent: editedStr,
+		BlastRadius:  persistence.ProposalScopeSwarm,
+		// LiveApply: a role's runtime.envVars is injected into agent containers
+		// at START (container.go startContainer), so a running task keeps its
+		// env — the change is non-disruptive to in-flight work and only affects
+		// the next spawn. Same posture as the MCP-catalog edits; skips the
+		// all-projects busy gate so the operator isn't blocked by a running task.
+		LiveApply: true,
+		Summary:   fmt.Sprintf("roles[%s].runtime.envVars.%s = %q", role, key, value),
+		Change: map[string]any{
+			"kind": "swarm_role_env", "swarm": swarmID, "role": role, "key": key, "value": value,
+		},
+	}
+	return a.finishRender(rc, raw, edited)
+}
+
 // FindMCPServerScope resolves which config tree owns an MCP server entry.
 // Daemon-first (design §4.4): a server present at both scopes resolves to the
 // daemon catalog (that is the entry clients inherit). Returns ("", true) for
@@ -442,11 +495,41 @@ func (a *Actionizer) RevalidateChange(projectID, evidence string) error {
 		return a.revalidateStepTimeout(cc)
 	case "swarm_role_model":
 		return a.revalidateRoleModel(cc)
+	case "swarm_role_env":
+		return a.revalidateRoleEnv(cc)
 	case "mcp_server_timeout":
 		return a.revalidateMCPServerTimeout(projectID, cc)
 	default:
 		return fmt.Errorf("revalidate: change kind %q not in the allowlist", cc.Kind)
 	}
+}
+
+// revalidateRoleEnv confirms the swarm role a swarm_role_env change targets
+// still exists (the world may have changed between draft and apply). The value
+// itself is a literal env string — nothing external to re-verify.
+func (a *Actionizer) revalidateRoleEnv(cc *DiagnoseConfigChange) error {
+	if strings.TrimSpace(cc.Key) == "" {
+		return fmt.Errorf("revalidate: swarm_role_env change has no key")
+	}
+	srel, err := swarmRel(cc.Swarm)
+	if err != nil {
+		return fmt.Errorf("revalidate: %w", err)
+	}
+	raw, err := a.ReadFile(srel)
+	if err != nil {
+		return fmt.Errorf("revalidate: %w", err)
+	}
+	var roleExists bool
+	if _, ferr := config.EditFrontmatter(raw, func(fm []byte) ([]byte, error) {
+		_, roleExists = config.GetYAMLListItemField(fm, "roles", "name", cc.Role, "name")
+		return fm, nil
+	}); ferr != nil {
+		return fmt.Errorf("revalidate: %w", ferr)
+	}
+	if !roleExists {
+		return fmt.Errorf("revalidate: swarm %s no longer has role %q", cc.Swarm, cc.Role)
+	}
+	return nil
 }
 
 func (a *Actionizer) revalidateStepTimeout(cc *DiagnoseConfigChange) error {

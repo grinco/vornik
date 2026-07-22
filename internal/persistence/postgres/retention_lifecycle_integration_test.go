@@ -148,7 +148,7 @@ func TestIntegration_RetentionSweepLinkCodes(t *testing.T) {
 	insert("c-expired-recent", withinGrace, nil) // KEEP (within grace)
 
 	sweeper := retention.New(db, zerolog.Nop())
-	counts, err := sweeper.SweepGlobal(ctx, 0) // responseCacheDays=0 → cache prune skipped
+	counts, err := sweeper.SweepGlobal(ctx, 0, 0) // response/embedding cache days=0 → cache prunes skipped
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -170,5 +170,58 @@ func TestIntegration_RetentionSweepLinkCodes(t *testing.T) {
 		if n != 1 {
 			t.Errorf("expected %s to survive the sweep", code)
 		}
+	}
+}
+
+// TestIntegration_RetentionSweepEmbeddingCache verifies the embedding_cache
+// prune against REAL Postgres — the core quality-safety invariant is that a
+// WARM row (recent last_hit_at, inside the window) survives while a COLD row
+// (last_hit_at past the window) is evicted. sqlmock cannot validate the
+// `last_hit_at < $1` predicate (it returns a canned RowsAffected regardless of
+// the WHERE clause), so this pins the real semantics end-to-end. The embedding
+// value is irrelevant to eviction (it's a rebuildable cache keyed on
+// content_hash+model), so we seed a cheap all-zero vector(1024) via array_fill.
+func TestIntegration_RetentionSweepEmbeddingCache(t *testing.T) {
+	ctx := context.Background()
+	db := connectMigrated(t).DB
+
+	mustExec(t, db, "DELETE FROM embedding_cache")
+	t.Cleanup(func() { mustExec(t, db, "DELETE FROM embedding_cache") })
+
+	now := time.Now().UTC()
+	cold := now.AddDate(0, 0, -40) // past a 30-day window → EVICT
+	warm := now.AddDate(0, 0, -1)  // inside the window → KEEP
+
+	insert := func(hash string, lastHit time.Time) {
+		t.Helper()
+		mustExec(t, db,
+			`INSERT INTO embedding_cache (content_hash, model, embedding, created_at, last_hit_at)
+			 VALUES ($1, $2, ('[' || array_to_string(array_fill(0.0, ARRAY[1024]), ',') || ']')::vector, $3, $4)`,
+			hash, "test-model", now, lastHit)
+	}
+	insert("h-cold", cold) // EVICT
+	insert("h-warm", warm) // KEEP
+
+	sweeper := retention.New(db, zerolog.Nop())
+	// response cache days=0 (skip), embedding cache days=30 → prune cold only.
+	counts, err := sweeper.SweepGlobal(ctx, 0, 30)
+	if err != nil {
+		t.Fatalf("SweepGlobal: %v", err)
+	}
+	if counts.EmbeddingCache != 1 {
+		t.Errorf("swept EmbeddingCache = %d, want 1 (only the cold row)", counts.EmbeddingCache)
+	}
+
+	var remaining int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM embedding_cache").Scan(&remaining); err != nil {
+		t.Fatalf("count remaining: %v", err)
+	}
+	if remaining != 1 {
+		t.Errorf("remaining embedding_cache = %d, want 1 (the warm row)", remaining)
+	}
+	var warmSurvives int
+	_ = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM embedding_cache WHERE content_hash = $1", "h-warm").Scan(&warmSurvives)
+	if warmSurvives != 1 {
+		t.Errorf("expected the warm row (h-warm) to survive the sweep, got %d", warmSurvives)
 	}
 }

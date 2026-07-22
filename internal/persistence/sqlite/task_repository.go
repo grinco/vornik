@@ -269,6 +269,46 @@ func (r *TaskRepository) List(ctx context.Context, filter persistence.TaskFilter
 	return tasks, rows.Err()
 }
 
+// ListRetryInFlight returns operator-retried tasks (retry_requested_at stamped
+// by RequeueTerminalTask) that are back in flight — status QUEUED/LEASED/RUNNING
+// with retry_requested_at >= since. Scoped to projectIDs when non-empty.
+func (r *TaskRepository) ListRetryInFlight(ctx context.Context, projectIDs []string, since time.Time) ([]*persistence.Task, error) {
+	var b strings.Builder
+	b.WriteString(`SELECT ` + taskSelectColumns + ` FROM tasks
+		WHERE status IN ('QUEUED','LEASED','RUNNING')
+		  AND retry_requested_at IS NOT NULL
+		  AND retry_requested_at >= ?`)
+	args := []any{sqliteTime(since.UTC())}
+	if len(projectIDs) > 0 {
+		b.WriteString(" AND project_id IN (")
+		for i, id := range projectIDs {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString("?")
+			args = append(args, id)
+		}
+		b.WriteString(")")
+	}
+	// Bounded — see the Postgres impl's note; these are informational rows.
+	b.WriteString(" ORDER BY retry_requested_at DESC LIMIT 200")
+
+	rows, err := r.db.QueryContext(ctx, b.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var tasks []*persistence.Task
+	for rows.Next() {
+		t, err := scanSqliteTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, rows.Err()
+}
+
 // Count mirrors List's WHERE clauses without LIMIT/OFFSET.
 func (r *TaskRepository) Count(ctx context.Context, filter persistence.TaskFilter) (int64, error) {
 	var b strings.Builder
@@ -427,10 +467,11 @@ func (r *TaskRepository) RequeueTerminalTask(ctx context.Context, id string, att
 			lease_expires_at  = NULL,
 			last_error        = NULL,
 			last_error_class  = NULL,
+			retry_requested_at = ?,
 			updated_at        = ?
 		WHERE id = ?
 		  AND status IN ('FAILED','CANCELLED','COMPLETED','PENDING')`,
-		attempt, maxAttempts, sqliteTime(time.Now().UTC()), id)
+		attempt, maxAttempts, sqliteTime(time.Now().UTC()), sqliteTime(time.Now().UTC()), id)
 	if err != nil {
 		return false, err
 	}

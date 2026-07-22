@@ -6,6 +6,11 @@ version: "1.0.0"
 author: "Vadim Grinco <vadim@grinco.eu>"
 license: "Proprietary"
 entrypoint: "review"
+# Reviews the STAGED input artifact (the doc under review). Declaring this makes
+# the companion delegate handler reject an artifact-less delegation at submit
+# instead of failing opaquely at file_read(/app/input/task.json). Attach via the
+# /upload skill or delegate inputArtifacts.
+require_input_artifacts: true
 maxStepVisits: 1
 maxIterations: 10
 maxWallClock: "20m"

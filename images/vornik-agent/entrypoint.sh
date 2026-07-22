@@ -47,6 +47,19 @@ TOOL_RESULT_MAX_BYTES="${VORNIK_TOOL_RESULT_MAX_BYTES:-262144}"
 # most large-model completions, short enough that a stalled TCP connection
 # fails the task instead of wedging it for hours.
 LLM_TIMEOUT="${VORNIK_LLM_TIMEOUT:-300}"
+AGENT_DEFER_MCP_TOOLS="${VORNIK_AGENT_DEFER_MCP_TOOLS:-1}"
+AGENT_DEFER_MCP_THRESHOLD="${VORNIK_AGENT_DEFER_MCP_THRESHOLD:-20}"
+AGENT_TOOL_SEARCH_LIMIT="${VORNIK_AGENT_TOOL_SEARCH_LIMIT:-8}"
+# 2026-07-21: default flipped ON (rolled out). Lossless — old large tool
+# results are compacted to head/tail with full bodies preserved under
+# .tool_results/ and rehydratable via tool_result_read. Set
+# VORNIK_TOOL_RESULT_HYGIENE=0 to disable per-agent if needed.
+TOOL_RESULT_HYGIENE="${VORNIK_TOOL_RESULT_HYGIENE:-1}"
+TOOL_RAW_COMPACT_CHARS="${VORNIK_TOOL_RAW_COMPACT_CHARS:-12000}"
+TOOL_RAW_KEEP_RECENT_BATCHES="${VORNIK_TOOL_RAW_KEEP_RECENT_BATCHES:-3}"
+TOOL_RAW_HEAD_CHARS="${VORNIK_TOOL_RAW_HEAD_CHARS:-1200}"
+TOOL_RAW_TAIL_CHARS="${VORNIK_TOOL_RAW_TAIL_CHARS:-800}"
+STEP_PROMPT_TOKEN_BUDGET="${VORNIK_STEP_PROMPT_TOKEN_BUDGET:-0}"
 
 # Per-million-token prices for this container's model. Injected by the
 # executor from the daemon's pricing.yaml so the agent can log per-iteration
@@ -57,6 +70,36 @@ LLM_COST_OUTPUT_PER_M="${VORNIK_LLM_COST_OUTPUT_PER_M:-0}"
 
 log() { echo "[vornik-agent] $1"; }
 debug() { [ "${VORNIK_LOG_LEVEL:-info}" = "debug" ] && echo "[vornik-agent] $1" || true; }
+
+is_truthy() {
+    case "${1:-}" in
+        ""|0|false|FALSE|False|no|NO|No|off|OFF|Off) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+tool_result_hygiene_enabled() {
+    is_truthy "$TOOL_RESULT_HYGIENE" || return 1
+    local threshold="${TOOL_RAW_COMPACT_CHARS:-12000}"
+    case "$threshold" in
+        -*)
+            ;;
+        ""|*[!0-9]*)
+            threshold=12000
+            ;;
+    esac
+    [ "$threshold" -gt 0 ] 2>/dev/null
+}
+
+step_prompt_token_budget() {
+    local budget="${STEP_PROMPT_TOKEN_BUDGET:-0}"
+    case "$budget" in
+        ""|*[!0-9]*)
+            budget=0
+            ;;
+    esac
+    printf '%s' "$budget"
+}
 
 # ms_now returns milliseconds-since-epoch as a portable 13-digit value.
 # The agent image's `date` is from coreutils-rust, which silently
@@ -127,7 +170,8 @@ is_builtin_tool() {
         file_edit|read_many_files|grep|glob) return 0 ;;
         git_status|git_diff|git_log|git_show) return 0 ;;
         test_run|lint_run|typecheck_run) return 0 ;;
-        backlog_deposit) return 0 ;;
+        backlog_deposit|tool_result_read) return 0 ;;
+        query_api|list_apis) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -135,7 +179,7 @@ is_builtin_tool() {
 # Canonical list of built-in tool names — single source of truth used by the
 # allowlist gate in tool_definitions() and by builtin_tool_allowed(). Keep
 # this aligned with is_builtin_tool() above.
-BUILTIN_TOOL_NAMES_JSON='["file_read","file_write","run_shell","current_time","file_edit","read_many_files","grep","glob","git_status","git_diff","git_log","git_show","test_run","lint_run","typecheck_run","backlog_deposit"]'
+BUILTIN_TOOL_NAMES_JSON='["file_read","file_write","run_shell","current_time","file_edit","read_many_files","grep","glob","git_status","git_diff","git_log","git_show","test_run","lint_run","typecheck_run","backlog_deposit","tool_result_read","query_api","list_apis"]'
 
 builtin_tool_allowed() {
     local tool="$1"
@@ -187,6 +231,92 @@ clamp_tool_contents() {
             then .content = (.content[:$cap] + "\n…[tool result truncated to fit the model context window]")
             else . end)
     ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
+compact_old_tool_results() {
+    local file="$1"
+    if ! tool_result_hygiene_enabled; then
+        return 0
+    fi
+    TOOL_RAW_COMPACT_CHARS="$TOOL_RAW_COMPACT_CHARS" \
+    TOOL_RAW_KEEP_RECENT_BATCHES="$TOOL_RAW_KEEP_RECENT_BATCHES" \
+    TOOL_RAW_HEAD_CHARS="$TOOL_RAW_HEAD_CHARS" \
+    TOOL_RAW_TAIL_CHARS="$TOOL_RAW_TAIL_CHARS" \
+    python3 - "$file" <<'PY'
+import json
+import os
+import re
+import sys
+
+path = sys.argv[1]
+
+def int_env(name, default):
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+threshold = int_env("TOOL_RAW_COMPACT_CHARS", 12000)
+if threshold <= 0:
+    raise SystemExit(0)
+keep_batches = max(1, int_env("TOOL_RAW_KEEP_RECENT_BATCHES", 3))
+head_chars = max(200, int_env("TOOL_RAW_HEAD_CHARS", 1200))
+tail_chars = max(200, int_env("TOOL_RAW_TAIL_CHARS", 800))
+
+with open(path, "r", encoding="utf-8") as f:
+    messages = json.load(f)
+
+batch_for_tool_id = {}
+batch_idx = 0
+for msg in messages:
+    if msg.get("role") == "assistant" and isinstance(msg.get("tool_calls"), list):
+        batch_idx += 1
+        for call in msg.get("tool_calls") or []:
+            tool_id = call.get("id")
+            if tool_id:
+                batch_for_tool_id[tool_id] = batch_idx
+
+keep_from = max(1, batch_idx - keep_batches + 1)
+changed = False
+
+for msg in messages:
+    if msg.get("role") != "tool":
+        continue
+    tool_id = msg.get("tool_call_id") or ""
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", tool_id):
+        continue
+    msg_batch = batch_for_tool_id.get(tool_id, 0)
+    if msg_batch >= keep_from:
+        continue
+    content = msg.get("content")
+    if not isinstance(content, str):
+        continue
+    original_len = len(content)
+    if original_len <= threshold:
+        continue
+    if head_chars + tail_chars >= original_len:
+        continue
+    head = content[:head_chars]
+    tail = content[-tail_chars:]
+    ref = f".tool_results/{tool_id}.txt" if tool_id else ".tool_results/<unknown>.txt"
+    msg["content"] = (
+        f"[tool result compacted: tool_call_id={tool_id} "
+        f"original_chars={original_len} retained_head_chars={head_chars} "
+        f"retained_tail_chars={tail_chars} full_result_ref={ref}]\n\n"
+        "--- retained head ---\n"
+        f"{head}\n\n"
+        "--- retained tail ---\n"
+        f"{tail}"
+    )
+    changed = True
+
+if changed:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(messages, f, ensure_ascii=False, separators=(",", ":"))
+        f.write("\n")
+    os.replace(tmp, path)
+PY
 }
 
 write_result() {
@@ -267,6 +397,12 @@ write_result() {
         --argjson cache_creation_tokens "${TOTAL_CACHE_CREATION_TOKENS:-0}" \
         --argjson cache_read_tokens "${TOTAL_CACHE_READ_TOKENS:-0}" \
         --argjson iterations "${TOTAL_ITERATIONS:-0}" \
+        --argjson max_request_bytes "${MAX_REQUEST_BYTES:-0}" \
+        --argjson max_prompt_tokens_estimate "${MAX_PROMPT_TOKENS_ESTIMATE:-0}" \
+        --argjson prompt_tokens_estimated_total "${TOTAL_PROMPT_TOKENS_ESTIMATED:-0}" \
+        --argjson max_prompt_tokens_actual "${MAX_PROMPT_TOKENS_ACTUAL:-0}" \
+        --argjson context_size "${LLM_CONTEXT_SIZE:-0}" \
+        --argjson max_tokens "${LLM_MAX_TOKENS:-0}" \
         '{
             status: $status,
             message: $message,
@@ -279,7 +415,13 @@ write_result() {
                 cache_creation_tokens: $cache_creation_tokens,
                 cache_read_tokens: $cache_read_tokens,
                 total_tokens: ($prompt_tokens + $completion_tokens),
-                iterations: $iterations
+                iterations: $iterations,
+                max_request_bytes: $max_request_bytes,
+                max_prompt_tokens_estimate: $max_prompt_tokens_estimate,
+                prompt_tokens_estimated_total: $prompt_tokens_estimated_total,
+                max_prompt_tokens_actual: $max_prompt_tokens_actual,
+                context_size: $context_size,
+                max_tokens: $max_tokens
             },
             diagnostics: ({exitCode: $exit_code, durationSeconds: $duration} + if $error_arr[0] != null then {error: $error_arr[0]} else {} end)
         }')
@@ -349,6 +491,11 @@ write_result() {
         base_result=$(printf '%s' "$base_result" | jq \
             --arg outcome "budget_tripwire" \
             --arg detail "$BUDGET_TRIPWIRE_DETAIL" \
+            '. + {outcome: $outcome, outcomeDetail: $detail}')
+    elif [ -n "${PROMPT_TOKEN_BUDGET_DETAIL:-}" ]; then
+        base_result=$(printf '%s' "$base_result" | jq \
+            --arg outcome "prompt_token_budget" \
+            --arg detail "$PROMPT_TOKEN_BUDGET_DETAIL" \
             '. + {outcome: $outcome, outcomeDetail: $detail}')
     fi
 
@@ -423,6 +570,28 @@ llm_call() {
     fi
     rm -f "$curl_err"
     printf '%s' "$result"
+}
+
+build_llm_request_file() {
+    local out_file="$1" msgs_file="$2" tools_file="$3" schema_name="$4" response_format="$5" response_schema_json="${6:-null}"
+    jq -n --arg model "$LLM_MODEL" \
+        --slurpfile msgs "$msgs_file" \
+        --slurpfile tools "$tools_file" \
+        --argjson ctx_size "${LLM_CONTEXT_SIZE:-0}" \
+        --argjson max_tokens "${LLM_MAX_TOKENS:-0}" \
+        --arg response_format "$response_format" \
+        --arg schema_name "$schema_name" \
+        --argjson response_schema "$response_schema_json" \
+        '{"model":$model,"messages":$msgs[0],"tools":$tools[0]}
+         | if $max_tokens > 0 then . + {"max_tokens":$max_tokens} else . end
+         | if $ctx_size > 0 then . + {"options":{"num_ctx":$ctx_size}} else . end
+         | if $response_format == "json_schema" and ($response_schema != null) then
+               . + {"response_format":{"type":"json_schema","json_schema":{"name":$schema_name,"schema":$response_schema,"strict":true}}}
+           elif $response_format == "json_schema" then
+               . + {"response_format":{"type":"json_object"}}
+           elif $response_format != "" then
+               . + {"response_format":{"type":$response_format}}
+           else . end' > "$out_file"
 }
 
 # Build a tool definition JSON array for the LLM.
@@ -750,6 +919,28 @@ LC_EOF
         extras_gated=$(printf '%s' "$extras_gated" | jq --argjson tools "$lifecycle_tools" '. + $tools')
     fi
 
+    if tool_result_hygiene_enabled; then
+        local tool_result_read_tool
+        tool_result_read_tool=$(cat <<'TR_EOF'
+{
+    "type": "function",
+    "function": {
+      "name": "tool_result_read",
+      "description": "Read the full saved body for a prior compacted tool result by tool_call_id. Use only when the retained head/tail preview is insufficient.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tool_call_id": {"type": "string", "description": "The tool_call_id shown in the compacted tool result placeholder."}
+        },
+        "required": ["tool_call_id"]
+      }
+    }
+  }
+TR_EOF
+)
+        extras_ungated=$(printf '%s' "$extras_ungated" | jq --argjson tool "$tool_result_read_tool" '. + [$tool]')
+    fi
+
     # skill_fetch — progressive-disclosure knowledge skills (LLD
     # 2026-07-12-skill-progressive-disclosure-design). The system
     # prompt carries a compact LEARNED SKILLS index; this tool pulls a
@@ -778,12 +969,205 @@ SF_EOF
         extras_ungated=$(printf '%s' "$extras_ungated" | jq --argjson tool "$skill_fetch_tool" '. + [$tool]')
     fi
 
+    # query_api / list_apis — authenticated third-party API access via the
+    # shipped gateway (LLD 2026-07-21-query-api-task-agents-design §3). Exposed
+    # only when the daemon API is reachable (VORNIK_API_URL); gated further by
+    # allowedTools (they are normal builtins, so the extras_gated allowlist
+    # filter below applies). The daemon injects the credential, enforces the
+    # per-project provider allowlist, agent read-only policy, per-task budget,
+    # redaction and the response byte cap — all server-side, so the agent
+    # cannot opt out.
+    if [ -n "${VORNIK_API_URL:-}" ]; then
+        local api_query_tools
+        api_query_tools=$(cat <<'API_EOF'
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "query_api",
+      "description": "Call an authenticated third-party API through the vornik gateway. The daemon injects the provider credential server-side — NEVER put API keys, tokens, or secrets in the arguments. Use list_apis first to discover available providers. Responses are redacted and size-capped by the daemon.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "provider": {"type": "string", "description": "Provider id as shown by list_apis (e.g. 'maps')"},
+          "method": {"type": "string", "description": "HTTP method (default GET). Writes are refused for agents unless the role is explicitly granted write access."},
+          "path": {"type": "string", "description": "Request path on the provider (e.g. '/maps/api/place/textsearch/json')"},
+          "query": {"type": "object", "description": "Optional query-string parameters as a JSON object"},
+          "body": {"type": "object", "description": "Optional request body as a JSON object (for write methods)"}
+        },
+        "required": ["provider", "path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "list_apis",
+      "description": "List the third-party API providers reachable from this project via the vornik gateway, with the paths/methods each allows. Call before query_api to discover the correct provider id and path.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string", "description": "Optional filter to narrow the provider list"}
+        }
+      }
+    }
+  }
+]
+API_EOF
+)
+        extras_gated=$(printf '%s' "$extras_gated" | jq --argjson tools "$api_query_tools" '. + $tools')
+    fi
+
     printf '%s' "$base_tools" | jq \
         --argjson ungated "$extras_ungated" \
         --argjson gated "$extras_gated" \
         --argjson allowed "$(allowed_builtin_tools_json)" \
         --argjson builtin "$BUILTIN_TOOL_NAMES_JSON" \
         '([.[] | select(.function.name as $name | (($builtin | index($name) | not) or ($allowed | index($name) != null)))]) + $ungated + ($gated | map(select(.function.name as $name | $allowed | index($name) != null)))'
+}
+
+tool_search_definition() {
+    cat <<'TOOLS_EOF'
+{
+  "type": "function",
+  "function": {
+    "name": "tool_search",
+    "description": "Search the deferred MCP tool catalogue and expose matching tools for the next turn. Use this when you need an MCP/integration tool that is not currently visible.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {"type": "string", "description": "Natural language description or exact MCP tool name to search for."},
+        "limit": {"type": "integer", "description": "Maximum matches to expose. Default 8."}
+      },
+      "required": ["query"]
+    }
+  }
+}
+TOOLS_EOF
+}
+
+defer_mcp_tools_enabled() {
+    local mcp_count="$1"
+    is_truthy "$AGENT_DEFER_MCP_TOOLS" && [ "$mcp_count" -gt "${AGENT_DEFER_MCP_THRESHOLD:-20}" ] 2>/dev/null
+}
+
+trim_expanded_mcp_tools() {
+    local expanded_names_file="$1"
+    local cap=$(( ${AGENT_TOOL_SEARCH_LIMIT:-8} * 2 ))
+    [ "$cap" -lt 1 ] 2>/dev/null && cap=8
+    local trimmed
+    trimmed=$(mktemp)
+    awk 'NF { line[++n]=$0; seen[$0]=n } END { for (i=1; i<=n; i++) if (seen[line[i]] == i) print line[i] }' "$expanded_names_file" \
+        | tail -n "$cap" > "$trimmed"
+    mv "$trimmed" "$expanded_names_file"
+}
+
+rebuild_tools_file() {
+    local builtin_tools_file="$1" mcp_tools_file="$2" expanded_names_file="$3" pinned_names_file="$4" tools_file="$5"
+    local mcp_count
+    mcp_count=$(jq 'length' "$mcp_tools_file" 2>/dev/null || echo 0)
+
+    if defer_mcp_tools_enabled "$mcp_count"; then
+        local search_tool_file visible_mcp_file
+        search_tool_file=$(mktemp)
+        visible_mcp_file=$(mktemp)
+        tool_search_definition > "$search_tool_file"
+        touch "$expanded_names_file"
+        touch "$pinned_names_file"
+        jq --rawfile expanded "$expanded_names_file" --rawfile pinned "$pinned_names_file" '
+            (($expanded + "\n" + $pinned) | split("\n") | map(select(length > 0)) | unique) as $allowed
+            | [.[] | select(.function.name as $name | $allowed | index($name) != null)]
+        ' "$mcp_tools_file" > "$visible_mcp_file"
+        jq -s '.[0] + [.[1]] + .[2]' "$builtin_tools_file" "$search_tool_file" "$visible_mcp_file" > "$tools_file"
+        rm -f "$search_tool_file" "$visible_mcp_file"
+    else
+        jq -s '.[0] + .[1]' "$builtin_tools_file" "$mcp_tools_file" > "$tools_file"
+    fi
+}
+
+handle_tool_search() {
+    local params="$1"
+    local query limit mcp_tools_file expanded_names_file
+    query=$(printf '%s' "$params" | jq -r '.query // ""')
+    limit=$(printf '%s' "$params" | jq -r ".limit // ${AGENT_TOOL_SEARCH_LIMIT:-8}")
+    mcp_tools_file="${MCP_TOOLS_FILE:-$WORKSPACE/.mcp_tools.json}"
+    expanded_names_file="${EXPANDED_MCP_TOOLS_FILE:-$WORKSPACE/.expanded_mcp_tools.txt}"
+
+    if [ -z "$query" ] || [ "$query" = "null" ]; then
+        echo '{"matches":[],"message":"query is required"}'
+        return
+    fi
+    if [ ! -s "$mcp_tools_file" ]; then
+        echo '{"matches":[],"message":"no MCP tools were discovered for this agent"}'
+        return
+    fi
+    case "$limit" in
+        ''|*[!0-9]*) limit="${AGENT_TOOL_SEARCH_LIMIT:-8}" ;;
+    esac
+    [ "$limit" -lt 1 ] 2>/dev/null && limit=1
+    [ "$limit" -gt 20 ] 2>/dev/null && limit=20
+
+    local matches_file
+    matches_file=$(mktemp)
+    jq --arg q "$query" --argjson limit "$limit" '
+        def terms:
+            ascii_downcase
+            | gsub("[^a-z0-9_/-]+"; " ")
+            | split(" ")
+            | map(select(length > 1));
+        ($q | terms) as $terms
+        | map(. as $tool
+            | (($tool.function.name // "") + " " + ($tool.function.description // "") | ascii_downcase) as $hay
+            | {
+                name: ($tool.function.name // ""),
+                description: ($tool.function.description // ""),
+                score: ([$terms[] as $term | select($hay | contains($term))] | length)
+              })
+        | map(select(.name != "" and .score > 0))
+        | sort_by([(-.score), .name])
+        | .[:$limit]
+    ' "$mcp_tools_file" > "$matches_file"
+
+    mkdir -p "$(dirname "$expanded_names_file")"
+    jq -r '.[].name' "$matches_file" >> "$expanded_names_file"
+    trim_expanded_mcp_tools "$expanded_names_file"
+
+    jq -n --slurpfile matches "$matches_file" \
+        '{matches: $matches[0], message: (if ($matches[0] | length) > 0 then "matching MCP tools will be available on the next turn" else "no matching MCP tools found" end)}'
+    rm -f "$matches_file"
+}
+
+handle_tool_result_read() {
+    local params="$1"
+    local tool_call_id
+    tool_call_id=$(printf '%s' "$params" | jq -r '.tool_call_id // ""')
+    if ! tool_result_hygiene_enabled; then
+        echo "ERROR: tool_result_read is unavailable because tool-result hygiene is disabled"
+        return
+    fi
+    if [ -z "$tool_call_id" ] || [ "$tool_call_id" = "null" ]; then
+        echo "ERROR: tool_call_id is required"
+        return
+    fi
+    case "$tool_call_id" in
+        *[!A-Za-z0-9_.:-]*)
+            echo "ERROR: invalid tool_call_id"
+            return
+            ;;
+    esac
+    local path="$WORKSPACE/.tool_results/${tool_call_id}.txt"
+    if [ ! -f "$path" ]; then
+        echo "ERROR: no saved tool result for tool_call_id=$tool_call_id"
+        return
+    fi
+    local size
+    size=$(wc -c < "$path")
+    if [ "$size" -gt "$TOOL_RESULT_MAX_BYTES" ]; then
+        head -c "$TOOL_RESULT_MAX_BYTES" "$path"
+        printf '\n\n[... truncated at %d bytes by tool_result_read, total %d bytes]' "$TOOL_RESULT_MAX_BYTES" "$size"
+    else
+        cat "$path"
+    fi
 }
 
 # Phase 32 — handle get_conversation_window tool call.
@@ -961,6 +1345,141 @@ handle_backlog_deposit() {
     printf '%s' "$response"
 }
 
+# Resolve the X-Execution-ID for project-scoped agent API calls. The daemon
+# validates it against the task-scoped key's binding. Mirrors llm_call's
+# resolution (INPUT_FILE .workflow.executionId, falling back to the
+# executor-stamped VORNIK_EXECUTION_ID that skill_fetch/backlog_deposit use).
+vornik_execution_id() {
+    local eid
+    eid=$(jq -r '.workflow.executionId // ""' "$INPUT_FILE" 2>/dev/null || true)
+    [ -z "$eid" ] && eid="${VORNIK_EXECUTION_ID:-}"
+    # Defensive: strip CR/LF/tabs/spaces so a malformed value can't smuggle
+    # extra HTTP headers into the X-Execution-ID curl header (CRLF injection).
+    # Execution IDs are opaque tokens with no internal whitespace.
+    eid=$(printf '%s' "$eid" | tr -d ' \t\r\n')
+    printf '%s' "$eid"
+}
+
+# Handle query_api tool call (authenticated third-party API access, LLD
+# 2026-07-21-query-api-task-agents-design §3). POSTs the LLM-supplied
+# provider/method/path/query/body to the daemon's project-scoped
+# /api/query endpoint; the daemon injects the credential, enforces the
+# provider allowlist + agent read-only policy + per-task budget, and
+# redacts/caps the response. Auth + attribution mirror handle_memory_search
+# (X-API-Key = the minted per-task key) plus the X-Execution-ID header the
+# Phase-2 endpoint requires (see resolveAgentAPIContext). The agent adds NO
+# client-side cap — the server already applied it.
+handle_query_api() {
+    local params="$1"
+    local provider method path query body project_id execution_id
+    local req url out http_code response refusal
+    provider=$(printf '%s' "$params" | jq -r '.provider // ""')
+    method=$(printf '%s' "$params" | jq -r '.method // ""')
+    path=$(printf '%s' "$params" | jq -r '.path // ""')
+    query=$(printf '%s' "$params" | jq -c '.query // {}')
+    body=$(printf '%s' "$params" | jq -c '.body // {}')
+    project_id=$(jq -r '.projectId // .project_id // ""' "$INPUT_FILE")
+    execution_id=$(vornik_execution_id)
+
+    if [ -z "${VORNIK_API_URL:-}" ] || [ -z "$project_id" ] || [ -z "$provider" ] || [ -z "$path" ]; then
+        printf '{"error":"query_api not available (VORNIK_API_URL=%s project_id=%s provider=%s path=%s)"}' \
+            "${VORNIK_API_URL:-<unset>}" "${project_id:-<unset>}" "${provider:-<unset>}" "${path:-<unset>}"
+        return
+    fi
+
+    # Credentials are injected daemon-side — the agent never sends them.
+    req=$(jq -n \
+        --arg provider "$provider" \
+        --arg method "$method" \
+        --arg path "$path" \
+        --argjson query "$query" \
+        --argjson body "$body" \
+        '{provider:$provider, method:$method, path:$path, query:$query, body:$body}')
+
+    vornik_resolve_url "${VORNIK_API_URL%/}/api/v1/projects/${project_id}/api/query"; url="$VORNIK_URL"
+
+    out=$(printf '%s' "$req" | curl -sS --max-time 30 $VORNIK_CURL_OPT -X POST \
+        -w '\n%{http_code}' \
+        -H "Content-Type: application/json" \
+        -H "X-API-Key: ${VORNIK_API_KEY:-}" \
+        -H "X-Execution-ID: ${execution_id}" \
+        --data @- \
+        "$url" 2>/dev/null) || { printf '{"error":"request failed"}'; return; }
+
+    http_code="${out##*$'\n'}"
+    response="${out%$'\n'*}"
+
+    if [ "$http_code" != "200" ]; then
+        printf '{"error":"query_api request failed (HTTP %s)"}' "${http_code:-000}"
+        return
+    fi
+
+    # A policy refusal arrives as {"refusal":"..."} with HTTP 200 (design §3);
+    # surface the text so the LLM can self-correct.
+    refusal=$(printf '%s' "$response" | jq -r '.refusal // ""' 2>/dev/null || true)
+    if [ -n "$refusal" ]; then
+        printf '%s' "$refusal"
+        return
+    fi
+    # Success: hand the LLM the API response body (already redacted + capped
+    # server-side), not the JSON envelope. The server's byte cap embeds its own
+    # truncation marker INSIDE .body (capToolResultBytes), so we do NOT append a
+    # second one here — a duplicate marker just confuses the model.
+    local api_body
+    api_body=$(printf '%s' "$response" | jq -r '.body // ""' 2>/dev/null)
+    if [ -z "$api_body" ]; then
+        printf '%s' "$response" # not the expected envelope — return verbatim rather than swallow it
+        return
+    fi
+    printf '%s' "$api_body"
+}
+
+# Handle list_apis tool call (provider discovery, LLD §3). GETs the
+# daemon's project-scoped /api/providers endpoint with an optional ?query=
+# filter. Same auth (X-API-Key) + X-Execution-ID header as query_api;
+# discovery is in-budget and audited server-side.
+handle_list_apis() {
+    local params="$1"
+    local query project_id execution_id encoded_q url out http_code response refusal
+    query=$(printf '%s' "$params" | jq -r '.query // ""')
+    project_id=$(jq -r '.projectId // .project_id // ""' "$INPUT_FILE")
+    execution_id=$(vornik_execution_id)
+
+    if [ -z "${VORNIK_API_URL:-}" ] || [ -z "$project_id" ]; then
+        printf '{"error":"list_apis not available (VORNIK_API_URL=%s project_id=%s)"}' \
+            "${VORNIK_API_URL:-<unset>}" "${project_id:-<unset>}"
+        return
+    fi
+
+    url="${VORNIK_API_URL%/}/api/v1/projects/${project_id}/api/providers"
+    if [ -n "$query" ]; then
+        encoded_q=$(printf '%s' "$query" | jq -Rr @uri)
+        url="${url}?query=${encoded_q}"
+    fi
+    vornik_resolve_url "$url"; url="$VORNIK_URL"
+
+    out=$(curl -sS --max-time 30 $VORNIK_CURL_OPT \
+        -w '\n%{http_code}' \
+        -H "X-API-Key: ${VORNIK_API_KEY:-}" \
+        -H "X-Execution-ID: ${execution_id}" \
+        "$url" 2>/dev/null) || { printf '{"error":"request failed"}'; return; }
+
+    http_code="${out##*$'\n'}"
+    response="${out%$'\n'*}"
+
+    if [ "$http_code" != "200" ]; then
+        printf '{"error":"list_apis request failed (HTTP %s)"}' "${http_code:-000}"
+        return
+    fi
+
+    refusal=$(printf '%s' "$response" | jq -r '.refusal // ""' 2>/dev/null || true)
+    if [ -n "$refusal" ]; then
+        printf '%s' "$refusal"
+        return
+    fi
+    printf '%s' "$response"
+}
+
 # Resolve a path to an absolute path under the workspace.
 # Agents must use workspace-relative paths (e.g. "project/file.txt").
 # Absolute paths within $WORKSPACE are accepted as-is.
@@ -996,11 +1515,17 @@ PY
 # Execute a single tool call. Prints the result string.
 exec_tool() {
     local name="$1" arguments="$2"
-    if is_builtin_tool "$name" && ! builtin_tool_allowed "$name"; then
+    if [ "$name" != "tool_search" ] && [ "$name" != "tool_result_read" ] && is_builtin_tool "$name" && ! builtin_tool_allowed "$name"; then
         echo "ERROR: tool '$name' is not allowed for this role"
         return
     fi
     case "$name" in
+        tool_search)
+            handle_tool_search "$arguments"
+            ;;
+        tool_result_read)
+            handle_tool_result_read "$arguments"
+            ;;
         file_read)
             local path
             path=$(printf '%s' "$arguments" | jq -r '.path // empty')
@@ -1011,6 +1536,12 @@ exec_tool() {
                     echo "$path"
                     return
                 fi
+                case "$path" in
+                    "$WORKSPACE"/.tool_results/*)
+                        echo "ERROR: .tool_results is only readable through tool_result_read"
+                        return
+                        ;;
+                esac
                 if [ -f "$path" ]; then
                     # Cap file output to 30KB to avoid blowing up the LLM
                     # context window. Large files cause degenerate tool loops.
@@ -1126,6 +1657,12 @@ PY
             ;;
         backlog_deposit)
             handle_backlog_deposit "$arguments"
+            ;;
+        query_api)
+            handle_query_api "$arguments"
+            ;;
+        list_apis)
+            handle_list_apis "$arguments"
             ;;
         get_conversation_window)
             handle_get_conversation_window "$arguments"
@@ -1714,10 +2251,17 @@ main() {
     # to the executor via result.json → prom metric. Reset here so warm
     # containers don't carry usage from a prior task.
     TOTAL_PROMPT_TOKENS=0
+    TOTAL_PROMPT_TOKENS_ESTIMATED=0
     TOTAL_COMPLETION_TOKENS=0
     TOTAL_CACHE_CREATION_TOKENS=0
     TOTAL_CACHE_READ_TOKENS=0
     TOTAL_ITERATIONS=0
+    MAX_REQUEST_BYTES=0
+    MAX_PROMPT_TOKENS_ESTIMATE=0
+    MAX_PROMPT_TOKENS_ACTUAL=0
+    PROMPT_TOKEN_BUDGET_FINAL_CALL=0
+    PROMPT_TOKEN_BUDGET_DETAIL=""
+    BUDGET_TRIPWIRE_DETAIL=""
     # Cumulative cost in USD across all iterations of this step.
     # Streamed to the daemon after every iteration so cancelled
     # tasks still carry the correct cost summary even when the
@@ -1879,6 +2423,10 @@ ${previous_result}
     local req_file="$WORKSPACE/.request.json"
     local tools_file="$WORKSPACE/.tools.json"
     local mcp_tools_file="$WORKSPACE/.mcp_tools.json"
+    local expanded_mcp_tools_file="$WORKSPACE/.expanded_mcp_tools.txt"
+    local pinned_mcp_tools_file="$WORKSPACE/.pinned_mcp_tools.txt"
+    MCP_TOOLS_FILE="$mcp_tools_file"
+    EXPANDED_MCP_TOOLS_FILE="$expanded_mcp_tools_file"
 
     # Build the user content via vornik-agent-helper. Without images
     # the helper emits a JSON string (text-only fast path); with one
@@ -1897,6 +2445,12 @@ ${previous_result}
     # Clear tool audit log for this invocation.
     rm -rf "$WORKSPACE/.tool_audit"
     mkdir -p "$WORKSPACE/.tool_audit"
+    rm -rf "$WORKSPACE/.tool_results"
+    mkdir -p "$WORKSPACE/.tool_results"
+    rm -f "$expanded_mcp_tools_file"
+    rm -f "$pinned_mcp_tools_file"
+    touch "$expanded_mcp_tools_file"
+    touch "$pinned_mcp_tools_file"
 
     # Discover MCP tools from the daemon proxy when available, otherwise
     # from project config written by the executor to /app/input/mcp.json.
@@ -1912,10 +2466,22 @@ ${previous_result}
         rm -f /tmp/mcp_discover_err
     fi
 
-    # Build tools file: merge built-in tools with MCP tools.
+    # Build base built-in tool file once. The visible merged tool list is
+    # rebuilt before every LLM call because tool_search can expand MCP tools
+    # mid-loop without another discovery pass.
     local builtin_tools_tmp="$WORKSPACE/.builtin_tools.json"
     tool_definitions > "$builtin_tools_tmp"
-    jq -s '.[0] + .[1]' "$builtin_tools_tmp" "$mcp_tools_file" > "$tools_file"
+    if defer_mcp_tools_enabled "$(jq 'length' "$mcp_tools_file" 2>/dev/null || echo 0)"; then
+        printf '%s\n' "$system_prompt" \
+            | grep -oE 'mcp__[A-Za-z0-9_-]+__[A-Za-z0-9_-]+' \
+            | sort -u > "$pinned_mcp_tools_file" 2>/dev/null || true
+        jq '.[0].content += "\n\nMCP tools may be lazy-loaded to reduce LLM context. If you need an MCP tool that is referenced by name but not visible in your function list, call tool_search with a short query first; matching tools will be available on the next turn."' \
+            "$msgs_file" > "$msgs_file.tmp" && mv "$msgs_file.tmp" "$msgs_file"
+    fi
+    rebuild_tools_file "$builtin_tools_tmp" "$mcp_tools_file" "$expanded_mcp_tools_file" "$pinned_mcp_tools_file" "$tools_file"
+    if defer_mcp_tools_enabled "$(jq 'length' "$mcp_tools_file" 2>/dev/null || echo 0)"; then
+        log "MCP: deferred exposure enabled (threshold=${AGENT_DEFER_MCP_THRESHOLD:-20}, search_limit=${AGENT_TOOL_SEARCH_LIMIT:-8})"
+    fi
 
     # Degenerate loop detection: if the same tool call (name+args) repeats
     # consecutively, the LLM is stuck. Break out after 3 identical repeats
@@ -2093,8 +2659,16 @@ ${previous_result}
                 clamp_tool_contents "$msgs_file" "$per_msg_cap"
             fi
         fi
+        local hygiene_before_bytes hygiene_after_bytes
+        hygiene_before_bytes=$(wc -c < "$msgs_file" 2>/dev/null || echo 0)
+        compact_old_tool_results "$msgs_file"
+        hygiene_after_bytes=$(wc -c < "$msgs_file" 2>/dev/null || echo 0)
+        if [ "$hygiene_after_bytes" -lt "$hygiene_before_bytes" ]; then
+            debug "tool result hygiene: compacted message history ${hygiene_before_bytes}->${hygiene_after_bytes} bytes"
+        fi
 
         debug "LLM call iteration $iteration/$MAX_TOOL_ITERATIONS"
+        rebuild_tools_file "$builtin_tools_tmp" "$mcp_tools_file" "$expanded_mcp_tools_file" "$pinned_mcp_tools_file" "$tools_file"
 
         # Low-budget warning: at 80% of the budget, inject a user message so
         # the LLM sees the constraint as a recent, salient instruction.
@@ -2130,42 +2704,69 @@ ${previous_result}
         # observability — appears in upstream gateway tooling as the
         # schema identifier.
         local schema_name="${role}_result"
-        jq -n --arg model "$LLM_MODEL" \
-            --slurpfile msgs "$msgs_file" \
-            --slurpfile tools "$tools_file" \
-            --argjson ctx_size "${LLM_CONTEXT_SIZE:-0}" \
-            --argjson max_tokens "${LLM_MAX_TOKENS:-0}" \
-            --arg response_format "$response_format" \
-            --arg schema_name "$schema_name" \
-            --argjson response_schema "${response_schema:-null}" \
-            '{"model":$model,"messages":$msgs[0],"tools":$tools[0]}
-             | if $max_tokens > 0 then . + {"max_tokens":$max_tokens} else . end
-             | if $ctx_size > 0 then . + {"options":{"num_ctx":$ctx_size}} else . end
-             | if $response_format == "json_schema" and ($response_schema != null) then
-                   . + {"response_format":{"type":"json_schema","json_schema":{"name":$schema_name,"schema":$response_schema,"strict":true}}}
-               elif $response_format == "json_schema" then
-                   # Degraded: operator requested json_schema but no
-                   # schema body landed in task.json (race during
-                   # role migration, e.g. effectiveResponseFormat
-                   # decided json_schema but applyRoleSchemaOpts saw
-                   # an empty render). Fall back to json_object so
-                   # the model still gets a structured-output nudge
-                   # rather than a malformed empty json_schema
-                   # request that the gateway would reject outright.
-                   . + {"response_format":{"type":"json_object"}}
-               elif $response_format != "" then
-                   . + {"response_format":{"type":$response_format}}
-               else . end' > "$req_file"
+        build_llm_request_file "$req_file" "$msgs_file" "$tools_file" "$schema_name" "$response_format" "${response_schema:-null}"
         local request
         request=$(cat "$req_file")
 
         local req_size=${#request}
-        debug "sending request ($req_size bytes)"
+        local prompt_tokens_estimate visible_tools_count mcp_tools_count
+        prompt_tokens_estimate=$(( (req_size + 2) / 3 ))
+        visible_tools_count=$(jq 'length' "$tools_file" 2>/dev/null || echo 0)
+        mcp_tools_count=$(jq 'length' "$mcp_tools_file" 2>/dev/null || echo 0)
+        if [ "$req_size" -gt "${MAX_REQUEST_BYTES:-0}" ] 2>/dev/null; then
+            MAX_REQUEST_BYTES="$req_size"
+        fi
+        if [ "$prompt_tokens_estimate" -gt "${MAX_PROMPT_TOKENS_ESTIMATE:-0}" ] 2>/dev/null; then
+            MAX_PROMPT_TOKENS_ESTIMATE="$prompt_tokens_estimate"
+        fi
+        log "preflight task_id=${task_id:-} execution_id=${execution_id:-} step_id=${STEP_ID:-} role=${role:-} iteration=$iteration request_bytes=$req_size prompt_tokens_estimate=$prompt_tokens_estimate context_size=${LLM_CONTEXT_SIZE:-0} max_tokens=${LLM_MAX_TOKENS:-0} visible_tools=$visible_tools_count mcp_catalog_tools=$mcp_tools_count"
+
+        local step_prompt_budget prompt_tokens_budget_base projected_prompt_tokens
+        step_prompt_budget=$(step_prompt_token_budget)
+        prompt_tokens_budget_base="${TOTAL_PROMPT_TOKENS:-0}"
+        if [ "${TOTAL_PROMPT_TOKENS_ESTIMATED:-0}" -gt "$prompt_tokens_budget_base" ] 2>/dev/null; then
+            prompt_tokens_budget_base="$TOTAL_PROMPT_TOKENS_ESTIMATED"
+        fi
+        projected_prompt_tokens=$(( prompt_tokens_budget_base + prompt_tokens_estimate ))
+        if [ "$step_prompt_budget" -gt 0 ] && [ "$projected_prompt_tokens" -gt "$step_prompt_budget" ]; then
+            if [ "${PROMPT_TOKEN_BUDGET_FINAL_CALL:-0}" = "1" ]; then
+                PROMPT_TOKEN_BUDGET_DETAIL="step prompt-token budget ${step_prompt_budget} would be exceeded again before a final answer; cumulative_prompt_tokens=${TOTAL_PROMPT_TOKENS}; cumulative_prompt_tokens_estimate=${TOTAL_PROMPT_TOKENS_ESTIMATED}; next_prompt_tokens_estimate=${prompt_tokens_estimate}"
+                local last_content
+                last_content=$(jq -r 'map(select(.role=="assistant" and .content != null)) | last.content // "Step stopped before another LLM call because the per-step prompt-token budget was exhausted."' "$msgs_file")
+                write_result "COMPLETED" "$last_content" "" "$(get_duration)"
+                log "prompt-token budget stop: $PROMPT_TOKEN_BUDGET_DETAIL"
+                return 0
+            fi
+
+            PROMPT_TOKEN_BUDGET_FINAL_CALL=1
+            log "prompt-token budget finalization: cumulative=$TOTAL_PROMPT_TOKENS cumulative_estimate=$TOTAL_PROMPT_TOKENS_ESTIMATED next_estimate=$prompt_tokens_estimate budget=$step_prompt_budget - making one tool-free final call"
+            jq --argjson budget "$step_prompt_budget" \
+               --argjson used "$prompt_tokens_budget_base" \
+               --argjson next "$prompt_tokens_estimate" \
+               '. + [{"role":"user","content":("Prompt-token budget: this step has used about " + ($used|tostring) + " prompt tokens, and the next request is estimated at " + ($next|tostring) + ", exceeding the per-step budget of " + ($budget|tostring) + ". Do not call tools. Summarize what you have, state any gaps, and produce the best final answer now.")}]' \
+               "$msgs_file" > "$msgs_file.tmp" && mv "$msgs_file.tmp" "$msgs_file"
+            printf '[]\n' > "$WORKSPACE/.empty_tools.json"
+            build_llm_request_file "$req_file" "$msgs_file" "$WORKSPACE/.empty_tools.json" "$schema_name" "$response_format" "${response_schema:-null}"
+            request=$(cat "$req_file")
+            req_size=${#request}
+            prompt_tokens_estimate=$(( (req_size + 2) / 3 ))
+            visible_tools_count=0
+            projected_prompt_tokens=$(( prompt_tokens_budget_base + prompt_tokens_estimate ))
+            if [ "$req_size" -gt "${MAX_REQUEST_BYTES:-0}" ] 2>/dev/null; then
+                MAX_REQUEST_BYTES="$req_size"
+            fi
+            if [ "$prompt_tokens_estimate" -gt "${MAX_PROMPT_TOKENS_ESTIMATE:-0}" ] 2>/dev/null; then
+                MAX_PROMPT_TOKENS_ESTIMATE="$prompt_tokens_estimate"
+            fi
+            PROMPT_TOKEN_BUDGET_DETAIL="step prompt-token budget ${step_prompt_budget} triggered a tool-free finalization call; cumulative_prompt_tokens_before_final=${TOTAL_PROMPT_TOKENS}; cumulative_prompt_tokens_estimate_before_final=${TOTAL_PROMPT_TOKENS_ESTIMATED}; final_prompt_tokens_estimate=${prompt_tokens_estimate}; projected_total=${projected_prompt_tokens}"
+            log "preflight finalization task_id=${task_id:-} execution_id=${execution_id:-} step_id=${STEP_ID:-} role=${role:-} iteration=$iteration request_bytes=$req_size prompt_tokens_estimate=$prompt_tokens_estimate context_size=${LLM_CONTEXT_SIZE:-0} max_tokens=${LLM_MAX_TOKENS:-0} visible_tools=$visible_tools_count mcp_catalog_tools=$mcp_tools_count"
+        fi
 
         local response
         response=$(llm_call "$request")
         local resp_size=${#response}
         debug "received response ($resp_size bytes)"
+        TOTAL_PROMPT_TOKENS_ESTIMATED=$((TOTAL_PROMPT_TOKENS_ESTIMATED + prompt_tokens_estimate))
 
         # Accumulate token usage for cost metrics. BAG echoes Bedrock's
         # usage block verbatim; missing fields default to 0. Do this before
@@ -2180,6 +2781,9 @@ ${previous_result}
             TOTAL_COMPLETION_TOKENS=$((TOTAL_COMPLETION_TOKENS + _c))
             TOTAL_CACHE_CREATION_TOKENS=$((TOTAL_CACHE_CREATION_TOKENS + _cc))
             TOTAL_CACHE_READ_TOKENS=$((TOTAL_CACHE_READ_TOKENS + _cr))
+            if [ "$_p" -gt "${MAX_PROMPT_TOKENS_ACTUAL:-0}" ] 2>/dev/null; then
+                MAX_PROMPT_TOKENS_ACTUAL="$_p"
+            fi
             # Per-iteration cost hint. Uses injected pricing so a runaway
             # tool loop is visible as a rising trail in the log stream
             # rather than only surfacing after the task completes.
@@ -2522,6 +3126,18 @@ ${previous_result}
                             ;;
                     esac
                 fi
+            fi
+
+            if tool_result_hygiene_enabled; then
+                case "$tc_id" in
+                    *[!A-Za-z0-9_.:-]*)
+                        debug "tool result hygiene: not saving result for unsafe tool_call_id=$tc_id"
+                        ;;
+                    *)
+                        mkdir -p "$WORKSPACE/.tool_results"
+                        printf '%s' "$tool_result" > "$WORKSPACE/.tool_results/${tc_id}.txt"
+                        ;;
+                esac
             fi
 
             local tc_duration_ms=$(( $(ms_now) - tc_start_ms ))

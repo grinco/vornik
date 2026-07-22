@@ -15,6 +15,7 @@ import (
 	"vornik.io/vornik/internal/apigateway"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
+	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/hallucination"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
@@ -313,6 +314,20 @@ type Agent struct {
 	// the tool cleanly regardless of composerEnabled.
 	composer        ComposerBridge
 	composerEnabled bool
+
+	// scraperWriteClient + webWriteRepo + webWrites + webApprovalHook back
+	// the web_submit tool (supervised web write actions LLD). All nil-safe:
+	// without the scraper client and the store the tool is a nil-wiring HARD
+	// gate ("not configured"). webWrites is the daemon tri-state toggle;
+	// webApprovalHook is the Task-10 resume-routing seam.
+	scraperWriteClient ScraperWriteClient
+	webWriteRepo       persistence.WebWriteRepo
+	webWrites          config.WebDaemonConfig
+	webApprovalHook    WebWriteApprovalHook
+	// webWriteTokenStore is the operator-chat-driven approval-token delivery
+	// channel: the inbox approve handler Puts the minted token, web_submit
+	// (mode=submit) Takes it when the assistant submits without a token arg.
+	webWriteTokenStore *WebWriteTokenStore
 }
 
 // SetEmailSender wires (or replaces) the email-sender after Agent
@@ -520,6 +535,11 @@ func NewAgent(
 		adminAuditRepo:        a.adminAuditRepo,
 		operatorProfiles:      a.operatorProfiles,
 		operatorIdentityLinks: a.operatorIdentityLinks,
+		scraperWriteClient:    a.scraperWriteClient,
+		webWriteRepo:          a.webWriteRepo,
+		webWrites:             a.webWrites,
+		webApprovalHook:       a.webApprovalHook,
+		webWriteTokenStore:    a.webWriteTokenStore,
 		logger:                a.logger,
 	}
 	return a

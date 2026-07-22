@@ -103,6 +103,11 @@ type Project struct {
 	// disables the channel for this project; same one-project-wins
 	// rule as GitHubApp in slice 1.
 	Email ProjectEmail `yaml:"email"`
+	// Web configures per-project supervised web write actions. Its
+	// WriteAllowlist is the deny-by-default operator gate on which hosts
+	// web_submit may write to (when the daemon web.writes toggle is "on").
+	// See https://docs.vornik.io
+	Web ProjectWeb `yaml:"web"`
 	// Slack configures the per-project Slack ConversationChannel
 	// (Events API webhook inbound, chat.postMessage outbound). Zero
 	// value disables the channel for this project. Mirrors
@@ -830,6 +835,18 @@ func (g ProjectGitHubApp) Enabled() bool {
 // slice 1 — operators who only want inbound notifications can
 // leave the SMTP block empty and Channel.Send returns
 // email.ErrOutboundNotConfigured.
+// ProjectWeb configures per-project supervised web write actions.
+type ProjectWeb struct {
+	// WriteAllowlist is the deny-by-default operator allowlist of hosts that
+	// web_submit may write to when the daemon web.writes toggle is "on". Empty
+	// (the default) means NO writes for this project. Entries are matched by the
+	// strict write matcher — exact host or label-anchored "*.domain" wildcard
+	// only (no apex/www equivalence, bare "*" rejected), punycode-normalized
+	// with mixed-script/homograph rejection. A "*.domain" entry makes every
+	// subdomain writable (incl. a compromised/dangling one) — the loader warns.
+	WriteAllowlist []string `yaml:"write_allowlist"`
+}
+
 type ProjectEmail struct {
 	// IMAPHost is the IMAP server hostname (e.g. imap.gmail.com).
 	// Required.

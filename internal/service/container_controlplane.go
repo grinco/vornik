@@ -16,6 +16,7 @@ import (
 
 	"vornik.io/vornik/internal/controlplane"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/persistence/postgres"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/safepath"
 )
@@ -585,6 +586,50 @@ func (c *Container) newActionizer() *controlplane.Actionizer {
 		},
 		Logger: c.Logger.With().Str("component", "control-plane").Str("engine", "actionize").Logger(),
 	}
+}
+
+// isTradingSwarm reports whether a swarm id is on the trading path, which the
+// cost/quality detector must never touch (design §F, detector-side exclusion).
+func isTradingSwarm(swarmID string) bool {
+	s := strings.ToLower(swarmID)
+	return strings.Contains(s, "trader") || strings.Contains(s, "broker") || strings.Contains(s, "trading")
+}
+
+// costTuningSwarmMap returns parallel (projectIDs, swarmIDs) from the registry
+// for the cost/quality percentile query, EXCLUDING trading swarms.
+func (c *Container) costTuningSwarmMap() (projectIDs, swarmIDs []string) {
+	if c == nil || c.Registry == nil {
+		return nil, nil
+	}
+	for _, p := range c.Registry.ListProjects() {
+		if p == nil || p.SwarmID == "" || isTradingSwarm(p.SwarmID) {
+			continue
+		}
+		projectIDs = append(projectIDs, p.ID)
+		swarmIDs = append(swarmIDs, p.SwarmID)
+	}
+	return projectIDs, swarmIDs
+}
+
+// startCostQualityWorker wires + starts the propose-only prompt-token-budget
+// detector (LLD 2026-07-21). No-op unless the proposal ledger, quality service,
+// and registry are wired. Gated by control_plane.cost_tuning_enabled (default
+// off); the worker is always constructed so the gate is the only switch.
+func (c *Container) startCostQualityWorker(ctx context.Context) {
+	if c == nil || c.repos == nil || c.repos.Proposals == nil || c.qualityService == nil || c.Registry == nil {
+		return
+	}
+	enabled := c.Config != nil && c.Config.ControlPlane.CostTuningEnabled
+	w := &controlplane.CostQualityWorker{
+		Quality:     c.qualityService,
+		Percentiles: postgres.NewQualityRepository(c.instrumentedDB()),
+		Actionize:   c.newActionizer(),
+		Proposals:   c.repos.Proposals,
+		SwarmMap:    c.costTuningSwarmMap,
+		Enabled:     enabled,
+		Logger:      c.Logger.With().Str("component", "control-plane").Str("worker", "cost-quality").Logger(),
+	}
+	go w.Run(collectorsCtxFrom(ctx, c))
 }
 
 // instinctActive reports whether the EE Instinct subsystem is present — the

@@ -34,6 +34,30 @@ func TestGateway_EnvOverridesAndSecretFile(t *testing.T) {
 	}
 }
 
+// TestGateway_AgentWritesEnvOverride — VORNIK_GATEWAY_AGENT_WRITES routes into
+// GatewayConfig.AgentWrites so the documented env override actually takes
+// effect, and an INVALID env value is a startup error via the same
+// normalize+validate path (never a silent off). Guards the review-caught gap
+// where the doc promised an env override that wasn't wired.
+func TestGateway_AgentWritesEnvOverride(t *testing.T) {
+	cfg := &Config{}
+	t.Setenv("VORNIK_GATEWAY_AGENT_WRITES", "user")
+	applyEnvOverrides(cfg)
+	if cfg.Gateway.AgentWrites != "user" {
+		t.Fatalf("AgentWrites = %q, want env value 'user'", cfg.Gateway.AgentWrites)
+	}
+	if mode, err := cfg.Gateway.AgentWritesMode(); err != nil || mode != "user" {
+		t.Fatalf("AgentWritesMode() = %q, %v; want user, nil", mode, err)
+	}
+
+	bad := &Config{}
+	t.Setenv("VORNIK_GATEWAY_AGENT_WRITES", "true")
+	applyEnvOverrides(bad)
+	if _, err := bad.Gateway.AgentWritesMode(); err == nil {
+		t.Fatal("an invalid env value must fail validation, not silently fall through to off")
+	}
+}
+
 func TestGateway_ValidateRequiresTokenWhenEnabled(t *testing.T) {
 	cfg := &Config{}
 	cfg.Gateway = GatewayConfig{Enabled: true} // no token, no token_file

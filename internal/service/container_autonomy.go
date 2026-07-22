@@ -291,13 +291,17 @@ func (c *Container) runRetentionLoop(ctx context.Context, sweeper *retention.Swe
 
 func (c *Container) runRetentionOnce(ctx context.Context, sweeper *retention.Sweeper, defaults retention.Policy) {
 	// Global (non-project-scoped) caches run once per cycle BEFORE
-	// the per-project loop. ResponseCacheDays defaults to 0 which
-	// short-circuits inside SweepGlobal; operators opt in via
-	// retention.response_cache_days (recommended: 30).
-	if g, err := sweeper.SweepGlobal(ctx, c.Config.Retention.ResponseCacheDays); err != nil {
+	// the per-project loop. ResponseCacheDays / EmbeddingCacheDays both
+	// default to 0 which short-circuits inside SweepGlobal; operators
+	// opt in via retention.response_cache_days / embedding_cache_days
+	// (recommended: 30 on deployments where the tables grow large).
+	if g, err := sweeper.SweepGlobal(ctx, c.Config.Retention.ResponseCacheDays, c.Config.Retention.EmbeddingCacheDays); err != nil {
 		c.Logger.Warn().Err(err).Msg("retention global sweep partially failed")
-	} else if g.ResponseCache > 0 {
-		c.Logger.Info().Int("response_cache", g.ResponseCache).Msg("retention global sweep pruned rows")
+	} else if g.ResponseCache > 0 || g.EmbeddingCache > 0 {
+		c.Logger.Info().
+			Int("response_cache", g.ResponseCache).
+			Int("embedding_cache", g.EmbeddingCache).
+			Msg("retention global sweep pruned rows")
 	}
 
 	if c.Registry == nil {

@@ -683,7 +683,33 @@ type Server struct {
 	// counter (task 4.4, design §5.8). Same nil-safe idiom as
 	// integrationsMetrics above.
 	inboxMetrics *InboxMetrics
+
+	// webWriteRepo backs the supervised web-write approval surface
+	// (supervised-web-write-actions Task 6): pending web_write_actions rows
+	// surface as "Needs approval" cards in /inbox, and the authenticated
+	// CSRF-protected approve/reject POST handlers mint / decline the approval
+	// token. Nil-safe — when unwired no web-write cards render and the
+	// approve/reject routes report the surface unconfigured. Listing pending
+	// rows uses the persistence.WebWritePendingLister query interface (a
+	// type-assertion on this repo), kept off the committed WebWriteRepo
+	// write/CAS contract.
+	webWriteRepo persistence.WebWriteRepo
+
+	// webWriteApprovalDeliver is the Task-10 resume-signal seam: on a
+	// successful approve it delivers the freshly-minted capability token to the
+	// owning agent run (submission_id + agent_run_id + raw token). Nil until
+	// Task 10 wires it — the approve still persists the approval and logs a
+	// TODO(web-write Task 10) so the operator decision is never lost. The raw
+	// token is delivered to the agent ONLY; it is never rendered in the UI.
+	webWriteApprovalDeliver WebWriteApprovalDeliverFunc
 }
+
+// WebWriteApprovalDeliverFunc delivers an approved web-write's one-time
+// capability token to the owning agent run. It is the seam Task 10 fills to
+// route {submission_id, agent_run_id, approval_token} to the paused run (and no
+// other). Returning an error is logged but does not roll back the persisted
+// approval — the token can still be re-delivered via the resume path.
+type WebWriteApprovalDeliverFunc func(submissionID, agentRunID, token string) error
 
 // ActiveChatSource exposes a count of live chat sessions for the
 // landing page tile. Production wires this to *telegram.Bot.
@@ -1003,6 +1029,23 @@ func WithWizardSessionLister(src WizardSessionLister) ServerOption {
 // /ui/fixit/ panel. Optional — nil renders a "not configured" state.
 func WithFixItDoctor(d api.FixItDoctor) ServerOption {
 	return func(s *Server) { s.fixItDoctor = d }
+}
+
+// WithWebWriteRepo wires the supervised web-write action store so pending rows
+// surface as "Needs approval" cards in /inbox and the approve/reject POST
+// handlers can mint / decline the approval token. Optional — nil leaves the
+// web-write cards hidden and the routes reporting the surface unconfigured.
+func WithWebWriteRepo(repo persistence.WebWriteRepo) ServerOption {
+	return func(s *Server) { s.webWriteRepo = repo }
+}
+
+// WithWebWriteApprovalDeliver wires the Task-10 resume-signal seam that routes
+// an approved web-write's one-time capability token to its owning agent run.
+// Optional — nil makes approve persist the decision and log a TODO(web-write
+// Task 10) instead of delivering, so the surface is testable and usable before
+// Task 10 lands.
+func WithWebWriteApprovalDeliver(deliver WebWriteApprovalDeliverFunc) ServerOption {
+	return func(s *Server) { s.webWriteApprovalDeliver = deliver }
 }
 
 // WithWizardEnabled gates the /ui/projects drafts banner on the
@@ -2100,6 +2143,11 @@ func (s *Server) Handler() http.Handler {
 
 	// Inbox — unified "what needs me" operator-action queue.
 	mux.HandleFunc("/inbox", s.Inbox)
+	// Supervised web-write approval actions (Task 6): authenticated,
+	// CSRF-protected POST approve/reject on a pending web_write_actions row.
+	// Approve mints the one-time capability token; both are POST-only (never a
+	// deeplinkable GET).
+	mux.HandleFunc("/inbox/web-write/", s.webWriteInboxRouter)
 
 	// Executions — cross-task run list (IA completion) + detail/actions
 	// under the prefix.

@@ -3,12 +3,11 @@ package dispatcher
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
+	"vornik.io/vornik/internal/apiaccess"
 	"vornik.io/vornik/internal/apigateway"
-	"vornik.io/vornik/internal/outputguard"
 )
 
 // queryAPIArgs is the LLM-facing shape. The schema description NEVER names
@@ -21,15 +20,19 @@ type queryAPIArgs struct {
 	Body     map[string]any `json:"body"`
 }
 
-// queryAPI calls a registered third-party API through the local gateway. Gate
-// order mirrors tool_send_email.go (design §3.2): nil-dep → active-project →
-// ownership → parse → validate (provider required → per-project api_providers
-// allowlist, design §5.4) → call → result. The allowlist gate deliberately
-// precedes existence resolution in apiClient.Call: for a restricted project,
-// an unregistered-or-disallowed provider both yield the same "not enabled for
-// project" refusal (information-hiding — design §7). Errors are
-// ToolResult.Content (human-readable text, never a Go error) so the LLM can
-// self-correct.
+// queryAPI is a thin adapter over apiaccess.Service.Query (design §2 chat
+// adapter). It keeps the session-level gates (nil-dep → active-project →
+// ownership) and arg parsing, then delegates the capability gate
+// (provider-required → per-project api_providers allowlist → write policy
+// → gateway call → sentinel mapping) to the shared core. The Allowlist
+// closure loads the project's api_providers so a non-empty allowlist still
+// blocks non-allowlisted providers (no discovery regression), and
+// AgentWrites is a role-blind closure returning true — chat defers write
+// policy to the gateway's writes_enabled (design §5c), preserving chat
+// write behavior. On refusal the human-readable reason is prefixed with
+// "query_api: " (never a raw Go error) so the LLM can self-correct; the
+// existing downstream output_guard pass still redacts and chat stays
+// UNCAPPED (design §5b).
 func (te *ToolExecutor) queryAPI(ctx context.Context, argsJSON, activeProject string, allowedProjects []string) ToolResult {
 	if te.apiClient == nil {
 		return ToolResult{Content: "query_api: third-party API gateway not configured on this daemon."}
@@ -44,39 +47,18 @@ func (te *ToolExecutor) queryAPI(ctx context.Context, argsJSON, activeProject st
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 		return ToolResult{Content: "query_api: invalid arguments: " + err.Error()}
 	}
-	if strings.TrimSpace(args.Provider) == "" {
-		return ToolResult{Content: "query_api: `provider` is required."}
-	}
-	if !providerAllowedForProject(te.registry, activeProject, args.Provider) {
-		return ToolResult{Content: fmt.Sprintf("query_api: provider %q is not enabled for project %q.", args.Provider, activeProject)}
-	}
-	if strings.TrimSpace(args.Method) == "" {
-		args.Method = "GET"
-	}
 
-	resp, err := te.apiClient.Call(ctx, apigateway.Request{
+	svc := &apiaccess.Service{
+		Client:      te.apiClient,
+		Allowlist:   te.apiProvidersAllowlist,
+		AgentWrites: func(_, _ string) bool { return true }, // chat defers to the gateway
+	}
+	outcome := svc.Query(ctx, activeProject, "", apigateway.Request{
 		Provider: args.Provider, Method: args.Method, Path: args.Path,
 		Query: args.Query, Body: args.Body,
 	})
-	if err != nil {
-		return ToolResult{Content: mapQueryAPIError(err, args)}
+	if outcome.Refusal != "" {
+		return ToolResult{Content: "query_api: " + outcome.Refusal}
 	}
-	return ToolResult{Content: resp.Body, Provenance: outputguard.ProvenanceThirdParty}
-}
-
-// mapQueryAPIError translates the gateway sentinels into clear, policy-aware
-// messages (design §6.1: a boundary, not a transient failure). Credentials are
-// never surfaced — the client already scrubs the token from any raw error.
-func mapQueryAPIError(err error, args queryAPIArgs) string {
-	switch {
-	case errors.Is(err, apigateway.ErrUnknownProvider):
-		return fmt.Sprintf("query_api: unknown provider %q — it is not registered.", args.Provider)
-	case errors.Is(err, apigateway.ErrMethodNotAllowed), errors.Is(err, apigateway.ErrUpstreamMethod):
-		return fmt.Sprintf("query_api: provider %q does not support %s on %q (read-only or route not configured).",
-			args.Provider, strings.ToUpper(args.Method), args.Path)
-	case errors.Is(err, apigateway.ErrGatewayAuth):
-		return "query_api: gateway authentication failed (daemon↔gateway token misconfigured)."
-	default:
-		return "query_api: " + err.Error()
-	}
+	return ToolResult{Content: outcome.Body, Provenance: outcome.Provenance}
 }

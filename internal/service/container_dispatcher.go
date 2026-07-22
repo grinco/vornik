@@ -210,6 +210,38 @@ func (c *Container) initDispatcher() {
 		))
 	}
 
+	// Supervised web-write actions (LLD 2026-07-21). Wired only when the
+	// scraper MCP + DB are configured (webWriteComponents gates on both) — the
+	// web_submit tool's nil-wiring HARD gate otherwise degrades it to "not
+	// configured". WithWebWritesConfig is passed unconditionally so the daemon
+	// tri-state toggle (off|on|insecure) is enforced inside the tool without a
+	// rebuild when an operator flips it. The token store is SHARED with the UI
+	// server (container_http.go) so an inbox approval's minted token reaches the
+	// submit path. The AWAITING_APPROVAL task hook is deliberately NOT wired:
+	// operator-chat-driven v1 has no autonomous run to park (LLD Components.5).
+	if repo, store := c.webWriteComponents(); repo != nil {
+		// C1 capability secret: the write client attaches it as daemon_auth on
+		// every web_submit call so the scraper can tell a daemon-issued write
+		// from an agent's direct call. Resolved fail-closed — a resolution error
+		// (unreadable submit_secret_file) or an empty secret still builds the
+		// client (writes-off deployments legitimately have no secret); the
+		// resulting calls the scraper rejects. Config.Validate already refuses to
+		// boot with web.writes on|insecure and no secret, so an empty secret here
+		// means writes are off.
+		submitSecret, err := c.Config.Web.ResolvedSubmitSecret()
+		if err != nil {
+			c.Logger.Warn().Err(err).Msg("web_submit capability secret unreadable; scraper will reject web writes")
+			submitSecret = ""
+		}
+		swc := dispatcher.NewMCPScraperWriteClient(c.mcpManager, submitSecret)
+		opts = append(opts,
+			dispatcher.WithScraperWriteClient(swc),
+			dispatcher.WithWebWriteRepo(repo),
+			dispatcher.WithWebWritesConfig(c.Config.Web),
+			dispatcher.WithWebWriteTokenStore(store),
+		)
+	}
+
 	// query_api gateway client — built from config, fail-closed. A nil
 	// client (disabled/unauthenticated) leaves the tool reporting "not
 	// configured"; a config error disables it with a warning rather than

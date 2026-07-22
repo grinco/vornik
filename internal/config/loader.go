@@ -458,6 +458,19 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("VORNIK_GATEWAY_TOKEN"); v != "" {
 		cfg.Gateway.Token = v
 	}
+	// Agent-write policy override. Set the raw value; AgentWritesMode() (called
+	// from Validate below) does the normalize+validate, so an invalid env value
+	// is a startup error via the SAME path as YAML — never a silent off.
+	if v := os.Getenv("VORNIK_GATEWAY_AGENT_WRITES"); v != "" {
+		cfg.Gateway.AgentWrites = v
+	}
+	// Daemon↔scraper web_submit capability secret (shared C1 contract). Env
+	// override wins over YAML so operators can inject it from the daemon
+	// environment (mirroring the same value passed to the scraper's
+	// SCRAPER_WEB_SUBMIT_SECRET) without committing it to config.
+	if v := os.Getenv("VORNIK_WEB_SUBMIT_SECRET"); v != "" {
+		cfg.Web.SubmitSecret = v
+	}
 }
 
 // DefaultConfig returns a configuration with sensible defaults.
@@ -770,6 +783,32 @@ func (c *Config) Validate() error {
 	composer.applyDefaults()
 	if err := composer.Validate(); err != nil {
 		return err
+	}
+	// web.writes tri-state + insecure co-flag (fail startup on an invalid value
+	// or insecure without the ack).
+	webMode, err := c.Web.WritesMode()
+	if err != nil {
+		return err
+	}
+	// gateway.agent_writes tri-state (off|user|all): fail startup on an invalid
+	// value rather than silently falling through to off (review I2). The load-
+	// time 'all' operator warning is emitted where the gateway is wired
+	// (container_http.go), which has the logger; Validate stays pure.
+	if _, err := c.Gateway.AgentWritesMode(); err != nil {
+		return err
+	}
+	// When web writes are enabled (on|insecure) the daemon↔scraper web_submit
+	// capability secret is REQUIRED. Without it the scraper cannot distinguish a
+	// daemon-issued web_submit from one an agent invokes directly, defeating the
+	// human approval gate (shared C1 contract). Fail closed at startup.
+	if webMode != "off" {
+		secret, serr := c.Web.ResolvedSubmitSecret()
+		if serr != nil {
+			return serr
+		}
+		if secret == "" {
+			return fmt.Errorf("web.writes is enabled but web.submit_secret[_file] is not set — the scraper web_submit capability secret is required so agents cannot bypass the approval gate")
+		}
 	}
 	return nil
 }

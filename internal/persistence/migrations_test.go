@@ -957,3 +957,15 @@ func TestMigration109_TradingExecReconcileColumns(t *testing.T) {
 		}
 	}
 }
+
+func TestMigration132_WebWriteActionsPresent(t *testing.T) {
+	var found bool
+	for _, m := range DefaultMigrations {
+		if m.Version == 132 && m.Name == "create_web_write_actions" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("migration 132 create_web_write_actions missing")
+	}
+}

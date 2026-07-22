@@ -6,6 +6,13 @@ version: "1.1.0"
 author: "Vadim Grinco <vadim@grinco.eu>"
 license: "Proprietary"
 entrypoint: "review"
+# The review step reads the STAGED input artifact as its source of truth
+# (v1.1.0+). Without an attached artifact the agent hard-fails at
+# file_read(/app/input/task.json) → not-found. Declaring this makes the
+# companion delegate handler REJECT an artifact-less delegation at submit with a
+# clear message (companion_mcp.go), instead of queuing a doomed task that aborts
+# opaquely. Attach via the /upload skill or delegate inputArtifacts.
+require_input_artifacts: true
 maxStepVisits: 1
 maxIterations: 8
 maxWallClock: "20m"

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -72,6 +73,9 @@ func (r *taskRepoForDelegationTest) TransitionToCancelled(context.Context, strin
 }
 func (r *taskRepoForDelegationTest) RequeueTerminalTask(context.Context, string, int, int) (bool, error) {
 	panic("not used")
+}
+func (r *taskRepoForDelegationTest) ListRetryInFlight(context.Context, []string, time.Time) ([]*persistence.Task, error) {
+	return nil, nil
 }
 func (r *taskRepoForDelegationTest) LeaseTask(context.Context, persistence.LeaseOptions) (*persistence.Task, error) {
 	panic("not used")

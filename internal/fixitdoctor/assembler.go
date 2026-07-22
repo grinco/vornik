@@ -205,6 +205,17 @@ func (a *Assembler) assembleFailedTask(ctx context.Context, ref FailureRef) (Gro
 	if err != nil {
 		return GroundingBundle{}, fmt.Errorf("fixitdoctor: load task %s: %w", ref.ID, err)
 	}
+	// Authorization: a repair session may only ground on a task in its OWN
+	// project. task IDs are global, so without this a caller could pair a
+	// project it can access (ref.ProjectID, scope-checked upstream) with a task
+	// ID in a DIFFERENT project and read that task's failure grounding (IDOR).
+	// The "not found" wording preserves the no-existence-leak convention (maps
+	// to 404 in the converse handler). When ref.ProjectID is empty the scope
+	// check is the caller-gate's job — the UI fetches the opening summary in
+	// that case only for admin-class (unscoped) callers.
+	if ref.ProjectID != "" && task.ProjectID != ref.ProjectID {
+		return GroundingBundle{}, fmt.Errorf("fixitdoctor: task %s not found in project %s", ref.ID, ref.ProjectID)
+	}
 
 	class := ""
 	if task.LastErrorClass != nil {

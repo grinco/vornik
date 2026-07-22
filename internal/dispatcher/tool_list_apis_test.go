@@ -280,6 +280,29 @@ func TestListAPIs_TruncationAtN50(t *testing.T) {
 	}
 }
 
+// F6: exactly 50 providers is a complete catalog, not a truncated one — the
+// adapter must NOT append the "results truncated" note. Regression guard for the
+// old len(kept)==cap false-positive.
+func TestListAPIs_ExactlyN50_NoTruncationNote(t *testing.T) {
+	var many []apigateway.ProviderInfo
+	for i := 0; i < 50; i++ {
+		many = append(many, apigateway.ProviderInfo{Name: fmt.Sprintf("p%02d", i), Description: "d"})
+	}
+	te := &ToolExecutor{
+		apiClient: &fakeListerClient{providers: many},
+		logger:    zerolog.Nop(),
+	}
+	res := te.listAPIs(context.Background(), `{}`, "proj", []string{"proj"})
+	if strings.Contains(res.Content, "results truncated") {
+		t.Errorf("exactly 50 providers must NOT emit the truncation note, content=%q", res.Content)
+	}
+	var got []listAPIsProvider
+	require.NoError(t, json.Unmarshal([]byte(res.Content), &got))
+	if len(got) != 50 {
+		t.Errorf("expected all 50 providers, got %d", len(got))
+	}
+}
+
 func TestListAPIs_EmptyResult_Message(t *testing.T) {
 	reg := loadListAPIsTestRegistry(t, "proj", []string{"nonexistent"})
 	te := &ToolExecutor{

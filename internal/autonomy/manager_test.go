@@ -73,6 +73,9 @@ func (m *mockTaskRepo) TransitionToCancelled(context.Context, string) (bool, err
 func (m *mockTaskRepo) RequeueTerminalTask(context.Context, string, int, int) (bool, error) {
 	return true, nil
 }
+func (m *mockTaskRepo) ListRetryInFlight(context.Context, []string, time.Time) ([]*persistence.Task, error) {
+	return nil, nil
+}
 func (m *mockTaskRepo) TransitionConditional(context.Context, string, []persistence.TaskStatus, persistence.TaskStatus, persistence.TransitionOpts) (bool, error) {
 	return true, nil
 }

@@ -279,6 +279,29 @@ func TestAssemble_FailedTask_NoTaskRepositoryErrors(t *testing.T) {
 	}
 }
 
+// IDOR guard (2026-07-22): task IDs are global, so a caller must not read the
+// grounding of a task in a DIFFERENT project than the one it named (and was
+// scope-checked for). A cross-project ref must fail closed, worded "not found"
+// (no existence leak). An empty ref.ProjectID skips this — the caller-gate owns
+// scope in that case (the UI fetches only for admins).
+func TestAssemble_FailedTask_RejectsCrossProject(t *testing.T) {
+	task := &persistence.Task{ID: "task-1", ProjectID: "proj-owner", LastErrorClass: strPtr(persistence.TaskFailureClassToolError)}
+	a := &Assembler{Tasks: &fakeTaskRepo{tasks: map[string]*persistence.Task{"task-1": task}}}
+
+	_, err := a.Assemble(context.Background(), FailureRef{Kind: FailureKindFailedTask, ID: "task-1", ProjectID: "proj-attacker"})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("cross-project ref must fail closed with a not-found error, got %v", err)
+	}
+
+	// Same project resolves normally; empty project is allowed through (gate's job).
+	if _, err := a.Assemble(context.Background(), FailureRef{Kind: FailureKindFailedTask, ID: "task-1", ProjectID: "proj-owner"}); err != nil {
+		t.Fatalf("same-project ref must resolve, got %v", err)
+	}
+	if _, err := a.Assemble(context.Background(), FailureRef{Kind: FailureKindFailedTask, ID: "task-1"}); err != nil {
+		t.Fatalf("empty-project ref must resolve (caller-gate owns scope), got %v", err)
+	}
+}
+
 // TestAssemble_FailedTask_LearnedRemediationsPresent covers the
 // learned-overlay path (playbook.LearnedRemediations) and pins that
 // its Action text — worker-mined, ultimately agent/tool-derived — is

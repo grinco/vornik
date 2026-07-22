@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/apigateway"
 	"vornik.io/vornik/internal/budget"
+	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/hallucination"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
@@ -321,6 +322,50 @@ func WithReminderRepository(r persistence.ReminderRepository) AgentOption {
 // the reminder still lands on the next regular heartbeat tick.
 func WithReminderKicker(k ReminderKicker) AgentOption {
 	return func(a *Agent) { a.reminderKicker = k }
+}
+
+// WithScraperWriteClient enables the web_submit tool by injecting the
+// seam onto the scraper's web_submit MCP tool. nil (the default) leaves
+// web_submit as a nil-wiring HARD gate that returns "not configured".
+// The concrete MCP-backed client is wired in a later task; tests pass a
+// fake.
+func WithScraperWriteClient(c ScraperWriteClient) AgentOption {
+	return func(a *Agent) { a.scraperWriteClient = c }
+}
+
+// WithWebWriteRepo wires the pending-write store the web_submit tool
+// persists to. nil disables the tool (the other half of the nil-wiring
+// HARD gate). The container builds it via persistence.NewWebWriteRepo
+// over the daemon's *sql.DB pool.
+func WithWebWriteRepo(r persistence.WebWriteRepo) AgentOption {
+	return func(a *Agent) { a.webWriteRepo = r }
+}
+
+// WithWebWritesConfig sets the daemon-level web-writes tri-state toggle
+// (off|on|insecure) the web_submit tool consults before dispatch. The
+// zero value (empty Writes) resolves to "off" — web writes refused.
+func WithWebWritesConfig(c config.WebDaemonConfig) AgentOption {
+	return func(a *Agent) { a.webWrites = c }
+}
+
+// WithWebWriteTokenStore wires the operator-chat-driven token-delivery store
+// (LLD Components.5). The inbox approve handler deposits the freshly minted
+// approval token here (via the UI server's WithWebWriteApprovalDeliver seam)
+// and web_submit(mode=submit) redeems it when the operator-chat assistant calls
+// submit without a token arg. nil leaves submit requiring an explicit
+// approval_token arg (the future autonomous-mode path). The container builds one
+// store and shares it with the UI server.
+func WithWebWriteTokenStore(s *WebWriteTokenStore) AgentOption {
+	return func(a *Agent) { a.webWriteTokenStore = s }
+}
+
+// WithWebWriteApprovalHook wires the seam that moves a pending web-write
+// action's owning task to AWAITING_APPROVAL and routes the approval
+// capability back to the owning agent run (LLD Components.5 / Task 10).
+// nil leaves preview persisting the pending row without auto-parking a
+// task (TODO-logged) — no fake transition.
+func WithWebWriteApprovalHook(h WebWriteApprovalHook) AgentOption {
+	return func(a *Agent) { a.webApprovalHook = h }
 }
 
 // WithAdminAuditRepository wires the admin-audit repo so the

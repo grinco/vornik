@@ -34,6 +34,10 @@ func (s *stubFixItDoctor) Converse(_ context.Context, sessionID, operatorID, fai
 	return &FixItResult{SessionID: "fix-1", Envelope: &FixItEnvelope{Message: "ok"}}, nil
 }
 
+func (s *stubFixItDoctor) OpeningSummary(_ context.Context, _, _, _ string) (string, error) {
+	return "", nil
+}
+
 func (s *stubFixItDoctor) SessionScope(_ context.Context, _, _ string) (string, bool, error) {
 	if s.scopeErr != nil {
 		return "", false, s.scopeErr

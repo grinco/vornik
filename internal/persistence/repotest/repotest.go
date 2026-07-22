@@ -529,6 +529,40 @@ func RunTaskRepositorySuite(t *testing.T, repo persistence.TaskRepository) {
 		}
 	})
 
+	// Regression 2026-07-22: the task_creation_source enum (Postgres) / CHECK
+	// (SQLite) was missing SCHEDULED, CHECKPOINT and FORK that the Go model
+	// defines, so a scheduled daily-digest reminder (kind=task) failed at insert
+	// with "invalid input value for enum task_creation_source: SCHEDULED" every
+	// fire and never delivered. Every model-defined creation source must persist
+	// on both backends.
+	t.Run("Create_persists_all_model_creation_sources", func(t *testing.T) {
+		project := uniqueID("proj")
+		for _, src := range []persistence.TaskCreationSource{
+			persistence.TaskCreationSourceUser,
+			persistence.TaskCreationSourceDelegation,
+			persistence.TaskCreationSourceAutonomous,
+			persistence.TaskCreationSourceRoute,
+			persistence.TaskCreationSourceA2A,
+			persistence.TaskCreationSourceCompanion,
+			persistence.TaskCreationSourceScheduled,
+			persistence.TaskCreationSourceCheckpoint,
+			persistence.TaskCreationSourceFork,
+		} {
+			task := newQueuedTask(project)
+			task.CreationSource = src
+			if err := repo.Create(ctx, task); err != nil {
+				t.Fatalf("Create with creation_source=%q must succeed: %v", src, err)
+			}
+			got, err := repo.Get(ctx, task.ID)
+			if err != nil {
+				t.Fatalf("Get after create (source=%q): %v", src, err)
+			}
+			if got.CreationSource != src {
+				t.Errorf("creation_source round-trip: got %q want %q", got.CreationSource, src)
+			}
+		}
+	})
+
 	t.Run("Get_unknown_id_returns_ErrNotFound", func(t *testing.T) {
 		_, err := repo.Get(ctx, uniqueID("missing"))
 		if err == nil {
@@ -772,6 +806,64 @@ func RunTaskRepositorySuite(t *testing.T, repo persistence.TaskRepository) {
 		}
 		if got.Attempt != 2 || got.MaxAttempts != 5 {
 			t.Errorf("expected attempt=2 max=5, got %d/%d", got.Attempt, got.MaxAttempts)
+		}
+	})
+
+	t.Run("ListRetryInFlight_returns_operator_retried_not_plain_queued", func(t *testing.T) {
+		project := uniqueID("proj")
+
+		// A task the operator retried: FAILED → RequeueTerminalTask stamps
+		// retry_requested_at and resets to QUEUED.
+		retried := newQueuedTask(project)
+		_ = repo.Create(ctx, retried)
+		_ = repo.UpdateStatus(ctx, retried.ID, persistence.TaskStatusFailed)
+		if ok, err := repo.RequeueTerminalTask(ctx, retried.ID, 1, 3); err != nil || !ok {
+			t.Fatalf("RequeueTerminalTask: ok=%v err=%v", ok, err)
+		}
+
+		// A plain QUEUED task never retried — must NOT be reported.
+		plain := newQueuedTask(project)
+		_ = repo.Create(ctx, plain)
+
+		since := time.Now().Add(-time.Hour)
+		got, err := repo.ListRetryInFlight(ctx, []string{project}, since)
+		if err != nil {
+			t.Fatalf("ListRetryInFlight: %v", err)
+		}
+		if len(got) != 1 || got[0].ID != retried.ID {
+			t.Fatalf("expected only the operator-retried task, got %d rows: %+v", len(got), got)
+		}
+
+		// The recency window excludes it when `since` is in the future.
+		if future, err := repo.ListRetryInFlight(ctx, []string{project}, time.Now().Add(time.Hour)); err != nil {
+			t.Fatalf("ListRetryInFlight(future): %v", err)
+		} else if len(future) != 0 {
+			t.Fatalf("a retry_requested_at before `since` must be excluded, got %d", len(future))
+		}
+
+		// Scope: another project's query must not see it.
+		if other, err := repo.ListRetryInFlight(ctx, []string{uniqueID("other")}, since); err != nil {
+			t.Fatalf("ListRetryInFlight(other scope): %v", err)
+		} else if len(other) != 0 {
+			t.Fatalf("cross-project scope leak: got %d rows", len(other))
+		}
+
+		// A re-FAILED task is no longer "in flight" — it drops out of the query
+		// (the inbox then shows it via the FAILED attention category, i.e. the
+		// row returns to "Failed" rather than staying stuck at "Retrying…").
+		_ = repo.UpdateStatus(ctx, retried.ID, persistence.TaskStatusFailed)
+		if refailed, err := repo.ListRetryInFlight(ctx, []string{project}, since); err != nil {
+			t.Fatalf("ListRetryInFlight(after re-fail): %v", err)
+		} else if len(refailed) != 0 {
+			t.Fatalf("a re-failed retry must drop out of retry-in-flight, got %d", len(refailed))
+		}
+
+		// Once the retried task terminates (COMPLETED), it drops out.
+		_ = repo.UpdateStatus(ctx, retried.ID, persistence.TaskStatusCompleted)
+		if done, err := repo.ListRetryInFlight(ctx, []string{project}, since); err != nil {
+			t.Fatalf("ListRetryInFlight(after complete): %v", err)
+		} else if len(done) != 0 {
+			t.Fatalf("a completed retry must drop out of retry-in-flight, got %d", len(done))
 		}
 	})
 

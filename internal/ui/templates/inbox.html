@@ -23,8 +23,9 @@
                  hx-select="#inbox-list"
                  hx-target="#inbox-list"
                  hx-swap="outerHTML">
-            {{if .Items}}
+            {{if or .Items .WebWrites}}
                 <ul class="space-y-2">
+                    {{range .WebWrites}}{{template "webWriteApprovalCard" .}}{{end}}
                     {{range .Items}}{{template "inboxItemRow" .}}{{end}}
                 </ul>
             {{else}}
@@ -111,6 +112,89 @@
 </li>
 {{end}}
 
+{{/* webWriteApprovalCard — one pending supervised web-write approval
+     (supervised-web-write-actions Task 6, design §Components.4 + I7).
+     Expects a webWriteCard. The card is the operator's proof that "what
+     the site sends equals what was approved": the filled-form screenshot,
+     the READ-ONLY field table (name + value + provenance incl. volatile),
+     the target host and the submission id. Approve/reject are authenticated
+     CSRF-protected POSTs to /ui/inbox/web-write/{id}/{approve|reject} —
+     approve mints the one-time capability token (delivered to the agent,
+     NEVER shown here). Same same-origin CSRF posture as the other inbox
+     forms (no per-form token anywhere in this codebase; AuthMiddleware +
+     the in-handler same-origin check gate the POST). hx-target removes the
+     card in place once decided. */}}
+{{define "webWriteApprovalCard"}}
+<li id="web-write-{{.SubmissionID}}" class="rounded-xl border border-dark-600 bg-dark-800 p-3.5 space-y-2.5">
+    <div class="flex items-center gap-2 flex-wrap text-[11px] text-gray-500">
+        <span class="font-medium uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-700 dark:text-amber-300">Needs approval</span>
+        <span>{{.ProjectID}}</span>
+        <span class="px-1.5 py-0.5 rounded-md bg-dark-700 text-gray-400" title="web form submission">web write</span>
+        <span class="ml-auto">{{.Age}}</span>
+    </div>
+
+    <div class="min-w-0 space-y-0.5">
+        <div class="text-sm text-gray-200">Submit a web form to <span class="font-medium text-gray-100">{{.TargetHost}}</span></div>
+        <div class="text-[11px] text-gray-500 break-all">{{.TargetURL}}</div>
+        <div class="text-[10px] text-gray-600 font-mono truncate">{{.SubmissionID}}</div>
+    </div>
+
+    {{/* Filled-form screenshot: the visual half of the approval evidence.
+         TODO(web-write Task 8-10 screenshot wiring): the artifact addressing
+         of ScreenshotRef is finalised with the daemon↔scraper client; until
+         then a missing/unresolvable ref renders this placeholder. The field
+         table below is the load-bearing, always-rendered evidence. */}}
+    {{if .ScreenshotHref}}
+    <img src="{{.ScreenshotHref}}" alt="Filled form preview for {{.TargetHost}}" class="max-w-full rounded-lg border border-dark-600">
+    {{else}}
+    <div class="rounded-lg border border-dashed border-dark-600 bg-dark-700/40 px-3 py-4 text-[11px] text-gray-500">
+        Filled-form screenshot unavailable (pending screenshot-artifact wiring). Review the field table below before approving.
+    </div>
+    {{end}}
+
+    {{/* Read-only field table: every field the form would submit, with
+         provenance. This is a display projection of the approved set — the
+         operator cannot edit it here (reject-with-note → agent re-previews). */}}
+    {{if .Fields}}
+    <div class="overflow-x-auto rounded-lg border border-dark-600">
+        <table class="w-full text-left text-[11px]">
+            <thead class="text-gray-500 bg-dark-700/60">
+                <tr>
+                    <th class="px-2 py-1 font-medium">Field</th>
+                    <th class="px-2 py-1 font-medium">Value</th>
+                    <th class="px-2 py-1 font-medium">Provenance</th>
+                </tr>
+            </thead>
+            <tbody class="text-gray-300">
+                {{range .Fields}}
+                <tr class="border-t border-dark-700">
+                    <td class="px-2 py-1 align-top">{{if .Label}}{{.Label}}<div class="text-[10px] text-gray-600 font-mono">{{.Name}}</div>{{else}}<span class="font-mono">{{.Name}}</span>{{end}}</td>
+                    <td class="px-2 py-1 align-top break-all">{{if eq .Provenance "volatile"}}<span class="text-gray-500 italic">(server-issued — value exempt)</span>{{else}}{{.Value}}{{end}}</td>
+                    <td class="px-2 py-1 align-top">
+                        <span class="px-1.5 py-0.5 rounded-md text-[10px]
+                            {{if eq .Provenance "agent-bound"}}bg-emerald-500/20 text-emerald-700 dark:text-emerald-300
+                            {{else if eq .Provenance "volatile"}}bg-violet-500/20 text-violet-700 dark:text-violet-300
+                            {{else if eq .Provenance "hidden"}}bg-gray-500/20 text-gray-400
+                            {{else}}bg-sky-500/20 text-sky-700 dark:text-sky-300{{end}}">{{.Provenance}}</span>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{end}}
+
+    <div class="flex flex-wrap items-center gap-1.5">
+        <form hx-post="/ui/inbox/web-write/{{.SubmissionID}}/approve" hx-target="#web-write-{{.SubmissionID}}" hx-swap="outerHTML" class="contents">
+            <button type="submit" class="flex-1 sm:flex-none px-4 py-2 text-xs font-medium rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition-colors">Approve &amp; submit</button>
+        </form>
+        <form hx-post="/ui/inbox/web-write/{{.SubmissionID}}/reject" hx-target="#web-write-{{.SubmissionID}}" hx-swap="outerHTML" class="contents">
+            <button type="submit" class="flex-1 sm:flex-none px-4 py-2 text-xs font-medium rounded-lg bg-rose-700/80 hover:bg-rose-600 text-white transition-colors">Reject</button>
+        </form>
+    </div>
+</li>
+{{end}}
+
 {{/* inboxItemRow — one "Needs your attention" row (task 4.3, design
      §5.6). Expects an inboxItem. Rendered both inline in the full page
      (ranged over from .Items above) and standalone as the HTMX
@@ -151,6 +235,7 @@
             {{if eq .Kind "Needs approval"}}bg-amber-500/20 text-amber-700 dark:text-amber-300
             {{else if eq .Kind "Needs input"}}bg-sky-500/20 text-sky-700 dark:text-sky-300
             {{else if eq .Kind "Failed"}}bg-rose-500/20 text-rose-700 dark:text-rose-300
+            {{else if eq .Kind "Retrying"}}bg-sky-500/20 text-sky-700 dark:text-sky-300
             {{else}}bg-gray-500/20 text-gray-300{{end}}">{{.Kind}}</span>
         <span>{{.ProjectID}}</span>
         <span class="ml-auto">{{.Age}}</span>
@@ -212,13 +297,28 @@
         </form>
         {{end}}
     {{else if eq .Kind "Failed"}}
-        {{/* Phase-3 fix-it deep link (plain navigation — the repair
-             chat is its own page) + inline Retry (retryOne via
-             TaskRetry). */}}
+        {{/* Three honest paths (fix/retry/dismiss design 2026-07-22):
+             FIX — the repair chat (its own page), root cause.
+             RETRY — TaskRetry requeues AND the row becomes "Retrying…" (it does
+               NOT vanish as if resolved; the re-run's outcome resolves it).
+             DISMISS — uiCloseTask (FAILED→CLOSED): acknowledge + remove from the
+               queue WITHOUT a re-run. Record kept, re-openable from task detail. */}}
         <a href="{{.FixItURL}}" class="flex-1 sm:flex-none text-center px-4 py-2 text-xs font-medium rounded-lg bg-violet-700/80 hover:bg-violet-600 text-white transition-colors">Help me fix this</a>
         <form hx-post="/ui/tasks/{{.TaskID}}/retry" hx-target="#inbox-item-{{.TaskID}}" hx-swap="outerHTML" class="contents">
             <button type="submit" class="flex-1 sm:flex-none px-4 py-2 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors">Retry</button>
         </form>
+        <form hx-post="/ui/tasks/{{.TaskID}}/close" hx-target="#inbox-item-{{.TaskID}}" hx-swap="outerHTML" class="contents">
+            <button type="submit" class="flex-1 sm:flex-none px-4 py-2 text-xs font-medium rounded-lg bg-dark-600 hover:bg-dark-500 text-gray-200 transition-colors">Dismiss</button>
+        </form>
+    {{else if eq .Kind "Retrying"}}
+        {{/* Informational — an operator-retried task back in flight. No action:
+             the re-run's outcome resolves it (COMPLETED → row clears; FAILED →
+             the row returns as "Failed" with the three buttons again). */}}
+        <span class="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-sky-500/15 text-sky-700 dark:text-sky-300">
+            <span class="inline-block h-1.5 w-1.5 rounded-full bg-sky-500 animate-pulse"></span>
+            Retrying…
+        </span>
+        <a href="{{.Href}}" class="flex-1 sm:flex-none text-center px-4 py-2 text-xs font-medium rounded-lg bg-dark-700 hover:bg-dark-600 text-gray-200 transition-colors">View</a>
     {{else}}
         <a href="{{.Href}}" class="flex-1 sm:flex-none text-center px-4 py-2 text-xs font-medium rounded-lg bg-accent-600 hover:bg-accent-500 text-white transition-colors">{{.Action}} →</a>
     {{end}}

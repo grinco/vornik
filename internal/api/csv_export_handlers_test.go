@@ -46,6 +46,9 @@ func (m *mockTaskRepository) TransitionToCancelled(ctx context.Context, id strin
 func (m *mockTaskRepository) RequeueTerminalTask(ctx context.Context, id string, attempt, maxAttempts int) (bool, error) {
 	return false, nil
 }
+func (m *mockTaskRepository) ListRetryInFlight(_ context.Context, _ []string, _ time.Time) ([]*persistence.Task, error) {
+	return nil, nil
+}
 func (m *mockTaskRepository) TransitionConditional(ctx context.Context, id string, from []persistence.TaskStatus, to persistence.TaskStatus, opts persistence.TransitionOpts) (bool, error) {
 	return false, nil
 }

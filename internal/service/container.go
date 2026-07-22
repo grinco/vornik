@@ -99,6 +99,7 @@ import (
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/projectarchive"
 	"vornik.io/vornik/internal/projectwizard"
+	"vornik.io/vornik/internal/quality"
 	"vornik.io/vornik/internal/ratelimit"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/reminders"
@@ -285,10 +286,21 @@ type Container struct {
 	// the operator hasn't declared a daemon-level mcp block.
 	mcpRegistry    *mcp.Registry
 	stateCollector *observability.StateCollector
-	stopCollectors context.CancelFunc
-	collectorsCtx  context.Context
-	memoryManager  *memory.Manager
-	memoryTitler   *memory.Titler
+	qualityService *quality.Service
+
+	// webWriteRepo + webWriteTokenStore back the supervised web-write feature
+	// (LLD 2026-07-21-supervised-web-write-actions). Both are shared between the
+	// dispatcher Agent (web_submit tool: persist pending rows, Take the approval
+	// token on submit) and the UI server (inbox approve: mint + persist the token
+	// hash, Put the raw token). Built once, lazily, by webWriteComponents() and
+	// only when the scraper MCP + DB are configured; nil otherwise (web_submit
+	// degrades to "not configured" and no inbox cards render).
+	webWriteRepo       persistence.WebWriteRepo
+	webWriteTokenStore *dispatcher.WebWriteTokenStore
+	stopCollectors     context.CancelFunc
+	collectorsCtx      context.Context
+	memoryManager      *memory.Manager
+	memoryTitler       *memory.Titler
 	// memoryConsolidateWorker runs the periodic LLM-free gist pass
 	// over every enabled project. Pure-Go; the cadence is bounded
 	// by Memory.ConsolidateIntervalSeconds (default 10 min). nil
@@ -560,6 +572,8 @@ type Container struct {
 	apiKeyLimiter        *ratelimit.APIKeyLimiter
 	rateLimitMetrics     *ratelimit.Metrics
 	dryRunMetrics        *api.DryRunMetrics
+	agentWriteMetrics    *api.AgentAPIWriteMetrics
+	agentWritesAllWarned bool
 	chainMetrics         *api.AuthChainMetrics
 	tradingSeriesMetrics *api.TradingSeriesMetrics
 	equityCheckMetrics   *api.TradingEquityCheckMetrics
@@ -1299,6 +1313,10 @@ func NewContainerWithObservability(cfg *config.Config, configPath string, obsCfg
 
 	// Initialize state metrics collector (task/execution/podman/registry gauges)
 	c.initStateCollector()
+
+	// Initialize the observe-only quality read-model (cost/quality tuning loop
+	// Phase 1); publishes two-tier quality gauges on the same collector cadence.
+	c.initQualityCollector()
 
 	return c, nil
 }

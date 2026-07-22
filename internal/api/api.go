@@ -12,6 +12,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
+	"vornik.io/vornik/internal/apigateway"
 	"vornik.io/vornik/internal/auth"
 	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/budget"
@@ -401,6 +402,14 @@ type FixItDoctor interface {
 	// which the handler calls first so it can scope-gate on the
 	// session's real project_id rather than trusting the request body.
 	Converse(ctx context.Context, sessionID, operatorID, failureKind, failureRefID, projectID, userMessage string) (*FixItResult, error)
+	// OpeningSummary renders the deterministic grounding for a NEW repair
+	// session (failureKind/failureRefID/projectID) as a plain-language
+	// message, WITHOUT creating a session or calling the LLM. The /ui/fixit
+	// panel shows it as the doctor's opening turn so the operator sees the
+	// diagnosis instead of a blank prompt. Returns "" (no error) when there
+	// is nothing to summarise; a non-nil error is a grounding-assembly
+	// failure the caller should log and degrade past (render the blank panel).
+	OpeningSummary(ctx context.Context, failureKind, failureRefID, projectID string) (string, error)
 	// SessionScope resolves an EXISTING session's own project_id, for
 	// the handler's scope gate — called BEFORE Converse so a caller
 	// can never widen scope by pairing a real session_id with a
@@ -937,6 +946,31 @@ type Server struct {
 	// instead of waiting for the post-step batch from result.json.
 	// nil makes the endpoint return 503; production always wires it.
 	toolAuditRepo persistence.ToolAuditRepository
+	// apiGatewayClient is the third-party API gateway seam behind the
+	// agent-facing query_api/list_apis endpoints (design
+	// https://docs.vornik.io
+	// §2). nil makes those endpoints report "not configured" — the same
+	// fail-closed posture as the chat dispatcher's tool. Shares the
+	// concrete client the dispatcher uses (built by service.newGatewayClient).
+	apiGatewayClient apigateway.Client
+	// agentWritesMode is the daemon-wide gateway.agent_writes policy
+	// (off|user|all) governing query_api writes from task-executing agents
+	// (LLD 2026-07-22-agent-query-api-write-policy-design.md). Empty ≡ off
+	// (fail-closed default). Validated + normalized at load; the api server
+	// receives the already-normalized value.
+	agentWritesMode string
+	// agentWriteMetrics counts task-originated query_api write attempts by
+	// {mode, creation_source, outcome}. nil disables (same contract as the
+	// other api metrics); production wires it from the shared registry.
+	agentWriteMetrics *AgentAPIWriteMetrics
+	// apiAllowlistWarnedProjects deduplicates the empty-api_providers
+	// operator warning to once per project per process (design §5c
+	// empty-allowlist visibility). Zero value is ready to use.
+	apiAllowlistWarnedProjects sync.Map
+	// apiBudget is the daemon-resident per-task query_api/list_apis budget
+	// (design §5, §5c). Re-derivable from the audit rows on restart. Zero
+	// value is ready to use.
+	apiBudget apiBudgetTracker
 	// tradingOrderRepo backs POST /api/v1/internal/trading-orders.
 	// The broker MCP's AuditWriter posts one row per place_order
 	// call (success or refused) so the daemon has an
@@ -1852,6 +1886,36 @@ func WithTaskCreator(c *taskcreate.Creator) ServerOption {
 func WithProjectRegistry(r *registry.Registry) ServerOption {
 	return func(s *Server) {
 		s.projectRegistry = r
+	}
+}
+
+// WithAPIGatewayClient wires the third-party API gateway seam behind the
+// agent-facing query_api/list_apis endpoints (design
+// https://docs.vornik.io §2). nil
+// leaves the endpoints reporting "not configured" (fail-closed). Production
+// passes the SAME concrete client the chat dispatcher uses.
+func WithAPIGatewayClient(c apigateway.Client) ServerOption {
+	return func(s *Server) {
+		s.apiGatewayClient = c
+	}
+}
+
+// WithAgentWritesMode wires the daemon-wide gateway.agent_writes policy
+// (off|user|all) into the agent query_api path. The value MUST already be
+// normalized (via config.GatewayConfig.AgentWritesMode); empty ≡ off. Governs
+// whether task-originated writes are permitted — see
+// https://docs.vornik.io
+func WithAgentWritesMode(mode string) ServerOption {
+	return func(s *Server) {
+		s.agentWritesMode = mode
+	}
+}
+
+// WithAgentAPIWriteMetrics wires the agent-write observability counter
+// (vornik_agent_api_writes_total). nil leaves it disabled.
+func WithAgentAPIWriteMetrics(m *AgentAPIWriteMetrics) ServerOption {
+	return func(s *Server) {
+		s.agentWriteMetrics = m
 	}
 }
 

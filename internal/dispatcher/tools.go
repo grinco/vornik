@@ -14,6 +14,7 @@ import (
 	"vornik.io/vornik/internal/apigateway"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
+	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/idfmt"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/memoryfirewall"
@@ -362,7 +363,23 @@ type ToolExecutor struct {
 	// bridge returns a graceful "not enabled yet" message instead of
 	// running a turn, so flipping the flag later needs no rewiring.
 	composerEnabled bool
-	logger          zerolog.Logger
+	// scraperWriteClient + webWriteRepo back the web_submit tool
+	// (supervised web write actions LLD). BOTH nil disables the tool
+	// (a nil-wiring HARD gate returns "not configured"). webWrites is
+	// the daemon-level tri-state toggle (off|on|insecure) consulted
+	// before dispatch; webApprovalHook is the seam that moves the
+	// owning task to AWAITING_APPROVAL + routes the approval capability
+	// (Task 10). nil hook → the pending row is stored but no task is
+	// auto-parked (TODO-logged).
+	scraperWriteClient ScraperWriteClient
+	webWriteRepo       persistence.WebWriteRepo
+	webWrites          config.WebDaemonConfig
+	webApprovalHook    WebWriteApprovalHook
+	// webWriteTokenStore delivers approval tokens from the inbox approve
+	// handler to the submit path in operator-chat-driven v1 (LLD Components.5).
+	// nil → submit requires an explicit approval_token arg (autonomous mode).
+	webWriteTokenStore *WebWriteTokenStore
+	logger             zerolog.Logger
 }
 
 // ReminderKicker is the narrow contract the set_reminder handler
@@ -447,6 +464,8 @@ func (te *ToolExecutor) execute(ctx context.Context, tc chat.ToolCall, activePro
 		return te.renderDocument(ctx, args, fs)
 	case "send_email":
 		return te.sendEmail(ctx, args, activeProject, allowedProjects)
+	case "web_submit":
+		return te.webSubmit(ctx, args, activeProject, allowedProjects)
 	case "query_api":
 		return te.queryAPI(ctx, args, activeProject, allowedProjects)
 	case "list_apis":
@@ -2137,6 +2156,25 @@ func DispatcherTools() []chat.Tool {
 						"in_reply_to":{"type":"string","description":"Optional. The Message-ID of an inbound email to thread this reply onto (no angle brackets)."}
 					},
 					"required":["to","subject","body"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: chat.ToolFunction{
+				Name:        "web_submit",
+				Description: "Fill and submit a single-page web form on a write-eligible site, with mandatory human approval. Two phases via `mode`. mode=preview: supply `url` and `fields` (each a {selector|label, value} binding derived from a prior web_fetch); this fills the form, screenshots it, enumerates every field it would send, and stores it for the operator to approve in /inbox — it does NOT submit. It returns a submission_id. mode=submit: supply ONLY that submission_id and the approval_token the operator's approval minted — everything the form sends is read from the approved submission, and what is sent is verified to equal what was approved. Never pass url/fields on a submit. Use this only for genuine form submissions the operator wants completed; it refuses disabled/anti-bot/login/payment pages and non-approved hosts.",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"mode":{"type":"string","enum":["preview","submit"],"description":"preview to fill+enumerate+park for approval; submit to send an already-approved submission."},
+						"url":{"type":"string","description":"preview only. The https target form URL (from a prior web_fetch)."},
+						"fields":{"type":"array","description":"preview only. The field bindings to fill.","items":{"type":"object","properties":{"selector":{"type":"string","description":"CSS selector for the field (preferred)."},"label":{"type":"string","description":"Visible label to resolve the field when no selector is known."},"value":{"type":"string","description":"Value to fill."}},"required":["value"]}},
+						"profile":{"type":"string","description":"preview only. Optional browser profile/context name."},
+						"submission_id":{"type":"string","description":"submit only. The submission_id returned by a prior preview."},
+						"approval_token":{"type":"string","description":"submit only. The one-time token the operator's /inbox approval minted for this submission."}
+					},
+					"required":["mode"]
 				}`),
 			},
 		},

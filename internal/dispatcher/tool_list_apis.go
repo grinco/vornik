@@ -6,15 +6,11 @@ import (
 	"fmt"
 	"strings"
 
+	"vornik.io/vornik/internal/apiaccess"
 	"vornik.io/vornik/internal/apigateway"
 	"vornik.io/vornik/internal/outputguard"
 	"vornik.io/vornik/internal/registry"
 )
-
-// maxListAPIsResults caps list_apis output (design §5.3 step 7):
-// bounds the response even when a large project allowlist (or an
-// unfiltered global registry) would otherwise return everything.
-const maxListAPIsResults = 50
 
 // listAPIsArgs is the LLM-facing shape — a single optional filter.
 type listAPIsArgs struct {
@@ -31,15 +27,15 @@ type listAPIsProvider struct {
 	Examples      []string `json:"examples,omitempty"`
 }
 
-// listAPIs returns the active project's allowed third-party API
-// providers so the agent can discover what query_api can call
-// without guessing provider names. Gate order mirrors queryAPI
-// (design §5.3, §6): nil-dep/capability → active-project →
-// ownership → resolve allowlist (nil-safe, warns on drift) →
-// keep-filter → optional query filter → cap → render.
-func (te *ToolExecutor) listAPIs(_ context.Context, argsJSON, activeProject string, allowedProjects []string) ToolResult {
-	pl, ok := te.apiClient.(apigateway.ProviderLister)
-	if te.apiClient == nil || !ok {
+// listAPIs is a thin adapter over apiaccess.Service.ListProviders (design
+// §2 chat adapter). It keeps the session-level gates (capability/nil-dep →
+// active-project → ownership) and the registry-drift warning, then loads
+// the project's api_providers allowlist through apiaccess (via the
+// Allowlist closure) so the discovery allowlist is NOT regressed, and
+// finally renders the compact catalog. Redaction stays downstream; chat
+// discovery output is first-party.
+func (te *ToolExecutor) listAPIs(ctx context.Context, argsJSON, activeProject string, allowedProjects []string) ToolResult {
+	if te.apiClient == nil || !implementsProviderLister(te.apiClient) {
 		return ToolResult{Content: "list_apis: provider discovery not available on this daemon."}
 	}
 	if strings.TrimSpace(activeProject) == "" {
@@ -60,8 +56,8 @@ func (te *ToolExecutor) listAPIs(_ context.Context, argsJSON, activeProject stri
 	// registry or a session-permitted project absent from the registry
 	// both widen discovery to "all providers" (metadata-only, no
 	// credential surface) but the drift must be visible, so log a
-	// single warning regardless of provider count rather than one per
-	// provider inside the filter loop below.
+	// single warning regardless of provider count. apiaccess's Allowlist
+	// closure returns nil in both cases (⇒ all), preserving the widen.
 	if te.registry == nil {
 		te.logger.Warn().Str("project", activeProject).
 			Msg("list_apis: registry not wired; treating project as all-providers-allowed")
@@ -70,28 +66,13 @@ func (te *ToolExecutor) listAPIs(_ context.Context, argsJSON, activeProject stri
 			Msg("list_apis: session-permitted project absent from registry")
 	}
 
-	providers := pl.ListProviders()
-	kept := make([]apigateway.ProviderInfo, 0, len(providers))
-	for _, p := range providers {
-		if providerAllowedForProject(te.registry, activeProject, p.Name) {
-			kept = append(kept, p)
-		}
+	svc := &apiaccess.Service{
+		Client:    te.apiClient,
+		Allowlist: te.apiProvidersAllowlist,
 	}
-
-	if q := strings.ToLower(strings.TrimSpace(args.Query)); q != "" {
-		filtered := make([]apigateway.ProviderInfo, 0, len(kept))
-		for _, p := range kept {
-			if strings.Contains(strings.ToLower(p.Name), q) || strings.Contains(strings.ToLower(p.Description), q) {
-				filtered = append(filtered, p)
-			}
-		}
-		kept = filtered
-	}
-
-	truncated := false
-	if len(kept) > maxListAPIsResults {
-		kept = kept[:maxListAPIsResults]
-		truncated = true
+	kept, truncated, err := svc.ListProviders(ctx, activeProject, args.Query)
+	if err != nil {
+		return ToolResult{Content: "list_apis: could not resolve the provider catalog: " + err.Error()}
 	}
 
 	if len(kept) == 0 {
@@ -113,6 +94,10 @@ func (te *ToolExecutor) listAPIs(_ context.Context, argsJSON, activeProject stri
 		return ToolResult{Content: "list_apis: failed to render provider catalog: " + err.Error()}
 	}
 	content := string(body)
+	// Surface the narrowing hint ONLY when ListProviders actually dropped
+	// entries. A result of exactly the cap size is complete, not truncated —
+	// keying off truncated (not len(kept)==cap) avoids the false-positive
+	// note at exactly 50 providers.
 	if truncated {
 		content += "\n\nresults truncated; pass query to narrow, or reduce the project's api_providers allowlist."
 	}
@@ -129,27 +114,44 @@ func implementsProviderLister(client apigateway.Client) bool {
 	return ok
 }
 
+// apiProvidersAllowlist is the Allowlist resolver both chat adapters pass
+// to apiaccess: it returns the project's permissions.api_providers from
+// the registry (nil ⇒ all providers allowed). It never errors — a nil
+// registry or a project absent from the registry both resolve to nil
+// (the empty-means-all convention; the drift is warned about by the
+// caller, e.g. listAPIs).
+func (te *ToolExecutor) apiProvidersAllowlist(projectID string) ([]string, error) {
+	return projectAPIProviders(te.registry, projectID), nil
+}
+
+// projectAPIProviders returns the project's permissions.api_providers
+// allowlist from the registry, or nil when the registry is nil, the
+// project is absent, or the allowlist is empty (all of which mean "all
+// providers allowed" — the empty-means-all convention shared with
+// AllowedTools/AllowedProjects). Extracted so both the chat adapters'
+// Allowlist closure (apiProvidersAllowlist) and providerAllowedForProject
+// share one resolution.
+func projectAPIProviders(reg *registry.Registry, project string) []string {
+	if reg == nil {
+		return nil
+	}
+	p := reg.GetProject(project)
+	if p == nil {
+		return nil
+	}
+	return p.Permissions.APIProviders
+}
+
 // providerAllowedForProject reports whether provider is enabled for
 // project under the registry's permissions.api_providers allowlist
 // (design §4.2). A nil registry, a project absent from the registry,
 // or an empty/nil allowlist all mean "all providers allowed" — the
 // same empty-means-all convention as AllowedTools/AllowedProjects
-// elsewhere; the caller is responsible for surfacing the nil-registry/
-// missing-project drift via a warning (listAPIs does this once,
-// up front, rather than per provider here). Membership is
-// case-sensitive, matching Phase-A Registry.Lookup.
-//
-// Shared by list_apis (keep-filter, here) and query_api (per-call
-// gate before apiClient.Call — design §5.4).
+// elsewhere. Membership is case-sensitive, matching Phase-A
+// Registry.Lookup. Retained for direct callers/tests; the live tool
+// paths now gate through apiaccess.Service.
 func providerAllowedForProject(reg *registry.Registry, project, provider string) bool {
-	if reg == nil {
-		return true
-	}
-	p := reg.GetProject(project)
-	if p == nil {
-		return true
-	}
-	allow := p.Permissions.APIProviders
+	allow := projectAPIProviders(reg, project)
 	if len(allow) == 0 {
 		return true
 	}

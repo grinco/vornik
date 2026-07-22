@@ -464,6 +464,7 @@ func (r *TaskRepository) RequeueTerminalTask(ctx context.Context, id string, att
 			lease_expires_at  = NULL,
 			last_error        = NULL,
 			last_error_class  = NULL,
+			retry_requested_at = NOW(),
 			updated_at        = NOW()
 		WHERE id = $1
 		  AND status IN ('FAILED','CANCELLED','COMPLETED','PENDING')
@@ -476,6 +477,52 @@ func (r *TaskRepository) RequeueTerminalTask(ctx context.Context, id string, att
 		return false, mapDBError(err)
 	}
 	return rows > 0, nil
+}
+
+// ListRetryInFlight returns operator-retried tasks (retry_requested_at stamped
+// by RequeueTerminalTask) that are back in flight — status QUEUED/LEASED/RUNNING
+// with retry_requested_at >= since. Scoped to projectIDs when non-empty.
+func (r *TaskRepository) ListRetryInFlight(ctx context.Context, projectIDs []string, since time.Time) ([]*persistence.Task, error) {
+	query := `
+		SELECT id, project_id, workflow_id, idempotency_key, parent_task_id, creation_source,
+		       delegation_mode, status, priority, payload, dependencies,
+		       lease_id, leased_at, leased_by, lease_expires_at,
+		       attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
+		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id
+		FROM tasks
+		WHERE status IN ('QUEUED','LEASED','RUNNING')
+		  AND retry_requested_at IS NOT NULL
+		  AND retry_requested_at >= $1`
+	args := []any{since}
+	if len(projectIDs) > 0 {
+		ph := make([]string, len(projectIDs))
+		for i, id := range projectIDs {
+			ph[i] = fmt.Sprintf("$%d", i+2)
+			args = append(args, id)
+		}
+		query += " AND project_id IN (" + strings.Join(ph, ", ") + ")"
+	}
+	// Bound the informational set — these render as buttonless "Retrying…" rows
+	// in the inbox; the realistic count of operator-retried, in-flight tasks in
+	// the recency window is tiny, so a generous cap just guards against a
+	// pathological burst of scripted retries flooding the page.
+	query += " ORDER BY retry_requested_at DESC LIMIT 200"
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var tasks []*persistence.Task
+	for rows.Next() {
+		t, serr := scanTask(rows)
+		if serr != nil {
+			return nil, serr
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, mapDBError(rows.Err())
 }
 
 // LeaseTask atomically claims a queued task.

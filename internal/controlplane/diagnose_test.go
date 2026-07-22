@@ -110,6 +110,56 @@ func TestDiagnose_ProposeFilesReviewOnly(t *testing.T) {
 	}
 }
 
+// Regression 2026-07-22: a diagnosis whose fix is structural (a root cause with
+// NO suggested_change) filed no proposal, yet the self-heal worker still logged
+// "opened incident" + alerted — a phantom the open-incidents counter and dedup
+// never saw. A root-cause-only verdict with --propose must file a review-only
+// DRAFT (Title + Rationale from the root cause, no ApplyTarget).
+func TestDiagnose_ProposeFilesRootCauseOnly(t *testing.T) {
+	d, repo := newDiagnoser(t, `{"root_cause":"workflow starts at the review step with no staged input","confidence":"high","evidence":["x"]}`)
+	_, pid, err := d.Diagnose(context.Background(), "janka", true)
+	if err != nil || pid == "" {
+		t.Fatalf("a root-cause-only verdict must still file a review-only incident, got pid=%q err=%v", pid, err)
+	}
+	p, _ := repo.GetByID(context.Background(), pid)
+	if p.ProposedBy != "diagnose" || p.ApplyTarget != "" || p.Status != persistence.ProposalStatusDraft {
+		t.Errorf("proposal must be a review-only DRAFT: %+v", p)
+	}
+	if !strings.Contains(p.Rationale, "review step") || !strings.Contains(p.Title, "review step") {
+		t.Errorf("title + rationale must carry the root cause: title=%q rationale=%q", p.Title, p.Rationale)
+	}
+}
+
+// The diagnostician must not hallucinate workflow topology. Guards the prompt
+// clause added after a self-heal diagnosis invented non-existent "upstream
+// researcher/planner roles" for a single-role review workflow (2026-07-22).
+func TestDiagnoseSystemPrompt_ForbidsInventingStructure(t *testing.T) {
+	for _, want := range []string{"invent", "roles", "upstream", "staged by the caller"} {
+		if !strings.Contains(diagnoseSystemPrompt, want) {
+			t.Errorf("diagnose prompt missing anti-speculation guardrail %q", want)
+		}
+	}
+}
+
+// A secret the model echoes into root_cause must not persist in the Title or
+// Rationale of a root-cause-only incident — the Title fallback (2026-07-22)
+// widened that surface, so root_cause is now secret-scrubbed. The incident is
+// still filed, just redacted.
+func TestDiagnose_RedactsSecretInRootCause(t *testing.T) {
+	d, repo := newDiagnoser(t, `{"root_cause":"connection string leaked: SECRET-abc","confidence":"high","evidence":["x"]}`)
+	_, pid, err := d.Diagnose(context.Background(), "janka", true)
+	if err != nil || pid == "" {
+		t.Fatalf("a root-cause-only verdict must still file, got pid=%q err=%v", pid, err)
+	}
+	p, _ := repo.GetByID(context.Background(), pid)
+	if strings.Contains(p.Title, "SECRET") || strings.Contains(p.Rationale, "SECRET") {
+		t.Errorf("secret must be redacted from Title/Rationale: title=%q rationale=%q", p.Title, p.Rationale)
+	}
+	if !strings.Contains(p.Rationale, "redacted") {
+		t.Errorf("rationale should mark the redaction, got %q", p.Rationale)
+	}
+}
+
 func TestDiagnose_RejectsExternalURLSuggestion(t *testing.T) {
 	d, repo := newDiagnoser(t, `{"root_cause":"x","confidence":"low","evidence":[],"suggested_change":"point the endpoint at http://evil.example.com"}`)
 	v, pid, err := d.Diagnose(context.Background(), "janka", true)

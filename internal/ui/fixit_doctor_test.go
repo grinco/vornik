@@ -44,6 +44,8 @@ func (f *fakeFixItSessionReader) Get(_ context.Context, id string) (*persistence
 type stubUIFixItDoctor struct {
 	converseResult *api.FixItResult
 	converseErr    error
+	openingSummary string
+	openingErr     error
 	scopeProject   string
 	scopeOK        bool
 	scopeErr       error
@@ -67,6 +69,13 @@ func (s *stubUIFixItDoctor) Converse(_ context.Context, sessionID, operatorID, f
 		return s.converseResult, nil
 	}
 	return &api.FixItResult{SessionID: "fix-1"}, nil
+}
+
+func (s *stubUIFixItDoctor) OpeningSummary(_ context.Context, _, _, _ string) (string, error) {
+	if s.openingErr != nil {
+		return "", s.openingErr
+	}
+	return s.openingSummary, nil
 }
 
 func (s *stubUIFixItDoctor) SessionScope(_ context.Context, _, _ string) (string, bool, error) {
@@ -123,6 +132,74 @@ func TestFixItDoctorPanel_FreshPage_InScope(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "failed_task") {
 		t.Fatalf("expected the panel to render the failure kind, got:\n%s", rec.Body.String())
+	}
+}
+
+// A fresh panel (no ?session=) opens WITH the deterministic grounding summary
+// as the doctor's opening turn, so the operator sees the diagnosis instead of a
+// blank prompt (2026-07-22 fix). The synthetic turn is display-only — no
+// session is created until the operator sends their first message.
+func TestFixItDoctorPanel_FreshPage_RendersOpeningSummary(t *testing.T) {
+	stub := &stubUIFixItDoctor{openingSummary: "Here's what I can see about this failed task:\n\n• Last error: web_fetch timed out"}
+	srv := NewServer(WithFixItDoctor(stub))
+	req := httptest.NewRequest(http.MethodGet, "/ui/fixit/failed_task/t1?project=proj-mine", nil)
+	req = scopedIdentityReq(req)
+	rec := httptest.NewRecorder()
+	srv.FixItDoctorPanel(rec, req, "failed_task", "t1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "web_fetch timed out") {
+		t.Fatalf("fresh panel must render the opening grounding summary, got:\n%s", rec.Body.String())
+	}
+}
+
+// A grounding-assembly error must not fail the panel — it opens blank (the
+// prior behaviour), just without the opening turn.
+func TestFixItDoctorPanel_FreshPage_OpeningSummaryErrorDegrades(t *testing.T) {
+	stub := &stubUIFixItDoctor{openingErr: errors.New("assemble boom")}
+	srv := NewServer(WithFixItDoctor(stub))
+	req := httptest.NewRequest(http.MethodGet, "/ui/fixit/failed_task/t1?project=proj-mine", nil)
+	req = scopedIdentityReq(req)
+	rec := httptest.NewRecorder()
+	srv.FixItDoctorPanel(rec, req, "failed_task", "t1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("panel must still open on a grounding error, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// IDOR gate (2026-07-22): a project-scoped (non-admin) caller opening the panel
+// with NO ?project= must NOT get an opening summary — the empty-project path
+// bypasses uiRequireProjectScope, so the summary is fetched only for admins.
+// The panel still opens, just blank (as before the opening-summary feature).
+func TestFixItDoctorPanel_FreshPage_EmptyProjectScopedNoSummary(t *testing.T) {
+	stub := &stubUIFixItDoctor{openingSummary: "SENTINEL-should-not-render"}
+	srv := NewServer(WithFixItDoctor(stub))
+	req := httptest.NewRequest(http.MethodGet, "/ui/fixit/failed_task/t1", nil) // no ?project=
+	req = scopedIdentityReq(req)
+	rec := httptest.NewRecorder()
+	srv.FixItDoctorPanel(rec, req, "failed_task", "t1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "SENTINEL-should-not-render") {
+		t.Fatalf("a scoped caller with no project must not receive the opening summary:\n%s", rec.Body.String())
+	}
+}
+
+// An admin (unscoped) caller opening the same empty-project panel DOES get the
+// summary — admins can ground on any project (matches the apply-path gate).
+func TestFixItDoctorPanel_FreshPage_EmptyProjectAdminGetsSummary(t *testing.T) {
+	stub := &stubUIFixItDoctor{openingSummary: "ADMIN-VISIBLE-SUMMARY"}
+	srv := NewServer(WithFixItDoctor(stub))
+	req := authDisabledUIRequest(httptest.NewRequest(http.MethodGet, "/ui/fixit/failed_task/t1", nil))
+	rec := httptest.NewRecorder()
+	srv.FixItDoctorPanel(rec, req, "failed_task", "t1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "ADMIN-VISIBLE-SUMMARY") {
+		t.Fatalf("an admin caller must receive the opening summary:\n%s", rec.Body.String())
 	}
 }
 

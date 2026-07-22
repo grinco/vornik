@@ -381,22 +381,24 @@ func (w *TuneWorker) scanFailedRate(ctx context.Context) {
 		if !advanceStreak(w.failedBreaches, project, breaching, w.breachesToPropose()) {
 			continue
 		}
-		FileFailedRateProposal(ctx, w.Proposals, w.Logger, project, s, w.breachesToPropose(), w.threshold())
+		FileFailedRateProposal(ctx, w.Proposals, w.Logger, project, s, w.breachesToPropose(), w.threshold(), "tune-detector")
 	}
 	resetAbsent(w.failedBreaches, seen)
 }
 
 // FileFailedRateProposal writes the generic review-only failed-rate DRAFT
-// proposal (ProposedBy="tune-detector"), deduped on the open-DRAFT title. It is
-// the SINGLE source of the generic failed-rate proposal — called by the Tune
-// worker's scan AND by the SelfHealWorker when its diagnosis is unavailable
-// (self-healing design §4.5), so the logic is never duplicated.
-func FileFailedRateProposal(ctx context.Context, proposals persistence.ProposalRepository, logger zerolog.Logger, project string, s RateSample, wantStreak int, threshold float64) {
+// proposal, deduped on the open-DRAFT title. It is the SINGLE source of the
+// generic failed-rate proposal — called by the Tune worker's scan (proposedBy
+// "tune-detector") AND by the SelfHealWorker for coverage when its diagnosis is
+// unavailable or non-fileable (proposedBy "self-heal", so the open-incidents
+// counter reflects it and the worker's per-project dedup matches — self-healing
+// design §4.5). The logic is never duplicated.
+func FileFailedRateProposal(ctx context.Context, proposals persistence.ProposalRepository, logger zerolog.Logger, project string, s RateSample, wantStreak int, threshold float64, proposedBy string) {
 	title := tuneFailedRateTitle(project)
 	rationale := fmt.Sprintf("Failed-task rate %.0f%% (%d/%d) over the scan window, sustained for %d consecutive scans — above the %.0f%% threshold. Investigate the failing step (logs/traces) or consider a model/timeout change.",
 		s.Rate*100, s.Failed, s.Total, wantStreak, threshold*100)
 	evidence := fmt.Sprintf(`{"signal":"failed_task_rate","rate":%.3f,"failed":%d,"total":%d}`, s.Rate, s.Failed, s.Total)
-	fileProposal(ctx, proposals, logger, project, title, rationale, evidence, "tune-detector")
+	fileProposal(ctx, proposals, logger, project, title, rationale, evidence, proposedBy)
 }
 
 func (w *TuneWorker) scanLatency(ctx context.Context) {

@@ -586,7 +586,7 @@ func TestSweepGlobal_DisabledShortCircuits(t *testing.T) {
 	// link_codes cleanup is also unconditional; absent table → no-op.
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
-	counts, err := s.SweepGlobal(context.Background(), 0)
+	counts, err := s.SweepGlobal(context.Background(), 0, 0)
 	if err != nil {
 		t.Fatalf("SweepGlobal(0): %v", err)
 	}
@@ -598,6 +598,9 @@ func TestSweepGlobal_DisabledShortCircuits(t *testing.T) {
 	}
 	if counts.APIKeys != 0 {
 		t.Errorf("expected 0 api_keys prunes when table absent, got %d", counts.APIKeys)
+	}
+	if counts.EmbeddingCache != 0 {
+		t.Errorf("expected 0 embedding-cache prunes when disabled, got %d", counts.EmbeddingCache)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unexpected SQL: %v", err)
@@ -621,7 +624,7 @@ func TestSweepGlobal_TableAbsentNoOp(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
-	counts, err := s.SweepGlobal(context.Background(), 30)
+	counts, err := s.SweepGlobal(context.Background(), 30, 0)
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -655,7 +658,7 @@ func TestPreviewGlobal_CountsWithoutDelete(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM link_codes WHERE expires_at < $1 OR (used_at IS NOT NULL AND used_at < $1)")).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
 
-	counts, err := s.PreviewGlobal(context.Background(), 30)
+	counts, err := s.PreviewGlobal(context.Background(), 30, 0)
 	if err != nil {
 		t.Fatalf("PreviewGlobal: %v", err)
 	}
@@ -701,7 +704,7 @@ func TestSweepGlobal_DeleteRemovesRows(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM link_codes WHERE")).
 		WillReturnResult(sqlmock.NewResult(0, 2))
 
-	counts, err := s.SweepGlobal(context.Background(), 30)
+	counts, err := s.SweepGlobal(context.Background(), 30, 0)
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -743,7 +746,7 @@ func TestSweepGlobal_UISessionsDeletedWithGrace(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
-	counts, err := s.SweepGlobal(context.Background(), 0)
+	counts, err := s.SweepGlobal(context.Background(), 0, 0)
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -777,7 +780,7 @@ func TestSweepGlobal_LinkCodesDeletedWithGrace(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM link_codes WHERE expires_at < $1 OR (used_at IS NOT NULL AND used_at < $1)")).
 		WillReturnResult(sqlmock.NewResult(0, 4))
 
-	counts, err := s.SweepGlobal(context.Background(), 0)
+	counts, err := s.SweepGlobal(context.Background(), 0, 0)
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -810,7 +813,7 @@ func TestSweepGlobal_APIKeysDeletedWithGrace(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
 		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
 
-	counts, err := s.SweepGlobal(context.Background(), 0)
+	counts, err := s.SweepGlobal(context.Background(), 0, 0)
 	if err != nil {
 		t.Fatalf("SweepGlobal: %v", err)
 	}
@@ -824,7 +827,114 @@ func TestSweepGlobal_APIKeysDeletedWithGrace(t *testing.T) {
 
 func TestSweepGlobal_NilDBSafe(t *testing.T) {
 	var s *Sweeper
-	if _, err := s.SweepGlobal(context.Background(), 30); err != nil {
+	if _, err := s.SweepGlobal(context.Background(), 30, 0); err != nil {
 		t.Errorf("nil sweeper: %v", err)
+	}
+}
+
+// TestSweepGlobal_EmbeddingCacheDeleteRemovesRows pins the embedding_cache
+// eviction: with the response cache disabled (days=0) and embedding
+// days=30, the sweeper probes + deletes cold rows by last_hit_at. Closes
+// the historical gap where embedding_cache had a last_hit_at index but no
+// sweep, so the table grew unbounded (migration 41 staged the index for
+// exactly this eviction).
+func TestSweepGlobal_EmbeddingCacheDeleteRemovesRows(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	s := New(db, zerolog.Nop())
+	// response cache disabled (days=0) → no llm_response_cache probe.
+	// embedding_cache runs next; other unconditional tables absent so
+	// this test isolates the embedding cache.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.embedding_cache')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(true))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM embedding_cache WHERE last_hit_at < $1")).
+		WillReturnResult(sqlmock.NewResult(0, 8))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.ui_sessions')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.api_keys')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+
+	counts, err := s.SweepGlobal(context.Background(), 0, 30)
+	if err != nil {
+		t.Fatalf("SweepGlobal: %v", err)
+	}
+	if counts.EmbeddingCache != 8 {
+		t.Errorf("expected 8 embedding_cache deleted, got %d", counts.EmbeddingCache)
+	}
+	if counts.ResponseCache != 0 {
+		t.Errorf("expected response cache untouched when disabled, got %d", counts.ResponseCache)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sql: %v", err)
+	}
+}
+
+// TestSweepGlobal_EmbeddingCacheTableAbsentNoOp: enabled but table missing
+// (deployment predating migration 41) is a single probe + no-op, not a 500.
+func TestSweepGlobal_EmbeddingCacheTableAbsentNoOp(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	s := New(db, zerolog.Nop())
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.embedding_cache')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.ui_sessions')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.api_keys')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+
+	counts, err := s.SweepGlobal(context.Background(), 0, 30)
+	if err != nil {
+		t.Fatalf("SweepGlobal: %v", err)
+	}
+	if counts.EmbeddingCache != 0 {
+		t.Errorf("expected 0 embedding_cache prunes when table absent, got %d", counts.EmbeddingCache)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sql: %v", err)
+	}
+}
+
+// TestPreviewGlobal_EmbeddingCache pins that preview counts embedding_cache
+// rows without deleting them.
+func TestPreviewGlobal_EmbeddingCache(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	s := New(db, zerolog.Nop())
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.embedding_cache')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(true))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM embedding_cache WHERE last_hit_at < $1")).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(23))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.ui_sessions')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.api_keys')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass('public.link_codes')")).
+		WillReturnRows(sqlmock.NewRows([]string{"present"}).AddRow(false))
+
+	counts, err := s.PreviewGlobal(context.Background(), 0, 30)
+	if err != nil {
+		t.Fatalf("PreviewGlobal: %v", err)
+	}
+	if counts.EmbeddingCache != 23 {
+		t.Errorf("expected 23 embedding_cache preview rows, got %d", counts.EmbeddingCache)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet sql: %v", err)
 	}
 }

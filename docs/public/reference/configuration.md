@@ -158,6 +158,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `retention.executions_days` | int | Days to keep execution rows. |
 | `retention.artifacts_days` | int | Days to keep artifacts. |
 | `retention.response_cache_days` | int | Days to keep cached LLM responses (30d recommended on busy deployments). |
+| `retention.embedding_cache_days` | int | Days to keep cached embeddings before evicting cold entries (0 = keep forever; 30d recommended if the table grows large). |
 
 ## metrics
 
@@ -412,6 +413,15 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `composer.max_tier` | int | Highest composer tier allowed (2 disables free-form synthesis; 3 = full). |
 | `composer.max_tier3_turns` | int | Per-session cap on expensive tier-3 composer turns. |
 
+## web
+
+| Key | Type | Description |
+|---|---|---|
+| `web.writes` | string | Web write-action mode: off (default), on (per-project write_allowlist), or insecure (bypass the allowlist — dev only, requires insecure_ack). |
+| `web.insecure_ack` | bool | Must be true to activate web.writes=insecure. A deliberate second flag so the allowlist bypass cannot be enabled by a single value. |
+| `web.submit_secret` | string | Daemon↔scraper web_submit capability secret attached as daemon_auth (prefer submit_secret_file). Required when web.writes is on/insecure. |
+| `web.submit_secret_file` | string | Path to a file holding the web_submit capability secret (preferred over inline submit_secret). |
+
 ## gateway
 
 | Key | Type | Description |
@@ -421,4 +431,5 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `gateway.token` | string | Internal daemon↔gateway key-auth secret (prefer token_file). |
 | `gateway.token_file` | string | Path to a file holding the gateway token (preferred over inline token). |
 | `gateway.providers` | map | Registered API providers the agent may call by name. |
+| `gateway.agent_writes` | string | Tri-state policy for query_api writes from task-executing agents: off (default; task-originated writes refused — chat-direct writes unaffected), user (permit only when the task's request-root creation_source is USER, i.e. a human-initiated tree; autonomous/scheduled/route-rooted trees stay read-only), all (any task-originated write permitted). Always AND-gated by the provider's writes_enabled and the gateway route allowlist. 'all' is broad (a prompt-injected autonomous agent can write to every writes_enabled provider) and emits a load-time warning. |
 

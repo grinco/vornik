@@ -36,7 +36,7 @@ services:
     entrypoint:
       - /bin/sh
       - -c
-      - 'sed -e "s|__VORNIK_GATEWAY_TOKEN__|$$VORNIK_GATEWAY_TOKEN|g" -e "s|__GOOGLE_MAPS_API_KEY__|$$GOOGLE_MAPS_API_KEY|g" /kong/kong.yml.template > /tmp/kong.yml && exec /docker-entrypoint.sh kong docker-start'
+      - 'sed -e "s|__VORNIK_GATEWAY_TOKEN__|$$VORNIK_GATEWAY_TOKEN|g" -e "s|__GOOGLE_MAPS_API_KEY__|$$GOOGLE_MAPS_API_KEY|g" -e "s|__MOLTBOOK_API_KEY__|$$MOLTBOOK_API_KEY|g" /kong/kong.yml.template > /tmp/kong.yml && exec /docker-entrypoint.sh kong docker-start'
     volumes:
       - ./gateway/kong.yml.template:/kong/kong.yml.template:ro,Z
     ports:

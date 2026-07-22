@@ -28,6 +28,25 @@ services:
             querystring:
               - "key:__GOOGLE_MAPS_API_KEY__"
 
+  - name: moltbook
+    url: https://www.moltbook.com/api/v1
+    routes:
+      - name: moltbook-route
+        paths:
+          - /moltbook
+        methods:
+          - GET
+          - HEAD
+          - POST
+        strip_path: true
+    plugins:
+      # Inject the agent's Moltbook bearer token; the LLM/daemon never sees it.
+      - name: request-transformer
+        config:
+          add:
+            headers:
+              - "Authorization:Bearer __MOLTBOOK_API_KEY__"
+
 consumers:
   - username: vornik-daemon
     keyauth_credentials:

@@ -28,6 +28,11 @@ rolePrelude: |
     memory" trailer on an [Attached files] line confirms an
     extracted_document exists and the tools above will work.
 roles:
+    # 2026-07-20: ALL roles flipped to Bedrock-PRIMARY + Ollama-fallback
+    # (Ollama session-limit exhaustion — ~24% of the weekly limit burned in a
+    # day by deep-research fan-outs). The per-role comments below describe the
+    # PRIOR Ollama-primary rationale and are now INVERTED — the model /
+    # modelFallback VALUES are authoritative, not the prose.
     - name: "lead"
       description: "Plans research and writing tasks"
       count: 1
@@ -60,8 +65,13 @@ roles:
       # 2026-06-02: flipped to codex-subscription primary to cut Bedrock
       # spend (codex is plan-billed/prepaid). Current primary glm-5 is now
       # the fallback; the executor retries on it if codex errors (retry.go).
+      # 2026-07-15: Bedrock→Ollama Cloud cutover — glm-5.2 (newer GLM
+      # release, subscription capacity / session limits) is primary;
+      # Bedrock zai.glm-5 (pay-per-token, the proven prior primary)
+      # becomes the modelFallback so a session-limit hit or Ollama
+      # outage degrades to the exact model this role ran before.
       model: "zai.glm-5"
-      modelFallback: "zai.glm-4.7"
+      modelFallback: "glm-5.2"
       maxTokens: 4096
       runtime:
         image: "localhost/vornik-agent:latest"
@@ -96,8 +106,14 @@ roles:
       # context (1M tokens) at $0.30/$1.20 — perfect for research
       # where the prompt grows large. Fallback to GPT-5.4-mini via
       # codex-subscription (plan-billed).
-      model: "zai.glm-4.7"
-      modelFallback: "minimax.minimax-m2.5"
+      # 2026-07-07: glm-4.7 Bedrock Converse hanging (see config.yaml chat.model); -> glm-5.
+      # 2026-07-15: Bedrock→Ollama Cloud cutover — glm-5.2 (newer GLM
+      # release, subscription capacity / session limits) is primary;
+      # Bedrock zai.glm-5 (pay-per-token, the proven prior primary)
+      # becomes the modelFallback so a session-limit hit or Ollama
+      # outage degrades to the exact model this role ran before.
+      model: "zai.glm-5"
+      modelFallback: "glm-5.2"
       maxTokens: 8192
       # Token-efficiency guardrail (2026-06-13): the researcher was looping on
       # the same sources, spending its iteration budget instead of finishing.
@@ -145,9 +161,21 @@ roles:
         cpu: "1"
         memory: "2Gi"
         envVars:
-            VORNIK_MAX_TOOL_ITERATIONS: "120"
+            VORNIK_STEP_PROMPT_TOKEN_BUDGET: "1418228"
+            # 2026-07-21: 120 -> 25. Completed research iterations are p50=7,
+            # p95=24 (task_llm_usage); >25 is thrashing, not depth, and drove
+            # the quadratic blowout days (40-90 iter steps). 25 spares 95% of
+            # successful work. The entrypoint budget block interpolates this so
+            # the agent gets a graceful "wrap up" cue as it nears the cap.
+            VORNIK_MAX_TOOL_ITERATIONS: "25"
       permissions:
-        allowedTools: ["file_read", "file_write", "run_shell", "read_many_files", "grep", "glob", "memory_search", "current_time", "mcp__*"]
+        # 2026-07-21: mcp__* wildcard replaced with an explicit research-scoped
+        # list. The wildcard admitted EVERY MCP tool (scraper + pagedrop + news
+        # + homeassistant, ~19-25 HA tool schemas) into tools[] on every call —
+        # re-sent uncached on every tool-loop iteration (token-cost root cause,
+        # see RAG diagnostic 2026-07-21). Researcher is scoped to research +
+        # read + gateway-API tools; publishing -> publisher role, HA -> lead.
+        allowedTools: ["file_read", "file_write", "run_shell", "read_many_files", "grep", "glob", "memory_search", "current_time", "query_api", "list_apis", "mcp__scraper__web_fetch", "mcp__scraper__web_search", "mcp__scraper__ical_events", "mcp__scraper__encode_image", "mcp__vornik__document_read_section", "mcp__vornik__document_get_outline", "mcp__vornik__document_get_metadata", "mcp__swarmd__document_read_section", "mcp__swarmd__document_get_outline", "mcp__swarmd__document_get_metadata"]
         delegationAllowed: false
     - name: "planner"
       description: "Turns research.md into a structured plan or itinerary at artifacts/out/plan.md (times, durations, costs, logistics, booking requirements)"
@@ -168,8 +196,14 @@ roles:
       # the researcher/writer cost profile since this role is the
       # third leg of the same pipeline. Fallback to GPT-5.4-mini
       # via codex-subscription (plan-billed).
-      model: "zai.glm-4.7"
-      modelFallback: "minimax.minimax-m2.5"
+      # 2026-07-07: glm-4.7 Bedrock Converse hanging (see config.yaml chat.model); -> glm-5.
+      # 2026-07-15: Bedrock→Ollama Cloud cutover — glm-5.2 (newer GLM
+      # release, subscription capacity / session limits) is primary;
+      # Bedrock zai.glm-5 (pay-per-token, the proven prior primary)
+      # becomes the modelFallback so a session-limit hit or Ollama
+      # outage degrades to the exact model this role ran before.
+      model: "zai.glm-5"
+      modelFallback: "glm-5.2"
       maxTokens: 8192
       # Mirrors the writer's contract: written/path/summary on
       # success, reason on failure; produced_files verified by the
@@ -228,8 +262,14 @@ roles:
       # Rank 9, 1M context lets the writer see the full research
       # context without summarisation. $0.30/$1.20. Fallback to
       # GPT-5.4-mini via codex-subscription (plan-billed).
-      model: "zai.glm-4.7"
-      modelFallback: "minimax.minimax-m2.5"
+      # 2026-07-07: glm-4.7 Bedrock Converse hanging (see config.yaml chat.model); -> glm-5.
+      # 2026-07-15: Bedrock→Ollama Cloud cutover — glm-5.2 (newer GLM
+      # release, subscription capacity / session limits) is primary;
+      # Bedrock zai.glm-5 (pay-per-token, the proven prior primary)
+      # becomes the modelFallback so a session-limit hit or Ollama
+      # outage degrades to the exact model this role ran before.
+      model: "zai.glm-5"
+      modelFallback: "glm-5.2"
       maxTokens: 8192
       # outputSchema is the single source of truth for this role's
       # result.json shape. The executor derives requiredOutputKeys +
@@ -277,6 +317,7 @@ roles:
         cpu: "1"
         memory: "2Gi"
         envVars:
+            VORNIK_STEP_PROMPT_TOKEN_BUDGET: "191902"
             VORNIK_MAX_TOOL_ITERATIONS: "50"
       permissions:
         # Writer reads research.md produced by the researcher and
@@ -301,8 +342,16 @@ roles:
       # bedrock+codex. Fallback to GPT-5.4 via codex-subscription
       # — top-tier vision quality at plan-billed cost when Gemma
       # struggles with dense OCR.
+      # 2026-07-15: Bedrock→Ollama Cloud cutover — gemma4:31b (newer
+      # multimodal Gemma release, subscription capacity) primary;
+      # Bedrock google.gemma-3-27b-it (pay-per-token, the proven prior
+      # primary) is the fallback. NOTE: image input over the Ollama
+      # Cloud OpenAI-compat path is unproven in this deployment — if
+      # vision tasks start failing, the automatic fallback restores the
+      # prior Bedrock Gemma 3 behavior; pixtral-large remains a manual
+      # escape hatch for dense-OCR quality misses.
       model: "google.gemma-3-27b-it"
-      modelFallback: "us.mistral.pixtral-large-2502-v1:0"
+      modelFallback: "gemma4:31b"
       maxTokens: 4096
       runtime:
         image: "localhost/vornik-agent:latest"
@@ -340,8 +389,12 @@ roles:
       # zai.glm-4.7-flash, but that hallucinated <function=...> tool-call syntax
       # on task afb57207. Both open-weight. (agent_llm.timeout was also raised
       # to 200s so rendering a large page in one call doesn't time out.)
+      # 2026-07-15: Bedrock→Ollama Cloud cutover — minimax-m2.7 (newer
+      # point release of the model proven fast here on task 8011,
+      # subscription capacity) primary; Bedrock minimax.minimax-m2.5
+      # (pay-per-token, the proven prior primary) is the fallback.
       model: "minimax.minimax-m2.5"
-      modelFallback: "moonshotai.kimi-k2.5"
+      modelFallback: "minimax-m2.7"
       # HTML output is larger than prose — a full styled report can run long.
       maxTokens: 16384
       injectSchemaIntoPrompt: true
@@ -480,8 +533,14 @@ roles:
         - "document_ingest"
       count: 1
       runtimePolicy: "ephemeral"
-      model: "zai.glm-4.7"
-      modelFallback: "minimax.minimax-m2.5"
+      # 2026-07-07: glm-4.7 Bedrock Converse hanging (see config.yaml chat.model); -> glm-5.
+      # 2026-07-15: Bedrock→Ollama Cloud cutover — glm-5.2 (newer GLM
+      # release, subscription capacity / session limits) is primary;
+      # Bedrock zai.glm-5 (pay-per-token, the proven prior primary)
+      # becomes the modelFallback so a session-limit hit or Ollama
+      # outage degrades to the exact model this role ran before.
+      model: "zai.glm-5"
+      modelFallback: "glm-5.2"
       maxTokens: 8192
       injectSchemaIntoPrompt: true
       systemPrompt: |
@@ -547,8 +606,15 @@ roles:
       # (gemma-4-26b under-performed; see chat.model rationale in config.yaml).
       # 2026-05-30: switched to minimax.minimax-m2 in lockstep with
       # chat.model — Vertex trial 429s were making the dispatcher flaky.
-      model: "zai.glm-4.7"
-      modelFallback: "minimax.minimax-m2"
+      # 2026-07-07: glm-4.7 Bedrock Converse hung (see config.yaml chat.model);
+      # swapped to zai.glm-5 in lockstep with chat.model.
+      # 2026-07-15: Bedrock→Ollama Cloud cutover — glm-5.2 (newer GLM
+      # release, subscription capacity / session limits) is primary;
+      # Bedrock zai.glm-5 (pay-per-token, the proven prior primary)
+      # becomes the modelFallback so a session-limit hit or Ollama
+      # outage degrades to the exact model this role ran before.
+      model: "zai.glm-5"
+      modelFallback: "glm-5.2"
       runtime:
         image: noop:dispatcher
 ---
@@ -734,12 +800,9 @@ Context source:
 - Otherwise read project/.autonomy/PROJECT_CONTEXT.md for
   the autonomy-feed procedure (source lists, output schema).
 
-Web: the container runs with NO network (`--network none`), so
-`curl`, `wget`, and any direct HTTP from run_shell ALWAYS fail —
-never use run_shell for web access. Use mcp__scraper__web_fetch
-(when available) for every web fetch. Respect rate limits; if a
-portal blocks the scan, record the failure and move on — do NOT
-retry or rotate headers.
+Web: use mcp__scraper__web_fetch when available. Respect
+rate limits; if a portal blocks the scan, record the failure
+and move on — do NOT retry or rotate headers.
 
 Write exactly one file: artifacts/out/research.md with summary,
 key facts, source URLs/names, caveats, useful raw notes. For

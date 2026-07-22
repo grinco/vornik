@@ -313,6 +313,32 @@ func (c *Container) initHTTPServer() error {
 			return executor.EnsureReceiveGuards(ctx, filepath.Join(workspaceRoot, projectID), logger)
 		}))
 	}
+	// Agent-facing query_api/list_apis endpoints (design
+	// 2026-07-21-query-api-task-agents-design.md §2). Build the SAME
+	// fail-closed gateway client the chat dispatcher uses; a nil client
+	// (disabled/unauthenticated) leaves the endpoints reporting "not
+	// configured", and a config error disables them with a warning rather
+	// than failing boot.
+	if gwClient, err := newGatewayClient(c.Config.Gateway); err != nil {
+		c.Logger.Warn().Err(err).Msg("agent query_api endpoints disabled: gateway config error")
+	} else if gwClient != nil {
+		apiOpts = append(apiOpts, api.WithAPIGatewayClient(gwClient))
+	}
+	// gateway.agent_writes (off|user|all): the daemon-wide policy for query_api
+	// writes from task-executing agents (LLD 2026-07-22). Value was validated at
+	// config load (loader Validate fails startup on an invalid value), so the
+	// error here is unreachable; default to the fail-closed "off" if it ever is.
+	if agentWritesMode, err := c.Config.Gateway.AgentWritesMode(); err == nil {
+		apiOpts = append(apiOpts, api.WithAgentWritesMode(agentWritesMode))
+		// One-time 'all' operator warning (LLD 2026-07-22, review I4). Emitted
+		// here — NOT in the pass-2/registry block — so it fires even when
+		// observability (the metrics registry) is disabled; the once-guard keeps
+		// it to a single line across setup passes.
+		if agentWritesMode == "all" && !c.agentWritesAllWarned {
+			c.agentWritesAllWarned = true
+			c.Logger.Warn().Msg("gateway.agent_writes=all: task-executing agents (including autonomous/prompt-injectable ones) may write to every writes_enabled provider; prefer 'user' unless broad autonomous writes are intended")
+		}
+	}
 	if c.Registry != nil {
 		apiOpts = append(apiOpts, api.WithProjectRegistry(c.Registry))
 		// Forge-job classifier for the generic webhook path: stamps a
@@ -479,6 +505,12 @@ func (c *Container) initHTTPServer() error {
 		if c.dryRunMetrics == nil {
 			c.dryRunMetrics = api.NewDryRunMetrics(reg)
 		}
+		// Agent-write observability counter (LLD 2026-07-22, review I4). Same
+		// pass-2-only registry rule as the metrics above. The 'all' operator
+		// warning is emitted in the gateway block above (registry-independent).
+		if c.agentWriteMetrics == nil {
+			c.agentWriteMetrics = api.NewAgentAPIWriteMetrics(reg)
+		}
 		// Same pass-2-only rule as dryRunMetrics (see the trap notes
 		// above): build the chain-verdict counter on the served
 		// registry, never on pass 1's DefaultRegisterer.
@@ -517,6 +549,7 @@ func (c *Container) initHTTPServer() error {
 		apiOpts = append(apiOpts, api.WithMetricsRegistry(reg))
 		apiOpts = append(apiOpts, api.WithRateLimitMetrics(c.rateLimitMetrics))
 		apiOpts = append(apiOpts, api.WithDryRunMetrics(c.dryRunMetrics))
+		apiOpts = append(apiOpts, api.WithAgentAPIWriteMetrics(c.agentWriteMetrics))
 		apiOpts = append(apiOpts, api.WithChainMetrics(c.chainMetrics))
 	}
 	if c.memoryManager != nil {
@@ -922,7 +955,8 @@ func (c *Container) initHTTPServer() error {
 			}
 		}
 		apiOpts = append(apiOpts, api.WithTradingAuthVerifier(
-			tradingauth.NewVerifier(c.Config.Trading.Auth.Secret, skew)))
+			tradingauth.NewVerifier(c.Config.Trading.Auth.Secret, skew),
+		))
 	}
 	// Per-project trading-order rate limit (backlog: "per-project
 	// rate-limit before a 2nd trading project"). Dedicated in-process
@@ -1451,6 +1485,23 @@ func (c *Container) initHTTPServer() error {
 		// gracefully — the panel renders a relative path + hint.
 		ui.WithPublicBaseURL(c.Config.Server.PublicBaseURL),
 	}
+	// Supervised web-write approval surface (LLD 2026-07-21). Wired only when the
+	// scraper MCP + DB are configured (the SAME memoized repo + token store the
+	// dispatcher's web_submit tool uses — container_web_write.go). The approve
+	// handler mints the one-time token, persists its row-bound hash, and delivers
+	// the RAW token daemon-side into the shared token store; web_submit(submit)
+	// Takes it (operator-chat-driven v1 — the assistant never holds the token).
+	// agent_run_id is unused in v1 (the pending row surfaces in /inbox regardless
+	// of task status), so the deliver closure ignores it.
+	if repo, store := c.webWriteComponents(); repo != nil {
+		uiOpts = append(uiOpts,
+			ui.WithWebWriteRepo(repo),
+			ui.WithWebWriteApprovalDeliver(func(submissionID, _ /* agentRunID */, token string) error {
+				store.Put(submissionID, token)
+				return nil
+			}),
+		)
+	}
 	// Edition gate — the /trading dashboard route. Registered only when the EE
 	// trading capability is present; Community builds 404 /trading instead of
 	// leaking the dashboard (the trading-* repos above stay wired for the
@@ -1732,7 +1783,8 @@ func (c *Container) initHTTPServer() error {
 	// buttons + the logout handler. Only when session login is
 	// configured + supported (Postgres).
 	if sessionLogin != nil {
-		uiOpts = append(uiOpts,
+		uiOpts = append(
+			uiOpts,
 			ui.WithLoginProviders(sessionLogin.providerNames),
 			ui.WithLogoutHandler(sessionLogin.logoutHandler),
 		)
@@ -1952,7 +2004,8 @@ func (c *Container) adminUIOptions(deps adminUIDeps) []ui.ServerOption { //nolin
 	if deps.healingPromoter != nil {
 		opts = append(opts, ui.WithHealingCandidatePromoter(deps.healingPromoter))
 	}
-	opts = append(opts,
+	opts = append(
+		opts,
 		ui.WithAdminReadinessProvider(newAdminReadinessFromAPI(deps.apiServer)),
 		ui.WithAdminLeaseAuditSource(newAdminLeaseAudit(c.DB)),
 		ui.WithAdminStuckExecutionSource(newAdminStuckExecs(c.DB)),
@@ -1988,7 +2041,8 @@ func (c *Container) adminUIOptions(deps adminUIDeps) []ui.ServerOption { //nolin
 		opts = append(opts, ui.WithDispatcherToolInventory(inv))
 	}
 	if c.mcpManager != nil {
-		opts = append(opts,
+		opts = append(
+			opts,
 			ui.WithAdminMCPInventory(newAdminMCPInventory(c.mcpManager)),
 			ui.WithAdminMCPRefresher(newAdminMCPRefresher(c.mcpManager, c.Registry)),
 		)
@@ -2241,7 +2295,8 @@ func resolvePricingPath(configPath string) string {
 	}
 	if configPath != "" {
 		baseDir := filepath.Dir(configPath)
-		candidates = append(candidates,
+		candidates = append(
+			candidates,
 			filepath.Join(baseDir, "pricing.yaml"),
 			filepath.Join(baseDir, "configs", "pricing.yaml"),
 		)

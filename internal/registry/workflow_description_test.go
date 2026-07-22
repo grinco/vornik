@@ -126,3 +126,30 @@ func TestBundledWorkflowsCarryDescription(t *testing.T) {
 		}
 	}
 }
+
+// TestReviewWorkflowsRequireInputArtifacts — the "review an attached artifact"
+// workflows MUST set require_input_artifacts so the companion delegate handler
+// rejects an artifact-less delegation at submit. Without it (2026-07-22
+// incident) a prompt-only delegation is accepted, then the review agent
+// hard-fails at runtime on file_read(/app/input/task.json) not-found, burning
+// retries with an opaque error. Regression guard against removing the flag.
+func TestReviewWorkflowsRequireInputArtifacts(t *testing.T) {
+	dir := "../../configs/workflows"
+	mustRequire := map[string]bool{
+		"companion-architectural-review.md": true,
+		"companion-doc-review.md":           true,
+	}
+	for name := range mustRequire {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		wf, err := ParseWorkflowMarkdown(data, name)
+		if err != nil {
+			t.Fatalf("%s parse: %v", name, err)
+		}
+		if !wf.RequireInputArtifacts {
+			t.Errorf("%s: require_input_artifacts must be true — its review step reads the staged input artifact; without the flag an artifact-less delegation is accepted then fails opaquely at runtime", name)
+		}
+	}
+}

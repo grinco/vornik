@@ -185,6 +185,31 @@ type Service struct {
 	dispatchMu sync.Mutex
 }
 
+// OpeningSummary assembles the grounding bundle for ref and renders it as a
+// plain-language opening message via BuildOpeningSummary — NO LLM call and NO
+// session created. The /ui/fixit panel calls this to show the diagnosis when a
+// fresh repair session opens, instead of a blank prompt (2026-07-22). Returns
+// "" (no error) when the doctor/assembler isn't wired, ref is invalid, or the
+// bundle is empty — the panel then renders unchanged. An assembler error is
+// surfaced so the caller can log it and degrade gracefully.
+func (s *Service) OpeningSummary(ctx context.Context, ref FailureRef) (string, error) {
+	if s == nil || s.Assembler == nil {
+		return "", nil
+	}
+	// Same bounds/charset gate the fresh-session Converse path applies, so a
+	// malformed or over-long ref never reaches the assembler. A validation miss
+	// is "nothing to summarise" (return "", nil) rather than an error — the
+	// panel simply opens blank, no log noise.
+	if err := validateFailureRef(ref); err != nil {
+		return "", nil
+	}
+	bundle, err := s.Assembler.Assemble(ctx, ref)
+	if err != nil {
+		return "", err
+	}
+	return BuildOpeningSummary(bundle), nil
+}
+
 // Converse appends the operator's message to the session transcript,
 // re-grounds via Assembler.Assemble, calls the LLM with the envelope
 // schema, parses + validates the envelope (dropping any out-of-

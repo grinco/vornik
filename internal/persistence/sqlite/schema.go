@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     idempotency_key     TEXT,
     parent_task_id      TEXT REFERENCES tasks(id) ON DELETE SET NULL,
     creation_source     TEXT NOT NULL DEFAULT 'USER'
-                        CHECK (creation_source IN ('USER', 'DELEGATION', 'AUTONOMOUS', 'ROUTE', 'A2A', 'COMPANION')),
+                        CHECK (creation_source IN ('USER', 'DELEGATION', 'AUTONOMOUS', 'ROUTE', 'A2A', 'COMPANION', 'SCHEDULED', 'CHECKPOINT', 'FORK')),
     delegation_mode     TEXT
                         CHECK (delegation_mode IS NULL OR delegation_mode IN ('SEQUENTIAL', 'PARALLEL', 'FAN_OUT')),
     status              TEXT NOT NULL DEFAULT 'QUEUED'
@@ -73,6 +73,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Migration v46 parity: soft link to the dispatcher turn that
     -- created this task. See migrations.go for rationale.
     chat_turn_id        TEXT,
+    -- Migration 133 parity: set by RequeueTerminalTask when an operator
+    -- retries/requeues this terminal task (any surface — inbox/API/chat/
+    -- Telegram/doctor), so the Outcome Inbox keeps it visible as "Retrying…"
+    -- until the re-run terminates. Server-side only (set + filtered, not scanned).
+    retry_requested_at  TEXT,
     UNIQUE (project_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_project    ON tasks(project_id);

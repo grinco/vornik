@@ -223,6 +223,9 @@ func (f *fakeTaskRepo) TransitionToCancelled(context.Context, string) (bool, err
 func (f *fakeTaskRepo) RequeueTerminalTask(context.Context, string, int, int) (bool, error) {
 	panic("not implemented")
 }
+func (f *fakeTaskRepo) ListRetryInFlight(context.Context, []string, time.Time) ([]*persistence.Task, error) {
+	return nil, nil
+}
 func (f *fakeTaskRepo) LeaseTask(context.Context, persistence.LeaseOptions) (*persistence.Task, error) {
 	panic("not implemented")
 }

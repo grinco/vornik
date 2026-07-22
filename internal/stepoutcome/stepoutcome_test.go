@@ -16,6 +16,7 @@ func TestOutcomeIsTerminal(t *testing.T) {
 	}{
 		{name: "ok is terminal", outcome: OK, want: true},
 		{name: "parse error is terminal", outcome: ParseError, want: true},
+		{name: "prompt token budget is terminal", outcome: PromptTokenBudget, want: true},
 		{name: "pending validation is not terminal", outcome: PendingValidation, want: false},
 		{name: "zero value is not terminal", outcome: Outcome(""), want: false},
 	}
@@ -33,6 +34,7 @@ func TestOutcomeString(t *testing.T) {
 	t.Parallel()
 
 	assert.Equal(t, "ok", OK.String())
+	assert.Equal(t, "prompt_token_budget", PromptTokenBudget.String())
 	assert.Equal(t, "", Outcome("").String())
 	assert.Equal(t, "custom", Outcome("custom").String())
 }

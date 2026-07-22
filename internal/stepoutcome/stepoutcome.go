@@ -91,6 +91,14 @@ const (
 	// no producer to blame, the budget envelope is a system constraint.
 	BudgetTripwire Outcome = "budget_tripwire"
 
+	// PromptTokenBudget — agent loop stopped because the projected
+	// cumulative prompt-token replay for the step would exceed the
+	// configured per-step ceiling. The step exits cleanly with a
+	// tool-free finalization answer, so workflow control flow can
+	// continue while dashboards still distinguish the quality signal
+	// from a fully unconstrained OK.
+	PromptTokenBudget Outcome = "prompt_token_budget"
+
 	// Superseded — set on outcomes when an operator retries an
 	// execution from an earlier step. The retry produces fresh
 	// outcomes for the re-run steps; the original ones get this
@@ -145,6 +153,10 @@ const (
 	// active period (daily or monthly). Detail field carries the
 	// estimated next-call cost and remaining envelope.
 	ClassBudgetTripwire = "budget_tripwire"
+	// ClassPromptTokenBudget — agent self-finalized because the next
+	// request would have exceeded the configured cumulative prompt-token
+	// ceiling for the step.
+	ClassPromptTokenBudget = "prompt_token_budget"
 	// ClassEmptyDelegation — a step that pins delegated_workflow finished a
 	// fresh pass with zero delegatedTasks, so no subtasks were scheduled.
 	// Paired with SchemaViolation (empty required collection). Without the

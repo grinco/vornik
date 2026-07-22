@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,6 +79,72 @@ const priorAttemptAnchor = "\n\nYour previous attempt's content (re-format it in
 // officer reasoning chain; short enough to keep the next-attempt
 // prompt under the gateway's request size envelope.
 const priorAttemptMaxChars = 4000
+
+const (
+	shapeRetrySuppressPressureRatio = 0.85
+	infraRetrySuppressPressureRatio = 0.95
+)
+
+type retryUsageEnvelope struct {
+	Usage struct {
+		MaxPromptTokensEstimate int64 `json:"max_prompt_tokens_estimate"`
+		MaxPromptTokensActual   int64 `json:"max_prompt_tokens_actual"`
+		ContextSize             int64 `json:"context_size"`
+		MaxTokens               int64 `json:"max_tokens"`
+		MaxRequestBytes         int64 `json:"max_request_bytes"`
+	} `json:"usage"`
+}
+
+func retrySuppressPressureRatio(defaultRatio float64) float64 {
+	raw := strings.TrimSpace(os.Getenv("VORNIK_RETRY_SUPPRESS_PRESSURE_RATIO"))
+	if raw == "" {
+		return defaultRatio
+	}
+	parsed, err := strconv.ParseFloat(raw, 64)
+	if err != nil || parsed <= 0 || parsed >= 1 {
+		return defaultRatio
+	}
+	return parsed
+}
+
+func retryPromptPressureHigh(result []byte, defaultRatio float64) (bool, string) {
+	if len(result) == 0 {
+		return false, ""
+	}
+	var envelope retryUsageEnvelope
+	if err := json.Unmarshal(result, &envelope); err != nil {
+		return false, ""
+	}
+	promptTokens := envelope.Usage.MaxPromptTokensActual
+	tokenSource := "actual"
+	if promptTokens <= 0 {
+		promptTokens = envelope.Usage.MaxPromptTokensEstimate
+		tokenSource = "estimate"
+	}
+	contextSize := envelope.Usage.ContextSize
+	maxTokens := envelope.Usage.MaxTokens
+	if promptTokens <= 0 || contextSize <= 0 {
+		return false, ""
+	}
+	inputWindow := contextSize - maxTokens
+	if inputWindow <= 0 {
+		return false, ""
+	}
+	threshold := retrySuppressPressureRatio(defaultRatio)
+	pressure := float64(promptTokens) / float64(inputWindow)
+	if pressure < threshold {
+		return false, ""
+	}
+	return true, fmt.Sprintf("input pressure %.3f >= %.3f (%s_prompt_tokens=%d, input_window=%d, request_bytes=%d, context_size=%d, max_tokens=%d)",
+		pressure, threshold, tokenSource, promptTokens, inputWindow, envelope.Usage.MaxRequestBytes, contextSize, maxTokens)
+}
+
+func costAwareRetrySuppressedError(kind string, reason string, err error) error {
+	if strings.TrimSpace(reason) == "" {
+		reason = "prompt pressure too high"
+	}
+	return fmt.Errorf("cost-aware retry suppressed for %s (%s): %w", kind, reason, err)
+}
 
 // extractPriorMessage pulls the prior attempt's stripped `message`
 // field out of the agent's result.json bytes. Returns "" if the
@@ -437,6 +505,16 @@ func (e *Executor) executeAgentStepWithShapeRetry(
 	if shapeRetryMaxAttempts <= 0 {
 		return cid, result, err
 	}
+	if high, reason := retryPromptPressureHigh(result, shapeRetrySuppressPressureRatio); high {
+		e.logger.Warn().
+			Str("execution_id", execution.ID).
+			Str("step", stepID).
+			Str("role", step.Role).
+			Str("reason", reason).
+			Str("error", truncateForPrompt(err.Error(), 200)).
+			Msg("shape retry: cost-aware retry suppression")
+		return cid, result, costAwareRetrySuppressedError("shape retry", reason, err)
+	}
 
 	// Loop guard: count prior shape-failure outcomes for THIS execution
 	// across all step IDs (original + _shape_retry + _model_fallback).
@@ -630,6 +708,16 @@ func (e *Executor) executeAgentStepWithInfraRetry(
 			// retry layer or the workflow loop) without burning more
 			// retry budget on a problem that won't fix itself.
 			return cid, result, err
+		}
+		if high, reason := retryPromptPressureHigh(result, infraRetrySuppressPressureRatio); high {
+			e.logger.Warn().
+				Str("execution_id", execution.ID).
+				Str("step", stepIDForAttempt).
+				Int("attempt", attempt).
+				Str("reason", reason).
+				Str("error", truncateForPrompt(err.Error(), 200)).
+				Msg("infra retry: cost-aware retry suppression")
+			return cid, result, costAwareRetrySuppressedError("infra retry", reason, err)
 		}
 		// Timeout-class failures each cost a full per-call timeout (~120s)
 		// and rarely recover on retry, so cap them well below the general

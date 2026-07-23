@@ -19,7 +19,7 @@ steps:
     role: "lead"
     on_success: "delegated"
     on_fail: "failed"
-    timeout: "5m"
+    timeout: "30s"
 terminals:
   delegated:
     status: "COMPLETED"

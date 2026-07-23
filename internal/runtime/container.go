@@ -278,6 +278,27 @@ func sanitizeNamePart(s string) string {
 	return result
 }
 
+// qualifyAgentImage prepends the local registry to an UNQUALIFIED vornik agent
+// image, e.g. "vornik-agent:latest" → "localhost/vornik-agent:latest". Rootless
+// podman refuses to resolve a bare short-name headless, and the daemon builds
+// the agent image as localhost/vornik-agent:latest — but config round-trips
+// (control-plane applies mirroring a swarm file drafted against a bare-image
+// tree) have repeatedly re-introduced the unqualified form. This is the single
+// fail-safe primitive that keeps a bare name from ever failing a spawn,
+// wherever it leaks in from. Anything already qualified (contains '/': a
+// localhost/… or registry-host image) is returned unchanged. See
+// https://docs.vornik.io
+func qualifyAgentImage(image string) string {
+	image = strings.TrimSpace(image)
+	if strings.Contains(image, "/") {
+		return image // already qualified (localhost/…, registry host, etc.)
+	}
+	if image == "vornik-agent" || strings.HasPrefix(image, "vornik-agent:") || strings.HasPrefix(image, "vornik-agent@") {
+		return "localhost/" + image
+	}
+	return image
+}
+
 // Validate checks that the container config has all required fields.
 func (c *ContainerConfig) Validate() error {
 	c.Image = strings.TrimSpace(c.Image)
@@ -290,6 +311,9 @@ func (c *ContainerConfig) Validate() error {
 	if strings.HasPrefix(c.Image, "-") {
 		return fmt.Errorf("image must not start with '-'")
 	}
+	// Fail-safe: normalise a bare vornik-agent short-name to localhost/ so a
+	// spawn never fails on an unqualified image that drifted in via config.
+	c.Image = qualifyAgentImage(c.Image)
 	if c.ProjectID == "" {
 		return fmt.Errorf("projectId is required")
 	}

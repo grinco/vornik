@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: b2a83f2314023bcb1b97a6b70c4d984d32c79c33c26d7b696d07a09f93ae168e
+      sha256: c209f3447a23a7b3dd49e9a23712277ece7089ad232dade7da00c257bd5677ae
 ---
 # Release Notes
 
@@ -52,6 +52,26 @@ model-health is fully visible in the doctor.
   overlaps itself, and an interrupted daemon can't lose or double-send an
   outcome. See [vornikctl reminders](../reference/vornikctl.md) and
   [Observability](../guides/observability.md) for the new metrics.
+- **macOS install.** The one-liner `curl -fsSL https://get.vornik.io | bash`
+  now works on **macOS** as well as Linux — the same command; the script detects
+  your OS. On macOS it provisions a small Linux VM and runs the stack inside it,
+  so the zero-egress agent isolation is preserved exactly as on Linux. See
+  [Getting started](../getting-started.md#macos-inside-a-linux-vm).
+- **Control-plane: apply tuning changes without waiting for an idle window.** A
+  *value-only* workflow edit — e.g. reclaiming an over-provisioned step timeout —
+  now applies even while tasks that use the workflow are in flight; only
+  *structural* changes still wait for an idle window. Recommendations that go
+  stale (their config target changed since they were drafted) now **auto-retire**
+  instead of lingering as un-appliable, and the detector re-files a fresh one.
+- **Control-plane hub is tidier.** The proposals inbox hides closed
+  (rejected / rolled-back) rows by default and paginates; the skills browser
+  hides retired skills by default; system-retired rows carry a distinct label so
+  they don't read as human rejections; and long MCP/dispatcher tool descriptions
+  now collapse behind a toggle.
+- **Safer rollback.** Rolling back an applied change is refused when a later
+  change overwrote the same target (or it was hand-edited), so a rollback can no
+  longer silently clobber newer state — roll back the newer change first. The
+  hub hides the rollback button on a proposal that's been superseded.
 
 See `docs/release-notes/2026.7.4.md`.
 

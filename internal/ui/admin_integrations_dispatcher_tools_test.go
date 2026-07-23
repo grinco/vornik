@@ -88,6 +88,35 @@ func TestAdminIntegrationsDispatcherTools_HappyPath(t *testing.T) {
 	}
 }
 
+// TestAdminIntegrationsDispatcherTools_DescriptionCollapsed — a tool's
+// (often long, MCP-authored) description renders collapsed by default behind a
+// toggle, in a scrollable read-only block (mirroring the skill-prompt pattern),
+// rather than dumped inline into the table cell. The full text stays in the DOM
+// so it's searchable/expandable.
+func TestAdminIntegrationsDispatcherTools_DescriptionCollapsed(t *testing.T) {
+	long := "PUBLISHING — choose the tool by content format. Markdown → publish_doc; HTML → publish_page. " +
+		"This is a deliberately long MCP tool description that would otherwise blow up the table row height."
+	rows := []AdminDispatcherToolRow{
+		{Name: "pagedrop_publish_doc", Description: long, BackingService: "pagedrop", Available: true},
+	}
+	srv := NewServer(WithDispatcherToolInventory(&stubDispatcherToolInventory{rows: rows}))
+	req := httptest.NewRequest(http.MethodGet, "/ui/admin/integrations/dispatcher-tools", nil)
+	rec := httptest.NewRecorder()
+	srv.AdminIntegrationsDispatcherTools(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	// Collapsed-by-default toggle present.
+	if !strings.Contains(body, "<details") || !strings.Contains(body, "View description") {
+		t.Errorf("expected a collapsed <details> description toggle; excerpt %q", firstN(body, 800))
+	}
+	// Full description text still in the DOM (inside the expandable block).
+	if !strings.Contains(body, long) {
+		t.Errorf("full description text must remain in the DOM (searchable/expandable)")
+	}
+}
+
 // TestAdminIntegrationsDispatcherTools_EmptyList — inventory wired
 // but returning zero rows (degenerate case; should never happen in
 // real deployments). Renders a distinct copy from the not-wired

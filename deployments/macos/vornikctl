@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+#
+# mac-host vornikctl shim — forwards to the real vornikctl binary running
+# inside the 'vornik' Lima VM, but intercepts a handful of commands BEFORE
+# the generic forward for diagnostics and safety (design
+# https://docs.vornik.io, §3.3):
+#   status  — also surfaces `systemctl --user status vornik` in the VM.
+#   logs    — runs `journalctl --user -u vornik` in the VM.
+#   delete  — refuses without --force (destroys ALL in-VM data) and NEVER
+#             silently forwards to `limactl delete`.
+#   update  — notes the two separate update surfaces (in-VM stack vs.
+#             mac-side tooling) before forwarding.
+# Anything else falls through to the generic forward (see the catch-all
+# case at the bottom of the case statement below).
+#
+# A dead port-forward would otherwise leave the operator with nothing to go
+# on, so VM-missing/stopped is detected via `limactl list` and reported with
+# a fix-it hint instead of hanging or erroring opaquely.
+set -euo pipefail
+
+c_yellow=$'\033[1;33m'; c_red=$'\033[1;31m'; c_off=$'\033[0m'
+warn() { printf '%s !!%s %s\n' "$c_yellow" "$c_off" "$*" >&2; }
+die()  { printf '%s xx%s %s\n' "$c_red"    "$c_off" "$*" >&2; exit 1; }
+
+# vm_status — the Lima status string (Running/Stopped/...) for the 'vornik'
+# VM, or empty if Lima doesn't know about it at all.
+vm_status() {
+  limactl list --format '{{.Status}}' vornik 2>/dev/null || true
+}
+
+# require_vm_running — print the re-install/start hint and exit instead of
+# letting a dead port-forward / unreachable `limactl shell` hang or fail
+# opaquely.
+require_vm_running() {
+  local status
+  status="$(vm_status)"
+  if [ -z "$status" ]; then
+    die "No Lima VM named 'vornik' found. Install Vornik first: bash deployments/macos/install.sh"
+  fi
+  if [ "$status" != "Running" ]; then
+    die "Lima VM 'vornik' exists but is not running (status: $status). Start it: limactl start vornik"
+  fi
+}
+
+cmd="${1:-}"
+
+case "$cmd" in
+  delete)
+    shift || true
+    force=0
+    for a in "$@"; do
+      [ "$a" = "--force" ] && force=1
+    done
+    if [ "$force" -ne 1 ]; then
+      warn "Refusing to delete the vornik VM without --force."
+      warn "This destroys ALL in-VM data (Postgres included)."
+      warn "run \`vornikctl backup <path>\` first — this destroys all in-VM data."
+      die "Re-run with --force once you have a backup: vornikctl delete --force"
+    fi
+    require_vm_running
+    exec limactl delete --force vornik
+    ;;
+
+  status)
+    require_vm_running
+    shift || true
+    echo "== limactl VM status =="
+    limactl list vornik
+    echo
+    echo "== systemd --user status vornik (in VM) =="
+    limactl shell vornik -- systemctl --user status vornik --no-pager || true
+    echo
+    echo "== in-VM vornikctl status =="
+    exec limactl shell vornik vornikctl status "$@"
+    ;;
+
+  logs)
+    require_vm_running
+    shift || true
+    exec limactl shell vornik -- journalctl --user -u vornik "$@"
+    ;;
+
+  update)
+    require_vm_running
+    shift || true
+    warn "Two update surfaces: the in-VM stack (daemon/Postgres/agent image, forwarded below)"
+    warn "vs. mac-side tooling (this shim, install.sh, vornik.yaml) — that one updates by"
+    warn "re-running install.sh: bash deployments/macos/install.sh"
+    exec limactl shell vornik vornikctl update "$@"
+    ;;
+
+  "")
+    die "Usage: vornikctl <command> [args...] — e.g. status, logs, update, 'delete --force', or any in-VM vornikctl subcommand"
+    ;;
+
+  *)
+    require_vm_running
+    exec limactl shell vornik vornikctl "$@"
+    ;;
+esac

@@ -114,7 +114,7 @@ func (s *Server) AdminSkills(w http.ResponseWriter, r *http.Request) {
 	for _, sk := range all {
 		counts[sk.Maturity]++
 	}
-	data.Tabs = append(data.Tabs, AdminSkillTab{Key: "", Label: "All", Count: len(all), Active: filter == ""})
+	data.Tabs = append(data.Tabs, AdminSkillTab{Key: "", Label: "Current", Count: len(all) - counts[persistence.SkillMaturityRetired], Active: filter == ""})
 	for _, m := range adminSkillMaturities {
 		data.Tabs = append(data.Tabs, AdminSkillTab{
 			Key: m.Key, Label: m.Label, Count: counts[m.Key], Active: filter == m.Key,
@@ -122,6 +122,9 @@ func (s *Server) AdminSkills(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, sk := range all {
+		if filter == "" && sk.Maturity == persistence.SkillMaturityRetired {
+			continue
+		}
 		if filter != "" && sk.Maturity != filter {
 			continue
 		}

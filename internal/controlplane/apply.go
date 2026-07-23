@@ -56,7 +56,17 @@ var (
 	// drafted (its recorded base hash no longer matches) — re-draft against
 	// current config. Optimistic concurrency for hub-authored config edits.
 	ErrStaleBase = errors.New("control-plane: config changed since this proposal was drafted; re-draft it")
+	// ErrRollbackTargetDrifted means the proposal's target changed since it was
+	// applied — a later overlapping apply overwrote it, or it was hand-edited — so
+	// restoring this proposal's snapshot would clobber that change. Roll back the
+	// newer change first (design 2026-07-23 §D).
+	ErrRollbackTargetDrifted = errors.New("control-plane: rollback target changed since it was applied (a later change overwrote it, or it was hand-edited); roll back the newer change first")
 )
+
+// AutoRetireStaleActor is the approver stamped on a proposal auto-retired
+// (→ REJECTED) because its config target drifted since drafting (design
+// 2026-07-23 §B). The authoring detector re-files a fresh proposal.
+const AutoRetireStaleActor = "system:auto-retire-stale"
 
 // scaffoldMaxOps caps the file ops in one apply (a project + swarm + a few
 // workflows; refuse a runaway plan). Design §3.
@@ -267,6 +277,15 @@ func (e *ApplyEngine) Apply(ctx context.Context, id, actor string, ackDaemon boo
 	// Optimistic concurrency: if the proposal recorded a base hash (hub-authored
 	// config edit), refuse when the on-disk file has changed since drafting.
 	if berr := verifyBaseHash(p, resolved); berr != nil {
+		if errors.Is(berr, ErrStaleBase) {
+			if serr := e.Proposals.SetStatus(ctx, id, persistence.ProposalStatusRejected, AutoRetireStaleActor); serr != nil {
+				e.Logger.Warn().Err(serr).Str("proposal_id", id).
+					Msg("control-plane: stale proposal auto-retire failed")
+			} else {
+				e.Logger.Info().Str("proposal_id", id).
+					Msg("control-plane: stale proposal auto-retired (config drifted since drafted)")
+			}
+		}
 		return berr
 	}
 	// Semantic re-validation of the typed change against current state
@@ -410,13 +429,8 @@ func (e *ApplyEngine) reverseWrites(written []resolvedOp) {
 // file changed since the proposal was drafted (ErrStaleBase). Proposals without
 // a base hash (workers, scaffold, legacy) skip the check entirely.
 func verifyBaseHash(p *persistence.ControlPlaneProposal, resolved []resolvedOp) error {
-	if strings.TrimSpace(p.Evidence) == "" {
-		return nil
-	}
-	var ev struct {
-		BaseHash string `json:"base_hash"`
-	}
-	if err := json.Unmarshal([]byte(p.Evidence), &ev); err != nil || ev.BaseHash == "" {
+	base, ok := parseBaseHash(p.Evidence)
+	if !ok {
 		return nil // Evidence isn't a base-hash envelope — not a hub config edit
 	}
 	// The base hash covers the (single) config-target file this proposal edits.
@@ -424,11 +438,26 @@ func verifyBaseHash(p *persistence.ControlPlaneProposal, resolved []resolvedOp) 
 		if !ro.existed {
 			continue
 		}
-		if hashBytes(ro.preImage) == ev.BaseHash {
+		if hashBytes(ro.preImage) == base {
 			return nil
 		}
 	}
 	return ErrStaleBase
+}
+
+// parseBaseHash extracts a proposal Evidence's optional {"base_hash":"..."}.
+// ok=false when Evidence is empty, not JSON, or carries no base_hash.
+func parseBaseHash(evidence string) (string, bool) {
+	if strings.TrimSpace(evidence) == "" {
+		return "", false
+	}
+	var ev struct {
+		BaseHash string `json:"base_hash"`
+	}
+	if err := json.Unmarshal([]byte(evidence), &ev); err != nil || ev.BaseHash == "" {
+		return "", false
+	}
+	return ev.BaseHash, true
 }
 
 func hashBytes(b []byte) string {
@@ -447,6 +476,118 @@ func readIfExists(path string) ([]byte, bool, error) {
 		return nil, false, nil
 	}
 	return nil, false, err
+}
+
+// proposalTargets returns the rel target paths a proposal writes (multi-op ops,
+// else the single ApplyTarget; empty for review-only / kind-applier proposals).
+func proposalTargets(p *persistence.ControlPlaneProposal) []string {
+	if strings.TrimSpace(p.ApplyOps) != "" {
+		var ops []applyFileOp
+		if err := json.Unmarshal([]byte(p.ApplyOps), &ops); err == nil {
+			out := make([]string, 0, len(ops))
+			for _, o := range ops {
+				out = append(out, o.Path)
+			}
+			return out
+		}
+	}
+	if strings.TrimSpace(p.ApplyTarget) != "" {
+		return []string{p.ApplyTarget}
+	}
+	return nil
+}
+
+// targetsOverlap reports whether two rel-path sets share any path.
+func targetsOverlap(a, b []string) bool {
+	set := make(map[string]struct{}, len(a))
+	for _, x := range a {
+		set[x] = struct{}{}
+	}
+	for _, y := range b {
+		if _, ok := set[y]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// expectedContentByPath maps each rel path a proposal writes to the content it
+// wrote (byte-exact; the apply engine writes op.Content/ApplyContent verbatim).
+func expectedContentByPath(p *persistence.ControlPlaneProposal) map[string]string {
+	m := map[string]string{}
+	if strings.TrimSpace(p.ApplyOps) != "" {
+		var ops []applyFileOp
+		if err := json.Unmarshal([]byte(p.ApplyOps), &ops); err == nil {
+			for _, o := range ops {
+				m[o.Path] = o.Content
+			}
+		}
+		return m
+	}
+	if strings.TrimSpace(p.ApplyTarget) != "" {
+		m[p.ApplyTarget] = p.ApplyContent
+	}
+	return m
+}
+
+// rollbackUnsafe reports whether rolling P back would clobber a later change:
+// ordering (a later-or-equal overlapping APPLIED proposal exists) or drift (disk
+// no longer matches what P applied). Returns an error only for infra failures
+// (list/read); the bool is the safety verdict.
+func (e *ApplyEngine) rollbackUnsafe(ctx context.Context, p *persistence.ControlPlaneProposal) (bool, error) {
+	// A non-empty ApplyOps that won't parse means we can't reason about this
+	// proposal's targets — fail closed (refuse the rollback) rather than proceed
+	// unguarded.
+	if s := strings.TrimSpace(p.ApplyOps); s != "" {
+		var ops []applyFileOp
+		if err := json.Unmarshal([]byte(s), &ops); err != nil {
+			return true, nil
+		}
+	}
+	targets := proposalTargets(p)
+	if len(targets) == 0 {
+		return false, nil
+	}
+	// Ordering: is any OTHER applied proposal that overlaps P's targets applied
+	// at-or-after P? If so, P is not the live top — refuse (content-independent,
+	// closes the identical-content case).
+	applied, err := e.Proposals.List(ctx, persistence.ProposalListFilter{Statuses: []string{persistence.ProposalStatusApplied}})
+	if err != nil {
+		return false, fmt.Errorf("rollback safety: list applied: %w", err)
+	}
+	for _, q := range applied {
+		if q == nil || q.ID == p.ID {
+			continue
+		}
+		if !targetsOverlap(targets, proposalTargets(q)) {
+			continue
+		}
+		// q supersedes p if it applied strictly later, or at the same instant with a
+		// higher ID (stable tie-break → exactly one of an equal-timestamp pair is the
+		// live top). Unknown timestamps can't be ordered: fail closed (treat p as not
+		// top when an overlapping APPLIED q exists) rather than risk clobbering q.
+		if p.AppliedAt == nil || q.AppliedAt == nil {
+			return true, nil
+		}
+		if q.AppliedAt.After(*p.AppliedAt) || (q.AppliedAt.Equal(*p.AppliedAt) && q.ID > p.ID) {
+			return true, nil
+		}
+	}
+	// Drift: disk must still equal exactly what P applied.
+	for rel, want := range expectedContentByPath(p) {
+		full, terr := e.resolveTarget(rel)
+		if terr != nil {
+			return false, terr
+		}
+		cur, existed, rerr := readIfExists(full)
+		if rerr != nil {
+			return false, fmt.Errorf("rollback safety: read %s: %w", rel, rerr)
+		}
+		if !existed || hashBytes(cur) != hashBytes([]byte(want)) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Rollback restores an APPLIED proposal's pre-apply snapshot.
@@ -473,6 +614,13 @@ func (e *ApplyEngine) Rollback(ctx context.Context, id string) error {
 		e.Logger.Info().Str("proposal_id", id).Str("kind", p.Kind).
 			Msg("control-plane: kind-applier proposal rolled back")
 		return nil
+	}
+	if unsafe, uerr := e.rollbackUnsafe(ctx, p); uerr != nil {
+		return uerr
+	} else if unsafe {
+		e.Logger.Warn().Str("proposal_id", id).
+			Msg("control-plane: rollback refused — target overwritten by a later change or hand-edited")
+		return ErrRollbackTargetDrifted
 	}
 	if p.PreApplySnapshot == "" {
 		return ErrSnapshotMissing

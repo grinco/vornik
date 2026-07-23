@@ -39,7 +39,20 @@
                                 <span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider rounded-md bg-gray-800 text-gray-400 ring-1 ring-gray-700">disabled</span>
                                 {{end}}
                             </td>
-                            <td class="px-4 py-2 text-gray-300 align-top">{{.Description}}</td>
+                            <td class="px-4 py-2 text-gray-300 align-top">
+                                {{if .Description}}
+                                {{/* Collapsed by default into a scrollable read-only block — MCP tool
+                                     descriptions are often multi-paragraph and would otherwise blow up
+                                     row height. Mirrors the skill-prompt render (admin_skills.html). */}}
+                                <details class="group">
+                                    <summary class="cursor-pointer list-none flex items-center gap-1 text-[11px] text-brand-400 hover:text-brand-300 select-none">
+                                        <span class="group-open:hidden">▸ View description ({{len .Description}} chars)</span>
+                                        <span class="hidden group-open:inline">▾ Hide description</span>
+                                    </summary>
+                                    <pre class="mt-2 whitespace-pre-wrap text-[11px] text-gray-300 bg-dark-900 rounded p-2 max-h-[50vh] overflow-auto">{{.Description}}</pre>
+                                </details>
+                                {{else}}<span class="text-gray-600">—</span>{{end}}
+                            </td>
                         </tr>
                         {{end}}
                     </tbody>

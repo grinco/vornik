@@ -2,11 +2,13 @@ package ui
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"vornik.io/vornik/internal/controlplane"
 	"vornik.io/vornik/internal/persistence"
@@ -58,11 +60,17 @@ func seedProposal(t *testing.T, repo persistence.ProposalRepository, id, title, 
 	}
 	if status != persistence.ProposalStatusDraft {
 		// Drive to the target status via the repo transitions.
-		if status == persistence.ProposalStatusApproved || status == persistence.ProposalStatusApplied {
+		switch status {
+		case persistence.ProposalStatusApproved, persistence.ProposalStatusApplied, persistence.ProposalStatusRolledBack:
 			_ = repo.SetStatus(context.Background(), id, persistence.ProposalStatusApproved, "seed-approver")
+		case persistence.ProposalStatusRejected:
+			_ = repo.SetStatus(context.Background(), id, persistence.ProposalStatusRejected, "seed-approver")
 		}
-		if status == persistence.ProposalStatusApplied {
+		if status == persistence.ProposalStatusApplied || status == persistence.ProposalStatusRolledBack {
 			_ = repo.MarkApplied(context.Background(), id, "seed-op", "OLD")
+		}
+		if status == persistence.ProposalStatusRolledBack {
+			_ = repo.MarkRolledBack(context.Background(), id)
 		}
 	}
 }
@@ -364,5 +372,198 @@ func TestBuildCPOverview_FoldsBlackBoxTriggers(t *testing.T) {
 	NewServer().buildCPOverview(context.Background(), &ce, nil)
 	if ce.OpenTriggerCount != 0 || len(ce.OpenTriggers) != 0 {
 		t.Errorf("CE (no repo) must not populate triggers; got %d", ce.OpenTriggerCount)
+	}
+}
+
+func TestAdminControlPlane_DefaultHidesClosed(t *testing.T) {
+	repo := newProposalRepoUI(t)
+	seedProposal(t, repo, "d1", "pending one", persistence.ProposalStatusDraft, false, "tune-detector")
+	seedProposal(t, repo, "r1", "rejected one", persistence.ProposalStatusRejected, false, "tune-detector")
+	seedProposal(t, repo, "rb1", "rolled back one", persistence.ProposalStatusRolledBack, true, "tune-detector")
+
+	s := NewServer(WithProposalStore(repo))
+	// Default proposals view (no status filter) hides REJECTED / ROLLED_BACK.
+	rec := httptest.NewRecorder()
+	s.AdminControlPlane(rec, httptest.NewRequest(http.MethodGet, "/admin/control-plane?section=proposals", nil))
+	body := rec.Body.String()
+	if strings.Contains(body, "rejected one") || strings.Contains(body, "rolled back one") {
+		t.Fatal("default proposals view must hide REJECTED/ROLLED_BACK rows")
+	}
+	if !strings.Contains(body, "pending one") {
+		t.Fatal("default view must still show open proposals")
+	}
+	// The "Open" tab count must reflect only the visible (open) rows — 1 here —
+	// not the full set incl. the hidden REJECTED/ROLLED_BACK rows (regression
+	// guard: the relabel from "All" to "Open" must not advertise hidden rows).
+	if !strings.Contains(body, `Open <span class="opacity-70">1</span>`) {
+		t.Errorf("Open tab count must equal the visible open rows (1), not the full set (3)")
+	}
+	// The Rejected tab reveals them.
+	rec = httptest.NewRecorder()
+	s.AdminControlPlane(rec, httptest.NewRequest(http.MethodGet, "/admin/control-plane?section=proposals&status=REJECTED", nil))
+	if !strings.Contains(rec.Body.String(), "rejected one") {
+		t.Fatal("Rejected tab must show rejected proposals")
+	}
+}
+
+func TestAdminControlPlane_Paginates(t *testing.T) {
+	repo := newProposalRepoUI(t)
+	for i := 0; i < cpProposalsPageSize+5; i++ {
+		seedProposal(t, repo, fmt.Sprintf("d%d", i), fmt.Sprintf("pending %d", i), persistence.ProposalStatusDraft, false, "tune-detector")
+	}
+	s := NewServer(WithProposalStore(repo))
+	rec := httptest.NewRecorder()
+	s.AdminControlPlane(rec, httptest.NewRequest(http.MethodGet, "/admin/control-plane?section=proposals", nil))
+	body := rec.Body.String()
+	// Page 1 exposes a next-page link and no prev link.
+	if !strings.Contains(body, "page=2") {
+		t.Fatal("page 1 must expose a next-page link when rows exceed the page size")
+	}
+}
+
+// TestAdminControlPlane_SupersededHidesRollback covers design 2026-07-23 §D.2:
+// an APPLIED proposal that a later overlapping-target APPLIED proposal
+// overwrote is no longer the live top-of-stack — its rollback would be
+// refused by the D1 engine guard, so the hub hides the button and shows the
+// "superseded" badge instead.
+func TestAdminControlPlane_SupersededHidesRollback(t *testing.T) {
+	repo := newProposalRepoUI(t)
+	base := time.Unix(1700000000, 0)
+	older := base
+	newer := base.Add(time.Minute)
+	mustCreate(t, repo, &persistence.ControlPlaneProposal{
+		ID: "p1", ProjectID: "janka", Kind: persistence.ProposalKindConfig,
+		BlastRadius: persistence.ProposalScopeProject, Title: "older apply",
+		Status: persistence.ProposalStatusApplied, ProposedBy: "agent",
+		Approver: "human", AppliedBy: "human", ApplyTarget: "config.yaml",
+		AppliedAt: &older,
+	})
+	mustCreate(t, repo, &persistence.ControlPlaneProposal{
+		ID: "p2", ProjectID: "janka", Kind: persistence.ProposalKindConfig,
+		BlastRadius: persistence.ProposalScopeProject, Title: "newer apply",
+		Status: persistence.ProposalStatusApplied, ProposedBy: "agent",
+		Approver: "human", AppliedBy: "human", ApplyTarget: "config.yaml",
+		AppliedAt: &newer,
+	})
+
+	s := NewServer(WithProposalStore(repo))
+	rec := httptest.NewRecorder()
+	s.AdminControlPlane(rec, httptest.NewRequest(http.MethodGet, "/admin/control-plane?section=proposals&status=APPLIED", nil))
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if !strings.Contains(body, "superseded — rollback unavailable") {
+		t.Error("expected the superseded badge on the overwritten row")
+	}
+	if got := strings.Count(body, "↩ Rollback"); got != 1 {
+		t.Errorf("expected exactly 1 rollback button (superseded row's hidden), got %d", got)
+	}
+}
+
+// TestAdminControlPlane_DisjointTargetsKeepBothRollbacks is the negative case:
+// two APPLIED proposals with DIFFERENT targets never overlap, so neither is
+// superseded and both keep their rollback button.
+func TestAdminControlPlane_DisjointTargetsKeepBothRollbacks(t *testing.T) {
+	repo := newProposalRepoUI(t)
+	base := time.Unix(1700000000, 0)
+	older := base
+	newer := base.Add(time.Minute)
+	mustCreate(t, repo, &persistence.ControlPlaneProposal{
+		ID: "p1", ProjectID: "janka", Kind: persistence.ProposalKindConfig,
+		BlastRadius: persistence.ProposalScopeProject, Title: "config apply",
+		Status: persistence.ProposalStatusApplied, ProposedBy: "agent",
+		Approver: "human", AppliedBy: "human", ApplyTarget: "config.yaml",
+		AppliedAt: &older,
+	})
+	mustCreate(t, repo, &persistence.ControlPlaneProposal{
+		ID: "p2", ProjectID: "janka", Kind: persistence.ProposalKindConfig,
+		BlastRadius: persistence.ProposalScopeProject, Title: "other apply",
+		Status: persistence.ProposalStatusApplied, ProposedBy: "agent",
+		Approver: "human", AppliedBy: "human", ApplyTarget: "other.yaml",
+		AppliedAt: &newer,
+	})
+
+	s := NewServer(WithProposalStore(repo))
+	rec := httptest.NewRecorder()
+	s.AdminControlPlane(rec, httptest.NewRequest(http.MethodGet, "/admin/control-plane?section=proposals&status=APPLIED", nil))
+	body := rec.Body.String()
+	if strings.Contains(body, "superseded") {
+		t.Error("disjoint targets must not trigger the superseded badge")
+	}
+	if got := strings.Count(body, "↩ Rollback"); got != 2 {
+		t.Errorf("expected both rollback buttons (disjoint targets), got %d", got)
+	}
+}
+
+// TestAdminControlPlane_EqualTimestampTieBreak mirrors the engine's strict
+// tie-break at the UI layer: two overlapping APPLIED proposals with the SAME
+// AppliedAt must render exactly one rollback button (the higher-ID row),
+// with the lower-ID row showing the superseded badge — never both refused,
+// never both allowed.
+func TestAdminControlPlane_EqualTimestampTieBreak(t *testing.T) {
+	repo := newProposalRepoUI(t)
+	at := time.Unix(1700000000, 0)
+	mustCreate(t, repo, &persistence.ControlPlaneProposal{
+		ID: "cpp_aaa", ProjectID: "janka", Kind: persistence.ProposalKindConfig,
+		BlastRadius: persistence.ProposalScopeProject, Title: "tie low",
+		Status: persistence.ProposalStatusApplied, ProposedBy: "agent",
+		Approver: "human", AppliedBy: "human", ApplyTarget: "config.yaml",
+		AppliedAt: &at,
+	})
+	mustCreate(t, repo, &persistence.ControlPlaneProposal{
+		ID: "cpp_bbb", ProjectID: "janka", Kind: persistence.ProposalKindConfig,
+		BlastRadius: persistence.ProposalScopeProject, Title: "tie high",
+		Status: persistence.ProposalStatusApplied, ProposedBy: "agent",
+		Approver: "human", AppliedBy: "human", ApplyTarget: "config.yaml",
+		AppliedAt: &at,
+	})
+
+	s := NewServer(WithProposalStore(repo))
+	rec := httptest.NewRecorder()
+	s.AdminControlPlane(rec, httptest.NewRequest(http.MethodGet, "/admin/control-plane?section=proposals&status=APPLIED", nil))
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if !strings.Contains(body, "superseded — rollback unavailable") {
+		t.Error("expected the superseded badge on the equal-timestamp lower-ID row")
+	}
+	if got := strings.Count(body, "↩ Rollback"); got != 1 {
+		t.Errorf("expected exactly 1 rollback button (tie-break top only), got %d", got)
+	}
+	if !strings.Contains(body, "tie high") {
+		t.Error("expected the higher-ID (tie-break top) row to render")
+	}
+}
+
+// TestAdminControlPlane_AutoRetiredLabel covers the system-vs-human rejection
+// distinction: a row retired by the system (Approver system:*) renders a
+// distinct "auto-retired (stale)" label instead of a plain rejection.
+func TestAdminControlPlane_AutoRetiredLabel(t *testing.T) {
+	repo := newProposalRepoUI(t)
+	mustCreate(t, repo, &persistence.ControlPlaneProposal{
+		ID: "p1", ProjectID: "janka", Kind: persistence.ProposalKindConfig,
+		BlastRadius: persistence.ProposalScopeProject, Title: "stale draft",
+		Status: persistence.ProposalStatusRejected, ProposedBy: "agent",
+		Approver: "system:auto-retire-stale",
+	})
+
+	s := NewServer(WithProposalStore(repo))
+	rec := httptest.NewRecorder()
+	s.AdminControlPlane(rec, httptest.NewRequest(http.MethodGet, "/admin/control-plane?section=proposals&status=REJECTED", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "auto-retired (stale)") {
+		t.Error("expected the auto-retired label for a system:-approver rejection")
+	}
+}
+
+// mustCreate seeds a proposal directly via repo.Create (bypassing SetStatus
+// transitions) so tests can construct explicit APPLIED/REJECTED rows with
+// controlled AppliedAt timestamps.
+func mustCreate(t *testing.T, repo persistence.ProposalRepository, p *persistence.ControlPlaneProposal) {
+	t.Helper()
+	if err := repo.Create(context.Background(), p); err != nil {
+		t.Fatalf("create %s: %v", p.ID, err)
 	}
 }

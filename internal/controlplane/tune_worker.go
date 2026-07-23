@@ -295,6 +295,54 @@ func (w *TuneWorker) tick(ctx context.Context) {
 	w.scanLatency(ctx)
 	w.scanToolLatency(ctx)
 	w.scanTimeoutReclaim(ctx)
+	w.scanStaleProposals(ctx)
+}
+
+// scanStaleProposals retires APPROVED single-op config proposals whose target
+// file drifted since drafting (base_hash no longer matches on-disk), so a
+// proposal that can never apply (ErrStaleBase) stops surfacing as actionable
+// (design 2026-07-23 §B). Reuses REJECTED via SetStatus; the authoring
+// detector re-files a fresh proposal (tune dedupes on open-DRAFT title only).
+// Requires the Actionizer to read the deployed tree; a no-op otherwise.
+func (w *TuneWorker) scanStaleProposals(ctx context.Context) {
+	if w.Actionize == nil || w.Actionize.ReadFile == nil {
+		return
+	}
+	approved, err := w.Proposals.List(ctx, persistence.ProposalListFilter{
+		Statuses: []string{persistence.ProposalStatusApproved},
+	})
+	if err != nil {
+		w.Logger.Warn().Err(err).Msg("control-plane: stale-proposal sweep: list failed")
+		return
+	}
+	for _, p := range approved {
+		if p == nil {
+			continue
+		}
+		// Multi-op / review-only proposals are out of scope for the base-hash
+		// staleness check (which covers a single config-target file).
+		if strings.TrimSpace(p.ApplyOps) != "" || strings.TrimSpace(p.ApplyTarget) == "" {
+			continue
+		}
+		base, ok := parseBaseHash(p.Evidence)
+		if !ok {
+			continue
+		}
+		fresh := false
+		if cur, rerr := w.Actionize.ReadFile(p.ApplyTarget); rerr == nil && hashBytes(cur) == base {
+			fresh = true
+		}
+		if fresh {
+			continue
+		}
+		if serr := w.Proposals.SetStatus(ctx, p.ID, persistence.ProposalStatusRejected, AutoRetireStaleActor); serr != nil {
+			w.Logger.Warn().Err(serr).Str("proposal_id", p.ID).
+				Msg("control-plane: stale-proposal sweep: retire failed")
+			continue
+		}
+		w.Logger.Info().Str("proposal_id", p.ID).Str("target", p.ApplyTarget).
+			Msg("control-plane: auto-retired stale proposal (config drifted since drafted)")
+	}
 }
 
 // scanTimeoutReclaim is the reclaim-capacity counterpart to scanLatency:

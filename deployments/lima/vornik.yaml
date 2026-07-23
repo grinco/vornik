@@ -1,0 +1,163 @@
+# Lima VM template for the macOS Vornik install
+# (https://docs.vornik.io, §3.1-§3.2).
+#
+# This VM *is* the "Linux host" the rest of the Vornik design targets: the
+# daemon, PostgreSQL, exec-scratch, agent workspaces, and agent containers
+# all share one filesystem view INSIDE this VM, exactly as on bare-metal
+# Linux — that's what preserves the zero-egress invariant across the
+# mac<->VM boundary (design §2).
+#
+# Raw Lima (not podman machine, not Colima — see design §3.1): we run a
+# general-purpose Linux host process (the vornik daemon under
+# `systemd --user`) that happens to spawn containers, not a managed
+# container-runtime appliance.
+#
+# Launched via: deployments/macos/install.sh, which does:
+#   limactl start --name vornik \
+#     --vm-type="$(pick_backend)" --arch="$(pick_arch)" \
+#     --cpus="${VORNIK_VM_CPUS:-4}" --memory="${VORNIK_VM_MEM:-8GiB}" \
+#     --disk="${VORNIK_VM_DISK:-60GiB}" \
+#     deployments/lima/vornik.yaml
+# (Re-running install.sh is idempotent: an existing `vornik` VM is reused,
+# see vm_exists() in install.sh.)
+
+# --- Backend + arch (design §3.1) ------------------------------------------
+# vmType is a PLACEHOLDER the installer fills at launch via `limactl start
+# --vm-type=...`: vz (Apple Virtualization) on Apple Silicon macOS >= 13,
+# qemu on Intel or pre-13 macOS (the vz floor). The value below is only the
+# default used if this template is launched directly (`limactl start
+# deployments/lima/vornik.yaml` with no override) — install.sh's
+# pick_backend() always overrides it from `sw_vers`.
+vmType: "vz"
+
+# Guest image arch matches the host arch (installer picks via `uname -m`,
+# see pick_arch() in install.sh) — arm64 on Apple Silicon (primary,
+# supported), amd64 on Intel (best-effort). No emulation: this avoids the
+# Rosetta/TCG tax and the rootless-podman-under-emulation seccomp seams.
+# Standard distro (Ubuntu LTS) so quickstart.sh's assumptions
+# (systemd --user, rootless podman, an ordinary user) hold unmodified.
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+# --- Pinned VM user (design §3.1, §3.2) ------------------------------------
+# We reuse the Ubuntu cloud image's default 'ubuntu' user with a FIXED uid,
+# pinned here rather than left to Lima's default (which otherwise creates a
+# guest user matching the *host* username/uid). Pinning keeps the user
+# stable across `limactl delete` + recreate, so the provision hook below and
+# quickstart.sh (step 3 of install.sh) always target the same known account
+# and mount ownership never drifts.
+user:
+  name: "ubuntu"
+  uid: 1000
+
+# CPU/mem/disk sizing for agent workloads — these are DEFAULTS; install.sh
+# overrides them per VORNIK_VM_CPUS/_MEM/_DISK via `limactl start`'s own
+# --cpus/--memory/--disk flags (env-tunable, design §3.2).
+cpus: 4
+memory: "8GiB"
+disk: "60GiB"
+
+# --- Port forward (design §3.2) --------------------------------------------
+# The daemon API/UI, forwarded to the mac's LOOPBACK only (never 0.0.0.0) —
+# see design §5 (F6): any local mac process can reach an unauthenticated
+# admin surface via this forward, so it must never be exposed beyond
+# 127.0.0.1. guestPort 8080 is VORNIK_HTTP_PORT's in-VM default; a
+# non-default VORNIK_HTTP_PORT requires editing this hostPort too (Lima has
+# no CLI override for portForwards, unlike --cpus/--memory/--disk/--vm-type/
+# --arch).
+portForwards:
+  - guestPort: 8080
+    hostIP: "127.0.0.1"
+    hostPort: 8080
+
+# --- Mounts (design §3.2, §3.4 / F3) ---------------------------------------
+# ONLY ~/.config/vornik is host-mounted, and it is writable so the operator
+# can edit config from macOS (single-writer rule: the in-VM daemon is the
+# sole writer; a mac-side edit must be followed by a config-reload, and must
+# not race a daemon-side admin-API write — see design §3.2). This list
+# REPLACES Lima's default mounts (home read-only + /tmp/lima writable) —
+# deliberately: no broader host<->VM filesystem bridge exists.
+#
+# The data dir (quickstart.sh's DATA_DIR, including the Postgres data dir)
+# is intentionally NOT mounted here and lives only inside the VM's own ext4/xfs
+# (design §3.4, F3): virtiofs cannot guarantee the fsync/fdatasync semantics
+# Postgres's WAL needs, so an unclean VM stop over a virtiofs-mounted data
+# dir risks torn WAL / silent corruption. Host-side persistence for data is
+# explicit via `vornikctl backup` (pg_dump, not a raw data-dir copy), never
+# a live mount.
+mounts:
+  - location: "~/.config/vornik"
+    mountPoint: "~/.config/vornik"
+    writable: true
+
+# --- Provision hook (design §3.2) ------------------------------------------
+# Runs as root (mode: system) at every VM boot (Lima re-runs `provision:` on
+# EVERY boot, not just VM creation) — so it is SENTINEL-GUARDED: a marker
+# file makes the subuid/subgid seeding, linger enablement, and
+# rootless-podman first-run happen exactly once, not on every start. Its
+# explicit contract is to leave the VM in the exact state quickstart.sh
+# assumes, so quickstart.sh itself runs completely UNMODIFIED (no
+# macOS-awareness bolted into the Linux installer).
+#
+# The sentinel is written ONLY after every step below has actually
+# succeeded — enable-linger is no longer `|| true`-swallowed, so a genuine
+# failure (of subuid/subgid seeding, enable-linger, or the podman
+# first-run) leaves the sentinel absent and the whole hook re-runs (and
+# retries) on the VM's next boot, instead of being masked forever. Each
+# individual step stays idempotent (grep-guarded / re-runnable) so re-running
+# already-succeeded steps on a retry is safe.
+provision:
+  - mode: system
+    boot: true
+    script: |
+      #!/bin/sh
+      set -eu
+
+      SENTINEL="/var/lib/vornik-provisioned"
+      if [ -f "$SENTINEL" ]; then
+        # Already provisioned (and confirmed successful) on a prior boot —
+        # nothing to do. This guard is what keeps a sentinel-guarded hook
+        # from re-seeding subuid/subgid, re-enabling linger, or re-running
+        # the podman first-run on every subsequent `limactl start`.
+        exit 0
+      fi
+
+      VMUSER="ubuntu"
+
+      # Seed /etc/subuid + /etc/subgid for the pinned VM user — rootless
+      # podman's user-namespace uid/gid mapping needs a subordinate range
+      # before its first run, and the cloud image does not ship one by
+      # default for every distro release. Idempotent (grep-guarded); a
+      # real failure here (e.g. /etc/subuid not writable) aborts the
+      # script (set -e) with the sentinel unwritten, so the hook retries
+      # next boot.
+      grep -q "^${VMUSER}:" /etc/subuid 2>/dev/null || echo "${VMUSER}:100000:65536" >> /etc/subuid
+      grep -q "^${VMUSER}:" /etc/subgid 2>/dev/null || echo "${VMUSER}:100000:65536" >> /etc/subgid
+
+      # Keep the pinned VM user's systemd --user manager running across a
+      # non-interactive `limactl shell` session (mirrors quickstart.sh's own
+      # `loginctl enable-linger "$(id -un)"`, but must target the VM user
+      # here since this hook runs as root). NOT `|| true`-swallowed: a real
+      # failure here must abort the hook (set -e) so the sentinel is never
+      # written and the next boot retries, rather than silently leaving
+      # linger disabled forever.
+      loginctl enable-linger "${VMUSER}"
+
+      # Rootless-podman first-run as the pinned VM user, so the user-namespace
+      # / subuid mapping and storage are initialized once here rather than
+      # racing with quickstart.sh's own first podman invocation. Best-effort
+      # (podman may legitimately not be installed yet at first boot) —
+      # `|| true` is acceptable here because it is a warm-up, not a
+      # correctness precondition quickstart.sh depends on.
+      su - "${VMUSER}" -c "podman info >/dev/null 2>&1" || true
+
+      # Sentinel written only once every step above that CAN fail (subuid/
+      # subgid seeding, enable-linger) has actually succeeded — see the
+      # `set -eu` at the top: any failure above exits the script before this
+      # point is reached, so the sentinel stays absent and the hook re-runs
+      # (and retries) on the VM's next boot.
+      mkdir -p "$(dirname "$SENTINEL")"
+      touch "$SENTINEL"

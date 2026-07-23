@@ -2,10 +2,12 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +27,16 @@ import (
 // candidate/workflow-proposal detail pages).
 
 const adminCPPageLimit = 500
+
+// cpProposalsPageSize bounds how many rows the Proposals tab renders per page
+// (in-memory paging over the unified inbox — design 2026-07-23 §C.1).
+const cpProposalsPageSize = 50
+
+// cpIsClosedStatus reports whether status is hidden from the default
+// (no-filter) proposals view; each remains reachable via its own status tab.
+func cpIsClosedStatus(status string) bool {
+	return status == persistence.ProposalStatusRejected || status == persistence.ProposalStatusRolledBack
+}
 
 // AdminCPRow is one proposal rendered to the console table.
 type AdminCPRow struct {
@@ -46,6 +58,13 @@ type AdminCPRow struct {
 	CanApply    bool // APPROVED + has an apply target
 	CanRollback bool // APPLIED
 	ReviewOnly  bool // APPROVED but no apply target → "action by hand"
+	// RollbackSuperseded: an APPLIED proposal that is no longer the live
+	// top-of-stack for its targets — a later overlapping apply overwrote it,
+	// so its rollback is unavailable (the engine guard would refuse it).
+	RollbackSuperseded bool
+	// AutoRetired: a closed row retired by the system (Approver system:*),
+	// e.g. auto-retire-stale — labelled distinctly from human rejections.
+	AutoRetired bool
 	IsDaemon    bool // daemon-scope → DAEMON badge + warning line
 	LiveApply   bool // applies live (skips the busy gate) → no idle wait
 	// NeedsAck generalises the apply-ack checkbox (design §4.5): daemon
@@ -164,6 +183,10 @@ type AdminControlPlaneData struct {
 	MCPWritable bool
 	Flash       string
 	Error       string
+	// Proposals pagination (in-memory over the assembled+filtered rows).
+	Page         int
+	PrevPageHref string
+	NextPageHref string
 }
 
 // AdminCPDiagnoseResult backs the Diagnose tab after a run.
@@ -278,7 +301,11 @@ func (s *Server) AdminControlPlane(w http.ResponseWriter, r *http.Request) {
 		s.buildCPMCP(ctx, &data)
 	default: // proposals
 		data.SourceFilter = strings.TrimSpace(r.URL.Query().Get("source"))
-		s.buildCPProposals(ctx, &data, all, filter, data.SourceFilter)
+		page := 1
+		if n, perr := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("page"))); perr == nil && n > 1 {
+			page = n
+		}
+		s.buildCPProposals(ctx, &data, all, filter, data.SourceFilter, page)
 	}
 	s.render(w, "admin_control_plane.html", data)
 }
@@ -405,7 +432,7 @@ func (s *Server) buildCPOverview(ctx context.Context, data *AdminControlPlaneDat
 // buildCPProposals fills the Proposals section: the status tab bar + the
 // filtered rows of the UNIFIED inbox — control-plane ledger rows plus the
 // architect/healing rows folded in from the memetic stores (Part B §5.2).
-func (s *Server) buildCPProposals(ctx context.Context, data *AdminControlPlaneData, all []*persistence.ControlPlaneProposal, filter, sourceFilter string) {
+func (s *Server) buildCPProposals(ctx context.Context, data *AdminControlPlaneData, all []*persistence.ControlPlaneProposal, filter, sourceFilter string, page int) {
 	inboxRows, architectWired, healingWired := s.buildCPInboxRows(ctx)
 	counts := map[string]int{}
 	sourceCounts := map[string]int{}
@@ -422,7 +449,11 @@ func (s *Server) buildCPProposals(ctx context.Context, data *AdminControlPlaneDa
 		sourceCounts[r.Source]++
 	}
 	total := len(all) + len(inboxRows)
-	data.Tabs = append(data.Tabs, AdminCPTab{Key: "", Label: "All", Count: total, Active: filter == ""})
+	// The default "Open" view hides closed ledger rows (REJECTED/ROLLED_BACK),
+	// so its tab count must exclude them too — otherwise the badge advertises
+	// rows the view doesn't render (mirrors the skills "Current" tab).
+	openCount := total - counts[persistence.ProposalStatusRejected] - counts[persistence.ProposalStatusRolledBack]
+	data.Tabs = append(data.Tabs, AdminCPTab{Key: "", Label: "Open", Count: openCount, Active: filter == ""})
 	for _, st := range adminCPStatuses {
 		data.Tabs = append(data.Tabs, AdminCPTab{Key: st.Key, Label: st.Label, Count: counts[st.Key], Active: filter == st.Key})
 	}
@@ -445,9 +476,15 @@ func (s *Server) buildCPProposals(ctx context.Context, data *AdminControlPlaneDa
 	// Control-plane ledger rows — hidden entirely when an inbox-only source
 	// (architect/healing) is selected; the inverse holds below.
 	ledgerHidden := sourceFilter == cpSourceArchitect || sourceFilter == cpSourceHealing
+	superseded := cpSupersededLedgerIDs(all)
 	for _, p := range all {
 		if ledgerHidden {
 			break
+		}
+		// Default view (no status filter) hides closed ledger rows — each
+		// remains reachable via its own status tab (design 2026-07-23 §C.1).
+		if filter == "" && cpIsClosedStatus(p.Status) {
+			continue
 		}
 		if filter != "" && p.Status != filter {
 			continue
@@ -455,7 +492,7 @@ func (s *Server) buildCPProposals(ctx context.Context, data *AdminControlPlaneDa
 		if sourceFilter != "" && p.ProposedBy != sourceFilter {
 			continue
 		}
-		data.Rows = append(data.Rows, s.cpLedgerRow(p))
+		data.Rows = append(data.Rows, s.cpLedgerRow(p, superseded))
 	}
 	for _, r := range inboxRows {
 		if filter != "" && r.Status != filter {
@@ -466,15 +503,130 @@ func (s *Server) buildCPProposals(ctx context.Context, data *AdminControlPlaneDa
 		}
 		data.Rows = append(data.Rows, r)
 	}
+
+	cpPaginateProposals(data, filter, sourceFilter, page)
+}
+
+// cpPaginateProposals slices the already-assembled+filtered data.Rows down to
+// the requested page (in-memory — a single SQL OFFSET can't span the ledger
+// + inbox stores, design 2026-07-23 §C.1) and sets the prev/next hrefs,
+// preserving the active status/source filters. Tab counts are computed over
+// the FULL merged set upstream and stay accurate regardless of the page.
+func cpPaginateProposals(data *AdminControlPlaneData, filter, sourceFilter string, page int) {
+	if page < 1 {
+		page = 1
+	}
+	data.Page = page
+	total := len(data.Rows)
+	start := (page - 1) * cpProposalsPageSize
+	if start > total {
+		start = total
+	}
+	end := start + cpProposalsPageSize
+	if end > total {
+		end = total
+	}
+	data.Rows = data.Rows[start:end]
+	hrefFor := func(p int) string {
+		v := url.Values{}
+		v.Set("section", cpSectionProposals)
+		if filter != "" {
+			v.Set("status", filter)
+		}
+		if sourceFilter != "" {
+			v.Set("source", sourceFilter)
+		}
+		v.Set("page", strconv.Itoa(p))
+		return "/ui/admin/control-plane?" + v.Encode()
+	}
+	if page > 1 {
+		data.PrevPageHref = hrefFor(page - 1)
+	}
+	if end < total {
+		data.NextPageHref = hrefFor(page + 1)
+	}
+}
+
+// cpProposalTargets returns the rel target paths a ledger proposal writes.
+func cpProposalTargets(p *persistence.ControlPlaneProposal) []string {
+	if strings.TrimSpace(p.ApplyOps) != "" {
+		var ops []struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal([]byte(p.ApplyOps), &ops); err == nil {
+			out := make([]string, 0, len(ops))
+			for _, o := range ops {
+				out = append(out, o.Path)
+			}
+			return out
+		}
+	}
+	if strings.TrimSpace(p.ApplyTarget) != "" {
+		return []string{p.ApplyTarget}
+	}
+	return nil
+}
+
+// cpTargetsOverlap reports whether a and b share at least one target path.
+func cpTargetsOverlap(a, b []string) bool {
+	set := make(map[string]struct{}, len(a))
+	for _, x := range a {
+		set[x] = struct{}{}
+	}
+	for _, y := range b {
+		if _, ok := set[y]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// cpSupersededLedgerIDs returns the set of APPLIED ledger proposals that are NOT
+// the live top-of-stack for their targets: another APPLIED proposal with an
+// overlapping target set was applied at-or-after them. Ordering-only (no disk),
+// matching the render-time contract of design 2026-07-23 §D.2 — its rollback
+// would be refused by the apply-engine guard, so the UI hides the button.
+func cpSupersededLedgerIDs(all []*persistence.ControlPlaneProposal) map[string]bool {
+	applied := make([]*persistence.ControlPlaneProposal, 0)
+	for _, p := range all {
+		if p != nil && p.Status == persistence.ProposalStatusApplied {
+			applied = append(applied, p)
+		}
+	}
+	superseded := map[string]bool{}
+	for _, p := range applied {
+		pt := cpProposalTargets(p)
+		if len(pt) == 0 {
+			continue
+		}
+		for _, q := range applied {
+			if q.ID == p.ID {
+				continue
+			}
+			if !cpTargetsOverlap(pt, cpProposalTargets(q)) {
+				continue
+			}
+			if p.AppliedAt == nil || q.AppliedAt == nil {
+				superseded[p.ID] = true
+				break
+			}
+			if q.AppliedAt.After(*p.AppliedAt) || (q.AppliedAt.Equal(*p.AppliedAt) && q.ID > p.ID) {
+				superseded[p.ID] = true
+				break
+			}
+		}
+	}
+	return superseded
 }
 
 // cpLedgerRow renders one control-plane ledger proposal as a hub row.
-func (s *Server) cpLedgerRow(p *persistence.ControlPlaneProposal) AdminCPRow {
+func (s *Server) cpLedgerRow(p *persistence.ControlPlaneProposal, superseded map[string]bool) AdminCPRow {
 	// KindApplierManaged kinds (e.g. instinct_retire) are applied by a
 	// registered state-mutating KindApplier, not the file-based path — they
 	// are applyable even with empty ApplyTarget/ApplyOps.
 	applyable := strings.TrimSpace(p.ApplyTarget) != "" || strings.TrimSpace(p.ApplyOps) != "" ||
 		persistence.KindApplierManaged(p.Kind)
+	isSuperseded := p.Status == persistence.ProposalStatusApplied && superseded[p.ID]
 	row := AdminCPRow{
 		ID: p.ID, Title: p.Title, Status: p.Status, Kind: p.Kind, BlastRadius: p.BlastRadius,
 		ProjectID: p.ProjectID, ProposedBy: p.ProposedBy, Approver: p.Approver, AppliedBy: p.AppliedBy,
@@ -482,12 +634,14 @@ func (s *Server) cpLedgerRow(p *persistence.ControlPlaneProposal) AdminCPRow {
 		CanApprove: p.Status == persistence.ProposalStatusDraft,
 		// Reject a DRAFT; withdraw an APPROVED-but-unappliable proposal
 		// (e.g. superseded by a re-draft) — both route to REJECTED.
-		CanReject:   p.Status == persistence.ProposalStatusDraft || p.Status == persistence.ProposalStatusApproved,
-		CanApply:    p.Status == persistence.ProposalStatusApproved && applyable,
-		CanRollback: p.Status == persistence.ProposalStatusApplied,
-		ReviewOnly:  p.Status == persistence.ProposalStatusApproved && !applyable,
-		IsDaemon:    p.BlastRadius == persistence.ProposalScopeDaemon,
-		LiveApply:   p.LiveApply,
+		CanReject:          p.Status == persistence.ProposalStatusDraft || p.Status == persistence.ProposalStatusApproved,
+		CanApply:           p.Status == persistence.ProposalStatusApproved && applyable,
+		CanRollback:        p.Status == persistence.ProposalStatusApplied && !isSuperseded,
+		ReviewOnly:         p.Status == persistence.ProposalStatusApproved && !applyable,
+		IsDaemon:           p.BlastRadius == persistence.ProposalScopeDaemon,
+		LiveApply:          p.LiveApply,
+		RollbackSuperseded: isSuperseded,
+		AutoRetired:        p.Status == persistence.ProposalStatusRejected && p.Approver == controlplane.AutoRetireStaleActor,
 	}
 	// Blast-radius ack (design §4.5): daemon AND swarm scopes require
 	// the acknowledgement checkbox before apply. Same ackDaemon field —

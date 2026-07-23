@@ -188,6 +188,8 @@
                                     · by <code class="text-gray-400">{{.ProposedBy}}</code>
                                     {{if .Approver}} · approved by <code class="text-gray-400">{{.Approver}}</code>{{end}}
                                     {{if .AppliedBy}} · applied by <code class="text-gray-400">{{.AppliedBy}}</code>{{end}}
+                                    {{if .RollbackSuperseded}}<span class="ml-2 px-1.5 py-0.5 text-[10px] rounded bg-dark-700 text-gray-400 border border-dark-600">superseded — rollback unavailable</span>{{end}}
+                                    {{if .AutoRetired}}<span class="ml-2 px-1.5 py-0.5 text-[10px] rounded bg-dark-700 text-amber-400/80 border border-dark-600">auto-retired (stale)</span>{{end}}
                                 </div>
                                 {{end}}
                                 {{if .Rationale}}<div class="text-xs text-gray-400 mt-2">{{.Rationale}}</div>{{end}}
@@ -290,6 +292,12 @@
                     </div>
                     {{end}}
                 </div>
+                {{end}}
+                {{if or .PrevPageHref .NextPageHref}}
+                <nav class="cp-pager flex items-center justify-between gap-2 pt-2 text-xs">
+                    {{if .PrevPageHref}}<a href="{{.PrevPageHref}}" class="text-brand-400 hover:text-brand-300">← Prev</a>{{else}}<span></span>{{end}}
+                    {{if .NextPageHref}}<a href="{{.NextPageHref}}" class="text-brand-400 hover:text-brand-300">Next →</a>{{end}}
+                </nav>
                 {{end}}
                 {{end}}{{/* end section=proposals */}}
 

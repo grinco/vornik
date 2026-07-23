@@ -47,7 +47,13 @@ type ConfigDiff struct {
 	ChangedSwarms    []string
 	DeletedSwarms    []string
 	ChangedWorkflows []string
-	DeletedWorkflows []string
+	// StructurallyChangedWorkflows is the subset of ChangedWorkflows whose
+	// change goes beyond runtime-tuning scalars (design 2026-07-23 §A). The
+	// reload conflict guard treats only these as conflicting with in-flight
+	// work; a value-only (timeout/retry/wall-clock/visit-cap) change applies
+	// live.
+	StructurallyChangedWorkflows []string
+	DeletedWorkflows             []string
 }
 
 // HasChanges reports whether the diff contains any changes.
@@ -356,13 +362,21 @@ func (r *Registry) DiffStaged() (ConfigDiff, error) {
 		return ConfigDiff{}, fmt.Errorf("no staged configuration available")
 	}
 
+	changedWFs := changedIDs(r.active.workflows, r.staged.workflows)
+	structuralWFs := make([]string, 0, len(changedWFs))
+	for _, id := range changedWFs {
+		if workflowChangeIsStructural(r.active.workflows[id], r.staged.workflows[id]) {
+			structuralWFs = append(structuralWFs, id)
+		}
+	}
 	return ConfigDiff{
-		ChangedProjects:  changedIDs(r.active.projects, r.staged.projects),
-		DeletedProjects:  deletedIDs(r.active.projects, r.staged.projects),
-		ChangedSwarms:    changedIDs(r.active.swarms, r.staged.swarms),
-		DeletedSwarms:    deletedIDs(r.active.swarms, r.staged.swarms),
-		ChangedWorkflows: changedIDs(r.active.workflows, r.staged.workflows),
-		DeletedWorkflows: deletedIDs(r.active.workflows, r.staged.workflows),
+		ChangedProjects:              changedIDs(r.active.projects, r.staged.projects),
+		DeletedProjects:              deletedIDs(r.active.projects, r.staged.projects),
+		ChangedSwarms:                changedIDs(r.active.swarms, r.staged.swarms),
+		DeletedSwarms:                deletedIDs(r.active.swarms, r.staged.swarms),
+		ChangedWorkflows:             changedWFs,
+		StructurallyChangedWorkflows: structuralWFs,
+		DeletedWorkflows:             deletedIDs(r.active.workflows, r.staged.workflows),
 	}, nil
 }
 

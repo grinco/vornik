@@ -57,7 +57,7 @@ REPO_URL="${VORNIK_REPO_URL:-https://github.com/grinco/vornik}"
 # (`make quickstart-stamp-ref REF=<tag>`), so the PUBLISHED installer pins a
 # concrete release rather than a moving branch. Keep it a real, recent tag in
 # the repo. Override at runtime with VORNIK_REF (e.g. VORNIK_REF=main).
-DEFAULT_VORNIK_REF="2026.7.3"
+DEFAULT_VORNIK_REF="2026.7.4"
 REF="${VORNIK_REF:-$DEFAULT_VORNIK_REF}"
 DIR="${VORNIK_DIR:-$HOME/vornik}"
 HTTP_PORT="${VORNIK_HTTP_PORT:-8080}"
@@ -165,7 +165,20 @@ require_safe_checkout_dir() {
 # without running the install body (which calls sudo/podman/git/build).
 if [ "${VORNIK_QUICKSTART_SOURCED:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
 
-[ "$(uname -s)" = "Linux" ] || die "This quickstart targets Linux (rootless podman). For macOS/Windows or k8s, see deployments/podman/README.md and docs/public/getting-started.md."
+# macOS handoff: this script is the get.vornik.io entry point for BOTH OSes
+# (the redirect serves it for every path; the OS is differentiated HERE, not by
+# URL). A native-mac daemon can't preserve zero-egress, so macOS runs the whole
+# stack in a Lima Linux VM — hand off to that installer, which provisions the VM
+# and runs THIS quickstart inside it (where uname=Linux, so the guard below is a
+# no-op and the Linux install proceeds — no loop). See
+# https://docs.vornik.io
+if [ "$(uname -s)" = "Darwin" ]; then
+  mac_base="${VORNIK_INSTALL_BASE:-https://raw.githubusercontent.com/grinco/vornik/${REF}/deployments}"
+  echo "vornik: macOS detected → handing off to the Lima-VM installer (${mac_base}/macos/install.sh)"
+  curl -fsSL "${mac_base}/macos/install.sh" | VORNIK_REF="${REF}" bash
+  exit "$?"
+fi
+[ "$(uname -s)" = "Linux" ] || die "This quickstart targets Linux or macOS (rootless podman / Lima VM). For Windows or k8s, see deployments/podman/README.md and docs/public/getting-started.md."
 [ "$(id -u)" -ne 0 ] || die "Run as a normal (non-root) user: Vornik CE installs as a rootless 'systemctl --user' service and spawns agents via your rootless podman. (The Enterprise RPM/deb is the system-service path.)"
 
 CONFIG_DIR="$HOME/.config/vornik"

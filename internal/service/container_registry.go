@@ -317,7 +317,7 @@ func collectTaskConflicts(ctx context.Context, repo persistence.TaskRepository, 
 	}
 
 	projectChanges := toSet(append(append([]string{}, diff.ChangedProjects...), diff.DeletedProjects...))
-	workflowChanges := toSet(append(append([]string{}, diff.ChangedWorkflows...), diff.DeletedWorkflows...))
+	workflowChanges := toSet(append(append([]string{}, diff.StructurallyChangedWorkflows...), diff.DeletedWorkflows...))
 
 	seen := make(map[string]struct{})
 	var conflicts []string
@@ -362,7 +362,7 @@ func collectExecutionConflicts(ctx context.Context, execRepo persistence.Executi
 	}
 
 	projectChanges := toSet(append(append([]string{}, diff.ChangedProjects...), diff.DeletedProjects...))
-	workflowChanges := toSet(append(append([]string{}, diff.ChangedWorkflows...), diff.DeletedWorkflows...))
+	workflowChanges := toSet(append(append([]string{}, diff.StructurallyChangedWorkflows...), diff.DeletedWorkflows...))
 
 	seen := make(map[string]struct{})
 	var conflicts []string

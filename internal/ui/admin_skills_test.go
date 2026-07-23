@@ -224,6 +224,30 @@ func TestAdminSkills_MaturityFilter(t *testing.T) {
 	}
 }
 
+func TestAdminSkills_DefaultHidesRetired(t *testing.T) {
+	ctx := context.Background()
+	repo := newSkillRepoUI(t)
+	_ = repo.Create(ctx, &persistence.Skill{ID: "a1", ProjectID: "p1", Name: "an-active", Description: "d", Body: "b", BodySHA256: "h", Maturity: persistence.SkillMaturityActive})
+	_ = repo.Create(ctx, &persistence.Skill{ID: "r1", ProjectID: "p1", Name: "a-retired", Description: "d", Body: "b", BodySHA256: "h", Maturity: persistence.SkillMaturityRetired})
+
+	s := NewServer(WithSkillRepository(repo))
+	rec := httptest.NewRecorder()
+	s.AdminSkills(rec, httptest.NewRequest(http.MethodGet, "/admin/skills", nil))
+	body := rec.Body.String()
+	if strings.Contains(body, "a-retired") {
+		t.Fatal("default skills view must hide retired skills")
+	}
+	if !strings.Contains(body, "an-active") {
+		t.Fatal("default view must show active skills")
+	}
+	// Retired tab reveals them.
+	rec = httptest.NewRecorder()
+	s.AdminSkills(rec, httptest.NewRequest(http.MethodGet, "/admin/skills?maturity=retired", nil))
+	if !strings.Contains(rec.Body.String(), "a-retired") {
+		t.Fatal("Retired tab must show retired skills")
+	}
+}
+
 func TestAdminSkills_RepoUnwired(t *testing.T) {
 	s := NewServer()
 	req := httptest.NewRequest(http.MethodGet, "/admin/skills", nil)

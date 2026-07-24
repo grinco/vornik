@@ -59,6 +59,9 @@ func (r *recordingUsageRepo) List(context.Context, persistence.TaskLLMUsageFilte
 func (r *recordingUsageRepo) SumCostByProject(context.Context, string, time.Time, time.Time) (float64, error) {
 	return 0, nil
 }
+func (r *recordingUsageRepo) SumCostByTask(context.Context, string) (float64, error) {
+	return 0, nil
+}
 func (r *recordingUsageRepo) SumCost(context.Context, time.Time, time.Time) (float64, error) {
 	return 0, nil
 }

@@ -72,7 +72,7 @@ const taskSelectColumns = `id, project_id, workflow_id, idempotency_key, parent_
 		lease_id, leased_at, leased_by, lease_expires_at,
 		attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
 		brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id,
-		chat_turn_id`
+		chat_turn_id, budget_usd`
 
 // Create inserts a new task row.
 func (r *TaskRepository) Create(ctx context.Context, task *persistence.Task) error {
@@ -99,21 +99,26 @@ func (r *TaskRepository) Create(ctx context.Context, task *persistence.Task) err
 		task.CreationSource = persistence.TaskCreationSourceUser
 	}
 
+	// Per-task cost governor: reject a stored non-positive budget so "off"
+	// is always NULL, never 0 (LLD 2026-07-24 §3.1).
+	if err := persistence.ValidateStoredTaskBudget(task.BudgetUSD); err != nil {
+		return err
+	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO tasks (
 			id, project_id, workflow_id, idempotency_key, parent_task_id, creation_source,
 			delegation_mode, status, priority, payload, dependencies,
 			lease_id, leased_at, leased_by, lease_expires_at,
 			attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
-			chat_turn_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			chat_turn_id, budget_usd
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.ProjectID, task.WorkflowID, task.IdempotencyKey, task.ParentTaskID, string(task.CreationSource),
 		nullableDelegationMode(task.DelegationMode), string(task.Status), task.Priority,
 		nullableBlob(task.Payload), sqliteStringArray(task.Dependencies),
 		task.LeaseID, sqliteTimePtr(task.LeasedAt), task.LeasedBy, sqliteTimePtr(task.LeaseExpiresAt),
 		task.Attempt, task.MaxAttempts, task.LastError, task.LastErrorClass,
 		sqliteTime(task.CreatedAt), sqliteTime(task.UpdatedAt),
-		task.ChatTurnID,
+		task.ChatTurnID, task.BudgetUSD,
 	)
 	return err
 }
@@ -149,6 +154,9 @@ func (r *TaskRepository) Update(ctx context.Context, task *persistence.Task) err
 	if task == nil {
 		return fmt.Errorf("task is nil")
 	}
+	if err := persistence.ValidateStoredTaskBudget(task.BudgetUSD); err != nil {
+		return err
+	}
 	task.UpdatedAt = time.Now().UTC()
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE tasks
@@ -170,6 +178,7 @@ func (r *TaskRepository) Update(ctx context.Context, task *persistence.Task) err
 		    max_attempts = ?,
 		    last_error = ?,
 		    last_error_class = ?,
+		    budget_usd = ?,
 		    updated_at = ?
 		WHERE id = ?`,
 		task.ProjectID, task.WorkflowID, task.IdempotencyKey, task.ParentTaskID, string(task.CreationSource),
@@ -177,6 +186,7 @@ func (r *TaskRepository) Update(ctx context.Context, task *persistence.Task) err
 		nullableBlob(task.Payload), sqliteStringArray(task.Dependencies),
 		task.LeaseID, sqliteTimePtr(task.LeasedAt), task.LeasedBy, sqliteTimePtr(task.LeaseExpiresAt),
 		task.Attempt, task.MaxAttempts, task.LastError, task.LastErrorClass,
+		task.BudgetUSD,
 		sqliteTime(task.UpdatedAt),
 		task.ID,
 	)
@@ -1006,6 +1016,7 @@ func scanSqliteTask(scanner interface{ Scan(dest ...any) error }) (*persistence.
 		messageCount     sql.NullInt64
 		openCheckpointID sql.NullString
 		chatTurnID       sql.NullString
+		budgetUSD        sql.NullFloat64
 	)
 	err := scanner.Scan(
 		&task.ID, &task.ProjectID, &workflowID, &idempotencyKey, &parentTaskID, &task.CreationSource,
@@ -1013,7 +1024,7 @@ func scanSqliteTask(scanner interface{ Scan(dest ...any) error }) (*persistence.
 		&leaseID, &leasedAt, &leasedBy, &leaseExpiresAt,
 		&task.Attempt, &task.MaxAttempts, &lastError, &lastErrorClass, &createdAt, &updatedAt,
 		&briefAmendedAt, &currentPhase, &expectedBy, &closedAt, &closedBy, &messageCount, &openCheckpointID,
-		&chatTurnID,
+		&chatTurnID, &budgetUSD,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1087,5 +1098,57 @@ func scanSqliteTask(scanner interface{ Scan(dest ...any) error }) (*persistence.
 	if chatTurnID.Valid {
 		task.ChatTurnID = &chatTurnID.String
 	}
+	if budgetUSD.Valid {
+		v := budgetUSD.Float64
+		task.BudgetUSD = &v
+	}
 	return &task, nil
+}
+
+// RaiseTaskBudget raises a task's per-task budget_usd override, gated so it is
+// always a strict increase. See the interface docstring for the guarded-
+// conditional-update semantics (LLD 2026-07-24 §3.6 F2 race guard).
+func (r *TaskRepository) RaiseTaskBudget(ctx context.Context, id string, newBudgetUSD float64, resumeFromAwaitingInput bool) (bool, error) {
+	if id == "" {
+		return false, fmt.Errorf("RaiseTaskBudget: id required")
+	}
+	if newBudgetUSD <= 0 {
+		return false, persistence.ErrInvalidTaskBudget
+	}
+	now := sqliteTime(time.Now().UTC())
+	// Strict-increase guard: NULL current counts as -inf (any positive
+	// applies); a non-NULL current must be strictly less than the new value.
+	var res sql.Result
+	var err error
+	if resumeFromAwaitingInput {
+		res, err = r.db.ExecContext(ctx, `
+			UPDATE tasks SET
+				budget_usd       = ?,
+				status           = 'QUEUED',
+				lease_id         = NULL,
+				leased_at        = NULL,
+				leased_by        = NULL,
+				lease_expires_at = NULL,
+				updated_at       = ?
+			WHERE id = ?
+			  AND status = 'AWAITING_INPUT'
+			  AND (budget_usd IS NULL OR budget_usd < ?)`,
+			newBudgetUSD, now, id, newBudgetUSD)
+	} else {
+		res, err = r.db.ExecContext(ctx, `
+			UPDATE tasks SET
+				budget_usd = ?,
+				updated_at = ?
+			WHERE id = ?
+			  AND (budget_usd IS NULL OR budget_usd < ?)`,
+			newBudgetUSD, now, id, newBudgetUSD)
+	}
+	if err != nil {
+		return false, err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }

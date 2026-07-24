@@ -81,25 +81,30 @@ func (r *TaskRepository) Create(ctx context.Context, task *persistence.Task) err
 	// not listed here — they all have DB defaults (NULL or 0) and
 	// only the conversational lifecycle handlers write them, never
 	// task creation.
+	// Per-task cost governor: reject a stored non-positive budget so "off"
+	// is always NULL, never 0 (LLD 2026-07-24 §3.1).
+	if err := persistence.ValidateStoredTaskBudget(task.BudgetUSD); err != nil {
+		return err
+	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO tasks (
 			id, project_id, workflow_id, idempotency_key, parent_task_id, creation_source,
 			delegation_mode, status, priority, payload, dependencies,
 			lease_id, leased_at, leased_by, lease_expires_at,
 			attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
-			chat_turn_id
+			chat_turn_id, budget_usd
 		) VALUES (
 			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10, $11,
 			$12, $13, $14, $15,
 			$16, $17, $18, $19, $20, $21,
-			$22
+			$22, $23
 		)`,
 		task.ID, task.ProjectID, task.WorkflowID, task.IdempotencyKey, task.ParentTaskID, task.CreationSource,
 		task.DelegationMode, task.Status, task.Priority, task.Payload, pq.Array(task.Dependencies),
 		task.LeaseID, task.LeasedAt, task.LeasedBy, task.LeaseExpiresAt,
 		task.Attempt, task.MaxAttempts, task.LastError, task.LastErrorClass, task.CreatedAt, task.UpdatedAt,
-		task.ChatTurnID,
+		task.ChatTurnID, task.BudgetUSD,
 	)
 	if err != nil {
 		return mapDBError(err)
@@ -115,7 +120,7 @@ func (r *TaskRepository) Get(ctx context.Context, id string) (*persistence.Task,
 		       delegation_mode, status, priority, payload, dependencies,
 		       lease_id, leased_at, leased_by, lease_expires_at,
 		       attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
-		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id
+		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id, budget_usd
 		FROM tasks
 		WHERE id = $1
 	`, id)
@@ -130,7 +135,7 @@ func (r *TaskRepository) GetByIdempotencyKey(ctx context.Context, projectID, ide
 		       delegation_mode, status, priority, payload, dependencies,
 		       lease_id, leased_at, leased_by, lease_expires_at,
 		       attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
-		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id
+		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id, budget_usd
 		FROM tasks
 		WHERE project_id = $1 AND idempotency_key = $2
 	`, projectID, idempotencyKey)
@@ -142,6 +147,9 @@ func (r *TaskRepository) GetByIdempotencyKey(ctx context.Context, projectID, ide
 func (r *TaskRepository) Update(ctx context.Context, task *persistence.Task) error {
 	if task == nil {
 		return fmt.Errorf("task is nil")
+	}
+	if err := persistence.ValidateStoredTaskBudget(task.BudgetUSD); err != nil {
+		return err
 	}
 	task.UpdatedAt = time.Now().UTC()
 
@@ -165,13 +173,15 @@ func (r *TaskRepository) Update(ctx context.Context, task *persistence.Task) err
 		    max_attempts = $17,
 		    last_error = $18,
 		    last_error_class = $19,
-		    updated_at = $20
+		    updated_at = $20,
+		    budget_usd = $21
 		WHERE id = $1
 	`,
 		task.ID, task.ProjectID, task.WorkflowID, task.IdempotencyKey, task.ParentTaskID, task.CreationSource,
 		task.DelegationMode, task.Status, task.Priority, task.Payload, pq.Array(task.Dependencies),
 		task.LeaseID, task.LeasedAt, task.LeasedBy, task.LeaseExpiresAt,
 		task.Attempt, task.MaxAttempts, task.LastError, task.LastErrorClass, task.UpdatedAt,
+		task.BudgetUSD,
 	)
 	if err != nil {
 		return mapDBError(err)
@@ -192,7 +202,7 @@ func (r *TaskRepository) List(ctx context.Context, filter persistence.TaskFilter
 		       delegation_mode, status, priority, payload, dependencies,
 		       lease_id, leased_at, leased_by, lease_expires_at,
 		       attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
-		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id
+		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id, budget_usd
 		FROM tasks
 		WHERE 1=1
 	`
@@ -488,7 +498,7 @@ func (r *TaskRepository) ListRetryInFlight(ctx context.Context, projectIDs []str
 		       delegation_mode, status, priority, payload, dependencies,
 		       lease_id, leased_at, leased_by, lease_expires_at,
 		       attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
-		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id
+		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id, budget_usd
 		FROM tasks
 		WHERE status IN ('QUEUED','LEASED','RUNNING')
 		  AND retry_requested_at IS NOT NULL
@@ -744,7 +754,7 @@ func (r *TaskRepository) LeaseTask(ctx context.Context, opts persistence.LeaseOp
 		          delegation_mode, status, priority, payload, dependencies,
 		          lease_id, leased_at, leased_by, lease_expires_at,
 		          attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
-		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id
+		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id, budget_usd
 	`
 
 	row := r.db.QueryRowContext(ctx, query, args...)
@@ -853,7 +863,7 @@ func (r *TaskRepository) FindExpiredLeases(ctx context.Context, limit int) ([]*p
 		       delegation_mode, status, priority, payload, dependencies,
 		       lease_id, leased_at, leased_by, lease_expires_at,
 		       attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
-		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id
+		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id, budget_usd
 		FROM tasks
 		WHERE status IN ('QUEUED', 'LEASED', 'RUNNING')
 		  AND lease_expires_at IS NOT NULL
@@ -982,7 +992,7 @@ func (r *TaskRepository) GetChildren(ctx context.Context, parentTaskID string) (
 		       delegation_mode, status, priority, payload, dependencies,
 		       lease_id, leased_at, leased_by, lease_expires_at,
 		       attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
-		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id
+		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id, budget_usd
 		FROM tasks
 		WHERE parent_task_id = $1
 		ORDER BY created_at ASC
@@ -1059,7 +1069,7 @@ func (r *TaskRepository) GetDependencies(ctx context.Context, taskID string) ([]
 		       dep.delegation_mode, dep.status, dep.priority, dep.payload, dep.dependencies,
 		       dep.lease_id, dep.leased_at, dep.leased_by, dep.lease_expires_at,
 		       dep.attempt, dep.max_attempts, dep.last_error, dep.last_error_class, dep.created_at, dep.updated_at,
-		       dep.brief_amended_at, dep.current_phase, dep.expected_by, dep.closed_at, dep.closed_by, dep.message_count, dep.open_checkpoint_id, dep.chat_turn_id
+		       dep.brief_amended_at, dep.current_phase, dep.expected_by, dep.closed_at, dep.closed_by, dep.message_count, dep.open_checkpoint_id, dep.chat_turn_id, dep.budget_usd
 		FROM tasks task
 		JOIN tasks dep ON dep.id = ANY(task.dependencies)
 		WHERE task.id = $1
@@ -1088,7 +1098,7 @@ func (r *TaskRepository) GetDependents(ctx context.Context, taskID string) ([]*p
 		       delegation_mode, status, priority, payload, dependencies,
 		       lease_id, leased_at, leased_by, lease_expires_at,
 		       attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
-		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id
+		       brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id, chat_turn_id, budget_usd
 		FROM tasks
 		WHERE $1 = ANY(dependencies)
 		ORDER BY created_at ASC
@@ -1136,6 +1146,8 @@ func scanTask(scanner interface {
 		openCheckpointID sql.NullString
 		// Migration v46.
 		chatTurnID sql.NullString
+		// Migration 136 — per-task cost governor budget override.
+		budgetUSD sql.NullFloat64
 	)
 
 	err := scanner.Scan(
@@ -1144,7 +1156,7 @@ func scanTask(scanner interface {
 		&leaseID, &leasedAt, &leasedBy, &leaseExpiresAt,
 		&task.Attempt, &task.MaxAttempts, &lastError, &lastErrorClass, &task.CreatedAt, &task.UpdatedAt,
 		&briefAmendedAt, &currentPhase, &expectedBy, &closedAt, &closedBy, &messageCount, &openCheckpointID,
-		&chatTurnID,
+		&chatTurnID, &budgetUSD,
 	)
 	if err != nil {
 		return nil, mapDBError(err)
@@ -1208,8 +1220,58 @@ func scanTask(scanner interface {
 	if chatTurnID.Valid {
 		task.ChatTurnID = &chatTurnID.String
 	}
+	if budgetUSD.Valid {
+		v := budgetUSD.Float64
+		task.BudgetUSD = &v
+	}
 
 	return &task, nil
+}
+
+// RaiseTaskBudget raises a task's per-task budget_usd override, gated so it is
+// always a strict increase. See the interface docstring for the guarded-
+// conditional-update semantics (LLD 2026-07-24 §3.6 F2 race guard).
+func (r *TaskRepository) RaiseTaskBudget(ctx context.Context, id string, newBudgetUSD float64, resumeFromAwaitingInput bool) (bool, error) {
+	if id == "" {
+		return false, fmt.Errorf("RaiseTaskBudget: id required")
+	}
+	if newBudgetUSD <= 0 {
+		return false, persistence.ErrInvalidTaskBudget
+	}
+	now := time.Now().UTC()
+	var res sql.Result
+	var err error
+	if resumeFromAwaitingInput {
+		res, err = r.db.ExecContext(ctx, `
+			UPDATE tasks SET
+				budget_usd       = $2,
+				status           = 'QUEUED',
+				lease_id         = NULL,
+				leased_at        = NULL,
+				leased_by        = NULL,
+				lease_expires_at = NULL,
+				updated_at       = $3
+			WHERE id = $1
+			  AND status = 'AWAITING_INPUT'
+			  AND (budget_usd IS NULL OR budget_usd < $2)`,
+			id, newBudgetUSD, now)
+	} else {
+		res, err = r.db.ExecContext(ctx, `
+			UPDATE tasks SET
+				budget_usd = $2,
+				updated_at = $3
+			WHERE id = $1
+			  AND (budget_usd IS NULL OR budget_usd < $2)`,
+			id, newBudgetUSD, now)
+	}
+	if err != nil {
+		return false, mapDBError(err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows > 0, nil
 }
 
 func mapDBError(err error) error {

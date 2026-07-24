@@ -17,6 +17,7 @@ import (
 	"vornik.io/vornik/internal/auth"
 	"vornik.io/vornik/internal/outputguard"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/taintlineage"
 )
 
 // Agent-facing third-party API endpoints (design
@@ -508,6 +509,36 @@ func (s *Server) AgentQueryAPI(w http.ResponseWriter, r *http.Request) {
 		audit.WalkOutcome = res.walkOutcome
 		audit.RootTaskID = res.rootTaskID
 		audit.CreationSource = res.creationSource
+
+		// Taint-lineage gate (taint-lineage-tracking §4.4): after the WHO gate
+		// (resolveAgentWrite) permits, also consult WHAT informed the write. In
+		// enforce mode a tainted (or Unknown, or incomplete-walk) lineage
+		// SYNCHRONOUSLY REFUSES the write — same control-flow shape as an
+		// agent_writes refusal, no park (D5). advisory allows + flags + metric;
+		// off is a no-op.
+		taint := s.resolveTaintReview(r.Context(), projectID, actx.taskID)
+		switch taint.mode {
+		case taintlineage.ModeEnforce:
+			if taint.requiresReview {
+				audit.Status = agentAPIStatusRefused
+				s.recordAgentWrite(res, false)
+				s.recordTaintWrite(taint.mode, "refused")
+				s.writeAgentAPIAudit(r.Context(), projectID, actx, audit)
+				respondJSON(w, http.StatusOK, AgentQueryResponse{
+					Refusal: "This write was refused: it was derived from untrusted content and this project enforces taint-lineage review. An operator must review the untrusted sources before this API write can proceed.",
+				})
+				return
+			}
+			// Allowed under enforce (untainted / matching latch) → permitted (M6).
+			s.recordTaintWrite(taint.mode, "permitted")
+		case taintlineage.ModeAdvisory:
+			if taint.tainted {
+				s.recordTaintWrite(taint.mode, "flagged")
+			} else {
+				// Allowed + untainted → permitted, the §14 calibration denominator (M6).
+				s.recordTaintWrite(taint.mode, "permitted")
+			}
+		}
 	}
 
 	outcome := s.newAgentAPIService(res.permit).Query(r.Context(), projectID, actx.role, apigateway.Request{

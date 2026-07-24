@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"vornik.io/vornik/internal/configrecon"
 	"vornik.io/vornik/internal/controlplane"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/postgres"
@@ -310,8 +311,15 @@ func (c *Container) newProposalMirror() func(proposalID string, files map[string
 	return func(proposalID string, files map[string][]byte) error {
 		var staged []string
 		var firstErr error
+		// Collect the DISTINCT normalizer names that fired across all files in
+		// this proposal, in first-seen order, so the commit message carries a
+		// `mirror-normalized: <name>` trailer per normalizer (review A6) — the
+		// operator who later `git revert`s a bad rewrite finds the audit at the
+		// commit, not only in the daemon log.
+		var normalizerOrder []string
+		seenNormalizer := map[string]bool{}
 		for rel, content := range files {
-			target, ok, err := mirrorOneFile(sourceRoot, sourceConfigsDir, rel, content, logger)
+			target, ok, notes, err := mirrorOneFile(sourceRoot, sourceConfigsDir, rel, content, logger)
 			if err != nil {
 				if strings.Contains(err.Error(), "escapes") {
 					return err
@@ -321,6 +329,13 @@ func (c *Container) newProposalMirror() func(proposalID string, files map[string
 				}
 				continue
 			}
+			for _, note := range notes {
+				c.configMirrorMetrics.Inc(note.Name)
+				if !seenNormalizer[note.Name] {
+					seenNormalizer[note.Name] = true
+					normalizerOrder = append(normalizerOrder, note.Name)
+				}
+			}
 			if ok {
 				staged = append(staged, target)
 			}
@@ -329,8 +344,14 @@ func (c *Container) newProposalMirror() func(proposalID string, files map[string
 			return firstErr
 		}
 		if len(staged) > 0 && isGitRepo(sourceConfigsDir) {
-			if err := gitCommitPaths(sourceConfigsDir, staged,
-				fmt.Sprintf("control-plane: apply %s", proposalID)); err != nil {
+			msg := fmt.Sprintf("control-plane: apply %s", proposalID)
+			if len(normalizerOrder) > 0 {
+				msg += "\n" // blank line separating subject from the trailer block
+				for _, name := range normalizerOrder {
+					msg += fmt.Sprintf("\nmirror-normalized: %s", name)
+				}
+			}
+			if err := gitCommitPaths(sourceConfigsDir, staged, msg); err != nil {
 				return fmt.Errorf("mirror: git commit: %w", err)
 			}
 		}
@@ -343,7 +364,7 @@ func (c *Container) newProposalMirror() func(proposalID string, files map[string
 // (config.yaml) beside it. nil content = delete. staged=false means the
 // write was skipped (missing parent dir — never scaffold the operator's
 // checkout from guesses).
-func mirrorOneFile(sourceRoot, sourceConfigsDir, rel string, content []byte, logger zerolog.Logger) (target string, staged bool, err error) {
+func mirrorOneFile(sourceRoot, sourceConfigsDir, rel string, content []byte, logger zerolog.Logger) (target string, staged bool, notes []configrecon.NormalizationNote, err error) {
 	// Canonicalize BEFORE prefix mapping (review: "configs//x" or an
 	// embedded ".." must not choose the wrong branch), and refuse dot-dot
 	// outright — the renderers already reject such identifiers (safeIdent)
@@ -353,7 +374,26 @@ func mirrorOneFile(sourceRoot, sourceConfigsDir, rel string, content []byte, log
 	// by design (deployed reality wins; the git commit preserves history).
 	rel = filepath.Clean(rel)
 	if filepath.IsAbs(rel) || strings.Contains(rel, "..") {
-		return "", false, fmt.Errorf("mirror: %q is not a safe relative path", rel)
+		return "", false, nil, fmt.Errorf("mirror: %q is not a safe relative path", rel)
+	}
+	// Config-tree round-trip guard (LLD 2026-07-24-config-tree-reconciliation-
+	// design.md §3.2): normalise declared canonical-defect fields BEFORE the
+	// source write + git commit, so a stale field (e.g. a bare agent `image:`
+	// carried over from stale DEPLOYED content) can never round-trip into the
+	// repo. Change-only: notes is empty and content is byte-identical when
+	// nothing fired, preserving the deployed-wins-verbatim contract exactly.
+	// The rel here is the config-root-relative path (e.g. "configs/swarms/x.md"
+	// or "config.yaml"), which is the basis AppliesTo expects. Skipped for a
+	// delete (nil content) — there is nothing to normalise.
+	if content != nil {
+		content, notes = configrecon.ApplyMirrorNormalizers(rel, content)
+		for _, note := range notes {
+			logger.Info().
+				Str("normalizer", note.Name).
+				Str("rel", rel).
+				Str("message", note.Message).
+				Msgf("mirror: normalized [%s] in %s before source write", note.Name, rel)
+		}
 	}
 	// Map the deployed rel path to its source-tree home, then containment-check
 	// through the canonical symlink-resolving guard (audit 2026-07-09 F-1):
@@ -367,22 +407,22 @@ func mirrorOneFile(sourceRoot, sourceConfigsDir, rel string, content []byte, log
 		clean, err = safepath.JoinUnderRel(sourceRoot, rel)
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("mirror: %q escapes the source tree: %w", rel, err)
+		return "", false, nil, fmt.Errorf("mirror: %q escapes the source tree: %w", rel, err)
 	}
 	if content == nil {
 		if rmErr := os.Remove(clean); rmErr != nil && !os.IsNotExist(rmErr) {
-			return "", false, rmErr
+			return "", false, nil, rmErr
 		}
-		return clean, true, nil
+		return clean, true, nil, nil
 	}
 	if info, statErr := os.Stat(filepath.Dir(clean)); statErr != nil || !info.IsDir() {
 		logger.Warn().Str("rel", rel).Msg("mirror: source-tree parent dir missing; skipped")
-		return "", false, nil
+		return "", false, nil, nil
 	}
 	if wErr := os.WriteFile(clean, content, 0o644); wErr != nil { //nolint:gosec // operator-owned config text
-		return "", false, wErr
+		return "", false, nil, wErr
 	}
-	return clean, true, nil
+	return clean, true, notes, nil
 }
 
 // gitCommitPaths stages the given absolute paths and makes one commit in the

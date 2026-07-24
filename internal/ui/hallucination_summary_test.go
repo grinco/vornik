@@ -147,6 +147,10 @@ func TestTruncateSummary_LongTruncated(t *testing.T) {
 	assert.Equal(t, "abcde…", got)
 }
 
+func (f *fakeOutcomeRepo) TaintedStepsForTasks(context.Context, []string) ([]persistence.TaintedStepRow, error) {
+	return nil, nil
+}
+
 func (f *fakeOutcomeRepo) StepLatencyP95ByStep(context.Context, time.Time) ([]persistence.StepLatencyStat, error) {
 	return nil, nil
 }

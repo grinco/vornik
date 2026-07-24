@@ -215,7 +215,7 @@ func TestCheckForecast_RefusesWhenForecastBreachesDailyCap(t *testing.T) {
 	current := Decision{DailyUSD: 4.5}
 	forecast := Forecast{USD: 1.0}
 
-	d := CheckForecast(proj, forecast, current)
+	d := CheckForecast(proj, forecast, current, 0)
 	assert.True(t, d.Refused, "4.50 spent + 1.00 forecast = 5.50 > 5.00 cap → must refuse")
 	assert.Contains(t, d.Reason, "daily hard cap",
 		"refusal reason must name the cap that tripped so operators know which dial to turn")
@@ -236,7 +236,7 @@ func TestCheckForecast_RefusesWhenForecastBreachesMonthlyCap(t *testing.T) {
 	current := Decision{DailyUSD: 5.0, MonthlyUSD: 49.0}
 	forecast := Forecast{USD: 2.0}
 
-	d := CheckForecast(proj, forecast, current)
+	d := CheckForecast(proj, forecast, current, 0)
 	assert.True(t, d.Refused)
 	assert.Contains(t, d.Reason, "monthly hard cap")
 }
@@ -254,7 +254,7 @@ func TestCheckForecast_AllowsWhenWellBelowCaps(t *testing.T) {
 	current := Decision{DailyUSD: 1.0, MonthlyUSD: 5.0}
 	forecast := Forecast{USD: 0.50}
 
-	d := CheckForecast(proj, forecast, current)
+	d := CheckForecast(proj, forecast, current, 0)
 	assert.False(t, d.Refused, "well under both caps must not refuse")
 	assert.Empty(t, d.Reason)
 }
@@ -263,8 +263,60 @@ func TestCheckForecast_AllowsWhenWellBelowCaps(t *testing.T) {
 // never refuse based on forecast (matches Check semantics).
 func TestCheckForecast_NoCaps(t *testing.T) {
 	proj := &registry.Project{ID: "p"} // empty Budget
-	d := CheckForecast(proj, Forecast{USD: 999.0}, Decision{})
+	d := CheckForecast(proj, Forecast{USD: 999.0}, Decision{}, 0)
 	assert.False(t, d.Refused, "no caps configured → forecast can't refuse, regardless of size")
+}
+
+// Per-task cost governor pre-flight (LLD 2026-07-24 §3.4).
+
+// TestCheckForecast_RefusesWhenForecastBreachesTaskBudget — the per-task arm:
+// no project cap at all, but the run's own forecast exceeds the per-task
+// ceiling → refuse.
+func TestCheckForecast_RefusesWhenForecastBreachesTaskBudget(t *testing.T) {
+	proj := &registry.Project{ID: "p"} // no project cap
+	d := CheckForecast(proj, Forecast{USD: 4.0}, Decision{}, 3.0)
+	assert.True(t, d.Refused, "forecast $4 > per-task budget $3 → refuse")
+	assert.Contains(t, d.Reason, "per-task budget")
+}
+
+// TestCheckForecast_TaskBudgetShortCircuitsWhenZero — the critical
+// backward-compat guarantee: taskBudgetUSD 0 means the per-task arm never
+// refuses, no matter how large the forecast, so un-configured projects behave
+// byte-identically.
+func TestCheckForecast_TaskBudgetShortCircuitsWhenZero(t *testing.T) {
+	proj := &registry.Project{ID: "p"} // no caps
+	d := CheckForecast(proj, Forecast{USD: 9999.0}, Decision{}, 0)
+	assert.False(t, d.Refused, "task budget 0 → per-task arm short-circuits regardless of forecast")
+}
+
+// TestCheckForecast_BothCeilings — under the per-task budget but over the
+// project cap is STILL refused (both ceilings retained). A task forecast of $1
+// with $4.50 already spent against a $5 daily cap refuses even though $1 is
+// under the $10 per-task budget.
+func TestCheckForecast_BothCeilings(t *testing.T) {
+	proj := &registry.Project{ID: "p", Budget: registry.ProjectBudget{DailyHardUSD: 5.0}}
+	d := CheckForecast(proj, Forecast{USD: 1.0}, Decision{DailyUSD: 4.5}, 10.0)
+	assert.True(t, d.Refused, "under per-task budget but over project cap → still refuse")
+	assert.Contains(t, d.Reason, "daily hard cap")
+}
+
+// TestCheckForecast_UnderTaskBudgetAllows — forecast under both the per-task
+// budget and the (absent) project cap → allowed.
+func TestCheckForecast_UnderTaskBudgetAllows(t *testing.T) {
+	proj := &registry.Project{ID: "p"}
+	d := CheckForecast(proj, Forecast{USD: 1.5}, Decision{}, 3.0)
+	assert.False(t, d.Refused, "forecast $1.50 under per-task budget $3 → allow")
+}
+
+// TestCheckForecast_TaskBudgetStrictBoundary — M4: the per-task arm uses strict
+// >, so a forecast exactly equal to the budget is ALLOWED; one cent over is
+// refused.
+func TestCheckForecast_TaskBudgetStrictBoundary(t *testing.T) {
+	proj := &registry.Project{ID: "p"}
+	eq := CheckForecast(proj, Forecast{USD: 3.0}, Decision{}, 3.0)
+	assert.False(t, eq.Refused, "forecast == per-task budget must be allowed (strict >)")
+	over := CheckForecast(proj, Forecast{USD: 3.01}, Decision{}, 3.0)
+	assert.True(t, over.Refused, "forecast just over the per-task budget must refuse")
 }
 
 // Compile-time assertion that the production usage repo satisfies

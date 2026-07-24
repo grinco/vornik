@@ -107,6 +107,17 @@ const (
 	// or executor directly — only by the retry-from-step API.
 	Superseded Outcome = "superseded"
 
+	// ParallelJoin — observability signal emitted by the parent on the
+	// proceed-true resume of a declarative `parallel` fan-out step. It is
+	// a direct terminal outcome (not the two-phase pending_validation path)
+	// keyed on the parallel step's id; ErrorDetail carries the JSON
+	// {policy, succeeded, total}. Emitted ONLY on proceed-true — a
+	// proceed-false join (quorum/best_effort not met) is observed via the
+	// task's last_error and the child tasks' own FAILED outcomes, never a
+	// parallel_join row (deliberate non-emission). See
+	// https://docs.vornik.io §6.
+	ParallelJoin Outcome = "parallel_join"
+
 	// VerifierWarn — advisory verifier violation. Written as a
 	// SEPARATE outcome row alongside the producer's primary row
 	// (which keeps its normal verdict, typically `ok`). Surfaces

@@ -53,7 +53,7 @@ func (s *stubAuditRepoY) CountByTool(_ context.Context, _ string) (map[string]in
 func TestPersistToolAuditFromResult_InvalidJSON(t *testing.T) {
 	ar := &stubAuditRepoY{}
 	e := &Executor{auditRepo: ar, logger: zerolog.Nop()}
-	_, loop := e.persistToolAuditFromResult(context.Background(),
+	_, loop, _ := e.persistToolAuditFromResult(context.Background(),
 		&persistence.Task{ID: "t"}, &persistence.Execution{ID: "x"},
 		"step-1", []byte("not json {{"))
 	assert.Equal(t, "", loop)
@@ -65,7 +65,7 @@ func TestPersistToolAuditFromResult_InvalidJSON(t *testing.T) {
 func TestPersistToolAuditFromResult_NoEntries(t *testing.T) {
 	ar := &stubAuditRepoY{}
 	e := &Executor{auditRepo: ar, logger: zerolog.Nop()}
-	_, loop := e.persistToolAuditFromResult(context.Background(),
+	_, loop, _ := e.persistToolAuditFromResult(context.Background(),
 		&persistence.Task{ID: "t"}, &persistence.Execution{ID: "x"},
 		"step-1", []byte(`{"other":"field"}`))
 	assert.Equal(t, "", loop)
@@ -86,7 +86,7 @@ func TestPersistToolAuditFromResult_DetectsLoopWithoutRepo(t *testing.T) {
 			{"tool": "read_file", "input": "/tmp/x"},
 		},
 	})
-	_, loop := e.persistToolAuditFromResult(context.Background(),
+	_, loop, _ := e.persistToolAuditFromResult(context.Background(),
 		&persistence.Task{ID: "t"}, &persistence.Execution{ID: "x"},
 		"step", body)
 	assert.NotEmpty(t, loop,
@@ -113,7 +113,7 @@ func TestPersistToolAuditFromResult_HappyPath(t *testing.T) {
 			{"tool": "edit_file", "input": "/b", "output": "ok", "duration_ms": 30}, // no audit_id → fresh one
 		},
 	})
-	_, loop := e.persistToolAuditFromResult(context.Background(),
+	_, loop, _ := e.persistToolAuditFromResult(context.Background(),
 		&persistence.Task{ID: "t-x", ProjectID: "p-1"},
 		&persistence.Execution{ID: "exec-1"},
 		"step-9", body)
@@ -152,7 +152,7 @@ func TestPersistToolAuditFromResult_RepoLogError(t *testing.T) {
 		},
 	})
 	require.NotPanics(t, func() {
-		_, _ = e.persistToolAuditFromResult(context.Background(),
+		_, _, _ = e.persistToolAuditFromResult(context.Background(),
 			&persistence.Task{ID: "t"}, &persistence.Execution{ID: "x"},
 			"step", body)
 	})

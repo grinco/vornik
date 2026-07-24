@@ -636,6 +636,97 @@ func TestBuildStateContext_FlagsActiveTask(t *testing.T) {
 	assert.Contains(t, got, "in-flight tick")
 }
 
+// TestBuildStateContext_IncludesCreatedAtAndCurrentTime — cadence-based
+// autonomy goals (e.g. vornik-marketing's per-feed 6h/24h scan) instruct
+// the lead to compute due-ness from each task's createdAt vs "now". The
+// observe bundle MUST therefore surface a per-task createdAt AND a
+// current-time reference; without them the LLM can't do the cadence math
+// and defaults to NO_ACTION (BACKLOG "marketing autonomy under-schedules
+// due feeds", 2026-07-23).
+func TestBuildStateContext_IncludesCreatedAtAndCurrentTime(t *testing.T) {
+	created := time.Now().Add(-7 * time.Hour).UTC().Truncate(time.Second)
+	tasks := []*persistence.Task{
+		{ID: "t1", ProjectID: "p1", Status: persistence.TaskStatusQueued, CreatedAt: created,
+			Payload: []byte(`{"context":{"prompt":"moltbook-outreach: engagement scan"}}`)},
+	}
+	m := New(nil, &registry.Registry{}, &mockTaskRepo{tasks: tasks}, nil)
+	got, _, err := m.buildStateContext(context.Background(), &registry.Project{ID: "p1"})
+	require.NoError(t, err)
+	assert.Contains(t, got, "Current time", "must anchor cadence math to a current-time reference")
+	assert.Contains(t, got, "created=", "each task line must carry its createdAt")
+	assert.Contains(t, got, created.Format(time.RFC3339), "createdAt must be the absolute RFC3339 timestamp")
+	assert.Contains(t, got, "ago", "a relative age hint should accompany the absolute timestamp")
+}
+
+// TestBuildStateContext_CompletedTaskIncludesCreatedAt — the goal scans
+// completed tasks too (most-recent per slug), so the completed branch
+// must also emit createdAt.
+func TestBuildStateContext_CompletedTaskIncludesCreatedAt(t *testing.T) {
+	created := time.Now().Add(-30 * time.Hour).UTC().Truncate(time.Second)
+	tasks := []*persistence.Task{
+		{ID: "c1", ProjectID: "p1", Status: persistence.TaskStatusCompleted, CreatedAt: created,
+			Payload: []byte(`{"context":{"prompt":"moltbook-showcase: original post"}}`)},
+	}
+	m := New(nil, &registry.Registry{}, &mockTaskRepo{tasks: tasks}, &stubExecRepo{})
+	got, _, err := m.buildStateContext(context.Background(), &registry.Project{ID: "p1"})
+	require.NoError(t, err)
+	assert.Contains(t, got, "moltbook-showcase: original post")
+	assert.Contains(t, got, created.Format(time.RFC3339), "completed task line must carry its createdAt")
+}
+
+// TestHumanizeAge — the compact age hint used in the observe bundle.
+// Covers the granularity-jump boundaries (review-20260723-8369 finding 5):
+// the h→d and m→h rollovers and both sub-minute signs.
+func TestHumanizeAge(t *testing.T) {
+	assert.Equal(t, "just now", humanizeAge(30*time.Second))
+	assert.Equal(t, "just now", humanizeAge(59*time.Second))
+	assert.Equal(t, "just now", humanizeAge(-1*time.Second)) // small negative skew
+	assert.Equal(t, "just now", humanizeAge(-5*time.Minute)) // larger negative skew
+	assert.Equal(t, "1m ago", humanizeAge(time.Minute))      // sub-hour boundary
+	assert.Equal(t, "45m ago", humanizeAge(45*time.Minute))
+	assert.Equal(t, "1h0m ago", humanizeAge(60*time.Minute)) // m→h rollover
+	assert.Equal(t, "1h0m ago", humanizeAge(time.Hour))
+	assert.Equal(t, "7h30m ago", humanizeAge(7*time.Hour+30*time.Minute))
+	assert.Equal(t, "23h59m ago", humanizeAge(23*time.Hour+59*time.Minute))
+	assert.Equal(t, "1d0h ago", humanizeAge(24*time.Hour)) // h→d rollover
+	assert.Equal(t, "2d4h ago", humanizeAge(52*time.Hour))
+}
+
+// TestBuildStateContext_ActiveBranchCreatedAtAndRFC3339Anchor — pins the
+// active/in-progress branch's created= emission (the queued+completed
+// branches are covered above) and the current-time anchor's RFC3339-UTC
+// shape, not just the literal label (review-20260723-8369 findings 5).
+func TestBuildStateContext_ActiveBranchCreatedAtAndRFC3339Anchor(t *testing.T) {
+	created := time.Now().Add(-3 * time.Hour).UTC().Truncate(time.Second)
+	tasks := []*persistence.Task{
+		{ID: "r1", ProjectID: "p1", Status: persistence.TaskStatusRunning, CreatedAt: created,
+			Payload: []byte(`{"context":{"prompt":"moltbook-showcase: drafting"}}`)},
+	}
+	m := New(nil, &registry.Registry{}, &mockTaskRepo{tasks: tasks}, nil)
+	got, hasActive, err := m.buildStateContext(context.Background(), &registry.Project{ID: "p1"})
+	require.NoError(t, err)
+	assert.True(t, hasActive)
+	assert.Contains(t, got, created.Format(time.RFC3339), "active task line must carry its createdAt")
+	assert.Regexp(t, `Current time \(UTC\): \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z`, got,
+		"current-time anchor must be RFC3339 UTC, not just a label")
+}
+
+// TestBuildStateContext_ZeroCreatedAtRendersUnknown — a task row with a
+// zero-value CreatedAt must render "created=unknown", never a fabricated
+// year-1 RFC3339 + billion-hour age that would mislead cadence math
+// (review-20260723-8369 finding 3, the load-bearing failure mode).
+func TestBuildStateContext_ZeroCreatedAtRendersUnknown(t *testing.T) {
+	tasks := []*persistence.Task{
+		{ID: "z1", ProjectID: "p1", Status: persistence.TaskStatusQueued, // zero CreatedAt
+			Payload: []byte(`{"context":{"prompt":"moltbook-outreach: scan"}}`)},
+	}
+	m := New(nil, &registry.Registry{}, &mockTaskRepo{tasks: tasks}, nil)
+	got, _, err := m.buildStateContext(context.Background(), &registry.Project{ID: "p1"})
+	require.NoError(t, err)
+	assert.Contains(t, got, "created=unknown")
+	assert.NotContains(t, got, "0001-01-01", "must not fabricate a year-1 timestamp")
+}
+
 // --------------------------------------------------------------------
 // autonomyPromptTitle — title-extraction helper covered by similarity
 // + UI surfaces, but the direct unit test pins both the colon-split

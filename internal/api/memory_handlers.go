@@ -238,8 +238,17 @@ func (s *Server) MemoryRegraph(w http.ResponseWriter, r *http.Request) {
 }
 
 // memorySearchResponse is the JSON response for GET /api/v1/projects/{id}/memory/search.
+// The routing fields (Verdict/Guidance/Basis) are emitted only when the
+// searcher supports confidence-based retrieval routing (P3); with routing off
+// they are omitted and the response is byte-identical to before the feature.
 type memorySearchResponse struct {
 	Results []MemorySearchResult `json:"results"`
+	// RetrievalTrustVerdict + Guidance + Basis are populated only under
+	// routing. omitempty keeps the non-routing response shape unchanged.
+	RetrievalTrustVerdict string                   `json:"retrieval_trust_verdict,omitempty"`
+	Guidance              string                   `json:"guidance,omitempty"`
+	VerdictBasis          *RoutingVerdictBasisWire `json:"verdict_basis,omitempty"`
+	WidenRounds           int                      `json:"widen_rounds,omitempty"`
 }
 
 // MemorySearch handles GET /api/v1/projects/{projectId}/memory/search?q=<query>&limit=<n>.
@@ -296,7 +305,21 @@ func (s *Server) MemorySearch(w http.ResponseWriter, r *http.Request) {
 		ActorID:   APIKeyIDFromContext(r.Context()),
 	})
 
-	results, err := s.memorySearcher.Search(ctx, projectID, q, limit)
+	// Prefer the confidence-based retrieval routing path (P3) when the
+	// searcher supports it: REST is a first opt-in caller (§6). The response
+	// then carries the retrieval_trust_verdict + guidance + per-result trust
+	// fields. Searchers without the capability use the legacy Search path,
+	// whose response is byte-identical to before the feature.
+	var (
+		results []MemorySearchResult
+		verdict *RoutingVerdictWire
+		err     error
+	)
+	if rs, ok := s.memorySearcher.(MemoryRoutingSearcher); ok {
+		results, verdict, err = rs.SearchRouting(ctx, projectID, q, limit)
+	} else {
+		results, err = s.memorySearcher.Search(ctx, projectID, q, limit)
+	}
 	if err != nil {
 		s.logger.Warn().
 			Err(err).
@@ -311,7 +334,16 @@ func (s *Server) MemorySearch(w http.ResponseWriter, r *http.Request) {
 		results = []MemorySearchResult{}
 	}
 
+	resp := memorySearchResponse{Results: results}
+	if verdict != nil {
+		resp.RetrievalTrustVerdict = verdict.Verdict
+		resp.Guidance = verdict.Guidance
+		resp.WidenRounds = verdict.WidenRounds
+		basis := verdict.Basis
+		resp.VerdictBasis = &basis
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(memorySearchResponse{Results: results})
+	_ = json.NewEncoder(w).Encode(resp)
 }

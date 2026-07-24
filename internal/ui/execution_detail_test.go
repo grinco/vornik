@@ -227,6 +227,10 @@ func TestExecutionDetail_StepOutcomesRenderInExecutionOrder(t *testing.T) {
 	}
 }
 
+func (r *shuffleOutcomeRepo) TaintedStepsForTasks(context.Context, []string) ([]persistence.TaintedStepRow, error) {
+	return nil, nil
+}
+
 func (r *shuffleOutcomeRepo) StepLatencyP95ByStep(context.Context, time.Time) ([]persistence.StepLatencyStat, error) {
 	return nil, nil
 }

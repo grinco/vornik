@@ -17,6 +17,7 @@ import (
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/safepath"
 	"vornik.io/vornik/internal/stepoutcome"
+	"vornik.io/vornik/internal/taintlineage"
 )
 
 // ArtifactDirSnapshot is a content-hash map of the files in an
@@ -625,6 +626,47 @@ type agentBudgetStamp struct {
 	ToolCallsUsed       *int   // nil → NULL
 }
 
+// taintStamp carries the three migration-137 taint-lineage columns, populated
+// only for agent-type steps (where a toolAudit list exists). Non-agent callers
+// (system/plan/gate steps) leave it zero-valued so the columns stay
+// false/NULL — correct, since a system step consumes prior steps' taint via
+// the lineage rollup rather than calling untrusted tools itself (§5.1). Mirrors
+// agentBudgetStamp; the executor marshals StepTaint.Sources at the boundary so
+// internal/persistence stays classifier-free (D2).
+type taintStamp struct {
+	UntrustedContentUsed bool
+	UntrustedSources     []byte // JSONB blob (marshalled taintlineage.Source slice); nil → NULL
+	RequiresReview       bool
+}
+
+// taintStampFromStep marshals a classifier StepTaint into the persistence
+// stamp. A step that touched no untrusted content (SeverityNone) yields a zero
+// stamp (all columns false/NULL). Best-effort marshal: a failure logs and
+// leaves the blob nil but still records the bools, so the audit signal is never
+// lost to a serialization hiccup.
+func (e *Executor) taintStampFromStep(st taintlineage.StepTaint) taintStamp {
+	stamp := taintStamp{
+		UntrustedContentUsed: st.Used,
+		RequiresReview:       st.RequiresReview,
+	}
+	// Persist the M1 SourcesBlob (capped display list + full_hash over the
+	// step's FULL pre-cap set + drop count), so the lineage latch key reflects
+	// per-step overflow. Only for a tainted step (Used); an untainted step
+	// leaves the column NULL.
+	if st.Used {
+		if blob, err := json.Marshal(taintlineage.NewSourcesBlob(st)); err == nil {
+			stamp.UntrustedSources = blob
+		} else if e != nil {
+			e.logger.Warn().Err(err).Msg("taint: failed to marshal untrusted sources blob")
+		}
+	}
+	if st.DroppedSources > 0 && e != nil {
+		e.logger.Debug().Int("dropped", st.DroppedSources).
+			Msg("taint: capped untrusted source list at MaxSources")
+	}
+	return stamp
+}
+
 // recordStepOutcomeWithSignals is the wider form that also persists
 // hallucination-detector findings on the row. Existing call sites
 // continue to use recordStepOutcome (which forwards a nil signals
@@ -641,7 +683,7 @@ func (e *Executor) recordStepOutcomeWithSignals(
 	duration *int64,
 	signals []byte,
 ) {
-	e.recordStepOutcomeWithSignalsAndBudget(ctx, task, execution, stepID, role, model, outcome, errorClass, errorDetail, attributedToStepID, duration, signals, agentBudgetStamp{})
+	e.recordStepOutcomeWithSignalsAndBudget(ctx, task, execution, stepID, role, model, outcome, errorClass, errorDetail, attributedToStepID, duration, signals, agentBudgetStamp{}, taintStamp{})
 }
 
 // recordStepOutcomeWithSignalsAndBudget is the full form used by the
@@ -658,6 +700,7 @@ func (e *Executor) recordStepOutcomeWithSignalsAndBudget(
 	duration *int64,
 	signals []byte,
 	budget agentBudgetStamp,
+	taint taintStamp,
 ) {
 	if e.outcomeRepo == nil {
 		return
@@ -682,6 +725,11 @@ func (e *Executor) recordStepOutcomeWithSignalsAndBudget(
 		ComplexityTier:      budget.ComplexityTier,
 		EffectiveToolBudget: budget.EffectiveToolBudget,
 		ToolCallsUsed:       budget.ToolCallsUsed,
+		// Migration-137 taint-lineage stamp — populated for agent steps only;
+		// non-agent steps leave these false/NULL via a zero taintStamp (§5.1).
+		UntrustedContentUsed: taint.UntrustedContentUsed,
+		UntrustedSources:     taint.UntrustedSources,
+		RequiresReview:       taint.RequiresReview,
 	}
 	// Stamp the canonical-context source captured at workspace
 	// prep so operator queries against context_source surface
@@ -858,14 +906,39 @@ func clampToolAuditDurationMs(e *Executor, tool, executionID string, ms int64) i
 	return clamped
 }
 
+// recordToolCallCounts emits the per-tool Prometheus counters for a step's
+// audited calls. No-op when metrics are unwired.
+func (e *Executor) recordToolCallCounts(projectID string, entries []auditEntryForDetection) {
+	if e.metrics == nil {
+		return
+	}
+	toolCounts := make(map[string]int, len(entries))
+	for _, entry := range entries {
+		toolCounts[entry.Tool]++
+	}
+	e.metrics.RecordToolCalls(projectID, toolCounts)
+}
+
+// recordStepTaintMetric increments the per-severity step-taint counter (§8).
+// No-op when metrics are unwired.
+func (e *Executor) recordStepTaintMetric(st taintlineage.StepTaint) {
+	if e.metrics == nil || e.metrics.StepTaintTotal == nil {
+		return
+	}
+	e.metrics.StepTaintTotal.WithLabelValues(st.MaxSeverity.String()).Inc()
+}
+
 // persistToolAuditFromResult parses toolAudit from raw result.json bytes,
-// writes entries to the audit log, and runs the degenerate-loop detector.
-// Returns the tool-call count (for the migration-106 budget stamp) and a
-// non-empty loop-detail string when a degenerate loop is detected; the
-// caller uses loopDetail to decide the step's outcome row (degenerate_loop
-// replaces the default pending_validation in executeAgentStep's defer). An
-// empty loopDetail means "no loop, continue with normal outcome classification."
-func (e *Executor) persistToolAuditFromResult(ctx context.Context, task *persistence.Task, execution *persistence.Execution, stepID string, resultBytes []byte) (toolCallCount int, loopDetail string) {
+// writes entries to the audit log, runs the degenerate-loop detector, and
+// classifies the step's untrusted-content taint from the same tool
+// names/inputs (taint-lineage-tracking §4.2). Returns the tool-call count (for
+// the migration-106 budget stamp), a non-empty loop-detail string when a
+// degenerate loop is detected (the caller uses it to override the default
+// pending_validation outcome in executeAgentStep's defer), and the classified
+// StepTaint (migration-137 stamp). A parse failure / empty audit returns a zero
+// StepTaint (untainted) — correct, a step that ran no tools consumed no
+// untrusted content.
+func (e *Executor) persistToolAuditFromResult(ctx context.Context, task *persistence.Task, execution *persistence.Execution, stepID string, resultBytes []byte) (toolCallCount int, loopDetail string, taint taintlineage.StepTaint) {
 	var parsed struct {
 		ToolAudit []struct {
 			AuditID    string `json:"audit_id"`
@@ -879,22 +952,29 @@ func (e *Executor) persistToolAuditFromResult(ctx context.Context, task *persist
 		e.logger.Warn().Err(err).Str("execution_id", execution.ID).
 			Int("result_len", len(resultBytes)).
 			Msg("audit: failed to parse result.json")
-		return 0, ""
+		return 0, "", taintlineage.StepTaint{}
 	}
 	if len(parsed.ToolAudit) == 0 {
 		e.logger.Debug().Str("execution_id", execution.ID).Str("step", stepID).
 			Msg("audit: no toolAudit entries in result.json")
-		return 0, ""
+		return 0, "", taintlineage.StepTaint{}
 	}
 
 	toolCallCount = len(parsed.ToolAudit)
 
-	// Degenerate-loop detection runs regardless of whether the audit
-	// repo is wired, because we use the result to drive outcome
-	// classification, not just DB logging.
+	// Degenerate-loop detection + taint classification both run regardless of
+	// whether the audit repo is wired, because both drive outcome
+	// classification (degenerate_loop outcome / taint columns), not just DB
+	// logging. Build both input slices in the one loop over the audit entries.
 	detected := make([]auditEntryForDetection, 0, len(parsed.ToolAudit))
+	toolCalls := make([]taintlineage.ToolCall, 0, len(parsed.ToolAudit))
 	for _, entry := range parsed.ToolAudit {
 		detected = append(detected, auditEntryForDetection{Tool: entry.Tool, Input: entry.Input})
+		toolCalls = append(toolCalls, taintlineage.ToolCall{Tool: entry.Tool, Input: entry.Input})
+	}
+	taint = taintlineage.Classify(toolCalls)
+	if e.metrics != nil {
+		e.recordStepTaintMetric(taint)
 	}
 	loopDetail = detectDegenerateLoop(detected)
 	if loopDetail != "" {
@@ -907,21 +987,16 @@ func (e *Executor) persistToolAuditFromResult(ctx context.Context, task *persist
 
 	if e.auditRepo == nil {
 		e.logger.Debug().Str("execution_id", execution.ID).Msg("audit: repo is nil, skipping persist")
-		return toolCallCount, loopDetail
+		return toolCallCount, loopDetail, taint
 	}
 
 	e.logger.Info().Str("execution_id", execution.ID).Str("step", stepID).
 		Int("entries", len(parsed.ToolAudit)).
 		Msg("audit: persisting tool audit entries")
 
-	// Record tool call metrics for Prometheus.
-	if e.metrics != nil {
-		toolCounts := make(map[string]int, len(parsed.ToolAudit))
-		for _, entry := range parsed.ToolAudit {
-			toolCounts[entry.Tool]++
-		}
-		e.metrics.RecordToolCalls(task.ProjectID, toolCounts)
-	}
+	// Record tool call metrics for Prometheus (per-tool counts from the
+	// already-built detection slice, avoiding a second pass over parsed).
+	e.recordToolCallCounts(task.ProjectID, detected)
 
 	for _, entry := range parsed.ToolAudit {
 		input, output := e.scanToolAuditForSecrets(execution, stepID, entry.Tool, entry.Input, entry.Output)
@@ -958,5 +1033,5 @@ func (e *Executor) persistToolAuditFromResult(ctx context.Context, task *persist
 		// matches a configured mapping. Best-effort; never fails the step.
 		e.captureToolCredential(ctx, task, execution, entry.Tool, entry.Output)
 	}
-	return toolCallCount, loopDetail
+	return toolCallCount, loopDetail, taint
 }

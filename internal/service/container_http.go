@@ -29,6 +29,7 @@ import (
 	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/configrecon"
 	"vornik.io/vornik/internal/conversation/a2a"
 	"vornik.io/vornik/internal/email"
 	"vornik.io/vornik/internal/executor"
@@ -82,6 +83,16 @@ func (c *Container) initHTTPServer() error {
 	}
 	if c.TelegramBot != nil {
 		taskCreatorOpts = append(taskCreatorOpts, taskcreate.WithBudgetNotifier(c.TelegramBot))
+	}
+	// Per-task cost governor pre-flight forecast gate (LLD 2026-07-24 §3.4, impl
+	// review I4): give the shared creator the pricing table + default model so
+	// every create surface routed through it (REST POST /tasks, companion MCP
+	// delegate) forecasts against the per-task budget + project cap.
+	if c.pricingTable != nil {
+		taskCreatorOpts = append(taskCreatorOpts, taskcreate.WithPricing(c.pricingTable))
+	}
+	if model := c.Config.Runtime.AgentLLM.Model; model != "" {
+		taskCreatorOpts = append(taskCreatorOpts, taskcreate.WithDefaultModel(model))
 	}
 	taskCreator := taskcreate.New(taskCreatorOpts...)
 	// Mirror onto the container so RemindersSubsystem.Start (which runs
@@ -339,6 +350,10 @@ func (c *Container) initHTTPServer() error {
 			c.Logger.Warn().Msg("gateway.agent_writes=all: task-executing agents (including autonomous/prompt-injectable ones) may write to every writes_enabled provider; prefer 'user' unless broad autonomous writes are intended")
 		}
 	}
+	// taint_lineage.enforcement_mode daemon default (taint-lineage-tracking §7).
+	// Validated at config load; the api server resolves per-project overrides via
+	// the project registry wired below.
+	apiOpts = append(apiOpts, api.WithTaintEnforcementMode(c.taintDefaultMode()))
 	if c.Registry != nil {
 		apiOpts = append(apiOpts, api.WithProjectRegistry(c.Registry))
 		// Forge-job classifier for the generic webhook path: stamps a
@@ -505,11 +520,24 @@ func (c *Container) initHTTPServer() error {
 		if c.dryRunMetrics == nil {
 			c.dryRunMetrics = api.NewDryRunMetrics(reg)
 		}
+		// Config-tree mirror-seam normalization counter (LLD 2026-07-24 §5).
+		// Same pass-2-only registry rule as the metrics around it: built once,
+		// on the served registry, guarded by the field.
+		if c.configMirrorMetrics == nil {
+			c.configMirrorMetrics = configrecon.NewMetrics(reg)
+		}
 		// Agent-write observability counter (LLD 2026-07-22, review I4). Same
 		// pass-2-only registry rule as the metrics above. The 'all' operator
 		// warning is emitted in the gateway block above (registry-independent).
 		if c.agentWriteMetrics == nil {
 			c.agentWriteMetrics = api.NewAgentAPIWriteMetrics(reg)
+		}
+		// Taint-lineage tainted-write counter (taint-lineage-tracking §8). Same
+		// pass-2-only registry rule. Shared by BOTH surfaces: the query_api gate
+		// records directly via the api server; the forge park routes through
+		// c.recordForgeTaintWrite → this same counter (single registration).
+		if c.taintWriteMetrics == nil {
+			c.taintWriteMetrics = api.NewTaintWriteMetrics(reg)
 		}
 		// Same pass-2-only rule as dryRunMetrics (see the trap notes
 		// above): build the chain-verdict counter on the served
@@ -550,6 +578,7 @@ func (c *Container) initHTTPServer() error {
 		apiOpts = append(apiOpts, api.WithRateLimitMetrics(c.rateLimitMetrics))
 		apiOpts = append(apiOpts, api.WithDryRunMetrics(c.dryRunMetrics))
 		apiOpts = append(apiOpts, api.WithAgentAPIWriteMetrics(c.agentWriteMetrics))
+		apiOpts = append(apiOpts, api.WithTaintWriteMetrics(c.taintWriteMetrics))
 		apiOpts = append(apiOpts, api.WithChainMetrics(c.chainMetrics))
 	}
 	if c.memoryManager != nil {

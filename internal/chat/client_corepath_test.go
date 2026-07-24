@@ -117,6 +117,43 @@ func TestDoComplete_WireBody_ResponseFormatFromContext_JSONObject(t *testing.T) 
 	}
 }
 
+// TestDoComplete_WireBody_PromptCacheKeyFromContext — BACKLOG
+// "OpenAI-compat prompt_cache_key passthrough": a prompt_cache_key
+// stamped on ctx (by the chat-proxy, from project+role) MUST ride the
+// non-stream OpenAI-compatible wire body so upstream auto-caching keys
+// on the shared static prefix.
+func TestDoComplete_WireBody_PromptCacheKeyFromContext(t *testing.T) {
+	var captured map[string]any
+	srv := captureWireBody(t, func(_ *http.Request, b []byte) { captured = decodeWireMap(t, b) })
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "k", "gpt-4")
+	ctx := WithRequestPromptCacheKey(context.Background(), "assistant:researcher")
+	if _, err := c.CompleteWithTools(ctx, []Message{{Role: "user", Content: "hi"}}, nil); err != nil {
+		t.Fatalf("CompleteWithTools: %v", err)
+	}
+	if got := captured["prompt_cache_key"]; got != "assistant:researcher" {
+		t.Errorf("prompt_cache_key = %v, want assistant:researcher", got)
+	}
+}
+
+// TestDoComplete_WireBody_NoPromptCacheKeyOmitsField — without a ctx
+// key the field must be omitted entirely (omitempty), so endpoints that
+// reject unknown keys aren't handed an empty one.
+func TestDoComplete_WireBody_NoPromptCacheKeyOmitsField(t *testing.T) {
+	var captured map[string]any
+	srv := captureWireBody(t, func(_ *http.Request, b []byte) { captured = decodeWireMap(t, b) })
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "k", "gpt-4")
+	if _, err := c.Complete(context.Background(), []Message{{Role: "user", Content: "hi"}}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if _, present := captured["prompt_cache_key"]; present {
+		t.Errorf("prompt_cache_key must be omitted when unset; got %v", captured["prompt_cache_key"])
+	}
+}
+
 // TestDoComplete_WireBody_ResponseFormatFromContext_JSONSchema — the
 // typed json_schema variant must carry its full schema body through to
 // the wire (the OpenAI-compat passthrough path; bedrock translates it

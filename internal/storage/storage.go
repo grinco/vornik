@@ -74,6 +74,7 @@ type Repositories struct {
 	ChunkGraphExtraction persistence.ChunkGraphExtractionRepository
 	MemoryRetrievalAudit persistence.MemoryRetrievalAuditRepository
 	MemoryIngestAudit    persistence.MemoryIngestAuditRepository
+	MemorySearchStage    persistence.MemorySearchStageRepository
 	CorpusEpochs         persistence.CorpusEpochRepository
 	MemoryQuarantine     persistence.MemoryQuarantineRepository
 	IngestQueue          persistence.IngestQueueRepository
@@ -347,6 +348,7 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		ProjectSpawns:                  sqlite.NewProjectSpawnRepository(db),
 		MemoryRetrievalAudit:           sqlite.NewMemoryRetrievalAuditRepository(db),
 		MemoryIngestAudit:              sqlite.NewMemoryIngestAuditRepository(db),
+		MemorySearchStage:              sqlite.NewMemorySearchStageRepository(db),
 		// Round 2 — financial.
 		LLMUsage:                sqlite.NewTaskLLMUsageRepository(db),
 		BudgetReservations:      sqlite.NewBudgetReservationRepository(db),
@@ -449,6 +451,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		ChunkGraphExtraction:           postgres.NewChunkGraphExtractionRepository(dbtx),
 		MemoryRetrievalAudit:           postgres.NewMemoryRetrievalAuditRepository(dbtx),
 		MemoryIngestAudit:              postgres.NewMemoryIngestAuditRepository(dbtx),
+		MemorySearchStage:              postgres.NewMemorySearchStageRepository(dbtx),
 		CorpusEpochs:                   postgres.NewCorpusEpochRepository(dbtx),
 		MemoryQuarantine:               postgres.NewMemoryQuarantineRepository(dbtx),
 		IngestQueue:                    postgres.NewIngestQueueRepository(dbtx),

@@ -53,6 +53,34 @@ func TestStreamRequest_CarriesMaxTokensAndResponseFormat(t *testing.T) {
 	}
 }
 
+// TestStreamRequest_CarriesPromptCacheKey — the streaming literal must
+// carry the ctx-stamped prompt_cache_key onto the wire, same as the
+// non-stream doComplete path (BACKLOG "OpenAI-compat prompt_cache_key
+// passthrough"). Guards against the recurring streamRequest-literal
+// drift that previously dropped max_tokens / response_format.
+func TestStreamRequest_CarriesPromptCacheKey(t *testing.T) {
+	var captured map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &captured)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	c := &Client{endpoint: srv.URL, model: "test-model", httpClient: &http.Client{}}
+	ctx := WithRequestPromptCacheKey(context.Background(), "assistant:researcher")
+
+	_, _ = c.CompleteWithToolsStream(ctx, []Message{{Role: "user", Content: "hi"}}, nil, nil)
+
+	if captured == nil {
+		t.Fatal("upstream never received a request body")
+	}
+	if got := captured["prompt_cache_key"]; got != "assistant:researcher" {
+		t.Errorf("prompt_cache_key = %v, want assistant:researcher", got)
+	}
+}
+
 // TestStreamScanner_BufferLargeEnoughForToolCallDeltas — pre-fix
 // the SSE scanner used the default 64KB cap and silently truncated
 // large tool-call argument deltas. Verify the buffer override

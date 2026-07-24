@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/contracts"
 	"vornik.io/vornik/internal/executor/agenthealth"
@@ -322,6 +323,17 @@ type Executor struct {
 	notifier       CompletionNotifier
 	steering       SteeringNotifier
 	memoryIndexer  MemoryIndexer
+	// budgetNotifier receives per-task cost-governor soft-breach + hard-park
+	// alerts (LLD 2026-07-24 §3.5/§3.6). Optional — nil no-ops (same pattern
+	// as CompletionNotifier). Deduped once per task via taskBudgetWarned.
+	budgetNotifier budget.Notifier
+	// taskBudgetWarned dedups the soft-breach Notifier event + structured log
+	// once per task_id, per daemon lifetime (§3.5 F4). Keyed on task_id alone;
+	// spend is monotonic and budget decreases are rejected, so a task can't
+	// oscillate down out of soft. A restart clears it (⇒ at most one re-warn);
+	// the non-deduped metric is the durable record. Value is unused (presence
+	// = warned).
+	taskBudgetWarned sync.Map
 	// systemHandlers backs the `system` workflow step type (B-7).
 	// Populated at executor construction via WithSystemHandlers.
 	// Nil-safe: a missing handler surfaces the standard
@@ -759,7 +771,15 @@ func WithBudgetReservationRepository(repo persistence.BudgetReservationRepositor
 // the backstop), and a no-op when no reservation repo is wired or the task
 // never reserved.
 func (e *Executor) settleBudgetReservation(ctx context.Context, taskID string) {
-	if e == nil || e.reservRepo == nil || taskID == "" {
+	if e == nil || taskID == "" {
+		return
+	}
+	// Per-task cost governor (impl review M1): drop the soft-breach dedup flag
+	// when the task reaches a terminal state so the in-memory map doesn't grow
+	// unbounded over the daemon's lifetime. This runs at every terminal site
+	// (handleSuccess / handleFailure). Safe on tasks that never breached soft.
+	e.taskBudgetWarned.Delete(taskID)
+	if e.reservRepo == nil {
 		return
 	}
 	if _, err := e.reservRepo.SettleByTask(ctx, taskID, time.Now().UTC()); err != nil {
@@ -1014,6 +1034,14 @@ func WithCompletionNotifier(n CompletionNotifier) Option {
 func WithCircuitBreaker(cb *circuitBreaker) Option {
 	return func(e *Executor) {
 		e.circuitBreaker = cb
+	}
+}
+
+// WithBudgetNotifier wires the per-task cost-governor breach notifier
+// (soft-breach + hard-park alerts). Optional — nil no-ops.
+func WithBudgetNotifier(n budget.Notifier) Option {
+	return func(e *Executor) {
+		e.budgetNotifier = n
 	}
 }
 

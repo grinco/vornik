@@ -26,6 +26,7 @@ import (
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/queue"
 	"vornik.io/vornik/internal/ratelimit"
 	"vornik.io/vornik/internal/registry"
@@ -137,8 +138,14 @@ type Creator struct {
 	llmUsageRepo    persistence.TaskLLMUsageRepository
 	reservRepo      persistence.BudgetReservationRepository
 	budgetNotifier  budget.Notifier
-	logger          zerolog.Logger
-	now             func() time.Time
+	// pricing + defaultModel back the pre-flight forecast gate (per-task cost
+	// governor, LLD 2026-07-24 §3.4, impl review I4). Both optional — without a
+	// usage repo the forecast is skipped entirely; pricing only sharpens the
+	// cold-start estimate.
+	pricing      *pricing.Table
+	defaultModel string
+	logger       zerolog.Logger
+	now          func() time.Time
 }
 
 // Option configures a Creator.
@@ -188,6 +195,19 @@ func WithBudgetReservationRepository(r persistence.BudgetReservationRepository) 
 // (telegram alert today). Optional.
 func WithBudgetNotifier(n budget.Notifier) Option {
 	return func(c *Creator) { c.budgetNotifier = n }
+}
+
+// WithPricing wires the model pricing table used by the pre-flight forecast
+// gate's cold-start estimate. Optional — a nil table just yields $0 cold-start
+// contributions.
+func WithPricing(t *pricing.Table) Option {
+	return func(c *Creator) { c.pricing = t }
+}
+
+// WithDefaultModel sets the daemon-wide fallback model used to resolve a step's
+// effective model in the forecast when neither the role nor the swarm pins one.
+func WithDefaultModel(m string) Option {
+	return func(c *Creator) { c.defaultModel = m }
 }
 
 // WithLogger sets the logger.
@@ -329,6 +349,19 @@ func (c *Creator) Create(ctx context.Context, p Params) (*persistence.Task, erro
 		}
 	}
 
+	// Pre-flight forecast gate (per-task cost governor, LLD 2026-07-24 §3.4,
+	// impl review I4). Lives here in the shared core so EVERY create path — POST
+	// /tasks (via createTaskViaCreator), the companion MCP delegate, and any
+	// future surface — enforces forecast + per-task budget + project cap
+	// uniformly. Short-circuits (no refusal) when nothing is configured, so
+	// un-configured projects see byte-identical create behaviour.
+	if reason := c.forecastRefusal(ctx, project, workflowID); reason != "" {
+		if c.budgetNotifier != nil {
+			c.budgetNotifier.NotifyBudgetBreach(ctx, p.ProjectID, "hard", "forecast", budget.Decision{Blocked: true, Reason: reason})
+		}
+		return nil, &Error{Reason: ReasonBudgetExceeded, Message: reason}
+	}
+
 	// Build payload. The agent runtime reads context.prompt — see
 	// the comment on api.CreateTaskRequest.Context for history.
 	payload, err := buildPayload(p)
@@ -398,6 +431,54 @@ func (c *Creator) Create(ctx context.Context, p Params) (*persistence.Task, erro
 	}
 
 	return task, nil
+}
+
+// forecastRefusal runs the pre-flight forecast gate (LLD 2026-07-24 §3.4) and
+// returns a non-empty refusal reason when the run's forecast would breach the
+// project daily/monthly hard cap OR the effective per-task budget. Returns ""
+// (allow) when no usage repo / registry is wired, when neither a project hard
+// cap nor a per-task budget is configured (short-circuit), or when the forecast
+// itself errors (best-effort — the reactive Check/Reserve is the backstop).
+func (c *Creator) forecastRefusal(ctx context.Context, project *registry.Project, workflowID string) string {
+	if c.llmUsageRepo == nil || c.projectRegistry == nil || project == nil || workflowID == "" {
+		return ""
+	}
+	// Create surfaces carry NO budget override (admin-only, §3.1) → the effective
+	// ceiling is the project default.
+	taskBudgetUSD := budget.EffectiveTaskBudgetUSD(project, nil)
+	if project.Budget.DailyHardUSD <= 0 && project.Budget.MonthlyHardUSD <= 0 && taskBudgetUSD <= 0 {
+		return "" // nothing configured → short-circuit (byte-identical to before)
+	}
+	wf := c.projectRegistry.GetWorkflow(workflowID)
+	swarm := c.projectRegistry.GetSwarm(project.SwarmID)
+	if wf == nil || swarm == nil {
+		return ""
+	}
+	now := c.now().UTC()
+	current, cerr := budget.Check(ctx, c.llmUsageRepo, project, now)
+	if cerr != nil {
+		c.logger.Warn().Err(cerr).Str("project_id", project.ID).Msg("taskcreate: budget snapshot for forecast failed — proceeding")
+		return ""
+	}
+	forecast, ferr := budget.ForecastTask(ctx, c.llmUsageRepo, c.pricing, budget.ForecastInput{
+		Workflow:     wf,
+		Swarm:        swarm,
+		DefaultModel: c.defaultModel,
+	}, now)
+	if ferr != nil {
+		c.logger.Warn().Err(ferr).Str("project_id", project.ID).Msg("taskcreate: forecast failed — proceeding without preventive gate")
+		return ""
+	}
+	if d := budget.CheckForecast(project, forecast, current, taskBudgetUSD); d.Refused {
+		c.logger.Info().
+			Str("project_id", project.ID).
+			Str("workflow_id", workflowID).
+			Float64("forecast_usd", forecast.USD).
+			Str("reason", d.Reason).
+			Msg("taskcreate: refusing create — forecast would breach budget")
+		return d.Reason
+	}
+	return ""
 }
 
 // buildPayload assembles the JSON payload persisted on the task

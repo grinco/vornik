@@ -49,6 +49,10 @@ type Searcher struct {
 	// sufficiency governs scored-sufficiency iterative retrieval
 	// (RecallSufficient). Zero value = disabled → single-shot.
 	sufficiency SufficiencyConfig
+	// traceSink (optional) persists the trust_verdict stage row for
+	// Routing-on searches (P3, §3.6). Nil disables the trace write —
+	// the verdict path itself never depends on it.
+	traceSink persistence.MemorySearchStageRepository
 }
 
 // defaultQueryEmbedTimeout bounds the query-embedding call on the
@@ -129,6 +133,16 @@ func (s *Searcher) SetMMRLambda(lambda float64) {
 func (s *Searcher) SetReranker(r Reranker) {
 	if s != nil {
 		s.reranker = r
+	}
+}
+
+// SetTraceSink wires the memory_search_stages trace repo used by the
+// confidence-based retrieval routing path to persist the trust_verdict
+// stage row (§3.6). Nil disables the write — the verdict is still computed
+// and returned; only the replayable trace is skipped.
+func (s *Searcher) SetTraceSink(repo persistence.MemorySearchStageRepository) {
+	if s != nil {
+		s.traceSink = repo
 	}
 }
 
@@ -228,6 +242,14 @@ type SearchOptions struct {
 	// scoped to where the extra quality is worth the seconds. No-op unless a
 	// real (non-Noop) reranker is wired.
 	Rerank bool
+	// Routing opts this search into confidence-based retrieval routing (P3):
+	// the daemon computes a retrieval_trust_verdict, runs the bounded
+	// verdict-predicated DB widen (when verdict==low), and surfaces the
+	// trust fields + verdict + guidance to the caller. Default false: with
+	// Routing off every response shape is byte-identical to before the
+	// feature. Only RecallWithRouting acts on it — the plain Search /
+	// RecallWithContext paths ignore it entirely.
+	Routing bool
 }
 
 // SearchWithOptions is the parameterised form of Search.

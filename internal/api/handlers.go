@@ -370,6 +370,13 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 		req.Context = merged
 	}
 
+	// Pre-flight forecast gate (per-task cost governor, LLD 2026-07-24 §3.4,
+	// impl review I4): the production POST /tasks path delegates to the shared
+	// taskcreate.Creator, which runs the forecast+per-task-budget+project-cap
+	// gate uniformly for every create surface (REST, companion MCP). The legacy
+	// inline path below is test-only. The webhook path (which bypasses the
+	// Creator) keeps its own gate in admitWebhookTask.
+
 	// When the shared task-creation core is wired (production
 	// wiring), delegate. The legacy inline path below stays so
 	// existing tests that don't set up a Creator keep working

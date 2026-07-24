@@ -51,14 +51,16 @@ func (r *ExecutionStepOutcomeRepository) Record(ctx context.Context, o *persiste
 			role, model, outcome, attributed_to_step_id,
 			error_class, error_detail, duration_ms,
 			finalized_at, recorded_at, hallucination_signals,
-			complexity_tier, effective_tool_budget, tool_calls_used
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			complexity_tier, effective_tool_budget, tool_calls_used,
+			untrusted_content_used, untrusted_sources, requires_review
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		o.ID, o.ProjectID, o.TaskID, o.ExecutionID, o.StepID,
 		o.Role, o.Model, o.Outcome, o.AttributedToStepID,
 		o.ErrorClass, o.ErrorDetail, duration,
 		sqliteTimePtr(o.FinalizedAt), sqliteTime(o.RecordedAt),
 		nullableBlob(o.HallucinationSignals),
 		nullableString(o.ComplexityTier), effectiveBudget, toolCallsUsed,
+		o.UntrustedContentUsed, nullableBlob(o.UntrustedSources), o.RequiresReview,
 	)
 	return err
 }
@@ -130,7 +132,8 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 		       role, model, outcome, attributed_to_step_id,
 		       error_class, error_detail, duration_ms,
 		       finalized_at, recorded_at, hallucination_signals,
-		       complexity_tier, effective_tool_budget, tool_calls_used
+		       complexity_tier, effective_tool_budget, tool_calls_used,
+		       untrusted_content_used, untrusted_sources, requires_review
 		FROM execution_step_outcomes WHERE 1=1`)
 	args := make([]any, 0, 10)
 	if f.ProjectID != nil {
@@ -208,6 +211,9 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 			complexityTier      sql.NullString
 			effectiveToolBudget sql.NullInt64
 			toolCallsUsed       sql.NullInt64
+			untrustedUsed       sql.NullBool
+			untrustedSources    sql.NullString
+			requiresReview      sql.NullBool
 		)
 		if err := rows.Scan(
 			&o.ID, &o.ProjectID, &o.TaskID, &o.ExecutionID, &o.StepID,
@@ -215,9 +221,15 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 			&o.ErrorClass, &o.ErrorDetail, &durationMS,
 			&finalizedAt, &recordedAt, &signals,
 			&complexityTier, &effectiveToolBudget, &toolCallsUsed,
+			&untrustedUsed, &untrustedSources, &requiresReview,
 		); err != nil {
 			return nil, err
 		}
+		o.UntrustedContentUsed = untrustedUsed.Valid && untrustedUsed.Bool
+		if untrustedSources.Valid && untrustedSources.String != "" {
+			o.UntrustedSources = []byte(untrustedSources.String)
+		}
+		o.RequiresReview = requiresReview.Valid && requiresReview.Bool
 		if attributed.Valid {
 			o.AttributedToStepID = &attributed.String
 		}
@@ -298,6 +310,52 @@ func (r *ExecutionStepOutcomeRepository) CountByRoleModelOutcome(ctx context.Con
 			return nil, err
 		}
 		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// TaintedStepsForTasks returns the untrusted-content step rows for a batch of
+// task IDs in ONE query (taint-lineage-tracking §4.3, I7). Uses the
+// idx_step_outcomes_task_taint partial index. Unknown-only rows
+// (requires_review=false) are returned too (F3). Empty input → nil.
+func (r *ExecutionStepOutcomeRepository) TaintedStepsForTasks(ctx context.Context, taskIDs []string) ([]persistence.TaintedStepRow, error) {
+	if len(taskIDs) == 0 {
+		return nil, nil
+	}
+	var b strings.Builder
+	b.WriteString(`
+		SELECT task_id, requires_review, untrusted_sources
+		FROM execution_step_outcomes
+		WHERE untrusted_content_used = 1 AND task_id IN (`)
+	args := make([]any, len(taskIDs))
+	for i, id := range taskIDs {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString("?")
+		args[i] = id
+	}
+	b.WriteString(")")
+	rows, err := r.db.QueryContext(ctx, b.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []persistence.TaintedStepRow
+	for rows.Next() {
+		var (
+			row     persistence.TaintedStepRow
+			review  sql.NullBool
+			sources sql.NullString
+		)
+		if err := rows.Scan(&row.TaskID, &review, &sources); err != nil {
+			return nil, err
+		}
+		row.RequiresReview = review.Valid && review.Bool
+		if sources.Valid && sources.String != "" {
+			row.UntrustedSources = []byte(sources.String)
+		}
+		out = append(out, row)
 	}
 	return out, rows.Err()
 }

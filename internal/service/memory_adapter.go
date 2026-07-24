@@ -125,6 +125,46 @@ func (a *memoryCompanionAdapter) Recall(ctx context.Context, projectID, query st
 	return out, nil
 }
 
+// RecallRouting is the confidence-based retrieval routing (P3) variant of
+// Recall for the companion `recall` tool. It opts the search into routing so
+// the result carries the retrieval_trust_verdict + guidance + per-hit trust
+// fields. Satisfies api.MemoryRoutingCompanionAdapter. Mirrors Recall's
+// actor-stamping + firewall RequestContext construction; the counterfactual
+// exclusion + class/min-score filtering stay in the handler.
+func (a *memoryCompanionAdapter) RecallRouting(ctx context.Context, projectID, query string, opts api.RecallOptions) ([]api.MemorySearchResult, *api.RoutingVerdictWire, error) {
+	if a == nil || a.s == nil {
+		return nil, nil, nil
+	}
+	if opts.ActorKind != "" || opts.ActorID != "" {
+		ctx = memory.WithRetrievalContext(ctx, &memory.RetrievalContext{
+			ActorKind: opts.ActorKind,
+			ActorID:   opts.ActorID,
+		})
+	}
+	searchOpts := memory.SearchOptions{
+		Limit:       opts.Limit,
+		FromDate:    opts.FromDate,
+		ToDate:      opts.ToDate,
+		RepoScope:   opts.RepoScope,
+		StrictScope: opts.StrictScope,
+		Routing:     true,
+	}
+	reqCtx := memoryfirewall.RequestContext{
+		Role:       opts.ActorKind,
+		OperatorID: opts.ActorID,
+		Purpose:    memoryfirewall.PurposeOperational,
+	}
+	results, verdict, err := a.s.RecallWithRouting(ctx, projectID, query, searchOpts, reqCtx)
+	if err != nil {
+		return nil, nil, err
+	}
+	out := make([]api.MemorySearchResult, len(results))
+	for i, r := range results {
+		out[i] = memorySearchResultToAPIRouting(r)
+	}
+	return out, routingVerdictToWire(verdict), nil
+}
+
 // RecentMemory delegates to memory.Repository.ListRecentChunks and
 // translates the row shape across the api/memory boundary. The
 // repoScope arg, when non-empty, restricts the digest to chunks
@@ -514,6 +554,80 @@ func (a *memorySearchAdapter) Search(ctx context.Context, projectID, query strin
 		}
 	}
 	return out, nil
+}
+
+// SearchRouting is the confidence-based retrieval routing (P3) entry point
+// for the REST memory-search handler. It opts the search into routing
+// (Routing on) so the daemon computes the retrieval_trust_verdict, runs the
+// bounded verdict-predicated DB widen, and returns the verdict + guidance
+// alongside the results with per-result trust fields populated. Satisfies
+// api.MemoryRoutingSearcher.
+func (a *memorySearchAdapter) SearchRouting(ctx context.Context, projectID, query string, limit int) ([]api.MemorySearchResult, *api.RoutingVerdictWire, error) {
+	reqCtx := memoryfirewall.RequestContext{Purpose: memoryfirewall.PurposeOperational}
+	if rc := memory.RetrievalContextFromContext(ctx); rc.ActorKind != "" {
+		reqCtx.Role = rc.ActorKind
+		reqCtx.OperatorID = rc.ActorID
+	}
+	results, verdict, err := a.s.RecallWithRouting(ctx, projectID, query,
+		memory.SearchOptions{Limit: limit, Routing: true}, reqCtx)
+	if err != nil {
+		return nil, nil, err
+	}
+	out := make([]api.MemorySearchResult, len(results))
+	for i, r := range results {
+		out[i] = memorySearchResultToAPIRouting(r)
+	}
+	return out, routingVerdictToWire(verdict), nil
+}
+
+// memorySearchResultToAPIRouting converts a memory.SearchResult to the api
+// wire shape INCLUDING the P3 trust fields (Routing-on projection).
+func memorySearchResultToAPIRouting(r memory.SearchResult) api.MemorySearchResult {
+	out := api.MemorySearchResult{
+		ChunkID:          r.ChunkID,
+		ProjectID:        r.ProjectID,
+		TaskID:           r.TaskID,
+		SourceName:       r.SourceName,
+		Content:          r.Content,
+		Score:            r.Score,
+		RepoScope:        r.RepoScope,
+		ContentClass:     r.ContentClass,
+		Confidence:       r.Confidence,
+		ValidationStatus: r.ValidationStatus,
+	}
+	if r.IsAlive != nil {
+		b := *r.IsAlive
+		out.IsAlive = &b
+	}
+	if r.LastCheckedAt != nil {
+		s := r.LastCheckedAt.UTC().Format(time.RFC3339)
+		out.LastCheckedAt = &s
+	}
+	if r.ExpiresAt != nil {
+		s := r.ExpiresAt.UTC().Format(time.RFC3339)
+		out.ExpiresAt = &s
+	}
+	return out
+}
+
+// routingVerdictToWire maps the memory-package verdict to the api wire shape.
+// nil in → nil out (a non-routing search).
+func routingVerdictToWire(v *memory.RoutingVerdict) *api.RoutingVerdictWire {
+	if v == nil {
+		return nil
+	}
+	return &api.RoutingVerdictWire{
+		Verdict:     v.Verdict,
+		Guidance:    v.Guidance,
+		WidenRounds: v.WidenRounds,
+		Basis: api.RoutingVerdictBasisWire{
+			ResultCount:   v.Basis.ResultCount,
+			TrustMean:     v.Basis.TrustMean,
+			AgeCapped:     v.Basis.AgeCapped,
+			WeakestDim:    v.Basis.WeakestDim,
+			TopHitAgeDays: v.Basis.TopHitAgeDays,
+		},
+	}
 }
 
 // uiMemorySearchAdapter wraps memory.Searcher so it satisfies

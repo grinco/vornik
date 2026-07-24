@@ -117,7 +117,7 @@ func TestBranchAndTitle(t *testing.T) {
 
 func TestOpenChangeRequest_HappyPath(t *testing.T) {
 	prov := &fakeProvider{openURL: "https://forge/o/r/pull/15"}
-	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/work/proj", sha: "deadbeef"}, nil)
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/work/proj", sha: "deadbeef"}, nil, nil)
 	if h.Name() != "forge.open_change_request" {
 		t.Fatalf("name=%s", h.Name())
 	}
@@ -140,7 +140,7 @@ func TestOpenChangeRequest_HappyPath(t *testing.T) {
 
 func TestOpenChangeRequest_DefaultBaseFallback(t *testing.T) {
 	prov := &fakeProvider{openURL: "u"}
-	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil)
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil, nil)
 	in := executor.SystemStepInput{Task: taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 1, Labels: []string{"bug"}})}
 	if _, err := h.Execute(context.Background(), in); err != nil {
 		t.Fatal(err)
@@ -162,29 +162,105 @@ func TestOpenChangeRequest_Errors(t *testing.T) {
 		t.Error("missing deps should error")
 	}
 	// missing job
-	h := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{}}, fakeSource{}, nil)
+	h := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{}}, fakeSource{}, nil, nil)
 	if _, err := h.Execute(ctx, executor.SystemStepInput{Task: &persistence.Task{}}); err == nil {
 		t.Error("missing forge job should error")
 	}
 	// resolver error
-	hr := NewOpenChangeRequestHandler(fakeResolver{err: errors.New("no provider")}, fakeSource{}, nil)
+	hr := NewOpenChangeRequestHandler(fakeResolver{err: errors.New("no provider")}, fakeSource{}, nil, nil)
 	if _, err := hr.Execute(ctx, executor.SystemStepInput{Task: good}); err == nil {
 		t.Error("resolver error should propagate")
 	}
 	// source error
-	hs := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{}}, fakeSource{err: errors.New("no worktree")}, nil)
+	hs := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{}}, fakeSource{err: errors.New("no worktree")}, nil, nil)
 	if _, err := hs.Execute(ctx, executor.SystemStepInput{Task: good}); err == nil {
 		t.Error("source error should propagate")
 	}
 	// push error
-	hp := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{pushErr: errors.New("push boom")}}, fakeSource{dir: "/d", sha: "s"}, nil)
+	hp := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{pushErr: errors.New("push boom")}}, fakeSource{dir: "/d", sha: "s"}, nil, nil)
 	if _, err := hp.Execute(ctx, executor.SystemStepInput{Task: good}); err == nil {
 		t.Error("push error should propagate")
 	}
 	// open error
-	ho := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{openErr: errors.New("open boom")}}, fakeSource{dir: "/d", sha: "s"}, nil)
+	ho := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{openErr: errors.New("open boom")}}, fakeSource{dir: "/d", sha: "s"}, nil, nil)
 	if _, err := ho.Execute(ctx, executor.SystemStepInput{Task: good}); err == nil {
 		t.Error("open error should propagate")
+	}
+}
+
+// fakeTaintGate returns a preset review signal (or nil for "proceed") and an
+// optional error (to exercise the M5 fail-closed path).
+type fakeTaintGate struct {
+	sig    *executor.TaintReviewSignal
+	err    error
+	called bool
+}
+
+func (g *fakeTaintGate) ReviewForgeWrite(_ context.Context, _, _ string) (*executor.TaintReviewSignal, error) {
+	g.called = true
+	return g.sig, g.err
+}
+
+// TestOpenChangeRequest_TaintGate_ErrorFailsClosed verifies M5: a reviewer error
+// parks (fail-closed) and NEVER pushes the branch, even with a nil signal.
+func TestOpenChangeRequest_TaintGate_ErrorFailsClosed(t *testing.T) {
+	prov := &fakeProvider{openURL: "u"}
+	gate := &fakeTaintGate{sig: nil, err: errors.New("reviewer boom")}
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil, gate)
+	in := executor.SystemStepInput{Task: taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 7})}
+	res, err := h.Execute(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Execute err=%v", err)
+	}
+	if _, ok := executor.AsTaintReview(res.Result); !ok {
+		t.Fatalf("a reviewer error must fail closed to a taint-review park, got %s", res.Result)
+	}
+	if prov.pushedBranch != "" {
+		t.Fatalf("branch must NOT be pushed on a reviewer error (fail-closed, M5)")
+	}
+}
+
+// TestOpenChangeRequest_TaintGate_Parks verifies that when the taint gate
+// returns a review signal, Execute returns it as the step result (a taint-review
+// park) and NEVER pushes the branch (taint-lineage-tracking §4.5).
+func TestOpenChangeRequest_TaintGate_Parks(t *testing.T) {
+	prov := &fakeProvider{openURL: "u"}
+	gate := &fakeTaintGate{sig: &executor.TaintReviewSignal{
+		State: executor.TaintReviewState, SourceSetHash: "abc", SourceCount: 2, ShownCount: 2,
+	}}
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil, gate)
+	in := executor.SystemStepInput{Task: taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 3})}
+	res, err := h.Execute(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Execute err=%v", err)
+	}
+	if !gate.called {
+		t.Fatalf("taint gate was not consulted")
+	}
+	sig, ok := executor.AsTaintReview(res.Result)
+	if !ok || sig.SourceSetHash != "abc" {
+		t.Fatalf("result is not a taint-review signal: %s", res.Result)
+	}
+	if prov.pushedBranch != "" {
+		t.Fatalf("branch must NOT be pushed when parking for taint review (pushed %q)", prov.pushedBranch)
+	}
+}
+
+// TestOpenChangeRequest_TaintGate_ProceedsWhenNil verifies a nil signal (off/
+// advisory / no taint) lets the write proceed to push+open normally.
+func TestOpenChangeRequest_TaintGate_ProceedsWhenNil(t *testing.T) {
+	prov := &fakeProvider{openURL: "https://forge/o/r/pull/9"}
+	gate := &fakeTaintGate{sig: nil}
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil, gate)
+	in := executor.SystemStepInput{Task: taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 4})}
+	if _, err := h.Execute(context.Background(), in); err != nil {
+		t.Fatalf("Execute err=%v", err)
+	}
+	if !gate.called {
+		t.Fatalf("taint gate was not consulted")
+	}
+	if prov.pushedBranch == "" {
+		t.Fatalf("branch should be pushed when the gate returns nil")
 	}
 }
 
@@ -432,7 +508,7 @@ func TestOpenChangeRequest_NoChangeSkips(t *testing.T) {
 	gitRun(t, dir, "update-ref", "refs/remotes/origin/main", sha)
 
 	prov := &fakeProvider{openURL: "should-not-be-used"}
-	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: dir, sha: sha}, nil)
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: dir, sha: sha}, nil, nil)
 	in := executor.SystemStepInput{Task: taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 1, DefaultBranch: "main", Labels: []string{"bug"}})}
 	res, err := h.Execute(context.Background(), in)
 	if err != nil {
@@ -528,6 +604,7 @@ func TestOpenChangeRequest_PushRejected_ParksWithPatch(t *testing.T) {
 		fakeResolver{p: &fakeProvider{pushErr: rej}},
 		fakeSource{dir: dir, sha: head},
 		store,
+		nil,
 	)
 	in := executor.SystemStepInput{
 		Task:      taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Kind: "backlog", Slug: "task-112", DefaultBranch: "main"}),

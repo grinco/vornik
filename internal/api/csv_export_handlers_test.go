@@ -90,6 +90,10 @@ func (m *mockTaskRepository) GetDependents(ctx context.Context, taskID string) (
 	return nil, nil
 }
 
+func (m *mockTaskRepository) RaiseTaskBudget(_ context.Context, _ string, _ float64, _ bool) (bool, error) {
+	return true, nil
+}
+
 // Mock ToolAuditRepository for CSV export tests
 type mockToolAuditRepository struct {
 	listFunc func(ctx context.Context, filter persistence.ToolAuditFilter) ([]*persistence.ToolAuditEntry, error)
@@ -127,6 +131,9 @@ func (m *mockTaskLLMUsageRepository) List(ctx context.Context, filter persistenc
 		return m.listFunc(ctx, filter)
 	}
 	return nil, nil
+}
+func (m *mockTaskLLMUsageRepository) SumCostByTask(_ context.Context, _ string) (float64, error) {
+	return 0, nil
 }
 func (m *mockTaskLLMUsageRepository) SumCostByProject(ctx context.Context, projectID string, since, until time.Time) (float64, error) {
 	return 0, nil

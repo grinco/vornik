@@ -183,6 +183,23 @@ type MemoryFirewallSearcher interface {
 	) ([]memory.SearchResult, error)
 }
 
+// MemoryRoutingSearcher is the optional capability surface for
+// confidence-based retrieval routing (P3). When the wired searcher
+// satisfies it, the memory_search tool opts into routing so the tool
+// output leads with a trust-verdict banner and annotates each hit with
+// confidence=/status= tokens (daemon-generated, emitted OUTSIDE the
+// untrusted_content wrapper). Searchers without it fall back to the
+// firewall / plain paths, and the tool output stays byte-identical to
+// before the feature (no banner, no extra tokens).
+type MemoryRoutingSearcher interface {
+	RecallWithRouting(
+		ctx context.Context,
+		projectID, query string,
+		opts memory.SearchOptions,
+		reqCtx memoryfirewall.RequestContext,
+	) ([]memory.SearchResult, *memory.RoutingVerdict, error)
+}
+
 // GraphSearcher is the optional knowledge-graph read surface the
 // memory_search tool blends into its result. When wired, after the
 // chunk hits the tool appends a structured "entities + 1-hop
@@ -929,7 +946,13 @@ func (te *ToolExecutor) createTask(ctx context.Context, argsJSON string, activeP
 				// non-fatal: the gate's job is to catch obvious
 				// over-budget submissions, not to block on transient
 				// DB hiccups.
-				if te.llmUsageRepo != nil && (proj.Budget.DailyHardUSD > 0 || proj.Budget.MonthlyHardUSD > 0) {
+				// Per-task cost governor: create_task exposes NO budget param
+				// (authority — never LLM-settable, §3.1), so the override is nil
+				// and the effective ceiling is the project default. The forecast
+				// runs when EITHER a project hard cap OR a per-task budget is
+				// configured (§3.4 uniform wiring).
+				taskBudgetUSD := budget.EffectiveTaskBudgetUSD(proj, nil)
+				if te.llmUsageRepo != nil && (proj.Budget.DailyHardUSD > 0 || proj.Budget.MonthlyHardUSD > 0 || taskBudgetUSD > 0) {
 					forecast, ferr := budget.ForecastTask(ctx, te.llmUsageRepo, te.pricing, budget.ForecastInput{
 						Workflow:     wf,
 						Swarm:        swarm,
@@ -940,7 +963,7 @@ func (te *ToolExecutor) createTask(ctx context.Context, argsJSON string, activeP
 							Str("project", project).
 							Str("workflow", workflowID).
 							Msg("dispatcher: forecast failed — proceeding without preventive gate")
-					} else if d := budget.CheckForecast(proj, forecast, currentBudget); d.Refused {
+					} else if d := budget.CheckForecast(proj, forecast, currentBudget, taskBudgetUSD); d.Refused {
 						te.logger.Info().
 							Str("project", project).
 							Str("workflow", workflowID).
@@ -1575,7 +1598,18 @@ func (te *ToolExecutor) memorySearch(ctx context.Context, argsJSON, activeProjec
 	// the agent's turn isn't slowed by the rerank LLM call. Scored-sufficiency
 	// + reranking is scoped to the non-interactive context-assembly path
 	// (the pre-delegation recall hint via RecallSufficient).
-	if fw, ok := te.memory.(MemoryFirewallSearcher); ok {
+	//
+	// Confidence-based retrieval routing (P3) is preferred when the searcher
+	// supports it: opt in (Routing on) so the tool leads with a trust-verdict
+	// banner and annotates hits with confidence=/status=. The bounded
+	// verdict-predicated DB widen runs inside RecallWithRouting. Falls back to
+	// the firewall / temporal / plain paths otherwise (banner + tokens absent,
+	// output byte-identical to before the feature).
+	var verdict *memory.RoutingVerdict
+	if rr, ok := te.memory.(MemoryRoutingSearcher); ok {
+		opts.Routing = true
+		results, verdict, err = rr.RecallWithRouting(ctx, project, args.Query, opts, reqCtx)
+	} else if fw, ok := te.memory.(MemoryFirewallSearcher); ok {
 		results, err = fw.RecallWithContext(ctx, project, args.Query, opts, reqCtx)
 	} else if temporal, ok := te.memory.(MemoryTemporalSearcher); ok && (!fromDate.IsZero() || !toDate.IsZero()) {
 		results, err = temporal.SearchWithOptions(ctx, project, args.Query, opts)
@@ -1598,9 +1632,22 @@ func (te *ToolExecutor) memorySearch(ctx context.Context, argsJSON, activeProjec
 	// untrusted.Prelude in the dispatcher's system prompt are the
 	// cheap mitigation.
 	var b strings.Builder
+	// Trust-verdict banner (P3, Routing only). Daemon-generated, so it sits
+	// OUTSIDE the untrusted_content wrappers below and the model can trust it.
+	if verdict != nil {
+		fmt.Fprintf(&b, "retrieval_trust_verdict=%s (trust_mean=%.2f, results=%d, weakest=%s)\n",
+			verdict.Verdict, verdict.Basis.TrustMean, verdict.Basis.ResultCount, verdict.Basis.WeakestDim)
+		fmt.Fprintf(&b, "guidance: %s\n\n", verdict.Guidance)
+	}
 	fmt.Fprintf(&b, "Found %d memory hit(s) for %q in %s:\n\n", len(results), args.Query, project)
 	for i, r := range results {
 		fmt.Fprintf(&b, "[%d] source=%s  score=%.2f\n", i+1, r.SourceName, r.Score)
+		// Per-hit trust tokens (P3, Routing only): daemon-generated, outside
+		// the untrusted wrapper. Only under Routing so the legacy per-hit line
+		// stays parse-stable for any consumer.
+		if verdict != nil {
+			fmt.Fprintf(&b, "    confidence=%.2f status=%s\n", r.Confidence, trustStatusOrUnknown(r.ValidationStatus))
+		}
 		// Surface the firewall's policy proof + any advisory warning so
 		// the model can cite the policy decision when composing its
 		// answer. RecallWithContext populates these; the legacy Search
@@ -1640,6 +1687,16 @@ func (te *ToolExecutor) memorySearch(ctx context.Context, argsJSON, activeProjec
 	}
 
 	return ToolResult{Content: b.String(), Provenance: outputguard.ProvenanceThirdParty}
+}
+
+// trustStatusOrUnknown renders a chunk's validation status for the P3
+// per-hit token, defaulting an empty status to "unknown" so the token is
+// always well-formed.
+func trustStatusOrUnknown(status string) string {
+	if status == "" {
+		return "unknown"
+	}
+	return status
 }
 
 // graphContextBlock builds the optional knowledge-graph context the

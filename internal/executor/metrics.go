@@ -84,6 +84,20 @@ type Metrics struct {
 	// contract violation worth investigating (design §9 R1).
 	ResidueDiscardTotal *prometheus.CounterVec
 
+	// TaskBudgetTierTotal counts per-task cost-governor evaluations by outcome
+	// tier (ok/soft/hard), labelled by project (LLD 2026-07-24 §4). Incremented
+	// per step-boundary evaluation and NOT deduped: a task that sits in "soft"
+	// for 30 steps increments tier="soft" ~30× — the desired time-in-tier
+	// signal. It is the durable record of tier occupancy; the Notifier event
+	// and structured log are the deduped edge-triggered signals.
+	TaskBudgetTierTotal *prometheus.CounterVec
+
+	// StepTaintTotal counts agent-step taint classifications by max severity
+	// (none/low/high/unknown), for the taint-lineage rollout calibration
+	// (taint-lineage-tracking §8/§14 — watch the unknown/low volume before any
+	// project flips to enforce). Incremented once per classified agent step.
+	StepTaintTotal *prometheus.CounterVec
+
 	// ModelSuccessRate is success / (success+failed+timeout) per (role, model).
 	// Cancelled outcomes are excluded: a user-initiated cancel should not
 	// penalise the model. Exposed as a native gauge so dashboards can read
@@ -496,6 +510,24 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 				Help:      "Non-backlog tracked files restored to HEAD at a failed/cancelled task terminal. Non-zero = worktree-contract violation (agent wrote to the shared clone directly).",
 			},
 			[]string{"project"},
+		),
+		TaskBudgetTierTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: executorNamespace,
+				Subsystem: executorSubsystem,
+				Name:      "task_budget_tier_total",
+				Help:      "Per-task cost-governor step-boundary evaluations by outcome tier (ok/soft/hard), per project. Not deduped — a persistent soft breach increments each step (time-in-tier signal).",
+			},
+			[]string{"project", "tier"},
+		),
+		StepTaintTotal: promauto.With(registerer).NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: executorNamespace,
+				Subsystem: executorSubsystem,
+				Name:      "step_taint_total",
+				Help:      "Agent-step untrusted-content classifications by max tool-class severity (none/low/high/unknown). Rollout calibration signal (taint-lineage-tracking §14).",
+			},
+			[]string{"severity"},
 		),
 		ModelSuccessRate: promauto.With(registerer).NewGaugeVec(
 			prometheus.GaugeOpts{

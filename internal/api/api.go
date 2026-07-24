@@ -48,6 +48,36 @@ type MemorySearcher interface {
 	Search(ctx context.Context, projectID, query string, limit int) ([]MemorySearchResult, error)
 }
 
+// MemoryRoutingSearcher is the optional capability surface for memory
+// searchers that support confidence-based retrieval routing (P3). The REST
+// memory-search handler type-asserts for it and, when present, opts the
+// search into routing (Routing on) so the response carries the
+// retrieval_trust_verdict + guidance + per-result trust fields. Searchers
+// that don't satisfy it fall back to the plain Search path, whose response
+// is byte-identical to before the feature. The production adapter satisfies
+// this; test stubs need not.
+type MemoryRoutingSearcher interface {
+	SearchRouting(ctx context.Context, projectID, query string, limit int) ([]MemorySearchResult, *RoutingVerdictWire, error)
+}
+
+// RoutingVerdictWire is the JSON-wire shape of the retrieval_trust_verdict
+// and its basis + guidance. Emitted only on Routing-on responses.
+type RoutingVerdictWire struct {
+	Verdict     string                  `json:"retrieval_trust_verdict"`
+	Basis       RoutingVerdictBasisWire `json:"verdict_basis"`
+	Guidance    string                  `json:"guidance"`
+	WidenRounds int                     `json:"widen_rounds"`
+}
+
+// RoutingVerdictBasisWire is the wire shape of the verdict basis.
+type RoutingVerdictBasisWire struct {
+	ResultCount   int     `json:"result_count"`
+	TrustMean     float64 `json:"trust_mean"`
+	AgeCapped     bool    `json:"age_capped"`
+	WeakestDim    string  `json:"weakest_dim"`
+	TopHitAgeDays int     `json:"top_hit_age_days,omitempty"`
+}
+
 // WebhookForwarder relays a verified webhook to the job tier (slice B).
 // On a RelayMode DMZ node the HMAC signature is verified first; then the
 // event is handed to the forwarder instead of being enqueued in-process.
@@ -264,6 +294,12 @@ type MemorySearchResult struct {
 	// honour its `class` filter without a second DB hop. Empty when an
 	// older repository returns chunks without the column.
 	ContentClass string `json:"content_class,omitempty"`
+	// --- Confidence-based retrieval routing (P3) trust fields ---
+	// Populated ONLY on Routing-on responses (SearchRouting); the legacy
+	// Search path leaves them zero so its response stays byte-identical.
+	Confidence       float64 `json:"confidence,omitempty"`
+	ValidationStatus string  `json:"validation_status,omitempty"`
+	ExpiresAt        *string `json:"expires_at,omitempty"`
 }
 
 // MCPExecutor is the subset of mcp.Manager the API needs to proxy tool
@@ -963,6 +999,14 @@ type Server struct {
 	// {mode, creation_source, outcome}. nil disables (same contract as the
 	// other api metrics); production wires it from the shared registry.
 	agentWriteMetrics *AgentAPIWriteMetrics
+	// taintDefaultMode is the daemon-default taint-lineage enforcement mode
+	// (off|advisory|enforce) governing tainted autonomous writes
+	// (taint-lineage-tracking §7). Empty ≡ advisory. Per-project overrides
+	// resolve via the project registry. Validated at load.
+	taintDefaultMode string
+	// taintWriteMetrics counts tainted-write outcomes by {mode, write_surface,
+	// outcome}. nil disables (same contract as the other api metrics).
+	taintWriteMetrics *TaintWriteMetrics
 	// apiAllowlistWarnedProjects deduplicates the empty-api_providers
 	// operator warning to once per project per process (design §5c
 	// empty-allowlist visibility). Zero value is ready to use.
@@ -1916,6 +1960,24 @@ func WithAgentWritesMode(mode string) ServerOption {
 func WithAgentAPIWriteMetrics(m *AgentAPIWriteMetrics) ServerOption {
 	return func(s *Server) {
 		s.agentWriteMetrics = m
+	}
+}
+
+// WithTaintEnforcementMode wires the daemon-default taint-lineage enforcement
+// mode (off|advisory|enforce). The value MUST already be normalized (via
+// config.TaintLineageConfig.TaintLineageMode); empty ≡ advisory. See
+// https://docs.vornik.io
+func WithTaintEnforcementMode(mode string) ServerOption {
+	return func(s *Server) {
+		s.taintDefaultMode = mode
+	}
+}
+
+// WithTaintWriteMetrics wires the tainted-write observability counter
+// (vornik_taint_writes_total). nil leaves it disabled.
+func WithTaintWriteMetrics(m *TaintWriteMetrics) ServerOption {
+	return func(s *Server) {
+		s.taintWriteMetrics = m
 	}
 }
 

@@ -242,7 +242,16 @@ func (s *Server) enqueueVerifiedWebhook(ctx context.Context, w http.ResponseWrit
 		return
 	}
 
-	if admitted := s.admitWebhookTask(ctx, project); !admitted.ok {
+	// Resolve the effective workflow the created task will run (mirrors
+	// createWebhookTask) so the pre-flight forecast gate can price it.
+	admitWorkflowID := source.WorkflowID
+	if workflowOverride != "" {
+		admitWorkflowID = workflowOverride
+	}
+	if admitWorkflowID == "" {
+		admitWorkflowID = project.DefaultWorkflowID
+	}
+	if admitted := s.admitWebhookTask(ctx, project, admitWorkflowID); !admitted.ok {
 		s.recordWebhookEvent(ctx, projectID, sourceName, eventID, body, persistence.WebhookEventStatusRejected, nil, admitted.code, admitted.reason)
 		respondError(w, admitted.status, admitted.code, admitted.reason)
 		return
@@ -270,7 +279,7 @@ type webhookAdmission struct {
 	reason string
 }
 
-func (s *Server) admitWebhookTask(ctx context.Context, project *registry.Project) webhookAdmission {
+func (s *Server) admitWebhookTask(ctx context.Context, project *registry.Project, workflowID string) webhookAdmission {
 	if s.rateLimiter != nil {
 		d := s.rateLimiter.Check(project, time.Now())
 		if s.rateLimitMetrics != nil {
@@ -300,6 +309,12 @@ func (s *Server) admitWebhookTask(ctx context.Context, project *registry.Project
 				s.budgetNotifier.NotifyBudgetBreach(ctx, project.ID, level, period, decision)
 			}
 		}
+	}
+	// Pre-flight forecast gate (per-task cost governor, LLD 2026-07-24 §3.4) —
+	// the webhook path was previously ungated. Short-circuits when nothing is
+	// configured.
+	if reason := s.forecastBudgetRefusal(ctx, project.ID, workflowID); reason != "" {
+		return webhookAdmission{status: http.StatusTooManyRequests, code: "BUDGET_EXCEEDED", reason: reason}
 	}
 	return webhookAdmission{ok: true}
 }

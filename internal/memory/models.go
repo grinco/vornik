@@ -75,6 +75,29 @@ type SearchResult struct {
 	// (blocked chunks don't surface) and EnforcementOff (no
 	// warning attached even when the evaluator would have blocked).
 	PolicyWarning string `json:"policy_warning,omitempty"`
+
+	// --- Confidence-based retrieval routing (P3) trust fields ---
+	// These are projected from project_memory_chunks by the search SQL
+	// and feed the retrieval_trust_verdict. They are populated on the
+	// internal result unconditionally, but only SURFACED to callers when
+	// SearchOptions.Routing is set (the output DTOs copy them under
+	// Routing) — with Routing off every caller-facing response stays
+	// byte-identical to before this feature.
+	//
+	// Confidence is the stored per-chunk confidence (REAL 0..1).
+	Confidence float64 `json:"confidence,omitempty"`
+	// ValidationStatus is the chunk's validation status (verified /
+	// unverified / legacy). Refuted / superseded are filtered by the
+	// search SQL and never reach here.
+	ValidationStatus string `json:"validation_status,omitempty"`
+	// ExpiresAt is the chunk's stored TTL expiry (nil = no TTL). Surfaced
+	// for callers; NOTE the verdict's freshness leg uses created_at + the
+	// class TTL, not this field (§3.4), to be robust to a backdated edit.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// CreatedAt is the chunk's creation timestamp — the freshness input
+	// for the verdict. json:"-" so adding it never changes any serialized
+	// response shape (the byte-identical-when-Routing-off contract).
+	CreatedAt time.Time `json:"-"`
 }
 
 // PolicyProofWire is the JSON-wire shape of the firewall's

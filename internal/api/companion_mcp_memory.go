@@ -168,6 +168,15 @@ type MemoryCompanionAdapter interface {
 	Correct(ctx context.Context, in CorrectInput) (CorrectResult, error)
 }
 
+// MemoryRoutingCompanionAdapter is the optional confidence-based retrieval
+// routing (P3) surface for the companion `recall` tool. When the wired
+// adapter satisfies it, recall opts into routing so the result carries the
+// retrieval_trust_verdict + guidance + per-hit trust fields. Adapters
+// without it use the plain Recall path (byte-identical recall output).
+type MemoryRoutingCompanionAdapter interface {
+	RecallRouting(ctx context.Context, projectID, query string, opts RecallOptions) ([]MemorySearchResult, *RoutingVerdictWire, error)
+}
+
 // RepoScopeCount is one row of the scope inventory the
 // `list_scopes` MCP tool returns. Scope is the empty string for
 // NULL-scoped chunks (the migration-grace bucket); any other value
@@ -351,6 +360,11 @@ type recallHit struct {
 	// non-empty value is the operator-supplied scope token, or
 	// '*' for cross-cutting. 2026-05-28 investigation closure.
 	RepoScope string `json:"repo_scope,omitempty"`
+	// Confidence / ValidationStatus are the P3 trust fields, populated
+	// ONLY under routing. omitempty keeps the non-routing recall hit
+	// byte-identical.
+	Confidence       float64 `json:"confidence,omitempty"`
+	ValidationStatus string  `json:"validation_status,omitempty"`
 }
 
 type recallResult struct {
@@ -359,6 +373,13 @@ type recallResult struct {
 	Hits      []recallHit `json:"hits"`
 	Returned  int         `json:"returned"`
 	ElapsedMS int64       `json:"elapsed_ms"`
+	// RetrievalTrustVerdict + Guidance + Basis are populated only under
+	// routing (P3). omitempty keeps the non-routing recall response
+	// byte-identical to before the feature.
+	RetrievalTrustVerdict string                   `json:"retrieval_trust_verdict,omitempty"`
+	Guidance              string                   `json:"guidance,omitempty"`
+	VerdictBasis          *RoutingVerdictBasisWire `json:"verdict_basis,omitempty"`
+	WidenRounds           int                      `json:"widen_rounds,omitempty"`
 }
 
 func (s *Server) companionToolRecall(ctx context.Context, key *persistence.APIKey, raw json.RawMessage) (string, error) {
@@ -407,7 +428,20 @@ func (s *Server) companionToolRecall(ctx context.Context, key *persistence.APIKe
 	}
 
 	start := time.Now()
-	results, err := s.memoryCompanion.Recall(ctx, key.ProjectID, args.Query, opts)
+	// Prefer the confidence-based retrieval routing path (P3) when the
+	// adapter supports it: recall then carries the retrieval_trust_verdict +
+	// guidance + per-hit trust fields. Adapters without it use the plain
+	// Recall path (byte-identical recall output).
+	var (
+		results []MemorySearchResult
+		verdict *RoutingVerdictWire
+		err     error
+	)
+	if rr, ok := s.memoryCompanion.(MemoryRoutingCompanionAdapter); ok {
+		results, verdict, err = rr.RecallRouting(ctx, key.ProjectID, args.Query, opts)
+	} else {
+		results, err = s.memoryCompanion.Recall(ctx, key.ProjectID, args.Query, opts)
+	}
 	if err != nil {
 		return "", fmt.Errorf("recall failed: %w", err)
 	}
@@ -445,15 +479,17 @@ func (s *Server) companionToolRecall(ctx context.Context, key *persistence.APIKe
 			continue
 		}
 		hits = append(hits, recallHit{
-			ChunkID:       r.ChunkID,
-			Score:         r.Score,
-			Content:       r.Content,
-			SourceName:    r.SourceName,
-			TaskID:        r.TaskID,
-			ContentClass:  r.ContentClass,
-			IsAlive:       r.IsAlive,
-			LastCheckedAt: r.LastCheckedAt,
-			RepoScope:     r.RepoScope,
+			ChunkID:          r.ChunkID,
+			Score:            r.Score,
+			Content:          r.Content,
+			SourceName:       r.SourceName,
+			TaskID:           r.TaskID,
+			ContentClass:     r.ContentClass,
+			IsAlive:          r.IsAlive,
+			LastCheckedAt:    r.LastCheckedAt,
+			RepoScope:        r.RepoScope,
+			Confidence:       r.Confidence,
+			ValidationStatus: r.ValidationStatus,
 		})
 	}
 	out := recallResult{
@@ -462,6 +498,13 @@ func (s *Server) companionToolRecall(ctx context.Context, key *persistence.APIKe
 		Hits:      hits,
 		Returned:  len(hits),
 		ElapsedMS: time.Since(start).Milliseconds(),
+	}
+	if verdict != nil {
+		out.RetrievalTrustVerdict = verdict.Verdict
+		out.Guidance = verdict.Guidance
+		out.WidenRounds = verdict.WidenRounds
+		basis := verdict.Basis
+		out.VerdictBasis = &basis
 	}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	return string(b), nil

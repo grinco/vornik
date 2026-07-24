@@ -256,6 +256,9 @@ func (f *fakeTaskRepo) CountChildrenForParents(context.Context, []string) (map[s
 func (f *fakeTaskRepo) GetDependencies(context.Context, string) ([]*persistence.Task, error) {
 	panic("not implemented")
 }
+func (f *fakeTaskRepo) RaiseTaskBudget(context.Context, string, float64, bool) (bool, error) {
+	return true, nil
+}
 func (f *fakeTaskRepo) GetDependents(context.Context, string) ([]*persistence.Task, error) {
 	panic("not implemented")
 }

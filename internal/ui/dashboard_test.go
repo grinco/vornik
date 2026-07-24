@@ -63,6 +63,9 @@ func (s *stubLLMUsageRepo) List(context.Context, persistence.TaskLLMUsageFilter)
 func (s *stubLLMUsageRepo) SumCost(context.Context, time.Time, time.Time) (float64, error) {
 	return s.sum, nil
 }
+func (s *stubLLMUsageRepo) SumCostByTask(context.Context, string) (float64, error) {
+	return 0, nil
+}
 func (s *stubLLMUsageRepo) SumCostByProject(context.Context, string, time.Time, time.Time) (float64, error) {
 	return 0, nil
 }

@@ -1566,6 +1566,13 @@ func (m *Manager) reconcileBacklogItems(ctx context.Context, abs string, project
 func (m *Manager) buildStateContext(ctx context.Context, project *registry.Project) (string, bool, error) {
 	var b strings.Builder
 
+	// Captured once so every per-task age below is relative to a single
+	// consistent "now". Cadence-based goals (e.g. vornik-marketing's
+	// per-feed 6h/24h scan) compute due-ness from each task's createdAt
+	// vs this reference; without it the lead has no wall-clock anchor and
+	// can't tell whether a feed's cadence has elapsed.
+	now := time.Now().UTC()
+
 	// Check whether the project context file exists in the project workspace.
 	// When it does, include its content so the lead can pick a specific next
 	// item without delegating that decision to the executing agent. Path is
@@ -1601,6 +1608,11 @@ func (m *Manager) buildStateContext(ctx context.Context, project *registry.Proje
 			fmt.Fprintf(&b, "%s: NOT FOUND (no project context file present)\n", relPath)
 		}
 	}
+
+	// Current-time anchor for cadence reasoning (see `now` above). Emitted
+	// before the task list so the lead can compute "createdAt + cadence
+	// vs now" for time-based goals.
+	fmt.Fprintf(&b, "Current time (UTC): %s\n", now.Format(time.RFC3339))
 
 	// Recent tasks — fetch more so the LLM has a fuller history to avoid repeats.
 	pid := project.ID
@@ -1639,11 +1651,13 @@ func (m *Manager) buildStateContext(ctx context.Context, project *registry.Proje
 			b.WriteString("Active/queued tasks (do NOT duplicate these):\n")
 			for _, t := range inProgress {
 				prompt := extractPrompt(t.Payload)
-				fmt.Fprintf(&b, "- [%s] status=%s prompt=%q\n", t.ID, t.Status, truncate(prompt, 120))
+				fmt.Fprintf(&b, "- [%s] status=%s %s prompt=%q\n",
+					t.ID, t.Status, taskCreatedField(t.CreatedAt, now), truncate(prompt, 120))
 			}
 			for _, t := range queued {
 				prompt := extractPrompt(t.Payload)
-				fmt.Fprintf(&b, "- [%s] status=%s prompt=%q\n", t.ID, t.Status, truncate(prompt, 120))
+				fmt.Fprintf(&b, "- [%s] status=%s %s prompt=%q\n",
+					t.ID, t.Status, taskCreatedField(t.CreatedAt, now), truncate(prompt, 120))
 			}
 		}
 
@@ -1675,7 +1689,8 @@ func (m *Manager) buildStateContext(ctx context.Context, project *registry.Proje
 			}
 			for _, t := range completed {
 				prompt := extractPrompt(t.Payload)
-				line := fmt.Sprintf("- [%s] prompt=%q", t.ID, truncate(prompt, 120))
+				line := fmt.Sprintf("- [%s] %s prompt=%q",
+					t.ID, taskCreatedField(t.CreatedAt, now), truncate(prompt, 120))
 				if exec, ok := execMap[t.ID]; ok && exec != nil && len(exec.Result) > 0 {
 					msg := extractResultMessage(exec.Result)
 					if msg != "" {
@@ -1905,7 +1920,11 @@ func (m *Manager) createAutonomousTask(ctx context.Context, project *registry.Pr
 			// configured (nothing to check against), or the
 			// forecast itself errors (we don't want a transient DB
 			// hiccup to block legitimate autonomy).
-			if m.llmUsageRepo != nil && (project.Budget.DailyHardUSD > 0 || project.Budget.MonthlyHardUSD > 0) {
+			// Per-task cost governor: autonomy-created tasks inherit the project
+			// default budget (no override, §3.1). The forecast runs when EITHER
+			// a project hard cap OR a per-task budget is configured (§3.4).
+			taskBudgetUSD := budget.EffectiveTaskBudgetUSD(project, nil)
+			if m.llmUsageRepo != nil && (project.Budget.DailyHardUSD > 0 || project.Budget.MonthlyHardUSD > 0 || taskBudgetUSD > 0) {
 				now := time.Now().UTC()
 				current, cerr := budget.Check(ctx, m.llmUsageRepo, project, now)
 				if cerr != nil {
@@ -1918,7 +1937,7 @@ func (m *Manager) createAutonomousTask(ctx context.Context, project *registry.Pr
 					}, now)
 					if ferr != nil {
 						m.logger.Warn().Err(ferr).Str("project", project.ID).Msg("autonomy: forecast failed — proceeding without preventive gate")
-					} else if d := budget.CheckForecast(project, forecast, current); d.Refused {
+					} else if d := budget.CheckForecast(project, forecast, current, taskBudgetUSD); d.Refused {
 						m.logger.Warn().
 							Str("project", project.ID).
 							Str("workflow_id", effectiveWorkflowID).
@@ -2675,4 +2694,38 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "..."
+}
+
+// taskCreatedField renders the "created=…" segment of an observe-bundle
+// task line. A zero CreatedAt (a row that somehow persisted without a
+// timestamp) renders "created=unknown" rather than a fabricated year-1
+// RFC3339 + billion-hour age, which would mislead the lead's cadence math
+// worse than omitting the datum entirely.
+func taskCreatedField(created, now time.Time) string {
+	if created.IsZero() {
+		return "created=unknown"
+	}
+	return fmt.Sprintf("created=%s (%s)", created.UTC().Format(time.RFC3339), humanizeAge(now.Sub(created)))
+}
+
+// humanizeAge renders a duration as a compact "3h12m ago" / "2d4h ago"
+// hint for the autonomy lead's cadence reasoning. The absolute createdAt
+// (RFC3339) is emitted alongside so the LLM can do exact math; this is
+// the human-friendly cross-check that makes "has 6h/24h elapsed?" legible
+// at a glance. Negative (clock skew) and sub-minute ages read "just now".
+func humanizeAge(d time.Duration) string {
+	if d < time.Minute {
+		return "just now"
+	}
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd%dh ago", days, hours)
+	case hours > 0:
+		return fmt.Sprintf("%dh%dm ago", hours, mins)
+	default:
+		return fmt.Sprintf("%dm ago", mins)
+	}
 }

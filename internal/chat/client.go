@@ -289,6 +289,15 @@ type ChatRequest struct {
 	//
 	// See https://docs.vornik.io
 	CacheStrategy *CacheStrategy `json:"cache_strategy,omitempty"`
+	// PromptCacheKey is OpenAI's server-side auto-cache steering hint.
+	// When set (stamped on ctx by the chat-proxy from the request's
+	// project + role and lifted onto req in doComplete), it rides the
+	// OpenAI-compatible wire so requests sharing an identical static
+	// prefix land on the same cache-affinity bucket upstream. Omitted
+	// by default; endpoints that don't recognise it ignore an unknown
+	// field. Distinct from CacheStrategy — this steers auto-caching,
+	// it does not insert explicit cache_control/CachePoint pragmas.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 }
 
 // CacheStrategy carries the operator-level prompt-cache directives
@@ -793,6 +802,13 @@ func (c *Client) doComplete(ctx context.Context, req ChatRequest) (*ChatResponse
 	// build a custom ChatRequest.
 	if rf := ResponseFormatStructFromContext(ctx); rf != nil {
 		req.ResponseFormat = rf
+	}
+	// OpenAI auto-cache steering: lift the ctx-stamped prompt_cache_key
+	// (set by the chat-proxy from project+role) onto the outgoing body.
+	// Only this OpenAI-compatible client forwards it; Bedrock/Anthropic
+	// build their own wire shapes and never see the field.
+	if k := PromptCacheKeyFromContext(ctx); k != "" {
+		req.PromptCacheKey = k
 	}
 	c.prepareRequestForProvider(&req)
 

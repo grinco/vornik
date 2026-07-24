@@ -24,6 +24,7 @@ import (
 type stubProvider struct {
 	lastMessages []chat.Message
 	lastTools    []chat.Tool
+	lastCtx      context.Context
 	resp         *chat.ChatResponse
 	err          error
 }
@@ -32,7 +33,8 @@ func (s *stubProvider) Complete(_ context.Context, _ []chat.Message) (*chat.Chat
 	return s.resp, s.err
 }
 
-func (s *stubProvider) CompleteWithTools(_ context.Context, messages []chat.Message, tools []chat.Tool) (*chat.ChatResponse, error) {
+func (s *stubProvider) CompleteWithTools(ctx context.Context, messages []chat.Message, tools []chat.Tool) (*chat.ChatResponse, error) {
+	s.lastCtx = ctx
 	s.lastMessages = messages
 	s.lastTools = tools
 	return s.resp, s.err
@@ -146,6 +148,102 @@ func TestChatCompletions_ForwardsToProvider(t *testing.T) {
 	assert.Equal(t, "claude-sonnet-4-6", resp.Model)
 	require.Len(t, resp.Choices, 1)
 	assert.Equal(t, "hello back", resp.Choices[0].Message.Content)
+}
+
+// okStub returns a minimal stub provider that replies 200 so the proxy
+// runs the full handler body (where the ctx stamping happens).
+func okStub() *stubProvider {
+	return &stubProvider{resp: &chat.ChatResponse{
+		ID:    "r",
+		Model: "m",
+		Choices: []struct {
+			Index        int          `json:"index"`
+			Message      chat.Message `json:"message"`
+			FinishReason string       `json:"finish_reason"`
+		}{{Index: 0, Message: chat.Message{Role: "assistant", Content: "ok"}, FinishReason: "stop"}},
+	}}
+}
+
+// TestChatCompletions_StampsPromptCacheKeyFromProjectRole — BACKLOG
+// "OpenAI-compat prompt_cache_key passthrough": when the agent posts
+// both X-Vornik-Project-ID and X-Vornik-Role, the proxy must stamp a
+// per-(project, role) prompt_cache_key onto the ctx handed to the
+// provider so OpenAI server-side auto-caching keys on the static prefix.
+func TestChatCompletions_StampsPromptCacheKeyFromProjectRole(t *testing.T) {
+	stub := okStub()
+	s := &Server{logger: zerolog.Nop(), chatProvider: stub, promptCacheMode: chat.CacheModeAuto}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("X-Vornik-Project-ID", "assistant")
+	req.Header.Set("X-Vornik-Role", "researcher")
+	w := httptest.NewRecorder()
+	s.ChatCompletions(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, stub.lastCtx)
+	assert.Equal(t, "assistant:researcher", chat.PromptCacheKeyFromContext(stub.lastCtx))
+}
+
+// TestChatCompletions_NoPromptCacheKeyWithoutRole — absent the role
+// header the proxy must NOT stamp a key (project alone is not enough;
+// caching by project would cross role prefixes and lower hit-rate).
+func TestChatCompletions_NoPromptCacheKeyWithoutRole(t *testing.T) {
+	stub := okStub()
+	s := &Server{logger: zerolog.Nop(), chatProvider: stub, promptCacheMode: chat.CacheModeAuto}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("X-Vornik-Project-ID", "assistant")
+	w := httptest.NewRecorder()
+	s.ChatCompletions(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, stub.lastCtx)
+	assert.Empty(t, chat.PromptCacheKeyFromContext(stub.lastCtx))
+}
+
+// TestChatCompletions_NoPromptCacheKeyWhenCachingDisabled — the cache
+// kill-switch (promptCacheMode off) must govern the key stamp too, so
+// "I disabled caching" also stops OpenAI auto-cache steering (review
+// Finding 5: config cohesion).
+func TestChatCompletions_NoPromptCacheKeyWhenCachingDisabled(t *testing.T) {
+	stub := okStub()
+	s := &Server{logger: zerolog.Nop(), chatProvider: stub, promptCacheMode: chat.CacheModeOff}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("X-Vornik-Project-ID", "assistant")
+	req.Header.Set("X-Vornik-Role", "researcher")
+	w := httptest.NewRecorder()
+	s.ChatCompletions(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	require.NotNil(t, stub.lastCtx)
+	assert.Empty(t, chat.PromptCacheKeyFromContext(stub.lastCtx))
+}
+
+// TestChatCompletions_MalformedRoleDropped — a caller-supplied role that
+// isn't a strict identifier (contains ':' or control chars, or is
+// overlong) must NOT be folded into prompt_cache_key: passing it through
+// would 400 every OpenAI-routed call (self-DoS) or alias another role's
+// bucket via the injected delimiter (review Finding 1).
+func TestChatCompletions_MalformedRoleDropped(t *testing.T) {
+	for _, role := range []string{"a:b", "bad role", "with\nnewline", strings.Repeat("x", 65)} {
+		stub := okStub()
+		s := &Server{logger: zerolog.Nop(), chatProvider: stub, promptCacheMode: chat.CacheModeAuto}
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions",
+			strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`))
+		req.Header.Set("X-Vornik-Project-ID", "assistant")
+		req.Header.Set("X-Vornik-Role", role)
+		w := httptest.NewRecorder()
+		s.ChatCompletions(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code, "role=%q body: %s", role, w.Body.String())
+		require.NotNil(t, stub.lastCtx)
+		assert.Empty(t, chat.PromptCacheKeyFromContext(stub.lastCtx), "malformed role %q must be dropped", role)
+	}
 }
 
 func TestChatCompletions_FillsInModelFromProviderWhenBlank(t *testing.T) {

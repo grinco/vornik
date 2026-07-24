@@ -314,6 +314,26 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 			// "config missing" refusal instead of emitting the only
 			// valid pick. Observed live 2026-05-18 with janka project
 			// (candidates: [research], lead model: zai.glm-4.7-flash).
+			// Per-task cost governor step-boundary gate (LLD 2026-07-24 §3.3).
+			// Fires once per agent-step dispatch, before the step runs, at the
+			// single-threaded-per-task boundary (the prior step's usage rows
+			// are committed). TierHard / fail-closed park the task
+			// AWAITING_INPUT and return errLeadHandoff (handled below like any
+			// lead handoff); TierSoft warns; TierOK proceeds. No-op when the
+			// per-task budget is disabled.
+			if berr := e.enforceTaskBudget(ctx, task, execution, plan, currentStepID); berr != nil {
+				if IsLeadHandoff(berr) {
+					// M5 (cosmetic): the parked step did NOT run, but we append
+					// it to completedSteps for parity with every other lead-
+					// handoff checkpoint. It's harmless — a budget resume mints a
+					// FRESH execution from the workflow entrypoint (no
+					// completed_steps replay, §3.6), so this list is not consulted
+					// on resume.
+					completedSteps = append(completedSteps, currentStepID)
+				}
+				return "", nil, completedSteps, berr
+			}
+
 			// Dispatch the agent step (Track-B Phase 3): synthesise the
 			// children's outcomes on a resume, auto-route a single
 			// candidate without an LLM call, or run the agent with the
@@ -919,10 +939,45 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 				}
 				return "", nil, completedSteps, errLeadHandoff
 			}
+			// A system handler (forge.open_change_request) can also request an
+			// untrusted-content review PARK before its write: same AWAITING_INPUT
+			// hand-off, but with the taint checkpoint (decision.kind=
+			// untrusted_review) + source-set latch (taint-lineage-tracking §4.5).
+			if tsig, ok := AsTaintReview(sysResult.Result); ok {
+				if hErr := e.parkForTaintReview(ctx, task, execution, tsig); hErr != nil {
+					return "", nil, completedSteps, hErr
+				}
+				return "", nil, completedSteps, errLeadHandoff
+			}
 			if err := e.saveCheckpoint(ctx, execution, step.OnSuccess, completedSteps, state); err != nil {
 				return "", nil, completedSteps, err
 			}
 			currentStepID = step.OnSuccess
+		case "parallel":
+			// Declarative intra-workflow fan-out (parallel-fanout LLD §4.2).
+			// First pass: create one PARALLEL delegated child per static
+			// branch (reusing createDelegatedTasks — inherits the N4 guards
+			// + rollback), write the ParallelJoin descriptor, and pause
+			// WAITING_FOR_CHILDREN. Resume (children already exist — the wake
+			// path re-queued the parent): skip re-fan-out, emit the
+			// parallel_join observability signal, and advance to the join
+			// step. All of it is a no-op for non-parallel workflows (this
+			// case is never entered), so legacy behaviour is byte-identical.
+			var (
+				nextStepID string
+				paused     bool
+				pErr       error
+			)
+			completedSteps, nextStepID, paused, pErr = e.handleParallelStep(
+				ctx, task, execution, currentStepID, step, completedSteps, &state,
+			)
+			if pErr != nil {
+				return "", nil, completedSteps, pErr
+			}
+			if paused {
+				return "", nil, completedSteps, errExecutionPaused
+			}
+			currentStepID = nextStepID
 		default:
 			return "", nil, completedSteps, fmt.Errorf("workflow step type %s is not implemented yet", step.Type)
 		}
@@ -1110,6 +1165,347 @@ func (e *Executor) handleDelegatedTasks(ctx context.Context, task *persistence.T
 		return true, err
 	}
 	return true, nil
+}
+
+// handleParallelStep runs one declarative `parallel` fan-out step, sourcing
+// its legs from the static step.Branches instead of an LLM's delegatedTasks
+// (parallel-fanout LLD v0.6 §4.2/§4.3/§6). A parallel step is always the
+// workflow entrypoint (enforced by validation), so on the fresh-execution
+// resume the re-queued parent re-enters exactly here with EMPTY state — hence
+// resume cannot be inferred from state.ParallelJoin (nil) and must be derived
+// from the child tasks, ATTEMPT-SCOPED:
+//
+//   - FIRST PASS (no child tagged for THIS parallel step at THIS parent
+//     attempt): build one delegatedTaskSpec per branch — each tagged with
+//     {parallel_step_id, parent_attempt} — call createDelegatedTasks(PARALLEL)
+//     (which enforces the N4 guards and rolls back partial batches, so an
+//     over-limit fan-out returns a *delegationGuardError with NO children),
+//     record the ParallelJoin descriptor, append the step to completedSteps,
+//     and pauseAwaitingChildren with the resume step pinned to step.Join.
+//     Returns paused=true.
+//
+//   - RESUME (this attempt's legs exist and are terminal — the wake path
+//     evaluated the policy proceed-true and re-queued the parent WITHOUT
+//     bumping the attempt): do NOT re-fan-out. Emit the parallel_join
+//     observability signal (idempotent on task+step), clear the descriptor,
+//     append the step to completedSteps, and advance to step.Join.
+//
+// A proceed-FALSE retry bumps parent.Attempt (bubbleUpChildFailure), so the
+// prior attempt's tagged legs no longer match — the parent takes the FIRST
+// PASS branch and genuinely re-fans-out, and NO parallel_join is emitted for
+// the failed attempt (honouring §4.3 "re-runs the whole fan-out" and the
+// proceed-false non-emission invariant).
+//
+// The parent is single-threaded throughout: the first pass pauses before any
+// leg runs, and the resume runs after every leg is terminal. All five
+// single-threaded invariants hold — parallelism lives entirely at the task
+// level (parallel-fanout LLD §2).
+func (e *Executor) handleParallelStep(
+	ctx context.Context,
+	task *persistence.Task,
+	execution *persistence.Execution,
+	currentStepID string,
+	step registry.WorkflowStep,
+	completedSteps []string,
+	state *executionState,
+) (newCompleted []string, nextStep string, paused bool, err error) {
+	attempt := parallelAttempt(task)
+	// A GetChildren error on entry is a genuine DB failure — surface it rather
+	// than risk a double fan-out (we cannot classify first-pass vs resume).
+	children, gcErr := e.taskRepo.GetChildren(ctx, task.ID)
+	if gcErr != nil {
+		return completedSteps, "", false, fmt.Errorf("parallel step %q: failed to list children: %w", currentStepID, gcErr)
+	}
+	// Attempt-scoped resume detection: only legs tagged for THIS step at THIS
+	// attempt count. A prior attempt's legs (lower parent_attempt) are ignored,
+	// so a proceed-false retry re-fans-out instead of resuming on stale legs.
+	if matching := filterParallelChildren(children, currentStepID, attempt); len(matching) > 0 {
+		// RESUME (proceed-true). Emit the observability signal (idempotent on
+		// task+step so a crash between emit and advance re-emits as a no-op on
+		// re-attach), clear the descriptor, advance to the join step.
+		e.emitParallelJoinOutcome(ctx, task, execution, currentStepID, step)
+		state.ParallelJoin = nil
+		completedSteps = append(completedSteps, currentStepID)
+		if saveErr := e.saveCheckpoint(ctx, execution, step.Join, completedSteps, *state); saveErr != nil {
+			return completedSteps, "", false, saveErr
+		}
+		e.logger.Info().
+			Str("task_id", task.ID).
+			Str("execution_id", execution.ID).
+			Str("step", currentStepID).
+			Str("join", step.Join).
+			Int("attempt", attempt).
+			Int("legs", len(matching)).
+			Msg("parallel: resume after legs terminal — advancing to join step")
+		return completedSteps, step.Join, false, nil
+	}
+
+	// FIRST PASS (for this attempt): fan out one PARALLEL child per branch,
+	// each tagged with this parallel step id + parent attempt.
+	specs := buildParallelBranchSpecs(step, currentStepID, attempt)
+	if createErr := e.createDelegatedTasks(ctx, task, specs, persistence.DelegationModeParallel); createErr != nil {
+		// N4 guard rejection (fan-out/depth/cycle) or a repo error — no
+		// partial children (createDelegatedTasks rolls back). Surface it;
+		// the parallel step has no on_fail edge by design.
+		return completedSteps, "", false, fmt.Errorf("parallel step %q: %w", currentStepID, createErr)
+	}
+
+	// Collect THIS attempt's freshly-created child ids for the descriptor.
+	// Best-effort: the descriptor is telemetry — the policy is re-derived from
+	// GetChildren at wake/resume, so a read miss here does not affect
+	// correctness. Filter to this attempt so a retry's descriptor names only
+	// its own legs.
+	created, _ := e.taskRepo.GetChildren(ctx, task.ID)
+	childIDs := make([]string, 0, len(step.Branches))
+	for _, c := range filterParallelChildren(created, currentStepID, attempt) {
+		childIDs = append(childIDs, c.ID)
+	}
+	branchIDs := make([]string, 0, len(step.Branches))
+	for _, b := range step.Branches {
+		branchIDs = append(branchIDs, b.ID)
+	}
+	state.ParallelJoin = &ParallelJoinState{
+		JoinStepID:   step.Join,
+		Policy:       step.JoinPolicy,
+		ChildTaskIDs: childIDs,
+		BranchIDs:    branchIDs,
+	}
+	completedSteps = append(completedSteps, currentStepID)
+	if pauseErr := e.pauseAwaitingChildren(ctx, task, execution, step.Join, completedSteps, state); pauseErr != nil {
+		return completedSteps, "", false, pauseErr
+	}
+	e.logger.Info().
+		Str("task_id", task.ID).
+		Str("execution_id", execution.ID).
+		Str("step", currentStepID).
+		Str("join", step.Join).
+		Str("join_policy", joinPolicyOrDefault(step.JoinPolicy)).
+		Int("attempt", attempt).
+		Int("branches", len(step.Branches)).
+		Msg("parallel: fanned out static branches as PARALLEL children — pausing for join")
+	return completedSteps, "", true, nil
+}
+
+// parallelAttempt returns the parent task's effective attempt number for
+// tagging / matching parallel legs, normalised to ≥1 (runExecution treats a
+// zero/uninitialised Attempt as 1). Both the tag write (first pass) and the
+// filter (resume detection) use this so a proceed-true resume — same attempt —
+// matches while a proceed-false retry — attempt+1 — does not.
+func parallelAttempt(task *persistence.Task) int {
+	if task == nil || task.Attempt <= 0 {
+		return 1
+	}
+	return task.Attempt
+}
+
+// parallelChildTag is the attempt-scoping stamp createDelegatedTasks writes
+// into a parallel leg's Payload.
+type parallelChildTag struct {
+	ParallelStepID string `json:"parallel_step_id"`
+	ParentAttempt  int    `json:"parent_attempt"`
+}
+
+// parallelChildMatches reports whether a child task is a leg of the given
+// parallel step launched at the given parent attempt (by reading its payload
+// tag). Untagged children (legacy delegation, LLM delegatedTasks) never match.
+func parallelChildMatches(child *persistence.Task, stepID string, attempt int) bool {
+	if child == nil || len(child.Payload) == 0 {
+		return false
+	}
+	var tag parallelChildTag
+	if err := json.Unmarshal(child.Payload, &tag); err != nil {
+		return false
+	}
+	return tag.ParallelStepID == stepID && tag.ParentAttempt == attempt
+}
+
+// filterParallelChildren returns the subset of children that are legs of the
+// given parallel step at the given parent attempt.
+func filterParallelChildren(children []*persistence.Task, stepID string, attempt int) []*persistence.Task {
+	out := make([]*persistence.Task, 0, len(children))
+	for _, c := range children {
+		if parallelChildMatches(c, stepID, attempt) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// filterChildrenByIDs returns the subset of children whose ID is in ids. Used
+// by the wake path to scope a parallel join's policy count to the CURRENT
+// cohort (the descriptor's ChildTaskIDs) so a retry never counts prior
+// attempts' stale terminal legs (parallel-fanout LLD v0.6 §4.3, NEW-1). An
+// empty ids set yields an empty cohort (the descriptor always names ≥1 leg for
+// a real fan-out; an empty set can only arise from a malformed descriptor, and
+// counting nothing is safer than counting stale legs).
+func filterChildrenByIDs(children []*persistence.Task, ids []string) []*persistence.Task {
+	want := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+	out := make([]*persistence.Task, 0, len(ids))
+	for _, c := range children {
+		if c == nil {
+			continue
+		}
+		if _, ok := want[c.ID]; ok {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// buildParallelBranchSpecs maps a parallel step's static branches to the
+// delegatedTaskSpec the delegation engine consumes, tagging each with the
+// parallel step id + parent attempt for attempt-scoped resume detection
+// (parallel-fanout LLD v0.6 §4.3). Priority is left 0 so createDelegatedTasks
+// inherits the parent's priority (§4.2). Pure — no I/O — so it is unit-testable.
+func buildParallelBranchSpecs(step registry.WorkflowStep, stepID string, parentAttempt int) []delegatedTaskSpec {
+	specs := make([]delegatedTaskSpec, 0, len(step.Branches))
+	for _, b := range step.Branches {
+		specs = append(specs, delegatedTaskSpec{
+			Prompt:         b.Prompt,
+			Role:           b.Role,
+			Workflow:       b.Workflow,
+			parallelStepID: stepID,
+			parentAttempt:  parentAttempt,
+		})
+	}
+	return specs
+}
+
+// joinPolicyOrDefault normalises an empty join policy to "all" for logging /
+// telemetry display. It does NOT validate — ParseJoinPolicy does that at load.
+func joinPolicyOrDefault(policy string) string {
+	if policy == "" {
+		return "all"
+	}
+	return policy
+}
+
+// emitParallelJoinOutcome records the proceed-true `parallel_join`
+// observability stepoutcome, keyed on the parallel step id, with
+// {policy, succeeded, total} in ErrorDetail (parallel-fanout LLD v0.6 §6).
+//
+// Idempotency is keyed on (TASK_id, step_id) — NOT execution_id, which changes
+// on every fresh-execution resume (I-4). A proceed-true join runs once per
+// task, so a prior parallel_join row for this task+step short-circuits the
+// write; a crash/reattach re-emit is therefore a no-op even though it runs
+// under a different execution_id, yielding exactly one row per task.
+//
+// Tolerant by construction: it never fails the parent for telemetry. If the
+// outcome repo isn't wired it no-ops; if the succeeded/total GetChildren read
+// errors it logs and SKIPS the row (the parent still advances to the join
+// step). Counts only THIS attempt's legs (attempt-scoped). Emitted ONLY here
+// (proceed-true) — a proceed-false join is observed via the task last_error +
+// child FAILED outcomes, never a parallel_join row.
+func (e *Executor) emitParallelJoinOutcome(
+	ctx context.Context,
+	task *persistence.Task,
+	execution *persistence.Execution,
+	parallelStepID string,
+	step registry.WorkflowStep,
+) {
+	if e.outcomeRepo == nil || task == nil {
+		return
+	}
+	// Idempotency guard: skip if a parallel_join row already exists for this
+	// (task, step) across ANY execution. Filtered in-memory so it holds
+	// regardless of whether the repo honours the List filter.
+	pj := string(stepoutcome.ParallelJoin)
+	existing, listErr := e.outcomeRepo.List(ctx, persistence.ExecutionStepOutcomeFilter{
+		TaskID:  &task.ID,
+		StepID:  &parallelStepID,
+		Outcome: &pj,
+	})
+	if listErr != nil {
+		// The dedup query failed — we cannot prove a prior row does not exist.
+		// A reattach runs under a NEW execution_id, so the repo's
+		// execution-scoped idempotency would not catch a re-emit; emitting
+		// blindly risks a DUPLICATE parallel_join row. Prefer a MISSING
+		// telemetry row over a duplicate: log and skip (NEW-3). The parent
+		// still advances to the join — this never fails the run.
+		e.logger.Warn().Err(listErr).
+			Str("task_id", task.ID).
+			Str("step", parallelStepID).
+			Msg("parallel_join: dedup List failed — skipping observability outcome to avoid a duplicate row")
+		return
+	}
+	for _, r := range existing {
+		if r != nil && r.TaskID == task.ID && r.StepID == parallelStepID && r.Outcome == pj {
+			e.logger.Debug().
+				Str("task_id", task.ID).
+				Str("step", parallelStepID).
+				Msg("parallel_join outcome already recorded for task+step — skipping idempotent re-emit")
+			return
+		}
+	}
+
+	children, gcErr := e.taskRepo.GetChildren(ctx, task.ID)
+	if gcErr != nil {
+		// Never fail the parent for a telemetry read — log and skip the row.
+		e.logger.Warn().Err(gcErr).
+			Str("execution_id", execution.ID).
+			Str("step", parallelStepID).
+			Msg("parallel_join: GetChildren failed at resume — skipping observability outcome, still advancing to join")
+		return
+	}
+	succeeded, total := countParallelLegs(filterParallelChildren(children, parallelStepID, parallelAttempt(task)))
+	detail, _ := json.Marshal(struct {
+		Policy    string `json:"policy"`
+		Succeeded int    `json:"succeeded"`
+		Total     int    `json:"total"`
+	}{
+		Policy:    joinPolicyOrDefault(step.JoinPolicy),
+		Succeeded: succeeded,
+		Total:     total,
+	})
+	e.recordStepOutcome(ctx, task, execution, parallelStepID, "", "",
+		string(stepoutcome.ParallelJoin), "", string(detail), nil, nil)
+	e.logger.Info().
+		Str("execution_id", execution.ID).
+		Str("step", parallelStepID).
+		Str("policy", joinPolicyOrDefault(step.JoinPolicy)).
+		Int("succeeded", succeeded).
+		Int("total", total).
+		Msg("parallel_join: recorded observability outcome on proceed-true resume")
+}
+
+// countParallelLegs returns (succeeded, total) over a fan-out's children:
+// succeeded counts terminal COMPLETED legs; total is the child count.
+// Shared by the wake-path policy evaluation and the resume-time telemetry so
+// both count legs identically (parallel-fanout LLD §4.3/§6).
+func countParallelLegs(children []*persistence.Task) (succeeded, total int) {
+	for _, c := range children {
+		if c == nil {
+			continue
+		}
+		total++
+		if c.Status == persistence.TaskStatusCompleted {
+			succeeded++
+		}
+	}
+	return succeeded, total
+}
+
+// parallelJoinProceeds evaluates a join policy against a terminal-legs
+// snapshot: all → succeeded==total; quorum:n → succeeded>=n; best_effort →
+// succeeded>=1. A malformed policy (should be impossible post-validation)
+// falls back to the strict `all` semantics. Shared decision function so the
+// wake path and any future caller agree (parallel-fanout LLD §4.3).
+func parallelJoinProceeds(policy string, succeeded, total int) bool {
+	kind, n, err := registry.ParseJoinPolicy(policy, total)
+	if err != nil {
+		return succeeded == total
+	}
+	switch kind {
+	case "quorum":
+		return succeeded >= n
+	case "best_effort":
+		return succeeded >= 1
+	default: // "all"
+		return succeeded == total
+	}
 }
 
 // salvageDelegatedTasksFromMessage recovers a delegation plan a model emitted
@@ -3175,47 +3571,61 @@ func (e *Executor) unblockParentIfChildrenDone(ctx context.Context, parentID str
 		return
 	}
 
-	if anyFailed {
-		// Respect the parent's retry budget — pre-fix this path
-		// unconditionally marked the parent FAILED via UpdateStatus,
-		// ignoring MaxAttempts entirely. A multi-attempt parent (e.g.
-		// MaxAttempts=3) was therefore terminally failed on its first
-		// child failure, with no last_error and no chance to retry.
-		// The fix mirrors handleFailure: stamp last_error +
-		// last_error_class on the SAME conditional UPDATE as the
-		// status flip.
-		retryBudgetRemaining := parent.MaxAttempts > 0 && parent.Attempt < parent.MaxAttempts
-		errMsg := fmt.Sprintf("child task(s) failed: %v", failedChildIDs)
-		errClass := string(persistence.TaskFailureClassChildFailed)
-		evt := e.logger.Warn().
-			Str("parent_task_id", parent.ID).
-			Str("project_id", parent.ProjectID).
-			Strs("failed_child_task_ids", failedChildIDs).
-			Int("parent_attempt", parent.Attempt).
-			Int("parent_max_attempts", parent.MaxAttempts).
-			Bool("retry_budget_remaining", retryBudgetRemaining).
-			Str("decision_path", "checkParentUnblock.anyFailed")
-		var moved bool
-		if retryBudgetRemaining {
-			moved, _ = e.taskRepo.TransitionConditional(ctx, parent.ID,
+	// Parallel-join policy hook (parallel-fanout LLD §4.3). A declarative
+	// `parallel` fan-out records a ParallelJoin descriptor on the paused
+	// parent's execution snapshot; a legacy delegation join leaves it nil,
+	// so the whole hook is guarded on that and the legacy path below stays
+	// byte-identical. Evaluated on the ALL-terminal snapshot (this line is
+	// only reached once every leg is terminal) — no early short-circuit.
+	if pj := e.loadParallelJoinDescriptor(ctx, parent.ID); pj != nil {
+		// Scope the policy count to the CURRENT cohort (pj.ChildTaskIDs), NOT
+		// all children (NEW-1). A proceed-false retry re-fans-out a fresh
+		// cohort but the prior attempt's terminal legs remain in the DB
+		// (bubbleUpChildFailure does not delete them). loadParallelJoinDescriptor
+		// reads the parent's current paused execution, which after the latest
+		// fan-out carries THIS attempt's ChildTaskIDs — so filtering by them
+		// counts only the current cohort. Without this, stale FAILED legs would
+		// doom every all/quorum retry, and stale SUCCESSES could wrongly satisfy
+		// best_effort/quorum on a fresh cohort that produced nothing.
+		cohort := filterChildrenByIDs(children, pj.ChildTaskIDs)
+		succeeded, total := countParallelLegs(cohort)
+		if parallelJoinProceeds(pj.Policy, succeeded, total) {
+			// proceed==true → the existing success branch: WAITING_FOR_CHILDREN
+			// → QUEUED. The parent resumes at the checkpointed join step;
+			// failed legs are simply absent from the fan-in.
+			moved, _ := e.taskRepo.TransitionConditional(ctx, parent.ID,
 				[]persistence.TaskStatus{persistence.TaskStatusWaitingForChildren},
 				persistence.TaskStatusQueued,
-				persistence.TransitionOpts{
-					LastError:      &errMsg,
-					LastErrorClass: &errClass,
-					Attempt:        parent.Attempt + 1,
-				})
-			evt.Bool("transitioned", moved).Msg("task: parent re-queued for retry after child-failure bubble-up")
-		} else {
-			moved, _ = e.taskRepo.TransitionConditional(ctx, parent.ID,
-				[]persistence.TaskStatus{persistence.TaskStatusWaitingForChildren},
-				persistence.TaskStatusFailed,
-				persistence.TransitionOpts{
-					LastError:      &errMsg,
-					LastErrorClass: &errClass,
-				})
-			evt.Bool("transitioned", moved).Msg("task: parent → terminal FAILED via child-failure bubble-up; retry budget exhausted")
+				persistence.TransitionOpts{})
+			e.logger.Info().
+				Str("parent_task_id", parent.ID).
+				Str("join_policy", joinPolicyOrDefault(pj.Policy)).
+				Int("succeeded", succeeded).
+				Int("total", total).
+				Bool("transitioned", moved).
+				Str("decision_path", "checkParentUnblock.parallelJoin.proceed").
+				Msg("task: parallel join policy satisfied — parent re-queued to resume at join")
+			return
 		}
+		// proceed==false → the existing child-failure bubble-up VERBATIM
+		// (retry budget then terminal FAILED, TaskFailureClassChildFailed),
+		// with a documented message override naming the policy + ratio. The
+		// failed-child ids are scoped to the current cohort too, so the
+		// bubble-up log names this attempt's failures, not stale ones.
+		cohortFailed := make([]string, 0, len(cohort))
+		for _, c := range cohort {
+			if c != nil && c.Status == persistence.TaskStatusFailed {
+				cohortFailed = append(cohortFailed, c.ID)
+			}
+		}
+		msg := fmt.Sprintf("parallel join policy %s not satisfied: %d/%d legs succeeded",
+			joinPolicyOrDefault(pj.Policy), succeeded, total)
+		e.bubbleUpChildFailure(ctx, parent, cohortFailed, &msg)
+		return
+	}
+
+	if anyFailed {
+		e.bubbleUpChildFailure(ctx, parent, failedChildIDs, nil)
 	} else {
 		moved, _ := e.taskRepo.TransitionConditional(ctx, parent.ID,
 			[]persistence.TaskStatus{persistence.TaskStatusWaitingForChildren},
@@ -3226,6 +3636,81 @@ func (e *Executor) unblockParentIfChildrenDone(ctx context.Context, parentID str
 				Str("parent_task_id", parent.ID).
 				Msg("task: parent unblock lost the race — already handled by a concurrent child finaliser")
 		}
+	}
+}
+
+// loadParallelJoinDescriptor returns the parent execution's ParallelJoin
+// descriptor, or nil for a legacy delegation join (or when the execution repo
+// isn't wired / can't be read). At the instant the wake path runs, the
+// parent's current execution IS the paused one carrying the descriptor — a
+// proceed-true re-queue only mints the fresh execution later, when the
+// scheduler leases the QUEUED task. Nil-safe so the existing check_parent
+// tests (no execRepo) keep the byte-identical legacy path.
+func (e *Executor) loadParallelJoinDescriptor(ctx context.Context, parentID string) *ParallelJoinState {
+	if e.execRepo == nil {
+		return nil
+	}
+	exec, err := e.execRepo.GetByTaskID(ctx, parentID)
+	if err != nil || exec == nil {
+		return nil
+	}
+	return loadExecutionState(exec).ParallelJoin
+}
+
+// bubbleUpChildFailure is the SHARED child-failure bubble-up used by both the
+// legacy all-or-nothing delegation join and the parallel proceed-false join.
+// It respects the parent's retry budget (re-queue Attempt+1 when budget
+// remains, else terminal FAILED), stamping last_error + last_error_class on
+// the SAME conditional UPDATE as the status flip — mirroring handleFailure.
+//
+// msgOverride is the documented last_error override (parallel-fanout LLD §4.3):
+// when nil the message defaults to the existing generic "child task(s) failed:
+// <ids>", so a legacy join is byte-identical; the parallel path passes a
+// policy+ratio message. The control flow, retry logic, error class, and log
+// lines are identical across both callers — only the message differs.
+func (e *Executor) bubbleUpChildFailure(ctx context.Context, parent *persistence.Task, failedChildIDs []string, msgOverride *string) {
+	// Respect the parent's retry budget — pre-fix this path
+	// unconditionally marked the parent FAILED via UpdateStatus,
+	// ignoring MaxAttempts entirely. A multi-attempt parent (e.g.
+	// MaxAttempts=3) was therefore terminally failed on its first
+	// child failure, with no last_error and no chance to retry.
+	// The fix mirrors handleFailure: stamp last_error +
+	// last_error_class on the SAME conditional UPDATE as the
+	// status flip.
+	retryBudgetRemaining := parent.MaxAttempts > 0 && parent.Attempt < parent.MaxAttempts
+	errMsg := fmt.Sprintf("child task(s) failed: %v", failedChildIDs)
+	if msgOverride != nil {
+		errMsg = *msgOverride
+	}
+	errClass := string(persistence.TaskFailureClassChildFailed)
+	evt := e.logger.Warn().
+		Str("parent_task_id", parent.ID).
+		Str("project_id", parent.ProjectID).
+		Strs("failed_child_task_ids", failedChildIDs).
+		Int("parent_attempt", parent.Attempt).
+		Int("parent_max_attempts", parent.MaxAttempts).
+		Bool("retry_budget_remaining", retryBudgetRemaining).
+		Str("decision_path", "checkParentUnblock.anyFailed")
+	var moved bool
+	if retryBudgetRemaining {
+		moved, _ = e.taskRepo.TransitionConditional(ctx, parent.ID,
+			[]persistence.TaskStatus{persistence.TaskStatusWaitingForChildren},
+			persistence.TaskStatusQueued,
+			persistence.TransitionOpts{
+				LastError:      &errMsg,
+				LastErrorClass: &errClass,
+				Attempt:        parent.Attempt + 1,
+			})
+		evt.Bool("transitioned", moved).Msg("task: parent re-queued for retry after child-failure bubble-up")
+	} else {
+		moved, _ = e.taskRepo.TransitionConditional(ctx, parent.ID,
+			[]persistence.TaskStatus{persistence.TaskStatusWaitingForChildren},
+			persistence.TaskStatusFailed,
+			persistence.TransitionOpts{
+				LastError:      &errMsg,
+				LastErrorClass: &errClass,
+			})
+		evt.Bool("transitioned", moved).Msg("task: parent → terminal FAILED via child-failure bubble-up; retry budget exhausted")
 	}
 }
 

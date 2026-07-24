@@ -2143,6 +2143,79 @@ func RunExecutionStepOutcomeSuite(t *testing.T, repo persistence.ExecutionStepOu
 			t.Errorf("ToolCallsUsed: got %v, want nil (NULL)", got.ToolCallsUsed)
 		}
 	})
+
+	// Migration-137 taint-lineage round-trip + TaintedStepsForTasks batch query.
+	// Covers: the three columns round-trip; an Unknown-only row (used=true,
+	// requires_review=false) IS returned by the batch query (F3); a batch over
+	// multiple task IDs returns each task's tainted rows; and an untainted row is
+	// NOT returned (the partial index excludes it).
+	t.Run("TaintLineage_roundtrip_and_batch", func(t *testing.T) {
+		taskHigh := uniqueID("t-high")
+		taskUnknown := uniqueID("t-unk")
+		taskClean := uniqueID("t-clean")
+		execT := uniqueID("exec")
+		highBlob := []byte(`[{"tool":"web_fetch","ref":"https://a.example","severity":2}]`)
+		unkBlob := []byte(`[{"tool":"weird","ref":"weird","severity":3}]`)
+
+		mk := func(taskID, stepID string, used, review bool, blob []byte) {
+			if err := repo.Record(ctx, &persistence.ExecutionStepOutcome{
+				ID: uniqueID("oc"), ProjectID: project, TaskID: taskID, ExecutionID: execT,
+				StepID: stepID, Role: "worker", Model: "m", Outcome: "ok", RecordedAt: time.Now().UTC(),
+				UntrustedContentUsed: used, UntrustedSources: blob, RequiresReview: review,
+			}); err != nil {
+				t.Fatalf("Record %s: %v", stepID, err)
+			}
+		}
+		mk(taskHigh, "sh", true, true, highBlob)
+		mk(taskUnknown, "su", true, false, unkBlob) // Unknown-only: used but not review (F3)
+		mk(taskClean, "sc", false, false, nil)      // untainted — excluded by the partial index
+
+		// Round-trip via List (the High row).
+		rows, err := repo.List(ctx, persistence.ExecutionStepOutcomeFilter{StepID: &[]string{"sh"}[0]})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(rows) == 0 || !rows[0].UntrustedContentUsed || !rows[0].RequiresReview || string(rows[0].UntrustedSources) != string(highBlob) {
+			t.Fatalf("taint columns did not round-trip: %+v", rows)
+		}
+
+		// Batch query across all three task IDs.
+		got, err := repo.TaintedStepsForTasks(ctx, []string{taskHigh, taskUnknown, taskClean})
+		if err != nil {
+			t.Fatalf("TaintedStepsForTasks: %v", err)
+		}
+		byTask := map[string]persistence.TaintedStepRow{}
+		for _, r := range got {
+			byTask[r.TaskID] = r
+		}
+		if _, ok := byTask[taskClean]; ok {
+			t.Errorf("untainted task must NOT be returned (partial index)")
+		}
+		hr, ok := byTask[taskHigh]
+		if !ok || !hr.RequiresReview {
+			t.Errorf("High task row missing or requires_review not set: %+v", hr)
+		}
+		ur, ok := byTask[taskUnknown]
+		if !ok {
+			t.Fatalf("Unknown-only task row MUST be returned (F3)")
+		}
+		if ur.RequiresReview {
+			t.Errorf("Unknown-only row must have requires_review=false")
+		}
+		if string(ur.UntrustedSources) != string(unkBlob) {
+			t.Errorf("Unknown row sources blob mismatch: %s", ur.UntrustedSources)
+		}
+	})
+
+	t.Run("TaintedStepsForTasks_empty_input", func(t *testing.T) {
+		got, err := repo.TaintedStepsForTasks(ctx, nil)
+		if err != nil {
+			t.Fatalf("TaintedStepsForTasks(nil): %v", err)
+		}
+		if len(got) != 0 {
+			t.Errorf("empty input must return no rows, got %d", len(got))
+		}
+	})
 }
 
 // RunKnowledgeEntitySuite — CRUD + AddAlias + UpdateLifecycle.

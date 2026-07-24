@@ -232,6 +232,14 @@ type Task struct {
 	// raw bytes so callers JSON-unmarshal into their own
 	// schemas. Nil for tasks that don't produce envelopes.
 	ResultEnvelope []byte `json:"result_envelope,omitempty"`
+
+	// BudgetUSD is the OPTIONAL per-task lifetime cost ceiling override
+	// (per-task cost governor, LLD 2026-07-24). Nil means "no override —
+	// fall back to the project's default_task_budget_usd". A non-nil value
+	// is ALWAYS strictly positive: the write layer rejects a stored 0 so
+	// "off" is expressed as NULL, never 0, killing the NULL/0 ambiguity.
+	// Operator/admin-only; never LLM-settable. See §3.1.
+	BudgetUSD *float64 `json:"budget_usd,omitempty"`
 }
 
 // EndedUnsuccessfully reports whether the task has reached a terminal
@@ -256,6 +264,18 @@ func (t *Task) EndedUnsuccessfully() bool {
 	default:
 		return false
 	}
+}
+
+// ValidateStoredTaskBudget enforces the per-task cost governor's write-layer
+// invariant: a stored budget_usd is NULL (nil) or strictly positive — never 0
+// or negative (LLD 2026-07-24 §3.1). Returns ErrInvalidTaskBudget on a
+// non-positive non-nil value; nil otherwise. Shared by both backends' Create /
+// Update / RaiseTaskBudget so "off is NULL, never 0" holds uniformly.
+func ValidateStoredTaskBudget(b *float64) error {
+	if b != nil && *b <= 0 {
+		return ErrInvalidTaskBudget
+	}
+	return nil
 }
 
 // TaskFailureClass enumerates the concrete failure modes a task can
@@ -1410,6 +1430,22 @@ type MemoryRetrievalAudit struct {
 	RepoScope *string `json:"repo_scope,omitempty"`
 }
 
+// MemorySearchStage is one per-search stage record persisted to
+// memory_search_stages. The confidence-based retrieval routing feature
+// (P3) writes stage="trust_verdict" rows; Parameters is a JSONB blob whose
+// shape is stage-specific (for trust_verdict: {verdict, trust_mean,
+// result_count, age_capped, weakest_dim, weights, thresholds, K,
+// minResults, widen_rounds}). TraceID optionally links to a
+// memory_search_traces row when that table is present; nil otherwise.
+type MemorySearchStage struct {
+	ID         string    `json:"id"`
+	ProjectID  string    `json:"project_id"`
+	TraceID    *string   `json:"trace_id,omitempty"`
+	Stage      string    `json:"stage"`
+	Parameters []byte    `json:"parameters"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 // MemoryRetrievalAuditFilter narrows a MemoryRetrievalAuditRepository.
 // List call. All fields optional; empty values disable that axis.
 // PageSize must be > 0 — implementations reject zero to keep the
@@ -1797,6 +1833,43 @@ type ExecutionStepOutcome struct {
 	// agent's result.json toolAudit list. NULL on non-agent
 	// steps and pre-migration rows. Migration 106.
 	ToolCallsUsed *int `json:"tool_calls_used,omitempty"`
+
+	// UntrustedContentUsed records whether this step consumed
+	// untrusted (third-party) content, derived from the step's
+	// tool-audit tool names/inputs by internal/taintlineage
+	// (taint-lineage-tracking-design.md, migration 137). True for
+	// any step whose max tool-class severity is Low/High/Unknown
+	// (F3 — Unknown counts as used). Non-agent steps and
+	// pre-migration rows leave it false.
+	UntrustedContentUsed bool `json:"untrusted_content_used,omitempty"`
+
+	// UntrustedSources carries the JSONB-encoded slice of
+	// taintlineage.Source entries this step touched (URL /
+	// provider·path / query text / qualified MCP name, each with
+	// its severity). Round-tripped as a raw JSON blob exactly like
+	// HallucinationSignals so the persistence layer gains no
+	// dependency on the classifier package. Empty / nil means
+	// "no untrusted sources or classifier not run". Migration 137.
+	UntrustedSources []byte `json:"untrusted_sources,omitempty"`
+
+	// RequiresReview is true when the step's max tool-class severity
+	// is High (the STORED flag; Unknown does NOT set it — the write
+	// gate escalates Unknown only in enforce mode, D8). Migration 137.
+	RequiresReview bool `json:"requires_review,omitempty"`
+}
+
+// TaintedStepRow is one untrusted-content step row returned by
+// ExecutionStepOutcomeRepository.TaintedStepsForTasks: the batched
+// taint-rollup input for the write gate (taint-lineage-tracking-design.md
+// §4.3/I7). Carries only what the rollup needs — the task the row belongs to
+// (so the caller can distinguish own vs ancestor rows), the bounded
+// untrusted_sources blob, and requires_review. Any row with
+// untrusted_content_used=true is returned (incl. Unknown-only rows,
+// requires_review=false — F3), so the gate's HasUnknown rollup sees them.
+type TaintedStepRow struct {
+	TaskID           string
+	RequiresReview   bool
+	UntrustedSources []byte // JSONB blob (marshalled []taintlineage.Source)
 }
 
 // TaskJudgeVerdict records one LLM-as-judge evaluation of a

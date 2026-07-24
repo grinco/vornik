@@ -48,7 +48,7 @@ func TestPersistToolAuditFromResult_InvalidJSONIsNoop(t *testing.T) {
 	e := &Executor{auditRepo: repo, logger: zerolog.Nop()}
 	task := &persistence.Task{ID: "t1", ProjectID: "p1"}
 	exec := &persistence.Execution{ID: "exec1"}
-	_, detail := e.persistToolAuditFromResult(context.Background(), task, exec, "step-1", []byte(`not json`))
+	_, detail, _ := e.persistToolAuditFromResult(context.Background(), task, exec, "step-1", []byte(`not json`))
 	assert.Equal(t, "", detail)
 	assert.Empty(t, repo.logged)
 }
@@ -58,7 +58,7 @@ func TestPersistToolAuditFromResult_NoEntriesIsNoop(t *testing.T) {
 	e := &Executor{auditRepo: repo, logger: zerolog.Nop()}
 	task := &persistence.Task{ID: "t1", ProjectID: "p1"}
 	exec := &persistence.Execution{ID: "exec1"}
-	_, detail := e.persistToolAuditFromResult(context.Background(), task, exec, "step-1", []byte(`{"toolAudit":[]}`))
+	_, detail, _ := e.persistToolAuditFromResult(context.Background(), task, exec, "step-1", []byte(`{"toolAudit":[]}`))
 	assert.Equal(t, "", detail)
 	assert.Empty(t, repo.logged)
 }
@@ -72,7 +72,7 @@ func TestPersistToolAuditFromResult_PersistsEntriesAndReusesAuditID(t *testing.T
 		{"audit_id":"ta_explicit_1","tool":"file_read","input":"path","output":"contents","duration_ms":42},
 		{"tool":"file_write","input":"path2","output":"ok","duration_ms":17}
 	]}`)
-	_, detail := e.persistToolAuditFromResult(context.Background(), task, exec, "plan_1_writer", body)
+	_, detail, _ := e.persistToolAuditFromResult(context.Background(), task, exec, "plan_1_writer", body)
 	assert.Equal(t, "", detail, "no loop expected")
 	require.Len(t, repo.logged, 2)
 
@@ -112,7 +112,7 @@ func TestPersistToolAuditFromResult_NilRepoSkipsLogButReturnsLoopDetail(t *testi
 		{"tool":"file_read","input":"same","output":"x","duration_ms":1},
 		{"tool":"file_read","input":"same","output":"x","duration_ms":1}
 	]}`)
-	_, detail := e.persistToolAuditFromResult(context.Background(), task, exec, "step-1", body)
+	_, detail, _ := e.persistToolAuditFromResult(context.Background(), task, exec, "step-1", body)
 	// Either the loop is detected (non-empty detail) or not — both
 	// outcomes are acceptable depending on detector thresholds. We
 	// only pin "no panic / no nil-deref" here, plus the contract

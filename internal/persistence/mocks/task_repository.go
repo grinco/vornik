@@ -92,6 +92,10 @@ type MockTaskRepository struct {
 	// GetDependentsFunc is the function called for GetDependents.
 	GetDependentsFunc func(ctx context.Context, taskID string) ([]*persistence.Task, error)
 
+	// RaiseTaskBudgetFunc lets tests script the per-task-budget top-up.
+	// Defaults to (true, nil) when nil.
+	RaiseTaskBudgetFunc func(ctx context.Context, id string, newBudgetUSD float64, resumeFromAwaitingInput bool) (bool, error)
+
 	// CallCount tracks how many times each method was called.
 	CallCount struct {
 		Create                  int
@@ -357,6 +361,15 @@ func (m *MockTaskRepository) GetDependents(ctx context.Context, taskID string) (
 		return m.GetDependentsFunc(ctx, taskID)
 	}
 	return nil, nil
+}
+
+// RaiseTaskBudget implements TaskRepository.
+func (m *MockTaskRepository) RaiseTaskBudget(ctx context.Context, id string, newBudgetUSD float64, resumeFromAwaitingInput bool) (bool, error) {
+	m.LastCall.ID = id
+	if m.RaiseTaskBudgetFunc != nil {
+		return m.RaiseTaskBudgetFunc(ctx, id, newBudgetUSD, resumeFromAwaitingInput)
+	}
+	return true, nil
 }
 
 // Reset resets the call counts and last call data.

@@ -69,6 +69,12 @@ func WorkflowSchema() AssetSchema {
 					"params",                // map[string]any — spawn_project params
 					"initial_task.workflow", // *WorkflowInitialTask
 					"initial_task.payload",
+					// parallel-step structural contract (raw-YAML-only, no form
+					// field yet) — pre-existing drift, deferred here to keep the
+					// schema guard green.
+					"branches",    // []WorkflowBranch — parallel fan-out legs
+					"join",        // consumer step the parent resumes at
+					"join_policy", // all | any | quorum:<n>
 				},
 			},
 		},

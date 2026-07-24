@@ -24,7 +24,7 @@ steps:
     role: "researcher"
     on_success: "done"
     on_fail: "failed"
-    timeout: "45m"
+    timeout: "612s"
     retry:
       on: ["container_non_zero_exit", "context_timeout"]
       max_attempts: 5

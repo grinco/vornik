@@ -1304,3 +1304,53 @@ defaultWorkflowId: "test-workflow"
 		}
 	})
 }
+
+// M4: the per-project taint_lineage.mode override is hard-validated at load —
+// a typo must fail startup, not silently coerce to advisory (fail-open).
+func TestProjectTaintLineage_Validate(t *testing.T) {
+	base := func() Project {
+		return Project{ID: "p", SwarmID: "s", DefaultWorkflowID: "w"}
+	}
+	cases := []struct {
+		name      string
+		mode      string
+		wantField string // empty → success
+	}{
+		{"unset inherits (success)", "", ""},
+		{"off (success)", "off", ""},
+		{"advisory (success)", "advisory", ""},
+		{"enforce (success)", "enforce", ""},
+		{"typo rejected", "enfroce", "taint_lineage.mode"},
+		{"bogus rejected", "true", "taint_lineage.mode"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := base()
+			p.TaintLineage.Mode = tc.mode
+			err := p.Validate("project.yaml")
+			if tc.wantField == "" {
+				if err != nil {
+					t.Fatalf("want success, got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("want validation error on field %q, got nil", tc.wantField)
+			}
+			ve, ok := err.(ProjectValidationError)
+			if !ok || ve.Field != tc.wantField {
+				t.Fatalf("want ProjectValidationError field %q, got %v", tc.wantField, err)
+			}
+		})
+	}
+}
+
+// ProjectTaintLineage.Enabled reports whether the operator authored an override.
+func TestProjectTaintLineage_Enabled(t *testing.T) {
+	if (ProjectTaintLineage{}).Enabled() {
+		t.Errorf("empty mode must be inherit (Enabled=false)")
+	}
+	if !(ProjectTaintLineage{Mode: "enforce"}).Enabled() {
+		t.Errorf("non-empty mode must be Enabled=true")
+	}
+}

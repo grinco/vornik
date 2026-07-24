@@ -537,6 +537,19 @@ func validateConfigSet(cfg *ConfigSet) error {
 		}
 	}
 
+	// Cross-workflow branch reference check: a `parallel` step's optional
+	// branch `workflow` must resolve to a known workflow id. Done here (not
+	// in the per-file Workflow.Validate) because it needs the full workflow
+	// set (parallel-fanout LLD §5).
+	for _, wf := range cfg.workflows {
+		if wf == nil {
+			continue
+		}
+		if err := wf.validateBranchWorkflowRefs(wf.ID, cfg.workflows); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
 	if len(errs) > 0 {
 		return &ValidationError{Errors: errs}
 	}

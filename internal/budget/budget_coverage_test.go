@@ -227,14 +227,14 @@ func TestResolveStepModel_UnknownRoleFallsBackToDefault(t *testing.T) {
 func TestCheckForecast_ExactlyAtDailyCapRefuses(t *testing.T) {
 	proj := &registry.Project{ID: "p", Budget: registry.ProjectBudget{DailyHardUSD: 5.0}}
 	// 4.00 spent + 1.00 forecast = 5.00 == cap → refuse (>= semantics).
-	d := CheckForecast(proj, Forecast{USD: 1.0}, Decision{DailyUSD: 4.0})
+	d := CheckForecast(proj, Forecast{USD: 1.0}, Decision{DailyUSD: 4.0}, 0)
 	assert.True(t, d.Refused, "projected == daily hard cap must refuse")
 	assert.Contains(t, d.Reason, "daily hard cap")
 }
 
 func TestCheckForecast_NilProjectAllows(t *testing.T) {
 	// Defensive: a nil project can't have caps, so the forecast can't refuse.
-	d := CheckForecast(nil, Forecast{USD: 999}, Decision{DailyUSD: 999})
+	d := CheckForecast(nil, Forecast{USD: 999}, Decision{DailyUSD: 999}, 0)
 	assert.False(t, d.Refused)
 	assert.Equal(t, 999.0, d.Forecast.USD, "forecast is echoed back even when project is nil")
 }

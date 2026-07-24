@@ -24,14 +24,19 @@ type OpenChangeRequestHandler struct {
 	// store attaches the mail-in patch when a push is rejected. Optional:
 	// nil disables the artifact (the task still parks with the reason).
 	store ArtifactStore
+	// taint is the untrusted-content review gate consulted BEFORE the branch is
+	// pushed (taint-lineage-tracking §4.5). Optional: nil disables the check
+	// (feature off / not wired), and the write proceeds unchanged.
+	taint TaintGate
 }
 
 // NewOpenChangeRequestHandler wires the handler. Nil-safe: a missing required
 // dependency (resolver/source) surfaces a clear error at Execute rather than
 // panicking. store is optional (the push-rejected fallback still parks without
-// it, minus the downloadable patch).
-func NewOpenChangeRequestHandler(resolver ProviderResolver, source PublishSource, store ArtifactStore) *OpenChangeRequestHandler {
-	return &OpenChangeRequestHandler{resolver: resolver, source: source, store: store}
+// it, minus the downloadable patch). taint is optional (nil disables the
+// untrusted-content review gate).
+func NewOpenChangeRequestHandler(resolver ProviderResolver, source PublishSource, store ArtifactStore, taint TaintGate) *OpenChangeRequestHandler {
+	return &OpenChangeRequestHandler{resolver: resolver, source: source, store: store, taint: taint}
 }
 
 // Name implements executor.SystemHandler.
@@ -89,6 +94,34 @@ func (h *OpenChangeRequestHandler) Execute(ctx context.Context, in executor.Syst
 			Base: base, SHA: sha, GitDir: gitDir, Commits: n, CountOK: countOK,
 		})
 		return executor.SystemStepResult{Result: out}, nil
+	}
+
+	// Untrusted-content review gate (taint-lineage-tracking §4.5): under a
+	// project's enforce mode, an autonomous forge write derived from untrusted
+	// lineage PARKS for operator review BEFORE the push happens. Checked here
+	// (past the no_change short-circuit, so we never park a write that would
+	// open nothing) and before PushBranch, so the operator reviews before any
+	// remote side effect. off/advisory return (nil,nil) and proceed.
+	if h.taint != nil {
+		sig, terr := h.taint.ReviewForgeWrite(ctx, in.Task.ProjectID, in.Task.ID)
+		switch {
+		case terr != nil:
+			// Fail CLOSED (M5): a reviewer error must never let an autonomous
+			// write through. ReviewForgeWrite folds resolution errors into a
+			// mode-aware decision internally (enforce → park, off/advisory →
+			// proceed) and does not surface them here, so a non-nil error is an
+			// unexpected contract break — take the conservative path and park for
+			// operator review rather than pushing unreviewed.
+			park := sig
+			if park == nil {
+				park = &executor.TaintReviewSignal{State: executor.TaintReviewState, SourceCount: 0, ShownCount: 0}
+			}
+			out, _ := json.Marshal(park)
+			return executor.SystemStepResult{Result: out}, nil
+		case sig != nil:
+			out, _ := json.Marshal(sig)
+			return executor.SystemStepResult{Result: out}, nil
+		}
 	}
 
 	branch := branchForJob(*job)

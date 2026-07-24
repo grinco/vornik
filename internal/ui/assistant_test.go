@@ -697,6 +697,9 @@ func (f *fakeUsageRepo) List(_ context.Context, _ persistence.TaskLLMUsageFilter
 func (f *fakeUsageRepo) SumCostByProject(_ context.Context, _ string, _, _ time.Time) (float64, error) {
 	return f.Spend, nil
 }
+func (f *fakeUsageRepo) SumCostByTask(_ context.Context, _ string) (float64, error) {
+	return f.Spend, nil
+}
 func (f *fakeUsageRepo) DeleteOlderThan(_ context.Context, _ time.Time) (int64, error) {
 	panic("fakeUsageRepo.DeleteOlderThan: not used by assistant tests")
 }

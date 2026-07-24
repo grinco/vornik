@@ -70,6 +70,9 @@ func ProjectSchema() AssetSchema {
 					{Path: "budget.monthly_hard_usd", Label: "Monthly hard cap", Kind: KindFloat},
 					{Path: "budget.timezone", Label: "Budget timezone", Kind: KindString, Default: "UTC"},
 					{Path: "budget.reservation_estimate_usd", Label: "Reservation estimate", Kind: KindFloat, Help: "Per-task amount reserved at admission (TOCTOU-safe)."},
+					{Path: "budget.default_task_budget_usd", Label: "Default per-task budget", Kind: KindFloat, Help: "Per-task lifetime cost ceiling (0 = off). Parks a task AWAITING_INPUT once its cumulative spend hits this."},
+					{Path: "budget.max_task_budget_usd", Label: "Max per-task budget", Kind: KindFloat, Help: "Optional clamp on per-task budget overrides (0 = no clamp)."},
+					{Path: "budget.task_soft_fraction", Label: "Per-task soft fraction", Kind: KindFloat, Help: "Fraction of the per-task budget at which a warn-only soft breach fires (default 0.80)."},
 				},
 			},
 			{
@@ -108,6 +111,14 @@ func ProjectSchema() AssetSchema {
 				Advanced: true,
 				Fields: []Field{
 					{Path: "firewall.mode", Label: "Mode", Kind: KindEnum, Enum: []string{"off", "advisory", "enforce"}, Help: "Empty = inherit daemon default."},
+				},
+			},
+			{
+				Title:    "Taint lineage",
+				Advanced: true,
+				Help:     "Governs whether autonomous writes derived from untrusted content are parked/refused for operator review.",
+				Fields: []Field{
+					{Path: "taint_lineage.mode", Label: "Mode", Kind: KindEnum, Enum: []string{"off", "advisory", "enforce"}, Help: "Empty = inherit daemon default. enforce parks tainted forge writes and refuses tainted query_api writes."},
 				},
 			},
 			{

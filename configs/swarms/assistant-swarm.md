@@ -167,7 +167,12 @@ roles:
             # the quadratic blowout days (40-90 iter steps). 25 spares 95% of
             # successful work. The entrypoint budget block interpolates this so
             # the agent gets a graceful "wrap up" cue as it nears the cap.
-            VORNIK_MAX_TOOL_ITERATIONS: "25"
+            # 2026-07-23: 25 -> 40 for the vornik-marketing moltbook feed
+            # (multi-endpoint /feed discovery + qualify + draft needs more room).
+            # SHARED across assistant/janka/vornik-marketing — only the ~5% tail
+            # (>25 iters) costs more; p50=7 unaffected. Cost-tuning control plane
+            # may re-tune down per telemetry.
+            VORNIK_MAX_TOOL_ITERATIONS: "40"
       permissions:
         # 2026-07-21: mcp__* wildcard replaced with an explicit research-scoped
         # list. The wildcard admitted EVERY MCP tool (scraper + pagedrop + news
@@ -317,7 +322,7 @@ roles:
         cpu: "1"
         memory: "2Gi"
         envVars:
-            VORNIK_STEP_PROMPT_TOKEN_BUDGET: "191902"
+            VORNIK_STEP_PROMPT_TOKEN_BUDGET: "160327"
             VORNIK_MAX_TOOL_ITERATIONS: "50"
       permissions:
         # Writer reads research.md produced by the researcher and

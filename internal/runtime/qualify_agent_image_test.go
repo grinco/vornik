@@ -21,8 +21,8 @@ func TestQualifyAgentImage(t *testing.T) {
 		"some-other-image:latest":       "some-other-image:latest",       // not our agent — unchanged
 	}
 	for in, want := range cases {
-		if got := qualifyAgentImage(in); got != want {
-			t.Errorf("qualifyAgentImage(%q) = %q, want %q", in, got, want)
+		if got := QualifyAgentImage(in); got != want {
+			t.Errorf("QualifyAgentImage(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

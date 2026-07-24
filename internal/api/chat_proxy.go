@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"time"
 
 	"vornik.io/vornik/internal/chat"
@@ -19,6 +20,26 @@ import (
 // (internal/chat/client.go:maxChatResponseBytes); mirroring it here
 // keeps the two ends in step.
 const maxChatProxyBodyBytes = 32 * 1024 * 1024
+
+// cacheRoleRe bounds a caller-supplied X-Vornik-Role before it becomes
+// part of an OpenAI prompt_cache_key: a non-empty identifier ≤64 chars
+// using only chars that are valid in OpenAI's prompt_cache_key AND free
+// of the ':' key delimiter (so a crafted role can't alias another
+// role's cache bucket). Real vornik roles ("researcher", "coder", …)
+// all match; anything else is dropped rather than passed upstream.
+var cacheRoleRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// validCacheRole reports whether role is safe to fold into a
+// prompt_cache_key. Invalid → the caller skips cache-key steering.
+func validCacheRole(role string) bool { return cacheRoleRe.MatchString(role) }
+
+// cachingEnabled reports whether the daemon-wide prompt-cache kill-switch
+// is on. Shared by the CacheStrategy default stamp and the OpenAI
+// prompt_cache_key stamp so a single config knob (chat.prompt_cache_mode)
+// governs ALL cache behaviour — empty / "off" disables both.
+func (s *Server) cachingEnabled() bool {
+	return s.promptCacheMode != "" && s.promptCacheMode != chat.CacheModeOff
+}
 
 // ChatCompletions serves POST /api/v1/chat/completions — an internal
 // OpenAI-compatible proxy. Agent containers already know how to POST
@@ -202,12 +223,62 @@ func (s *Server) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.CacheStrategy != nil && req.CacheStrategy.Mode != "" && req.CacheStrategy.Mode != chat.CacheModeOff {
 		ctx = chat.WithRequestCacheStrategy(ctx, req.CacheStrategy)
-	} else if s.promptCacheMode != "" && s.promptCacheMode != chat.CacheModeOff {
+	} else if s.cachingEnabled() {
 		// Daemon-wide default kicks in when the request didn't pin
 		// a strategy. Lets operators turn caching on with a single
 		// config knob without touching every caller. Bedrock +
 		// Anthropic honour it; other providers no-op.
 		ctx = chat.WithRequestCacheStrategy(ctx, &chat.CacheStrategy{Mode: s.promptCacheMode})
+	}
+	// OpenAI auto-cache steering (BACKLOG "OpenAI-compat prompt_cache_key
+	// passthrough"): derive a per-(project, role) cache key so requests
+	// sharing an identical static prefix land on the same server-side
+	// cache-affinity bucket upstream. The agent posts its role in
+	// X-Vornik-Role; project comes from the already-resolved projectID.
+	//
+	// Wire isolation: req.PromptCacheKey is set only inside
+	// (*chat.Client).doComplete, which is reached only by the
+	// OpenAI-compatible *Client provider. Bedrock (chat.BedrockProvider),
+	// Anthropic (chat.ClaudeSubscriptionClient) and codex
+	// (chat.CodexSubscriptionClient) are distinct Provider types with
+	// their own CompleteWithTools that never call doComplete and never
+	// marshal ChatRequest — so the field cannot ride their wire. Stamping
+	// the ctx value here is therefore a true no-op for them.
+	//
+	// Gated on the same cachingEnabled() kill-switch as CacheStrategy
+	// above so one config knob governs ALL cache behaviour — an operator
+	// who turns caching off must not still steer OpenAI auto-caching.
+	//
+	// The role is caller-supplied and NOT authz-checked, so it is
+	// validated against a strict identifier charset before flowing into
+	// OpenAI's own-validated prompt_cache_key field: a malformed role
+	// would otherwise 400 every OpenAI-routed call (self-DoS) or alias
+	// another role's bucket via an injected ':'. projectID is the
+	// daemon-resolved, authz-checked value (not the raw header) and vornik
+	// project IDs are themselves strict identifiers, so only the caller-
+	// controlled role half needs guarding here.
+	if s.cachingEnabled() && projectID != "" {
+		role := r.Header.Get("X-Vornik-Role")
+		switch {
+		case role == "":
+			// No role header (e.g. a pre-feature agent image) — no steering.
+			// Absence is the normal degraded state, so nothing to log.
+		case validCacheRole(role):
+			ctx = chat.WithRequestPromptCacheKey(ctx, projectID+":"+role)
+		default:
+			// Drop-on-invalid keeps availability, but a role that keeps
+			// failing validation silently loses cache steering — log it so
+			// an unexpected agent role format is debuggable beyond a
+			// hit-rate regression. Cap the logged value so an oversized
+			// header can't bloat the log line.
+			logged := role
+			if len(logged) > 64 {
+				logged = logged[:64] + "…"
+			}
+			s.logger.Debug().
+				Str("role", logged).
+				Msg("dropped malformed X-Vornik-Role from prompt_cache_key steering")
+		}
 	}
 
 	// This is the agent-container entry: MODEL_UNHEALTHY on these calls is

@@ -300,6 +300,19 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `memory.reranker.max_candidates` | int | Top-K results scored per recall (0 = default 20). |
 | `memory.reranker.timeout_seconds` | int | Per-recall rerank timeout in seconds (0 = default 15). |
 | `memory.reranker.max_snippet_bytes` | int | Per-candidate snippet sent to the reranker (0 = default 600). |
+| `memory.retrieval_routing.k` | int | Top-K window the trust mean is computed over (0 = default 5). |
+| `memory.retrieval_routing.min_results` | int | Floor result count for a non-low verdict; must be <= k (0 = default 1). |
+| `memory.retrieval_routing.high_threshold` | float | Trust-mean at/above which the verdict is high (0 = default 0.70). |
+| `memory.retrieval_routing.low_threshold` | float | Trust-mean below which the verdict is low and the widen fires (0 = default 0.40). |
+| `memory.retrieval_routing.w_status` | float | Weight of the validation-status leg (0 = default 0.6). |
+| `memory.retrieval_routing.w_conf` | float | Weight of the confidence leg (0 = default 0.2). |
+| `memory.retrieval_routing.w_fresh` | float | Weight of the freshness leg (0 = default 0.2). |
+| `memory.retrieval_routing.unverified_conf_discount` | float | Discount applied to unverified chunks' confidence term (0 = default 0.5). |
+| `memory.retrieval_routing.no_ttl_age_cap_days` | int | Age in days past which a no-TTL chunk is stale and, as top hit, caps the verdict at medium (0 = default 180). |
+| `memory.retrieval_routing.no_ttl_stale_freshness` | float | Freshness floor for an aged no-TTL chunk (0 = default 0.3). |
+| `memory.retrieval_routing.max_rounds` | int | Hard cap on verdict-predicated widen rounds (0 = default 3). |
+| `memory.retrieval_routing.widen_enabled` | bool | Enable the verdict-predicated DB widen (default true; set false for verdict-only). |
+| `memory.retrieval_routing.enabled` | bool | Master switch for confidence-based retrieval routing (default true; set false to disable the feature entirely). |
 | `memory.embedding_model` | string | Embedding model name. Required when enabled. |
 | `memory.embedding_dimension` | int | Vector dimension produced by the model. |
 | `memory.embedding_endpoint` | string | Override endpoint for embedding requests. |
@@ -432,4 +445,10 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `gateway.token_file` | string | Path to a file holding the gateway token (preferred over inline token). |
 | `gateway.providers` | map | Registered API providers the agent may call by name. |
 | `gateway.agent_writes` | string | Tri-state policy for query_api writes from task-executing agents: off (default; task-originated writes refused — chat-direct writes unaffected), user (permit only when the task's request-root creation_source is USER, i.e. a human-initiated tree; autonomous/scheduled/route-rooted trees stay read-only), all (any task-originated write permitted). Always AND-gated by the provider's writes_enabled and the gateway route allowlist. 'all' is broad (a prompt-injected autonomous agent can write to every writes_enabled provider) and emits a load-time warning. |
+
+## taint_lineage
+
+| Key | Type | Description |
+|---|---|---|
+| `taint_lineage.enforcement_mode` | string | Daemon-default taint-lineage enforcement for autonomous writes: off (record only, never park/refuse), advisory (default; record + flag, never park/refuse), enforce (park tainted forge writes for operator review, synchronously refuse tainted query_api writes). Per-project overridable. Audit is always recorded regardless. Never LLM-settable. |
 

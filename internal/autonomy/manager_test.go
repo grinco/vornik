@@ -121,6 +121,9 @@ func (m *mockTaskRepo) CountChildrenForParents(context.Context, []string) (map[s
 func (m *mockTaskRepo) GetDependencies(context.Context, string) ([]*persistence.Task, error) {
 	return nil, nil
 }
+func (m *mockTaskRepo) RaiseTaskBudget(context.Context, string, float64, bool) (bool, error) {
+	return true, nil
+}
 func (m *mockTaskRepo) GetDependents(context.Context, string) ([]*persistence.Task, error) {
 	return nil, nil
 }
@@ -988,6 +991,9 @@ func (s *stubLLMUsageRepo) Record(context.Context, *persistence.TaskLLMUsage) er
 func (s *stubLLMUsageRepo) Upsert(context.Context, *persistence.TaskLLMUsage) error { return nil }
 func (s *stubLLMUsageRepo) List(context.Context, persistence.TaskLLMUsageFilter) ([]*persistence.TaskLLMUsage, error) {
 	return nil, nil
+}
+func (s *stubLLMUsageRepo) SumCostByTask(context.Context, string) (float64, error) {
+	return 0, nil
 }
 func (s *stubLLMUsageRepo) SumCostByProject(context.Context, string, time.Time, time.Time) (float64, error) {
 	return s.dailyCost, nil

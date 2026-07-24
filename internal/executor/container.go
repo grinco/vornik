@@ -21,6 +21,7 @@ import (
 	"vornik.io/vornik/internal/runtime"
 	"vornik.io/vornik/internal/safepath"
 	"vornik.io/vornik/internal/stepoutcome"
+	"vornik.io/vornik/internal/taintlineage"
 	"vornik.io/vornik/internal/toolbudget"
 	"vornik.io/vornik/internal/verifier"
 )
@@ -243,6 +244,12 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// (resolveRoleToolBudget) and the tool-audit count (persistToolAuditFromResult);
 	// left zero so the three columns stay NULL for non-agent paths.
 	var agentStamp agentBudgetStamp
+	// taintStamp carries the migration-137 taint-lineage columns stamped on the
+	// outcome row for agent steps only. Populated from persistToolAuditFromResult's
+	// StepTaint classification at both the warm and ephemeral call sites; left
+	// zero (untainted) if no tool audit was produced. The defer reads it so the
+	// columns land regardless of whether the step succeeded or failed.
+	var taintStampVal taintStamp
 	// hallucinationSignalsBlob is set by the post-step detector hook
 	// later in this function. Captured into the closure so the defer
 	// can pass it to the outcome row regardless of whether the step
@@ -326,7 +333,7 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 			errDetail = promptTokenBudgetDetail
 		}
 		durMS := time.Since(stepStartedAt).Milliseconds()
-		e.recordStepOutcomeWithSignalsAndBudget(ctx, task, execution, stepID, step.Role, effectiveModel, outcome, errClass, errDetail, nil, &durMS, hallucinationSignalsBlob, agentStamp)
+		e.recordStepOutcomeWithSignalsAndBudget(ctx, task, execution, stepID, step.Role, effectiveModel, outcome, errClass, errDetail, nil, &durMS, hallucinationSignalsBlob, agentStamp, taintStampVal)
 	}()
 
 	// Used by verifyClaimedModifications as the mtime floor: any file the
@@ -502,10 +509,12 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 			// while their cost was never summed into entry.costUSD.
 			if len(result) > 0 {
 				var toolCount int
-				toolCount, degenerateLoopDetail = e.persistToolAuditFromResult(ctx, task, execution, stepID, result)
+				var stepTaint taintlineage.StepTaint
+				toolCount, degenerateLoopDetail, stepTaint = e.persistToolAuditFromResult(ctx, task, execution, stepID, result)
 				if toolCount > 0 {
 					agentStamp.ToolCallsUsed = &toolCount
 				}
+				taintStampVal = e.taintStampFromStep(stepTaint)
 				e.recordLLMUsageFromResult(ctx, task, execution, stepID, step.Role, effectiveModel, result)
 			}
 			// Output-shape contract applies to warm runs too; missing
@@ -735,10 +744,12 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// reads — see the defer at the top of this function.
 	if len(resultBytes) > 0 {
 		var toolCount int
-		toolCount, degenerateLoopDetail = e.persistToolAuditFromResult(ctx, task, execution, stepID, resultBytes)
+		var stepTaint taintlineage.StepTaint
+		toolCount, degenerateLoopDetail, stepTaint = e.persistToolAuditFromResult(ctx, task, execution, stepID, resultBytes)
 		if toolCount > 0 {
 			agentStamp.ToolCallsUsed = &toolCount
 		}
+		taintStampVal = e.taintStampFromStep(stepTaint)
 		e.recordLLMUsageFromResult(ctx, task, execution, stepID, step.Role, effectiveModel, resultBytes)
 	} else {
 		e.logger.Warn().Str("execution_id", execution.ID).Str("step", stepID).

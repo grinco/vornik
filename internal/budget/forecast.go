@@ -221,9 +221,30 @@ func resolveStepModel(step registry.WorkflowStep, swarm *registry.Swarm, default
 // the decision in scope (dispatcher, autonomy manager) don't pay
 // for a second SQL aggregate, and the forecast gate sees the same
 // snapshot the budget gate just used.
-func CheckForecast(project *registry.Project, forecast Forecast, currentDecision Decision) ForecastDecision {
+//
+// taskBudgetUSD is the effective per-task LIFETIME budget for the task about to
+// be created (LLD 2026-07-24 §3.4). When > 0 the forecast is ALSO refused when
+// forecast.USD alone exceeds it — a run whose predicted cost already blows the
+// per-task ceiling. When 0 the per-task arm SHORT-CIRCUITS (no refusal) so
+// un-configured projects see byte-identical create behaviour. The project
+// daily/monthly caps are retained (a task under its per-task budget but over
+// the project cap is still refused). Per §3.4 the comparison is the RUN's own
+// forecast, NOT budget − prior_lifetime_spend — the step-boundary governor is
+// the cumulative backstop.
+func CheckForecast(project *registry.Project, forecast Forecast, currentDecision Decision, taskBudgetUSD float64) ForecastDecision {
 	d := ForecastDecision{Forecast: forecast}
 	if project == nil {
+		return d
+	}
+	// Per-task ceiling (short-circuits when disabled). Checked first so an
+	// over-budget single run is refused with the most specific reason. STRICT
+	// > (LLD §3.4 M4): a forecast exactly equal to the budget is allowed.
+	if taskBudgetUSD > 0 && forecast.USD > taskBudgetUSD {
+		d.Refused = true
+		d.Reason = fmt.Sprintf(
+			"forecast $%.2f would breach per-task budget $%.2f",
+			forecast.USD, taskBudgetUSD,
+		)
 		return d
 	}
 	b := project.Budget

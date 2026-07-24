@@ -585,6 +585,9 @@ func (m *mockLLMUsageRepo) Upsert(context.Context, *persistence.TaskLLMUsage) er
 func (m *mockLLMUsageRepo) List(context.Context, persistence.TaskLLMUsageFilter) ([]*persistence.TaskLLMUsage, error) {
 	return nil, nil
 }
+func (m *mockLLMUsageRepo) SumCostByTask(context.Context, string) (float64, error) {
+	return 0, nil
+}
 func (m *mockLLMUsageRepo) SumCostByProject(context.Context, string, time.Time, time.Time) (float64, error) {
 	return m.cost, nil
 }

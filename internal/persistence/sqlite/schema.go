@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Telegram/doctor), so the Outcome Inbox keeps it visible as "Retrying…"
     -- until the re-run terminates. Server-side only (set + filtered, not scanned).
     retry_requested_at  TEXT,
+    -- Migration 136 parity: per-task lifetime cost governor override
+    -- (LLD 2026-07-24 §3.1). NULL = inherit project default_task_budget_usd;
+    -- when set, always strictly positive (write layer rejects 0).
+    budget_usd          REAL,
     UNIQUE (project_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_project    ON tasks(project_id);
@@ -382,6 +386,20 @@ CREATE INDEX IF NOT EXISTS idx_memory_audit_project_scope ON memory_retrieval_au
 CREATE INDEX IF NOT EXISTS idx_memory_audit_project_time ON memory_retrieval_audit(project_id, retrieved_at DESC);
 
 -- ============================================================
+-- memory_search_stages (P3 routing trace sink; mirrors Postgres migration 135)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS memory_search_stages (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL,
+    trace_id    TEXT,
+    stage       TEXT NOT NULL,
+    parameters  TEXT NOT NULL DEFAULT '{}',
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_search_stages_project_time ON memory_search_stages(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_search_stages_stage ON memory_search_stages(stage);
+
+-- ============================================================
 -- memory_ingest_audit — per-call ingest record (migration 74 in postgres).
 -- Companion-direct deposits via IngestCompanionNote bypass
 -- project_ingest_queue, so the queue's per-row producer_role + state
@@ -609,12 +627,18 @@ CREATE TABLE IF NOT EXISTS execution_step_outcomes (
     -- migration 106 parity: budget-stamp columns for the instinct ↔ tool-budget seam
     complexity_tier       TEXT,
     effective_tool_budget INTEGER,
-    tool_calls_used       INTEGER
+    tool_calls_used       INTEGER,
+    -- migration 137 parity: taint-lineage tracking columns
+    untrusted_content_used BOOLEAN NOT NULL DEFAULT 0,
+    untrusted_sources      BLOB,
+    requires_review        BOOLEAN NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_step_outcomes_execution ON execution_step_outcomes(execution_id);
 CREATE INDEX IF NOT EXISTS idx_step_outcomes_project_time ON execution_step_outcomes(project_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_step_outcomes_pending
   ON execution_step_outcomes(execution_id, step_id) WHERE outcome = 'pending_validation';
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_task_taint
+  ON execution_step_outcomes(task_id) WHERE untrusted_content_used = 1;
 
 -- ============================================================
 -- knowledge_entities — round 3 (memory/KG)

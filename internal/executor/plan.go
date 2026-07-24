@@ -254,6 +254,16 @@ type delegatedTaskSpec struct {
 	// (e.g. issue-fix's decompose targets `issue-subtask`) instead of the
 	// project default, without changing the project-wide default.
 	Workflow string `json:"workflow"`
+	// parallelStepID / parentAttempt tag a declarative `parallel` fan-out
+	// child's payload for ATTEMPT-SCOPED resume detection (parallel-fanout LLD
+	// v0.6 §4.3). They are set ONLY by the parallel path (buildParallelBranchSpecs)
+	// and are unexported so an LLM-emitted delegatedTasks spec can never carry
+	// them. When parallelStepID is non-empty createDelegatedTasks stamps
+	// {parallel_step_id, parent_attempt} into the child's Payload, letting a
+	// proceed-false retry (which bumps parent.Attempt) re-fan-out cleanly
+	// instead of mistaking the prior attempt's terminal legs for a resume.
+	parallelStepID string
+	parentAttempt  int
 }
 
 // resolveExecutionPlan builds the execution plan from the workflow resolver or falls
@@ -1257,11 +1267,19 @@ func (e *Executor) createDelegatedTasks(ctx context.Context, parent *persistence
 		if priority <= 0 {
 			priority = parent.Priority
 		}
-		payload, _ := json.Marshal(map[string]any{
+		payloadMap := map[string]any{
 			"context": map[string]any{
 				"prompt": spec.Prompt,
 			},
-		})
+		}
+		// Attempt-scoped tag for declarative parallel fan-out children so
+		// handleParallelStep can tell THIS attempt's legs from a prior
+		// attempt's terminal legs (parallel-fanout LLD v0.6 §4.3).
+		if spec.parallelStepID != "" {
+			payloadMap["parallel_step_id"] = spec.parallelStepID
+			payloadMap["parent_attempt"] = spec.parentAttempt
+		}
+		payload, _ := json.Marshal(payloadMap)
 		var childWorkflowID *string
 		if wf := strings.TrimSpace(spec.Workflow); wf != "" {
 			childWorkflowID = &wf

@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
 	"vornik.io/vornik/internal/forge"
+	"vornik.io/vornik/internal/taintlineage"
 )
 
 // Project represents a project definition loaded from projects/*.yaml
@@ -129,6 +130,12 @@ type Project struct {
 	// mode is the typical compliance path — strict mode on the
 	// project storing personal data, advisory on the rest.
 	Firewall ProjectFirewall `yaml:"firewall"`
+	// TaintLineage overrides the daemon-default taint-lineage enforcement mode
+	// for this project (taint-lineage-tracking-design.md §7). Zero value =
+	// inherit the daemon default (advisory). Per-project enforce is the typical
+	// opt-in: enforce on the project whose autonomous agents open forge PRs /
+	// issue query_api writes, advisory on the rest. Never LLM-settable.
+	TaintLineage ProjectTaintLineage `yaml:"taint_lineage"`
 	// Verifiers is the Phase 2 hallucination-detection list:
 	// declarative outcome checks that run after each agent step
 	// finalises. A failing verifier fails the step so the
@@ -1127,6 +1134,23 @@ func (f ProjectFirewall) Enabled() bool {
 	return strings.TrimSpace(f.Mode) != ""
 }
 
+// ProjectTaintLineage overrides the daemon-default taint-lineage
+// enforcement mode for a project (taint-lineage-tracking-design.md §7).
+// Zero value means "inherit daemon default" — Mode unset falls through
+// to config.TaintLineage.EnforcementMode.
+type ProjectTaintLineage struct {
+	// Mode is "off" | "advisory" | "enforce" | "" (inherit). Empty /
+	// unset falls through to the daemon default; an invalid value
+	// coerces to advisory (fail-safe) in the resolver.
+	Mode string `yaml:"mode"`
+}
+
+// Enabled reports whether the per-project taint override should be
+// applied. Empty Mode = "inherit daemon default".
+func (t ProjectTaintLineage) Enabled() bool {
+	return strings.TrimSpace(t.Mode) != ""
+}
+
 // ProjectRateLimit caps how fast tasks can be created for the project.
 // Enforced at autonomy evaluate(), dispatcher create_task, and API
 // POST /tasks — each gate consults the same shared counter so a project
@@ -1203,6 +1227,29 @@ type ProjectBudget struct {
 	// actually counts. Zero falls back to budget.DefaultReservationEstimateUSD.
 	// Only meaningful when a hard cap is set.
 	ReservationEstimateUSD float64 `yaml:"reservation_estimate_usd"`
+
+	// DefaultTaskBudgetUSD is the per-task LIFETIME cost ceiling applied to
+	// every task in this project that carries no explicit override. Zero (the
+	// default) disables the per-task governor entirely — backward-compatible,
+	// today's behaviour. When > 0 the step-boundary governor parks a task
+	// AWAITING_INPUT once its cumulative task_llm_usage spend reaches this
+	// ceiling, and the pre-flight forecast refuses a task whose predicted run
+	// cost alone already exceeds it. See
+	// https://docs.vornik.io §3.1.
+	DefaultTaskBudgetUSD float64 `yaml:"default_task_budget_usd"`
+
+	// MaxTaskBudgetUSD is an OPTIONAL security ceiling on per-task overrides
+	// (mirrors the existing max_factor pattern). When > 0 any per-task
+	// budget_usd override — including one set by an admin — is clamped to
+	// min(requested, MaxTaskBudgetUSD), so even a compromised admin key can't
+	// grant one task an unbounded ceiling. Zero means no clamp.
+	MaxTaskBudgetUSD float64 `yaml:"max_task_budget_usd"`
+
+	// TaskSoftFraction is the fraction of the effective per-task budget at
+	// which the governor emits a warn-only soft-breach signal (Notifier event
+	// + metric + log). Zero falls back to DefaultTaskSoftFraction (0.80).
+	// Must be in (0, 1] when set.
+	TaskSoftFraction float64 `yaml:"task_soft_fraction"`
 }
 
 // ProjectAutonomy controls autonomous task creation settings
@@ -1714,6 +1761,18 @@ func (p *Project) Validate(filename string) error {
 	if p.Budget.MonthlySoftUSD > 0 && p.Budget.MonthlyHardUSD > 0 && p.Budget.MonthlySoftUSD > p.Budget.MonthlyHardUSD {
 		return ProjectValidationError{File: filename, Field: "budget.monthly_soft_usd", Message: "cannot exceed budget.monthly_hard_usd"}
 	}
+	if p.Budget.DefaultTaskBudgetUSD < 0 {
+		return ProjectValidationError{File: filename, Field: "budget.default_task_budget_usd", Message: "cannot be negative"}
+	}
+	if p.Budget.MaxTaskBudgetUSD < 0 {
+		return ProjectValidationError{File: filename, Field: "budget.max_task_budget_usd", Message: "cannot be negative"}
+	}
+	if p.Budget.TaskSoftFraction < 0 || p.Budget.TaskSoftFraction > 1 {
+		return ProjectValidationError{File: filename, Field: "budget.task_soft_fraction", Message: "must be in (0, 1]"}
+	}
+	if p.Budget.MaxTaskBudgetUSD > 0 && p.Budget.DefaultTaskBudgetUSD > p.Budget.MaxTaskBudgetUSD {
+		return ProjectValidationError{File: filename, Field: "budget.default_task_budget_usd", Message: "cannot exceed budget.max_task_budget_usd"}
+	}
 	if p.Trading.Caps.MaxPositionUSD < 0 {
 		return ProjectValidationError{File: filename, Field: "trading.caps.max_position_usd", Message: "cannot be negative"}
 	}
@@ -1734,6 +1793,13 @@ func (p *Project) Validate(filename string) error {
 	}
 	if p.Trading.Mode != "" && p.Trading.Mode != "paper" && p.Trading.Mode != "live" {
 		return ProjectValidationError{File: filename, Field: "trading.mode", Message: "must be 'paper' or 'live' (or unset)"}
+	}
+	// Taint-lineage per-project override: hard-error on an invalid value at load
+	// (M4), mirroring the daemon-default validation in config.go. Without this a
+	// typo like "enfroce" would silently coerce to advisory in EffectiveMode —
+	// a project the operator set to enforce would run UNPROTECTED with no error.
+	if _, ok := taintlineage.NormalizeMode(p.TaintLineage.Mode); !ok {
+		return ProjectValidationError{File: filename, Field: "taint_lineage.mode", Message: "must be 'off', 'advisory', or 'enforce' (or unset)"}
 	}
 	// Webhook sources require a name + a secret. The auth middleware
 	// admits unauthenticated webhook requests only when they bear an

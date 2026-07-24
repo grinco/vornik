@@ -39,8 +39,9 @@ func (r *ExecutionStepOutcomeRepository) Record(ctx context.Context, o *persiste
 			error_class, error_detail, duration_ms,
 			finalized_at, recorded_at, hallucination_signals,
 			context_source,
-			complexity_tier, effective_tool_budget, tool_calls_used
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+			complexity_tier, effective_tool_budget, tool_calls_used,
+			untrusted_content_used, untrusted_sources, requires_review
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`,
 		o.ID, o.ProjectID, o.TaskID, o.ExecutionID, o.StepID,
 		o.Role, o.Model, o.Outcome, nullableString(o.AttributedToStepID),
 		o.ErrorClass, o.ErrorDetail, nullableInt64(o.DurationMS),
@@ -48,6 +49,7 @@ func (r *ExecutionStepOutcomeRepository) Record(ctx context.Context, o *persiste
 		nullableJSONB(o.HallucinationSignals),
 		emptyStringToNullable(o.ContextSource),
 		emptyStringToNullable(o.ComplexityTier), nullableInt(o.EffectiveToolBudget), nullableInt(o.ToolCallsUsed),
+		o.UntrustedContentUsed, nullableJSONB(o.UntrustedSources), o.RequiresReview,
 	)
 	return mapDBError(err)
 }
@@ -164,7 +166,8 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 		       role, model, outcome, attributed_to_step_id,
 		       error_class, error_detail, duration_ms,
 		       finalized_at, recorded_at, hallucination_signals,
-		       complexity_tier, effective_tool_budget, tool_calls_used
+		       complexity_tier, effective_tool_budget, tool_calls_used,
+		       untrusted_content_used, untrusted_sources, requires_review
 		FROM execution_step_outcomes WHERE 1=1`
 	args := make([]any, 0, 10)
 	pos := 1
@@ -258,6 +261,9 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 			complexityTier      sql.NullString
 			effectiveToolBudget sql.NullInt64
 			toolCallsUsed       sql.NullInt64
+			untrustedUsed       sql.NullBool
+			untrustedSources    []byte
+			requiresReview      sql.NullBool
 		)
 		if err := rows.Scan(
 			&o.ID, &o.ProjectID, &o.TaskID, &o.ExecutionID, &o.StepID,
@@ -265,12 +271,18 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 			&o.ErrorClass, &o.ErrorDetail, &durationMS,
 			&finalizedAt, &o.RecordedAt, &signals,
 			&complexityTier, &effectiveToolBudget, &toolCallsUsed,
+			&untrustedUsed, &untrustedSources, &requiresReview,
 		); err != nil {
 			return nil, err
 		}
 		if len(signals) > 0 {
 			o.HallucinationSignals = signals
 		}
+		o.UntrustedContentUsed = untrustedUsed.Valid && untrustedUsed.Bool
+		if len(untrustedSources) > 0 {
+			o.UntrustedSources = untrustedSources
+		}
+		o.RequiresReview = requiresReview.Valid && requiresReview.Bool
 		o.AttributedToStepID = stringPtrOrNil(attributed)
 		if durationMS.Valid {
 			v := durationMS.Int64
@@ -369,6 +381,50 @@ func (r *ExecutionStepOutcomeRepository) CountByRoleModelOutcome(ctx context.Con
 			return nil, err
 		}
 		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// TaintedStepsForTasks returns the untrusted-content step rows for a batch of
+// task IDs in ONE query (taint-lineage-tracking §4.3, I7). Uses the
+// idx_step_outcomes_task_taint partial index (WHERE untrusted_content_used =
+// true), so Unknown-only rows (requires_review=false) are returned too — the
+// gate's HasUnknown rollup depends on it (F3). Empty input → nil.
+func (r *ExecutionStepOutcomeRepository) TaintedStepsForTasks(ctx context.Context, taskIDs []string) ([]persistence.TaintedStepRow, error) {
+	if len(taskIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(taskIDs))
+	args := make([]any, len(taskIDs))
+	for i, id := range taskIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	query := `
+		SELECT task_id, requires_review, untrusted_sources
+		FROM execution_step_outcomes
+		WHERE untrusted_content_used = true
+		  AND task_id IN (` + strings.Join(placeholders, ", ") + `)`
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []persistence.TaintedStepRow
+	for rows.Next() {
+		var (
+			row     persistence.TaintedStepRow
+			review  sql.NullBool
+			sources []byte
+		)
+		if err := rows.Scan(&row.TaskID, &review, &sources); err != nil {
+			return nil, err
+		}
+		row.RequiresReview = review.Valid && review.Bool
+		if len(sources) > 0 {
+			row.UntrustedSources = sources
+		}
+		out = append(out, row)
 	}
 	return out, rows.Err()
 }

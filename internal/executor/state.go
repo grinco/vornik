@@ -94,6 +94,37 @@ type executionState struct {
 	// snapshot so it survives resume. See
 	// https://docs.vornik.io
 	ComplexityTier string `json:"complexityTier,omitempty"`
+	// ParallelJoin is the DESCRIPTOR written once at the pause checkpoint of
+	// a declarative `parallel` fan-out step (parallel-fanout LLD §4.5). It
+	// carries the join step id, the join policy, and the branch→child
+	// mapping so the CROSS-GOROUTINE wake path
+	// (unblockParentIfChildrenDone) can evaluate the join policy without
+	// loading the workflow definition — and so a legacy delegation join,
+	// which leaves this nil, keeps its byte-identical all-or-nothing
+	// behaviour. NO verdict is persisted here: succeeded/total are derived
+	// at resume from GetChildren. Written once per WAITING_FOR_CHILDREN
+	// window by the paused parent and read-only for the rest of that
+	// window (the wake path reads but never mutates it). Nil for every
+	// non-parallel execution.
+	ParallelJoin *ParallelJoinState `json:"parallelJoin,omitempty"`
+}
+
+// ParallelJoinState is the descriptor-only record of an in-flight parallel
+// fan-out's join (parallel-fanout LLD §4.5). It is written once at the pause
+// checkpoint and never carries a verdict — the join policy is re-evaluated
+// from the authoritative child statuses (GetChildren) both by the wake path
+// and at resume.
+type ParallelJoinState struct {
+	// JoinStepID is the non-parallel consumer step the parent resumes at.
+	JoinStepID string `json:"joinStepId"`
+	// Policy is the raw join_policy string (all | best_effort | quorum:<n>).
+	// Carried so the wake path evaluates the policy without the workflow def.
+	Policy string `json:"policy"`
+	// ChildTaskIDs are the delegated leg task ids (descriptor / telemetry).
+	ChildTaskIDs []string `json:"childTaskIds,omitempty"`
+	// BranchIDs are the declared branch ids, in workflow order (lets the
+	// resume-time telemetry name legs).
+	BranchIDs []string `json:"branchIds,omitempty"`
 }
 
 // Constants for the executionState.PausedReason field.

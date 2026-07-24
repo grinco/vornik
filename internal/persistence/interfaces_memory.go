@@ -136,6 +136,21 @@ type MemoryRetrievalAuditRepository interface {
 	List(ctx context.Context, filter MemoryRetrievalAuditFilter) ([]*MemoryRetrievalAudit, error)
 }
 
+// MemorySearchStageRepository persists per-search stage rows into
+// memory_search_stages. The confidence-based retrieval routing feature
+// (P3) writes one stage="trust_verdict" row per Routing-on search whose
+// parameters JSONB holds the verdict + basis + the exact tuning params
+// used, giving the post-rollout tuning loop a replayable record.
+//
+// Empty / nil callers (SQLite deployments, tests, deployments without
+// memory) skip writes — the searcher nil-checks before recording, so the
+// verdict path never depends on this repo being wired.
+type MemorySearchStageRepository interface {
+	// RecordStage inserts one stage row. ID generated when empty;
+	// CreatedAt defaults to NOW() when zero.
+	RecordStage(ctx context.Context, stage *MemorySearchStage) error
+}
+
 // MemoryQuarantineRepository persists chunks that ingest gates
 // refused. DMARC-style — they aren't dropped silently; operators
 // can inspect, release (after overriding the gate), or drop.

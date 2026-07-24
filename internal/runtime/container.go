@@ -278,7 +278,7 @@ func sanitizeNamePart(s string) string {
 	return result
 }
 
-// qualifyAgentImage prepends the local registry to an UNQUALIFIED vornik agent
+// QualifyAgentImage prepends the local registry to an UNQUALIFIED vornik agent
 // image, e.g. "vornik-agent:latest" → "localhost/vornik-agent:latest". Rootless
 // podman refuses to resolve a bare short-name headless, and the daemon builds
 // the agent image as localhost/vornik-agent:latest — but config round-trips
@@ -288,7 +288,11 @@ func sanitizeNamePart(s string) string {
 // wherever it leaks in from. Anything already qualified (contains '/': a
 // localhost/… or registry-host image) is returned unchanged. See
 // https://docs.vornik.io
-func qualifyAgentImage(image string) string {
+//
+// Exported so the config-tree round-trip guard (internal/configrecon) can reuse
+// the exact same semantics at the mirror seam without duplicating the rule
+// (https://docs.vornik.io §3.1).
+func QualifyAgentImage(image string) string {
 	image = strings.TrimSpace(image)
 	if strings.Contains(image, "/") {
 		return image // already qualified (localhost/…, registry host, etc.)
@@ -313,7 +317,7 @@ func (c *ContainerConfig) Validate() error {
 	}
 	// Fail-safe: normalise a bare vornik-agent short-name to localhost/ so a
 	// spawn never fails on an unqualified image that drifted in via config.
-	c.Image = qualifyAgentImage(c.Image)
+	c.Image = QualifyAgentImage(c.Image)
 	if c.ProjectID == "" {
 		return fmt.Errorf("projectId is required")
 	}

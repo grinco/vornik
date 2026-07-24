@@ -1529,7 +1529,9 @@ SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
            * (1 + COALESCE(c.utility_score, 0)) AS score,
        COALESCE(c.content_class, ''),
        c.is_alive, c.last_checked_at,
-       COALESCE(c.repo_scope, '') AS repo_scope
+       COALESCE(c.repo_scope, '') AS repo_scope,
+       COALESCE(c.confidence, 0), COALESCE(c.validation_status, ''),
+       c.created_at, c.expires_at
 FROM project_memory_chunks c
 LEFT JOIN semantic s ON s.id = c.id
 LEFT JOIN keyword  k ON k.id = c.id
@@ -1624,7 +1626,9 @@ SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
            * (1 + COALESCE(c.utility_score, 0)) AS score,
        COALESCE(c.content_class, ''),
        c.is_alive, c.last_checked_at,
-       COALESCE(c.repo_scope, '') AS repo_scope
+       COALESCE(c.repo_scope, '') AS repo_scope,
+       COALESCE(c.confidence, 0), COALESCE(c.validation_status, ''),
+       c.created_at, c.expires_at
 FROM project_memory_chunks c
 LEFT JOIN semantic s ON s.id = c.id
 LEFT JOIN keyword  k ON k.id = c.id
@@ -1675,7 +1679,9 @@ SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
         + (0.5 * ts_rank(c.tsv, q.relaxed_q))) * (1 + COALESCE(c.utility_score, 0)) AS score,
        COALESCE(c.content_class, ''),
        c.is_alive, c.last_checked_at,
-       COALESCE(c.repo_scope, '') AS repo_scope
+       COALESCE(c.repo_scope, '') AS repo_scope,
+       COALESCE(c.confidence, 0), COALESCE(c.validation_status, ''),
+       c.created_at, c.expires_at
 FROM project_memory_chunks c, q
 WHERE c.project_id = $1 AND (c.tsv @@ q.strict_q OR c.tsv @@ q.relaxed_q)
   AND (c.expires_at IS NULL OR c.expires_at > NOW())
@@ -1708,7 +1714,9 @@ SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
         + (0.5 * ts_rank(c.tsv, q.relaxed_q))) * (1 + COALESCE(c.utility_score, 0)) AS score,
        COALESCE(c.content_class, ''),
        c.is_alive, c.last_checked_at,
-       COALESCE(c.repo_scope, '') AS repo_scope
+       COALESCE(c.repo_scope, '') AS repo_scope,
+       COALESCE(c.confidence, 0), COALESCE(c.validation_status, ''),
+       c.created_at, c.expires_at
 FROM project_memory_chunks c, q
 WHERE c.project_id = $1 AND (c.tsv @@ q.strict_q OR c.tsv @@ q.relaxed_q)
   AND c.lifecycle_state = 'published'
@@ -2360,10 +2368,12 @@ func scanSearchResults(rows *sql.Rows) ([]SearchResult, error) {
 	}
 	// Column tiers (each strictly more-permissive than the one
 	// below it; the loop picks the highest that matches):
+	//   14 cols → +trust fields     (confidence/validation_status/created_at/expires_at — P3 routing)
 	//   10 cols → +repo_scope        (post-B-6-followup; UI surface)
 	//    9 cols → +liveness / class
 	//    7 cols → +class only
 	//    6 cols → bare legacy result
+	withTrust := len(cols) >= 14
 	withRepoScope := len(cols) >= 10
 	withLiveness := len(cols) >= 9
 	withClass := len(cols) >= 7
@@ -2371,6 +2381,50 @@ func scanSearchResults(rows *sql.Rows) ([]SearchResult, error) {
 	for rows.Next() {
 		var sr SearchResult
 		switch {
+		case withTrust:
+			var class sql.NullString
+			var alive sql.NullBool
+			var checked sql.NullTime
+			var scope sql.NullString
+			var confidence sql.NullFloat64
+			var vstatus sql.NullString
+			var createdAt sql.NullTime
+			var expiresAt sql.NullTime
+			if err := rows.Scan(
+				&sr.ChunkID, &sr.ProjectID, &sr.TaskID,
+				&sr.SourceName, &sr.Content, &sr.Score, &class,
+				&alive, &checked, &scope,
+				&confidence, &vstatus, &createdAt, &expiresAt,
+			); err != nil {
+				return nil, err
+			}
+			if class.Valid {
+				sr.ContentClass = class.String
+			}
+			if alive.Valid {
+				v := alive.Bool
+				sr.IsAlive = &v
+			}
+			if checked.Valid {
+				t := checked.Time
+				sr.LastCheckedAt = &t
+			}
+			if scope.Valid {
+				sr.RepoScope = scope.String
+			}
+			if confidence.Valid {
+				sr.Confidence = confidence.Float64
+			}
+			if vstatus.Valid {
+				sr.ValidationStatus = vstatus.String
+			}
+			if createdAt.Valid {
+				sr.CreatedAt = createdAt.Time
+			}
+			if expiresAt.Valid {
+				t := expiresAt.Time
+				sr.ExpiresAt = &t
+			}
 		case withRepoScope:
 			var class sql.NullString
 			var alive sql.NullBool

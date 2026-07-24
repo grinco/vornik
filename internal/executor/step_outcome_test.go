@@ -28,6 +28,7 @@ type stubStepOutcomeRepo struct {
 	recordErr   error // when non-nil, Record returns it (covers warn-outcome resilience)
 	sweepErr    error // when non-nil, SweepPending returns it (covers sweep-resilience)
 	finalizeErr error // when non-nil, FinalizePending returns a generic error (not ErrNotFound)
+	listErr     error // when non-nil, List returns it (covers dedup-List failure paths)
 }
 
 func newStubStepOutcomeRepo() *stubStepOutcomeRepo { return &stubStepOutcomeRepo{} }
@@ -83,6 +84,9 @@ func (s *stubStepOutcomeRepo) SweepPending(_ context.Context, executionID, fallb
 func (s *stubStepOutcomeRepo) List(_ context.Context, _ persistence.ExecutionStepOutcomeFilter) ([]*persistence.ExecutionStepOutcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
 	out := make([]*persistence.ExecutionStepOutcome, 0, len(s.rows))
 	for _, r := range s.rows {
 		cp := *r
@@ -588,7 +592,7 @@ func TestBudgetStamp_agentVsNonAgent(t *testing.T) {
 			context.Background(), task, exec,
 			"agent-step-1", "coder", "qwen-coder",
 			string(stepoutcome.PendingValidation), "", "", nil, nil, nil,
-			stamp,
+			stamp, taintStamp{},
 		)
 
 		require.Len(t, repo.rows, 1)
@@ -617,6 +621,10 @@ func TestBudgetStamp_agentVsNonAgent(t *testing.T) {
 		assert.Nil(t, row.EffectiveToolBudget, "EffectiveToolBudget must be nil (NULL) on non-agent step")
 		assert.Nil(t, row.ToolCallsUsed, "ToolCallsUsed must be nil (NULL) on non-agent step")
 	})
+}
+
+func (s *stubStepOutcomeRepo) TaintedStepsForTasks(context.Context, []string) ([]persistence.TaintedStepRow, error) {
+	return nil, nil
 }
 
 func (s *stubStepOutcomeRepo) StepLatencyP95ByStep(context.Context, time.Time) ([]persistence.StepLatencyStat, error) {

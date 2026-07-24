@@ -528,6 +528,9 @@ func (s *spendRepoStub) List(context.Context, persistence.TaskLLMUsageFilter) ([
 func (s *spendRepoStub) SumCost(context.Context, time.Time, time.Time) (float64, error) {
 	return 0, nil
 }
+func (s *spendRepoStub) SumCostByTask(context.Context, string) (float64, error) {
+	return 0, nil
+}
 func (s *spendRepoStub) SumCostByProject(context.Context, string, time.Time, time.Time) (float64, error) {
 	return 0, nil
 }

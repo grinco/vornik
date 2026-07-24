@@ -33,6 +33,27 @@ func TestWithRequestMaxTokens(t *testing.T) {
 	}
 }
 
+// TestWithRequestPromptCacheKey — same set/no-op contract for the
+// OpenAI prompt_cache_key steering hint (BACKLOG "OpenAI-compat
+// prompt_cache_key passthrough").
+func TestWithRequestPromptCacheKey(t *testing.T) {
+	ctx := context.Background()
+	if got := PromptCacheKeyFromContext(ctx); got != "" {
+		t.Errorf("empty ctx: got %q, want \"\"", got)
+	}
+
+	ctx = WithRequestPromptCacheKey(ctx, "assistant:researcher")
+	if got := PromptCacheKeyFromContext(ctx); got != "assistant:researcher" {
+		t.Errorf("set key: got %q", got)
+	}
+
+	// Empty key is a no-op (returns the parent ctx unchanged).
+	ctx2 := WithRequestPromptCacheKey(ctx, "")
+	if got := PromptCacheKeyFromContext(ctx2); got != "assistant:researcher" {
+		t.Errorf("set empty should preserve parent: got %q", got)
+	}
+}
+
 // TestWithRequestResponseFormat — same contract for the
 // response_format directive.
 func TestWithRequestResponseFormat(t *testing.T) {
@@ -69,5 +90,8 @@ func TestNilContext_SafeAccessors(t *testing.T) {
 	}
 	if got := ResponseFormatFromContext(nilCtx); got != "" {
 		t.Errorf("nil ctx response_format: got %q", got)
+	}
+	if got := PromptCacheKeyFromContext(nilCtx); got != "" {
+		t.Errorf("nil ctx prompt_cache_key: got %q", got)
 	}
 }

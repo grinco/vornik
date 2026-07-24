@@ -166,3 +166,38 @@ func CacheStrategyFromContext(ctx context.Context) *CacheStrategy {
 	}
 	return nil
 }
+
+type promptCacheKeyContextKey struct{}
+
+// WithRequestPromptCacheKey stamps an OpenAI `prompt_cache_key` onto
+// ctx. Unlike CacheStrategy (which inserts explicit cache_control /
+// CachePoint annotations for Anthropic + Bedrock Claude/Nova), this is
+// a steering hint for providers that auto-cache server-side on the
+// static prefix — OpenAI-family models cache prefixes >1024 tokens
+// automatically and route requests sharing a `prompt_cache_key` to the
+// same cache-affinity bucket, lifting hit-rate for identical (role,
+// project) prefixes. The chat-proxy derives the key from the request's
+// project + role headers and calls this before invoking the Provider;
+// only the OpenAI-compatible *Client forwards it onto the wire, so
+// Bedrock / Anthropic / codex-subscription providers are unaffected.
+//
+// Empty key is a no-op (the converter falls through to no key).
+func WithRequestPromptCacheKey(ctx context.Context, key string) context.Context {
+	if key == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, promptCacheKeyContextKey{}, key)
+}
+
+// PromptCacheKeyFromContext returns the per-request prompt_cache_key set
+// by WithRequestPromptCacheKey, or "" when absent. Providers that don't
+// support OpenAI auto-cache steering ignore this.
+func PromptCacheKeyFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(promptCacheKeyContextKey{}).(string); ok {
+		return v
+	}
+	return ""
+}

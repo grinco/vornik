@@ -163,6 +163,10 @@ func TestHealingTriggerGenerateCandidate_NoArchitectNoRecipe(t *testing.T) {
 	}
 }
 
+func (s *stubStepOutcomeRepo) TaintedStepsForTasks(context.Context, []string) ([]persistence.TaintedStepRow, error) {
+	return nil, nil
+}
+
 func (s *stubStepOutcomeRepo) StepLatencyP95ByStep(context.Context, time.Time) ([]persistence.StepLatencyStat, error) {
 	return nil, nil
 }

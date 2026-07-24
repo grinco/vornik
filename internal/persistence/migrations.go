@@ -5685,4 +5685,74 @@ ALTER TYPE task_creation_source ADD VALUE IF NOT EXISTS 'FORK';`,
 		// labels are harmless if a later version rolls back).
 		Down: ``,
 	},
+	{
+		Version: 135,
+		Name:    "memory_search_stages",
+		Up: `
+-- Per-search stage trace sink for confidence-based retrieval routing (P3).
+-- The searcher writes one stage='trust_verdict' row per Routing-on search
+-- whose parameters JSONB holds {verdict, trust_mean, result_count,
+-- age_capped, weakest_dim, weights, thresholds, K, minResults, widen_rounds}
+-- — a complete, replayable record for the post-rollout tuning loop. This is
+-- NOT a chunk-schema migration (the trust fields confidence/validation_status/
+-- expires_at already exist on project_memory_chunks); it adds a new trace
+-- table. trace_id is nullable so the row stands alone until/if a
+-- memory_search_traces parent row exists to link it to.
+-- See https://docs.vornik.io §3.6.
+CREATE TABLE IF NOT EXISTS memory_search_stages (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL,
+    trace_id    TEXT,
+    stage       TEXT NOT NULL,
+    parameters  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_memory_search_stages_project_time
+    ON memory_search_stages (project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_search_stages_stage
+    ON memory_search_stages (stage);`,
+		Down: `DROP TABLE IF EXISTS memory_search_stages;`,
+	},
+	{
+		Version: 136,
+		Name:    "tasks_budget_usd",
+		Up: `
+-- Per-task LIFETIME cost governor (LLD 2026-07-24 §3.1). Nullable per-task
+-- budget override; NULL = fall back to the project's default_task_budget_usd.
+-- A stored value is always strictly positive (the write layer rejects 0), so
+-- "off" is expressed as NULL. Additive + nullable: safe on a live table, no
+-- backfill, reversible by drop-column.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS budget_usd DOUBLE PRECISION;`,
+		Down: `ALTER TABLE tasks DROP COLUMN IF EXISTS budget_usd;`,
+	},
+	{
+		Version: 137,
+		Name:    "execution_step_outcomes_taint_lineage",
+		// Taint-lineage tracking (taint-lineage-tracking-design.md §4.3, D2).
+		// Stamps each agent-step outcome row with whether it consumed untrusted
+		// (third-party) content — derived from the step's tool-audit tool
+		// names/inputs by internal/taintlineage — plus a bounded JSONB source
+		// list and a requires_review flag (High-severity present). All three
+		// are default-off/NULL: non-agent steps and pre-migration rows are
+		// untainted (correct — classification didn't exist then).
+		//
+		// The partial index powers TaintedStepsForTasks (the write gate's
+		// lineage rollup): it covers Low/High/Unknown rows (WHERE
+		// untrusted_content_used=true, incl. Unknown-only rows so HasUnknown is
+		// never silently false — F3) and is scoped by task_id so the per-task
+		// scan stays bounded.
+		Up: `
+ALTER TABLE execution_step_outcomes ADD COLUMN IF NOT EXISTS untrusted_content_used BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE execution_step_outcomes ADD COLUMN IF NOT EXISTS untrusted_sources JSONB;
+ALTER TABLE execution_step_outcomes ADD COLUMN IF NOT EXISTS requires_review BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS idx_step_outcomes_task_taint
+  ON execution_step_outcomes (task_id) WHERE untrusted_content_used = true;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_step_outcomes_task_taint;
+ALTER TABLE execution_step_outcomes DROP COLUMN IF EXISTS untrusted_content_used;
+ALTER TABLE execution_step_outcomes DROP COLUMN IF EXISTS untrusted_sources;
+ALTER TABLE execution_step_outcomes DROP COLUMN IF EXISTS requires_review;
+`,
+	},
 }

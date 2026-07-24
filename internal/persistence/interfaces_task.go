@@ -149,6 +149,29 @@ type TaskRepository interface {
 	// pill without an N+1 GetChildren call per row.
 	CountChildrenForParents(ctx context.Context, parentTaskIDs []string) (map[string]int, error)
 
+	// RaiseTaskBudget sets a task's per-task budget_usd override to
+	// newBudgetUSD, but ONLY when it is a strict increase over the current
+	// value (a NULL current counts as -inf, so any positive value applies;
+	// a non-NULL current must be strictly less than newBudgetUSD). Powers
+	// the per-task cost governor's operator top-up (LLD 2026-07-24 §3.6):
+	//
+	//   - newBudgetUSD MUST be strictly positive (a stored 0 is rejected
+	//     with ErrInvalidTaskBudget) — clamping by max_task_budget_usd is
+	//     the caller's job.
+	//   - When resumeFromAwaitingInput is true the update is a GUARDED
+	//     CONDITIONAL UPDATE that additionally requires status='AWAITING_INPUT'
+	//     and, on match, transitions the task AWAITING_INPUT→QUEUED and clears
+	//     the lease in the same statement. This makes a concurrent cancel and
+	//     top-up-resume mutually exclusive: whichever commits first wins and
+	//     the loser matches 0 rows (F2 race guard).
+	//   - When false the budget is raised in place with no status change
+	//     (used to raise the ceiling on a task that isn't parked).
+	//
+	// Returns (true, nil) when a row was updated, (false, nil) when the guard
+	// matched nothing (not a strict increase, or — in resume mode — the task
+	// wasn't AWAITING_INPUT).
+	RaiseTaskBudget(ctx context.Context, id string, newBudgetUSD float64, resumeFromAwaitingInput bool) (bool, error)
+
 	// GetDependencies retrieves tasks that must complete before a given task.
 	GetDependencies(ctx context.Context, taskID string) ([]*Task, error)
 
@@ -449,6 +472,14 @@ type TaskLLMUsageRepository interface {
 	// by budget enforcement (daily/monthly ceilings).
 	SumCostByProject(ctx context.Context, projectID string, since, until time.Time) (float64, error)
 
+	// SumCostByTask returns the CUMULATIVE lifetime cost for a single task,
+	// summed across ALL executions of that task_id (SUM(cost_usd) WHERE
+	// task_id=$1). Powers the per-task cost governor (LLD 2026-07-24 §3.2):
+	// because a parked-task resume mints a fresh execution, lifetime spend
+	// is intentionally cumulative across re-runs. Returns 0 for an unknown
+	// task (COALESCE), mirroring SumCostByProject.
+	SumCostByTask(ctx context.Context, taskID string) (float64, error)
+
 	// SumCost returns total LLM spend across all projects within the
 	// window. Powers the dashboard's headline "spend in last 24h" card.
 	SumCost(ctx context.Context, since, until time.Time) (float64, error)
@@ -574,6 +605,14 @@ type ExecutionStepOutcomeRepository interface {
 	// Rows without a duration are skipped; the workflow id comes from the
 	// owning execution.
 	StepLatencyP95ByStep(ctx context.Context, since time.Time) ([]StepLatencyStat, error)
+
+	// TaintedStepsForTasks returns the untrusted-content step rows (source
+	// blob + requires_review) for a BATCH of task IDs in ONE query, using the
+	// idx_step_outcomes_task_taint partial index (taint-lineage-tracking §4.3,
+	// I7 — no N+1). Rows with untrusted_content_used=true are returned,
+	// including Unknown-only rows (requires_review=false) so the write gate's
+	// HasUnknown rollup sees them (F3). An empty taskIDs slice returns nil.
+	TaintedStepsForTasks(ctx context.Context, taskIDs []string) ([]TaintedStepRow, error)
 }
 
 // RoleModelOutcomeCount is one row of CountByRoleModelOutcome.

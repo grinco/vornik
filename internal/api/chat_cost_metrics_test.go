@@ -47,6 +47,9 @@ func (r *recordingUsageRepo) Upsert(ctx context.Context, u *persistence.TaskLLMU
 func (r *recordingUsageRepo) List(_ context.Context, _ persistence.TaskLLMUsageFilter) ([]*persistence.TaskLLMUsage, error) {
 	return nil, nil
 }
+func (r *recordingUsageRepo) SumCostByTask(_ context.Context, _ string) (float64, error) {
+	return 0, nil
+}
 func (r *recordingUsageRepo) SumCostByProject(_ context.Context, _ string, _, _ time.Time) (float64, error) {
 	return 0, nil
 }

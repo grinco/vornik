@@ -248,6 +248,21 @@ func (r *TaskLLMUsageRepository) SumCostByProject(ctx context.Context, projectID
 	return total, nil
 }
 
+// SumCostByTask returns the cumulative lifetime cost for one task, summed
+// across ALL of its executions (LLD 2026-07-24 §3.2). Mirrors
+// SumCostByProject; idx_task_llm_usage_task covers the predicate.
+func (r *TaskLLMUsageRepository) SumCostByTask(ctx context.Context, taskID string) (float64, error) {
+	var total float64
+	err := r.db.QueryRowContext(ctx,
+		"SELECT COALESCE(SUM(cost_usd), 0) FROM task_llm_usage WHERE task_id = $1",
+		taskID,
+	).Scan(&total)
+	if err != nil && err != sql.ErrNoRows {
+		return 0, mapDBError(err)
+	}
+	return total, nil
+}
+
 // SumCostByAPIKey sums LLM spend across every task created by a
 // companion API key. Joins task_llm_usage → tasks on the expression
 // indexed by migration 82. Low-frequency (the delegate gate), so the

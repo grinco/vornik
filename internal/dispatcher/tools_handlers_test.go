@@ -2558,6 +2558,9 @@ type budgetUsageRepo struct {
 	daily, monthly float64
 }
 
+func (b *budgetUsageRepo) SumCostByTask(_ context.Context, _ string) (float64, error) {
+	return 0, nil
+}
 func (b *budgetUsageRepo) SumCostByProject(_ context.Context, _ string, since, until time.Time) (float64, error) {
 	// budget.Check passes the day's start / month's start as `since`;
 	// the difference between since and until is roughly 1 day or 1
@@ -2655,6 +2658,9 @@ type errUsageRepo struct {
 func (e *errUsageRepo) SumCostByProject(_ context.Context, _ string, _, _ time.Time) (float64, error) {
 	return 0, e.err
 }
+func (e *errUsageRepo) SumCostByTask(_ context.Context, _ string) (float64, error) {
+	return 0, e.err
+}
 
 func TestCreateTask_BudgetCheckErrorProceeds(t *testing.T) {
 	configDir := t.TempDir()
@@ -2731,6 +2737,9 @@ type forecastErrUsageRepo struct {
 }
 
 func (f *forecastErrUsageRepo) SumCostByProject(_ context.Context, _ string, _, _ time.Time) (float64, error) {
+	return 0, nil
+}
+func (f *forecastErrUsageRepo) SumCostByTask(_ context.Context, _ string) (float64, error) {
 	return 0, nil
 }
 func (f *forecastErrUsageRepo) AggregateByRoleModel(_ context.Context, _, _ time.Time, _ int, _ string) ([]persistence.RoleModelSpend, error) {
@@ -2810,6 +2819,9 @@ type forecastUsageRepo struct {
 }
 
 func (f *forecastUsageRepo) SumCostByProject(_ context.Context, _ string, _, _ time.Time) (float64, error) {
+	return 0, nil
+}
+func (f *forecastUsageRepo) SumCostByTask(_ context.Context, _ string) (float64, error) {
 	return 0, nil
 }
 func (f *forecastUsageRepo) AggregateByRoleModel(_ context.Context, _, _ time.Time, _ int, _ string) ([]persistence.RoleModelSpend, error) {

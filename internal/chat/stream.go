@@ -81,11 +81,14 @@ func (c *Client) CompleteWithToolsStream(ctx context.Context, messages []Message
 		ChatRequest
 		Stream bool `json:"stream"`
 	}
-	// MaxTokens / ResponseFormat must be carried — pre-fix this literal
-	// copied only Model / Messages / Tools / Options, so any role with
-	// chat.max_tokens configured got uncapped output and any role using
-	// responseFormat: json_object had structured-output enforcement
-	// silently bypassed when ProcessStreaming was the dispatch path.
+	// MaxTokens / ResponseFormat / PromptCacheKey must be carried — pre-fix
+	// this literal copied only Model / Messages / Tools / Options, so any
+	// role with chat.max_tokens configured got uncapped output and any role
+	// using responseFormat: json_object had structured-output enforcement
+	// silently bypassed when ProcessStreaming was the dispatch path. The
+	// prompt_cache_key ctx value must be lifted here for the same reason —
+	// otherwise streamed completions silently lose OpenAI auto-cache
+	// steering that the non-stream doComplete path applies.
 	req := streamRequest{
 		ChatRequest: ChatRequest{
 			Model:          c.model,
@@ -94,6 +97,7 @@ func (c *Client) CompleteWithToolsStream(ctx context.Context, messages []Message
 			MaxTokens:      c.maxTokens,
 			Options:        c.contextOptions(),
 			ResponseFormat: ResponseFormatStructFromContext(ctx),
+			PromptCacheKey: PromptCacheKeyFromContext(ctx),
 		},
 		Stream: true,
 	}

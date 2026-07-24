@@ -164,6 +164,10 @@ func TestFinalizePendingOutcome_HappyPathEmitsMetric(t *testing.T) {
 	assert.Equal(t, 1.0, got, "finalizePendingOutcome must emit one RecordFinalOutcome with the actual role+model")
 }
 
+func (f *failingOutcomeRepo) TaintedStepsForTasks(context.Context, []string) ([]persistence.TaintedStepRow, error) {
+	return nil, nil
+}
+
 func (f *failingOutcomeRepo) StepLatencyP95ByStep(context.Context, time.Time) ([]persistence.StepLatencyStat, error) {
 	return nil, nil
 }

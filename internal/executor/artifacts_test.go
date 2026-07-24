@@ -156,6 +156,9 @@ models:
 // stubLLMUsageRepo is a trivial in-memory TaskLLMUsageRepository for tests.
 type stubLLMUsageRepo struct {
 	rows []*persistence.TaskLLMUsage
+	// sumErr, when set, is returned by SumCostByTask so tests can exercise
+	// the per-task governor's fail-closed path.
+	sumErr error
 }
 
 func newStubLLMUsageRepo() *stubLLMUsageRepo { return &stubLLMUsageRepo{} }
@@ -181,6 +184,17 @@ func (s *stubLLMUsageRepo) Upsert(_ context.Context, u *persistence.TaskLLMUsage
 func (s *stubLLMUsageRepo) List(_ context.Context, _ persistence.TaskLLMUsageFilter) ([]*persistence.TaskLLMUsage, error) {
 	return s.rows, nil
 }
+func (s *stubLLMUsageRepo) SumCostByTask(_ context.Context, _ string) (float64, error) {
+	if s.sumErr != nil {
+		return 0, s.sumErr
+	}
+	var total float64
+	for _, r := range s.rows {
+		total += r.CostUSD
+	}
+	return total, nil
+}
+
 func (s *stubLLMUsageRepo) SumCostByProject(_ context.Context, _ string, _, _ time.Time) (float64, error) {
 	var total float64
 	for _, r := range s.rows {

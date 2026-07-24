@@ -11,6 +11,7 @@ import (
 
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/scheduler"
+	"vornik.io/vornik/internal/taintlineage"
 )
 
 // Phase 24 of the conversational task lifecycle (LLD:
@@ -325,6 +326,65 @@ func (s *Server) AnswerCheckpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-task cost governor resume (LLD 2026-07-24 §3.6, impl review I2/I3/I5):
+	// a budget `decision` checkpoint (decision.kind=="budget") is resumed through
+	// this same answer path, branching on the chosen option so none is inert and
+	// the checkpoint resolves via the normal path (fixing the dangling
+	// open_checkpoint_id). "increase" raises the budget (admin-class only) then
+	// re-queues; "abandon" cancels; anything else (incl. "reduce scope")
+	// re-queues without a raise. Auth + budget parse happen BEFORE any write so a
+	// non-admin's rejected attempt leaves no answer/resolution behind.
+	var budgetIncrease, budgetAbandon, budgetClampHit bool
+	var budgetNewUSD float64
+	// Taint-review resume (taint-lineage-tracking §4.5): an untrusted_review
+	// checkpoint (decision.kind=="untrusted_review") resumes through this same
+	// path. "allow" (admin-class ONLY) records the D7 source-set latch then
+	// RE-RUNS the task; "cancel" blocks it. A non-admin allow is refused (no
+	// self-serving clear, §9). Auth happens BEFORE any write.
+	var taintAllow, taintCancel bool
+	var taintSourceSetHash, taintExecutionID string
+	if cp, cerr := s.taskMessageRepo.GetOpenCheckpoint(r.Context(), taskID); cerr == nil && cp != nil {
+		switch {
+		case IsBudgetCheckpoint(cp.Metadata):
+			switch req.Choice {
+			case "increase":
+				budgetIncrease = true
+			case "abandon":
+				budgetAbandon = true
+			}
+		case IsTaintReviewCheckpoint(cp.Metadata):
+			switch req.Choice {
+			case "allow":
+				taintAllow = true
+			case "cancel":
+				taintCancel = true
+			}
+			taintSourceSetHash = taintlineage.CheckpointSourceSetHash(cp.Metadata)
+			if cp.ExecutionID != nil {
+				taintExecutionID = *cp.ExecutionID
+			}
+		}
+	}
+	if taintAllow && !s.isAdminClassRequest(r) {
+		respondError(w, http.StatusForbidden, "ADMIN_SCOPE_REQUIRED",
+			"clearing an untrusted-content review requires an admin API key or admin session; a project-scoped key cannot approve its own task's tainted write")
+		return
+	}
+	if budgetIncrease {
+		if !s.isAdminClassRequest(r) {
+			respondError(w, http.StatusForbidden, "ADMIN_SCOPE_REQUIRED",
+				"raising a task budget requires an admin API key or admin session; a project-scoped key cannot raise its own task's ceiling")
+			return
+		}
+		reqBudget, ok := budgetFromAnswerMetadata(req.Metadata)
+		if !ok || reqBudget <= 0 {
+			respondError(w, http.StatusBadRequest, "VALIDATION_ERROR",
+				"budget_usd (strictly positive) is required in the answer metadata to increase the budget")
+			return
+		}
+		budgetNewUSD, budgetClampHit = s.clampTaskBudgetForProject(task.ProjectID, reqBudget)
+	}
+
 	// Build the answer message metadata. Carry the choice (if any)
 	// and the operator-supplied metadata side-by-side.
 	metaMap := map[string]any{}
@@ -390,9 +450,98 @@ func (s *Server) AnswerCheckpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Budget "increase & resume": raise the (clamped, strictly-increasing)
+	// budget AND transition AWAITING_INPUT→QUEUED in one guarded conditional
+	// update (WHERE status='AWAITING_INPUT'), so a racing cancel makes the loser
+	// a 0-row no-op (F2). This replaces the plain re-queue for this branch.
+	if budgetIncrease {
+		raised, rerr := s.taskRepo.RaiseTaskBudget(r.Context(), taskID, budgetNewUSD, true)
+		if rerr != nil {
+			s.logger.Error().Err(rerr).Str("taskId", taskID).Msg("AnswerCheckpoint: budget raise+resume failed")
+			respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to raise budget and re-queue task")
+			return
+		}
+		if !raised {
+			msg := "budget must strictly increase over the current value, or the task is no longer awaiting input"
+			if budgetClampHit {
+				msg = fmt.Sprintf("requested budget was clamped to the project max ($%.2f), which is not a strict increase over the current budget", budgetNewUSD)
+			}
+			respondError(w, http.StatusConflict, "INVALID_STATE", msg)
+			return
+		}
+		if s.rescheduler != nil {
+			s.rescheduler.Wake()
+		}
+		s.logger.Info().Str("taskId", taskID).Float64("budget_usd", budgetNewUSD).Msg("AnswerCheckpoint: per-task budget raised & resumed")
+		respondJSON(w, http.StatusOK, map[string]any{
+			"messageId": answer.ID,
+			"requeued":  true,
+			"budgetUsd": budgetNewUSD,
+		})
+		return
+	}
+
+	// Budget "abandon": cancel the parked task via a guarded conditional update
+	// (AWAITING_INPUT→CANCELLED). Same F2 race guard as the resume paths.
+	if budgetAbandon {
+		cancelled, cerr := s.taskRepo.TransitionConditional(r.Context(), taskID,
+			[]persistence.TaskStatus{persistence.TaskStatusAwaitingInput},
+			persistence.TaskStatusCancelled,
+			persistence.TransitionOpts{ClearLease: true},
+		)
+		if cerr != nil {
+			s.logger.Error().Err(cerr).Str("taskId", taskID).Msg("AnswerCheckpoint: budget abandon failed")
+			respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to cancel task")
+			return
+		}
+		if !cancelled {
+			respondError(w, http.StatusConflict, "INVALID_STATE", "task is no longer awaiting input")
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]any{
+			"messageId": answer.ID,
+			"cancelled": true,
+		})
+		return
+	}
+
+	// Taint-review "cancel": block the tainted write by cancelling the parked
+	// task (AWAITING_INPUT→CANCELLED), same F2 race guard as budget abandon.
+	if taintCancel {
+		cancelled, cerr := s.taskRepo.TransitionConditional(r.Context(), taskID,
+			[]persistence.TaskStatus{persistence.TaskStatusAwaitingInput},
+			persistence.TaskStatusCancelled,
+			persistence.TransitionOpts{ClearLease: true},
+		)
+		if cerr != nil {
+			s.logger.Error().Err(cerr).Str("taskId", taskID).Msg("AnswerCheckpoint: taint cancel failed")
+			respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to cancel task")
+			return
+		}
+		if !cancelled {
+			respondError(w, http.StatusConflict, "INVALID_STATE", "task is no longer awaiting input")
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]any{
+			"messageId": answer.ID,
+			"cancelled": true,
+		})
+		return
+	}
+
+	// Taint-review "allow" (admin-class, gated above): record the D7 latch for
+	// the reviewed source set BEFORE the resume, then fall through to the normal
+	// AWAITING_INPUT→QUEUED re-run. On the re-run resolveTaintReview recomputes
+	// the lineage hash: an unchanged set + complete walk → latch matches → the
+	// write proceeds; a new source or incomplete walk → re-parks (D7/F1).
+	if taintAllow {
+		s.recordTaintReviewLatch(r.Context(), taskID, taintExecutionID, taintSourceSetHash)
+	}
+
 	// Atomic AWAITING_INPUT → QUEUED. If the task drifted
 	// concurrently (another operator answered first; daemon picked
-	// it back up), report 409 with the live status.
+	// it back up), report 409 with the live status. This is also the
+	// budget "reduce scope" path — resumes without raising the budget.
 	ok, err := s.taskRepo.TransitionConditional(r.Context(), taskID,
 		[]persistence.TaskStatus{persistence.TaskStatusAwaitingInput},
 		persistence.TaskStatusQueued,

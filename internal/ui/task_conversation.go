@@ -6,11 +6,16 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/api"
+	"vornik.io/vornik/internal/auth"
+	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/scheduler"
+	"vornik.io/vornik/internal/taintlineage"
 )
 
 // Phase 26+27 of the conversational task lifecycle (LLD §5.1).
@@ -443,6 +448,21 @@ func (s *Server) uiPostMessage(ctx context.Context, task *persistence.Task, r *h
 	return "message-sent"
 }
 
+// clampTaskBudget applies the project's optional MaxTaskBudgetUSD ceiling to a
+// requested per-task budget, returning the (possibly clamped) value and whether
+// the clamp reduced it. Nil-safe on registry/project.
+func (s *Server) clampTaskBudget(projectID string, requested float64) (float64, bool) {
+	if s.projectReg == nil {
+		return requested, false
+	}
+	proj := s.projectReg.GetProject(projectID)
+	if proj == nil {
+		return requested, false
+	}
+	clamped := budget.ClampTaskBudget(proj, requested)
+	return clamped, clamped < requested
+}
+
 func (s *Server) uiAnswerCheckpoint(ctx context.Context, task *persistence.Task, r *http.Request) string {
 	checkpointID := strings.TrimSpace(r.FormValue("checkpoint_id"))
 	content := strings.TrimSpace(r.FormValue("content"))
@@ -460,6 +480,61 @@ func (s *Server) uiAnswerCheckpoint(ctx context.Context, task *persistence.Task,
 	if task.OpenCheckpointID == nil || *task.OpenCheckpointID != checkpointID {
 		return "checkpoint-resolved"
 	}
+
+	// Per-task cost governor resume (LLD 2026-07-24 §3.6, impl review I2/I3/I5):
+	// budget `decision` checkpoints resume through this same answer path,
+	// branching on the option. "increase" raises the budget (admin-class only)
+	// then re-queues; "abandon" cancels; anything else re-queues without a raise.
+	// Auth + parse happen BEFORE writes so a non-admin's rejected attempt leaves
+	// no answer/resolution behind.
+	var budgetIncrease, budgetAbandon, budgetClampHit bool
+	var budgetNewUSD float64
+	// Taint-review resume twin (taint-lineage-tracking §4.5): mirrors the API
+	// AnswerCheckpoint untrusted_review branch. "allow" (admin-class only)
+	// records the D7 latch then re-runs; "cancel" blocks.
+	var taintAllow, taintCancel bool
+	var taintSourceSetHash, taintExecutionID string
+	if cp, cerr := s.taskMessageRepo.GetOpenCheckpoint(ctx, task.ID); cerr == nil && cp != nil {
+		switch {
+		case api.IsBudgetCheckpoint(cp.Metadata):
+			switch choice {
+			case "increase":
+				budgetIncrease = true
+			case "abandon":
+				budgetAbandon = true
+			}
+		case api.IsTaintReviewCheckpoint(cp.Metadata):
+			switch choice {
+			case "allow":
+				taintAllow = true
+			case "cancel":
+				taintCancel = true
+			}
+			taintSourceSetHash = taintlineage.CheckpointSourceSetHash(cp.Metadata)
+			if cp.ExecutionID != nil {
+				taintExecutionID = *cp.ExecutionID
+			}
+		}
+	}
+	if taintAllow {
+		adminClass := !api.IsAuthEnabledFromContext(r.Context()) || api.SessionRoleFromContext(r.Context()) == auth.RoleAdmin
+		if !adminClass {
+			return "taint-admin-required"
+		}
+	}
+	if budgetIncrease {
+		adminClass := !api.IsAuthEnabledFromContext(r.Context()) || api.SessionRoleFromContext(r.Context()) == auth.RoleAdmin
+		if !adminClass {
+			return "budget-admin-required"
+		}
+		raw := strings.TrimSpace(r.FormValue("budget_usd"))
+		reqBudget, perr := strconv.ParseFloat(raw, 64)
+		if perr != nil || reqBudget <= 0 {
+			return "budget-value-required"
+		}
+		budgetNewUSD, budgetClampHit = s.clampTaskBudget(task.ProjectID, reqBudget)
+	}
+
 	// Choice-only answers must still carry readable Content: the chat
 	// log renders Content, and the lead agent's conversation view reads
 	// Content — an empty answer is invisible to both (regression: task
@@ -493,6 +568,86 @@ func (s *Server) uiAnswerCheckpoint(ctx context.Context, task *persistence.Task,
 	if err := s.taskMessageRepo.MarkCheckpointResolved(ctx, task.ID, checkpointID); err != nil {
 		s.logger.Error().Err(err).Str("task_id", task.ID).Msg("uiAnswerCheckpoint: resolve failed")
 	}
+
+	// Budget "increase & resume": clamped, strictly-increasing raise + guarded
+	// AWAITING_INPUT→QUEUED in one update (F2 race guard).
+	if budgetIncrease {
+		raised, rerr := s.taskRepo.RaiseTaskBudget(ctx, task.ID, budgetNewUSD, true)
+		if rerr != nil {
+			s.logger.Error().Err(rerr).Str("task_id", task.ID).Msg("uiAnswerCheckpoint: budget raise+resume failed")
+			return "answer-failed"
+		}
+		if !raised {
+			if budgetClampHit {
+				return "budget-clamped-no-increase"
+			}
+			return "checkpoint-stale"
+		}
+		if s.rescheduler != nil {
+			s.rescheduler.Wake()
+		}
+		if s.sseBus != nil {
+			s.sseBus.Publish(task.ID, SSEEvent{Kind: "status", Data: "QUEUED"})
+			s.sseBus.Publish(task.ID, SSEEvent{Kind: "message", Data: "budget-raised"})
+		}
+		return "budget-raised"
+	}
+
+	// Budget "abandon": cancel via guarded conditional update.
+	if budgetAbandon {
+		cancelled, cerr := s.taskRepo.TransitionConditional(ctx, task.ID,
+			[]persistence.TaskStatus{persistence.TaskStatusAwaitingInput},
+			persistence.TaskStatusCancelled,
+			persistence.TransitionOpts{ClearLease: true})
+		if !cancelled {
+			if cerr != nil {
+				return "answer-failed"
+			}
+			return "checkpoint-stale"
+		}
+		if s.sseBus != nil {
+			s.sseBus.Publish(task.ID, SSEEvent{Kind: "status", Data: "CANCELLED"})
+		}
+		return "task-cancelled"
+	}
+
+	// Taint-review "cancel": block the write by cancelling the parked task.
+	if taintCancel {
+		cancelled, cerr := s.taskRepo.TransitionConditional(ctx, task.ID,
+			[]persistence.TaskStatus{persistence.TaskStatusAwaitingInput},
+			persistence.TaskStatusCancelled,
+			persistence.TransitionOpts{ClearLease: true})
+		if !cancelled {
+			if cerr != nil {
+				return "answer-failed"
+			}
+			return "checkpoint-stale"
+		}
+		if s.sseBus != nil {
+			s.sseBus.Publish(task.ID, SSEEvent{Kind: "status", Data: "CANCELLED"})
+		}
+		return "task-cancelled"
+	}
+
+	// Taint-review "allow" (admin-class, gated above): record the D7 latch for
+	// the reviewed source set before the resume, then fall through to the normal
+	// AWAITING_INPUT→QUEUED re-run.
+	if taintAllow && taintSourceSetHash != "" {
+		marker := &persistence.TaskMessage{
+			TaskID:      task.ID,
+			AuthorKind:  persistence.TaskMessageAuthorSystem,
+			MessageKind: persistence.TaskMessageKindSystem,
+			Content:     "untrusted-content review cleared for the reviewed source set",
+			Metadata:    taintlineage.LatchMarkerMetadata(taintSourceSetHash),
+		}
+		if taintExecutionID != "" {
+			marker.ExecutionID = &taintExecutionID
+		}
+		if err := s.taskMessageRepo.Insert(ctx, marker); err != nil {
+			s.logger.Warn().Err(err).Str("task_id", task.ID).Msg("uiAnswerCheckpoint: failed to record taint review latch")
+		}
+	}
+
 	ok, _ := s.taskRepo.TransitionConditional(ctx, task.ID,
 		[]persistence.TaskStatus{persistence.TaskStatusAwaitingInput},
 		persistence.TaskStatusQueued,

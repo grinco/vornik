@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -324,6 +325,48 @@ type WorkflowStep struct {
 	// free of secrets that could leak through `vornikctl
 	// workflow show` or a `git diff`.
 	APIKeyEnv string `yaml:"api_key_env,omitempty"`
+
+	// --- parallel step fields (declarative intra-workflow fan-out /
+	// fan-in; LLD https://docs.vornik.io
+	// fanout-design.md §4.1) ---
+
+	// Branches declares the static legs of a `parallel` fan-out step.
+	// Each branch becomes one PARALLEL delegated child task at runtime
+	// (via the existing delegation engine), so parallelism lives at the
+	// task level and the executor's single-threaded invariants are
+	// untouched. Required (≥1) when Type == "parallel"; ignored
+	// otherwise. See §4.2.
+	Branches []WorkflowBranch `yaml:"branches,omitempty"`
+	// Join is the non-`parallel` consumer step the parent resumes at once
+	// the fan-out legs terminate (subject to JoinPolicy). Required when
+	// Type == "parallel"; it is the parallel step's ONLY forward edge —
+	// a parallel step may not set on_success/on_fail/gates (§4.3/§5).
+	Join string `yaml:"join,omitempty"`
+	// JoinPolicy governs when the parent proceeds to Join after all legs
+	// are terminal: `all` (default / empty), `best_effort` (≥1 leg
+	// succeeded), or `quorum:<n>` (≥n legs succeeded, 1≤n≤len(branches)).
+	// v1 evaluates only AFTER all legs are terminal — no early
+	// short-circuit or cancellation. See §4.3.
+	JoinPolicy string `yaml:"join_policy,omitempty"`
+}
+
+// WorkflowBranch is one statically-declared leg of a `parallel` fan-out
+// step. It mirrors the runtime delegatedTaskSpec (inline role+prompt, with
+// an optional sub-workflow) so an author who knows the legs up front can
+// declare them without routing through an LLM `decompose` step. See
+// https://docs.vornik.io §4.1.
+type WorkflowBranch struct {
+	// ID is a workflow-unique, non-empty identifier for the leg. Surfaced
+	// in the fan-in / observability path so a missing leg can be named.
+	ID string `yaml:"id"`
+	// Role is the swarm role that runs the leg (required).
+	Role string `yaml:"role"`
+	// Prompt is the instruction handed to the leg's agent (required).
+	Prompt string `yaml:"prompt"`
+	// Workflow optionally pins the sub-workflow the leg runs under. Empty
+	// = a default single-agent leg. Must resolve to a known workflow id
+	// (validated at config-set load, cross-workflow).
+	Workflow string `yaml:"workflow,omitempty"`
 }
 
 // HasExternalSideEffects reports whether running this step mutates state
@@ -495,12 +538,24 @@ func (w *Workflow) Validate(filename string) error {
 			"spawn_project": true,
 			"a2a_call":      true,
 			"system":        true,
+			"parallel":      true,
 		}
 		if !validTypes[step.Type] {
 			return WorkflowValidationError{
 				File:    filename,
 				Field:   fmt.Sprintf("steps.%s.type", stepID),
-				Message: fmt.Sprintf("invalid step type '%s', must be one of: agent, gate, approval, plan, call_project, spawn_project, a2a_call, system", step.Type),
+				Message: fmt.Sprintf("invalid step type '%s', must be one of: agent, gate, approval, plan, call_project, spawn_project, a2a_call, system, parallel", step.Type),
+			}
+		}
+
+		// parallel steps carry their own structural contract (branches,
+		// join, join_policy) and forbid the ordinary success/fail edges —
+		// their only forward edge is `join`. Validate the whole shape in
+		// one place; the transition/gate checks below are skipped for a
+		// well-formed parallel step because it sets none of those fields.
+		if step.Type == "parallel" {
+			if err := w.validateParallelStep(filename, stepID, step); err != nil {
+				return err
 			}
 		}
 
@@ -652,6 +707,223 @@ func (w *Workflow) Validate(filename string) error {
 		return err
 	}
 
+	// Cumulative fan-out load check across parallel steps on any single
+	// root-to-terminal path (parallel-fanout LLD §5). Partial approximation
+	// — the runtime N4 guard is authoritative.
+	if err := w.validateCumulativeFanOut(filename); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// parallelCumulativeFanOutLimit is the static bound used by the load-time
+// cumulative fan-out check. It mirrors the delegation engine's default
+// per-parent fan-out limit (defaultDelegationFanOutLimit = 20 in the
+// executor). The registry has no access to runtime config, so this is a
+// fail-fast convenience for the static-only case; the runtime N4 guard —
+// which counts actual cumulative children including sub-workflow
+// delegations the static check cannot see — is the authoritative bound
+// (parallel-fanout LLD §5).
+const parallelCumulativeFanOutLimit = 20
+
+// ParseJoinPolicy validates and decodes a parallel step's join_policy.
+// Empty is treated as "all". Returns the normalized kind ("all",
+// "best_effort", or "quorum") and, for quorum, the threshold n. branchCount
+// bounds a quorum threshold to 1 ≤ n ≤ branchCount. A malformed policy
+// returns an error. Shared by the registry validator and the executor's
+// wake-path policy evaluation so the two never drift (parallel-fanout LLD
+// §4.3/§5).
+func ParseJoinPolicy(policy string, branchCount int) (kind string, n int, err error) {
+	switch {
+	case policy == "" || policy == "all":
+		return "all", 0, nil
+	case policy == "best_effort":
+		return "best_effort", 0, nil
+	case strings.HasPrefix(policy, "quorum:"):
+		raw := strings.TrimPrefix(policy, "quorum:")
+		q, convErr := strconv.Atoi(raw)
+		if convErr != nil {
+			return "", 0, fmt.Errorf("join_policy quorum threshold %q is not an integer", raw)
+		}
+		if q < 1 {
+			return "", 0, fmt.Errorf("join_policy quorum threshold must be ≥1, got %d", q)
+		}
+		if branchCount > 0 && q > branchCount {
+			return "", 0, fmt.Errorf("join_policy quorum threshold %d exceeds branch count %d", q, branchCount)
+		}
+		return "quorum", q, nil
+	default:
+		return "", 0, fmt.Errorf("join_policy %q is not one of: all, best_effort, quorum:<n>", policy)
+	}
+}
+
+// validateParallelStep enforces the structural contract for a `parallel`
+// step (parallel-fanout LLD §5): ≥1 branch each with a unique non-empty id
+// + role + prompt; a non-empty `join` resolving to an existing non-parallel
+// step; a well-formed `join_policy`; and NO on_success/on_fail/gates (the
+// only forward edge is `join`; proceed-false is handled by the runtime
+// child-failure bubble-up, not a graph edge). Branch `workflow` references
+// are checked cross-workflow at config-set load (validateConfigSet), not
+// here, because a single-file Validate cannot see other workflows.
+func (w *Workflow) validateParallelStep(filename, stepID string, step WorkflowStep) error {
+	// A `parallel` step MUST be the workflow entrypoint (parallel-fanout LLD
+	// v0.6 §1). The whole resume model depends on it: a WAITING_FOR_CHILDREN →
+	// QUEUED parent is re-dispatched as a FRESH execution at the entrypoint with
+	// empty state (executor.go), so the parallel step must be that entrypoint to
+	// (a) be re-entered on resume, (b) have no predecessor steps to re-run, and
+	// (c) have no predecessor-created children to poison first-pass detection.
+	// This also makes a second parallel step impossible (one entrypoint), which
+	// eliminates the "second parallel sees the first's children" bug (C2).
+	if stepID != w.Entrypoint {
+		return WorkflowValidationError{
+			File:    filename,
+			Field:   fmt.Sprintf("steps.%s", stepID),
+			Message: fmt.Sprintf("a parallel step must be the workflow entrypoint (entrypoint is '%s'); the resume model requires it (LLD v0.6 §1)", w.Entrypoint),
+		}
+	}
+	if len(step.Branches) == 0 {
+		return WorkflowValidationError{
+			File:    filename,
+			Field:   fmt.Sprintf("steps.%s.branches", stepID),
+			Message: "a parallel step requires at least one branch",
+		}
+	}
+	// A parallel step's only forward edge is `join`. Mirrors the agent-step
+	// on_success-vs-gates footgun guard.
+	if step.OnSuccess != "" || step.OnFail != "" || len(step.Gates) > 0 {
+		return WorkflowValidationError{
+			File:    filename,
+			Field:   fmt.Sprintf("steps.%s", stepID),
+			Message: "a parallel step must not set on_success, on_fail, or gates — its only edge is `join`; a proceed-false join is handled by the runtime child-failure bubble-up",
+		}
+	}
+	if step.Join == "" {
+		return WorkflowValidationError{
+			File:    filename,
+			Field:   fmt.Sprintf("steps.%s.join", stepID),
+			Message: "join is required for parallel steps (the non-parallel consumer step to resume at)",
+		}
+	}
+	if step.Join == stepID {
+		// A self-join (join == the parallel step, which is the entrypoint) would
+		// resume the parent right back into the fan-out — an infinite loop.
+		return WorkflowValidationError{
+			File:    filename,
+			Field:   fmt.Sprintf("steps.%s.join", stepID),
+			Message: "join target must not be the parallel step itself (a self-join would resume back into the fan-out)",
+		}
+	}
+	if _, isStep := w.Steps[step.Join]; !isStep {
+		return WorkflowValidationError{
+			File:    filename,
+			Field:   fmt.Sprintf("steps.%s.join", stepID),
+			Message: fmt.Sprintf("join target '%s' not found in steps (a parallel step must join a non-parallel step, not a terminal)", step.Join),
+		}
+	}
+	// Note: a join target cannot itself be a parallel step — the entrypoint
+	// rule above guarantees at most one parallel step (the entrypoint), and
+	// join != entrypoint, so any second parallel step is already rejected as
+	// non-entrypoint. No separate join-type check is needed (LLD v0.6 §1).
+	if _, _, err := ParseJoinPolicy(step.JoinPolicy, len(step.Branches)); err != nil {
+		return WorkflowValidationError{
+			File:    filename,
+			Field:   fmt.Sprintf("steps.%s.join_policy", stepID),
+			Message: err.Error(),
+		}
+	}
+	return validateParallelBranches(filename, stepID, step.Branches)
+}
+
+// validateParallelBranches checks each declared leg has a workflow-unique,
+// non-empty id plus a role and prompt (parallel-fanout LLD §5). Split out of
+// validateParallelStep to keep that function within the lint length budget.
+func validateParallelBranches(filename, stepID string, branches []WorkflowBranch) error {
+	seen := make(map[string]bool, len(branches))
+	for i, b := range branches {
+		if b.ID == "" {
+			return WorkflowValidationError{
+				File:    filename,
+				Field:   fmt.Sprintf("steps.%s.branches[%d].id", stepID, i),
+				Message: "branch id is required and must be non-empty",
+			}
+		}
+		if seen[b.ID] {
+			return WorkflowValidationError{
+				File:    filename,
+				Field:   fmt.Sprintf("steps.%s.branches[%d].id", stepID, i),
+				Message: fmt.Sprintf("duplicate branch id '%s'", b.ID),
+			}
+		}
+		seen[b.ID] = true
+		if b.Role == "" {
+			return WorkflowValidationError{
+				File:    filename,
+				Field:   fmt.Sprintf("steps.%s.branches[%d].role", stepID, i),
+				Message: fmt.Sprintf("branch '%s' role is required", b.ID),
+			}
+		}
+		if b.Prompt == "" {
+			return WorkflowValidationError{
+				File:    filename,
+				Field:   fmt.Sprintf("steps.%s.branches[%d].prompt", stepID, i),
+				Message: fmt.Sprintf("branch '%s' prompt is required", b.ID),
+			}
+		}
+	}
+	return nil
+}
+
+// validateBranchWorkflowRefs checks that every `parallel` branch's optional
+// `workflow` sub-workflow reference resolves to a known workflow id. Run at
+// config-set load (validateConfigSet) where the full workflow set is
+// available; a single-file Validate cannot see other workflows. v1 does NOT
+// recursively inspect the referenced sub-workflow for a nested parallel step
+// — that nesting is bounded at runtime by the delegation depth guard
+// (parallel-fanout LLD §5).
+func (w *Workflow) validateBranchWorkflowRefs(filename string, known map[string]*Workflow) error {
+	for stepID, step := range w.Steps {
+		if step.Type != "parallel" {
+			continue
+		}
+		for i, b := range step.Branches {
+			ref := strings.TrimSpace(b.Workflow)
+			if ref == "" {
+				continue
+			}
+			if _, ok := known[ref]; !ok {
+				return WorkflowValidationError{
+					File:    filename,
+					Field:   fmt.Sprintf("steps.%s.branches[%d].workflow", stepID, i),
+					Message: fmt.Sprintf("branch '%s' references non-existent workflow '%s'", b.ID, ref),
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// validateCumulativeFanOut rejects a `parallel` step whose static branch count
+// exceeds the fan-out limit at load. Because a parallel step MUST be the
+// workflow entrypoint (LLD v0.6 §1), there is at most one per workflow, so the
+// old cross-parallel path-sum is gone — a single branch-count check suffices.
+// This is a fail-fast convenience for the obvious static breach; the runtime N4
+// guard (which counts actual cumulative children incl. sub-workflow
+// delegations, and across retries) remains the authoritative bound
+// (parallel-fanout LLD §5).
+func (w *Workflow) validateCumulativeFanOut(filename string) error {
+	for stepID, step := range w.Steps {
+		if step.Type != "parallel" {
+			continue
+		}
+		if len(step.Branches) > parallelCumulativeFanOutLimit {
+			return WorkflowValidationError{
+				File:    filename,
+				Field:   fmt.Sprintf("steps.%s.branches", stepID),
+				Message: fmt.Sprintf("parallel fan-out declares %d branches, exceeding the static limit of %d (the runtime N4 guard is authoritative, but this obvious breach is rejected at load)", len(step.Branches), parallelCumulativeFanOutLimit),
+			}
+		}
+	}
 	return nil
 }
 
@@ -747,6 +1019,13 @@ func (w *Workflow) fanOutOrigins() map[string]bool {
 		if strings.TrimSpace(step.DelegatedWorkflow) != "" {
 			origins[id] = true
 		}
+		// A `parallel` step is a static fan-out origin: its `join` step is
+		// the legal post-delegation consumer (where stage_child_artifacts
+		// belongs), and the parallel step itself is never a valid consumer
+		// (parallel-fanout LLD §5).
+		if step.Type == "parallel" {
+			origins[id] = true
+		}
 	}
 	return origins
 }
@@ -763,14 +1042,11 @@ func (w *Workflow) stepsReachableAfterOrigins(origins map[string]bool) map[strin
 		if !ok {
 			continue
 		}
-		if step.OnSuccess != "" {
-			w.reachableFrom(step.OnSuccess, reached)
-		}
-		if step.OnFail != "" {
-			w.reachableFrom(step.OnFail, reached)
-		}
-		for _, gate := range step.Gates {
-			w.reachableFrom(gate.Target, reached)
+		// Follow every forward edge INCLUDING a parallel step's join edge
+		// (stepSuccessors), so the join consumer of a parallel fan-out
+		// origin is correctly recognised as a post-delegation step.
+		for _, next := range w.stepSuccessors(step) {
+			w.reachableFrom(next, reached)
 		}
 	}
 	return reached
@@ -808,6 +1084,35 @@ func (w *Workflow) validateReachability(filename string) error {
 	return nil
 }
 
+// stepSuccessors returns the forward-transition targets of a step: the
+// ordinary on_success / on_fail / gate edges, PLUS a `parallel` step's
+// `join` edge (a parallel step has no on_success — without this its join
+// consumer would be mis-read as unreachable and cycle/fan-out walks would
+// skip through it). Shared by reachableFrom, stepsReachableAfterOrigins, and
+// validateCumulativeFanOut so all graph walkers follow the same rule
+// (parallel-fanout LLD §5).
+func (w *Workflow) stepSuccessors(step WorkflowStep) []string {
+	var out []string
+	if step.Type == "parallel" {
+		if step.Join != "" {
+			out = append(out, step.Join)
+		}
+		return out
+	}
+	if step.OnSuccess != "" {
+		out = append(out, step.OnSuccess)
+	}
+	if step.OnFail != "" {
+		out = append(out, step.OnFail)
+	}
+	for _, gate := range step.Gates {
+		if gate.Target != "" {
+			out = append(out, gate.Target)
+		}
+	}
+	return out
+}
+
 // reachableFrom performs a DFS to find all reachable steps
 func (w *Workflow) reachableFrom(current string, visited map[string]bool) {
 	if visited[current] {
@@ -820,14 +1125,8 @@ func (w *Workflow) reachableFrom(current string, visited map[string]bool) {
 		return // It's a terminal
 	}
 
-	if step.OnSuccess != "" {
-		w.reachableFrom(step.OnSuccess, visited)
-	}
-	if step.OnFail != "" {
-		w.reachableFrom(step.OnFail, visited)
-	}
-	for _, gate := range step.Gates {
-		w.reachableFrom(gate.Target, visited)
+	for _, next := range w.stepSuccessors(step) {
+		w.reachableFrom(next, visited)
 	}
 }
 

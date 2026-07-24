@@ -56,6 +56,7 @@ func TestTaskGet_FullyPopulatedRow(t *testing.T) {
 		7,                  // message_count
 		"chk-1",            // open_checkpoint_id
 		"chat_20260521_xx", // chat_turn_id
+		3.5,                // budget_usd
 	)
 
 	mock.ExpectQuery(regexp.QuoteMeta("FROM tasks WHERE id = $1")).

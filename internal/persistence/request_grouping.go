@@ -153,6 +153,65 @@ func ResolveRequestRootsWithCompleteness(ctx context.Context, repo TaskLister, t
 	return current, outcome, nil
 }
 
+// ResolveLineageWithCompleteness walks a SINGLE task's ancestor chain and
+// returns the full lineage task-ID set (the task itself + every ancestor up to
+// the terminating node) plus the walk outcome — the taint-lineage write gate's
+// input (taint-lineage-tracking-design.md §4.4). It reuses the SAME batched
+// hop as ResolveRequestRootsWithCompleteness (one List per level; a single
+// linear chain here) and the SAME WalkOutcome classification, so "complete" is
+// exactly WalkOutcomeCleanRoot (D6): any other outcome (missing_parent | cycle
+// | depth_exhausted | a repo error) is an incomplete walk the gate fails closed
+// on.
+//
+// Unlike ResolveRequestRoots* which return only the ROOT, this returns EVERY
+// task id visited, because a tainting step can live at any ancestor level and
+// the gate's rollup must query them all. The returned slice always includes
+// taskID first (even when the walk is incomplete, so the writing task's own
+// rows are still consulted). A repo List error returns (the ids gathered so
+// far, WalkOutcome(""), err) — the caller treats a non-nil err as fail-closed.
+func ResolveLineageWithCompleteness(ctx context.Context, repo TaskLister, taskID string, maxDepth int) ([]string, WalkOutcome, error) {
+	if maxDepth <= 0 {
+		maxDepth = MaxRequestRootWalkDepth
+	}
+	if repo == nil || taskID == "" {
+		return nil, WalkOutcomeMissingParent, nil
+	}
+	found, err := repo.List(ctx, TaskFilter{IDs: []string{taskID}})
+	if err != nil {
+		return nil, "", err
+	}
+	byID := byTaskID(found)
+	cur, ok := byID[taskID]
+	if !ok || cur == nil {
+		// The writing task row itself is missing — nothing to walk; treat as an
+		// incomplete lineage (fail-closed) but still surface the id.
+		return []string{taskID}, WalkOutcomeMissingParent, nil
+	}
+	ids := []string{taskID}
+	seen := map[string]bool{taskID: true}
+	for depth := 0; depth < maxDepth; depth++ {
+		if cur.ParentTaskID == nil || *cur.ParentTaskID == "" {
+			return ids, WalkOutcomeCleanRoot, nil
+		}
+		parentID := *cur.ParentTaskID
+		if seen[parentID] {
+			return ids, WalkOutcomeCycle, nil
+		}
+		parents, perr := repo.List(ctx, TaskFilter{IDs: []string{parentID}})
+		if perr != nil {
+			return ids, "", perr
+		}
+		parent, pok := byTaskID(parents)[parentID]
+		if !pok || parent == nil {
+			return ids, WalkOutcomeMissingParent, nil
+		}
+		ids = append(ids, parentID)
+		seen[parentID] = true
+		cur = parent
+	}
+	return ids, WalkOutcomeDepthExhausted, nil
+}
+
 // pendingParentIDs collects the distinct ParentTaskIDs still needing
 // resolution across every not-done chain in current, marking any chain
 // that has reached a root (ParentTaskID nil) as done + clean_root in

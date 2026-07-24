@@ -77,6 +77,7 @@ import (
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/configrecon"
 	"vornik.io/vornik/internal/contracts"
 	"vornik.io/vornik/internal/dispatcher"
 	"vornik.io/vornik/internal/email"
@@ -572,8 +573,10 @@ type Container struct {
 	apiKeyLimiter        *ratelimit.APIKeyLimiter
 	rateLimitMetrics     *ratelimit.Metrics
 	dryRunMetrics        *api.DryRunMetrics
+	configMirrorMetrics  *configrecon.Metrics
 	agentWriteMetrics    *api.AgentAPIWriteMetrics
 	agentWritesAllWarned bool
+	taintWriteMetrics    *api.TaintWriteMetrics
 	chainMetrics         *api.AuthChainMetrics
 	tradingSeriesMetrics *api.TradingSeriesMetrics
 	equityCheckMetrics   *api.TradingEquityCheckMetrics

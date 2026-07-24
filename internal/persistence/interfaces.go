@@ -54,6 +54,12 @@ const (
 	// ErrLeaseExpired indicates the lease has already expired.
 	ErrLeaseExpired RepositoryError = "lease expired"
 
+	// ErrInvalidTaskBudget indicates a write attempted to store a
+	// non-positive per-task budget_usd. Per the per-task cost governor
+	// (LLD 2026-07-24 §3.1) a stored budget is NULL or strictly positive
+	// — never 0 — so callers express "off" as NULL, not 0.
+	ErrInvalidTaskBudget RepositoryError = "invalid task budget: must be strictly positive or NULL"
+
 	// ErrOrderIdentityMismatch indicates a TradingOrderRepository.Record
 	// upsert hit a row whose (symbol, action, qty, limit_price) tuple
 	// differs from the incoming payload. The same (project_id,

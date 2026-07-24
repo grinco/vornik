@@ -210,6 +210,39 @@ type Config struct {
 	// authenticated third-party HTTP APIs for the query_api tool. See
 	// https://docs.vornik.io
 	Gateway GatewayConfig `yaml:"gateway" json:"gateway"`
+	// TaintLineage governs the daemon-default enforcement mode for
+	// taint-lineage tracking of autonomous writes. See
+	// https://docs.vornik.io
+	TaintLineage TaintLineageConfig `yaml:"taint_lineage" json:"taint_lineage"`
+}
+
+// TaintLineageConfig is the daemon-default taint-lineage enforcement policy.
+// Per-project overrides live in the project registry (registry.ProjectTaintLineage).
+// Audit (recording the taint columns) is ALWAYS on regardless of this value;
+// the mode governs only whether a tainted write is parked/refused (D4).
+type TaintLineageConfig struct {
+	// EnforcementMode is off | advisory (default) | enforce. Validated at load
+	// (hard error on any other value, matching how gateway.agent_writes
+	// validates its tri-state). Never LLM-settable.
+	EnforcementMode string `yaml:"enforcement_mode" json:"enforcement_mode" doc:"Daemon-default taint-lineage enforcement for autonomous writes: off (record only, never park/refuse), advisory (default; record + flag, never park/refuse), enforce (park tainted forge writes for operator review, synchronously refuse tainted query_api writes). Per-project overridable. Audit is always recorded regardless. Never LLM-settable."`
+}
+
+// TaintLineageMode validates taint_lineage.enforcement_mode and returns the
+// normalized mode (off|advisory|enforce). Empty ≡ advisory (the observe-first
+// default); any other value is a hard load error, never a silent fall-through
+// (matching gateway.agent_writes). Single validation path for the YAML value +
+// the VORNIK_TAINT_LINEAGE_MODE env override.
+func (c TaintLineageConfig) TaintLineageMode() (string, error) {
+	switch strings.ToLower(strings.TrimSpace(c.EnforcementMode)) {
+	case "", "advisory":
+		return "advisory", nil
+	case "off":
+		return "off", nil
+	case "enforce":
+		return "enforce", nil
+	default:
+		return "", fmt.Errorf("taint_lineage.enforcement_mode: unknown value %q (want off|advisory|enforce)", c.EnforcementMode)
+	}
 }
 
 // GatewayConfig configures the local API gateway (Kong DB-less) that fronts
@@ -2293,6 +2326,52 @@ type MemoryRerankerConfig struct {
 	MaxSnippetBytes int    `yaml:"max_snippet_bytes" doc:"Per-candidate snippet sent to the reranker (0 = default 600)."`
 }
 
+// MemoryRetrievalRoutingConfig tunes confidence-based retrieval routing
+// (P3): the daemon computes a retrieval_trust_verdict from stored trust
+// fields and, when the verdict is low, runs a bounded verdict-predicated
+// DB widen. All knobs are inert unless a caller opts a search into routing;
+// zero-valued knobs fall back to the shipped defaults in the searcher. The
+// one hard invariant (min_results <= k) is enforced at config load. See
+// https://docs.vornik.io §3.2.
+type MemoryRetrievalRoutingConfig struct {
+	K                      int     `yaml:"k" doc:"Top-K window the trust mean is computed over (0 = default 5)."`
+	MinResults             int     `yaml:"min_results" doc:"Floor result count for a non-low verdict; must be <= k (0 = default 1)."`
+	HighThreshold          float64 `yaml:"high_threshold" doc:"Trust-mean at/above which the verdict is high (0 = default 0.70)."`
+	LowThreshold           float64 `yaml:"low_threshold" doc:"Trust-mean below which the verdict is low and the widen fires (0 = default 0.40)."`
+	WStatus                float64 `yaml:"w_status" doc:"Weight of the validation-status leg (0 = default 0.6)."`
+	WConf                  float64 `yaml:"w_conf" doc:"Weight of the confidence leg (0 = default 0.2)."`
+	WFresh                 float64 `yaml:"w_fresh" doc:"Weight of the freshness leg (0 = default 0.2)."`
+	UnverifiedConfDiscount float64 `yaml:"unverified_conf_discount" doc:"Discount applied to unverified chunks' confidence term (0 = default 0.5)."`
+	NoTTLAgeCapDays        int     `yaml:"no_ttl_age_cap_days" doc:"Age in days past which a no-TTL chunk is stale and, as top hit, caps the verdict at medium (0 = default 180)."`
+	NoTTLStaleFreshness    float64 `yaml:"no_ttl_stale_freshness" doc:"Freshness floor for an aged no-TTL chunk (0 = default 0.3)."`
+	MaxRounds              int     `yaml:"max_rounds" doc:"Hard cap on verdict-predicated widen rounds (0 = default 3)."`
+	// WidenEnabled toggles the widen loop; default true (widening ships with
+	// Routing). A *bool so an explicit false is distinguishable from unset.
+	WidenEnabled *bool `yaml:"widen_enabled" doc:"Enable the verdict-predicated DB widen (default true; set false for verdict-only)."`
+	// Enabled is the master routing kill-switch; default true. Set false to
+	// revert the rollout config-only (no verdict/guidance/trust fields, no
+	// widen) without a code change. A *bool so an explicit false is honored.
+	Enabled *bool `yaml:"enabled" doc:"Master switch for confidence-based retrieval routing (default true; set false to disable the feature entirely)."`
+}
+
+// Validate enforces the min_results <= k invariant against the effective
+// (defaulted) values so an operator who sets only one of them still gets a
+// meaningful config-load error.
+func (c MemoryRetrievalRoutingConfig) Validate() error {
+	k := c.K
+	if k <= 0 {
+		k = 5
+	}
+	minResults := c.MinResults
+	if minResults <= 0 {
+		minResults = 1
+	}
+	if minResults > k {
+		return fmt.Errorf("memory.retrieval_routing.min_results (%d) must be <= memory.retrieval_routing.k (%d)", minResults, k)
+	}
+	return nil
+}
+
 // MemoryBedrockConfig configures the native AWS Bedrock embedding path,
 // used when memory.embedding_provider is "bedrock".
 type MemoryBedrockConfig struct {
@@ -2315,6 +2394,10 @@ type MemoryConfig struct {
 	// Reranker configures the LLM relevance reranker (and, by activating
 	// it, scored-sufficiency).
 	Reranker MemoryRerankerConfig `yaml:"reranker"`
+
+	// RetrievalRouting tunes confidence-based retrieval routing (P3): the
+	// daemon-side retrieval_trust_verdict + verdict-predicated DB widen.
+	RetrievalRouting MemoryRetrievalRoutingConfig `yaml:"retrieval_routing"`
 
 	// EmbeddingModel is the model name to request from the embedding endpoint,
 	// e.g. "text-embedding-3-small". Required when Enabled=true.

@@ -464,6 +464,12 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("VORNIK_GATEWAY_AGENT_WRITES"); v != "" {
 		cfg.Gateway.AgentWrites = v
 	}
+	// Taint-lineage enforcement override. Set the raw value; TaintLineageMode()
+	// (called from Validate below) normalizes+validates, so an invalid env value
+	// is a startup error via the SAME path as YAML — never a silent advisory.
+	if v := os.Getenv("VORNIK_TAINT_LINEAGE_MODE"); v != "" {
+		cfg.TaintLineage.EnforcementMode = v
+	}
 	// Daemon↔scraper web_submit capability secret (shared C1 contract). Env
 	// override wins over YAML so operators can inject it from the daemon
 	// environment (mirroring the same value passed to the scraper's
@@ -761,6 +767,9 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("memory.prompt_injection_scan must be one of off|detect|quarantine, got %q", c.Memory.PromptInjectionScan)
 	}
+	if err := c.Memory.RetrievalRouting.Validate(); err != nil {
+		return err
+	}
 	if c.Runtime.UserNSMode != "" {
 		validUserNSModes := map[string]bool{
 			"host":    true,
@@ -795,6 +804,12 @@ func (c *Config) Validate() error {
 	// time 'all' operator warning is emitted where the gateway is wired
 	// (container_http.go), which has the logger; Validate stays pure.
 	if _, err := c.Gateway.AgentWritesMode(); err != nil {
+		return err
+	}
+	// taint_lineage.enforcement_mode tri-state (off|advisory|enforce): fail
+	// startup on an invalid value rather than silently defaulting to advisory
+	// (taint-lineage-tracking §7).
+	if _, err := c.TaintLineage.TaintLineageMode(); err != nil {
 		return err
 	}
 	// When web writes are enabled (on|insecure) the daemon↔scraper web_submit

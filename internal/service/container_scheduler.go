@@ -494,6 +494,14 @@ func (c *Container) initScheduler() error {
 	if c.Registry != nil {
 		executorOpts = append(executorOpts, executor.WithWorkflowResolver(c.Registry))
 	}
+	// Per-task cost governor breach notifier (LLD 2026-07-24 §3.5/§3.6, impl
+	// review I1): the executor is the subsystem that fires soft-breach + hard-
+	// park alerts, so it must receive the same budget notifier every other
+	// subsystem gets (dispatcher/autonomy/api/ui) — without this the executor's
+	// soft AND hard alerts are dead no-ops.
+	if c.TelegramBot != nil {
+		executorOpts = append(executorOpts, executor.WithBudgetNotifier(c.TelegramBot))
+	}
 	if registry := c.observabilityRegistry(); registry != nil {
 		executorOpts = append(executorOpts, executor.WithPrometheusRegistry(registry))
 	}
@@ -657,7 +665,7 @@ func (c *Container) initScheduler() error {
 	sysHandlers := executor.NewSystemHandlerRegistry()
 	if forgeResolver := c.newForgeResolver(); forgeResolver != nil {
 		forgeSrc := &forgePublishSource{workspacePath: executorConfig.ProjectWorkspacePath}
-		sysHandlers.Register(forgeh.NewOpenChangeRequestHandler(forgeResolver, forgeSrc, c.artifactStore))
+		sysHandlers.Register(forgeh.NewOpenChangeRequestHandler(forgeResolver, forgeSrc, c.artifactStore, c.newTaintReviewer()))
 		sysHandlers.Register(forgeh.NewPostReviewHandler(forgeResolver))
 		sysHandlers.Register(forgeh.NewFetchDiffHandler(forgeResolver))
 		c.Logger.Info().Msg("forge system handlers registered (forge.open_change_request, forge.post_review, forge.fetch_diff)")
@@ -681,6 +689,7 @@ func (c *Container) initScheduler() error {
 			WorkerConcurrency:     c.Config.Memory.WorkerConcurrency,
 			EmbeddingCacheEnabled: c.Config.Memory.EmbeddingCacheEnabled,
 			ResponseCacheEnabled:  c.Config.Memory.ResponseCacheEnabled,
+			RetrievalRouting:      retrievalRoutingConfig(c.Config.Memory.RetrievalRouting),
 		}
 		// Wire pricing so the Phase E cache's CacheStats can surface
 		// a TotalSavingsUSD headline on /ui/spend. nil pricing leaves
@@ -916,6 +925,13 @@ func (c *Container) initScheduler() error {
 			memAuditRepo := c.repos.MemoryRetrievalAudit
 			mgr.Searcher.SetAuditRepo(memAuditRepo)
 			mgr.Searcher.SetLogger(c.Logger.With().Str("component", "memory").Str("audit", "retrieval").Logger())
+
+			// Confidence-based retrieval routing (P3) trace sink: persist
+			// the trust_verdict stage row per Routing-on search. Nil-safe —
+			// SQLite / unwired deployments skip the trace.
+			if c.repos.MemorySearchStage != nil {
+				mgr.Searcher.SetTraceSink(c.repos.MemorySearchStage)
+			}
 
 			// Scored-sufficiency iterative retrieval. Inert unless
 			// enabled AND a real reranker is wired (gated inside the
@@ -1584,4 +1600,34 @@ func instinctAutoApplyAllowedClasses(cfg *config.Config) []string {
 		return nil
 	}
 	return cfg.Instinct.Consumers.AutoApply.AllowedErrorClasses
+}
+
+// retrievalRoutingConfig maps the config-package routing block onto the
+// memory-package RetrievalRoutingConfig. Zero-valued knobs are left zero so
+// the searcher's applyDefaults fills them from the shipped §3.2 defaults;
+// only explicitly-set operator values are carried through. no_ttl_age_cap is
+// expressed in days at the config surface and converted to a duration here.
+func retrievalRoutingConfig(rr config.MemoryRetrievalRoutingConfig) memory.RetrievalRoutingConfig {
+	out := memory.RetrievalRoutingConfig{
+		K:                      rr.K,
+		MinResults:             rr.MinResults,
+		HighThreshold:          rr.HighThreshold,
+		LowThreshold:           rr.LowThreshold,
+		WStatus:                rr.WStatus,
+		WConf:                  rr.WConf,
+		WFresh:                 rr.WFresh,
+		UnverifiedConfDiscount: rr.UnverifiedConfDiscount,
+		NoTTLStaleFreshness:    rr.NoTTLStaleFreshness,
+		MaxRounds:              rr.MaxRounds,
+	}
+	if rr.NoTTLAgeCapDays > 0 {
+		out.NoTTLAgeCap = time.Duration(rr.NoTTLAgeCapDays) * 24 * time.Hour
+	}
+	if rr.WidenEnabled != nil {
+		out.SetWidenEnabled(*rr.WidenEnabled)
+	}
+	if rr.Enabled != nil {
+		out.SetEnabled(*rr.Enabled)
+	}
+	return out
 }

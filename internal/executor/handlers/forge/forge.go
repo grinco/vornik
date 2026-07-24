@@ -18,9 +18,21 @@ import (
 	"fmt"
 	"strings"
 
+	"vornik.io/vornik/internal/executor"
 	forgeapi "vornik.io/vornik/internal/forge"
 	"vornik.io/vornik/internal/persistence"
 )
+
+// TaintGate resolves the task-lineage taint rollup for an autonomous forge
+// write and reports whether it must PARK for operator review under the project's
+// enforce mode (taint-lineage-tracking §4.4/§4.5). A non-nil signal means park;
+// (nil, nil) means proceed. The implementation (executor.TaintReviewer) is
+// injected by the service container; nil disables the check (off-by-default for
+// callers that don't wire it). Kept as an interface here so the handler's test
+// doubles stay trivial.
+type TaintGate interface {
+	ReviewForgeWrite(ctx context.Context, projectID, taskID string) (*executor.TaintReviewSignal, error)
+}
 
 // ProviderResolver resolves a project's configured forge provider. Wired by the
 // service container (which holds the project registry + a provider cache); a

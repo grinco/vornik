@@ -540,10 +540,22 @@ llm_call() {
     local request_body="$1"
     vornik_resolve_url "${LLM_ENDPOINT}/chat/completions"
     local url="$VORNIK_URL"
-    local task_id project_id execution_id
+    local task_id project_id execution_id role
     task_id=$(jq -r '.taskId // ""' "$INPUT_FILE" 2>/dev/null || true)
     project_id=$(jq -r '.projectId // ""' "$INPUT_FILE" 2>/dev/null || true)
     execution_id=$(jq -r '.workflow.executionId // ""' "$INPUT_FILE" 2>/dev/null || true)
+    # Role steers OpenAI server-side prompt-cache affinity: the daemon
+    # derives prompt_cache_key = "<project>:<role>" from this header so
+    # requests sharing a role's static prefix hit the same cache bucket.
+    # Sent only when a role is known — omitting it (rather than sending an
+    # empty header) keeps the header's presence in the daemon access log a
+    # legible signal that this agent image carries the feature.
+    role=$(jq -r '.swarm.role // .role // ""' "$INPUT_FILE" 2>/dev/null || true)
+    [ -z "$role" ] && role="${VORNIK_ROLE:-}"
+    local role_hdr=()
+    if [ -n "$role" ]; then
+        role_hdr=(-H "X-Vornik-Role: ${role}")
+    fi
     # Log to stderr — stdout is captured by the caller as the response.
     [ "${VORNIK_LOG_LEVEL:-info}" = "debug" ] && echo "[vornik-agent] calling $url (model=$LLM_MODEL)" >&2 || true
     local curl_err
@@ -557,6 +569,7 @@ llm_call() {
         -H "X-Vornik-Project-ID: ${project_id:-${VORNIK_PROJECT_ID:-}}" \
         -H "X-Vornik-Task-ID: ${task_id:-${VORNIK_TASK_ID:-}}" \
         -H "X-Vornik-Execution-ID: ${execution_id:-${VORNIK_EXECUTION_ID:-}}" \
+        "${role_hdr[@]}" \
         -d @- 2>"$curl_err")
     local rc=$?
     if [ "$rc" -ne 0 ]; then

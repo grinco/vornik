@@ -2175,7 +2175,12 @@ func RunExecutionStepOutcomeSuite(t *testing.T, repo persistence.ExecutionStepOu
 		if err != nil {
 			t.Fatalf("List: %v", err)
 		}
-		if len(rows) == 0 || !rows[0].UntrustedContentUsed || !rows[0].RequiresReview || string(rows[0].UntrustedSources) != string(highBlob) {
+		// UntrustedSources is a JSONB column: Postgres canonicalizes it (reorders
+		// object keys, adds whitespace) so a byte-exact compare against the compact
+		// input spuriously fails, while SQLite stores it verbatim. Compare
+		// semantically — the backend-agnostic contract — matching the
+		// hallucination_signals JSONB precedent.
+		if len(rows) == 0 || !rows[0].UntrustedContentUsed || !rows[0].RequiresReview || !jsonEqual(t, rows[0].UntrustedSources, highBlob) {
 			t.Fatalf("taint columns did not round-trip: %+v", rows)
 		}
 
@@ -2202,7 +2207,7 @@ func RunExecutionStepOutcomeSuite(t *testing.T, repo persistence.ExecutionStepOu
 		if ur.RequiresReview {
 			t.Errorf("Unknown-only row must have requires_review=false")
 		}
-		if string(ur.UntrustedSources) != string(unkBlob) {
+		if !jsonEqual(t, ur.UntrustedSources, unkBlob) {
 			t.Errorf("Unknown row sources blob mismatch: %s", ur.UntrustedSources)
 		}
 	})

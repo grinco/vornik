@@ -88,7 +88,7 @@ HTTP_PORT="${VORNIK_HTTP_PORT:-8080}"
 VM_CPUS="${VORNIK_VM_CPUS:-4}"
 VM_MEM="${VORNIK_VM_MEM:-8GiB}"
 VM_DISK="${VORNIK_VM_DISK:-60GiB}"
-REF="${VORNIK_REF:-2026.7.4}"
+REF="${VORNIK_REF:-2026.7.5}"
 QUICKSTART_URL="${VORNIK_QUICKSTART_URL:-https://raw.githubusercontent.com/grinco/vornik/${REF}/deployments/podman/quickstart.sh}"
 QUICKSTART_SHA256_URL="${VORNIK_QUICKSTART_SHA256_URL:-${QUICKSTART_URL}.sha256}"
 SHIM_BIN_DIR="${VORNIK_SHIM_BIN_DIR:-$HOME/.local/bin}"
@@ -96,8 +96,9 @@ SHIM_BIN_DIR="${VORNIK_SHIM_BIN_DIR:-$HOME/.local/bin}"
 case "$HTTP_PORT" in
   ''|*[!0-9]*) die "VORNIK_HTTP_PORT must be a decimal port number" ;;
 esac
-[ "$HTTP_PORT" -ge 1 ] && [ "$HTTP_PORT" -le 65535 ] ||
+if [ "$HTTP_PORT" -lt 1 ] || [ "$HTTP_PORT" -gt 65535 ]; then
   die "VORNIK_HTTP_PORT must be between 1 and 65535"
+fi
 case "$QUICKSTART_URL" in
   https://*) ;;
   *) die "VORNIK_QUICKSTART_URL must use https://" ;;
@@ -165,6 +166,13 @@ VM_USER="$(limactl shell "$VM_NAME" -- id -un)"
 ok "in-VM user: $VM_USER (matches the pinned VM user)"
 
 log "Running the Linux quickstart inside the VM (first run builds binaries + the agent image; several minutes)..."
+# The single quotes below are LOAD-BEARING and deliberate. The URLs and port
+# reach the guest as `env` NAME=VALUE arguments and are expanded by the guest's
+# own shell; they are never interpolated into the program text by this host
+# shell. Switching to double quotes would re-introduce the command injection
+# fixed in the 2026-07-25 audit (a single quote in VORNIK_QUICKSTART_URL then
+# closes the quoted program and executes inside the Lima VM).
+# shellcheck disable=SC2016 # intentional: expansion must happen in the guest
 limactl shell "$VM_NAME" -- env \
   VORNIK_QUICKSTART_URL="$QUICKSTART_URL" \
   VORNIK_QUICKSTART_SHA256_URL="$QUICKSTART_SHA256_URL" \

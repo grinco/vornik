@@ -3,6 +3,12 @@ workflowId: trading
 displayName: 'Trading: strategy → risk → execute'
 description: "Three-step trading workflow: strategist generates a candidate trade plan, risk-officer reviews it, executor places the order if approvals exist."
 version: "1.0"
+# Required by the shipped-config doctor's workflow_md_shape check (author +
+# license are recommended for shared-catalog discovery). The 24 other shipped
+# workflows carry the same pair; this template replaces configs/workflows/
+# trading.md on export, so omitting them failed that test on CE only.
+author: "Vadim Grinco <vadim@grinco.eu>"
+license: "Proprietary"
 entrypoint: strategize
 maxStepVisits: 1
 maxIterations: 15

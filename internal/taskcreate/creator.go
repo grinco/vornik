@@ -437,8 +437,9 @@ func (c *Creator) Create(ctx context.Context, p Params) (*persistence.Task, erro
 // returns a non-empty refusal reason when the run's forecast would breach the
 // project daily/monthly hard cap OR the effective per-task budget. Returns ""
 // (allow) when no usage repo / registry is wired, when neither a project hard
-// cap nor a per-task budget is configured (short-circuit), or when the forecast
-// itself errors (best-effort — the reactive Check/Reserve is the backstop).
+// cap nor a per-task budget is configured (short-circuit). Once a hard limit
+// is configured, missing forecast inputs and repository errors refuse creation:
+// the task may spend money before the reactive step-boundary gate can stop it.
 func (c *Creator) forecastRefusal(ctx context.Context, project *registry.Project, workflowID string) string {
 	if c.llmUsageRepo == nil || c.projectRegistry == nil || project == nil || workflowID == "" {
 		return ""
@@ -452,13 +453,13 @@ func (c *Creator) forecastRefusal(ctx context.Context, project *registry.Project
 	wf := c.projectRegistry.GetWorkflow(workflowID)
 	swarm := c.projectRegistry.GetSwarm(project.SwarmID)
 	if wf == nil || swarm == nil {
-		return ""
+		return "budget forecast unavailable: workflow or swarm configuration is missing"
 	}
 	now := c.now().UTC()
 	current, cerr := budget.Check(ctx, c.llmUsageRepo, project, now)
 	if cerr != nil {
-		c.logger.Warn().Err(cerr).Str("project_id", project.ID).Msg("taskcreate: budget snapshot for forecast failed — proceeding")
-		return ""
+		c.logger.Warn().Err(cerr).Str("project_id", project.ID).Msg("taskcreate: budget snapshot for forecast failed — refusing create")
+		return "budget forecast unavailable: current spend could not be read"
 	}
 	forecast, ferr := budget.ForecastTask(ctx, c.llmUsageRepo, c.pricing, budget.ForecastInput{
 		Workflow:     wf,
@@ -466,8 +467,8 @@ func (c *Creator) forecastRefusal(ctx context.Context, project *registry.Project
 		DefaultModel: c.defaultModel,
 	}, now)
 	if ferr != nil {
-		c.logger.Warn().Err(ferr).Str("project_id", project.ID).Msg("taskcreate: forecast failed — proceeding without preventive gate")
-		return ""
+		c.logger.Warn().Err(ferr).Str("project_id", project.ID).Msg("taskcreate: forecast failed — refusing create")
+		return "budget forecast unavailable: task cost could not be estimated"
 	}
 	if d := budget.CheckForecast(project, forecast, current, taskBudgetUSD); d.Refused {
 		c.logger.Info().

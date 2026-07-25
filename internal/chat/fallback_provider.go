@@ -126,6 +126,17 @@ func (f *FallbackProvider) withFallback(ctx context.Context, call func(Provider)
 	return call(ov.WithModel(fb))
 }
 
+// Unwrap exposes the wrapped provider. Returns root rather than inner: inner
+// may have been WithModel-descended into one route, whereas root is the
+// original chain (the *Router in a router deployment) that discovery and
+// readiness probes need to reach. See Unwrapper.
+func (f *FallbackProvider) Unwrap() Provider {
+	if f.root != nil {
+		return f.root
+	}
+	return f.inner
+}
+
 func (f *FallbackProvider) Model() string { return f.inner.Model() }
 
 func (f *FallbackProvider) SetMetrics(m *Metrics) {

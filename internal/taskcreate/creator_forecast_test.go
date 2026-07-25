@@ -2,6 +2,7 @@ package taskcreate
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,7 +15,11 @@ import (
 
 // fcUsageRepo drives ForecastTask via AggregateByRoleModel (per-step cost) and
 // budget.Check via SumCostByProject, satisfying the full repo interface.
-type fcUsageRepo struct{ perStepCost float64 }
+type fcUsageRepo struct {
+	perStepCost float64
+	sumErr      error
+	forecastErr error
+}
 
 func (f *fcUsageRepo) Record(context.Context, *persistence.TaskLLMUsage) error { return nil }
 func (f *fcUsageRepo) Upsert(context.Context, *persistence.TaskLLMUsage) error { return nil }
@@ -23,10 +28,13 @@ func (f *fcUsageRepo) List(context.Context, persistence.TaskLLMUsageFilter) ([]*
 }
 func (f *fcUsageRepo) SumCostByTask(context.Context, string) (float64, error) { return 0, nil }
 func (f *fcUsageRepo) SumCostByProject(context.Context, string, time.Time, time.Time) (float64, error) {
-	return 0, nil
+	return 0, f.sumErr
 }
 func (f *fcUsageRepo) SumCost(context.Context, time.Time, time.Time) (float64, error) { return 0, nil }
 func (f *fcUsageRepo) AggregateByRoleModel(context.Context, time.Time, time.Time, int, string) ([]persistence.RoleModelSpend, error) {
+	if f.forecastErr != nil {
+		return nil, f.forecastErr
+	}
 	return []persistence.RoleModelSpend{{Role: "coder", Model: "m", CostUSD: f.perStepCost, StepCount: 1}}, nil
 }
 func (f *fcUsageRepo) AggregateByProject(context.Context, time.Time, time.Time, int) ([]persistence.ProjectSpend, error) {
@@ -106,5 +114,31 @@ func TestCreate_ForecastShortCircuitsWhenNothingConfigured(t *testing.T) {
 	}
 	if task == nil {
 		t.Fatal("expected a task on the short-circuit path")
+	}
+}
+
+func TestCreate_ConfiguredBudgetFailsClosedWhenSpendUnavailable(t *testing.T) {
+	reg := budgetProjectRegistry(t, "budget:\n  daily_hard_usd: 5\n")
+	c := New(
+		WithTaskRepository(&mocks.MockTaskRepository{}),
+		WithProjectRegistry(reg),
+		WithLLMUsageRepository(&fcUsageRepo{sumErr: errors.New("database unavailable")}),
+	)
+	_, err := c.Create(context.Background(), Params{ProjectID: "demo", TaskType: "x"})
+	if ce := AsError(err); ce == nil || ce.Reason != ReasonBudgetExceeded {
+		t.Fatalf("configured budget must fail closed when spend is unavailable, got %v", err)
+	}
+}
+
+func TestCreate_ConfiguredBudgetFailsClosedWhenForecastUnavailable(t *testing.T) {
+	reg := budgetProjectRegistry(t, "budget:\n  default_task_budget_usd: 5\n")
+	c := New(
+		WithTaskRepository(&mocks.MockTaskRepository{}),
+		WithProjectRegistry(reg),
+		WithLLMUsageRepository(&fcUsageRepo{forecastErr: errors.New("history unavailable")}),
+	)
+	_, err := c.Create(context.Background(), Params{ProjectID: "demo", TaskType: "x"})
+	if ce := AsError(err); ce == nil || ce.Reason != ReasonBudgetExceeded {
+		t.Fatalf("configured budget must fail closed when forecast is unavailable, got %v", err)
 	}
 }

@@ -117,3 +117,61 @@ func TestQualityRepository_RolePercentiles(t *testing.T) {
 		t.Errorf("unmet expectations: %v", err)
 	}
 }
+
+// Pins the bounded A1 twin (design §4.1): recorded_at is BOUNDED both sides
+// (>= $1 AND < $2), two time args are passed in order, and the fan-out
+// canonicalisation is preserved.
+func TestQualityRepository_RoleAggregatesBetween(t *testing.T) {
+	db, mock, cleanup := newMockDBTX(t)
+	defer cleanup()
+	repo := NewQualityRepository(db)
+
+	from := time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 6, 28, 0, 0, 0, 0, time.UTC)
+	re := "(?s)" + regexp.QuoteMeta("DISTINCT ON (o.execution_id, o.step_id)") +
+		".*" + regexp.QuoteMeta("o.recorded_at >= $1 AND o.recorded_at < $2") +
+		".*" + regexp.QuoteMeta("outcome <> 'superseded'")
+	mock.ExpectQuery(re).
+		WithArgs(from, to).
+		WillReturnRows(sqlmock.NewRows([]string{"project_id", "role", "total", "passing", "passing_prompt_tokens"}).
+			AddRow("assistant", "researcher", int64(50), int64(40), int64(400000)))
+
+	got, err := repo.RoleQualityAggregatesBetween(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("RoleQualityAggregatesBetween: %v", err)
+	}
+	if len(got) != 1 || got[0].ProjectID != "assistant" || got[0].Total != 50 || got[0].Passing != 40 {
+		t.Fatalf("got %+v, want assistant/researcher 50/40", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// Pins the bounded A2 twin (design §4.1): recorded_at bounded both sides, two
+// time args in order, terminal-task rollup preserved.
+func TestQualityRepository_TaskAggregatesBetween(t *testing.T) {
+	db, mock, cleanup := newMockDBTX(t)
+	defer cleanup()
+	repo := NewQualityRepository(db)
+
+	from := time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 6, 28, 0, 0, 0, 0, time.UTC)
+	re := "(?s)" + regexp.QuoteMeta("o.recorded_at >= $1 AND o.recorded_at < $2") +
+		".*" + regexp.QuoteMeta("t.status IN ('COMPLETED','FAILED','CANCELLED')")
+	mock.ExpectQuery(re).
+		WithArgs(from, to).
+		WillReturnRows(sqlmock.NewRows([]string{"project_id", "workflow_id", "total", "passing", "passing_prompt_tokens"}).
+			AddRow("assistant", "research", int64(20), int64(16), int64(1600000)))
+
+	got, err := repo.TaskQualityAggregatesBetween(context.Background(), from, to)
+	if err != nil {
+		t.Fatalf("TaskQualityAggregatesBetween: %v", err)
+	}
+	if len(got) != 1 || got[0].WorkflowID != "research" || got[0].Total != 20 || got[0].Passing != 16 {
+		t.Fatalf("got %+v, want assistant/research 20/16", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}

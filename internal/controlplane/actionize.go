@@ -68,7 +68,15 @@ type Actionizer struct {
 	// MaxSuggestedStepTimeout caps a rendered step timeout absolutely
 	// (design §4.5; 0 → 2h).
 	MaxSuggestedStepTimeout time.Duration
-	Logger                  zerolog.Logger
+	// IsTradingSwarm classifies a swarm id as trading/broker path. Injected
+	// (from service.isTradingSwarm) so the applier-side refusal
+	// (RefuseTradingTarget) shares the detector's single classifier and the two
+	// can never diverge. Nil → the refusal fails open with a WARN (design
+	// 2026-07-24-applier-trading-refusal D3); RefuseTradingTarget requires a
+	// non-nil Logger on that nil-classifier path (Logger is a value type, so it
+	// can't be nil-checked — it is always wired in newActionizer and in tests).
+	IsTradingSwarm func(swarmID string) bool
+	Logger         zerolog.Logger
 }
 
 func (a *Actionizer) maxStepTimeout() time.Duration {
@@ -470,6 +478,54 @@ func (a *Actionizer) finishRender(rc *RenderedChange, oldRaw, newRaw []byte) (*R
 	rc.BaseHash = hex.EncodeToString(sum[:])
 	rc.Diff = compactDiff(string(oldRaw), string(newRaw))
 	return rc, nil
+}
+
+// RefuseTradingTarget is the apply-time defense-in-depth mirror of the
+// detector-side trading exclusion (review-20260721-a7bf #6): it refuses a
+// cost/quality-detector proposal whose typed change targets a trading swarm.
+// It is the load-bearing applier check the detector-side SwarmMap exclusion
+// otherwise stood alone on. Scope (design 2026-07-24-applier-trading-refusal
+// §2/D4): detector-origin only (operator-authored proposals are an intentional
+// path and never blocked), but kind-agnostic within that — any detector change
+// whose .Swarm classifies as trading is refused, not only swarm_role_env.
+// Non-detector proposals, non-trading targets, and evidence without a typed
+// change all pass.
+func (a *Actionizer) RefuseTradingTarget(proposedBy, evidence string) error {
+	if proposedBy != costQualityDetectorProposedBy {
+		return nil // only the detector's proposals are in scope (D4)
+	}
+	if strings.TrimSpace(evidence) == "" {
+		return nil
+	}
+	var env struct {
+		Change *DiagnoseConfigChange `json:"change"`
+	}
+	if err := json.Unmarshal([]byte(evidence), &env); err != nil || env.Change == nil {
+		return nil // not an actionized proposal — nothing to classify
+	}
+	if a.IsTradingSwarm == nil {
+		// Fail-open: without the classifier we cannot tell a trading swarm from
+		// a non-trading one, so refusing here would reject EVERY detector
+		// proposal (the common, legitimate non-trading case that is the whole
+		// point of the tuning loop), not just trading ones — strictly worse than
+		// the hole. Safe to skip because the PRIMARY guard, the detector-side
+		// exclusion (service.costTuningSwarmMap), calls the package-level
+		// isTradingSwarm DIRECTLY, not this injected field — so a nil here never
+		// disables the primary exclusion. WARN so an unwired classifier in a real
+		// container is loud, not silent (design D3 / review-20260724-3386 #2).
+		a.Logger.Warn().Str("swarm", env.Change.Swarm).
+			Msg("control-plane: trading classifier unwired; applier-side trading refusal skipped")
+		return nil
+	}
+	if a.IsTradingSwarm(env.Change.Swarm) {
+		// The high-severity event: an actual refusal. Log it independently of the
+		// returned sentinel so it is observable beyond the operator CLI/UI
+		// (review-20260724-3386 #3).
+		a.Logger.Warn().Str("swarm", env.Change.Swarm).Str("kind", env.Change.Kind).
+			Msg("control-plane: refusing to apply a cost/quality-detector proposal to a trading swarm")
+		return fmt.Errorf("%w: swarm %q", ErrTradingSwarmRefused, env.Change.Swarm)
+	}
+	return nil
 }
 
 // RevalidateChange is the apply-time semantic re-check (design §4.5, review

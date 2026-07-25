@@ -529,7 +529,7 @@ func (s *Server) uiAnswerCheckpoint(ctx context.Context, task *persistence.Task,
 		}
 		raw := strings.TrimSpace(r.FormValue("budget_usd"))
 		reqBudget, perr := strconv.ParseFloat(raw, 64)
-		if perr != nil || reqBudget <= 0 {
+		if perr != nil || !budget.ValidTaskBudgetUSD(reqBudget) {
 			return "budget-value-required"
 		}
 		budgetNewUSD, budgetClampHit = s.clampTaskBudget(task.ProjectID, reqBudget)

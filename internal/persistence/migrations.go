@@ -5755,4 +5755,55 @@ ALTER TABLE execution_step_outcomes DROP COLUMN IF EXISTS untrusted_sources;
 ALTER TABLE execution_step_outcomes DROP COLUMN IF EXISTS requires_review;
 `,
 	},
+	{
+		Version: 138,
+		Name:    "cost_tuning_canaries_and_proposal_regressed_status",
+		// Cost/quality canary + regression auto-rollback guard (§D,
+		// https://docs.vornik.io).
+		//
+		// 1. New cost_tuning_canaries table (design §4.3): one row per applied
+		//    cost-tuning proposal, the SINGLE source of trip-prevention +
+		//    cooldown. A PARTIAL index on status='open' powers the EVALUATE work
+		//    set + the detector's open-canary skip. `baseline` JSONB is the
+		//    immutable pre-apply quality snapshot captured at open.
+		// 2. Relax the control_plane_proposals status CHECK to admit REGRESSED
+		//    (design §4.4) — the audit badge for a canary-tripped auto-rollback.
+		//    Follows the migration-129 drop/recreate precedent; the constraint
+		//    name is Postgres's default for the unnamed inline column CHECK.
+		Up: `
+CREATE TABLE IF NOT EXISTS cost_tuning_canaries (
+    proposal_id    TEXT PRIMARY KEY,
+    swarm_id       TEXT NOT NULL,
+    role           TEXT NOT NULL,
+    knob           TEXT NOT NULL,
+    project_ids    JSONB NOT NULL DEFAULT '[]'::jsonb,
+    workflow_ids   JSONB NOT NULL DEFAULT '[]'::jsonb,
+    applied_at     TIMESTAMPTZ NOT NULL,
+    baseline_start TIMESTAMPTZ NOT NULL,
+    window_until   TIMESTAMPTZ NOT NULL,
+    baseline       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status         TEXT NOT NULL
+                   CHECK (status IN ('open','passed','regressed','insufficient_data','superseded')),
+    reason         TEXT,
+    opened_at      TIMESTAMPTZ NOT NULL,
+    closed_at      TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_cost_tuning_canaries_open
+    ON cost_tuning_canaries (status) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS idx_cost_tuning_canaries_swarm_role
+    ON cost_tuning_canaries (swarm_id, role);
+
+ALTER TABLE control_plane_proposals DROP CONSTRAINT IF EXISTS control_plane_proposals_status_check;
+ALTER TABLE control_plane_proposals ADD CONSTRAINT control_plane_proposals_status_check
+    CHECK (status IN ('DRAFT','APPROVED','REJECTED','APPLIED','ROLLED_BACK','REGRESSED'));
+`,
+		Down: `
+ALTER TABLE control_plane_proposals DROP CONSTRAINT IF EXISTS control_plane_proposals_status_check;
+ALTER TABLE control_plane_proposals ADD CONSTRAINT control_plane_proposals_status_check
+    CHECK (status IN ('DRAFT','APPROVED','REJECTED','APPLIED','ROLLED_BACK'));
+DROP INDEX IF EXISTS idx_cost_tuning_canaries_swarm_role;
+DROP INDEX IF EXISTS idx_cost_tuning_canaries_open;
+DROP TABLE IF EXISTS cost_tuning_canaries;
+`,
+	},
 }

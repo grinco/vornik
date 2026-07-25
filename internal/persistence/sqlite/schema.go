@@ -1248,7 +1248,7 @@ CREATE TABLE IF NOT EXISTS control_plane_proposals (
     rationale          TEXT NOT NULL DEFAULT '',
     evidence           TEXT NOT NULL DEFAULT '',
     status             TEXT NOT NULL DEFAULT 'DRAFT'
-                         CHECK (status IN ('DRAFT','APPROVED','REJECTED','APPLIED','ROLLED_BACK')),
+                         CHECK (status IN ('DRAFT','APPROVED','REJECTED','APPLIED','ROLLED_BACK','REGRESSED')),
     proposed_by        TEXT NOT NULL DEFAULT '',
     approver           TEXT NOT NULL DEFAULT '',
     pre_apply_snapshot TEXT NOT NULL DEFAULT '',
@@ -1263,6 +1263,38 @@ CREATE TABLE IF NOT EXISTS control_plane_proposals (
 );
 CREATE INDEX IF NOT EXISTS idx_cp_proposals_status ON control_plane_proposals (status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cp_proposals_project ON control_plane_proposals (project_id);
+
+-- ============================================================
+-- cost_tuning_canaries — cost/quality canary + regression auto-rollback
+-- guard (§D, https://docs.vornik.io
+-- design.md). Postgres parity: migration 138. One row per applied cost-tuning
+-- proposal; the SINGLE source of trip-prevention + cooldown (crash-safe,
+-- design §4.5). project_ids/workflow_ids/baseline are JSON TEXT (sqliteStringArray
+-- + a marshalled baseline blob). The PARTIAL index on status='open' mirrors the
+-- Postgres partial index (SQLite supports partial indexes — parity asserted in
+-- repotest, design I5).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS cost_tuning_canaries (
+    proposal_id    TEXT PRIMARY KEY,
+    swarm_id       TEXT NOT NULL,
+    role           TEXT NOT NULL,
+    knob           TEXT NOT NULL,
+    project_ids    TEXT NOT NULL DEFAULT '[]',
+    workflow_ids   TEXT NOT NULL DEFAULT '[]',
+    applied_at     TEXT NOT NULL,
+    baseline_start TEXT NOT NULL,
+    window_until   TEXT NOT NULL,
+    baseline       TEXT NOT NULL DEFAULT '{}',
+    status         TEXT NOT NULL
+                   CHECK (status IN ('open','passed','regressed','insufficient_data','superseded')),
+    reason         TEXT,
+    opened_at      TEXT NOT NULL,
+    closed_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cost_tuning_canaries_open
+    ON cost_tuning_canaries (status) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS idx_cost_tuning_canaries_swarm_role
+    ON cost_tuning_canaries (swarm_id, role);
 
 -- ============================================================
 -- execution_injected_skills — which approved skills were injected

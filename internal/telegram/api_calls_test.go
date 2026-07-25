@@ -79,6 +79,17 @@ func TestGetUpdates_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestGetUpdates_RejectsOversizedResponse(t *testing.T) {
+	srv, _ := scriptedTelegramServer(t, map[string]string{
+		"/getUpdates": strings.Repeat("x", maxTelegramUpdatesResponseBytes+1),
+	})
+	defer srv.Close()
+	bot := makeBotWithTransport(t, srv.URL)
+	if _, err := bot.getUpdates(context.Background(), 0); err == nil {
+		t.Fatal("expected oversized Telegram response to be rejected")
+	}
+}
+
 // --- sendChatAction --------------------------------------------------
 
 func TestSendChatAction_DispatchesPOST(t *testing.T) {

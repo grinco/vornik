@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/scheduler"
 	"vornik.io/vornik/internal/taintlineage"
@@ -377,7 +378,7 @@ func (s *Server) AnswerCheckpoint(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reqBudget, ok := budgetFromAnswerMetadata(req.Metadata)
-		if !ok || reqBudget <= 0 {
+		if !ok || !budget.ValidTaskBudgetUSD(reqBudget) {
 			respondError(w, http.StatusBadRequest, "VALIDATION_ERROR",
 				"budget_usd (strictly positive) is required in the answer metadata to increase the budget")
 			return

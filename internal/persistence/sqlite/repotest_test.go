@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"vornik.io/vornik/internal/persistence/repotest"
@@ -51,6 +52,40 @@ func TestSkillRepository_Contract(t *testing.T) {
 func TestProposalRepository_Contract(t *testing.T) {
 	db := newTestDB(t)
 	repotest.RunProposalSuite(t, sqlite.NewProposalRepository(db.DB))
+}
+
+// TestCostTuningCanaryRepository_Contract — the cost/quality canary guard's row
+// store (design 2026-07-24 §4.3). Both backends must agree on the open/finalize
+// lifecycle, the cooldown query keyed (swarm,role,knob), and the baseline JSON
+// round-trip.
+func TestCostTuningCanaryRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunCostTuningCanarySuite(t, sqlite.NewCostTuningCanaryRepository(db.DB))
+}
+
+// TestCostAutoApplyTrust_Contract — the cost-auto-apply trust primitives that
+// span the canary + proposal repos (auto-apply design D1/D8): LastApplyActorForKnob
+// (join) and StagePreApplySnapshot.
+func TestCostAutoApplyTrust_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunCostAutoApplyTrustSuite(t, sqlite.NewCostTuningCanaryRepository(db.DB), sqlite.NewProposalRepository(db.DB))
+}
+
+// TestCostTuningCanaries_PartialIndex_SQLite asserts the WHERE status='open'
+// partial index exists on the SQLite side too (design I5 parity — SQLite
+// supports partial indexes).
+func TestCostTuningCanaries_PartialIndex_SQLite(t *testing.T) {
+	db := newTestDB(t)
+	var sqlText string
+	err := db.DB.QueryRowContext(context.Background(), `
+		SELECT sql FROM sqlite_master
+		WHERE type='index' AND name='idx_cost_tuning_canaries_open'`).Scan(&sqlText)
+	if err != nil {
+		t.Fatalf("partial index lookup: %v", err)
+	}
+	if !strings.Contains(sqlText, "status") || !strings.Contains(sqlText, "'open'") {
+		t.Fatalf("idx_cost_tuning_canaries_open is not the expected partial index: %q", sqlText)
+	}
 }
 
 // TestExecutionInjectedSkillRepository_Contract — the execution→skill

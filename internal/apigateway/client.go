@@ -16,6 +16,9 @@ var (
 	// rejects it as a conservative pre-filter before any network call; the
 	// gateway route allowlist remains authoritative (design §5, C2 / review F2).
 	ErrInvalidPath = errors.New("query_api: path must not contain '..'")
+	// ErrGatewayRequest is a transport/build failure whose underlying error may
+	// contain the full request URL and query. Callers surface only this sentinel.
+	ErrGatewayRequest = errors.New("gateway request failed")
 )
 
 // Request is a provider call the tool asks the gateway to make.

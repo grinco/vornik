@@ -134,7 +134,21 @@ type Container struct {
 	// workers' per-tick closures read it via liveSelfHealEnabled, falling back
 	// to the boot-time c.Config (which hot-reload deliberately never mutates).
 	cpSelfHealLive atomic.Pointer[bool]
-	Logger         zerolog.Logger
+	// cpCanaryEnabledLive is the hot-reloadable live value of
+	// control_plane.cost_tuning_canary.enabled (design 2026-07-24 §9 #2). nil
+	// until the first hot-reload stages a value; the canary guard's per-tick +
+	// trip-time closure reads it via liveCanaryEnabled, falling back to the
+	// boot-time c.Config. This is the operator's instant kill-switch on
+	// auto-rollback — re-checked at trip time so a mid-tick brake suppresses a
+	// pending rollback, not just future ticks.
+	cpCanaryEnabledLive atomic.Pointer[bool]
+	// cpCostAutoApplyEnabledLive is the hot-reloadable live value of
+	// control_plane.cost_tuning_auto_apply.enabled (auto-apply design D5). nil
+	// until the first hot-reload; the auto-apply worker reads it via
+	// liveCostAutoApplyEnabled (per-tick AND at apply time), so flipping the flag
+	// + reload brakes auto-apply instantly without a restart.
+	cpCostAutoApplyEnabledLive atomic.Pointer[bool]
+	Logger                     zerolog.Logger
 	// DB is the raw *sql.DB used for backend-agnostic call sites
 	// (state collectors, retention sweeper, memory.New, doctor
 	// handlers). backend owns the lifecycle + driver-specific

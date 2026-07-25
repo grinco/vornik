@@ -3,11 +3,31 @@ package budget
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 )
+
+func TestValidTaskBudgetUSD(t *testing.T) {
+	for _, tc := range []struct {
+		value float64
+		want  bool
+	}{
+		{1, true},
+		{0.01, true},
+		{0, false},
+		{-1, false},
+		{math.NaN(), false},
+		{math.Inf(1), false},
+		{math.Inf(-1), false},
+	} {
+		if got := ValidTaskBudgetUSD(tc.value); got != tc.want {
+			t.Errorf("ValidTaskBudgetUSD(%v) = %v, want %v", tc.value, got, tc.want)
+		}
+	}
+}
 
 // stubTaskSpend is a TaskSpendRepo double returning a fixed spend / error.
 type stubTaskSpend struct {

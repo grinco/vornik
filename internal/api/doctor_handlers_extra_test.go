@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -585,4 +586,28 @@ func TestRunDoctor_FixQueryParamParsed(t *testing.T) {
 			assert.NotEmpty(t, report.Summary)
 		})
 	}
+}
+
+// TestRunReportReadOnly_IncludesAgentLLMTopology is a regression test for
+// M-3 (final-review fix wave): the support/"install stuck" report bundle
+// (RunReportReadOnly) omitted the agent_llm_topology check even though it's
+// pure-config (no network probe, no container run) and guards the #1
+// fresh-install failure mode. It must be surfaced here so support bundles
+// catch a misconfigured agent_llm.endpoint without the operator having to
+// run the full (side-effecting) doctor pass.
+func TestRunReportReadOnly_IncludesAgentLLMTopology(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	h := NewDoctorHandlers(closedDB(t))
+
+	report := h.RunReportReadOnly(context.Background())
+
+	assert.NotEmpty(t, report.Checks, "must contain at least one check")
+	found := false
+	for _, c := range report.Checks {
+		if c.Name == "agent_llm_topology" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "RunReportReadOnly must include the agent_llm_topology check")
 }

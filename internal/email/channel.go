@@ -292,6 +292,12 @@ type Channel struct {
 	recvMu sync.RWMutex
 	recv   conversation.Receiver
 
+	// deliveryFailures counts consecutive Receive failures per IMAP UID so a
+	// message that fails deterministically is eventually dropped instead of
+	// being retried forever. See maxDeliveryAttemptsPerMessage.
+	deliveryMu       sync.Mutex
+	deliveryFailures map[string]int
+
 	sessionsMu sync.Mutex
 	sessions   map[string]*sessionEntry
 
@@ -607,6 +613,14 @@ func (c *Channel) tryReconnectAndRetry(ctx context.Context, originalErr error, m
 // record session → forward to the Receiver → mark message seen on
 // the IMAP server so the next poll cycle doesn't re-deliver it.
 func (c *Channel) handleRawMessage(ctx context.Context, raw RawMessage) {
+	if raw.Oversized {
+		c.logger.Warn().
+			Str("uid", raw.UID).
+			Int("max_bytes", maxInboundMessageBytes).
+			Msg("email: inbound message exceeds size limit; dropping")
+		c.markSeenBestEffort(ctx, raw.UID)
+		return
+	}
 	parsed, err := ParseRFC5322(raw.Body)
 	if err != nil {
 		c.logger.Warn().Err(err).Str("uid", raw.UID).Msg("email: RFC 5322 parse failed; dropping")
@@ -683,13 +697,74 @@ func (c *Channel) handleRawMessage(ctx context.Context, raw RawMessage) {
 		return
 	}
 	if err := recv.Receive(ctx, msg); err != nil {
-		c.logger.Warn().Err(err).Str("uid", raw.UID).Msg("email: Receiver.Receive returned error")
 		// Do NOT mark seen — let the next poll cycle re-attempt.
 		// (Mirrors the GitHub channel's silent-retry posture for
 		// transient downstream failures.)
+		//
+		// BUT bound the retries. FetchUnseen caps each poll at
+		// maxUnseenMessagesPerPoll oldest-first UIDs, so a message that fails
+		// Receive deterministically would stay unseen forever and permanently
+		// starve every message behind it (audit 2026-07-25 follow-up: the
+		// batch cap turned an infinite retry into inbox-wide head-of-line
+		// blocking). After maxDeliveryAttemptsPerMessage cycles we drop it
+		// loudly so the mailbox drains.
+		attempts := c.noteDeliveryFailure(raw.UID)
+		if attempts >= maxDeliveryAttemptsPerMessage {
+			c.logger.Error().Err(err).
+				Str("uid", raw.UID).
+				Int("attempts", attempts).
+				Msg("email: delivery failed repeatedly; marking seen and dropping so later messages are not starved")
+			c.forgetDeliveryFailure(raw.UID)
+			c.markSeenBestEffort(ctx, raw.UID)
+			return
+		}
+		c.logger.Warn().Err(err).
+			Str("uid", raw.UID).
+			Int("attempts", attempts).
+			Int("max_attempts", maxDeliveryAttemptsPerMessage).
+			Msg("email: Receiver.Receive returned error; retrying on the next poll cycle")
 		return
 	}
+	c.forgetDeliveryFailure(raw.UID)
 	c.markSeenBestEffort(ctx, raw.UID)
+}
+
+// maxDeliveryAttemptsPerMessage bounds how many poll cycles a single message
+// may fail Receive before it is marked seen and dropped. Retrying forever is
+// only safe when the rest of the mailbox can still be fetched; the
+// maxUnseenMessagesPerPoll batch cap removed that property.
+const maxDeliveryAttemptsPerMessage = 5
+
+// maxTrackedDeliveryFailures bounds the failure map. Entries are removed on
+// success or on drop, so this only guards the pathological case of UIDs that
+// fail once and are never seen again (e.g. deleted from the mailbox
+// server-side). Hitting it resets the counters — retrying a few extra times is
+// strictly safer than growing without bound.
+const maxTrackedDeliveryFailures = 1024
+
+// noteDeliveryFailure records a failed delivery for uid and returns the running
+// consecutive-failure count (1 on the first failure).
+func (c *Channel) noteDeliveryFailure(uid string) int {
+	c.deliveryMu.Lock()
+	defer c.deliveryMu.Unlock()
+	if c.deliveryFailures == nil {
+		c.deliveryFailures = make(map[string]int)
+	}
+	if len(c.deliveryFailures) >= maxTrackedDeliveryFailures {
+		c.logger.Warn().Int("tracked", len(c.deliveryFailures)).
+			Msg("email: delivery-failure map at capacity; resetting retry counters")
+		c.deliveryFailures = make(map[string]int)
+	}
+	c.deliveryFailures[uid]++
+	return c.deliveryFailures[uid]
+}
+
+// forgetDeliveryFailure clears uid's failure count after a successful delivery
+// or a permanent drop.
+func (c *Channel) forgetDeliveryFailure(uid string) {
+	c.deliveryMu.Lock()
+	defer c.deliveryMu.Unlock()
+	delete(c.deliveryFailures, uid)
 }
 
 // markSeenBestEffort marks an IMAP message as Seen, logging but

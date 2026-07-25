@@ -46,6 +46,7 @@ import (
 	"vornik.io/vornik/internal/retention"
 	"vornik.io/vornik/internal/slack"
 	"vornik.io/vornik/internal/taskcreate"
+	"vornik.io/vornik/internal/telemetryclient"
 	"vornik.io/vornik/internal/templates"
 	"vornik.io/vornik/internal/tradingauth"
 	"vornik.io/vornik/internal/ui"
@@ -815,6 +816,14 @@ func (c *Container) initHTTPServer() error {
 		}
 		return c.ConfigReloader.Reload()
 	}))
+	telemetryEnabled, _, telemetryErr := c.Config.Telemetry.Resolve(os.Getenv("VORNIK_TELEMETRY"))
+	if telemetryErr != nil {
+		c.Logger.Warn().Err(telemetryErr).Msg("anonymous telemetry disabled by invalid environment setting")
+	}
+	apiOpts = append(apiOpts, api.WithLifecycleTelemetry(
+		telemetryclient.ProductionClient(telemetryEnabled && telemetryErr == nil),
+		c.Version(),
+	))
 	// Workflow rollbacker — Slice 5 of the memetic-workflows arc.
 	// Mirror of the applier wiring; nil-safe at the endpoint.
 	workflowRollbacker := newWorkflowRollbacker(
@@ -1374,6 +1383,8 @@ func (c *Container) initHTTPServer() error {
 	}
 	uiOpts := []ui.ServerOption{
 		ui.WithLogger(c.Logger.With().Str("component", "ui").Logger()),
+		ui.WithVersionFunc(c.Version), // page-footer changelog link (lazy — SetVersion runs after this server is built)
+
 		ui.WithTaskRepository(c.repos.Tasks),
 		// Task 5.4: the Guided Integrations Hub's probe/save counters.
 		// c.integrationsMetrics is nil on pass 1 (no observability yet) and
@@ -2356,26 +2367,14 @@ func templateModelIDs(ctx context.Context, provider chat.Provider) ([]string, er
 	if provider == nil {
 		return nil, fmt.Errorf("chat provider not configured")
 	}
-	var result chat.ListModelsResult
-	switch p := provider.(type) {
-	case *chat.Router:
-		result = p.ListModels(ctx)
-	case chat.ModelAggregator:
-		if agg, ok := p.ListModelsAggregated(ctx); ok {
-			result = agg
-		} else if models, err := p.ListModels(ctx); err == nil {
-			result = chat.ListModelsResult{Providers: map[string][]chat.ModelInfo{"chat": models}}
-		} else {
-			return nil, err
-		}
-	case chat.ModelLister:
-		models, err := p.ListModels(ctx)
-		if err != nil {
-			return nil, err
-		}
-		result = chat.ListModelsResult{Providers: map[string][]chat.ModelInfo{"chat": models}}
-	default:
+	// chat.AggregateModels walks the decorator chain, so a router wrapped in
+	// FallbackProvider/LoggingProvider stays discoverable. See chat.Unwrapper.
+	result, answered := chat.AggregateModels(ctx, provider)
+	if !answered {
 		return nil, fmt.Errorf("chat provider does not implement model discovery")
+	}
+	for name, msg := range result.Errors {
+		return nil, fmt.Errorf("model discovery failed for %s: %s", name, msg)
 	}
 	ids := make([]string, 0, 16)
 	for _, models := range result.Providers {

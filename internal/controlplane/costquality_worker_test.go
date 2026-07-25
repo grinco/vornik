@@ -26,9 +26,11 @@ func (f *fakeProposals) List(context.Context, persistence.ProposalListFilter) ([
 func (f *fakeProposals) GetByID(context.Context, string) (*persistence.ControlPlaneProposal, error) {
 	return nil, nil
 }
-func (f *fakeProposals) SetStatus(context.Context, string, string, string) error   { return nil }
-func (f *fakeProposals) MarkApplied(context.Context, string, string, string) error { return nil }
-func (f *fakeProposals) MarkRolledBack(context.Context, string) error              { return nil }
+func (f *fakeProposals) SetStatus(context.Context, string, string, string) error     { return nil }
+func (f *fakeProposals) MarkApplied(context.Context, string, string, string) error   { return nil }
+func (f *fakeProposals) StagePreApplySnapshot(context.Context, string, string) error { return nil }
+func (f *fakeProposals) MarkRolledBack(context.Context, string) error                { return nil }
+func (f *fakeProposals) MarkRegressed(context.Context, string, string) error         { return nil }
 
 type fakeQual struct{ rep quality.Report }
 
@@ -107,5 +109,78 @@ func TestCostQualityWorkerDisabledIsNoop(t *testing.T) {
 	newCQWorker(fp, true, false).tick(context.Background())
 	if len(fp.created) != 0 {
 		t.Errorf("created %d proposals, want 0 (disabled)", len(fp.created))
+	}
+}
+
+// Detector skip (design §7): an OPEN canary on (swarm,role) suppresses a fresh
+// proposal.
+func TestCostQualityWorkerSkipsWhenCanaryOpen(t *testing.T) {
+	fp := &fakeProposals{}
+	w := newCQWorker(fp, true, true)
+	canaries := newFakeCanaryRepo()
+	canaries.rows["existing"] = &persistence.CostTuningCanary{
+		ProposalID: "existing", SwarmID: "assistant-swarm", Role: "researcher",
+		Knob: promptTokenBudgetEnvKey, Status: persistence.CanaryStatusOpen,
+	}
+	w.Canaries = canaries
+	w.CooldownDuration = 336 * time.Hour
+	w.tick(context.Background())
+	if len(fp.created) != 0 {
+		t.Fatalf("open canary must suppress proposals, got %d", len(fp.created))
+	}
+}
+
+// Detector skip (design §7): an active cooldown on (swarm,role,knob) suppresses.
+func TestCostQualityWorkerSkipsWhenCooldownActive(t *testing.T) {
+	fp := &fakeProposals{}
+	w := newCQWorker(fp, true, true)
+	canaries := newFakeCanaryRepo()
+	closed := time.Now()
+	canaries.rows["regr"] = &persistence.CostTuningCanary{
+		ProposalID: "regr", SwarmID: "assistant-swarm", Role: "researcher",
+		Knob: promptTokenBudgetEnvKey, Status: persistence.CanaryStatusRegressed, ClosedAt: &closed,
+	}
+	w.Canaries = canaries
+	w.CooldownDuration = 336 * time.Hour
+	w.tick(context.Background())
+	if len(fp.created) != 0 {
+		t.Fatalf("active cooldown must suppress proposals, got %d", len(fp.created))
+	}
+}
+
+// A cooldown on a DIFFERENT knob does NOT suppress this knob (§7: keyed
+// swarm,role,knob).
+func TestCostQualityWorkerCooldownDifferentKnobUnaffected(t *testing.T) {
+	fp := &fakeProposals{}
+	w := newCQWorker(fp, true, true)
+	canaries := newFakeCanaryRepo()
+	closed := time.Now()
+	canaries.rows["regr"] = &persistence.CostTuningCanary{
+		ProposalID: "regr", SwarmID: "assistant-swarm", Role: "researcher",
+		Knob: "SOME_OTHER_KNOB", Status: persistence.CanaryStatusRegressed, ClosedAt: &closed,
+	}
+	w.Canaries = canaries
+	w.CooldownDuration = 336 * time.Hour
+	w.tick(context.Background())
+	if len(fp.created) != 1 {
+		t.Fatalf("a different-knob cooldown must NOT suppress this knob, got %d", len(fp.created))
+	}
+}
+
+// insufficient_data / passed canaries do NOT block the detector (§7).
+func TestCostQualityWorkerInsufficientDataDoesNotBlock(t *testing.T) {
+	fp := &fakeProposals{}
+	w := newCQWorker(fp, true, true)
+	canaries := newFakeCanaryRepo()
+	closed := time.Now()
+	canaries.rows["insuf"] = &persistence.CostTuningCanary{
+		ProposalID: "insuf", SwarmID: "assistant-swarm", Role: "researcher",
+		Knob: promptTokenBudgetEnvKey, Status: persistence.CanaryStatusInsufficientData, ClosedAt: &closed,
+	}
+	w.Canaries = canaries
+	w.CooldownDuration = 336 * time.Hour
+	w.tick(context.Background())
+	if len(fp.created) != 1 {
+		t.Fatalf("insufficient_data must not block; got %d proposals", len(fp.created))
 	}
 }

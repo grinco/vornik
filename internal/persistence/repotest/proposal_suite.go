@@ -26,6 +26,54 @@ func RunProposalSuite(t *testing.T, repo persistence.ProposalRepository) {
 	t.Run("apply_fields_round_trip", func(t *testing.T) { proposalApplyFields(t, repo) })
 	t.Run("MarkApplied_only_from_approved", func(t *testing.T) { proposalMarkApplied(t, repo) })
 	t.Run("MarkRolledBack_only_from_applied", func(t *testing.T) { proposalMarkRolledBack(t, repo) })
+	t.Run("MarkRegressed_from_applied", func(t *testing.T) { proposalMarkRegressedFromApplied(t, repo) })
+	t.Run("MarkRegressed_from_rolled_back", func(t *testing.T) { proposalMarkRegressedFromRolledBack(t, repo) })
+	t.Run("MarkRegressed_rejects_draft", func(t *testing.T) { proposalMarkRegressedRejectsDraft(t, repo) })
+}
+
+// proposalMarkRegressedFromApplied pins APPLIED → REGRESSED (design §4.4).
+func proposalMarkRegressedFromApplied(t *testing.T, repo persistence.ProposalRepository) {
+	ctx := context.Background()
+	mustCreateProposal(t, repo, newTestProposal("mreg-ap", "p1"))
+	_ = repo.SetStatus(ctx, "mreg-ap", persistence.ProposalStatusApproved, "human")
+	_ = repo.MarkApplied(ctx, "mreg-ap", "vadim", "snap")
+	if err := repo.MarkRegressed(ctx, "mreg-ap", "A1 quality regressed"); err != nil {
+		t.Fatalf("MarkRegressed(APPLIED): %v", err)
+	}
+	got, _ := repo.GetByID(ctx, "mreg-ap")
+	if got.Status != persistence.ProposalStatusRegressed {
+		t.Fatalf("expected REGRESSED, got %s", got.Status)
+	}
+}
+
+// proposalMarkRegressedFromRolledBack pins ROLLED_BACK → REGRESSED — the
+// transition the canary guard's trip path actually executes (Rollback first,
+// then the best-effort badge). Design §4.4/§4.5 C2.
+func proposalMarkRegressedFromRolledBack(t *testing.T, repo persistence.ProposalRepository) {
+	ctx := context.Background()
+	mustCreateProposal(t, repo, newTestProposal("mreg-rb", "p1"))
+	_ = repo.SetStatus(ctx, "mreg-rb", persistence.ProposalStatusApproved, "human")
+	_ = repo.MarkApplied(ctx, "mreg-rb", "vadim", "snap")
+	if err := repo.MarkRolledBack(ctx, "mreg-rb"); err != nil {
+		t.Fatalf("MarkRolledBack: %v", err)
+	}
+	if err := repo.MarkRegressed(ctx, "mreg-rb", "canary trip"); err != nil {
+		t.Fatalf("MarkRegressed(ROLLED_BACK): %v", err)
+	}
+	got, _ := repo.GetByID(ctx, "mreg-rb")
+	if got.Status != persistence.ProposalStatusRegressed {
+		t.Fatalf("expected REGRESSED, got %s", got.Status)
+	}
+}
+
+// proposalMarkRegressedRejectsDraft pins the guard: neither APPLIED nor
+// ROLLED_BACK → ErrProposalNotRegressable.
+func proposalMarkRegressedRejectsDraft(t *testing.T, repo persistence.ProposalRepository) {
+	ctx := context.Background()
+	mustCreateProposal(t, repo, newTestProposal("mreg-dr", "p1"))
+	if err := repo.MarkRegressed(ctx, "mreg-dr", "nope"); !errors.Is(err, persistence.ErrProposalNotRegressable) {
+		t.Fatalf("MarkRegressed on DRAFT must fail ErrProposalNotRegressable, got %v", err)
+	}
 }
 
 func proposalApplyFields(t *testing.T, repo persistence.ProposalRepository) {

@@ -71,6 +71,9 @@ const (
 	// A task can never accrue more than maxAgentAPICallsPerTask agent API
 	// rows (the budget refuses further calls), so this is a safe ceiling.
 	agentAPIBudgetSeedPageSize = maxAgentAPICallsPerTask*2 + 16
+	// maxTrackedAgentAPITasks bounds daemon-resident counters. Evicted tasks
+	// safely reconstruct from persisted audit on their next call.
+	maxTrackedAgentAPITasks = 10_000
 	// maxAuditPathLen caps the raw request path persisted in the audit row
 	// (F1). Unlike query/body (hashed — the primary exfil channel), the path
 	// is kept verbatim for operator observability (it is the called route),
@@ -122,8 +125,9 @@ type agentAPIAuditPayload struct {
 
 // apiTaskSpend is the running per-task budget counter.
 type apiTaskSpend struct {
-	calls int
-	bytes int64
+	calls    int
+	bytes    int64
+	lastUsed time.Time
 }
 
 // apiBudgetTracker is the daemon-resident per-task budget (design §5, §5c).
@@ -143,7 +147,7 @@ type apiBudgetTracker struct {
 // hammer the gateway with refused calls just as readily as accepted ones, so
 // the call-count ceiling must bound both. Only response bytes (added via
 // addBytes on success) count toward the byte ceiling.
-func (b *apiBudgetTracker) reserveCall(taskID string, seed func() apiTaskSpend) (string, bool) {
+func (b *apiBudgetTracker) reserveCall(taskID string, seed func() (apiTaskSpend, error)) (string, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.seen == nil {
@@ -151,10 +155,24 @@ func (b *apiBudgetTracker) reserveCall(taskID string, seed func() apiTaskSpend) 
 	}
 	sp := b.seen[taskID]
 	if sp == nil {
-		s := seed()
+		s, err := seed()
+		if err != nil {
+			return "per-task API budget state unavailable; refusing the call until persisted usage can be verified.", false
+		}
+		if len(b.seen) >= maxTrackedAgentAPITasks {
+			var oldestID string
+			var oldest time.Time
+			for id, candidate := range b.seen {
+				if oldestID == "" || candidate.lastUsed.Before(oldest) {
+					oldestID, oldest = id, candidate.lastUsed
+				}
+			}
+			delete(b.seen, oldestID)
+		}
 		sp = &s
 		b.seen[taskID] = sp
 	}
+	sp.lastUsed = time.Now()
 	if sp.calls >= maxAgentAPICallsPerTask {
 		return fmt.Sprintf(
 			"per-task API call budget exhausted (%d calls); no further query_api/list_apis calls will run for this task.",
@@ -178,6 +196,7 @@ func (b *apiBudgetTracker) addBytes(taskID string, n int64) {
 	defer b.mu.Unlock()
 	if sp := b.seen[taskID]; sp != nil {
 		sp.bytes += n
+		sp.lastUsed = time.Now()
 	}
 }
 
@@ -294,14 +313,14 @@ func (s *Server) toolResultMaxBytes() int {
 }
 
 // deriveTaskAPISpend re-derives a task's spent budget from the persisted
-// audit rows (design §5c). Best-effort: a nil repo, an empty task, or a
-// transient store error returns a zero seed — the per-task project-bound key
-// still bounds blast radius, and the next successful call re-seeds. Only
-// agent rows (our two tool names, TaskID matched) are summed; chat rows carry
-// an empty TaskID and are excluded by the filter.
-func (s *Server) deriveTaskAPISpend(ctx context.Context, taskID string) apiTaskSpend {
+// audit rows (design §5c). A missing repository, empty task ID, or transient
+// store error fails closed: caching a zero seed would let a restart or storage
+// outage reset the task's call and byte ceilings. Only agent rows (our two tool
+// names, TaskID matched) are summed; chat rows carry an empty TaskID and are
+// excluded by the filter.
+func (s *Server) deriveTaskAPISpend(ctx context.Context, taskID string) (apiTaskSpend, error) {
 	if s.toolAuditRepo == nil || taskID == "" {
-		return apiTaskSpend{}
+		return apiTaskSpend{}, errors.New("tool audit repository unavailable")
 	}
 	rows, err := s.toolAuditRepo.List(ctx, persistence.ToolAuditFilter{
 		TaskID:   &taskID,
@@ -309,8 +328,8 @@ func (s *Server) deriveTaskAPISpend(ctx context.Context, taskID string) apiTaskS
 	})
 	if err != nil {
 		s.logger.Warn().Err(err).Str("task_id", taskID).
-			Msg("agent api budget: audit re-derivation failed; seeding from zero")
-		return apiTaskSpend{}
+			Msg("agent api budget: audit re-derivation failed; refusing call")
+		return apiTaskSpend{}, err
 	}
 	var spend apiTaskSpend
 	for _, row := range rows {
@@ -346,7 +365,7 @@ func (s *Server) deriveTaskAPISpend(ctx context.Context, taskID string) apiTaskS
 			// consumed live, so excluded from the re-derived seed.
 		}
 	}
-	return spend
+	return spend, nil
 }
 
 // hashAndLen returns the hex SHA-256 of b and its byte length. Used to record
@@ -469,7 +488,7 @@ func (s *Server) reserveAgentBudget(r *http.Request, actx agentAPIContext) (stri
 	if actx.taskID == "" {
 		return "", true
 	}
-	return s.apiBudget.reserveCall(actx.taskID, func() apiTaskSpend {
+	return s.apiBudget.reserveCall(actx.taskID, func() (apiTaskSpend, error) {
 		return s.deriveTaskAPISpend(r.Context(), actx.taskID)
 	})
 }
@@ -827,12 +846,16 @@ func capToolResultBytes(s string, maxBytes int) (string, bool) {
 	if maxBytes <= 0 || len(s) <= maxBytes {
 		return s, false
 	}
-	cut := maxBytes
+	marker := fmt.Sprintf("\n\n[truncated: response exceeded %d bytes]", maxBytes)
+	if maxBytes <= len(marker) {
+		return marker[:maxBytes], true
+	}
+	cut := maxBytes - len(marker)
 	// Back off to a rune boundary so we don't split a multibyte sequence.
 	for cut > 0 && !utf8RuneStart(s[cut]) {
 		cut--
 	}
-	return s[:cut] + fmt.Sprintf("\n\n[truncated: response exceeded %d bytes]", maxBytes), true
+	return s[:cut] + marker, true
 }
 
 // utf8RuneStart reports whether b is the first byte of a UTF-8 rune (i.e. not

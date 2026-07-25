@@ -1,6 +1,7 @@
 package verifier
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -187,12 +188,30 @@ func verifyScorecardFloor(cfg Config, in Input) *Violation {
 	return nil
 }
 
-// evaluateFloorProposal applies the entry floor and protected-symbol
-// EXIT guard to a single proposal, returning the first Violation it
-// produces (and incrementing the rejection metric) or nil when the
-// proposal clears both. Split out of verifyScorecardFloor to keep that
-// function within the funlen budget.
-func evaluateFloorProposal(cfg Config, p floorProposal, entryCfg trading.EntryConfig, protected map[string]bool) *Violation {
+// floorVerdict is the disposition classifyFloorProposal assigns to one
+// proposal: keep it, soft-DROP it (a policy floor rejection — the tick still
+// proceeds), or HARD-fail the step (an integrity violation).
+type floorVerdict int
+
+const (
+	floorKeep floorVerdict = iota
+	floorDrop
+	floorHard
+)
+
+// classifyFloorProposal is the shared per-proposal decision used by BOTH the
+// scorecard_floor verifier (→ Violation) and FilterTradingProposals (→ drop/
+// hard). It applies the code-enforced entry floor + the protected-symbol EXIT
+// guard and returns the verdict, the reason label (for the metric), and a
+// human-readable detail. Pure: no metric/side effects (callers increment).
+//
+// Split (soft-drop design, 2026-07-25): floor policy rejections on OPENS
+// (below_min / missing_scores / stale / panel_incomplete / risk_off_long) are
+// DROP (the open is removed, the tick NO_ACTIONs); integrity violations
+// (unknown_action on an open, protected_symbol close) are HARD. A protected
+// symbol OPEN is NOT hard — it flows through the normal floor (keep if it
+// clears, drop if sub-floor); only closing/reducing a protected symbol is hard.
+func classifyFloorProposal(p floorProposal, entryCfg trading.EntryConfig, protected map[string]bool) (floorVerdict, string, string) {
 	hasScores := p.Scorecard != nil && p.Regime != nil
 	var total, componentCount int
 	var label string
@@ -203,12 +222,6 @@ func evaluateFloorProposal(cfg Config, p floorProposal, entryCfg trading.EntryCo
 		stale = p.Regime.Stale
 		componentCount = p.Regime.ComponentCount
 	}
-	// The real proposal schema carries no `side`; derive the floor's
-	// entry side from the authoritative intent+action pair. Only an OPEN
-	// maps to a gated side (BUY→long, SELL→short); a close (or any other
-	// intent) maps to "" so trading.EvaluateEntry treats it as a non-open
-	// and waves it through — closes are never floor-gated. Normalize
-	// casing fail-closed (an LLM emitting "Open"/"buy" must still gate).
 	intent := strings.ToLower(strings.TrimSpace(p.Intent))
 	action := strings.ToUpper(strings.TrimSpace(p.Action))
 	var side string
@@ -218,77 +231,159 @@ func evaluateFloorProposal(cfg Config, p floorProposal, entryCfg trading.EntryCo
 	case intent == "open" && action == "SELL":
 		side = "short"
 	default:
-		side = "" // close / unknown ⇒ non-open, not floor-gated
+		side = ""
 	}
-	// An OPEN whose action didn't normalize to BUY/SELL (e.g. "HOLD", an
-	// empty string, or "LONG") derives side=="" just like a close does —
-	// but it is NOT a close, so waving it through here would let a
-	// malformed/hallucinated open bypass the entire fail-closed floor.
-	// Reject it explicitly rather than letting the side=="" branch below
-	// treat it as a non-open.
+	// Malformed OPEN (action not BUY/SELL) — integrity violation, HARD (never
+	// silently waved through as a non-open).
 	if side == "" && intent == "open" {
-		incFloorRejected("unknown_action")
-		return &Violation{
-			VerifierName: nameOrDefault(cfg, "scorecard_floor"),
-			Type:         cfg.Type,
-			Detail: fmt.Sprintf(
-				"strategist proposed a %s open on %s that fails the code-enforced entry floor: unknown_action (action=%q) — only BUY/SELL opens are floor-gated, so an unrecognized action must not bypass the deterministic gate",
-				p.Intent, p.Symbol, p.Action,
-			),
-		}
+		return floorHard, "unknown_action", fmt.Sprintf(
+			"strategist proposed an open on %s that fails the code-enforced entry floor: unknown_action (action=%q) — only BUY/SELL opens are floor-gated, so an unrecognized action must not bypass the deterministic gate",
+			p.Symbol, p.Action)
 	}
-	// Normalize the free-form regime label and region to the canonical
-	// casing trading.EvaluateEntry compares against, or the gate fails
-	// OPEN: it matches RegimeLabel against the UPPERCASE literal
-	// "RISK_OFF" and keys MinComponentCount by the lowercase region
-	// ("us"/"eu"/"apac"). An LLM emitting "risk_off" or "US" would
-	// otherwise slip the risk_off_long and panel_incomplete blocks — the
-	// exact inverse of this fail-closed gate's purpose.
 	label = strings.ToUpper(strings.TrimSpace(label))
 	region := strings.ToLower(strings.TrimSpace(p.Region))
 
-	// Entry floor: only OPEN sides are gated (EvaluateEntry waves
-	// through non-opens). First failure wins.
+	// Entry floor: only OPEN sides gated (EvaluateEntry waves through non-opens).
+	// A floor failure on an OPEN is a soft DROP.
 	ok, reason := trading.EvaluateEntry(trading.EntryProposal{
-		Symbol:         p.Symbol,
-		Side:           side,
-		Region:         region,
-		RegimeLabel:    label,
-		Total:          total,
-		ComponentCount: componentCount,
-		RegimeStale:    stale,
-		HasScores:      hasScores,
+		Symbol: p.Symbol, Side: side, Region: region, RegimeLabel: label,
+		Total: total, ComponentCount: componentCount, RegimeStale: stale, HasScores: hasScores,
 	}, entryCfg)
 	if !ok {
-		incFloorRejected(reason)
-		return &Violation{
-			VerifierName: nameOrDefault(cfg, "scorecard_floor"),
-			Type:         cfg.Type,
-			Detail: fmt.Sprintf(
-				"strategist proposed a %s open on %s that fails the code-enforced entry floor: %s (total=%d, regime=%s, stale=%t, components=%d) — the LLM narrative can't override the deterministic gate",
-				side, p.Symbol, reason, total, label, stale, componentCount,
-			),
-		}
+		return floorDrop, reason, fmt.Sprintf(
+			"dropped %s open on %s: %s (total=%d, regime=%s, stale=%t, components=%d) — below the code-enforced entry floor",
+			side, p.Symbol, reason, total, label, stale, componentCount)
 	}
 
-	// Protected-symbol close guard: intent=="close" is the authoritative
-	// "this is an exit" signal from the executor/broker schema — the
-	// strategist must never flatten a symbol the operator holds outside
-	// the strategy's model. This keys off intent (NOT the trading.Classify
-	// cascade): Classify can return a non-exit action for a close
-	// proposal, so using it here would be a bug. The internal/trading
-	// cascade classifier stays as a tested roadmap primitive but is
-	// intentionally NOT in the v1 enforcement path.
+	// Protected-symbol CLOSE guard — integrity violation, HARD. (A protected
+	// OPEN already passed the floor above and is kept; only reducing a
+	// protected holding is refused.)
 	if intent == "close" && protected[strings.ToUpper(strings.TrimSpace(p.Symbol))] {
-		incFloorRejected("protected_symbol")
-		return &Violation{
-			VerifierName: nameOrDefault(cfg, "scorecard_floor"),
-			Type:         cfg.Type,
-			Detail: fmt.Sprintf(
-				"strategist proposed a close (intent=close) on protected symbol %s — protected_symbol positions are held outside the strategy's model and must never be closed/reduced by it",
-				p.Symbol,
-			),
+		return floorHard, "protected_symbol", fmt.Sprintf(
+			"strategist proposed a close (intent=close) on protected symbol %s — protected_symbol positions are held outside the strategy's model and must never be closed/reduced by it",
+			p.Symbol)
+	}
+	return floorKeep, "", ""
+}
+
+// evaluateFloorProposal applies the entry floor and protected-symbol
+// EXIT guard to a single proposal, returning the first Violation it
+// produces (and incrementing the rejection metric) or nil when the
+// proposal clears both. Split out of verifyScorecardFloor to keep that
+// function within the funlen budget. Delegates the decision to the shared
+// classifyFloorProposal so the verifier + FilterTradingProposals agree.
+func evaluateFloorProposal(cfg Config, p floorProposal, entryCfg trading.EntryConfig, protected map[string]bool) *Violation {
+	verdict, reason, detail := classifyFloorProposal(p, entryCfg, protected)
+	if verdict == floorKeep {
+		return nil
+	}
+	incFloorRejected(reason)
+	return &Violation{
+		VerifierName: nameOrDefault(cfg, "scorecard_floor"),
+		Type:         cfg.Type,
+		Detail:       detail,
+	}
+}
+
+// FilterTradingProposals is the soft-drop enforcement seam (design
+// 2026-07-25-scorecard-floor-soft-drop): given the strategist step's raw
+// result.json, it DROPS floor-failing OPEN proposals (removing whole entries,
+// preserving each kept entry's full fields) so they never reach the risk-officer
+// / executor / place_order, increments vornik_trading_floor_rejected_total per
+// drop, and returns the rewritten bytes. It returns a non-nil error (HARD fail —
+// the caller fails the step) on an integrity violation (protected-symbol close,
+// unknown action) or an unparseable proposal (fail-closed). No-op (returns the
+// input unchanged) when the floor is disabled, there are no proposals, or the
+// output can't be parsed as an envelope.
+//
+// This is the ENFORCEMENT path; the scorecard_floor verifier is demoted to
+// SeverityWarn and runs AFTER this filter as an observability backstop on the
+// already-filtered set (design D3).
+func FilterTradingProposals(resultBytes []byte, fc *TradingFloorConfig) ([]byte, error) {
+	if fc == nil || !fc.ScorecardEnabled || !fc.RegimeEnabled || len(resultBytes) == 0 {
+		return resultBytes, nil
+	}
+	protected := make(map[string]bool, len(fc.ProtectedSymbols))
+	for _, sym := range fc.ProtectedSymbols {
+		protected[strings.ToUpper(strings.TrimSpace(sym))] = true
+	}
+	entryCfg := trading.EntryConfig{
+		MinEntryTotal:      fc.MinEntryTotal,
+		BlockLongInRiskOff: fc.BlockLongInRiskOff,
+		StaleBehavior:      fc.StaleBehavior,
+		MinComponentCount:  fc.MinComponentCount,
+		Protected:          protected,
+	}
+
+	// Parse into an ordered-agnostic object so every top-level field the
+	// executor/risk-officer read (rationale, has_proposals, …) survives; only
+	// proposals[] is rewritten. A parse failure → no-op (verifier still warns).
+	var obj map[string]json.RawMessage
+	if err := jsonUnmarshalLenient(resultBytes, &obj); err != nil || obj == nil {
+		return resultBytes, nil
+	}
+	rawProps, ok := obj["proposals"]
+	if !ok {
+		return resultBytes, nil // no proposals key → nothing to filter
+	}
+	var proposals []json.RawMessage
+	if err := json.Unmarshal(rawProps, &proposals); err != nil || len(proposals) == 0 {
+		return resultBytes, nil // empty/absent proposals → no-op (no panic)
+	}
+
+	kept, dropped, hardErr := filterProposalsRaw(proposals, entryCfg, protected)
+	if hardErr != nil {
+		return resultBytes, hardErr // integrity/parse violation → fail the step (bytes unchanged)
+	}
+	if dropped == 0 {
+		return resultBytes, nil // nothing dropped → return input verbatim
+	}
+	// Rewrite proposals[] with the kept entries + recompute has_proposals so a
+	// no-remaining-proposal tick reads has_proposals=false (consistency; the
+	// maybe_execute gate keys off the risk-officer's has_approvals, D5).
+	// Fail-CLOSED on a re-marshal error (review-20260724-98de #2): we already
+	// decided to drop opens, so returning the ORIGINAL (unfiltered) bytes would
+	// let the sub-floor opens through — the exact inverse of the gate. A marshal
+	// failure over verbatim RawMessages is near-impossible, but if it happens we
+	// fail the step rather than silently un-drop.
+	keptBytes, err := json.Marshal(kept)
+	if err != nil {
+		return resultBytes, fmt.Errorf("scorecard_floor: re-marshal of filtered proposals failed (fail-closed, %d dropped): %w", dropped, err)
+	}
+	obj["proposals"] = keptBytes
+	obj["has_proposals"] = json.RawMessage(map[bool]string{true: "true", false: "false"}[len(kept) > 0])
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return resultBytes, fmt.Errorf("scorecard_floor: re-marshal of the filtered envelope failed (fail-closed, %d dropped): %w", dropped, err)
+	}
+	return out, nil
+}
+
+// filterProposalsRaw classifies each proposal (preserving kept entries' full
+// JSON verbatim), returning the kept RawMessages, the soft-drop count, and the
+// first HARD error. An unparseable proposal is a HARD error (fail-closed: never
+// keep an entry we can't classify).
+func filterProposalsRaw(raw []json.RawMessage, entryCfg trading.EntryConfig, protected map[string]bool) ([]json.RawMessage, int, error) {
+	kept := make([]json.RawMessage, 0, len(raw))
+	for _, rp := range raw {
+		var p floorProposal
+		if err := json.Unmarshal(rp, &p); err != nil {
+			return nil, 0, fmt.Errorf("scorecard_floor: unparseable proposal (fail-closed): %w", err)
+		}
+		verdict, reason, detail := classifyFloorProposal(p, entryCfg, protected)
+		switch verdict {
+		case floorKeep:
+			kept = append(kept, rp)
+		case floorDrop:
+			incFloorRejected(reason)
+		case floorHard:
+			// Single increment: the executor returns this error BEFORE runVerifiers
+			// (container.go), so the (warn) verifier does NOT also run/count on a
+			// hard-fail; on the soft path the verifier sees the already-filtered set
+			// (no re-count). review-20260724-98de #1.
+			incFloorRejected(reason)
+			return nil, 0, fmt.Errorf("scorecard_floor: %s", detail)
 		}
 	}
-	return nil
+	return kept, len(raw) - len(kept), nil
 }

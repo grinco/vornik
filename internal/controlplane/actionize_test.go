@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -267,6 +268,72 @@ roles:
 	evGhost := `{"change":{"kind":"swarm_role_env","swarm":"assistant-swarm","role":"ghost","key":"K","value":"v"}}`
 	if err := a.RevalidateChange("", evGhost); err == nil {
 		t.Error("swarm_role_env for a vanished role should fail revalidation")
+	}
+}
+
+// TestRefuseTradingTarget covers the applier-side defense-in-depth trading
+// refusal — the mirror of the detector-side exclusion at the ApplyEngine
+// ValidateChange seam. Regression: companion finding review-20260721-a7bf #6
+// ("trading-path exclusion is stated twice but never enforced at the seam").
+func TestRefuseTradingTarget(t *testing.T) {
+	// Faithful copy of service.isTradingSwarm (unexported there); the wiring
+	// test in the service package asserts newActionizer injects the real one.
+	trading := func(s string) bool {
+		ls := strings.ToLower(s)
+		return strings.Contains(ls, "trader") || strings.Contains(ls, "broker") || strings.Contains(ls, "trading")
+	}
+	const det = costQualityDetectorProposedBy
+	envFor := func(swarm string) string {
+		return `{"change":{"kind":"swarm_role_env","swarm":"` + swarm + `","role":"researcher","key":"K","value":"v"}}`
+	}
+	// Capture logs so the refusal-branch WARN (the high-severity event) is pinned,
+	// not merely present (review-20260724-24a2 #3).
+	var refBuf bytes.Buffer
+	a := &Actionizer{IsTradingSwarm: trading, Logger: zerolog.New(&refBuf)}
+
+	// Detector proposal targeting a trading swarm → refused with the sentinel.
+	for _, sw := range []string{"ibkr-trader-swarm", "trading-swarm", "BROKER-swarm"} {
+		if err := a.RefuseTradingTarget(det, envFor(sw)); !errors.Is(err, ErrTradingSwarmRefused) {
+			t.Errorf("detector proposal to trading swarm %q must be refused, got %v", sw, err)
+		}
+	}
+	if !strings.Contains(refBuf.String(), "refusing to apply") {
+		t.Errorf("an actual refusal must emit a WARN, got logs: %q", refBuf.String())
+	}
+	// Detector proposal to a non-trading swarm → passes (the happy path).
+	if err := a.RefuseTradingTarget(det, envFor("assistant-swarm")); err != nil {
+		t.Errorf("detector proposal to non-trading swarm must pass, got %v", err)
+	}
+	// Non-detector origin → never blocked (operator/other paths, D4).
+	for _, pb := range []string{"self-heal", "tune-detector", "operator", ""} {
+		if err := a.RefuseTradingTarget(pb, envFor("ibkr-trader-swarm")); err != nil {
+			t.Errorf("non-detector origin %q must not be blocked, got %v", pb, err)
+		}
+	}
+	// Kind-agnostic within detector-origin (D4): swarm_role_model to trading → refused.
+	modelEv := `{"change":{"kind":"swarm_role_model","swarm":"trading-swarm","role":"strategist","model":"m"}}`
+	if err := a.RefuseTradingTarget(det, modelEv); !errors.Is(err, ErrTradingSwarmRefused) {
+		t.Errorf("detector swarm_role_model to trading swarm must be refused, got %v", err)
+	}
+	// Change carrying no swarm (e.g. workflow_step_timeout) → passes (swarm-targeted).
+	noSwarm := `{"change":{"kind":"workflow_step_timeout","workflow":"wf","step":"s","timeout":"30s"}}`
+	if err := a.RefuseTradingTarget(det, noSwarm); err != nil {
+		t.Errorf("change with empty swarm must pass, got %v", err)
+	}
+	// Empty / malformed / change-less evidence → passes.
+	for _, ev := range []string{"", "   ", "not json", `{"foo":1}`, `{"change":null}`} {
+		if err := a.RefuseTradingTarget(det, ev); err != nil {
+			t.Errorf("evidence %q must pass, got %v", ev, err)
+		}
+	}
+	// Nil classifier → fail-open (nil) AND a WARN is emitted (D3 observability).
+	var buf bytes.Buffer
+	aNil := &Actionizer{IsTradingSwarm: nil, Logger: zerolog.New(&buf)}
+	if err := aNil.RefuseTradingTarget(det, envFor("ibkr-trader-swarm")); err != nil {
+		t.Errorf("nil classifier must fail-open (nil), got %v", err)
+	}
+	if !strings.Contains(buf.String(), "classifier unwired") {
+		t.Errorf("nil classifier must emit a WARN, got logs: %q", buf.String())
 	}
 }
 

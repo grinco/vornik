@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -76,9 +77,235 @@ type ControlPlaneConfig struct {
 	// budget detector (LLD 2026-07-21-cost-quality-tuning-loop). It files
 	// human-gated DRAFT proposals only; it never applies. Opt-in; default false.
 	CostTuningEnabled bool `yaml:"cost_tuning_enabled" json:"cost_tuning_enabled" doc:"Enable the propose-only cost/quality prompt-token-budget detector (files review-only DRAFT proposals). Opt-in; default false."`
+
+	// CostTuningCanary configures the cost/quality canary + regression
+	// auto-rollback guard (LLD 2026-07-24-cost-quality-canary-rollback §D). After
+	// a cost-tuning config proposal is APPLIED, it opens a canary on the affected
+	// (swarm, role), compares a pre-apply baseline to a post-apply window, and on
+	// a statistically-guarded regression AUTO-ROLLS-BACK + marks the proposal
+	// REGRESSED + opens a cooldown. Ships OFF; live-reloadable; trading excluded.
+	CostTuningCanary CostTuningCanaryConfig `yaml:"cost_tuning_canary" json:"cost_tuning_canary" doc:"Cost/quality canary + regression auto-rollback guard: after an applied cost-tuning proposal, watch quality and auto-roll-back a regression. Opt-in; default off."`
+
+	// CostTuningAutoApply configures Phase 4 auto-apply (LLD
+	// 2026-07-24-cost-quality-auto-apply §D). It auto-approves+acks+applies a
+	// DRAFT cost-quality-detector proposal ONLY when its (swarm,role,knob) has
+	// >=K canary-PASSED applies AND the most-recent apply was human (M=1
+	// re-seed). Leader-gated; crosses the no-silent-mutation line. Ships OFF;
+	// empty allow-list = NONE (safety inversion); requires the canary guard.
+	CostTuningAutoApply CostTuningAutoApplyConfig `yaml:"cost_tuning_auto_apply" json:"cost_tuning_auto_apply" doc:"Cost/quality Phase-4 auto-apply: auto-apply a proven-safe (>=K passed canaries, M=1) cost-tuning proposal without a human. Opt-in; default off; empty swarms allow-list means NONE; requires cost_tuning_canary.enabled."`
+}
+
+// CostTuningAutoApplyConfig is the Phase-4 auto-apply tuning surface (design §3
+// D3). Ships enabled:false with an EMPTY swarms allow-list that means NONE (a
+// safety inversion vs the canary guard's empty=all, because auto-apply ACTS
+// rather than just watches). K (MinPassedCanaries) is floored at 1 by Validate.
+type CostTuningAutoApplyConfig struct {
+	// Enabled gates the whole worker. False (default) => no auto-apply.
+	// Live-reloadable + re-checked at apply time. Also requires the canary guard
+	// (cost_tuning_canary.enabled) to be on — auto-apply without the rollback net
+	// is refused (design D4).
+	Enabled bool `yaml:"enabled" json:"enabled" doc:"Enable cost/quality Phase-4 auto-apply. Opt-in; default false. Live-reloadable, re-checked at apply time. Also requires cost_tuning_canary.enabled."`
+	// Swarms is the per-swarm allow-list. EMPTY MEANS NONE (safety inversion):
+	// auto-apply is opt-in per swarm, so a fresh deploy auto-applies nothing even
+	// with enabled:true.
+	Swarms []string `yaml:"swarms" json:"swarms" doc:"Per-swarm allow-list for auto-apply. EMPTY MEANS NONE (safety inversion) — auto-apply is opt-in per swarm."`
+	// MinPassedCanaries is K: the number of prior canary-PASSED applies a
+	// (swarm,role,knob) needs before it is trusted for auto-apply. 0 => 2;
+	// Validate floors it at 1 (0 would auto-apply an unproven knob).
+	MinPassedCanaries int `yaml:"min_passed_canaries" json:"min_passed_canaries" doc:"K: prior canary-PASSED applies a knob needs before auto-apply. 0 means 2; must be >= 1."`
+	// ScanInterval is the worker's tick cadence. Empty => 15m.
+	ScanInterval string `yaml:"scan_interval" json:"scan_interval" doc:"Auto-apply worker scan interval (Go duration). Empty means 15m."`
+}
+
+// ResolvedCostTuningAutoApply is CostTuningAutoApplyConfig with defaults filled.
+type ResolvedCostTuningAutoApply struct {
+	Enabled           bool
+	Swarms            []string
+	MinPassedCanaries int
+	ScanInterval      time.Duration
+}
+
+// Resolved fills defaults (K=2, scan 15m). Assumes Validate vetted the strings.
+func (c CostTuningAutoApplyConfig) Resolved() ResolvedCostTuningAutoApply {
+	k := c.MinPassedCanaries
+	if k < 1 {
+		k = 2
+	}
+	return ResolvedCostTuningAutoApply{
+		Enabled:           c.Enabled,
+		Swarms:            c.Swarms,
+		MinPassedCanaries: k,
+		ScanInterval:      parseDurationOr(c.ScanInterval, 15*time.Minute),
+	}
+}
+
+// Validate rejects a non-positive K (0 is legal — it resolves to the default 2;
+// a NEGATIVE value is the error) and an unparseable/non-positive scan_interval.
+// Note the K floor: even the default resolves to >= 1, so an unproven knob
+// (0 passed canaries) is never auto-applied.
+func (c CostTuningAutoApplyConfig) Validate() error {
+	if c.MinPassedCanaries < 0 {
+		return fmt.Errorf("control_plane.cost_tuning_auto_apply.min_passed_canaries must be >= 0 (0 resolves to the default 2), got %d", c.MinPassedCanaries)
+	}
+	if c.ScanInterval != "" {
+		d, err := time.ParseDuration(c.ScanInterval)
+		if err != nil {
+			return fmt.Errorf("control_plane.cost_tuning_auto_apply.scan_interval: invalid duration %q: %w", c.ScanInterval, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("control_plane.cost_tuning_auto_apply.scan_interval must be positive, got %q", c.ScanInterval)
+		}
+	}
+	return nil
+}
+
+// CostTuningCanaryConfig is the cost/quality canary guard's tuning surface
+// (design 2026-07-24 §8). Ships enabled:false. Duration fields are Go-duration
+// strings ("15m", "168h"); Resolved() fills any omitted field with its design
+// default and Validate() rejects unparseable/incoherent values at load.
+type CostTuningCanaryConfig struct {
+	// Enabled gates the whole guard. False (default) => no discovery, no
+	// evaluation, no rollback. Live-reloadable + re-checked at trip time.
+	Enabled bool `yaml:"enabled" json:"enabled" doc:"Enable the cost/quality canary + regression auto-rollback guard. Opt-in; default false. Live-reloadable and re-checked at trip time."`
+	// Swarms is the per-swarm rollout allow-list; empty means all non-trading
+	// swarms. Consulted at discover AND trip time.
+	Swarms []string `yaml:"swarms" json:"swarms" doc:"Per-swarm allow-list for the canary guard; empty means all non-trading swarms. Consulted at discover and trip time."`
+	// ScanInterval is the guard's tick cadence. Empty => 15m.
+	ScanInterval string `yaml:"scan_interval" json:"scan_interval" doc:"Canary guard scan/tick interval (Go duration). Empty means 15m."`
+	// Window (W) is both the baseline look-back and the post-apply watch window.
+	// Empty => 168h.
+	Window string `yaml:"window" json:"window" doc:"Canary baseline look-back and post-apply watch window W (Go duration). Empty means 168h."`
+	// MinSamples is the per-window A1 min-sample floor. 0 => 20.
+	MinSamples int `yaml:"min_samples" json:"min_samples" doc:"Per-window A1 (step-tier) min-sample floor. 0 means 20."`
+	// A2MinSamples is the per-series A2 min-sample floor. 0 => 10.
+	A2MinSamples int `yaml:"a2_min_samples" json:"a2_min_samples" doc:"Per-series A2 (task-tier) min-sample floor. 0 means 10."`
+	// A2Subwindows is how many equal sub-windows the A2 backstop must find
+	// sustained regression across. 0 => 4.
+	A2Subwindows int `yaml:"a2_subwindows" json:"a2_subwindows" doc:"Number of equal sub-windows the A2 backstop must find regression sustained across. 0 means 4."`
+	// MarginA1 is the A1 quality-rate drop margin. 0 => 0.05.
+	MarginA1 float64 `yaml:"margin_a1" json:"margin_a1" doc:"A1 quality-rate drop margin that trips a regression. 0 means 0.05. Must be < margin_a2."`
+	// MarginA2 is the (larger) A2 quality-rate drop margin. 0 => 0.10.
+	MarginA2 float64 `yaml:"margin_a2" json:"margin_a2" doc:"A2 (task-tier) quality-rate drop margin (larger than margin_a1). 0 means 0.10."`
+	// MarginCost is the EffectiveCost increase margin. 0 => 0.15.
+	MarginCost float64 `yaml:"margin_cost" json:"margin_cost" doc:"EffectiveCost increase margin that trips a cost regression. 0 means 0.15."`
+	// Cooldown is the per-(swarm,role,knob) suppression after a regressed
+	// rollback. Empty => 336h.
+	Cooldown string `yaml:"cooldown" json:"cooldown" doc:"Per-(swarm,role,knob) detector cooldown after a regressed rollback (Go duration). Empty means 336h."`
+	// MaxCanaryAge force-closes an open canary older than this to
+	// insufficient_data so the detector is never frozen. Empty => 336h.
+	MaxCanaryAge string `yaml:"max_canary_age" json:"max_canary_age" doc:"Failsafe: an open canary older than this force-closes to insufficient_data (Go duration). Empty means 336h."`
+}
+
+// ResolvedCostTuningCanary is CostTuningCanaryConfig with every omitted field
+// filled with its design default and durations parsed. The container hands these
+// concrete values to the guard worker.
+type ResolvedCostTuningCanary struct {
+	Enabled      bool
+	Swarms       []string
+	ScanInterval time.Duration
+	Window       time.Duration
+	MinSamples   int
+	A2MinSamples int
+	A2Subwindows int
+	MarginA1     float64
+	MarginA2     float64
+	MarginCost   float64
+	Cooldown     time.Duration
+	MaxCanaryAge time.Duration
+}
+
+func parseDurationOr(s string, def time.Duration) time.Duration {
+	if s == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(s); err == nil {
+		return d
+	}
+	return def
+}
+
+// Resolved fills defaults (design §8) and parses durations. Assumes Validate has
+// already vetted the strings; an unparseable duration falls back to its default.
+func (c CostTuningCanaryConfig) Resolved() ResolvedCostTuningCanary {
+	posOr := func(v, def int) int {
+		if v > 0 {
+			return v
+		}
+		return def
+	}
+	fOr := func(v, def float64) float64 {
+		if v > 0 {
+			return v
+		}
+		return def
+	}
+	return ResolvedCostTuningCanary{
+		Enabled:      c.Enabled,
+		Swarms:       c.Swarms,
+		ScanInterval: parseDurationOr(c.ScanInterval, 15*time.Minute),
+		Window:       parseDurationOr(c.Window, 168*time.Hour),
+		MinSamples:   posOr(c.MinSamples, 20),
+		A2MinSamples: posOr(c.A2MinSamples, 10),
+		A2Subwindows: posOr(c.A2Subwindows, 4),
+		MarginA1:     fOr(c.MarginA1, 0.05),
+		MarginA2:     fOr(c.MarginA2, 0.10),
+		MarginCost:   fOr(c.MarginCost, 0.15),
+		Cooldown:     parseDurationOr(c.Cooldown, 336*time.Hour),
+		MaxCanaryAge: parseDurationOr(c.MaxCanaryAge, 336*time.Hour),
+	}
+}
+
+// Validate rejects unparseable durations, non-positive/negative numeric knobs,
+// margins outside (0,1), and the MarginA1 >= MarginA2 incoherence (design §4.2:
+// MarginA1 < MarginA2). Empty/zero fields are legal — they resolve to defaults.
+func (c CostTuningCanaryConfig) Validate() error {
+	for name, s := range map[string]string{
+		"scan_interval": c.ScanInterval, "window": c.Window,
+		"cooldown": c.Cooldown, "max_canary_age": c.MaxCanaryAge,
+	} {
+		if s == "" {
+			continue
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("control_plane.cost_tuning_canary.%s: invalid duration %q: %w", name, s, err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("control_plane.cost_tuning_canary.%s must be positive, got %q", name, s)
+		}
+	}
+	for name, v := range map[string]int{
+		"min_samples": c.MinSamples, "a2_min_samples": c.A2MinSamples, "a2_subwindows": c.A2Subwindows,
+	} {
+		if v < 0 {
+			return fmt.Errorf("control_plane.cost_tuning_canary.%s must be >= 0, got %d", name, v)
+		}
+	}
+	for name, v := range map[string]float64{
+		"margin_a1": c.MarginA1, "margin_a2": c.MarginA2, "margin_cost": c.MarginCost,
+	} {
+		if v < 0 || v >= 1 {
+			return fmt.Errorf("control_plane.cost_tuning_canary.%s must be in [0,1), got %v", name, v)
+		}
+	}
+	r := c.Resolved()
+	if r.MarginA1 >= r.MarginA2 {
+		return fmt.Errorf("control_plane.cost_tuning_canary.margin_a1 (%v) must be < margin_a2 (%v)", r.MarginA1, r.MarginA2)
+	}
+	if r.A2Subwindows < 1 {
+		return fmt.Errorf("control_plane.cost_tuning_canary.a2_subwindows must be >= 1")
+	}
+	return nil
 }
 
 type Config struct {
+	// unresolvedPlaceholders holds the ${VAR} names referenced by config.yaml
+	// that were not set in the environment when it was loaded. Populated by
+	// LoadFromPath and used by Validate to explain WHY a required field came
+	// out empty — the field is present in the file, its placeholder just
+	// expanded to nothing. Unexported: diagnostic state, never serialised.
+	unresolvedPlaceholders []string
+
 	// SteeringNotificationsEnabled pushes a prompt to the originating
 	// chat/DM when a task that was created there enters a steering state
 	// (AWAITING_INPUT / AWAITING_APPROVAL), so the operator doesn't have to
@@ -113,6 +340,7 @@ type Config struct {
 	// DETECTOR, not a store.
 	NamedSecrets []NamedSecret `yaml:"named_secrets" json:"named_secrets" doc:"Per-secret allowlist of env credentials injected into agent containers, scoped by project."`
 
+	Telemetry TelemetryConfig `yaml:"telemetry,omitempty" json:"telemetry,omitempty" doc:"Anonymous install and project-creation telemetry. Enabled by default; set enabled=false to opt out."`
 	Server    ServerConfig    `yaml:"server"`
 	Database  DatabaseConfig  `yaml:"database"`
 	Storage   StorageConfig   `yaml:"storage"`

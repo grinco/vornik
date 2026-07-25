@@ -188,9 +188,9 @@ func TestQueryAPI_ErrorMapping(t *testing.T) {
 		{apigateway.ErrMethodNotAllowed, "does not support"},
 		{apigateway.ErrGatewayAuth, "authentication failed"},
 		{apigateway.ErrUpstreamMethod, "does not support"},
-		// A non-sentinel error falls through to the default branch and is
-		// surfaced verbatim (still prefixed, still human-readable Content).
-		{errors.New("boom"), "boom"},
+		// Unknown client errors are redacted because transport errors may
+		// contain the full URL, including sensitive query values.
+		{errors.New("boom?token=LEAK-ME"), "gateway request failed"},
 	}
 	for _, tc := range cases {
 		fc := &fakeAPIClient{err: tc.err}
@@ -199,6 +199,5 @@ func TestQueryAPI_ErrorMapping(t *testing.T) {
 		if !strings.Contains(strings.ToLower(res.Content), tc.want) {
 			t.Errorf("err %v → %q, want substring %q", tc.err, res.Content, tc.want)
 		}
-		_ = errors.Is // keep import
 	}
 }

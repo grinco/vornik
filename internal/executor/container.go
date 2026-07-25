@@ -932,6 +932,24 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 		}
 	}
 
+	// Trading scorecard_floor SOFT-DROP (design 2026-07-25): before the
+	// verifiers run, drop floor-failing OPEN proposals from the strategist's
+	// result so a no-qualifying-candidate tick NO_ACTIONs instead of the whole
+	// step hard-failing. Integrity violations (protected-symbol close, unknown
+	// action, unparseable proposal) still HARD-fail the step here. No-op for
+	// non-trading projects / non-proposal steps (self-gated). The rewritten
+	// resultBytes is what flows to the risk-officer/executor; the (now
+	// SeverityWarn) scorecard_floor verifier below observes the filtered set.
+	filtered, floorErr := e.filterTradingFloor(task, resultBytes)
+	if floorErr != nil {
+		hallucinationDetail = floorErr.Error()
+		if rmErr := e.runtime.RemoveContainer(context.Background(), containerID, true); rmErr != nil {
+			e.logger.Warn().Err(rmErr).Str("container_id", containerID).Msg("failed to remove container after trading-floor hard-fail")
+		}
+		return "", nil, floorErr
+	}
+	resultBytes = filtered
+
 	// Phase 2 outcome verifiers: project-declared declarative
 	// invariants over (artifacts, audit, result.json). Distinct
 	// from Phase 1 which scans prose; Phase 2 scrutinises actual
@@ -1046,6 +1064,40 @@ func extractTaskType(task *persistence.Task) string {
 // file-backed verifiers like cv_claims_grounded can read workspace files
 // (e.g. .autonomy/RESUME.md) without inline duplication. Empty string is
 // safe: verifiers that need it will abstain when it is absent.
+// filterTradingFloor applies the scorecard_floor SOFT-DROP to an agent step's
+// result (design 2026-07-25-scorecard-floor-soft-drop): floor-failing OPEN
+// proposals are dropped so a no-qualifying-candidate tick NO_ACTIONs instead of
+// hard-failing the step; integrity violations (protected-symbol close, unknown
+// action, unparseable proposal) return an error that fails the step. Self-gated:
+// a no-op for non-trading projects (no watchlist) or when the floor flags are
+// off, and — via FilterTradingProposals — for step outputs with no proposals[]
+// (risk-officer/executor steps), so it can run on every agent step safely.
+func (e *Executor) filterTradingFloor(task *persistence.Task, resultBytes []byte) ([]byte, error) {
+	if e.workflows == nil {
+		return resultBytes, nil
+	}
+	proj, ok := e.workflows.(interface {
+		GetProject(string) *registry.Project
+	})
+	if !ok {
+		return resultBytes, nil
+	}
+	p := proj.GetProject(task.ProjectID)
+	if p == nil || len(p.Trading.Watchlist) == 0 {
+		return resultBytes, nil
+	}
+	fc := &verifier.TradingFloorConfig{
+		ScorecardEnabled:   p.Trading.Scorecard.Enabled,
+		RegimeEnabled:      p.Trading.Regime.Enabled,
+		MinEntryTotal:      p.Trading.Scorecard.MinEntryTotal,
+		BlockLongInRiskOff: p.Trading.Regime.BlockLongInRiskOff,
+		StaleBehavior:      p.Trading.Regime.StaleBehavior,
+		MinComponentCount:  p.Trading.Regime.MinComponentCount,
+		ProtectedSymbols:   p.Trading.ProtectedSymbols,
+	}
+	return verifier.FilterTradingProposals(resultBytes, fc)
+}
+
 func (e *Executor) runVerifiers(ctx context.Context, task *persistence.Task, execution *persistence.Execution, stepID string, resultBytes []byte, projectDir string) error {
 	if e.workflows == nil {
 		return nil

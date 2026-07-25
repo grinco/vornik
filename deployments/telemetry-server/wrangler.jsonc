@@ -1,0 +1,44 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "vornik-telemetry-mock",
+  "main": "worker.js",
+  "compatibility_date": "2026-07-25",
+  "workers_dev": true,
+
+  // Workers Logs. The Worker emits one structured `{"msg":"collect",...}` line
+  // per accepted event carrying only the bucketed query dimensions — no body,
+  // no headers, no IP — so the dashboard and `wrangler tail` show what is being
+  // reported without Logpush or request-body logging.
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+
+  // Aggregate counters with a ~90-day window, queryable over the SQL API. This
+  // is the durable insight surface and the stepping stone to a real collector:
+  // it stores only the closed dimension set, never per-request identifiers.
+  //
+  // Requires the Workers Paid plan. On free tier the binding is simply absent
+  // and the Worker degrades to accept-and-log (covered by worker tests), so
+  // deleting this block does not break emission.
+  "analytics_engine_datasets": [
+    {
+      "binding": "TELEMETRY",
+      "dataset": "vornik_lifecycle_v1"
+    }
+  ],
+
+  // The production hostname binding, previously configured only by hand in the
+  // dashboard — so a fresh deploy did not reproduce the live endpoint. Declared
+  // here to make the deployment reproducible.
+  //
+  // NOTE: with a route declared, `npm run deploy` updates PRODUCTION, not just
+  // the workers.dev preview. Use `npx wrangler versions upload` to stage a
+  // version without promoting it.
+  "routes": [
+    {
+      "pattern": "telemetry.vornik.io/v1/collect.json*",
+      "zone_name": "vornik.io"
+    }
+  ]
+}

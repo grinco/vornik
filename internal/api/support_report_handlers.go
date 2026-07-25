@@ -110,6 +110,7 @@ func (s *Server) SupportReport(w http.ResponseWriter, r *http.Request) {
 // writes the error response and returns ok=false.
 func (s *Server) resolveSupportRequest(w http.ResponseWriter, r *http.Request) (bundleRequest, bool) {
 	var req supportReportRequest
+	limitJSONBody(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", "invalid request body")
 		return bundleRequest{}, false

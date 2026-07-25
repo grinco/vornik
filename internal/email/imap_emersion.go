@@ -12,6 +12,11 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 )
 
+const (
+	maxInboundMessageBytes   = 40 << 20
+	maxUnseenMessagesPerPoll = 4
+)
+
 // NewIMAPClient returns the production IMAPClient adapter, backed
 // by github.com/emersion/go-imap/v2. Use this when wiring the email
 // channel against a real IMAP server; tests in this package use
@@ -150,9 +155,15 @@ func (c *emersionIMAPClient) FetchUnseen(ctx context.Context) ([]RawMessage, err
 	if len(uids) == 0 {
 		return nil, nil
 	}
+	if len(uids) > maxUnseenMessagesPerPoll {
+		uids = uids[:maxUnseenMessagesPerPoll]
+	}
 
 	set := imap.UIDSetNum(uids...)
-	bs := &imap.FetchItemBodySection{Peek: true}
+	bs := &imap.FetchItemBodySection{
+		Peek:    true,
+		Partial: &imap.SectionPartial{Offset: 0, Size: maxInboundMessageBytes + 1},
+	}
 	fetchOpts := &imap.FetchOptions{
 		UID:         true,
 		BodySection: []*imap.FetchItemBodySection{bs},
@@ -171,9 +182,14 @@ func (c *emersionIMAPClient) FetchUnseen(ctx context.Context) ([]RawMessage, err
 		if body == nil {
 			continue
 		}
+		oversized := len(body) > maxInboundMessageBytes
+		if oversized {
+			body = nil
+		}
 		out = append(out, RawMessage{
-			UID:  strconv.FormatUint(uint64(m.UID), 10),
-			Body: body,
+			UID:       strconv.FormatUint(uint64(m.UID), 10),
+			Body:      body,
+			Oversized: oversized,
 		})
 	}
 	return out, nil

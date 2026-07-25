@@ -180,6 +180,11 @@ func (h *HealthGatedProvider) CompleteWithToolsStream(ctx context.Context, messa
 }
 
 // Model delegates to the inner provider (gating is invisible to "which model").
+// Unwrap exposes the gated provider so capability lookup can see through this
+// decorator — without it a route's sub-provider is invisible to model discovery
+// and to readiness probes. See Unwrapper.
+func (h *HealthGatedProvider) Unwrap() Provider { return h.inner }
+
 func (h *HealthGatedProvider) Model() string { return h.inner.Model() }
 
 // SetMetrics stores the metrics for the state gauge + trips counter and

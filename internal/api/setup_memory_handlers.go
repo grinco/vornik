@@ -43,6 +43,7 @@ func (s *Server) SetupMemoryValidate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	limitJSONBody(w, r)
 	proposal, _, err := decodeSetupMemoryProposal(r)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "BAD_BODY", err.Error())
@@ -81,6 +82,7 @@ func (s *Server) SetupMemoryCommit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	limitJSONBody(w, r)
 	proposal, force, err := decodeSetupMemoryProposal(r)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "BAD_BODY", err.Error())

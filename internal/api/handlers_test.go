@@ -2527,10 +2527,7 @@ func TestServer_CreateTask_BudgetSoftBreachStillAdmits(t *testing.T) {
 	assert.True(t, created, "task creation must proceed despite soft breach")
 }
 
-// errBudgetRepo simulates a transient DB error from
-// SumCostByProject. The api handler logs + proceeds (fail-open) so
-// a flaky usage table can't block legitimate tasks. Pre-fix the
-// fail-open branch had no test pinning the behaviour.
+// errBudgetRepo simulates a transient DB error from SumCostByProject.
 type errBudgetRepo struct {
 	mockLLMUsageRepo
 }
@@ -2563,8 +2560,8 @@ func TestServer_CreateTask_BudgetRepoErrorAdmits(t *testing.T) {
 	server.CreateTask(rec, req)
 
 	assert.NotEqual(t, http.StatusTooManyRequests, rec.Code,
-		"budget repo error must fail-open, not block legitimate tasks")
-	assert.True(t, created, "fail-open: task creation must proceed when budget.Check errors")
+		"legacy inline fallback retains its pre-window fail-open behavior")
+	assert.True(t, created, "legacy inline fallback should still admit on repository failure")
 }
 
 func (m *mockLLMUsageRepo) SumCostByAPIKey(_ context.Context, _ string, _, _ time.Time) (float64, error) {

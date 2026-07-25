@@ -1,10 +1,51 @@
 package urlguard
 
 import (
+	"net"
 	"testing"
 
 	"golang.org/x/net/idna"
 )
+
+func TestIsBlockedIPRejectsEveryNonPublicRange(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		"192.0.0.1",       // IETF protocol assignments
+		"192.0.2.1",       // TEST-NET-1
+		"198.18.0.1",      // benchmarking
+		"198.51.100.1",    // TEST-NET-2
+		"203.0.113.1",     // TEST-NET-3
+		"224.0.0.1",       // multicast
+		"240.0.0.1",       // reserved
+		"255.255.255.255", // limited broadcast
+		"2001:db8::1",     // IPv6 documentation
+		"ff02::1",         // IPv6 multicast
+		"192.88.99.1",     // 6to4 relay anycast
+		// Transition prefixes embedding a blocked IPv4 destination. Without
+		// these, a NAT64/6to4 gateway reaches the v4 target the rules above
+		// forbid (audit 2026-07-25 follow-up to A01).
+		"64:ff9b::a9fe:a9fe",   // NAT64-encoded 169.254.169.254 (metadata)
+		"64:ff9b::7f00:1",      // NAT64-encoded 127.0.0.1
+		"64:ff9b:1::a9fe:a9fe", // local-use NAT64 (RFC8215)
+		"2002:7f00:1::",        // 6to4-wrapped 127.0.0.1
+		"2001:0:0:0::1",        // Teredo
+		"100::1",               // discard-only
+		"fec0::1",              // deprecated site-local
+	} {
+		if ip := net.ParseIP(raw); ip == nil || !isBlockedIP(ip) {
+			t.Errorf("isBlockedIP(%q) = false, want true", raw)
+		}
+	}
+	for _, raw := range []string{
+		"93.184.216.34",      // public IPv4 unicast
+		"2606:2800:220:1::1", // public IPv6 unicast
+		"2001:db9::1",        // adjacent to the documentation prefix, still public
+	} {
+		if ip := net.ParseIP(raw); ip == nil || isBlockedIP(ip) {
+			t.Errorf("public unicast %q must remain allowed", raw)
+		}
+	}
+}
 
 func TestValidateTargetURL(t *testing.T) {
 	bad := []string{

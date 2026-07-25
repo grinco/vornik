@@ -14,6 +14,10 @@
 # The defaults (1000:1000) are a reasonable non-root baseline when the
 # builder doesn't pass args — e.g. CI smoke tests — but local operator
 # builds should always match the running daemon's uid/gid.
+#
+# Rebuild ONLY via `make build-agent` (auto-sets VORNIK_UID/GID to your uid).
+# A bare `podman build` defaults uid to 1000 and breaks rootless workspace
+# mounts even under keep-id. See https://docs.vornik.io F3.
 
 ARG VORNIK_UID=1000
 ARG VORNIK_GID=1000

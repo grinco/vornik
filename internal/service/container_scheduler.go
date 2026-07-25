@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/apikey"
 	"vornik.io/vornik/internal/artifacts"
 	"vornik.io/vornik/internal/budget"
@@ -130,6 +131,27 @@ func (m *taskKeyMinter) MintProjectScopedKey(ctx context.Context, projectID, rol
 	return raw, nil
 }
 
+// warnAgentLLMDirectRoute logs a startup breakage warning when agents would
+// route their minted per-task key direct to the upstream (topology 1).
+// Extracted from initScheduler so it's unit-testable without standing up the
+// whole scheduler (podman runtime manager, executor wiring, repos, ...).
+//
+// Regression: fresh-install "Invalid API key" (2026-07-25, design F2b) — an
+// empty agent_llm.endpoint makes agents fall back to chat.endpoint (the real
+// upstream) and send their minted per-task sk-vornik-* key there, where it's
+// rejected outright. This used to log at Info, which fresh-install operators
+// never see before every task starts failing; it must WARN and name the
+// breakage. The `vornikctl doctor` agent_llm_topology check (internal/api)
+// guards the same failure mode at boot/on-demand.
+func warnAgentLLMDirectRoute(logger zerolog.Logger, resolvedEndpoint string) {
+	logger.Warn().
+		Str("resolved_endpoint", resolvedEndpoint).
+		Msg("agent_llm.endpoint is empty: agents send their minted per-task key " +
+			"DIRECT to the upstream, which rejects it as 'Invalid API key' — every " +
+			"task will fail. Set AGENT_LLM_ENDPOINT to the daemon /api/v1 proxy. " +
+			"Run `vornikctl doctor` (agent_llm_topology).")
+}
+
 // initScheduler initializes the task scheduler.
 func (c *Container) initScheduler() error {
 	// Resolve the FileBackend named by Config.Storage.Backend
@@ -240,20 +262,18 @@ func (c *Container) initScheduler() error {
 
 	// Resolve LLM config for agent containers (AgentLLM with ChatConfig fallback).
 	llm := c.Config.ResolvedAgentLLM()
-	// Topology-2 opt-in nudge (LLD 2026-07-12-agent-llm-health-breaker §8):
-	// when the operator left runtime.agent_llm.endpoint empty, agents
-	// inherit chat.endpoint (the upstream gateway) and curl it DIRECTLY
-	// (topology 1) — bypassing the chat-router HealthGatedProvider. The
-	// executor-side agent breaker (above) still covers them, but only
-	// after N sustained failures; routing agents through the daemon chat
-	// proxy (set runtime.agent_llm.endpoint to the daemon's /api/v1 URL)
-	// gives sub-second fail-over via the existing chat breaker. Log once
-	// at startup so the operator knows the latency trade-off.
+	// Hard misconfiguration, not a latency nudge (LLD 2026-07-12-agent-llm-health-breaker
+	// §8, tightened 2026-07-25 per design F2b): when the operator leaves
+	// runtime.agent_llm.endpoint empty, agents inherit chat.endpoint (the
+	// upstream gateway) and curl it DIRECTLY (topology 1) with their minted
+	// per-task sk-vornik-* key, which the upstream rejects outright as
+	// "Invalid API key" — every task fails, not just a degraded fail-over
+	// path. Set runtime.agent_llm.endpoint to the daemon's /api/v1 URL so
+	// agents route through the daemon proxy (topology 2), which both
+	// accepts the minted key and gives sub-second fail-over via the
+	// chat-router breaker.
 	if c.Config.Runtime.AgentLLM.Endpoint == "" && llm.Endpoint != "" {
-		c.Logger.Info().
-			Str("resolved_endpoint", llm.Endpoint).
-			Msg("agent_llm.endpoint not set: agents route DIRECT to the upstream (topology 1); " +
-				"set runtime.agent_llm.endpoint to the daemon /api/v1 URL for sub-second model fail-over via the chat-router breaker")
+		warnAgentLLMDirectRoute(c.Logger, llm.Endpoint)
 	}
 	if llm.Endpoint != "" {
 		executorConfig.AgentLLMEnv = map[string]string{

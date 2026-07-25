@@ -217,6 +217,10 @@ func (p *LoggingProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 }
 
 // Ping delegates to the wrapped provider's readiness probe.
+// Unwrap exposes the wrapped provider so capability lookup can see through
+// this decorator. See Unwrapper.
+func (p *LoggingProvider) Unwrap() Provider { return p.inner }
+
 func (p *LoggingProvider) Ping(ctx context.Context) error {
 	if pg, ok := p.inner.(Pinger); ok {
 		return pg.Ping(ctx)

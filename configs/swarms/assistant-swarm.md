@@ -115,19 +115,19 @@ roles:
       model: "zai.glm-5"
       modelFallback: "glm-5.2"
       maxTokens: 8192
-      # Token-efficiency guardrail (2026-06-13): the researcher was looping on
-      # the same sources, spending its iteration budget instead of finishing.
-      systemPrompt: |
-        Be token-efficient. Track which sources you have already fetched in this
-        task and NEVER re-query the same URL/source twice — re-reading something
-        you already have wastes the iteration budget and adds nothing. Stop and
-        synthesize as soon as you have enough to answer the question; do not keep
-        gathering just because tool iterations remain. When you do fetch, prefer a
-        NEW source over re-checking one you've already seen.
-        Web access: the container runs with NO network (`--network none`), so
-        `curl`, `wget`, and any direct HTTP from run_shell ALWAYS fail — never use
-        run_shell for the web. Use the mcp__scraper__web_fetch tool for every web
-        fetch; if a portal blocks it, record the failure and move on.
+      # NO inline systemPrompt on purpose — this role is body-canonical
+      # (see '### researcher' under '## Role prompts').
+      #
+      # 2026-07-25: an inline systemPrompt carrying the 2026-06-13
+      # token-efficiency guardrail was SILENTLY SHADOWING the body
+      # subsection: applyRolePrompts fills from the body only when the
+      # inline field is empty, so ~1 000 chars of instructions (context-source
+      # resolution, the artifacts/out/research.md contract, produced_files)
+      # had been dead since that guardrail was added. Both texts are now
+      # merged and deduplicated into the body subsection.
+      #
+      # Do NOT re-add an inline systemPrompt here — it would shadow the body
+      # again with no error. Edit the body subsection instead.
       # produced_files is verified by the executor: every path listed
       # must exist on disk and have been written during this step.
       # outputSchema replaces requiredOutputKeys + the prose Output
@@ -161,7 +161,7 @@ roles:
         cpu: "1"
         memory: "2Gi"
         envVars:
-            VORNIK_STEP_PROMPT_TOKEN_BUDGET: "1418228"
+            VORNIK_STEP_PROMPT_TOKEN_BUDGET: "1335130"
             # 2026-07-21: 120 -> 25. Completed research iterations are p50=7,
             # p95=24 (task_llm_usage); >25 is thrashing, not depth, and drove
             # the quadratic blowout days (40-90 iter steps). 25 spares 95% of
@@ -322,7 +322,7 @@ roles:
         cpu: "1"
         memory: "2Gi"
         envVars:
-            VORNIK_STEP_PROMPT_TOKEN_BUDGET: "160327"
+            VORNIK_STEP_PROMPT_TOKEN_BUDGET: "151385"
             VORNIK_MAX_TOOL_ITERATIONS: "50"
       permissions:
         # Writer reads research.md produced by the researcher and
@@ -793,30 +793,36 @@ impossible.
 
 ### researcher
 
-Researcher. Gather only information needed for the task.
-Prefer primary or reputable sources. Avoid rereading known
-material — use memory_search first.
+Researcher. Gather only what the task needs, from primary or reputable sources.
 
-Context source:
-- If env var VORNIK_TASK_CREATION_SOURCE = "USER" and
-  VORNIK_USER_CONTEXT_PATH is set, read THAT file
-  (typically project/.autonomy/USER_GUIDANCE.md) for the
-  user-facing charter. The user's prompt is the contract.
-- Otherwise read project/.autonomy/PROJECT_CONTEXT.md for
-  the autonomy-feed procedure (source lists, output schema).
+**1. Read your charter first.**
+- If `VORNIK_TASK_CREATION_SOURCE` = "USER" and `VORNIK_USER_CONTEXT_PATH` is
+  set, read THAT file (typically `project/.autonomy/USER_GUIDANCE.md`). The
+  user's prompt is the contract.
+- Otherwise read `project/.autonomy/PROJECT_CONTEXT.md` for the autonomy-feed
+  procedure (source lists, output schema).
 
-Web: use mcp__scraper__web_fetch when available. Respect
-rate limits; if a portal blocks the scan, record the failure
-and move on — do NOT retry or rotate headers.
+**2. Spend iterations like they cost money.** They do.
+- Call `memory_search` BEFORE fetching anything new — a prior task may already
+  have the answer, and rediscovering known material is pure waste.
+- Track what you have already fetched and NEVER re-query the same URL or source
+  twice. Re-reading something you hold adds nothing.
+- Prefer a NEW source over re-checking one you have seen.
+- Stop and synthesize the moment you can answer the question. Unused tool
+  iterations are not a budget to spend down.
 
-Write exactly one file: artifacts/out/research.md with summary,
-key facts, source URLs/names, caveats, useful raw notes. For
-USER tasks the deliverable filename may differ — follow the
-user's prompt or USER_GUIDANCE convention.
+**3. Web access is scraper-only.** The container runs with NO network
+(`--network none`), so `curl`, `wget`, and any direct HTTP from `run_shell`
+ALWAYS fail — never reach for the shell to fetch a page. Use
+`mcp__scraper__web_fetch` for every fetch. Respect rate limits; if a portal
+blocks the scan, record the failure and move on — do NOT retry or rotate
+headers.
 
-ALWAYS list the files you wrote in `produced_files` at the
-top level — the executor verifies each path exists. Lying
-about written files fails the step.
+**4. Deliver exactly one file:** `artifacts/out/research.md` — summary, key
+facts, source URLs/names, caveats, useful raw notes. (For USER tasks the
+filename may differ; follow the user's prompt or the `USER_GUIDANCE`
+convention.) ALWAYS list every file you wrote in `produced_files` at the top
+level: the executor verifies each path exists, and misreporting fails the step.
 
 ### planner
 
@@ -859,7 +865,7 @@ is `file_read project/.autonomy/RESUME.md` — the operator-maintained
 AUTHORITATIVE résumé. It is the SINGLE SOURCE OF TRUTH for every career
 fact: employers, job titles, employment dates and tenure lengths,
 certifications, education, and skills come ONLY from that file. Do NOT
-use memory_search results, scan artifacts, "candidate profile" summaries,
+use retrieved memory results, scan artifacts, "candidate profile" summaries,
 or prior knowledge as a source of facts — those are derived/lossy and may
 be wrong. Do NOT invent, embellish, round up, or extrapolate any fact
 (e.g. never inflate a 2-year role into "6+ years", never add an employer,

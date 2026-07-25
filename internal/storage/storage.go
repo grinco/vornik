@@ -44,6 +44,9 @@ type Repositories struct {
 	Skills             persistence.SkillRepository
 	ExecInjectedSkills persistence.ExecutionInjectedSkillRepository
 	Proposals          persistence.ProposalRepository
+	// CostTuningCanaries backs the cost/quality canary + regression
+	// auto-rollback guard (LLD 2026-07-24-cost-quality-canary-rollback §D).
+	CostTuningCanaries persistence.CostTuningCanaryRepository
 	AdminAudit         persistence.AdminAuditRepository
 	SecretRedaction    persistence.SecretRedactionAuditRepository
 	TaskCredentials    persistence.TaskCredentialRepository
@@ -325,6 +328,7 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		Skills:                         sqlite.NewSkillRepository(db),
 		ExecInjectedSkills:             sqlite.NewExecutionInjectedSkillRepository(db),
 		Proposals:                      sqlite.NewProposalRepository(db),
+		CostTuningCanaries:             sqlite.NewCostTuningCanaryRepository(db),
 		AdminAudit:                     sqlite.NewAdminAuditRepository(db),
 		SecretRedaction:                sqlite.NewSecretRedactionAuditRepository(db),
 		TaskCredentials:                sqlite.NewTaskCredentialRepository(db),
@@ -434,6 +438,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		Skills:                         postgres.NewSkillRepository(dbtx),
 		ExecInjectedSkills:             postgres.NewExecutionInjectedSkillRepository(dbtx),
 		Proposals:                      postgres.NewProposalRepository(dbtx),
+		CostTuningCanaries:             postgres.NewCostTuningCanaryRepository(dbtx),
 		AdminAudit:                     postgres.NewAdminAuditRepository(dbtx),
 		SecretRedaction:                postgres.NewSecretRedactionAuditRepository(dbtx),
 		TaskCredentials:                postgres.NewTaskCredentialRepository(dbtx),

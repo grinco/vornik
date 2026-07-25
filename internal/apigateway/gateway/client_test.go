@@ -286,7 +286,10 @@ func TestCall_InvalidMethodScrubbed(t *testing.T) {
 	c := newClientForServer(t, srv, reg, "tok123")
 
 	_, err := c.Call(context.Background(), apigateway.Request{Provider: "maps", Method: "BAD METHOD"})
-	if err == nil || !strings.Contains(err.Error(), "build request") {
-		t.Fatalf("err = %v, want a build-request error", err)
+	if !errors.Is(err, apigateway.ErrGatewayRequest) {
+		t.Fatalf("err = %v, want ErrGatewayRequest", err)
+	}
+	if strings.Contains(err.Error(), "BAD METHOD") {
+		t.Fatalf("request-construction error leaked attacker-controlled input: %v", err)
 	}
 }

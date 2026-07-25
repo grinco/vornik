@@ -1,8 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -251,96 +254,33 @@ func TestGitWorkspaceRoot_NilConfig(t *testing.T) {
 	}
 }
 
-// TestParseCGIOutput covers all branches of parseCGIOutput.
-func TestParseCGIOutput(t *testing.T) {
-	tests := []struct {
-		name       string
-		raw        []byte
-		wantStatus int
-		wantHdr    map[string]string // key→first value
-		wantBody   []byte
-		wantErrStr string // non-empty means expect error containing this
-	}{
-		{
-			name:       "normal CRLF separator with body",
-			raw:        []byte("Content-Type: text/plain\r\n\r\nhello body"),
-			wantStatus: 200,
-			wantHdr:    map[string]string{"Content-Type": "text/plain"},
-			wantBody:   []byte("hello body"),
-		},
-		{
-			name:       "LF-only separator fallback",
-			raw:        []byte("Content-Type: application/octet-stream\n\nbinary"),
-			wantStatus: 200,
-			wantHdr:    map[string]string{"Content-Type": "application/octet-stream"},
-			wantBody:   []byte("binary"),
-		},
-		{
-			name:       "Status header 404",
-			raw:        []byte("Status: 404 Not Found\r\nContent-Type: text/plain\r\n\r\nnot found"),
-			wantStatus: 404,
-			wantHdr:    map[string]string{"Content-Type": "text/plain"},
-			wantBody:   []byte("not found"),
-		},
-		{
-			name:       "Status header 301 no reason phrase",
-			raw:        []byte("Status: 301\r\n\r\n"),
-			wantStatus: 301,
-			wantBody:   []byte{},
-		},
-		{
-			name:       "no blank line at all — all header section, empty body",
-			raw:        []byte("Content-Type: text/plain"),
-			wantStatus: 200,
-			wantHdr:    map[string]string{"Content-Type": "text/plain"},
-			wantBody:   []byte{},
-		},
-		{
-			name:       "malformed header line no colon",
-			raw:        []byte("MissingColon\r\n\r\n"),
-			wantErrStr: "malformed CGI header line",
-		},
-		{
-			name:       "invalid Status value non-numeric",
-			raw:        []byte("Status: abc Bad\r\n\r\n"),
-			wantErrStr: "invalid CGI Status value",
-		},
-		{
-			name:       "multiple headers",
-			raw:        []byte("Content-Type: text/html\r\nX-Custom: val\r\n\r\nbody"),
-			wantStatus: 200,
-			wantHdr:    map[string]string{"Content-Type": "text/html", "X-Custom": "val"},
-			wantBody:   []byte("body"),
-		},
+func TestStreamCGIResponseStreamsLargeBody(t *testing.T) {
+	body := bytes.Repeat([]byte("x"), 8<<20)
+	src := io.MultiReader(
+		strings.NewReader("Status: 201 Created\r\nContent-Type: application/octet-stream\r\n\r\n"),
+		bytes.NewReader(body),
+	)
+	rec := httptest.NewRecorder()
+	status, err := streamCGIResponse(rec, src)
+	if err != nil {
+		t.Fatalf("streamCGIResponse: %v", err)
 	}
+	if status != http.StatusCreated || rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d/%d, want 201", status, rec.Code)
+	}
+	if rec.Body.Len() != len(body) {
+		t.Fatalf("body size = %d, want %d", rec.Body.Len(), len(body))
+	}
+}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			status, hdrs, body, err := parseCGIOutput(tc.raw)
-			if tc.wantErrStr != "" {
-				if err == nil {
-					t.Fatalf("expected error containing %q, got nil", tc.wantErrStr)
-				}
-				if !strings.Contains(err.Error(), tc.wantErrStr) {
-					t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErrStr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if status != tc.wantStatus {
-				t.Fatalf("status = %d, want %d", status, tc.wantStatus)
-			}
-			if tc.wantBody != nil && string(body) != string(tc.wantBody) {
-				t.Fatalf("body = %q, want %q", body, tc.wantBody)
-			}
-			for k, v := range tc.wantHdr {
-				if got := hdrs.Get(k); got != v {
-					t.Fatalf("header %q = %q, want %q", k, got, v)
-				}
-			}
-		})
+func TestStreamCGIResponseRejectsOversizedHeaders(t *testing.T) {
+	raw := "X-Large: " + strings.Repeat("a", maxGitCGIHeaderBytes) + "\r\n\r\nbody"
+	rec := httptest.NewRecorder()
+	if _, err := streamCGIResponse(rec, strings.NewReader(raw)); err == nil {
+		t.Fatal("streamCGIResponse accepted oversized CGI headers")
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("wrote %d response bytes before rejecting headers", rec.Body.Len())
 	}
 }
 
@@ -933,5 +873,174 @@ func TestGitHTTPBackend_AuditNoDoubleWrite(t *testing.T) {
 	rows := auditRepo.snapshot()
 	if len(rows) != 1 {
 		t.Fatalf("expected exactly 1 audit row, got %d", len(rows))
+	}
+}
+
+// --- streaming CGI regressions (audit 2026-07-25 follow-up) ----------------
+//
+// The switch from the buffered cmd.Output() + parseCGIOutput path to
+// streamCGIResponse introduced two defects that these tests pin.
+
+// errAfterHeaders yields a complete CGI header block, then fails. It models a
+// git-http-backend that dies (or a pipe that breaks) after its headers were
+// already flushed to the client.
+type errAfterHeaders struct {
+	hdr  *strings.Reader
+	done bool
+}
+
+func (e *errAfterHeaders) Read(p []byte) (int, error) {
+	if e.done {
+		return 0, errors.New("backend pipe broke mid-body")
+	}
+	n, err := e.hdr.Read(p)
+	if errors.Is(err, io.EOF) {
+		e.done = true
+		if n > 0 {
+			return n, nil
+		}
+		return 0, errors.New("backend pipe broke mid-body")
+	}
+	return n, err
+}
+
+// TestStreamCGIResponse_MidBodyFailureMarksHeadersSent pins the fix for the
+// regression where the handler's "cw.bytesWritten == 0" guard let respondError
+// run after streamCGIResponse had already committed the status line: the client
+// received HTTP 200 with a JSON error envelope grafted onto a git content-type
+// response. wroteHeader — not bytesWritten — is the correct signal.
+func TestStreamCGIResponse_MidBodyFailureMarksHeadersSent(t *testing.T) {
+	rec := httptest.NewRecorder()
+	cw := &countingResponseWriter{ResponseWriter: rec, statusCode: http.StatusOK}
+	src := &errAfterHeaders{hdr: strings.NewReader(
+		"Status: 200 OK\r\nContent-Type: application/x-git-upload-pack-result\r\n\r\n")}
+
+	status, err := streamCGIResponse(cw, src)
+	if err == nil {
+		t.Fatal("expected a mid-body stream error")
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (headers parsed before the failure)", status)
+	}
+	if cw.bytesWritten != 0 {
+		t.Fatalf("bytesWritten = %d, want 0 — the failure is before any body byte", cw.bytesWritten)
+	}
+	if !cw.wroteHeader {
+		t.Fatal("wroteHeader must be true: the status line is already on the wire, " +
+			"so the handler must NOT call respondError")
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/x-git-upload-pack-result" {
+		t.Fatalf("Content-Type = %q, want the git content type", got)
+	}
+}
+
+// TestCountingResponseWriter_WriteHeaderIsIdempotent guards the defence in
+// depth: even if a caller does reach respondError after the stream committed
+// headers, the status code must not be rewritten (net/http would log a
+// "superfluous WriteHeader call" and keep the first code anyway).
+func TestCountingResponseWriter_WriteHeaderIsIdempotent(t *testing.T) {
+	rec := httptest.NewRecorder()
+	cw := &countingResponseWriter{ResponseWriter: rec, statusCode: http.StatusOK}
+	cw.WriteHeader(http.StatusOK)
+	cw.WriteHeader(http.StatusInternalServerError)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 (first WriteHeader wins)", rec.Code)
+	}
+	if cw.statusCode != http.StatusOK {
+		t.Fatalf("statusCode = %d, want 200", cw.statusCode)
+	}
+}
+
+// TestStreamCGIResponse_RejectsNewlineFreeHeaderStream pins the fix for the
+// bypassable header cap: bufio.Reader.ReadString materialises an entire line
+// before returning, so a newline-free stream was buffered in full (8 MiB in the
+// audit repro) before the maxGitCGIHeaderBytes check could run. ReadSlice with
+// a cap-sized buffer fails at the boundary instead — proven by the error being
+// the cap error, not "read CGI headers: EOF".
+func TestStreamCGIResponse_RejectsNewlineFreeHeaderStream(t *testing.T) {
+	rec := httptest.NewRecorder()
+	cw := &countingResponseWriter{ResponseWriter: rec, statusCode: http.StatusOK}
+	huge := strings.Repeat("X", maxGitCGIHeaderBytes*4)
+
+	_, err := streamCGIResponse(cw, strings.NewReader(huge))
+	if err == nil {
+		t.Fatal("expected an oversize-header error")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("err = %v, want the header-size cap error (a %q error means the "+
+			"whole line was buffered before the cap was checked)", err, "read CGI headers: EOF")
+	}
+	if cw.wroteHeader {
+		t.Fatal("nothing may be committed to the wire when the header block is rejected")
+	}
+}
+
+// TestStreamCGIResponse_HeaderAtCapBoundary keeps the cap from being so strict
+// that a legitimate (large but bounded) header block is rejected.
+func TestStreamCGIResponse_HeaderAtCapBoundary(t *testing.T) {
+	// One header line just under the cap, then the blank-line terminator.
+	value := strings.Repeat("v", maxGitCGIHeaderBytes-len("X-Big: \r\n")-16)
+	raw := "X-Big: " + value + "\r\n\r\nPACKDATA"
+	rec := httptest.NewRecorder()
+	cw := &countingResponseWriter{ResponseWriter: rec, statusCode: http.StatusOK}
+
+	status, err := streamCGIResponse(cw, strings.NewReader(raw))
+	if err != nil {
+		t.Fatalf("a header block under the cap must be accepted, got %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if rec.Body.String() != "PACKDATA" {
+		t.Fatalf("body = %q, want %q", rec.Body.String(), "PACKDATA")
+	}
+}
+
+// TestStreamCGIResponse_StatusAndBodyPassThrough replaces the coverage the
+// deleted parseCGIOutput test provided for the CGI header/status/body split.
+func TestStreamCGIResponse_StatusAndBodyPassThrough(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		raw        string
+		wantStatus int
+		wantBody   string
+		wantHdr    string
+		wantErr    bool
+	}{
+		{"CRLF with body", "Content-Type: text/plain\r\n\r\nhello", 200, "hello", "text/plain", false},
+		{"LF-only separator", "Content-Type: text/plain\n\nbinary", 200, "binary", "text/plain", false},
+		{"Status 404", "Status: 404 Not Found\r\nContent-Type: text/plain\r\n\r\nnope", 404, "nope", "text/plain", false},
+		{"Status without reason phrase", "Status: 301\r\n\r\n", 301, "", "", false},
+		{"non-numeric Status rejected", "Status: abc Bad\r\n\r\n", 0, "", "", true},
+		{"out-of-range Status rejected", "Status: 99\r\n\r\n", 0, "", "", true},
+		{"no terminating blank line", "Content-Type: text/plain", 0, "", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			cw := &countingResponseWriter{ResponseWriter: rec, statusCode: http.StatusOK}
+			status, err := streamCGIResponse(cw, strings.NewReader(tc.raw))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error for %q", tc.raw)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if status != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", status, tc.wantStatus)
+			}
+			if rec.Body.String() != tc.wantBody {
+				t.Fatalf("body = %q, want %q", rec.Body.String(), tc.wantBody)
+			}
+			if tc.wantHdr != "" && rec.Header().Get("Content-Type") != tc.wantHdr {
+				t.Fatalf("Content-Type = %q, want %q", rec.Header().Get("Content-Type"), tc.wantHdr)
+			}
+			// "Status" is a CGI-only header and must never be forwarded.
+			if rec.Header().Get("Status") != "" {
+				t.Fatal("the CGI Status header must be stripped, not forwarded")
+			}
+		})
 	}
 }

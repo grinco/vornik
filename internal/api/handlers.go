@@ -19,6 +19,7 @@ import (
 	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/mcp"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/taskcreate"
 )
 
@@ -357,7 +358,18 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 				"input artifacts are not configured on this daemon")
 			return
 		}
-		results, err := s.processInputArtifacts(r.Context(), projectID, req.InputArtifacts)
+		// Derive skip_auto_extract from the target workflow, exactly as
+		// the companion delegate path does. A workflow declaring
+		// require_input_artifacts reads the STAGED file; auto-extracting
+		// here sets context.inputExtractions, which makes the executor
+		// skip staging and leaves roles without the document_* MCP tools
+		// with nothing to read (T-8f69, 2026-07-25).
+		wf := (*registry.Workflow)(nil)
+		if s.projectRegistry != nil {
+			wf = s.projectRegistry.GetWorkflow(s.effectiveWorkflowID(projectID, req.WorkflowID))
+		}
+		results, err := s.processInputArtifactsWithOpts(r.Context(), projectID, req.InputArtifacts,
+			processInputArtifactsOpts{SkipAutoExtract: resolveSkipAutoExtract(false, wf)})
 		if err != nil {
 			respondError(w, http.StatusBadRequest, "VALIDATION_ERROR", err.Error())
 			return
@@ -434,12 +446,7 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Determine workflow
-	workflowID := req.WorkflowID
-	if workflowID == "" && s.projectRegistry != nil {
-		if project := s.projectRegistry.GetProject(projectID); project != nil {
-			workflowID = project.DefaultWorkflowID
-		}
-	}
+	workflowID := s.effectiveWorkflowID(projectID, req.WorkflowID)
 
 	// Determine priority
 	priority := req.Priority
@@ -2061,6 +2068,24 @@ func extractPathSegmentAfter(r *http.Request, marker string) string {
 // the URL-layer defense-in-depth for the surfaces it does
 // cover; extending it to resolve IDs is parked unless the
 // per-request DB cost is judged acceptable.
+// effectiveWorkflowID resolves the workflow a create-task request will
+// actually run: the explicit workflowId when supplied, otherwise the
+// project's configured default. Shared by the input-artifact staging
+// decision and the task's own WorkflowID so the two can't disagree —
+// they sit ~80 lines apart and the artifact decision happens first.
+func (s *Server) effectiveWorkflowID(projectID, requested string) string {
+	if requested != "" {
+		return requested
+	}
+	if s.projectRegistry == nil {
+		return ""
+	}
+	if project := s.projectRegistry.GetProject(projectID); project != nil {
+		return project.DefaultWorkflowID
+	}
+	return ""
+}
+
 func extractProjectID(r *http.Request) string {
 	if id := extractPathSegmentAfter(r, "projects"); id != "" {
 		return id

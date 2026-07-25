@@ -162,7 +162,7 @@ func TestQuery_GatewaySentinelMapped(t *testing.T) {
 		{"method", apigateway.ErrMethodNotAllowed, "does not support"},
 		{"upstream", apigateway.ErrUpstreamMethod, "does not support"},
 		{"auth", apigateway.ErrGatewayAuth, "authentication failed"},
-		{"other", errors.New("boom"), "boom"},
+		{"other", errors.New("transport failed for https://gateway/x?token=LEAK-ME"), "gateway request failed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,6 +175,9 @@ func TestQuery_GatewaySentinelMapped(t *testing.T) {
 			// A mapped refusal is human-readable, never a bare Go error prefix.
 			if out.Body != "" {
 				t.Errorf("refusal should carry no body, got %q", out.Body)
+			}
+			if strings.Contains(out.Refusal, "LEAK-ME") || strings.Contains(out.Refusal, "token=") {
+				t.Errorf("gateway refusal leaked request data: %q", out.Refusal)
 			}
 		})
 	}

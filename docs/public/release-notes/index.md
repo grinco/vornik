@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 3fdc11ddb5c1e7ab9c0f2a7c9244d4287da22107f6ef21f2242c88a19f0bc99a
+      sha256: 44e3a1f4c3a34acfce966893d51998b4f341f53f9d02042b1853a81a88864f11
 ---
 # Release Notes
 
@@ -14,6 +14,125 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.7.5
+
+**A security-and-governance release.** Two full security audits — the ten-day
+contribution window and then the whole tree — found and fixed 37 issues, one
+critical in each pass. **Upgrading is recommended.** Alongside that, you get
+per-task spend caps, parallel workflow steps, and a safety net under automated
+cost tuning. This release also adds **anonymous usage telemetry, enabled by
+default** — read that item before upgrading.
+
+- **New: anonymous usage telemetry, on by default.** Vornik now reports two
+  lifecycle events — a successful install, and a project creation — to
+  `telemetry.vornik.io`. What goes out: the event type, the release version, an
+  OS and architecture category, which Vornik-owned path created the project, and
+  for a project the built-in template name (or `custom`) plus whether autonomy
+  was switched on. **Nothing else.** No installation identifier, hostname,
+  username, project name, path, repository, prompt, task content, config value,
+  key, endpoint, model name, or error text — and no hashes of any of those. A
+  build from source reports its version as `dev` rather than a commit, so the
+  version can't single out one machine. The service sees your IP while handling
+  the request, as any HTTPS service does; it is not part of the payload and is
+  never stored alongside an event, so reports can't be linked to each other or to
+  a machine. Only aggregate counts are retained.
+
+    Turn it off at install time by answering `n` to the prompt, or
+    `VORNIK_TELEMETRY=off` for an unattended install; afterwards set
+    `telemetry.enabled: false`. An explicit config choice always beats the
+    environment. Run `vornikctl telemetry sample` to print the effective setting
+    and the exact request that *would* be sent, without sending anything. Full
+    detail in the Telemetry and privacy reference.
+- **Security: upgrade recommended.** A ten-day contribution audit (21 findings)
+  plus a whole-tree trust-boundary pass (10 findings) plus a review of those
+  fixes (6 more) — all with root-cause fixes and regression tests. The two
+  critical ones: the **macOS installer** could execute arbitrary commands inside
+  the provisioned VM if an attacker controlled its environment variables, and
+  **archive extraction** could write outside its target directory by following a
+  planted symlink. Also closed: several safety gates that silently *allowed* work
+  when they couldn't read their own inputs (per-task API budgets reset by a DB
+  blip, task-cost forecasts proceeding while limits were blind, taint checks
+  reporting "off" when unwired), incomplete SSRF blocklists in both the daemon
+  and the scraper, unguarded browser subresource/WebSocket egress, and gateway
+  errors that leaked full request URLs into agent-visible messages.
+- **Cap what a single task can spend.** A new per-task budget stops one runaway
+  task from eating a project's allowance: the forecast at creation *refuses* a
+  task that would breach its cap, ~80% emits a warning, and 100% parks the task
+  for your decision (increase / reduce / abandon) instead of failing it. Spend
+  accumulates across resumes. Set `default_task_budget_usd` on the project (with
+  an optional per-task override and a `max_task_budget_usd` clamp) —
+  **0 or unset leaves everything as it was.**
+- **Workflows can fan out in parallel.** A new `parallel` step runs several
+  branches at once and joins them with `all`, `quorum:<n>`, or `best_effort`,
+  so a research or review stage no longer has to run serially. See
+  `configs/workflows/parallel-research.md` for a worked example.
+- **Memory search tells you how much to trust a result.** `memory_search` now
+  returns a trust verdict (high / medium / low) computed from stored confidence,
+  validation status and freshness — not from an opaque relevance score. A low
+  verdict automatically widens the search, and an aged result with no expiry is
+  capped at medium so a stale decision can't be presented as current.
+- **A safety net under automated cost tuning.** After a cost-tuning change is
+  applied, a canary compares quality and cost before and after, and
+  **automatically rolls the change back** if it regressed — then holds that knob
+  in a cooldown. With that guard in place you can optionally let *proven* changes
+  apply without a human: only for knobs with a track record of passed canaries,
+  and only when the last change there was made by a person. Off by default, and
+  scoped by an explicit per-swarm allow-list that means *none* when left empty.
+- **Autonomous writes can be gated on untrusted input.** vornik now records
+  whether each agent step consumed untrusted content and can hold a write whose
+  lineage traces back to it, with the contributing sources attached for your
+  review. Defaults to **advisory** (observe-only, no behavior change) so you can
+  watch it before switching a project to `enforce`.
+- **Report a problem without leaking your environment.** `vornikctl report`
+  builds an anonymized problem report and a prefilled GitHub issue for you to
+  review before submitting — secrets, emails, home paths, IPs and hostnames are
+  stripped at a single choke point. If it can't anonymize something, it refuses
+  rather than guessing. The installer offers the same thing when a fresh install
+  fails.
+- **Fewer first-run surprises.** A pass over a clean install fixed agent-LLM
+  connectivity, unwritable rootless workspaces, the daemon not surviving logout,
+  and Postgres not restarting after a reboot. The bundled demo project now ships
+  with autonomy **off** so a fresh install can't burn tokens unattended, and
+  `vornikctl doctor` gained checks for agent-LLM reachability, upstream API-key
+  validity (with a live probe), and agent-image UID mapping. Three doctor checks
+  also stopped reporting *correct* setups as problems — a router-based model
+  config, a secret externalized to a file rather than an env var, and a prompt
+  that tells an agent **not** to use a tool it was deliberately denied.
+- **Fixed: `vornikctl` couldn't read its own config on a fresh install.** Every
+  config-loading command failed with `database name is required` while the daemon
+  on the same host ran fine — the `${...}` placeholders in `config.yaml` are
+  filled from an environment file that the daemon got from systemd and the CLI
+  did not. The CLI now reads the same files (`vornik.env` and `secrets/env`
+  alongside the existing `secrets/*.env`), and if a placeholder genuinely has
+  nothing to resolve to, the error names the variables instead of reporting the
+  field as missing.
+- **Fixed: no models listed when a model-fallback map was configured.**
+  `vornikctl models list` printed nothing — and the models API returned an empty
+  list — for any deployment setting `chat.router.model_fallbacks`, because model
+  discovery was lost inside the provider chain. The same gap blanked the
+  Ollama-compatible `/api/tags` endpoint, the doctor's model-reachability check,
+  and the template model picker, and quietly turned per-provider readiness probes
+  into no-ops. The models API now returns `501` when nothing can enumerate models,
+  so an empty list means empty rather than broken.
+- **Fixed: an attached document could be reviewed from memory instead.** A
+  review delegated with a file attached could end up reviewing stale recalled
+  chunks rather than the attachment, because extracting the upload at submit time
+  suppressed staging the file for the agent. Workflows that declare they need
+  input artifacts now always get the raw file. The Claude Code and Codex
+  companion plugins ship as 0.13.0 and 0.11.0 with corrected guidance; installed
+  clients pick that up on their next marketplace update.
+- **Behavior changes to note.** A `web_fetch` of a page with a blocked or
+  unresolvable third-party asset now **succeeds** and lists what it refused in a
+  new `denied_subresources` field, instead of failing the whole fetch. Inbound
+  email that fails delivery five polls in a row is dropped with an error log
+  rather than retried forever (this is what stops one bad message from blocking
+  your inbox). If you override the macOS installer's quickstart URL it must now
+  be `https://` and have a published `.sha256` alongside it.
+
+See `docs/release-notes/2026.7.5.md`.
 
 ---
 

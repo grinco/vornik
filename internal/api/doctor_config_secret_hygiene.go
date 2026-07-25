@@ -72,6 +72,15 @@ func (h *DoctorHandlers) checkConfigSecretHygiene() DoctorCheck {
 		if raw, ok := rawSecrets[key]; ok && isEnvSourcedRaw(raw) {
 			continue // operator did the right thing — env-sourced
 		}
+		// A `<field>_file:` sibling is the STRONGEST option available (the
+		// loader reads a 0600 file at startup into the very field we snapshot),
+		// so the resolved value being secret-shaped is expected, not a finding.
+		// Without this the check punished the most secure configuration —
+		// observed 2026-07-25 against auth.providers.github.client_secret_file,
+		// the same class of false positive the env-sourced hop above fixed.
+		if rawSecrets[key+"_file"] != "" {
+			continue
+		}
 		if looksLikeRawSecret(h.secretFields[key]) {
 			items = append(items, fmt.Sprintf(
 				"%s appears to be a raw plaintext secret (%d chars); recommend moving to ${ENV_VAR} and setting the variable in the systemd unit",
@@ -135,6 +144,11 @@ func (h *DoctorHandlers) loadRawSecretFields() map[string]string {
 		"telegram.bot_token",
 		"memory.embedding_api_key",
 		"auth.providers.github.client_secret",
+		// `_file` siblings: presence means the secret is externalized to a
+		// file, which the loader resolves INTO the field above at startup.
+		// Looked up so the lint can tell "resolved from a 0600 file" apart
+		// from "pasted into config.yaml" — post-resolution they are identical.
+		"auth.providers.github.client_secret_file",
 	}
 	for _, p := range paths {
 		if v, ok := lookupYAMLPath(raw, p); ok {

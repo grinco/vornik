@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -119,6 +120,28 @@ func TestApply_ValidationFailsNoWrite(t *testing.T) {
 		if filepath.Ext(en.Name()) == ".tmp" || len(en.Name()) > 8 && en.Name()[:9] == ".cp-apply" {
 			t.Errorf("stray temp file left: %s", en.Name())
 		}
+	}
+}
+
+// TestApply_ValidateChangeTradingRefusalNoWrite asserts a ValidateChange refusal
+// (the applier-side trading guard's return) aborts Apply before any write, leaves
+// the proposal APPROVED, and surfaces the sentinel through errors.Is.
+// Regression: review-20260721-a7bf #6 (applier-side trading exclusion).
+func TestApply_ValidateChangeTradingRefusalNoWrite(t *testing.T) {
+	e, repo, id, file := approvedProposal(t, persistence.ProposalScopeProject)
+	e.ValidateChange = func(_ context.Context, _ *persistence.ControlPlaneProposal) error {
+		return fmt.Errorf("%w: swarm %q", ErrTradingSwarmRefused, "ibkr-trader-swarm")
+	}
+	err := e.Apply(context.Background(), id, "vadim", false)
+	if !errors.Is(err, ErrTradingSwarmRefused) {
+		t.Fatalf("expected ErrTradingSwarmRefused, got %v", err)
+	}
+	if got := readFile(t, file); got != oldContent {
+		t.Errorf("file must be untouched on trading refusal, got %q", got)
+	}
+	p, _ := repo.GetByID(context.Background(), id)
+	if p.Status != persistence.ProposalStatusApproved {
+		t.Errorf("refused proposal must stay APPROVED, got %s", p.Status)
 	}
 }
 

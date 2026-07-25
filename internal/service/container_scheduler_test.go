@@ -1,6 +1,8 @@
 package service
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -89,6 +91,35 @@ func TestInitWatchdog_SkippedOnNonWorker(t *testing.T) {
 	}
 	if c.Watchdog != nil {
 		t.Error("watchdog must NOT be built on a non-worker node")
+	}
+}
+
+// TestWarnAgentLLMDirectRoute is a regression test for the fresh-install
+// "Invalid API key" incident (2026-07-25, design F2b): initScheduler used to
+// log the empty-agent_llm.endpoint fallback at Info, which fresh-install
+// operators never see before every task starts failing. The extracted
+// warnAgentLLMDirectRoute helper (see container_scheduler.go) must WARN and
+// name the breakage explicitly so it's greppable in the daemon's own logs —
+// this is the same failure mode internal/api's agent_llm_topology doctor
+// check guards, surfaced here at the point it actually gets logged.
+func TestWarnAgentLLMDirectRoute(t *testing.T) {
+	var buf bytes.Buffer
+	logger := captureLogger(&buf)
+
+	warnAgentLLMDirectRoute(logger, "https://api.z.ai/v1")
+
+	rec := findLog(logRecords(t, &buf), "Invalid API key")
+	if rec == nil {
+		t.Fatalf("expected a warning naming the 'Invalid API key' breakage; got %q", buf.String())
+	}
+	if lvl, _ := rec["level"].(string); lvl != "warn" {
+		t.Errorf("expected warn level, got %q (full record: %v)", lvl, rec)
+	}
+	if ep, _ := rec["resolved_endpoint"].(string); ep != "https://api.z.ai/v1" {
+		t.Errorf("expected resolved_endpoint field, got %q", ep)
+	}
+	if msg, _ := rec["message"].(string); !strings.Contains(msg, "vornikctl doctor") {
+		t.Errorf("expected message to name the correct CLI command 'vornikctl doctor', got %q", msg)
 	}
 }
 

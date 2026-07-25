@@ -288,6 +288,37 @@ func TestProposalRepository_PostgresContract(t *testing.T) {
 	repotest.RunProposalSuite(t, NewProposalRepository(db.DB))
 }
 
+// TestCostTuningCanaryRepository_PostgresContract — the cost/quality canary
+// guard's row store (design 2026-07-24 §4.3), the same suite that runs against
+// SQLite.
+func TestCostTuningCanaryRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunCostTuningCanarySuite(t, NewCostTuningCanaryRepository(db.DB))
+}
+
+// TestCostAutoApplyTrust_PostgresContract — the cost-auto-apply cross-repo trust
+// primitives (auto-apply design D1/D8), same suite that runs against SQLite.
+func TestCostAutoApplyTrust_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunCostAutoApplyTrustSuite(t, NewCostTuningCanaryRepository(db.DB), NewProposalRepository(db.DB))
+}
+
+// TestCostTuningCanaries_PartialIndex_Postgres asserts the WHERE status='open'
+// partial index exists (design I5 — parity with the SQLite side).
+func TestCostTuningCanaries_PartialIndex_Postgres(t *testing.T) {
+	db := newIntegrationDB(t)
+	var indexdef string
+	err := db.DB.QueryRowContext(context.Background(), `
+		SELECT indexdef FROM pg_indexes
+		WHERE tablename = 'cost_tuning_canaries' AND indexname = 'idx_cost_tuning_canaries_open'`).Scan(&indexdef)
+	if err != nil {
+		t.Fatalf("partial index lookup: %v", err)
+	}
+	if !strings.Contains(indexdef, "status") || !strings.Contains(indexdef, "'open'") {
+		t.Fatalf("idx_cost_tuning_canaries_open is not the expected partial index: %q", indexdef)
+	}
+}
+
 // TestExecutionInjectedSkillRepository_PostgresContract — the
 // execution→skill association, same suite the SQLite side runs.
 func TestExecutionInjectedSkillRepository_PostgresContract(t *testing.T) {

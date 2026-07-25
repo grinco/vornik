@@ -139,6 +139,7 @@ func (s *Server) OperatorProposalItem(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) operatorPropose(w http.ResponseWriter, r *http.Request) {
 	var req operatorProposeRequest
+	limitJSONBody(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "INVALID_BODY", "invalid JSON: "+err.Error())
 		return
@@ -203,6 +204,7 @@ func (s *Server) operatorDecide(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	var req operatorDecideRequest
+	limitJSONBody(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "INVALID_BODY", "invalid JSON: "+err.Error())
 		return
@@ -252,6 +254,7 @@ func (s *Server) operatorApply(w http.ResponseWriter, r *http.Request, id string
 		Actor     string `json:"actor"`
 		AckDaemon bool   `json:"ackDaemon"`
 	}
+	limitJSONBody(w, r)
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	actor := strings.TrimSpace(body.Actor)
 	if actor == "" {
@@ -325,6 +328,7 @@ func (s *Server) OperatorDiagnose(w http.ResponseWriter, r *http.Request) {
 		Focus   string `json:"focus"`
 		Propose bool   `json:"propose"`
 	}
+	limitJSONBody(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondError(w, http.StatusBadRequest, "INVALID_BODY", "expected {\"focus\":...}: "+err.Error())
 		return

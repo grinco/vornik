@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -35,24 +36,81 @@ import (
 // its sibling `secrets/` folder (the same location onboarding writes to and
 // onboardingSecretsDir derives). A missing secrets dir is not an error.
 func sourceSecretsEnvFiles(configPath string) {
-	if configPath == "" {
-		return
-	}
-	secretsDir := filepath.Join(filepath.Dir(configPath), "secrets")
-	matches, err := filepath.Glob(filepath.Join(secretsDir, "*.env"))
-	if err != nil || len(matches) == 0 {
-		return
-	}
-	// Deterministic order so overlapping keys resolve predictably
-	// (first file to set a key wins, since later files see it non-empty).
-	sort.Strings(matches)
-	for _, file := range matches {
+	for _, file := range envFileCandidates(configPath) {
 		for k, v := range parseEnvFile(file) {
 			if os.Getenv(k) == "" {
 				_ = os.Setenv(k, v)
 			}
 		}
 	}
+}
+
+// placeholderRe matches the ${VAR} form os.ExpandEnv resolves. $VAR without
+// braces is deliberately ignored: the shipped configs use the braced form, and
+// bare-word matching would flag prose in comments.
+var placeholderRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// unresolvedPlaceholderNames returns the distinct ${VAR} names referenced by raw
+// config bytes that are NOT set in the environment, sorted.
+//
+// Used to turn "database name is required" — which sent a customer looking at
+// the wrong thing, since the field was present and only its placeholder expanded
+// to empty — into an error that names the variable and where to put it.
+func unresolvedPlaceholderNames(raw []byte) []string {
+	seen := map[string]struct{}{}
+	for _, match := range placeholderRe.FindAllSubmatch(raw, -1) {
+		name := string(match[1])
+		if os.Getenv(name) != "" {
+			continue
+		}
+		seen[name] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// envFileCandidates lists the env files to source, in the order they are
+// applied. Earlier entries win, because a key is only filled when still empty.
+//
+// It covers every location a shipped deployment actually writes, which the
+// original `secrets/*.env`-only glob did not:
+//
+//   - <configDir>/vornik.env — the EnvironmentFile the podman quickstart seeds
+//     and deployments/podman/systemd/vornik.service loads. It holds POSTGRES_DB
+//     and POSTGRES_USER, which config.yaml references as placeholders. systemd
+//     supplied these to the daemon, so the daemon worked while every
+//     config-loading vornikctl command failed with "database name is required"
+//     on a fresh install (customer report, 2026-07-26).
+//   - <configDir>/secrets/env — listed by contrib/systemd/vornik.service. The
+//     old glob required something before ".env", so a file named exactly `env`
+//     never matched.
+//   - <configDir>/secrets/*.env — onboarding-written per-service secrets.
+//
+// Missing files are skipped; parseEnvFile is best-effort by design.
+func envFileCandidates(configPath string) []string {
+	if configPath == "" {
+		return nil
+	}
+	configDir := filepath.Dir(configPath)
+	secretsDir := filepath.Join(configDir, "secrets")
+
+	candidates := []string{
+		filepath.Join(configDir, "vornik.env"),
+		filepath.Join(secretsDir, "env"),
+	}
+	// Deterministic order so overlapping keys resolve predictably.
+	if matches, err := filepath.Glob(filepath.Join(secretsDir, "*.env")); err == nil {
+		sort.Strings(matches)
+		candidates = append(candidates, matches...)
+	}
+	return candidates
 }
 
 // ParseEnvFile reads a systemd-style EnvironmentFile / dotenv file into a

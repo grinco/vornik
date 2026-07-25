@@ -7,9 +7,17 @@ import (
 
 // Repo reads the raw per-(project,·) aggregates from the audit spine. Backed by
 // internal/persistence/postgres.QualityRepository in production; faked in tests.
+//
+// The *Between twins are the bounded-window variant the canary guard needs
+// (design 2026-07-24 §4.1): identical fold/score, only the recorded_at WHERE
+// bound differs — [from, to) instead of [since, now]. Historical ranges anchored
+// to a proposal's AppliedAt, so a baseline captured at open is reproducible
+// regardless of when the guard runs.
 type Repo interface {
 	RoleQualityAggregates(ctx context.Context, since time.Time) ([]RoleAggregate, error)
 	TaskQualityAggregates(ctx context.Context, since time.Time) ([]TaskAggregate, error)
+	RoleQualityAggregatesBetween(ctx context.Context, from, to time.Time) ([]RoleAggregate, error)
+	TaskQualityAggregatesBetween(ctx context.Context, from, to time.Time) ([]TaskAggregate, error)
 }
 
 // Config carries the per-tier min-sample floors (design §A — each tier has its
@@ -87,18 +95,69 @@ func (s *Service) Refresh(ctx context.Context, since time.Time) (Report, error) 
 		return Report{}, err
 	}
 
+	return s.assemble(roles, tasks, true), nil
+}
+
+// RefreshBetween reads aggregates over the explicit historical window [from, to)
+// and returns the two-tier snapshot, WITHOUT publishing gauges (design §4.1). The
+// canary guard uses it for its baseline / post windows anchored to a proposal's
+// AppliedAt; it must not disturb the live gauge snapshot that Refresh maintains.
+// Same fold/score as Refresh — the only difference is the bounded repo query.
+func (s *Service) RefreshBetween(ctx context.Context, from, to time.Time) (Report, error) {
+	roles, err := s.repo.RoleQualityAggregatesBetween(ctx, from, to)
+	if err != nil {
+		return Report{}, err
+	}
+	tasks, err := s.repo.TaskQualityAggregatesBetween(ctx, from, to)
+	if err != nil {
+		return Report{}, err
+	}
+	return s.assemble(roles, tasks, false), nil
+}
+
+// assemble folds + scores both tiers into a Report, publishing the gauges only
+// when publish is true (the live Refresh path). Shared so RefreshBetween reuses
+// the exact fold/score of Refresh (design §4.1 "reuse fold/score").
+func (s *Service) assemble(roles []RoleAggregate, tasks []TaskAggregate, publish bool) Report {
 	var rep Report
 	for _, a := range FoldRolesBySwarm(roles, s.swarmOf, s.cfg.StepMinSample) {
 		sc := ScoreTier(a.TierInput)
 		rep.Steps = append(rep.Steps, ScoredSwarmRole{Swarm: a.Swarm, Role: a.Role, Projects: a.Projects, TierScore: sc})
-		s.publish("step", a.Swarm, a.Role, sc)
+		if publish {
+			s.publish("step", a.Swarm, a.Role, sc)
+		}
 	}
 	for _, a := range FoldTasksBySwarm(tasks, s.swarmOf, s.cfg.TaskMinSample) {
 		sc := ScoreTier(a.TierInput)
 		rep.Tasks = append(rep.Tasks, ScoredSwarmWorkflow{Swarm: a.Swarm, Workflow: a.Workflow, Projects: a.Projects, TierScore: sc})
-		s.publish("task", a.Swarm, a.Workflow, sc)
+		if publish {
+			s.publish("task", a.Swarm, a.Workflow, sc)
+		}
 	}
-	return rep, nil
+	return rep
+}
+
+// PickRole linear-scans a Report for the (swarm, role) A1 series (the pattern
+// CostQualityWorker.tick uses). ok=false when the series is absent from the
+// window (e.g. no steps for that role in the range).
+func PickRole(rep Report, swarm, role string) (ScoredSwarmRole, bool) {
+	for _, r := range rep.Steps {
+		if r.Swarm == swarm && r.Role == role {
+			return r, true
+		}
+	}
+	return ScoredSwarmRole{}, false
+}
+
+// PickWorkflow linear-scans a Report for the (swarm, workflow) A2 series.
+// ok=false when the workflow ran no terminal tasks in the window.
+func PickWorkflow(rep Report, swarm, workflow string) (ScoredSwarmWorkflow, bool) {
+	for _, t := range rep.Tasks {
+		if t.Swarm == swarm && t.Workflow == workflow {
+			return t, true
+		}
+	}
+	return ScoredSwarmWorkflow{}, false
 }
 
 func (s *Service) publish(tier, swarm, key string, sc TierScore) {

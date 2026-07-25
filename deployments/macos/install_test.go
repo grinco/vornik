@@ -271,6 +271,52 @@ func TestInstallShEnvTunableKnobs(t *testing.T) {
 	}
 }
 
+func TestInstallShDoesNotInterpolateEnvIntoGuestShell(t *testing.T) {
+	sh := repoFile(t, "deployments/macos/install.sh")
+	for _, unsafe := range []string{"'${QUICKSTART_URL}'", "'${HTTP_PORT}'"} {
+		if strings.Contains(sh, unsafe) {
+			t.Errorf("install.sh interpolates attacker-controlled environment into bash -c: %s", unsafe)
+		}
+	}
+	if !strings.Contains(sh, `VORNIK_QUICKSTART_URL="$QUICKSTART_URL"`) {
+		t.Error("quickstart URL must be passed as an argument-safe env value")
+	}
+	if !strings.Contains(sh, `VORNIK_HTTP_PORT="$HTTP_PORT"`) {
+		t.Error("HTTP port must be passed as an argument-safe env value")
+	}
+	if !strings.Contains(sh, `https://*`) {
+		t.Error("quickstart URL override must be restricted to HTTPS")
+	}
+}
+
+func TestInstallShPinsNestedQuickstartToVornikRef(t *testing.T) {
+	sh := repoFile(t, "deployments/macos/install.sh")
+	if !strings.Contains(sh, `REF="${VORNIK_REF:-`) {
+		t.Error("install.sh must consume the release ref propagated by the Linux entry point")
+	}
+	if !strings.Contains(sh, `grinco/vornik/${REF}/deployments/podman/quickstart.sh`) {
+		t.Error("nested quickstart fetch must use the pinned VORNIK_REF, not a moving branch")
+	}
+	if strings.Contains(sh, "grinco/vornik/main/deployments/podman/quickstart.sh") {
+		t.Error("nested quickstart must not silently fetch moving main")
+	}
+}
+
+func TestInstallShVerifiesNestedQuickstartChecksum(t *testing.T) {
+	sh := repoFile(t, "deployments/macos/install.sh")
+	if !strings.Contains(sh, "quickstart.sh.sha256") {
+		t.Error("nested installer must fetch the published quickstart checksum")
+	}
+	if !strings.Contains(sh, "sha256sum -c") {
+		t.Error("nested installer must verify quickstart before execution")
+	}
+	checkIdx := strings.Index(sh, "sha256sum -c")
+	runIdx := strings.LastIndex(sh, "/tmp/quickstart.sh")
+	if checkIdx < 0 || runIdx < 0 || checkIdx >= runIdx {
+		t.Error("checksum verification must occur before quickstart execution")
+	}
+}
+
 func TestInstallShStartsLimaVmByName(t *testing.T) {
 	sh := repoFile(t, "deployments/macos/install.sh")
 	if !strings.Contains(sh, "limactl start") {

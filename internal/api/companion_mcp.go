@@ -15,6 +15,7 @@ import (
 	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/mcp"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/taskcreate"
 )
 
@@ -687,6 +688,37 @@ func isReviewClassWorkflow(workflow string) bool {
 	return reviewClassWorkflows[strings.TrimSpace(workflow)]
 }
 
+// resolveSkipAutoExtract decides whether an upload bypasses REST
+// auto-extraction, given what the caller asked for and the target
+// workflow's own declaration.
+//
+// A workflow with require_input_artifacts=true reads its input from the
+// STAGED file (/app/workspace/artifacts/in/<name>). Auto-extracting that
+// upload into project memory sets context.inputExtractions, and
+// executor.extractTaskInputArtifacts then deliberately skips staging the
+// raw file on the assumption that the agent will fall back to the
+// document_* MCP tools. Roles whose allowedTools omit those tools — the
+// companion reviewer among them — get 403 FORBIDDEN instead, so the
+// agent has no readable copy of the artifact at all.
+//
+// Deriving the flag here closes that gap for every client at once.
+// Leaving it to caller-side guidance did not hold: the codex plugin
+// documented it for companion-rag-ingest only, and the same failure
+// recurred four times (B-10 / task_20260528134611, two reviews on
+// 2026-06-28, one on 2026-07-03, then T-8f69 on 2026-07-25).
+//
+// The derivation only ever turns the flag ON. An explicit
+// skip_auto_extract=true is never downgraded, and a workflow that makes
+// no such declaration — including an unknown/ad-hoc ID, where wf is nil
+// — keeps the default auto-extract behaviour that the Telegram and
+// email upload paths rely on.
+func resolveSkipAutoExtract(requested bool, wf *registry.Workflow) bool {
+	if requested {
+		return true
+	}
+	return wf != nil && wf.RequireInputArtifacts
+}
+
 // estimateWorkflowCost returns the cost_estimate sub-object for a
 // (project, workflow) pair, or nil when no estimate can be produced
 // (usage repo unwired, query error, or no prior-run sample). The
@@ -778,10 +810,13 @@ func (s *Server) companionToolDelegate(ctx context.Context, key *persistence.API
 	// are NOT blocked — preserve the prior behaviour for IDs the
 	// catalog doesn't know.
 	if s.projectRegistry != nil {
-		if wf := s.projectRegistry.GetWorkflow(args.Workflow); wf != nil &&
-			wf.RequireInputArtifacts && len(args.InputArtifacts) == 0 {
+		wf := s.projectRegistry.GetWorkflow(args.Workflow)
+		if wf != nil && wf.RequireInputArtifacts && len(args.InputArtifacts) == 0 {
 			return "", fmt.Errorf("workflow %q ingests context.inputArtifacts and none were provided — file paths in the prompt are NOT uploaded; stage files via the /vornik-rag-ingest or /vornik-upload plugin commands (base64 inputArtifacts)", args.Workflow)
 		}
+		// Derive skip_auto_extract from the workflow definition rather
+		// than trusting the caller to remember it (T-8f69, 2026-07-25).
+		args.SkipAutoExtract = resolveSkipAutoExtract(args.SkipAutoExtract, wf)
 	}
 
 	// Per-key budget cap (finding #2 / mitigation plan §7.2).

@@ -140,3 +140,59 @@ func TestLooksLikeRawSecret(t *testing.T) {
 		})
 	}
 }
+
+// TestConfigSecretHygiene_FileSourcedSecretIsNotAFinding pins the fix for a
+// false positive found on the dev box: the operator externalized the GitHub
+// OAuth secret to a 0600 file via client_secret_file — the STRONGEST option the
+// loader offers — and the loader resolves that file INTO
+// auth.providers.github.client_secret at startup. The check snapshots the
+// post-resolution value, saw a 40-char secret-shaped string with no raw
+// `client_secret:` key to match against, and reported it as pasted plaintext.
+// It punished the most secure configuration (same class as the env-sourced
+// false positive the `${VAR}` hop already fixed).
+func TestConfigSecretHygiene_FileSourcedSecretIsNotAFinding(t *testing.T) {
+	dir := t.TempDir()
+	secretFile := filepath.Join(dir, "oidc-github")
+	if err := os.WriteFile(secretFile, []byte("0123456789abcdef0123456789abcdef01234567"), 0o600); err != nil {
+		t.Fatalf("write secret file: %v", err)
+	}
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfg := "auth:\n  providers:\n    github:\n      client_id: \"Ov23xxxx\"\n      client_secret_file: \"" + secretFile + "\"\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	h := &DoctorHandlers{
+		configPath: cfgPath,
+		// Mirrors the loader: client_secret_file has been resolved into the
+		// client_secret field by the time the doctor snapshots it.
+		secretFields: map[string]string{
+			"auth.providers.github.client_secret": "0123456789abcdef0123456789abcdef01234567",
+		},
+	}
+	got := h.checkConfigSecretHygiene()
+	if got.Status != "OK" {
+		t.Fatalf("a file-sourced secret must not be a finding, got %+v", got)
+	}
+}
+
+// TestConfigSecretHygiene_InlineSecretStillFlagged is the negative control: an
+// actually-pasted secret with no _file sibling must still be reported.
+func TestConfigSecretHygiene_InlineSecretStillFlagged(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	cfg := "auth:\n  providers:\n    github:\n      client_secret: \"0123456789abcdef0123456789abcdef01234567\"\n"
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	h := &DoctorHandlers{
+		configPath: cfgPath,
+		secretFields: map[string]string{
+			"auth.providers.github.client_secret": "0123456789abcdef0123456789abcdef01234567",
+		},
+	}
+	got := h.checkConfigSecretHygiene()
+	if got.Status != "WARNING" {
+		t.Fatalf("an inline pasted secret must still be flagged, got %+v", got)
+	}
+}

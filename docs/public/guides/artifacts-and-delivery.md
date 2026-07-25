@@ -7,7 +7,7 @@ sources:
     - path: internal/dispatcher/agent.go
       sha256: ec9f279a903b47d000c4fb76af98e0121c4053a2fff5ce01bbb3de96f843b2ee
     - path: internal/email/channel.go
-      sha256: f79eef8120d028866e172af25d8cf0355800a1e9ac7a3c585e50f3e8e7032fb0
+      sha256: bea71c819f9a54dd1573fe3d22460f4c31bb8524eb9c40987191e93161f8c4ab
 ---
 # Artifacts & Outbound File Delivery
 

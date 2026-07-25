@@ -86,6 +86,22 @@ func TestResolveTaintReview_Off_NoQuery(t *testing.T) {
 	}
 }
 
+func TestResolveTaintReview_Enforce_UnwiredFailsClosed(t *testing.T) {
+	srv := &Server{taintDefaultMode: string(taintlineage.ModeEnforce)}
+	res := srv.resolveTaintReview(context.Background(), "p", "t")
+	if res.mode != taintlineage.ModeEnforce || !res.park || !res.requiresReview || res.walkComplete {
+		t.Fatalf("unwired enforce-mode gate must fail closed: %+v", res)
+	}
+}
+
+func TestResolveTaintReview_Enforce_MissingTaskIDFailsClosed(t *testing.T) {
+	srv := taintServer("enforce", nil, &tcStubMessageRepo{})
+	res := srv.resolveTaintReview(context.Background(), "p", "")
+	if !res.park || !res.requiresReview {
+		t.Fatalf("missing task identity must not bypass enforce mode: %+v", res)
+	}
+}
+
 func TestResolveTaintReview_Advisory_FlagNoPark(t *testing.T) {
 	srv := taintServer("advisory", map[string][]persistence.TaintedStepRow{"t": {taintHighRow()}}, &tcStubMessageRepo{})
 	res := srv.resolveTaintReview(context.Background(), "p", "t")

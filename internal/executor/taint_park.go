@@ -29,6 +29,12 @@ type TaintReviewSignal struct {
 	ShownCount    int                   `json:"shown_count"`  // len(Sources) — surfaced truncation
 	Sources       []taintlineage.Source `json:"sources,omitempty"`
 	Mode          string                `json:"mode,omitempty"`
+	// LineageUnavailable marks a fail-closed park: enforce mode is active but
+	// the lineage repositories or the task identity were missing, so NO source
+	// walk happened. The counts and hash are therefore zero/empty and must not
+	// be presented to the operator as "0 external sources" — that reads as
+	// "nothing untrusted was found", the opposite of what happened.
+	LineageUnavailable bool `json:"lineage_unavailable,omitempty"`
 }
 
 // AsTaintReview reports whether a system-step result requests the untrusted-
@@ -61,8 +67,8 @@ type TaintReviewer struct {
 	recordOutcome func(mode taintlineage.Mode, outcome string)
 }
 
-// NewTaintReviewer builds a reviewer. Any nil repo/modeFn degrades safely to
-// "no park" (the feature is inert until fully wired).
+// NewTaintReviewer builds a reviewer. A nil modeFn leaves the feature inert;
+// once mode resolution is wired, missing repositories park in enforce mode.
 func NewTaintReviewer(
 	outcomeRepo persistence.ExecutionStepOutcomeRepository,
 	taskLister persistence.TaskLister,
@@ -88,12 +94,22 @@ func NewTaintReviewer(
 //
 // Implements forge.TaintGate.
 func (tr *TaintReviewer) ReviewForgeWrite(ctx context.Context, projectID, taskID string) (*TaintReviewSignal, error) {
-	if tr == nil || tr.modeFn == nil || tr.outcomeRepo == nil || tr.taskLister == nil || taskID == "" {
+	if tr == nil || tr.modeFn == nil {
 		return nil, nil
 	}
 	mode := tr.modeFn(projectID)
 	if mode == taintlineage.ModeOff {
 		return nil, nil
+	}
+	if tr.outcomeRepo == nil || tr.taskLister == nil || taskID == "" {
+		if mode != taintlineage.ModeEnforce {
+			return nil, nil
+		}
+		return &TaintReviewSignal{
+			State:              TaintReviewState,
+			Mode:               string(mode),
+			LineageUnavailable: true,
+		}, nil
 	}
 
 	dec, err := resolveTaintDecision(ctx, mode, taskID, tr.taskLister, tr.outcomeRepo, tr.msgRepo)
@@ -225,21 +241,30 @@ func (e *Executor) parkForTaintReview(ctx context.Context, task *persistence.Tas
 		return fmt.Errorf("cannot park for taint review: conversational repos not wired")
 	}
 
+	// The fail-closed park has no source walk behind it, so the source-count
+	// wording would claim "0 external source(s)" — indistinguishable from a
+	// clean result. Say what actually happened instead.
 	question := fmt.Sprintf(
 		"This task attempted an autonomous forge write derived from untrusted content (%d external source(s); showing the first %d). Review the sources, then resume to allow the write or cancel to block it. Resuming RE-RUNS the task from the start; a re-run that pulls a NEW untrusted source will pause again for review.",
 		sig.SourceCount, sig.ShownCount,
 	)
+	reason := "tainted_write"
+	if sig.LineageUnavailable {
+		question = "This task attempted an autonomous forge write, but its untrusted-source lineage could NOT be determined (enforce mode is active and the lineage repositories or task identity are unavailable). The write is held rather than allowed unreviewed. Resume only if you are satisfied the write is safe; cancel to block it. If this recurs, the daemon's taint-lineage wiring needs attention."
+		reason = "lineage_unavailable"
+	}
 
 	meta, _ := json.Marshal(map[string]any{
 		"kind": "decision",
 		"decision": map[string]any{
-			"kind":            taintlineage.CheckpointDecisionKind,
-			"reason":          "tainted_write",
-			"write_surface":   "forge",
-			"source_count":    sig.SourceCount,
-			"shown_count":     sig.ShownCount,
-			"source_set_hash": sig.SourceSetHash,
-			"sources":         sig.Sources,
+			"kind":                taintlineage.CheckpointDecisionKind,
+			"reason":              reason,
+			"write_surface":       "forge",
+			"source_count":        sig.SourceCount,
+			"shown_count":         sig.ShownCount,
+			"source_set_hash":     sig.SourceSetHash,
+			"sources":             sig.Sources,
+			"lineage_unavailable": sig.LineageUnavailable,
 		},
 		"question": question,
 		"options": []map[string]any{

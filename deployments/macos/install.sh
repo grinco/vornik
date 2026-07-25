@@ -21,7 +21,9 @@
 #                        Lima has no CLI override for port forwards (unlike
 #                        --cpus/--memory/--disk/--vm-type/--arch).
 #   VORNIK_QUICKSTART_URL  override the quickstart.sh URL fetched inside the
-#                        VM (default: grinco/vornik main branch's copy)
+#                        VM (default: the VORNIK_REF release's copy)
+#   VORNIK_QUICKSTART_SHA256_URL  checksum URL (default: <quickstart URL>.sha256)
+#   VORNIK_REF           release tag used by the nested quickstart fetch
 #   VORNIK_SHIM_BIN_DIR    where to install the vornikctl shim on the mac
 #                        (default: $HOME/.local/bin)
 set -euo pipefail
@@ -86,8 +88,24 @@ HTTP_PORT="${VORNIK_HTTP_PORT:-8080}"
 VM_CPUS="${VORNIK_VM_CPUS:-4}"
 VM_MEM="${VORNIK_VM_MEM:-8GiB}"
 VM_DISK="${VORNIK_VM_DISK:-60GiB}"
-QUICKSTART_URL="${VORNIK_QUICKSTART_URL:-https://raw.githubusercontent.com/grinco/vornik/main/deployments/podman/quickstart.sh}"
+REF="${VORNIK_REF:-2026.7.4}"
+QUICKSTART_URL="${VORNIK_QUICKSTART_URL:-https://raw.githubusercontent.com/grinco/vornik/${REF}/deployments/podman/quickstart.sh}"
+QUICKSTART_SHA256_URL="${VORNIK_QUICKSTART_SHA256_URL:-${QUICKSTART_URL}.sha256}"
 SHIM_BIN_DIR="${VORNIK_SHIM_BIN_DIR:-$HOME/.local/bin}"
+
+case "$HTTP_PORT" in
+  ''|*[!0-9]*) die "VORNIK_HTTP_PORT must be a decimal port number" ;;
+esac
+[ "$HTTP_PORT" -ge 1 ] && [ "$HTTP_PORT" -le 65535 ] ||
+  die "VORNIK_HTTP_PORT must be between 1 and 65535"
+case "$QUICKSTART_URL" in
+  https://*) ;;
+  *) die "VORNIK_QUICKSTART_URL must use https://" ;;
+esac
+case "$QUICKSTART_SHA256_URL" in
+  https://*) ;;
+  *) die "VORNIK_QUICKSTART_SHA256_URL must use https://" ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE="$SCRIPT_DIR/../lima/vornik.yaml"
@@ -147,8 +165,15 @@ VM_USER="$(limactl shell "$VM_NAME" -- id -un)"
 ok "in-VM user: $VM_USER (matches the pinned VM user)"
 
 log "Running the Linux quickstart inside the VM (first run builds binaries + the agent image; several minutes)..."
-limactl shell "$VM_NAME" -- bash -c \
-  "curl -fsSL '${QUICKSTART_URL}' -o /tmp/quickstart.sh && chmod +x /tmp/quickstart.sh && VORNIK_HTTP_PORT='${HTTP_PORT}' /tmp/quickstart.sh"
+limactl shell "$VM_NAME" -- env \
+  VORNIK_QUICKSTART_URL="$QUICKSTART_URL" \
+  VORNIK_QUICKSTART_SHA256_URL="$QUICKSTART_SHA256_URL" \
+  VORNIK_HTTP_PORT="$HTTP_PORT" \
+  bash -c 'curl -fsSL -o /tmp/quickstart.sh -- "$VORNIK_QUICKSTART_URL" &&
+    curl -fsSL -o /tmp/quickstart.sh.sha256 -- "$VORNIK_QUICKSTART_SHA256_URL" &&
+    (cd /tmp && sha256sum -c quickstart.sh.sha256) &&
+    chmod +x /tmp/quickstart.sh &&
+    /tmp/quickstart.sh'
 
 # ---------------------------------------------------------------------------
 # 4. Install the mac-host vornikctl shim.

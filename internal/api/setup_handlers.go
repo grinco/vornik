@@ -74,6 +74,7 @@ func (s *Server) SetupModels(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusServiceUnavailable, "SETUP_NOT_CONFIGURED", "model listing not wired")
 		return
 	}
+	limitJSONBody(w, r)
 	proposal, _, err := decodeSetupChatProposal(r)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "BAD_BODY", err.Error())
@@ -109,6 +110,7 @@ func (s *Server) SetupDispatcherCommit(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ProjectID string `json:"project_id"`
 	}
+	limitJSONBody(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondError(w, http.StatusBadRequest, "BAD_BODY", "invalid JSON body")
 		return
@@ -161,6 +163,7 @@ func (s *Server) SetupSessionCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SelectedUseCase string `json:"selected_use_case"`
 	}
+	limitJSONBody(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondError(w, http.StatusBadRequest, "BAD_BODY", "invalid JSON body")
 		return
@@ -224,6 +227,7 @@ func (s *Server) SetupSessionValidate(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "SESSION_NOT_FOUND", "session not found")
 		return
 	}
+	limitJSONBody(w, r)
 	body, _, err := decodeSetupChatProposal(r)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "BAD_BODY", err.Error())
@@ -281,6 +285,7 @@ func (s *Server) SetupSessionCommit(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "SESSION_NOT_FOUND", "session not found")
 		return
 	}
+	limitJSONBody(w, r)
 	proposal, force, err := decodeSetupChatProposal(r)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, "BAD_BODY", err.Error())

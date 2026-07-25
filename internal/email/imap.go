@@ -101,6 +101,11 @@ type RawMessage struct {
 	// blank line + body). The channel passes this to ParseRFC5322
 	// to extract Subject / From / Body / threading headers.
 	Body []byte
+
+	// Oversized means the adapter stopped fetching after the inbound message
+	// ceiling. Body is intentionally omitted so the channel can acknowledge and
+	// drop the message without parsing attacker-controlled partial MIME data.
+	Oversized bool
 }
 
 // ParsedMessage is the headers-plus-body shape ParseRFC5322

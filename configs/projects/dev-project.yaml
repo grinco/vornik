@@ -13,7 +13,10 @@ defaultPriority: 50 # 0-100; lower numbers run first
 maxConcurrentTasks: 1   # serial execution — prevents workspace clashes (see BACKLOG.md for git worktree parallelism)
 
 autonomy:
-  enabled: true
+  # OFF by default so a fresh install doesn't burn tokens unattended; enable in
+  # the UI (Settings → Autonomy) or set true. While on, the lead evaluates state
+  # every pollInterval (5m) and may schedule up to maxTasksPerHour (6) tasks.
+  enabled: false
   # Autonomy mode (one of: llm | cron | backlog).
   # `llm` (default) — lead evaluates state each tick and picks the
   # next task via tool-use. Best for state-driven projects like

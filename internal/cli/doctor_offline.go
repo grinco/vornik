@@ -25,15 +25,14 @@ import (
 //   - recent daemon journal errors ("why won't it boot")
 //
 // It never mutates anything. Exit is non-zero if any check FAILs.
-func runDoctorOffline(_ *cobra.Command) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
+// buildOfflineDoctorReport runs the static (daemon-down) checks and returns the
+// report + the resolved config path. Extracted so `vornikctl report` can reuse
+// the offline diagnostics at install time (design 2026-07-25-vornik-report).
+func buildOfflineDoctorReport(ctx context.Context) (doctorReport, string) {
 	report := doctorReport{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 		Summary:   "offline",
 	}
-
 	cfg, cfgPath := offlineCheckConfig(&report)
 	if cfg != nil {
 		offlineCheckDatabase(ctx, cfg, &report)
@@ -50,6 +49,20 @@ func runDoctorOffline(_ *cobra.Command) error {
 		report.Summary = "offline: all static checks passed"
 	} else {
 		report.Summary = fmt.Sprintf("offline: %d check(s) FAILED", failed)
+	}
+	return report, cfgPath
+}
+
+func runDoctorOffline(_ *cobra.Command) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	report, cfgPath := buildOfflineDoctorReport(ctx)
+	failed := 0
+	for _, c := range report.Checks {
+		if c.Status == "fail" {
+			failed++
+		}
 	}
 
 	if doctorJSON {

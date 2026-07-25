@@ -329,6 +329,30 @@ func TestPoller_PicksUpNewMessage(t *testing.T) {
 	<-errCh
 }
 
+func TestPoller_DropsAndMarksOversizedMessage(t *testing.T) {
+	cfg := validConfig()
+	imap := newFakeIMAP([]RawMessage{{UID: "oversized", Oversized: true}})
+	cfg.IMAPClient = imap
+	ch, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	recv := &captureReceiver{}
+	cancel, errCh := startChannel(t, ch, recv)
+	defer cancel()
+
+	waitFor(t, func() bool { return len(imap.snapshotMarkSeen()) == 1 })
+	if got := recv.snapshot(); len(got) != 0 {
+		t.Fatalf("oversized message delivered to receiver: %v", got)
+	}
+	if got := imap.snapshotMarkSeen(); len(got) != 1 || got[0] != "oversized" {
+		t.Fatalf("MarkSeen = %v, want [oversized]", got)
+	}
+
+	cancel()
+	<-errCh
+}
+
 func TestPoller_AllowlistRejectsUnlistedSender(t *testing.T) {
 	cfg := validConfig()
 	cfg.SenderAllowlist = []string{"trusted.com"}
@@ -1203,4 +1227,90 @@ func TestChannel_DegradesGracefullyWhenAttachmentPersistenceFails(t *testing.T) 
 	}
 	cancel()
 	<-errCh
+}
+
+// TestHandleRawMessage_BoundedDeliveryRetries pins the fix for the head-of-line
+// blocking introduced alongside maxUnseenMessagesPerPoll (audit 2026-07-25
+// follow-up A-cap). FetchUnseen now returns only the first
+// maxUnseenMessagesPerPoll unseen UIDs, so a message that fails Receive
+// deterministically and is never marked seen starves EVERY message behind it
+// forever. Delivery retries must therefore be bounded: after
+// maxDeliveryAttemptsPerMessage cycles the message is marked seen and dropped.
+func TestHandleRawMessage_BoundedDeliveryRetries(t *testing.T) {
+	cfg := validConfig()
+	imap := newFakeIMAP()
+	cfg.IMAPClient = imap
+	ch, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	recv := &captureReceiver{err: errors.New("dispatcher rejects this message")}
+	ch.recv = recv
+
+	raw := RawMessage{
+		UID:  "wedged",
+		Body: sampleEmail("a@b", "alice@external.test", "Hello vornik", "Please help"),
+	}
+
+	// Every cycle before the last must leave the message UNSEEN so a genuinely
+	// transient downstream failure still gets retried.
+	for i := 1; i < maxDeliveryAttemptsPerMessage; i++ {
+		ch.handleRawMessage(context.Background(), raw)
+		if seen := imap.snapshotMarkSeen(); len(seen) != 0 {
+			t.Fatalf("attempt %d: marked seen too early (%v) — a transient failure must be retried", i, seen)
+		}
+	}
+
+	// The final attempt gives up and drains the slot.
+	ch.handleRawMessage(context.Background(), raw)
+	seen := imap.snapshotMarkSeen()
+	if len(seen) != 1 || seen[0] != "wedged" {
+		t.Fatalf("MarkSeen = %v, want [wedged] after %d failed attempts — otherwise this "+
+			"message permanently starves the %d-message poll batch",
+			seen, maxDeliveryAttemptsPerMessage, maxUnseenMessagesPerPoll)
+	}
+	if got := recv.snapshot(); len(got) != 0 {
+		t.Fatalf("failing receiver must not have captured anything, got %v", got)
+	}
+}
+
+// TestHandleRawMessage_SuccessResetsRetryCounter proves the counter is
+// per-message and consecutive: a message that fails then succeeds must not
+// carry its failure count forward (otherwise an intermittently-flaky
+// downstream would eventually start dropping healthy mail).
+func TestHandleRawMessage_SuccessResetsRetryCounter(t *testing.T) {
+	cfg := validConfig()
+	imap := newFakeIMAP()
+	cfg.IMAPClient = imap
+	ch, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	recv := &captureReceiver{err: errors.New("transient")}
+	ch.recv = recv
+	raw := RawMessage{
+		UID:  "flaky",
+		Body: sampleEmail("a@b", "alice@external.test", "Hello vornik", "Please help"),
+	}
+
+	for i := 1; i < maxDeliveryAttemptsPerMessage; i++ {
+		ch.handleRawMessage(context.Background(), raw)
+	}
+	if n := ch.noteDeliveryFailure("flaky"); n != maxDeliveryAttemptsPerMessage {
+		t.Fatalf("failure count = %d, want %d", n, maxDeliveryAttemptsPerMessage)
+	}
+	ch.forgetDeliveryFailure("flaky")
+
+	// Downstream recovers.
+	recv.mu.Lock()
+	recv.err = nil
+	recv.mu.Unlock()
+	ch.handleRawMessage(context.Background(), raw)
+
+	if got := recv.snapshot(); len(got) != 1 {
+		t.Fatalf("recovered delivery = %d messages, want 1", len(got))
+	}
+	if n := ch.noteDeliveryFailure("flaky"); n != 1 {
+		t.Fatalf("counter after success = %d, want 1 (a successful delivery must clear it)", n)
+	}
 }

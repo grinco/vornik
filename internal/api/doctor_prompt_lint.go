@@ -165,9 +165,19 @@ func lintRole(sw *registry.Swarm, role registry.SwarmRole, hasStepPrompt bool) [
 		if !agenttools.IsBuiltin(tool) {
 			continue // not a known tool name — probably a false match
 		}
-		if !allowed[tool] {
-			out = append(out, fmt.Sprintf("prompt references tool %q but it is not in permissions.allowedTools", tool))
+		if allowed[tool] {
+			continue
 		}
+		// A prompt that FORBIDS a tool mentions its name too. Flagging that
+		// as "references a tool it lacks" inverts the finding: the operator
+		// deliberately withheld the tool AND told the model not to use it —
+		// the config is right and the pair is self-consistent. Observed
+		// 2026-07-25 on assistant-swarm/writer, whose prompt reads "Do NOT
+		// use memory_search results ... those are derived/lossy".
+		if mentionedOnlyUnderProhibition(prompt, tool) {
+			continue
+		}
+		out = append(out, fmt.Sprintf("prompt references tool %q but it is not in permissions.allowedTools", tool))
 	}
 
 	// 4. allowedTools entries that never appear in the prompt. This
@@ -270,4 +280,58 @@ func extractToolReferences(prompt string) map[string]bool {
 		}
 	}
 	return out
+}
+
+// prohibitionCues are the negation markers that turn a tool mention into an
+// instruction NOT to use it. Matched against the whitespace-normalised text
+// immediately preceding the mention.
+var prohibitionCues = []string{
+	"do not", "don't", "dont", "never", "avoid", "without", "no need",
+	"not use", "rather than", "instead of", "must not", "may not",
+}
+
+// prohibitionWindow is how far back from a tool mention to look for a cue.
+// Wide enough to span a line break ("Do NOT\nuse memory_search results" — the
+// real case this exists for), narrow enough that an unrelated earlier
+// sentence's "never" doesn't suppress a genuine finding.
+const prohibitionWindow = 60
+
+// mentionedOnlyUnderProhibition reports whether EVERY occurrence of tool in
+// prompt is preceded by a prohibition cue. "Every" matters: a prompt that says
+// "use memory_search first, but never for career facts" still genuinely
+// instructs the model to call the tool, so one un-negated mention is enough to
+// keep the finding.
+func mentionedOnlyUnderProhibition(prompt, tool string) bool {
+	// Collapse whitespace so a cue split across a line break is still adjacent,
+	// mirroring how the model reads the rendered prompt.
+	flat := strings.ToLower(strings.Join(strings.Fields(prompt), " "))
+	needle := strings.ToLower(tool)
+
+	found := false
+	for idx := 0; ; {
+		i := strings.Index(flat[idx:], needle)
+		if i < 0 {
+			break
+		}
+		at := idx + i
+		found = true
+		start := at - prohibitionWindow
+		if start < 0 {
+			start = 0
+		}
+		if !containsAny(flat[start:at], prohibitionCues) {
+			return false // an un-negated mention — the finding stands
+		}
+		idx = at + len(needle)
+	}
+	return found
+}
+
+func containsAny(haystack string, needles []string) bool {
+	for _, n := range needles {
+		if strings.Contains(haystack, n) {
+			return true
+		}
+	}
+	return false
 }

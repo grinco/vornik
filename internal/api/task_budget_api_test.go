@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +23,8 @@ import (
 // AggregateByRoleModel while satisfying the full TaskLLMUsageRepository.
 type forecastStubUsageRepo struct {
 	perStepCost float64
+	sumErr      error
+	forecastErr error
 }
 
 func (f *forecastStubUsageRepo) Record(context.Context, *persistence.TaskLLMUsage) error { return nil }
@@ -33,12 +36,15 @@ func (f *forecastStubUsageRepo) SumCostByTask(context.Context, string) (float64,
 	return 0, nil
 }
 func (f *forecastStubUsageRepo) SumCostByProject(context.Context, string, time.Time, time.Time) (float64, error) {
-	return 0, nil
+	return 0, f.sumErr
 }
 func (f *forecastStubUsageRepo) SumCost(context.Context, time.Time, time.Time) (float64, error) {
 	return 0, nil
 }
 func (f *forecastStubUsageRepo) AggregateByRoleModel(context.Context, time.Time, time.Time, int, string) ([]persistence.RoleModelSpend, error) {
+	if f.forecastErr != nil {
+		return nil, f.forecastErr
+	}
 	return []persistence.RoleModelSpend{{Role: "coder", Model: "m", CostUSD: f.perStepCost, StepCount: 1}}, nil
 }
 func (f *forecastStubUsageRepo) AggregateByProject(context.Context, time.Time, time.Time, int) ([]persistence.ProjectSpend, error) {
@@ -132,6 +138,30 @@ func TestWebhookAdmit_ShortCircuitsWhenNothingConfigured(t *testing.T) {
 	adm := server.admitWebhookTask(context.Background(), reg.GetProject("p1"), "build")
 	if !adm.ok {
 		t.Fatalf("nothing configured → admit must be ok, got %+v", adm)
+	}
+}
+
+func TestWebhookAdmit_ConfiguredBudgetFailsClosedWhenSpendUnavailable(t *testing.T) {
+	reg := budgetRegistry(t, "budget:\n  daily_hard_usd: 5\n")
+	server := NewServer(
+		WithProjectRegistry(reg),
+		WithLLMUsageRepository(&forecastStubUsageRepo{sumErr: errors.New("database unavailable")}),
+	)
+	adm := server.admitWebhookTask(context.Background(), reg.GetProject("p1"), "build")
+	if adm.ok || adm.code != "BUDGET_EXCEEDED" {
+		t.Fatalf("configured budget must fail closed when spend is unavailable, got %+v", adm)
+	}
+}
+
+func TestWebhookAdmit_ConfiguredBudgetFailsClosedWhenForecastUnavailable(t *testing.T) {
+	reg := budgetRegistry(t, "budget:\n  default_task_budget_usd: 5\n")
+	server := NewServer(
+		WithProjectRegistry(reg),
+		WithLLMUsageRepository(&forecastStubUsageRepo{forecastErr: errors.New("history unavailable")}),
+	)
+	adm := server.admitWebhookTask(context.Background(), reg.GetProject("p1"), "build")
+	if adm.ok || adm.code != "BUDGET_EXCEEDED" {
+		t.Fatalf("configured budget must fail closed when forecast is unavailable, got %+v", adm)
 	}
 }
 

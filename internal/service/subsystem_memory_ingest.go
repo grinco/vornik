@@ -262,6 +262,15 @@ func (s *MemoryIngestSubsystem) Start(ctx context.Context) error {
 	// Control-plane cost/quality prompt-token-budget detector (opt-in,
 	// default off). Files review-only DRAFT budget proposals; never mutates.
 	c.startCostQualityWorker(ctx)
+	// Control-plane cost/quality canary + regression auto-rollback guard
+	// (leader-gated, opt-in, default off). After an applied cost-tuning
+	// proposal it watches quality and auto-rolls-back a regression.
+	c.startCanaryGuardWorker(ctx)
+	// Control-plane Phase-4 cost/quality auto-apply (leader-gated, opt-in,
+	// default off; empty allow-list = NONE; requires the canary guard). Auto-
+	// applies a proven-safe (>=K passed canaries, M=1 re-seed) cost-tuning
+	// proposal without a human. Crosses the no-silent-mutation line.
+	c.startCostAutoApplyWorker(ctx)
 
 	return nil
 }

@@ -1,6 +1,6 @@
 {
   "name": "codex-companion",
-  "version": "0.9.0+codex.20260707",
+  "version": "0.11.0+codex.20260725",
   "description": "Vornik async-offload companion for Codex. Delegate reviews, audits, validations, research, summarization, and project RAG memory work to a vornik daemon over MCP.",
   "author": {
     "name": "vornik"
@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Vornik Companion for Codex",
     "shortDescription": "Delegate async agent work from Codex to vornik.",
-    "longDescription": "Connects Codex to the vornik companion MCP endpoint so Codex can queue long-running reviews, audits, validation, research, summarization, and RAG memory operations without doing all work inline. 0.9.0 adds a `knowledge` skill teaching Codex the daemon-owned knowledge-skill store: propose reusable procedures (draft → operator-approved → served to swarm roles + all clients), search/apply approved skills, and approve with an admin key. Distinct from SWARM-SKILL.md capability skills and from RAG memory.",
+    "longDescription": "Connects Codex to the vornik companion MCP endpoint so Codex can queue long-running reviews, audits, validation, research, summarization, and RAG memory operations without doing all work inline. 0.9.0 adds a `knowledge` skill teaching Codex the daemon-owned knowledge-skill store: propose reusable procedures (draft → operator-approved → served to swarm roles + all clients), search/apply approved skills, and approve with an admin key. Distinct from SWARM-SKILL.md capability skills and from RAG memory. 0.10.0 adds a `report-problem` skill teaching Codex how to help a user file an anonymized Vornik problem report (bug, crash, or INSTALL failure) as a prefilled github.com/grinco/vornik issue via the deterministic `vornikctl report` CLI (with `--offline`/`--dry-run`), guarded by review-before-submit and zero-auth (the user files under their own GitHub identity; nothing auto-posted). 0.11.0 corrects the delegate skill's file guidance for the T-8f69 staging fix (2026-07-25): the daemon now derives skip_auto_extract from a workflow's require_input_artifacts, so Codex no longer needs to set it when attaching inputArtifacts to companion-architectural-review / companion-doc-review / companion-rag-ingest. The prior text scoped that advice to companion-rag-ingest alone, so an artifact-bearing review delegated from Codex was auto-extracted at upload time — which suppressed raw-file staging and left roles without the document_* MCP tools unable to read the attachment at all.",
     "developerName": "vornik",
     "category": "Development",
     "capabilities": [

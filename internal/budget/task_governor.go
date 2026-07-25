@@ -2,10 +2,18 @@ package budget
 
 import (
 	"context"
+	"math"
 
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 )
+
+// ValidTaskBudgetUSD reports whether a caller-supplied task ceiling can be
+// persisted and compared safely. NaN disables ordered comparisons and
+// infinities make the hard stop unreachable, so both are invalid.
+func ValidTaskBudgetUSD(v float64) bool {
+	return v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0)
+}
 
 // DefaultTaskSoftFraction is the fraction of a task's effective budget at which
 // the governor emits a warn-only soft-breach signal when the project doesn't

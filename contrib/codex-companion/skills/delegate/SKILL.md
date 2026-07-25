@@ -90,11 +90,18 @@ them to `mcp__vornik__delegate` as `inputArtifacts`:
 }
 ```
 
-For `companion-rag-ingest`, set `skip_auto_extract=true` so the workflow gets
-raw staged files and performs the ingest path itself.
-
 If a workflow advertises `require_input_artifacts=true` in `catalog`, a
 delegation without `inputArtifacts` is invalid. Stage the bytes first.
+
+You do NOT need to set `skip_auto_extract` for those workflows. The daemon
+derives it from `require_input_artifacts` and forces it on, because a workflow
+that reads a staged file must not have that file auto-extracted into RAG at
+upload time — extraction suppresses staging, and roles whose `allowedTools`
+omit the `document_*` MCP tools then get 403 with no readable copy of the
+artifact at all (T-8f69, 2026-07-25; earlier as B-10).
+
+Set `skip_auto_extract=true` explicitly only to stage a raw file for a workflow
+that does NOT declare `require_input_artifacts`. It is never downgraded.
 
 ## Repo scope
 

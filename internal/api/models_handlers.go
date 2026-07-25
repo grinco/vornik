@@ -97,41 +97,15 @@ func (s *Server) ListModels(w http.ResponseWriter, r *http.Request) {
 	//      unwraps to the inner *Router when present
 	//   3. Any chat.ModelLister (single-provider deployments — only
 	//      one sub-provider, no router involved)
-	var result chat.ListModelsResult
-	if r1, ok := s.chatProvider.(*chat.Router); ok {
-		result = r1.ListModels(r.Context())
-	} else if q, ok := s.chatProvider.(chat.ModelAggregator); ok {
-		if agg, ok := q.ListModelsAggregated(r.Context()); ok {
-			result = agg
-		} else if models, err := q.ListModels(r.Context()); err == nil {
-			for i := range models {
-				if models[i].Provider == "" {
-					models[i].Provider = "chat"
-				}
-			}
-			result = chat.ListModelsResult{Providers: map[string][]chat.ModelInfo{"chat": models}}
-		} else {
-			result = chat.ListModelsResult{
-				Providers: map[string][]chat.ModelInfo{},
-				Errors:    map[string]string{"chat": err.Error()},
-			}
-		}
-	} else if lister, ok := s.chatProvider.(chat.ModelLister); ok {
-		models, err := lister.ListModels(r.Context())
-		if err != nil {
-			result = chat.ListModelsResult{
-				Providers: map[string][]chat.ModelInfo{},
-				Errors:    map[string]string{"chat": err.Error()},
-			}
-		} else {
-			for i := range models {
-				if models[i].Provider == "" {
-					models[i].Provider = "chat"
-				}
-			}
-			result = chat.ListModelsResult{Providers: map[string][]chat.ModelInfo{"chat": models}}
-		}
-	} else {
+	// chat.AggregateModels walks the provider's decorator chain, so a
+	// capability held by an inner provider is not hidden by its wrappers.
+	// This used to assert on s.chatProvider directly, which meant the
+	// FallbackProvider layer added when chat.router.model_fallbacks is
+	// configured (2026-07-18) severed discovery: the endpoint answered 200
+	// with an empty list and no errors, indistinguishable from "no models".
+	// The bool is what restores that distinction.
+	result, answered := chat.AggregateModels(r.Context(), s.chatProvider)
+	if !answered {
 		respondError(w, http.StatusNotImplemented, "DISCOVERY_UNSUPPORTED",
 			"the configured chat provider does not implement model discovery")
 		return

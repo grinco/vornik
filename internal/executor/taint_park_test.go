@@ -111,6 +111,24 @@ func TestReviewForgeWrite_Off_NoSignal(t *testing.T) {
 	}
 }
 
+func TestReviewForgeWrite_Enforce_UnwiredFailsClosed(t *testing.T) {
+	tr := NewTaintReviewer(nil, nil, nil,
+		func(string) taintlineage.Mode { return taintlineage.ModeEnforce }, nil)
+	sig, err := tr.ReviewForgeWrite(context.Background(), "p", "t")
+	if err != nil || sig == nil || sig.State != TaintReviewState {
+		t.Fatalf("unwired enforce-mode gate must park, sig=%+v err=%v", sig, err)
+	}
+}
+
+func TestReviewForgeWrite_Enforce_MissingTaskIDFailsClosed(t *testing.T) {
+	tr := NewTaintReviewer(&taintOutcomeRepo{}, &taintLister{}, nil,
+		func(string) taintlineage.Mode { return taintlineage.ModeEnforce }, nil)
+	sig, err := tr.ReviewForgeWrite(context.Background(), "p", "")
+	if err != nil || sig == nil || sig.State != TaintReviewState {
+		t.Fatalf("missing task identity must not bypass enforce mode, sig=%+v err=%v", sig, err)
+	}
+}
+
 func TestReviewForgeWrite_Advisory_FlagNoPark(t *testing.T) {
 	tr, recorded := newReviewer(map[string][]persistence.TaintedStepRow{"t": {highRow("t")}},
 		map[string]*persistence.Task{"t": rootTask()}, nil, taintlineage.ModeAdvisory)
@@ -253,3 +271,41 @@ func IsTaintReviewCheckpointMetaLocal(meta []byte) bool {
 }
 
 func strptrExec(s string) *string { return &s }
+
+// TestReviewForgeWrite_UnwiredEnforceMarksLineageUnavailable pins that the
+// fail-closed park is DISTINGUISHABLE from a completed walk that found nothing.
+// Without the flag, parkForTaintReview renders "0 external source(s); showing
+// the first 0" — which reads to an operator as "nothing untrusted was found",
+// the exact opposite of what happened (audit 2026-07-25 follow-up to A14).
+func TestReviewForgeWrite_UnwiredEnforceMarksLineageUnavailable(t *testing.T) {
+	tr := NewTaintReviewer(nil, nil, nil,
+		func(string) taintlineage.Mode { return taintlineage.ModeEnforce }, nil)
+	sig, err := tr.ReviewForgeWrite(context.Background(), "p", "t")
+	if err != nil || sig == nil {
+		t.Fatalf("unwired enforce-mode gate must park, sig=%+v err=%v", sig, err)
+	}
+	if !sig.LineageUnavailable {
+		t.Error("a fail-closed park must be flagged so it is not reported as a clean 0-source walk")
+	}
+	if sig.SourceCount != 0 || sig.SourceSetHash != "" {
+		t.Errorf("no walk ran, so counts/hash must be zero: %+v", sig)
+	}
+}
+
+// TestReviewForgeWrite_ResolvedWalkIsNotFlaggedUnavailable is the negative
+// control: a real walk must NOT set the flag, or every park would claim the
+// lineage was unreadable.
+func TestReviewForgeWrite_ResolvedWalkIsNotFlaggedUnavailable(t *testing.T) {
+	tr, _ := newReviewer(map[string][]persistence.TaintedStepRow{"t": {highRow("t")}},
+		map[string]*persistence.Task{"t": rootTask()}, nil, taintlineage.ModeEnforce)
+	sig, err := tr.ReviewForgeWrite(context.Background(), "p", "t")
+	if err != nil {
+		t.Fatalf("ReviewForgeWrite: %v", err)
+	}
+	if sig == nil {
+		t.Fatal("enforce mode with a High-taint source must park")
+	}
+	if sig.LineageUnavailable {
+		t.Error("a completed lineage walk must not be flagged as unavailable")
+	}
+}

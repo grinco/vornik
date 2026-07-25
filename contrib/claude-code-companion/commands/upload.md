@@ -198,6 +198,11 @@ delegate_args = {
     # file at upload time AND mark it as already-extracted, which
     # makes the agent skip staging the raw file (see B-10 backlog).
     # The right default for a file-upload-then-workflow shape.
+    #
+    # Since T-8f69 (2026-07-25) the daemon also derives this from the
+    # target workflow's require_input_artifacts, so /upload is correct
+    # even against an older daemon AND against a workflow that doesn't
+    # declare the flag. Keep it explicit: it is never downgraded.
     "skip_auto_extract": True,
 }
 if repo_scope:

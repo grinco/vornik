@@ -390,28 +390,13 @@ func (s *Server) collectModelsForOllama(ctx context.Context) []ollamaModelRow {
 		}
 	}
 
-	if r1, ok := s.chatProvider.(*chat.Router); ok {
-		res := r1.ListModels(ctx)
-		for prov, ms := range res.Providers {
+	// Walk the decorator chain rather than asserting on the outermost value —
+	// otherwise the FallbackProvider layer (present whenever
+	// chat.router.model_fallbacks is set) hides the router and this endpoint
+	// silently lists nothing. See chat.Unwrapper.
+	if result, answered := chat.AggregateModels(ctx, s.chatProvider); answered {
+		for prov, ms := range result.Providers {
 			push(prov, ms)
-		}
-		return out
-	}
-	if q, ok := s.chatProvider.(chat.ModelAggregator); ok {
-		if agg, ok := q.ListModelsAggregated(ctx); ok {
-			for prov, ms := range agg.Providers {
-				push(prov, ms)
-			}
-			return out
-		}
-		if ms, err := q.ListModels(ctx); err == nil {
-			push("chat", ms)
-		}
-		return out
-	}
-	if lister, ok := s.chatProvider.(chat.ModelLister); ok {
-		if ms, err := lister.ListModels(ctx); err == nil {
-			push("chat", ms)
 		}
 	}
 	return out

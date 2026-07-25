@@ -1,7 +1,7 @@
 ---
 sources:
     - path: internal/config/config.go
-      sha256: 8f2f1f4411146a31337f3239a39862613034aa662c73c9f7727ad3e106de123e
+      sha256: 05c51c907806d0a7efba71c07ca7ae4bf300b7711e77e7cd6a6a99e75aa8afad
     - path: internal/executor/executor.go
       sha256: d836b9606678d708cf27714da918c6e924842bc888b9dca057807e9c59b5597d
 ---
@@ -48,6 +48,30 @@ and reference it:
 
 Expansion happens once, when the configuration is loaded. Update the
 environment and reload the daemon to pick up a rotated value.
+
+### Where the env files are read from
+
+Before expanding placeholders, vornik sources these files itself, so `${VAR}`
+resolves the same way for the daemon and for `vornikctl` — which has no systemd
+`EnvironmentFile` of its own:
+
+1. `<config-dir>/vornik.env` — the file the podman quickstart seeds
+2. `<config-dir>/secrets/env`
+3. `<config-dir>/secrets/*.env` — one file per service, alphabetical
+
+A variable already present and non-empty in the real environment always wins, so
+an explicit `export` or a systemd `EnvironmentFile` still overrides these files.
+Earlier entries in the list win over later ones.
+
+If a required setting comes out empty because its placeholder had nothing to
+resolve to, the error names the variables involved:
+
+```
+configuration validation failed: database name is required (unset config
+placeholders: ${POSTGRES_DB}, ${POSTGRES_USER} — set them in
+<configDir>/vornik.env or <configDir>/secrets/*.env, or export them before
+running)
+```
 
 ## Scoping with `allowed_projects`
 

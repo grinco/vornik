@@ -61,16 +61,21 @@ func seedProposal(t *testing.T, repo persistence.ProposalRepository, id, title, 
 	if status != persistence.ProposalStatusDraft {
 		// Drive to the target status via the repo transitions.
 		switch status {
-		case persistence.ProposalStatusApproved, persistence.ProposalStatusApplied, persistence.ProposalStatusRolledBack:
+		case persistence.ProposalStatusApproved, persistence.ProposalStatusApplied,
+			persistence.ProposalStatusRolledBack, persistence.ProposalStatusRegressed:
 			_ = repo.SetStatus(context.Background(), id, persistence.ProposalStatusApproved, "seed-approver")
 		case persistence.ProposalStatusRejected:
 			_ = repo.SetStatus(context.Background(), id, persistence.ProposalStatusRejected, "seed-approver")
 		}
-		if status == persistence.ProposalStatusApplied || status == persistence.ProposalStatusRolledBack {
+		if status == persistence.ProposalStatusApplied || status == persistence.ProposalStatusRolledBack ||
+			status == persistence.ProposalStatusRegressed {
 			_ = repo.MarkApplied(context.Background(), id, "seed-op", "OLD")
 		}
 		if status == persistence.ProposalStatusRolledBack {
 			_ = repo.MarkRolledBack(context.Background(), id)
+		}
+		if status == persistence.ProposalStatusRegressed {
+			_ = repo.MarkRegressed(context.Background(), id, "canary trip: A1 regressed")
 		}
 	}
 }
@@ -565,5 +570,30 @@ func mustCreate(t *testing.T, repo persistence.ProposalRepository, p *persistenc
 	t.Helper()
 	if err := repo.Create(context.Background(), p); err != nil {
 		t.Fatalf("create %s: %v", p.ID, err)
+	}
+}
+
+// A control-plane ledger proposal auto-rolled-back by the canary guard renders
+// the "Regressed after apply" warning badge and NO action buttons (design
+// 2026-07-24 §4.4 — the badge finally has a real producer).
+func TestAdminControlPlane_RegressedLedgerRowShowsBadge(t *testing.T) {
+	repo := newProposalRepoUI(t)
+	seedProposal(t, repo, "rg1", "cost cut that regressed", persistence.ProposalStatusRegressed, true, "cost-quality-detector")
+
+	s := NewServer(WithProposalStore(repo))
+	rec := httptest.NewRecorder()
+	// The Regressed tab (closed status) — request it explicitly.
+	s.AdminControlPlane(rec, httptest.NewRequest(http.MethodGet,
+		"/admin/control-plane?section=proposals&status=REGRESSED", nil))
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if !strings.Contains(body, "Regressed after apply") {
+		t.Errorf("expected the '⚠ Regressed after apply' badge for a REGRESSED ledger row")
+	}
+	// A regressed row must not offer a Rollback button (already reverted).
+	if strings.Contains(body, `name="id" value="rg1"`) && strings.Contains(body, ">Rollback<") {
+		t.Errorf("regressed row must not offer Rollback")
 	}
 }

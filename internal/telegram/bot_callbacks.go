@@ -198,7 +198,9 @@ func (b *Bot) answerCallbackQuery(ctx context.Context, callbackID, text string, 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		buf, _ := io.ReadAll(resp.Body)
+		// Bounded like every other Telegram read in this package: an error body
+		// is attacker-influenceable and goes straight into a log line.
+		buf, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		return fmt.Errorf("answerCallbackQuery HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(buf)))
 	}
 	return nil

@@ -16,8 +16,10 @@ import (
 //   - no usage repo / registry is wired (no history → no forecast),
 //   - neither a project hard cap nor a per-task budget is configured
 //     (short-circuit — byte-identical to today's behaviour), or
-//   - the forecast itself errors (best-effort; a transient DB blip must not
-//     block legitimate work — the reactive Check remains the backstop).
+//
+// Once a hard cap is configured, missing inputs or a failed spend/forecast
+// read return a refusal. Starting work while the preventive gate is blind can
+// itself incur unbounded cost before the reactive step-boundary check runs.
 //
 // This is the seam that wires the two currently-ungated create paths (POST
 // /tasks and the webhook) into the uniform forecast+per-task-budget+project-cap
@@ -44,20 +46,20 @@ func (s *Server) forecastBudgetRefusal(ctx context.Context, projectID, workflowI
 	wf := s.projectRegistry.GetWorkflow(workflowID)
 	swarm := s.projectRegistry.GetSwarm(proj.SwarmID)
 	if wf == nil || swarm == nil {
-		return ""
+		return "budget forecast unavailable: workflow or swarm configuration is missing"
 	}
 	current, cerr := budget.Check(ctx, s.llmUsageRepo, proj, time.Now().UTC())
 	if cerr != nil {
-		s.logger.Warn().Err(cerr).Str("project_id", projectID).Msg("api: budget snapshot for forecast failed — proceeding")
-		return ""
+		s.logger.Warn().Err(cerr).Str("project_id", projectID).Msg("api: budget snapshot for forecast failed — refusing create")
+		return "budget forecast unavailable: current spend could not be read"
 	}
 	forecast, ferr := budget.ForecastTask(ctx, s.llmUsageRepo, s.pricingTableLoaded(), budget.ForecastInput{
 		Workflow: wf,
 		Swarm:    swarm,
 	}, time.Now().UTC())
 	if ferr != nil {
-		s.logger.Warn().Err(ferr).Str("project_id", projectID).Msg("api: forecast failed — proceeding without preventive gate")
-		return ""
+		s.logger.Warn().Err(ferr).Str("project_id", projectID).Msg("api: forecast failed — refusing create")
+		return "budget forecast unavailable: task cost could not be estimated"
 	}
 	if d := budget.CheckForecast(proj, forecast, current, taskBudgetUSD); d.Refused {
 		s.logger.Info().

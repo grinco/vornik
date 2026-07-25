@@ -1,11 +1,11 @@
 ---
 sources:
     - path: internal/api/companion_mcp.go
-      sha256: 133fa89db96e4dc4e89be017368d50317e0a4569a09dfb56c070f6e9a9504590
+      sha256: 28c8ca786ce2f098a116d6de193dcfe6722a5a221c302669888ddf2d22631b8d
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
-      sha256: 1ab15e960d5223832ed9aa8ce69038217d31b0a0ec3ed648223784ea9f0615ad
+      sha256: 4db994ee442d150212980a709a17f348f90a9e3fba0a11c0da8b590a221577c5
     - path: contrib/codex-companion/.codex-plugin/plugin.json
-      sha256: c66881d15d3c654eeef6a3be03a9ad0196b411653381e9d8bb4836c52768ee40
+      sha256: cb022e4a32265f8145b696440f0660d875e4178e74fab1779a902c0790a753d4
 ---
 # Companion plugin
 
@@ -69,6 +69,16 @@ review), `/peek` (recent tasks), and `/upload` (attach files to a delegation).
 In Codex, use the MCP tools directly; the Codex adapter ships a `delegate` skill
 that teaches the same recall-before-delegate and file-attachment rules.
 
+Both companion plugins also bundle a `report-problem` skill that ships enabled by
+default: it teaches the host LLM how to help you file an **anonymized** Vornik
+problem report — a bug, a crash, a misbehaving swarm, or an install failure — as a
+prefilled `github.com/grinco/vornik` issue. The work is done by the deterministic
+`vornikctl report` CLI (rich diagnostics when the daemon is up, `--offline` static
+checks when it is down) plus the quickstart installer's own failure URL for
+pre-daemon install errors; the skill is the guardrail — review the anonymized body
+before submitting, and you file it under your own GitHub account (nothing is ever
+posted automatically).
+
 ## Project memory and repo scope
 
 `recall` and `remember` operate on the memory of the vornik **project** your key
@@ -125,7 +135,11 @@ infrastructure. `status` and `result` poll it. Because the work happens on
 vornik and `result` returns only the final output artifact, a long review or
 audit doesn't consume your editor's token budget. File-bearing workflows must
 receive files as `inputArtifacts`; Claude's `/upload` command wraps that flow,
-while Codex should call `delegate` directly with base64 `inputArtifacts`.
+while Codex should call `delegate` directly with base64 `inputArtifacts`. When
+the target workflow declares `require_input_artifacts`, the daemon stages your
+upload as a raw file rather than extracting it into project memory first — so
+the agent reads exactly the bytes you sent, and no client has to opt into that
+behaviour.
 
 The shipped delegation workflows include:
 

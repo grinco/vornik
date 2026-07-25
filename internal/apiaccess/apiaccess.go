@@ -216,7 +216,9 @@ func mapGatewayError(err error, req apigateway.Request) string {
 			req.Provider, strings.ToUpper(strings.TrimSpace(req.Method)), req.Path)
 	case errors.Is(err, apigateway.ErrGatewayAuth):
 		return "gateway authentication failed (daemon↔gateway token misconfigured)."
+	case errors.Is(err, apigateway.ErrGatewayRequest):
+		return "gateway request failed."
 	default:
-		return err.Error()
+		return "gateway request failed."
 	}
 }

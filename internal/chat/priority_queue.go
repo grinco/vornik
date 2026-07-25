@@ -38,6 +38,10 @@ type QueuedProvider struct {
 
 // NewQueuedProvider wraps provider with a priority queue. maxConcurrent <= 0
 // returns provider unchanged.
+// Unwrap exposes the wrapped provider so capability lookup can see through
+// this decorator. See Unwrapper.
+func (q *QueuedProvider) Unwrap() Provider { return q.provider }
+
 func NewQueuedProvider(provider Provider, maxConcurrent int) Provider {
 	if provider == nil || maxConcurrent <= 0 {
 		return provider

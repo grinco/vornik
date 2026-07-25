@@ -365,7 +365,11 @@ func (r *Router) ListModels(ctx context.Context) ListModelsResult {
 		Errors:    map[string]string{},
 	}
 	for name, sub := range subs {
-		lister, ok := sub.(ModelLister)
+		// Look through the sub's decorators: each route is wrapped in a
+		// bounded-queue and a health gate, neither of which forwards
+		// ListModels, so asserting on the outermost value hid every
+		// sub-provider. See Unwrapper.
+		lister, ok := FindInChain[ModelLister](sub)
 		if !ok {
 			continue
 		}
@@ -408,20 +412,22 @@ func (r *Router) Ping(ctx context.Context) error {
 	if r == nil {
 		return fmt.Errorf("router not configured")
 	}
-	if pg, ok := r.fallback.(Pinger); ok {
-		if err := pg.Ping(ctx); err != nil {
-			return fmt.Errorf("router fallback: %w", err)
-		}
+	// PingChain rather than a direct assertion: the fallback and every route
+	// are wrapped in decorators that don't forward Ping, so asserting on the
+	// outermost value treated every sub-provider as "ready by construction"
+	// and the probes verified nothing. See Unwrapper.
+	if probed, err := PingChain(ctx, r.fallback); probed && err != nil {
+		return fmt.Errorf("router fallback: %w", err)
 	}
 	for name, sub := range r.resolveSubs() {
 		if sub == r.fallback {
 			continue
 		}
-		pg, ok := sub.(Pinger)
-		if !ok {
+		probed, err := PingChain(ctx, sub)
+		if !probed {
 			continue
 		}
-		if err := pg.Ping(ctx); err != nil {
+		if err != nil {
 			r.logger.Warn().Err(err).Str("sub_provider", name).
 				Msg("router: sub-provider ping failed at startup — continuing on fallback")
 		}

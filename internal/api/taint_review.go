@@ -48,8 +48,11 @@ func (s *Server) effectiveTaintMode(projectID string) taintlineage.Mode {
 // enforce (D6 — requiresReview+park), non-blocking under advisory.
 func (s *Server) resolveTaintReview(ctx context.Context, projectID, taskID string) taintResolution {
 	mode := s.effectiveTaintMode(projectID)
-	if mode == taintlineage.ModeOff || s.stepOutcomeRepo == nil || s.taskRepo == nil || taskID == "" {
+	if mode == taintlineage.ModeOff {
 		return taintResolution{mode: taintlineage.ModeOff, walkComplete: true}
+	}
+	if s.stepOutcomeRepo == nil || s.taskRepo == nil || taskID == "" {
+		return s.taintFailClosed(mode)
 	}
 
 	lineageIDs, outcome, err := persistence.ResolveLineageWithCompleteness(

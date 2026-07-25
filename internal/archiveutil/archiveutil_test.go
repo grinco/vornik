@@ -102,6 +102,101 @@ func TestUntarGzDropsSymlinks(t *testing.T) {
 	}
 }
 
+func TestUntarGzRejectsPreexistingSymlinkParent(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	body := []byte("pwned")
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "sub/escape.txt",
+		Mode:     0o644,
+		Size:     int64(len(body)),
+		Typeflag: tar.TypeReg,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	_ = tw.Close()
+	_ = gz.Close()
+
+	archive := filepath.Join(t.TempDir(), "symlink-parent.tgz")
+	if err := os.WriteFile(archive, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(dst, "sub")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	if err := UntarGz(archive, dst); err == nil {
+		t.Fatal("UntarGz accepted an entry below a pre-existing symlink")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "escape.txt")); !os.IsNotExist(err) {
+		t.Fatalf("archive wrote outside extraction root: %v", err)
+	}
+}
+
+func TestUntarGzWithLimitsRejectsExpandedSize(t *testing.T) {
+	archive := archiveWithFiles(t, map[string][]byte{
+		"a.txt": bytes.Repeat([]byte("a"), 32),
+	})
+	err := UntarGzWithLimits(archive, t.TempDir(), ExtractLimits{
+		MaxEntries: 10,
+		MaxBytes:   16,
+	})
+	if err == nil {
+		t.Fatal("UntarGzWithLimits accepted an archive above the expanded-byte limit")
+	}
+}
+
+func TestUntarGzWithLimitsRejectsTooManyEntries(t *testing.T) {
+	archive := archiveWithFiles(t, map[string][]byte{
+		"a.txt": []byte("a"),
+		"b.txt": []byte("b"),
+	})
+	err := UntarGzWithLimits(archive, t.TempDir(), ExtractLimits{
+		MaxEntries: 1,
+		MaxBytes:   1024,
+	})
+	if err == nil {
+		t.Fatal("UntarGzWithLimits accepted too many archive entries")
+	}
+}
+
+func archiveWithFiles(t *testing.T, files map[string][]byte) string {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for name, body := range files {
+		if err := tw.WriteHeader(&tar.Header{
+			Name:     name,
+			Mode:     0o644,
+			Size:     int64(len(body)),
+			Typeflag: tar.TypeReg,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "files.tgz")
+	if err := os.WriteFile(archive, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return archive
+}
+
 func TestCopyDirSkipsSymlinks(t *testing.T) {
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "real.txt"), []byte("x"), 0o644); err != nil {

@@ -143,6 +143,13 @@ ingest, a dataset to validate), do NOT name its path here — use
 > `inputArtifacts`, so file content never burns your tokens. Workflows
 > that set `require_input_artifacts` (shown in `catalog()`) make the
 > daemon REJECT artifact-less delegations up front.
+>
+> For those workflows the daemon also forces `skip_auto_extract`, so a
+> plain `mcp__vornik__delegate` call carrying `inputArtifacts` is safe —
+> you don't have to remember the flag. Without that, upload-time
+> extraction stamps `context.inputExtractions`, which suppresses file
+> staging; a role whose `allowedTools` lacks the `document_*` MCP tools
+> then gets 403 and never sees the artifact (T-8f69, 2026-07-25).
 
 (Run `mcp__vornik__catalog` for the live list — this user's key may
 have a narrower allowlist. The catalog response also surfaces

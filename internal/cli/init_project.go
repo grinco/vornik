@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/telemetryclient"
 	"vornik.io/vornik/internal/templates"
 )
 
@@ -174,21 +177,35 @@ func runInitProjectFromTemplate(cmd *cobra.Command, args []string, configDir str
 			return errors.New(msg + ")")
 		}
 	}
-	for _, target := range targets {
-		body := rendered[target]
-		fullPath := filepath.Join(configDir, target)
-		if mkErr := os.MkdirAll(filepath.Dir(fullPath), 0o755); mkErr != nil {
-			return mkErr
+	if !initForce {
+		written, writeErr := templates.WriteRenderedFilesExclusive(configDir, rendered)
+		if writeErr != nil {
+			return writeErr
 		}
-		// 0o600 — project + swarm + workflow configs can carry
-		// credentials interpolated from template params.
-		if wErr := os.WriteFile(fullPath, []byte(body), 0o600); wErr != nil {
-			return wErr
+		for _, target := range written {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n", filepath.Join(configDir, target))
 		}
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n", fullPath)
+	} else {
+		for _, target := range targets {
+			body := rendered[target]
+			fullPath := filepath.Join(configDir, target)
+			if mkErr := os.MkdirAll(filepath.Dir(fullPath), 0o755); mkErr != nil {
+				return mkErr
+			}
+			// 0o600 — project + swarm + workflow configs can carry
+			// credentials interpolated from template params.
+			if wErr := os.WriteFile(fullPath, []byte(body), 0o600); wErr != nil {
+				return wErr
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n", fullPath)
+		}
 	}
 	if projectID != "" {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Next: open /ui/projects/%s/setup to finish configuring and verify readiness.\n", projectID)
+	}
+	if !initForce {
+		emitProjectCreated(configDir, telemetryclient.SourceCLITemplate, initTemplate, true,
+			renderedProjectAutonomyCLI(rendered))
 	}
 	return nil
 }
@@ -274,12 +291,63 @@ func runInitProject(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return err
+	if initForce {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			return err
+		}
+	} else {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			if errors.Is(err, os.ErrExist) {
+				return fmt.Errorf("project config already exists: %s (use --force to overwrite)", path)
+			}
+			return err
+		}
+		if _, err := f.Write(data); err != nil {
+			_ = f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
 	}
 	fmt.Printf("Created %s\n", path)
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Next: open /ui/projects/%s/setup to finish configuring and verify readiness.\n", projectID)
+	if !initForce {
+		emitProjectCreated(configDir, telemetryclient.SourceCLIBasic, "", false, initAutonomy)
+	}
 	return nil
+}
+
+var lifecycleTelemetryClient = telemetryclient.ProductionClient
+
+func emitProjectCreated(configDir, source, template string, builtIn, autonomy bool) {
+	configPath := filepath.Join(filepath.Dir(configDir), "config.yaml")
+	enabled, _, err := config.ResolveTelemetryFile(configPath, os.Getenv("VORNIK_TELEMETRY"))
+	if err != nil {
+		return
+	}
+	client := lifecycleTelemetryClient(enabled)
+	_ = client.Emit(context.Background(), telemetryclient.ProjectEvent(
+		Version, source, template, builtIn, autonomy,
+	))
+}
+
+func renderedProjectAutonomyCLI(rendered map[string]string) bool {
+	for target, body := range rendered {
+		if !strings.HasPrefix(target, "projects/") || !strings.HasSuffix(target, ".yaml") {
+			continue
+		}
+		var project struct {
+			Autonomy struct {
+				Enabled bool `yaml:"enabled"`
+			} `yaml:"autonomy"`
+		}
+		if yaml.Unmarshal([]byte(body), &project) == nil {
+			return project.Autonomy.Enabled
+		}
+	}
+	return false
 }
 
 // validateRenderedTemplate hydrates the rendered template files into

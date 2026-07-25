@@ -11,7 +11,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -118,7 +117,7 @@ func (c *Client) Call(ctx context.Context, req apigateway.Request) (apigateway.R
 
 	httpReq, err := http.NewRequestWithContext(ctx, strings.ToUpper(req.Method), u.String(), bodyReader)
 	if err != nil {
-		return apigateway.Response{}, fmt.Errorf("build request: %w", c.scrubErr(err))
+		return apigateway.Response{}, apigateway.ErrGatewayRequest
 	}
 	httpReq.Header.Set("apikey", c.token) // internal daemon↔gateway key-auth
 	if bodyReader != nil {
@@ -127,7 +126,7 @@ func (c *Client) Call(ctx context.Context, req apigateway.Request) (apigateway.R
 
 	resp, err := c.httpc.Do(httpReq)
 	if err != nil {
-		return apigateway.Response{}, fmt.Errorf("gateway request failed: %s", c.scrub(err.Error()))
+		return apigateway.Response{}, apigateway.ErrGatewayRequest
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MiB cap
@@ -140,8 +139,6 @@ func (c *Client) Call(ctx context.Context, req apigateway.Request) (apigateway.R
 	}
 	return apigateway.Response{Status: resp.StatusCode, Body: c.scrub(string(body))}, nil
 }
-
-func (c *Client) scrubErr(err error) error { return errors.New(c.scrub(err.Error())) }
 
 // ListProviders implements the optional apigateway.ProviderLister capability
 // (design §5.2): the list_apis dispatcher tool type-asserts the client to

@@ -48,6 +48,30 @@ type DoctorHandlers struct {
 	artifactsRoot  string
 	workspacesRoot string
 	gatewayURL     string
+	// agentLLMEndpoint and unixSocketPath back checkAgentLLMTopology, the
+	// fresh-install "Invalid API key" guard (F2b): agents mint per-task keys
+	// that only the daemon's own /api/v1 proxy accepts, and an empty
+	// agent_llm.endpoint silently falls back to the real upstream.
+	agentLLMEndpoint string
+	unixSocketPath   string
+	// chatEndpoint and chatAPIKey back checkAgentLLMAPIKey, the
+	// upstream-credential guard (F2c): a present-but-rejected chat.api_key
+	// (or an empty one against a real, non-loopback chat.endpoint) makes
+	// every job 401 just like the fresh-install "Invalid API key" incident
+	// checkAgentLLMTopology guards against, but from the credential side
+	// rather than the routing side. chat.api_key is ALSO snapshotted into
+	// secretFields below for the hygiene check; this is a dedicated copy.
+	chatEndpoint string
+	chatAPIKey   string
+	// chatProvider is cfg.Chat.Provider. When it delegates to sub-providers
+	// ("router"), the top-level chat.api_key/chat.endpoint are NOT the
+	// credential path — each sub-provider carries its own — so the
+	// upstream-credential check must not read their emptiness as a fault.
+	chatProvider string
+	// probeFunc is the injectable live-probe seam for checkAgentLLMAPIKey.
+	// nil ⇒ liveProbe (real HTTP GET to <endpoint>/models); tests set this
+	// so the check never touches the network.
+	probeFunc func(ctx context.Context, endpoint, key string) (int, error)
 	// webWritesMode is the resolved daemon web.writes mode (off|on|insecure) at
 	// boot. "insecure" surfaces a persistent degraded doctor signal (LLD I2).
 	webWritesMode string
@@ -145,6 +169,21 @@ type DoctorHandlers struct {
 	// from login-required.yaml in scraperProfileRoot. Nil-safe — when the
 	// file is absent all profile intervals fall back to a default cadence.
 	loginRequired map[string]time.Duration
+
+	// usernsMode is cfg.Runtime.UserNSMode at boot ("", "host", "keep-id").
+	// checkAgentImageUID uses it to decide whether the keep-id subuid
+	// preflight applies (F3b — second guard for the rootless workspace
+	// "Permission denied" incident; see doctor_agent_image_uid.go).
+	usernsMode string
+	// bakedUIDFunc is the injectable seam for reading the agent image's
+	// baked-in uid (`podman run --rm --entrypoint id <image> -u`). Nil ⇒
+	// realBakedUID; tests inject a fake so they never shell out to podman.
+	bakedUIDFunc func(ctx context.Context, image string) (int, error)
+	// subuidOKFunc is the injectable seam for the keep-id subuid preflight
+	// (checks /etc/subuid + /etc/subgid + newuidmap). Nil ⇒
+	// subuidProvisioned; tests inject a fake so they never touch the
+	// filesystem or PATH.
+	subuidOKFunc func() bool
 }
 
 // SetAPIMetrics wires the registered APIMetrics so the
@@ -207,6 +246,12 @@ func (h *DoctorHandlers) SetServerConfig(cfg *config.Config) {
 	h.artifactsRoot = cfg.Storage.ArtifactsPath
 	h.workspacesRoot = cfg.Runtime.ProjectWorkspacePath
 	h.webWritesMode, _ = cfg.Web.WritesMode() // invalid values fail Validate() at startup
+	h.agentLLMEndpoint = cfg.Runtime.AgentLLM.Endpoint
+	h.unixSocketPath = cfg.Server.UnixSocket
+	h.chatEndpoint = cfg.Chat.Endpoint
+	h.chatAPIKey = cfg.Chat.APIKey
+	h.chatProvider = cfg.Chat.Provider
+	h.usernsMode = cfg.Runtime.UserNSMode
 
 	// Snapshot secret-bearing fields for checkConfigSecretHygiene.
 	// Keep the VALUES (not the whole struct) so a future hot-reload
@@ -314,6 +359,7 @@ func (h *DoctorHandlers) RunReportReadOnly(ctx context.Context) DoctorReport {
 	report.Checks = append(report.Checks, h.checkSchemaGateDrift())
 	report.Checks = append(report.Checks, h.checkDatabaseSchema(ctx))
 	report.Checks = append(report.Checks, h.checkPodmanConfig(ctx))
+	report.Checks = append(report.Checks, h.checkAgentLLMTopology())
 	report.Checks = append(report.Checks, h.checkAPISecurityPosture())
 	report.Checks = append(report.Checks, h.checkBudgetUtilisation(ctx))
 	report.Checks = append(report.Checks, h.checkLeaderLocksHealth())
@@ -372,6 +418,9 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkPodmanConfig(ctx))
 	report.Checks = append(report.Checks, h.checkEnvFileFreshness())
 	report.Checks = append(report.Checks, h.checkAgentImages(ctx))
+	report.Checks = append(report.Checks, h.checkAgentLLMTopology())
+	report.Checks = append(report.Checks, h.checkAgentLLMAPIKey(ctx))
+	report.Checks = append(report.Checks, h.checkAgentImageUID(ctx))
 	report.Checks = append(report.Checks, h.checkAPISecurityPosture())
 	report.Checks = append(report.Checks, h.checkAPIKeyStrength())
 	report.Checks = append(report.Checks, h.checkPricingCoverage())
@@ -800,6 +849,49 @@ func (h *DoctorHandlers) checkPodmanConfig(ctx context.Context) DoctorCheck {
 	return DoctorCheck{Name: name, Status: "OK", Message: fmt.Sprintf("podman OK (%s)", podmanPath)}
 }
 
+// agentImagesFromSwarms collects the unique, real (non-empty, non-"noop:")
+// agent images referenced by any role across swarms. Shared by
+// checkAgentImages and firstAgentImage so both walk the same set of images
+// the same way. Skips the "noop:" sentinel prefix used for non-containerised
+// roles like the dispatcher — runtime.image is required by the registry
+// loader, but those roles never launch a container, so podman image exists
+// (or a baked-uid probe) would always falsely flag them.
+func agentImagesFromSwarms(swarms map[string]*registry.Swarm) map[string]bool {
+	images := make(map[string]bool)
+	for _, swarm := range swarms {
+		for _, role := range swarm.Roles {
+			if role.Runtime.Image == "" || strings.HasPrefix(role.Runtime.Image, "noop:") {
+				continue
+			}
+			images[role.Runtime.Image] = true
+		}
+	}
+	return images
+}
+
+// firstAgentImage returns one representative real agent image configured
+// under configDir, or "" if none are configured. checkAgentImageUID only
+// needs a single agent image to compare its baked uid against the host uid
+// (unlike checkAgentImages, which must check every image's local
+// availability), so this picks the lexicographically-first image name for
+// determinism rather than returning the whole set.
+func firstAgentImage(configDir string) (string, error) {
+	swarms, err := registry.LoadSwarms(configDir)
+	if err != nil {
+		return "", err
+	}
+	images := agentImagesFromSwarms(swarms)
+	if len(images) == 0 {
+		return "", nil
+	}
+	names := make([]string, 0, len(images))
+	for image := range images {
+		names = append(names, image)
+	}
+	sort.Strings(names)
+	return names[0], nil
+}
+
 // checkAgentImages verifies that agent images referenced in swarm configs are available locally.
 func (h *DoctorHandlers) checkAgentImages(ctx context.Context) DoctorCheck {
 	name := "agent_images"
@@ -817,15 +909,7 @@ func (h *DoctorHandlers) checkAgentImages(ctx context.Context) DoctorCheck {
 	// non-containerised roles like the dispatcher — runtime.image is
 	// required by the registry loader, but those roles never launch a
 	// container, so podman image exists would always falsely flag them.
-	images := make(map[string]bool)
-	for _, swarm := range swarms {
-		for _, role := range swarm.Roles {
-			if role.Runtime.Image == "" || strings.HasPrefix(role.Runtime.Image, "noop:") {
-				continue
-			}
-			images[role.Runtime.Image] = true
-		}
-	}
+	images := agentImagesFromSwarms(swarms)
 
 	if len(images) == 0 {
 		return DoctorCheck{Name: name, Status: "OK", Message: "no agent images configured"}

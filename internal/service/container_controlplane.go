@@ -459,6 +459,17 @@ func (c *Container) newProposalApplier() *controlplane.ApplyEngine {
 			if actionizer == nil {
 				return nil
 			}
+			// Defense-in-depth: refuse a cost/quality-detector proposal that
+			// targets a trading swarm BEFORE the semantic re-check (mirror of the
+			// detector-side exclusion; review-20260721-a7bf #6). Returned before
+			// RevalidateChange so the operator sees the specific trading sentinel,
+			// not the generic re-validation wrap (design D5). Note this refusal is
+			// itself conditional on a wired actionizer (the nil guard above); in the
+			// nil-actionizer path coverage falls back to the detector-side exclusion
+			// alone (review-20260724-24a2 F3).
+			if err := actionizer.RefuseTradingTarget(p.ProposedBy, p.Evidence); err != nil {
+				return err
+			}
 			return actionizer.RevalidateChange(p.ProjectID, p.Evidence)
 		},
 		// Two-trees mirror (§4.7) — nil-safe when no source tree configured.
@@ -624,7 +635,11 @@ func (c *Container) newActionizer() *controlplane.Actionizer {
 			_, known := c.pricingTable.Lookup(model)
 			return known
 		},
-		Logger: c.Logger.With().Str("component", "control-plane").Str("engine", "actionize").Logger(),
+		// Injected so the applier-side trading refusal (RefuseTradingTarget)
+		// shares the SAME classifier the detector-side exclusion uses — the two
+		// can never diverge (design 2026-07-24-applier-trading-refusal D3).
+		IsTradingSwarm: isTradingSwarm,
+		Logger:         c.Logger.With().Str("component", "control-plane").Str("engine", "actionize").Logger(),
 	}
 }
 
@@ -668,6 +683,197 @@ func (c *Container) startCostQualityWorker(ctx context.Context) {
 		SwarmMap:    c.costTuningSwarmMap,
 		Enabled:     enabled,
 		Logger:      c.Logger.With().Str("component", "control-plane").Str("worker", "cost-quality").Logger(),
+	}
+	// Canary-aware skip (design §7): don't re-propose on a (swarm,role) with an
+	// open canary or a knob still in cooldown after a regressed rollback.
+	if c.repos.CostTuningCanaries != nil {
+		w.Canaries = c.repos.CostTuningCanaries
+		w.CooldownDuration = c.Config.ControlPlane.CostTuningCanary.Resolved().Cooldown
+	}
+	go w.Run(collectorsCtxFrom(ctx, c))
+}
+
+// liveCanaryEnabled returns the hot-reloadable live value of
+// control_plane.cost_tuning_canary.enabled: the boot-time c.Config value until a
+// hot-reload stages a new one (applyHotConfig). Read by the guard's discover +
+// trip-time closure so a config reload flips the kill-switch live (design §9 #2).
+func (c *Container) liveCanaryEnabled() bool {
+	if v := c.cpCanaryEnabledLive.Load(); v != nil {
+		return *v
+	}
+	return c.Config != nil && c.Config.ControlPlane.CostTuningCanary.Enabled
+}
+
+// canaryBlastRadius resolves (swarm) → (projects sharing it, workflows those
+// projects run) from the registry — the A2 watch set (design §5), excluding
+// trading swarms. Re-derived at open time, not from stale Evidence.
+func (c *Container) canaryBlastRadius(swarm string) (projectIDs, workflowIDs []string) {
+	if c == nil || c.Registry == nil || swarm == "" || isTradingSwarm(swarm) {
+		return nil, nil
+	}
+	wfSeen := map[string]bool{}
+	for _, p := range c.Registry.ListProjects() {
+		if p == nil || p.SwarmID != swarm {
+			continue
+		}
+		projectIDs = append(projectIDs, p.ID)
+		for _, wf := range append([]string{p.DefaultWorkflowID}, p.AdaptiveCandidateWorkflows...) {
+			if wf == "" || wfSeen[wf] {
+				continue
+			}
+			wfSeen[wf] = true
+			workflowIDs = append(workflowIDs, wf)
+		}
+	}
+	sort.Strings(projectIDs)
+	sort.Strings(workflowIDs)
+	return projectIDs, workflowIDs
+}
+
+// startCanaryGuardWorker wires + starts the cost/quality canary + regression
+// auto-rollback guard, leader-gated (per the Tune/SelfHeal precedent — NOT the
+// un-leader-gated cost-quality worker, because the guard MUTATES). No-op unless
+// the proposal ledger, canary store, quality service, apply engine, and registry
+// are wired. The enable + swarm allow-list are consulted live at discover AND
+// trip time (design §9 #2).
+func (c *Container) startCanaryGuardWorker(ctx context.Context) {
+	if c == nil || c.repos == nil || c.repos.Proposals == nil || c.repos.CostTuningCanaries == nil ||
+		c.qualityService == nil || c.Registry == nil {
+		return
+	}
+	engine := c.newProposalApplier()
+	if engine == nil {
+		return // no apply engine → nothing to roll back through
+	}
+	cfg := c.Config.ControlPlane.CostTuningCanary.Resolved()
+	allowed := map[string]bool{}
+	for _, s := range cfg.Swarms {
+		allowed[s] = true
+	}
+	swarmAllowed := func(swarm string) bool {
+		if len(allowed) == 0 {
+			return true // empty allow-list = all non-trading swarms
+		}
+		return allowed[swarm]
+	}
+	var metrics *controlplane.CanaryMetrics
+	if reg := c.observabilityRegistry(); reg != nil {
+		metrics = controlplane.NewCanaryMetrics(reg)
+	}
+	w := &controlplane.CanaryGuardWorker{
+		Quality:        c.qualityService,
+		Canaries:       c.repos.CostTuningCanaries,
+		Proposals:      c.repos.Proposals,
+		Rollback:       engine.Rollback,
+		BlastRadius:    c.canaryBlastRadius,
+		Enabled:        c.liveCanaryEnabled,
+		SwarmAllowed:   swarmAllowed,
+		IsTradingSwarm: isTradingSwarm,
+		MinSamples:     cfg.MinSamples,
+		A2MinSamples:   cfg.A2MinSamples,
+		A2Subwindows:   cfg.A2Subwindows,
+		MarginA1:       cfg.MarginA1,
+		MarginA2:       cfg.MarginA2,
+		MarginCost:     cfg.MarginCost,
+		Window:         cfg.Window,
+		MaxCanaryAge:   cfg.MaxCanaryAge,
+		Interval:       cfg.ScanInterval,
+		Metrics:        metrics,
+		Logger:         c.Logger.With().Str("component", "control-plane").Str("worker", "canary-guard").Logger(),
+	}
+	if elector := c.initWorkerElector("control_plane_canary_guard"); elector != nil {
+		w.LeaderGate = elector
+		elector.BootstrapAcquire(ctx)
+		go elector.Run(ctx)
+	}
+	go w.Run(collectorsCtxFrom(ctx, c))
+}
+
+// liveCostAutoApplyEnabled returns the hot-reloadable live value of
+// control_plane.cost_tuning_auto_apply.enabled: the boot-time c.Config value
+// until a hot-reload stages a new one. Read by the auto-apply worker's per-tick +
+// apply-time closure so a reload flips the kill-switch live (auto-apply §D5).
+func (c *Container) liveCostAutoApplyEnabled() bool {
+	if v := c.cpCostAutoApplyEnabledLive.Load(); v != nil {
+		return *v
+	}
+	return c.Config != nil && c.Config.ControlPlane.CostTuningAutoApply.Enabled
+}
+
+// startCostAutoApplyWorker wires + starts the Phase-4 cost/quality auto-apply
+// worker, leader-gated (it MUTATES — same posture as the canary guard). No-op
+// unless the proposal ledger, canary store, and apply engine are wired. The
+// enable + swarm allow-list are consulted live at scan AND apply time; the empty
+// allow-list means NONE (safety inversion), and the canary guard is a hard
+// prerequisite (auto-apply design D4). See https://docs.vornik.io
+// 2026-07-24-cost-quality-auto-apply-design.md.
+func (c *Container) startCostAutoApplyWorker(ctx context.Context) {
+	if c == nil || c.repos == nil || c.repos.Proposals == nil || c.repos.CostTuningCanaries == nil {
+		return
+	}
+	engine := c.newProposalApplier()
+	if engine == nil {
+		return // no apply engine → nothing to drive
+	}
+	aaCfg := c.Config.ControlPlane.CostTuningAutoApply.Resolved()
+	// Empty allow-list = NONE (safety inversion vs the canary guard): auto-apply
+	// is opt-in per swarm. The closure is deny-by-default so a nil/empty map never
+	// auto-applies.
+	allowed := map[string]bool{}
+	for _, s := range aaCfg.Swarms {
+		allowed[s] = true
+	}
+	swarmAllowed := func(swarm string) bool { return allowed[swarm] }
+	// F8: WARN for allow-list entries matching no known swarm — a typo is SAFE
+	// (that swarm never auto-applies) but silently unmet intent, so surface it.
+	// (A startup log rather than a dedicated doctor check — no cost-tuning doctor
+	// surface exists yet; see the auto-apply LLD §6.)
+	if c.Registry != nil && len(allowed) > 0 {
+		known := map[string]bool{}
+		for _, p := range c.Registry.ListProjects() {
+			if p != nil && p.SwarmID != "" {
+				known[p.SwarmID] = true
+			}
+		}
+		for s := range allowed {
+			if !known[s] {
+				c.Logger.Warn().Str("swarm", s).
+					Msg("cost-auto-apply: allow-list entry matches no known swarm — that swarm will never auto-apply (typo?)")
+			}
+		}
+	}
+	// Cooldown matches the canary guard's so the worker's skip agrees with the
+	// detector's (design D7).
+	cooldown := c.Config.ControlPlane.CostTuningCanary.Resolved().Cooldown
+	var metrics *controlplane.CostAutoApplyMetrics
+	if reg := c.observabilityRegistry(); reg != nil {
+		metrics = controlplane.NewCostAutoApplyMetrics(reg)
+	}
+	// ReadFile reads the SAME deployed tree the apply engine writes (rel to the
+	// config dir), for snapshot staging (D8) + the crash-signature check.
+	actionizer := c.newActionizer()
+	if actionizer == nil {
+		return
+	}
+	w := &controlplane.CostAutoApplyWorker{
+		Proposals:         c.repos.Proposals,
+		Canaries:          c.repos.CostTuningCanaries,
+		Apply:             engine.Apply,
+		ReadFile:          actionizer.ReadFile,
+		Enabled:           c.liveCostAutoApplyEnabled,
+		CanaryEnabled:     c.liveCanaryEnabled, // D4 prerequisite
+		SwarmAllowed:      swarmAllowed,
+		IsTradingSwarm:    isTradingSwarm,
+		MinPassedCanaries: aaCfg.MinPassedCanaries,
+		CooldownDuration:  cooldown,
+		Interval:          aaCfg.ScanInterval,
+		Metrics:           metrics,
+		Logger:            c.Logger.With().Str("component", "control-plane").Str("worker", "cost-auto-apply").Logger(),
+	}
+	if elector := c.initWorkerElector("control_plane_cost_auto_apply"); elector != nil {
+		w.LeaderGate = elector
+		elector.BootstrapAcquire(ctx)
+		go elector.Run(ctx)
 	}
 	go w.Run(collectorsCtxFrom(ctx, c))
 }

@@ -122,6 +122,35 @@ else
   bad "ensure_compose did not fall back to install_sys: $(cat "$TMP/fallback.called" 2>/dev/null)"
 fi
 
+# --- anonymous telemetry first-install choice ----------------------------
+echo "--- anonymous telemetry first-install choice ---"
+TELEMETRY_CFG="$TMP/telemetry-config.yaml"
+printf 'server:\n  address: ":8080"\n' >"$TELEMETRY_CFG"
+VORNIK_TELEMETRY=off configure_anonymous_telemetry "$TELEMETRY_CFG" 0 >/dev/null
+if grep -q '^telemetry:' "$TELEMETRY_CFG" && grep -q 'enabled: false' "$TELEMETRY_CFG"; then
+  ok "environment opt-out is persisted in config.yaml"
+else
+  bad "environment opt-out was not persisted"
+fi
+
+TELEMETRY_CFG_ON="$TMP/telemetry-config-on.yaml"
+printf 'server:\n  address: ":8080"\n' >"$TELEMETRY_CFG_ON"
+VORNIK_TELEMETRY=on configure_anonymous_telemetry "$TELEMETRY_CFG_ON" 0 >/dev/null
+if grep -q '^telemetry:' "$TELEMETRY_CFG_ON"; then
+  bad "enabled default should not be shipped into config.yaml"
+else
+  ok "enabled choice leaves telemetry absent from config.yaml"
+fi
+
+TELEMETRY_CFG_BAD="$TMP/telemetry-config-bad.yaml"
+printf 'server:\n  address: ":8080"\n' >"$TELEMETRY_CFG_BAD"
+VORNIK_TELEMETRY=invalid configure_anonymous_telemetry "$TELEMETRY_CFG_BAD" 0 >/dev/null 2>&1
+if grep -q 'enabled: false' "$TELEMETRY_CFG_BAD"; then
+  ok "invalid environment value fails closed"
+else
+  bad "invalid environment value did not fail closed"
+fi
+
 # --- require_safe_checkout_dir ------------------------------------------
 echo "--- require_safe_checkout_dir ---"
 if isolated require_safe_checkout_dir "$HOME/vornik"; then
@@ -154,6 +183,155 @@ if grep -q '/ui/setup' "$SCRIPT_DIR/quickstart.sh"; then
 else
   bad "quickstart.sh never mentions /ui/setup — the guided onboarding path is undiscoverable"
 fi
+
+echo "--- install-failure reporting: scrubber strips diverse secret formats ---"
+SEEDED="Authorization: Bearer eyJhbGci.eyJzdWIi.SflKxwRJ token=sk-ABCDEFGHIJKLMNOPQR key AKIAIOSFODNN7EXAMPLE https://x?token=supersecretvalue password=hunter2hunter2 -----BEGIN PRIVATE KEY-----MIIabc-----END PRIVATE KEY----- QWxhZGRpbjpvcGVuc2VzYW1lMTIzNDU2Nzg5MA=="
+SCRUBBED="$(printf '%s' "$SEEDED" | vornik_scrub)"
+for leak in 'eyJhbGci.eyJzdWIi.SflKxwRJ' 'sk-ABCDEFGHIJKLMNOPQR' 'AKIAIOSFODNN7EXAMPLE' 'supersecretvalue' 'hunter2hunter2' 'MIIabc'; do
+  case "$SCRUBBED" in
+    *"$leak"*) bad "scrubber LEAKED '$leak': $SCRUBBED" ;;
+    *) ok "scrubber stripped '$leak'" ;;
+  esac
+done
+
+echo "--- scrubber strips identifiers (paths/email/IP), not just secrets ---"
+# review-20260725-7530 #3: the installer scrubber must reach parity with the Go
+# scrubber — home/tilde paths (whole tail, incl. project name), email, IPv4.
+IDS="see /var/home/vadim/projects/vornik-marketing/logs and /Users/joe/secretproj/x and ~/work/acme-thing/y ping vadim@vornik.io at 192.0.2.10 or 8.8.4.4"
+IDS_SCRUBBED="$(printf '%s' "$IDS" | vornik_scrub)"
+for leak in 'vadim' 'vornik-marketing' 'secretproj' 'acme-thing' 'vadim@vornik.io' '192.0.2.10' '8.8.4.4' '/projects/'; do
+  case "$IDS_SCRUBBED" in
+    *"$leak"*) bad "scrubber LEAKED identifier '$leak': $IDS_SCRUBBED" ;;
+    *) ok "scrubber stripped identifier '$leak'" ;;
+  esac
+done
+
+echo "--- report_install_failure strips this machine's hostname ---"
+# The failing command may embed the hostname; the hook replaces it with <host>.
+HN="$(uname -n 2>/dev/null || hostname 2>/dev/null || echo UNKNOWNHOST)"
+HOUT="$(REF=2026.7.4 BASH_COMMAND="ssh build@$HN /var/home/vadim/x" report_install_failure 9 2>&1)"
+case "$HOUT" in
+  *"$HN"*) [ "$HN" = UNKNOWNHOST ] && ok "no hostname to strip (skipped)" || bad "hostname '$HN' leaked: $HOUT" ;;
+  *) ok "hostname stripped from failing command" ;;
+esac
+
+echo "--- report_install_failure emits a prefilled grinco/vornik issue URL ---"
+FOUT="$(REF=2026.7.4 report_install_failure 7 2>&1)"
+case "$FOUT" in *"github.com/grinco/vornik/issues/new?"*) ok "failure hook prints the grinco/vornik issue URL" ;; *) bad "no issue URL in failure output: $FOUT" ;; esac
+case "$FOUT" in *"labels=bug%2Cinstall"*) ok "issue carries bug,install labels" ;; *) bad "labels not encoded: $FOUT" ;; esac
+# success (exit 0) must be a no-op
+SOUT="$(report_install_failure 0 2>&1)"
+case "$SOUT" in *"issues/new"*) bad "failure hook fired on exit 0" ;; *) ok "no-op on exit 0" ;; esac
+
+echo "--- ensure_linger ---"
+# Task 11 (F6): loginctl enable-linger used to be fire-and-forget (`|| warn`)
+# — on hosts where the unprivileged call is denied, linger silently stayed
+# off and the daemon (a systemctl --user unit) dies on logout. ensure_linger
+# must verify Linger=yes and escalate to sudo when the unprivileged call
+# doesn't stick.
+: > "$TMP/linger_calls"
+CALLS="$TMP/linger_calls"; export CALLS
+
+# Already-enabled host: no enable-linger call at all (idempotent no-op).
+make_stub id '#!/bin/sh
+echo testuser
+'
+make_stub loginctl '#!/bin/sh
+case "$1" in
+  show-user) echo "Linger=yes" ;;
+  enable-linger) echo "enable-linger $*" >> "$CALLS" ;;
+esac
+'
+isolated ensure_linger
+if grep -q "enable-linger" "$CALLS"; then
+  bad "ensure_linger called enable-linger when already Linger=yes"
+else
+  ok "ensure_linger short-circuits when linger is already enabled"
+fi
+rm -f "$STUB/loginctl"
+
+# Unprivileged enable denied ⇒ escalate to sudo.
+: > "$CALLS"
+make_stub loginctl '#!/bin/sh
+case "$1" in
+  show-user) echo "Linger=no" ;;
+  enable-linger) echo "enable-linger $*" >> "$CALLS"; exit 1 ;;
+esac
+'
+make_stub sudo '#!/bin/sh
+echo "sudo $*" >> "$CALLS"
+"$@"
+'
+# Invoke it BARE (no `|| true` around the call) under `set -e`, matching the
+# real call site (quickstart.sh runs the non-sourced script under
+# `set -euo pipefail` and calls `ensure_linger` unguarded). Regression:
+# ensure_linger's own unprivileged `loginctl enable-linger` line used to lack
+# `|| true`, so under set -e it aborted the whole installer right here —
+# before the sudo escalation or the warn ever ran — which is worse than the
+# pre-Task-11 fire-and-forget behavior. `isolated ensure_linger || true`
+# (the old form of this test) masked that bug by swallowing the abort.
+( PATH="$STUB"; set -e; ensure_linger )
+rc=$?
+if [ "$rc" -eq 0 ]; then
+  ok "ensure_linger tolerates set -e (unprivileged enable-linger failure doesn't abort the caller)"
+else
+  bad "ensure_linger aborted under set -e (exit $rc) instead of falling through to sudo escalation"
+fi
+if grep -q "sudo loginctl enable-linger" "$CALLS"; then
+  ok "ensure_linger escalates to sudo when unprivileged enable is denied"
+else
+  bad "ensure_linger did not escalate to sudo: $(cat "$CALLS")"
+fi
+rm -f "$STUB/id" "$STUB/loginctl" "$STUB/sudo"
+
+echo "--- enable_podman_restart ---"
+# Task 12 (F7): deps.compose.yaml sets `restart: always`, but for rootless
+# podman that only recovers crashes — NOT a host reboot. Boot autostart needs
+# podman-restart.service enabled for the user. Guard on the unit existing so
+# hosts without it warn instead of hard-failing.
+: > "$TMP/restart_calls"
+CALLS="$TMP/restart_calls"; export CALLS
+make_stub systemctl '#!/bin/sh
+echo "systemctl $*" >> "$CALLS"
+case "$1 $2" in
+  "--user list-unit-files") exit 0 ;;
+  "--user enable") exit 0 ;;
+esac
+exit 0
+'
+isolated enable_podman_restart
+if grep -q "systemctl --user enable podman-restart.service" "$CALLS"; then
+  ok "enable_podman_restart enables podman-restart.service when the unit exists"
+else
+  bad "did not enable podman-restart.service: $(cat "$CALLS")"
+fi
+rm -f "$STUB/systemctl"
+
+# Unit not present on this host (e.g. no podman-restart.service shipped) ⇒
+# warn, no hard failure, and no enable call attempted.
+: > "$CALLS"
+make_stub systemctl '#!/bin/sh
+echo "systemctl $*" >> "$CALLS"
+case "$1 $2" in
+  "--user list-unit-files") exit 1 ;;
+esac
+exit 0
+'
+if isolated enable_podman_restart >/tmp/enable_podman_restart.$$ 2>&1; then :; fi
+if grep -q "systemctl --user enable podman-restart.service" "$CALLS"; then
+  bad "enable_podman_restart called enable when list-unit-files reported no unit"
+else
+  ok "enable_podman_restart skips enable when the unit is absent"
+fi
+rm -f "$STUB/systemctl" "/tmp/enable_podman_restart.$$"
+
+echo "--- print_success_footer names doctor + report ---"
+# Task 8 (F5): the post-install success message must point at both
+# `vornikctl doctor` (diagnostics) and `vornikctl report` (anonymized issue
+# filing) so a failing first task doesn't strand the user.
+FOOTER="$(print_success_footer 2>&1)"
+case "$FOOTER" in *"vornikctl doctor"*) ok "footer names vornikctl doctor";; *) bad "footer missing 'vornikctl doctor': $FOOTER";; esac
+case "$FOOTER" in *"vornikctl report"*) ok "footer names vornikctl report";; *) bad "footer missing 'vornikctl report': $FOOTER";; esac
 
 echo "---"
 echo "PASS: $pass passed, $fail failed"

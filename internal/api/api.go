@@ -38,6 +38,7 @@ import (
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/secrets"
 	"vornik.io/vornik/internal/taskcreate"
+	"vornik.io/vornik/internal/telemetryclient"
 	"vornik.io/vornik/internal/templates"
 	"vornik.io/vornik/internal/tradingauth"
 	"vornik.io/vornik/internal/workspacelock"
@@ -866,6 +867,8 @@ type Server struct {
 	projectTemplates    *templates.Catalog
 	templateOptions     templates.OptionsResolver
 	configsDir          string
+	lifecycleTelemetry  telemetryclient.Client
+	telemetryVersion    string
 	// projectDoctor serves the per-project readiness endpoints
 	// (report, per-check run, secret set). Nil in deployments that
 	// haven't wired it — the doctor endpoints answer 503 rather than
@@ -2022,6 +2025,14 @@ func WithTemplateOptionsResolver(r templates.OptionsResolver) ServerOption {
 func WithConfigsDir(dir string) ServerOption {
 	return func(s *Server) {
 		s.configsDir = dir
+	}
+}
+
+// WithLifecycleTelemetry wires anonymous project-creation telemetry.
+func WithLifecycleTelemetry(client telemetryclient.Client, version string) ServerOption {
+	return func(s *Server) {
+		s.lifecycleTelemetry = client
+		s.telemetryVersion = version
 	}
 }
 

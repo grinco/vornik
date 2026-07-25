@@ -49,6 +49,8 @@ import (
 	"vornik.io/vornik/internal/registry"
 )
 
+const maxA2ASubmitResponseBytes = 1 << 20
+
 // a2aCallStreamMaxIdle is the largest gap between SSE events
 // we'll wait before declaring the partner hung. Cleanly bounded
 // — without it a wedged partner pins the executor goroutine
@@ -138,8 +140,14 @@ func (e *Executor) handleA2ACallStep(ctx context.Context, stepID string, step *r
 	if err != nil {
 		return nil, fmt.Errorf("a2a_call %s: submit: %w", stepID, err)
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxA2ASubmitResponseBytes+1))
 	_ = resp.Body.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("a2a_call %s: read submit response: %w", stepID, readErr)
+	}
+	if len(body) > maxA2ASubmitResponseBytes {
+		return nil, fmt.Errorf("a2a_call %s: submit response exceeds %d bytes", stepID, maxA2ASubmitResponseBytes)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("a2a_call %s: submit HTTP %d: %s", stepID, resp.StatusCode, truncateForLog(string(body), 240))
 	}

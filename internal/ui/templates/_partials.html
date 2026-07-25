@@ -1414,7 +1414,14 @@
      the old brand-colour footer clashed with the glass/dark shell and was
      redundant with the rail. Kept as an empty define so the ~60
      {{template "pageFooter"}} call sites don't all need editing. */}}
-{{define "pageFooter"}}{{end}}
+{{/* pageFooter — subtle daemon-version chrome linking to the changelog. Renders
+     nothing when appVersion is empty (e.g. unset in tests). appVersion is a
+     server-bound FuncMap entry (see NewServer), so no page data threading. */}}
+{{define "pageFooter"}}{{with appVersion}}
+<footer class="mt-8 pb-4 px-4 text-right text-xs text-ink-500 border-t border-ink-500/10 pt-3">
+    <a href="https://docs.vornik.io/changelog" target="_blank" rel="noopener"
+       title="Release notes" class="hover:text-ink-300 hover:underline">Vornik {{.}}</a>
+</footer>{{end}}{{end}}
 
 {{/*
 sortHeader renders a sortable <th>. Expects a dict:

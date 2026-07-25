@@ -68,6 +68,15 @@ runtime:
   # quickstart sets VORNIK_RUN_AS_USER to "$(id -u):$(id -g)" and builds the
   # agent image with matching VORNIK_UID/VORNIK_GID.
   run_as_user: "${VORNIK_RUN_AS_USER}"
+  # keep-id maps the agent's uid to the operator's real host uid so the
+  # rootless bind-mounted workspace is writable. Without it, podman's default
+  # userns remaps to a subordinate /etc/subuid uid and every workspace write
+  # fails with "Permission denied" (verified 2026-07-25), even when the image's
+  # baked uid matches. keep-id needs /etc/subuid entries for the user (the
+  # quickstart's rootless prereqs provide them). An explicit mode disables the
+  # daemon's default->keep-id->host auto-fallback (manager.go:435), which is
+  # correct: a host that can't do keep-id can't provide a writable rootless mount.
+  userns_mode: "keep-id"
   project_workspace_path: "${VORNIK_DATA_DIR}/workspaces"
 
   agent_llm:

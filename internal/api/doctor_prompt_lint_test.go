@@ -142,3 +142,41 @@ func TestLintRole_EmptyPromptStillFlags(t *testing.T) {
 	}
 	assert.True(t, require, "expected empty-prompt finding, got: %v", findings)
 }
+
+// TestMentionedOnlyUnderProhibition pins the negation-awareness fix. Rule 3
+// flagged assistant-swarm/writer for "referencing" memory_search when its
+// prompt actually FORBIDS it ("Do NOT use memory_search results ... those are
+// derived/lossy") and correctly withholds the tool — the config was right and
+// the doctor inverted it (audit 2026-07-25 follow-up).
+func TestMentionedOnlyUnderProhibition(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prompt string
+		want   bool
+	}{
+		{
+			// The real prompt: the cue is at the end of the PRECEDING line.
+			name: "prohibition split across a line break",
+			prompt: "facts come ONLY from that file. Do NOT\nuse memory_search results, scan artifacts,\n" +
+				"or prior knowledge as a source of facts.",
+			want: true,
+		},
+		{"never", "You must never call memory_search here.", true},
+		{"avoid", "Avoid memory_search — the researcher already aggregated it.", true},
+		{"instead of", "Read RESUME.md instead of memory_search.", true},
+		{"plain instruction is not a prohibition", "Use memory_search first to avoid rereading material.", false},
+		{
+			// One negated + one genuine instruction ⇒ the finding must stand.
+			name:   "mixed mentions keep the finding",
+			prompt: "Use memory_search first. Do not use memory_search for career facts.",
+			want:   false,
+		},
+		{"absent tool is not a prohibition", "No tools mentioned at all.", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mentionedOnlyUnderProhibition(tc.prompt, "memory_search"); got != tc.want {
+				t.Errorf("mentionedOnlyUnderProhibition(%q) = %v, want %v", tc.prompt, got, tc.want)
+			}
+		})
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,20 @@ func TestA2ACallCov_SubmitResponseUnparseable(t *testing.T) {
 	})
 	if err == nil || !contains(err.Error(), "parse submit response") {
 		t.Fatalf("expected parse-submit error, got %v", err)
+	}
+}
+
+func TestA2ACallCov_SubmitResponseOversized(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", maxA2ASubmitResponseBytes+1)))
+	}))
+	defer srv.Close()
+	e := &Executor{}
+	_, err := e.handleA2ACallStep(context.Background(), "s", &registry.WorkflowStep{
+		Type: "a2a_call", AgentURL: srv.URL, Prompt: "x",
+	})
+	if err == nil || !contains(err.Error(), "submit response exceeds") {
+		t.Fatalf("expected oversized-submit-response error, got %v", err)
 	}
 }
 

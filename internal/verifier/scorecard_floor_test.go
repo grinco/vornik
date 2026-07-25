@@ -400,3 +400,123 @@ func TestScorecardFloor_HoistsFromMessageField(t *testing.T) {
 	require.NotNil(t, v, "buried below-min open must still be caught")
 	assert.Contains(t, v.Detail, "below_min")
 }
+
+// ---- FilterTradingProposals (soft-drop, design 2026-07-25) ----
+
+func parseFilteredProposals(t *testing.T, b []byte) ([]map[string]any, bool) {
+	t.Helper()
+	var env struct {
+		Proposals    []map[string]any `json:"proposals"`
+		HasProposals bool             `json:"has_proposals"`
+	}
+	require.NoError(t, jsonUnmarshalLenient(b, &env))
+	return env.Proposals, env.HasProposals
+}
+
+// Mix: a below_min OPEN is dropped; the qualifying OPEN + the exit are kept
+// verbatim (full fields preserved); has_proposals recomputed; no hard error.
+func TestFilterTradingProposals_DropsSubFloorKeepsRest(t *testing.T) {
+	fc := floorCfgEnabled()
+	in := []byte(`{"rationale":"r","has_proposals":true,"proposals":[
+		{"symbol":"AAPL","intent":"open","action":"BUY","qty":10,"stop_loss_price":180.5,"region":"us","scorecard":{"total":5},"regime":{"label":"RISK_ON","component_count":3,"stale":false}},
+		{"symbol":"NVO","intent":"open","action":"BUY","qty":7,"region":"us","scorecard":{"total":0},"regime":{"label":"RISK_ON","component_count":3,"stale":false}},
+		{"symbol":"MSFT","intent":"close","action":"SELL","qty":5}
+	]}`)
+	out, err := FilterTradingProposals(in, fc)
+	require.NoError(t, err)
+	props, hasProps := parseFilteredProposals(t, out)
+	require.Len(t, props, 2, "below_min NVO dropped; AAPL + MSFT kept")
+	assert.True(t, hasProps)
+	syms := []string{props[0]["symbol"].(string), props[1]["symbol"].(string)}
+	assert.ElementsMatch(t, []string{"AAPL", "MSFT"}, syms)
+	// Full fields of the kept open survive verbatim (not the floorProposal subset).
+	for _, p := range props {
+		if p["symbol"] == "AAPL" {
+			assert.EqualValues(t, 10, p["qty"])
+			assert.EqualValues(t, 180.5, p["stop_loss_price"])
+		}
+	}
+	assert.NotContains(t, string(out), "NVO")
+}
+
+// Protected-symbol CLOSE is a HARD integrity violation → error (step fails).
+func TestFilterTradingProposals_ProtectedCloseHardFails(t *testing.T) {
+	fc := floorCfgEnabled()
+	in := []byte(`{"proposals":[{"symbol":"RSU-LOCKUP","intent":"close","action":"SELL","qty":100}]}`)
+	_, err := FilterTradingProposals(in, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "protected")
+}
+
+// Protected-symbol OPEN is NOT hard: a sub-floor protected open is DROPPED
+// (soft), a qualifying protected open is KEPT (review finding #3).
+func TestFilterTradingProposals_ProtectedOpenIsSoftNotHard(t *testing.T) {
+	fc := floorCfgEnabled()
+	subFloor := []byte(`{"proposals":[{"symbol":"RSU-LOCKUP","intent":"open","action":"BUY","region":"us","scorecard":{"total":0},"regime":{"label":"RISK_ON","component_count":3}}]}`)
+	out, err := FilterTradingProposals(subFloor, fc)
+	require.NoError(t, err, "protected OPEN sub-floor must DROP, not hard-fail")
+	props, hasProps := parseFilteredProposals(t, out)
+	assert.Empty(t, props)
+	assert.False(t, hasProps)
+
+	qualifying := []byte(`{"proposals":[{"symbol":"RSU-LOCKUP","intent":"open","action":"BUY","qty":3,"region":"us","scorecard":{"total":5},"regime":{"label":"RISK_ON","component_count":3}}]}`)
+	out2, err2 := FilterTradingProposals(qualifying, fc)
+	require.NoError(t, err2)
+	props2, _ := parseFilteredProposals(t, out2)
+	require.Len(t, props2, 1, "a qualifying protected OPEN is kept")
+}
+
+// Unknown action on an OPEN is a HARD integrity violation.
+func TestFilterTradingProposals_UnknownActionHardFails(t *testing.T) {
+	fc := floorCfgEnabled()
+	in := []byte(`{"proposals":[{"symbol":"AAPL","intent":"open","action":"HOLD","scorecard":{"total":5},"regime":{"label":"RISK_ON","component_count":3}}]}`)
+	_, err := FilterTradingProposals(in, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown_action")
+}
+
+// Unparseable proposal → HARD (fail-closed: never keep an entry we can't classify).
+func TestFilterTradingProposals_UnparseableHardFails(t *testing.T) {
+	fc := floorCfgEnabled()
+	in := []byte(`{"proposals":[123]}`)
+	_, err := FilterTradingProposals(in, fc)
+	require.Error(t, err)
+}
+
+// Disabled floor / empty proposals / no proposals key → input returned unchanged.
+func TestFilterTradingProposals_NoOpCases(t *testing.T) {
+	in := []byte(`{"proposals":[{"symbol":"AAPL","intent":"open","action":"BUY","scorecard":{"total":0},"regime":{}}]}`)
+	// Flags off ⇒ inert (soak gate): even a below-floor open is untouched.
+	off := floorCfgEnabled()
+	off.ScorecardEnabled = false
+	out, err := FilterTradingProposals(in, off)
+	require.NoError(t, err)
+	assert.Equal(t, string(in), string(out))
+
+	// Empty proposals array ⇒ unchanged, no panic (review finding #4).
+	empty := []byte(`{"proposals":[]}`)
+	out2, err2 := FilterTradingProposals(empty, floorCfgEnabled())
+	require.NoError(t, err2)
+	assert.Equal(t, string(empty), string(out2))
+
+	// No proposals key ⇒ unchanged.
+	nokey := []byte(`{"message":"no trades this tick"}`)
+	out3, err3 := FilterTradingProposals(nokey, floorCfgEnabled())
+	require.NoError(t, err3)
+	assert.Equal(t, string(nokey), string(out3))
+}
+
+// Exits are never dropped even with no qualifying opens (risk-reducing actions flow).
+func TestFilterTradingProposals_ExitsNeverDropped(t *testing.T) {
+	fc := floorCfgEnabled()
+	in := []byte(`{"proposals":[
+		{"symbol":"NVO","intent":"open","action":"BUY","region":"us","scorecard":{"total":0},"regime":{"label":"RISK_ON","component_count":3}},
+		{"symbol":"TSLA","intent":"close","action":"SELL","qty":4}
+	]}`)
+	out, err := FilterTradingProposals(in, fc)
+	require.NoError(t, err)
+	props, hasProps := parseFilteredProposals(t, out)
+	require.Len(t, props, 1)
+	assert.Equal(t, "TSLA", props[0]["symbol"])
+	assert.True(t, hasProps)
+}

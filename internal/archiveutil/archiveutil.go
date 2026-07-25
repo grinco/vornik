@@ -15,12 +15,25 @@ package archiveutil
 import (
 	"archive/tar"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"vornik.io/vornik/internal/safepath"
 )
+
+const (
+	defaultMaxExtractEntries = 100_000
+	defaultMaxExtractBytes   = 10 << 30
+)
+
+// ExtractLimits bounds the resources consumed while expanding an archive.
+type ExtractLimits struct {
+	MaxEntries int
+	MaxBytes   int64
+}
 
 // CopyFile copies src to dst preserving mode bits. Parent
 // directories of dst are created as needed.
@@ -128,6 +141,18 @@ func TarGzDir(dir, out string) error {
 // (Zip-Slip), and silently drops symlink / hardlink entries so a
 // crafted archive can't redirect a later file write outside dir.
 func UntarGz(archive, dir string) error {
+	return UntarGzWithLimits(archive, dir, ExtractLimits{
+		MaxEntries: defaultMaxExtractEntries,
+		MaxBytes:   defaultMaxExtractBytes,
+	})
+}
+
+// UntarGzWithLimits extracts a tar.gz archive without following links already
+// present below dir and rejects archives above the supplied expanded limits.
+func UntarGzWithLimits(archive, dir string, limits ExtractLimits) error {
+	if limits.MaxEntries <= 0 || limits.MaxBytes <= 0 {
+		return errors.New("archive extraction limits must be positive")
+	}
 	f, err := os.Open(archive)
 	if err != nil {
 		return err
@@ -139,6 +164,8 @@ func UntarGz(archive, dir string) error {
 	}
 	defer func() { _ = gz.Close() }()
 	tr := tar.NewReader(gz)
+	var entries int
+	var expandedBytes int64
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -147,33 +174,45 @@ func UntarGz(archive, dir string) error {
 		if err != nil {
 			return err
 		}
-		if filepath.IsAbs(hdr.Name) {
-			return fmt.Errorf("refusing entry with unsafe path: %s", hdr.Name)
+		entries++
+		if entries > limits.MaxEntries {
+			return fmt.Errorf("archive exceeds %d entry limit", limits.MaxEntries)
 		}
-		target := filepath.Join(dir, hdr.Name)
-		rel, relErr := filepath.Rel(dir, target)
-		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("refusing entry with unsafe path: %s", hdr.Name)
+		written, err := extractEntry(tr, hdr, dir, limits.MaxBytes-expandedBytes)
+		if err != nil {
+			return err
 		}
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode))
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(out, tr); err != nil { //nolint:gosec // size-bounded by caller's --max-size cap
-				_ = out.Close()
-				return err
-			}
+		expandedBytes += written
+	}
+}
+
+func extractEntry(tr io.Reader, hdr *tar.Header, dir string, remainingBytes int64) (int64, error) {
+	target, err := safepath.JoinUnderRel(dir, hdr.Name)
+	if err != nil {
+		return 0, fmt.Errorf("refusing entry with unsafe path %q: %w", hdr.Name, err)
+	}
+	mode := os.FileMode(hdr.Mode) & 0o777
+	switch hdr.Typeflag {
+	case tar.TypeDir:
+		return 0, os.MkdirAll(target, mode)
+	case tar.TypeReg:
+		if hdr.Size < 0 || hdr.Size > remainingBytes {
+			return 0, fmt.Errorf("archive exceeds expanded-byte limit")
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return 0, err
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := io.CopyN(out, tr, hdr.Size); err != nil {
 			_ = out.Close()
+			return 0, err
 		}
+		return hdr.Size, out.Close()
+	default:
+		return 0, nil
 	}
 }
 

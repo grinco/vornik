@@ -121,22 +121,14 @@ func (m modelPingerAdapter) Reachable(ctx context.Context, modelID string) bool 
 	if m.provider == nil || modelID == "" {
 		return false
 	}
-	// Try the aggregating path first (Router / QueuedProvider / LoggingProvider
-	// wrapping a Router), then the single-provider ModelLister path.
-	// *chat.Router implements chat.ModelAggregator, so the interface branch
-	// covers it — a direct *chat.Router type-assertion is redundant.
+	// chat.AggregateModels walks the decorator chain, so a router hidden behind
+	// FallbackProvider/LoggingProvider is still found. Asserting on the
+	// outermost value made this report every model unreachable whenever
+	// chat.router.model_fallbacks was configured. See chat.Unwrapper.
 	var models []chat.ModelInfo
-	if agg, ok := m.provider.(chat.ModelAggregator); ok {
-		if result, ok2 := agg.ListModelsAggregated(ctx); ok2 {
-			for _, ms := range result.Providers {
-				models = append(models, ms...)
-			}
-		} else if ms, err := agg.ListModels(ctx); err == nil {
-			models = ms
-		}
-	} else if lister, ok := m.provider.(chat.ModelLister); ok {
-		if ms, err := lister.ListModels(ctx); err == nil {
-			models = ms
+	if result, answered := chat.AggregateModels(ctx, m.provider); answered {
+		for _, ms := range result.Providers {
+			models = append(models, ms...)
 		}
 	}
 	for _, info := range models {

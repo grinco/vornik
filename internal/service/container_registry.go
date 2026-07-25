@@ -190,6 +190,20 @@ func (c *Container) applyHotConfig() {
 	c.cpSelfHealLive.Store(&sh)
 	c.Logger.Info().Bool("self_heal_enabled", sh).
 		Msg("hot-reload: applied control_plane.self_heal_enabled without restart")
+	// control_plane.cost_tuning_canary.enabled hot-applies (design §9 #2): the
+	// canary guard reads the live value at discover AND trip time, so flipping
+	// the flag + reload brakes auto-rollback without a restart.
+	canary := staged.ControlPlane.CostTuningCanary.Enabled
+	c.cpCanaryEnabledLive.Store(&canary)
+	c.Logger.Info().Bool("cost_tuning_canary_enabled", canary).
+		Msg("hot-reload: applied control_plane.cost_tuning_canary.enabled without restart")
+	// control_plane.cost_tuning_auto_apply.enabled hot-applies (auto-apply design
+	// D5): the worker reads the live value per-tick AND at apply time, so a
+	// mid-tick brake suppresses a pending auto-apply, not just future ticks.
+	autoApply := staged.ControlPlane.CostTuningAutoApply.Enabled
+	c.cpCostAutoApplyEnabledLive.Store(&autoApply)
+	c.Logger.Info().Bool("cost_tuning_auto_apply_enabled", autoApply).
+		Msg("hot-reload: applied control_plane.cost_tuning_auto_apply.enabled without restart")
 	if c.memoryPipeline != nil {
 		c.memoryPipeline.UpdateGates(
 			staged.Memory.PromptInjectionScan,

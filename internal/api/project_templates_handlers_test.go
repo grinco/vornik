@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/telemetryclient"
 	"vornik.io/vornik/internal/templates"
 )
 
@@ -132,6 +134,47 @@ func TestCreateProjectFromTemplate_HappyPath(t *testing.T) {
 	require.NoError(t, rerr)
 	assert.Equal(t, "projectId: my-project\ngreeting: hi\n", string(got))
 }
+
+func TestCreateProjectFromTemplate_EmitsExactlyOnceAfterCreation(t *testing.T) {
+	srv, _, _, _ := templateRig(t)
+	var calls int
+	srv.lifecycleTelemetry = telemetryclient.Client{
+		Endpoint: "https://telemetry.example.test/v1/collect.json",
+		Enabled:  true,
+		HTTP: &http.Client{Transport: apiRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			body, err := io.ReadAll(req.Body)
+			require.NoError(t, err)
+			require.Contains(t, string(body), `"event":"project_created"`)
+			require.NotContains(t, string(body), "my-project")
+			return &http.Response{
+				StatusCode: http.StatusAccepted,
+				Body:       io.NopCloser(strings.NewReader(`{"accepted":true}`)),
+				Header:     make(http.Header),
+			}, nil
+		})},
+	}
+	srv.telemetryVersion = "2026.7.4"
+
+	body := bytes.NewBufferString(`{"slug":"demo","parameters":{"projectId":"my-project"}}`)
+	req := templateAdminReq(httptest.NewRequest(http.MethodPost, "/api/v1/projects/from-template", body))
+	rec := httptest.NewRecorder()
+	srv.CreateProjectFromTemplate(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code, "body=%s", rec.Body.String())
+	require.Equal(t, 1, calls)
+
+	// Conflict/retry must not produce another event.
+	req = templateAdminReq(httptest.NewRequest(http.MethodPost, "/api/v1/projects/from-template",
+		bytes.NewBufferString(`{"slug":"demo","parameters":{"projectId":"my-project"}}`)))
+	rec = httptest.NewRecorder()
+	srv.CreateProjectFromTemplate(rec, req)
+	require.Equal(t, http.StatusConflict, rec.Code)
+	require.Equal(t, 1, calls)
+}
+
+type apiRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f apiRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestCreateProjectFromTemplate_RequiresAdmin(t *testing.T) {
 	srv, _, _, _ := templateRig(t)

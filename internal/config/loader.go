@@ -60,11 +60,16 @@ func Load() (*Config, string, error) {
 func LoadFromPath(path string) (*Config, error) {
 	cfg := DefaultConfig()
 
+	// Kept at function scope so the placeholder diagnostic below can inspect
+	// the pre-expansion text.
+	var rawConfigBytes []byte
+
 	if path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
+		rawConfigBytes = data
 
 		// Parse based on file extension
 		if strings.HasSuffix(path, ".json") {
@@ -123,6 +128,11 @@ func LoadFromPath(path string) (*Config, error) {
 	// doc), so explicit deployment env still wins and re-running on a hot
 	// reload is safe.
 	sourceSecretsEnvFiles(path)
+
+	// Recorded AFTER sourcing the env files (so a variable supplied by
+	// vornik.env / secrets is not reported) and before expansion, which
+	// destroys the evidence by turning ${VAR} into "".
+	cfg.unresolvedPlaceholders = unresolvedPlaceholderNames(rawConfigBytes)
 
 	expandEnvPlaceholders(cfg)
 
@@ -482,6 +492,7 @@ func applyEnvOverrides(cfg *Config) {
 // DefaultConfig returns a configuration with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
+		Telemetry: TelemetryConfig{Enabled: true},
 		// Steering notifications default ON — a task that needs the operator
 		// should reach them on the channel they used (opt-out via YAML).
 		SteeringNotificationsEnabled: true,
@@ -602,9 +613,29 @@ func DefaultConfig() *Config {
 }
 
 // Validate validates the configuration.
+// placeholderHint explains an empty required field when the config referenced
+// ${VAR}s that were never set. Without it the operator sees only the symptom —
+// "database name is required" — while the field IS present in config.yaml and
+// merely expanded to nothing, which is a materially different fix.
+func (c *Config) placeholderHint() string {
+	if len(c.unresolvedPlaceholders) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (unset config placeholders: ${%s}"+
+		" — set them in <configDir>/vornik.env or <configDir>/secrets/*.env,"+
+		" or export them before running)",
+		strings.Join(c.unresolvedPlaceholders, "}, ${"))
+}
+
+// requiredErr wraps a missing-required-field message with the placeholder hint
+// when one applies.
+func (c *Config) requiredErr(msg string) error {
+	return fmt.Errorf("%s%s", msg, c.placeholderHint())
+}
+
 func (c *Config) Validate() error {
 	if c.Server.Address == "" {
-		return fmt.Errorf("server address is required")
+		return c.requiredErr("server address is required")
 	}
 	driver := c.Database.Driver
 	if driver == "" {
@@ -613,20 +644,20 @@ func (c *Config) Validate() error {
 	switch driver {
 	case "postgres":
 		if c.Database.Host == "" {
-			return fmt.Errorf("database host is required")
+			return c.requiredErr("database host is required")
 		}
 		if c.Database.Port <= 0 {
 			return fmt.Errorf("database port must be greater than zero")
 		}
 		if c.Database.Name == "" {
-			return fmt.Errorf("database name is required")
+			return c.requiredErr("database name is required")
 		}
 		if c.Database.User == "" {
-			return fmt.Errorf("database user is required")
+			return c.requiredErr("database user is required")
 		}
 	case "sqlite":
 		if c.Database.Path == "" {
-			return fmt.Errorf("database path is required for sqlite driver")
+			return c.requiredErr("database path is required for sqlite driver")
 		}
 	default:
 		return fmt.Errorf("unsupported database driver: %s", driver)
@@ -768,6 +799,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("memory.prompt_injection_scan must be one of off|detect|quarantine, got %q", c.Memory.PromptInjectionScan)
 	}
 	if err := c.Memory.RetrievalRouting.Validate(); err != nil {
+		return err
+	}
+	if err := c.ControlPlane.CostTuningCanary.Validate(); err != nil {
+		return err
+	}
+	if err := c.ControlPlane.CostTuningAutoApply.Validate(); err != nil {
 		return err
 	}
 	if c.Runtime.UserNSMode != "" {

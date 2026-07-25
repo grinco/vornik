@@ -35,7 +35,9 @@ const cpProposalsPageSize = 50
 // cpIsClosedStatus reports whether status is hidden from the default
 // (no-filter) proposals view; each remains reachable via its own status tab.
 func cpIsClosedStatus(status string) bool {
-	return status == persistence.ProposalStatusRejected || status == persistence.ProposalStatusRolledBack
+	return status == persistence.ProposalStatusRejected ||
+		status == persistence.ProposalStatusRolledBack ||
+		status == persistence.ProposalStatusRegressed
 }
 
 // AdminCPRow is one proposal rendered to the console table.
@@ -207,6 +209,7 @@ var adminCPStatuses = []struct{ Key, Label string }{
 	{persistence.ProposalStatusApplied, "Applied"},
 	{persistence.ProposalStatusRejected, "Rejected"},
 	{persistence.ProposalStatusRolledBack, "Rolled back"},
+	{persistence.ProposalStatusRegressed, "Regressed"},
 }
 
 // cpFlashMessages maps the done= redirect token to a FIXED message (never
@@ -452,7 +455,7 @@ func (s *Server) buildCPProposals(ctx context.Context, data *AdminControlPlaneDa
 	// The default "Open" view hides closed ledger rows (REJECTED/ROLLED_BACK),
 	// so its tab count must exclude them too — otherwise the badge advertises
 	// rows the view doesn't render (mirrors the skills "Current" tab).
-	openCount := total - counts[persistence.ProposalStatusRejected] - counts[persistence.ProposalStatusRolledBack]
+	openCount := total - counts[persistence.ProposalStatusRejected] - counts[persistence.ProposalStatusRolledBack] - counts[persistence.ProposalStatusRegressed]
 	data.Tabs = append(data.Tabs, AdminCPTab{Key: "", Label: "Open", Count: openCount, Active: filter == ""})
 	for _, st := range adminCPStatuses {
 		data.Tabs = append(data.Tabs, AdminCPTab{Key: st.Key, Label: st.Label, Count: counts[st.Key], Active: filter == st.Key})
@@ -642,6 +645,10 @@ func (s *Server) cpLedgerRow(p *persistence.ControlPlaneProposal, superseded map
 		LiveApply:          p.LiveApply,
 		RollbackSuperseded: isSuperseded,
 		AutoRetired:        p.Status == persistence.ProposalStatusRejected && p.Approver == controlplane.AutoRetireStaleActor,
+		// REGRESSED = auto-rolled-back by the cost/quality canary guard (design
+		// 2026-07-24 §4.4). Render the warning badge; no action buttons (the
+		// change is already reverted + the knob is cooling down).
+		Regressed: p.Status == persistence.ProposalStatusRegressed,
 	}
 	// Blast-radius ack (design §4.5): daemon AND swarm scopes require
 	// the acknowledgement checkbox before apply. Same ackDaemon field —
@@ -679,6 +686,8 @@ func normalizeCPFilter(v string) string {
 		return persistence.ProposalStatusRejected
 	case persistence.ProposalStatusRolledBack:
 		return persistence.ProposalStatusRolledBack
+	case persistence.ProposalStatusRegressed:
+		return persistence.ProposalStatusRegressed
 	default:
 		return ""
 	}

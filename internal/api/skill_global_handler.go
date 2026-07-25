@@ -43,6 +43,7 @@ func (s *Server) SkillSetGlobal(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Global bool `json:"global"`
 	}
+	limitJSONBody(w, r)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		respondError(w, http.StatusBadRequest, "INVALID_BODY", "expected {\"global\": bool}: "+err.Error())
 		return

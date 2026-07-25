@@ -61,6 +61,13 @@ var (
 	// restoring this proposal's snapshot would clobber that change. Roll back the
 	// newer change first (design 2026-07-23 §D).
 	ErrRollbackTargetDrifted = errors.New("control-plane: rollback target changed since it was applied (a later change overwrote it, or it was hand-edited); roll back the newer change first")
+	// ErrTradingSwarmRefused means a cost/quality-detector proposal was refused at
+	// apply time because its typed change targets a trading/broker swarm — the
+	// applier-side mirror of the detector-side trading exclusion (defense in depth,
+	// review-20260721-a7bf #6; design 2026-07-24-applier-trading-refusal). Produced
+	// by (*Actionizer).RefuseTradingTarget via the ValidateChange hook.
+	// Operator-authored proposals are NOT subject to it.
+	ErrTradingSwarmRefused = errors.New("control-plane: refusing to apply a cost/quality-detector proposal to a trading swarm")
 )
 
 // AutoRetireStaleActor is the approver stamped on a proposal auto-retired

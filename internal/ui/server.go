@@ -232,6 +232,16 @@ type Server struct {
 	// false so /trading 404s instead of leaking the dashboard — the nav item's
 	// data-cap is only a client-side, fail-open hint. (2026-06-27.)
 	tradingEnabled bool
+	// version is the daemon build version (e.g. "2026.7.4-52-gebe09761"),
+	// surfaced in the page footer as a changelog link via the "appVersion"
+	// FuncMap entry. Empty ⇒ the footer renders nothing (graceful).
+	version string
+	// versionFn, when set, is preferred over `version` and read at RENDER time.
+	// The container wires c.Version here because initHTTPServer (which builds
+	// this server) runs inside the container constructor, BEFORE SetVersion — a
+	// captured string would be empty. A lazy provider reads the value at request
+	// time, long after SetVersion. Nil ⇒ fall back to the static `version`.
+	versionFn func() string
 	// allUICallersAdmin makes the nav render AdminOnly entries visible
 	// on every page. Set when the deployment cannot produce a non-admin
 	// browser session, so the AdminOnly gate (which exists only to hide
@@ -725,6 +735,25 @@ type ServerOption func(*Server)
 func WithLogger(logger zerolog.Logger) ServerOption {
 	return func(s *Server) {
 		s.logger = logger
+	}
+}
+
+// WithVersion sets a static daemon build version surfaced in the page footer as
+// a changelog link. Empty ⇒ the footer renders nothing. Prefer WithVersionFunc
+// when the version isn't known at server-construction time (the daemon's case).
+func WithVersion(v string) ServerOption {
+	return func(s *Server) {
+		s.version = v
+	}
+}
+
+// WithVersionFunc wires a lazy version provider read at render time — used by the
+// daemon because the UI server is built (in the container constructor) before
+// SetVersion runs, so a captured string would be empty. Takes precedence over
+// WithVersion.
+func WithVersionFunc(fn func() string) ServerOption {
+	return func(s *Server) {
+		s.versionFn = fn
 	}
 }
 
@@ -2027,6 +2056,14 @@ func NewServer(opts ...ServerOption) *Server {
 	// Server-bound so the persistent "restart required" banner reflects live
 	// pending-restart state on every render (see the nav partial).
 	fm["restartPending"] = s.restartBanner
+	// Server-bound daemon version for the page footer's changelog link
+	// (avoids threading version through every page's data struct).
+	fm["appVersion"] = func() string {
+		if s.versionFn != nil {
+			return s.versionFn()
+		}
+		return s.version
+	}
 	tmpl, err := template.New("").
 		Funcs(fm).
 		ParseFS(templatesFS, "templates/*.html")

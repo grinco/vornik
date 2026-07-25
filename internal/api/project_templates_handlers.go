@@ -1,12 +1,16 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
+	"gopkg.in/yaml.v3"
+	"vornik.io/vornik/internal/telemetryclient"
 	"vornik.io/vornik/internal/templates"
 )
 
@@ -301,6 +305,41 @@ func (s *Server) CreateProjectFromTemplate(w http.ResponseWriter, r *http.Reques
 		Slug:         req.Slug,
 		FilesWritten: written,
 	})
+
+	// The catalog lookup above proves this is a built-in template. Emission is
+	// best-effort and must not alter the already-successful API result.
+	//
+	// The response is already written, so the client may hang up immediately.
+	// WithoutCancel detaches from that: inheriting r.Context() let a prompt
+	// disconnect cancel the emit, silently undercounting creations that in fact
+	// succeeded. The client's own 2s timeout still bounds how long this holds
+	// the handler.
+	emitCtx, cancelEmit := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Second)
+	defer cancelEmit()
+	_ = s.lifecycleTelemetry.Emit(emitCtx, telemetryclient.ProjectEvent(
+		s.telemetryVersion,
+		telemetryclient.SourceAPITemplate,
+		req.Slug,
+		true,
+		renderedProjectAutonomy(rendered),
+	))
+}
+
+func renderedProjectAutonomy(rendered map[string]string) bool {
+	for target, body := range rendered {
+		if !strings.HasPrefix(target, "projects/") || !strings.HasSuffix(target, ".yaml") {
+			continue
+		}
+		var project struct {
+			Autonomy struct {
+				Enabled bool `yaml:"enabled"`
+			} `yaml:"autonomy"`
+		}
+		if yaml.Unmarshal([]byte(body), &project) == nil {
+			return project.Autonomy.Enabled
+		}
+	}
+	return false
 }
 
 // lastValue returns the last element of v, or "" when v is empty —

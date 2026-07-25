@@ -6,6 +6,42 @@ file is written for you: every step is a command plus a check. Run the
 command, verify the check, and only then continue. If a check fails, stop
 and triage with the step's hints — do not push on past a failed check.
 
+## Trust & safety (read first)
+
+- During install, Vornik doesn't send your data to us or any third party.
+  Secrets are written to `~/.config/vornik/secrets/` and never transmitted.
+- Setup talks to your local daemon at `http://localhost:8080`. The outbound
+  calls are ones you trigger yourself: validating your chat/LLM key against
+  the endpoint you entered, and — if you enable memory/RAG — validating your
+  embedding key against that endpoint. Never any Vornik service.
+- The installer is open source — review `deployments/podman/quickstart.sh` before running.
+
+### Install (reviewable)
+
+```bash
+curl -fsSL https://get.vornik.io -o quickstart.sh
+less quickstart.sh          # review — nothing leaves your machine
+bash quickstart.sh
+```
+
+(One-liner `curl -fsSL https://get.vornik.io | bash` is the convenience option.)
+Note: the two-step path depends on `get.vornik.io` serving the current script;
+the in-repo `deployments/podman/quickstart.sh` is the reviewable source of truth.
+
+### If a task fails after install
+
+1. `vornikctl doctor` — checks agent-LLM topology, workspace uid, upstream key, and more.
+2. `vornikctl report` — opens a pre-anonymized GitHub issue you review and submit.
+
+### Upgrading from an install before this release
+
+The installer seeds `~/.config/vornik/configs/` only on first install (when
+it's empty) and preserves your existing configs on later runs — so an older
+`~/.config/vornik/configs/projects/dev-project.yaml` keeps `autonomy.enabled: true`.
+If you don't want unattended scheduling, set it to `false` (or toggle it off
+in the UI). `vornikctl doctor` (autonomy_budget_guard) flags autonomy-enabled
+projects.
+
 **Ground rules**
 
 1. **Ask before privileged commands.** Package installs (`sudo dnf/apt/…`)

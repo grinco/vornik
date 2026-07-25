@@ -53,17 +53,38 @@ var metadataHosts = map[string]bool{
 
 func buildBlockedNets() []*net.IPNet {
 	cidrs := []string{
-		"127.0.0.0/8",    // IPv4 loopback
-		"10.0.0.0/8",     // RFC1918 private
-		"172.16.0.0/12",  // RFC1918 private
-		"192.168.0.0/16", // RFC1918 private
-		"169.254.0.0/16", // link-local (incl. AWS/GCP metadata 169.254.169.254)
-		"100.64.0.0/10",  // CGNAT (RFC6598; incl. Alibaba metadata 100.100.100.200)
-		"0.0.0.0/8",      // "this" network / unspecified (IPv4)
-		"::1/128",        // IPv6 loopback
-		"fc00::/7",       // IPv6 unique-local (ULA)
-		"fe80::/10",      // IPv6 link-local
-		"::/128",         // IPv6 unspecified
+		"127.0.0.0/8",     // IPv4 loopback
+		"10.0.0.0/8",      // RFC1918 private
+		"172.16.0.0/12",   // RFC1918 private
+		"192.168.0.0/16",  // RFC1918 private
+		"169.254.0.0/16",  // link-local (incl. AWS/GCP metadata 169.254.169.254)
+		"100.64.0.0/10",   // CGNAT (RFC6598; incl. Alibaba metadata 100.100.100.200)
+		"0.0.0.0/8",       // "this" network / unspecified (IPv4)
+		"192.0.0.0/24",    // IETF protocol assignments
+		"192.0.2.0/24",    // TEST-NET-1
+		"198.18.0.0/15",   // benchmarking
+		"198.51.100.0/24", // TEST-NET-2
+		"203.0.113.0/24",  // TEST-NET-3
+		"224.0.0.0/4",     // multicast
+		"240.0.0.0/4",     // reserved + limited broadcast
+		"192.88.99.0/24",  // 6to4 relay anycast (deprecated, RFC7526)
+		"::1/128",         // IPv6 loopback
+		"fc00::/7",        // IPv6 unique-local (ULA)
+		"fe80::/10",       // IPv6 link-local
+		"::/128",          // IPv6 unspecified
+		"2001:db8::/32",   // IPv6 documentation
+		"ff00::/8",        // IPv6 multicast
+		// Transition/translation prefixes. These embed an IPv4 destination in
+		// an IPv6 address, so a blocked v4 target reached through a NAT64 or
+		// 6to4 gateway sidesteps every v4 rule above: 64:ff9b::a9fe:a9fe IS
+		// 169.254.169.254 (cloud metadata). Blocking the prefixes is correct —
+		// we never need to reach a public host through one.
+		"64:ff9b::/96",   // NAT64 well-known prefix (RFC6052)
+		"64:ff9b:1::/48", // local-use NAT64 (RFC8215)
+		"2002::/16",      // 6to4 (RFC3056)
+		"2001::/32",      // Teredo (RFC4380)
+		"100::/64",       // discard-only (RFC6666)
+		"fec0::/10",      // deprecated site-local (RFC3879)
 	}
 	nets := make([]*net.IPNet, 0, len(cidrs))
 	for _, c := range cidrs {

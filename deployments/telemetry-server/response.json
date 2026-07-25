@@ -1,0 +1,5 @@
+{
+  "accepted": true,
+  "body_stored": false,
+  "message": "Request accepted. The mock endpoint does not store or process the JSON body."
+}

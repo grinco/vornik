@@ -52,6 +52,19 @@ type AutonomyController interface {
 
 const telegramLongPollTimeout = 30 * time.Second
 const telegramHTTPTimeout = 35 * time.Second
+const maxTelegramUpdatesResponseBytes = 8 << 20
+const maxTelegramAPIResponseBytes = 1 << 20
+
+func readTelegramResponse(body io.Reader, maxBytes int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("telegram API response exceeds %d bytes", maxBytes)
+	}
+	return data, nil
+}
 
 // UserAccess mirrors config.UserAccess but is accepted via the
 // BotConfig map so the telegram package doesn't depend on config.
@@ -2457,7 +2470,7 @@ func (b *Bot) getUpdates(ctx context.Context, offset int64) ([]Update, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readTelegramResponse(resp.Body, maxTelegramUpdatesResponseBytes)
 	if err != nil {
 		b.logger.Warn().
 			Err(err).
@@ -2867,7 +2880,7 @@ func (b *Bot) doSendMessage(ctx context.Context, chatID int64, reqBody SendMessa
 		return 0, fmt.Errorf("failed to send message: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readTelegramResponse(resp.Body, maxTelegramAPIResponseBytes)
 	if err != nil {
 		return 0, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -2905,7 +2918,7 @@ func (b *Bot) sendMessageGetID(ctx context.Context, chatID int64, text string) (
 		return 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readTelegramResponse(resp.Body, maxTelegramAPIResponseBytes)
 	if err != nil {
 		return 0, err
 	}

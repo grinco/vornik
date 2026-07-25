@@ -220,6 +220,11 @@ func (q *BoundedRouteProvider) CompleteWithToolsStream(ctx context.Context, mess
 
 // Model delegates to the inner provider — queueing is invisible
 // to the dispatcher's "which model ran this step" surface.
+// Unwrap exposes the wrapped provider so capability lookup can see through
+// this decorator — without it a route's sub-provider is invisible to model
+// discovery and to readiness probes. See Unwrapper.
+func (q *BoundedRouteProvider) Unwrap() Provider { return q.inner }
+
 func (q *BoundedRouteProvider) Model() string { return q.inner.Model() }
 
 // SetMetrics delegates to the inner provider so existing

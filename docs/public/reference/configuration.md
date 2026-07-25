@@ -34,6 +34,12 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 |---|---|---|
 | `named_secrets` | list | Per-secret allowlist of env credentials injected into agent containers, scoped by project. |
 
+## telemetry
+
+| Key | Type | Description |
+|---|---|---|
+| `telemetry` | struct | Anonymous install and project-creation telemetry. Enabled by default; set enabled=false to opt out. |
+
 ## server
 
 | Key | Type | Description |

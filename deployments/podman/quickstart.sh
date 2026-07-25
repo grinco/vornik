@@ -57,7 +57,7 @@ REPO_URL="${VORNIK_REPO_URL:-https://github.com/grinco/vornik}"
 # (`make quickstart-stamp-ref REF=<tag>`), so the PUBLISHED installer pins a
 # concrete release rather than a moving branch. Keep it a real, recent tag in
 # the repo. Override at runtime with VORNIK_REF (e.g. VORNIK_REF=main).
-DEFAULT_VORNIK_REF="2026.7.4"
+DEFAULT_VORNIK_REF="2026.7.5"
 REF="${VORNIK_REF:-$DEFAULT_VORNIK_REF}"
 DIR="${VORNIK_DIR:-$HOME/vornik}"
 HTTP_PORT="${VORNIK_HTTP_PORT:-8080}"
@@ -69,6 +69,79 @@ log()  { printf '%s==>%s %s\n' "$c_blue"   "$c_off" "$*"; }
 ok()   { printf '%s ok%s %s\n' "$c_green"  "$c_off" "$*"; }
 warn() { printf '%s !!%s %s\n' "$c_yellow" "$c_off" "$*" >&2; }
 die()  { printf '%s xx%s %s\n' "$c_red"    "$c_off" "$*" >&2; exit 1; }
+
+# --- install-failure reporting (2026-07-25) ---------------------------------
+# On ANY non-zero exit, print a prefilled grinco/vornik issue URL the user can
+# open + submit with their own GitHub account. The installer is the only actor
+# pre-install, so it carries its own (deliberately aggressive) secret scrubber.
+# It posts ONLY low-risk structured context (version/platform/exit + the scrubbed
+# failing command) — NOT an arbitrary log tail — and asks the user to add detail
+# after reviewing it. sourceable by quickstart_test.sh (VORNIK_QUICKSTART_SOURCED=1).
+
+# vornik_scrub — strip likely secrets AND identifiers from stdin before they
+# enter a PUBLIC issue. Mirrors the Go scrubber (internal/report) so the
+# installer path is no weaker than daemon-up reporting (review-20260725-7530 #3):
+# secrets first, then email / IPv4 / home-&-tilde paths (whole path, tail and
+# all — a surviving tail leaks project names), base64 last (after paths collapse).
+vornik_scrub() {
+  sed -E \
+    -e 's/(Bearer|token|secret|password|passwd|api[_-]?key|access[_-]?key)([=: ]+)[^[:space:]"'"'"']+/\1\2<redacted>/Ig' \
+    -e 's/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/<redacted-jwt>/g' \
+    -e 's/\bsk-[A-Za-z0-9_-]{12,}/<redacted-key>/g' \
+    -e 's/\bAKIA[0-9A-Z]{12,}/<redacted-key>/g' \
+    -e 's/([?&](token|key|api_key|secret|password|access_key)=)[^&[:space:]]+/\1<redacted>/Ig' \
+    -e 's/-----BEGIN[^-]+-----[^-]*-----END[^-]+-----/<redacted-pem>/g' \
+    -e 's#[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}#<email>#g' \
+    -e 's#\b([0-9]{1,3}\.){3}[0-9]{1,3}\b#<ip>#g' \
+    -e 's#(/var)?/home/[^[:space:]/]+(/[^[:space:],;)]*)?#<path>#g' \
+    -e 's#/Users/[^[:space:]/]+(/[^[:space:],;)]*)?#<path>#g' \
+    -e 's#/root(/[^[:space:],;)]*)?#<path>#g' \
+    -e 's#~/[^[:space:],;)]*#<path>#g' \
+    -e 's#\b[A-Za-z0-9+/]{32,}={0,2}\b#<redacted-b64>#g'
+}
+
+# vornik_urlencode — pure-bash percent-encoder (no jq/python dependency).
+vornik_urlencode() {
+  local s="$1" out='' c i
+  for (( i=0; i<${#s}; i++ )); do
+    c="${s:i:1}"
+    case "$c" in
+      [a-zA-Z0-9.~_-]) out+="$c" ;;
+      *) printf -v c '%%%02X' "'$c" >/dev/null 2>&1 || c='%3F'; out+="$c" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# report_install_failure <exit-code> — no-op on success; else print the URL.
+report_install_failure() {
+  local ec="${1:-0}" os arch cmd hn title body url
+  case "$ec" in ''|0) return 0 ;; esac
+  os="$(uname -s 2>/dev/null || echo unknown)"
+  arch="$(uname -m 2>/dev/null || echo unknown)"
+  cmd="$(printf '%s' "${BASH_COMMAND:-<unknown>}" | vornik_scrub)"
+  # This machine's hostname is only known at runtime, so strip it here (after
+  # the stdin scrubber): a literal replace, hostnames carry no glob chars.
+  hn="$(uname -n 2>/dev/null || hostname 2>/dev/null || true)"
+  [ -n "$hn" ] && cmd="${cmd//$hn/<host>}"
+  title="Install failure: exit ${ec}"
+  body="vornik quickstart install failed.
+
+- version (REF): ${REF:-unknown}
+- platform: ${os}/${arch}
+- exit code: ${ec}
+- failing command: ${cmd}
+
+<Add what you were doing and any error output here. This issue is PUBLIC — review your text for secrets, tokens, hostnames, and file paths before submitting.>"
+  url="https://github.com/grinco/vornik/issues/new?labels=$(vornik_urlencode 'bug,install')&title=$(vornik_urlencode "$title")&body=$(vornik_urlencode "$body")"
+  printf '\n%s xx%s installation failed (exit %s).\n' "${c_red:-}" "${c_off:-}" "$ec" >&2
+  printf 'Report it — this opens a prefilled, anonymized GitHub issue you review + submit:\n  %s\n\n' "$url" >&2
+}
+
+# Fire the hook on any non-zero exit — but NOT when merely sourced by the test.
+if [ "${VORNIK_QUICKSTART_SOURCED:-}" != 1 ]; then
+  trap 'report_install_failure "$?"' EXIT
+fi
 
 # --- detection / selection helpers (sourced by quickstart_test.sh) -------
 # Kept here, above the install body, so a test harness can source just
@@ -109,6 +182,68 @@ ensure_compose() {
   fi
   install_sys podman-compose >/dev/null 2>&1 || true
   have_compose
+}
+
+# configure_anonymous_telemetry <config-path> <interactive:0|1>
+# Applies the first-install choice. Enabled is the implicit default, so only
+# opt-out writes YAML. Environment values make automation deterministic.
+configure_anonymous_telemetry() {
+  local config_path="$1" interactive="${2:-0}" choice="${VORNIK_TELEMETRY:-}" normalized
+  normalized="$(printf '%s' "$choice" | tr '[:upper:]' '[:lower:]')"
+  case "$normalized" in
+    0|false|no|off)
+      printf '\n# Anonymous lifecycle telemetry opt-out (default is enabled).\ntelemetry:\n  enabled: false\n' >>"$config_path"
+      ok "Anonymous telemetry disabled in $config_path"
+      return 0
+      ;;
+    1|true|yes|on)
+      return 0
+      ;;
+    "")
+      ;;
+    *)
+      warn "Invalid VORNIK_TELEMETRY value; telemetry is disabled."
+      printf '\n# Anonymous lifecycle telemetry opt-out (invalid environment value; fail closed).\ntelemetry:\n  enabled: false\n' >>"$config_path"
+      return 0
+      ;;
+  esac
+
+  if [ "$interactive" != 1 ]; then
+    printf '%s\n' "Anonymous telemetry is enabled. Set VORNIK_TELEMETRY=off now, or telemetry.enabled: false later, to disable it."
+    return 0
+  fi
+
+  while :; do
+    cat >/dev/tty <<'EOF'
+
+Anonymous usage telemetry
+Vornik reports successful installs and project creations. No IDs, names,
+paths, prompts, config, keys, or model/provider details are sent.
+Your IP is visible while telemetry.vornik.io handles the request, but is not
+included in the payload and must not be retained by the service.
+
+Send anonymous telemetry? [Y/n/s=show sample]
+EOF
+    IFS= read -r choice </dev/tty || choice=""
+    case "$(printf '%s' "$choice" | tr '[:upper:]' '[:lower:]')" in
+      ""|y|yes) return 0 ;;
+      n|no)
+        printf '\n# Anonymous lifecycle telemetry opt-out (default is enabled).\ntelemetry:\n  enabled: false\n' >>"$config_path"
+        ok "Anonymous telemetry disabled in $config_path"
+        return 0
+        ;;
+      s|sample)
+        cat >/dev/tty <<'EOF'
+Example URL:
+https://telemetry.vornik.io/v1/collect.json?e=install_succeeded&sv=1&v=2026.7.4&os=linux&arch=amd64&source=quickstart
+Example body:
+{"schema_version":1,"event":"install_succeeded","vornik_version":"2026.7.4","platform":{"os":"linux","arch":"amd64"},"source":"quickstart"}
+After install, run: vornikctl telemetry sample
+EOF
+        ;;
+      *) warn "Please answer y, n, or s." ;;
+    esac
+  done
 }
 
 # require_safe_checkout_dir <path> — quickstart may delete and re-clone the
@@ -159,6 +294,47 @@ require_safe_checkout_dir() {
       die "Refusing unsafe VORNIK_DIR value: '$dir'. Set VORNIK_DIR to a dedicated checkout directory."
       ;;
   esac
+}
+
+# print_success_footer — post-install guidance (F5): a failing first task
+# should point users at diagnostics + reporting, not leave them stranded.
+print_success_footer() {
+  printf '\nIf a task fails, run:\n'
+  printf '  vornikctl doctor   # checks agent-LLM topology, image uid, upstream key, +more\n'
+  printf '  vornikctl report   # opens an anonymized issue you review + submit\n'
+}
+
+# ensure_linger — verify `loginctl enable-linger` actually took (F6). The
+# unprivileged call can be silently denied on some hosts; when that happens
+# linger stays off and the daemon (a `systemctl --user` unit) dies the moment
+# no login session remains. Escalate to sudo before giving up.
+ensure_linger() {
+  local u; u="$(id -un)"
+  if [ "$(loginctl show-user "$u" --property=Linger 2>/dev/null)" = "Linger=yes" ]; then
+    return 0
+  fi
+  loginctl enable-linger "$u" >/dev/null 2>&1 || true
+  if [ "$(loginctl show-user "$u" --property=Linger 2>/dev/null)" != "Linger=yes" ]; then
+    # Unprivileged enable was denied on this host; escalate.
+    sudo loginctl enable-linger "$u" >/dev/null 2>&1 || true
+  fi
+  if [ "$(loginctl show-user "$u" --property=Linger 2>/dev/null)" != "Linger=yes" ]; then
+    warn "could not enable login lingering — the daemon and Postgres will stop when you log out. Run: sudo loginctl enable-linger $u"
+  fi
+}
+
+# enable_podman_restart — Postgres autostarts after a reboot (F7). Rootless
+# `restart: always` (deps.compose.yaml) recovers crashes but NOT host
+# reboots; the user's podman-restart.service (with linger from
+# ensure_linger) restarts restart-policy containers at boot. Guard on the
+# unit existing so hosts without it warn instead of hard-failing.
+enable_podman_restart() {
+  if systemctl --user list-unit-files podman-restart.service >/dev/null 2>&1; then
+    systemctl --user enable podman-restart.service >/dev/null 2>&1 \
+      || warn "could not enable podman-restart.service — Postgres may not autostart after a reboot (run: systemctl --user enable podman-restart.service)"
+  else
+    warn "podman-restart.service not found — Postgres may not autostart after a reboot."
+  fi
 }
 
 # When sourced by quickstart_test.sh, stop here — expose the helpers above
@@ -232,8 +408,9 @@ podman compose version >/dev/null 2>&1 || compose=(podman-compose)
 ok "Using compose provider: ${compose[*]}"
 
 # Keep the user service running after logout so agents survive a closed SSH
-# session. Not fatal if it can't be enabled (some minimal hosts lack logind).
-loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || warn "could not enable login lingering — the daemon may stop when you log out (run: loginctl enable-linger $(id -un))"
+# session. Linger is load-bearing (without it nothing autostarts), so verify
+# it actually took and escalate to sudo if the unprivileged call was denied.
+ensure_linger
 
 # ---------------------------------------------------------------------------
 # 2. Fetch the build context + config seed.
@@ -331,9 +508,16 @@ for f in deployments/podman/config/vornik.host.yaml deployments/podman/vornik.en
   [ -f "$DIR/$f" ] || die "Missing $f in $DIR — the checkout looks stale/incomplete. Remove it and re-run: rm -rf '$DIR' && curl -fsSL https://get.vornik.io | bash"
 done
 
+new_install=""
 if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
   cp "$DIR/deployments/podman/config/vornik.host.yaml" "$CONFIG_DIR/config.yaml"
+  new_install=1
   ok "Seeded $CONFIG_DIR/config.yaml"
+  telemetry_interactive=0
+  if [ -t 1 ] && [ -c /dev/tty ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    telemetry_interactive=1
+  fi
+  configure_anonymous_telemetry "$CONFIG_DIR/config.yaml" "$telemetry_interactive"
 fi
 
 if [ ! -f "$CONFIG_DIR/vornik.env" ]; then
@@ -361,6 +545,8 @@ cd "$DIR/deployments/podman"
 log "Starting PostgreSQL + pgvector..."
 VORNIK_HTTP_PORT="$HTTP_PORT" POSTGRES_PORT="$PG_PORT" \
   "${compose[@]}" -f deps.compose.yaml up -d
+
+enable_podman_restart
 
 # scraper.compose.yaml is Enterprise-only (stripped from the CE tree).
 if [ -f scraper.compose.yaml ]; then
@@ -390,6 +576,9 @@ done
 echo
 if [ -n "$ready" ]; then
   ok "Vornik is up and ready."
+  if [ -n "$new_install" ]; then
+    "$BIN_DIR/vornikctl" telemetry emit-install --source quickstart >/dev/null 2>&1 || true
+  fi
 else
   warn "Vornik did not report ready within the timeout. Check logs: journalctl --user -u vornik -e"
 fi
@@ -420,3 +609,5 @@ cat <<EOF
     deps     (cd ${DIR}/deployments/podman && ${compose[*]} -f deps.compose.yaml down)   # add -v to wipe data
 
 EOF
+
+print_success_footer

@@ -52,7 +52,23 @@ const (
 	ProposalStatusRejected   = "REJECTED"
 	ProposalStatusApplied    = "APPLIED"
 	ProposalStatusRolledBack = "ROLLED_BACK"
+	// ProposalStatusRegressed is a strict specialization of ROLLED_BACK:
+	// "auto-rolled-back by the cost/quality canary guard because a post-apply
+	// regression tripped" (design 2026-07-24 §D). It is a best-effort AUDIT
+	// badge written AFTER the durable canary trip record — trip-prevention +
+	// cooldown key off the canary row, never this status (C2). MarkRegressed
+	// accepts BOTH APPLIED→REGRESSED and ROLLED_BACK→REGRESSED.
+	ProposalStatusRegressed = "REGRESSED"
 )
+
+// CostAutoApplyActor is the applied_by / approver identity stamped on every
+// proposal the cost-auto-apply worker approves, applies, or rejects (auto-apply
+// design D5/D6/D9). It is ALSO the M=1 re-seed signal: LastApplyActorForKnob
+// returning this value means the knob was last auto-applied, so auto-apply is
+// blocked until a human re-seeds. Defined in persistence (not controlplane) so
+// both the worker and the repotest suites can reference it without an import
+// cycle.
+const CostAutoApplyActor = "cost-auto-apply"
 
 // ProposalMaxFieldBytes caps the free-text fields (diff / rationale / evidence
 // / pre_apply_snapshot) at 64 KiB — matches the knowledge-skill body cap.
@@ -85,6 +101,12 @@ const ErrProposalNotApproved RepositoryError = "control-plane proposal not APPRO
 // ErrProposalNotApplied is returned by MarkRolledBack when the proposal is not
 // APPLIED (only an applied change can be rolled back).
 const ErrProposalNotApplied RepositoryError = "control-plane proposal not APPLIED"
+
+// ErrProposalNotRegressable is returned by MarkRegressed when the proposal is
+// neither APPLIED nor ROLLED_BACK (the two states the audit badge accepts —
+// APPLIED→REGRESSED and, the transition that actually executes in the trip
+// path, ROLLED_BACK→REGRESSED). Design 2026-07-24 §4.4.
+const ErrProposalNotRegressable RepositoryError = "control-plane proposal not in APPLIED or ROLLED_BACK"
 
 // ControlPlaneProposal is one ledger row.
 type ControlPlaneProposal struct {
@@ -182,7 +204,25 @@ type ProposalRepository interface {
 	// id. Caller writes the snapshot BEFORE the config file (design §Apply).
 	MarkApplied(ctx context.Context, id, appliedBy, snapshot string) error
 
+	// StagePreApplySnapshot writes pre_apply_snapshot on an APPROVED proposal
+	// WITHOUT changing status — the cost-auto-apply worker pre-stages the
+	// pre-image before ApplyEngine.Apply writes any file, so the
+	// atomicWrite→MarkApplied crash window is recoverable by the startup
+	// reconciler (auto-apply design D8). Only APPROVED is accepted
+	// (ErrProposalNotApproved otherwise); ErrNotFound for an unknown id. Safe to
+	// overwrite — MarkApplied later writes the identical pre-image.
+	StagePreApplySnapshot(ctx context.Context, id, snapshot string) error
+
 	// MarkRolledBack transitions an APPLIED proposal to ROLLED_BACK. Only
 	// APPLIED → ROLLED_BACK is allowed (ErrProposalNotApplied otherwise).
 	MarkRolledBack(ctx context.Context, id string) error
+
+	// MarkRegressed stamps the "auto-rolled-back due to regression" audit badge
+	// (REGRESSED), recording the trip reason. It accepts BOTH APPLIED→REGRESSED
+	// and ROLLED_BACK→REGRESSED (the latter is the transition the canary guard's
+	// trip path actually executes: it Rollbacks — APPLIED→ROLLED_BACK — then
+	// best-effort MarkRegressed — design §4.4/§4.5). Any other source status
+	// returns ErrProposalNotRegressable. This is a BEST-EFFORT badge applied
+	// after the durable canary trip record; its failure never re-opens a trip.
+	MarkRegressed(ctx context.Context, id, reason string) error
 }

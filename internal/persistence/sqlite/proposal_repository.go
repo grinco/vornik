@@ -174,6 +174,29 @@ func (r *ProposalRepository) MarkApplied(ctx context.Context, id, appliedBy, sna
 	return nil
 }
 
+// StagePreApplySnapshot writes pre_apply_snapshot on an APPROVED proposal
+// without changing status (cost-auto-apply crash-safety, design D8).
+func (r *ProposalRepository) StagePreApplySnapshot(ctx context.Context, id, snapshot string) error {
+	existing, err := r.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if existing.Status != persistence.ProposalStatusApproved {
+		return persistence.ErrProposalNotApproved
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE control_plane_proposals
+		SET pre_apply_snapshot = ?
+		WHERE id = ? AND status = 'APPROVED'`, snapshot, id)
+	if err != nil {
+		return err
+	}
+	if n, aerr := res.RowsAffected(); aerr == nil && n == 0 {
+		return persistence.ErrProposalNotApproved
+	}
+	return nil
+}
+
 // MarkRolledBack transitions APPLIED → ROLLED_BACK.
 func (r *ProposalRepository) MarkRolledBack(ctx context.Context, id string) error {
 	existing, err := r.GetByID(ctx, id)
@@ -191,6 +214,33 @@ func (r *ProposalRepository) MarkRolledBack(ctx context.Context, id string) erro
 	}
 	if n, aerr := res.RowsAffected(); aerr == nil && n == 0 {
 		return persistence.ErrProposalNotApplied
+	}
+	return nil
+}
+
+// MarkRegressed stamps the best-effort REGRESSED audit badge (design §4.4). It
+// accepts BOTH APPLIED→REGRESSED and ROLLED_BACK→REGRESSED (the latter is the
+// transition the canary guard's trip path executes). Any other source status is
+// ErrProposalNotRegressable. The durable trip reason lives on the canary row;
+// this badge only flips the proposal status (a lost badge never re-opens a trip).
+func (r *ProposalRepository) MarkRegressed(ctx context.Context, id, reason string) error {
+	_ = reason // durable reason is the canary row; badge flips status only (design §4.4)
+	existing, err := r.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if existing.Status != persistence.ProposalStatusApplied && existing.Status != persistence.ProposalStatusRolledBack {
+		return persistence.ErrProposalNotRegressable
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE control_plane_proposals SET status = ?
+		WHERE id = ? AND status IN ('APPLIED','ROLLED_BACK')`,
+		persistence.ProposalStatusRegressed, id)
+	if err != nil {
+		return err
+	}
+	if n, aerr := res.RowsAffected(); aerr == nil && n == 0 {
+		return persistence.ErrProposalNotRegressable
 	}
 	return nil
 }

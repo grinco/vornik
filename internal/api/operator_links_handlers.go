@@ -48,7 +48,7 @@ type OperatorLinkCreateRequest struct {
 // ListOperatorLinks handles GET /api/v1/operators/{id}/links.
 // Returns every channel speaker id that resolves to {id}.
 func (s *Server) ListOperatorLinks(w http.ResponseWriter, r *http.Request, operatorID string) {
-	if !s.requireAdminGate(w, r) {
+	if !s.requireOperatorScope(w, r) {
 		return
 	}
 	if s.operatorIdentityLinkRepo == nil {
@@ -75,7 +75,7 @@ func (s *Server) ListOperatorLinks(w http.ResponseWriter, r *http.Request, opera
 // CreateOperatorLink handles POST /api/v1/operators/{id}/links.
 // Adds a row pointing channel_speaker_id at {id}.
 func (s *Server) CreateOperatorLink(w http.ResponseWriter, r *http.Request, operatorID string) {
-	if !s.requireAdminGate(w, r) {
+	if !s.requireOperatorScope(w, r) {
 		return
 	}
 	if s.operatorIdentityLinkRepo == nil {
@@ -138,7 +138,7 @@ func (s *Server) CreateOperatorLink(w http.ResponseWriter, r *http.Request, oper
 // {id} is parsed but not strictly enforced — the canonical
 // scope check is done client-side by `vornikctl operator unlink`.
 func (s *Server) DeleteOperatorLink(w http.ResponseWriter, r *http.Request, operatorID, channelSpeakerID string) {
-	if !s.requireAdminGate(w, r) {
+	if !s.requireOperatorScope(w, r) {
 		return
 	}
 	if s.operatorIdentityLinkRepo == nil {

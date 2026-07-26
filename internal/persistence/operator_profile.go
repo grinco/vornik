@@ -29,10 +29,9 @@ type OperatorProfile struct {
 //   - Postgres: real persistence. Upsert uses ON CONFLICT DO
 //     UPDATE so the dispatcher's per-turn write (when the
 //     write tool eventually ships) is one round trip.
-//   - SQLite: stub returning ErrNotFound + no-op Upsert/Delete.
-//     Single-process deployments don't need cross-process
-//     profile persistence — the in-memory dispatcher session
-//     state covers the same surface for one daemon's lifetime.
+//   - SQLite: real persistence using the consolidated SQLite
+//     schema. Community/single-process deployments use the same
+//     durable profile semantics as Postgres deployments.
 //
 // All methods are operator-id-scoped; cross-tenant scoping is
 // deferred to 2026.8.0+ when the tenant model lands.

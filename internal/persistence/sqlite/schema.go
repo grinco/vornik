@@ -1372,6 +1372,25 @@ CREATE INDEX IF NOT EXISTS idx_fixit_sessions_ref_open
     ON fixit_sessions (failure_kind, failure_ref_id) WHERE closed_at IS NULL;
 
 -- ============================================================
+-- operator_profile — Postgres migration 60 parity.
+-- SQLite runs this consolidated idempotent schema on every startup, so
+-- existing databases receive the table without a numbered migration step.
+--
+-- Community Edition commonly uses SQLite. Persist the same allow-listed
+-- structured preferences + notes that the dispatcher injects on Postgres;
+-- acknowledging and discarding these writes creates false memory.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS operator_profile (
+    operator_id TEXT PRIMARY KEY,
+    structured BLOB NOT NULL DEFAULT '{}',
+    notes       TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_operator_profile_updated
+    ON operator_profile (updated_at DESC);
+
+-- ============================================================
 -- instinct_lift (migration 128) — latest true-lift snapshot per
 -- instinct (2026-07-19-instinct-lift-measurement-design.md §4.3).
 -- Snapshot, not event log — upserted each lift_eval pass. No

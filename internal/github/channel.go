@@ -572,6 +572,15 @@ func (c *Channel) Start(ctx context.Context, recv conversation.Receiver) error {
 	return ctx.Err()
 }
 
+// ReceiverBound reports whether Start has attached a dispatcher receiver.
+// It is primarily an operational/test diagnostic for webhook channels, where
+// accepting HTTP deliveries without a receiver would otherwise fail silently.
+func (c *Channel) ReceiverBound() bool {
+	c.recvMu.RLock()
+	defer c.recvMu.RUnlock()
+	return c.recv != nil
+}
+
 // verifyInstallationPermissions warns at boot when an installation with outbound
 // credentials lacks `contents: write` — the permission forge.PushBranch needs to
 // open a change request. Best-effort and non-fatal: a network hiccup or an

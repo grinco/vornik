@@ -78,7 +78,7 @@ func (s *Server) ListOperators(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET only")
 		return
 	}
-	if !s.requireAdminGate(w, r) {
+	if !s.requireOperatorScope(w, r) {
 		return
 	}
 	if s.operatorProfileRepo == nil {
@@ -115,7 +115,7 @@ func (s *Server) ShowOperator(w http.ResponseWriter, r *http.Request, id string)
 		respondError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "GET only")
 		return
 	}
-	if !s.requireAdminGate(w, r) {
+	if !s.requireOperatorScope(w, r) {
 		return
 	}
 	if s.operatorProfileRepo == nil {
@@ -145,7 +145,7 @@ func (s *Server) SetOperatorKey(w http.ResponseWriter, r *http.Request, id strin
 		respondError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "POST only")
 		return
 	}
-	if !s.requireAdminGate(w, r) {
+	if !s.requireOperatorScope(w, r) {
 		return
 	}
 	if s.operatorProfileRepo == nil {
@@ -246,7 +246,7 @@ func (s *Server) ForgetOperator(w http.ResponseWriter, r *http.Request, id strin
 		respondError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "DELETE only")
 		return
 	}
-	if !s.requireAdminGate(w, r) {
+	if !s.requireOperatorScope(w, r) {
 		return
 	}
 	if s.operatorProfileRepo == nil {

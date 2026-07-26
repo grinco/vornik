@@ -23,8 +23,11 @@ import (
 // its own copy because cross-package test helpers would require an
 // exported test-helper package.
 type fakeChanSessionRepo struct {
-	mu   sync.Mutex
-	rows map[string]*persistence.ChannelSession
+	mu             sync.Mutex
+	rows           map[string]*persistence.ChannelSession
+	blockOneSave   bool
+	saveBlocked    chan struct{}
+	releaseOneSave chan struct{}
 }
 
 func newFakeChanSessionRepo() *fakeChanSessionRepo {
@@ -44,6 +47,19 @@ func (f *fakeChanSessionRepo) Load(_ context.Context, kind, sessionID string) (*
 }
 
 func (f *fakeChanSessionRepo) Save(_ context.Context, kind, sessionID, activeProject string, history []byte) error {
+	f.mu.Lock()
+	block := f.blockOneSave
+	blocked := f.saveBlocked
+	release := f.releaseOneSave
+	if block {
+		f.blockOneSave = false
+	}
+	f.mu.Unlock()
+	if block {
+		close(blocked)
+		<-release
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.rows[chKey(kind, sessionID)] = &persistence.ChannelSession{
@@ -139,6 +155,112 @@ func TestSlackSessionStore_LoadHydratesFromPersister(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, sess.History, 1)
 	assert.Equal(t, "slack-prior", sess.History[0].Content)
+}
+
+// TestSlackSessionStore_LoadTrimsPersistedHistory regresses an upgrade from
+// the old unbounded Slack store. Hydration must compact both the in-memory
+// cache and the persisted row; otherwise the second turn (or next restart)
+// replays the full historical transcript again.
+func TestSlackSessionStore_LoadTrimsPersistedHistory(t *testing.T) {
+	repo := newFakeChanSessionRepo()
+	prior := []chat.Message{
+		{Role: "user", Content: "turn one"},
+		{Role: "assistant", Content: "answer one"},
+		{Role: "user", Content: "turn two"},
+		{Role: "assistant", Content: "answer two"},
+		{Role: "user", Content: "turn three"},
+		{Role: "assistant", Content: "answer three"},
+	}
+	raw, _ := json.Marshal(prior)
+	const sessionID = "T1/C2#legacy-unbounded"
+	require.NoError(t, repo.Save(context.Background(), "slack", sessionID, "proj-slack", raw))
+
+	store := newSlackSessionStoreWithLimits(nil, "proj-slack", 4, 0)
+	store.SetPersister(sessionstore.New(repo, "slack", zerolog.Nop()))
+	msg := conversation.ChannelMessage{SessionID: sessionID}
+
+	first, err := store.Load(context.Background(), msg)
+	require.NoError(t, err)
+	require.Len(t, first.History, 4)
+
+	second, err := store.Load(context.Background(), msg)
+	require.NoError(t, err)
+	require.Len(t, second.History, 4)
+
+	row, err := repo.Load(context.Background(), "slack", sessionID)
+	require.NoError(t, err)
+	var persisted []chat.Message
+	require.NoError(t, json.Unmarshal(row.History, &persisted))
+	require.Len(t, persisted, 4)
+	assert.Equal(t, "turn two", persisted[0].Content)
+}
+
+// TestSlackSessionStore_CompactionCannotOverwriteConcurrentAppend ensures the
+// one-time legacy-row compaction is serialized with a newer dispatcher turn.
+func TestSlackSessionStore_CompactionCannotOverwriteConcurrentAppend(t *testing.T) {
+	repo := newFakeChanSessionRepo()
+	prior := []chat.Message{
+		{Role: "user", Content: "old turn one"},
+		{Role: "assistant", Content: "old answer one"},
+		{Role: "user", Content: "old turn two"},
+		{Role: "assistant", Content: "old answer two"},
+	}
+	raw, _ := json.Marshal(prior)
+	const sessionID = "T1/C2#compaction-race"
+	require.NoError(t, repo.Save(context.Background(), "slack", sessionID, "proj-slack", raw))
+
+	repo.mu.Lock()
+	repo.blockOneSave = true
+	repo.saveBlocked = make(chan struct{})
+	repo.releaseOneSave = make(chan struct{})
+	repo.mu.Unlock()
+
+	store := newSlackSessionStoreWithLimits(nil, "proj-slack", 2, 0)
+	store.SetPersister(sessionstore.New(repo, "slack", zerolog.Nop()))
+	msg := conversation.ChannelMessage{SessionID: sessionID}
+
+	loadDone := make(chan error, 1)
+	go func() {
+		_, err := store.Load(context.Background(), msg)
+		loadDone <- err
+	}()
+	<-repo.saveBlocked
+
+	fresh := []chat.Message{
+		{Role: "user", Content: "fresh turn"},
+		{Role: "assistant", Content: "fresh answer"},
+	}
+	appendDone := make(chan error, 1)
+	go func() {
+		appendDone <- store.Append(context.Background(), msg, dispatcher.Result{Messages: fresh})
+	}()
+
+	// The pre-fix implementation lets Append complete while the stale
+	// compaction write is blocked, allowing that stale write to land last.
+	appendCompleted := false
+	select {
+	case err := <-appendDone:
+		require.NoError(t, err)
+		appendCompleted = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(repo.releaseOneSave)
+	require.NoError(t, <-loadDone)
+	if !appendCompleted {
+		select {
+		case err := <-appendDone:
+			require.NoError(t, err)
+		case <-time.After(time.Second):
+			t.Fatal("Append remained blocked after compaction completed")
+		}
+	}
+
+	row, err := repo.Load(context.Background(), "slack", sessionID)
+	require.NoError(t, err)
+	var persisted []chat.Message
+	require.NoError(t, json.Unmarshal(row.History, &persisted))
+	require.Len(t, persisted, 2)
+	assert.Equal(t, "fresh turn", persisted[0].Content)
 }
 
 // TestGitHubSessionStore_AppendWritesThroughToPersister: github's

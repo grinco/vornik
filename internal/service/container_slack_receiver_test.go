@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -72,7 +73,7 @@ func TestSlackSessionStore_AppendReplacesHistory(t *testing.T) {
 
 	// Subsequent Append replaces — doesn't accumulate.
 	result2 := dispatcher.Result{
-		Messages: []chat.Message{{Role: "system", Content: "fresh"}},
+		Messages: []chat.Message{{Role: "user", Content: "fresh"}},
 	}
 	if err := store.Append(context.Background(), msg, result2); err != nil {
 		t.Fatalf("Append second: %v", err)
@@ -143,5 +144,65 @@ func TestSlackSessionStore_LoadCopiesHistory(t *testing.T) {
 	snap := store.snapshotHistory("T/C#1")
 	if snap[0].Content != "original" {
 		t.Errorf("store leaked mutation: %q (want %q)", snap[0].Content, "original")
+	}
+}
+
+// TestSlackSessionStore_TrimsWholeTurnsByCount regresses Slack retaining and
+// resending every message in a thread. The count cap must drop the oldest
+// complete turn, never leave an orphaned assistant/tool message at the front.
+func TestSlackSessionStore_TrimsWholeTurnsByCount(t *testing.T) {
+	store := newSlackSessionStoreWithLimits(nil, "p", 4, 0)
+	msg := conversation.ChannelMessage{SessionID: "T/C#bounded"}
+	history := []chat.Message{
+		{Role: "user", Content: "turn one"},
+		{Role: "assistant", Content: "answer one"},
+		{Role: "user", Content: "turn two"},
+		{Role: "assistant", Content: "answer two"},
+		{Role: "user", Content: "turn three"},
+		{Role: "assistant", Content: "answer three"},
+	}
+	if err := store.Append(context.Background(), msg, dispatcher.Result{Messages: history}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	sess, err := store.Load(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(sess.History) != 4 {
+		t.Fatalf("History len=%d, want 4: %+v", len(sess.History), sess.History)
+	}
+	if sess.History[0].Role != "user" || sess.History[0].Content != "turn two" {
+		t.Fatalf("history did not trim at whole-turn boundary: %+v", sess.History)
+	}
+}
+
+// TestSlackSessionStore_TrimsWholeTurnsByTokenBudget covers the expensive
+// failure seen in production: prompt tokens climbed on every Slack reply even
+// with chat.max_history_tokens configured, because Slack ignored that setting.
+func TestSlackSessionStore_TrimsWholeTurnsByTokenBudget(t *testing.T) {
+	store := newSlackSessionStoreWithLimits(nil, "p", 100, 30)
+	msg := conversation.ChannelMessage{SessionID: "T/C#token-bounded"}
+	long := strings.Repeat("x", 80) // ~20 tokens per message.
+	history := []chat.Message{
+		{Role: "user", Content: "old " + long},
+		{Role: "assistant", Content: "old answer " + long},
+		{Role: "user", Content: "new " + long},
+		{Role: "assistant", Content: "new answer " + long},
+	}
+	if err := store.Append(context.Background(), msg, dispatcher.Result{Messages: history}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	sess, err := store.Load(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(sess.History) != 2 {
+		t.Fatalf("History len=%d, want newest turn only: %+v", len(sess.History), sess.History)
+	}
+	if sess.History[0].Content != "new "+long {
+		t.Fatalf("wrong turn retained: %+v", sess.History)
+	}
+	if sess.ContextTier != chat.TierPoor {
+		t.Fatalf("ContextTier=%s, want poor for newest turn over soft budget", sess.ContextTier)
 	}
 }

@@ -62,7 +62,7 @@ type updateOperatorProfileArgs struct {
 // reply on every path.
 func (te *ToolExecutor) updateOperatorProfile(ctx context.Context, rawArgs string) ToolResult {
 	if te.operatorProfiles == nil {
-		return ToolResult{Content: "Operator-profile updates are not configured on this daemon — the OperatorProfileRepository isn't wired (SQLite / pre-migration-60 deployment)."}
+		return ToolResult{Content: "Operator-profile updates are not configured on this daemon — the OperatorProfileRepository isn't wired (for example, a Postgres deployment before migration 60)."}
 	}
 	operatorID, _ := operatorIDFromContext(ctx)
 	if operatorID == "" {

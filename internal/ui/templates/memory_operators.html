@@ -18,7 +18,7 @@
             {{if not .Available}}
             <div class="glass rounded-xl border border-dark-700 p-5 text-gray-400 text-sm">
                 <p>Operator profile repository not wired.</p>
-                <p class="mt-2 text-gray-500">SQLite single-process deployments + Postgres deployments pre-migration-60 leave this surface dormant. Once migration 60 (<code class="font-mono text-brand-300">operator_profile</code>) runs and the dispatcher's <code class="font-mono text-brand-300">update_operator_profile</code> tool starts populating, rows appear here automatically.</p>
+                <p class="mt-2 text-gray-500">This is unexpected on current SQLite deployments. On Postgres, verify migration 60 (<code class="font-mono text-brand-300">operator_profile</code>) has run and the repository was initialized.</p>
             </div>
             {{else}}
 

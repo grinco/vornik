@@ -31,8 +31,10 @@ import (
 // channels' "history is best-effort, the platform thread is the
 // authoritative record" contract.
 type slackSessionStore struct {
-	registry  *registry.Registry
-	projectID string
+	registry         *registry.Registry
+	projectID        string
+	maxHistory       int
+	maxHistoryTokens int
 
 	mu      sync.Mutex
 	history map[string][]chat.Message
@@ -53,11 +55,36 @@ func (s *slackSessionStore) SetPersister(p *sessionstore.Persister) {
 // wiring; production always supplies one because each Slack channel
 // instance is one-project-per-workspace.
 func newSlackSessionStore(reg *registry.Registry, projectID string) *slackSessionStore {
+	return newSlackSessionStoreWithLimits(reg, projectID, 100, 0)
+}
+
+// newSlackSessionStoreWithLimits constructs a Slack store with the same
+// message-count and token-budget policy used by Telegram conversations.
+func newSlackSessionStoreWithLimits(
+	reg *registry.Registry,
+	projectID string,
+	maxHistory int,
+	maxHistoryTokens int,
+) *slackSessionStore {
 	return &slackSessionStore{
-		registry:  reg,
-		projectID: projectID,
-		history:   make(map[string][]chat.Message),
+		registry:         reg,
+		projectID:        projectID,
+		maxHistory:       maxHistory,
+		maxHistoryTokens: maxHistoryTokens,
+		history:          make(map[string][]chat.Message),
 	}
+}
+
+// boundedHistory applies chat.Conversation's whole-turn trimming semantics.
+// It is used on both append and persisted-session hydration so an old
+// unbounded channel_sessions row cannot be replayed wholesale after upgrade.
+func (s *slackSessionStore) boundedHistory(messages []chat.Message) ([]chat.Message, int) {
+	conv := chat.NewConversation("slack-session", s.maxHistory)
+	conv.SetMaxTokens(s.maxHistoryTokens)
+	for _, m := range messages {
+		conv.AddMessage(m)
+	}
+	return conv.GetMessages(), conv.EstimateTokens()
 }
 
 // Load returns the per-session conversation snapshot for the
@@ -75,10 +102,21 @@ func (s *slackSessionStore) Load(ctx context.Context, msg conversation.ChannelMe
 
 	if len(history) == 0 && s.persister != nil {
 		if persisted, _, found, err := s.persister.Load(ctx, msg.SessionID); err == nil && found && len(persisted) > 0 {
-			history = persisted
+			history, _ = s.boundedHistory(persisted)
 			s.mu.Lock()
-			s.history[msg.SessionID] = append([]chat.Message(nil), persisted...)
-			s.mu.Unlock()
+			if current := s.history[msg.SessionID]; len(current) > 0 {
+				// Append or another Load won the hydration race. Use its newer
+				// snapshot and never overwrite persistence with stale history.
+				history = append([]chat.Message(nil), current...)
+				s.mu.Unlock()
+			} else {
+				s.history[msg.SessionID] = append([]chat.Message(nil), history...)
+				// Keep hydration and legacy-row compaction ordered ahead of
+				// Append. Append takes the same lock before publishing newer
+				// history, then persists it after this save completes.
+				_ = s.persister.Save(ctx, msg.SessionID, s.projectID, history)
+				s.mu.Unlock()
+			}
 		}
 	}
 
@@ -86,6 +124,10 @@ func (s *slackSessionStore) Load(ctx context.Context, msg conversation.ChannelMe
 		History:       history,
 		ActiveProject: s.projectID,
 	}
+	_, estimatedTokens := s.boundedHistory(history)
+	estimatedTokens += len(msg.Text) / 4
+	sess.ContextTier = chat.TierFromUsage(estimatedTokens, s.maxHistoryTokens)
+	sess.ContextHeadroomPct = chat.HeadroomPct(estimatedTokens, s.maxHistoryTokens)
 	if s.registry == nil || s.projectID == "" {
 		return sess, nil
 	}
@@ -114,7 +156,7 @@ func (s *slackSessionStore) Append(ctx context.Context, msg conversation.Channel
 		return nil
 	}
 	s.mu.Lock()
-	updated := append([]chat.Message(nil), result.Messages...)
+	updated, _ := s.boundedHistory(result.Messages)
 	s.history[msg.SessionID] = updated
 	s.mu.Unlock()
 

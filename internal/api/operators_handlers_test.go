@@ -162,7 +162,7 @@ func TestListOperators_UnwiredYields503(t *testing.T) {
 	}
 }
 
-func TestOperatorsRequireAdminKey(t *testing.T) {
+func TestOperatorsRejectProjectScopedKey(t *testing.T) {
 	repo := newStubOperatorProfileRepo()
 	repo.rows["telegram:42"] = &persistence.OperatorProfile{OperatorID: "telegram:42"}
 	s := NewServer(
@@ -172,15 +172,43 @@ func TestOperatorsRequireAdminKey(t *testing.T) {
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/operators", nil)
-	req = req.WithContext(context.WithValue(req.Context(), apiKeyKey, "sk-project"))
+	ctx := context.WithValue(req.Context(), authEnabledKey, true)
+	ctx = context.WithValue(ctx, projectIDKey, []string{"project-a"})
+	req = req.WithContext(ctx)
 	rec := httptest.NewRecorder()
 	s.ListOperators(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status=%d, want 403; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404; body=%s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestOperatorLinkAndAuditEndpointsRequireAdminKey(t *testing.T) {
+// TestListOperators_CommunityEdition_AllAccessCaller — operator profiles are
+// a Community feature. An auth-enabled CE server has no WithAdminConfig, but
+// an unscoped/all-access caller must still be able to read the repository.
+// This regresses the requireAdminGate call that returned 501
+// EDITION_UNSUPPORTED on CE even though the dispatcher tool was exposed.
+func TestListOperators_CommunityEdition_AllAccessCaller(t *testing.T) {
+	repo := newStubOperatorProfileRepo()
+	repo.rows["slack:U123"] = &persistence.OperatorProfile{
+		OperatorID: "slack:U123",
+		Structured: []byte(`{"verbosity":"concise"}`),
+	}
+	s := NewServer(
+		WithLogger(zerolog.Nop()),
+		WithOperatorProfileRepository(repo),
+	)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/operators", nil)
+	req = req.WithContext(context.WithValue(req.Context(), authEnabledKey, true))
+	rec := httptest.NewRecorder()
+
+	s.ListOperators(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200 in Community Edition; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestOperatorLinkAndAuditEndpointsRejectProjectScopedKey(t *testing.T) {
 	s := NewServer(
 		WithLogger(zerolog.Nop()),
 		WithAdminConfig(config.AdminConfig{Enabled: true, AllowedKeys: []string{"sk-admin"}}),
@@ -199,11 +227,13 @@ func TestOperatorLinkAndAuditEndpointsRequireAdminKey(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
-			req = req.WithContext(context.WithValue(req.Context(), apiKeyKey, "sk-project"))
+			ctx := context.WithValue(req.Context(), authEnabledKey, true)
+			ctx = context.WithValue(ctx, projectIDKey, []string{"project-a"})
+			req = req.WithContext(ctx)
 			rec := httptest.NewRecorder()
 			s.operatorsRouter(rec, req)
-			if rec.Code != http.StatusForbidden {
-				t.Fatalf("status=%d, want 403; body=%s", rec.Code, rec.Body.String())
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status=%d, want 404; body=%s", rec.Code, rec.Body.String())
 			}
 		})
 	}

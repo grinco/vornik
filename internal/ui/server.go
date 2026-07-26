@@ -639,8 +639,8 @@ type Server struct {
 	clusterNodeSource ClusterNodeSource
 	// operatorProfiles powers /ui/memory/operators — per-operator
 	// profile listing + detail. Nil-safe; the page renders a
-	// "not wired" hint when absent (SQLite + pre-migration-60
-	// deployments).
+	// "not wired" hint when absent (for example, a Postgres
+	// deployment that has not yet run migration 60).
 	operatorProfiles OperatorProfileSource
 	// operatorProfileAudit reads admin_audit rows for the
 	// operator-profile detail page's audit panel. Lifted off

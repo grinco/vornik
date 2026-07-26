@@ -12,6 +12,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/dispatcher"
@@ -60,6 +61,13 @@ func (s *SlackChannelsSubsystem) Start(ctx context.Context) error {
 	if c == nil || len(c.SlackChannels) == 0 {
 		return nil
 	}
+	if len(c.SlackChannels) != len(c.SlackProjects) {
+		return fmt.Errorf(
+			"slack channel/project slice length mismatch: %d channels, %d projects",
+			len(c.SlackChannels),
+			len(c.SlackProjects),
+		)
+	}
 
 	if c.Dispatcher == nil {
 		s.logger.Warn().
@@ -70,7 +78,18 @@ func (s *SlackChannelsSubsystem) Start(ctx context.Context) error {
 
 	for i, ch := range c.SlackChannels {
 		project := c.SlackProjects[i]
-		store := newSlackSessionStore(c.Registry, project.ID)
+		maxHistoryTokens := c.Config.Chat.MaxHistoryTokens
+		if maxHistoryTokens == 0 && c.Config.Chat.ContextSize > 0 {
+			maxHistoryTokens = c.Config.Chat.ContextSize * 70 / 100
+		} else if maxHistoryTokens < 0 {
+			maxHistoryTokens = 0
+		}
+		store := newSlackSessionStoreWithLimits(
+			c.Registry,
+			project.ID,
+			c.Config.Chat.MaxHistory,
+			maxHistoryTokens,
+		)
 		store.SetPersister(c.channelSessionPersister("slack"))
 		receiver := &dispatcher.ChannelReceiver{
 			Channel:  ch,

@@ -1801,6 +1801,18 @@ func (c *Container) initHTTPServer() error {
 		uiOpts = append(uiOpts, ui.WithWebUIBaseURL(c.Config.Telegram.WebUIBaseURL))
 	}
 
+	// Operator profiles are a Community feature. Keep their UI wiring
+	// outside the providers.Admin edition gate below, just like the API
+	// and dispatcher wiring above. Placing these options in
+	// adminUIOptions made /ui/memory/operators report "repository not
+	// wired" in CE even though storage had constructed the repository.
+	if c.repos != nil && c.repos.OperatorProfiles != nil {
+		uiOpts = append(uiOpts, ui.WithOperatorProfileSource(c.repos.OperatorProfiles))
+	}
+	if c.repos != nil && c.repos.AdminAudit != nil {
+		uiOpts = append(uiOpts, ui.WithOperatorProfileAuditSource(c.repos.AdminAudit))
+	}
+
 	// Edition gate (outer) — Admin UI surface.
 	// Inner nil-checks on each repo are the existing inner gates;
 	// they stay unchanged. The outer c.providers.Admin gate is the
@@ -2062,18 +2074,6 @@ func (c *Container) adminUIOptions(deps adminUIDeps) []ui.ServerOption { //nolin
 	// surfaces webhook/relay nodes the lease tables can't show.
 	if c.repos != nil && c.repos.ClusterNodes != nil {
 		opts = append(opts, ui.WithClusterNodeSource(c.repos.ClusterNodes))
-	}
-	// Operator-profile read surface for /ui/memory/operators.
-	// SQLite stub returns empty so the page renders the "no
-	// rows yet" state instead of "not wired".
-	if c.repos != nil && c.repos.OperatorProfiles != nil {
-		opts = append(opts, ui.WithOperatorProfileSource(c.repos.OperatorProfiles))
-	}
-	// Audit-trail reader for the operator-profile detail
-	// page's "Recent changes" panel. Same admin_audit table
-	// the dispatcher tool writes to.
-	if c.repos != nil && c.repos.AdminAudit != nil {
-		opts = append(opts, ui.WithOperatorProfileAuditSource(c.repos.AdminAudit))
 	}
 	if inv := newEmailChannelInventory(c.EmailChannels, c.EmailProjects); inv != nil {
 		opts = append(opts, ui.WithEmailChannelInventory(inv))

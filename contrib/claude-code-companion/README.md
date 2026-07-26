@@ -29,10 +29,23 @@ plugs in without any vornik-side change.
   on the delegate prompt and attaches the strongest hits to the
   response. The host LLM surfaces "vornik already knows X — still
   delegate?" before swarm compute starts.
-- **One skill** — `delegate` — teaches Claude when to reach for the
-  companion rather than spending its own tokens on a long task, and
-  the "recall before delegate" rule that keeps memory-redundant work
-  off the swarm.
+- **Four skills:**
+  - `delegate` — when to reach for the companion rather than spending
+    Claude's own tokens on a long task, and the "recall before delegate"
+    rule that keeps memory-redundant work off the swarm.
+  - `configure-vornik` — configuring a deployment: finding the config
+    tree the daemon actually reads, scaffolding projects and swarms, and
+    the validate → reload → confirm loop.
+  - `troubleshoot-vornik` — diagnosing a deployment that is down,
+    degraded, or failing tasks, routing by symptom through the doctor,
+    the failure-class playbook, and task post-mortems.
+  - `report-problem` — filing an anonymized bug, crash, or install
+    failure as a prefilled `github.com/grinco/vornik` issue the user
+    reviews and submits themselves.
+
+  The last three form the operator lifecycle triad and cross-reference
+  each other: configure → troubleshoot when a change doesn't take,
+  troubleshoot → report when the diagnostic ladder bottoms out.
 
 ## Prerequisites
 

@@ -1,82 +1,118 @@
-# vornik Demo Fleet — podman-compose
+# vornik Demo Fleet — host daemon + podman deps
 
-One-command bringup of the full vornik fleet on a single VM for demos and local testing. The compose file starts:
+One-command bringup on a single Linux host for demos and local testing. The
+**daemon runs on the host** as a rootless `systemctl --user` service; only
+the stateful/auxiliary services run in containers:
 
-| Container | Image | Purpose |
+| Where | What | Purpose |
 |---|---|---|
-| `vornik-postgres` | `pgvector/pgvector:pg16` | Database (with vector extension) |
-| `vornik` | built from `deployments/docker/Dockerfile` | Daemon + UI + API |
+| host user service | `vornik` (`~/.local/bin/vornik`) | Daemon + UI + API |
+| container `vornik-postgres` | `pgvector/pgvector:pg16` | Database (with vector extension) |
+| container `vornik-scraper` *(Enterprise)* | `localhost/vornik-scraper:latest` | Headless-browser MCP server |
 
-Agent containers are **not** in the compose file — vornik spawns them on-demand via the host's podman socket (see [Runtime model](#runtime-model)).
+Agent containers are spawned on-demand by the daemon via your rootless
+podman — they are siblings of the deps containers and share the host
+filesystem with the daemon (see [Runtime model](#runtime-model)).
+
+> **Why host, not container?** A daemon-in-a-container that drives the host
+> podman hits the Docker-out-of-Docker bind-mount trap: it asks the host
+> podman to `podman run -v <path>:…`, but `<path>` (its exec scratch /
+> workspaces) exists only inside the daemon container, so the host can't
+> `statfs` it. Running the daemon on the host removes the boundary. Full
+> rationale: `https://docs.vornik.io`.
 
 Production deployment goes via Helm/RKE2; see `deployments/RKE2.md`.
 
 ## Quick start
 
 ```bash
-# 0. (One-time) enable podman's user socket on the VM.
-systemctl --user enable --now podman.socket
-
-# 1. Build the agent image on the host. vornik spawns this per task.
-make build-agent
-
-# 2. Configure and launch.
-cd deployments/podman
-cp .env.example .env
-# edit .env — set VORNIK_CHAT_API_KEY at minimum
-podman-compose up -d
-
-# 3. Verify.
-podman-compose ps
-curl -s http://localhost:8080/healthz
-open http://localhost:8080/ui
+curl -fsSL https://get.vornik.io | bash      # clone + build + install + start
 ```
 
-First boot takes longer than subsequent ones because the vornik image builds from the Dockerfile (≈2 min) and Postgres runs the full v1..v10 migration set (≈10 s).
+The one-liner pins the **release tag baked into the script** (not a moving
+branch); set `VORNIK_REF=main` for bleeding-edge. To verify the script against
+its published checksum before piping it to a shell (catches transit/redirect
+tampering — not a signature), fetch both first:
+
+```bash
+REF=<release>  # a tag from github.com/grinco/vornik/releases that ships quickstart.sh.sha256
+base="https://raw.githubusercontent.com/grinco/vornik/$REF/deployments/podman"
+curl -fsSLO "$base/quickstart.sh" && curl -fsSLO "$base/quickstart.sh.sha256"
+sha256sum -c quickstart.sh.sha256 && VORNIK_REF="$REF" bash quickstart.sh
+```
+
+That one-liner (this directory's `quickstart.sh`) installs prerequisites,
+builds `vornik` + `vornikctl` in an ephemeral golang container, builds the
+agent image, seeds `~/.config/vornik`, brings up the deps, and starts the
+`vornik` user service. Then connect an LLM — open
+<http://localhost:8080/ui> and the first-run **setup guide** (`/ui/setup`)
+tests your endpoint + key and creates a first project. Or from the terminal:
+
+```bash
+$EDITOR ~/.config/vornik/vornik.env      # set VORNIK_CHAT_API_KEY (+ CHAT_ENDPOINT/CHAT_MODEL)
+systemctl --user restart vornik
+curl -s http://localhost:8080/readyz
+xdg-open http://localhost:8080/ui
+```
+
+### Manual (equivalent steps)
+
+```bash
+cd deployments/podman
+cp .env.example .env                                    # postgres creds/ports for compose
+podman compose -f deps.compose.yaml up -d               # postgres (+ scraper.compose.yaml on EE)
+make build-agent                                        # localhost/vornik-agent:latest
+go build -o ~/.local/bin/vornik    ./cmd/vornik         # or use the ephemeral-build one-liner
+go build -o ~/.local/bin/vornikctl ./cmd/vornikctl
+cp config/vornik.host.yaml ~/.config/vornik/config.yaml
+cp vornik.env.example      ~/.config/vornik/vornik.env  # edit: LLM key, run-as user
+install -m644 systemd/vornik.service ~/.config/systemd/user/vornik.service
+systemctl --user daemon-reload && systemctl --user enable --now vornik
+```
+
+First boot runs the full migration set (≈10 s); the ephemeral build adds
+≈2–3 min the first time (cached afterward).
 
 ## Runtime model
 
 ```
-   HOST VM
+   HOST (your user, rootless podman)
    ┌──────────────────────────────────────────────────────────┐
-   │                                                          │
-   │  podman.sock (rootless or rootful)                       │
-   │     ▲                                                    │
-   │     │ mounted at /var/run/podman/podman.sock             │
-   │     │                                                    │
-   │  ┌──┴──────────────────────┐   ┌─────────────────────┐   │
-   │  │ vornik container        │   │ postgres container  │   │
-   │  │   - reads config/       │   │   pgvector/pg16     │   │
-   │  │   - talks to postgres   │───┤                     │   │
-   │  │   - asks host podman    │   └─────────────────────┘   │
-   │  │     to start agents     │   (compose bridge network)  │
-   │  └───────┬─────────────────┘                             │
-   │          │ host podman spawns...                         │
-   │          ▼                                               │
-   │  ┌──────────────────────┐   ┌──────────────────────┐     │
-   │  │ agent container 1    │   │ agent container N    │     │
-   │  │   vornik-agent:...   │   │   vornik-agent:...   │     │
-   │  │   VORNIK_API_URL =   │   │   (each spawned per  │     │
-   │  │   host.containers    │   │   task execution)    │     │
-   │  │   .internal:8080 ←───┼───┼─────────┐            │     │
-   │  └──────────────────────┘   └─────────┼────────────┘     │
-   │                                       ▼                  │
-   │                                  localhost:8080          │
-   │                                  (vornik port-forward)   │
+   │  vornik.service (systemctl --user) → ~/.local/bin/vornik   │
+   │    - reads ~/.config/vornik/{config.yaml,configs,vornik.env}│
+   │    - data under ~/.local/share/vornik                      │
+   │    - DB → 127.0.0.1:5432 ; scraper → 127.0.0.1:8787 (EE)    │
+   │    - spawns agents via `podman run` (sibling containers)   │
+   │         │                                                  │
+   │         ├── vornik-postgres (pgvector)   :127.0.0.1:5432   │
+   │         ├── vornik-scraper  (EE)         :127.0.0.1:8787   │
+   │         └── agent container 1..N                           │
+   │               VORNIK_API_URL = host.containers.internal:8080│
    └──────────────────────────────────────────────────────────┘
 ```
 
 Key details:
 
-- The vornik daemon runs in a container, but **agents don't** — they're started by the host's podman via the socket mount. This mirrors the bare-metal topology (vornik running via systemd) that most dev installs use, so swarm YAML configs from a host install work as-is.
-- vornik binds on `0.0.0.0:8080` inside its container. The compose file exposes that port on the host at `8080`. Agents (on the host podman network) reach vornik via `host.containers.internal:8080`, which vornik injects automatically as `VORNIK_API_URL` — see `internal/service/container.go:agentCallbackURL`.
-- Postgres stays inside the compose bridge network; the host port mapping is there only for psql/pgAdmin convenience.
+- The daemon and the agents it spawns share **one filesystem view**, so the
+  exec-scratch and workspace bind mounts that broke under the old
+  daemon-in-a-container topology now resolve.
+- The daemon binds `0.0.0.0:8080`; agents (sibling containers) reach it via
+  `host.containers.internal:8080`, which vornik injects as `VORNIK_API_URL`
+  (`internal/service/container.go:agentCallbackURL`). Firewall the host if
+  the LAN is untrusted.
+- Postgres (and the EE scraper) publish on loopback; the daemon reaches them
+  at `127.0.0.1`. The daemon does **not** need `podman.socket` — it shells
+  out to the `podman` CLI directly (`internal/runtime/manager.go`).
 
 ## Configuration
 
-### Environment (`.env`)
+Everything lives under `~/.config/vornik/` (XDG), seeded on first run and
+never clobbered by a re-run:
 
-All runtime-tunable values live in `.env`. See `.env.example` for the full list with inline docs. The minimum for a working demo is:
+### `vornik.env` (secrets + env)
+
+Loaded by the systemd unit; expanded into `config.yaml` via `${VAR}`
+placeholders. See `vornik.env.example`. Minimum for a working demo:
 
 ```bash
 VORNIK_CHAT_API_KEY=sk-ant-...
@@ -84,82 +120,84 @@ CHAT_ENDPOINT=https://api.anthropic.com
 CHAT_MODEL=claude-opus-4-7
 ```
 
-### vornik config (`config/vornik.yaml`)
+After editing: `systemctl --user restart vornik`.
 
-The daemon's YAML config. Uses `${VAR}` placeholders that get expanded at load time from the env values passed by the compose file. Edit in place when you need structural changes (adding gate definitions, tweaking scheduler tuning, etc.); for secrets, prefer `.env`.
+### `config.yaml`
 
-### Registry (projects / swarms / workflows)
+The daemon's YAML config (seeded from `config/vornik.host.yaml`). `${VAR}`
+placeholders expand from `vornik.env` at load. Edit in place for structural
+changes; keep secrets in `vornik.env`.
 
-Mounted **read-only from the repo root** at `../../configs` → `/etc/vornik/configs`. That means `configs/projects/*.yaml`, `configs/swarms/*.yaml`, and `configs/workflows/*.yaml` in the repo are what vornik sees. Edit there, then `podman-compose restart vornik` to pick up changes.
+### `configs/` — registry (projects / swarms / workflows)
+
+Seeded from the repo `configs/` tree on first run and owned by you; the UI
+writes project/swarm/workflow edits back here. Edit, then
+`systemctl --user restart vornik` to pick up changes.
 
 ## Operations
 
 ```bash
-# Tail logs
-podman-compose logs -f vornik
-podman-compose logs -f postgres
+# Daemon
+journalctl --user -u vornik -f                 # logs
+systemctl --user restart vornik                # pick up config changes
+vornikctl doctor                               # same checks as /api/v1/doctor
+vornikctl project list
 
-# Restart just vornik (pick up config changes)
-podman-compose restart vornik
-
-# In-pod doctor — same checks as /api/v1/doctor
-podman exec vornik vornikctl doctor
-
-# Connect to the DB
+# Deps
+cd deployments/podman
+podman compose -f deps.compose.yaml logs -f postgres
 podman exec -it vornik-postgres psql -U vornik -d vornik
-
-# Verify pgvector is installed
 podman exec vornik-postgres psql -U vornik -d vornik -c '\dx vector'
 
-# List containers managed by vornik (compose services + spawned agents)
+# Containers vornik manages (deps + spawned agents)
 podman ps --filter "label=vornik.managed=true"
 
-# Stop the fleet, keep state
-podman-compose down
-
-# Stop and wipe state (DB and vornik data both)
-podman-compose down -v
-podman volume rm vornik-postgres-data vornik-data 2>/dev/null || true
+# Stop deps, keep state
+podman compose -f deps.compose.yaml down
+# Stop and wipe DB state
+podman compose -f deps.compose.yaml down -v
 ```
 
 ## Upgrading
 
-The image is built locally from the current checkout. To pick up code changes:
+Re-run the one-liner (it `git pull`s, rebuilds the binaries, and restarts),
+or by hand:
 
 ```bash
-# Force rebuild
-podman-compose build vornik
-podman-compose up -d vornik
-
-# Or pull from a registry if you're pinning a version
-# (set image: explicitly in the compose file)
-podman-compose pull vornik
-podman-compose up -d vornik
+git -C ~/vornik pull --ff-only
+go build -o ~/.local/bin/vornik    ./cmd/vornik     # from ~/vornik
+go build -o ~/.local/bin/vornikctl ./cmd/vornikctl
+systemctl --user restart vornik
 ```
 
 Migrations run automatically on startup; already-applied versions are skipped.
 
-## Exposing beyond the VM
+## Exposing beyond the host
 
-The compose file binds ports to `0.0.0.0` by default — fine for a private VM, not fine for anything on a shared network. Tighten by:
+The daemon binds `0.0.0.0:8080` (required for the agent callback) — fine for
+a private host, not for a shared network. Tighten by:
 
-1. Setting `api.auth_enabled: true` in `config/vornik.yaml` and adding keys to `api_keys`.
-2. Changing the port mapping in `podman-compose.yaml` from `"8080:8080"` to `"127.0.0.1:8080:8080"` and putting a real reverse proxy (Caddy, nginx) in front with TLS.
-3. For the DB port, either remove the mapping entirely (vornik doesn't need it exposed) or restrict to `127.0.0.1`.
+1. Setting `api.auth_enabled: true` in `~/.config/vornik/config.yaml` and
+   adding keys to `api_keys`.
+2. Putting a real reverse proxy (Caddy, nginx) with TLS in front of `:8080`
+   and firewalling the raw port.
+3. Keeping the Postgres (and scraper) port on `127.0.0.1` (the default).
 
-Anything more serious should go through the Helm chart in `deployments/helm/vornik` onto a real cluster.
+Anything more serious should go through the Helm chart in
+`deployments/helm/vornik` onto a real cluster.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `podman-compose up` fails on build | Go 1.25 download blocked | Pre-pull: `podman pull docker.io/library/golang:1.25` |
-| vornik container restart-looping | `.env` missing or secrets unset | `podman-compose logs vornik` — the config loader prints which placeholders are empty |
+| Build fails | Go 1.25 image pull blocked | Pre-pull: `podman pull docker.io/library/golang:1.25` |
+| Immutable OS (Bazzite/Silverblue): "could not install" | no `dnf`; podman ships in the image | The installer auto-detects this: it skips already-present tools and installs the compose provider via `pip --user` (no root/reboot). If a core tool is genuinely missing: `sudo rpm-ostree install <pkg> && systemctl reboot`, or install Homebrew. |
+| `vornik.service` won't start | missing config / secrets | `journalctl --user -u vornik -e` — the loader prints which placeholders are empty |
 | `connection refused` to postgres | DB still starting | Wait 30 s; healthcheck has a 30 s `start_period` |
-| Agents never start | Podman socket not mounted | Check `ls -l $PODMAN_SOCK` on the host; enable with `systemctl --user enable --now podman.socket` |
-| Agents start but time out pulling image | Agent image not on host podman | `make build-agent` on the host, or push to a registry and set `AGENT_IMAGE` to a reachable ref |
-| UI shows empty project list | Registry mount empty | Check `../../configs/projects/` exists relative to the compose file |
-| `CREATE EXTENSION vector` errors on first boot | You switched images from plain postgres to pgvector mid-flight | Wipe the volume: `podman-compose down -v` then restart |
+| Agents never start | agent image missing on host podman | `make build-agent`, or set `AGENT_IMAGE` to a reachable fully-qualified ref |
+| Daemon stops after logout | lingering not enabled | `loginctl enable-linger "$USER"` |
+| UI shows empty project list | registry not seeded | check `~/.config/vornik/configs/projects/` exists |
+| `CREATE EXTENSION vector` errors on first boot | switched from plain postgres mid-flight | wipe the volume: `podman compose -f deps.compose.yaml down -v` then restart |
 
 ## Role-specialized cluster (clustering)
 
@@ -293,13 +331,18 @@ The `vornik-webhook` service is intentionally missing any `database:` config blo
 
 ```
 deployments/podman/
-├── podman-compose.yaml    ← single-node fleet (the original entry point)
+├── quickstart.sh          ← the get.vornik.io one-liner (host daemon + deps)
+├── deps.compose.yaml      ← single-node deps: postgres (CE + EE)
+├── scraper.compose.yaml   ← scraper overlay (Enterprise-only; absent in CE)
+├── vornik.env.example     ← copy to ~/.config/vornik/vornik.env (daemon secrets/env)
+├── systemd/
+│   └── vornik.service     ← the `systemctl --user` unit the quickstart installs
 ├── cluster.compose.yaml   ← role-specialized cluster (ui + worker + webhook)
 ├── gen-cluster-certs.sh   ← generates mTLS certs for the cluster compose
-├── .env.example           ← copy to .env and edit (shared by both composes)
+├── .env.example           ← copy to .env (postgres creds/ports for the deps compose)
 ├── .gitignore             ← excludes .env, certs/, *.key, *.crt
 ├── config/
-│   ├── vornik.yaml        ← single-node daemon config
+│   ├── vornik.host.yaml   ← host daemon config (seeds ~/.config/vornik/config.yaml)
 │   ├── ui.yaml            ← cluster: profile: ui config
 │   ├── worker.yaml        ← cluster: profile: worker config (+ relay_ingress)
 │   └── webhook.yaml       ← cluster: profile: webhook config (+ relay)

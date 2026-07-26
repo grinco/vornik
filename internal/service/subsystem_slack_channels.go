@@ -15,18 +15,13 @@ import (
 
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/dispatcher"
-	"vornik.io/vornik/internal/registry"
-	"vornik.io/vornik/internal/slack"
 )
 
-// SlackChannelsSubsystem encapsulates the slice of Slack
-// channels. Skip preconditions: empty channel slice (no
-// project declared a slack block).
+// SlackChannelsSubsystem owns the Slack channel lifecycle. Channel
+// instances are read from the container at Start time because
+// initHTTPServer rebuilds them after subsystem Build.
 type SlackChannelsSubsystem struct {
 	logger zerolog.Logger
-
-	channels []*slack.Channel
-	projects []*registry.Project
 }
 
 // NewSlackChannelsSubsystem returns a fresh subsystem.
@@ -37,9 +32,10 @@ func NewSlackChannelsSubsystem() *SlackChannelsSubsystem {
 // Name implements Subsystem.
 func (s *SlackChannelsSubsystem) Name() string { return "slack_channels" }
 
-// Build captures pre-constructed channel/project slices. The
-// channels are built during NewContainer (signing-secret + bot
-// token loading happens there).
+// Build validates that Slack was configured and captures only the
+// subsystem logger. Channel instances must not be captured here:
+// observability initialization rebuilds the HTTP server (and its
+// mounted Slack channels) after subsystem Build.
 func (s *SlackChannelsSubsystem) Build(deps *BuildDeps) error {
 	if deps == nil || deps.Container == nil {
 		return SubsystemSkipped("nil deps")
@@ -50,8 +46,6 @@ func (s *SlackChannelsSubsystem) Build(deps *BuildDeps) error {
 	if len(c.SlackChannels) == 0 {
 		return SubsystemSkipped("no slack channels configured")
 	}
-	s.channels = c.SlackChannels
-	s.projects = c.SlackProjects
 	return nil
 }
 
@@ -59,23 +53,23 @@ func (s *SlackChannelsSubsystem) Build(deps *BuildDeps) error {
 // one goroutine per channel. Dispatcher-missing logs + skips the
 // runtime wiring; the channels are inbound-only (events log).
 func (s *SlackChannelsSubsystem) Start(ctx context.Context) error {
-	if s == nil || len(s.channels) == 0 {
+	if s == nil {
 		return nil
 	}
 	c := containerFromDetectorCtx(ctx)
-	if c == nil {
+	if c == nil || len(c.SlackChannels) == 0 {
 		return nil
 	}
 
 	if c.Dispatcher == nil {
 		s.logger.Warn().
-			Int("channels", len(s.channels)).
+			Int("channels", len(c.SlackChannels)).
 			Msg("dispatcher not configured (chat client missing) — inbound events will land in logs only")
 		return nil
 	}
 
-	for i, ch := range s.channels {
-		project := s.projects[i]
+	for i, ch := range c.SlackChannels {
+		project := c.SlackProjects[i]
 		store := newSlackSessionStore(c.Registry, project.ID)
 		store.SetPersister(c.channelSessionPersister("slack"))
 		receiver := &dispatcher.ChannelReceiver{

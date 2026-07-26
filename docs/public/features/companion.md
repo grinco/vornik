@@ -3,9 +3,9 @@ sources:
     - path: internal/api/companion_mcp.go
       sha256: 28c8ca786ce2f098a116d6de193dcfe6722a5a221c302669888ddf2d22631b8d
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
-      sha256: 4db994ee442d150212980a709a17f348f90a9e3fba0a11c0da8b590a221577c5
+      sha256: fcf7465d69ae6f7376fa3d4c206050ec1dc87ecbd268f2ef96b3da56ab9eea61
     - path: contrib/codex-companion/.codex-plugin/plugin.json
-      sha256: cb022e4a32265f8145b696440f0660d875e4178e74fab1779a902c0790a753d4
+      sha256: a8dd0d584753ee5125bc844edcc2c280aedafeb9d0884b8ce18dc86131f59bc0
 ---
 # Companion plugin
 
@@ -69,15 +69,46 @@ review), `/peek` (recent tasks), and `/upload` (attach files to a delegation).
 In Codex, use the MCP tools directly; the Codex adapter ships a `delegate` skill
 that teaches the same recall-before-delegate and file-attachment rules.
 
-Both companion plugins also bundle a `report-problem` skill that ships enabled by
-default: it teaches the host LLM how to help you file an **anonymized** Vornik
-problem report — a bug, a crash, a misbehaving swarm, or an install failure — as a
-prefilled `github.com/grinco/vornik` issue. The work is done by the deterministic
-`vornikctl report` CLI (rich diagnostics when the daemon is up, `--offline` static
-checks when it is down) plus the quickstart installer's own failure URL for
-pre-daemon install errors; the skill is the guardrail — review the anonymized body
-before submitting, and you file it under your own GitHub account (nothing is ever
-posted automatically).
+## Operator skills
+
+Both companion plugins bundle an **operator lifecycle triad** — three skills
+that ship enabled by default and teach your host LLM to drive Vornik's own
+tooling instead of improvising. They cross-reference each other, so a session
+can walk from "set this up" to "why is it broken" to "file it upstream"
+without you naming the next step.
+
+**`configure-vornik`** — configuring a deployment: daemon settings, projects,
+swarms, workflows, models, secrets, channels. It leads with the config
+hazards that silently no-op an otherwise correct change. The registry tree
+holding `projects/`, `swarms/`, and `workflows/` is resolved by a *fallback
+chain*, not one environment variable, and `vornikctl`'s chain differs from
+the daemon's — so a file can be perfectly valid and still sit in a directory
+the daemon never reads. `VORNIK_CONFIGS_DIR` is honoured only when the
+directory already contains all three subdirectories; otherwise it is skipped
+with no error at all. The skill then pins the apply loop — validate with
+`vornikctl doctor`, `vornikctl config reload`, then **confirm** with
+`vornikctl config reload-status`, where validation errors actually surface —
+and the restart-versus-reload boundary: systemd resolves the daemon's
+environment only at start, so unit and env-file edits need a restart.
+
+**`troubleshoot-vornik`** — diagnosing a deployment that is down, degraded,
+or failing tasks, routed by symptom. Daemon down goes to
+`vornikctl doctor --offline`, the static escape hatch that needs no running
+daemon. Degraded goes to `vornikctl doctor` and `doctor feature`. A failed
+task goes to `vornikctl task explain` and then `vornikctl playbook show
+<CLASS>` — the failure-class corpus that already carries a written
+remediation for the error the executor stamped. The skill also states plainly
+which findings `--fix` can repair and which are diagnostic only, so you don't
+get sent in a circle.
+
+**`report-problem`** — filing an **anonymized** Vornik problem report (a bug,
+a crash, a misbehaving swarm, or an install failure) as a prefilled
+`github.com/grinco/vornik` issue. The work is done by the deterministic
+`vornikctl report` CLI (rich diagnostics when the daemon is up, `--offline`
+static checks when it is down) plus the quickstart installer's own failure URL
+for pre-daemon install errors; the skill is the guardrail — review the
+anonymized body before submitting, and you file it under your own GitHub
+account (nothing is ever posted automatically).
 
 ## Project memory and repo scope
 

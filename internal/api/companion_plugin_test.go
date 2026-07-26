@@ -411,3 +411,161 @@ func TestCompanionPlugin_SkillPresent(t *testing.T) {
 	assert.Contains(t, string(body), "name: delegate",
 		"skill name field is the public contract — renaming requires marketplace coordination")
 }
+
+// TestCompanionPlugin_OperatorSkillTriad — the operator lifecycle triad
+// (configure → troubleshoot → report) must ship complete and cross-linked.
+//
+// Regression guard for the gap this closed: before the triad landed, the
+// plugin shipped `report-problem` (v0.12.0) with NO test at all, and the
+// README still advertised "One skill". Only `delegate` was pinned. A skill
+// that silently goes missing from the bundle is invisible until a user asks
+// for help and the assistant improvises an answer instead.
+func TestCompanionPlugin_OperatorSkillTriad(t *testing.T) {
+	// Each skill is pinned to one substring that only its real body carries,
+	// so a file that still has valid frontmatter but an emptied or
+	// placeholder body fails here rather than sailing through CI. Existence
+	// plus well-formed frontmatter is NOT enough — that was the porous guard
+	// this table replaced.
+	bodyPin := map[string]string{
+		"delegate":            "recall",
+		"report-problem":      "vornikctl report",
+		"configure-vornik":    "VORNIK_CONFIGS_DIR",
+		"troubleshoot-vornik": "vornikctl doctor",
+	}
+	for sk, pin := range bodyPin {
+		t.Run(sk, func(t *testing.T) {
+			path := filepath.Join(companionPluginDir, "skills", sk, "SKILL.md")
+			body, err := os.ReadFile(path)
+			require.NoErrorf(t, err, "skill %q missing from the bundle", sk)
+			text := string(body)
+			assert.True(t, strings.HasPrefix(text, "---\n"),
+				"SKILL.md must lead with YAML frontmatter")
+			assert.Containsf(t, text, "name: "+sk,
+				"frontmatter name must match the directory — it is the routing key")
+			assert.Containsf(t, text, "description:",
+				"a skill with no description never gets routed to")
+
+			// Body must actually exist and teach something.
+			_, after, found := strings.Cut(strings.TrimPrefix(text, "---\n"), "\n---\n")
+			require.Truef(t, found, "skill %q has no closing frontmatter delimiter", sk)
+			assert.Greaterf(t, len(strings.TrimSpace(after)), 400,
+				"skill %q has a stub body — frontmatter alone teaches nothing", sk)
+			assert.Containsf(t, after, pin,
+				"skill %q body lost its load-bearing content (expected to mention %q)", sk, pin)
+		})
+	}
+}
+
+// TestCompanionPlugin_TriadCrossLinks — each operator skill must name the
+// others so the assistant can walk the lifecycle instead of dead-ending.
+// troubleshoot in particular must carry the exit ramp to report-problem:
+// its whole value when the diagnostic ladder bottoms out is handing off to
+// the anonymized reporter rather than inventing a fix.
+func TestCompanionPlugin_TriadCrossLinks(t *testing.T) {
+	read := func(t *testing.T, skill string) string {
+		t.Helper()
+		body, err := os.ReadFile(filepath.Join(companionPluginDir, "skills", skill, "SKILL.md"))
+		require.NoError(t, err)
+		return string(body)
+	}
+
+	troubleshoot := read(t, "troubleshoot-vornik")
+	assert.Contains(t, troubleshoot, "report-problem",
+		"troubleshoot must hand off to the reporter when the ladder is exhausted")
+	assert.Contains(t, troubleshoot, "configure-vornik",
+		"troubleshoot must point back to configure when the finding is a config fix")
+
+	configure := read(t, "configure-vornik")
+	assert.Contains(t, configure, "troubleshoot-vornik",
+		"configure must point at troubleshoot when a change doesn't take effect")
+}
+
+// TestCompanionPlugin_ConfigureSkillPinsResolutionHazards — the three
+// silent-no-op hazards are the reason this skill exists. Each was verified
+// against the resolver source: VORNIK_CONFIGS_DIR is skipped without warning
+// when the layout check fails, `vornikctl init` resolves against the invoking
+// shell rather than the daemon unit, and both chains end at a relative
+// `configs` taken from the current working directory. Drop any of these and
+// the skill becomes confidently wrong in exactly the cases that matter.
+func TestCompanionPlugin_ConfigureSkillPinsResolutionHazards(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(companionPluginDir, "skills", "configure-vornik", "SKILL.md"))
+	require.NoError(t, err)
+	text := string(body)
+
+	assert.Contains(t, text, "VORNIK_CONFIGS_DIR",
+		"the registry-tree override must be named")
+	assert.Contains(t, text, "reload-status",
+		"validation errors surface in reload-status, not in reload's own output")
+	for _, sub := range []string{"projects", "swarms", "workflows"} {
+		assert.Containsf(t, text, sub,
+			"the layout check requires all three subdirs — naming them is what makes the silent-skip diagnosable")
+	}
+	assert.Contains(t, text, "EnvironmentFile",
+		"env-file edits need a restart, not a reload")
+	assert.Contains(t, text, "Environment=",
+		"a clean env_file_freshness does not mean the environment is fresh — Environment= has no check")
+}
+
+// TestCompanionPlugin_TroubleshootSkillPinsFixNarrowness — `--fix` repairs
+// only the eight operational findings; schema, runtime, security-posture,
+// pricing, and budget checks are diagnostic only. An assistant that promises
+// --fix will clear a security finding sends the operator in a circle.
+func TestCompanionPlugin_TroubleshootSkillPinsFixNarrowness(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(companionPluginDir, "skills", "troubleshoot-vornik", "SKILL.md"))
+	require.NoError(t, err)
+	text := string(body)
+
+	assert.Contains(t, text, "--offline",
+		"the daemon-down escape hatch is the first rung of the ladder")
+	assert.Contains(t, text, "--fix",
+		"the narrowness of --fix must be stated")
+	assert.Contains(t, text, "diagnostic only",
+		"the repairable/diagnostic split is the load-bearing distinction")
+	assert.Contains(t, text, "playbook",
+		"the failure-class playbook is the highest-value, least-known path")
+	assert.Contains(t, text, "vornikctl task tail",
+		"canonical form — bare `vornikctl tail` is only an alias")
+}
+
+// TestCompanionPlugin_ReadmeAdvertisesEverySkill — the README's skill list is
+// how a human discovers what the bundle can do. It drifted once already
+// (stuck at "One skill" after report-problem shipped in v0.12.0), so pin it.
+func TestCompanionPlugin_ReadmeAdvertisesEverySkill(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(companionPluginDir, "README.md"))
+	require.NoError(t, err)
+	text := string(body)
+
+	for _, sk := range []string{"delegate", "report-problem", "configure-vornik", "troubleshoot-vornik"} {
+		assert.Containsf(t, text, sk, "README must advertise the %q skill", sk)
+	}
+	assert.NotContains(t, text, "One skill",
+		"stale skill count — the bundle ships four")
+}
+
+// TestCompanionPlugin_VersionHasChangelogEntry — the manifest `description`
+// is this plugin's append-only changelog, keyed by version. Tying the two
+// together makes both halves of a release self-enforcing: bump the version
+// without describing what changed and this fails; describe a change without
+// bumping and the new text has no matching key, so it fails too.
+//
+// The failure mode it guards is silent: installed clients auto-update from
+// the marketplace by VERSION, so a skill or guidance change shipped without
+// a bump never reaches anyone already running the plugin.
+func TestCompanionPlugin_VersionHasChangelogEntry(t *testing.T) {
+	var manifest struct {
+		Version     string `json:"version"`
+		Description string `json:"description"`
+	}
+	raw, err := os.ReadFile(filepath.Join(companionPluginDir, ".claude-plugin", "plugin.json"))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(raw, &manifest))
+	require.NotEmpty(t, manifest.Version)
+
+	// Codex-style build metadata (`0.12.0+codex.<date>`) is not part of the
+	// changelog key; the entry is written against the base version.
+	base, _, _ := strings.Cut(manifest.Version, "+")
+	assert.Containsf(t, manifest.Description, base+":",
+		"manifest version %q has no %q changelog entry in the description — "+
+			"every bump documents what changed, and every change gets a bump",
+		manifest.Version, base)
+}

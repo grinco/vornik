@@ -230,3 +230,88 @@ func TestCodexCompanionPlugin_NoClaudeOnlySurfaces(t *testing.T) {
 			"Codex plugin should not ship Claude-only surface %s; use MCP tools and skills instead", path)
 	}
 }
+
+// TestCodexCompanionPlugin_OperatorSkillTriad — the codex bundle must carry
+// the same operator lifecycle triad as the claude-code bundle. The two trees
+// are mirrored deliberately; a skill that lands in one and not the other is
+// the drift this pins.
+func TestCodexCompanionPlugin_OperatorSkillTriad(t *testing.T) {
+	for _, sk := range []string{"delegate", "knowledge", "report-problem", "configure-vornik", "troubleshoot-vornik"} {
+		t.Run(sk, func(t *testing.T) {
+			path := filepath.Join(codexCompanionPluginDir, "skills", sk, "SKILL.md")
+			body, err := os.ReadFile(path)
+			require.NoErrorf(t, err, "skill %q missing from the codex bundle", sk)
+			text := string(body)
+			assert.True(t, strings.HasPrefix(text, "---\n"),
+				"SKILL.md must lead with YAML frontmatter")
+			assert.Containsf(t, text, "name: "+sk,
+				"frontmatter name must match the directory")
+
+			// Same anti-stub guard as the claude-code bundle: valid
+			// frontmatter over an emptied body must not pass.
+			_, after, found := strings.Cut(strings.TrimPrefix(text, "---\n"), "\n---\n")
+			require.Truef(t, found, "skill %q has no closing frontmatter delimiter", sk)
+			assert.Greaterf(t, len(strings.TrimSpace(after)), 400,
+				"skill %q has a stub body — frontmatter alone teaches nothing", sk)
+		})
+	}
+}
+
+// TestCodexCompanionPlugin_OperatorSkillsMirrorClaudeCode — the codex copies
+// must stay byte-identical to their claude-code originals apart from the
+// addressee line. Asserting the two trees against each other catches the
+// drift a per-tree content check cannot: a hazard fixed in one bundle and
+// forgotten in the other.
+func TestCodexCompanionPlugin_OperatorSkillsMirrorClaudeCode(t *testing.T) {
+	for _, sk := range []string{"report-problem", "configure-vornik", "troubleshoot-vornik"} {
+		t.Run(sk, func(t *testing.T) {
+			cc, err := os.ReadFile(filepath.Join(companionPluginDir, "skills", sk, "SKILL.md"))
+			require.NoError(t, err)
+			cx, err := os.ReadFile(filepath.Join(codexCompanionPluginDir, "skills", sk, "SKILL.md"))
+			require.NoError(t, err)
+
+			normalized := strings.ReplaceAll(string(cc), "Teaches Claude how", "Teaches Codex how")
+			assert.Equalf(t, normalized, string(cx),
+				"codex copy of %q diverges from the claude-code original beyond the addressee — "+
+					"mirror the fix into both bundles", sk)
+		})
+	}
+}
+
+// TestCodexCompanionPlugin_OperatorSkillsAddressCodex — the codex copies are
+// byte-identical to the claude-code ones except that they address Codex. A
+// copy-paste that leaves "Claude" in the codex bundle tells the wrong model
+// it is the wrong model.
+func TestCodexCompanionPlugin_OperatorSkillsAddressCodex(t *testing.T) {
+	for _, sk := range []string{"report-problem", "configure-vornik", "troubleshoot-vornik"} {
+		t.Run(sk, func(t *testing.T) {
+			body, err := os.ReadFile(filepath.Join(codexCompanionPluginDir, "skills", sk, "SKILL.md"))
+			require.NoError(t, err)
+			text := string(body)
+			assert.Contains(t, text, "Codex",
+				"the codex copy must address Codex")
+			assert.NotContains(t, text, "Teaches Claude",
+				"stale claude-code wording survived the mirror")
+		})
+	}
+}
+
+// TestCodexCompanionPlugin_VersionHasChangelogEntry — same contract as the
+// claude-code bundle: the description is an append-only changelog keyed by
+// version, so a bump and its entry can't drift apart. See the claude-code
+// twin for why the failure this guards is silent.
+func TestCodexCompanionPlugin_VersionHasChangelogEntry(t *testing.T) {
+	var manifest struct {
+		Version     string `json:"version"`
+		Description string `json:"description"`
+	}
+	raw, err := os.ReadFile(filepath.Join(codexCompanionPluginDir, ".codex-plugin", "plugin.json"))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(raw, &manifest))
+	require.NotEmpty(t, manifest.Version)
+
+	base, _, _ := strings.Cut(manifest.Version, "+")
+	assert.Containsf(t, manifest.Description, base+":",
+		"manifest version %q has no %q changelog entry in the description",
+		manifest.Version, base)
+}

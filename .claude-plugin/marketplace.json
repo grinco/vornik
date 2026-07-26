@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "vornik-companion",
-      "description": "Async-offload companion. Delegate reviews, audits, validations, research, summarization, and bulk RAG ingest to vornik-managed agents over MCP; results re-enter Claude's context via a SessionStart digest hook. Per-repo scoping (migration 75) so one project's RAG cleanly serves multiple repos. v0.5: commands shed the redundant vornik- prefix (/upload, /rag-ingest, delegate skill) and the docs make companion-architectural-review a standing merge gate for non-trivial changes and design docs. v0.6: adds /memory-correct + the memory_correct MCP tool (soft-refute stale RAG facts so newer findings take precedence) and rewrites /remember to the heredoc\u2192POST hardening so long notes no longer mangle on tool-call serialization. v0.7: /memory-correct gains a surgical --chunk-id mode (refute an exact chunk by id, not the claim-search top match).",
+      "description": "Async-offload companion. Delegate reviews, audits, validations, research, summarization, and bulk RAG ingest to vornik-managed agents over MCP; results re-enter Claude's context via a SessionStart digest hook. Per-repo scoping (migration 75) so one project's RAG cleanly serves multiple repos. Also bundles an operator lifecycle triad of skills — configure-vornik, troubleshoot-vornik, and report-problem — so your assistant drives Vornik's own tooling (config validate/reload, the doctor, the failure-class playbook, and the anonymized problem reporter) instead of improvising.",
       "author": {
         "name": "vornik"
       },

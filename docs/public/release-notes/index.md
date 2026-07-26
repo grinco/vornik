@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 44e3a1f4c3a34acfce966893d51998b4f341f53f9d02042b1853a81a88864f11
+      sha256: 1ec4ad642fe97bc20cac4e38b2b013522c2718040f06cc74101770871122133e
 ---
 # Release Notes
 
@@ -122,8 +122,20 @@ default** — read that item before upgrading.
   chunks rather than the attachment, because extracting the upload at submit time
   suppressed staging the file for the agent. Workflows that declare they need
   input artifacts now always get the raw file. The Claude Code and Codex
-  companion plugins ship as 0.13.0 and 0.11.0 with corrected guidance; installed
+  companion plugins ship as 0.14.0 and 0.12.0 with corrected guidance; installed
   clients pick that up on their next marketplace update.
+- **New: your coding assistant can now configure and troubleshoot Vornik.** Both
+  companion plugins bundle an operator lifecycle triad — `configure-vornik`,
+  `troubleshoot-vornik`, and the existing `report-problem` — so setup, diagnosis,
+  and filing a bug each follow a guarded path over Vornik's own tooling instead
+  of being improvised. `configure-vornik` leads with the configuration traps that
+  fail silently: the config tree is found by a fallback chain rather than one
+  environment variable, `VORNIK_CONFIGS_DIR` is ignored without complaint unless
+  the directory already holds `projects/`, `swarms/`, and `workflows/`, and
+  editing the wrong copy of a config is the usual reason a correct change does
+  nothing. `troubleshoot-vornik` routes by symptom to the right diagnostic —
+  `doctor --offline` when the daemon is down, the failure-class playbook when a
+  task fails — and hands off to `report-problem` when it runs out of road.
 - **Behavior changes to note.** A `web_fetch` of a page with a blocked or
   unresolvable third-party asset now **succeeds** and lists what it refused in a
   new `denied_subresources` field, instead of failing the whole fetch. Inbound

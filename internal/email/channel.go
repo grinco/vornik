@@ -421,6 +421,13 @@ func New(cfg Config) (*Channel, error) {
 // Name implements conversation.Channel.
 func (c *Channel) Name() string { return channelName }
 
+// Logger returns the channel's logger. Exposed so the wiring that
+// constructs the channel can assert it actually handed one over — a
+// zero-value zerolog.Logger discards silently, which once left the entire
+// inbound-mail path (including attachment auto-extraction into project
+// memory) absent from journald.
+func (c *Channel) Logger() *zerolog.Logger { return &c.logger }
+
 // Start binds the Receiver, dials the IMAP server, and enters the
 // poll loop. Returns when ctx is cancelled, Stop is called, or the
 // IMAP transport reports an unrecoverable error. Implementations

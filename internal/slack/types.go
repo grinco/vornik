@@ -332,6 +332,12 @@ func New(cfg Config) (*Channel, error) {
 // ChannelMessage.Source.
 func (c *Channel) Name() string { return channelName }
 
+// Logger returns the channel's logger. Exposed so the wiring that
+// constructs the channel can assert it actually handed one over — a
+// zero-value zerolog.Logger discards silently, which once left every
+// conversation channel's inbound path absent from journald.
+func (c *Channel) Logger() *zerolog.Logger { return &c.logger }
+
 // resolveInstallations normalises Config's two routing modes into a
 // single internal []*installation. Single-installation mode (no
 // Installations entries) synthesises one entry from the top-level

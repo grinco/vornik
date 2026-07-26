@@ -206,6 +206,44 @@ for leak in 'vadim' 'vornik-marketing' 'secretproj' 'acme-thing' 'vadim@vornik.i
   esac
 done
 
+echo "--- vornik_urlencode is POSIX and byte-exact ---"
+# Regression: the encoder shipped as a C-style `for (( ))` bash loop, so
+# sourcing quickstart.sh under dash died with "Bad for loop variable" and this
+# whole file failed to parse (CI 2026-07-26). Reaching this line at all proves
+# the parse; the assertions below pin the behaviour the rewrite must keep.
+case "$(vornik_urlencode 'AZaz09._~-')" in
+  'AZaz09._~-') ok "unreserved characters pass through unencoded" ;;
+  *) bad "unreserved set mangled: $(vornik_urlencode 'AZaz09._~-')" ;;
+esac
+case "$(vornik_urlencode 'a b,c/d?e=f&g')" in
+  'a%20b%2Cc%2Fd%3Fe%3Df%26g') ok "reserved characters percent-encoded" ;;
+  *) bad "reserved encoding wrong: $(vornik_urlencode 'a b,c/d?e=f&g')" ;;
+esac
+# `awk -v` would expand the backslash escape and turn \n into a real newline.
+case "$(vornik_urlencode 'C:\x\ny')" in
+  'C%3A%5Cx%5Cny') ok "backslashes survive as literal bytes" ;;
+  *) bad "backslash mangled: $(vornik_urlencode 'C:\x\ny')" ;;
+esac
+# RFC 3986 encodes multibyte UTF-8 per byte: č = 0xC4 0x8D.
+case "$(vornik_urlencode 'č')" in
+  '%C4%8D') ok "multibyte UTF-8 encoded per byte" ;;
+  *) bad "multibyte encoding wrong: $(vornik_urlencode 'č')" ;;
+esac
+
+echo "--- vornik_replace_all replaces literally, not as a regex ---"
+case "$(vornik_replace_all 'a.c and abc' 'a.c' 'X')" in
+  'X and abc') ok "needle treated as a literal, not a BRE" ;;
+  *) bad "literal replace wrong: $(vornik_replace_all 'a.c and abc' 'a.c' 'X')" ;;
+esac
+case "$(vornik_replace_all 'h1 h1 h1' 'h1' '<host>')" in
+  '<host> <host> <host>') ok "all occurrences replaced" ;;
+  *) bad "replace-all missed occurrences: $(vornik_replace_all 'h1 h1 h1' 'h1' '<host>')" ;;
+esac
+case "$(vornik_replace_all 'keep me' '' 'X')" in
+  'keep me') ok "empty needle is a no-op (no infinite loop)" ;;
+  *) bad "empty needle mangled input" ;;
+esac
+
 echo "--- report_install_failure strips this machine's hostname ---"
 # The failing command may embed the hostname; the hook replaces it with <host>.
 HN="$(uname -n 2>/dev/null || hostname 2>/dev/null || echo UNKNOWNHOST)"

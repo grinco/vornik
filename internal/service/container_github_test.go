@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rs/zerolog"
+
 	"vornik.io/vornik/internal/registry"
 )
 
@@ -48,9 +50,9 @@ func inboundOnlyProject(id string) *registry.Project {
 // TestBuildGitHubChannel_NoProjectsEnabled — empty input returns
 // (nil, nil, nil); caller skips mounting the route.
 func TestBuildGitHubChannel_NoProjectsEnabled(t *testing.T) {
-	ch, ps, err := buildGitHubChannel(nil)
+	ch, ps, err := buildGitHubChannel(nil, zerolog.Nop())
 	if err != nil {
-		t.Fatalf("buildGitHubChannel(nil): %v", err)
+		t.Fatalf("buildGitHubChannel(nil, zerolog.Nop()): %v", err)
 	}
 	if ch != nil || ps != nil {
 		t.Errorf("expected (nil, nil), got channel=%v projects=%v", ch, ps)
@@ -64,7 +66,7 @@ func TestBuildGitHubChannel_AllDisabled(t *testing.T) {
 		{ID: "p1", SwarmID: "s", DefaultWorkflowID: "w"},
 		{ID: "p2", SwarmID: "s", DefaultWorkflowID: "w"},
 	}
-	ch, enabled, err := buildGitHubChannel(ps)
+	ch, enabled, err := buildGitHubChannel(ps, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildGitHubChannel: %v", err)
 	}
@@ -78,7 +80,7 @@ func TestBuildGitHubChannel_AllDisabled(t *testing.T) {
 func TestBuildGitHubChannel_InboundOnly_Constructs(t *testing.T) {
 	t.Setenv("GH_TEST_SECRET", "shhh")
 	ps := []*registry.Project{inboundOnlyProject("p-1")}
-	ch, enabled, err := buildGitHubChannel(ps)
+	ch, enabled, err := buildGitHubChannel(ps, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildGitHubChannel: %v", err)
 	}
@@ -97,7 +99,7 @@ func TestBuildGitHubChannel_InboundOnly_Constructs(t *testing.T) {
 func TestBuildGitHubChannel_MissingSecretEnv(t *testing.T) {
 	t.Setenv("GH_TEST_SECRET", "")
 	ps := []*registry.Project{inboundOnlyProject("p-1")}
-	_, _, err := buildGitHubChannel(ps)
+	_, _, err := buildGitHubChannel(ps, zerolog.Nop())
 	if err == nil || !strings.Contains(err.Error(), "webhook_secret_env") {
 		t.Errorf("err = %v, want missing-env failure", err)
 	}
@@ -111,7 +113,7 @@ func TestBuildGitHubChannel_BadPrivateKeyPath(t *testing.T) {
 	p.GitHubApp.AppID = 12345
 	p.GitHubApp.InstallationID = 99
 	p.GitHubApp.PrivateKeyPath = "/nonexistent/key.pem"
-	_, _, err := buildGitHubChannel([]*registry.Project{p})
+	_, _, err := buildGitHubChannel([]*registry.Project{p}, zerolog.Nop())
 	if err == nil || !strings.Contains(err.Error(), "private_key_path") {
 		t.Errorf("err = %v, want PEM read failure", err)
 	}
@@ -127,7 +129,7 @@ func TestBuildGitHubChannel_OutboundFullyConfigured(t *testing.T) {
 	p.GitHubApp.AppID = 12345
 	p.GitHubApp.InstallationID = 99
 	p.GitHubApp.PrivateKeyPath = pemPath
-	ch, _, err := buildGitHubChannel([]*registry.Project{p})
+	ch, _, err := buildGitHubChannel([]*registry.Project{p}, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildGitHubChannel: %v", err)
 	}
@@ -152,7 +154,7 @@ func TestBuildGitHubChannel_MultipleEnabled_BuildsMultiInstall(t *testing.T) {
 	p2.GitHubApp.AppID = 2
 	p2.GitHubApp.InstallationID = 200
 	p2.GitHubApp.PrivateKeyPath = pemPath
-	ch, enabled, err := buildGitHubChannel([]*registry.Project{p1, p2})
+	ch, enabled, err := buildGitHubChannel([]*registry.Project{p1, p2}, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildGitHubChannel: %v", err)
 	}
@@ -183,7 +185,7 @@ func TestBuildGitHubChannel_MultipleEnabled_DuplicateInstallationID(t *testing.T
 	p2.GitHubApp.AppID = 2
 	p2.GitHubApp.InstallationID = 100 // collision
 	p2.GitHubApp.PrivateKeyPath = pemPath
-	_, _, err := buildGitHubChannel([]*registry.Project{p1, p2})
+	_, _, err := buildGitHubChannel([]*registry.Project{p1, p2}, zerolog.Nop())
 	if err == nil || !strings.Contains(err.Error(), "duplicate installation_id") {
 		t.Errorf("err = %v, want duplicate-installation_id failure", err)
 	}
@@ -208,7 +210,7 @@ func TestBuildGitHubChannel_MultipleEnabled_SecretMismatch(t *testing.T) {
 	p2.GitHubApp.AppID = 2
 	p2.GitHubApp.InstallationID = 200
 	p2.GitHubApp.PrivateKeyPath = pemPath
-	_, _, err := buildGitHubChannel([]*registry.Project{p1, p2})
+	_, _, err := buildGitHubChannel([]*registry.Project{p1, p2}, zerolog.Nop())
 	if err == nil || !strings.Contains(err.Error(), "WebhookSecret") {
 		t.Errorf("err = %v, want WebhookSecret-mismatch failure", err)
 	}

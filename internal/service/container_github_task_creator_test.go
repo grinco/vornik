@@ -642,6 +642,7 @@ func TestBuildGitHubChannelWithTaskCreator_WiresIntoChannel(t *testing.T) {
 	ch, picked, err := buildGitHubChannelWithTaskCreator(
 		[]*registry.Project{proj},
 		taskCreatorFromRepo(repo, nil, zerolog.Nop()),
+		zerolog.Nop(),
 	)
 	if err != nil {
 		t.Fatalf("buildGitHubChannelWithTaskCreator: %v", err)
@@ -687,6 +688,7 @@ func TestBuildGitHubChannelWithTaskCreator_PRPath(t *testing.T) {
 	ch, _, err := buildGitHubChannelWithTaskCreator(
 		[]*registry.Project{proj},
 		taskCreatorFromRepo(repo, nil, zerolog.Nop()),
+		zerolog.Nop(),
 	)
 	if err != nil {
 		t.Fatalf("buildGitHubChannelWithTaskCreator: %v", err)
@@ -728,6 +730,7 @@ func TestBuildGitHubChannelWithTaskCreator_IdempotentRetry(t *testing.T) {
 	ch, _, err := buildGitHubChannelWithTaskCreator(
 		[]*registry.Project{proj},
 		taskCreatorFromRepo(repo, nil, zerolog.Nop()),
+		zerolog.Nop(),
 	)
 	if err != nil {
 		t.Fatalf("buildGitHubChannelWithTaskCreator: %v", err)
@@ -768,7 +771,7 @@ func TestBuildGitHubChannel_NilTaskCreatorFactory_KeepsLogPath(t *testing.T) {
 	proj := inboundOnlyProject("p-1")
 	proj.GitHubApp.TaskLabels = []string{"vornik-task"}
 
-	ch, _, err := buildGitHubChannelWithTaskCreator([]*registry.Project{proj}, nil)
+	ch, _, err := buildGitHubChannelWithTaskCreator([]*registry.Project{proj}, nil, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildGitHubChannelWithTaskCreator: %v", err)
 	}
@@ -802,7 +805,7 @@ func TestBuildGitHubChannel_FactoryReturnsNil_KeepsLogPath(t *testing.T) {
 	proj.GitHubApp.TaskLabels = []string{"vornik-task"}
 
 	factory := func(_ *registry.Project) github.TaskCreator { return nil }
-	ch, _, err := buildGitHubChannelWithTaskCreator([]*registry.Project{proj}, factory)
+	ch, _, err := buildGitHubChannelWithTaskCreator([]*registry.Project{proj}, factory, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildGitHubChannelWithTaskCreator: %v", err)
 	}

@@ -552,6 +552,12 @@ func indexSet(in []string) map[string]struct{} {
 // Name implements conversation.Channel.
 func (c *Channel) Name() string { return channelName }
 
+// Logger returns the channel's logger. Exposed so the wiring that
+// constructs the channel can assert it actually handed one over — a
+// zero-value zerolog.Logger discards silently, which once left every
+// conversation channel's inbound path absent from journald.
+func (c *Channel) Logger() *zerolog.Logger { return &c.logger }
+
 // Start binds the Receiver and blocks until ctx is cancelled.
 // Unlike Telegram, the GitHub App is webhook-driven — there's no
 // poll loop to run. Start exists purely to satisfy the Channel

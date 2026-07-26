@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rs/zerolog"
+
 	"vornik.io/vornik/internal/conversation"
 	"vornik.io/vornik/internal/dispatcher"
 	"vornik.io/vornik/internal/registry"
@@ -61,7 +63,7 @@ func TestBuildGitHubChannel_MultiInstall_RoutesSessions(t *testing.T) {
 	t.Setenv("GH_TEST_SECRET", "shhh")
 	pA, pB, _ := multiInstallProjectPair(t)
 
-	ch, enabled, err := buildGitHubChannel([]*registry.Project{pA, pB})
+	ch, enabled, err := buildGitHubChannel([]*registry.Project{pA, pB}, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildGitHubChannel: %v", err)
 	}
@@ -239,7 +241,7 @@ func TestBuildGitHubChannel_MultiInstall_SecondProjectBadPEM(t *testing.T) {
 	t.Setenv("GH_TEST_SECRET", "shhh")
 	pA, pB, _ := multiInstallProjectPair(t)
 	pB.GitHubApp.PrivateKeyPath = "/nonexistent/key.pem"
-	_, _, err := buildGitHubChannel([]*registry.Project{pA, pB})
+	_, _, err := buildGitHubChannel([]*registry.Project{pA, pB}, zerolog.Nop())
 	if err == nil || !strings.Contains(err.Error(), "project-B") {
 		t.Errorf("err = %v, want project-B-scoped failure", err)
 	}
@@ -253,7 +255,7 @@ func TestBuildGitHubChannel_MultiInstall_FirstProjectBadPEM(t *testing.T) {
 	t.Setenv("GH_TEST_SECRET", "shhh")
 	pA, pB, _ := multiInstallProjectPair(t)
 	pA.GitHubApp.PrivateKeyPath = "/nonexistent/keyA.pem"
-	_, _, err := buildGitHubChannel([]*registry.Project{pA, pB})
+	_, _, err := buildGitHubChannel([]*registry.Project{pA, pB}, zerolog.Nop())
 	if err == nil || !strings.Contains(err.Error(), "project-A") {
 		t.Errorf("err = %v, want project-A-scoped failure", err)
 	}
@@ -267,7 +269,7 @@ func TestBuildGitHubChannel_MultiInstall_APIBaseURLMismatch(t *testing.T) {
 	pA, pB, _ := multiInstallProjectPair(t)
 	pA.GitHubApp.APIBaseURL = "https://github.example.com/api/v3"
 	pB.GitHubApp.APIBaseURL = "https://github.other.example/api/v3"
-	_, _, err := buildGitHubChannel([]*registry.Project{pA, pB})
+	_, _, err := buildGitHubChannel([]*registry.Project{pA, pB}, zerolog.Nop())
 	if err == nil || !strings.Contains(err.Error(), "APIBaseURL") {
 		t.Errorf("err = %v, want APIBaseURL-mismatch failure", err)
 	}

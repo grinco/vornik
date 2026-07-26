@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/rs/zerolog"
+
 	"vornik.io/vornik/internal/email"
 	"vornik.io/vornik/internal/registry"
 )
@@ -45,7 +47,7 @@ func TestEmailChannelInventory_PerProjectShape(t *testing.T) {
 			AuthPolicy:             "strict",
 		},
 	}
-	ch, err := buildEmailChannelForProject(p, nil, "", nil)
+	ch, err := buildEmailChannelForProject(p, nil, "", nil, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildEmailChannelForProject: %v", err)
 	}
@@ -96,7 +98,7 @@ func TestEmailChannelInventory_PerProjectShape(t *testing.T) {
 func TestEmailChannelInventory_SkipsNilEntries(t *testing.T) {
 	t.Setenv("EMAIL_PASS_SKIP", "shhh")
 	p := buildEmailProject("good", "EMAIL_PASS_SKIP")
-	ch, err := buildEmailChannelForProject(p, nil, "", nil)
+	ch, err := buildEmailChannelForProject(p, nil, "", nil, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildEmailChannelForProject: %v", err)
 	}

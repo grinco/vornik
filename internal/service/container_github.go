@@ -42,8 +42,8 @@ import (
 // var, missing PEM file, malformed key — and abort daemon boot so
 // the misconfig surfaces at startup rather than the first
 // delivery.
-func buildGitHubChannel(projects []*registry.Project) (*github.Channel, []*registry.Project, error) {
-	return buildGitHubChannelWithTaskCreator(projects, nil)
+func buildGitHubChannel(projects []*registry.Project, logger zerolog.Logger) (*github.Channel, []*registry.Project, error) {
+	return buildGitHubChannelWithTaskCreator(projects, nil, logger)
 }
 
 // taskCreatorFromRepo returns a closure that builds a
@@ -79,6 +79,7 @@ func taskCreatorFromRepo(
 func buildGitHubChannelWithTaskCreator(
 	projects []*registry.Project,
 	taskCreatorFor func(*registry.Project) github.TaskCreator,
+	logger zerolog.Logger,
 ) (*github.Channel, []*registry.Project, error) {
 	var enabled []*registry.Project
 	for _, p := range projects {
@@ -106,6 +107,7 @@ func buildGitHubChannelWithTaskCreator(
 				cfg.TaskCreator = tc
 			}
 		}
+		cfg.Logger = channelLogger(logger, "github-app", picked.ID)
 		ch, err := github.New(cfg)
 		if err != nil {
 			return nil, []*registry.Project{picked}, fmt.Errorf("project %q github_app: %w", picked.ID, err)
@@ -145,6 +147,9 @@ func buildGitHubChannelWithTaskCreator(
 		APIBaseURL:    baseCfg.APIBaseURL,
 		HTTPClient:    baseCfg.HTTPClient,
 		Installations: installs,
+		// One handler serves every installation, so the logger
+		// carries no single project_id.
+		Logger: channelLogger(logger, "github-app", ""),
 	}
 	ch, err := github.New(multiCfg)
 	if err != nil {

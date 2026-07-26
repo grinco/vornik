@@ -1145,6 +1145,7 @@ func (c *Container) initHTTPServer() error {
 	ghChannel, ghEnabledProjects, err := buildGitHubChannelWithTaskCreator(
 		ghProjects,
 		taskCreatorFromRepo(ghTaskRepo, nil, c.Logger.With().Str("component", "github_task_creator").Logger()),
+		c.Logger,
 	)
 	if err != nil {
 		return fmt.Errorf("github-app channel: %w", err)
@@ -1211,7 +1212,7 @@ func (c *Container) initHTTPServer() error {
 			c.Logger.With().Str("component", "email-extractor").Logger(),
 		)
 	}
-	emChannels, emProjects, err := buildEmailChannels(emailProjects, artifactRepoForEmail, c.emailAttachmentDir(), emailAutoExtractor)
+	emChannels, emProjects, err := buildEmailChannels(emailProjects, artifactRepoForEmail, c.emailAttachmentDir(), emailAutoExtractor, c.Logger)
 	if err != nil {
 		return fmt.Errorf("email channel: %w", err)
 	}
@@ -1252,7 +1253,7 @@ func (c *Container) initHTTPServer() error {
 	if c.Registry != nil {
 		slackProjects = c.Registry.ListProjects()
 	}
-	skChannels, skProjects, err := buildSlackChannels(slackProjects, c.voiceSTT, c.voiceTTS)
+	skChannels, skProjects, err := buildSlackChannels(slackProjects, c.voiceSTT, c.voiceTTS, c.Logger)
 	if err != nil {
 		return fmt.Errorf("slack channel: %w", err)
 	}

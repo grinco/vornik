@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rs/zerolog"
+
 	"vornik.io/vornik/internal/registry"
 )
 
@@ -27,9 +29,9 @@ func buildEmailProject(id, passwordEnv string) *registry.Project {
 }
 
 func TestBuildEmailChannel_NoProjectsEnabled(t *testing.T) {
-	ch, p, err := buildEmailChannel(nil, nil, "")
+	ch, p, err := buildEmailChannel(nil, "", zerolog.Nop())
 	if err != nil {
-		t.Fatalf("buildEmailChannel(nil): %v", err)
+		t.Fatalf("buildEmailChannel(nil, zerolog.Nop()): %v", err)
 	}
 	if ch != nil || p != nil {
 		t.Errorf("expected (nil, nil), got (%v, %v)", ch, p)
@@ -41,7 +43,7 @@ func TestBuildEmailChannel_AllDisabled(t *testing.T) {
 	ps := []*registry.Project{
 		{ID: "a", SwarmID: "s", DefaultWorkflowID: "w"},
 	}
-	ch, p, err := buildEmailChannel(ps, nil, "")
+	ch, p, err := buildEmailChannel(ps, "", zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildEmailChannel: %v", err)
 	}
@@ -53,7 +55,7 @@ func TestBuildEmailChannel_AllDisabled(t *testing.T) {
 func TestBuildEmailChannel_InboundOnly_Constructs(t *testing.T) {
 	t.Setenv("EMAIL_PASS_BUILD_INBOUND", "shhh")
 	p := buildEmailProject("test", "EMAIL_PASS_BUILD_INBOUND")
-	ch, picked, err := buildEmailChannel([]*registry.Project{p}, nil, "")
+	ch, picked, err := buildEmailChannel([]*registry.Project{p}, "", zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildEmailChannel: %v", err)
 	}
@@ -67,7 +69,7 @@ func TestBuildEmailChannel_InboundOnly_Constructs(t *testing.T) {
 
 func TestBuildEmailChannel_MissingPasswordEnv(t *testing.T) {
 	p := buildEmailProject("test", "EMAIL_PASS_DEFINITELY_UNSET")
-	_, _, err := buildEmailChannel([]*registry.Project{p}, nil, "")
+	_, _, err := buildEmailChannel([]*registry.Project{p}, "", zerolog.Nop())
 	if err == nil {
 		t.Fatal("expected error for missing password env, got nil")
 	}
@@ -83,7 +85,7 @@ func TestBuildEmailChannel_MissingSMTPPasswordEnv(t *testing.T) {
 	p.Email.SMTPUsername = "u@test"
 	p.Email.SMTPPasswordEnv = "SMTP_PASS_DEFINITELY_UNSET"
 	p.Email.FromAddress = "u@test"
-	_, _, err := buildEmailChannel([]*registry.Project{p}, nil, "")
+	_, _, err := buildEmailChannel([]*registry.Project{p}, "", zerolog.Nop())
 	if err == nil {
 		t.Fatal("expected error for missing SMTP password env")
 	}
@@ -96,7 +98,7 @@ func TestBuildEmailChannel_BadPollInterval(t *testing.T) {
 	t.Setenv("EMAIL_PASS_BAD_POLL", "shhh")
 	p := buildEmailProject("test", "EMAIL_PASS_BAD_POLL")
 	p.Email.PollInterval = "not-a-duration"
-	_, _, err := buildEmailChannel([]*registry.Project{p}, nil, "")
+	_, _, err := buildEmailChannel([]*registry.Project{p}, "", zerolog.Nop())
 	if err == nil {
 		t.Fatal("expected error for malformed poll_interval")
 	}
@@ -109,7 +111,7 @@ func TestBuildEmailChannel_MultipleEnabled_FirstViaLegacyShim(t *testing.T) {
 	t.Setenv("EMAIL_PASS_MULTI_B", "shhh")
 	p1 := buildEmailProject("a", "EMAIL_PASS_MULTI_A")
 	p2 := buildEmailProject("b", "EMAIL_PASS_MULTI_B")
-	ch, picked, err := buildEmailChannel([]*registry.Project{p1, p2}, nil, "")
+	ch, picked, err := buildEmailChannel([]*registry.Project{p1, p2}, "", zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildEmailChannel: %v", err)
 	}
@@ -128,7 +130,7 @@ func TestBuildEmailChannels_PerProject(t *testing.T) {
 	t.Setenv("EMAIL_PASS_PER_B", "shhh")
 	p1 := buildEmailProject("alpha", "EMAIL_PASS_PER_A")
 	p2 := buildEmailProject("beta", "EMAIL_PASS_PER_B")
-	channels, picked, err := buildEmailChannels([]*registry.Project{p1, p2}, nil, "", nil)
+	channels, picked, err := buildEmailChannels([]*registry.Project{p1, p2}, nil, "", nil, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildEmailChannels: %v", err)
 	}
@@ -156,7 +158,7 @@ func TestBuildEmailChannels_DuplicateMailboxRejected(t *testing.T) {
 	// Force the same inbound identity (host+user+mailbox) despite distinct IDs.
 	p2.Email.IMAPHost = p1.Email.IMAPHost
 	p2.Email.IMAPUsername = p1.Email.IMAPUsername
-	channels, picked, err := buildEmailChannels([]*registry.Project{p1, p2}, nil, "", nil)
+	channels, picked, err := buildEmailChannels([]*registry.Project{p1, p2}, nil, "", nil, zerolog.Nop())
 	if err == nil {
 		t.Fatal("expected error for two projects sharing one inbound mailbox")
 	}
@@ -176,7 +178,7 @@ func TestBuildEmailChannels_SameUserDifferentMailboxOK(t *testing.T) {
 	p2.Email.IMAPUsername = p1.Email.IMAPUsername
 	p1.Email.IMAPMailbox = "INBOX"
 	p2.Email.IMAPMailbox = "Vornik"
-	channels, _, err := buildEmailChannels([]*registry.Project{p1, p2}, nil, "", nil)
+	channels, _, err := buildEmailChannels([]*registry.Project{p1, p2}, nil, "", nil, zerolog.Nop())
 	if err != nil {
 		t.Fatalf("distinct mailboxes on one login should be allowed: %v", err)
 	}
@@ -192,7 +194,7 @@ func TestBuildEmailChannels_OneBrokenAbortsAll(t *testing.T) {
 	t.Setenv("EMAIL_PASS_PARTIAL_OK", "shhh")
 	p1 := buildEmailProject("ok", "EMAIL_PASS_PARTIAL_OK")
 	p2 := buildEmailProject("broken", "EMAIL_PASS_PARTIAL_DEFINITELY_UNSET")
-	channels, picked, err := buildEmailChannels([]*registry.Project{p1, p2}, nil, "", nil)
+	channels, picked, err := buildEmailChannels([]*registry.Project{p1, p2}, nil, "", nil, zerolog.Nop())
 	if err == nil {
 		t.Fatal("expected error from misconfigured project")
 	}
@@ -211,6 +213,7 @@ func TestBuildEmailChannels_AttachmentDirIsPerProject(t *testing.T) {
 	p2 := buildEmailProject("beta", "EMAIL_PASS_DIR_B")
 	channels, picked, err := buildEmailChannels(
 		[]*registry.Project{p1, p2}, nil, "/var/lib/vornik/email", nil,
+		zerolog.Nop(),
 	)
 	if err != nil {
 		t.Fatalf("buildEmailChannels: %v", err)
@@ -249,7 +252,7 @@ func TestBuildEmailChannel_WiresAttachmentDir(t *testing.T) {
 	p := buildEmailProject("test-attach", "EMAIL_PASS_ATTACH_DIR")
 	p.Email.AttachmentSizeCapBytes = 5 * 1024 * 1024
 	p.Email.AttachmentStoreDir = "/var/tmp/vornik-test"
-	_, picked, err := buildEmailChannel([]*registry.Project{p}, nil, "")
+	_, picked, err := buildEmailChannel([]*registry.Project{p}, "", zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildEmailChannel: %v", err)
 	}
@@ -331,7 +334,7 @@ func TestBuildEmailChannel_DefaultsAttachmentDirFromBase(t *testing.T) {
 	t.Setenv("EMAIL_PASS_ATTACH_DEFAULT", "shhh")
 	p := buildEmailProject("project-X", "EMAIL_PASS_ATTACH_DEFAULT")
 	// AttachmentStoreDir empty in YAML → fall back to base + project ID
-	ch, _, err := buildEmailChannel([]*registry.Project{p}, nil, "/var/lib/vornik/email")
+	ch, _, err := buildEmailChannel([]*registry.Project{p}, "/var/lib/vornik/email", zerolog.Nop())
 	if err != nil {
 		t.Fatalf("buildEmailChannel: %v", err)
 	}

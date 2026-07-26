@@ -100,17 +100,42 @@ vornik_scrub() {
     -e 's#\b[A-Za-z0-9+/]{32,}={0,2}\b#<redacted-b64>#g'
 }
 
-# vornik_urlencode — pure-bash percent-encoder (no jq/python dependency).
+# vornik_urlencode — percent-encoder (no jq/python dependency; awk is POSIX
+# base). Everything above the source guard must parse under /bin/sh, because
+# quickstart_test.sh sources this file with dash in CI — so no C-style for,
+# no `+=`, no `printf -v`. The input arrives via the environment, not `awk -v`,
+# which would expand backslash escapes in a failing command line; LC_ALL=C
+# makes length/substr byte-wise so multibyte UTF-8 is encoded per byte, as
+# RFC 3986 requires.
 vornik_urlencode() {
-  local s="$1" out='' c i
-  for (( i=0; i<${#s}; i++ )); do
-    c="${s:i:1}"
-    case "$c" in
-      [a-zA-Z0-9.~_-]) out+="$c" ;;
-      *) printf -v c '%%%02X' "'$c" >/dev/null 2>&1 || c='%3F'; out+="$c" ;;
+  VORNIK_URLENCODE_IN="$1" LC_ALL=C awk '
+    BEGIN {
+      for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i
+      s = ENVIRON["VORNIK_URLENCODE_IN"]
+      n = length(s)
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c ~ /^[A-Za-z0-9._~-]$/) printf "%s", c
+        else printf "%%%02X", ord[c]
+      }
+    }'
+}
+
+# vornik_replace_all <haystack> <needle> <replacement> — literal (non-regex)
+# replace-all. sed would treat the needle as a BRE, and hostnames carry dots.
+vornik_replace_all() {
+  vra_rest="$1" vra_needle="$2" vra_repl="$3" vra_out=''
+  if [ -z "$vra_needle" ]; then printf '%s' "$vra_rest"; return 0; fi
+  while :; do
+    case "$vra_rest" in
+      *"$vra_needle"*)
+        vra_pre="${vra_rest%%"$vra_needle"*}"
+        vra_out="$vra_out$vra_pre$vra_repl"
+        vra_rest="${vra_rest#"$vra_pre$vra_needle"}"
+        ;;
+      *) printf '%s' "$vra_out$vra_rest"; return 0 ;;
     esac
   done
-  printf '%s' "$out"
 }
 
 # report_install_failure <exit-code> — no-op on success; else print the URL.
@@ -123,7 +148,7 @@ report_install_failure() {
   # This machine's hostname is only known at runtime, so strip it here (after
   # the stdin scrubber): a literal replace, hostnames carry no glob chars.
   hn="$(uname -n 2>/dev/null || hostname 2>/dev/null || true)"
-  [ -n "$hn" ] && cmd="${cmd//$hn/<host>}"
+  if [ -n "$hn" ]; then cmd="$(vornik_replace_all "$cmd" "$hn" '<host>')"; fi
   title="Install failure: exit ${ec}"
   body="vornik quickstart install failed.
 

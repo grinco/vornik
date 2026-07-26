@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"vornik.io/vornik/internal/email"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
@@ -33,7 +35,7 @@ import (
 // build so the operator sees the misconfig immediately; we don't
 // silently boot some channels and skip the broken one (that would
 // reduce visibility into "why isn't project X receiving mail?").
-func buildEmailChannels(projects []*registry.Project, artifactRepo persistence.ArtifactRepository, defaultAttachmentDir string, autoExtractor email.AttachmentAutoExtractor) ([]*email.Channel, []*registry.Project, error) {
+func buildEmailChannels(projects []*registry.Project, artifactRepo persistence.ArtifactRepository, defaultAttachmentDir string, autoExtractor email.AttachmentAutoExtractor, logger zerolog.Logger) ([]*email.Channel, []*registry.Project, error) {
 	var (
 		channels []*email.Channel
 		picked   []*registry.Project
@@ -54,7 +56,7 @@ func buildEmailChannels(projects []*registry.Project, artifactRepo persistence.A
 			return nil, nil, fmt.Errorf("project %q email: duplicate inbound mailbox %q (already configured by project %q)",
 				p.ID, mailboxKey, existing)
 		}
-		ch, err := buildEmailChannelForProject(p, artifactRepo, defaultAttachmentDir, autoExtractor)
+		ch, err := buildEmailChannelForProject(p, artifactRepo, defaultAttachmentDir, autoExtractor, logger)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -88,7 +90,7 @@ func emailInboxIdentity(e registry.ProjectEmail) string {
 // buildEmailChannels delegates to. Kept separate for testability —
 // callers (tests, future per-project hot-reload paths) can build
 // a single channel without iterating a registry.
-func buildEmailChannelForProject(p *registry.Project, artifactRepo persistence.ArtifactRepository, defaultAttachmentDir string, autoExtractor email.AttachmentAutoExtractor) (*email.Channel, error) {
+func buildEmailChannelForProject(p *registry.Project, artifactRepo persistence.ArtifactRepository, defaultAttachmentDir string, autoExtractor email.AttachmentAutoExtractor, logger zerolog.Logger) (*email.Channel, error) {
 	cfg, err := resolveEmailConfig(p.Email)
 	if err != nil {
 		return nil, fmt.Errorf("project %q email: %w", p.ID, err)
@@ -102,6 +104,7 @@ func buildEmailChannelForProject(p *registry.Project, artifactRepo persistence.A
 		// full quartet (host/username/password/from).
 		cfg.SMTPSender = newSMTPSenderFromConfig(cfg)
 	}
+	cfg.Logger = channelLogger(logger, "email", p.ID)
 	cfg.ArtifactRepo = artifactRepo
 	cfg.AttachmentProjectID = p.ID
 	cfg.AttachmentStoreDir = strings.TrimSpace(p.Email.AttachmentStoreDir)
@@ -133,8 +136,8 @@ func buildEmailChannelForProject(p *registry.Project, artifactRepo persistence.A
 // callers should use buildEmailChannels.
 //
 // Deprecated: use buildEmailChannels.
-func buildEmailChannel(projects []*registry.Project, artifactRepo persistence.ArtifactRepository, defaultAttachmentDir string) (*email.Channel, *registry.Project, error) {
-	channels, picked, err := buildEmailChannels(projects, artifactRepo, defaultAttachmentDir, nil)
+func buildEmailChannel(projects []*registry.Project, defaultAttachmentDir string, logger zerolog.Logger) (*email.Channel, *registry.Project, error) {
+	channels, picked, err := buildEmailChannels(projects, nil, defaultAttachmentDir, nil, logger)
 	if err != nil {
 		return nil, nil, err
 	}

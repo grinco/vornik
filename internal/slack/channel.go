@@ -8,6 +8,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -210,6 +211,41 @@ type eventInner struct {
 	EventTs   string `json:"event_ts,omitempty"`
 }
 
+// acceptDelivery atomically claims an upstream delivery ID for the replay
+// window. Slack retries an Events API request when the handler spends more
+// than a few seconds in the dispatcher; retries carry the same event_id.
+func (c *Channel) acceptDelivery(id string, now time.Time) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return true
+	}
+	c.deliveriesMu.Lock()
+	defer c.deliveriesMu.Unlock()
+	cutoff := now.Add(-maxReplayWindow)
+	for seenID, seenAt := range c.seenDeliveries {
+		if seenAt.Before(cutoff) {
+			delete(c.seenDeliveries, seenID)
+		}
+	}
+	if _, exists := c.seenDeliveries[id]; exists {
+		return false
+	}
+	if len(c.seenDeliveries) >= maxSeenDeliveries {
+		var (
+			oldestID string
+			oldestAt time.Time
+		)
+		for seenID, seenAt := range c.seenDeliveries {
+			if oldestID == "" || seenAt.Before(oldestAt) {
+				oldestID, oldestAt = seenID, seenAt
+			}
+		}
+		delete(c.seenDeliveries, oldestID)
+	}
+	c.seenDeliveries[id] = now
+	return true
+}
+
 // HandleWebhook is the HTTP entry point for inbound Slack Events
 // API deliveries. Mount on the daemon's API mux at
 // `/api/v1/slack/webhook`.
@@ -244,6 +280,22 @@ func (c *Channel) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	if err := c.verifySignature(r, body, now); err != nil {
 		c.logger.Warn().Err(err).Msg("slack: signature verification failed")
 		http.Error(w, "unauthorised", http.StatusUnauthorized)
+		return
+	}
+	// Slack marks retry attempts explicitly. Drop them even when a load
+	// balancer sends the retry to another daemon whose in-memory event_id
+	// cache has never seen the original delivery.
+	if retryNum := strings.TrimSpace(r.Header.Get("X-Slack-Retry-Num")); retryNum != "" {
+		c.logger.Info().
+			Str("retry_num", retryNum).
+			Str("retry_reason", r.Header.Get("X-Slack-Retry-Reason")).
+			Msg("slack: retry delivery acknowledged without redispatch")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/x-www-form-urlencoded") {
+		c.handleSlashCommandWebhook(w, r, body, now)
 		return
 	}
 
@@ -293,6 +345,14 @@ func (c *Channel) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 			Str("team_id", teamID).
 			Str("event_id", payload.EventID).
 			Msg("slack: team_id not recognised; dropping delivery")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if !c.acceptDelivery("event:"+payload.EventID, now) {
+		c.logger.Info().
+			Str("team_id", teamID).
+			Str("event_id", payload.EventID).
+			Msg("slack: duplicate event delivery acknowledged")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -358,6 +418,99 @@ func (c *Channel) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleSlashCommandWebhook handles Slack's signed
+// application/x-www-form-urlencoded command payload. Vornik exposes a single
+// command, /vornik <prompt>, which enters the same project-scoped dispatcher
+// session as ordinary Slack messages. It acknowledges before dispatch so Slack
+// never shows its three-second timeout banner.
+func (c *Channel) handleSlashCommandWebhook(w http.ResponseWriter, r *http.Request, body []byte, now time.Time) {
+	form, err := url.ParseQuery(string(body))
+	if err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	teamID := strings.TrimSpace(form.Get("team_id"))
+	inst, ok := c.installationsByID[teamID]
+	if !ok {
+		c.logger.Warn().Str("team_id", teamID).Msg("slack: slash command for unknown team")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if command := strings.TrimSpace(form.Get("command")); command != "/vornik" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Unsupported command. Use /vornik <prompt>."))
+		return
+	}
+	channelID := strings.TrimSpace(form.Get("channel_id"))
+	userID := strings.TrimSpace(form.Get("user_id"))
+	if !c.slashCommandActorAllowed(inst, channelID, userID) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	text := strings.TrimSpace(form.Get("text"))
+	if text == "" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Usage: /vornik <prompt>"))
+		return
+	}
+	triggerID := strings.TrimSpace(form.Get("trigger_id"))
+	if !c.acceptDelivery("slash:"+triggerID, now) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	c.recvMu.RLock()
+	recvAny := c.recv
+	c.recvMu.RUnlock()
+	recv, ok := recvAny.(conversation.Receiver)
+	if !ok || recv == nil {
+		c.logger.Warn().Str("trigger_id", triggerID).Msg("slack: slash command received but no Receiver bound")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	sessionID := fmt.Sprintf("%s/%s#slash:%s", teamID, channelID, userID)
+	msg := conversation.ChannelMessage{
+		Source:    channelName,
+		ID:        triggerID,
+		SessionID: sessionID,
+		SpeakerID: userID,
+		Text:      text,
+		ThreadID:  "slash:" + userID,
+		Timestamp: now,
+		ChannelSpecific: map[string]string{
+			"team_id":      teamID,
+			"channel_id":   channelID,
+			"event_id":     triggerID,
+			"event_type":   "slash_command",
+			"command":      "/vornik",
+			"project_id":   inst.projectID,
+			"response_url": form.Get("response_url"),
+		},
+	}
+	c.recordSession(sessionID, "Slack "+channelID, userID, now, inst)
+
+	dispatchCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), slashDispatchTimeout)
+	w.WriteHeader(http.StatusOK)
+	go func() {
+		defer cancel()
+		if err := recv.Receive(dispatchCtx, msg); err != nil {
+			c.logger.Warn().Err(err).Str("trigger_id", triggerID).Msg("slack: slash command Receiver.Receive returned error")
+		}
+	}()
+}
+
+func (c *Channel) slashCommandActorAllowed(inst *installation, channelID, userID string) bool {
+	if len(inst.allowedChannels) > 0 {
+		if _, allowed := inst.allowedChannels[channelID]; !allowed {
+			return false
+		}
+	}
+	_, err := c.resolveSpeakerForInstallation(inst, userID)
+	return err == nil
 }
 
 // handleMessageEvent is the shared inbound translation path for the

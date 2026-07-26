@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +22,20 @@ type recordingReceiver struct {
 	mu  sync.Mutex
 	got []conversation.ChannelMessage
 	err error // optional error to return from Receive
+}
+
+type blockingReceiver struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	calls   atomic.Int64
+}
+
+func (r *blockingReceiver) Receive(_ context.Context, _ conversation.ChannelMessage) error {
+	r.calls.Add(1)
+	r.once.Do(func() { close(r.started) })
+	<-r.release
+	return nil
 }
 
 func (r *recordingReceiver) Receive(_ context.Context, msg conversation.ChannelMessage) error {
@@ -280,6 +295,131 @@ func TestHandleWebhook_MessageIM_Dispatches(t *testing.T) {
 	}
 	if got := rec.snapshot(); len(got) != 1 {
 		t.Fatalf("Receive call count = %d, want 1 (DMs dispatch without mention)", len(got))
+	}
+}
+
+// TestHandleWebhook_DuplicateEventIDDispatchesOnce regresses Slack retrying a
+// delivery while the first request is still waiting on the LLM. Every retry
+// carries the same event_id and must be acknowledged without another dispatch.
+func TestHandleWebhook_DuplicateEventIDDispatchesOnce(t *testing.T) {
+	cfg := validConfig()
+	now := time.Unix(1700000000, 0)
+	ch := makeChannel(t, cfg, now)
+	rec := &recordingReceiver{}
+	bindReceiver(ch, rec)
+	payload := map[string]any{
+		"type":     "event_callback",
+		"team_id":  "T123",
+		"event_id": "Ev_retry_same",
+		"event": map[string]any{
+			"type":         "message",
+			"user":         "U_alice",
+			"text":         "hi",
+			"channel":      "D_alice",
+			"ts":           "1700000002.000200",
+			"channel_type": "im",
+		},
+	}
+
+	for range 2 {
+		w := postSignedJSON(t, ch, cfg.SigningSecret, now, payload)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", w.Code)
+		}
+	}
+	if got := rec.snapshot(); len(got) != 1 {
+		t.Fatalf("Receive call count = %d, want exactly 1 for duplicate event_id", len(got))
+	}
+}
+
+func TestHandleWebhook_RetryWhileFirstReceiveInFlightDispatchesOnce(t *testing.T) {
+	cfg := validConfig()
+	now := time.Unix(1700000000, 0)
+	ch := makeChannel(t, cfg, now)
+	rec := &blockingReceiver{started: make(chan struct{}), release: make(chan struct{})}
+	bindReceiver(ch, rec)
+	body, err := json.Marshal(map[string]any{
+		"type":     "event_callback",
+		"team_id":  "T123",
+		"event_id": "Ev_slow_retry",
+		"event": map[string]any{
+			"type":         "message",
+			"user":         "U_alice",
+			"text":         "slow hello",
+			"channel":      "D_alice",
+			"ts":           "1700000002.000300",
+			"channel_type": "im",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	firstReq := signedRequest(t, cfg.SigningSecret, now.Unix(), body)
+	firstDone := make(chan struct{})
+	go func() {
+		ch.HandleWebhook(httptest.NewRecorder(), firstReq)
+		close(firstDone)
+	}()
+	<-rec.started
+
+	retryReq := signedRequest(t, cfg.SigningSecret, now.Unix(), body)
+	retryReq.Header.Set("X-Slack-Retry-Num", "1")
+	retryReq.Header.Set("X-Slack-Retry-Reason", "http_timeout")
+	retryRec := httptest.NewRecorder()
+	ch.HandleWebhook(retryRec, retryReq)
+	if retryRec.Code != http.StatusOK {
+		t.Fatalf("retry status = %d, want 200", retryRec.Code)
+	}
+	if got := rec.calls.Load(); got != 1 {
+		t.Fatalf("Receive calls while first is in flight = %d, want 1", got)
+	}
+	close(rec.release)
+	<-firstDone
+}
+
+func TestHandleWebhook_RetryHeaderDropsAcrossChannelInstances(t *testing.T) {
+	cfg := validConfig()
+	now := time.Unix(1700000000, 0)
+	first := makeChannel(t, cfg, now)
+	second := makeChannel(t, cfg, now)
+	firstRec := &recordingReceiver{}
+	secondRec := &recordingReceiver{}
+	bindReceiver(first, firstRec)
+	bindReceiver(second, secondRec)
+	payload := map[string]any{
+		"type":     "event_callback",
+		"team_id":  "T123",
+		"event_id": "Ev_cross_replica",
+		"event": map[string]any{
+			"type":         "message",
+			"user":         "U_alice",
+			"text":         "hello",
+			"channel":      "D_alice",
+			"ts":           "1700000002.000400",
+			"channel_type": "im",
+		},
+	}
+	postSignedJSON(t, first, cfg.SigningSecret, now, payload)
+	body, _ := json.Marshal(payload)
+	retryReq := signedRequest(t, cfg.SigningSecret, now.Unix(), body)
+	retryReq.Header.Set("X-Slack-Retry-Num", "1")
+	second.HandleWebhook(httptest.NewRecorder(), retryReq)
+
+	if got := len(firstRec.snapshot()) + len(secondRec.snapshot()); got != 1 {
+		t.Fatalf("total Receive calls across instances = %d, want 1", got)
+	}
+}
+
+func TestAcceptDelivery_HardCapsCache(t *testing.T) {
+	ch := makeChannel(t, validConfig(), time.Unix(1700000000, 0))
+	now := time.Unix(1700000000, 0)
+	for i := range 10001 {
+		if !ch.acceptDelivery(fmt.Sprintf("event:Ev-%d", i), now) {
+			t.Fatalf("new delivery %d rejected", i)
+		}
+	}
+	if got := len(ch.seenDeliveries); got > 10000 {
+		t.Fatalf("seen delivery cache len = %d, want <= 10000", got)
 	}
 }
 

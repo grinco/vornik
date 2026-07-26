@@ -114,8 +114,11 @@ been allowed into.
 3. Subscribe the bot to the `app_mention`, `message.im`, and `message.channels`
    events.
 4. Under **OAuth & Permissions**, add the `app_mentions:read`, `chat:write`,
-   `im:history`, `im:read`, and `channels:history` scopes.
-5. Install the App to your workspace and capture the signing secret and the bot
+   `im:history`, `im:read`, `channels:history`, and `commands` scopes.
+5. Under **Slash Commands**, create `/vornik` and set its request URL to the
+   same `/api/v1/slack/webhook` endpoint. Use `/vornik <prompt>` to start or
+   continue the per-user channel session.
+6. Install (or reinstall) the App to your workspace and capture the signing secret and the bot
    token (it starts with `xoxb-`).
 
 ### Configuration
@@ -151,6 +154,16 @@ is what lets vornik reply.
   server's clock is in sync.
 - Slack limits how fast a bot can post (roughly one message per second per
   channel). vornik respects this automatically and waits when Slack asks it to.
+- Slack retries Events API deliveries when acknowledgement is slow. vornik
+  drops Slack-marked retries (including when they reach another replica) and
+  deduplicates repeated `event_id` values, so one message produces one
+  dispatcher turn.
+- `/vornik` is the Slack command entry point. Telegram-specific commands such
+  as `/tasks` are not separately registered in Slack; ask for those operations
+  through `/vornik`, for example `/vornik show my running tasks`.
+- Slash commands use a per-user, per-channel session separate from ordinary
+  message threads. Their delayed answers post at channel level because a slash
+  invocation has no Slack message timestamp to reply under.
 
 ---
 

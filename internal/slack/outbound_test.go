@@ -120,6 +120,28 @@ func TestSendChatPostMessage_HappyPath(t *testing.T) {
 	}
 }
 
+func TestSendChatPostMessage_SlashSessionPostsWithoutThread(t *testing.T) {
+	stub := newSlackStub(t)
+	ch := outboundChannel(t, stub)
+
+	if _, err := ch.Send(context.Background(), conversation.ChannelMessage{
+		SessionID: "T123/C_general#slash:U_alice",
+		Text:      "delayed slash reply",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	var got chatPostMessageRequest
+	if err := json.Unmarshal([]byte(stub.snapshotBody(0)), &got); err != nil {
+		t.Fatalf("decode stub body: %v", err)
+	}
+	if got.Channel != "C_general" || got.Text != "delayed slash reply" {
+		t.Fatalf("unexpected request: %+v", got)
+	}
+	if got.ThreadTs != "" {
+		t.Fatalf("ThreadTs = %q, want empty for slash command", got.ThreadTs)
+	}
+}
+
 // TestSendChatPostMessage_SendsBearerAuth — the bot token rides in
 // the Authorization header per Slack's docs.
 func TestSendChatPostMessage_SendsBearerAuth(t *testing.T) {

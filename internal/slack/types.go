@@ -66,6 +66,15 @@ const maxWebhookBodyBytes = 1 * 1024 * 1024
 // "Verifying requests from Slack" docs.
 const maxReplayWindow = 5 * time.Minute
 
+// maxSeenDeliveries hard-bounds the retry-dedup cache. TTL cleanup normally
+// keeps it far smaller; the cap protects against a burst of high-cardinality
+// signed events within one replay window.
+const maxSeenDeliveries = 10_000
+
+// slashDispatchTimeout bounds work detached from Slack's short HTTP request
+// deadline after the command has already been acknowledged.
+const slashDispatchTimeout = 10 * time.Minute
+
 // defaultPostMessageRPS / defaultPostMessageBurst tune the per-
 // (team, channel) outbound rate limiter. Slack's published Tier-3
 // ceiling is ~1 message/second per channel; we honor that with a
@@ -254,6 +263,12 @@ type Channel struct {
 	sessionsMu sync.Mutex
 	sessions   map[string]*sessionEntry
 
+	// deliveriesMu + seenDeliveries suppress Slack retries before they reach
+	// the dispatcher. Slack reuses event_id (Events API) or trigger_id (slash
+	// commands) across retry attempts.
+	deliveriesMu   sync.Mutex
+	seenDeliveries map[string]time.Time
+
 	// rateLimiter is the per-(team, channel) outbound token bucket
 	// (internal/ratelimit/keybucket.go). Lazily allocated; wired in
 	// channel.go. Held as `any` so types.go doesn't depend on the
@@ -317,6 +332,7 @@ func New(cfg Config) (*Channel, error) {
 		postMessageRPS:     rps,
 		postMessageBurst:   burst,
 		sessions:           make(map[string]*sessionEntry),
+		seenDeliveries:     make(map[string]time.Time),
 		installations:      installs,
 		installationsByID:  indexInstallations(installs),
 		voice:              cfg.Voice,

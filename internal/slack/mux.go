@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -91,7 +93,14 @@ func (m *MuxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Type   string `json:"type"`
 		TeamID string `json:"team_id"`
 	}
-	_ = json.Unmarshal(body, &peek)
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/x-www-form-urlencoded") {
+		if form, err := url.ParseQuery(string(body)); err == nil {
+			peek.Type = "slash_command"
+			peek.TeamID = form.Get("team_id")
+		}
+	} else {
+		_ = json.Unmarshal(body, &peek)
+	}
 
 	if peek.Type == "url_verification" {
 		m.handleURLVerification(w, r, body)

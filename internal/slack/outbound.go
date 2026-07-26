@@ -87,6 +87,11 @@ func (c *Channel) sendChatPostMessage(ctx context.Context, msg conversation.Chan
 	if err != nil {
 		return "", err
 	}
+	if strings.HasPrefix(threadRoot, "slash:") {
+		// Slash invocations have no originating message timestamp to thread
+		// against. Post the delayed dispatcher reply at channel level.
+		threadRoot = ""
+	}
 	inst, ok := c.installationsByID[teamID]
 	if !ok {
 		return "", fmt.Errorf("%w: team_id %q not configured", ErrUnknownSession, teamID)

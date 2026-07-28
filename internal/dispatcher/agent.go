@@ -106,6 +106,15 @@ type Request struct {
 	// FileSender delivers output files back to the caller (optional).
 	FileSender FileSender
 
+	// ChannelIdentity is the originating channel's own address / handle
+	// on its platform (e.g. the email channel's From: address), when the
+	// channel implements conversation.SelfIdentifyingChannel. Folded into
+	// the system prompt so the lead can recognise its own earlier words
+	// when a platform quotes them back — an email client's quoted trailer
+	// otherwise reads to the model as a third party's statement (incident
+	// 2026-07-28). Empty means "unknown"; no identity claim is made.
+	ChannelIdentity string
+
 	// ContextTier signals the session's context-budget headroom
 	// (PEAK / GOOD / DEGRADING / POOR). Zero-value (TierPeak) means
 	// "no degradation signal" — defaults apply. When the caller
@@ -198,6 +207,10 @@ type Agent struct {
 	rateLimiter     ratelimit.ProjectLimiter
 	budgetNotifier  budget.Notifier
 	artifactStore   InputArtifactStore
+	// channelThreads backs get_channel_thread. Set via
+	// SetChannelThreadReader after construction, because the channel session
+	// stores are built after the dispatcher agent.
+	channelThreads ChannelThreadReader
 	// projectWorkspacePath — base dir for per-project workspaces;
 	// lets the ToolExecutor allow-list the per-project uploads/ dir
 	// channel attachments land in. See ToolExecutor.projectWorkspacePath.
@@ -507,6 +520,7 @@ func NewAgent(
 		execRepo:                     execRepo,
 		artifactRepo:                 artifactRepo,
 		artifactStore:                a.artifactStore,
+		channelThreads:               a.channelThreads,
 		projectWorkspacePath:         a.projectWorkspacePath,
 		attachmentAutoExtractor:      a.attachmentAutoExtractor,
 		attachmentAutoExtractTimeout: 60 * time.Second,
@@ -543,4 +557,21 @@ func NewAgent(
 		logger:                a.logger,
 	}
 	return a
+}
+
+// SetChannelThreadReader wires the reader backing get_channel_thread. Late-bound
+// setter for the same reason as SetChannelFollowupRegistrar: the per-channel
+// session stores are constructed after the dispatcher agent, so
+// construction-time wiring isn't available.
+//
+// Passing nil leaves the tool disabled; it then reports the capability as
+// unavailable rather than failing the turn.
+func (a *Agent) SetChannelThreadReader(r ChannelThreadReader) {
+	if a == nil {
+		return
+	}
+	a.channelThreads = r
+	if a.toolExecutor != nil {
+		a.toolExecutor.channelThreads = r
+	}
 }

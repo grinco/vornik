@@ -44,3 +44,11 @@ func (r *ChannelSessionRepository) Save(_ context.Context, _, _, _ string, _ []b
 func (r *ChannelSessionRepository) Delete(_ context.Context, _, _ string) error {
 	return nil
 }
+
+// ListByPrefix always returns no rows, consistent with Load's ErrNotFound:
+// this backend stores nothing, so it has no sibling sessions to report.
+// Callers that use it to enrich context (the Slack channel's thread digests)
+// degrade to their in-memory view rather than erroring.
+func (r *ChannelSessionRepository) ListByPrefix(_ context.Context, _, _ string, _ int) ([]*persistence.ChannelSession, error) {
+	return nil, nil
+}

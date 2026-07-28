@@ -150,8 +150,12 @@ func TestE2E_AppMentionRoundTrip(t *testing.T) {
 	if postedReq.Text != "hi from vornik" {
 		t.Errorf("posted Text = %q, want %q", postedReq.Text, "hi from vornik")
 	}
-	if postedReq.ThreadTs != "1700000010.000100" {
-		t.Errorf("posted ThreadTs = %q, want %q (the inbound ts as the new thread root)", postedReq.ThreadTs, "1700000010.000100")
+	// A top-level mention now gets a CHANNEL-LEVEL reply (no thread_ts):
+	// answers buried in threads are unfindable in Slack days later, which is
+	// what drove the operator report. In-thread messages still reply in-thread
+	// — covered by channel_continuity_test.go.
+	if postedReq.ThreadTs != "" {
+		t.Errorf("posted ThreadTs = %q, want empty (channel-level reply)", postedReq.ThreadTs)
 	}
 	if got := gotAuthHeader.Load(); got != "Bearer xoxb-bot" {
 		t.Errorf("Authorization header = %q, want Bearer xoxb-bot", got)
@@ -166,7 +170,7 @@ func TestE2E_AppMentionRoundTrip(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("ListSessions = %d sessions, want 1", len(sessions))
 	}
-	if sessions[0].ID != "T_E2E/C_ops#1700000010.000100" {
-		t.Errorf("session ID = %q", sessions[0].ID)
+	if sessions[0].ID != "T_E2E/C_ops#"+ChannelSessionThreadRoot {
+		t.Errorf("session ID = %q, want T_E2E/C_ops#%s", sessions[0].ID, ChannelSessionThreadRoot)
 	}
 }

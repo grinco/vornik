@@ -584,19 +584,31 @@ func (c *Channel) handleMessageEvent(ctx context.Context, p eventPayload, inst *
 // matching how Slack's UI displays threads.
 func (c *Channel) buildMessageChannelMessage(p eventPayload, inst *installation) conversation.ChannelMessage {
 	ev := p.Event
+	// Session scope: a message inside a thread belongs to that thread; a
+	// top-level channel message belongs to the CHANNEL.
+	//
+	// Keying a top-level message on its own ts (the original behaviour) gave
+	// every channel message a fresh empty session, so a correspondent who
+	// follows up in the channel — the normal thing to do, because Slack threads
+	// are unfindable after a few days — got a bot with no memory of the earlier
+	// threads OR of her own previous channel message (operator report
+	// 2026-07-28).
 	threadRoot := ev.ThreadTs
 	if threadRoot == "" {
-		threadRoot = ev.Ts
+		threadRoot = ChannelSessionThreadRoot
 	}
 	sessionID := fmt.Sprintf("%s/%s#%s", p.TeamID, ev.Channel, threadRoot)
 	cs := map[string]string{
 		"team_id":      p.TeamID,
 		"channel_id":   ev.Channel,
 		"channel_type": ev.ChannelType,
-		"thread_ts":    threadRoot,
-		"event_id":     p.EventID,
-		"event_type":   ev.Type,
-		"project_id":   inst.projectID,
+		// The REAL thread_ts, or empty at channel level. Never the synthesised
+		// session root: voiceTracker keys on this and must not be told a thread
+		// exists when it does not.
+		"thread_ts":  ev.ThreadTs,
+		"event_id":   p.EventID,
+		"event_type": ev.Type,
+		"project_id": inst.projectID,
 	}
 	if ev.ThreadTs != "" && ev.ThreadTs != ev.Ts {
 		cs["in_reply_to_ts"] = ev.Ts
@@ -608,8 +620,8 @@ func (c *Channel) buildMessageChannelMessage(p eventPayload, inst *installation)
 		SessionID:       sessionID,
 		SpeakerID:       ev.User,
 		Text:            ev.Text,
-		InReplyTo:       "", // Slack uses thread_ts as the threading primitive — captured in ChannelSpecific
-		ThreadID:        threadRoot,
+		InReplyTo:       "",          // Slack uses thread_ts as the threading primitive — captured in ChannelSpecific
+		ThreadID:        ev.ThreadTs, // empty at channel level; ThreadID names a thread, and there isn't one
 		Timestamp:       ts,
 		ChannelSpecific: cs,
 	}
@@ -745,8 +757,10 @@ func (c *Channel) sendVoiceForSession(ctx context.Context, msg conversation.Chan
 		return "", false, fmt.Errorf("%w: team_id %q not configured", ErrUnknownSession, teamID)
 	}
 	return c.sendVoiceReply(ctx, inst, uploadAudioParams{
-		Channel:  channelID,
-		ThreadTs: threadRoot,
+		Channel: channelID,
+		// Same sentinel mapping as the text path — otherwise a channel-scoped
+		// session would upload with a literal thread_ts of "main".
+		ThreadTs: resolveThreadTs(threadRoot),
 		Filename: "reply.m4a",
 	}, msg.Text)
 }

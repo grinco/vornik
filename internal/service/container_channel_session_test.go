@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -70,6 +72,31 @@ func (f *fakeChanSessionRepo) Save(_ context.Context, kind, sessionID, activePro
 		UpdatedAt:     time.Now(),
 	}
 	return nil
+}
+
+// ListByPrefix returns matching rows newest-first, mirroring the Postgres
+// ordering so tests that exercise sibling lookup see production semantics.
+func (f *fakeChanSessionRepo) ListByPrefix(_ context.Context, kind, prefix string, limit int) ([]*persistence.ChannelSession, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if limit <= 0 {
+		return nil, nil
+	}
+	var out []*persistence.ChannelSession
+	for key, row := range f.rows {
+		if !strings.HasPrefix(key, chKey(kind, "")) || row == nil {
+			continue
+		}
+		if !strings.HasPrefix(row.SessionID, prefix) {
+			continue
+		}
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (f *fakeChanSessionRepo) Delete(_ context.Context, kind, sessionID string) error {

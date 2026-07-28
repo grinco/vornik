@@ -86,6 +86,53 @@ SET active_project = EXCLUDED.active_project,
 	return nil
 }
 
+// ListByPrefix returns the sessions under a SessionID prefix, newest activity
+// first. See the interface doc for why a prefix query is the right shape.
+//
+// The prefix is escaped before interpolation into LIKE: a Slack channel id
+// can't contain '%' or '_', but the argument is not this package's to trust,
+// and an unescaped '%' would silently widen the match to other channels — the
+// containment property the caller relies on.
+func (r *ChannelSessionRepository) ListByPrefix(ctx context.Context, kind, prefix string, limit int) ([]*persistence.ChannelSession, error) {
+	if kind == "" || prefix == "" {
+		return nil, fmt.Errorf("channel_session: kind + prefix required")
+	}
+	if limit <= 0 {
+		return nil, nil
+	}
+	const q = `
+SELECT kind, session_id, COALESCE(active_project, ''), history, created_at, updated_at, expires_at
+FROM channel_sessions
+WHERE kind = $1 AND session_id LIKE $2
+ORDER BY updated_at DESC
+LIMIT $3`
+	rows, err := r.db.QueryContext(ctx, q, kind, escapeLikePrefix(prefix)+"%", limit)
+	if err != nil {
+		return nil, fmt.Errorf("channel_session: list by prefix: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*persistence.ChannelSession
+	for rows.Next() {
+		var (
+			s         persistence.ChannelSession
+			expiresAt sql.NullTime
+		)
+		if err := rows.Scan(&s.Kind, &s.SessionID, &s.ActiveProject, &s.History, &s.CreatedAt, &s.UpdatedAt, &expiresAt); err != nil {
+			return nil, fmt.Errorf("channel_session: list by prefix scan: %w", err)
+		}
+		if expiresAt.Valid {
+			t := expiresAt.Time
+			s.ExpiresAt = &t
+		}
+		out = append(out, &s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("channel_session: list by prefix rows: %w", err)
+	}
+	return out, nil
+}
+
 // Delete removes the session. Idempotent — no error when the row
 // doesn't exist; the caller's "clear chat" affordance shouldn't
 // fail for a session that was never persisted.

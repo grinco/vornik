@@ -135,6 +135,13 @@ func (a *Agent) Process(ctx context.Context, req Request) (result Result) {
 		systemPrompt = BuildSystemPrompt(req.Project, req.Projects)
 		roleLabel = "dispatcher"
 	}
+	// Order matters for prompt-cache hit rate: append the MORE stable block
+	// first. Channel identity is effectively immutable (the channel's From
+	// address), while the operator profile is rewritten by
+	// update_operator_profile over time. With identity first,
+	// base+identity stays a valid cached prefix across profile edits;
+	// reversed, every profile edit would also shift the identity block.
+	systemPrompt = appendChannelIdentity(systemPrompt, req.ChannelIdentity)
 	systemPrompt = a.maybeInjectOperatorProfile(ctx, systemPrompt, req.OperatorID)
 	audit := newChatAuditTurn(a)
 	// Propagate the pre-allocated turn id through ctx so tools that
@@ -339,6 +346,13 @@ func (a *Agent) ProcessStreaming(ctx context.Context, req Request, onText chat.S
 		systemPrompt = BuildSystemPrompt(req.Project, req.Projects)
 		roleLabel = "dispatcher"
 	}
+	// Order matters for prompt-cache hit rate: append the MORE stable block
+	// first. Channel identity is effectively immutable (the channel's From
+	// address), while the operator profile is rewritten by
+	// update_operator_profile over time. With identity first,
+	// base+identity stays a valid cached prefix across profile edits;
+	// reversed, every profile edit would also shift the identity block.
+	systemPrompt = appendChannelIdentity(systemPrompt, req.ChannelIdentity)
 	systemPrompt = a.maybeInjectOperatorProfile(ctx, systemPrompt, req.OperatorID)
 	audit := newChatAuditTurn(a)
 	// Propagate the pre-allocated turn id through ctx so tools that

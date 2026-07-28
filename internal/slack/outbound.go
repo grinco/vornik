@@ -87,11 +87,7 @@ func (c *Channel) sendChatPostMessage(ctx context.Context, msg conversation.Chan
 	if err != nil {
 		return "", err
 	}
-	if strings.HasPrefix(threadRoot, "slash:") {
-		// Slash invocations have no originating message timestamp to thread
-		// against. Post the delayed dispatcher reply at channel level.
-		threadRoot = ""
-	}
+	threadRoot = resolveThreadTs(threadRoot)
 	inst, ok := c.installationsByID[teamID]
 	if !ok {
 		return "", fmt.Errorf("%w: team_id %q not configured", ErrUnknownSession, teamID)
@@ -247,6 +243,32 @@ func parseRetryAfter(in string) time.Duration {
 // `<team_id>/<channel_id>#<thread_root_ts>` into its components.
 // Defensive on every separator so a malformed SessionID surfaces a
 // routing error rather than a wonky outbound URL.
+// ChannelSessionThreadRoot is the SessionID third component marking a
+// CHANNEL-scoped session rather than a thread-scoped one — all top-level
+// messages in a channel share it, so the conversation is continuous instead of
+// resetting on every message.
+//
+// Deliberately non-numeric: Slack timestamps are digits and a dot, so this can
+// never collide with a real thread_ts. It joins the existing "slash:" sentinel
+// as a third component that is not a timestamp; parseSlackSessionID only
+// requires the component to be non-empty.
+const ChannelSessionThreadRoot = "main"
+
+// resolveThreadTs maps a SessionID's third component to the thread_ts an
+// outbound Slack API call should use: empty (post at channel level) for the
+// non-timestamp sentinels, the timestamp itself otherwise.
+//
+// Shared by both outbound paths on purpose. sendChatPostMessage and
+// sendVoiceForSession each derive their thread target from the parsed
+// SessionID, so a sentinel handled in only one of them would post text at
+// channel level while uploading voice with a literal thread_ts of "main".
+func resolveThreadTs(threadRoot string) string {
+	if threadRoot == ChannelSessionThreadRoot || strings.HasPrefix(threadRoot, "slash:") {
+		return ""
+	}
+	return threadRoot
+}
+
 func parseSlackSessionID(s string) (teamID, channelID, threadRoot string, err error) {
 	hash := strings.LastIndex(s, "#")
 	if hash < 0 {

@@ -272,6 +272,10 @@ type ToolExecutor struct {
 	execRepo      persistence.ExecutionRepository
 	artifactRepo  persistence.ArtifactRepository
 	artifactStore InputArtifactStore // nil disables input snapshotting
+	// channelThreads reads sibling conversations in the caller's own chat
+	// container, backing get_channel_thread. Nil disables the tool — the
+	// lead is told the capability is unavailable rather than erroring.
+	channelThreads ChannelThreadReader
 	// allowedInputRoots is the allow-list of host directories a
 	// create_task `input_files` entry may name as a *literal*
 	// filesystem path before it is snapshotted via StoreInput.
@@ -505,6 +509,8 @@ func (te *ToolExecutor) execute(ctx context.Context, tc chat.ToolCall, activePro
 		return te.memoryCorrect(ctx, args, activeProject, allowedProjects)
 	case "read_artifact":
 		return te.readArtifact(ctx, args, allowedProjects)
+	case getChannelThreadName:
+		return te.getChannelThread(ctx, args)
 	case ToolSearchName:
 		return te.toolSearch(args, activeProject, chatID)
 	case composeAutomationName:
@@ -2196,6 +2202,20 @@ func DispatcherTools() []chat.Tool {
 						"artifact_name":{"type":"string","description":"Specific artifact name (optional — sends first artifact if omitted)"}
 					},
 					"required":["task_id"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: chat.ToolFunction{
+				Name:        getChannelThreadName,
+				Description: "Read the full transcript of one of YOUR OWN earlier conversations in this same chat channel. Use it when a message refers to something discussed before and the RECENT THREADS block in your system prompt shows a thread that looks relevant but its excerpt is too short to answer from. Pass the thread_key exactly as that block lists it. Only threads in the current channel and workspace are readable. Prefer this over asking the user to repeat themselves — in Slack they follow up in the channel precisely because finding the old thread is hard for them too.",
+				Parameters: json.RawMessage(`{
+					"type":"object",
+					"properties":{
+						"thread_key":{"type":"string","description":"The thread_key from the RECENT THREADS block (e.g. 1719400000.123456)."}
+					},
+					"required":["thread_key"]
 				}`),
 			},
 		},

@@ -362,6 +362,39 @@ RESPONSE STYLE
 	return b.String()
 }
 
+// appendChannelIdentity appends a channel-identity block naming the address
+// the bot itself sends from, so the model can recognise its own earlier words
+// when the platform echoes them back.
+//
+// Why this exists: email clients quote the message being replied to. A
+// correspondent who replies "4" to pick from a numbered list sends "4" plus a
+// quoted copy of the bot's own previous reply. With no idea what its own
+// address is, the lead read that quote as a third party's statement and
+// answered "I see bot@vornik.io said … — what did you want?" instead of acting
+// on the choice (incident 2026-07-28). The channel now strips the quoted
+// trailer, and this block is the backstop for quotes that survive stripping
+// (inline replies, unrecognised client formats).
+//
+// Appended (never prepended) so the caller's prompt stays a stable prefix and
+// keeps hitting the provider prompt cache. Empty identity is a no-op — an
+// unconfigured channel must not have a blank address asserted for it.
+func appendChannelIdentity(systemPrompt, identity string) string {
+	identity = strings.TrimSpace(identity)
+	if identity == "" {
+		return systemPrompt
+	}
+	var b strings.Builder
+	b.WriteString(systemPrompt)
+	b.WriteString("\n\nYOUR OWN IDENTITY ON THIS CHANNEL\n")
+	fmt.Fprintf(&b, "  You send from %s. That address is YOU, not another participant.\n", identity)
+	b.WriteString("  Quoted or forwarded text attributed to that address is your OWN\n")
+	b.WriteString("  earlier reply in this thread — treat it as your prior turn, never as\n")
+	b.WriteString("  a third party's statement, and never ask the user what \"they\" meant\n")
+	b.WriteString("  by it. When a reply is terse (\"4\", \"yes\", \"the second one\"), resolve\n")
+	b.WriteString("  it against your own last message and act on it.\n")
+	return b.String()
+}
+
 // BuildLeadSystemPrompt creates a system prompt for lead-mode conversations.
 //
 // When a user selects a project via /project, the conversation is "pinned" to

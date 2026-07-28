@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"vornik.io/vornik/internal/chat"
@@ -9,6 +10,7 @@ import (
 	"vornik.io/vornik/internal/dispatcher"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/sessionstore"
+	"vornik.io/vornik/internal/slack"
 )
 
 // slackSessionStore implements dispatcher.SessionStore for the Slack
@@ -141,8 +143,61 @@ func (s *slackSessionStore) Load(ctx context.Context, msg conversation.ChannelMe
 	if leadPrompt, _ := dispatcher.ResolveLeadPrompt(s.registry, s.projectID); leadPrompt != "" {
 		swarm := s.registry.GetSwarm(project.SwarmID)
 		sess.LeadSystemPrompt = dispatcher.BuildLeadSystemPrompt(project, swarm, leadPrompt, sess.AvailableProjects)
+		sess.LeadSystemPrompt += s.threadDigestBlock(ctx, msg.SessionID)
 	}
 	return sess, nil
+}
+
+// threadDigestBlock renders the "what was discussed in this channel's threads"
+// system-prompt block for a CHANNEL-scoped turn, or "" for anything else.
+//
+// Only channel-scoped sessions get it: inside a thread the lead already has
+// that thread's own history, and injecting sibling threads there would be noise
+// plus a cross-thread bleed for no benefit.
+//
+// Best-effort throughout — a digest is an enrichment, so a persistence error
+// degrades to "no block" rather than failing the user's turn.
+func (s *slackSessionStore) threadDigestBlock(ctx context.Context, sessionID string) string {
+	if threadKeyFromSessionID(sessionID) != slack.ChannelSessionThreadRoot {
+		return ""
+	}
+	prefix := channelPrefixFromSessionID(sessionID)
+	if prefix == "" {
+		return ""
+	}
+
+	// Durable view first. Fetch more than we render so that excluding the
+	// caller and non-thread siblings can't starve the block below the cap.
+	siblings, err := s.persister.ListByPrefix(ctx, prefix, maxDigestThreads*3)
+	if err != nil {
+		return ""
+	}
+	if len(siblings) == 0 {
+		// No persistence (SQLite / unwired) or nothing stored yet — fall back
+		// to whatever this process has seen. Without this, single-process
+		// deployments would get no digests at all.
+		siblings = s.inMemorySiblings(prefix)
+	}
+	return renderThreadDigests(digestsForChannel(siblings, sessionID))
+}
+
+// inMemorySiblings projects the in-process history map into the same shape as
+// the persisted listing. UpdatedAt is unknown here, so ordering falls back to
+// the stable sort in renderThreadDigests rather than being fabricated.
+func (s *slackSessionStore) inMemorySiblings(prefix string) []sessionstore.SiblingSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]sessionstore.SiblingSession, 0, len(s.history))
+	for id, h := range s.history {
+		if !strings.HasPrefix(id, prefix) || len(h) == 0 {
+			continue
+		}
+		out = append(out, sessionstore.SiblingSession{
+			SessionID: id,
+			History:   append([]chat.Message(nil), h...),
+		})
+	}
+	return out
 }
 
 // Append replaces the session's history with the dispatcher's
@@ -177,3 +232,31 @@ func (s *slackSessionStore) snapshotHistory(sessionID string) []chat.Message {
 // Compile-time guard: slackSessionStore satisfies the dispatcher
 // SessionStore contract.
 var _ dispatcher.SessionStore = (*slackSessionStore)(nil)
+
+// ReadThread implements dispatcher.ChannelThreadReader over this channel's
+// session state, backing the get_channel_thread tool.
+//
+// Reads the in-memory map first, then the durable row, so a thread whose
+// session predates the current process is still readable — which is the point,
+// since the whole feature exists because people follow up on conversations from
+// days ago.
+//
+// Access scoping is NOT enforced here: the tool resolves the requested thread
+// against the caller's own container prefix before calling this. Keeping the
+// check in one place (the tool) avoids two implementations disagreeing about
+// what "same channel" means.
+func (s *slackSessionStore) ReadThread(ctx context.Context, sessionID string) ([]chat.Message, error) {
+	s.mu.Lock()
+	if h, ok := s.history[sessionID]; ok && len(h) > 0 {
+		out := append([]chat.Message(nil), h...)
+		s.mu.Unlock()
+		return out, nil
+	}
+	s.mu.Unlock()
+
+	history, _, found, err := s.persister.Load(ctx, sessionID)
+	if err != nil || !found {
+		return nil, err
+	}
+	return history, nil
+}

@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 1ec4ad642fe97bc20cac4e38b2b013522c2718040f06cc74101770871122133e
+      sha256: e92a731da28c40640d77fbbdbfe84d1d9131e5288a27e628c65f6ad3e3749e2f
 ---
 # Release Notes
 
@@ -14,6 +14,67 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.7.6
+
+**A conversation-channels release.** The bot now keeps its bearings in email and
+Slack. **Two behaviour changes are visible to your users immediately** — Slack
+reply placement and the shape of inbound email in the prompt. Read those two
+items before upgrading.
+
+- **Behaviour change: Slack replies to a top-level message now land in the
+  channel, not in a thread.** A message sent inside a thread still gets an
+  in-thread reply, so the bot mirrors wherever the person chose to speak.
+  Deliberate: Slack threads become unfindable within days, so people follow up
+  in the channel anyway, and burying every answer in a thread fought that.
+  Expect a slightly busier channel and far less "where did the bot say that?".
+- **Fixed: Slack conversations in a channel had no memory.** Every top-level
+  message opened a brand-new empty session, so the bot had no recollection of
+  earlier threads — or even of the message someone typed a minute earlier. All
+  top-level messages in a channel now share one continuous conversation;
+  threads keep their own.
+- **New: the bot can reach a channel's earlier threads.** On a channel-level
+  turn it sees a short digest of the channel's recent threads — opening
+  question, latest answer, turn count, date — and can pull any one of them in
+  full when the digest is not enough. Reads are scoped to the caller's own
+  workspace and channel. Requires PostgreSQL; on SQLite, digests cover only the
+  current process lifetime.
+- **Behaviour change: inbound email now carries a `From:` and `Subject:` header
+  on the model's turn.** If you pin project prompts to an exact inbound email
+  shape, re-check them. Other channels are unchanged.
+- **Fixed: the email subject line never reached the model.** An instruction
+  written only in the subject — "add these books to rag", with the books
+  attached and an empty body — was silently dropped, and the bot answered as if
+  no instruction had been given.
+- **Fixed: the bot read its own quoted replies as somebody else's words.** Mail
+  clients quote the message being replied to, and the whole trailer was handed
+  to the model, which had no idea what its own address was. Reply someone said
+  "4" to a numbered list and the bot asked them what they meant. Quoted
+  trailers are now trimmed (Gmail, Apple Mail, Thunderbird, Roundcube, Outlook
+  including localised forms, forwards, plain `>` quotes), and the bot is told
+  its own address and that quoted text from it is its own earlier turn.
+- **Fixed: multi-party email threads were unattributable.** With two people on a
+  thread the bot could not tell their messages apart. Each turn now records its
+  sender.
+- **Fixed: Slack retries no longer produce duplicate replies**, and Slack slash
+  commands are handled as first-class inbound.
+- **Fixed: inbound Slack and GitHub webhook events could reach a channel with no
+  receiver attached** and land in logs only, when observability initialisation
+  rebuilt the HTTP server after startup.
+- **Fixed on Community edition: operator profiles.** The operator memory page
+  renders and saves — its storage and UI route were not fully wired.
+- **New operator skills for the Claude Code / Codex companion:**
+  `configure-vornik` (find the tree the daemon actually reads, scaffold, then
+  validate → reload → confirm), `troubleshoot-vornik` (route by symptom to the
+  right diagnostic instead of improvising) and `report-problem` (file an
+  anonymised upstream issue, with review before submit). These were described
+  under 2026.7.5 but landed after that release was cut — 2026.7.6 is the first
+  release that actually contains them.
+
+Upgrading requires no configuration changes and adds no migrations. The Slack
+and email changes take effect when you restart the daemon.
 
 ---
 

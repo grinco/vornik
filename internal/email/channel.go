@@ -428,6 +428,15 @@ func (c *Channel) Name() string { return channelName }
 // memory) absent from journald.
 func (c *Channel) Logger() *zerolog.Logger { return &c.logger }
 
+// SelfIdentity returns the address this channel sends from, satisfying
+// conversation.SelfIdentifyingChannel. The dispatcher folds it into the
+// system prompt so the lead knows which address in a thread is its own.
+// Without it the lead has no way to tell its own quoted words from a third
+// party's, and reports them as somebody else's statement (incident
+// 2026-07-28). Empty when outbound isn't configured — the dispatcher then
+// omits the identity block rather than asserting a blank address.
+func (c *Channel) SelfIdentity() string { return strings.TrimSpace(c.cfg.FromAddress) }
+
 // Start binds the Receiver, dials the IMAP server, and enters the
 // poll loop. Returns when ctx is cancelled, Stop is called, or the
 // IMAP transport reports an unrecoverable error. Implementations
@@ -888,9 +897,13 @@ func (c *Channel) buildChannelMessage(parsed ParsedMessage, uid string, persiste
 		ts = c.clock()
 	}
 	cs := map[string]string{
-		"message_id": parsed.MessageID,
-		"subject":    parsed.Subject,
-		"uid":        uid,
+		"message_id":                        parsed.MessageID,
+		conversation.ChannelSpecificSubject: parsed.Subject,
+		// Attribution for the user turn: mail threads are routinely
+		// multi-party, and the lead otherwise cannot tell one
+		// correspondent's message from another in history.
+		conversation.ChannelSpecificSender: parsed.From,
+		"uid":                              uid,
 	}
 	if len(parsed.References) > 0 {
 		cs["references"] = strings.Join(parsed.References, " ")
@@ -931,11 +944,16 @@ func (c *Channel) buildChannelMessage(parsed ParsedMessage, uid string, persiste
 		})
 	}
 	return conversation.ChannelMessage{
-		Source:          channelName,
-		ID:              parsed.MessageID,
-		SessionID:       sessionID,
-		SpeakerID:       parsed.From,
-		Text:            parsed.Body,
+		Source:    channelName,
+		ID:        parsed.MessageID,
+		SessionID: sessionID,
+		SpeakerID: parsed.From,
+		// Quoted trailer removed: mail clients append the message being
+		// replied to, and handing that to the LLM made it read its own
+		// prior reply as a third party's words (incident 2026-07-28).
+		// StripQuotedReply never returns empty for non-empty input, so a
+		// reply that is *only* quote still delivers something actionable.
+		Text:            StripQuotedReply(parsed.Body),
 		Attachments:     attachments,
 		InReplyTo:       parsed.InReplyTo,
 		ThreadID:        "",

@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -111,6 +112,54 @@ func (p *Persister) Save(ctx context.Context, sessionID, activeProject string, h
 		return err
 	}
 	return nil
+}
+
+// SiblingSession is one persisted session under a shared SessionID prefix,
+// with its history already unmarshalled.
+type SiblingSession struct {
+	SessionID string
+	History   []chat.Message
+	UpdatedAt time.Time
+}
+
+// ListByPrefix returns the persisted sessions whose SessionID starts with
+// prefix, most-recently-updated first, capped at limit. Nil when the repo is
+// unwired (SQLite / opted-out deployments) — callers fall back to whatever
+// in-memory view they have rather than treating it as an error.
+//
+// Corrupt-history rows are skipped rather than failing the batch, matching
+// Load's corrupt-row tolerance: one bad row must not deny the caller the other
+// siblings.
+func (p *Persister) ListByPrefix(ctx context.Context, prefix string, limit int) ([]SiblingSession, error) {
+	if p == nil || p.repo == nil {
+		return nil, nil
+	}
+	rows, err := p.repo.ListByPrefix(ctx, p.kind, prefix, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SiblingSession, 0, len(rows))
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		var history []chat.Message
+		if len(row.History) > 0 {
+			if jsonErr := json.Unmarshal(row.History, &history); jsonErr != nil {
+				p.logger.Warn().Err(jsonErr).
+					Str("kind", p.kind).
+					Str("session_id", row.SessionID).
+					Msg("session_store: corrupt history JSON in prefix listing; skipping row")
+				continue
+			}
+		}
+		out = append(out, SiblingSession{
+			SessionID: row.SessionID,
+			History:   history,
+			UpdatedAt: row.UpdatedAt,
+		})
+	}
+	return out, nil
 }
 
 // Delete removes the persisted row. Used by "clear chat" affordances.

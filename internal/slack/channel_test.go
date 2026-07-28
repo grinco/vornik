@@ -250,8 +250,11 @@ func TestHandleWebhook_AppMention_Dispatches(t *testing.T) {
 	if msg.Source != channelName {
 		t.Errorf("Source = %q, want %q", msg.Source, channelName)
 	}
-	if msg.SessionID != "T123/C_general#1700000001.000100" {
-		t.Errorf("SessionID = %q, want T123/C_general#1700000001.000100", msg.SessionID)
+	// A top-level mention is CHANNEL-scoped, not keyed on its own ts — that
+	// keying gave every channel message a fresh empty session (operator report
+	// 2026-07-28). See channel_continuity_test.go.
+	if msg.SessionID != "T123/C_general#"+ChannelSessionThreadRoot {
+		t.Errorf("SessionID = %q, want T123/C_general#%s", msg.SessionID, ChannelSessionThreadRoot)
 	}
 	if msg.SpeakerID != "U_alice" {
 		t.Errorf("SpeakerID = %q, want U_alice", msg.SpeakerID)
@@ -715,8 +718,9 @@ func TestHandleWebhook_RecordsSession(t *testing.T) {
 	if len(sessions) != 1 {
 		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
 	}
-	if sessions[0].ID != "T123/C_general#1700000011.000100" {
-		t.Errorf("session ID = %q", sessions[0].ID)
+	// Channel-scoped: top-level messages share one session per channel.
+	if sessions[0].ID != "T123/C_general#"+ChannelSessionThreadRoot {
+		t.Errorf("session ID = %q, want T123/C_general#%s", sessions[0].ID, ChannelSessionThreadRoot)
 	}
 	if sessions[0].ParticipantCount != 1 {
 		t.Errorf("ParticipantCount = %d, want 1", sessions[0].ParticipantCount)

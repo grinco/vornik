@@ -98,6 +98,45 @@ type StreamingChannel interface {
 	StreamingSend(ctx context.Context, sessionID string) (Stream, error)
 }
 
+// ChannelSpecificSender is the ChannelSpecific key carrying a human-readable
+// attribution for who sent an inbound message (an email address, a Slack
+// display name). enrichUserContent renders it as a "From:" line on the user
+// turn so multi-party conversations stay attributable in history — SpeakerID
+// alone only feeds the operator-profile lookup and never reaches the prompt,
+// which left the lead unable to tell one correspondent from another.
+//
+// Channels that are inherently 1:1 need not set it; when absent the user turn
+// is unchanged.
+const ChannelSpecificSender = "sender"
+
+// ChannelSpecificSubject is the ChannelSpecific key carrying an inbound
+// message's subject line. Shared between the producing channel (email today)
+// and the dispatcher's enrichUserContent, which folds it into the user turn —
+// a typo on either side would silently drop the subject, which is exactly how
+// subject-borne instructions went missing before (incident 2026-07-28).
+const ChannelSpecificSubject = "subject"
+
+// SelfIdentifyingChannel is implemented by channels that know their own
+// outbound identity on the platform — the address or handle that the bot's
+// own messages appear under in a conversation.
+//
+// The dispatcher type-asserts this (same idiom as StreamingChannel) and folds
+// the identity into the system prompt. It matters wherever a platform echoes
+// earlier messages back into an inbound one: email clients quote the message
+// being replied to, so without knowing its own address the lead reads its own
+// previous reply as a third party's statement and asks the user what they
+// meant (incident 2026-07-28). Channels with no meaningful self-identity
+// (Telegram, where inbound messages never quote the bot) simply don't
+// implement it.
+type SelfIdentifyingChannel interface {
+	Channel
+
+	// SelfIdentity returns the channel's own address / handle, or "" when
+	// it isn't configured. Callers MUST treat empty as "unknown" and omit
+	// any identity claim rather than asserting a blank one.
+	SelfIdentity() string
+}
+
 // Stream is the incremental outbound handle returned by
 // StreamingChannel.StreamingSend. The dispatcher pushes tokens
 // via Append as they arrive from the LLM; Close finalises the

@@ -3,11 +3,11 @@ sources:
     - path: internal/dispatcher/render_document.go
       sha256: 978d37b59d3584d28b5260865673db9fbb40bbf123ecff1d76a3eab1c49a27fe
     - path: internal/dispatcher/tools.go
-      sha256: cdc645183814698febe89b527711ad9fb9f1a0ec759223b4f10c47eeddc8d19d
+      sha256: d3e79a3de90e3f9b8c4217dfbd885d06812c4e9dfca7cded806dcd5bfdc73a8f
     - path: internal/dispatcher/agent.go
-      sha256: ec9f279a903b47d000c4fb76af98e0121c4053a2fff5ce01bbb3de96f843b2ee
+      sha256: da94e274281dfe44d8c56b1f8f45a095d958574cf8f83d7a06635c28668f9907
     - path: internal/email/channel.go
-      sha256: 1a3e118f158d4cd5dfccf1f0172b6445f51f5ded766ea5b2d78eebacf6b18529
+      sha256: 38058785781c8f5dad5197c282de88501a07e81a192d3cec3c6715bd57fb8a6a
 ---
 # Artifacts & Outbound File Delivery
 

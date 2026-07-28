@@ -62,6 +62,12 @@ func (f *fakeChannelSessionRepo) Save(_ context.Context, kind, sessionID, active
 	return nil
 }
 
+// ListByPrefix is unused by these tests — fakeChannelSessionRepo exists to exercise
+// Load/Save/Delete. Present to satisfy the repository interface.
+func (f *fakeChannelSessionRepo) ListByPrefix(_ context.Context, _, _ string, _ int) ([]*persistence.ChannelSession, error) {
+	return nil, nil
+}
+
 func (f *fakeChannelSessionRepo) Delete(_ context.Context, kind, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

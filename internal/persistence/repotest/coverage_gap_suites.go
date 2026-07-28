@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -1199,6 +1200,80 @@ func RunChannelSessionSuite(t *testing.T, repo persistence.ChannelSessionReposit
 		got, _ := repo.Load(ctx, kind, sess)
 		if got.ActiveProject != "proj-b" {
 			t.Fatalf("expected upsert to proj-b, got %q", got.ActiveProject)
+		}
+	})
+
+	t.Run("ListByPrefix_scopes_to_prefix_and_kind", func(t *testing.T) {
+		kind, other := uniqueID("kind"), uniqueID("kind")
+		prefix := uniqueID("T") + "/C_general#"
+		for _, id := range []string{prefix + "111.1", prefix + "222.2"} {
+			if err := repo.Save(ctx, kind, id, "proj-a", []byte(`[]`)); err != nil {
+				t.Fatalf("Save %s: %v", id, err)
+			}
+		}
+		// Same prefix, different kind — must not appear.
+		if err := repo.Save(ctx, other, prefix+"333.3", "proj-a", []byte(`[]`)); err != nil {
+			t.Fatalf("Save other-kind: %v", err)
+		}
+		// Same kind, different container — must not appear.
+		if err := repo.Save(ctx, kind, uniqueID("T")+"/C_other#444.4", "proj-a", []byte(`[]`)); err != nil {
+			t.Fatalf("Save other-container: %v", err)
+		}
+
+		got, err := repo.ListByPrefix(ctx, kind, prefix, 10)
+		if err != nil {
+			t.Fatalf("ListByPrefix: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("got %d rows, want 2 (only this kind + prefix)", len(got))
+		}
+		for _, row := range got {
+			if row.Kind != kind || !strings.HasPrefix(row.SessionID, prefix) {
+				t.Fatalf("row escaped the scope: %+v", row)
+			}
+		}
+	})
+
+	t.Run("ListByPrefix_honours_limit_and_orders_newest_first", func(t *testing.T) {
+		kind := uniqueID("kind")
+		prefix := uniqueID("T") + "/C#"
+		// Saved in order, so the last one saved has the newest updated_at.
+		for _, id := range []string{prefix + "1", prefix + "2", prefix + "3"} {
+			if err := repo.Save(ctx, kind, id, "proj-a", []byte(`[]`)); err != nil {
+				t.Fatalf("Save %s: %v", id, err)
+			}
+		}
+		got, err := repo.ListByPrefix(ctx, kind, prefix, 2)
+		if err != nil {
+			t.Fatalf("ListByPrefix: %v", err)
+		}
+		if len(got) > 2 {
+			t.Fatalf("limit ignored: got %d rows", len(got))
+		}
+		for i := 1; i < len(got); i++ {
+			if got[i].UpdatedAt.After(got[i-1].UpdatedAt) {
+				t.Fatalf("rows not newest-first: %v then %v", got[i-1].UpdatedAt, got[i].UpdatedAt)
+			}
+		}
+		if _, err := repo.ListByPrefix(ctx, kind, prefix, 0); err != nil {
+			t.Fatalf("limit 0 should be a clean empty, got %v", err)
+		}
+	})
+
+	t.Run("ListByPrefix_treats_LIKE_metacharacters_literally", func(t *testing.T) {
+		// A '%' in the prefix must not widen the match — that would break the
+		// containment property callers rely on to scope reads to one container.
+		kind := uniqueID("kind")
+		decoy := uniqueID("T") + "/C_decoy#1"
+		if err := repo.Save(ctx, kind, decoy, "proj-a", []byte(`[]`)); err != nil {
+			t.Fatalf("Save decoy: %v", err)
+		}
+		got, err := repo.ListByPrefix(ctx, kind, "%", 10)
+		if err != nil {
+			t.Fatalf("ListByPrefix: %v", err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("a literal %% prefix matched %d rows; wildcards must be escaped", len(got))
 		}
 	})
 

@@ -175,8 +175,17 @@ func (r *ChannelReceiver) Receive(ctx context.Context, msg conversation.ChannelM
 	if msg.Source != "" && msg.SpeakerID != "" {
 		operatorID = msg.Source + ":" + msg.SpeakerID
 	}
+	// Channels that know their own platform identity hand it over so the
+	// agent can tell the lead which address in the thread is its own.
+	// Type-assert rather than widening Channel — same idiom as
+	// StreamingChannel in dispatch().
+	channelIdentity := ""
+	if sic, ok := r.Channel.(conversation.SelfIdentifyingChannel); ok {
+		channelIdentity = sic.SelfIdentity()
+	}
 	req := Request{
 		ChatID:               sess.ChatID,
+		ChannelIdentity:      channelIdentity,
 		Messages:             history,
 		Project:              sess.ActiveProject,
 		Projects:             sess.AvailableProjects,
@@ -383,15 +392,17 @@ func (r *ChannelReceiver) logger() *zerolog.Logger {
 	return &nop
 }
 
-// enrichUserContent folds attachment metadata into the user-visible
-// message the dispatcher hands to the LLM. Without this the email
-// channel (and any future channel that populates msg.Attachments)
-// would persist attachment bytes as artifacts but the LLM would
-// never learn the attachments existed — `msg.Text` alone strips the
-// envelope.
+// enrichUserContent folds the envelope context — the subject line and
+// attachment metadata — into the user-visible message the dispatcher hands to
+// the LLM. Without it the email channel (and any future channel that populates
+// msg.Attachments) would persist attachment bytes as artifacts but the LLM
+// would never learn the attachments existed, and a subject-borne instruction
+// would be dropped entirely — `msg.Text` alone strips the envelope.
 //
 // Format kept terse so a chatty attachment list doesn't dominate
 // the prompt:
+//
+//	Subject: add these books to rag
 //
 //	<msg.Text>
 //
@@ -404,15 +415,48 @@ func (r *ChannelReceiver) logger() *zerolog.Logger {
 // segment is omitted so the LLM still sees the file's existence
 // without a misleading "you can read it" hint.
 //
-// Empty Attachments is unchanged: returns msg.Text verbatim so
-// existing channels (Telegram, GitHub, Slack today) keep their
-// current single-line content shape.
+// No subject and no attachments is unchanged: returns msg.Text verbatim so
+// channels that carry neither (Telegram, GitHub, Slack today) keep their
+// current single-line content shape. The subject comes from
+// ChannelSpecific["subject"], which only the email channel populates today.
 func enrichUserContent(msg conversation.ChannelMessage) string {
-	if len(msg.Attachments) == 0 {
+	subject := strings.TrimSpace(msg.ChannelSpecific[conversation.ChannelSpecificSubject])
+	sender := strings.TrimSpace(msg.ChannelSpecific[conversation.ChannelSpecificSender])
+	if len(msg.Attachments) == 0 && subject == "" && sender == "" {
 		return msg.Text
 	}
 	var b strings.Builder
+	// Envelope header block, then a blank line, then the body. Assembled as a
+	// list so any combination of present/absent headers spaces correctly.
+	//
+	//   From:    who wrote this turn — keeps a multi-party thread attributable
+	//            in history. SpeakerID feeds the operator-profile lookup but
+	//            never reaches the prompt, so without this the lead saw a flat
+	//            stream of user messages and could not tell correspondents
+	//            apart.
+	//   Subject: on email this routinely carries the whole instruction while
+	//            the body is empty ("add these books to rag" + attachments).
+	//            It used to be sanitised into ChannelSpecific and never read,
+	//            leaving the LLM to guess (incident 2026-07-28).
+	//
+	// Channels supplying neither are byte-for-byte unchanged (fast path above).
+	headers := make([]string, 0, 2)
+	if sender != "" {
+		headers = append(headers, "From: "+sender)
+	}
+	if subject != "" {
+		headers = append(headers, "Subject: "+subject)
+	}
+	if len(headers) > 0 {
+		b.WriteString(strings.Join(headers, "\n"))
+		b.WriteString("\n\n")
+	}
 	b.WriteString(msg.Text)
+	// A subject-only message (empty body, no files) needs no trailer — and
+	// must not emit a dangling "[Attached files]" header with no entries.
+	if len(msg.Attachments) == 0 {
+		return strings.TrimRight(b.String(), "\n")
+	}
 	if msg.Text != "" && !strings.HasSuffix(msg.Text, "\n") {
 		b.WriteString("\n")
 	}

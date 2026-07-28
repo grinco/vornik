@@ -57,4 +57,19 @@ type ChannelSessionRepository interface {
 	// affordance and the future stale-session sweeper. No error
 	// when the row doesn't exist — idempotent.
 	Delete(ctx context.Context, kind, sessionID string) error
+
+	// ListByPrefix returns sessions whose SessionID starts with prefix,
+	// most-recently-updated first, capped at limit (<=0 yields no rows).
+	//
+	// Exists because a SessionID encodes its own container: every Slack
+	// thread in one channel shares the prefix "<team>/<channel>#", so
+	// "the other conversations in this channel" is a prefix query rather
+	// than a new data model. Used to surface what was discussed in a
+	// channel's threads to a channel-level turn — Slack threads are
+	// unfindable days later, so users follow up in the channel instead.
+	//
+	// prefix is matched literally: implementations MUST escape LIKE
+	// metacharacters so a session id containing '%' or '_' cannot widen
+	// the match.
+	ListByPrefix(ctx context.Context, kind, prefix string, limit int) ([]*ChannelSession, error)
 }

@@ -76,6 +76,9 @@ func (s *SlackChannelsSubsystem) Start(ctx context.Context) error {
 		return nil
 	}
 
+	// Collected across the loop and wired once, below.
+	var threadReaders slackThreadReaderSet
+
 	for i, ch := range c.SlackChannels {
 		project := c.SlackProjects[i]
 		maxHistoryTokens := c.Config.Chat.MaxHistoryTokens
@@ -91,6 +94,15 @@ func (s *SlackChannelsSubsystem) Start(ctx context.Context) error {
 			maxHistoryTokens,
 		)
 		store.SetPersister(c.channelSessionPersister("slack"))
+		// Back get_channel_thread so the lead can pull an earlier thread in the
+		// same channel when a channel-level follow-up refers to one.
+		// Late-bound: stores are built here, after the dispatcher agent.
+		//
+		// Accumulated across channels rather than overwritten — with several
+		// Slack workspaces wired, a single store's in-memory map only holds its
+		// own channel's threads, so keeping the last one would silently lose
+		// in-process history for every other workspace.
+		threadReaders = append(threadReaders, store)
 		receiver := &dispatcher.ChannelReceiver{
 			Channel:  ch,
 			Agent:    c.Dispatcher,
@@ -110,6 +122,9 @@ func (s *SlackChannelsSubsystem) Start(ctx context.Context) error {
 				s.logger.Warn().Err(err).Str("project_id", projectID).Msg("slack channel.Start returned")
 			}
 		}()
+	}
+	if len(threadReaders) > 0 {
+		c.Dispatcher.SetChannelThreadReader(threadReaders)
 	}
 	return nil
 }

@@ -87,9 +87,10 @@ func (s *GitHubChannelSubsystem) Start(ctx context.Context) error {
 	store.SetPersister(c.channelSessionPersister("github"))
 
 	receiver := &dispatcher.ChannelReceiver{
-		Channel:  c.GitHubChannel,
-		Agent:    c.Dispatcher,
-		Sessions: store,
+		Channel:    c.GitHubChannel,
+		Agent:      c.Dispatcher,
+		Sessions:   store,
+		Disclosure: c.AIDisclosure,
 	}
 	s.logger.Info().
 		Str("project_id", logProjectID).

@@ -966,6 +966,23 @@ CREATE TABLE IF NOT EXISTS chat_system_prompts (
     created_at TEXT NOT NULL
 );
 
+-- EU AI Act Art 50(1) disclosure record. Mirrors postgres migration 139;
+-- TIMESTAMPTZ drops to TEXT (RFC3339Nano via sqliteTime), which keeps
+-- BETWEEN comparisons correct because every value is UTC in one format.
+--
+-- Real table, not a stub: this is the Art 99 evidence trail, and a
+-- single-node deployment must be able to prove it disclosed.
+CREATE TABLE IF NOT EXISTS channel_disclosure_log (
+    channel    TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    served_at  TEXT NOT NULL,
+    text_hash  TEXT NOT NULL,
+    PRIMARY KEY (channel, session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_disclosure_served_at
+    ON channel_disclosure_log (served_at);
+
 CREATE TABLE IF NOT EXISTS chat_audit_log (
     id                  TEXT PRIMARY KEY,
     ts                  TEXT NOT NULL,

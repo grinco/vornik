@@ -145,7 +145,7 @@ func TestGatherChildArtifacts_ExcludesCheckpointAndCalleeChildren(t *testing.T) 
 	e := newGatherExecutor(er, ar)
 
 	entries, summary := e.gatherChildArtifacts(context.Background(),
-		[]*persistence.Task{checkpoint, callee, deleg})
+		[]*persistence.Task{checkpoint, callee, deleg}, "")
 
 	require.Len(t, entries, 1, "only the delegation child should be staged")
 	assert.Contains(t, entries[0]["name"], "findings.md")
@@ -199,7 +199,7 @@ func TestGatherChildArtifacts_LatestCompletedExecution(t *testing.T) {
 	e := newGatherExecutor(er, ar)
 
 	entries, summary := e.gatherChildArtifacts(context.Background(),
-		[]*persistence.Task{childA, childB})
+		[]*persistence.Task{childA, childB}, "")
 
 	names := entryNames(entries)
 	// childA → newest COMPLETED only; childB → max-id COMPLETED only.
@@ -246,7 +246,7 @@ func TestGatherChildArtifacts_EmptyAndMissing(t *testing.T) {
 	e := newGatherExecutor(er, ar)
 
 	entries, summary := e.gatherChildArtifacts(context.Background(),
-		[]*persistence.Task{emptyChild, missingChild})
+		[]*persistence.Task{emptyChild, missingChild}, "")
 
 	assert.Empty(t, entries)
 	assert.Equal(t, 2, summary.Expected)
@@ -282,7 +282,7 @@ func TestGatherChildArtifacts_ChildPrefixedNamesNoCollision(t *testing.T) {
 	e := newGatherExecutor(er, ar)
 
 	entries, summary := e.gatherChildArtifacts(context.Background(),
-		[]*persistence.Task{childA, childB})
+		[]*persistence.Task{childA, childB}, "")
 
 	require.Len(t, entries, 2)
 	names := entryNames(entries)
@@ -332,7 +332,7 @@ func TestGatherChildArtifacts_NoCrossJobLeak_T06b5(t *testing.T) {
 
 	// Gather ONLY parent A's children.
 	entries, summary := e.gatherChildArtifacts(context.Background(),
-		[]*persistence.Task{cA1, cA2})
+		[]*persistence.Task{cA1, cA2}, "")
 
 	require.Len(t, entries, 2)
 	for _, ent := range entries {

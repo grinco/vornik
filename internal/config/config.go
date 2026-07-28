@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"vornik.io/vornik/internal/aidisclosure"
 )
 
 // Config represents the top-level vornik configuration.
@@ -353,10 +355,14 @@ type Config struct {
 	// Secrets configures the secret-leak detector.
 	Secrets   SecretsConfig   `yaml:"secrets"`
 	Retention RetentionConfig `yaml:"retention"`
-	Metrics   MetricsConfig   `yaml:"metrics"`
-	Tracing   TracingConfig   `yaml:"tracing"`
-	Logging   LoggingConfig   `yaml:"logging"`
-	API       APIConfig       `yaml:"api"`
+
+	// AIDisclosure tunes the EU AI Act Art 50(1) notice. Note there is
+	// deliberately NO enabled/disabled key — see aidisclosure.Config.
+	AIDisclosure aidisclosure.Config `yaml:"ai_disclosure"`
+	Metrics      MetricsConfig       `yaml:"metrics"`
+	Tracing      TracingConfig       `yaml:"tracing"`
+	Logging      LoggingConfig       `yaml:"logging"`
+	API          APIConfig           `yaml:"api"`
 	// Trading configures the daemon side of the broker→daemon
 	// trading audit channel — specifically the HMAC request-auth
 	// guarding the /api/v1/internal/trading-* endpoints. Empty

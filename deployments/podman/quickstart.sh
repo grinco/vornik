@@ -501,6 +501,23 @@ case ":$PATH:" in
      warn "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc" ;;
 esac
 
+# Operator shell fragment (T-1089). vornikctl runs the daemon's full config load
+# and validation but resolves paths + secrets from the INVOKING SHELL, not from
+# the systemd unit — so in a plain shell commands like `vornikctl backup` fail on
+# unrelated rules purely for want of the daemon's environment. Generate the
+# fragment; contains only non-secret paths plus a loop sourcing the 0600 secret
+# files. We ADVISE rather than edit any rc: this script is curl|bash'd, and
+# silently rewriting a user's shell rc is not ours to do.
+if [ -x "$DIR/scripts/gen-shell-env.sh" ] || [ -r "$DIR/scripts/gen-shell-env.sh" ]; then
+  if bash "$DIR/scripts/gen-shell-env.sh" "$CONFIG_DIR" "$DATA_DIR" "$CONFIG_DIR/shell-env.sh" >/dev/null 2>&1; then
+    ok "Wrote $CONFIG_DIR/shell-env.sh (makes vornikctl resolve the same config as the daemon)"
+    log "  To use it in every shell, add this line to your shell rc:"
+    log "    [ -r \"$CONFIG_DIR/shell-env.sh\" ] && . \"$CONFIG_DIR/shell-env.sh\""
+  else
+    warn "Could not generate $CONFIG_DIR/shell-env.sh — vornikctl may need VORNIK_CONFIG set by hand."
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # 4. Build the agent image into the host's rootless podman storage. The
 #    daemon spawns each task's agent as a sibling container from here. The

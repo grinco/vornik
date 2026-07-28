@@ -831,7 +831,19 @@ func classifyShapeFailure(err error) shapeFailureKind {
 	switch {
 	case strings.Contains(msg, "plausibility violation"):
 		return shapeFailurePlausibility
-	case strings.Contains(msg, "schema violation: role"):
+	// Broad "schema violation:" prefix, NOT "schema violation: role" (T-1089).
+	// container.go emits that prefix from two guards: the role
+	// requiredOutputKeys check ("… role %q result.json is missing required
+	// keys") and the require_output_glob output contract ("… output contract
+	// for step %q not met"). Matching on "role" silently excluded the second:
+	// registry.WorkflowStep.RequireOutputGlob's doc promises the shape-retry
+	// layer "corrects once before giving up", and shapeFailureMetricKind
+	// already labels any "schema violation:" as schema_violation — so the
+	// metric reported a schema violation while this classifier reported no
+	// shape failure, no corrective retry ran, and isModelShapedFailure skipped
+	// the fallback too. The agent never saw the "You MUST write the declared
+	// output file" hint that exists for exactly this case.
+	case strings.Contains(msg, "schema violation:"):
 		return shapeFailureJSON
 	case strings.Contains(msg, "is missing required keys"):
 		return shapeFailureJSON

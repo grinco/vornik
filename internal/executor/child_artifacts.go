@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"path/filepath"
 	"sort"
 
 	"vornik.io/vornik/internal/persistence"
@@ -15,9 +16,12 @@ import (
 //   - Expected: number of delegation-engine children considered.
 //   - Staged:   number of artifact entries emitted.
 //   - Missing:  child task IDs with NO COMPLETED execution.
-//   - Empty:    child task IDs whose latest COMPLETED execution produced
-//     ZERO artifacts (the T-06b5 failure class — a child that
-//     "succeeded" but contributed nothing; must never be dropped).
+//   - Empty:    child task IDs whose latest COMPLETED execution contributed
+//     nothing stageable (the T-06b5 failure class — a child that
+//     "succeeded" but said nothing; must never be dropped). Covers
+//     both zero artifacts and, when the consumer step sets
+//     stage_child_artifacts_include, zero artifacts MATCHING that
+//     glob — so an over-narrow glob is visible, not silent.
 type childArtifactSummary struct {
 	Expected int
 	Staged   int
@@ -71,7 +75,16 @@ func childShortID(taskID string) string {
 // A child with no COMPLETED execution is reported in summary.Missing; a
 // child whose latest COMPLETED execution produced zero artifacts is
 // reported in summary.Empty. Neither is silently dropped.
-func (e *Executor) gatherChildArtifacts(ctx context.Context, resumeChildren []*persistence.Task) ([]map[string]string, childArtifactSummary) {
+//
+// includeGlob optionally narrows WHICH artifacts stage, matched against each
+// artifact's OWN name (before the <childShortID>- staging prefix). Empty means
+// "all of them" — step 2's canonical rule, unchanged. See
+// registry.WorkflowStep.StageChildArtifactsInclude for why the narrowing exists
+// (T-1089: per-child response transcripts doubling the consumer's input). A
+// child that produced artifacts but none matching the glob is reported in
+// summary.Empty, so an over-narrow glob surfaces through the same completeness
+// contract instead of looking like full coverage.
+func (e *Executor) gatherChildArtifacts(ctx context.Context, resumeChildren []*persistence.Task, includeGlob string) ([]map[string]string, childArtifactSummary) {
 	// 1. Filter to delegation-engine children, then order deterministically
 	// by (created_at, id) — the stable dispatch key.
 	delegChildren := make([]*persistence.Task, 0, len(resumeChildren))
@@ -106,6 +119,15 @@ func (e *Executor) gatherChildArtifacts(ctx context.Context, resumeChildren []*p
 			summary.Empty = append(summary.Empty, child.ID)
 			continue
 		}
+		arts = filterArtifactsByName(arts, includeGlob)
+		if len(arts) == 0 {
+			// The child DID produce artifacts, but none the consumer asked for.
+			// Report it empty rather than dropping it: an over-narrow glob must
+			// surface through the same completeness contract that catches a
+			// genuinely empty child (T-06b5), not masquerade as full coverage.
+			summary.Empty = append(summary.Empty, child.ID)
+			continue
+		}
 
 		// Deterministic per-child order: by artifact name.
 		sort.SliceStable(arts, func(i, j int) bool { return arts[i].Name < arts[j].Name })
@@ -126,6 +148,32 @@ func (e *Executor) gatherChildArtifacts(ctx context.Context, resumeChildren []*p
 		entries = nil
 	}
 	return entries, summary
+}
+
+// filterArtifactsByName keeps only artifacts whose Name matches glob. An empty
+// glob is "keep everything" (the default, canonical rule).
+//
+// A malformed pattern is rejected at config load by
+// registry.validateStageChildArtifacts, so filepath.Match cannot realistically
+// error here; if it somehow does, the artifact is DROPPED rather than kept. That
+// is the safe direction: a dropped child surfaces in inputArtifactsSummary.empty[]
+// and the consumer's prompt contract makes it refuse to invent content, whereas
+// silently keeping everything would hand the consumer the very input bloat the
+// glob exists to prevent — invisibly.
+func filterArtifactsByName(arts []*persistence.Artifact, glob string) []*persistence.Artifact {
+	if glob == "" {
+		return arts
+	}
+	out := make([]*persistence.Artifact, 0, len(arts))
+	for _, a := range arts {
+		if a == nil {
+			continue
+		}
+		if ok, err := filepath.Match(glob, a.Name); err == nil && ok {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // latestCompletedExecution returns the child task's single latest COMPLETED

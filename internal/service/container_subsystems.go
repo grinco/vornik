@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/mcp"
 	"vornik.io/vornik/internal/memory"
@@ -628,6 +629,11 @@ func (c *Container) initDatabase() error {
 	} else {
 		c.repos = storage.Build(c.instrumentedDB())
 	}
+
+	// EU AI Act Art 50(1). Built here rather than lazily at each channel
+	// so there is exactly one instance and one place a wiring mistake
+	// could happen. Every dispatcher.ChannelReceiver takes it.
+	c.AIDisclosure = aidisclosure.New(c.Config.AIDisclosure, c.repos.ChannelDisclosure)
 
 	return nil
 }

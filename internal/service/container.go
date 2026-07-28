@@ -70,6 +70,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rs/zerolog"
+	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/artifacts"
 	"vornik.io/vornik/internal/autonomy"
@@ -237,6 +238,13 @@ type Container struct {
 	// chat is disabled.
 	Dispatcher  *dispatcher.Agent
 	TelegramBot *telegram.Bot
+
+	// AIDisclosure enforces EU AI Act Art 50(1) — the human must be told
+	// they are interacting with an AI system. Handed to every
+	// dispatcher.ChannelReceiver so all five channels are covered from
+	// one place. Nil only when storage isn't up yet; a wired daemon
+	// always has it, because a nil here means non-conformity.
+	AIDisclosure *aidisclosure.Service
 	// GitHubChannel is the GitHub App conversation channel
 	// constructed from per-project github_app config. Nil when no
 	// project has the block configured. See

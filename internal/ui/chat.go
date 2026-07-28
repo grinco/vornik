@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/conversation"
 	"vornik.io/vornik/internal/dispatcher"
@@ -58,6 +59,14 @@ const chatDispatchTimeout = 5 * time.Minute
 // "chat not configured" banner instead of returning 500.
 func WithChatDispatcher(d ChatDispatcher) ServerOption {
 	return func(s *Server) { s.chatDispatcher = d }
+}
+
+// WithAIDisclosure wires the EU AI Act Art 50(1) disclosure service into
+// the web-chat surface. Nil is tolerated so tests and minimal builds keep
+// working, but a production wiring that leaves it nil is non-conforming:
+// web chat is a system intended to interact directly with natural persons.
+func WithAIDisclosure(d *aidisclosure.Service) ServerOption {
+	return func(s *Server) { s.aiDisclosure = d }
 }
 
 // WithChatSessionPersister wires the DB-backed persistence layer
@@ -188,9 +197,10 @@ func (s *Server) ChatPostMessage(w http.ResponseWriter, r *http.Request, project
 		DisplayName: "Web operator",
 	})
 	receiver := &dispatcher.ChannelReceiver{
-		Channel:  channel,
-		Agent:    s.chatDispatcher,
-		Sessions: store,
+		Channel:    channel,
+		Agent:      s.chatDispatcher,
+		Sessions:   store,
+		Disclosure: s.aiDisclosure,
 		ResultPostprocessor: func(result dispatcher.Result) string {
 			// Append the deliverable-links block when the
 			// dispatcher's turn referenced a task that produced
@@ -224,8 +234,36 @@ func (s *Server) ChatPostMessage(w http.ResponseWriter, r *http.Request, project
 	}
 	// Refresh history from the store so the rendered page shows
 	// the user's new prompt + the assistant reply.
-	data.History = store.History(data.SessionID)
+	data.History = mergeDisclosureIntoHistory(store.History(data.SessionID), channel, s.aiDisclosure)
 	s.render(w, "chat.html", data)
+}
+
+// mergeDisclosureIntoHistory prepends the EU AI Act Art 50(1) notice to the
+// rendered history when it was served on this turn.
+//
+// Why this exists. The disclosure reaches the channel through Channel.Send.
+// For webchat, Send buffers into channel.Sent() rather than writing to the
+// session store — and this handler renders the STORE. So the notice was
+// recorded in channel_disclosure_log as served while the human never saw it.
+//
+// That failure mode is worse than not disclosing: the evidence trail asserts
+// an Art 50(1) disclosure that did not reach anyone. Caught by end-to-end
+// testing against production on 2026-07-29; unit tests asserted only that
+// Send was called, which was true and insufficient.
+func mergeDisclosureIntoHistory(history []chat.Message, ch *webchat.Channel, svc *aidisclosure.Service) []chat.Message {
+	if svc == nil || ch == nil {
+		return history
+	}
+	notice := svc.Notice().Text
+	for _, sent := range ch.Sent() {
+		if sent != notice {
+			continue
+		}
+		// Served this turn — render it first, ahead of the user's
+		// prompt, so it is the first thing in the conversation.
+		return append([]chat.Message{{Role: "assistant", Content: notice}}, history...)
+	}
+	return history
 }
 
 // chatPageData builds the render struct with project info +

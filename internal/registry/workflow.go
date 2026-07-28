@@ -248,6 +248,31 @@ type WorkflowStep struct {
 	// See https://docs.vornik.io §3.1–§3.5.
 	StageChildArtifacts bool `yaml:"stage_child_artifacts,omitempty"`
 
+	// StageChildArtifactsInclude optionally narrows WHICH of the children's
+	// artifacts stage, as a filepath.Match glob against each artifact's own
+	// name (not the <childShortID>- prefixed staged name — authors write the
+	// filename their child produced).
+	//
+	// Empty (the default) stages every artifact of each child's latest
+	// COMPLETED execution — the canonical rule from the delegated-child-
+	// artifact-handoff design §3.2, unchanged.
+	//
+	// Why this exists (T-1089, 2026-07-28): a child harvests its DECLARED
+	// output plus the executor's own `<step>-response-*.md` transcript, and
+	// another response per shape retry. deep-research therefore staged 26
+	// entries for 10 subtasks — the findings AND the verbose transcripts that
+	// largely duplicate them. That roughly doubled the consumer's input and
+	// contributed directly to the writer exhausting its prompt-token budget
+	// before it could write the deliverable. Setting `findings-*.md` here
+	// stages only what the aggregation actually needs.
+	//
+	// A child whose latest COMPLETED execution produced artifacts but NONE
+	// matching the glob is reported in inputArtifactsSummary.empty[] — the
+	// completeness contract is preserved under filtering, so a silently
+	// over-narrow glob still surfaces to the consumer rather than looking like
+	// a child that had nothing to say.
+	StageChildArtifactsInclude string `yaml:"stage_child_artifacts_include,omitempty"`
+
 	// MaxVisits optionally bounds how many times THIS step may be entered,
 	// tighter than the workflow-global MaxStepVisits. On the (MaxVisits+1)-th
 	// entry the executor routes to the step's on_fail (preserving the prior
@@ -966,6 +991,32 @@ func (w *Workflow) validateStageChildArtifacts(filename string) error {
 			break
 		}
 	}
+
+	// The include glob is meaningless without the flag, and a malformed pattern
+	// would silently match nothing — staging an empty artifacts/in/ that looks
+	// exactly like "the children had nothing to say". Both are config errors, so
+	// fail at LOAD time rather than at 3am mid-run. Checked before the `declared`
+	// early-return so an include-without-flag typo can't hide behind it.
+	for stepID, step := range w.Steps {
+		if step.StageChildArtifactsInclude == "" {
+			continue
+		}
+		if !step.StageChildArtifacts {
+			return WorkflowValidationError{
+				File:    filename,
+				Field:   fmt.Sprintf("steps.%s.stage_child_artifacts_include", stepID),
+				Message: "stage_child_artifacts_include has no effect without stage_child_artifacts: true on the same step",
+			}
+		}
+		if _, err := filepath.Match(step.StageChildArtifactsInclude, "probe"); err != nil {
+			return WorkflowValidationError{
+				File:    filename,
+				Field:   fmt.Sprintf("steps.%s.stage_child_artifacts_include", stepID),
+				Message: fmt.Sprintf("stage_child_artifacts_include is not a valid glob (%v) — a malformed pattern matches nothing and would silently stage an empty artifacts/in/", err),
+			}
+		}
+	}
+
 	if !declared {
 		return nil
 	}

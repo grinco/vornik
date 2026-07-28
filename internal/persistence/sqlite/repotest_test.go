@@ -330,3 +330,13 @@ func TestStepLatency_Contract(t *testing.T) {
 		sqlite.NewExecutionRepository(db.DB),
 		sqlite.NewTaskRepository(db.DB))
 }
+
+// TestChannelDisclosureRepository_Contract — the EU AI Act Art 50 disclosure
+// record (migration 139). Unlike ChannelSessionRepository, the SQLite side is
+// a real implementation, not a no-op stub: this table is the Art 99 evidence
+// trail and a stub would leave single-node deployments unable to prove they
+// disclosed. The shared suite runs against Postgres too.
+func TestChannelDisclosureRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunChannelDisclosureSuite(t, sqlite.NewChannelDisclosureRepository(db.DB))
+}

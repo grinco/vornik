@@ -15,7 +15,7 @@ redacted), and steps to reproduce.
 ## Commercial support & SaaS (Enterprise)
 
 The **Enterprise Edition** is offered with commercial support and as a hosted
-SaaS by **EaseIT**:
+SaaS by **EaseIT Labs**:
 
 - Hosted SaaS: <https://vornik.cloud>
 - Enterprise support & licensing: **enterprise@vornik.io**

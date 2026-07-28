@@ -1796,6 +1796,70 @@ func (e *Executor) resolveResumeGuard(ctx context.Context, task *persistence.Tas
 // directly here is the correct, deterministic trigger. gatherChildArtifacts
 // filters to delegation-engine children (DelegationMode != nil), so a
 // checkpoint/call_project child can never be staged.
+// maxForkOriginWalkDepth bounds the FORK→origin walk in
+// resolveStagingRootTask. A fork of a fork is legal (the operator can fork a
+// failed fork), so the walk must iterate — but a corrupt or cyclic
+// parent-pointer chain must terminate rather than spin. Any real chain is 1–2
+// hops; 8 is generous headroom that still fails fast.
+const maxForkOriginWalkDepth = 8
+
+// resolveStagingRootTask returns the task whose delegated children hold the
+// artifacts a stage_child_artifacts step should consume, plus whether staging
+// may proceed at all.
+//
+// For an ordinary task that is the task itself. For a FORK task it is the
+// fork's ORIGIN — the task whose execution was forked. replay.Forker.Fork sets
+// a fork task's ParentTaskID to the source execution's TaskID, so the
+// delegated children the consumer step needs sit under the origin: they are
+// the fork's SIBLINGS. A fork task never has delegated children of its own.
+//
+// Incident T-1089 (2026-07-28): after a deep-research synthesis produced no
+// deliverable, the operator forked `synthesize` — the designed recovery
+// action. GetChildren(fork) returned nothing, so no findings were staged into
+// artifacts/in/ and no inputArtifactsSummary was injected. The writer
+// correctly refused to fabricate a report, and the fork failed exactly like
+// the run it was meant to repair. Every fork of a stage_child_artifacts
+// consumer step was structurally guaranteed to fail this way, which is
+// precisely the workflow class the primitive exists for.
+//
+// Containment is preserved. The walk only ever follows the fork's OWN lineage,
+// so a fork still sees only its origin job's children — never a prior or
+// concurrent job's (the T-06b5 invariant). gatherChildArtifacts' DelegationMode
+// != nil filter keeps the fork task itself and any sibling forks out of the
+// gather, so a fork can never stage an earlier fork's response as findings.
+//
+// Returns ok=false when the chain cannot be resolved (lookup error, missing
+// origin row, depth exhausted). The caller then stages nothing — the honest
+// outcome, since a fabricated-looking empty gather is worse than none: the
+// declaring step's prompt contract makes the agent refuse rather than invent.
+func (e *Executor) resolveStagingRootTask(ctx context.Context, task *persistence.Task) (*persistence.Task, bool) {
+	cur := task
+	for depth := 0; depth < maxForkOriginWalkDepth; depth++ {
+		if cur.CreationSource != persistence.TaskCreationSourceFork {
+			return cur, true
+		}
+		if cur.ParentTaskID == nil || *cur.ParentTaskID == "" {
+			// A fork with no origin pointer shouldn't exist; treat it as
+			// unresolvable rather than gathering the fork's empty children.
+			e.logger.Warn().Str("task_id", cur.ID).
+				Msg("stage_child_artifacts: fork task has no origin task; staging skipped")
+			return nil, false
+		}
+		origin, err := e.taskRepo.Get(ctx, *cur.ParentTaskID)
+		if err != nil || origin == nil {
+			e.logger.Warn().Err(err).
+				Str("task_id", cur.ID).
+				Str("origin_task_id", *cur.ParentTaskID).
+				Msg("stage_child_artifacts: fork origin task unreadable; staging skipped")
+			return nil, false
+		}
+		cur = origin
+	}
+	e.logger.Warn().Str("task_id", task.ID).Int("max_depth", maxForkOriginWalkDepth).
+		Msg("stage_child_artifacts: fork origin walk exceeded max depth (cyclic lineage?); staging skipped")
+	return nil, false
+}
+
 func (e *Executor) stageResumeChildArtifacts(
 	ctx context.Context,
 	task *persistence.Task,
@@ -1806,16 +1870,22 @@ func (e *Executor) stageResumeChildArtifacts(
 	if opts == nil || task == nil || !step.StageChildArtifacts || e.taskRepo == nil {
 		return
 	}
-	children, err := e.taskRepo.GetChildren(ctx, task.ID)
+	// A FORK task holds no delegated children of its own — resolve the job
+	// whose children actually carry the findings (see resolveStagingRootTask).
+	root, ok := e.resolveStagingRootTask(ctx, task)
+	if !ok {
+		return
+	}
+	children, err := e.taskRepo.GetChildren(ctx, root.ID)
 	if err != nil {
-		e.logger.Warn().Err(err).Str("task_id", task.ID).
+		e.logger.Warn().Err(err).Str("task_id", root.ID).
 			Msg("stage_child_artifacts: GetChildren failed; staging skipped")
 		return
 	}
 	if len(children) == 0 {
 		return
 	}
-	arts, summary := e.gatherChildArtifacts(ctx, children)
+	arts, summary := e.gatherChildArtifacts(ctx, children, step.StageChildArtifactsInclude)
 	if summary.Expected == 0 {
 		// No delegation-engine children after filtering — nothing to stage.
 		return

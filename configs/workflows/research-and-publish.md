@@ -2,7 +2,7 @@
 workflowId: "research-and-publish"
 displayName: "Research, Write & Publish"
 description: "Three-step pipeline in one task: a researcher gathers information into research.md, a writer turns it into a polished deliverable, and a publisher renders that deliverable into a self-contained, Vornik-themed HTML page and publishes it via PageDrop — returning a shareable link. The publisher reads the writer's fresh deliverable in the same workspace (never RAG), so the published page reflects exactly this run's validated research."
-version: "1.0"
+version: "1.1"
 author: "Vadim Grinco <vadim@grinco.eu>"
 license: "Proprietary"
 entrypoint: "research"
@@ -43,7 +43,8 @@ steps:
   publish:
     type: "agent"
     role: "publisher"
-    on_success: "done"
+    # Success routes through a GATE, never straight to `done` (T-1089).
+    on_success: "confirm_published"
     on_fail: "recover"
     timeout: "15m"
     retry:
@@ -51,6 +52,22 @@ steps:
       max_attempts: 3
       backoff: "exponential"
       initial_delay: "20s"
+  confirm_published:
+    type: "gate"
+    # T-1089: a publisher returning `published.ok: false` is a schema-VALID
+    # result, so the step SUCCEEDS and on_success fires — routing it to `done`
+    # reported COMPLETED for research that was never shared. A declared failure
+    # lands on the same lead `recover` checkpoint as a hard publisher failure,
+    # preserving this workflow's existing recovery design. A gate rather than a
+    # retry: re-running the publisher risks a double-publish. on_success is
+    # intentionally UNSET so a malformed result carrying no `published.ok` key
+    # cannot fall through to `done`.
+    gates:
+      - condition: "published.ok == true"
+        target: "done"
+      - condition: "published.ok == false"
+        target: "recover"
+    on_fail: "recover"
   recover:
     type: "plan"
     role: "lead"

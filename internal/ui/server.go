@@ -16,6 +16,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/admin"
+	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/auth"
 	"vornik.io/vornik/internal/budget"
@@ -535,6 +536,9 @@ type Server struct {
 	// banner instead of returning 500 so deployments without a
 	// chat provider keep the rest of the UI usable.
 	chatDispatcher ChatDispatcher
+
+	// aiDisclosure enforces EU AI Act Art 50(1) on the web-chat surface.
+	aiDisclosure *aidisclosure.Service
 
 	// chatStores keeps one in-memory webchat SessionStore per
 	// project so two browsers on different projects can't read

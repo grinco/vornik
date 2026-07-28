@@ -8,7 +8,7 @@ section below before opening a pull request.
 Vornik requires a **Contributor License Agreement**. By contributing you grant a
 broad copyright + patent license for your contribution to **Vadim Grinco** (the
 project's IP owner), who licenses the project — including contributions — to
-EaseIT for the commercial offerings. This is what lets the project sustain a
+EaseIT Labs for the commercial offerings. This is what lets the project sustain a
 proprietary Enterprise overlay and a hosted SaaS while keeping the Community
 Edition open under AGPL.
 

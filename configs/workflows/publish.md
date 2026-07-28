@@ -2,7 +2,7 @@
 workflowId: "publish"
 displayName: "Publish"
 description: "Render EXPLICIT content into a single self-contained, Vornik-themed HTML page and publish it via PageDrop, returning a shareable link. Standalone counterpart to research-and-publish: the task prompt must supply the content to publish — a workspace file path (e.g. a committed report) or the text inline. The publisher renders exactly that (never a memory/RAG search). Use it to (re)publish a specific document on demand; for fresh research use research-and-publish instead."
-version: "1.0"
+version: "1.1"
 author: "Vadim Grinco <vadim@grinco.eu>"
 license: "Proprietary"
 entrypoint: "publish"
@@ -19,7 +19,8 @@ steps:
   publish:
     type: "agent"
     role: "publisher"
-    on_success: "done"
+    # Success routes through a GATE, never straight to `done` (T-1089).
+    on_success: "confirm_published"
     # On publisher failure (PageDrop unreachable, render error), route to the
     # lead recovery checkpoint rather than failing outright — mirrors the
     # research workflow. pedantic-mode projects fall through to terminal fail.
@@ -30,6 +31,22 @@ steps:
       max_attempts: 3
       backoff: "exponential"
       initial_delay: "20s"
+  confirm_published:
+    type: "gate"
+    # T-1089: a publisher returning `published.ok: false` is a
+    # schema-VALID result, so the step SUCCEEDS and on_success fires. For a
+    # workflow whose entire purpose is publishing, routing that to `done` meant
+    # the one thing it exists to do could fail while reporting COMPLETED.
+    # A declared failure lands on the same lead `recover` checkpoint as a hard
+    # publisher failure, so this workflow's existing recovery design is
+    # preserved rather than bypassed. on_success is intentionally UNSET so a
+    # malformed result with no `published.ok` key cannot fall through to `done`.
+    gates:
+      - condition: "published.ok == true"
+        target: "done"
+      - condition: "published.ok == false"
+        target: "recover"
+    on_fail: "recover"
   recover:
     type: "plan"
     role: "lead"

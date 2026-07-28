@@ -2,7 +2,7 @@
 workflowId: "research-subtask"
 displayName: "Research Subtask"
 description: "The leaf unit of deep-research: a researcher investigates ONE self-contained sub-question and writes its findings to a top-level output artifact (artifacts/out/findings.md), harvested into the durable artifact store scoped to this task. Analogous to issue-subtask for code. Subtasks are INDEPENDENT — each runs in its own isolated task workspace and does NOT read sibling subtasks' findings; the deep-research synthesize step aggregates them all via the artifact store. The prompt IS the sub-question; there is no decomposition or publishing here."
-version: "1.1.0"
+version: "1.2.0"
 author: "Vadim Grinco <vadim@grinco.eu>"
 license: "Proprietary"
 # 2026-07-11: leaf workflow for deep-research decomposition. A single
@@ -25,6 +25,15 @@ steps:
     on_success: "done"
     on_fail: "failed"
     timeout: "612s"
+    # Output contract (2026-07-12, re-pathed 2026-07-28): the promised findings
+    # file must exist, freshly written by THIS step, or the step fails (one
+    # corrective shape retry, then on_fail). TOP-LEVEL path — the 2026-07-20
+    # re-platforming moved findings to the ephemeral per-execution
+    # artifacts/out/ that persistArtifacts harvests to the durable store. That
+    # move dropped this contract line along with the old `project/`-prefixed
+    # path; a subtask that "completed" without writing findings then reached
+    # synthesize as a silent gap (the original 2026-07-12 failure class).
+    require_output_glob: "artifacts/out/findings.md"
     retry:
       on: ["container_non_zero_exit", "context_timeout"]
       max_attempts: 5

@@ -8,6 +8,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/conversation"
 	"vornik.io/vornik/internal/registry"
@@ -49,6 +50,34 @@ type ChannelReceiver struct {
 	// flows emit raw deltas while the model is running, then append any
 	// missing postprocessed suffix before closing the stream.
 	ResultPostprocessor func(Result) string
+
+	// Disclosure enforces EU AI Act Art 50(1): the human must be told they
+	// are interacting with an AI system, at the latest at the first
+	// interaction of a session.
+	//
+	// This lives on the receiver rather than in each channel because every
+	// channel funnels through Receive — one chokepoint means a channel
+	// added later cannot forget to disclose. Nil disables the behaviour and
+	// exists only so pre-existing construction sites keep compiling; a
+	// production wiring that leaves it nil is non-conforming.
+	//
+	// Design: https://docs.vornik.io
+	Disclosure *aidisclosure.Service
+
+	// DisclosureMetrics observes serve/failure counts. Nil is fine.
+	DisclosureMetrics DisclosureObserver
+}
+
+// DisclosureObserver receives Art 50 disclosure outcomes. Implemented by the
+// metrics layer; nil-safe at every call site.
+//
+// A `stage="send"` failure is a conformity alarm, not merely a transport
+// error — turns are being refused. A `stage="write"` failure is the quiet
+// one: nothing user-visible breaks, and only the Art 99 evidence trail
+// degrades, which is why it must be observable rather than logged and lost.
+type DisclosureObserver interface {
+	DisclosureServed(channel, cadence string)
+	DisclosureFailed(channel, stage string)
 }
 
 // Doer is the narrow dispatcher contract the ChannelReceiver
@@ -161,6 +190,14 @@ func (r *ChannelReceiver) Receive(ctx context.Context, msg conversation.ChannelM
 
 	sess, err := r.loadSession(ctx, msg)
 	if err != nil {
+		return err
+	}
+
+	// EU AI Act Art 50(1)+(5). Served BEFORE the dispatcher runs, so the
+	// human sees it before any AI-generated content rather than merely in
+	// the same exchange — and so a dispatcher failure cannot leave a turn
+	// where the AI spoke and the disclosure did not.
+	if err := r.serveDisclosure(ctx, msg.SessionID); err != nil {
 		return err
 	}
 
@@ -343,10 +380,97 @@ func (r *ChannelReceiver) dispatch(ctx context.Context, sessionID string, req Re
 // channels with no transformation needs (GitHub today) keep the
 // existing behaviour.
 func (r *ChannelReceiver) postprocess(result Result) string {
-	if r.ResultPostprocessor == nil {
-		return result.Text
+	text := result.Text
+	if r.ResultPostprocessor != nil {
+		text = r.ResultPostprocessor(result)
 	}
-	return r.ResultPostprocessor(result)
+	// Art 50(1) footer for per-message channels, applied LAST so a
+	// configured postprocessor cannot strip the legally required notice.
+	return r.disclosureFooter(text)
+}
+
+// serveDisclosure delivers the Art 50(1) notice for per-session channels.
+//
+// The failure model here is deliberately asymmetric (design §4):
+//
+//   - Send fails      → FAIL CLOSED. Abort the turn. Silence beats an
+//     undisclosed AI conversation, and if Send is broken
+//     the reply would have failed anyway.
+//   - store read fails → serve anyway. A duplicate notice is a UX blemish;
+//     a skipped one is non-conformity.
+//   - store write fails → continue. The human has been disclosed to, so the
+//     obligation is met; only the evidence degraded.
+func (r *ChannelReceiver) serveDisclosure(ctx context.Context, sessionID string) error {
+	if r.Disclosure == nil {
+		return nil
+	}
+	channel := r.Channel.Name()
+	if aidisclosure.CadenceFor(channel) != aidisclosure.CadencePerSession {
+		return nil // per-message channels carry it as a footer instead
+	}
+
+	notice, serve, err := r.Disclosure.Ensure(ctx, channel, sessionID)
+	if err != nil {
+		// Fail toward disclosure: serve is true on a read error.
+		r.observeDisclosureFailure(channel, "read")
+	}
+	if !serve {
+		return nil
+	}
+
+	if _, sendErr := r.Channel.Send(ctx, conversation.ChannelMessage{
+		Source:    channel,
+		SessionID: sessionID,
+		Text:      notice.Text,
+	}); sendErr != nil {
+		r.observeDisclosureFailure(channel, "send")
+		return fmt.Errorf(
+			"dispatcher: AI Act Art 50 disclosure could not be delivered on %s/%s; "+
+				"refusing to continue the turn undisclosed: %w",
+			channel, sessionID, sendErr)
+	}
+	r.observeDisclosureServed(channel, aidisclosure.CadencePerSession.String())
+
+	if recErr := r.Disclosure.Record(ctx, channel, sessionID, notice); recErr != nil {
+		// Already disclosed — the obligation is met. Only the Art 99
+		// evidence trail degraded, so observe it and carry on.
+		r.observeDisclosureFailure(channel, "write")
+	}
+	return nil
+}
+
+// disclosureFooter appends the Art 50(1) notice to an outbound on
+// per-message channels — email replies and GitHub comments are standalone
+// artifacts that get forwarded, quoted, and read in isolation from the
+// thread, so a once-per-session banner would not reach the reader.
+//
+// An empty reply stays empty: sendReply skips it, and a footer with no
+// content behind it helps nobody.
+func (r *ChannelReceiver) disclosureFooter(text string) string {
+	if r.Disclosure == nil || text == "" {
+		return text
+	}
+	channel := r.Channel.Name()
+	if aidisclosure.CadenceFor(channel) != aidisclosure.CadencePerMessage {
+		return text
+	}
+	r.observeDisclosureServed(channel, aidisclosure.CadencePerMessage.String())
+	// The "---" rule keeps the notice "clear and distinguishable from
+	// surrounding content" (Art 50(5)) as plain text, on every channel,
+	// without relying on markup a reader's client may not render.
+	return text + "\n\n---\n" + r.Disclosure.Notice().Text
+}
+
+func (r *ChannelReceiver) observeDisclosureServed(channel, cadence string) {
+	if r.DisclosureMetrics != nil {
+		r.DisclosureMetrics.DisclosureServed(channel, cadence)
+	}
+}
+
+func (r *ChannelReceiver) observeDisclosureFailure(channel, stage string) {
+	if r.DisclosureMetrics != nil {
+		r.DisclosureMetrics.DisclosureFailed(channel, stage)
+	}
 }
 
 // sendReply routes a final assistant text back through the

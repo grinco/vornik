@@ -2,7 +2,7 @@
 workflowId: "parallel-research"
 displayName: "Parallel Research → Synthesize"
 description: "Declarative parallel fan-out example: a `parallel` step launches three fixed research legs concurrently (as PARALLEL delegated child tasks via the existing delegation engine), then a `synthesize` join step consolidates whichever legs succeeded. join_policy quorum:2 lets the workflow proceed with 2-of-3 legs, calling out any missing leg via inputArtifactsSummary rather than failing the whole run. Unlike deep-research (LLM-decided leg count via delegatedTasks), the legs here are declared statically and validated at load. See https://docs.vornik.io"
-version: "1.0.0"
+version: "1.1.0"
 author: "Vadim Grinco <vadim@grinco.eu>"
 license: "Proprietary"
 # 2026-07-23 (LLD 2026-07-23-workflow-parallel-fanout): first consumer of the
@@ -54,6 +54,14 @@ steps:
     # inputArtifactsSummary (expected/staged/missing/empty). A leg that did not
     # succeed appears under `missing` — call it out, do not invent its content.
     stage_child_artifacts: true
+    # Output contract (added 2026-07-28, T-1089): the deliverable must exist,
+    # freshly written by THIS step, or the step fails loud instead of handing
+    # publish nothing. Same hole deep-research fell into — an analyst that
+    # reports "I could not write it" is a schema-VALID success, so without this
+    # the chain completed with no report. TOP-LEVEL path (no `project/` prefix):
+    # outputGlobSatisfied resolves it against the ephemeral workspaceDir that
+    # persistArtifacts harvests from.
+    require_output_glob: "artifacts/out/deliverable.md"
     prompt: |
       The parallel research legs have run. The executor has staged each
       SUCCEEDED leg's findings into `artifacts/in/` (one file per leg) and set
@@ -73,16 +81,36 @@ steps:
   publish:
     type: "agent"
     role: "publisher"
-    on_success: "done"
+    # Success routes through a GATE, never straight to `done` (T-1089).
+    on_success: "confirm_published"
     on_fail: "failed"
     timeout: "15m"
     prompt: |
       Read `artifacts/out/deliverable.md` and publish it as a shareable page
-      with PageDrop (`mcp__pagedrop__pagedrop_publish_doc`); return the link. If
-      publishing is unavailable, say so and return the report path instead.
+      with PageDrop (`mcp__pagedrop__pagedrop_publish_doc`); return the link.
+
+      If publishing genuinely fails, report `published.ok: false` with a
+      `published.reason` saying why. Do NOT claim success you didn't achieve:
+      the report file is preserved either way, and the task will be marked
+      failed so the operator can retry just this step.
 
       Respond with:
-      `{"publish":{"url":"<page link or empty>","title":"<title>"}}`
+      `{"published":{"ok":true,"url":"<page link>","title":"<title>"},"message":"<one line>"}`
+  confirm_published:
+    type: "gate"
+    # T-1089: `published.ok: false` is a schema-VALID publisher result, so an
+    # honest "I did not publish" is a step SUCCESS and on_success fires. Without
+    # this gate the task reported COMPLETED having shared nothing. A gate rather
+    # than a retry — re-running the publisher risks a double-publish, and a
+    # declared failure is not a shape failure a different model would fix.
+    # on_success is intentionally UNSET so a malformed result with no
+    # `published.ok` key cannot fall through to `done`.
+    gates:
+      - condition: "published.ok == true"
+        target: "done"
+      - condition: "published.ok == false"
+        target: "publish_failed"
+    on_fail: "publish_failed"
 terminals:
   done:
     status: "COMPLETED"
@@ -90,6 +118,9 @@ terminals:
   failed:
     status: "FAILED"
     message: "Parallel research incomplete — the join policy was not satisfied, or synthesis/publish failed."
+  publish_failed:
+    status: "FAILED"
+    message: "Parallel research synthesized the brief but could NOT publish it — the deliverable artifact is preserved on the task; fork the publish step to retry sharing it."
 ---
 
 # Parallel Research → Synthesize (declarative fan-out)

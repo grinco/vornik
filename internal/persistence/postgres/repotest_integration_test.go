@@ -576,3 +576,13 @@ func TestStepLatency_PostgresContract(t *testing.T) {
 		NewExecutionRepository(db.DB),
 		NewTaskRepository(db.DB))
 }
+
+// TestChannelDisclosureRepository_PostgresContract — the EU AI Act Art 50
+// disclosure record (migration 139), the same suite that runs against SQLite.
+// The dialects diverge here (TIMESTAMPTZ vs RFC3339 TEXT, NOW() vs a bound
+// parameter), which is exactly why this must run on the integration lane:
+// `go test ./...` is sqlite-only and would not catch a Postgres-side break.
+func TestChannelDisclosureRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunChannelDisclosureSuite(t, NewChannelDisclosureRepository(db.DB))
+}

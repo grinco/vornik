@@ -31,6 +31,7 @@ func (c *Container) wireTelegramReceiver() *dispatcher.ChannelReceiver {
 		Agent:               c.Dispatcher,
 		Sessions:            store,
 		ResultPostprocessor: telegram.GuardFooterPostprocessor(),
+		Disclosure:          c.AIDisclosure,
 	}
 	c.TelegramBot.SetReceiver(receiver)
 	c.Logger.Info().Msg("telegram channel-receiver wired (slice 2 of ConversationChannel rollout)")

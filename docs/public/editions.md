@@ -5,7 +5,7 @@ Vornik comes in two editions built from the same core:
 - **Community Edition (CE)** — this repository, **AGPL-3.0**. The complete
   orchestration core; fully usable for personal and small-team work.
 - **Enterprise Edition (EE)** — a proprietary overlay that adds advanced
-  capabilities, offered with commercial support and a hosted SaaS by EaseIT.
+  capabilities, offered with commercial support and a hosted SaaS by EaseIT Labs.
 
 ## Feature matrix
 

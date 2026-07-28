@@ -754,7 +754,7 @@ func TestParallelFanIn_FailedLegInMissing(t *testing.T) {
 		{ID: "legA", DelegationMode: delegationMode(persistence.DelegationModeParallel), Status: persistence.TaskStatusCompleted, CreatedAt: now},
 		{ID: "legB", DelegationMode: delegationMode(persistence.DelegationModeParallel), Status: persistence.TaskStatusFailed, CreatedAt: now.Add(time.Second)},
 	}
-	entries, summary := e.gatherChildArtifacts(context.Background(), children)
+	entries, summary := e.gatherChildArtifacts(context.Background(), children, "")
 	if summary.Expected != 2 {
 		t.Errorf("Expected = %d, want 2", summary.Expected)
 	}

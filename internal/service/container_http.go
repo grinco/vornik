@@ -1783,6 +1783,7 @@ func (c *Container) initHTTPServer() error {
 	// dispatcher is wired.
 	if c.Dispatcher != nil {
 		uiOpts = append(uiOpts, ui.WithChatDispatcher(c.Dispatcher))
+		uiOpts = append(uiOpts, ui.WithAIDisclosure(c.AIDisclosure))
 	}
 	// DB-backed webchat session store. Each per-project
 	// SessionStore the UI lazily constructs will write-through

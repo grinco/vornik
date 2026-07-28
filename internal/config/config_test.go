@@ -620,6 +620,13 @@ func TestLoadMissingConfigUsesDefaults(t *testing.T) {
 	// $XDG_CONFIG_HOME so the user-config discovery added for vornikctl
 	// doesn't pick up a real ~/.config/vornik/config.yaml and make the
 	// "missing config" scenario unreachable.
+	// VORNIK_CONFIG names the config file DIRECTLY, bypassing the
+	// HOME/XDG discovery isolated below — the installer's shell-env
+	// fragment (88ca7b9ce) exports it, so an operator who sourced that
+	// fragment made this test load their real config and never reach the
+	// "missing config" path. Cleared first for the same reason.
+	t.Setenv("VORNIK_CONFIG", "")
+
 	origHome := os.Getenv("HOME")
 	origXDG := os.Getenv("XDG_CONFIG_HOME")
 	isolated := t.TempDir()

@@ -8,7 +8,7 @@
     {{/* theme-color drives the mobile browser address-bar tint and the
          PWA title-bar accent. Updated at runtime by the theme-picker
          JS below so it tracks the operator's choice. The initial value
-         is the dark-theme brand-500 (EaseIT blue) since dark is the
+         is the dark-theme brand-500 (EaseIT Labs blue) since dark is the
          default theme; the early script will overwrite this before
          first paint if a light-theme preference is saved/system-set. */}}
     <meta name="theme-color" content="#0078C3">
@@ -38,7 +38,7 @@
                 document.documentElement.setAttribute('data-theme', theme);
                 // Sync the address-bar tint with the chosen theme.
                 // Light-theme brand-500 = #558A98 cadet teal.
-                // Dark-theme  brand-500 = #0078C3 EaseIT blue.
+                // Dark-theme  brand-500 = #0078C3 EaseIT Labs blue.
                 var meta = document.querySelector('meta[name="theme-color"]');
                 if (meta) meta.setAttribute('content', theme === 'dark' ? '#0078C3' : '#558A98');
             } catch (e) {
@@ -93,8 +93,8 @@
         //            (https://coolors.co/ffcab1-69a2b0-659157-a1c084-e05263).
         //            Cadet teal brand, forest accent, warm off-white
         //            surfaces, dark ink. Default for new operators.
-        //   dark   — EaseIT brand palette on Nord-inspired cool-gray
-        //            surfaces. Saturated EaseIT blue + lime green
+        //   dark   — EaseIT Labs brand palette on Nord-inspired cool-gray
+        //            surfaces. Saturated EaseIT Labs blue + lime green
         //            accents on a charcoal floor.
         //
         // Conventions baked into the token system:
@@ -451,7 +451,7 @@
             --accent-900: 33 48 36;       /* #213024 */
         }
         [data-theme="dark"] {
-            /* DARK — EaseIT brand on Nord-inspired neutral surfaces */
+            /* DARK — EaseIT Labs brand on Nord-inspired neutral surfaces */
             color-scheme: dark;
             /* Surface (neutral cool charcoal) */
             --surface-900: 59 66 82;      /* #3B4252 page bg */
@@ -469,24 +469,24 @@
             --ink-700: 55 65 81;          /* #374151 */
             --ink-800: 31 41 55;          /* #1F2937 */
             --ink-900: 17 24 39;          /* #111827 deepest */
-            /* Brand — EaseIT blue */
+            /* Brand — EaseIT Labs blue */
             --brand-50:  230 243 250;     /* #E6F3FA */
             --brand-100: 204 231 245;     /* #CCE7F5 */
             --brand-200: 153 207 235;     /* #99CFEB */
             --brand-300: 102 183 225;     /* #66B7E1 */
             --brand-400: 51 159 215;      /* #339FD7 */
-            --brand-500: 0 120 195;       /* #0078C3 — EaseIT hero */
+            --brand-500: 0 120 195;       /* #0078C3 — EaseIT Labs hero */
             --brand-600: 0 102 166;       /* #0066A6 */
             --brand-700: 0 84 137;        /* #005489 */
             --brand-800: 0 66 108;        /* #00426C */
             --brand-900: 0 48 79;         /* #00304F */
-            /* Accent — EaseIT lime green */
+            /* Accent — EaseIT Labs lime green */
             --accent-50:  242 248 230;    /* #F2F8E6 */
             --accent-100: 229 240 204;    /* #E5F0CC */
             --accent-200: 203 225 153;    /* #CBE199 */
             --accent-300: 177 210 102;    /* #B1D266 */
             --accent-400: 151 195 51;     /* #97C333 */
-            --accent-500: 120 180 30;     /* #78B41E EaseIT hero */
+            --accent-500: 120 180 30;     /* #78B41E EaseIT Labs hero */
             --accent-600: 101 152 24;     /* #659818 */
             --accent-700: 82 124 19;      /* #527C13 */
             --accent-800: 63 96 14;       /* #3F600E */
@@ -513,7 +513,7 @@
         /* Nav-logo centre dot — different colour per theme so the
            glyph mirrors each palette's accent identity:
              light  → peach-300  (Coolors warm highlight)
-             dark   → accent-500 (EaseIT lime green) */
+             dark   → accent-500 (EaseIT Labs lime green) */
         .nav-logo-dot { fill: #FFCAB1; }
         [data-theme="dark"] .nav-logo-dot { fill: #78B41E; }
 
@@ -1018,7 +1018,7 @@
 
 {{define "themeToggle"}}
 {{/* Theme picker — toggles between `light` (Coolors palette) and
-     `dark` (EaseIT brand on Nord neutral). Persists the choice in
+     `dark` (EaseIT Labs brand on Nord neutral). Persists the choice in
      localStorage so it survives reloads and navigations. The early
      resolver in pageHead applies the saved value before first paint,
      so this button is the only place the operator interacts with

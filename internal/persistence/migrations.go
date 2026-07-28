@@ -5806,4 +5806,42 @@ DROP INDEX IF EXISTS idx_cost_tuning_canaries_open;
 DROP TABLE IF EXISTS cost_tuning_canaries;
 `,
 	},
+	{
+		Version: 139,
+		Name:    "channel_disclosure_log",
+		// EU AI Act Art 50(1) disclosure record
+		// (2026-07-28-ai-act-art50-disclosure-design.md §2.4).
+		//
+		// Dual-purpose by design: the per-session state that stops the
+		// "you are interacting with an AI system" notice repeating every
+		// turn, AND the Art 99 evidence trail proving it was served. An
+		// obligation met but unprovable is worth little under enforcement.
+		//
+		// PK (channel, session_id) makes MarkServed an idempotent
+		// ON CONFLICT DO NOTHING, so two concurrent first turns in one
+		// session cannot double-record or double-notify.
+		//
+		// text_hash is SHA-256 hex of the exact rendered notice. Storing
+		// the hash not the prose keeps rows small while still answering
+		// "which wording did this session see?" after the operator edits
+		// the disclosure — exactly what an enforcement request asks.
+		//
+		// RETENTION: this table is the evidence trail and MUST be exempt
+		// from the generic retention sweeper. See the Art 99 runbook.
+		Up: `
+CREATE TABLE IF NOT EXISTS channel_disclosure_log (
+    channel    TEXT        NOT NULL,
+    session_id TEXT        NOT NULL,
+    served_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    text_hash  TEXT        NOT NULL,
+    PRIMARY KEY (channel, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_disclosure_served_at
+    ON channel_disclosure_log (served_at);
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_channel_disclosure_served_at;
+DROP TABLE IF EXISTS channel_disclosure_log;
+`,
+	},
 }

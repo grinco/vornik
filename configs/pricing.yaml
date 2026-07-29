@@ -94,6 +94,13 @@ models:
   "kimi-k2.5":             { input: 0.60, output: 3.00, reasoning_multiplier: 2.0 } # matches moonshotai.kimi-k2.5 (Bedrock)
   "kimi-k2.6":             { input: 0.66, output: 3.41 } # openrouter.ai/moonshotai/kimi-k2.6 (paid; the :free variant is a different id)
   "kimi-k2.7-code":        { input: 0.72, output: 3.49 } # openrouter.ai/moonshotai/kimi-k2.7-code
+  # kimi-k3 — operator-supplied vendor rates (2026-07-29). The most expensive
+  # model on this route by a wide margin: 3.2x glm-5.2's input and 5x its
+  # output. Vision-capable, but that alone is a poor reason to point a
+  # high-volume chat surface at it — see the dispatcher-model note in
+  # config.yaml. The cache_read rate is 10% of input, so a stable system
+  # prefix pays back heavily here if it is ever used for bulk work.
+  "kimi-k3":               { input: 3.00, output: 15.00, cache_read: 0.30 }
   "deepseek-v3.1:671b":    { input: 0.25, output: 0.95 } # openrouter.ai/deepseek/deepseek-chat-v3.1
   "deepseek-v3.2":         { input: 0.62, output: 1.85 } # matches deepseek.v3.2 (Bedrock)
   "deepseek-v4-flash":     { input: 0.10, output: 0.20 } # openrouter.ai/deepseek/deepseek-v4-flash

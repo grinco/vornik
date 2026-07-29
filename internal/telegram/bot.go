@@ -146,6 +146,20 @@ type Message struct {
 	Text     string
 	FileID   string // Telegram file_id if a document was attached
 	FileName string // Original file name
+	// DownloadedPath is the host path HandleMessage downloaded the
+	// attachment to, set after DownloadTelegramFile succeeds. It is
+	// what lets MessageToChannelMessage populate
+	// ChannelMessage.Attachments: Telegram has no persisted artifact
+	// at inbound time (unlike email), so the local file IS the only
+	// handle on the bytes. Empty when nothing was attached or the
+	// download failed.
+	//
+	// see LLD § https://docs.vornik.io §4.3.0
+	DownloadedPath string
+	// MimeTypeHint is the content type Telegram advertised for the
+	// attachment, when it advertised one. Used for media
+	// classification; empty falls back to the filename extension.
+	MimeTypeHint string
 	// ReplyToMessageID is the message_id this message is a reply
 	// to (Telegram's "swipe to reply" feature). Used by the
 	// conversational task lifecycle (Phase 28) to route replies
@@ -2758,11 +2772,15 @@ func (b *Bot) HandleUpdate(ctx context.Context, upd *Update) error {
 	} else if upd.Message.Document != nil {
 		msg.FileID = upd.Message.Document.FileID
 		msg.FileName = upd.Message.Document.FileName
+		msg.MimeTypeHint = upd.Message.Document.MimeType
 	} else if len(upd.Message.Photo) > 0 {
 		// Use the largest photo resolution
 		best := upd.Message.Photo[len(upd.Message.Photo)-1]
 		msg.FileID = best.FileID
 		msg.FileName = "photo.jpg"
+		// Telegram's photo variants carry no mime_type; the API
+		// always delivers JPEG for the photo field.
+		msg.MimeTypeHint = "image/jpeg"
 	}
 	if msg.Text == "" && upd.Message.Caption != "" {
 		msg.Text = upd.Message.Caption

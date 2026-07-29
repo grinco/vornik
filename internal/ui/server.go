@@ -23,6 +23,7 @@ import (
 	"vornik.io/vornik/internal/chatorigin"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/controlplane"
+	"vornik.io/vornik/internal/dispatcher"
 	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
@@ -539,6 +540,13 @@ type Server struct {
 
 	// aiDisclosure enforces EU AI Act Art 50(1) on the web-chat surface.
 	aiDisclosure *aidisclosure.Service
+	// disclosureMetrics observes Art 50 serve/failure counts on the web-chat
+	// receiver. Nil is tolerated so tests compile, but a production wiring
+	// that leaves it nil cannot evidence conformity.
+	disclosureMetrics dispatcher.DisclosureObserver
+	// mediaSight governs whether the web-chat dispatcher turn may perceive
+	// media directly. Nil hands every media attachment over to the vision role.
+	mediaSight *dispatcher.MediaSight
 
 	// chatStores keeps one in-memory webchat SessionStore per
 	// project so two browsers on different projects can't read

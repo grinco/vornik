@@ -673,6 +673,14 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("invalid log level: %s", c.Logging.Level)
 		}
 	}
+	// Fail the boot on a malformed modality declaration rather than
+	// silently resolving the typo'd entry to text-only — that would look
+	// identical to a deliberate text-only declaration, and the operator
+	// would see media work hand over with no way to tell why.
+	// see LLD § https://docs.vornik.io §4.7
+	if _, err := c.Chat.DeclaredModalities(); err != nil {
+		return fmt.Errorf("chat.model_capabilities: %w", err)
+	}
 	if c.API.AuthEnabled && c.API.AuthDryRun {
 		return fmt.Errorf("api.auth_dry_run is an evaluation mode; remove it when setting api.auth_enabled: true")
 	}
@@ -841,6 +849,12 @@ func (c *Config) Validate() error {
 	// time 'all' operator warning is emitted where the gateway is wired
 	// (container_http.go), which has the logger; Validate stays pure.
 	if _, err := c.Gateway.AgentWritesMode(); err != nil {
+		return err
+	}
+	// A publication-surface provider must name the body field its Art 50(1)
+	// gate inspects; required=true with no content_fields is a gate that passes
+	// everything (G6 finding B).
+	if err := c.Gateway.ValidateDisclosure(); err != nil {
 		return err
 	}
 	// taint_lineage.enforcement_mode tri-state (off|advisory|enforce): fail

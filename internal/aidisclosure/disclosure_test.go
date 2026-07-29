@@ -260,3 +260,76 @@ func TestConfig_Validate_EmptyIsValidMeaningUseDefaults(t *testing.T) {
 		t.Errorf("zero Config must be valid (means 'use compiled defaults'), got %v", err)
 	}
 }
+
+// --- publication notice (G6 trace, 2026-07-29) ---
+//
+// The conversational notice says "Replies in this conversation are generated
+// by an AI model". That is false of an artifact this system AUTHORS — a forge
+// review, a social post — where there is no conversation and nothing is a
+// reply. A disclosure that misdescribes what the reader is looking at is
+// weaker than a shorter accurate one, so publication surfaces get their own
+// wording. Design: 2026-07-29-art50-publication-surface-disclosure-design.md §3.
+
+func TestPublicationNotice_DoesNotClaimToBeAReplyInAConversation(t *testing.T) {
+	n := New(Config{}, nil).PublicationNotice()
+	if strings.Contains(strings.ToLower(n.Text), "conversation") {
+		t.Errorf("publication notice must not describe a conversation, got %q", n.Text)
+	}
+	if !strings.Contains(strings.ToLower(n.Text), "ai agent") {
+		t.Errorf("publication notice must name the AI authorship, got %q", n.Text)
+	}
+	if !strings.Contains(n.Text, DefaultURL) {
+		t.Errorf("publication notice must carry the transparency URL, got %q", n.Text)
+	}
+}
+
+// The two notices are distinct artifacts with distinct fingerprints; an
+// enforcement request asking "which wording did this surface serve?" must not
+// get an ambiguous answer.
+func TestPublicationNotice_HashesDistinctlyFromTheConversationalNotice(t *testing.T) {
+	s := New(Config{}, nil)
+	conv, pub := s.Notice(), s.PublicationNotice()
+	if conv.Text == pub.Text {
+		t.Fatal("conversational and publication notices must differ in text")
+	}
+	if conv.Hash == pub.Hash {
+		t.Fatal("conversational and publication notices must have different hashes")
+	}
+	sum := sha256.Sum256([]byte(pub.Text))
+	if pub.Hash != hex.EncodeToString(sum[:]) {
+		t.Errorf("publication hash = %q, want SHA-256 of its own text", pub.Hash)
+	}
+}
+
+func TestPublicationNotice_TextAndURLOverrides(t *testing.T) {
+	n := New(Config{PublicationText: "Machine-written. See %s", URL: "https://example.test/ai"}, nil).PublicationNotice()
+	if n.Text != "Machine-written. See https://example.test/ai" {
+		t.Errorf("override not applied: %q", n.Text)
+	}
+	// A custom text with no placeholder still has to reach the statement.
+	n2 := New(Config{PublicationText: "Machine-written."}, nil).PublicationNotice()
+	if !strings.Contains(n2.Text, DefaultURL) {
+		t.Errorf("placeholder-free override must still carry the URL, got %q", n2.Text)
+	}
+}
+
+// Same reasoning as TestConfig_Validate_RejectsWhitespaceOnlyText: blanking
+// the publication text must not become the off-switch the design refuses.
+func TestConfig_Validate_RejectsWhitespaceOnlyPublicationText(t *testing.T) {
+	for _, text := range []string{" ", "\t", "\n  \n"} {
+		if err := (Config{PublicationText: text}).Validate(); err == nil {
+			t.Errorf("Config{PublicationText:%q}.Validate() = nil, want an error", text)
+		}
+	}
+}
+
+// TestCadenceFor_ForgeReview_IsPerMessage makes the unknown-channel default
+// load-bearing on purpose rather than by accident. A forge review comment is a
+// standalone quotable artifact — it gets linked, quoted and forwarded to
+// readers who never saw the thread — which is exactly the per-message
+// rationale in cadence.go.
+func TestCadenceFor_ForgeReview_IsPerMessage(t *testing.T) {
+	if got := CadenceFor("forge-review"); got != CadencePerMessage {
+		t.Fatalf("CadenceFor(forge-review) = %v, want CadencePerMessage", got)
+	}
+}

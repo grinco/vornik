@@ -82,6 +82,7 @@ func swarmRoleItemSchema() AssetSchema {
 				Fields: []Field{
 					{Path: "model", Label: "Model", Kind: KindString, Help: "Overrides the daemon model for this role. Empty = daemon default."},
 					{Path: "modelFallback", Label: "Model fallback", Kind: KindString, Help: "Backup model on a model-shaped failure (schema/plausibility/iteration). Prefer a different vendor."},
+					{Path: "requiredModalities", Label: "Required modalities", Kind: KindStringList, Help: "What this role must be able to PERCEIVE: text, vision, audio. Config load refuses a model or fallback that cannot — so a role whose prompt promises sight can't be pointed at a blind model. Empty = unchecked."},
 					{Path: "maxTokens", Label: "Max output tokens", Kind: KindInt, Help: "0 = daemon/model default."},
 					{Path: "contextSize", Label: "Context size", Kind: KindInt, Help: "0 = daemon/model default."},
 					{Path: "responseFormat", Label: "Response format", Kind: KindString, Help: `Gateway output constraint. "json_object" enforces a parseable JSON envelope; empty = free-form.`},

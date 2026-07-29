@@ -21,6 +21,7 @@ import (
 	imagex "vornik.io/vornik/internal/extractor/image"
 	"vornik.io/vornik/internal/extractor/pdf"
 	"vornik.io/vornik/internal/extractor/textfile"
+	videox "vornik.io/vornik/internal/extractor/video"
 )
 
 // extractorPipeline is a thin lazy-init holder. The fields are
@@ -115,6 +116,24 @@ func (c *Container) initExtractorPipeline() {
 	// section via the same error path.
 	if err := reg.Register(imagex.New(), "image/*"); err != nil {
 		c.Logger.Error().Err(err).Msg("extractor: failed to register image extractor")
+		return
+	}
+	// Video — ffprobe metadata + uniform-interval keyframe sampling via
+	// ffmpeg. Registered unconditionally like PDF and audio: the binary
+	// check happens at Extract time with an install hint, and a host
+	// without ffmpeg degrades to a metadata-only failure rather than a
+	// dispatch-time gap the operator cannot see. Neither binary is a new
+	// dependency — the voice subsystem already requires ffmpeg.
+	//
+	// see LLD § https://docs.vornik.io §4.6
+	videoOpts := videox.NewWithOptions(
+		c.Config.Voice.STT.FFmpegPath, // reuse the operator's configured ffmpeg
+		"",                            // ffprobe from PATH (same package as ffmpeg)
+		c.Config.Media.Video.MaxFrames,
+		c.Config.Media.Video.MinIntervalSeconds,
+	)
+	if err := reg.Register(videoOpts, "video/*"); err != nil {
+		c.Logger.Error().Err(err).Msg("extractor: failed to register video extractor")
 		return
 	}
 	c.Logger.Info().

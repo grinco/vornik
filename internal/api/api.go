@@ -26,6 +26,7 @@ import (
 	"vornik.io/vornik/internal/featuredoctor"
 	"vornik.io/vornik/internal/mcp"
 	"vornik.io/vornik/internal/mediahandles"
+	"vornik.io/vornik/internal/mediakind"
 	"vornik.io/vornik/internal/memoryfirewall"
 	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
@@ -578,6 +579,11 @@ type Server struct {
 	// setupConfigPath is the daemon's resolved config.yaml path. The commit
 	// handler patches this file via featuredoctor.FileConfigWriter.
 	setupConfigPath string
+	// modelCapabilities holds chat.model_capabilities so the
+	// Ollama-compat /api/show surface advertises the same modality
+	// judgement the routing gate acts on. nil → mediakind's id
+	// patterns decide.
+	modelCapabilities map[string][]mediakind.Modality
 	// setupSecretsDir is <configDir>/secrets, derived from setupConfigPath
 	// by the container. The commit handler writes chat.env here.
 	setupSecretsDir string
@@ -899,7 +905,11 @@ type Server struct {
 	executor         ExecutorInterface
 	taskLogSource    TaskLogSource
 	config           *config.Config
-	metricsRegistry  *prometheus.Registry
+	// aiDisclosure supplies the EU AI Act Art 50(1) notice for gateway
+	// providers marked as publication surfaces (G6 finding B). Nil makes any
+	// write to such a provider refuse — see agentPublicationRefusal.
+	aiDisclosure    PublicationDiscloser
+	metricsRegistry *prometheus.Registry
 	// apiMetrics is the registered counter / histogram set
 	// (NewAPIMetrics). Stashed here so the cost-attribution
 	// hot path can bump the per-source counter without
@@ -1396,6 +1406,16 @@ func WithSetupMemoryValidator(v onboarding.MemoryValidatorInterface) ServerOptio
 // the commit handler can patch it via featuredoctor.FileConfigWriter.
 func WithSetupConfigPath(path string) ServerOption {
 	return func(s *Server) { s.setupConfigPath = path }
+}
+
+// WithModelCapabilities supplies the operator's per-model modality
+// declarations (chat.model_capabilities) so the Ollama-compat surface
+// advertises exactly what the routing gate will act on. nil is fine —
+// mediakind then resolves from its built-in id patterns.
+//
+// see LLD § https://docs.vornik.io §4.1
+func WithModelCapabilities(declared map[string][]mediakind.Modality) ServerOption {
+	return func(s *Server) { s.modelCapabilities = declared }
 }
 
 // WithSetupSecretsDir records the <configDir>/secrets directory the
@@ -2057,6 +2077,14 @@ func WithTaskLogSource(src TaskLogSource) ServerOption {
 func WithConfig(cfg *config.Config) ServerOption {
 	return func(s *Server) {
 		s.config = cfg
+	}
+}
+
+// WithAIDisclosure supplies the Art 50(1) publication notice used to gate writes
+// to gateway providers configured as human-facing publication surfaces.
+func WithAIDisclosure(d PublicationDiscloser) ServerOption {
+	return func(s *Server) {
+		s.aiDisclosure = d
 	}
 }
 

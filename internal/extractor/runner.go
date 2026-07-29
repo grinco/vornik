@@ -206,6 +206,10 @@ func (r *Runner) Run(ctx context.Context, projectID, sourceArtifactID string, ex
 		return nil, fmt.Errorf("runner: write sections: %w", err)
 	}
 
+	if err := writeProducedFiles(storageDir, res.Files); err != nil {
+		return nil, fmt.Errorf("runner: write produced files: %w", err)
+	}
+
 	metadataBytes, err := json.MarshalIndent(res.Metadata, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("runner: marshal metadata: %w", err)
@@ -297,4 +301,38 @@ func ReadSection(doc *persistence.ExtractedDocument, sectionID string) (string, 
 		return "", err
 	}
 	return string(data), nil
+}
+
+// writeProducedFiles persists extractor-emitted binaries (video keyframes)
+// under <storageDir>/files/.
+//
+// RelPath is extractor-supplied, so it is reduced to a bare filename and
+// re-joined with safepath — the same discipline writeSections applies to
+// section ids. An extractor is in-process code rather than untrusted input,
+// but a path-shaped bug here writes outside the document's directory, and
+// the check costs nothing.
+//
+// see LLD § https://docs.vornik.io §4.6
+func writeProducedFiles(storageDir string, files []ProducedFile) error {
+	if len(files) == 0 {
+		return nil
+	}
+	dir := filepath.Join(storageDir, "files")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("mkdir files: %w", err)
+	}
+	for _, f := range files {
+		name, err := safepath.CleanFileName(filepath.Base(f.RelPath))
+		if err != nil {
+			return fmt.Errorf("produced file %q: %w", f.RelPath, err)
+		}
+		target, err := safepath.JoinUnder(dir, name)
+		if err != nil {
+			return fmt.Errorf("produced file %q: %w", f.RelPath, err)
+		}
+		if err := os.WriteFile(target, f.Content, 0o600); err != nil {
+			return fmt.Errorf("write %q: %w", name, err)
+		}
+	}
+	return nil
 }

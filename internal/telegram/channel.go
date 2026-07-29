@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -349,12 +350,40 @@ func MessageToChannelMessage(msg *Message) conversation.ChannelMessage {
 	if msg.UserID != 0 {
 		speakerID = strconv.FormatInt(msg.UserID, 10)
 	}
+	// Attachments: Telegram used to populate NONE, which meant the generic
+	// media path (classification, capability gate, inline pixels) saw an
+	// empty list on the very channel most attachments arrive through —
+	// the file was mentioned only as prose inside msg.Text. Surfacing it
+	// here is additive: the SYSTEM trailer in msg.Text and the
+	// create_task input_files contract are unchanged, so the lead's
+	// host-path handling keeps working exactly as before.
+	//
+	// ChannelRef carries the downloaded host path; the dispatcher's fetch
+	// seam reads bytes from it under an allowlisted-root check. Voice is
+	// deliberately excluded — it is already transcribed into Text by the
+	// STT path before this runs, so re-surfacing it as an attachment
+	// would double-report one utterance.
+	//
+	// see LLD § https://docs.vornik.io §4.3.0
+	var attachments []conversation.Attachment
+	if msg.DownloadedPath != "" && !msg.IsVoice {
+		name := msg.FileName
+		if name == "" {
+			name = filepath.Base(msg.DownloadedPath)
+		}
+		attachments = append(attachments, conversation.Attachment{
+			Name:       name,
+			MimeType:   msg.MimeTypeHint,
+			ChannelRef: msg.DownloadedPath,
+		})
+	}
 	return conversation.ChannelMessage{
 		Source:          "telegram",
 		ID:              strconv.FormatInt(msg.ID, 10),
 		SessionID:       strconv.FormatInt(msg.ChatID, 10),
 		SpeakerID:       speakerID,
 		Text:            msg.Text,
+		Attachments:     attachments,
 		InReplyTo:       inReplyTo,
 		ThreadID:        threadID,
 		Timestamp:       time.Now(),

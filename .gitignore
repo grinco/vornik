@@ -81,3 +81,6 @@ __pycache__/
 /vornik-enterprise
 /vornikctl
 /vornik-broker
+
+# mkdocs local build output (published from CI / manually to vornik-docs gh-pages)
+site/

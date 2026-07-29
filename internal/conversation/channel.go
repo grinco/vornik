@@ -18,6 +18,7 @@ package conversation
 
 import (
 	"context"
+	"io"
 	"time"
 )
 
@@ -379,3 +380,26 @@ var ErrSpeakerUnknown = constError("conversation: speaker not known on this chan
 type constError string
 
 func (e constError) Error() string { return string(e) }
+
+// AttachmentFetcher is an OPTIONAL capability a Channel may implement:
+// given one of the Attachments it produced, return the payload bytes.
+//
+// Declared as a separate interface resolved by type assertion rather than
+// as a method on Channel so every existing channel keeps compiling
+// untouched, and so a channel that genuinely has no way to fetch bytes
+// (Slack and GitHub carry no inbound attachments today) simply does not
+// implement it — the caller then hands the work off rather than silently
+// pretending the media was unavailable.
+//
+// This is the referent the Attachment.ChannelRef doc comment has always
+// promised ("pass it to the originating Channel's FetchAttachment method
+// when the bytes are actually needed") and which, until now, did not
+// exist anywhere in the tree.
+//
+// Implementations MUST honour ctx cancellation and MUST NOT return a nil
+// ReadCloser with a nil error. Callers close the reader.
+//
+// see LLD § https://docs.vornik.io §4.3.0
+type AttachmentFetcher interface {
+	FetchAttachment(ctx context.Context, a Attachment) (io.ReadCloser, error)
+}

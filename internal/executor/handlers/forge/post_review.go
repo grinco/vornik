@@ -7,20 +7,46 @@ import (
 	"fmt"
 	"strings"
 
+	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/executor"
 	forgeapi "vornik.io/vornik/internal/forge"
 )
+
+// Discloser supplies the EU AI Act Art 50(1) notice for authored artifacts.
+// A local one-method interface so this package depends on the policy, not on
+// the service that owns per-session state it has no use for.
+type Discloser interface {
+	PublicationNotice() aidisclosure.Notice
+}
 
 // PostReviewHandler implements the "forge.post_review" system step: post the
 // reviewer agent's prose against the change request as a review/note. The body
 // is the LLM's text; the posting itself is deterministic.
 type PostReviewHandler struct {
-	resolver ProviderResolver
+	resolver   ProviderResolver
+	disclosure Discloser
 }
 
 // NewPostReviewHandler wires the handler.
-func NewPostReviewHandler(resolver ProviderResolver) *PostReviewHandler {
-	return &PostReviewHandler{resolver: resolver}
+//
+// disclosure is REQUIRED. A review comment reaches a human — the developer whose
+// pull request it lands on — so it carries the Art 50(1) notice, and this
+// surface does not go through the dispatcher chokepoint that covers channels
+// (G6 finding A, 2026-07-29). A nil disclosure makes Execute refuse rather than
+// publish undisclosed.
+func NewPostReviewHandler(resolver ProviderResolver, disclosure Discloser) *PostReviewHandler {
+	return &PostReviewHandler{resolver: resolver, disclosure: disclosure}
+}
+
+// discloseSuffix is the separator between the review and its notice. A rule plus
+// its own line so the notice survives being quoted into another thread, and so
+// it reads as a distinct statement rather than part of the reviewer's prose
+// (Art 50(5) "clear and distinguishable").
+const discloseSuffix = "\n\n---\n"
+
+// withDisclosure appends the Art 50(1) publication notice to a review body.
+func withDisclosure(body string, n aidisclosure.Notice) string {
+	return body + discloseSuffix + n.Text
 }
 
 // Name implements executor.SystemHandler.
@@ -212,6 +238,14 @@ func (h *PostReviewHandler) Execute(ctx context.Context, in executor.SystemStepI
 	if h == nil || h.resolver == nil {
 		return executor.SystemStepResult{}, errors.New(name + ": handler is missing required dependencies (resolver)")
 	}
+	// Fail closed: unable to disclose means unable to post. Publishing an
+	// undisclosed AI-authored comment to a human is the non-conformity; failing
+	// the step is merely a broken build.
+	if h.disclosure == nil {
+		return executor.SystemStepResult{}, errors.New(name +
+			": handler is missing required dependencies (disclosure) — refusing to post " +
+			"an undisclosed AI-authored review (EU AI Act Art 50(1))")
+	}
 	job, err := forgeJobFromTask(in.Task, name)
 	if err != nil {
 		return executor.SystemStepResult{}, err
@@ -225,6 +259,7 @@ func (h *PostReviewHandler) Execute(ctx context.Context, in executor.SystemStepI
 	if err != nil {
 		return executor.SystemStepResult{}, fmt.Errorf("%s: resolve provider: %w", name, err)
 	}
+	body = withDisclosure(body, h.disclosure.PublicationNotice())
 	if err := provider.PostReview(ctx, job.Repo, job.Number, forgeapi.ReviewSpec{Body: body, Event: event}); err != nil {
 		return executor.SystemStepResult{}, fmt.Errorf("%s: post review: %w", name, err)
 	}

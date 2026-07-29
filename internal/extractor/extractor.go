@@ -102,6 +102,25 @@ type Result struct {
 	Metadata Metadata
 	Outline  []OutlineEntry
 	Sections []Section
+	// Files are extractor-produced binaries that must outlive the
+	// extraction — today: keyframes sampled from a video. Sections are
+	// markdown and cannot carry them, and a temp dir would be gone
+	// before anything could look at the frames.
+	//
+	// The Runner writes each under <storage_path>/<doc_id>/files/<RelPath>,
+	// so a section can reference "files/frame-000.jpg" and the reference
+	// stays valid for the document's lifetime.
+	//
+	// see LLD § https://docs.vornik.io §4.6
+	Files []ProducedFile
+}
+
+// ProducedFile is one binary an extractor emits alongside its sections.
+// RelPath is a plain filename (no directory components — the Runner
+// rejects anything else) and Content is the payload.
+type ProducedFile struct {
+	RelPath string
+	Content []byte
 }
 
 // TotalTextBytes returns the sum of all section content lengths.

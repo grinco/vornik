@@ -178,3 +178,11 @@ func TestMemoryCacheStatsAdapter_NilManagerDisabled(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, resp.Enabled)
 }
+
+// Evict / EvictAll satisfy memory.EmbedCache for the Art 17 erasure path. These
+// stubs exercise the stats adapter, which never evicts, so they are no-ops.
+func (statslessEmbedCache) Evict(_ context.Context, _, _ string) error { return nil }
+func (statslessEmbedCache) EvictAll(_ context.Context, _ string) error { return nil }
+
+func (*stubEmbedCache) Evict(_ context.Context, _, _ string) error { return nil }
+func (*stubEmbedCache) EvictAll(_ context.Context, _ string) error { return nil }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/counterfactual"
+	"vornik.io/vornik/internal/mediakind"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/stepoutcome"
@@ -100,7 +101,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 	// after step 1. Operator-reported on a CV-extraction task:
 	// "writer claimed it preserved the CV but the file never
 	// reached its container".
-	taskInputArtifacts := extractTaskInputArtifacts(task.Payload)
+	taskInputArtifacts := extractTaskInputArtifacts(task.Payload, e.config.MediaStageMaxBytes)
 	stepArtifacts = append(stepArtifacts, taskInputArtifacts...)
 
 	// Loop protection: track how many times each step is visited.
@@ -2268,18 +2269,44 @@ func resolvePedantic(payload []byte, workflow *registry.Workflow, project *regis
 // unparseable payloads (best-effort; a malformed payload should
 // not stop the workflow — only the input files are lost).
 //
-// SKIPS files that have a matching context.inputExtractions entry:
-// when extraction succeeded at create_task time, the worker
-// reaches the content via mcp__vornik__document_* (Phase 2 tools).
-// Staging the raw binary on top of that has caused operators to
-// observe the worker file_read'ing the EPUB and blowing the 32 MB
-// chat-proxy cap (2026-05-21 incident, tasks T-fa9e/T-7f98/T-8889).
-// Removing the staged copy structurally eliminates the failure.
+// SKIPS files whose extraction can stand in for the original —
+// documents. When extraction succeeded at create_task time, the
+// worker reaches a document's content via mcp__vornik__document_*
+// (Phase 2 tools). Staging the raw binary on top of that has caused
+// operators to observe the worker file_read'ing the EPUB and blowing
+// the 32 MB chat-proxy cap (2026-05-21 incident, tasks
+// T-fa9e/T-7f98/T-8889). Removing the staged copy structurally
+// eliminates that failure.
+//
+// MEDIA IS DIFFERENT, and conflating the two cost us T-1df3
+// (2026-07-29). An image's extraction is OCR plus EXIF — on that task,
+// 115 bytes of "1280x1280 jpeg; OCR found no text" replacing 218 KB of
+// pixels. A transcript is not what a video looked like. For image,
+// audio, video, and unclassifiable inputs the extraction is a LOSSY
+// derivative, so the raw file is staged *in addition to* it; otherwise
+// the agent runtime's image detection (which reads staged paths) can
+// never fire and a vision-capable role receives nothing to look at.
+// mediakind.ExtractionSufficient owns that distinction so this and the
+// dispatcher's attachment trailer cannot disagree about it.
+//
+// maxMediaBytes bounds the raw media staging; zero means unbounded.
+// Over the cap the extraction stands alone — a degradation, but a
+// bounded and operator-chosen one rather than a silent drop at any
+// size. Documents ignore the cap: they are never staged anyway.
+//
+// Classification is by filename extension, because the payload carries
+// paths and extraction summaries but no MIME type. That is the weaker
+// of mediakind's two signals; a mis-extensioned image is staged or
+// skipped wrongly. The cost is bounded either way — a wrongly staged
+// document is one extra file in artifacts/in/, and a wrongly skipped
+// image degrades to the pre-existing behaviour.
 //
 // Extracted into a free function so the contract can be unit-
 // tested without booting a full Executor + plan + container
 // stack.
-func extractTaskInputArtifacts(payload []byte) []map[string]string {
+//
+// see LLD § https://docs.vornik.io §4.2
+func extractTaskInputArtifacts(payload []byte, maxMediaBytes int64) []map[string]string {
 	if len(payload) == 0 {
 		return nil
 	}
@@ -2327,8 +2354,7 @@ func extractTaskInputArtifacts(payload []byte) []map[string]string {
 			continue
 		}
 		base := filepath.Base(path)
-		if extractedBasenames[base] {
-			// Skip staging — agent uses document_* tools instead.
+		if extractedBasenames[base] && !stageRawAlongsideExtraction(path, base, maxMediaBytes) {
 			continue
 		}
 		out = append(out, map[string]string{
@@ -2340,6 +2366,39 @@ func extractTaskInputArtifacts(payload []byte) []map[string]string {
 		return nil
 	}
 	return out
+}
+
+// stageRawAlongsideExtraction decides whether a file that ALREADY has an
+// extraction should nonetheless have its raw bytes staged into the
+// container.
+//
+// False for documents: the extraction carries the content, and staging the
+// binary too is what let a worker file_read a 32 MB EPUB into the
+// chat-proxy cap (2026-05-21, T-fa9e/T-7f98/T-8889).
+//
+// True for image, audio, video, and unclassifiable inputs, because their
+// extractions are lossy derivatives — the OCR text is not the picture
+// (T-1df3) — bounded by maxMediaBytes so "the bytes travel" cannot mean
+// "any number of bytes travel". Zero is unbounded.
+//
+// A stat failure returns true. stageInputArtifacts is the component that
+// actually reads the bytes and already skips sources it cannot read, so
+// refusing here would drop a perfectly readable file over a transient
+// error on a path this function only inspects by name.
+//
+// see LLD § https://docs.vornik.io §4.2
+func stageRawAlongsideExtraction(path, base string, maxMediaBytes int64) bool {
+	if mediakind.ExtractionSufficient(mediakind.Classify(base, "")) {
+		return false
+	}
+	if maxMediaBytes <= 0 {
+		return true
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return true
+	}
+	return fi.Size() <= maxMediaBytes
 }
 
 // handleSuccess processes a successful execution.

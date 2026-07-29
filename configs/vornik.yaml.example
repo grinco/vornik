@@ -960,5 +960,30 @@ gateway:
       writes_enabled: false
       description: "Google Maps API (geocoding, places, directions)."
 
+    # A PUBLICATION SURFACE — a provider whose readers are natural persons
+    # (a social platform, a forum). EU AI Act Art 50(1) obliges telling those
+    # readers they are dealing with an AI, and this path does NOT go through the
+    # channel disclosure chokepoint in the dispatcher, so the gate lives here.
+    #
+    # With disclosure.required, a write is REFUSED unless the notice text appears
+    # in one of content_fields. The daemon does not inject it: that would mean
+    # knowing which field of an arbitrary third-party body holds human-facing
+    # prose. The agent composes the content; the daemon refuses to transmit
+    # content that does not carry the notice, and the refusal tells the agent
+    # exactly what to add so it can retry in the same task.
+    #
+    # content_fields has NO default and is REQUIRED when required: true — naming
+    # the field explicitly is what stops the notice being parked in a key no
+    # reader ever sees, and an empty list would be a gate that passes everything.
+    # The notice wording comes from ai_disclosure.publication_text.
+    # social-platform:
+    #   base_path: "/social"
+    #   allowed_methods: ["GET", "HEAD", "POST"]
+    #   writes_enabled: true
+    #   description: "Example social platform — agent posts and comments."
+    #   disclosure:
+    #     required: true
+    #     content_fields: ["content"]
+
 mcp:
   servers: []

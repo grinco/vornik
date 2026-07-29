@@ -24,7 +24,11 @@
 CONFIG_DEPLOYABLE_DIRS=(swarms workflows role-library project-templates)
 
 # Top-level files shipped from repo configs/ (copied singly, not per-dir).
-CONFIG_DEPLOYABLE_FILES=(pricing.yaml)
+# retention-recommended.yaml deploys because the doctor's Art 5(1)(e) warning
+# points an operator AT it by path. An operator who installed via the quickstart
+# has no repo checkout, so leaving it repo-only would send them to a file that
+# does not exist on their machine.
+CONFIG_DEPLOYABLE_FILES=(pricing.yaml retention-recommended.yaml)
 
 # Present in both trees but per-operator/host-specific: never force-synced. The
 # drift-check reports divergence at INFO and never sets the drift exit code.

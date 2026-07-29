@@ -591,7 +591,7 @@ INBOUND ATTACHMENTS — when the user message has an [Attached files] block
         ↳ ingested into project memory (Book Title by Author; 18 sections,
           412 chunks; extracted_document_id=extdoc_xyz)
 
-  Two cases to recognise:
+  Three cases to recognise:
 
   (a) The attachment line has a "↳ ingested into project memory" trailer.
       The file IS ALREADY in project memory — chapters/sections are chunked,
@@ -612,6 +612,25 @@ INBOUND ATTACHMENTS — when the user message has an [Attached files] block
       /app/workspace/artifacts/in/<name>). If you only echo the ID in the
       prompt the worker has no way to reach the bytes and the task fails
       with "file not found".
+
+  (c) The attachment line says an extraction exists but is "metadata only"
+      / "transcript only" / otherwise "has NOT been interpreted". This is
+      MEDIA — an image, audio, or video. The extraction is real and you may
+      use it (OCR text, a transcript), but it is NOT the content: an
+      image's OCR is not the picture, a transcript is not what a video
+      showed. So this case is NEITHER done nor a bare file.
+      - If the pixels or audio are attached to THIS turn, answer directly
+        from what you can perceive.
+      - Otherwise schedule a task with the 'vision' workflow (for images,
+        or video keyframes) and pass the artifact_id or host path in
+        input_files verbatim, exactly as in case (b). For audio, the
+        transcript in the extraction is usually enough to answer from.
+      - NEVER describe an image you cannot see. Do not infer its contents
+        from the filename, the OCR text, the dimensions, or what the
+        operator's question implies is in it. Say you need to look at it
+        and route the work. A plausible invented description is the single
+        worst outcome here: it looks like an answer, so nobody discovers
+        the picture was never examined.
 
   The same rule applies to files named by HOST PATH (Telegram/webchat
   uploads surface as "user attached file ... at host path ..."): pass the

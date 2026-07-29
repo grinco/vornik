@@ -300,7 +300,11 @@ type Container struct {
 	runtimeManager  *runtime.Manager
 	warmPool        *runtime.WarmPool
 	autonomyManager *autonomy.Manager
-	mcpManager      *mcp.Manager
+	// dispatcherMetrics is retained so the channel receivers' media
+	// observer can resolve it lazily — receivers are built before the
+	// metrics registry is wired.
+	dispatcherMetrics *dispatcher.Metrics
+	mcpManager        *mcp.Manager
 	// mcpRegistry caches the daemon-level MCP server catalog
 	// declared by config.MCP.Servers. Distinct from mcpManager
 	// (which holds per-project active clients used by agents) —
@@ -1563,7 +1567,11 @@ func (c *Container) wireComponentMetrics() {
 	}
 
 	if c.Dispatcher != nil {
-		c.Dispatcher.SetMetrics(dispatcher.NewMetrics(reg))
+		// Retained on the container as well: the channel receivers'
+		// media observer resolves it lazily, since receivers are
+		// constructed before this runs.
+		c.dispatcherMetrics = dispatcher.NewMetrics(reg)
+		c.Dispatcher.SetMetrics(c.dispatcherMetrics)
 		c.Logger.Info().Msg("dispatcher metrics wired")
 	}
 

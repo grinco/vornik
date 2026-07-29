@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"vornik.io/vornik/internal/mediakind"
 )
 
 // Swarm represents a swarm definition loaded from swarms/*.md
@@ -105,6 +107,25 @@ type SwarmRole struct {
 	// The fallback runs at most once per step — if it also fails,
 	// the executor reports the most recent error.
 	ModelFallback string `yaml:"modelFallback"`
+	// RequiredModalities declares what this role's work needs to
+	// PERCEIVE — "vision" for a role that looks at images, "audio" for
+	// one that listens. Validation then refuses a Model (or
+	// ModelFallback) that cannot, so a role whose prompt promises sight
+	// cannot be wired to a blind model and discover it at task time.
+	//
+	// Declaration-driven on purpose: a role named "vision" gets no
+	// special treatment, and a differently-named role that needs sight
+	// gets the same protection. Empty (the default) skips the check
+	// entirely, so existing swarm files are unaffected.
+	//
+	// Both Model and ModelFallback are checked. The fallback matters
+	// most: the assistant swarm's vision role crosses providers
+	// (google.gemma-3-27b-it → gemma4:31b), so a primary-only check
+	// would pass while a fallback-time degradation to a blind model
+	// went undetected until it happened in production.
+	//
+	// see LLD § https://docs.vornik.io §4.5
+	RequiredModalities []string `yaml:"requiredModalities"`
 	// MaxTokens overrides the daemon-level max output tokens for this role.
 	// 0 = use daemon default (or model_limits entry if the model is overridden).
 	MaxTokens int `yaml:"maxTokens"`
@@ -344,6 +365,10 @@ func (s *Swarm) Validate(filename string) error {
 			}
 		}
 
+		if err := validateRoleModalities(filename, i, role); err != nil {
+			return err
+		}
+
 		// Validate runtime policy
 		if role.RuntimePolicy != "" && role.RuntimePolicy != "ephemeral" && role.RuntimePolicy != "warm" {
 			return SwarmValidationError{
@@ -467,4 +492,62 @@ func LoadSwarms(dir string) (map[string]*Swarm, error) {
 	}
 
 	return swarms, nil
+}
+
+// validateRoleModalities enforces a role's RequiredModalities declaration
+// against the models it will actually run on.
+//
+// The point is to move a whole class of failure from run time to config
+// load: without it, a role whose prompt tells the agent "the image arrives
+// as a multimodal content block — you can see it directly" can be pointed
+// at a text-only model, and the mismatch only surfaces as a confident
+// answer about pixels the model never received.
+//
+// Both Model and ModelFallback are checked, because the fallback is where
+// this hides — a sighted primary with a blind secondary looks fine until
+// the retry path fires.
+//
+// An empty Model is skipped: it means "inherit the daemon default", which
+// the swarm file cannot resolve. Refusing there would make the declaration
+// unusable on inheriting roles rather than safer.
+//
+// see LLD § https://docs.vornik.io §4.5
+func validateRoleModalities(filename string, i int, role SwarmRole) error {
+	if len(role.RequiredModalities) == 0 {
+		return nil
+	}
+	required, err := mediakind.ParseModalities(role.RequiredModalities)
+	if err != nil {
+		return SwarmValidationError{
+			File:    filename,
+			Field:   fmt.Sprintf("roles[%d].requiredModalities", i),
+			Message: err.Error(),
+		}
+	}
+	for _, spec := range []struct {
+		field string
+		model string
+	}{
+		{"model", role.Model},
+		{"modelFallback", role.ModelFallback},
+	} {
+		if spec.model == "" {
+			continue
+		}
+		caps := mediakind.Capabilities(spec.model, nil)
+		for _, m := range required {
+			if caps.Can(m) {
+				continue
+			}
+			return SwarmValidationError{
+				File:  filename,
+				Field: fmt.Sprintf("roles[%d].%s", i, spec.field),
+				Message: fmt.Sprintf(
+					"role %q requires %s but model %q cannot perceive it (resolved capabilities: %s). "+
+						"Either point this role at a capable model or declare the model's modalities in chat.model_capabilities.",
+					role.Name, m, spec.model, caps),
+			}
+		}
+	}
+	return nil
 }

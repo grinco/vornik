@@ -558,6 +558,19 @@ func (s *Server) AgentQueryAPI(w http.ResponseWriter, r *http.Request) {
 				s.recordTaintWrite(taint.mode, "permitted")
 			}
 		}
+
+		// EU AI Act Art 50(1) publication gate (G6 finding B): a write to a
+		// provider whose readers are people must carry the disclosure. Runs
+		// LAST of the write gates — after WHO (agent_writes) and WHAT (taint) —
+		// because it is the only one that inspects the payload, and there is no
+		// point vetting content for a write the policy gates already refused.
+		if reason := s.agentPublicationRefusal(req.Provider, req.Path, req.Body); reason != "" {
+			audit.Status = agentAPIStatusRefused
+			s.recordAgentWrite(res, false)
+			s.writeAgentAPIAudit(r.Context(), projectID, actx, audit)
+			respondJSON(w, http.StatusOK, AgentQueryResponse{Refusal: reason})
+			return
+		}
 	}
 
 	outcome := s.newAgentAPIService(res.permit).Query(r.Context(), projectID, actx.role, apigateway.Request{

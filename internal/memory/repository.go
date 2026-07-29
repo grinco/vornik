@@ -2496,3 +2496,65 @@ func scanSearchResults(rows *sql.Rows) ([]SearchResult, error) {
 	}
 	return results, rows.Err()
 }
+
+// --- GDPR Art 17 erasure support (internal/erasure ChunkStore) -------------
+//
+// Four narrow queries backing the erasure cascade. They exist here because
+// this repository owns project_memory_chunks; the cascade itself lives in
+// internal/erasure so the ordering and containment rules are in one place.
+//
+// Chunks reach an artifact by two independent routes, and BOTH have to be
+// covered or erasure is partial:
+//
+//   - derived_from_extracted_document_id — text chunked out of an extraction
+//     (a photo's OCR, a recording's transcript). No foreign key exists on this
+//     column, which is why nothing cascades today.
+//   - artifact_id — chunks linked straight to the source. The column is
+//     ON DELETE SET NULL, so deleting the artifact would otherwise leave the
+//     chunk in place and merely null the pointer, destroying the provenance
+//     that would let anyone find it afterwards.
+//
+// see LLD § https://docs.vornik.io §4.4
+
+// CountByExtractedDocument counts chunks derived from one extraction.
+func (r *Repository) CountByExtractedDocument(ctx context.Context, extractedDocumentID string) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM project_memory_chunks WHERE derived_from_extracted_document_id = $1`,
+		extractedDocumentID).Scan(&n)
+	return n, err
+}
+
+// CountByArtifact counts chunks linked directly to one artifact.
+func (r *Repository) CountByArtifact(ctx context.Context, artifactID string) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM project_memory_chunks WHERE artifact_id = $1`,
+		artifactID).Scan(&n)
+	return n, err
+}
+
+// DeleteByExtractedDocument removes chunks derived from one extraction and
+// returns how many rows went.
+func (r *Repository) DeleteByExtractedDocument(ctx context.Context, extractedDocumentID string) (int, error) {
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM project_memory_chunks WHERE derived_from_extracted_document_id = $1`,
+		extractedDocumentID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}
+
+// DeleteByArtifact removes chunks linked directly to one artifact and returns
+// how many rows went.
+func (r *Repository) DeleteByArtifact(ctx context.Context, artifactID string) (int, error) {
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM project_memory_chunks WHERE artifact_id = $1`, artifactID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
+}

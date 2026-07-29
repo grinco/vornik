@@ -656,3 +656,65 @@ func TestErrStreamClosed_Sentinel(t *testing.T) {
 		t.Error("ErrStreamClosed.Error() returned empty string")
 	}
 }
+
+// A Telegram photo must surface as exactly ONE ChannelMessage.Attachment —
+// before this, Telegram populated none, so the generic media path saw an
+// empty list on the channel most attachments arrive through (T-1df3 came in
+// this way).
+//
+// The claim that it is ADDITIVE is asserted, not assumed: the SYSTEM trailer
+// in Text and the host path the lead passes to create_task input_files must
+// both survive untouched.
+//
+// see LLD § https://docs.vornik.io §4.3.0
+func TestMessageToChannelMessage_PhotoBecomesOneAttachment(t *testing.T) {
+	msg := &Message{
+		ID: 7, ChatID: 42, UserID: 9,
+		Text:           "what is this?\n\n[SYSTEM: user attached file \"photo.jpg\" at host path \"/tmp/up/photo.jpg\". When you call create_task, pass input_files: [\"/tmp/up/photo.jpg\"].]",
+		FileID:         "fid",
+		FileName:       "photo.jpg",
+		MimeTypeHint:   "image/jpeg",
+		DownloadedPath: "/tmp/up/photo.jpg",
+	}
+	cm := MessageToChannelMessage(msg)
+	if len(cm.Attachments) != 1 {
+		t.Fatalf("want exactly 1 attachment, got %d", len(cm.Attachments))
+	}
+	a := cm.Attachments[0]
+	if a.Name != "photo.jpg" || a.MimeType != "image/jpeg" || a.ChannelRef != "/tmp/up/photo.jpg" {
+		t.Errorf("attachment fields wrong: %+v", a)
+	}
+	// Additive: the existing prose contract is byte-for-byte intact.
+	if cm.Text != msg.Text {
+		t.Errorf("Text was modified; the SYSTEM trailer / input_files contract must be untouched")
+	}
+}
+
+// Voice is transcribed into Text by the STT path before translation, so
+// re-surfacing it as an attachment would double-report one utterance.
+func TestMessageToChannelMessage_VoiceNotDoubleReported(t *testing.T) {
+	cm := MessageToChannelMessage(&Message{
+		ID: 1, ChatID: 2, Text: "transcribed words",
+		FileName: "voice.oga", DownloadedPath: "/tmp/up/voice.oga", IsVoice: true,
+	})
+	if len(cm.Attachments) != 0 {
+		t.Errorf("voice must not surface as an attachment, got %+v", cm.Attachments)
+	}
+}
+
+func TestMessageToChannelMessage_NoDownloadNoAttachment(t *testing.T) {
+	cm := MessageToChannelMessage(&Message{ID: 1, ChatID: 2, Text: "hello"})
+	if len(cm.Attachments) != 0 {
+		t.Errorf("a text-only message must carry no attachments, got %+v", cm.Attachments)
+	}
+}
+
+// Name falls back to the path's basename when Telegram advertised none.
+func TestMessageToChannelMessage_NameFallsBackToBasename(t *testing.T) {
+	cm := MessageToChannelMessage(&Message{
+		ID: 1, ChatID: 2, Text: "x", DownloadedPath: "/tmp/up/scan.png",
+	})
+	if len(cm.Attachments) != 1 || cm.Attachments[0].Name != "scan.png" {
+		t.Errorf("want name scan.png, got %+v", cm.Attachments)
+	}
+}

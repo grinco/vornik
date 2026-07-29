@@ -29,6 +29,42 @@ import (
 // A2A — see the design's §9.4 reasoning), add it to the allowlist below WITH
 // the statutory reason, not just a path.
 func TestEveryChannelReceiverWiresTheAIDisclosure(t *testing.T) {
+	offenders := receiverLiteralsMissingField(t, "Disclosure:")
+	if len(offenders) > 0 {
+		t.Errorf(
+			"these dispatcher.ChannelReceiver construction sites do not set Disclosure, "+
+				"so those channels would converse with humans without the EU AI Act "+
+				"Art 50(1) notice: %v", offenders)
+	}
+}
+
+// TestEveryChannelReceiverWiresTheDisclosureMetrics is the observability half
+// of the same guard.
+//
+// Serving the disclosure and being able to PROVE it are separate obligations:
+// Art 50 requires the notice, Art 99 makes the breach enforceable, and an
+// operator who cannot show a serve rate cannot demonstrate compliance — nor
+// notice it silently stopping. The disclosure is served deep inside the
+// receiver and nothing user-visible changes when the counters never move, so a
+// nil observer is indistinguishable from a conforming deployment with no
+// traffic. That is precisely the failure this scan exists to prevent.
+//
+// If you are here because this failed on a new channel: add
+// `DisclosureMetrics: c.disclosureObserver()` to the literal.
+func TestEveryChannelReceiverWiresTheDisclosureMetrics(t *testing.T) {
+	offenders := receiverLiteralsMissingField(t, "DisclosureMetrics:")
+	if len(offenders) > 0 {
+		t.Errorf(
+			"these dispatcher.ChannelReceiver construction sites do not set "+
+				"DisclosureMetrics, so Art 50 serve/failure counts on those channels "+
+				"are unobserved and conformity cannot be evidenced: %v", offenders)
+	}
+}
+
+// receiverLiteralsMissingField scans every non-test .go file for
+// `&dispatcher.ChannelReceiver{` literals that do not name the given field.
+func receiverLiteralsMissingField(t *testing.T, field string) []string {
+	t.Helper()
 	// Paths whose ChannelReceiver literal is exempt, and why. Empty today:
 	// all five shipped channels are human-facing.
 	exempt := map[string]string{}
@@ -67,7 +103,7 @@ func TestEveryChannelReceiverWiresTheAIDisclosure(t *testing.T) {
 			if !ok {
 				continue
 			}
-			if strings.Contains(body, "Disclosure:") {
+			if strings.Contains(body, field) {
 				continue
 			}
 			rel, _ := filepath.Rel(root, path)
@@ -82,13 +118,7 @@ func TestEveryChannelReceiverWiresTheAIDisclosure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
-
-	if len(offenders) > 0 {
-		t.Errorf(
-			"these dispatcher.ChannelReceiver construction sites do not set Disclosure, "+
-				"so those channels would converse with humans without the EU AI Act "+
-				"Art 50(1) notice: %v", offenders)
-	}
+	return offenders
 }
 
 // compositeLiteralBody returns the text up to the brace that closes the

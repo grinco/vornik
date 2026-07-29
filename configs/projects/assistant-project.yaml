@@ -36,6 +36,11 @@ adaptiveCandidateWorkflows:
   - research
   - deep-research
   - plan-and-write
+  # Route here when the request needs an IMAGE interpreted. Without this
+  # entry the swarm's vision role is unreachable — the adaptive router can
+  # only pick from this list, so a photo went to a blind researcher
+  # (T-1df3, 2026-07-29).
+  - vision
 defaultPriority: 50 # 0-100; lower numbers run first
 maxConcurrentTasks: 3   # independent tasks can run in parallel
 

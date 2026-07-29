@@ -1,6 +1,6 @@
 # AI transparency
 
-**Last updated:** 28 July 2026
+**Last updated:** 29 July 2026
 
 If you arrived here from a message that said *"You are interacting with an AI
 system"* — this page explains what that means.
@@ -45,6 +45,8 @@ configured it. The possible recipients are:
 | OpenAI | Language model inference |
 | Amazon Web Services (Bedrock) | Language model inference |
 | OpenRouter | Model routing to further downstream providers |
+| Google Cloud (Vertex AI) | Language model inference |
+| Ollama Cloud | Language model inference, including image input |
 | Locally-hosted models (e.g. Ollama) | Inference with no external transmission |
 
 An operator running local models only can process your messages without any
@@ -53,6 +55,45 @@ talking to which configuration applies.
 
 This list is also the sub-processor list for data-protection purposes — see
 the [compliance status](compliance.md) page.
+
+## If you were mentioned here but never wrote to us
+
+This section is for a different reader: someone whose personal data a Vornik
+deployment holds because **somebody else** put it there. An email that names
+you. A CV sent about you. A photo you appear in.
+
+**Who to ask, and who not to.** Vornik is software that organisations run on
+their own infrastructure. **The Vornik project does not hold, store, or have
+access to any data from a customer's deployment** — so we cannot look you up,
+confirm whether a deployment holds data about you, or action a request. The
+organisation running the deployment is the **data controller** and the only
+party who can answer you.
+
+If you do not know who that is, the message or document that brought you here
+usually identifies them — the sending domain, the signature, or the person who
+contacted you.
+
+**What you are entitled to.** GDPR Article 14 obliges that controller to tell
+you what they hold about you, why, on what legal basis, who else sees it, how
+long they keep it, and where it came from — and they owe you that even though
+you never chose to interact with their system. You can also ask for a copy
+(Article 15), correction (16), erasure (17), restriction (18), portability (20),
+and you can object to processing based on legitimate interests (21). If they do
+not respond satisfactorily you can complain to your national supervisory
+authority without going through them first.
+
+**What Vornik does to make that possible.** Two things worth knowing, because
+they affect what a controller can honestly promise you:
+
+- The software records where each piece of data entered from, so a controller
+  can answer "where did you get this about me?" rather than guessing.
+- Its image analysis explicitly **refuses** to identify people, infer emotions,
+  or deduce race, religion, politics, union membership, health, sex life, or
+  sexual orientation from appearance.
+
+Operators: the notice you owe under Article 14 is yours to publish, not ours.
+A template you can adopt is in the project's
+`docs/legal/art14-notice-template.md`.
 
 ## Human oversight
 

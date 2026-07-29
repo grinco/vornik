@@ -153,6 +153,20 @@ func (c *Container) initHTTPServer() error {
 		api.WithSetupValidator(onboarding.NewChatValidator()),
 		api.WithSetupMemoryValidator(onboarding.NewMemoryValidator()),
 		api.WithSetupConfigPath(c.ConfigPath),
+		// Per-model modality declarations, so the Ollama-compat
+		// /api/show surface advertises the same judgement the media
+		// routing gate acts on. Validate() already rejected a bad
+		// modality name at load, so the error here is unreachable in
+		// practice; nil-on-error is the right degrade anyway (mediakind
+		// falls back to its id patterns rather than claiming sight).
+		// see LLD § https://docs.vornik.io §4.1
+		func() api.ServerOption {
+			declared, err := c.Config.Chat.DeclaredModalities()
+			if err != nil {
+				declared = nil
+			}
+			return api.WithModelCapabilities(declared)
+		}(),
 		api.WithSetupSecretsDir(onboardingSecretsDir(c.ConfigPath)),
 		// Live observation subscriber (Feature #3 Phase B). The
 		// publisher itself is wired into the executor at
@@ -220,6 +234,10 @@ func (c *Container) initHTTPServer() error {
 		api.WithRateLimiter(c.rateLimiter),
 		api.WithTaskCreator(taskCreator),
 		api.WithConfig(c.Config),
+		// Art 50(1) gate for gateway providers configured as publication
+		// surfaces (G6 finding B). Built in initDatabase, which runs before
+		// initHTTPServer; the gate refuses publication writes if it is ever nil.
+		api.WithAIDisclosure(c.AIDisclosure),
 	}
 	// Edition gate (outer) — Admin interfaces. Both initHTTPServer passes
 	// run this same function body, so the gate covers both automatically.
@@ -1784,6 +1802,10 @@ func (c *Container) initHTTPServer() error {
 	if c.Dispatcher != nil {
 		uiOpts = append(uiOpts, ui.WithChatDispatcher(c.Dispatcher))
 		uiOpts = append(uiOpts, ui.WithAIDisclosure(c.AIDisclosure))
+		// Web chat is a ChannelReceiver like the other four: it owes the same
+		// Art 50 observability and the same media-perception rules.
+		uiOpts = append(uiOpts, ui.WithDisclosureMetrics(c.disclosureObserver()))
+		uiOpts = append(uiOpts, ui.WithMediaSight(c.mediaSight()))
 	}
 	// DB-backed webchat session store. Each per-project
 	// SessionStore the UI lazily constructs will write-through

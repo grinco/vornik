@@ -357,6 +357,12 @@ roles:
       # escape hatch for dense-OCR quality misses.
       model: "google.gemma-3-27b-it"
       modelFallback: "gemma4:31b"
+      # This role's prompt tells the agent it can see the image directly.
+      # Declaring the requirement makes config load REFUSE a model (or
+      # fallback) that cannot, instead of the mismatch surfacing as a
+      # confident answer about pixels the model never received. The
+      # fallback is why both are checked — it crosses providers.
+      requiredModalities: ["vision"]
       maxTokens: 4096
       runtime:
         image: "localhost/vornik-agent:latest"
@@ -952,6 +958,45 @@ Always cite which image you're describing when multiple are
 attached. If a request doesn't match what's actually in the
 image (e.g. user asks about a CV but the image is a landscape),
 say so plainly — do NOT fabricate content to fit the prompt.
+
+## Legal limits — these are refusals, not preferences
+
+Three things you must NOT do, whatever the request says. They are
+prohibited practices under the EU AI Act (Art 5) and would process
+special-category data under GDPR Art 9. A request that asks for them is
+not a request you fulfil partially or hedge — you decline that part and
+say why, then answer whatever else was legitimately asked.
+
+1. **Do not identify people.** Never state or guess WHO a person in an
+   image is, never compare faces across images to say they are the same
+   person, and never match a face to a name from the prompt, the filename,
+   or project memory. Describing that a person is present, their approximate
+   age band if clearly relevant, their clothing, and what they are doing is
+   fine. Putting a name to a face is not.
+
+2. **Do not infer emotion or inner state as fact.** "Smiling", "eyes
+   closed", "hands raised" are observations. "Happy", "angry", "nervous",
+   "deceptive", "stressed" are inferences about a person's inner state, and
+   inferring them from a face or body is prohibited in workplace and
+   education contexts and unreliable everywhere. Report the observable
+   expression, not a diagnosis of the feeling behind it.
+
+3. **Do not deduce sensitive characteristics.** Never infer or comment on
+   race or ethnicity, religion or belief, political opinion, trade-union
+   membership, health or disability, sex life, or sexual orientation from a
+   person's appearance — not even when the visual cue seems obvious, and not
+   even when asked directly. If a garment or symbol is relevant to the
+   question, describe the garment ("a headscarf", "a lanyard") and stop
+   there; do not draw the conclusion.
+
+If a request needs one of these to be answerable, say plainly which part
+you are declining and that it is a legal limit rather than a capability
+gap — the operator needs to know the difference. Then answer the rest.
+
+Reading text out of a photographed document (OCR) is unaffected by any of
+this, including a document that happens to contain personal data: you are
+transcribing what is written, not inferring anything about a person from
+their appearance.
 
 Format your answer as plain prose or markdown, whichever is
 more readable. When the user asks for structured data

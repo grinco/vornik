@@ -410,6 +410,28 @@ func (s *Sweeper) runGlobal(ctx context.Context, responseCacheDays, embeddingCac
 	return counts, firstErr
 }
 
+// evidenceTables are NEVER prunable, whatever any allowlist says.
+//
+// EU AI Act Art 50 obliges the provider to disclose that a human is
+// interacting with an AI system; Art 99 makes non-compliance enforceable at up
+// to €15M or 3% of worldwide turnover from 2 Aug 2026. `channel_disclosure_log`
+// is the record that the disclosure WAS served — an obligation met but
+// unprovable is worth very little under enforcement, so deleting this trail
+// converts a compliant deployment into an indefensible one.
+//
+// Why a DENYLIST when the two allowlists already omit this table: omission
+// protects by accident. Anyone adding a line to `allowedTables` or
+// `globalCleanupTables` — reasonably, while wiring some new cleanup — would
+// silently start pruning the evidence trail, and nothing would fail. A deny
+// checked BEFORE the allowlist protects by assertion instead, and
+// TestEvidenceTablesAreNeverPrunable fails the build if this table ever
+// appears in an allowlist.
+//
+// see LLD § https://docs.vornik.io
+var evidenceTables = map[string]bool{
+	"channel_disclosure_log": true,
+}
+
 // globalCleanupTables is the allowlist of global (non-project-scoped) tables
 // the threshold cleanups may touch. Closed set — pruneGlobalByThreshold
 // rejects anything else so the table name (interpolated into SQL) can never
@@ -427,6 +449,9 @@ var globalCleanupTables = map[string]bool{
 // api_keys / link_codes cleanups, which differ only in the table and the
 // staleness predicate. previewOnly switches DELETE → COUNT.
 func (s *Sweeper) pruneGlobalByThreshold(ctx context.Context, table, where string, threshold time.Time, previewOnly bool) (int, error) {
+	if evidenceTables[table] {
+		return 0, fmt.Errorf("refusing to prune %s: conformity evidence trail (AI Act Art 50 / Art 99) — see evidenceTables", table)
+	}
 	if !globalCleanupTables[table] {
 		return 0, fmt.Errorf("forbidden global cleanup table: %s", table)
 	}
@@ -768,6 +793,9 @@ func (s *Sweeper) pruneOlderThan(ctx context.Context, table, tsCol, extraWhere s
 		"updated_at":   true,
 		"ingested_at":  true,
 		"evaluated_at": true,
+	}
+	if evidenceTables[table] {
+		return 0, fmt.Errorf("refusing to prune %s: conformity evidence trail (AI Act Art 50 / Art 99) — see evidenceTables", table)
 	}
 	if !allowedTables[table] {
 		return 0, fmt.Errorf("forbidden table name: %s", table)

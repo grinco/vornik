@@ -224,6 +224,44 @@ func purgeRepotestLeftovers() error {
 	return tx.Commit()
 }
 
+// resetSuiteTables clears tables whose shared repotest suite seeds FIXED
+// literal ids, so the contract test is repeatable against a PERSISTENT
+// database.
+//
+// Why this is needed at all: the repotest suites are shared with SQLite, where
+// every test gets a fresh in-memory database and hardcoded fixture ids like
+// "pr-1" / "lf-a" can never collide. Postgres runs against a durable DB, so
+// the SECOND consecutive run of the lane failed with "duplicate key" — the
+// purge in TestMain is scoped to project namespaces (proj-%, other-%) and
+// never matched these non-project ids.
+//
+// Truncating before the suite rather than after is deliberate: an after-only
+// sweep leaves residue whenever a run is killed or crashes mid-flight, which
+// is exactly the state that then breaks the NEXT run.
+//
+// SAFETY: this refuses to run unless the connection really is on the
+// dedicated integration database. POSTGRES_DB can be pointed at the daemon's
+// live database, and truncating control_plane_proposals there would destroy
+// real operator data — so the guard asks the server for current_database()
+// rather than trusting the env var that got us here.
+func resetSuiteTables(t *testing.T, db *DB, tables ...string) {
+	t.Helper()
+	var current string
+	if err := db.DB.QueryRow(`SELECT current_database()`).Scan(&current); err != nil {
+		t.Fatalf("resetSuiteTables: cannot determine current database: %v", err)
+	}
+	if current != integrationDBName {
+		t.Fatalf("resetSuiteTables: refusing to truncate %v on database %q — "+
+			"only the dedicated %q may be reset (unset POSTGRES_DB or point it at %q)",
+			tables, current, integrationDBName, integrationDBName)
+	}
+	for _, table := range tables {
+		if _, err := db.DB.Exec("TRUNCATE TABLE " + table); err != nil {
+			t.Fatalf("resetSuiteTables: truncate %s: %v", table, err)
+		}
+	}
+}
+
 func newIntegrationDB(t *testing.T) *DB {
 	t.Helper()
 	cfg := Config{
@@ -285,6 +323,8 @@ func TestSkillRepository_PostgresContract(t *testing.T) {
 // ledger, the same suite that runs against SQLite.
 func TestProposalRepository_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
+	// Fixed fixture ids (pr-1, lf-a, ...) — see resetSuiteTables.
+	resetSuiteTables(t, db, "control_plane_proposals")
 	repotest.RunProposalSuite(t, NewProposalRepository(db.DB))
 }
 
@@ -293,6 +333,7 @@ func TestProposalRepository_PostgresContract(t *testing.T) {
 // SQLite.
 func TestCostTuningCanaryRepository_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
+	resetSuiteTables(t, db, "cost_tuning_canaries")
 	repotest.RunCostTuningCanarySuite(t, NewCostTuningCanaryRepository(db.DB))
 }
 
@@ -300,6 +341,8 @@ func TestCostTuningCanaryRepository_PostgresContract(t *testing.T) {
 // primitives (auto-apply design D1/D8), same suite that runs against SQLite.
 func TestCostAutoApplyTrust_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
+	// Spans both stores, so both have to start clean.
+	resetSuiteTables(t, db, "cost_tuning_canaries", "control_plane_proposals")
 	repotest.RunCostAutoApplyTrustSuite(t, NewCostTuningCanaryRepository(db.DB), NewProposalRepository(db.DB))
 }
 
@@ -584,5 +627,10 @@ func TestStepLatency_PostgresContract(t *testing.T) {
 // `go test ./...` is sqlite-only and would not catch a Postgres-side break.
 func TestChannelDisclosureRepository_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
+	// Fixed fixture ids, same class as the proposal/canary suites — see
+	// resetSuiteTables. Safe despite this being the Art 50 evidence trail in
+	// production: the helper refuses to truncate anything unless the
+	// connection is genuinely on the dedicated integration database.
+	resetSuiteTables(t, db, "channel_disclosure_log")
 	repotest.RunChannelDisclosureSuite(t, NewChannelDisclosureRepository(db.DB))
 }

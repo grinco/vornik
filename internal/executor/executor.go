@@ -205,6 +205,16 @@ type Config struct {
 	// Applied when a role's Model field selects a specific model.
 	ModelLimits map[string]ModelLimit
 
+	// MediaStageMaxBytes caps a single raw media file staged into an
+	// agent container alongside its extraction (media.stage_max_bytes).
+	// Media has to travel as bytes because its extraction is lossy — an
+	// image's OCR text is not the picture — and this bounds that.
+	// Zero means unbounded. Documents are unaffected: they are never
+	// staged when an extraction exists.
+	//
+	// see LLD § https://docs.vornik.io §4.2
+	MediaStageMaxBytes int64
+
 	// ProjectWorkspacePath is the base dir for per-project persistent workspaces.
 	ProjectWorkspacePath string
 

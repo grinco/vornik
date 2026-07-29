@@ -252,6 +252,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `chat.endpoint` | string | OpenAI-compatible base URL (single-provider mode). |
 | `chat.api_key` | string | API key for the endpoint. Prefer an environment variable. |
 | `chat.model` | string | Default model identifier when a request does not pin one. |
+| `chat.model_capabilities` | map | Per-model modality declarations (text, vision, audio). Undeclared models fall back to built-in id patterns, then text-only. |
 | `chat.wizard_model` | string | Model for the project-setup wizard. |
 | `chat.fixit_model` | string | Model for the Fix-It Doctor repair chat. |
 | `chat.timeout` | string | Bound on a single LLM round-trip. |
@@ -384,6 +385,17 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `voice.stt.model` | string | Absolute path to the STT model file. |
 | `voice.tts.provider` | string | Text-to-speech provider (piper). |
 | `voice.tts.voice` | string | Absolute path to the TTS voice model. |
+
+## media
+
+| Key | Type | Description |
+|---|---|---|
+| `media.stage_max_bytes` | int | Largest raw media file staged into an agent container alongside its extraction. 0 = unbounded. |
+| `media.inline_max_bytes` | int | Largest single image attached to a dispatcher chat turn. 0 = built-in default (5 MB). |
+| `media.inline_max_bytes_total` | int | Combined image bytes allowed on one dispatcher chat turn. 0 = built-in default (10 MB). |
+| `media.inline_max_images` | int | Most images attached to one dispatcher chat turn. 0 = built-in default (4). |
+| `media.video.max_frames` | int | Most keyframes sampled from one video. 0 = extractor default (8). |
+| `media.video.min_interval_seconds` | int | Shortest gap between sampled keyframes. 0 = extractor default (5). |
 
 ## node
 

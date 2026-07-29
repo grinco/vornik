@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: e92a731da28c40640d77fbbdbfe84d1d9131e5288a27e628c65f6ad3e3749e2f
+      sha256: 75d52064b86003497110afd3661965fee995430787bbd53ae370a0e34fbcb5b4
 ---
 # Release Notes
 
@@ -14,6 +14,82 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.7.7
+
+**The assistant can see.** Send it a photo and it answers about the photo. Two
+legal obligations also moved from documented to enforced-in-code.
+
+- **New: media perception.** Images sent over any channel are now understood —
+  answered directly when the dispatcher's model can see them, otherwise handed
+  to a dedicated vision agent. Audio is transcribed; video yields a transcript
+  plus sampled keyframes. Previously a photo produced an honest "I cannot see
+  this", because the pixels were being discarded before they reached the agent.
+- **Behaviour change: the dispatcher model is now `minimax-m3`.** It is
+  multimodal, tool-use tuned, and **cheaper** than the model it replaces. If you
+  pin Bedrock models on swarm roles, check `vornikctl doctor`'s
+  `model_route_coverage` after upgrading — the default provider route moved, and
+  Bedrock ids are now pinned explicitly rather than relying on it.
+- **New: `vornikctl erase artifact <id>`.** Performs a complete GDPR Article 17
+  erasure — the extraction rows, the memory chunks derived from them, and the
+  stored files. Deleting an artifact alone never removed any of that: derived
+  embeddings survived and merely lost the pointer back to their source. Shows
+  you exactly what will go and asks before doing it.
+- **New: AI-disclosure observability.** Serve and failure counts for the EU AI
+  Act Article 50 notice are now exported, so you can show the obligation is
+  being met and notice if it ever stops.
+- **Fixed: the disclosure record can no longer be pruned.** It is the evidence
+  that the notice was served; retention now refuses to touch it outright rather
+  than merely omitting it from a list.
+- **New: GDPR data-subject rights.** `vornikctl subject` registers a person,
+  records what is held about them, and produces an Article 15 access or
+  Article 20 portability report. Identity verification is required before
+  anything is produced — an export handed to whoever asked would disclose that
+  person's data to a stranger. Records that also concern other people are listed
+  but their content is withheld, under Article 15(4).
+- **New: breach ledger.** `vornikctl incident` records a personal-data breach and
+  walks the Article 33/34 obligations, with the 72-hour clock running from when
+  you became *aware* rather than when the breach happened. `vornikctl doctor`
+  warns while there is still a day left and errors once the window closes.
+- **New: retention guidance.** The sweeper still ships off — enabling it on
+  upgrade would delete data you never agreed to lose — but the doctor now tells
+  you plainly that the deployment keeps personal data indefinitely, and a
+  recommended profile ships alongside your config to copy from. It also warns
+  when the sweeper is on with no windows, and when the memory-chunk window is
+  missing: long-term memory is the longest-lived personal data in the system.
+- **Fixed: a model was billing at the wrong rate.** `kimi-k3` was available but
+  unpriced, so its spend accrued at the default rate — the most expensive model
+  on that route was the one being mis-costed.
+- **Fixed: AI disclosure now covers two surfaces that are not channels.** The
+  Article 50(1) notice was served on every chat channel, but two paths reach a
+  person without being a channel and so bypassed it: code-review comments the
+  platform posts on pull requests, and autonomous posts to a third-party API. Both
+  now carry the notice. Review comments refuse to post if the disclosure is
+  unavailable rather than publishing undisclosed, and a gateway provider can be
+  marked as a **publication surface** — a write whose content lacks the notice is
+  refused, with the exact wording to add, so the agent corrects itself and retries.
+  Publication surfaces get their own wording, because "replies in this
+  conversation" is untrue of something the system authored.
+- **New: `vornikctl subject erase`.** Carries out an Article 17 erasure for a
+  verified request. It shows the plan and asks before destroying anything, names
+  each record's treatment, and lists what is retained under an exemption with the
+  legal ground — a subject told "erased" while records remain has been misled.
+  The Article 17(1) ground you record decides what happens to records that also
+  concern other people: under most grounds they are preserved, but under 17(1)(d)
+  or (e) the controller has no discretion to retain and the record goes in full.
+  Uploaded files are removed properly — the derived text, the memory built from
+  it, the stored file, and the row.
+  **Known limitation, stated because it affects the response a subject receives:**
+  removing one person's data from a record shared with others is not yet automated.
+  Those records are identified and reported, and the request is deliberately left
+  open rather than closed as complete.
+- **Docs: the records of processing and the DPA template were re-verified against
+  the code.** Both had gone stale in the direction that understates the platform —
+  the processing record still said no data-subject identifier existed, and the DPA
+  told a prospective controller that erasure was available only per project or per
+  record. Corrected, along with what the platform still cannot warrant.
 
 ---
 

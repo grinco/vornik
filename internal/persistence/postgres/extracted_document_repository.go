@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"vornik.io/vornik/internal/erasure"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -196,4 +197,44 @@ func scanExtractedDocument(row scannable) (*persistence.ExtractedDocument, error
 	doc.MetadataBlob = metadata
 	doc.OutlineBlob = outline
 	return doc, nil
+}
+
+// ListBySourceArtifact returns every extraction derived from one source
+// artifact, in the shape the erasure cascade consumes.
+//
+// Deliberately NOT GetByArtifact: that returns a single row, and the table's
+// unique constraint is on (source_artifact_id, extractor_name,
+// extractor_version) — so one artifact can legitimately have several
+// extractions (a re-extraction after an extractor upgrade). An erasure that
+// only handled the first would silently leave the others' text and keyframes
+// on disk.
+//
+// see LLD § https://docs.vornik.io §4.4
+func (r *ExtractedDocumentRepository) ListBySourceArtifact(ctx context.Context, sourceArtifactID string) ([]erasure.Document, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, storage_path, section_count
+		   FROM extracted_documents
+		  WHERE source_artifact_id = $1
+		  ORDER BY extracted_at`, sourceArtifactID)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []erasure.Document
+	for rows.Next() {
+		var d erasure.Document
+		if err := rows.Scan(&d.ID, &d.StoragePath, &d.SectionCount); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// DeleteExtractedDocument satisfies the erasure DocumentStore contract. It is a
+// thin alias for Delete so the erasure service depends on a name that says what
+// it removes rather than on a bare Delete.
+func (r *ExtractedDocumentRepository) DeleteExtractedDocument(ctx context.Context, id string) error {
+	return r.Delete(ctx, id)
 }

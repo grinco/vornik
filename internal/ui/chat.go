@@ -69,6 +69,24 @@ func WithAIDisclosure(d *aidisclosure.Service) ServerOption {
 	return func(s *Server) { s.aiDisclosure = d }
 }
 
+// WithDisclosureMetrics wires the Art 50 serve/failure observer into the
+// web-chat receiver.
+//
+// Web chat is the fifth ChannelReceiver construction site and the easiest to
+// forget — it lives in the ui package rather than beside the other four in
+// internal/service, which is exactly how it was missed until the source-level
+// guard in TestEveryChannelReceiverWiresTheDisclosureMetrics named it.
+func WithDisclosureMetrics(o dispatcher.DisclosureObserver) ServerOption {
+	return func(s *Server) { s.disclosureMetrics = o }
+}
+
+// WithMediaSight wires inline media perception into the web-chat receiver.
+// Nil (the default) means every media attachment hands over to the vision
+// role, which is the safe behaviour rather than a degraded one.
+func WithMediaSight(m *dispatcher.MediaSight) ServerOption {
+	return func(s *Server) { s.mediaSight = m }
+}
+
 // WithChatSessionPersister wires the DB-backed persistence layer
 // for every webchat SessionStore the UI lazily constructs. Nil
 // keeps the pre-feature in-memory-only behaviour — a rolling
@@ -197,10 +215,12 @@ func (s *Server) ChatPostMessage(w http.ResponseWriter, r *http.Request, project
 		DisplayName: "Web operator",
 	})
 	receiver := &dispatcher.ChannelReceiver{
-		Channel:    channel,
-		Agent:      s.chatDispatcher,
-		Sessions:   store,
-		Disclosure: s.aiDisclosure,
+		Channel:           channel,
+		Agent:             s.chatDispatcher,
+		Sessions:          store,
+		Disclosure:        s.aiDisclosure,
+		DisclosureMetrics: s.disclosureMetrics,
+		Media:             s.mediaSight,
 		ResultPostprocessor: func(result dispatcher.Result) string {
 			// Append the deliverable-links block when the
 			// dispatcher's turn referenced a task that produced

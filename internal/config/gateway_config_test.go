@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -147,5 +148,74 @@ gateway:
 		if ats.Examples[i] != v {
 			t.Errorf("headmatch-ats.Examples[%d] = %q, want %q", i, ats.Examples[i], v)
 		}
+	}
+}
+
+// --- publication disclosure (G6 finding B, 2026-07-29) ---
+//
+// A gateway provider can be a human-facing publication surface: the `moltbook`
+// provider autonomously posts to a public social platform every 6h/24h. That
+// path never touches dispatcher/channel_receiver.go, so the Art 50(1) channel
+// chokepoint does not cover it, and disclosure was carried only by a prompt
+// instruction in a knowledge skill. Design:
+// https://docs.vornik.io §5
+
+func TestProviderDisclosure_RequiredWithNoContentFieldsIsAConfigError(t *testing.T) {
+	cfg := &Config{}
+	cfg.Gateway = GatewayConfig{Enabled: true, Providers: map[string]ProviderConfig{
+		"moltbook": {
+			BasePath:      "/moltbook",
+			WritesEnabled: true,
+			Disclosure:    ProviderDisclosureConfig{Required: true},
+		},
+	}}
+	err := cfg.Gateway.ValidateDisclosure()
+	if err == nil {
+		t.Fatal("disclosure.required with no content_fields must be a config error, " +
+			"not a silent gate that inspects nothing")
+	}
+	if !strings.Contains(err.Error(), "content_fields") {
+		t.Errorf("error should name content_fields, got %v", err)
+	}
+}
+
+func TestProviderDisclosure_RequiredWithContentFieldsIsValid(t *testing.T) {
+	cfg := &Config{}
+	cfg.Gateway = GatewayConfig{Enabled: true, Providers: map[string]ProviderConfig{
+		"moltbook": {
+			BasePath:      "/moltbook",
+			WritesEnabled: true,
+			Disclosure:    ProviderDisclosureConfig{Required: true, ContentFields: []string{"content"}},
+		},
+	}}
+	if err := cfg.Gateway.ValidateDisclosure(); err != nil {
+		t.Fatalf("valid disclosure config rejected: %v", err)
+	}
+}
+
+// A provider that is not a publication surface needs no disclosure block, and
+// must not acquire one by default — every existing provider stays unaffected.
+func TestProviderDisclosure_NotRequiredByDefault(t *testing.T) {
+	cfg := &Config{}
+	cfg.Gateway = GatewayConfig{Enabled: true, Providers: map[string]ProviderConfig{
+		"google-maps": {BasePath: "/maps"},
+	}}
+	if err := cfg.Gateway.ValidateDisclosure(); err != nil {
+		t.Fatalf("provider without a disclosure block must be valid: %v", err)
+	}
+	if cfg.Gateway.Providers["google-maps"].Disclosure.Required {
+		t.Error("disclosure must not default to required")
+	}
+}
+
+// Whitespace-only field names are a misconfiguration that would silently check
+// nothing — the same class of hole as a blank disclosure text.
+func TestProviderDisclosure_BlankContentFieldNameIsAConfigError(t *testing.T) {
+	cfg := &Config{}
+	cfg.Gateway = GatewayConfig{Enabled: true, Providers: map[string]ProviderConfig{
+		"moltbook": {Disclosure: ProviderDisclosureConfig{Required: true, ContentFields: []string{" "}}},
+	}}
+	if err := cfg.Gateway.ValidateDisclosure(); err == nil {
+		t.Fatal("a whitespace-only content field name must be a config error")
 	}
 }

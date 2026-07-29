@@ -326,6 +326,10 @@ func (c *Container) initScheduler() error {
 			}
 		}
 	}
+	// Raw media staged alongside a lossy extraction is bounded by an
+	// operator-set size; 0 = unbounded (see MediaConfig).
+	// see LLD § https://docs.vornik.io §4.2
+	executorConfig.MediaStageMaxBytes = c.Config.Media.StageMaxBytes
 	if executorConfig.AgentLLMEnv == nil {
 		executorConfig.AgentLLMEnv = make(map[string]string)
 	}
@@ -686,7 +690,11 @@ func (c *Container) initScheduler() error {
 	if forgeResolver := c.newForgeResolver(); forgeResolver != nil {
 		forgeSrc := &forgePublishSource{workspacePath: executorConfig.ProjectWorkspacePath}
 		sysHandlers.Register(forgeh.NewOpenChangeRequestHandler(forgeResolver, forgeSrc, c.artifactStore, c.newTaintReviewer()))
-		sysHandlers.Register(forgeh.NewPostReviewHandler(forgeResolver))
+		// c.AIDisclosure is built in initDatabase (container.go:747), which runs
+		// before initScheduler (908) — so it is non-nil here. The handler
+		// refuses to post if it ever isn't: a review comment reaches a human
+		// outside the channel chokepoint, so it carries the Art 50(1) notice.
+		sysHandlers.Register(forgeh.NewPostReviewHandler(forgeResolver, c.AIDisclosure))
 		sysHandlers.Register(forgeh.NewFetchDiffHandler(forgeResolver))
 		c.Logger.Info().Msg("forge system handlers registered (forge.open_change_request, forge.post_review, forge.fetch_diff)")
 		// Boot-time push-permission check for every forge-configured project

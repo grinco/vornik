@@ -432,3 +432,57 @@ func TestRunner_DifferentTargetsRunConcurrently(t *testing.T) {
 		t.Errorf("max concurrent Extract = %d; want 2 (per-target lock should not serialize distinct targets)", ext.maxActive)
 	}
 }
+
+// Video keyframes reach disk as ProducedFiles under <storage>/files/, so a
+// section can reference "files/frame-001.jpg" and the reference stays valid
+// for the document's lifetime — a temp dir would be gone first.
+//
+// see LLD § https://docs.vornik.io §4.6
+func TestWriteProducedFiles(t *testing.T) {
+	dir := t.TempDir()
+	files := []ProducedFile{
+		{RelPath: "frame-001.jpg", Content: []byte("AAA")},
+		{RelPath: "frame-002.jpg", Content: []byte("BBB")},
+	}
+	if err := writeProducedFiles(dir, files); err != nil {
+		t.Fatalf("writeProducedFiles: %v", err)
+	}
+	for _, f := range files {
+		got, err := os.ReadFile(filepath.Join(dir, "files", f.RelPath))
+		if err != nil {
+			t.Fatalf("read %s: %v", f.RelPath, err)
+		}
+		if string(got) != string(f.Content) {
+			t.Errorf("%s content = %q", f.RelPath, got)
+		}
+	}
+}
+
+func TestWriteProducedFiles_NoFilesIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeProducedFiles(dir, nil); err != nil {
+		t.Fatalf("nil files should be a no-op: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "files")); !os.IsNotExist(err) {
+		t.Error("no files should mean no files/ directory")
+	}
+}
+
+// A path-shaped RelPath must be reduced to a bare filename. An extractor is
+// in-process code rather than untrusted input, but a bug here writes outside
+// the document's directory, and the check costs nothing.
+func TestWriteProducedFiles_PathTraversalReducedToBasename(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeProducedFiles(dir, []ProducedFile{
+		{RelPath: "../../escaped.jpg", Content: []byte("X")},
+	}); err != nil {
+		t.Fatalf("writeProducedFiles: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "files", "escaped.jpg")); err != nil {
+		t.Errorf("expected the sanitised basename inside files/: %v", err)
+	}
+	parent := filepath.Dir(filepath.Dir(dir))
+	if _, err := os.Stat(filepath.Join(parent, "escaped.jpg")); err == nil {
+		t.Error("a traversal RelPath must not write outside the storage dir")
+	}
+}

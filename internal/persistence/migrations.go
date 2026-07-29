@@ -5844,4 +5844,331 @@ DROP INDEX IF EXISTS idx_channel_disclosure_served_at;
 DROP TABLE IF EXISTS channel_disclosure_log;
 `,
 	},
+	{
+		Version: 140,
+		Name:    "erasure_cascade_indexes",
+		// GDPR Art 17 erasure cascade (2026-07-29-media-modality-compliance-
+		// design.md §4.4). Indexes only — deliberately NO new foreign key and
+		// NO change to existing ON DELETE behaviour.
+		//
+		// Why indexes and not constraints. The cascade is performed by
+		// internal/erasure rather than by the database, for two reasons a
+		// constraint cannot address:
+		//
+		//   1. An extraction's personal data is partly ON DISK (sections/ with
+		//      OCR text and transcripts, files/ with sampled video keyframes).
+		//      No foreign key can delete a directory, so a row-only cascade
+		//      would report erasure while the bytes remained.
+		//   2. project_memory_chunks.artifact_id is ON DELETE SET NULL.
+		//      Flipping it to CASCADE would fire on EVERY artifact deletion —
+		//      including retention pruning of ordinary task artifacts — and
+		//      silently destroy memory an operator relies on. That is a
+		//      data-loss change to a live store, not a bug fix, so it is not
+		//      made here.
+		//
+		// What the indexes are for: the cascade looks chunks up by
+		// derived_from_extracted_document_id and by artifact_id, and
+		// extractions up by source_artifact_id. None of the three was indexed,
+		// so an erasure would have sequentially scanned the chunk table (790
+		// derived chunks and growing on the reference deployment) once per
+		// extraction.
+		//
+		// Idempotent and reversible: CREATE INDEX IF NOT EXISTS, and Down drops
+		// only what Up created.
+		Up: `
+CREATE INDEX IF NOT EXISTS idx_memory_chunks_derived_extdoc
+    ON project_memory_chunks (derived_from_extracted_document_id)
+    WHERE derived_from_extracted_document_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_memory_chunks_artifact
+    ON project_memory_chunks (artifact_id)
+    WHERE artifact_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_extdoc_source_artifact
+    ON extracted_documents (source_artifact_id);
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_extdoc_source_artifact;
+DROP INDEX IF EXISTS idx_memory_chunks_artifact;
+DROP INDEX IF EXISTS idx_memory_chunks_derived_extdoc;
+`,
+	},
+	{
+		Version: 141,
+		Name:    "data_subject_axis",
+		// GDPR data-subject axis — increment 1 of
+		// 2026-07-29-gdpr-data-subject-rights-design.md.
+		//
+		// The axis is INERT on landing: nothing writes to these tables yet, so
+		// this migration changes no behaviour. It exists first because every
+		// right depends on it — nothing in the schema previously said WHICH
+		// PERSON a row of personal data concerned, which left Art 15, 16, 17
+		// and 20 unexercisable per-subject. One missing axis took out four
+		// rights.
+		//
+		// Links rather than a data_subject_id column on each table (design
+		// §4.1): a column asserts every row concerns exactly one person, and
+		// that is false for the rows that matter most — a chat turn or memory
+		// chunk routinely concerns several. Links model the real many-to-many
+		// and leave room for the provenance the reports depend on.
+		//
+		// source + confidence are NOT decoration. A link from an LLM's entity
+		// extraction is not the same kind of fact as one from an authenticated
+		// session, and an access or erasure report that presented them alike
+		// would overstate what the deployment knows.
+		//
+		// exclusivity exists because a chunk naming two people cannot be
+		// half-deleted, and Art 15(4) forbids handing it over whole. 'unknown'
+		// is treated as 'shared' in code — assuming exclusivity would
+		// authorise deleting another person's data on a guess.
+		//
+		// request_state on data_subjects makes a half-finished erasure VISIBLE
+		// rather than silently inconsistent; doctor surfaces a subject stuck
+		// mid-request.
+		//
+		// CASCADE on both children enforces the no-orphan invariant: the index
+		// must never outlive the subject it describes, since the index is
+		// itself personal data (design §8).
+		Up: `
+CREATE TABLE IF NOT EXISTS data_subjects (
+    id                TEXT PRIMARY KEY,
+    display_name      TEXT        NOT NULL,
+    request_state     TEXT,
+    request_opened_at TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS data_subject_identifiers (
+    subject_id TEXT        NOT NULL REFERENCES data_subjects(id) ON DELETE CASCADE,
+    kind       TEXT        NOT NULL,
+    value      TEXT        NOT NULL,
+    source     TEXT        NOT NULL,
+    confidence TEXT        NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (subject_id, kind, value)
+);
+
+-- Reverse lookup: "which subject does this identifier belong to?" is how the
+-- authenticated and email binders resolve an inbound handle to a subject.
+CREATE INDEX IF NOT EXISTS idx_ds_identifiers_lookup
+    ON data_subject_identifiers (kind, value);
+
+CREATE TABLE IF NOT EXISTS data_subject_links (
+    subject_id  TEXT        NOT NULL REFERENCES data_subjects(id) ON DELETE CASCADE,
+    table_name  TEXT        NOT NULL,
+    row_id      TEXT        NOT NULL,
+    project_id  TEXT,
+    source      TEXT        NOT NULL,
+    confidence  TEXT        NOT NULL,
+    exclusivity TEXT        NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (subject_id, table_name, row_id)
+);
+
+-- "Who else is in this row?" — the query the shared-row decision and the
+-- Art 15(4) leakage check both need.
+CREATE INDEX IF NOT EXISTS idx_ds_links_row
+    ON data_subject_links (table_name, row_id);
+
+-- Open requests, for the Art 12(3) clock and the doctor check.
+CREATE INDEX IF NOT EXISTS idx_data_subjects_open_request
+    ON data_subjects (request_opened_at)
+    WHERE request_state IS NOT NULL;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_data_subjects_open_request;
+DROP INDEX IF EXISTS idx_ds_links_row;
+DROP TABLE IF EXISTS data_subject_links;
+DROP INDEX IF EXISTS idx_ds_identifiers_lookup;
+DROP TABLE IF EXISTS data_subject_identifiers;
+DROP TABLE IF EXISTS data_subjects;
+`,
+	},
+	{
+		Version: 142,
+		Name:    "data_subject_requests",
+		// The rights-request ledger — increment 3 of the GDPR design.
+		//
+		// This table IS the Art 5(2) accountability evidence for rights
+		// handling. Two things it must make impossible to lose:
+		//
+		//   1. WHO verified a requester's identity and HOW. Producing an Art 15
+		//      export for an unverified requester discloses the subject's data
+		//      to a stranger, so the request mechanism is itself an attack
+		//      surface. An unattributable verification is indistinguishable
+		//      from none, which is why both columns exist and the state machine
+		//      refuses to leave 'open' without them.
+		//   2. WHAT was sent. report_hash pins the artefact, so "what did we
+		//      actually disclose" stays answerable after the fact.
+		//
+		// The Art 12(3) clock runs from opened_at. extended/extended_reason
+		// record the three-month extension, which is lawful only for complex or
+		// numerous requests AND only where the subject was told within the
+		// first month — so the reason is retained rather than inferred later.
+		//
+		// refused_reason is required in the 'refused' state at the application
+		// layer: Art 12(4) obliges telling the subject why, and an unexplained
+		// refusal is the shape of obstruction.
+		//
+		// NOT erasable on request. This ledger is the record that rights WERE
+		// honoured; deleting it on request would destroy the evidence that the
+		// deletion happened. It is registered as an uncovered table in
+		// internal/datasubject for exactly that reason.
+		//
+		// see LLD § https://docs.vornik.io §4.8
+		Up: `
+CREATE TABLE IF NOT EXISTS data_subject_requests (
+    id              TEXT PRIMARY KEY,
+    subject_id      TEXT        NOT NULL REFERENCES data_subjects(id) ON DELETE RESTRICT,
+    kind            TEXT        NOT NULL,
+    state           TEXT        NOT NULL,
+    opened_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    verified_by     TEXT,
+    verified_how    TEXT,
+    verified_at     TIMESTAMPTZ,
+    extended        BOOLEAN     NOT NULL DEFAULT FALSE,
+    extended_reason TEXT,
+    report_hash     TEXT,
+    refused_reason  TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- The Art 12(3) clock: find live requests by age so the doctor check can warn
+-- BEFORE a legal deadline rather than after it.
+CREATE INDEX IF NOT EXISTS idx_ds_requests_live
+    ON data_subject_requests (opened_at)
+    WHERE state IN ('open', 'verified');
+
+CREATE INDEX IF NOT EXISTS idx_ds_requests_subject
+    ON data_subject_requests (subject_id);
+`,
+		// ON DELETE RESTRICT, not CASCADE, and deliberately the opposite choice
+		// from the identifier/link tables: those describe the subject and must
+		// not outlive them, whereas this records what the controller DID and
+		// must not vanish because the subject row was removed.
+		Down: `
+DROP INDEX IF EXISTS idx_ds_requests_subject;
+DROP INDEX IF EXISTS idx_ds_requests_live;
+DROP TABLE IF EXISTS data_subject_requests;
+`,
+	},
+	{
+		Version: 143,
+		Name:    "security_incidents",
+		// GDPR Art 33/34 personal-data-breach ledger — increment 8.
+		//
+		// Art 33(5) obliges the controller to DOCUMENT every personal-data
+		// breach — facts, effects, remedial action — INCLUDING breaches
+		// correctly not notified. A written procedure satisfies nothing on its
+		// own; a supervisory authority asks for the record. So the table is the
+		// obligation, and the state machine refuses to progress an incident
+		// whose facts are unrecorded.
+		//
+		// became_aware_at is separate from occurred_at because the Art 33(1)
+		// 72-hour clock runs from AWARENESS. Conflating them errs both ways: a
+		// breach discovered late gets a deadline that already expired, and one
+		// discovered immediately gets a deadline that never started.
+		//
+		// The two risk columns are two DIFFERENT statutory thresholds, not a
+		// duplicate: Art 33 asks whether a risk is likely (notify the
+		// authority), Art 34 whether a HIGH risk is likely (tell the subjects).
+		// A breach can be notifiable to the authority and not to the subjects,
+		// and collapsing them either over-alarms people or leaves them
+		// uninformed. Each carries its own reason column because Art 33(5)
+		// requires the assessment documented, not only its conclusion.
+		//
+		// NOT erasable on a subject request: this is the record that a breach
+		// was handled, retained under Art 17(3)(b).
+		//
+		// see LLD § https://docs.vornik.io §4.10
+		Up: `
+CREATE TABLE IF NOT EXISTS security_incidents (
+    id                    TEXT PRIMARY KEY,
+    state                 TEXT        NOT NULL,
+    occurred_at           TIMESTAMPTZ,
+    became_aware_at       TIMESTAMPTZ NOT NULL,
+    facts                 TEXT        NOT NULL DEFAULT '',
+    effects               TEXT        NOT NULL DEFAULT '',
+    remedial              TEXT        NOT NULL DEFAULT '',
+    authority_risk        TEXT        NOT NULL DEFAULT '',
+    authority_risk_reason TEXT        NOT NULL DEFAULT '',
+    notified_authority_at TIMESTAMPTZ,
+    authority_reference   TEXT        NOT NULL DEFAULT '',
+    subject_risk          TEXT        NOT NULL DEFAULT '',
+    subject_risk_reason   TEXT        NOT NULL DEFAULT '',
+    notified_subjects_at  TIMESTAMPTZ,
+    subject_exemption     TEXT        NOT NULL DEFAULT '',
+    assessed_by           TEXT        NOT NULL DEFAULT '',
+    closed_at             TIMESTAMPTZ,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- The 72-hour clock: find undischarged incidents by awareness time so the
+-- doctor warns with a day left rather than after the deadline.
+CREATE INDEX IF NOT EXISTS idx_incidents_live
+    ON security_incidents (became_aware_at)
+    WHERE state IN ('detected', 'assessed');
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_incidents_live;
+DROP TABLE IF EXISTS security_incidents;
+`,
+	},
+	{
+		Version: 144,
+		Name:    "data_subject_request_erasure_ground",
+		// GDPR Art 17 erasure — the ground, captured at INTAKE (increment 5).
+		//
+		// The Art 17(1) limb a request is made under is not bookkeeping: it
+		// decides what happens to a row that also concerns somebody else. Four
+		// limbs leave the controller discretion, so a shared row can be honoured
+		// by redacting this subject's data and keeping the other person's
+		// context. Two do not — 17(1)(d) (unlawfully processed) and 17(1)(e)
+		// (erasure required by legal obligation) — and under those the row must
+		// go in full.
+		//
+		// It lives on the REQUEST rather than being chosen at execution time
+		// because it is a fact about what the subject asked for, not an operator
+		// preference to be re-decided later. Recording it at intake is also what
+		// makes the decision auditable: "why was this row deleted rather than
+		// redacted" is answerable from the request itself.
+		//
+		// Nullable with no default: an empty ground is NOT a usable value, and
+		// PlanErasure refuses to plan without one rather than guessing. A default
+		// here would silently pick a policy for every legacy row.
+		Up: `
+ALTER TABLE data_subject_requests
+    ADD COLUMN IF NOT EXISTS erasure_ground TEXT;
+`,
+		Down: `
+ALTER TABLE data_subject_requests
+    DROP COLUMN IF EXISTS erasure_ground;
+`,
+	},
+	{
+		Version: 145,
+		Name:    "data_subject_request_report",
+		// The Art 5(2) accountability artefact, stored rather than assumed.
+		//
+		// report_hash already existed and was written whenever a request was
+		// actioned. The report it fingerprints, however, was only saved if the
+		// operator happened to pass --out — so the ledger could hold a hash of a
+		// document nobody kept. A fingerprint of an unsaved document attests to
+		// nothing, and this is the evidence that the right was honoured.
+		//
+		// It also settles what happens to data_subject_links on erasure. A link
+		// asserts "this person appears in this row"; once the row is deleted that
+		// assertion is stale personal data about the subject, so the links go with
+		// it. That is only defensible because the report — which enumerates every
+		// table, row, disposition and reason — is retained HERE, under
+		// Art 17(3)(b), as the structured record of what was erased.
+		Up: `
+ALTER TABLE data_subject_requests
+    ADD COLUMN IF NOT EXISTS report_json TEXT;
+`,
+		Down: `
+ALTER TABLE data_subject_requests
+    DROP COLUMN IF EXISTS report_json;
+`,
+	},
 }

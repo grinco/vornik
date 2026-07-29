@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/chat"
+	"vornik.io/vornik/internal/mediakind"
 )
 
 // Ollama-compatibility layer (2026-05-16). Translates Ollama's
@@ -269,7 +270,7 @@ func (s *Server) OllamaShow(w http.ResponseWriter, r *http.Request) {
 			QuantizationLevel: "n/a",
 		},
 		ModelInfo:    map[string]any{},
-		Capabilities: capabilitiesForModelID(model),
+		Capabilities: s.capabilitiesForModelID(model),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
@@ -298,27 +299,28 @@ func familyForModelID(model string) string {
 // when the model id matches a known multimodal naming pattern
 // so an operator trying to use vision on a text-only model
 // doesn't get cryptic provider 400s.
-func capabilitiesForModelID(model string) []string {
+func (s *Server) capabilitiesForModelID(model string) []string {
 	caps := []string{"completion", "tools"}
-	if isVisionModel(model) {
+	if s.isVisionModel(model) {
 		caps = append(caps, "vision")
 	}
 	return caps
 }
 
-func isVisionModel(model string) bool {
-	m := strings.ToLower(model)
-	// Open-coded list mirrors what real Ollama's GGUF metadata
-	// would surface: anything with -vision, -vl, llava, gemini
-	// (all gemini models are multimodal as of 2.x), or claude-*
-	// (Anthropic vision-by-default since Sonnet 3.5).
-	patterns := []string{"vision", "-vl", "llava", "gemini", "claude", "gpt-4o", "gpt-5"}
-	for _, p := range patterns {
-		if strings.Contains(m, p) {
-			return true
-		}
-	}
-	return false
+// isVisionModel delegates to mediakind, which owns both the model-id
+// pattern list this function used to hold open-coded and the operator's
+// explicit chat.model_capabilities declarations.
+//
+// Sharing it matters because this function decides what the daemon
+// ADVERTISES while mediakind decides what the daemon ACTS on. Two copies
+// of the same judgement drift, and the direction of drift is the harmful
+// one: advertising vision for a model the routing gate treats as blind
+// tells an operator to send images that will then be silently handed off
+// (or worse, ignored). One list, one answer.
+//
+// see LLD § https://docs.vornik.io §4.1
+func (s *Server) isVisionModel(model string) bool {
+	return mediakind.Capabilities(model, s.modelCapabilities).Can(mediakind.ModalityVision)
 }
 
 // OllamaTags serves GET /api/tags. Walks the same provider model

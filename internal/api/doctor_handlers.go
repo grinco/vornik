@@ -175,6 +175,12 @@ type DoctorHandlers struct {
 	// preflight applies (F3b — second guard for the rootless workspace
 	// "Permission denied" incident; see doctor_agent_image_uid.go).
 	usernsMode string
+	// retention* back checkRetentionEnabled. Snapshotted as values rather than a
+	// config pointer for the same reason secretFields are: a later hot-reload
+	// must not silently change what the doctor reports.
+	retentionKnown   bool
+	retentionEnabled bool
+	retentionWindows map[string]int
 	// bakedUIDFunc is the injectable seam for reading the agent image's
 	// baked-in uid (`podman run --rm --entrypoint id <image> -u`). Nil ⇒
 	// realBakedUID; tests inject a fake so they never shell out to podman.
@@ -252,6 +258,27 @@ func (h *DoctorHandlers) SetServerConfig(cfg *config.Config) {
 	h.chatAPIKey = cfg.Chat.APIKey
 	h.chatProvider = cfg.Chat.Provider
 	h.usernsMode = cfg.Runtime.UserNSMode
+
+	// Retention posture for checkRetentionEnabled. Only NON-ZERO windows are
+	// recorded: an unset window prunes nothing, so counting it as configured
+	// would let a half-configured sweeper report as healthy.
+	h.retentionKnown = true
+	h.retentionEnabled = cfg.Retention.Enabled
+	h.retentionWindows = map[string]int{}
+	for key, days := range map[string]int{
+		"task_llm_usage_days":      cfg.Retention.TaskLLMUsageDays,
+		"tool_audit_days":          cfg.Retention.ToolAuditDays,
+		"tasks_days":               cfg.Retention.TasksDays,
+		"executions_days":          cfg.Retention.ExecutionsDays,
+		"artifacts_days":           cfg.Retention.ArtifactsDays,
+		"task_messages_days":       cfg.Retention.TaskMessagesDays,
+		"memory_chunks_days":       cfg.Retention.MemoryChunksDays,
+		"memory_ingest_audit_days": cfg.Retention.MemoryIngestAuditDays,
+	} {
+		if days > 0 {
+			h.retentionWindows[key] = days
+		}
+	}
 
 	// Snapshot secret-bearing fields for checkConfigSecretHygiene.
 	// Keep the VALUES (not the whole struct) so a future hot-reload
@@ -367,6 +394,8 @@ func (h *DoctorHandlers) RunReportReadOnly(ctx context.Context) DoctorReport {
 	report.Checks = append(report.Checks, h.checkModelCircuits())
 	report.Checks = append(report.Checks, h.checkAgentModelCircuits())
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
+	report.Checks = append(report.Checks, h.checkRetentionEnabled())
+	report.Checks = append(report.Checks, h.checkBreachDeadlines(ctx))
 	report.Checks = append(report.Checks, h.checkModelRouteCoverage())
 	report.Checks = append(report.Checks, h.checkScraperProfileFreshness(ctx, fix))
 	report.Checks = append(report.Checks, h.checkGatewayHealthy(ctx, fix))
@@ -437,6 +466,8 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkModelCircuits())
 	report.Checks = append(report.Checks, h.checkAgentModelCircuits())
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
+	report.Checks = append(report.Checks, h.checkRetentionEnabled())
+	report.Checks = append(report.Checks, h.checkBreachDeadlines(ctx))
 	report.Checks = append(report.Checks, h.checkModelRouteCoverage())
 	report.Checks = append(report.Checks, h.checkScraperProfileFreshness(ctx, fix))
 	report.Checks = append(report.Checks, h.checkGatewayHealthy(ctx, fix))

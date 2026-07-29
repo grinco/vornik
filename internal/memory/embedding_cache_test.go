@@ -92,10 +92,11 @@ func TestEmbeddingCacheRepo_PutErrorPropagates(t *testing.T) {
 // --- in-memory test fake exercising the Embedder's cache flow ----
 
 type fakeEmbedCache struct {
-	mu   sync.Mutex
-	data map[string][]float32
-	gets int
-	puts int
+	evicted []string
+	mu      sync.Mutex
+	data    map[string][]float32
+	gets    int
+	puts    int
 }
 
 func newFakeEmbedCache() *fakeEmbedCache {
@@ -204,4 +205,110 @@ func TestNewEmbeddingCache_NilDB(t *testing.T) {
 	if NewEmbeddingCache(nil) != nil {
 		t.Error("nil db should yield nil cache (no-op behaviour)")
 	}
+}
+
+// --- eviction on erasure (GDPR Art 17) ---
+//
+// Found while verifying the 5c redaction design: EmbedCache had Get and Put only,
+// so the vector derived from a subject's pre-erasure text survived every erasure
+// path — 5b's DeleteRow, the artifact cascade, and redaction. The cache holds no
+// plaintext and is not similarity-searchable, but it is data DERIVED from the
+// subject's personal data, keyed by a hash that confirms the exact source text.
+// The parent design already treats a surviving derived embedding as the thing to
+// fix; that is why the artifact cascade exists.
+//
+// The retention sweeper prunes this table by last_hit_at age and only when
+// retention.embedding_cache_days is set. Time-based cold-entry pruning is not
+// compliance with an erasure request.
+
+func TestEvictAll_RemovesEveryModelsVectorForOneContent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM embedding_cache WHERE content_hash = $1")).
+		WithArgs("abc123").
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	repo := NewEmbeddingCache(db)
+	if err := repo.EvictAll(context.Background(), "abc123"); err != nil {
+		t.Fatalf("EvictAll: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+// Model-scoped eviction, for the case where only one model's vector must go.
+func TestEvict_RemovesOneModelsVector(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectExec(regexp.QuoteMeta(
+		"DELETE FROM embedding_cache WHERE content_hash = $1 AND model = $2")).
+		WithArgs("abc123", "bge-m3").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	repo := NewEmbeddingCache(db)
+	if err := repo.Evict(context.Background(), "abc123", "bge-m3"); err != nil {
+		t.Fatalf("Evict: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+// An empty hash must not become "delete the whole cache". Same reasoning as
+// DeleteProjectArtifacts refusing an empty project id.
+func TestEvict_RefusesAnEmptyHash(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	repo := NewEmbeddingCache(db)
+
+	if err := repo.EvictAll(context.Background(), "  "); err == nil {
+		t.Error("an empty content hash must be refused — it would wipe the cache")
+	}
+	if err := repo.Evict(context.Background(), "", "bge-m3"); err == nil {
+		t.Error("an empty content hash must be refused")
+	}
+}
+
+// Eviction must be idempotent: erasure paths retry, and a hash that is already
+// absent is the expected steady state on a second run.
+func TestEvictAll_AbsentHashIsNotAnError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM embedding_cache WHERE content_hash = $1")).
+		WithArgs("never-cached").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	repo := NewEmbeddingCache(db)
+	if err := repo.EvictAll(context.Background(), "never-cached"); err != nil {
+		t.Fatalf("an absent hash must not error: %v", err)
+	}
+}
+
+// Evict / EvictAll satisfy EmbedCache for the Art 17 erasure path. The fakes
+// record the call so a test can assert eviction happened; the embedder itself
+// never evicts.
+func (f *fakeEmbedCache) Evict(_ context.Context, hash, model string) error {
+	f.evicted = append(f.evicted, hash+"/"+model)
+	return nil
+}
+
+func (f *fakeEmbedCache) EvictAll(_ context.Context, hash string) error {
+	f.evicted = append(f.evicted, hash)
+	return nil
 }

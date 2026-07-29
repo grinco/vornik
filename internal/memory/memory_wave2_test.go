@@ -42,6 +42,7 @@ import (
 // "cache must never block upstream" contract can be asserted, and it
 // records the exact (hash, model) keys it was asked to Put.
 type w2EmbedCache struct {
+	evicted  []string
 	mu       sync.Mutex
 	data     map[string][]float32
 	getErr   bool
@@ -697,4 +698,17 @@ func TestW2MemCleanNarrativeCollapsesNewlinesAndTabs(t *testing.T) {
 	if got := cleanNarrative(in); got != "An automated trading project." {
 		t.Errorf("whitespace collapse: %q", got)
 	}
+}
+
+// Evict / EvictAll satisfy EmbedCache for the Art 17 erasure path. The fakes
+// record the call so a test can assert eviction happened; the embedder itself
+// never evicts.
+func (f *w2EmbedCache) Evict(_ context.Context, hash, model string) error {
+	f.evicted = append(f.evicted, hash+"/"+model)
+	return nil
+}
+
+func (f *w2EmbedCache) EvictAll(_ context.Context, hash string) error {
+	f.evicted = append(f.evicted, hash)
+	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -936,5 +937,50 @@ func TestPreviewGlobal_EmbeddingCache(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet sql: %v", err)
+	}
+}
+
+// The AI Act Art 50 disclosure log is the Art 99 evidence trail: the record
+// that the "you are interacting with an AI system" notice was actually served.
+// An obligation met but unprovable is worth little under enforcement, so
+// pruning this table converts a compliant deployment into an indefensible one.
+//
+// Before this guard it was protected only by ABSENCE from two allowlists, plus
+// a documentation note. Absence protects by accident — anyone adding a line
+// while wiring a new cleanup would have started pruning it, and nothing would
+// have failed.
+//
+// see LLD § https://docs.vornik.io
+func TestEvidenceTablesAreNeverPrunable(t *testing.T) {
+	if !evidenceTables["channel_disclosure_log"] {
+		t.Fatal("channel_disclosure_log must be listed as a conformity evidence table")
+	}
+	// Belt: it must not appear in either allowlist. If someone adds it, this
+	// fails even though the deny would still refuse at runtime — the intent is
+	// that nobody should be able to *believe* it is prunable.
+	for table := range evidenceTables {
+		if globalCleanupTables[table] {
+			t.Errorf("%s is an evidence table but appears in globalCleanupTables", table)
+		}
+	}
+	// Braces: the deny must be checked BEFORE the allowlist, so adding the
+	// table to an allowlist cannot enable pruning. Exercised through the real
+	// entry points with a nil DB — the refusal must happen before any query,
+	// so a nil handle is safe and proves the ordering.
+	s := &Sweeper{}
+	if _, err := s.pruneOlderThan(context.Background(), "channel_disclosure_log", "served_at", "TRUE", "", time.Now(), false); err == nil {
+		t.Error("pruneOlderThan must refuse the evidence table")
+	} else if !strings.Contains(err.Error(), "evidence trail") {
+		t.Errorf("refusal should name the reason, got: %v", err)
+	}
+	if _, err := s.pruneGlobalByThreshold(context.Background(), "channel_disclosure_log", "TRUE", time.Now(), false); err == nil {
+		t.Error("pruneGlobalByThreshold must refuse the evidence table")
+	} else if !strings.Contains(err.Error(), "evidence trail") {
+		t.Errorf("refusal should name the reason, got: %v", err)
+	}
+	// And a preview must refuse too — a COUNT that succeeds would imply the
+	// table is in scope for a future DELETE.
+	if _, err := s.pruneOlderThan(context.Background(), "channel_disclosure_log", "served_at", "TRUE", "", time.Now(), true); err == nil {
+		t.Error("preview must refuse the evidence table as well")
 	}
 }

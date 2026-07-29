@@ -11,6 +11,7 @@ import (
 	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/conversation"
+	"vornik.io/vornik/internal/mediakind"
 	"vornik.io/vornik/internal/registry"
 )
 
@@ -66,6 +67,14 @@ type ChannelReceiver struct {
 
 	// DisclosureMetrics observes serve/failure counts. Nil is fine.
 	DisclosureMetrics DisclosureObserver
+
+	// Media governs whether this receiver may attach media to the
+	// dispatcher's own turn, and how much. Nil disables inline media
+	// entirely — every media attachment then hands over to a specialist,
+	// which is the pre-existing behaviour and the safe default.
+	//
+	// see LLD § https://docs.vornik.io §4.3
+	Media *MediaSight
 }
 
 // DisclosureObserver receives Art 50 disclosure outcomes. Implemented by the
@@ -201,7 +210,24 @@ func (r *ChannelReceiver) Receive(ctx context.Context, msg conversation.ChannelM
 		return err
 	}
 
-	history := append(sess.History, chat.Message{Role: "user", Content: enrichUserContent(msg)})
+	// Media on this turn: classify each attachment, decide whether this
+	// model can perceive it, and append a directive generated from the
+	// branch actually taken. Pixels ride on THIS turn only — see the
+	// stripInlineMedia call before Append below.
+	// see LLD § https://docs.vornik.io §4.3
+	outcomes := r.buildSightOutcomes(ctx, msg)
+	r.observeOutcomes(outcomes)
+	turnText := enrichUserContent(msg) + mediaNotes(outcomes)
+	userTurn := chat.Message{Role: "user", Content: turnText}
+	if blocks := mediaBlocks(turnText, outcomes); blocks != nil {
+		userTurn.Blocks = blocks
+	}
+	// Copy rather than append in place: sess.History's backing array is
+	// owned by the session store, and appending into spare capacity would
+	// mutate what the store still holds.
+	history := make([]chat.Message, 0, len(sess.History)+1)
+	history = append(history, sess.History...)
+	history = append(history, userTurn)
 	// OperatorID is "<source>:<speaker>" when both are present —
 	// the stable per-operator key the dispatcher's profile lookup
 	// uses. Empty when SpeakerID is missing (synthetic / system
@@ -242,6 +268,13 @@ func (r *ChannelReceiver) Receive(ctx context.Context, msg conversation.ChannelM
 	}
 
 	if r.Sessions != nil {
+		// Never persist pixels. The session store writes result.Messages
+		// back as the new history, so an image left in place would be
+		// replayed on every subsequent turn — a permanent per-image token
+		// charge (the chat layer bills image blocks at a flat figure
+		// regardless of size) and a cache-prefix invalidation each turn.
+		// see LLD § https://docs.vornik.io §4.3(1)
+		result.Messages = stripInlineMedia(result.Messages)
 		if err := r.Sessions.Append(ctx, msg, result); err != nil {
 			return fmt.Errorf("dispatcher: session append: %w", err)
 		}
@@ -613,29 +646,68 @@ func enrichUserContent(msg conversation.ChannelMessage) string {
 		}
 		b.WriteString("\n")
 		if a.Extraction != nil {
-			// Inline extraction summary so the lead LLM knows the
-			// file already landed in project memory and doesn't
-			// schedule a redundant "process this book" task. The
-			// "ingested into project memory" phrasing is load-
-			// bearing: BuildLeadSystemPrompt's INBOUND ATTACHMENTS
-			// directive matches on it.
-			b.WriteString("    ↳ ingested into project memory (")
-			if a.Extraction.Title != "" {
-				b.WriteString(a.Extraction.Title)
-				if a.Extraction.Author != "" {
-					b.WriteString(" by ")
-					b.WriteString(a.Extraction.Author)
-				}
-				b.WriteString("; ")
-			}
-			fmt.Fprintf(&b, "%d sections, %d chunks; extracted_document_id=%s",
-				a.Extraction.SectionCount,
-				a.Extraction.ChunksIngested,
-				a.Extraction.ExtractedDocumentID)
-			b.WriteString(")\n")
+			writeExtractionTrailer(&b, a)
 		}
 	}
 	return b.String()
+}
+
+// writeExtractionTrailer renders an attachment's extraction summary, and
+// states whether that extraction can stand in for the original.
+//
+// The distinction is load-bearing in both directions:
+//
+//   - DOCUMENTS keep the exact phrase "↳ ingested into project memory".
+//     It is a protocol string, not prose: BuildLeadSystemPrompt's INBOUND
+//     ATTACHMENTS branch (a) matches on it to tell the lead the work is
+//     done, and agent.go and tools.go match on it too. Do not reword it.
+//
+//   - MEDIA must NOT say that. An image's extraction is OCR plus EXIF, so
+//     branch (a) firing on a photo told the dispatcher to report the file
+//     as ingested and schedule nothing — suppressing the vision handover
+//     entirely (D4, live on the email channel before this change). The
+//     media form surfaces the same extraction ids, so the lead can still
+//     use the OCR text or transcript, but denies interpretation explicitly.
+//
+// The denial is phrased negatively ("has NOT been interpreted") on purpose.
+// The failure mode is a model concluding it already has the answer, and an
+// absent claim is a weaker guard than an explicit denial.
+//
+// see LLD § https://docs.vornik.io §4.5b
+func writeExtractionTrailer(b *strings.Builder, a conversation.Attachment) {
+	kind := mediakind.Classify(a.Name, a.MimeType)
+	if mediakind.ExtractionSufficient(kind) {
+		b.WriteString("    ↳ ingested into project memory (")
+		if a.Extraction.Title != "" {
+			b.WriteString(a.Extraction.Title)
+			if a.Extraction.Author != "" {
+				b.WriteString(" by ")
+				b.WriteString(a.Extraction.Author)
+			}
+			b.WriteString("; ")
+		}
+		fmt.Fprintf(b, "%d sections, %d chunks; extracted_document_id=%s",
+			a.Extraction.SectionCount,
+			a.Extraction.ChunksIngested,
+			a.Extraction.ExtractedDocumentID)
+		b.WriteString(")\n")
+		return
+	}
+
+	// Media: what the extraction actually contains, then what it is not.
+	var what string
+	switch kind {
+	case mediakind.KindImage:
+		what = "metadata + OCR text only — the image itself has NOT been interpreted"
+	case mediakind.KindAudio:
+		what = "transcript only — non-speech audio has NOT been interpreted"
+	case mediakind.KindVideo:
+		what = "transcript + sampled keyframes only — the video has NOT been interpreted as a whole"
+	default:
+		what = "partial extraction only — this file has NOT been interpreted"
+	}
+	fmt.Fprintf(b, "    ↳ %s (%d sections; extracted_document_id=%s)\n",
+		what, a.Extraction.SectionCount, a.Extraction.ExtractedDocumentID)
 }
 
 // humanBytes renders a byte count as a short human-readable string.

@@ -104,10 +104,12 @@ func (s *SlackChannelsSubsystem) Start(ctx context.Context) error {
 		// in-process history for every other workspace.
 		threadReaders = append(threadReaders, store)
 		receiver := &dispatcher.ChannelReceiver{
-			Channel:    ch,
-			Agent:      c.Dispatcher,
-			Sessions:   store,
-			Disclosure: c.AIDisclosure,
+			Channel:           ch,
+			Agent:             c.Dispatcher,
+			Sessions:          store,
+			Disclosure:        c.AIDisclosure,
+			Media:             c.mediaSight(),
+			DisclosureMetrics: c.disclosureObserver(),
 		}
 		s.logger.Info().
 			Str("project_id", project.ID).

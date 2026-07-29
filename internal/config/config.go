@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"vornik.io/vornik/internal/aidisclosure"
+	"vornik.io/vornik/internal/mediakind"
 )
 
 // Config represents the top-level vornik configuration.
@@ -406,6 +407,12 @@ type Config struct {
 	// drops through to the legacy attachment path and outbound
 	// replies stay text. See https://docs.vornik.io
 	Voice VoiceConfig `yaml:"voice"`
+	// Media bounds how media attachments travel: how large a raw media
+	// file may be when staged into an agent container alongside its
+	// (lossy) extraction, and later how much image data may ride on a
+	// dispatcher turn. See
+	// https://docs.vornik.io
+	Media MediaConfig `yaml:"media"`
 	// ToolBudget configures dynamic per-role tool-use limits: a planner
 	// emits a complexity tier and the daemon scales each role's static
 	// VORNIK_MAX_TOOL_ITERATIONS by a config-capped factor. Opt-in, off
@@ -527,6 +534,73 @@ type ProviderConfig struct {
 	// public APIs the model already understands; add a couple for internal/
 	// custom APIs so the agent can discover how to call them.
 	Examples []string `yaml:"examples" json:"examples" doc:"Optional endpoint hints surfaced by list_apis, e.g. \"/geocode/json?address= — geocode an address\". Omit for APIs the model already knows."`
+
+	// Disclosure marks this provider as a human-facing PUBLICATION surface and
+	// makes the EU AI Act Art 50(1) notice a precondition of every write.
+	Disclosure ProviderDisclosureConfig `yaml:"disclosure" json:"disclosure" doc:"Marks this provider as a human-facing publication surface: writes are refused unless the request body carries the AI-disclosure notice."`
+}
+
+// ProviderDisclosureConfig governs Art 50(1) enforcement on a gateway provider
+// that publishes to humans — a social platform, a forum, anything where the
+// reader is a natural person rather than a machine.
+//
+// The gateway cannot inject the notice: that would require knowing which field
+// of an arbitrary third-party JSON body carries human-facing prose, per provider
+// and per route. So it enforces by REFUSAL — the agent composes the content, and
+// a write whose content does not carry the notice does not leave the daemon.
+// The agent is already instructed to disclose; this makes the instruction a
+// control rather than a hope.
+//
+// Design: https://docs.vornik.io §5
+type ProviderDisclosureConfig struct {
+	// Required turns the gate on. Default false: every provider that is not a
+	// publication surface is unaffected and pays no inspection cost.
+	Required bool `yaml:"required" json:"required" doc:"When true, a write to this provider is refused unless the AI-disclosure notice appears in one of content_fields."`
+
+	// ContentFields names the top-level JSON body keys that must carry the
+	// notice. Naming them explicitly is what stops the notice being smuggled
+	// into a key no reader ever sees. There is deliberately NO default: a
+	// silent default would let a misconfigured provider look gated while
+	// inspecting the wrong field.
+	ContentFields []string `yaml:"content_fields" json:"content_fields" doc:"Top-level JSON body keys that must contain the disclosure, e.g. [\"content\"]. Required when required=true."`
+
+	// Paths limits the gate to the routes that actually publish text, as path
+	// prefixes matched against the request path (e.g. ["/posts", "/comments"]).
+	//
+	// Not every write to a publication surface says anything to a reader: an
+	// upvote or a follow carries no content field and no Art 50(1) obligation,
+	// and gating it would refuse legitimate work for a duty that does not apply.
+	//
+	// EMPTY MEANS GATE EVERY WRITE. That is the fail-closed default: a provider
+	// that does nothing but publish needs no path list, and forgetting to write
+	// one over-enforces rather than under-enforces.
+	Paths []string `yaml:"paths" json:"paths" doc:"Path prefixes this gate applies to, e.g. [\"/posts\", \"/comments\"]. Empty gates EVERY write to the provider (fail-closed). Use it to exempt non-publishing writes such as votes or follows."`
+}
+
+// ValidateDisclosure rejects a publication-surface provider that would inspect
+// nothing. required=true with no usable content_fields is the silent-misconfig
+// case: the gate appears armed and passes every write.
+func (c GatewayConfig) ValidateDisclosure() error {
+	for name, p := range c.Providers {
+		if !p.Disclosure.Required {
+			continue
+		}
+		if len(p.Disclosure.ContentFields) == 0 {
+			return fmt.Errorf(
+				"gateway.providers.%s.disclosure: required=true needs at least one content_fields entry "+
+					"(e.g. [\"content\"]) — otherwise the Art 50(1) gate inspects nothing and passes every write",
+				name)
+		}
+		for _, f := range p.Disclosure.ContentFields {
+			if strings.TrimSpace(f) == "" {
+				return fmt.Errorf(
+					"gateway.providers.%s.disclosure.content_fields: contains a blank field name — "+
+						"a blank name matches nothing and would silently disarm the Art 50(1) gate",
+					name)
+			}
+		}
+	}
+	return nil
 }
 
 // ScraperConfig groups daemon-side scraper-adjacent behaviour.
@@ -1907,6 +1981,21 @@ type ChatConfig struct {
 	//     router.<sub>.model when you need a different per-sub-provider
 	//     default; leave it unset to inherit Model.
 	Model string `yaml:"model" doc:"Default model identifier when a request does not pin one."`
+	// ModelCapabilities declares which modalities each model can
+	// perceive, keyed by model id, with values drawn from text,
+	// vision, and audio. An undeclared model falls back to
+	// mediakind's built-in id patterns and then to text-only —
+	// fail-closed, so an unrecognised model is assumed blind and
+	// media work hands over to a specialist instead of being sent
+	// to a model that would ignore the pixels and answer anyway.
+	//
+	// Declare a model text-only to override a pattern match, which
+	// is how an operator records "this provider's path for this
+	// model does not actually accept images" (e.g. glm-5.2 over the
+	// Ollama Cloud OpenAI-compat surface).
+	//
+	// see LLD § https://docs.vornik.io §4.7
+	ModelCapabilities map[string][]string `yaml:"model_capabilities" doc:"Per-model modality declarations (text, vision, audio). Undeclared models fall back to built-in id patterns, then text-only."`
 	// WizardModel pins the model the conversational project-setup
 	// wizard (internal/projectwizard) uses, independent of the
 	// dispatcher/autonomy default in Model. Empty inherits Model (the
@@ -3226,4 +3315,96 @@ type NodeCapabilities struct {
 	ServeWebhooks bool
 	RunWorkers    bool
 	RelayMode     bool
+}
+
+// DeclaredModalities resolves ModelCapabilities into the shape
+// mediakind.Capabilities consumes, validating every modality name.
+//
+// Returns nil (not an empty map) when nothing is declared, so callers can
+// pass the result straight through to mediakind.Capabilities, which
+// accepts a nil declaration map and falls back to its id patterns.
+//
+// see LLD § https://docs.vornik.io §4.7
+func (c ChatConfig) DeclaredModalities() (map[string][]mediakind.Modality, error) {
+	if len(c.ModelCapabilities) == 0 {
+		return nil, nil
+	}
+	out := make(map[string][]mediakind.Modality, len(c.ModelCapabilities))
+	for model, names := range c.ModelCapabilities {
+		ms, err := mediakind.ParseModalities(names)
+		if err != nil {
+			return nil, fmt.Errorf("model %q: %w", model, err)
+		}
+		out[model] = ms
+	}
+	return out, nil
+}
+
+// MediaConfig bounds how media attachments travel through the system.
+//
+// Media is the one attachment class whose extraction cannot substitute for
+// the original — an image's OCR text is not the picture — so the raw bytes
+// have to reach whatever is going to perceive them. These caps are what
+// keep "the bytes travel" from meaning "any number of bytes travel".
+//
+// see LLD § https://docs.vornik.io §4.7
+type MediaConfig struct {
+	// StageMaxBytes caps a single raw media file staged into an agent
+	// container next to its extraction. Over the cap the extraction
+	// stands alone. Zero (the default) means unbounded, which preserves
+	// the behaviour of a deployment that never sets the key.
+	StageMaxBytes int64 `yaml:"stage_max_bytes" doc:"Largest raw media file staged into an agent container alongside its extraction. 0 = unbounded."`
+	// InlineMaxBytes caps ONE image attached to a dispatcher chat turn.
+	// InlineMaxBytesTotal caps all images on a single turn combined — the
+	// per-image cap alone permits several under-cap files that together
+	// exceed what should ride on one provider request, and the local token
+	// estimate would not notice because image blocks are charged a flat
+	// figure regardless of payload size. InlineMaxImages caps the count.
+	//
+	// Unlike StageMaxBytes, zero here means "use the built-in default"
+	// rather than unbounded: an unbounded amount of base64 on a chat turn
+	// is never the behaviour an operator wants by omission.
+	InlineMaxBytes      int64 `yaml:"inline_max_bytes" doc:"Largest single image attached to a dispatcher chat turn. 0 = built-in default (5 MB)."`
+	InlineMaxBytesTotal int64 `yaml:"inline_max_bytes_total" doc:"Combined image bytes allowed on one dispatcher chat turn. 0 = built-in default (10 MB)."`
+	InlineMaxImages     int   `yaml:"inline_max_images" doc:"Most images attached to one dispatcher chat turn. 0 = built-in default (4)."`
+	// Video bounds keyframe sampling. Zero values fall back to the
+	// extractor's own defaults (8 frames, 5-second floor).
+	Video MediaVideoConfig `yaml:"video"`
+}
+
+// MediaVideoConfig bounds video keyframe sampling.
+//
+// Sampling is uniform-interval, so these two numbers decide what the system
+// can honestly say about a video: anything shorter than the interval may
+// appear in no frame at all. The frame manifest states that limitation
+// explicitly rather than leaving a reader to assume the frames are
+// exhaustive.
+type MediaVideoConfig struct {
+	MaxFrames          int `yaml:"max_frames" doc:"Most keyframes sampled from one video. 0 = extractor default (8)."`
+	MinIntervalSeconds int `yaml:"min_interval_seconds" doc:"Shortest gap between sampled keyframes. 0 = extractor default (5)."`
+}
+
+// Built-in inline-media defaults, applied when the operator leaves the key
+// unset. Sized so a phone photo rides inline while a burst of high-res
+// scans hands over to the vision role instead of inflating one request.
+const (
+	DefaultMediaInlineMaxBytes      int64 = 5 << 20  // 5 MB
+	DefaultMediaInlineMaxBytesTotal int64 = 10 << 20 // 10 MB
+	DefaultMediaInlineMaxImages     int   = 4
+)
+
+// InlineLimits returns the effective per-turn inline caps, substituting the
+// built-in defaults for unset keys.
+func (m MediaConfig) InlineLimits() (perImage, total int64, count int) {
+	perImage, total, count = m.InlineMaxBytes, m.InlineMaxBytesTotal, m.InlineMaxImages
+	if perImage <= 0 {
+		perImage = DefaultMediaInlineMaxBytes
+	}
+	if total <= 0 {
+		total = DefaultMediaInlineMaxBytesTotal
+	}
+	if count <= 0 {
+		count = DefaultMediaInlineMaxImages
+	}
+	return perImage, total, count
 }

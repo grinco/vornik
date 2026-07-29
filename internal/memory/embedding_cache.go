@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // EmbedCache is the narrow interface the Embedder consumes to skip
@@ -35,6 +36,24 @@ type EmbedCache interface {
 	// semantics: a second call with the same key just refreshes
 	// last_hit_at + embedding bytes. No-op when vec is empty.
 	Put(ctx context.Context, hash, model string, vec []float32) error
+
+	// Evict removes one (hash, model) entry. For GDPR Art 17: a cached
+	// vector is data DERIVED from the text it was computed over, so when
+	// that text is erased or redacted the vector must go too.
+	//
+	// The retention sweeper also prunes this table, but by last_hit_at age
+	// and only when retention.embedding_cache_days is set — time-based
+	// cold-entry pruning is not compliance with an erasure request.
+	//
+	// Idempotent: an absent key is not an error, because erasure paths
+	// retry and "already gone" is the expected second-run state.
+	Evict(ctx context.Context, hash, model string) error
+
+	// EvictAll removes EVERY model's vector for one content hash. This is
+	// the erasure default: the operator may have re-embedded under several
+	// models over the deployment's life, and erasing the text while leaving
+	// an older model's vector behind would defeat the point.
+	EvictAll(ctx context.Context, hash string) error
 }
 
 // ContentHash is the canonical hashing function used as the
@@ -169,6 +188,37 @@ func (r *embeddingCacheRepo) Put(ctx context.Context, hash, model string, vec []
 	`, hash, model, lit)
 	if err != nil {
 		return fmt.Errorf("embedding cache put: %w", err)
+	}
+	return nil
+}
+
+// Evict implements EmbedCache. See the interface for why erasure needs it.
+func (r *embeddingCacheRepo) Evict(ctx context.Context, hash, model string) error {
+	if strings.TrimSpace(hash) == "" {
+		return fmt.Errorf("memory: refusing to evict with an empty content hash")
+	}
+	_, err := r.db.ExecContext(ctx,
+		`DELETE FROM embedding_cache WHERE content_hash = $1 AND model = $2`, hash, model)
+	if err != nil {
+		return fmt.Errorf("memory: evict embedding cache %s/%s: %w", hash, model, err)
+	}
+	return nil
+}
+
+// EvictAll implements EmbedCache.
+//
+// The empty-hash guard is not defensive noise: without it an empty hash would
+// delete every row in the cache, the same class of mistake DeleteProjectArtifacts
+// guards against with its empty-projectID check.
+func (r *embeddingCacheRepo) EvictAll(ctx context.Context, hash string) error {
+	if strings.TrimSpace(hash) == "" {
+		return fmt.Errorf("memory: refusing to evict with an empty content hash — " +
+			"that would delete every cached embedding")
+	}
+	_, err := r.db.ExecContext(ctx,
+		`DELETE FROM embedding_cache WHERE content_hash = $1`, hash)
+	if err != nil {
+		return fmt.Errorf("memory: evict embedding cache %s: %w", hash, err)
 	}
 	return nil
 }

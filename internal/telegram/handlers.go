@@ -384,13 +384,19 @@ func (b *Bot) HandleMessage(ctx context.Context, msg *Message) error {
 		if err != nil {
 			b.logger.Warn().Err(err).Str("file_id", msg.FileID).Msg("failed to download telegram file")
 		} else {
+			// Record the host path so MessageToChannelMessage can
+			// surface this as a ChannelMessage.Attachment. Telegram
+			// persists no artifact at inbound time, so this local
+			// file is the only handle on the bytes — the dispatcher's
+			// fetch seam reads it from here.
+			// see LLD § https://docs.vornik.io §4.3.0
+			msg.DownloadedPath = path
 			msg.Text += fmt.Sprintf(
 				"\n\n[SYSTEM: user attached file %q at host path %q. "+
 					"When you call create_task, pass input_files: [%q]. "+
 					"The executor stages attachments into /app/workspace/artifacts/in/ "+
 					"inside the agent container — reference that path (not the host path) "+
-					"in the task prompt you write. Image attachments are also forwarded "+
-					"to vision-capable models as multimodal content automatically.]",
+					"in the task prompt you write.]",
 				msg.FileName, path, path,
 			)
 		}

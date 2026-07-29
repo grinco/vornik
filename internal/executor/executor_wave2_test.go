@@ -321,7 +321,7 @@ func TestW2ExecExtractTaskInputArtifacts_ExtractedSkipped(t *testing.T) {
 		"inputFiles":["/tmp/report.epub","/tmp/data.bin"],
 		"inputExtractions":[{"extracted_document_id":"doc-1"},{}]
 	}}`)
-	got := extractTaskInputArtifacts(payload)
+	got := extractTaskInputArtifacts(payload, 0)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 staged artifact, got %v", got)
 	}
@@ -337,14 +337,14 @@ func TestW2ExecExtractTaskInputArtifacts_CountMismatchSkipsAll(t *testing.T) {
 		"inputFiles":["/tmp/a.pdf","/tmp/b.pdf"],
 		"inputExtractions":[{"extracted_document_id":"doc-1"}]
 	}}`)
-	if got := extractTaskInputArtifacts(payload); got != nil {
+	if got := extractTaskInputArtifacts(payload, 0); got != nil {
 		t.Fatalf("count mismatch should stage nothing, got %v", got)
 	}
 }
 
 func TestW2ExecExtractTaskInputArtifacts_NoExtractionsStagesAll(t *testing.T) {
 	payload := []byte(`{"context":{"inputFiles":["/tmp/a.txt","","/tmp/b.txt"]}}`)
-	got := extractTaskInputArtifacts(payload)
+	got := extractTaskInputArtifacts(payload, 0)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 staged (empty path dropped), got %v", got)
 	}
@@ -354,13 +354,13 @@ func TestW2ExecExtractTaskInputArtifacts_NoExtractionsStagesAll(t *testing.T) {
 }
 
 func TestW2ExecExtractTaskInputArtifacts_EmptyAndBad(t *testing.T) {
-	if got := extractTaskInputArtifacts(nil); got != nil {
+	if got := extractTaskInputArtifacts(nil, 0); got != nil {
 		t.Fatalf("nil payload → nil, got %v", got)
 	}
-	if got := extractTaskInputArtifacts([]byte(`{not json`)); got != nil {
+	if got := extractTaskInputArtifacts([]byte(`{not json`), 0); got != nil {
 		t.Fatalf("bad json → nil, got %v", got)
 	}
-	if got := extractTaskInputArtifacts([]byte(`{"context":{"inputFiles":[]}}`)); got != nil {
+	if got := extractTaskInputArtifacts([]byte(`{"context":{"inputFiles":[]}}`), 0); got != nil {
 		t.Fatalf("no files → nil, got %v", got)
 	}
 }

@@ -50,7 +50,87 @@ type Metrics struct {
 	// no-finding scans so the histogram captures the regex-set latency
 	// floor.
 	OutputGuardScanDuration *prometheus.HistogramVec
+
+	// MediaAttachmentsTotal counts inbound media attachments by kind
+	// (image / audio / video) and disposition (inline / handover /
+	// transcribed). Without it, "why did my photo go to a task instead
+	// of being answered in chat" is invisible: the decision is made from
+	// model capability, size caps, and format, none of which the
+	// operator can see from the reply.
+	//
+	// see LLD § https://docs.vornik.io §4.7
+	MediaAttachmentsTotal *prometheus.CounterVec
+
+	// AIDisclosureServedTotal counts EU AI Act Art 50(1) disclosures served,
+	// by channel and cadence (per_session / per_message).
+	//
+	// This is a CONFORMITY signal, not a nice-to-have: Art 50 binds the
+	// provider from 2 Aug 2026 and Art 99 makes breach enforceable at up to
+	// €15M or 3% of worldwide turnover. Without a rate series an operator
+	// cannot show the obligation is being met, nor notice it silently
+	// stopping — the disclosure is served deep inside the receiver and
+	// nothing user-visible changes if it degrades.
+	//
+	// see LLD § https://docs.vornik.io §4.1
+	AIDisclosureServedTotal *prometheus.CounterVec
+
+	// AIDisclosureFailuresTotal counts failures by channel and stage.
+	//
+	// The two stages fail very differently and must stay distinguishable:
+	// stage="send" means turns are being REFUSED rather than served
+	// undisclosed (a loud alarm, users notice), while stage="write" is the
+	// quiet one — nothing user-visible breaks and only the Art 99 evidence
+	// trail degrades. The quiet failure is the dangerous one, which is
+	// precisely why it needs a counter rather than a log line.
+	AIDisclosureFailuresTotal *prometheus.CounterVec
+
+	// MediaHandoverTotal counts handovers by kind and the specific
+	// branch that declined — model_blind, over_size_cap,
+	// over_total_cap, over_count_cap, unsupported_mime, fetch_failed,
+	// no_fetch_seam, sight_disabled. One label per branch on purpose:
+	// a generic failure bucket would leave a misdeclared model and a
+	// too-tight size cap looking identical.
+	MediaHandoverTotal *prometheus.CounterVec
 }
+
+// MediaAttachment records one attachment's disposition. Nil-safe.
+func (m *Metrics) MediaAttachment(kind, disposition string) {
+	if m == nil || m.MediaAttachmentsTotal == nil {
+		return
+	}
+	m.MediaAttachmentsTotal.WithLabelValues(kind, disposition).Inc()
+}
+
+// MediaHandover records why one attachment was handed to a specialist
+// instead of perceived inline. Nil-safe.
+func (m *Metrics) MediaHandover(kind, reason string) {
+	if m == nil || m.MediaHandoverTotal == nil {
+		return
+	}
+	m.MediaHandoverTotal.WithLabelValues(kind, reason).Inc()
+}
+
+// DisclosureServed records one Art 50 disclosure. Nil-safe.
+func (m *Metrics) DisclosureServed(channel, cadence string) {
+	if m == nil || m.AIDisclosureServedTotal == nil {
+		return
+	}
+	m.AIDisclosureServedTotal.WithLabelValues(channel, cadence).Inc()
+}
+
+// DisclosureFailed records one Art 50 disclosure failure. Nil-safe.
+func (m *Metrics) DisclosureFailed(channel, stage string) {
+	if m == nil || m.AIDisclosureFailuresTotal == nil {
+		return
+	}
+	m.AIDisclosureFailuresTotal.WithLabelValues(channel, stage).Inc()
+}
+
+// Compile-time guards: *Metrics satisfies both observers the receiver takes.
+var (
+	_ MediaObserver      = (*Metrics)(nil)
+	_ DisclosureObserver = (*Metrics)(nil)
+)
 
 // NewMetrics creates dispatcher metrics registered against the given registerer.
 func NewMetrics(registerer prometheus.Registerer) *Metrics {
@@ -106,6 +186,42 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 				Help:      "Output-guard scans that redacted HIGH-severity content in place, labelled by tool.",
 			},
 			[]string{"tool"},
+		),
+		AIDisclosureServedTotal: auto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "vornik",
+				Subsystem: "ai_disclosure",
+				Name:      "served_total",
+				Help:      "EU AI Act Art 50(1) AI-interaction disclosures served, by channel and cadence.",
+			},
+			[]string{"channel", "cadence"},
+		),
+		AIDisclosureFailuresTotal: auto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "vornik",
+				Subsystem: "ai_disclosure",
+				Name:      "failures_total",
+				Help:      "EU AI Act Art 50(1) disclosure failures, by channel and stage (send = turn refused; write = evidence trail degraded).",
+			},
+			[]string{"channel", "stage"},
+		),
+		MediaAttachmentsTotal: auto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "vornik",
+				Subsystem: "media",
+				Name:      "attachments_total",
+				Help:      "Inbound media attachments by kind and disposition (inline / handover / transcribed).",
+			},
+			[]string{"kind", "disposition"},
+		),
+		MediaHandoverTotal: auto.NewCounterVec(
+			prometheus.CounterOpts{
+				Namespace: "vornik",
+				Subsystem: "media",
+				Name:      "handover_total",
+				Help:      "Media attachments handed to a specialist instead of perceived inline, by kind and reason.",
+			},
+			[]string{"kind", "reason"},
 		),
 		OutputGuardScanDuration: auto.NewHistogramVec(
 			prometheus.HistogramOpts{

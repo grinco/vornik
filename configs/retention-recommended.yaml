@@ -1,0 +1,79 @@
+# Recommended retention profile — GDPR Art 5(1)(e) storage limitation
+#
+# WHY THIS FILE EXISTS. The sweeper ships DISABLED, deliberately: enabling it by
+# default would delete data on upgrade that an operator never agreed to lose.
+# The consequence is that a stock deployment keeps personal data INDEFINITELY,
+# which does not satisfy Art 5(1)(e) — "kept in a form which permits
+# identification of data subjects for no longer than is necessary".
+#
+# So the default is safe for your data and wrong for your compliance, and only
+# you can resolve that. This file is the starting point: copy the block into your
+# config.yaml, adjust the windows to your actual purposes, and turn it on.
+#
+# THE WINDOWS BELOW ARE A STARTING POINT, NOT ADVICE. Art 5(1)(e) asks what is
+# necessary for YOUR purposes; nobody can answer that from the software's side.
+# A consultancy retaining client correspondence for a contractual limitation
+# period and a personal assistant clearing its inbox weekly are both compliant
+# with very different numbers.
+#
+# Two rows are deliberately absent, and their absence is the point:
+#   - channel_disclosure_log is EU AI Act Art 50/99 conformity evidence and is
+#     refused by the sweeper outright (internal/retention evidenceTables). It is
+#     not tunable and must not be pruned.
+#   - extracted_documents has no window because the sweeper does not yet touch
+#     it. Extractions and their on-disk sections/keyframes therefore accumulate
+#     regardless of what you set here — a known gap, tracked in BACKLOG.md, not
+#     something this profile silently covers.
+#
+# see docs/legal/ropa.md §7 and
+# https://docs.vornik.io §4.9
+
+retention:
+  # Turning this on is the decision. Everything below is inert until you do.
+  enabled: true
+
+  # How often the sweeper runs. Hourly is frequent enough that a window means
+  # roughly what it says, and cheap enough to ignore.
+  interval: "1h"
+
+  # --- Operational telemetry: shortest windows, least value over time ---
+
+  # Per-task LLM spend rows. Useful for cost review; personal data only
+  # incidentally (prompts are not stored here, totals are).
+  task_llm_usage_days: 180
+
+  # Tool-call audit. Art 17(3)(b) accountability record — keep long enough to
+  # investigate an incident, and note the AI Act's own 6-month floor on
+  # tool_audit_log if you are a deployer under Art 26(6).
+  tool_audit_days: 365
+
+  # --- Work records: contain personal data from correspondence ---
+
+  # Task and execution rows. These carry prompts and results, so they carry
+  # whatever a correspondent wrote.
+  tasks_days: 365
+  executions_days: 365
+
+  # Uploaded files. Often the densest personal data in the system — a CV, a
+  # photo, a contract. Shorter than the task that used them is usually right,
+  # since the answer outlives the source document.
+  artifacts_days: 180
+
+  # Task conversation messages.
+  task_messages_days: 365
+
+  # --- Long-term memory: the row most operators under-think ---
+
+  # RAG chunks derived from mail, documents, and chat. An embedding of a
+  # sentence about a person is still personal data about that person, and this
+  # store is the one designed to outlive its sources — which is exactly why it
+  # needs a window rather than inheriting one.
+  memory_chunks_days: 730
+
+  # Memory ingest audit. Diagnostic; short.
+  memory_ingest_audit_days: 90
+
+  # Memory policy evaluations. Allow-decisions are noise after a month; block
+  # decisions are evidence and are kept a year.
+  memory_policy_eval_allow_days: 30
+  memory_policy_eval_block_days: 365

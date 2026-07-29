@@ -288,7 +288,7 @@ func TestPostReview_HappyPathAndEventMapping(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			prov := &fakeProvider{}
-			h := NewPostReviewHandler(fakeResolver{p: prov})
+			h := NewPostReviewHandler(fakeResolver{p: prov}, realDiscloser())
 			in := executor.SystemStepInput{
 				Task:       taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 3}),
 				Step:       &registry.WorkflowStep{Handler: "forge.post_review", GatingReviews: tc.gating},
@@ -301,8 +301,10 @@ func TestPostReview_HappyPathAndEventMapping(t *testing.T) {
 			if prov.gotRepo != "o/r" || prov.gotNumber != 3 {
 				t.Errorf("target repo=%s number=%d", prov.gotRepo, prov.gotNumber)
 			}
-			if prov.gotReview.Body != tc.wantBody || prov.gotReview.Event != tc.wantEvent {
-				t.Errorf("prev=%s: review=%+v want body=%q event=%q", tc.prev, prov.gotReview, tc.wantBody, tc.wantEvent)
+			// wantBody is the review text; every posted body also carries the
+			// Art 50(1) disclosure trailer (G6 finding A).
+			if prov.gotReview.Body != wantDisclosedBody(tc.wantBody) || prov.gotReview.Event != tc.wantEvent {
+				t.Errorf("prev=%s: review=%+v want body=%q event=%q", tc.prev, prov.gotReview, wantDisclosedBody(tc.wantBody), tc.wantEvent)
 			}
 			if len(res.Result) == 0 {
 				t.Error("expected a result envelope")
@@ -334,7 +336,7 @@ func TestPostReview_GatingDerivesEventFromVerdict(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			prov := &fakeProvider{}
-			h := NewPostReviewHandler(fakeResolver{p: prov})
+			h := NewPostReviewHandler(fakeResolver{p: prov}, realDiscloser())
 			in := executor.SystemStepInput{
 				Task:       taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 7}),
 				Step:       &registry.WorkflowStep{Handler: "forge.post_review", GatingReviews: tc.gating},
@@ -358,7 +360,7 @@ func TestPostReview_Errors(t *testing.T) {
 		t.Error("missing deps should error")
 	}
 	// empty body
-	h := NewPostReviewHandler(fakeResolver{p: &fakeProvider{}})
+	h := NewPostReviewHandler(fakeResolver{p: &fakeProvider{}}, realDiscloser())
 	if _, err := h.Execute(ctx, executor.SystemStepInput{Task: good, PrevResult: json.RawMessage(`{}`)}); err == nil {
 		t.Error("empty review body should error")
 	}
@@ -367,12 +369,12 @@ func TestPostReview_Errors(t *testing.T) {
 		t.Error("missing job should error")
 	}
 	// resolver error
-	hr := NewPostReviewHandler(fakeResolver{err: errors.New("no provider")})
+	hr := NewPostReviewHandler(fakeResolver{err: errors.New("no provider")}, realDiscloser())
 	if _, err := hr.Execute(ctx, executor.SystemStepInput{Task: good, PrevResult: json.RawMessage(`{"body":"x"}`)}); err == nil {
 		t.Error("resolver error should propagate")
 	}
 	// post error
-	hp := NewPostReviewHandler(fakeResolver{p: &fakeProvider{reviewErr: errors.New("post boom")}})
+	hp := NewPostReviewHandler(fakeResolver{p: &fakeProvider{reviewErr: errors.New("post boom")}}, realDiscloser())
 	if _, err := hp.Execute(ctx, executor.SystemStepInput{Task: good, PrevResult: json.RawMessage(`{"body":"x"}`)}); err == nil {
 		t.Error("post error should propagate")
 	}

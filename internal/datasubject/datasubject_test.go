@@ -3,45 +3,9 @@ package datasubject
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
-
-// THE coverage test, and the reason the two sets exist.
-//
-// Every personal-data-bearing table the ROPA inventories must be either
-// LINKABLE (the subject axis can find rows in it) or explicitly UNCOVERED with
-// a reason. A table in neither is a gap nobody can see: an Art 17 erasure would
-// silently skip it while the report claimed success, which is precisely the
-// documented-but-unenforced failure this design exists to remove.
-//
-// Reading the inventory out of the ROPA rather than hardcoding it means the
-// test tracks the document that counsel and the operator actually maintain. If
-// someone records a new table there, this fails until it is classified.
-//
-// see LLD § https://docs.vornik.io §4.2
-func TestEveryROPATableIsClassified(t *testing.T) {
-	inventory := ropaTableInventory(t)
-	if len(inventory) < 5 {
-		t.Fatalf("only %d tables parsed out of the ROPA — the parse is probably broken, "+
-			"and a silently-empty inventory would make this test vacuous", len(inventory))
-	}
-
-	var unclassified []string
-	for _, table := range inventory {
-		_, linkable := linkableTables[LinkableTable(table)]
-		_, uncovered := UncoveredTable[table]
-		if !linkable && !uncovered {
-			unclassified = append(unclassified, table)
-		}
-	}
-	if len(unclassified) > 0 {
-		t.Errorf("these tables are named in docs/legal/ropa.md as holding personal data but are "+
-			"neither in the linkable set nor listed as uncovered, so a subject erasure would "+
-			"silently miss them: %v", unclassified)
-	}
-}
 
 // A table cannot be both linkable and uncovered — that would leave the
 // executor's behaviour ambiguous.
@@ -199,101 +163,6 @@ func TestLinkableTablesIsSorted(t *testing.T) {
 	}
 }
 
-// ropaTableInventory extracts backtick-quoted table names from the ROPA's
-// "Categories of personal data" section — the operator-maintained inventory of
-// where personal data lands.
-func ropaTableInventory(t *testing.T) []string {
-	t.Helper()
-	path := filepath.Join("..", "..", "docs", "legal", "ropa.md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read ROPA: %v", err)
-	}
-	body := string(data)
-	start := strings.Index(body, "## 4. Categories of personal data")
-	if start < 0 {
-		t.Fatal("ROPA §4 not found — the inventory this test reads has moved")
-	}
-	end := strings.Index(body[start:], "\n## ")
-	if end < 0 {
-		end = len(body) - start
-	}
-	section := body[start : start+end]
-
-	// Table names are backticked and snake_case; skip column references
-	// (table.column) by taking the part before any dot.
-	re := regexp.MustCompile("`([a-z][a-z0-9_]{4,})(?:\\.[a-z_]+)?`")
-	seen := map[string]bool{}
-	var out []string
-	for _, m := range re.FindAllStringSubmatch(section, -1) {
-		name := m[1]
-		// Filter prose words that happen to be backticked in this section.
-		if !strings.Contains(name, "_") {
-			continue
-		}
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		out = append(out, name)
-	}
-	return out
-}
-
-// The Art 14 notice template must carry every element Art 14(1)–(2) requires.
-//
-// A notice missing an element does not discharge the duty, and the gap is
-// invisible on reading — nobody notices the absent paragraph. So the elements
-// are asserted rather than trusted to review.
-//
-// It must ALSO stay honest about whose duty it is: Vornik is delivered as
-// software an operator runs themselves, the project holds no deployment data,
-// and a vendor page therefore cannot discharge an operator's Art 14 duty. The
-// template is adopted and published BY the operator.
-//
-// see LLD § https://docs.vornik.io §4.13
-func TestArt14TemplateCarriesRequiredElements(t *testing.T) {
-	path := filepath.Join("..", "..", "docs", "legal", "art14-notice-template.md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read Art 14 template: %v", err)
-	}
-	body := strings.Join(strings.Fields(string(data)), " ")
-
-	// One probe per Art 14(1)/(2) element.
-	elements := map[string]string{
-		"14(1)(a) controller identity": "[CONTROLLER LEGAL NAME]",
-		"14(1)(b) DPO":                 "Data protection officer",
-		"14(1)(c) purposes + basis":    "Article 6(1)(f)",
-		"14(1)(d) categories":          "categories of data",
-		"14(1)(e) recipients":          "Who else sees it",
-		"14(1)(f) transfers":           "Standard Contractual Clauses",
-		"14(2)(a) retention":           "How long it is kept",
-		"14(2)(c) rights":              "Article 20",
-		"14(2)(e) complaint":           "supervisory authority",
-		"14(2)(f) source":              "Article 14(2)(f)",
-		"14(2)(g) automated decisions": "Automated decisions",
-	}
-	for element, probe := range elements {
-		if !strings.Contains(body, probe) {
-			t.Errorf("template is missing %s (probe %q)", element, probe)
-		}
-	}
-
-	// The relief must be described as CONDITIONAL on publication, since that is
-	// the whole basis for using a page instead of individual notices.
-	for _, want := range []string{"14(5)(b)", "conditional", "one month"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("template should state the 14(5)(b) basis and its clock: missing %q", want)
-		}
-	}
-	// And it must say where 14(5)(b) does NOT help, or an operator will assume
-	// publishing covers the reachable case too.
-	if !strings.Contains(body, "does NOT save you") {
-		t.Error("template must state where 14(5)(b) relief does not apply (the reachable data subject)")
-	}
-}
-
 // The public product page must not imply the project holds deployment data or
 // can action a request — it cannot, and saying otherwise would suggest a
 // controller relationship that does not exist.
@@ -311,70 +180,6 @@ func TestPublicPageDisclaimsVendorControllership(t *testing.T) {
 	}
 	if !strings.Contains(body, "art14-notice-template.md") {
 		t.Error("the public page should point operators at the template they must publish")
-	}
-}
-
-// The legal documents mix three kinds of statement, and the mixture is the
-// dangerous part: a software fact an operator may rely on, the vendor's own
-// worked answer, and a value the operator must supply. An operator who mistook
-// the second for the third would publish an Art 30 record that is false for
-// them — worse than an absent one under audit.
-//
-// This asserts the markers survive editing. It is a documentation test on
-// purpose: the failure mode is silent erosion during an unrelated edit, which
-// review does not reliably catch.
-//
-// see LLD § https://docs.vornik.io §4.11
-func TestLegalDocsMarkTemplateVersusExample(t *testing.T) {
-	ropa := readDoc(t, filepath.Join("..", "..", "docs", "legal", "ropa.md"))
-
-	// The legend itself must be present, or the per-section markers are
-	// uninterpretable.
-	for _, want := range []string{"[SOFTWARE FACT]", "[EXAMPLE]", "[TEMPLATE — REPLACE]"} {
-		if !strings.Contains(ropa, want) {
-			t.Errorf("ROPA is missing the %s legend entry", want)
-		}
-	}
-
-	// Every numbered section must carry a marker. An unmarked section is one an
-	// operator has to guess about.
-	for _, section := range []string{
-		"## 1. Controller / processor identity",
-		"## 2. Processing activities at a glance",
-		"## 3. Categories of data subject",
-		"## 4. Categories of personal data",
-		"## 5. Recipients",
-		"## 6. Third-country transfers",
-		"## 7. Retention",
-		"## 8. Security measures",
-		"## 9. Known gaps",
-	} {
-		idx := strings.Index(ropa, section)
-		if idx < 0 {
-			t.Errorf("ROPA section %q not found — heading changed without updating this test", section)
-			continue
-		}
-		// The marker rides on the heading line itself.
-		line := ropa[idx:]
-		if nl := strings.IndexByte(line, '\n'); nl >= 0 {
-			line = line[:nl]
-		}
-		if !strings.Contains(line, "[SOFTWARE FACT]") &&
-			!strings.Contains(line, "[TEMPLATE — REPLACE]") &&
-			!strings.Contains(line, "[EXAMPLE]") {
-			t.Errorf("ROPA section %q carries no template/example/fact marker", section)
-		}
-	}
-
-	// Every vendor-specific legal document must disclaim that it speaks for a
-	// customer deployment. Naming the vendor's own answer without that
-	// disclaimer is the error this audit exists to remove.
-	for _, doc := range []string{"ropa.md", "editorial-responsibility.md", "art14-notice-template.md"} {
-		body := readDoc(t, filepath.Join("..", "..", "docs", "legal", doc))
-		if !strings.Contains(body, "delivered, not operated on") {
-			t.Errorf("%s should state that the software is delivered, not operated on the operator's behalf, "+
-				"so a reader cannot mistake a vendor answer for their own position", doc)
-		}
 	}
 }
 

@@ -6171,4 +6171,97 @@ ALTER TABLE data_subject_requests
     DROP COLUMN IF EXISTS report_json;
 `,
 	},
+	{
+		Version: 146,
+		Name:    "chat_memory_write_confirmations",
+		// SLICE 3 of the chat memory-write design §5.3 (revision 8, GREEN at review
+		// round 6). The state that makes a shared-scope confirmation enforceable below
+		// the UI rather than a prompt instruction.
+		//
+		// TWO TABLES, DELIBERATELY. The pending row is transient and unique per
+		// conversation; the audit row is append-only evidence. Revision 4 tried to do
+		// both with one row retained until the chunk's TTL, and that breaks the
+		// one-pending-per-session primary key: a retained row blocks the next proposal,
+		// and letting the next proposal overwrite it destroys the evidence. Splitting
+		// them is what let §5.3.3 keep one-shot semantics AND an Art 5(2) record.
+		//
+		// THE PRIMARY KEY IS A SAFETY PROPERTY, not a storage convenience. At most one
+		// pending confirmation per (channel, session_id), so an acknowledgement can only
+		// ever discharge the most recent proposal and there is never ambiguity about
+		// which write the human just agreed to. A second proposal REPLACES the first,
+		// which makes a superseded proposal unacknowledgeable rather than dormant.
+		//
+		// acknowledged_at is NULL until a human acknowledges, and it is stamped ONLY
+		// from a human-originated inbound turn in ChannelReceiver.Receive — never from a
+		// tool argument. That is the whole distinction from
+		// internal/chat/parser.go:186, whose `confirm` flag is parsed out of the model's
+		// own emitted JSON and therefore gates nothing against a model that skips
+		// asking.
+		//
+		// content_fingerprint pins the confirmation to the exact content proposed, so
+		// acknowledging one fact cannot authorize writing another. It is a SHA-256 of
+		// the whitespace-normalised content, never the content itself — the audit row
+		// must not become a second copy of personal data outliving the chunk it attests
+		// to (Art 5(1)(e)).
+		//
+		// Both tables carry operator_id and are therefore in scope for Art 17 (§5.3.4).
+		// The pending table is erasable by operator_id; the audit table is retained
+		// under Art 17(3)(b) as the record that a shared write was authorized, disclosed
+		// in the retained-categories report, and swept at the chunk TTL plus a 7-day
+		// grace so the evidence outlives what it justifies rather than the reverse.
+		//
+		// see LLD § https://docs.vornik.io §5.3
+		Up: `
+CREATE TABLE IF NOT EXISTS chat_memory_write_confirmations (
+    channel             TEXT        NOT NULL,
+    session_id          TEXT        NOT NULL,
+    content_fingerprint TEXT        NOT NULL,
+    scope               TEXT        NOT NULL,
+    operator_id         TEXT        NOT NULL,
+    proposed_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at          TIMESTAMPTZ NOT NULL,
+    acknowledged_at     TIMESTAMPTZ,
+    PRIMARY KEY (channel, session_id)
+);
+
+-- The retention sweep: find rows past expiry so a crashed conversation cannot
+-- leave a pending confirmation indefinitely (§5.3.3).
+CREATE INDEX IF NOT EXISTS idx_chat_memory_confirm_expiry
+    ON chat_memory_write_confirmations (expires_at);
+
+-- Art 17 erasure by subject: the pending table is erasable by operator_id.
+CREATE INDEX IF NOT EXISTS idx_chat_memory_confirm_operator
+    ON chat_memory_write_confirmations (operator_id);
+
+CREATE TABLE IF NOT EXISTS chat_memory_write_audit (
+    id                  BIGSERIAL PRIMARY KEY,
+    channel             TEXT        NOT NULL,
+    session_id          TEXT        NOT NULL,
+    content_fingerprint TEXT        NOT NULL,
+    scope               TEXT        NOT NULL,
+    operator_id         TEXT        NOT NULL,
+    proposed_at         TIMESTAMPTZ NOT NULL,
+    acknowledged_at     TIMESTAMPTZ NOT NULL,
+    granted_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Answering "prove this shared write was acknowledged" starts from the
+-- fingerprint of the chunk in question.
+CREATE INDEX IF NOT EXISTS idx_chat_memory_audit_fingerprint
+    ON chat_memory_write_audit (content_fingerprint);
+
+-- Retained under Art 17(3)(b) rather than erased, but still swept on its own
+-- horizon: exempt from erasure is not exempt from retention (§5.3.4).
+CREATE INDEX IF NOT EXISTS idx_chat_memory_audit_granted
+    ON chat_memory_write_audit (granted_at);
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_chat_memory_audit_granted;
+DROP INDEX IF EXISTS idx_chat_memory_audit_fingerprint;
+DROP TABLE IF EXISTS chat_memory_write_audit;
+DROP INDEX IF EXISTS idx_chat_memory_confirm_operator;
+DROP INDEX IF EXISTS idx_chat_memory_confirm_expiry;
+DROP TABLE IF EXISTS chat_memory_write_confirmations;
+`,
+	},
 }

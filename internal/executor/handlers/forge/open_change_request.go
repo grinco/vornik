@@ -28,15 +28,26 @@ type OpenChangeRequestHandler struct {
 	// pushed (taint-lineage-tracking §4.5). Optional: nil disables the check
 	// (feature off / not wired), and the write proceeds unchanged.
 	taint TaintGate
+	// disclosure supplies the Art 50(1) notice carried by the pull-request body.
+	// REQUIRED — see NewOpenChangeRequestHandler.
+	disclosure Discloser
 }
 
 // NewOpenChangeRequestHandler wires the handler. Nil-safe: a missing required
-// dependency (resolver/source) surfaces a clear error at Execute rather than
-// panicking. store is optional (the push-rejected fallback still parks without
-// it, minus the downloadable patch). taint is optional (nil disables the
-// untrusted-content review gate).
-func NewOpenChangeRequestHandler(resolver ProviderResolver, source PublishSource, store ArtifactStore, taint TaintGate) *OpenChangeRequestHandler {
-	return &OpenChangeRequestHandler{resolver: resolver, source: source, store: store, taint: taint}
+// dependency (resolver/source/disclosure) surfaces a clear error at Execute
+// rather than panicking. store is optional (the push-rejected fallback still
+// parks without it, minus the downloadable patch). taint is optional (nil
+// disables the untrusted-content review gate).
+//
+// disclosure is REQUIRED, on the same terms as PostReviewHandler's. A pull
+// request reaches a human — the developer who reviews and un-drafts it, and on a
+// public repository anyone reading the PR list — and this surface does not go
+// through the dispatcher chokepoint that covers channels (G6 finding C,
+// 2026-07-30). The draft gate is the Art 50(4) control and it is not a
+// substitute: "review before merge" says nothing about who wrote the text. A nil
+// disclosure makes Execute refuse rather than publish undisclosed.
+func NewOpenChangeRequestHandler(resolver ProviderResolver, source PublishSource, store ArtifactStore, taint TaintGate, disclosure Discloser) *OpenChangeRequestHandler {
+	return &OpenChangeRequestHandler{resolver: resolver, source: source, store: store, taint: taint, disclosure: disclosure}
 }
 
 // Name implements executor.SystemHandler.
@@ -64,6 +75,16 @@ func (h *OpenChangeRequestHandler) Execute(ctx context.Context, in executor.Syst
 	const name = "forge.open_change_request"
 	if h == nil || h.resolver == nil || h.source == nil {
 		return executor.SystemStepResult{}, errors.New(name + ": handler is missing required dependencies (resolver/source)")
+	}
+	// Fail closed, and fail EARLY: unable to disclose means unable to publish.
+	// Checked here with the other dependencies rather than beside the
+	// OpenChangeRequest call that consumes the notice, so a misconfigured daemon
+	// never pushes a branch it then cannot open a pull request for — that would
+	// leave a branch on a public forge with nothing explaining it.
+	if h.disclosure == nil {
+		return executor.SystemStepResult{}, errors.New(name +
+			": handler is missing required dependencies (disclosure) — refusing to open " +
+			"an undisclosed AI-authored pull request (EU AI Act Art 50(1))")
 	}
 	job, err := forgeJobFromTask(in.Task, name)
 	if err != nil {
@@ -140,11 +161,14 @@ func (h *OpenChangeRequestHandler) Execute(ctx context.Context, in executor.Syst
 	// review and mark ready (or discard) before merge — never an auto-mergeable
 	// PR. (isFeature now only affects the branch name + title verb.)
 	url, err := provider.OpenChangeRequest(ctx, forgeapi.ChangeRequestSpec{
-		Repo:   job.Repo,
-		Head:   branch,
-		Base:   base,
-		Title:  titleForJob(*job),
-		Body:   bodyForJob(*job),
+		Repo:  job.Repo,
+		Head:  branch,
+		Base:  base,
+		Title: titleForJob(*job),
+		// Same notice, same separator as forge.post_review: both sinks in this
+		// abstraction disclose identically, so the perimeter is one rule rather
+		// than a per-sink convention an auditor has to be walked through.
+		Body:   withDisclosure(bodyForJob(*job), h.disclosure.PublicationNotice()),
 		Labels: job.Labels,
 		Draft:  true,
 	})

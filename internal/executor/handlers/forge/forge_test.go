@@ -117,7 +117,7 @@ func TestBranchAndTitle(t *testing.T) {
 
 func TestOpenChangeRequest_HappyPath(t *testing.T) {
 	prov := &fakeProvider{openURL: "https://forge/o/r/pull/15"}
-	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/work/proj", sha: "deadbeef"}, nil, nil)
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/work/proj", sha: "deadbeef"}, nil, nil, realDiscloser())
 	if h.Name() != "forge.open_change_request" {
 		t.Fatalf("name=%s", h.Name())
 	}
@@ -140,7 +140,7 @@ func TestOpenChangeRequest_HappyPath(t *testing.T) {
 
 func TestOpenChangeRequest_DefaultBaseFallback(t *testing.T) {
 	prov := &fakeProvider{openURL: "u"}
-	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil, nil)
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil, nil, realDiscloser())
 	in := executor.SystemStepInput{Task: taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 1, Labels: []string{"bug"}})}
 	if _, err := h.Execute(context.Background(), in); err != nil {
 		t.Fatal(err)
@@ -162,27 +162,27 @@ func TestOpenChangeRequest_Errors(t *testing.T) {
 		t.Error("missing deps should error")
 	}
 	// missing job
-	h := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{}}, fakeSource{}, nil, nil)
+	h := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{}}, fakeSource{}, nil, nil, realDiscloser())
 	if _, err := h.Execute(ctx, executor.SystemStepInput{Task: &persistence.Task{}}); err == nil {
 		t.Error("missing forge job should error")
 	}
 	// resolver error
-	hr := NewOpenChangeRequestHandler(fakeResolver{err: errors.New("no provider")}, fakeSource{}, nil, nil)
+	hr := NewOpenChangeRequestHandler(fakeResolver{err: errors.New("no provider")}, fakeSource{}, nil, nil, realDiscloser())
 	if _, err := hr.Execute(ctx, executor.SystemStepInput{Task: good}); err == nil {
 		t.Error("resolver error should propagate")
 	}
 	// source error
-	hs := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{}}, fakeSource{err: errors.New("no worktree")}, nil, nil)
+	hs := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{}}, fakeSource{err: errors.New("no worktree")}, nil, nil, realDiscloser())
 	if _, err := hs.Execute(ctx, executor.SystemStepInput{Task: good}); err == nil {
 		t.Error("source error should propagate")
 	}
 	// push error
-	hp := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{pushErr: errors.New("push boom")}}, fakeSource{dir: "/d", sha: "s"}, nil, nil)
+	hp := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{pushErr: errors.New("push boom")}}, fakeSource{dir: "/d", sha: "s"}, nil, nil, realDiscloser())
 	if _, err := hp.Execute(ctx, executor.SystemStepInput{Task: good}); err == nil {
 		t.Error("push error should propagate")
 	}
 	// open error
-	ho := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{openErr: errors.New("open boom")}}, fakeSource{dir: "/d", sha: "s"}, nil, nil)
+	ho := NewOpenChangeRequestHandler(fakeResolver{p: &fakeProvider{openErr: errors.New("open boom")}}, fakeSource{dir: "/d", sha: "s"}, nil, nil, realDiscloser())
 	if _, err := ho.Execute(ctx, executor.SystemStepInput{Task: good}); err == nil {
 		t.Error("open error should propagate")
 	}
@@ -206,7 +206,7 @@ func (g *fakeTaintGate) ReviewForgeWrite(_ context.Context, _, _ string) (*execu
 func TestOpenChangeRequest_TaintGate_ErrorFailsClosed(t *testing.T) {
 	prov := &fakeProvider{openURL: "u"}
 	gate := &fakeTaintGate{sig: nil, err: errors.New("reviewer boom")}
-	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil, gate)
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil, gate, realDiscloser())
 	in := executor.SystemStepInput{Task: taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 7})}
 	res, err := h.Execute(context.Background(), in)
 	if err != nil {
@@ -228,7 +228,7 @@ func TestOpenChangeRequest_TaintGate_Parks(t *testing.T) {
 	gate := &fakeTaintGate{sig: &executor.TaintReviewSignal{
 		State: executor.TaintReviewState, SourceSetHash: "abc", SourceCount: 2, ShownCount: 2,
 	}}
-	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil, gate)
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil, gate, realDiscloser())
 	in := executor.SystemStepInput{Task: taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 3})}
 	res, err := h.Execute(context.Background(), in)
 	if err != nil {
@@ -251,7 +251,7 @@ func TestOpenChangeRequest_TaintGate_Parks(t *testing.T) {
 func TestOpenChangeRequest_TaintGate_ProceedsWhenNil(t *testing.T) {
 	prov := &fakeProvider{openURL: "https://forge/o/r/pull/9"}
 	gate := &fakeTaintGate{sig: nil}
-	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil, gate)
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: "/d", sha: "s"}, nil, gate, realDiscloser())
 	in := executor.SystemStepInput{Task: taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 4})}
 	if _, err := h.Execute(context.Background(), in); err != nil {
 		t.Fatalf("Execute err=%v", err)
@@ -510,7 +510,7 @@ func TestOpenChangeRequest_NoChangeSkips(t *testing.T) {
 	gitRun(t, dir, "update-ref", "refs/remotes/origin/main", sha)
 
 	prov := &fakeProvider{openURL: "should-not-be-used"}
-	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: dir, sha: sha}, nil, nil)
+	h := NewOpenChangeRequestHandler(fakeResolver{p: prov}, fakeSource{dir: dir, sha: sha}, nil, nil, realDiscloser())
 	in := executor.SystemStepInput{Task: taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Number: 1, DefaultBranch: "main", Labels: []string{"bug"}})}
 	res, err := h.Execute(context.Background(), in)
 	if err != nil {
@@ -607,6 +607,7 @@ func TestOpenChangeRequest_PushRejected_ParksWithPatch(t *testing.T) {
 		fakeSource{dir: dir, sha: head},
 		store,
 		nil,
+		realDiscloser(),
 	)
 	in := executor.SystemStepInput{
 		Task:      taskWithJob(forgeapi.ForgeJob{Repo: "o/r", Kind: "backlog", Slug: "task-112", DefaultBranch: "main"}),

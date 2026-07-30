@@ -689,11 +689,12 @@ func (c *Container) initScheduler() error {
 	sysHandlers := executor.NewSystemHandlerRegistry()
 	if forgeResolver := c.newForgeResolver(); forgeResolver != nil {
 		forgeSrc := &forgePublishSource{workspacePath: executorConfig.ProjectWorkspacePath}
-		sysHandlers.Register(forgeh.NewOpenChangeRequestHandler(forgeResolver, forgeSrc, c.artifactStore, c.newTaintReviewer()))
 		// c.AIDisclosure is built in initDatabase (container.go:747), which runs
-		// before initScheduler (908) — so it is non-nil here. The handler
-		// refuses to post if it ever isn't: a review comment reaches a human
-		// outside the channel chokepoint, so it carries the Art 50(1) notice.
+		// before initScheduler (908) — so it is non-nil here. Both handlers
+		// refuse to publish if it ever isn't: a pull request and a review comment
+		// each reach a human outside the channel chokepoint, so both carry the
+		// Art 50(1) notice (G6 findings A and C).
+		sysHandlers.Register(forgeh.NewOpenChangeRequestHandler(forgeResolver, forgeSrc, c.artifactStore, c.newTaintReviewer(), c.AIDisclosure))
 		sysHandlers.Register(forgeh.NewPostReviewHandler(forgeResolver, c.AIDisclosure))
 		sysHandlers.Register(forgeh.NewFetchDiffHandler(forgeResolver))
 		c.Logger.Info().Msg("forge system handlers registered (forge.open_change_request, forge.post_review, forge.fetch_diff)")

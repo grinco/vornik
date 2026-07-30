@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/registry/project.go
-      sha256: 8559c4b462883adc4d63839573e0da16a5c8ed2dd740ddae87c3ec0ae7b28911
+      sha256: 3fda8198ac3b13b11f7b85239d2dd7718c7c7662bde56295873112decae05bc3
     - path: internal/mcp/client.go
-      sha256: 354f70438fbcdcda253088a7ca9621866d8e78c3e28a86d10251d6458d510d53
+      sha256: 5d5e53e20bf973d0babfe3951651d7e5897c8c0a3520626272eb1dbbe882700c
     - path: internal/mcp/ratelimit.go
       sha256: 19ad0c64e2abd9d25e95971e1ba5e3cfe91f34852edeca6e4f9c70825b2e901d
     - path: internal/cli/mcp.go
@@ -113,6 +113,81 @@ vornik enforces it in two places:
 
 Keeping `allowed_tools` tight is the single most effective control here: it is
 both a safety boundary and a reliability win.
+
+### Noticing when a server's tool set changes under you
+
+`allowed_tools` is a list *you* maintain against a catalogue the *server* owns. A
+third-party server can add a tool in any release — including a destructive one —
+and your allow-list will quietly keep filtering it out. That is the correct
+behaviour, but you probably want to know it happened, because the credential that
+server uses may still permit whatever the new tool does.
+
+Vornik classifies every advertised tool as read-only or mutating at connect time,
+using the server's own `readOnlyHint` / `destructiveHint` annotations where it
+supplies them and the tool name otherwise. Anything it cannot recognise as a read
+is treated as mutating — the safe direction, since the tool nobody anticipated is
+exactly the one a denylist would miss.
+
+Names are split on separators *and* on camelCase, so `drive_search`,
+`calendar_listEvents` and `calendar.listEvents` are all read correctly. Servers
+mix these conventions freely and you do not get to choose which one yours uses.
+
+When a server advertises a mutating tool your `allowed_tools` does not name, the
+daemon logs a warning listing them. Nothing is exposed to the model, but the
+change is visible.
+
+If a server's annotations **disagree** with what the tool name suggests — declaring
+a `delete`-looking tool read-only, or a `get`-looking one destructive — the daemon
+logs that too, at INFO. The server is believed either way, because it knows its own
+semantics; the log exists so a third party cannot quietly reclassify a destructive
+tool as safe without leaving a trace.
+
+For a server whose tool set you do not control and want to be strict about, add:
+
+```yaml
+      require_declared_tools: true
+```
+
+With that set, the daemon **refuses to register the server** if it advertises a
+mutating tool while `allowed_tools` is empty — that combination means "expose
+everything", and everything now includes something destructive. If
+`allowed_tools` *is* set, registration proceeds and you get the warning, because
+the allow-list is already keeping the tool away from the model and taking a whole
+integration offline because an upstream release added a tool would be worse than
+the problem.
+
+It is **off by default**, deliberately: plenty of servers legitimately expose
+mutating tools with no allow-list — a page publisher, a home-automation bridge —
+and those should keep working untouched.
+
+### Tools that reach your filesystem
+
+Some MCP tools take a path on **your host** rather than a remote identifier —
+`localPath`, `filePath`, `outputPath` and similar. A stdio server runs as a child
+of the daemon, with the daemon's OS user, so such a tool is file access with the
+daemon's permissions: it can read whatever that user can read (including the
+daemon's own config and secrets) and overwrite whatever that user can write.
+
+This is easy to miss, because a tool's name usually gives no hint. Google's
+Workspace MCP server, for example, advertises four tools that write a
+caller-chosen absolute path — and all four begin with `download` or `get`, which
+read as harmless fetches. None of them annotates itself.
+
+Vornik therefore treats **any tool taking a host filesystem parameter as
+mutating**, whatever its name suggests, and this cannot be overridden by the
+server's `readOnlyHint`. That hint is a claim about the *remote* service; a third
+party has no standing to declare a write to your disk safe. At connect time the
+daemon logs these tools at WARN, naming the parameter, and separately flags any
+that your `allowed_tools` actually exposes.
+
+The practical rule: **keep host-path tools out of `allowed_tools` unless you
+specifically want a model writing files as your daemon user.** If you do want one,
+declare it explicitly, so the choice is recorded rather than inherited from an
+expose-everything default.
+
+A generic parameter name such as `path` or `dir` is treated the same way. Where
+that parameter is really a *remote* path, the cost is one line in `allowed_tools`;
+the opposite mistake costs arbitrary file access.
 
 ## Throttling tools with `toolRateLimits`
 

@@ -1017,6 +1017,28 @@ type ProjectSlack struct {
 	// higher-tier app can raise these.
 	PostMessageRPS   int `yaml:"post_message_rps"`
 	PostMessageBurst int `yaml:"post_message_burst"`
+
+	// SlashCommand is the slash command this deployment answers, e.g.
+	// "/vornik" (the default when unset) or "/holly" for a
+	// differently-branded instance. A leading slash is optional; the
+	// resolver adds one. The value must match the command registered
+	// in the Slack app manifest — Slack decides what it sends, this
+	// only decides what the daemon accepts.
+	SlashCommand string `yaml:"slash_command,omitempty"`
+
+	// ProgressSignal controls the "working on it…" placeholder that
+	// stands in for the typing indicator Slack does not give bots. A
+	// turn takes 10-60 seconds and Slack shows nothing meanwhile, so a
+	// working bot is indistinguishable from a broken one. Default is
+	// ON; set false to opt out and accept the silence. Pointer so a
+	// missing-from-YAML field keeps the default.
+	ProgressSignal *bool `yaml:"progress_signal,omitempty"`
+
+	// ProgressSignalGap is how long a turn may run before the
+	// placeholder appears (a Go duration, e.g. "2s"). Empty takes the
+	// channel default. Raising it suppresses the placeholder for
+	// medium-length turns; lowering it makes the bot look busier.
+	ProgressSignalGap string `yaml:"progress_signal_gap,omitempty"`
 }
 
 // Enabled reports whether the Slack channel is configured enough to

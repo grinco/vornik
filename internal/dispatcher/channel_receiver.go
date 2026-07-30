@@ -206,7 +206,7 @@ func (r *ChannelReceiver) Receive(ctx context.Context, msg conversation.ChannelM
 	// human sees it before any AI-generated content rather than merely in
 	// the same exchange — and so a dispatcher failure cannot leave a turn
 	// where the AI spoke and the disclosure did not.
-	if err := r.serveDisclosure(ctx, msg.SessionID); err != nil {
+	if err := r.serveDisclosure(ctx, msg); err != nil {
 		return err
 	}
 
@@ -433,7 +433,7 @@ func (r *ChannelReceiver) postprocess(result Result) string {
 //     a skipped one is non-conformity.
 //   - store write fails → continue. The human has been disclosed to, so the
 //     obligation is met; only the evidence degraded.
-func (r *ChannelReceiver) serveDisclosure(ctx context.Context, sessionID string) error {
+func (r *ChannelReceiver) serveDisclosure(ctx context.Context, msg conversation.ChannelMessage) error {
 	if r.Disclosure == nil {
 		return nil
 	}
@@ -442,7 +442,19 @@ func (r *ChannelReceiver) serveDisclosure(ctx context.Context, sessionID string)
 		return nil // per-message channels carry it as a footer instead
 	}
 
-	notice, serve, err := r.Disclosure.Ensure(ctx, channel, sessionID)
+	// The identity the obligation is owed to is not always the session. A channel may
+	// declare a coarser one — Slack's sessions are per-thread, but Art 50(1) is owed to
+	// a PERSON at their first interaction, not to each thread they open. The notice is
+	// still delivered to msg.SessionID below, because that is where they are reading.
+	sessionID := msg.SessionID
+	scope := sessionID
+	if scoper, ok := r.Channel.(conversation.DisclosureScoper); ok {
+		if declared := strings.TrimSpace(scoper.DisclosureScope(msg)); declared != "" {
+			scope = declared
+		}
+	}
+
+	notice, serve, err := r.Disclosure.Ensure(ctx, channel, scope)
 	if err != nil {
 		// Fail toward disclosure: serve is true on a read error.
 		r.observeDisclosureFailure(channel, "read")
@@ -464,7 +476,7 @@ func (r *ChannelReceiver) serveDisclosure(ctx context.Context, sessionID string)
 	}
 	r.observeDisclosureServed(channel, aidisclosure.CadencePerSession.String())
 
-	if recErr := r.Disclosure.Record(ctx, channel, sessionID, notice); recErr != nil {
+	if recErr := r.Disclosure.Record(ctx, channel, scope, notice); recErr != nil {
 		// Already disclosed — the obligation is met. Only the Art 99
 		// evidence trail degraded, so observe it and carry on.
 		r.observeDisclosureFailure(channel, "write")

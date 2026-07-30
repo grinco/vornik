@@ -132,6 +132,15 @@ slack:
     - "C0ABCDEF12"
   sender_allowlist:
     - "U0AAAAAAA"
+  # Optional. The command this deployment answers; defaults to /vornik. Set it
+  # when the bot is branded differently, and match the app's own manifest.
+  slash_command: "/vornik"
+  # Optional. A turn can take a minute, and Slack gives bots no typing
+  # indicator, so vornik posts a short "working on it" placeholder and replaces
+  # it with the answer. Set false to keep the channel silent until the reply.
+  progress_signal: true
+  # Optional. How long a turn may run before that placeholder appears.
+  progress_signal_gap: "2s"
 ```
 
 Supply the secrets in the environment before starting vornik:
@@ -164,6 +173,41 @@ is what lets vornik reply.
 - Slash commands use a per-user, per-channel session separate from ordinary
   message threads. Their delayed answers post at channel level because a slash
   invocation has no Slack message timestamp to reply under.
+- **Direct messages are never gated by `channel_allowlist`.** A DM's channel id
+  is created by Slack the first time each person writes to the bot, so it cannot
+  be listed in advance. `sender_allowlist` is the control for DMs — and with it
+  empty, any member of the workspace can DM the bot.
+- **In a thread, you only tag the bot once.** Replies inside a thread vornik is
+  already part of continue the conversation without a mention. A new top-level
+  message in a channel still needs an @-mention, which is what keeps the bot out
+  of conversations between colleagues.
+- Images posted to Slack are read: they go to the model directly when it can see
+  images, and to the vision role when it cannot. Voice memos are transcribed when
+  voice is configured.
+- Opening the app's **Home** tab shows what this deployment serves and how to
+  reach it. Subscribe to the `app_home_opened` bot event to enable it; no extra
+  OAuth scope is needed.
+- **You can see what a turn is doing.** While vornik works, the "working on it"
+  message is rewritten in place to name the current step — searching memory,
+  scheduling the job, calling an external service. It is replaced by the answer
+  when the turn finishes, and it never becomes part of the conversation.
+- **A job scheduled from chat reports back.** When a task vornik created for you
+  finishes, it posts the outcome and a link into the same conversation, whether
+  or not it succeeded. That works across a daemon restart: the link between the
+  task and your conversation is stored in the database, not in memory.
+
+### Reporting a problem with vornik
+
+Ask the bot to report a bug ("something is broken, please file a report") on any
+channel and it prepares an anonymised report: hostnames, file paths, IP
+addresses, email addresses and anything resembling a credential are stripped
+automatically.
+
+It gives you back a **link**, and does not submit anything itself. The report
+would go to a public repository, and automatic redaction cannot know whether
+your own description mentions a customer or a system you would rather not name —
+so you read it on GitHub and press submit yourself. The same rule applies to
+`vornikctl report` on the host.
 
 ---
 

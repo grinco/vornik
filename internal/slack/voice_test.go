@@ -227,9 +227,14 @@ func TestSlackFileShared_Inbound_TranscribesAndDispatches(t *testing.T) {
 	}
 }
 
-func TestSlackFileShared_NonAudio_Ignored(t *testing.T) {
+// CONTRACT CHANGED 2026-07-30. This test asserted that an image file_shared was
+// ignored — which was the bug, not the feature: the project has a vision role and
+// files:read was already granted, yet a posted photo was fetched and discarded. An
+// image now rides on as an attachment for the vision path (see images.go). A file that
+// is neither audio nor image is still ignored, which is what this now covers.
+func TestSlackFileShared_NonMedia_Ignored(t *testing.T) {
 	stt := &fakeSlackSTT{}
-	vts := newSlackVoiceTestServer(t, "image/png", []byte("png-bytes"))
+	vts := newSlackVoiceTestServer(t, "application/pdf", []byte("%PDF-1.7"))
 	defer vts.Close()
 	ch := newSlackVoiceChannel(t, vts, VoiceProviders{STT: stt})
 	rcv := &recordingReceiver{}
@@ -249,7 +254,7 @@ func TestSlackFileShared_NonAudio_Ignored(t *testing.T) {
 		},
 	})
 	if stt.calls != 0 {
-		t.Errorf("STT calls = %d, want 0 (image file_shared should be ignored)", stt.calls)
+		t.Errorf("STT calls = %d, want 0 (a PDF is not audio)", stt.calls)
 	}
 	if len(rcv.snapshot()) != 0 {
 		t.Errorf("dispatched %d messages, want 0", len(rcv.snapshot()))
@@ -276,11 +281,15 @@ func TestSlackFileShared_NoSTT_Dropped(t *testing.T) {
 			"file":     map[string]string{"id": "F1"},
 		},
 	})
-	if vts.filesInfoHits != 0 {
-		t.Errorf("filesInfo called %d times despite no STT; want 0", vts.filesInfoHits)
+	// files.info IS now called before the STT check, and must be: the MIME decides
+	// whether this file needs transcription at all or is an image the vision path
+	// wants. Skipping the lookup to save one API call is what made images
+	// unreachable on any deployment without voice configured.
+	if vts.filesInfoHits != 1 {
+		t.Errorf("filesInfo called %d times; want 1 — the MIME decides the route", vts.filesInfoHits)
 	}
 	if len(rcv.snapshot()) != 0 {
-		t.Errorf("dispatched without STT")
+		t.Errorf("dispatched audio without STT")
 	}
 }
 
@@ -884,5 +893,39 @@ func TestParseSlackFilesInfo(t *testing.T) {
 	}
 	if parsed.File.URLPrivateDownload != "http://x/d" {
 		t.Errorf("url not parsed")
+	}
+}
+
+// Same 2026-07-30 defect as the message gate, on the audio path: a voice memo sent as
+// a DM arrives on a per-user `D…` channel, which no channel_allowlist can name in
+// advance. file_shared often ships without channel_type, so the `D` prefix is the only
+// signal available there.
+func TestSlackFileShared_DMBypassesChannelAllowlist(t *testing.T) {
+	inst := &installation{
+		projectID:       "easeit-companion",
+		allowedChannels: map[string]struct{}{"C03HTMUL2S1": {}},
+	}
+	// A DM, identified by channel_type.
+	if !channelAllowed(inst, "im", "D0BLA9ZRDFH") {
+		t.Error("a DM must bypass the channel allowlist — its D… id cannot be pre-listed")
+	}
+	// A DM with NO channel_type, which is the file_shared shape: the prefix decides.
+	if !channelAllowed(inst, "", "D0BLA9ZRDFH") {
+		t.Error("file_shared often omits channel_type; the D prefix must still mark a DM")
+	}
+	// The allowlist must still bite on shared channels.
+	if channelAllowed(inst, "channel", "C_OTHER") {
+		t.Error("an un-allow-listed shared channel must still be refused")
+	}
+	if !channelAllowed(inst, "channel", "C03HTMUL2S1") {
+		t.Error("the allow-listed shared channel must be permitted")
+	}
+	// An empty allowlist means expose-all, unchanged.
+	if !channelAllowed(&installation{projectID: "p"}, "channel", "C_ANY") {
+		t.Error("an empty allowlist must permit every channel, as before")
+	}
+	// A private channel (G…) must NOT be mistaken for a DM.
+	if channelAllowed(inst, "", "G_PRIVATE") {
+		t.Error("a G… private channel is not a DM and must still be gated")
 	}
 }

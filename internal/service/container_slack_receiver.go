@@ -25,13 +25,18 @@ import (
 // container.go constructs one store-and-receiver pair per
 // SlackChannels[i].
 //
-// Daemon restart clears the in-memory history; the persisted truth
-// is the Slack thread itself. Subsequent messages on the same thread
-// start a fresh dispatcher turn — operators rely on the channel's
-// thread metadata + the bot's reply text to carry context across
-// restarts, not in-process state. Matches the email + github
-// channels' "history is best-effort, the platform thread is the
-// authoritative record" contract.
+// RESTART SURVIVAL, corrected 2026-07-30. This comment used to say a
+// daemon restart clears the history and that operators should rely on
+// the Slack thread itself to carry context. That predates the
+// persister and is no longer true: when a channel-session repo is
+// wired (SetPersister, Postgres in production), Load rehydrates from
+// the durable row and the conversation survives a restart —
+// TestSlackSessionStore_ConversationSurvivesARestart pins it.
+//
+// It matters because it is a correctness property, not a nicety: a
+// customer asked about a job Vornik had scheduled and got "I don't
+// know anything about it" (2026-07-30). Only on SQLite, whose repo is
+// a documented no-op, does the in-memory map remain the whole truth.
 type slackSessionStore struct {
 	registry         *registry.Registry
 	projectID        string
@@ -122,6 +127,15 @@ func (s *slackSessionStore) Load(ctx context.Context, msg conversation.ChannelMe
 		}
 	}
 
+	// A thread hanging off a message WE posted is a continuation of the conversation it
+	// hangs off, not a new one. Without this, opening a thread under a channel-level
+	// answer produced an EMPTY session and the bot could not see the exchange the person
+	// was visibly replying to — operator report 2026-07-30, quoting the bot: "I don't
+	// have a recent thread context to anchor on."
+	if len(history) == 0 {
+		history = s.inheritedChannelHistory(ctx, msg)
+	}
+
 	sess := dispatcher.Session{
 		History:       history,
 		ActiveProject: s.projectID,
@@ -144,6 +158,7 @@ func (s *slackSessionStore) Load(ctx context.Context, msg conversation.ChannelMe
 		swarm := s.registry.GetSwarm(project.SwarmID)
 		sess.LeadSystemPrompt = dispatcher.BuildLeadSystemPrompt(project, swarm, leadPrompt, sess.AvailableProjects)
 		sess.LeadSystemPrompt += s.threadDigestBlock(ctx, msg.SessionID)
+		sess.LeadSystemPrompt += slackFormattingBlock
 	}
 	return sess, nil
 }
@@ -168,9 +183,16 @@ func (s *slackSessionStore) threadDigestBlock(ctx context.Context, sessionID str
 
 	// Durable view first. Fetch more than we render so that excluding the
 	// caller and non-thread siblings can't starve the block below the cap.
-	siblings, err := s.persister.ListByPrefix(ctx, prefix, maxDigestThreads*3)
-	if err != nil {
-		return ""
+	//
+	// Nil persister (SQLite, or unwired) has nothing durable to list and must not be
+	// dereferenced — same latent panic as ReadThread had.
+	var siblings []sessionstore.SiblingSession
+	if s.persister != nil {
+		var err error
+		siblings, err = s.persister.ListByPrefix(ctx, prefix, maxDigestThreads*3)
+		if err != nil {
+			return ""
+		}
 	}
 	if len(siblings) == 0 {
 		// No persistence (SQLite / unwired) or nothing stored yet — fall back
@@ -254,9 +276,112 @@ func (s *slackSessionStore) ReadThread(ctx context.Context, sessionID string) ([
 	}
 	s.mu.Unlock()
 
+	// A store without persistence (SQLite, or unwired test/degenerate config) has
+	// nothing durable to consult. Dereferencing it unconditionally crashed the daemon
+	// on the first in-memory miss.
+	if s.persister == nil {
+		return nil, nil
+	}
+
 	history, _, found, err := s.persister.Load(ctx, sessionID)
 	if err != nil || !found {
 		return nil, err
 	}
 	return history, nil
 }
+
+// ThreadEngaged implements slack.ThreadEngagementChecker: it reports whether this store
+// holds conversation history for a Slack session id.
+//
+// It is what lets a mention-less reply inside a thread start a turn (incident
+// 2026-07-30 — three follow-ups in a thread the bot was actively holding went
+// unanswered). Reading through ReadThread is deliberate: it consults the durable row as
+// well as the in-memory map, so engagement survives a daemon restart, which is the
+// whole point — people follow up on a thread hours later.
+//
+// A lookup error reads as NOT engaged. The failure mode of a false negative is one
+// missed reply the user can retrieve by tagging the bot; a false positive would have
+// it answering a conversation between colleagues.
+func (s *slackSessionStore) ThreadEngaged(ctx context.Context, sessionID string) bool {
+	history, err := s.ReadThread(ctx, sessionID)
+	return err == nil && len(history) > 0
+}
+
+// ThreadParentIsBotKey is the ChannelSpecific flag the Slack channel sets when an
+// inbound thread reply's parent_user_id is our own bot user id — i.e. the thread hangs
+// off a message Vornik posted.
+const ThreadParentIsBotKey = "thread_parent_is_bot"
+
+// inheritedChannelHistory returns the channel-scoped conversation a thread should start
+// from, or nil.
+//
+// WHY. The 2026-07-28 continuity change keys a top-level channel message on the CHANNEL
+// (`<team>/<channel>#main`) and the bot answers at channel level. Slack lets a person
+// open a thread under that answer, which produces a session keyed on the thread root — a
+// brand-new empty conversation. The person is visibly replying to an exchange the bot
+// then cannot see, and says so: "I don't have a recent thread context to anchor on."
+//
+// SCOPE, deliberately narrow on both axes:
+//
+//   - Only when the thread is rooted on OUR OWN message. Two colleagues opening a thread
+//     under each other's message and tagging the bot get help with that thread, not a
+//     replay of an unrelated channel conversation.
+//   - Only to SEED an empty thread. Once the thread has its own exchanges those are the
+//     truth; re-seeding every turn would replay the channel history and grow the prompt
+//     without bound.
+//
+// The prefix is derived from the caller's own session id, so a thread in one channel can
+// never be seeded from another channel's conversation.
+func (s *slackSessionStore) inheritedChannelHistory(
+	ctx context.Context,
+	msg conversation.ChannelMessage,
+) []chat.Message {
+	if msg.ChannelSpecific[ThreadParentIsBotKey] != "true" {
+		return nil
+	}
+	// At channel level the parent is the channel session itself; inheriting would mean
+	// loading ourselves.
+	if threadKeyFromSessionID(msg.SessionID) == slack.ChannelSessionThreadRoot {
+		return nil
+	}
+	prefix := channelPrefixFromSessionID(msg.SessionID)
+	if prefix == "" {
+		return nil
+	}
+
+	inherited, err := s.ReadThread(ctx, prefix+slack.ChannelSessionThreadRoot)
+	if err != nil || len(inherited) == 0 {
+		return nil
+	}
+	bounded, _ := s.boundedHistory(inherited)
+	return bounded
+}
+
+// slackFormattingBlock teaches the lead Slack's own markup.
+//
+// OPERATOR REQUEST 2026-07-30: use rich text in chat — hyperlinks on words, emoji,
+// emphasis. Most outbound text is written by the model, not composed by the daemon, so
+// the daemon-side helpers only get half the job done; the model has to know the
+// conventions for the surface it is speaking on.
+//
+// The mrkdwn traps are worth naming explicitly because Slack is NOT Markdown and the
+// models default to Markdown: `**bold**` renders with visible asterisks, and
+// `[label](url)` renders as literal brackets. Both look like a bug to the reader.
+const slackFormattingBlock = `
+
+SLACK FORMATTING — you are writing into Slack, which uses mrkdwn, NOT Markdown.
+- Links: <https://example.com|the words to click>. NEVER paste a bare URL and never use
+  [label](url) — Slack shows the brackets literally. Long URLs are unreadable in a
+  channel, so always anchor them on words.
+- Bold is *single asterisks*, italic is _underscores_, strikethrough is ~tildes~.
+  **Double** asterisks are wrong here and render visibly.
+- ` + "`code`" + ` and triple-backtick blocks work as expected; use them for ids, paths and
+  commands so they can be copied.
+- Emoji are welcome and useful as status at a glance (:white_check_mark: done, :x: failed,
+  :warning: caution). Use them sparingly — one per message, not decoration.
+- Bulleted lists: start lines with • or -. Headings do not exist in mrkdwn; use *bold* on
+  its own line instead.
+- Mentioning a person: <@USER_ID>. Never invent an id; use one you were given.
+Formatting is for reading. When a reply is delivered as a voice note it is converted to
+plain speech automatically, so write naturally and do not avoid formatting on that account.
+`

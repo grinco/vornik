@@ -9,6 +9,7 @@ package dispatcher
 import (
 	"context"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -211,6 +212,10 @@ type Agent struct {
 	// SetChannelThreadReader after construction, because the channel session
 	// stores are built after the dispatcher agent.
 	channelThreads ChannelThreadReader
+	// problemReports (optional) backs the report_problem tool, letting a
+	// customer file an anonymised bug report from a chat channel instead of
+	// needing shell access to the host. Nil omits the tool.
+	problemReports ProblemReportBuilder
 	// projectWorkspacePath — base dir for per-project workspaces;
 	// lets the ToolExecutor allow-list the per-project uploads/ dir
 	// channel attachments land in. See ToolExecutor.projectWorkspacePath.
@@ -224,6 +229,12 @@ type Agent struct {
 	// deployments without the extractor wiring; behaviour matches
 	// pre-Phase-3 (raw path passed through).
 	attachmentAutoExtractor AttachmentAutoExtractor
+	// turnStatus (optional) receives coarse in-flight progress so the
+	// originating channel can show the human that work is happening. See
+	// turn_status.go. Late-bound because channels outlive construction order.
+	turnStatusMu sync.RWMutex
+	turnStatus   TurnStatusReporter
+
 	// followupRegistrar receives RegisterFollowup calls when the
 	// dispatcher schedules a task with await_completion=true. The
 	// bot uses these to auto-resume the chat conversation when
@@ -521,6 +532,7 @@ func NewAgent(
 		artifactRepo:                 artifactRepo,
 		artifactStore:                a.artifactStore,
 		channelThreads:               a.channelThreads,
+		problemReports:               a.problemReports,
 		projectWorkspacePath:         a.projectWorkspacePath,
 		attachmentAutoExtractor:      a.attachmentAutoExtractor,
 		attachmentAutoExtractTimeout: 60 * time.Second,

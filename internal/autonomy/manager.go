@@ -1183,6 +1183,13 @@ func (m *Manager) tickCron(ctx context.Context, project *registry.Project, evalS
 	}{
 		Prompt: prompt,
 		Type:   project.ResolveCronTaskType(),
+		// autonomy.workflow_id, honoured here as it already is in backlog mode.
+		// Omitting it made a cron project's tasks run under DefaultWorkflowID while
+		// the config said otherwise — a field the registry accepted, logged no
+		// warning about, and silently ignored. Found in production 2026-07-30 when
+		// an hourly ingest job routed through `adaptive` instead of `ingest`.
+		// Empty stays empty: the default is resolved downstream, unchanged.
+		WorkflowID: strings.TrimSpace(project.Autonomy.WorkflowID),
 	}
 	argsJSON, err := json.Marshal(args)
 	if err != nil {

@@ -23,8 +23,14 @@ package memory
 // the unit lane and CI hosts without a throwaway Postgres stay green. Run
 // with the package's standard integration recipe, e.g.:
 //
-//	TEST_DATABASE_URL=postgres://vornik:vornik@localhost:5433/vornik_integration_test?sslmode=disable \
+//	TEST_DATABASE_URL=postgres://swarmd:swarmd@127.0.0.1:5432/vornik_integration_test?sslmode=disable \
 //	  go test -tags=integration ./internal/memory/... -run TestIntegration_IngestRecall -race -count=1
+//
+// The ROLE matters and is easy to get wrong: most recipes in this repo say
+// `vornik`, but the reference deployment's Postgres role is `swarmd`. A mismatch
+// used to produce a silent SKIP that read like "no database here" — it now fails
+// loudly (see isAuthFailure below), because a project-isolation guard that does
+// not run protects nothing.
 //
 // SAFETY: refuses to run against any live daemon database — "vornik"
 // (default) or "vornik_test" — unless
@@ -35,6 +41,7 @@ package memory
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/url"
 	"os"
 	"strconv"
@@ -43,7 +50,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 	"github.com/rs/zerolog"
 
 	"vornik.io/vornik/internal/memoryfirewall"
@@ -92,6 +99,23 @@ func openIngestRecallDB(t *testing.T) *sql.DB {
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
+		// SETTING TEST_DATABASE_URL IS A STATEMENT OF INTENT, so an
+		// AUTHENTICATION failure is not the same as "there is no Postgres
+		// here" and must not skip quietly. This test silently skipped on the
+		// reference deployment for exactly that reason: every documented
+		// recipe uses the role `vornik`, the deployment's role is `swarmd`,
+		// and a credential mismatch produced a skip that read like an absent
+		// database. A project-isolation guard that quietly does not run is
+		// indistinguishable from one that does not exist.
+		if isAuthFailure(err) {
+			t.Fatalf("TEST_DATABASE_URL is set but authentication FAILED (%v).\n"+
+				"This is a credential mismatch, not an absent database — refusing to skip, "+
+				"because a skipped isolation guard protects nothing.\n"+
+				"On the reference deployment the Postgres role is `swarmd`, not the `vornik` "+
+				"used in most recipes:\n"+
+				"  TEST_DATABASE_URL='postgres://swarmd:swarmd@127.0.0.1:5432/vornik_integration_test?sslmode=disable'",
+				err)
+		}
 		t.Skipf("postgres unreachable, skipping: %v", err)
 	}
 
@@ -379,4 +403,34 @@ func cleanupProjects(t *testing.T, db *sql.DB, projectIDs ...string) {
 			t.Logf("cleanup artifacts project %s: %v", pid, err)
 		}
 	}
+}
+
+// isAuthFailure reports whether a Postgres connection error is an authentication
+// rejection rather than an absent or unreachable server.
+//
+// The distinction decides skip-versus-fail: an operator who set TEST_DATABASE_URL
+// asked for this test to run, so a wrong credential is a mistake to surface, while
+// no server at all is a legitimate "not here".
+//
+// PREFERS SQLSTATE OVER STRING MATCHING. Class 28 is "Invalid Authorization
+// Specification" — 28000 and 28P01 (invalid_password) — which is exactly this
+// question, decided by the server rather than by us guessing at message text.
+//
+// An earlier version matched the bare substring "authentication", which a code
+// review correctly flagged: it would fire on any error mentioning the word,
+// including transient TLS and network failures, turning a legitimate skip into a
+// CI failure. That is the opposite of the intent — the point is to catch the
+// operator's credential mistake, not to break unrelated runs. The two string
+// probes that remain are narrow and cover the cases pq reports without a code.
+func isAuthFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		return strings.HasPrefix(string(pqErr.Code), "28")
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "password authentication failed") ||
+		strings.Contains(msg, "no password supplied")
 }

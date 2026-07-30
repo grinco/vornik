@@ -44,6 +44,11 @@ type ArtifactEraser interface {
 type Executor struct {
 	Rows      RowDeleter
 	Artifacts ArtifactEraser
+	// Redact carries the stores needed for DispositionRedact (slice 5c). Nil on an
+	// executor wired for deletion only, in which case a planned redaction is
+	// DEFERRED with the capability-missing reason — never silently skipped, and
+	// never treated as an error, because a missing capability is not a fault.
+	Redact *RedactDeps
 }
 
 // DeferredAction is a planned action this slice could not perform.
@@ -52,6 +57,12 @@ type DeferredAction struct {
 	RowID       string        `json:"row_id"`
 	Disposition Disposition   `json:"disposition"`
 	Reason      string        `json:"reason"`
+}
+
+// DeletedRecord identifies one row actually removed.
+type DeletedRecord struct {
+	Table LinkableTable `json:"table"`
+	RowID string        `json:"row_id"`
 }
 
 // FailedAction is a planned action that was attempted and errored.
@@ -71,12 +82,25 @@ type ErasureResult struct {
 	// RowsDeleted counts rows actually removed. Deferred and failed rows are
 	// never included.
 	RowsDeleted int `json:"rows_deleted"`
+	// Deleted lists them. The count alone cannot produce a per-record
+	// subject-facing narrative, and the subject is entitled to know WHICH records
+	// were removed, not just how many.
+	Deleted []DeletedRecord `json:"deleted,omitempty"`
 	// ArtifactsErased counts source artifacts put through the cascade.
 	ArtifactsErased int `json:"artifacts_erased"`
 	// DerivedChunksDeleted counts memory chunks the cascade removed.
 	DerivedChunksDeleted int `json:"derived_chunks_deleted"`
 
-	// Deferred are rows this slice cannot yet action (redaction — slice 5c).
+	// Redacted are shared rows rewritten to remove the subject while preserving
+	// the other subjects the row concerns.
+	Redacted []RedactedAction `json:"redacted,omitempty"`
+	// CollisionDeleted are rows deleted because their redacted form duplicated an
+	// existing row. Separate from RowsDeleted because the subject is told a
+	// different thing about them.
+	CollisionDeleted []CollisionDeletion `json:"collision_deleted,omitempty"`
+
+	// Deferred are rows that could not be actioned — a failed verification, a
+	// declined review, a fired version guard, or a missing capability.
 	Deferred []DeferredAction `json:"deferred,omitempty"`
 	// Failed are rows that were attempted and errored.
 	Failed []FailedAction `json:"failed,omitempty"`
@@ -118,17 +142,51 @@ func (e *Executor) Execute(ctx context.Context, plan *ErasurePlan) (*ErasureResu
 
 	res := &ErasureResult{SubjectID: plan.SubjectID, RequestID: plan.RequestID}
 
+	// Identifiers are re-queried HERE, at execution, not carried from planning
+	// (§5 step 2): a plan-time snapshot can be stale, and verifying a rewrite
+	// against a stale set would report success while a newly-recorded identifier
+	// survives in the text. Read once for the whole plan — the set belongs to the
+	// request and is stable for its duration.
+	var (
+		ids     []string
+		idErr   error
+		retries []collisionRetry
+	)
+	if e.Redact != nil && e.Redact.Identifiers != nil {
+		ids, idErr = e.Redact.Identifiers.Identifiers(ctx, plan.SubjectID)
+	} else if e.Redact != nil {
+		idErr = errors.New("no identifier source is wired")
+	}
+
 	for _, a := range plan.Actions {
 		switch a.Disposition {
 		case DispositionDelete:
 			e.applyDelete(ctx, a, res)
 		case DispositionRedact:
-			// Slice 5c. Reported, never silently passed over.
-			res.Deferred = append(res.Deferred, DeferredAction{
-				Table: a.Table, RowID: a.RowID, Disposition: a.Disposition,
-				Reason: "row also concerns other subjects and the recorded ground permits redaction, " +
-					"but redact-and-re-embed is not yet implemented — this row has NOT been erased",
-			})
+			if e.Redact == nil || e.Redact.Redactor == nil || e.Redact.Rewriter == nil {
+				// Reported, never silently passed over.
+				res.Deferred = append(res.Deferred, DeferredAction{
+					Table: a.Table, RowID: a.RowID, Disposition: a.Disposition,
+					Reason: "row also concerns other subjects and the recorded ground permits " +
+						"redaction, but this executor has no redaction capability wired — this " +
+						"row has NOT been erased",
+				})
+				break
+			}
+			if idErr != nil {
+				// Without the subject's identifiers there is nothing to verify a
+				// rewrite against, so proceeding would mean writing a generated
+				// replacement on an unverifiable basis. Defer the whole redaction set.
+				res.Deferred = append(res.Deferred, DeferredAction{
+					Table: a.Table, RowID: a.RowID, Disposition: a.Disposition,
+					Reason: fmt.Sprintf("the subject's identifiers could not be read (%v), so no "+
+						"rewrite could be verified; this row has NOT been changed", idErr),
+				})
+				break
+			}
+			if retry := e.applyRedact(ctx, a, ids, plan, res); retry != nil {
+				retries = append(retries, *retry)
+			}
 		default:
 			// An unknown disposition is a programming error, and treating it as
 			// a no-op would silently drop a row from the erasure.
@@ -136,6 +194,21 @@ func (e *Executor) Execute(ctx context.Context, plan *ErasurePlan) (*ErasureResu
 				Table: a.Table, RowID: a.RowID,
 				Err: fmt.Sprintf("unknown disposition %q", a.Disposition),
 			})
+		}
+	}
+
+	// Second pass for collision deferrals (§4.2). A chunk whose redacted form
+	// duplicated a chunk that was ITSELF awaiting redaction could not be resolved on
+	// the first pass: deleting into that survivor would have preserved a chunk still
+	// containing the subject. By now the survivor has been redacted or has failed, so
+	// the collision can be re-evaluated once. Once only — a chunk still unresolved
+	// after this is reported deferred and needs a human, not an unbounded retry loop.
+	for _, r := range retries {
+		if next := e.applyRedact(ctx, r.action, ids, plan, res); next != nil {
+			e.deferRedaction(r.action, res, fmt.Sprintf(
+				"after redaction this record duplicated record %s, which is itself still "+
+					"unresolved, so it was left untouched and needs manual handling",
+				next.survivorID))
 		}
 	}
 
@@ -161,6 +234,7 @@ func (e *Executor) applyDelete(ctx context.Context, a Action, res *ErasureResult
 		}
 		res.ArtifactsErased++
 		res.DerivedChunksDeleted += chunks
+		res.Deleted = append(res.Deleted, DeletedRecord{Table: a.Table, RowID: a.RowID})
 		return
 	}
 	if err := e.Rows.DeleteRow(ctx, a.Table, a.RowID); err != nil {
@@ -168,4 +242,5 @@ func (e *Executor) applyDelete(ctx context.Context, a Action, res *ErasureResult
 		return
 	}
 	res.RowsDeleted++
+	res.Deleted = append(res.Deleted, DeletedRecord{Table: a.Table, RowID: a.RowID})
 }

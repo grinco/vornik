@@ -1059,6 +1059,14 @@ func (r *Repository) CountUnclassifiedChunks(ctx context.Context) (int, error) {
 // ListChunksMissingTitle in shape so the auto-backfill loop is a
 // drop-in parallel of the titler's. limit ≤ 0 → 100, capped at 1000.
 func (r *Repository) ListUnclassifiedChunksAcrossProjects(ctx context.Context, limit int) ([]ClassifyBackfillRow, error) {
+	return r.ListUnclassifiedChunksAcrossProjectsFrom(ctx, limit, 0)
+}
+
+// ListUnclassifiedChunksAcrossProjectsFrom is the paged form. The offset lets the
+// auto-loop walk past rows nothing can classify instead of re-deciding the same
+// oldest page forever — the 2026-07-30 livelock, where `remaining` sat at 1199
+// across every tick because a declined row is never written.
+func (r *Repository) ListUnclassifiedChunksAcrossProjectsFrom(ctx context.Context, limit, offset int) ([]ClassifyBackfillRow, error) {
 	if r == nil || r.db == nil {
 		return nil, nil
 	}
@@ -1076,8 +1084,11 @@ SELECT id, project_id,
 FROM project_memory_chunks
 WHERE COALESCE(content_class, '') IN ('', 'unclassified')
 ORDER BY created_at ASC
-LIMIT $1`
-	rows, err := r.db.QueryContext(ctx, q, limit)
+LIMIT $1 OFFSET $2`
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := r.db.QueryContext(ctx, q, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("ListUnclassifiedChunksAcrossProjects: %w", err)
 	}
@@ -2547,14 +2558,72 @@ func (r *Repository) DeleteByExtractedDocument(ctx context.Context, extractedDoc
 	return int(n), err
 }
 
+// scanHashes drains a single-column hash query, closing the rows on every path.
+func scanHashes(rows *sql.Rows) ([]string, error) {
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		if h != "" {
+			out = append(out, h)
+		}
+	}
+	return out, rows.Err()
+}
+
 // DeleteByArtifact removes chunks linked directly to one artifact and returns
 // how many rows went.
+//
+// Also evicts each deleted chunk's embedding_cache entry, in the SAME transaction
+// (slice 5c §4.4). Without this the cascade removed the chunk and left the vector
+// derived from its text, keyed by that text's hash — and nothing else removes it: the
+// retention sweeper prunes by last_hit_at age and only when
+// retention.embedding_cache_days is set, which is cold-entry pruning rather than
+// compliance with an erasure request.
+//
+// The cache is keyed (content_hash, model) with no project column, so this can evict
+// an entry an identical chunk elsewhere would have hit. Deliberate and cheap — one
+// re-embed on the next miss, against retaining data derived from erased content.
 func (r *Repository) DeleteByArtifact(ctx context.Context, artifactID string) (int, error) {
-	res, err := r.db.ExecContext(ctx,
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin artifact chunk delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Collect the hashes BEFORE the delete — afterwards there is nothing left to
+	// read them from.
+	rows, err := tx.QueryContext(ctx,
+		`SELECT DISTINCT content_hash FROM project_memory_chunks WHERE artifact_id = $1`, artifactID)
+	if err != nil {
+		return 0, fmt.Errorf("read chunk hashes for artifact %s: %w", artifactID, err)
+	}
+	hashes, err := scanHashes(rows)
+	if err != nil {
+		return 0, fmt.Errorf("read chunk hashes for artifact %s: %w", artifactID, err)
+	}
+
+	res, err := tx.ExecContext(ctx,
 		`DELETE FROM project_memory_chunks WHERE artifact_id = $1`, artifactID)
 	if err != nil {
 		return 0, err
 	}
 	n, err := res.RowsAffected()
-	return int(n), err
+	if err != nil {
+		return 0, err
+	}
+
+	for _, h := range hashes {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM embedding_cache WHERE content_hash = $1`, h); err != nil {
+			return 0, fmt.Errorf("evict embedding cache for artifact %s: %w", artifactID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit artifact chunk delete: %w", err)
+	}
+	return int(n), nil
 }

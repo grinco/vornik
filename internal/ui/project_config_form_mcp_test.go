@@ -279,8 +279,12 @@ func TestBuildMCPServersValue_SubscribedAllTools(t *testing.T) {
 	assert.False(t, empty)
 	require.Len(t, value, 1)
 	assert.Equal(t, "scraper", value[0]["name"])
-	assert.Equal(t, "sse", value[0]["transport"])
-	assert.Equal(t, "http://x/sse", value[0]["url"])
+	// transport/url were asserted here until 2026-07-29. They are now omitted on
+	// purpose: emitting them suppressed the daemon's connection-detail
+	// inheritance, which broke every stdio subscription. See
+	// TestBuildMCPServersValue_SubscriptionOmitsTransportSoDaemonDetailsAreInherited.
+	assert.Nil(t, value[0]["transport"], "a subscription inherits transport from the daemon")
+	assert.Nil(t, value[0]["url"], "a subscription inherits url from the daemon")
 	_, hasTools := value[0]["allowed_tools"]
 	assert.False(t, hasTools, "AllowAllTools=true must omit allowed_tools")
 }
@@ -480,8 +484,12 @@ func TestProjectConfigFormSave_MCPSubscribeRoundTrip(t *testing.T) {
 	require.Len(t, proj.MCP.Servers, 1)
 	srv := proj.MCP.Servers[0]
 	assert.Equal(t, "scraper", srv.Name)
-	assert.Equal(t, "sse", srv.Transport)
-	assert.Equal(t, "http://scraper.local/sse", srv.URL)
+	// A saved SUBSCRIPTION round-trips as name + allowed_tools only. Transport and
+	// URL are intentionally absent since 2026-07-29 — the daemon fills them in from
+	// its own catalogue at connect time, and pinning them here suppressed that
+	// inheritance and broke every stdio subscription in production.
+	assert.Empty(t, srv.Transport, "a subscription must not pin transport")
+	assert.Empty(t, srv.URL, "a subscription must not pin url")
 	assert.Equal(t, []string{"web_fetch"}, srv.AllowedTools)
 }
 
@@ -748,4 +756,76 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// REGRESSION (2026-07-29, found in production). A registry SUBSCRIPTION must not
+// carry `transport` — and the failure this caused was total, not cosmetic.
+//
+// The daemon supplies a name-only subscription's connection details from its own
+// mcp.servers catalogue, but ONLY when the project entry leaves transport unset
+// (container_subsystems.go: `if s.Transport == ""`). The form was copying the
+// daemon's transport into the project entry while copying neither `command` nor
+// `args`, which produced an entry declaring `transport: stdio` with no command.
+// Inheritance was suppressed, and the server failed to register with
+// "mcp server <name>: command is empty".
+//
+// An sse/http server survived by accident because `url` was copied too, making
+// that entry self-sufficient. Every STDIO server broke — observed when saving the
+// MCP form silently killed both `pagedrop` and `google-workspace` on a live
+// project.
+func TestBuildMCPServersValue_SubscriptionOmitsTransportSoDaemonDetailsAreInherited(t *testing.T) {
+	data := &ProjectConfigFormData{
+		MCPRegistryRows: []MCPRegistryRow{
+			{ // the stdio case that broke
+				Server: MCPRegistryServer{
+					Name: "google-workspace", Transport: "stdio",
+					Tools: []MCPRegistryTool{{Name: "calendar_list"}, {Name: "gmail_send"}},
+				},
+				Subscribed:   true,
+				AllowedTools: map[string]bool{"calendar_list": true},
+			},
+			{ // and the sse case, which must behave the same way
+				Server:        MCPRegistryServer{Name: "scraper", Transport: "sse", URL: "http://127.0.0.1:8787"},
+				Subscribed:    true,
+				AllowAllTools: true,
+			},
+		},
+	}
+	value, empty := buildMCPServersValue(data)
+	assert.False(t, empty)
+	require.Len(t, value, 2)
+
+	for _, entry := range value {
+		name := entry["name"]
+		if _, has := entry["transport"]; has {
+			t.Errorf("%v: transport must be omitted — its presence suppresses the daemon's "+
+				"connection-detail inheritance and the entry carries no command of its own", name)
+		}
+		if _, has := entry["url"]; has {
+			t.Errorf("%v: url must be omitted too — it comes from the daemon definition, and "+
+				"duplicating it lets the project drift from the daemon's catalogue", name)
+		}
+	}
+	// The project's own narrowing is still the form's job and must survive.
+	assert.Equal(t, "google-workspace", value[0]["name"])
+	assert.Equal(t, []string{"calendar_list"}, value[0]["allowed_tools"],
+		"the operator's tool selection is the one thing a subscription DOES carry")
+	_, hasTools := value[1]["allowed_tools"]
+	assert.False(t, hasTools, "AllowAllTools=true still omits allowed_tools")
+}
+
+// A CUSTOM row is a self-contained server definition, not a subscription, so it
+// MUST keep transport/url — there is no daemon entry to inherit from. Pinned so
+// the fix above is not over-applied to custom rows.
+func TestBuildMCPServersValue_CustomRowKeepsItsOwnTransport(t *testing.T) {
+	data := &ProjectConfigFormData{
+		MCPCustomRows: []MCPCustomRow{{
+			Name: "selfhosted", Transport: "sse", URL: "http://127.0.0.1:9999",
+		}},
+	}
+	value, _ := buildMCPServersValue(data)
+	require.Len(t, value, 1)
+	assert.Equal(t, "sse", value[0]["transport"],
+		"a custom row defines its own connection and must keep transport")
+	assert.Equal(t, "http://127.0.0.1:9999", value[0]["url"])
 }

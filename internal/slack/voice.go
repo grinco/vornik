@@ -220,23 +220,17 @@ func (c *Channel) fetchSlackFileMeta(ctx context.Context, inst *installation, fi
 // rather than retrying, because file_shared events don't carry a
 // user-facing ack semantics like message events do.
 func (c *Channel) handleFileSharedEvent(ctx context.Context, p eventPayload, inst *installation) {
-	if c.voice.STT == nil {
-		c.logger.Debug().Str("team_id", p.TeamID).Msg("slack: file_shared event with no STT wired; dropping")
-		return
-	}
 	ev := p.Event
 	if ev == nil || ev.File == nil || strings.TrimSpace(ev.File.ID) == "" {
 		c.logger.Debug().Str("event_id", p.EventID).Msg("slack: file_shared event without file payload")
 		return
 	}
-	if len(inst.allowedChannels) > 0 {
-		if _, ok := inst.allowedChannels[ev.Channel]; !ok {
-			c.logger.Warn().
-				Str("team_id", p.TeamID).
-				Str("channel", ev.Channel).
-				Msg("slack: file_shared channel not on allowlist; dropping")
-			return
-		}
+	if !channelAllowed(inst, ev.ChannelType, ev.Channel) {
+		c.logger.Warn().
+			Str("team_id", p.TeamID).
+			Str("channel", ev.Channel).
+			Msg("slack: file_shared channel not on allowlist; dropping")
+		return
 	}
 	if _, err := c.resolveSpeakerForInstallation(inst, ev.User); err != nil {
 		c.logger.Warn().Str("team_id", p.TeamID).Str("user", ev.User).
@@ -249,9 +243,21 @@ func (c *Channel) handleFileSharedEvent(ctx context.Context, p eventPayload, ins
 		c.logger.Warn().Err(err).Str("file_id", ev.File.ID).Msg("slack: files.info failed")
 		return
 	}
-	if !isAudioMime(meta.Mimetype) {
+	// Route by what the file IS. Audio is transcribed here and rides on as text; an
+	// image rides on as an attachment for the vision path to inline or hand over;
+	// anything else is still ignored, since no downstream path claims it.
+	switch {
+	case isImageMime(meta.Mimetype):
+		c.dispatchImageFile(ctx, p, inst, meta)
+		return
+	case !isAudioMime(meta.Mimetype):
 		c.logger.Debug().Str("file_id", meta.ID).Str("mime", meta.Mimetype).
-			Msg("slack: file_shared MIME is not audio; ignoring (v1 slice scope)")
+			Msg("slack: file_shared MIME is neither audio nor image; ignoring")
+		return
+	}
+	if c.voice.STT == nil {
+		c.logger.Debug().Str("team_id", p.TeamID).Str("file_id", meta.ID).
+			Msg("slack: audio file_shared but no STT wired; dropping")
 		return
 	}
 	downloadURL := meta.URLPrivateDownload
@@ -507,7 +513,18 @@ func (c *Channel) sendVoiceReply(ctx context.Context, inst *installation, p uplo
 	if c.voice.TTS == nil {
 		return "", false, nil
 	}
-	audio, synthErr := c.voice.TTS.Synthesize(ctx, text, voice.TTSOptions{Format: "mp4-aac"})
+	// Rich text is for READING. A synthesiser handed mrkdwn pronounces the asterisks and
+	// spells a URL character by character, so the spoken form is derived here — labelled
+	// links become their label, bare links are not dictated, emoji and entity refs go.
+	// Operator instruction 2026-07-30. The text sent as a FALLBACK below is untouched,
+	// because that one is read.
+	spoken := voice.ForSpeech(text)
+	if strings.TrimSpace(spoken) == "" {
+		// Nothing left worth listening to (a reply that was only a link). Fall back to
+		// text rather than upload silence.
+		return "", false, nil
+	}
+	audio, synthErr := c.voice.TTS.Synthesize(ctx, spoken, voice.TTSOptions{Format: "mp4-aac"})
 	if synthErr != nil {
 		c.logger.Info().Err(synthErr).Str("session", p.Channel+"/"+p.ThreadTs).
 			Msg("slack: TTS Synthesize failed; falling back to text")

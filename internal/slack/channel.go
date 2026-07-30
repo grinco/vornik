@@ -37,7 +37,24 @@ func (c *Channel) Stop() error {
 	c.recvMu.Lock()
 	c.recv = nil
 	c.recvMu.Unlock()
+	// Drain in-flight event turns. Since deliveries are dispatched asynchronously
+	// (Slack's ack budget is 3s, a turn takes much longer), a Stop that returned
+	// immediately would abandon a turn between "answer generated" and "answer
+	// posted" — the same silent-loss shape the async dispatch was introduced to fix.
+	//
+	// Disarm the pending "working on it…" timers first, so a shutdown between arming
+	// and firing cannot post a placeholder into a channel the daemon has stopped
+	// answering in.
+	c.disarmProgressSignals()
+	c.waitInFlight()
 	return nil
+}
+
+// waitInFlight blocks until every dispatched event turn has finished. Used by Stop
+// for a graceful drain, and by tests as a deterministic synchronisation point instead
+// of a sleep.
+func (c *Channel) waitInFlight() {
+	c.inFlight.Wait()
 }
 
 // ResolveSpeaker maps a Slack user_id (U…) to a conversation.Speaker.
@@ -172,6 +189,31 @@ type eventPayload struct {
 	Event     *eventInner `json:"event,omitempty"`
 	EventID   string      `json:"event_id,omitempty"`
 	EventTime int64       `json:"event_time,omitempty"`
+	// Authorizations names the installed identities the delivery was
+	// sent on behalf of. The bot entry carries OUR OWN user id, which
+	// is how a thread rooted on one of our messages is recognised
+	// without a config entry or an extra auth.test call.
+	Authorizations []eventAuthorization `json:"authorizations,omitempty"`
+}
+
+// eventAuthorization is one entry of the Events API `authorizations`
+// array.
+type eventAuthorization struct {
+	TeamID string `json:"team_id,omitempty"`
+	UserID string `json:"user_id,omitempty"`
+	IsBot  bool   `json:"is_bot,omitempty"`
+}
+
+// botUserID returns the bot identity this delivery was authorised for,
+// or "" when Slack omitted the array (older payload shapes, and the
+// synthetic payloads in some tests).
+func (p eventPayload) botUserID() string {
+	for _, a := range p.Authorizations {
+		if a.IsBot && a.UserID != "" {
+			return a.UserID
+		}
+	}
+	return ""
 }
 
 // eventInner is the nested object Slack wraps the actual event in
@@ -183,6 +225,14 @@ type eventInner struct {
 	Channel  string `json:"channel,omitempty"`   // C… channel id
 	Ts       string `json:"ts,omitempty"`        // message timestamp
 	ThreadTs string `json:"thread_ts,omitempty"` // present when in a thread
+	// Tab distinguishes which App Home tab was opened on an
+	// app_home_opened event: "home" or "messages".
+	Tab string `json:"tab,omitempty"`
+	// ParentUserID is the author of the thread's ROOT message, present
+	// on thread replies. When it equals our own bot user id the thread
+	// hangs off something we said, which makes a mention-less reply an
+	// unambiguous continuation of our conversation.
+	ParentUserID string `json:"parent_user_id,omitempty"`
 	// ChannelType is "im" for DMs, "channel" for public channels,
 	// "group" for private channels. The channel branches on this to
 	// distinguish message.im from message.channels.
@@ -374,6 +424,33 @@ func (c *Channel) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// DETACH THE DISPATCH FROM THE REQUEST. Slack allows THREE SECONDS to ack an
+	// event delivery; a real turn (memory_search, a Workspace tool, a 60 KB prompt)
+	// takes far longer. Handling an event on r.Context() therefore fails twice over:
+	// the handler blocks past the ack budget so Slack retries, and when Slack closes
+	// the original connection the cancellation kills the in-flight turn — including
+	// the outbound reply.
+	//
+	// Observed in production 2026-07-30: a thread reply ran its tools, produced a
+	// 2.9 KB answer, and the user saw nothing. The slash-command path below already
+	// had this right; the event paths did not.
+	//
+	// WithoutCancel keeps the values (trace ids, logger) while dropping the
+	// cancellation; WithTimeout re-bounds it so a hung turn cannot leak a goroutine
+	// and an LLM call forever. The ack is written before dispatching, so Slack sees a
+	// 200 immediately and does not retry.
+	dispatchCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(r.Context()), eventDispatchTimeout)
+	dispatch := func(fn func(context.Context)) {
+		w.WriteHeader(http.StatusOK)
+		c.inFlight.Add(1)
+		go func() {
+			defer c.inFlight.Done()
+			defer cancel()
+			fn(dispatchCtx)
+		}()
+	}
+
 	switch payload.Event.Type {
 	case "file_shared":
 		// Voice MVP slice 4. Normalise the file_shared variant
@@ -385,26 +462,27 @@ func (c *Channel) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		if payload.Event.Channel == "" {
 			payload.Event.Channel = payload.Event.ChannelID
 		}
-		c.handleFileSharedEvent(r.Context(), payload, inst)
+		dispatch(func(ctx context.Context) { c.handleFileSharedEvent(ctx, payload, inst) })
+	case "app_home_opened":
+		// Publishing the home view keeps Slack from rendering its own "still a work in
+		// progress" placeholder in the first surface a new user opens.
+		dispatch(func(ctx context.Context) { c.handleAppHomeOpened(ctx, payload, inst) })
 	case "app_mention":
-		c.handleMessageEvent(r.Context(), payload, inst, false)
+		dispatch(func(ctx context.Context) { c.handleMessageEvent(ctx, payload, inst, false) })
 	case "message":
-		// message.im → always dispatch. message.channels / .groups →
-		// only when @vornik is mentioned in the text. Slack delivers
-		// message.channels for every message in a channel the bot is
-		// a member of; we drop the rest to keep LLM spend bounded.
+		// message.im → always dispatch. message.channels / .groups → only when the
+		// message is addressed to us, which handleMessageEvent decides.
+		//
+		// That decision USED TO LIVE HERE, gated purely on the message text. It now
+		// runs inside the dispatched turn because establishing "is this a thread we
+		// are already in" can reach the database, and Slack's ack budget is three
+		// seconds. The cost of deciding late is one short-lived goroutine per channel
+		// message; no LLM spend happens before the gate.
 		switch payload.Event.ChannelType {
 		case "im":
-			c.handleMessageEvent(r.Context(), payload, inst, false)
+			dispatch(func(ctx context.Context) { c.handleMessageEvent(ctx, payload, inst, false) })
 		case "channel", "group":
-			if mentionsVornik(payload.Event.Text) {
-				c.handleMessageEvent(r.Context(), payload, inst, true)
-			} else {
-				c.logger.Debug().
-					Str("team_id", teamID).
-					Str("channel", payload.Event.Channel).
-					Msg("slack: message without @vornik mention; dropping")
-			}
+			dispatch(func(ctx context.Context) { c.handleMessageEvent(ctx, payload, inst, true) })
 		default:
 			c.logger.Debug().
 				Str("team_id", teamID).
@@ -438,10 +516,11 @@ func (c *Channel) handleSlashCommandWebhook(w http.ResponseWriter, r *http.Reque
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if command := strings.TrimSpace(form.Get("command")); command != "/vornik" {
+	expected := NormaliseSlashCommand(c.cfg.SlashCommand)
+	if command := strings.TrimSpace(form.Get("command")); command != expected {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("Unsupported command. Use /vornik <prompt>."))
+		_, _ = w.Write([]byte("Unsupported command. Use " + expected + " <prompt>."))
 		return
 	}
 	channelID := strings.TrimSpace(form.Get("channel_id"))
@@ -454,7 +533,7 @@ func (c *Channel) handleSlashCommandWebhook(w http.ResponseWriter, r *http.Reque
 	if text == "" {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("Usage: /vornik <prompt>"))
+		_, _ = w.Write([]byte("Usage: " + expected + " <prompt>"))
 		return
 	}
 	triggerID := strings.TrimSpace(form.Get("trigger_id"))
@@ -486,7 +565,7 @@ func (c *Channel) handleSlashCommandWebhook(w http.ResponseWriter, r *http.Reque
 			"channel_id":   channelID,
 			"event_id":     triggerID,
 			"event_type":   "slash_command",
-			"command":      "/vornik",
+			"command":      expected,
 			"project_id":   inst.projectID,
 			"response_url": form.Get("response_url"),
 		},
@@ -497,17 +576,24 @@ func (c *Channel) handleSlashCommandWebhook(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusOK)
 	go func() {
 		defer cancel()
+		c.beginProgressSignal(dispatchCtx, sessionID)
 		if err := recv.Receive(dispatchCtx, msg); err != nil {
 			c.logger.Warn().Err(err).Str("trigger_id", triggerID).Msg("slack: slash command Receiver.Receive returned error")
 		}
 	}()
 }
 
+// slashCommandActorAllowed gates a /vornik invocation on the same two allowlists as an
+// inbound message, DMs included — the slash payload carries no channel_type, so the
+// `D…` id prefix is the only marker available. See channelAllowed for why a channel
+// allowlist cannot be applied to a DM at all.
 func (c *Channel) slashCommandActorAllowed(inst *installation, channelID, userID string) bool {
-	if len(inst.allowedChannels) > 0 {
-		if _, allowed := inst.allowedChannels[channelID]; !allowed {
-			return false
-		}
+	if !channelAllowed(inst, "", channelID) {
+		c.logger.Warn().
+			Str("channel", channelID).
+			Str("project_id", inst.projectID).
+			Msg("slack: slash command channel not on installation allowlist; dropping")
+		return false
 	}
 	_, err := c.resolveSpeakerForInstallation(inst, userID)
 	return err == nil
@@ -531,8 +617,8 @@ func (c *Channel) handleMessageEvent(ctx context.Context, p eventPayload, inst *
 			Msg("slack: message event without user; dropping")
 		return
 	}
-	if len(inst.allowedChannels) > 0 {
-		if _, ok := inst.allowedChannels[ev.Channel]; !ok {
+	if !channelAllowed(inst, ev.ChannelType, ev.Channel) {
+		{
 			c.logger.Warn().
 				Str("team_id", p.TeamID).
 				Str("channel", ev.Channel).
@@ -549,16 +635,29 @@ func (c *Channel) handleMessageEvent(ctx context.Context, p eventPayload, inst *
 			Msg("slack: sender not on installation allowlist; dropping (no LLM spend)")
 		return
 	}
-	// Defensive: requireMention is true on message.channels. The
-	// HandleWebhook caller already checks but we re-check here so a
-	// future refactor that adds a new caller can't accidentally bypass
-	// the gate.
-	if requireMention && !mentionsVornik(ev.Text) {
+	// requireMention is true on message.channels / message.groups — every message in a
+	// channel the bot belongs to, most of which are not for us.
+	msg := c.buildMessageChannelMessage(p, inst)
+	if requireMention && !c.addressedToUs(ctx, p, msg.SessionID) {
 		return
 	}
 
-	msg := c.buildMessageChannelMessage(p, inst)
+	// One user message can reach us as TWO deliveries with different event_ids
+	// (app_mention plus message.channels), so the event_id cache cannot collapse them.
+	// Claim the message itself, and only once every gate above has passed, so a
+	// delivery we dropped never suppresses the sibling that would have been answered.
+	if !c.acceptDelivery("msg:"+ev.Channel+":"+ev.Ts, c.clock()) {
+		c.logger.Debug().
+			Str("event_id", p.EventID).
+			Str("ts", ev.Ts).
+			Msg("slack: message already answered via a sibling delivery; dropping")
+		return
+	}
+
 	c.recordSession(msg.SessionID, channelTitleFromPayload(p), ev.User, msg.Timestamp, inst)
+	// From here the turn is ours and will take as long as it takes. Arm the stand-in
+	// for the typing indicator Slack does not give bots.
+	c.beginProgressSignal(ctx, msg.SessionID)
 	c.recvMu.RLock()
 	recvAny := c.recv
 	c.recvMu.RUnlock()
@@ -574,6 +673,86 @@ func (c *Channel) handleMessageEvent(ctx context.Context, p eventPayload, inst *
 	if err := recv.Receive(ctx, msg); err != nil {
 		c.logger.Warn().Err(err).Str("event_id", p.EventID).Msg("slack: Receiver.Receive returned error")
 	}
+}
+
+// addressedToUs decides whether a SHARED-channel message that did not arrive as an
+// app_mention should still start a turn.
+//
+// INCIDENT 2026-07-30. This used to be `mentionsVornik(text)` alone, and three
+// consecutive follow-ups inside a thread the bot was actively holding went unanswered
+// with nothing in the journal above Debug. Two compounding reasons:
+//
+//  1. mentionsVornik matches the LITERAL string "@vornik". A real Slack mention is
+//     delivered encoded — `<@U0BLPMBQXDL>` — so the gate never recognises a genuine
+//     mention. Tagged messages work only because app_mention is a separate delivery.
+//  2. Replies inside a thread carry no mention at all. That is how people converse in
+//     threads: you tag the bot once to open the thread and then just talk.
+//
+// So a mention-less message counts as ours when it is a reply inside a thread we are
+// already part of. Top-level channel chatter still needs an explicit mention — that is
+// what keeps the bot out of conversations between colleagues, and what keeps LLM spend
+// bounded in a busy channel.
+func (c *Channel) addressedToUs(ctx context.Context, p eventPayload, sessionID string) bool {
+	ev := p.Event
+	// Someone typing "@vornik" as plain text rather than picking the autocomplete. No
+	// app_mention is delivered for that, so this branch is the only thing that catches
+	// it.
+	if mentionsVornik(ev.Text) {
+		return true
+	}
+	if ev.ThreadTs == "" {
+		return false
+	}
+	// The thread hangs off a message WE posted. Stateless, needs no lookup, and
+	// survives a restart — which matters because the whole point is continuity.
+	if bot := p.botUserID(); bot != "" && ev.ParentUserID == bot {
+		return true
+	}
+	// Otherwise: do we hold conversation history for this thread? True when a human
+	// opened the thread and tagged us into it. Backed by the persisted session row, so
+	// this also survives a restart.
+	return c.threadEngaged(ctx, sessionID)
+}
+
+// channelAllowed applies the channel allowlist, EXEMPTING direct messages.
+//
+// channel_allowlist exists to bound which SHARED channels the bot may act in — it is
+// what keeps it out of a channel someone added it to by mistake. Applying it to DMs is
+// unimplementable: a DM's channel id is a per-user `D…` that Slack creates lazily on
+// first contact, so an operator cannot list it in advance. Three users means three ids
+// that do not exist until each person messages the bot.
+//
+// Doing so silently killed every direct message on this deployment (2026-07-30):
+// "slack: channel not on installation allowlist; dropping channel=D0BLA9ZRDFH", with
+// only the team's C… channel allow-listed.
+//
+// A DM's meaningful control is the SENDER allowlist, which is applied separately and
+// unchanged. Note the consequence, stated rather than hidden: with an EMPTY
+// sender_allowlist, any workspace member can DM the bot. That was already true for
+// every other channel type and is why production deployments set it.
+//
+// Both signals are consulted because the two inbound shapes differ: message events
+// carry channel_type, while file_shared often does not — there, the `D` prefix is the
+// only marker available.
+func channelAllowed(inst *installation, channelType, channelID string) bool {
+	if len(inst.allowedChannels) == 0 {
+		return true
+	}
+	if isDirectMessageChannel(channelType, channelID) {
+		return true
+	}
+	_, ok := inst.allowedChannels[channelID]
+	return ok
+}
+
+// isDirectMessageChannel reports whether an inbound event came from a DM.
+func isDirectMessageChannel(channelType, channelID string) bool {
+	if channelType == "im" {
+		return true
+	}
+	// Slack channel-id convention: D… direct, C… public, G… private/group. Used only
+	// when channel_type is absent, which is the file_shared case.
+	return channelType == "" && strings.HasPrefix(channelID, "D")
 }
 
 // buildMessageChannelMessage translates a message-shaped event into
@@ -612,6 +791,14 @@ func (c *Channel) buildMessageChannelMessage(p eventPayload, inst *installation)
 	}
 	if ev.ThreadTs != "" && ev.ThreadTs != ev.Ts {
 		cs["in_reply_to_ts"] = ev.Ts
+	}
+	// A thread rooted on a message WE posted is a continuation of whatever conversation
+	// that message belonged to — most often the CHANNEL-level one, which lives in a
+	// different session. The session store uses this to seed an otherwise empty thread,
+	// so a follow-up under our own answer is not met with "I have no context to anchor
+	// on" (operator report 2026-07-30).
+	if bot := p.botUserID(); bot != "" && ev.ThreadTs != "" && ev.ParentUserID == bot {
+		cs["thread_parent_is_bot"] = "true"
 	}
 	ts := slackTsToTime(ev.Ts, c.clock)
 	return conversation.ChannelMessage{
@@ -729,6 +916,11 @@ func isMentionWordChar(b byte) bool {
 // surface uses the file_id for InReplyTo correlation since uploaded
 // files don't carry a `ts` of their own).
 func (c *Channel) Send(ctx context.Context, msg conversation.ChannelMessage) (string, error) {
+	// A real message is landing, so the "working on it…" placeholder has done its job.
+	// Cleared for the disclosure notice too — on a session's first turn that is what
+	// arrives first, and a placeholder left behind it would never be collected.
+	defer c.clearProgressSignal(ctx, msg.SessionID)
+
 	if c.shouldReplyAsVoice(msg.SessionID) {
 		sentID, used, err := c.sendVoiceForSession(ctx, msg)
 		if used {

@@ -987,3 +987,108 @@ gateway:
 
 mcp:
   servers: []
+
+  # --- Google Workspace (Phase 0) -----------------------------------------
+  # Commented out deliberately: enabling it needs an operator to complete the
+  # due diligence in docs/operator/2026-07-29-google-workspace-phase0-setup.md
+  # first. Uncomment once that is done.
+  #
+  # The tool names below were read off the server's own tools/list (v0.0.8,
+  # clone 089927e, probed 2026-07-29) — 57 tools advertised, 19 allow-listed
+  # here. The daemon re-validates at connect time rather than trusting this
+  # file, so a renamed tool upstream fails loudly instead of silently widening.
+  #
+  # - name: google-workspace
+  #   transport: stdio
+  #   command: node
+  #   # The SERVER, not scripts/start.js. start.js is a development launcher: it
+  #   # runs `npm install` in the inherited cwd on every start, which would need
+  #   # network at each daemon start AND re-resolve dependencies each time,
+  #   # defeating the `npm ci` pinning the runbook asks for. It then execs the
+  #   # path below. Verified to speak MCP standalone with cwd = "/", so Vornik's
+  #   # cwd pin (client.go, audit recommendation) needs no exception.
+  #   args:
+  #     - /home/swarm-control/.local/share/vornik/workspace-mcp/workspace-server/dist/index.js
+  #   # Add --use-dot-names for `drive.search` instead of `drive_search`; the
+  #   # names below assume the default. Do not change it without editing the list.
+  #   #
+  #   # READ-ONLY agent surface. allowed_tools constrains what the MODEL can
+  #   # call; it does NOT narrow the OAuth grant, which for this server includes
+  #   # the full `drive`, `calendar`, `documents`, `gmail.modify` and
+  #   # `chat.messages` scopes — deletion included. See the setup runbook for
+  #   # why that residual is accepted in Phase 0.
+  #   #
+  #   # DELIBERATELY EXCLUDED — these five take a path on THIS host and would run
+  #   # as the daemon's OS user, i.e. file access as the daemon rather than as the
+  #   # agent: drive_downloadFile, gmail_downloadAttachment, slides_getImages,
+  #   # slides_getSlideThumbnail (all write a caller-chosen absolute localPath),
+  #   # and gmail_createDraft (reads attachments[].filePath). Four of them begin
+  #   # with `download`/`get` and none is annotated, so nothing in their names
+  #   # says so. The daemon logs them at WARN at connect time.
+  #   allowed_tools:
+  #     # Calendar — the "organise my day" core.
+  #     - calendar_list
+  #     - calendar_listEvents
+  #     - calendar_getEvent
+  #     - calendar_findFreeTime
+  #     # Drive — discovery only; content comes via the Docs/Sheets readers.
+  #     - drive_search
+  #     - drive_findFolder
+  #     - drive_getComments
+  #     # Docs — getText returns the body without burning tokens on conversion.
+  #     - docs_getText
+  #     - docs_getSuggestions
+  #     # Sheets — getText takes format: text|csv|json.
+  #     - sheets_getText
+  #     - sheets_getRange
+  #     - sheets_getMetadata
+  #     # Slides — text and notes only (getImages is excluded, see above).
+  #     - slides_getText
+  #     - slides_getMetadata
+  #     - slides_getSpeakerNotes
+  #     # Time — the server's own clock, so "today" resolves in the right zone.
+  #     - time_getCurrentDate
+  #     - time_getCurrentTime
+  #     - time_getTimeZone
+  #     # Identity — resolves whose account the token belongs to.
+  #     - people_getMe
+  #   # Refuse to register if this server ever advertises a mutating tool that
+  #   # allowed_tools does not name. Worth setting here specifically because the
+  #   # tool set belongs to Google and can change in any release — this
+  #   # catalogue already includes gmail_send, calendar_deleteEvent and
+  #   # drive_trashFile, so expose-all is never right for it.
+  #   require_declared_tools: true
+
+# ---------------------------------------------------------------------------
+# Automatic ingestion of Google Workspace documents into project memory.
+#
+# OFF by default, and ingest-on-request (a human pasting a link) works without
+# any of this — the settings below govern only the UNATTENDED path.
+#
+# Two preconditions are enforced at STARTUP, and the daemon refuses to load
+# rather than warning, because both failures would otherwise only become visible
+# after other people's meeting records had been indexed:
+#
+#   1. retention.memory_chunks_days must be set. Ingesting meeting records into
+#      a store with no window is indefinite retention of the most sensitive
+#      content the system holds (GDPR Art 5(1)(e)).
+#   2. Art 17 shared-row redaction must be available. Every ingested meeting
+#      record concerns several people, so until redaction ships an erasure
+#      request over them reports almost all as deferred rather than erased.
+#      This is currently FALSE in the binary, so enabling automatic ingestion
+#      will be refused — by design, not by omission.
+#
+# A source rule is one of exactly three kinds: folder, shared_drive, or label.
+# A free-text query is deliberately not permitted, because it would make the set
+# of ingested documents depend on Drive's search behaviour rather than on
+# something you can read back. mime_types is required per rule: without it,
+# "the minutes in this folder" silently ingests whatever else lands there.
+# ---------------------------------------------------------------------------
+workspace_ingest:
+  enabled: false
+  sources: []
+  # - kind: folder            # folder | shared_drive | label
+  #   id: "1AbCdEfGhIjKlMnOp"
+  #   recursive: true
+  #   mime_types:
+  #     - application/vnd.google-apps.document

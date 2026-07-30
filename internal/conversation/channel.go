@@ -403,3 +403,42 @@ func (e constError) Error() string { return string(e) }
 type AttachmentFetcher interface {
 	FetchAttachment(ctx context.Context, a Attachment) (io.ReadCloser, error)
 }
+
+// DisclosureScoper is implemented by channels whose SessionID is finer-grained
+// than the identity the EU AI Act Art 50(1) notice is owed to.
+//
+// The obligation is to ensure the natural persons CONCERNED are informed that
+// they are interacting with an AI system, at the time of their first
+// interaction. It does not require re-informing a person who has already been
+// told. Slack's SessionID encodes the thread
+// (`<team>/<channel>#<thread_ts>`), so treating it as the disclosure identity
+// made every new thread a fresh "first interaction" and repeated the notice at
+// someone who had already read it (operator report 2026-07-30).
+//
+// It cut the other way too, and worse: in a SHARED channel the channel-scoped
+// session was marked served by whoever spoke first, so every later participant
+// got no notice at all. A per-person scope fixes both directions.
+//
+// The returned string is bookkeeping ONLY — the key under which "already
+// disclosed" is remembered. The notice itself is still delivered to
+// msg.SessionID, because that is where the person is reading. A channel that
+// does not implement this keeps its SessionID as the key.
+type DisclosureScoper interface {
+	DisclosureScope(msg ChannelMessage) string
+}
+
+// TurnStatusChannel is implemented by channels that can show a transient
+// "what the agent is doing right now" indicator for an in-flight turn.
+//
+// A turn takes 10-60 seconds and most chat platforms give a bot no typing
+// indicator, so without this the human cannot tell a working turn from a
+// broken one — the failure that let a silently-lost answer go unnoticed on
+// Slack (2026-07-30).
+//
+// The status is DISPLAY ONLY. It never enters the conversation history, costs
+// no model context, and may be overwritten or dropped at will: an
+// implementation that cannot show it right now should do nothing rather than
+// queue or error. Callers treat it as fire-and-forget.
+type TurnStatusChannel interface {
+	SetTurnStatus(ctx context.Context, sessionID, status string)
+}

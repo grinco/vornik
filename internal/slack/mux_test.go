@@ -49,6 +49,7 @@ func TestMuxHandler_RoutesByTeamID(t *testing.T) {
 	reqA := signedRequest(t, "s-a", now.Unix(), payloadA)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, reqA)
+	mux.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusOK {
 		t.Fatalf("A status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
@@ -75,6 +76,7 @@ func TestMuxHandler_RoutesByTeamID(t *testing.T) {
 	reqB := signedRequest(t, "s-b", now.Unix(), payloadB)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, reqB)
+	mux.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusOK {
 		t.Fatalf("B status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
@@ -108,6 +110,7 @@ func TestMuxHandler_URLVerification(t *testing.T) {
 	req := signedRequest(t, "s-handshake", now.Unix(), body)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
+	mux.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
@@ -136,6 +139,7 @@ func TestMuxHandler_UnknownTeam_DropsWith200(t *testing.T) {
 	req := signedRequest(t, "s-a", now.Unix(), body)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
+	mux.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
@@ -158,6 +162,7 @@ func TestMuxHandler_MalformedJSON_RoutesToFallback(t *testing.T) {
 	req := signedRequest(t, "s-a", now.Unix(), []byte("not-json"))
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
+	mux.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200 (drop-and-ack)", w.Code)
 	}
@@ -170,6 +175,7 @@ func TestMuxHandler_WrongMethod(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/slack/webhook", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
+	mux.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", w.Code)
 	}
@@ -182,6 +188,7 @@ func TestMuxHandler_OversizedBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/slack/webhook", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
+	mux.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("status = %d, want 413", w.Code)
 	}

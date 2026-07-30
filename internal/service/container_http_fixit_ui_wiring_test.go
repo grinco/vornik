@@ -33,7 +33,7 @@ import (
 func TestNewContainer_WiresFixItDoctorIntoUIServer(t *testing.T) {
 	cfg := newComposerWiringTestConfig(t)
 
-	c, err := NewContainer(cfg, "")
+	c, err := NewContainer(cfg, isolatedConfigPath(t))
 	if err != nil {
 		t.Fatalf("NewContainer: unexpected error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestNewContainer_WiresFixItDoctorIntoUIServer(t *testing.T) {
 func TestNewContainer_WiresFixItSessionReaderIntoUIServer(t *testing.T) {
 	cfg := newComposerWiringTestConfig(t)
 
-	c, err := NewContainer(cfg, "")
+	c, err := NewContainer(cfg, isolatedConfigPath(t))
 	if err != nil {
 		t.Fatalf("NewContainer: unexpected error: %v", err)
 	}

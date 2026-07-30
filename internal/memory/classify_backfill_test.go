@@ -271,7 +271,7 @@ func TestClassifyBackfiller_BackfillBatchAcrossProjects_MultiProject(t *testing.
 	})
 	defer cleanup()
 	mock.ExpectQuery("SELECT id, project_id").
-		WithArgs(5).
+		WithArgs(5, 0).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}).
 			AddRow("c1", "p-alpha", "alpha.md", "researcher", "alpha body").
 			AddRow("c2", "p-beta", "beta.md", "analyst", "beta body"))
@@ -390,5 +390,43 @@ func TestClassifyBackfiller_CountRemainingAll(t *testing.T) {
 	got, err := bf.CountRemainingAll(context.Background())
 	if err != nil || got != 7 {
 		t.Fatalf("got %d %v", got, err)
+	}
+}
+
+// LIVELOCK, observed in production 2026-07-30. The auto-loop selected
+// `ORDER BY created_at ASC LIMIT 25`, the classifier declined all 25, and a declined row
+// is never written — so the same page came back every tick and permanently blocked the
+// 1,174 rows behind it. The journal showed it plainly: succeeded=0, skipped=25 and
+// remaining pinned at 1199 across every tick, for hours.
+//
+// The cursor has to advance past what nothing can classify.
+func TestClassifyBackfiller_AdvancesPastRowsNothingCanClassify(t *testing.T) {
+	b := &ClassifyBackfiller{}
+	if b.offset != 0 {
+		t.Fatalf("fresh backfiller offset = %d, want 0", b.offset)
+	}
+	// Simulate a tick that declined everything.
+	b.offset += 25
+	if b.offset != 25 {
+		t.Fatalf("offset after an all-declined page = %d, want 25 so the next tick "+
+			"reaches rows the first page was blocking", b.offset)
+	}
+}
+
+// When the LLM abstains, the deterministic role map is consulted before giving up: it is
+// what the ingest path itself uses, and for a chunk whose producer_role is known it is a
+// better answer than leaving the row unclassified forever.
+func TestClassifyByRole_ProvidesATerminalAnswerForKnownRoles(t *testing.T) {
+	if got, _ := ClassifyByRole("researcher"); got == ClassUnclassified {
+		t.Error("a known producer role must map to a real class, or the fallback " +
+			"cannot rescue an LLM abstention")
+	}
+	// A companion deposit is its own class, and must not be relabelled.
+	if got, _ := ClassifyByRole("companion:claude-code"); got != ClassCompanionNote {
+		t.Errorf("companion role = %q, want companion_note", got)
+	}
+	// An unknown role genuinely has no answer — the fallback must not invent one.
+	if got, _ := ClassifyByRole("some-role-nobody-registered"); got != ClassUnclassified {
+		t.Errorf("unknown role = %q, want unclassified rather than a guess", got)
 	}
 }

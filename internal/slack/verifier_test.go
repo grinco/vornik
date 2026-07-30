@@ -39,6 +39,11 @@ func validConfig() Config {
 		BotToken:      "xoxb-test-token",
 		TeamID:        "T123",
 		TeamAllowlist: []string{"T123"},
+		// Off by default across the suite: an armed progress signal would fire a real
+		// chat.postMessage at the default Slack API base URL two seconds into any test
+		// that dispatches a message event. progress_test.go sets its own delay against
+		// a stub server.
+		ProgressSignalDelay: -1,
 	}
 }
 

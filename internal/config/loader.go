@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"vornik.io/vornik/internal/datasubject"
 )
 
 // Load reads configuration from the specified path with the following precedence:
@@ -855,6 +857,16 @@ func (c *Config) Validate() error {
 	// gate inspects; required=true with no content_fields is a gate that passes
 	// everything (G6 finding B).
 	if err := c.Gateway.ValidateDisclosure(); err != nil {
+		return err
+	}
+	// Workspace ingestion's two preconditions are enforced at LOAD time rather
+	// than at the first unattended cycle: an operator who enables automatic
+	// ingestion of other people's meeting records should learn at startup that
+	// the retention window is unset or that shared-row redaction is unavailable,
+	// not discover it after the content has been indexed. Both are refusals
+	// rather than warnings — LLD §4.1.
+	if err := c.WorkspaceIngest.Validate(
+		c.Retention.MemoryChunksDays, datasubject.SharedRowRedactionAvailable); err != nil {
 		return err
 	}
 	// taint_lineage.enforcement_mode tri-state (off|advisory|enforce): fail

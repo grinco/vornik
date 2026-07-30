@@ -39,7 +39,7 @@ func TestNewContainer_CommunityRendersAdminNavEntries(t *testing.T) {
 	const key = "sk-vornik-ce-nav-wiring-test"
 	cfg.API.APIKeys = []string{key}
 
-	c, err := NewContainer(cfg, "")
+	c, err := NewContainer(cfg, isolatedConfigPath(t))
 	if err != nil {
 		t.Fatalf("NewContainer: unexpected error: %v", err)
 	}

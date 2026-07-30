@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -444,9 +445,45 @@ func (r *DataSubjectRepository) DeleteRow(ctx context.Context, table datasubject
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Slice 5c §4.4 retro-fit. A deleted memory chunk leaves its embedding_cache
+	// row behind, keyed by the hash of the text we were asked to erase. That vector
+	// is data DERIVED from the subject's personal data — the same reasoning that
+	// makes the artifact cascade delete derived chunks — and nothing else evicts it:
+	// the retention sweeper prunes by last_hit_at age and only when
+	// retention.embedding_cache_days is set, which is time-based cold-entry pruning,
+	// not compliance with an erasure request.
+	//
+	// Read the hash BEFORE the delete and evict in the SAME transaction, so there is
+	// no window in which the chunk is gone but its vector is not, and no separate
+	// call that can fail on its own and leave the pair inconsistent.
+	//
+	// This was a gap in code already shipped by 5b, not only in 5c.
+	var cachedHash string
+	if table == datasubject.TableProjectMemoryChunks {
+		if err := tx.QueryRowContext(ctx,
+			`SELECT content_hash FROM project_memory_chunks WHERE id = $1`, rowID,
+		).Scan(&cachedHash); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("postgres: read content_hash before erasing %s/%s: %w", table, rowID, err)
+		}
+	}
+
 	if _, err := tx.ExecContext(ctx,
 		fmt.Sprintf(`DELETE FROM %s WHERE %s = $1`, table, spec.idCol), rowID); err != nil {
 		return fmt.Errorf("postgres: delete %s/%s: %w", table, rowID, err)
+	}
+	if cachedHash != "" {
+		// EVERY model's vector for this hash, not just the current one: the operator
+		// may have re-embedded under several models over the deployment's life, and
+		// erasing the text while leaving an older model's vector is not erasure.
+		//
+		// embedding_cache is keyed (content_hash, model) with no project column, so
+		// this can evict an entry an identical chunk in ANOTHER project would have
+		// hit. That is deliberate and cheap — the cost is one re-embed on the next
+		// miss, against retaining a vector derived from erased data.
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM embedding_cache WHERE content_hash = $1`, cachedHash); err != nil {
+			return fmt.Errorf("postgres: evict embedding cache for %s/%s: %w", table, rowID, err)
+		}
 	}
 	// Every subject's link to this row, not just the requester's: the row is gone,
 	// so any remaining link would point at nothing.

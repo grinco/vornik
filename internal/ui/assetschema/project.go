@@ -205,6 +205,7 @@ var ProjectDeferredPaths = []string{
 	"slack.team_id", "slack.signing_secret_env", "slack.bot_token_env",
 	"slack.channel_allowlist", "slack.sender_allowlist", "slack.verify_inbound_signature",
 	"slack.post_message_rps", "slack.post_message_burst",
+	"slack.slash_command", "slack.progress_signal", "slack.progress_signal_gap",
 	// Voice STT/TTS providers.
 	"voice.stt.provider", "voice.stt.model", "voice.stt.binary_path", "voice.stt.ffmpeg_path",
 	"voice.stt.language_hint", "voice.tts.provider", "voice.tts.voice", "voice.tts.binary_path",

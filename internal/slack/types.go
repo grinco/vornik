@@ -37,6 +37,7 @@
 package slack
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -73,6 +74,13 @@ const maxSeenDeliveries = 10_000
 
 // slashDispatchTimeout bounds work detached from Slack's short HTTP request
 // deadline after the command has already been acknowledged.
+// eventDispatchTimeout bounds an Events-API turn once it has been detached from the
+// inbound request. Slack's ack budget is 3 seconds, so the handler acks and dispatches
+// asynchronously; this is the ceiling on the detached work. Matches
+// slashDispatchTimeout — both are the same kind of turn, and a user cannot tell from
+// the outside whether they typed a slash command or sent a message.
+const eventDispatchTimeout = 10 * time.Minute
+
 const slashDispatchTimeout = 10 * time.Minute
 
 // defaultPostMessageRPS / defaultPostMessageBurst tune the per-
@@ -84,6 +92,22 @@ const (
 	defaultPostMessageRPS   = 1
 	defaultPostMessageBurst = 1
 )
+
+// defaultSlashCommand is the command name a deployment answers when the operator has
+// not chosen one.
+const defaultSlashCommand = "/vornik"
+
+// NormaliseSlashCommand trims the configured command and guarantees the single leading
+// slash Slack sends, so "holly", "/holly" and "  /holly " all resolve identically.
+// Exported so the daemon's config resolver stores a canonical value and the operator
+// sees the same string in logs that Slack will send.
+func NormaliseSlashCommand(configured string) string {
+	trimmed := strings.TrimSpace(configured)
+	if trimmed == "" {
+		return defaultSlashCommand
+	}
+	return "/" + strings.TrimLeft(trimmed, "/")
+}
 
 // Config carries the operator-provided Slack settings the channel
 // needs. Populated from project config at boot; never mutated after
@@ -172,6 +196,21 @@ type Config struct {
 	PostMessageRPS   int
 	PostMessageBurst int
 
+	// SlashCommand is the slash command this deployment answers.
+	// Empty defaults to "/vornik"; a leading slash is optional. Exists
+	// because a differently-branded instance (Holly, sharing this
+	// workspace) registers its own command name in its Slack app and
+	// should not have to answer to another product's name.
+	SlashCommand string
+
+	// ProgressSignalDelay is how long a turn may run before it posts a
+	// "working on it…" placeholder, the stand-in for the typing
+	// indicator Slack does not give bots (see progress.go). Zero takes
+	// the default; NEGATIVE disables the signal, which is how an
+	// operator who dislikes the extra message opts out, and how tests
+	// keep from reaching the Slack API.
+	ProgressSignalDelay time.Duration
+
 	// Installations lists one entry per Slack workspace the channel
 	// serves. When non-empty, the channel routes inbound deliveries
 	// by matching payload.team_id against InstallationConfig.TeamID.
@@ -250,6 +289,11 @@ type Channel struct {
 	installations     []*installation
 	installationsByID map[string]*installation
 
+	// inFlight counts event turns dispatched asynchronously off the inbound
+	// request. Stop() drains it so a shutdown cannot abandon a turn between
+	// "answer generated" and "answer posted".
+	inFlight sync.WaitGroup
+
 	recvMu sync.RWMutex
 	// recv is the bound conversation.Receiver — wired to "any" here
 	// so types.go doesn't pull in the conversation package; channel.go
@@ -283,6 +327,56 @@ type Channel struct {
 	// are currently in voice-reply mode (latest inbound was audio).
 	voice        VoiceProviders
 	voiceTracker *voiceTracker
+
+	// engagementMu guards threadEngagement, which is bound after
+	// construction (the session store is built once the dispatcher
+	// exists). Held as an interface so a nil checker degrades to
+	// "unknown" rather than panicking.
+	engagementMu     sync.RWMutex
+	threadEngagement ThreadEngagementChecker
+
+	// progress tracks the per-session "working on it…" placeholder that
+	// stands in for the typing indicator Slack does not give bots. See
+	// progress.go. progressDelay is how long a turn may run before it
+	// posts one; zero disables the signal entirely.
+	progressMu    sync.Mutex
+	progress      map[string]*progressSignal
+	progressDelay time.Duration
+}
+
+// ThreadEngagementChecker reports whether the bot already holds a
+// conversation on a Slack session id. It is what lets a mention-less
+// reply inside a thread the bot is participating in start a turn,
+// while leaving unrelated channel chatter alone.
+//
+// Implemented by the daemon's Slack session store, which consults the
+// persisted channel_sessions row as well as in-process history — so
+// engagement survives a restart. A thread whose session is unknown is
+// reported as not engaged: the failure mode is a missed reply, never
+// an unsolicited one.
+type ThreadEngagementChecker interface {
+	ThreadEngaged(ctx context.Context, sessionID string) bool
+}
+
+// SetThreadEngagementChecker binds the engagement lookup. Safe to call
+// at any point after New; until it is called only the parent_user_id
+// signal is available.
+func (c *Channel) SetThreadEngagementChecker(t ThreadEngagementChecker) {
+	c.engagementMu.Lock()
+	c.threadEngagement = t
+	c.engagementMu.Unlock()
+}
+
+// threadEngaged consults the bound checker. Returns false when none is
+// bound, which is the conservative answer.
+func (c *Channel) threadEngaged(ctx context.Context, sessionID string) bool {
+	c.engagementMu.RLock()
+	checker := c.threadEngagement
+	c.engagementMu.RUnlock()
+	if checker == nil {
+		return false
+	}
+	return checker.ThreadEngaged(ctx, sessionID)
 }
 
 // New constructs a Channel from the given Config. Returns an error
@@ -321,6 +415,10 @@ func New(cfg Config) (*Channel, error) {
 	if burst <= 0 {
 		burst = defaultPostMessageBurst
 	}
+	progressDelay := cfg.ProgressSignalDelay
+	if progressDelay == 0 {
+		progressDelay = progressSignalDelay
+	}
 
 	c := &Channel{
 		cfg:                cfg,
@@ -337,6 +435,8 @@ func New(cfg Config) (*Channel, error) {
 		installationsByID:  indexInstallations(installs),
 		voice:              cfg.Voice,
 		voiceTracker:       newVoiceTracker(),
+		progress:           make(map[string]*progressSignal),
+		progressDelay:      progressDelay,
 	}
 	if c.voice.MaxOutboundDuration <= 0 {
 		c.voice.MaxOutboundDuration = slackAudioMaxDurationMs

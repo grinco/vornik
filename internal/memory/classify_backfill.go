@@ -27,6 +27,21 @@ type ClassifyBackfiller struct {
 	// LeaderGate gates the tick loop on the elected leader.
 	// Same shape + nil-safe contract as TitleBackfiller.
 	LeaderGate LeaderGate
+
+	// offset walks the oldest-first queue past rows nothing can classify.
+	//
+	// LIVELOCK, observed in production 2026-07-30: the loop selected
+	// `ORDER BY created_at ASC LIMIT 25`, the classifier declined all 25, and a
+	// declined row is never written — so the same 25 came back every tick and
+	// permanently blocked the 1,174 behind them. `remaining` sat at 1199 across
+	// ticks with succeeded=0, forever.
+	//
+	// Advancing by the number skipped walks past them, so every classifiable row
+	// is reached. It resets on an empty page so newly-ingested rows are picked up.
+	// Not persisted: a restart re-walks from the oldest, which costs one wasted
+	// page and is self-correcting. The complete fix is a durable per-row
+	// "attempted" marker, which needs a migration and is noted in the backlog.
+	offset int
 }
 
 // ClassifyBackfillResult summarises one BackfillBatch call. Same
@@ -167,9 +182,18 @@ func (b *ClassifyBackfiller) BackfillBatchAcrossProjects(ctx context.Context, ba
 	if batchSize <= 0 {
 		batchSize = 10
 	}
-	rows, err := b.Repo.ListUnclassifiedChunksAcrossProjects(ctx, batchSize)
+	rows, err := b.Repo.ListUnclassifiedChunksAcrossProjectsFrom(ctx, batchSize, b.offset)
 	if err != nil {
 		return nil, fmt.Errorf("list unclassified (all projects): %w", err)
+	}
+	if len(rows) == 0 && b.offset > 0 {
+		// Walked off the end. Start over so rows ingested since the last pass, and
+		// any whose role mapping has since been added, get another look.
+		b.offset = 0
+		rows, err = b.Repo.ListUnclassifiedChunksAcrossProjectsFrom(ctx, batchSize, 0)
+		if err != nil {
+			return nil, fmt.Errorf("list unclassified (all projects, rewound): %w", err)
+		}
 	}
 	out := &ClassifyBackfillResult{Processed: len(rows)}
 	for _, row := range rows {
@@ -187,6 +211,17 @@ func (b *ClassifyBackfiller) BackfillBatchAcrossProjects(ctx context.Context, ba
 			continue
 		}
 		if class == "" || class == ClassUnclassified {
+			// The LLM abstained. Before giving up, try the deterministic role map —
+			// it is what the ingest path itself uses, and for a chunk whose
+			// producer_role is known it is a better answer than leaving the row
+			// unclassified forever.
+			if byRole, _ := ClassifyByRole(row.ProducerRole); byRole != ClassUnclassified {
+				if uerr := b.Repo.UpdateChunkClass(ctx, row.ID, string(byRole),
+					DefaultClassPolicies[byRole].TTL); uerr == nil {
+					out.Succeeded++
+					continue
+				}
+			}
 			out.Skipped++
 			continue
 		}
@@ -249,6 +284,17 @@ func (b *ClassifyBackfiller) BackfillBatch(ctx context.Context, projectID string
 		// skipped so the operator sees how many genuinely ambiguous
 		// chunks the model couldn't resolve.
 		if class == "" || class == ClassUnclassified {
+			// The LLM abstained. Before giving up, try the deterministic role map —
+			// it is what the ingest path itself uses, and for a chunk whose
+			// producer_role is known it is a better answer than leaving the row
+			// unclassified forever.
+			if byRole, _ := ClassifyByRole(row.ProducerRole); byRole != ClassUnclassified {
+				if uerr := b.Repo.UpdateChunkClass(ctx, row.ID, string(byRole),
+					DefaultClassPolicies[byRole].TTL); uerr == nil {
+					out.Succeeded++
+					continue
+				}
+			}
 			out.Skipped++
 			continue
 		}

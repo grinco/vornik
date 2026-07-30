@@ -27,6 +27,8 @@ var (
 	subjectVerifiedHow   string
 	subjectRefuseWhy     string
 	subjectOutPath       string
+	subjectEraseApply    bool
+	subjectRewriteModel  string
 	subjectLinkTable     string
 	subjectLinkRow       string
 	subjectLinkProject   string
@@ -153,6 +155,11 @@ func init() {
 	subjectRequestCmd.Flags().StringVar(&subjectErasureGround, "ground", "",
 		"Art 17(1) ground, required for --kind erasure (see 'subject erase --help')")
 	subjectEraseCmd.Flags().StringVar(&subjectOutPath, "out", "", "write the erasure report here instead of stdout")
+	subjectEraseCmd.Flags().BoolVar(&subjectEraseApply, "apply", false,
+		"skip per-record review of proposed redactions (AUDITED: every record committed "+
+			"this way is stamped review_bypassed in the request record)")
+	subjectEraseCmd.Flags().StringVar(&subjectRewriteModel, "rewrite-model", "",
+		"model used to rewrite shared records (defaults to the chat section's model)")
 	subjectEraseCmd.Flags().BoolVar(&subjectEraseYes, "yes", false,
 		"skip the confirmation prompt (erasure is irreversible)")
 	subjectLinkCmd.Flags().StringVar(&subjectLinkTable, "table", "", "table the row lives in (required)")

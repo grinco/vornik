@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/autonomy/manager.go
-      sha256: 91812026c3ca8311733f8cabc253f39b3faa23b807826bd0a07c4dc93f950916
+      sha256: 4304c0b1c0fa689a2ad41febb4d21b0b190b45536ad0d46a4b2fc1db13de37bb
     - path: internal/registry/project.go
-      sha256: 8559c4b462883adc4d63839573e0da16a5c8ed2dd740ddae87c3ec0ae7b28911
+      sha256: 3fda8198ac3b13b11f7b85239d2dd7718c7c7662bde56295873112decae05bc3
 ---
 # Autonomy — self-running projects
 
@@ -53,7 +53,7 @@ Useful keys:
 | `autonomy.allowedTaskTypes` | restrict what task types autonomy may create |
 | `autonomy.requireApproval` | create tasks as awaiting-approval instead of queued |
 | `autonomy.duplicateWindow` | how long a completed task suppresses an identical one (default `24h`; `0` for cron-style) |
-| `autonomy.workflow_id` | override the workflow a `backlog`-mode tick dispatches into (see [Backlog autonomy and agent deposits](#backlog-autonomy-and-agent-deposits)) |
+| `autonomy.workflow_id` | override the workflow a `backlog`- or `cron`-mode tick dispatches into (see [Backlog autonomy and agent deposits](#backlog-autonomy-and-agent-deposits)) |
 
 ## Staying in control
 

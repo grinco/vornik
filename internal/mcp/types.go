@@ -21,6 +21,15 @@ type ServerConfig struct {
 	// set to only those whose names are listed. Empty means "all tools
 	// the server advertises" (back-compatible default).
 	AllowedTools []string `yaml:"allowed_tools" json:"allowed_tools,omitempty"`
+	// RequireDeclaredTools makes the mutating-tool gate REFUSE registration
+	// when this server advertises a mutating tool that allowed_tools does not
+	// name (Workspace LLD §10.2). Opt-in per server, and default false, for a
+	// deliberate reason: several existing deployments run expose-all servers
+	// whose tool sets are legitimately mutating (a page publisher, a home
+	// -automation bridge), and a retroactive global rule would refuse to
+	// register integrations that work today. Strictness is declared where it is
+	// wanted rather than imposed where it is not.
+	RequireDeclaredTools bool `yaml:"require_declared_tools" json:"require_declared_tools,omitempty"`
 	// TimeoutSeconds overrides the per-request HTTP timeout for SSE /
 	// streamable-http transports (initialize, tools/list, tools/call). 0
 	// = the 30s default. Raise it for servers whose tools legitimately
@@ -87,6 +96,10 @@ type Tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"inputSchema"`
+	// Annotations carries the server's own read-only / destructive hints when
+	// it supplies them. Authoritative over the name heuristic in
+	// IsMutating — the server knows its semantics better than a verb table.
+	Annotations *ToolAnnotations `json:"annotations,omitempty"`
 }
 
 // ToolResult is the response from tools/call.

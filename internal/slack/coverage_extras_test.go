@@ -68,6 +68,7 @@ func TestHandleWebhook_ReadBodyFailure(t *testing.T) {
 	req.Header.Set("X-Slack-Signature", "v0=deadbeef")
 	w := httptest.NewRecorder()
 	ch.HandleWebhook(w, req)
+	ch.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 on body read failure", w.Code)
 	}
@@ -390,6 +391,7 @@ func TestMuxHandler_ReadBodyFailure(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", &erroringReader{err: errors.New("boom"), data: []byte("x")})
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
+	mux.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 on body read failure", w.Code)
 	}
@@ -407,6 +409,7 @@ func TestMuxHandler_URLVerificationNoChannels_DropsWith200(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
+	mux.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200 (no channels ⇒ drop)", w.Code)
 	}

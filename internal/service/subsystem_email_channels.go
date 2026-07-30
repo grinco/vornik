@@ -159,6 +159,12 @@ func (s *EmailChannelsSubsystem) Start(ctx context.Context) error {
 	if n := c.reminderCompletionNotifier(); n != nil {
 		notifiers = append(notifiers, n)
 	}
+	// Re-added here for the same reason the reminder notifier is: this subsystem
+	// rebuilds the whole multiplexer, so omitting it would silently drop the Slack
+	// completion notice on any deployment that also has email configured.
+	if n := c.chatCompletionSink(); n != nil {
+		notifiers = append(notifiers, n)
+	}
 	if multi := newMultiCompletionNotifier(notifiers...); multi != nil && c.Executor != nil {
 		c.Executor.SetCompletionNotifier(multi)
 	}

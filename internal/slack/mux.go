@@ -66,6 +66,17 @@ func NewMuxHandler(channels []*Channel, logger zerolog.Logger) *MuxHandler {
 	return m
 }
 
+// waitInFlight drains every routed channel's asynchronously dispatched event turns.
+// Same rationale as Channel.Stop: deliveries are acked in 3s and processed for much
+// longer, so a shutdown that did not drain could abandon a turn between "answer
+// generated" and "answer posted". Also the deterministic synchronisation point tests
+// use instead of sleeping.
+func (m *MuxHandler) waitInFlight() {
+	for _, ch := range m.byTeam {
+		ch.waitInFlight()
+	}
+}
+
 // ServeHTTP implements http.Handler so the daemon's API server can
 // mount MuxHandler directly. Reads + buffers the body so the
 // dispatch-target channel still gets an intact request.

@@ -239,7 +239,9 @@ func TestListUnclassifiedChunksAcrossProjects(t *testing.T) {
 	defer cleanup()
 	// Limit clamping: 0 → 100, takes a single positional arg (no project_id).
 	mock.ExpectQuery("FROM project_memory_chunks").
-		WithArgs(100).
+		// limit + offset: the offset lets the auto-loop walk past rows nothing can
+		// classify instead of re-deciding the same oldest page forever (2026-07-30).
+		WithArgs(100, 0).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}).
 			AddRow("c1", "p-alpha", "alpha.md", "researcher", "body alpha").
 			AddRow("c2", "p-beta", "beta.md", "", "body beta"))
@@ -253,7 +255,7 @@ func TestListUnclassifiedChunksAcrossProjects(t *testing.T) {
 
 	// Limit clamping: huge → 1000.
 	mock.ExpectQuery("FROM project_memory_chunks").
-		WithArgs(1000).
+		WithArgs(1000, 0).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}))
 	if _, err := r.ListUnclassifiedChunksAcrossProjects(context.Background(), 9999); err != nil {
 		t.Fatal(err)

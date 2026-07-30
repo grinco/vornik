@@ -258,6 +258,10 @@ func (a *Agent) Process(ctx context.Context, req Request) (result Result) {
 				Str("tool", tc.Function.Name).
 				Msg("dispatcher: executing tool")
 			a.metrics.recordToolCall(tc.Function.Name)
+			// Tell the originating channel what is happening. Display only —
+			// never enters history, costs no context, and a channel that cannot
+			// show it does nothing.
+			a.reportTurnStatus(ctx, req, toolStatusLine(tc.Function.Name))
 
 			// Intent judge: fire the heuristic verdict and (when
 			// the refiner is wired + risk meets the floor) the
@@ -464,6 +468,7 @@ func (a *Agent) ProcessStreaming(ctx context.Context, req Request, onText chat.S
 
 		for _, tc := range assistantMsg.ToolCalls {
 			a.logger.Info().Str("tool", tc.Function.Name).Msg("dispatcher: executing tool")
+			a.reportTurnStatus(ctx, req, toolStatusLine(tc.Function.Name))
 
 			if onText != nil {
 				// Status marker bracketed in blank lines so the

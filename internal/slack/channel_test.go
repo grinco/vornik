@@ -74,6 +74,7 @@ func postSignedJSON(t *testing.T, ch *Channel, secret string, now time.Time, pay
 	req := signedRequest(t, secret, now.Unix(), body)
 	w := httptest.NewRecorder()
 	ch.HandleWebhook(w, req)
+	ch.waitInFlight() // event dispatch is async since 2026-07-30
 	return w
 }
 
@@ -179,6 +180,7 @@ func TestHandleWebhook_BadSignature_Returns401(t *testing.T) {
 	req.Header.Set("X-Slack-Signature", "v0=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
 	w := httptest.NewRecorder()
 	ch.HandleWebhook(w, req)
+	ch.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", w.Code)
 	}
@@ -192,6 +194,7 @@ func TestHandleWebhook_WrongMethod(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	ch.HandleWebhook(w, req)
+	ch.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", w.Code)
 	}
@@ -209,6 +212,7 @@ func TestHandleWebhook_OversizedBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	ch.HandleWebhook(w, req)
+	ch.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusRequestEntityTooLarge {
 		t.Errorf("status = %d, want 413", w.Code)
 	}
@@ -370,6 +374,9 @@ func TestHandleWebhook_RetryWhileFirstReceiveInFlightDispatchesOnce(t *testing.T
 	retryReq.Header.Set("X-Slack-Retry-Reason", "http_timeout")
 	retryRec := httptest.NewRecorder()
 	ch.HandleWebhook(retryRec, retryReq)
+	// No waitInFlight here: the first Receive is deliberately still blocked (released
+	// below), so draining would deadlock. The assertion is that the RETRY added no
+	// second dispatch, which is already observable.
 	if retryRec.Code != http.StatusOK {
 		t.Fatalf("retry status = %d, want 200", retryRec.Code)
 	}
@@ -914,6 +921,7 @@ func TestHandleWebhook_MalformedJSON_Returns400(t *testing.T) {
 	req := signedRequest(t, cfg.SigningSecret, now.Unix(), body)
 	w := httptest.NewRecorder()
 	ch.HandleWebhook(w, req)
+	ch.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
 	}
@@ -948,5 +956,226 @@ func TestHandleWebhook_ReceiverErr_LoggedNotPropagated(t *testing.T) {
 	}
 	if got := rec.snapshot(); len(got) != 1 {
 		t.Errorf("Receive count = %d, want 1 (handler must still call Receive)", len(got))
+	}
+}
+
+// ctxCapturingReceiver records the context it was handed and blocks until released,
+// so a test can inspect that context AFTER the inbound HTTP request has finished.
+type ctxCapturingReceiver struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	ctx     context.Context
+}
+
+func newCtxCapturingReceiver() *ctxCapturingReceiver {
+	return &ctxCapturingReceiver{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (r *ctxCapturingReceiver) Receive(ctx context.Context, _ conversation.ChannelMessage) error {
+	r.mu.Lock()
+	r.ctx = ctx
+	r.mu.Unlock()
+	r.once.Do(func() { close(r.started) })
+	<-r.release
+	return nil
+}
+
+func (r *ctxCapturingReceiver) capturedCtx() context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ctx
+}
+
+// THE REGRESSION, observed in production 2026-07-30.
+//
+// A thread reply in Slack produced tool calls and a 2.9 KB model answer, and the user
+// got no reply. Root cause: the event paths dispatched with `r.Context()` and blocked
+// on Receive before writing the 200. Slack allows 3 SECONDS; a turn that calls
+// memory_search plus a Workspace tool takes far longer. So Slack timed out, retried
+// (the retry was correctly deduped), and closed the original connection — which
+// cancelled `r.Context()` and killed the in-flight turn, reply included.
+//
+// The slash-command path already had this right: ack immediately, then dispatch on
+// `context.WithTimeout(context.WithoutCancel(r.Context()), …)`. The event paths must
+// behave the same way.
+//
+// Two properties, and both matter independently:
+//  1. HandleWebhook must ACK without waiting for the Receiver, or Slack times out.
+//  2. The dispatch context must SURVIVE cancellation of the request context, or the
+//     reply is killed exactly when Slack hangs up.
+func TestHandleWebhook_EventDispatchSurvivesRequestCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"direct message", `{"type":"event_callback","team_id":"T123","event_id":"Ev1",
+			"event":{"type":"message","channel_type":"im","user":"U1","channel":"D1","text":"hello","ts":"1.1"}}`},
+		{"app_mention", `{"type":"event_callback","team_id":"T123","event_id":"Ev2",
+			"event":{"type":"app_mention","user":"U1","channel":"C1","text":"<@U9> hi","ts":"2.1"}}`},
+		{"thread reply mentioning the bot", `{"type":"event_callback","team_id":"T123","event_id":"Ev3",
+			"event":{"type":"message","channel_type":"channel","user":"U1","channel":"C1",
+			"text":"@vornik any followup?","ts":"3.2","thread_ts":"3.1"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			ch, err := New(cfg)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			recv := newCtxCapturingReceiver()
+			bindReceiver(ch, recv)
+			defer close(recv.release)
+
+			body := []byte(tc.body)
+			req := signedRequest(t, cfg.SigningSecret, time.Now().Unix(), body)
+			reqCtx, cancelReq := context.WithCancel(req.Context())
+			req = req.WithContext(reqCtx)
+			rec := httptest.NewRecorder()
+
+			done := make(chan struct{})
+			go func() { defer close(done); ch.HandleWebhook(rec, req) }()
+
+			// (1) The ack must not wait for the Receiver. Slack's budget is 3s; allow
+			// a generous 2s here so a slow CI box does not produce a flake while still
+			// failing a handler that blocks on the full turn.
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("HandleWebhook blocked on the Receiver — Slack would time out at 3s " +
+					"and retry, and the original connection would be cancelled")
+			}
+			if rec.Code != http.StatusOK {
+				t.Errorf("ack status = %d, want 200", rec.Code)
+			}
+
+			select {
+			case <-recv.started:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the Receiver was never invoked")
+			}
+
+			// (2) Slack hangs up. The dispatch context must NOT die with it.
+			cancelReq()
+			dispatchCtx := recv.capturedCtx()
+			if dispatchCtx == nil {
+				t.Fatal("no context captured")
+			}
+			select {
+			case <-dispatchCtx.Done():
+				t.Fatal("dispatch context was cancelled when the request context was — this is " +
+					"exactly the bug: Slack's 3s timeout closes the connection and the " +
+					"in-flight reply is killed")
+			case <-time.After(150 * time.Millisecond):
+				// still alive, which is the point
+			}
+		})
+	}
+}
+
+// The detached context must still be BOUNDED — a turn that hangs forever must not leak
+// a goroutine and an LLM call indefinitely.
+func TestHandleWebhook_EventDispatchContextHasADeadline(t *testing.T) {
+	cfg := validConfig()
+	ch, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	recv := newCtxCapturingReceiver()
+	bindReceiver(ch, recv)
+	defer close(recv.release)
+
+	body := []byte(`{"type":"event_callback","team_id":"T123","event_id":"Ev9",
+		"event":{"type":"message","channel_type":"im","user":"U1","channel":"D1","text":"hi","ts":"9.1"}}`)
+	req := signedRequest(t, cfg.SigningSecret, time.Now().Unix(), body)
+	rec := httptest.NewRecorder()
+	go ch.HandleWebhook(rec, req)
+
+	select {
+	case <-recv.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the Receiver was never invoked")
+	}
+	if _, ok := recv.capturedCtx().Deadline(); !ok {
+		t.Error("the dispatch context must carry a deadline; an unbounded detached context " +
+			"leaks a goroutine and an in-flight LLM call when a turn hangs")
+	}
+}
+
+// REGRESSION 2026-07-30: a DM was dropped by the CHANNEL allowlist.
+//
+// channel_allowlist exists to bound which SHARED channels the bot may act in. It was
+// also being applied to DMs, whose channel id is a per-user `D…` that an operator
+// cannot know in advance — so allow-listing the team's channel silently killed every
+// direct message: "slack: channel not on installation allowlist; dropping
+// channel=D0BLA9ZRDFH".
+//
+// A DM's meaningful control is the SENDER allowlist, which still applies. Gating a DM
+// on a channel allowlist is unimplementable in practice: three users means three
+// unknown D… ids, each created lazily by Slack on first contact.
+func TestHandleWebhook_DMBypassesChannelAllowlistButNotSenderAllowlist(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		senders      []string
+		wantDispatch bool
+	}{
+		{"DM from an allow-listed sender is dispatched", []string{"U_alice"}, true},
+		{"DM from an unknown sender is still refused", []string{"U_someone_else"}, false},
+		{"DM with no sender allowlist is dispatched (dev mode)", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			// The team's shared channel only — deliberately NOT any D… id.
+			cfg.ChannelAllowlist = []string{"C03HTMUL2S1"}
+			cfg.SenderAllowlist = tc.senders
+			ch, err := New(cfg)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			recv := &recordingReceiver{}
+			bindReceiver(ch, recv)
+
+			body := []byte(`{"type":"event_callback","team_id":"T123","event_id":"Ev_dm_gate",
+				"event":{"type":"message","channel_type":"im","user":"U_alice",
+				"channel":"D0BLA9ZRDFH","text":"any followup?","ts":"1.1"}}`)
+			req := signedRequest(t, cfg.SigningSecret, time.Now().Unix(), body)
+			ch.HandleWebhook(httptest.NewRecorder(), req)
+			ch.waitInFlight()
+
+			got := len(recv.snapshot())
+			if tc.wantDispatch && got != 1 {
+				t.Errorf("DM dispatch count = %d, want 1 — a channel allowlist must not gate "+
+					"DMs, whose D… id cannot be known in advance", got)
+			}
+			if !tc.wantDispatch && got != 0 {
+				t.Errorf("DM dispatch count = %d, want 0 — the SENDER allowlist must still apply", got)
+			}
+		})
+	}
+}
+
+// The channel allowlist must still bite on SHARED channels — that is what it is for,
+// and it is what keeps the bot out of channels someone added it to by mistake.
+func TestHandleWebhook_ChannelAllowlistStillGatesSharedChannels(t *testing.T) {
+	cfg := validConfig()
+	cfg.ChannelAllowlist = []string{"C03HTMUL2S1"}
+	ch, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	recv := &recordingReceiver{}
+	bindReceiver(ch, recv)
+
+	body := []byte(`{"type":"event_callback","team_id":"T123","event_id":"Ev_other_chan",
+		"event":{"type":"message","channel_type":"channel","user":"U_alice",
+		"channel":"C_NOT_ALLOWED","text":"@vornik hello","ts":"2.1"}}`)
+	req := signedRequest(t, cfg.SigningSecret, time.Now().Unix(), body)
+	ch.HandleWebhook(httptest.NewRecorder(), req)
+	ch.waitInFlight()
+
+	if got := len(recv.snapshot()); got != 0 {
+		t.Errorf("dispatch count = %d, want 0 — an un-allow-listed shared channel must "+
+			"still be refused", got)
 	}
 }

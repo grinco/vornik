@@ -999,6 +999,14 @@ func NewContainer(cfg *config.Config, configPath string, opts ...ContainerOption
 			if n := c.reminderCompletionNotifier(); n != nil {
 				notifiers = append(notifiers, n)
 			}
+			// Durable "your job finished" notice for channels without their own
+			// auto-resume followup (Slack today). Resolves the destination from
+			// chat_audit rather than an in-memory map, so a restart between
+			// scheduling and completion still reports back — the customer report of
+			// 2026-07-30.
+			if n := c.chatCompletionSink(); n != nil {
+				notifiers = append(notifiers, n)
+			}
 			if multi := newMultiCompletionNotifier(notifiers...); multi != nil {
 				c.Executor.SetCompletionNotifier(multi)
 			}
@@ -1573,6 +1581,17 @@ func (c *Container) wireComponentMetrics() {
 		c.dispatcherMetrics = dispatcher.NewMetrics(reg)
 		c.Dispatcher.SetMetrics(c.dispatcherMetrics)
 		c.Logger.Info().Msg("dispatcher metrics wired")
+	}
+
+	// Let a customer file an anonymised bug report from a chat channel rather than
+	// needing shell access for `vornikctl report`. Nil when the build cannot identify
+	// its own version, which omits the tool rather than filing a report nobody can act
+	// on.
+	if c.Dispatcher != nil {
+		if b := c.problemReportBuilder(); b != nil {
+			c.Dispatcher.SetProblemReportBuilder(b)
+			c.Logger.Info().Msg("chat bug-report path wired (report_problem)")
+		}
 	}
 
 	if c.autonomyManager != nil {

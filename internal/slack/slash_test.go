@@ -32,6 +32,7 @@ func TestMuxHandler_VornikSlashCommandDispatches(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
+	mux.waitInFlight() // event dispatch is async since 2026-07-30
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
@@ -74,6 +75,7 @@ func TestMuxHandler_DuplicateSlashTriggerDispatchesOnce(t *testing.T) {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
+		mux.waitInFlight() // event dispatch is async since 2026-07-30
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", w.Code)
 		}
@@ -108,6 +110,7 @@ func TestMuxHandler_SlashCommandRequiresValidSignature(t *testing.T) {
 	req.Header.Set("X-Slack-Signature", "v0=forged")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
+	mux.waitInFlight() // event dispatch is async since 2026-07-30
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", w.Code)
@@ -124,5 +127,62 @@ func TestParseSlackSessionID_SlashSessionHasNoThreadTimestamp(t *testing.T) {
 	}
 	if team != "T123" || channel != "C_general" || !strings.HasPrefix(thread, "slash:") {
 		t.Fatalf("unexpected parse: team=%q channel=%q thread=%q", team, channel, thread)
+	}
+}
+
+// The channel allowlist must not gate /vornik in a DM — the same defect fixed for
+// message events in 25edd7e70, still live on the slash path.
+//
+// A DM's channel id is a per-user `D…` Slack creates lazily on first contact, so it
+// cannot be allow-listed in advance. The operator's own instruction to the workspace
+// was "use the /vornik command in channel or DM" (2026-07-30 01:27), and the DM half of
+// that was silently refused whenever channel_allowlist was set. The SENDER allowlist
+// remains the control for a DM.
+func TestSlashCommand_DMBypassesChannelAllowlist(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		channelID    string
+		senders      []string
+		wantDispatch bool
+	}{
+		{"DM from an allow-listed sender", "D0BLA9ZRDFH", []string{"U_alice"}, true},
+		{"DM from an unknown sender is refused", "D0BLA9ZRDFH", []string{"U_bob"}, false},
+		{"allow-listed shared channel still works", "C_general", []string{"U_alice"}, true},
+		{"un-allow-listed shared channel is refused", "C_other", []string{"U_alice"}, false},
+		{"private group is not a DM and is refused", "G_secret", []string{"U_alice"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.ChannelAllowlist = []string{"C_general"}
+			cfg.SenderAllowlist = tc.senders
+			now := time.Unix(1700000000, 0)
+			ch := makeChannel(t, cfg, now)
+			rec := &recordingReceiver{}
+			bindReceiver(ch, rec)
+
+			form := url.Values{
+				"team_id":    {"T123"},
+				"channel_id": {tc.channelID},
+				"user_id":    {"U_alice"},
+				"command":    {"/vornik"},
+				"text":       {"what is on my calendar"},
+				"trigger_id": {"trigger-" + tc.channelID},
+			}.Encode()
+			req := signedRequest(t, cfg.SigningSecret, now.Unix(), []byte(form))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			ch.HandleWebhook(httptest.NewRecorder(), req)
+
+			deadline := time.Now().Add(time.Second)
+			for len(rec.snapshot()) == 0 && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			got := len(rec.snapshot())
+			if tc.wantDispatch && got != 1 {
+				t.Fatalf("dispatch count = %d, want 1", got)
+			}
+			if !tc.wantDispatch && got != 0 {
+				t.Fatalf("dispatch count = %d, want 0", got)
+			}
+		})
 	}
 }

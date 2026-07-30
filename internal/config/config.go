@@ -360,10 +360,15 @@ type Config struct {
 	// AIDisclosure tunes the EU AI Act Art 50(1) notice. Note there is
 	// deliberately NO enabled/disabled key — see aidisclosure.Config.
 	AIDisclosure aidisclosure.Config `yaml:"ai_disclosure"`
-	Metrics      MetricsConfig       `yaml:"metrics"`
-	Tracing      TracingConfig       `yaml:"tracing"`
-	Logging      LoggingConfig       `yaml:"logging"`
-	API          APIConfig           `yaml:"api"`
+
+	// WorkspaceIngest governs automatic ingestion of Google Workspace
+	// documents. Off by default, and ingest-on-request is unaffected by it.
+	// See LLD 2026-07-29-authenticated-mcp-google-workspace-design.md §4.1.
+	WorkspaceIngest WorkspaceIngestConfig `yaml:"workspace_ingest" json:"workspace_ingest"`
+	Metrics         MetricsConfig         `yaml:"metrics"`
+	Tracing         TracingConfig         `yaml:"tracing"`
+	Logging         LoggingConfig         `yaml:"logging"`
+	API             APIConfig             `yaml:"api"`
 	// Trading configures the daemon side of the broker→daemon
 	// trading audit channel — specifically the HMAC request-auth
 	// guarding the /api/v1/internal/trading-* endpoints. Empty
@@ -943,6 +948,10 @@ type MCPServerConfig struct {
 	// server appear in the discovery catalog. Empty = all advertised
 	// tools.
 	AllowedTools []string `yaml:"allowed_tools" doc:"Restrict which advertised tools appear."`
+	// RequireDeclaredTools refuses to register this server when it advertises a
+	// mutating tool that allowed_tools does not name. Opt-in per server; see
+	// mcp.ServerConfig for why it is not a global default.
+	RequireDeclaredTools bool `yaml:"require_declared_tools" doc:"Refuse to register this server if it advertises a mutating (write/delete) tool that allowed_tools does not name. Use for third-party servers whose tool set can change under you — a later release adding a destructive tool then fails loudly instead of silently widening what agents can reach. Default false: existing expose-all servers with legitimately mutating tools keep working."`
 	// TimeoutSeconds overrides the per-request HTTP timeout (SSE /
 	// streamable-http). 0 = the 30s default. Raise it for servers with
 	// legitimately long-running tools (e.g. scraper web_fetch).

@@ -51,11 +51,21 @@ Under (d) and (e) the controller has no discretion to keep any part, so another
 person's context is lost too. Under the others, redaction honours this subject
 while preserving theirs.
 
-WHAT THIS SLICE CANNOT YET DO. Redaction of shared records needs an LLM pass over
-the memory pipeline and is not implemented. Those records are reported as
-DEFERRED and are NOT erased — the request is deliberately left un-actioned so it
-still shows as live, because marking it complete while data remains would put a
-false completion in the accountability ledger.
+HOW REDACTION WORKS, AND WHAT IT DOES NOT PROMISE. A shared record is rewritten by
+a model to remove this subject while preserving everyone else, then VERIFIED
+mechanically: if any of the subject's identifiers survives in the rewrite it is
+discarded and the record is left untouched. You review each rewrite before it is
+committed (use --apply to skip that, which is recorded against the request).
+
+The guarantee is that the subject's KNOWN IDENTIFIERS are gone. It is not that no
+combination of remaining details could still be associated with them — pronouns,
+role references and quasi-identifiers are outside what any mechanical check
+reaches, and the subject-facing report says so.
+
+Records that cannot be redacted safely are reported as DEFERRED and are NOT
+erased — the request is deliberately left un-actioned so it still shows as live,
+because marking it complete while data remains would put a false completion in
+the accountability ledger.
 
 The report names what was retained under an exemption and why. A subject told
 "erased" while records remain has been misled.`,
@@ -157,7 +167,11 @@ func runSubjectErase(_ *cobra.Command, args []string) error {
 		}
 	}
 
-	res, execErr := newSubjectExecutor(deps).Execute(ctx, plan)
+	exec, err := newSubjectExecutor(deps)
+	if err != nil {
+		return err
+	}
+	res, execErr := exec.Execute(ctx, plan)
 	if res != nil {
 		printErasureResult(res)
 		if err := writeErasureReport(ctx, plan, res, &req, deps.Repo); err != nil {
@@ -192,9 +206,34 @@ func printErasurePlan(p *datasubject.ErasurePlan) {
 	}
 }
 
+// shortHash trims a content hash for terminal output; the full pair lives in the
+// stored report, which is the auditable copy.
+func shortHash(h string) string {
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
+}
+
 func printErasureResult(r *datasubject.ErasureResult) {
 	fmt.Printf("\nErased: %d row(s), %d artifact(s), %d derived memory chunk(s).\n",
 		r.RowsDeleted, r.ArtifactsErased, r.DerivedChunksDeleted)
+	if len(r.Redacted) > 0 {
+		fmt.Printf("Redacted: %d shared record(s) rewritten to remove this subject while "+
+			"preserving other people's data.\n", len(r.Redacted))
+		for _, a := range r.Redacted {
+			bypass := ""
+			if a.ReviewBypassed {
+				bypass = "  [APPLIED WITHOUT REVIEW]"
+			}
+			fmt.Printf("  REDACTED  %s/%s  %s → %s%s\n",
+				a.Table, a.RowID, shortHash(a.BeforeHash), shortHash(a.AfterHash), bypass)
+		}
+	}
+	for _, c := range r.CollisionDeleted {
+		fmt.Printf("  REMOVED   %s/%s — after redaction it duplicated %s\n",
+			c.Table, c.RowID, c.SurvivorID)
+	}
 	for _, d := range r.Deferred {
 		fmt.Printf("  DEFERRED  %s/%s — %s\n", d.Table, d.RowID, d.Reason)
 	}
@@ -214,10 +253,15 @@ func writeErasureReport(
 	ctx context.Context, plan *datasubject.ErasurePlan, res *datasubject.ErasureResult,
 	req *datasubject.Request, repo *postgres.DataSubjectRepository,
 ) error {
+	// The narrative is what the SUBJECT reads; plan and result are what an auditor
+	// reads. Both go in the stored report, and the narrative comes first because a
+	// report whose honest summary is buried under two pages of row ids is honest
+	// only in a technical sense (§7).
 	report := struct {
-		Plan   *datasubject.ErasurePlan   `json:"plan"`
-		Result *datasubject.ErasureResult `json:"result"`
-	}{plan, res}
+		Narrative datasubject.SubjectNarrative `json:"subject_narrative"`
+		Plan      *datasubject.ErasurePlan     `json:"plan"`
+		Result    *datasubject.ErasureResult   `json:"result"`
+	}{res.Narrative(plan), plan, res}
 
 	blob, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -261,6 +305,9 @@ func writeErasureReport(
 type erasureDeps struct {
 	Repo *postgres.DataSubjectRepository
 	DB   *sql.DB
+	// Cfg is the loaded daemon config, kept so the redaction path can build its
+	// rewrite client from the same chat settings the daemon uses.
+	Cfg  *config.Config
 	Root string
 }
 
@@ -291,6 +338,7 @@ func openErasureDeps(ctx context.Context) (*erasureDeps, func(), error) {
 		Repo: postgres.NewDataSubjectRepository(db),
 		DB:   db,
 		Root: root,
+		Cfg:  cfg,
 	}, closeFn, nil
 }
 
@@ -300,16 +348,28 @@ func openErasureDeps(ctx context.Context) (*erasureDeps, func(), error) {
 // cascade also removes the extraction rows, the derived memory chunks, the
 // extraction storage directories, and the uploaded file itself. A plain row
 // delete would orphan every one of those while reporting success.
-func newSubjectExecutor(d *erasureDeps) *datasubject.Executor {
+func newSubjectExecutor(d *erasureDeps) (*datasubject.Executor, error) {
+	redact, err := newRedactDeps(d.Cfg, d)
+	if err != nil {
+		// Configured but broken. Refuse rather than degrade every shared record to a
+		// deferral, which would read as a policy decision instead of a fault.
+		return nil, fmt.Errorf("wire redaction capability: %w", err)
+	}
+	if redact == nil {
+		fmt.Println("\nNOTE: no rewrite model is configured (chat.endpoint + chat.model, or " +
+			"--rewrite-model), so records shared with other people will be DEFERRED rather " +
+			"than redacted. They are listed in the report and stay un-erased.")
+	}
 	return &datasubject.Executor{
-		Rows: d.Repo,
+		Redact: redact,
+		Rows:   d.Repo,
 		Artifacts: cascadeEraser{svc: &erasure.Service{
 			Docs:         postgres.NewExtractedDocumentRepository(d.DB),
 			Chunks:       memory.NewRepository(d.DB),
 			Artifacts:    artifactRowStore{repo: postgres.NewArtifactRepository(d.DB)},
 			ArtifactRoot: d.Root,
 		}},
-	}
+	}, nil
 }
 
 // buildErasurePlan collects the subject's links and decides their treatment.

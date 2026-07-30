@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 
 	"vornik.io/vornik/internal/voice"
@@ -307,7 +308,14 @@ func (b *Bot) sendVoiceReply(ctx context.Context, chatID int64, text string) (se
 	if b.voice.TTS == nil {
 		return "", false, nil
 	}
-	audio, err := b.voice.TTS.Synthesize(ctx, text, voice.TTSOptions{Format: "ogg-opus"})
+	// See internal/voice.ForSpeech: rich text is for reading, not for a synthesiser.
+	spoken := voice.ForSpeech(text)
+	if strings.TrimSpace(spoken) == "" {
+		// Nothing left worth listening to (a reply that was only a link). The caller
+		// falls back to text, which is the readable form anyway.
+		return "", false, nil
+	}
+	audio, err := b.voice.TTS.Synthesize(ctx, spoken, voice.TTSOptions{Format: "ogg-opus"})
 	if err != nil {
 		// Oversize-text or empty-text: caller-side budget exceeded.
 		// Caller falls back to text.

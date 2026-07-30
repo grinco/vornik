@@ -253,13 +253,24 @@ func buildMCPServersValue(data *ProjectConfigFormData) (value []map[string]any, 
 		if !row.Subscribed {
 			continue
 		}
+		// NAME-ONLY SUBSCRIPTION — deliberately no transport and no url.
+		//
+		// The daemon supplies a subscription's connection details from its own
+		// mcp.servers catalogue, but only when the project entry leaves transport
+		// unset (container_subsystems.go: `if s.Transport == ""`). This used to
+		// copy row.Server.Transport while copying neither Command nor Args, which
+		// emitted `transport: stdio` with no command: inheritance was suppressed
+		// and the server failed to register with "command is empty". sse/http
+		// servers survived only because url was copied as well, making those
+		// entries self-sufficient by accident; every stdio server broke.
+		//
+		// Found in production 2026-07-29 — saving this form killed `pagedrop` and
+		// `google-workspace` on a live project. Omitting both also keeps the
+		// connection defined in exactly one place, so a project cannot drift from
+		// the daemon's catalogue.
 		entry := map[string]any{
-			"name":      row.Server.Name,
-			"transport": row.Server.Transport,
-			"_order":    []string{"name", "transport", "url", "allowed_tools"},
-		}
-		if row.Server.URL != "" {
-			entry["url"] = row.Server.URL
+			"name":   row.Server.Name,
+			"_order": []string{"name", "transport", "url", "allowed_tools"},
 		}
 		var allowed []string
 		if !row.AllowAllTools {

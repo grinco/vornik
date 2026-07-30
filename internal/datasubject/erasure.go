@@ -111,6 +111,34 @@ func (g ErasureGround) RemovesRetentionDiscretion() bool {
 	return erasureGrounds[g].removesDiscretion
 }
 
+// SharedRowRedactionAvailable reports whether Art 17 shared-row redaction —
+// erasure slice 5c — has shipped.
+//
+// A constant rather than config, because it describes what the BINARY can do,
+// not what an operator wants. Features that cannot be defended without it gate
+// on this: automatic Workspace ingestion refuses to start while it is false,
+// since every ingested meeting record is a shared row and an erasure request
+// over them would report almost all as deferred rather than erased.
+//
+// TRUE since 2026-07-30: slice 5c shipped. A shared row is now rewritten by a model
+// to remove the subject, the rewrite is VERIFIED mechanically against the subject's
+// identifiers before anything is written, and content, hash, embedding, re-embed
+// queue and embedding cache all move in one transaction.
+//
+// WHAT THIS TRUE DOES AND DOES NOT CLAIM. It claims the capability exists and that a
+// subject's known identifiers can be removed from a shared record without destroying
+// the other people's data in it. It does NOT claim inferential removal — pronouns,
+// role references and Recital 26 quasi-identifiers survive, and the subject-facing
+// report says so in those words (report_narrative.go). Nor does it cover shared
+// conversation transcripts, which are slice 5d.
+//
+// It also depends on a rewrite model being configured. With none, every shared row
+// DEFERS with a recorded reason rather than being silently skipped — so the honest
+// failure mode is a visibly incomplete erasure, not a false completion.
+//
+// Design: 2026-07-29-art17-redact-and-reembed-design.md
+const SharedRowRedactionAvailable = true
+
 // Disposition is what happens to one linked row.
 type Disposition string
 

@@ -276,6 +276,9 @@ type ToolExecutor struct {
 	// container, backing get_channel_thread. Nil disables the tool — the
 	// lead is told the capability is unavailable rather than erroring.
 	channelThreads ChannelThreadReader
+	// problemReports backs report_problem. Nil omits the tool from the
+	// catalogue rather than exposing one that always fails.
+	problemReports ProblemReportBuilder
 	// allowedInputRoots is the allow-list of host directories a
 	// create_task `input_files` entry may name as a *literal*
 	// filesystem path before it is snapshotted via StoreInput.
@@ -461,6 +464,8 @@ func (te *ToolExecutor) execute(ctx context.Context, tc chat.ToolCall, activePro
 	switch name {
 	case "list_projects":
 		return te.listProjects(allowedProjects)
+	case "report_problem":
+		return te.reportProblem(ctx, args)
 	case "switch_project":
 		return te.switchProject(args, allowedProjects)
 	case "list_tasks":
@@ -2051,6 +2056,21 @@ func DispatcherTools() []chat.Tool {
 				Name:        "list_projects",
 				Description: "List all registered projects.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: chat.ToolFunction{
+				Name: "report_problem",
+				Description: "File a bug report about Vornik itself — a crash, an error, a feature " +
+					"misbehaving, something that used to work. Use this when the user is reporting a " +
+					"problem WITH VORNIK, not when a task of theirs failed for its own reasons. " +
+					"Returns a link the user must open and submit themselves; it does NOT submit " +
+					"anything, because the report goes to a public repository and the user has to see " +
+					"it first. Tell them the link is theirs to send.",
+				Parameters: json.RawMessage(`{"type":"object","properties":{` +
+					`"summary":{"type":"string","description":"What went wrong, in the user's own words. Include what they were doing and what happened instead. Hostnames, file paths, IP addresses, emails and credentials are stripped automatically."}` +
+					`},"required":["summary"]}`),
 			},
 		},
 		{

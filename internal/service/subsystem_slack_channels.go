@@ -103,6 +103,10 @@ func (s *SlackChannelsSubsystem) Start(ctx context.Context) error {
 		// own channel's threads, so keeping the last one would silently lose
 		// in-process history for every other workspace.
 		threadReaders = append(threadReaders, store)
+		// Let the channel recognise a thread it is already part of, so a follow-up
+		// reply that carries no mention still starts a turn (incident 2026-07-30).
+		// Bound per channel: engagement is answered by THIS workspace's store.
+		ch.SetThreadEngagementChecker(store)
 		receiver := &dispatcher.ChannelReceiver{
 			Channel:           ch,
 			Agent:             c.Dispatcher,
@@ -129,6 +133,12 @@ func (s *SlackChannelsSubsystem) Start(ctx context.Context) error {
 	if len(threadReaders) > 0 {
 		c.Dispatcher.SetChannelThreadReader(threadReaders)
 	}
+	// Let the dispatcher say what it is doing mid-turn. Wired here because Slack is the
+	// only channel that can display a transient status today; the reporter itself is
+	// channel-agnostic and skips channels that cannot.
+	c.Dispatcher.SetTurnStatusReporter(&turnStatusReporter{
+		resolver: &containerChannelResolver{c: c},
+	})
 	return nil
 }
 

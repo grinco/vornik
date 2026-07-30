@@ -139,15 +139,24 @@ func Connect(ctx context.Context, cfg ServerConfig, logger zerolog.Logger) (*Cli
 		return nil, fmt.Errorf("mcp tools/list failed for %s: %w", cfg.Name, err)
 	}
 
+	// Mutating-tool gate (Workspace LLD §10.2). A third-party server's tool
+	// set is theirs to change, so an expose-everything config that was written
+	// against a read-only catalogue must not silently acquire a destructive
+	// tool. Refuses only where the change would actually widen what an agent
+	// can reach; with an allowlist present the filter below already prevents
+	// that, and we warn instead. Runs BEFORE the filter so the decision is
+	// made against what the server really advertises.
+	if err := c.applyMutatingToolGate(cfg, tools); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+
 	// Apply the allowlist filter, if any. Doing this at the Client layer
 	// means everything downstream (Manager.Tools, agent-side mcp-bridge,
 	// the dispatcher's tool catalog) sees only the allowed set, without
 	// needing to know the allowlist exists.
 	if len(cfg.AllowedTools) > 0 {
-		c.allowedSet = make(map[string]struct{}, len(cfg.AllowedTools))
-		for _, name := range cfg.AllowedTools {
-			c.allowedSet[name] = struct{}{}
-		}
+		c.allowedSet = allowedToolSet(cfg.AllowedTools)
 		filtered := make([]Tool, 0, len(tools))
 		skipped := make([]string, 0)
 		for _, t := range tools {
@@ -933,4 +942,55 @@ func validateLauncher(cmd string) error {
 	}
 
 	return fmt.Errorf("command %q is not in the allowlist of safe launchers (uvx, npx, python3, etc.) or standard system paths (/usr/bin, etc.)", cmd)
+}
+
+// applyMutatingToolGate enforces the Workspace LLD §10.2 gate and, regardless of
+// whether the server opted in, tells the operator when the upstream tool surface
+// has grown a mutating tool they did not declare.
+//
+// The warning is unconditional because it is pure signal: the allowlist already
+// keeps the tool away from agents, but the CREDENTIAL may still permit what that
+// tool would do, and a changed upstream surface is worth knowing about on any
+// server — not only the ones strict enough to refuse.
+func (c *Client) applyMutatingToolGate(cfg ServerConfig, tools []Tool) error {
+	allowed := allowedToolSet(cfg.AllowedTools)
+	if err := gateAdvertisedTools(cfg.Name, cfg.RequireDeclaredTools, allowed, tools); err != nil {
+		return err
+	}
+	if overrides := AnnotationOverrides(tools); len(overrides) > 0 {
+		// The server's own annotation is believed (it knows its semantics), but a
+		// third party reclassifying a destructive-looking tool as safe should
+		// leave a trace rather than pass silently.
+		c.logger.Info().
+			Str("server", cfg.Name).
+			Strs("annotation_overrides", overrides).
+			Msg("mcp: server annotations reclassified tools against the name heuristic")
+	}
+	// Host filesystem reach is reported separately from "mutating", and at WARN
+	// even when the tool is filtered out, because it is the one hazard an operator
+	// cannot infer from anything else they can see. Google's Workspace server
+	// advertises five such tools (`drive_downloadFile`, `gmail_downloadAttachment`,
+	// `slides_getImages`, `slides_getSlideThumbnail`, `gmail_createDraft`); four
+	// begin with a read verb, none is annotated, and the subprocess runs as the
+	// daemon user. Exposing one is file access as the daemon, not as the agent.
+	if hostPaths := HostFilesystemTools(tools); len(hostPaths) > 0 {
+		event := c.logger.Warn()
+		if exposed := HostFilesystemTools(allowedSubset(allowed, tools)); len(exposed) > 0 {
+			event = event.Strs("exposed_to_agents", exposed)
+		}
+		event.
+			Str("server", cfg.Name).
+			Strs("host_filesystem_tools", hostPaths).
+			Msg("mcp: server advertises tools that read or write paths on THIS host, as the " +
+				"daemon's OS user — keep them out of allowed_tools unless you intend that")
+	}
+	if undeclared := undeclaredMutatingTools(allowed, tools); len(undeclared) > 0 {
+		c.logger.Warn().
+			Str("server", cfg.Name).
+			Strs("undeclared_mutating_tools", undeclared).
+			Msg("mcp: server advertises mutating tools not in allowed_tools — filtered out, " +
+				"but the upstream tool surface has changed; review whether the credential's " +
+				"scopes still match what you intend to permit")
+	}
+	return nil
 }

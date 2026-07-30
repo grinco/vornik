@@ -166,6 +166,13 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `retention.response_cache_days` | int | Days to keep cached LLM responses (30d recommended on busy deployments). |
 | `retention.embedding_cache_days` | int | Days to keep cached embeddings before evicting cold entries (0 = keep forever; 30d recommended if the table grows large). |
 
+## workspace_ingest
+
+| Key | Type | Description |
+|---|---|---|
+| `workspace_ingest.enabled` | bool | Turn on automatic ingestion of Workspace documents. Off by default; ingest-on-request works regardless. |
+| `workspace_ingest.sources` | list | Explicit source rules. No rules means nothing is ingested automatically. |
+
 ## metrics
 
 | Key | Type | Description |

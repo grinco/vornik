@@ -49,7 +49,7 @@ func TestNewContainer_WiresComposerBridgeOntoDispatcher_WhenComposerEnabled(t *t
 	cfg := newComposerWiringTestConfig(t)
 	cfg.Composer.Enabled = true
 
-	c, err := NewContainer(cfg, "")
+	c, err := NewContainer(cfg, isolatedConfigPath(t))
 	if err != nil {
 		t.Fatalf("NewContainer: unexpected error: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestNewContainer_ComposerBridgeStaysDisabled_WhenComposerConfigDisabled(t *
 	// cfg.Composer.Enabled left at its zero value (false) — the
 	// Phase 3 soak default.
 
-	c, err := NewContainer(cfg, "")
+	c, err := NewContainer(cfg, isolatedConfigPath(t))
 	if err != nil {
 		t.Fatalf("NewContainer: unexpected error: %v", err)
 	}

@@ -126,6 +126,7 @@ func TestE2E_AppMentionRoundTrip(t *testing.T) {
 	req := signedRequest(t, "shh", now.Unix(), payload)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
+	mux.waitInFlight() // event dispatch is async since 2026-07-30
 	if w.Code != http.StatusOK {
 		t.Fatalf("webhook status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}

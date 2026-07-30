@@ -702,3 +702,74 @@ func TestHV_AutonomyDuplicateWindow_Resolution(t *testing.T) {
 	assert.Equal(t, 6*time.Hour, autonomyDuplicateWindow(mk("6h")), "valid => parsed")
 	assert.Equal(t, 24*time.Hour, autonomyDuplicateWindow(nil), "nil project => 24h default")
 }
+
+// TestHV_TickCron_HonoursAutonomyWorkflowID — a config trap found in production
+// 2026-07-30.
+//
+// autonomy.workflow_id is honoured by BACKLOG mode but tickCron never set it, so a
+// cron project's tasks silently ran under project.DefaultWorkflowID instead. Setting
+// the field appeared to work — the registry accepted it, no warning was logged — and
+// the task ran under a different procedure than the operator asked for.
+//
+// A config field that one mode respects and another silently ignores is worse than an
+// unsupported field, because there is nothing to notice.
+func TestHV_TickCron_HonoursAutonomyWorkflowID(t *testing.T) {
+	repo := &mockTaskRepo{}
+	reg := &registry.Registry{}
+	// Both must resolve, so the assertion is about which one is CHOSEN rather than
+	// about registry validation rejecting one of them.
+	require.NoError(t, reg.RegisterTransient("ingest", &registry.Workflow{}))
+	require.NoError(t, reg.RegisterTransient("adaptive", &registry.Workflow{}))
+	m := New(nil, reg, repo, nil, WithEvaluationRepository(&captureEvalRepo{}))
+	p := &registry.Project{
+		ID:                "easeit-companion",
+		DefaultWorkflowID: "adaptive",
+		Autonomy: registry.ProjectAutonomy{
+			Enabled:          true,
+			Mode:             registry.AutonomyModeCron,
+			Goal:             "Sweep Workspace and ingest what is new",
+			WorkflowID:       "ingest", // the operator's explicit choice
+			DuplicateWindow:  "0s",
+			CronTaskType:     "summary",
+			AllowedTaskTypes: []string{"summary"},
+			MaxTasksPerHour:  100,
+		},
+	}
+	require.NoError(t, m.tickCron(context.Background(), p, time.Now()))
+
+	tasks := repo.createdTasks()
+	require.Len(t, tasks, 1, "the tick must create a task")
+	require.NotNil(t, tasks[0].WorkflowID, "the task must carry a resolved workflow")
+	assert.Equal(t, "ingest", *tasks[0].WorkflowID,
+		"cron mode must honour autonomy.workflow_id; falling back to defaultWorkflowId "+
+			"runs the task under a procedure the operator did not choose")
+}
+
+// And an UNSET workflow_id must leave the task's workflow nil, so the default resolves
+// downstream exactly as it does today. The fix must not force every cron project to
+// name a workflow, nor start stamping a default the task did not previously carry.
+func TestHV_TickCron_EmptyWorkflowIDStillFallsBackToTheDefault(t *testing.T) {
+	repo := &mockTaskRepo{}
+	reg := &registry.Registry{}
+	require.NoError(t, reg.RegisterTransient("adaptive", &registry.Workflow{}))
+	m := New(nil, reg, repo, nil, WithEvaluationRepository(&captureEvalRepo{}))
+	p := &registry.Project{
+		ID:                "p1",
+		DefaultWorkflowID: "adaptive",
+		Autonomy: registry.ProjectAutonomy{
+			Enabled:          true,
+			Mode:             registry.AutonomyModeCron,
+			Goal:             "do the thing",
+			DuplicateWindow:  "0s",
+			CronTaskType:     "summary",
+			AllowedTaskTypes: []string{"summary"},
+			MaxTasksPerHour:  100,
+		},
+	}
+	require.NoError(t, m.tickCron(context.Background(), p, time.Now()))
+	tasks := repo.createdTasks()
+	require.Len(t, tasks, 1)
+	assert.Nil(t, tasks[0].WorkflowID,
+		"an unset workflow_id must leave the task's workflow unset — the project default "+
+			"is resolved downstream, and stamping it here would change existing behaviour")
+}

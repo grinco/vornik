@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -108,11 +109,28 @@ func resolveSlackConfig(p registry.ProjectSlack, projectID string) (slack.Config
 	if strings.TrimSpace(signingSecret) == "" {
 		return slack.Config{}, fmt.Errorf("signing_secret_env %q is unset or empty", p.SigningSecretEnv)
 	}
+	// A turn takes 10-60s and Slack gives bots no typing indicator, so the placeholder
+	// is ON unless the operator opts out. Zero here means "channel default": a negative
+	// value is the only thing that disables the signal, so the opt-out has to be
+	// explicit rather than an accident of the zero value.
+	var progressDelay time.Duration
+	if p.ProgressSignal != nil && !*p.ProgressSignal {
+		progressDelay = -1
+	} else if gap := strings.TrimSpace(p.ProgressSignalGap); gap != "" {
+		parsed, err := time.ParseDuration(gap)
+		if err != nil {
+			return slack.Config{}, fmt.Errorf("progress_signal_gap %q: %w", gap, err)
+		}
+		progressDelay = parsed
+	}
+
 	cfg := slack.Config{
-		SigningSecret:    signingSecret,
-		TeamID:           strings.TrimSpace(p.TeamID),
-		PostMessageRPS:   p.PostMessageRPS,
-		PostMessageBurst: p.PostMessageBurst,
+		SigningSecret:       signingSecret,
+		TeamID:              strings.TrimSpace(p.TeamID),
+		PostMessageRPS:      p.PostMessageRPS,
+		PostMessageBurst:    p.PostMessageBurst,
+		SlashCommand:        slack.NormaliseSlashCommand(p.SlashCommand),
+		ProgressSignalDelay: progressDelay,
 		Installations: []slack.InstallationConfig{
 			{
 				ProjectID:        projectID,

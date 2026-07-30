@@ -265,7 +265,9 @@ func (h *DoctorHandlers) checkModelHealth(ctx context.Context) DoctorCheck {
 
 	findings := evalModelHealth(scoped, fallbacks)
 	if len(findings) == 0 {
-		return DoctorCheck{Name: name, Status: "OK", Message: fmt.Sprintf("all %d role-pinned model(s) healthy over last %s", len(referenced), modelHealthWindow)}
+		// Scope named explicitly: see modelHealthHealthySummary for why the previous
+		// wording misled an operator through a live outage on 2026-07-30.
+		return DoctorCheck{Name: name, Status: "OK", Message: modelHealthHealthySummary(len(referenced))}
 	}
 
 	worst := "WARNING"

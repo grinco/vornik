@@ -192,6 +192,13 @@ func (m *MockTaskRepository) ReleaseLease(ctx context.Context, taskID, leaseID s
 	if opts.Error != "" {
 		task.LastError = &opts.Error
 	}
+	// Model the real column semantics: an EMPTY ErrorClass preserves whatever is already
+	// there (see ReleaseOptions.ErrorClass). A mock that ignored the field entirely could
+	// not catch the 2026-07-30 empty-class defect at all.
+	if opts.ErrorClass != "" {
+		cls := opts.ErrorClass
+		task.LastErrorClass = &cls
+	}
 
 	return nil
 }

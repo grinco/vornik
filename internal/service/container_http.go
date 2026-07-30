@@ -1335,6 +1335,10 @@ func (c *Container) initHTTPServer() error {
 		dh.SetServerConfig(c.Config)
 		dh.SetConfigPath(c.ConfigPath)
 		dh.SetPricingPath(resolvePricingPath(c.ConfigPath))
+		// Live model-call outcomes for model_calls_live. initChat (container.go:843)
+		// runs before initHTTPServer (container.go:1097), so the tally exists by now.
+		// Nil is handled anyway — the check reports "nothing to assess".
+		dh.SetChatCallStats(c.ChatCallStats)
 		// Role-library doctor check (composer task 1.1b concern-2): a
 		// role-library entry's tool may legitimately name a system-step
 		// handler (e.g. "rag.extract") instead of a built-in/mcp__ tool;

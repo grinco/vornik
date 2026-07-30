@@ -69,6 +69,10 @@ Models:
   model_health          Role-pinned models with high recent failure rate or
                         degenerate output; RECOMMENDS the role's modelFallback
                         (diagnostic only — never auto-switches a model)
+  model_calls_live      Model calls failing SINCE DAEMON START, per (model, call
+                        site). Covers EVERY call site, including the memory
+                        workers (classifier/titler/reranker/graph) that
+                        model_health does not enumerate
   model_route_coverage  Role-pinned models that don't resolve to a chat
                         model_route prefix or are missing from pricing.yaml
 

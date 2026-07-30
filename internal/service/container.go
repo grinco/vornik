@@ -229,6 +229,11 @@ type Container struct {
 	// CLI provider (internal/chat/cli_client.go) can be plugged in
 	// alongside the HTTP one.
 	ChatClient chat.Provider
+
+	// ChatCallStats tallies every model call's outcome per (model, call_site) for the
+	// doctor's model_calls_live check. Built when chat logging is wired; see
+	// container_chat.go and internal/api/doctor_model_calls.go.
+	ChatCallStats *chat.CallStats
 	// Dispatcher is the daemon's shared LLM tool-calling loop, used
 	// by every inbound conversation channel (Telegram, GitHub App,
 	// future Slack / email). Constructed by initDispatcher after the

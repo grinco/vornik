@@ -105,70 +105,77 @@ func (b *ClassifyBackfiller) Run(ctx context.Context, interval time.Duration, ba
 		Msg("classify backfill auto-loop started")
 	defer b.Logger.Info().Msg("classify backfill auto-loop stopped")
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	// A TIMER rather than a ticker, so the delay can adapt to whether the work is
+	// succeeding. INCIDENT 2026-07-30: a fixed 30s ticker against a gateway whose calls
+	// took longer than 30s launched five more calls every tick while the previous five
+	// were still burning their timeouts — ~500 timeouts an hour and a frozen backlog.
+	// A loop whose work is failing has to slow down; see failureBackoff.
+	backoff := newFailureBackoff(interval)
+	timer := time.NewTimer(backoff.interval())
+	defer timer.Stop()
 
 	if b.LeaderGate == nil || b.LeaderGate.IsLeader() {
-		b.runOnce(ctx, batchSize)
+		b.observeTick(backoff, b.runOnce(ctx, batchSize))
 	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			if b.LeaderGate != nil && !b.LeaderGate.IsLeader() {
-				continue
+		case <-timer.C:
+			if b.LeaderGate == nil || b.LeaderGate.IsLeader() {
+				b.observeTick(backoff, b.runOnce(ctx, batchSize))
 			}
-			b.runOnce(ctx, batchSize)
+			timer.Reset(backoff.interval())
 		}
 	}
+}
+
+// observeTick delegates to the shared helper; see observeBackfillTick.
+func (b *ClassifyBackfiller) observeTick(backoff *failureBackoff, result *ClassifyBackfillResult) {
+	if result == nil {
+		observeBackfillTick(b.Logger, "classify", backoff, 0, 0, false)
+		return
+	}
+	observeBackfillTick(b.Logger, "classify", backoff, result.Processed, result.Failed, true)
 }
 
 // runOnce performs a single backfill cycle: refresh the remaining
 // gauge, then call BackfillBatchAcrossProjects when there's work.
 // Split from Run so the immediate-fire-at-start path doesn't
 // duplicate the ticker logic. Mirrors TitleBackfiller.runOnce.
-func (b *ClassifyBackfiller) runOnce(ctx context.Context, batchSize int) {
-	remaining, err := b.CountRemainingAll(ctx)
-	if err != nil {
-		if b.Metrics != nil {
-			b.Metrics.ClassifyBackfillTicksTotal.WithLabelValues("errored").Inc()
-		}
-		b.Logger.Warn().Err(err).Msg("classify backfill auto-loop: count remaining failed")
-		return
-	}
+// Structural twin of TitleBackfiller.runOnce — see the note there for why the residue
+// after extracting runBackfillTick/newBackfillHooks cannot itself be deduplicated.
+//
+//nolint:dupl // adapter twin; shared logic lives in runBackfillTick/newBackfillHooks
+func (b *ClassifyBackfiller) runOnce(ctx context.Context, batchSize int) *ClassifyBackfillResult {
+	var m *backfillMetricSet
 	if b.Metrics != nil {
-		b.Metrics.ClassifyBackfillRemainingChunks.Set(float64(remaining))
-	}
-	if remaining == 0 {
-		if b.Metrics != nil {
-			b.Metrics.ClassifyBackfillTicksTotal.WithLabelValues("idle").Inc()
+		m = &backfillMetricSet{
+			ticks:     b.Metrics.ClassifyBackfillTicksTotal,
+			chunks:    b.Metrics.ClassifyBackfillChunksTotal,
+			remaining: b.Metrics.ClassifyBackfillRemainingChunks,
 		}
-		return
 	}
-	result, err := b.BackfillBatchAcrossProjects(ctx, batchSize)
-	if err != nil {
-		if b.Metrics != nil {
-			b.Metrics.ClassifyBackfillTicksTotal.WithLabelValues("errored").Inc()
-		}
-		b.Logger.Warn().Err(err).Int("remaining_before", remaining).
-			Msg("classify backfill auto-loop: batch failed")
-		return
+	counts, haveEvidence := runBackfillTick(ctx, batchSize, newBackfillHooks(
+		"classify", b.Logger, m, b.CountRemainingAll,
+		func(ctx context.Context, n int) (backfillCounts, error) {
+			r, err := b.BackfillBatchAcrossProjects(ctx, n)
+			if err != nil || r == nil {
+				return backfillCounts{}, err
+			}
+			return backfillCounts{
+				Processed: r.Processed, Succeeded: r.Succeeded,
+				Failed: r.Failed, Skipped: r.Skipped, Remaining: r.Remaining,
+			}, nil
+		},
+	))
+	if !haveEvidence {
+		return nil
 	}
-	if b.Metrics != nil {
-		b.Metrics.ClassifyBackfillTicksTotal.WithLabelValues("progressed").Inc()
-		b.Metrics.ClassifyBackfillChunksTotal.WithLabelValues("succeeded").Add(float64(result.Succeeded))
-		b.Metrics.ClassifyBackfillChunksTotal.WithLabelValues("failed").Add(float64(result.Failed))
-		b.Metrics.ClassifyBackfillChunksTotal.WithLabelValues("skipped").Add(float64(result.Skipped))
-		b.Metrics.ClassifyBackfillRemainingChunks.Set(float64(result.Remaining))
+	return &ClassifyBackfillResult{
+		Processed: counts.Processed, Succeeded: counts.Succeeded,
+		Failed: counts.Failed, Skipped: counts.Skipped, Remaining: counts.Remaining,
 	}
-	b.Logger.Info().
-		Int("processed", result.Processed).
-		Int("succeeded", result.Succeeded).
-		Int("failed", result.Failed).
-		Int("skipped", result.Skipped).
-		Int("remaining", result.Remaining).
-		Msg("classify backfill auto-loop: tick complete")
 }
 
 // BackfillBatchAcrossProjects is BackfillBatch's cross-project

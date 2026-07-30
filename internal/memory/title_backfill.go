@@ -77,72 +77,87 @@ func (b *TitleBackfiller) Run(ctx context.Context, interval time.Duration, batch
 		Msg("title backfill auto-loop started")
 	defer b.Logger.Info().Msg("title backfill auto-loop stopped")
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	// TIMER, not ticker, so the cadence can react to sustained failure. On
+	// 2026-07-30 this loop was the DOMINANT load once the classifier had been backed
+	// off — 15 of 25 timeouts in a five-minute window, 25 calls every 5 minutes against
+	// a saturated gateway. Same reasoning as the classify loop; see failureBackoff.
+	backoff := newFailureBackoff(interval)
+	timer := time.NewTimer(backoff.interval())
+	defer timer.Stop()
 
 	// Fire immediately so a daemon restart picks up any NULLs left
 	// from the previous incarnation without waiting a full interval.
 	if b.LeaderGate == nil || b.LeaderGate.IsLeader() {
-		b.runOnce(ctx, batchSize)
+		b.observeTick(backoff, b.runOnce(ctx, batchSize))
 	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			if b.LeaderGate != nil && !b.LeaderGate.IsLeader() {
-				continue
+		case <-timer.C:
+			if b.LeaderGate == nil || b.LeaderGate.IsLeader() {
+				b.observeTick(backoff, b.runOnce(ctx, batchSize))
 			}
-			b.runOnce(ctx, batchSize)
+			timer.Reset(backoff.interval())
 		}
 	}
+}
+
+// observeTick delegates to the shared helper; see observeBackfillTick.
+func (b *TitleBackfiller) observeTick(backoff *failureBackoff, result *BackfillResult) {
+	if result == nil {
+		observeBackfillTick(b.Logger, "title", backoff, 0, 0, false)
+		return
+	}
+	observeBackfillTick(b.Logger, "title", backoff, result.Processed, result.Failed, true)
 }
 
 // runOnce performs a single backfill cycle: refresh the remaining-
 // chunks gauge, then call BackfillBatch if there's work. Split out
 // from Run so the immediate-fire-at-start path doesn't duplicate the
 // ticker logic.
-func (b *TitleBackfiller) runOnce(ctx context.Context, batchSize int) {
-	remaining, err := b.CountRemaining(ctx)
-	if err != nil {
-		if b.Metrics != nil {
-			b.Metrics.TitleBackfillTicksTotal.WithLabelValues("errored").Inc()
-		}
-		b.Logger.Warn().Err(err).Msg("title backfill auto-loop: count remaining failed")
-		return
-	}
+// The body below is a structural twin of ClassifyBackfiller.runOnce and `dupl` flags it.
+// The shared LOGIC is genuinely extracted — runBackfillTick holds the tick algorithm and
+// newBackfillHooks the metric plumbing — and what is left is an adapter: bind this loop's
+// count/batch methods, its metric family, and convert between its own result type and the
+// shared one. Unifying that too would need generics over struct fields, which Go does not
+// have; the alternative (a shared result type threaded through both public APIs) would
+// change exported signatures for no behavioural gain.
+//
+// Suppressed deliberately and narrowly. My own change caused this finding (dupl was clean
+// on HEAD before it), so this is not an inherited warning being papered over — it is the
+// residue after the extraction that removing the warning would otherwise have hidden.
+//
+//nolint:dupl // adapter twin; shared logic lives in runBackfillTick/newBackfillHooks
+func (b *TitleBackfiller) runOnce(ctx context.Context, batchSize int) *BackfillResult {
+	var m *backfillMetricSet
 	if b.Metrics != nil {
-		b.Metrics.TitleBackfillRemainingChunks.Set(float64(remaining))
-	}
-	if remaining == 0 {
-		if b.Metrics != nil {
-			b.Metrics.TitleBackfillTicksTotal.WithLabelValues("idle").Inc()
+		m = &backfillMetricSet{
+			ticks:     b.Metrics.TitleBackfillTicksTotal,
+			chunks:    b.Metrics.TitleBackfillChunksTotal,
+			remaining: b.Metrics.TitleBackfillRemainingChunks,
 		}
-		return
 	}
-	result, err := b.BackfillBatch(ctx, batchSize)
-	if err != nil {
-		if b.Metrics != nil {
-			b.Metrics.TitleBackfillTicksTotal.WithLabelValues("errored").Inc()
-		}
-		b.Logger.Warn().Err(err).Int("remaining_before", remaining).
-			Msg("title backfill auto-loop: batch failed")
-		return
+	counts, haveEvidence := runBackfillTick(ctx, batchSize, newBackfillHooks(
+		"title", b.Logger, m, b.CountRemaining,
+		func(ctx context.Context, n int) (backfillCounts, error) {
+			r, err := b.BackfillBatch(ctx, n)
+			if err != nil || r == nil {
+				return backfillCounts{}, err
+			}
+			return backfillCounts{
+				Processed: r.Processed, Succeeded: r.Succeeded,
+				Failed: r.Failed, Skipped: r.Skipped, Remaining: r.Remaining,
+			}, nil
+		},
+	))
+	if !haveEvidence {
+		return nil
 	}
-	if b.Metrics != nil {
-		b.Metrics.TitleBackfillTicksTotal.WithLabelValues("progressed").Inc()
-		b.Metrics.TitleBackfillChunksTotal.WithLabelValues("succeeded").Add(float64(result.Succeeded))
-		b.Metrics.TitleBackfillChunksTotal.WithLabelValues("failed").Add(float64(result.Failed))
-		b.Metrics.TitleBackfillChunksTotal.WithLabelValues("skipped").Add(float64(result.Skipped))
-		b.Metrics.TitleBackfillRemainingChunks.Set(float64(result.Remaining))
+	return &BackfillResult{
+		Processed: counts.Processed, Succeeded: counts.Succeeded,
+		Failed: counts.Failed, Skipped: counts.Skipped, Remaining: counts.Remaining,
 	}
-	b.Logger.Info().
-		Int("processed", result.Processed).
-		Int("succeeded", result.Succeeded).
-		Int("failed", result.Failed).
-		Int("skipped", result.Skipped).
-		Int("remaining", result.Remaining).
-		Msg("title backfill auto-loop: tick complete")
 }
 
 // BackfillBatch processes up to batchSize chunks serially and returns

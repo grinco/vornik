@@ -1020,7 +1020,8 @@ func (s *Scheduler) TaskCompleted(taskID, leaseID string, success bool, errorMsg
 	if err != nil || task == nil {
 		// Can't look up the task — fail permanently.
 		return s.repo.ReleaseLease(s.baseContext(), taskID, leaseID, persistence.TaskStatusFailed, persistence.ReleaseOptions{
-			Error: errorMsg,
+			Error:      errorMsg,
+			ErrorClass: classifySchedulerFailure(nil, errorMsg),
 		})
 	}
 
@@ -1040,8 +1041,12 @@ func (s *Scheduler) TaskCompleted(taskID, leaseID string, success bool, errorMsg
 		})
 	}
 
+	// Terminal. Stamp a class so `task explain` and `playbook show` have something to
+	// resolve — an empty column here was the 2026-07-30 defect. An empty return from the
+	// classifier preserves a more precise class the executor already set.
 	return s.repo.ReleaseLease(s.baseContext(), taskID, leaseID, persistence.TaskStatusFailed, persistence.ReleaseOptions{
-		Error: errorMsg,
+		Error:      errorMsg,
+		ErrorClass: classifySchedulerFailure(task, errorMsg),
 	})
 }
 

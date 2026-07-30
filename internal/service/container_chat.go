@@ -153,7 +153,15 @@ func (c *Container) initChat() error {
 			llmLog = llmLog.Level(zerolog.DebugLevel)
 			logContent = true
 		}
-		c.ChatClient = chat.NewLoggingProvider(c.ChatClient, llmLog)
+		// Tally every call's outcome per (model, call_site) so `vornikctl doctor` can
+		// answer "is a model failing right now". Added after 2026-07-30, where six
+		// memory-pipeline models failed 100% for hours and doctor reported all models
+		// healthy — those call sites are not swarm roles, so nothing enumerated them.
+		// The wrapper is the one place every model call already passes through.
+		if c.ChatCallStats == nil {
+			c.ChatCallStats = chat.NewCallStats()
+		}
+		c.ChatClient = chat.NewLoggingProviderWithStats(c.ChatClient, llmLog, c.ChatCallStats)
 		c.Logger.Info().
 			Bool("log_content", logContent).
 			Msg("chat call logging enabled")

@@ -152,6 +152,13 @@ func (c *Container) initRegistry() error {
 		return nil
 	})
 	c.ConfigReloader = reloader
+	// Let a reload say which edits it CANNOT apply. Some values are read once at
+	// worker start (backfill tickers), so a reload that reported plain success left an
+	// operator believing a change was live when it was not — 2026-07-30. The probe
+	// reads the live config each cycle; the reloader keeps the start-up baseline.
+	reloader.SetRestartOnlyProbe(func() map[string]string {
+		return config.RestartOnlySnapshotOf(c.Config)
+	})
 	if c.Executor != nil {
 		c.Executor.SetWorkflowResolver(c.Registry)
 	}

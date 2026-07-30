@@ -38,6 +38,11 @@ type DoctorReport struct {
 
 // DoctorHandlers provides the /api/v1/doctor endpoint.
 type DoctorHandlers struct {
+	// callStats is the live per-(model, call_site) outcome tally backing
+	// checkModelCallsLive. Optional: nil means the check reports "nothing to
+	// assess" rather than failing. See doctor_model_calls.go for why this exists.
+	callStats *chat.CallStats
+
 	db             *sql.DB
 	configDir      string
 	configPath     string // path config.yaml was loaded from, for checkConfigSecretHygiene
@@ -196,6 +201,19 @@ type DoctorHandlers struct {
 // cost-attribution doctor check can read live counter values.
 // Called from the service container alongside the other doctor
 // setters. Optional — the check returns OK when nil.
+// SetChatCallStats wires the live per-(model, call_site) outcome tally backing
+// checkModelCallsLive. Nil-safe on both sides: an unwired sink makes the check report
+// "nothing to assess" rather than failing.
+//
+// Late-bound because the chat provider is wrapped when the container builds its chat
+// client, after the API handlers exist.
+func (h *DoctorHandlers) SetChatCallStats(s *chat.CallStats) {
+	if h == nil {
+		return
+	}
+	h.callStats = s
+}
+
 func (h *DoctorHandlers) SetAPIMetrics(m *APIMetrics) {
 	if h == nil {
 		return
@@ -391,6 +409,7 @@ func (h *DoctorHandlers) RunReportReadOnly(ctx context.Context) DoctorReport {
 	report.Checks = append(report.Checks, h.checkBudgetUtilisation(ctx))
 	report.Checks = append(report.Checks, h.checkLeaderLocksHealth())
 	report.Checks = append(report.Checks, h.checkModelHealth(ctx))
+	report.Checks = append(report.Checks, h.checkModelCallsLive())
 	report.Checks = append(report.Checks, h.checkModelCircuits())
 	report.Checks = append(report.Checks, h.checkAgentModelCircuits())
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
@@ -463,6 +482,7 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkCostAttribution())
 	report.Checks = append(report.Checks, h.checkLeaderLocksHealth())
 	report.Checks = append(report.Checks, h.checkModelHealth(ctx))
+	report.Checks = append(report.Checks, h.checkModelCallsLive())
 	report.Checks = append(report.Checks, h.checkModelCircuits())
 	report.Checks = append(report.Checks, h.checkAgentModelCircuits())
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))

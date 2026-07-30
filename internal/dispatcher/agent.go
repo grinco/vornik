@@ -216,6 +216,9 @@ type Agent struct {
 	// customer file an anonymised bug report from a chat channel instead of
 	// needing shell access to the host. Nil omits the tool.
 	problemReports ProblemReportBuilder
+	// memoryWrite (optional) gates the chat memory-write capability per channel.
+	// Nil means the capability is absent. See tool_remember.go.
+	memoryWrite MemoryWriteGate
 	// projectWorkspacePath — base dir for per-project workspaces;
 	// lets the ToolExecutor allow-list the per-project uploads/ dir
 	// channel attachments land in. See ToolExecutor.projectWorkspacePath.
@@ -533,6 +536,7 @@ func NewAgent(
 		artifactStore:                a.artifactStore,
 		channelThreads:               a.channelThreads,
 		problemReports:               a.problemReports,
+		memoryWrite:                  a.memoryWrite,
 		projectWorkspacePath:         a.projectWorkspacePath,
 		attachmentAutoExtractor:      a.attachmentAutoExtractor,
 		attachmentAutoExtractTimeout: 60 * time.Second,

@@ -316,14 +316,20 @@ type ConfigReloader struct {
 	// behind a running reload.
 	reloadMu sync.Mutex
 
-	mu                sync.RWMutex
-	reloadErrors      []string
-	reloadWarnings    []string
-	lastReload        time.Time
-	lastAttempt       time.Time
-	pendingActivation bool
-	blocked           bool
-	blockedReason     string
+	mu             sync.RWMutex
+	reloadErrors   []string
+	reloadWarnings []string
+	// restartOnly* back checkRestartOnlyDrift: the baseline is the set of
+	// read-once field values the running workers were started with, so a reload
+	// can say which edits are on disk but not yet live. See restart_only.go.
+	restartOnlyProbe       func() map[string]string
+	restartOnlyBaseline    map[string]string
+	restartOnlyBaselineSet bool
+	lastReload             time.Time
+	lastAttempt            time.Time
+	pendingActivation      bool
+	blocked                bool
+	blockedReason          string
 	// metrics observes each Reload() cycle on Prometheus (audit R7).
 	// Nil-safe: unset on SQLite / test rigs that never call SetMetrics.
 	metrics *Metrics
@@ -549,6 +555,10 @@ func (r *ConfigReloader) runCycle() error {
 		}
 	}
 
+	// Before declaring success, say which edits cannot have taken effect. The reload
+	// genuinely succeeded; this only stops it implying more than it did (2026-07-30:
+	// "config reloaded successfully" twice while the worker kept its old ticker).
+	r.checkRestartOnlyDrift()
 	r.finishReloadSuccess(start)
 	return nil
 }

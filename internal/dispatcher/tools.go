@@ -279,6 +279,8 @@ type ToolExecutor struct {
 	// problemReports backs report_problem. Nil omits the tool from the
 	// catalogue rather than exposing one that always fails.
 	problemReports ProblemReportBuilder
+	// memoryWrite gates `remember`. Nil omits the capability.
+	memoryWrite MemoryWriteGate
 	// allowedInputRoots is the allow-list of host directories a
 	// create_task `input_files` entry may name as a *literal*
 	// filesystem path before it is snapshotted via StoreInput.
@@ -466,6 +468,8 @@ func (te *ToolExecutor) execute(ctx context.Context, tc chat.ToolCall, activePro
 		return te.listProjects(allowedProjects)
 	case "report_problem":
 		return te.reportProblem(ctx, args)
+	case "remember":
+		return te.remember(ctx, args)
 	case "switch_project":
 		return te.switchProject(args, allowedProjects)
 	case "list_tasks":
@@ -2056,6 +2060,21 @@ func DispatcherTools() []chat.Tool {
 				Name:        "list_projects",
 				Description: "List all registered projects.",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{}}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: chat.ToolFunction{
+				Name: "remember",
+				Description: "Keep a fact from this conversation in durable memory. Only " +
+					"available in channels the operator has granted memory-write; it reports " +
+					"itself unavailable otherwise. Use it when the user asks you to remember " +
+					"something, NOT on your own initiative. If it tells you nothing was saved, " +
+					"say so plainly — never imply you kept something you did not.",
+				Parameters: json.RawMessage(`{"type":"object","properties":{` +
+					`"content":{"type":"string","description":"The fact to keep, in the user's own terms. Do not include anything they did not ask you to retain."},` +
+					`"scope":{"type":"string","description":"Omit for personal (default, only the speaker can read it). Pass \"for the team\" ONLY when the user explicitly said the fact should be shared with the project. Never infer sharing from the content."}` +
+					`},"required":["content"]}`),
 			},
 		},
 		{

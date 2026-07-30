@@ -314,6 +314,12 @@ const (
 	// is what the watchdog assigns when the executor is still nominally
 	// running but hasn't made forward progress.
 	TaskFailureClassStuckExecution = "STUCK_EXECUTION"
+	// knownTaskFailureClasses is every class a writer may stamp.
+	//
+	// INCIDENT 2026-07-30: a task failed with last_error set and last_error_class EMPTY,
+	// which made `vornikctl task explain` and `vornikctl playbook show` dead ends from the
+	// object an operator actually inspects. Stamping an UNRECOGNISED class would move the
+	// dead end rather than remove it, so writers validate against this set.
 	// TaskFailureClassToolIterationLimit fires when an agent's
 	// tool-use loop hit the configured VORNIK_MAX_TOOL_ITERATIONS
 	// cap before producing a final answer. Distinct from

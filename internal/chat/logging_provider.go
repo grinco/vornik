@@ -54,15 +54,27 @@ type ModelAggregator interface {
 type LoggingProvider struct {
 	inner Provider
 	log   zerolog.Logger
+	// stats (optional) tallies every call's outcome per (model, call_site) so the
+	// doctor can answer "is a model failing RIGHT NOW". Added after the 2026-07-30
+	// incident where six memory-pipeline models failed 100% for hours and no
+	// queryable record of it existed — see CallStats. Nil disables the tally.
+	stats *CallStats
 }
 
 // NewLoggingProvider wraps inner so every completion is logged. A nil
 // inner returns nil (nothing to wrap) so callers stay nil-safe.
 func NewLoggingProvider(inner Provider, log zerolog.Logger) Provider {
+	return NewLoggingProviderWithStats(inner, log, nil)
+}
+
+// NewLoggingProviderWithStats is NewLoggingProvider plus an outcome tally. The daemon
+// uses this form so `vornikctl doctor` can see live per-(model, call_site) failure rates;
+// tests and callers that do not care pass nil via NewLoggingProvider.
+func NewLoggingProviderWithStats(inner Provider, log zerolog.Logger, stats *CallStats) Provider {
 	if inner == nil {
 		return nil
 	}
-	return &LoggingProvider{inner: inner, log: log}
+	return &LoggingProvider{inner: inner, log: log, stats: stats}
 }
 
 func (p *LoggingProvider) Complete(ctx context.Context, messages []Message) (*ChatResponse, error) {
@@ -110,6 +122,9 @@ func (p *LoggingProvider) logRequest(ctx context.Context, op string, messages []
 func (p *LoggingProvider) logResult(ctx context.Context, op string, messages []Message, start time.Time, resp *ChatResponse, err error) {
 	site := callSite(ctx)
 	latency := time.Since(start)
+	// One chokepoint for the tally too: every provider is wrapped here, so no future
+	// call site can forget to report its outcome.
+	p.stats.Record(p.inner.Model(), site, err)
 
 	if err != nil {
 		// A cancelled CALLER context (context.Canceled) is expected

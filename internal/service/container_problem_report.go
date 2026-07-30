@@ -75,15 +75,19 @@ func (b *problemReportBuilder) BuildProblemReport(ctx context.Context, symptom s
 
 // problemReportBuilder returns the bug-report seam for the dispatcher.
 //
-// The version falls back to version.Default rather than disabling the tool. An earlier
-// revision returned nil on an empty c.version and the tool was therefore PERMANENTLY
-// DARK: Container.SetVersion exists but nothing in the daemon calls it — only vornikctl
-// sets its own CLI version — so c.version is always "". Caught by the absence of the
-// "chat bug-report path wired" log line on first deploy.
+// The version falls back to version.Default rather than disabling the tool.
 //
-// A fallback version is honest here: it is the same constant `vornikctl report` stamps on
-// an archive build with no git metadata, and a report that names a slightly imprecise
-// version is worth far more than no report at all.
+// CORRECTION 2026-07-30: an earlier revision of this comment claimed nothing in the
+// daemon calls Container.SetVersion. That was wrong — service.Run calls it with the
+// ldflag-injected main.Version. What was actually empty was the injection: the binary had
+// been built with only -X main.Edition, so main.Version kept version.Default and the UI
+// reported 2026.4.5. Fixed by building through the Makefile, which stamps
+// -X main.Version from `git describe`.
+//
+// The fallback stays regardless, because it is the honest answer for a build that really
+// has no git metadata (the archive case `vornikctl report` already handles the same way).
+// A report naming an imprecise version is worth far more than no report — but it must not
+// be the normal path, and it no longer is.
 func (c *Container) problemReportBuilder() dispatcher.ProblemReportBuilder {
 	if c == nil {
 		return nil

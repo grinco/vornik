@@ -41,6 +41,12 @@ type callSiteAccounting struct {
 	// it would take, when not. Required either way — an undocumented
 	// entry is how the last three regressions survived review.
 	note string
+	// enterpriseOnly marks a call site declared under internal/enterprise,
+	// which the CE export strips. The shared registry ships to CE (this is a
+	// _test.go file), so without this flag the stale-entries check flags such a
+	// site as undeclared on the CE tree and reds the public build — even though
+	// it is correctly declared in EE. See TestRegistryHasNoStaleEntries.
+	enterpriseOnly bool
 }
 
 var callSiteRegistry = map[string]callSiteAccounting{
@@ -76,7 +82,8 @@ var callSiteRegistry = map[string]callSiteAccounting{
 			"audit of call sites missed it entirely on 2026-07-30.",
 	},
 	"instinct.distiller": {
-		accounted: true,
+		accounted:      true,
+		enterpriseOnly: true, // declared in internal/enterprise/instinct/engine/distiller.go — stripped from CE
 		note: "Distiller.LLMUsage + Pricing, wired instinct/subsystem.go wireDistiller. " +
 			"Previously assigned only in distiller_test.go — the seam existed and " +
 			"production never used it.",
@@ -129,10 +136,22 @@ func TestRegistryHasNoStaleEntries(t *testing.T) {
 	root := repoRoot(t)
 	found := discoverCallSites(t, root)
 
-	for site := range callSiteRegistry {
-		if _, ok := found[site]; !ok {
-			t.Errorf("callSiteRegistry lists %q but no production code declares it — remove the entry or restore the call site", site)
+	// The CE export strips internal/enterprise, so an enterprise-only call site
+	// is legitimately undiscoverable on the CE tree. Skip such entries when the
+	// enterprise tree is absent, so the shared registry can carry them for EE
+	// without reding the public CE build. On EE the tree is present and the
+	// entries are discovered, so this changes nothing there.
+	_, enterpriseErr := os.Stat(filepath.Join(root, "internal", "enterprise"))
+	enterprisePresent := enterpriseErr == nil
+
+	for site, entry := range callSiteRegistry {
+		if _, ok := found[site]; ok {
+			continue
 		}
+		if entry.enterpriseOnly && !enterprisePresent {
+			continue // EE-only site, correctly absent on the CE tree
+		}
+		t.Errorf("callSiteRegistry lists %q but no production code declares it — remove the entry or restore the call site", site)
 	}
 }
 

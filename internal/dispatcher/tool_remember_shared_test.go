@@ -195,7 +195,7 @@ func TestRememberShared_ProposesAndListsPhrases(t *testing.T) {
 	te := sharedExecutor(confirms, audit)
 
 	res := te.remember(sharedCtx(),
-		`{"content":"the roadmap slipped to Q4","scope":"shared"}`)
+		`{"content":"the roadmap slipped to Q4","scope":"shared"}`, "")
 
 	low := strings.ToLower(res.Content)
 	if !strings.Contains(low, "everyone") {
@@ -240,14 +240,14 @@ func TestRememberShared_RepeatedCallsNeverReachAuthorized(t *testing.T) {
 	ctx := sharedCtx()
 	args := `{"content":"the api key rotates monthly","scope":"shared"}`
 
-	first := te.remember(ctx, args)
+	first := te.remember(ctx, args, "")
 	if strings.Contains(strings.ToLower(first.Content), "authorized") {
 		t.Fatalf("first call must PROPOSE, not authorize: %s", first.Content)
 	}
 
 	// The model tries again in the same turn — no acknowledgement has arrived because only the
 	// receiver, from a human inbound turn, can produce one.
-	second := te.remember(ctx, args)
+	second := te.remember(ctx, args, "")
 	low := strings.ToLower(second.Content)
 	if strings.Contains(low, "authorized") {
 		t.Fatalf("a second remember() in the same turn must NOT authorize a write: %s", second.Content)
@@ -288,7 +288,7 @@ func TestRememberShared_AuthorizedWritesAuditBeforeDeleteAndReportsNotBuilt(t *t
 	}, now.Add(-2*time.Minute))
 
 	res := te.remember(sharedCtx(),
-		`{"content":"`+content+`","scope":"shared"}`)
+		`{"content":"`+content+`","scope":"shared"}`, "")
 
 	low := strings.ToLower(res.Content)
 	if !strings.Contains(low, "authorized") {
@@ -346,7 +346,7 @@ func TestRememberShared_AuthorizedRefusesWithoutAuditSink(t *testing.T) {
 	}, now.Add(-2*time.Minute))
 
 	res := te.remember(sharedCtx(),
-		`{"content":"`+content+`","scope":"shared"}`)
+		`{"content":"`+content+`","scope":"shared"}`, "")
 
 	if !strings.Contains(strings.ToLower(res.Content), "not authorized") {
 		t.Errorf("must refuse (not authorize) without an audit sink: %s", res.Content)
@@ -365,7 +365,7 @@ func TestRememberShared_RefusesWithoutOperatorIdentity(t *testing.T) {
 
 	// Call site is set, but NO operator id is stamped on the context.
 	res := te.remember(WithCallSiteForTest(context.Background(), "slack", "sess"),
-		`{"content":"something sensitive","scope":"shared"}`)
+		`{"content":"something sensitive","scope":"shared"}`, "")
 
 	if !strings.Contains(strings.ToLower(res.Content), "who is speaking") {
 		t.Errorf("must refuse a shared write with no speaker identity: %s", res.Content)
@@ -380,7 +380,7 @@ func TestRememberShared_RefusesWithoutOperatorIdentity(t *testing.T) {
 func TestRememberShared_UnwiredStoreReportsNotBuilt(t *testing.T) {
 	te := &ToolExecutor{memoryWrite: &stubMemoryWriteGate{allow: map[string]bool{"slack|sess": true}}}
 	res := te.remember(sharedCtx(),
-		`{"content":"x","scope":"shared"}`)
+		`{"content":"x","scope":"shared"}`, "")
 	if !strings.Contains(res.Content, "NOT implemented yet") {
 		t.Errorf("an unwired confirmation store must report the save path not built: %s", res.Content)
 	}

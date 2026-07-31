@@ -108,12 +108,13 @@ func (s *SlackChannelsSubsystem) Start(ctx context.Context) error {
 		// Bound per channel: engagement is answered by THIS workspace's store.
 		ch.SetThreadEngagementChecker(store)
 		receiver := &dispatcher.ChannelReceiver{
-			Channel:           ch,
-			Agent:             c.Dispatcher,
-			Sessions:          store,
-			Disclosure:        c.AIDisclosure,
-			Media:             c.mediaSight(),
-			DisclosureMetrics: c.disclosureObserver(),
+			Channel:                  ch,
+			Agent:                    c.Dispatcher,
+			Sessions:                 store,
+			Disclosure:               c.AIDisclosure,
+			Media:                    c.mediaSight(),
+			DisclosureMetrics:        c.disclosureObserver(),
+			MemoryWriteConfirmations: c.chatMemoryConfirmations(),
 		}
 		s.logger.Info().
 			Str("project_id", project.ID).

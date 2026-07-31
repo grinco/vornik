@@ -144,6 +144,13 @@ type Project struct {
 	// as a non-voice attachment and outbound replies stay text.
 	// See https://docs.vornik.io
 	Voice ProjectVoice `yaml:"voice"`
+	// Memory configures durable chat memory-write for this project
+	// (chat memory-write design §5.1). Its WriteChannels is the
+	// deny-by-default opt-in: a channel name listed here may write
+	// durable project memory via the chat `remember` tool. Empty (the
+	// zero value) = no channel may write — the safe default. See
+	// ProjectMemory and CanWriteMemory.
+	Memory ProjectMemory `yaml:"memory"`
 	// Firewall overrides daemon-level memory firewall settings
 	// for this project. Phase D follow-on of the Policy-Aware
 	// Memory Firewall (LLD: https://docs.vornik.io
@@ -1082,6 +1089,41 @@ func (s ProjectSlack) Enabled() bool {
 // Slice 1-4 MVP: only the open-weight local providers (whisper.cpp +
 // Piper) are wired. Hosted-provider fields (deepgram-, openai-,
 // elevenlabs-, coqui-) parse but are not honoured until slice 7.
+// ProjectMemory is the per-project durable chat memory-write opt-in
+// (chat memory-write design §5.1). The channel-level grant is what
+// makes a dispatcher-level write defensible: someone with config access
+// decided this conversation may write durably, and the set of writing
+// channels is an auditable config fact rather than an emergent property
+// of who talked to the bot.
+type ProjectMemory struct {
+	// WriteChannels lists the channel names (as conversation.Channel.Name()
+	// reports them — "slack", "telegram", "github", "web") that may write
+	// durable project memory through the chat `remember` tool. Empty =
+	// none (the deny-by-default safe state).
+	//
+	// Email is deliberately not recommended here: an email From: header is
+	// spoofable, so a shared-scope acknowledgement over email is only as
+	// good as the sending domain's SPF/DKIM posture, which this design does
+	// not check (design §5.6.5). Personal-scope writes are fine on any
+	// listed channel.
+	WriteChannels []string `yaml:"write_channels"`
+}
+
+// GrantsMemoryWrite reports whether this project has granted the named
+// channel durable memory-write. Case-sensitive exact match against the
+// configured channel names.
+func (m ProjectMemory) GrantsMemoryWrite(channel string) bool {
+	if channel == "" {
+		return false
+	}
+	for _, c := range m.WriteChannels {
+		if c == channel {
+			return true
+		}
+	}
+	return false
+}
+
 type ProjectVoice struct {
 	// STT is the speech-to-text provider block.
 	STT ProjectVoiceSTT `yaml:"stt"`

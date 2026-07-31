@@ -225,6 +225,13 @@ type Agent struct {
 	// SetMemoryWriteConfirmations.
 	memoryConfirms persistence.ChatMemoryWriteConfirmationRepository
 	memoryAudit    persistence.ChatMemoryWriteAuditRepository
+	// chatMemory + dataSubjects back the personal-scope memory-write (slice 5):
+	// chatMemory persists a chat_memory chunk, dataSubjects links it to the
+	// operator's own data subject for Art 17. Both nil leaves the personal path
+	// reporting "not built" and skips linkage. See tool_remember.go and
+	// SetChatMemoryWriter.
+	chatMemory   ChatMemoryWriter
+	dataSubjects DataSubjectLinker
 	// projectWorkspacePath — base dir for per-project workspaces;
 	// lets the ToolExecutor allow-list the per-project uploads/ dir
 	// channel attachments land in. See ToolExecutor.projectWorkspacePath.
@@ -545,6 +552,8 @@ func NewAgent(
 		memoryWrite:                  a.memoryWrite,
 		memoryConfirms:               a.memoryConfirms,
 		memoryAudit:                  a.memoryAudit,
+		chatMemory:                   a.chatMemory,
+		dataSubjects:                 a.dataSubjects,
 		projectWorkspacePath:         a.projectWorkspacePath,
 		attachmentAutoExtractor:      a.attachmentAutoExtractor,
 		attachmentAutoExtractTimeout: 60 * time.Second,

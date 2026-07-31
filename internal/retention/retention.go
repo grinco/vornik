@@ -220,6 +220,14 @@ type Counts struct {
 	// project_memory_chunks by the operator-level cap. Zero when
 	// MemoryChunksDays is 0 or nothing matched.
 	MemoryChunks int
+	// MemoryExpired is the count of rows hard-deleted from
+	// project_memory_chunks by the always-on expires_at sweep — the
+	// TTL-verified-to-DELETE step (chat memory-write design §5, parent
+	// §6.4). Distinct from MemoryChunks (the created_at operator cap):
+	// this honours per-class TTL so a chat_memory chunk past its 90-day
+	// horizon is actually deleted, not merely hidden by the retrieval
+	// filter. Class-agnostic — any class with a TTL benefits.
+	MemoryExpired int
 	// MemoryIngestAudit is the count of rows pruned from
 	// memory_ingest_audit by the always-on window.
 	MemoryIngestAudit int
@@ -680,6 +688,26 @@ func (s *Sweeper) run(ctx context.Context, p Policy, previewOnly bool) (Counts, 
 		}
 	}
 
+	// 7b. project_memory_chunks — always-on expires_at sweep (chat
+	//     memory-write design §5 / parent §6.4). Hard-deletes chunks
+	//     whose per-class TTL has elapsed, so a TTL actually DELETES
+	//     rather than only hiding the row behind the retrieval filter
+	//     (routing.go's `expires_at IS NULL OR expires_at > NOW()`).
+	//     Always on (not the opt-in MemoryChunksDays ceiling): a class
+	//     TTL that only hides is a compliance gap (Art 17 "without undue
+	//     delay"), not a product knob. Runs every retention cycle (6h
+	//     cadence, container_autonomy.go initRetention). data_subject_links
+	//     do NOT cascade on chunk delete (polymorphic (table_name,row_id),
+	//     no FK), so pruneExpiredChunks removes the paired links first.
+	if n, err := s.pruneExpiredChunks(ctx, p.ProjectID, now, previewOnly); err != nil {
+		s.warn("project_memory_chunks(expires_at)", err)
+		if firstErr == nil {
+			firstErr = err
+		}
+	} else {
+		counts.MemoryExpired = n
+	}
+
 	// 8. memory_ingest_audit — always-on (default 90d). Both ingest
 	//    paths (companion + agent) write here; without a sweep the
 	//    deposit trail grows forever (mitigation plan §7.3 / §8.3).
@@ -769,6 +797,75 @@ func (s *Sweeper) pruneTaskMessages(ctx context.Context, projectID string, thres
 		return 0, fmt.Errorf("rows affected for task_messages: %w", err)
 	}
 	return int(aff), nil
+}
+
+// pruneExpiredChunks hard-deletes project_memory_chunks whose
+// per-class TTL has elapsed (expires_at < now), for one project. This
+// is the mechanism that makes a class TTL actually erase rather than
+// only hide the row (chat memory-write design §5, parent §6.4).
+//
+// The FK cascade is verified, not assumed (review C2). Against
+// project_memory_chunks:
+//   - entity_mentions.chunk_id, memory_embed_queue.chunk_id and
+//     memory_embed_dlq.chunk_id carry ON DELETE CASCADE, so those child
+//     rows go automatically with the chunk.
+//   - data_subject_links does NOT: it is polymorphic
+//     (table_name, row_id) with no foreign key to any one table, so a
+//     chunk delete would ORPHAN its links. Erasure's DeleteRow removes
+//     the paired links for exactly this reason; the sweep must do the
+//     same, in the SAME transaction, deleting the links FIRST so there
+//     is never a link pointing at a chunk that is already gone.
+//
+// Runs even in preview (COUNT only) without touching either table.
+func (s *Sweeper) pruneExpiredChunks(ctx context.Context, projectID string, now time.Time, previewOnly bool) (int, error) {
+	if projectID == "" {
+		return 0, nil
+	}
+	if previewOnly {
+		var n int
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM project_memory_chunks
+			WHERE project_id = $1 AND expires_at IS NOT NULL AND expires_at < $2
+		`, projectID, now).Scan(&n); err != nil {
+			return 0, fmt.Errorf("count expired chunks: %w", err)
+		}
+		return n, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin expired-chunk sweep: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Links first — no FK cascade backs them (review C2). Scoped to the
+	// exact set of chunks about to be deleted via the same predicate.
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM data_subject_links
+		WHERE table_name = 'project_memory_chunks'
+		  AND row_id IN (
+			SELECT id FROM project_memory_chunks
+			WHERE project_id = $1 AND expires_at IS NOT NULL AND expires_at < $2
+		  )
+	`, projectID, now); err != nil {
+		return 0, fmt.Errorf("delete expired-chunk subject links: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx, `
+		DELETE FROM project_memory_chunks
+		WHERE project_id = $1 AND expires_at IS NOT NULL AND expires_at < $2
+	`, projectID, now)
+	if err != nil {
+		return 0, fmt.Errorf("delete expired chunks: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("rows affected for expired chunks: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit expired-chunk sweep: %w", err)
+	}
+	return int(n), nil
 }
 
 // pruneOlderThan runs a COUNT or DELETE on table rows older than threshold

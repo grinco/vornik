@@ -77,6 +77,28 @@ type PipelineConfig struct {
 	// nil, IngestCompanionNote fails with a clear error.
 	CreateCompanionArtifact func(ctx context.Context, projectID, artifactID, sourceName string, sizeBytes int64) error
 
+	// CreateChatMemoryArtifact inserts the synthetic artifacts row a
+	// chat memory-write deposit needs before its chunk is upserted,
+	// mirroring CreateCompanionArtifact (chat memory-write design
+	// D2.1). project_memory_chunks.artifact_id points at artifacts(id),
+	// so the row must exist first. When nil, IngestChatMemory fails
+	// with a clear error rather than writing an orphaned chunk.
+	CreateChatMemoryArtifact func(ctx context.Context, projectID, artifactID, sourceName string, sizeBytes int64) error
+
+	// DeleteChatMemoryArtifact removes the synthetic artifacts row a
+	// chat deposit created, used by DeleteChatMemory's compensation
+	// path (design D4.1a). Nil = the artifact row is left behind (the
+	// chunk is still deleted); wiring it keeps compensation complete.
+	DeleteChatMemoryArtifact func(ctx context.Context, projectID, artifactID string) error
+
+	// DeleteChatMemorySubjectLinks removes any data_subject_links that
+	// reference the chunks of one chat-memory artifact. Called first in
+	// DeleteChatMemory so a compensated write leaves no stale link
+	// pointing at a row that is about to vanish. Kept as a hook so the
+	// memory package does not import the GDPR schema directly (the
+	// container wires it to the DataSubjectRepository). Nil = skip.
+	DeleteChatMemorySubjectLinks func(ctx context.Context, projectID, artifactID string) error
+
 	// RecordCompanionIngest writes one row to memory_ingest_audit
 	// per IngestCompanionNote call regardless of gate decision.
 	// Closes the audit-log gap LLD-22's "reuse queue.producer_role"
@@ -1109,4 +1131,132 @@ func (p *Pipeline) IngestCompanionNote(
 	}
 
 	return CompanionIngestResult{Stats: stats, ArtifactID: artifactID}, err
+}
+
+// ChatMemoryIngestResult is what IngestChatMemory returns. Stats and
+// the synthetic ArtifactID mirror CompanionIngestResult; ChunkIDs is
+// the extra the chat path needs — the ids of the just-written chunks,
+// so the dispatcher can produce a data_subject_link per chunk after
+// the write (chat memory-write design D4.1) and compensate by id if
+// the link fails. ChunkIDs is empty when the deposit was gated out
+// (Stats.Admitted == 0).
+type ChatMemoryIngestResult struct {
+	Stats      IngestStats
+	ArtifactID string   // synthetic "chatmem_<ts>_<rand>"
+	ChunkIDs   []string // ids of admitted chunks; empty when nothing landed
+}
+
+// IngestChatMemory ingests a fact deposited from a chat channel through
+// the dispatcher's `remember` tool (chat memory-write design slice 5,
+// §2). Modelled on IngestCompanionNote: it synthesises chat-shaped
+// provenance and routes the content through the SAME pipeline
+// (RunStandardGates → IngestText → backfillClassMetadata) so the chunk
+// lands as ClassChatMemory with the class TTL (90d) and confidence
+// (0.3) stamped.
+//
+//   - producerRole = "chat:<channel>" → drives the ProvenanceCompleteGate
+//     carve-out (isChatProducer, §2.2). Class is pinned via ClassOverride
+//     rather than role-map inference — explicit and testable.
+//   - artifactID  = "chatmem_<ts>_<rand>" — synthetic. As with the
+//     companion path, the synthetic artifacts row is inserted first (via
+//     CreateChatMemoryArtifact) so the chunk's artifact_id resolves.
+//   - sourceName  = "chat:<channel>:<session>" — carries the channel +
+//     session provenance and drives the gate carve-out.
+//
+// taskID and epochID are empty (a chat deposit is tied to neither).
+// Returns the chunk ids of the admitted deposit so the caller can link
+// the data subject; on any infrastructure error the chunk is not left
+// dangling (the caller compensates via DeleteChatMemory).
+func (p *Pipeline) IngestChatMemory(
+	ctx context.Context,
+	projectID, channel, sessionID, content string,
+) (ChatMemoryIngestResult, error) {
+	if p == nil {
+		return ChatMemoryIngestResult{}, errors.New("pipeline is nil")
+	}
+	if projectID == "" || channel == "" {
+		return ChatMemoryIngestResult{}, errors.New("IngestChatMemory: project_id and channel are required")
+	}
+
+	artifactID := persistence.GenerateID("chatmem")
+	ingestExec := persistence.GenerateID("chatmem")
+	producerRole := "chat:" + channel
+	sourceName := "chat:" + channel + ":" + sessionID
+
+	// FK precondition: the synthetic artifacts row must exist before the
+	// chunk upsert. Same contract as CreateCompanionArtifact — required,
+	// not nil-safe, so a mis-wired deployment fails loudly instead of
+	// writing an orphaned chunk.
+	if p.cfg.CreateChatMemoryArtifact == nil {
+		return ChatMemoryIngestResult{}, errors.New("IngestChatMemory: PipelineConfig.CreateChatMemoryArtifact is required")
+	}
+	if err := p.cfg.CreateChatMemoryArtifact(ctx, projectID, artifactID, sourceName, int64(len(content))); err != nil {
+		return ChatMemoryIngestResult{}, fmt.Errorf("IngestChatMemory: create artifact row: %w", err)
+	}
+
+	opts := IngestArtifactOptions{ClassOverride: ClassChatMemory}
+	stats, err := p.IngestArtifactWithOptions(
+		ctx,
+		projectID,
+		"", // taskID
+		artifactID,
+		sourceName,
+		producerRole,
+		ingestExec,
+		content,
+		int64(len(content)),
+		"", // epochID
+		opts,
+	)
+	if err != nil {
+		return ChatMemoryIngestResult{Stats: stats, ArtifactID: artifactID}, err
+	}
+
+	// Only fetch chunk ids when something actually landed — a gated /
+	// deduped / quarantined deposit leaves nothing to link.
+	var chunkIDs []string
+	if stats.Admitted > 0 {
+		ids, idErr := p.indexer.ChunkIDsByArtifact(ctx, projectID, artifactID)
+		if idErr != nil {
+			return ChatMemoryIngestResult{Stats: stats, ArtifactID: artifactID},
+				fmt.Errorf("IngestChatMemory: read chunk ids: %w", idErr)
+		}
+		chunkIDs = ids
+	}
+	return ChatMemoryIngestResult{Stats: stats, ArtifactID: artifactID, ChunkIDs: chunkIDs}, nil
+}
+
+// DeleteChatMemory removes a chat-memory deposit whole — its chunks,
+// their embedding-cache vectors and entity-mention rows (via
+// DeleteByArtifact), any stale data_subject_links referencing those
+// chunks (via the DeleteChatMemorySubjectLinks hook), and the synthetic
+// artifacts row (via DeleteChatMemoryArtifact). It is the compensation
+// path for design D4.1a: a chat chunk that carries a data subject with
+// no link is a silent Art-17 gap, so when the post-insert link fails
+// the write is undone rather than left half-done.
+//
+// Links are removed FIRST, so at no point is there a link pointing at a
+// chunk that is already gone. The hooks are nil-safe; the chunk delete
+// is the load-bearing step.
+func (p *Pipeline) DeleteChatMemory(ctx context.Context, projectID, artifactID string) error {
+	if p == nil {
+		return errors.New("pipeline is nil")
+	}
+	if artifactID == "" {
+		return errors.New("DeleteChatMemory: artifact_id is required")
+	}
+	if p.cfg.DeleteChatMemorySubjectLinks != nil {
+		if err := p.cfg.DeleteChatMemorySubjectLinks(ctx, projectID, artifactID); err != nil {
+			return fmt.Errorf("DeleteChatMemory: delete subject links: %w", err)
+		}
+	}
+	if _, err := p.indexer.DeleteByArtifact(ctx, artifactID); err != nil {
+		return fmt.Errorf("DeleteChatMemory: delete chunks: %w", err)
+	}
+	if p.cfg.DeleteChatMemoryArtifact != nil {
+		if err := p.cfg.DeleteChatMemoryArtifact(ctx, projectID, artifactID); err != nil {
+			return fmt.Errorf("DeleteChatMemory: delete artifact row: %w", err)
+		}
+	}
+	return nil
 }

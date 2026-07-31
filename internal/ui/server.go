@@ -547,6 +547,12 @@ type Server struct {
 	// mediaSight governs whether the web-chat dispatcher turn may perceive
 	// media directly. Nil hands every media attachment over to the vision role.
 	mediaSight *dispatcher.MediaSight
+	// chatMemoryConfirmations backs the shared-scope memory-write
+	// acknowledgement hook on the web-chat receiver (chat memory-write design
+	// §5.3.2 step 2). Nil leaves the hook dormant. Web chat is the fifth
+	// ChannelReceiver site and the easiest to forget — wired via
+	// WithChatMemoryConfirmations from the container.
+	chatMemoryConfirmations persistence.ChatMemoryWriteConfirmationRepository
 
 	// chatStores keeps one in-memory webchat SessionStore per
 	// project so two browsers on different projects can't read

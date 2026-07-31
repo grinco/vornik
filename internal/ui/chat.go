@@ -29,6 +29,7 @@ import (
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/conversation"
 	"vornik.io/vornik/internal/dispatcher"
+	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/sessionstore"
 	"vornik.io/vornik/internal/webchat"
 )
@@ -78,6 +79,17 @@ func WithAIDisclosure(d *aidisclosure.Service) ServerOption {
 // guard in TestEveryChannelReceiverWiresTheDisclosureMetrics named it.
 func WithDisclosureMetrics(o dispatcher.DisclosureObserver) ServerOption {
 	return func(s *Server) { s.disclosureMetrics = o }
+}
+
+// WithChatMemoryConfirmations wires the shared-scope memory-write
+// acknowledgement store into the web-chat receiver (chat memory-write design
+// §5.3.2 step 2), so a human's acknowledgement typed in web chat can discharge
+// a pending shared write. Nil leaves the hook dormant. Web chat is the fifth
+// ChannelReceiver construction site — the source-level guard
+// TestEveryChannelReceiverWiresMemoryWriteConfirmations names it if this is
+// forgotten.
+func WithChatMemoryConfirmations(r persistence.ChatMemoryWriteConfirmationRepository) ServerOption {
+	return func(s *Server) { s.chatMemoryConfirmations = r }
 }
 
 // WithMediaSight wires inline media perception into the web-chat receiver.
@@ -215,12 +227,13 @@ func (s *Server) ChatPostMessage(w http.ResponseWriter, r *http.Request, project
 		DisplayName: "Web operator",
 	})
 	receiver := &dispatcher.ChannelReceiver{
-		Channel:           channel,
-		Agent:             s.chatDispatcher,
-		Sessions:          store,
-		Disclosure:        s.aiDisclosure,
-		DisclosureMetrics: s.disclosureMetrics,
-		Media:             s.mediaSight,
+		Channel:                  channel,
+		Agent:                    s.chatDispatcher,
+		Sessions:                 store,
+		Disclosure:               s.aiDisclosure,
+		DisclosureMetrics:        s.disclosureMetrics,
+		Media:                    s.mediaSight,
+		MemoryWriteConfirmations: s.chatMemoryConfirmations,
 		ResultPostprocessor: func(result dispatcher.Result) string {
 			// Append the deliverable-links block when the
 			// dispatcher's turn referenced a task that produced

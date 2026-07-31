@@ -7,8 +7,49 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"vornik.io/vornik/internal/datasubject"
+	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/persistence"
 )
+
+// ChatMemoryWriter persists a chat-deposited fact to project memory as a
+// chat_memory chunk, and can undo a partial write. Implemented by
+// *memory.Pipeline (IngestChatMemory / DeleteChatMemory). Nil leaves the
+// personal write path reporting "not built", so a deployment without the
+// pipeline wired behaves as slice 3 did.
+type ChatMemoryWriter interface {
+	IngestChatMemory(ctx context.Context, projectID, channel, sessionID, content string) (memory.ChatMemoryIngestResult, error)
+	DeleteChatMemory(ctx context.Context, projectID, artifactID string) error
+}
+
+// DataSubjectLinker is the narrow slice of the GDPR data-subject
+// repository the chat-memory write needs to link a chunk to the operator
+// who deposited it, so an Art 17 erasure for that operator finds it.
+// Implemented by *postgres.DataSubjectRepository. Nil skips the link (the
+// write still happens) — but production must wire it; the §6.1 coverage
+// otherwise regresses.
+type DataSubjectLinker interface {
+	FindSubjectByIdentifier(ctx context.Context, kind, value string) (string, error)
+	CreateSubject(ctx context.Context, s datasubject.Subject) error
+	AddIdentifier(ctx context.Context, subjectID string, id datasubject.Identifier) error
+	AddLink(ctx context.Context, subjectID string, l datasubject.Link) error
+}
+
+// chatMemoryCompensationDeletes counts D4.1a compensation deletes — a
+// chat chunk written but then dropped because its data_subject_link
+// could not be recorded. This fallback is rare by design; a non-zero
+// count flags a link-layer problem (the same failure class the
+// reranker/distiller unbilled-call-site incidents taught us to make
+// visible rather than swallow), so it is a named, attributable metric.
+var chatMemoryCompensationDeletes = promauto.NewCounter(prometheus.CounterOpts{
+	Namespace: "vornik",
+	Subsystem: "chat_memory",
+	Name:      "compensation_delete_total",
+	Help:      "Chat-memory writes rolled back because the data-subject link failed after the chunk insert (design D4.1a).",
+})
 
 // SLICE 1 of the chat memory-write design
 // (https://docs.vornik.io), after three review
@@ -76,6 +117,27 @@ func (a *Agent) SetMemoryWriteConfirmations(
 	}
 }
 
+// SetChatMemoryWriter wires the personal-scope memory-write path (slice 5): the
+// pipeline that persists a chat_memory chunk and the data-subject repository that
+// links it to the operator for Art 17. Either may be nil — a nil writer leaves the
+// personal path reporting "not built", a nil linker skips the (required-in-prod)
+// data-subject link.
+//
+// Writes through to the tool executor for the same reason SetMemoryWriteGate does:
+// NewAgent builds a.toolExecutor once, so assigning only the agent field would leave
+// the executor holding nil and the write path permanently dark (the 1234aea37 class).
+func (a *Agent) SetChatMemoryWriter(w ChatMemoryWriter, linker DataSubjectLinker) {
+	if a == nil {
+		return
+	}
+	a.chatMemory = w
+	a.dataSubjects = linker
+	if a.toolExecutor != nil {
+		a.toolExecutor.chatMemory = w
+		a.toolExecutor.dataSubjects = linker
+	}
+}
+
 // rememberUnavailable is the single refusal text.
 //
 // IDENTICAL whether the capability is absent or merely ungranted for this channel (review
@@ -98,7 +160,7 @@ type rememberArgs struct {
 // is exactly the "it said it would remember and nothing happened" report that started this
 // work, and shipping that shape again while the write path is pending would recreate the
 // original bug with extra steps.
-func (te *ToolExecutor) remember(ctx context.Context, args string) ToolResult {
+func (te *ToolExecutor) remember(ctx context.Context, args, activeProject string) ToolResult {
 	channel, sessionID := originatingChannelFromContext(ctx)
 
 	// No originating channel (API, A2A, an autonomy tick) means there is no channel whose
@@ -123,14 +185,117 @@ func (te *ToolExecutor) remember(ctx context.Context, args string) ToolResult {
 
 	scope := resolveMemoryScope(in.Scope)
 
-	// PERSONAL scope is unchanged in this slice: the operator-profile write path is slice
-	// 4-5. Report it plainly rather than implying a save happened — a tool that accepts and
-	// discards is the exact "it said it would remember and nothing happened" bug this design
-	// exists to fix.
+	// PERSONAL scope now persists end-to-end (slice 5): a chat_memory chunk in the
+	// active project's memory, linked to the operator's own data subject. SHARED
+	// scope still runs the slice-3 confirmation machine and waits for slice 4's NED
+	// gate before it can persist (rememberShared).
 	if scope != memoryScopeShared {
-		return rememberSaveNotBuilt(scope)
+		return te.rememberPersonal(ctx, channel, sessionID, activeProject, in.Content)
 	}
 	return te.rememberShared(ctx, channel, sessionID, in.Content)
+}
+
+// rememberPersonal persists a personal-scope chat deposit (chat memory-write design
+// slice 5): the fact is the operator's OWN data, so it is written as a chat_memory
+// chunk in the active project and linked to the operator's data subject for Art 17.
+//
+// Personal scope runs NO named-entity resolution — it does not extract third parties
+// (that gate is shared-scope-only, slice 4). The residual §6.1 boundary (a chat note
+// may name someone the write does not index) is covered by the Art 15/17 disclosure,
+// not by a gate here.
+//
+// If the post-insert data-subject link fails, the chunk is COMPENSATED away rather
+// than left unlinked — an unlinked chunk is a silent Art-17 gap (design D4.1a).
+func (te *ToolExecutor) rememberPersonal(ctx context.Context, channel, sessionID, activeProject, content string) ToolResult {
+	// Write path not wired (no pipeline, or no active project to write into):
+	// report plainly rather than implying a save, exactly as slice 3 did.
+	if te.chatMemory == nil || activeProject == "" {
+		return rememberSaveNotBuilt(memoryScopePersonal)
+	}
+	// The chunk is the operator's own data; without a resolvable operator identity
+	// there is nobody to attribute it to for Art 17, and a personal note with no
+	// owner is meaningless. Refuse (the §5.6.5 "identity cannot be resolved" rule).
+	operatorID, _ := operatorIDFromContext(ctx)
+	if operatorID == "" {
+		return ToolResult{Content: "I can't save that to your personal memory: I can't tell who " +
+			"is speaking, and a personal note has to belong to someone. Nothing has been saved."}
+	}
+
+	res, err := te.chatMemory.IngestChatMemory(ctx, activeProject, channel, sessionID, content)
+	if err != nil {
+		te.logger.Warn().Err(err).Str("project", activeProject).Str("channel", channel).
+			Msg("remember: IngestChatMemory failed")
+		return ToolResult{Content: "I hit a temporary problem saving that, so nothing was kept. " +
+			"Tell the user there was a problem and to try again."}
+	}
+	if res.Stats.Admitted == 0 {
+		// Gated out: duplicate, too short, or a secret-dump. Report truthfully
+		// rather than implying a save.
+		return ToolResult{Content: "I couldn't keep that: the memory gates filtered it (it may be a " +
+			"duplicate of something already in memory, too short, or contain a secret). Nothing was kept."}
+	}
+
+	// GDPR link (design D4.1, operator-self variant). Best case the linker is wired;
+	// if it is and the link fails, compensate.
+	if te.dataSubjects != nil {
+		if linkErr := te.linkOperatorToChunks(ctx, operatorID, activeProject, res.ChunkIDs); linkErr != nil {
+			if delErr := te.chatMemory.DeleteChatMemory(ctx, activeProject, res.ArtifactID); delErr != nil {
+				te.logger.Error().Err(delErr).Str("project", activeProject).Str("artifact", res.ArtifactID).
+					Msg("remember: COMPENSATION delete failed after link error — an unlinked chat_memory chunk may persist")
+			}
+			chatMemoryCompensationDeletes.Inc()
+			te.logger.Warn().Err(linkErr).Str("project", activeProject).
+				Msg("remember: data-subject link failed; compensated by deleting the chunk")
+			return ToolResult{Content: "I couldn't record who this memory belongs to, so I did NOT keep " +
+				"it (a memory that can't be tied to a person can't be erased on request). Tell the user " +
+				"there was a temporary problem and to try again."}
+		}
+	}
+
+	return ToolResult{Content: "Saved to this project's memory as a personal chat note — it's kept for " +
+		"about 90 days and only surfaces as low-confidence context. Tell the user it was saved."}
+}
+
+// linkOperatorToChunks resolves (or creates) the operator's data subject and links
+// every chunk of the just-written deposit to it, so an Art 17 erasure for that
+// operator finds the chat_memory chunk (design D4.1). The identity is the operator
+// id, and the link is recorded as an operator assertion at PROBABLE confidence —
+// downgraded from the source ceiling because the operator id is only as strong as
+// the channel that produced it (§5.6.5), and UNKNOWN exclusivity because personal
+// scope runs no NED, so whether the note also concerns others is undetermined
+// (treated as shared by the erasure planner — the safe direction).
+func (te *ToolExecutor) linkOperatorToChunks(ctx context.Context, operatorID, projectID string, chunkIDs []string) error {
+	subjectID, err := te.dataSubjects.FindSubjectByIdentifier(ctx, datasubject.KindOperatorID, operatorID)
+	if err != nil {
+		return fmt.Errorf("find subject: %w", err)
+	}
+	if subjectID == "" {
+		subjectID = persistence.GenerateID("subject")
+		if err := te.dataSubjects.CreateSubject(ctx, datasubject.Subject{ID: subjectID, DisplayName: operatorID}); err != nil {
+			return fmt.Errorf("create subject: %w", err)
+		}
+		if err := te.dataSubjects.AddIdentifier(ctx, subjectID, datasubject.Identifier{
+			Kind:       datasubject.KindOperatorID,
+			Value:      operatorID,
+			Source:     datasubject.SourceOperatorAsserted,
+			Confidence: datasubject.ConfidenceProbable,
+		}); err != nil {
+			return fmt.Errorf("add identifier: %w", err)
+		}
+	}
+	for _, cid := range chunkIDs {
+		if err := te.dataSubjects.AddLink(ctx, subjectID, datasubject.Link{
+			Table:       datasubject.TableProjectMemoryChunks,
+			RowID:       cid,
+			ProjectID:   projectID,
+			Source:      datasubject.SourceOperatorAsserted,
+			Confidence:  datasubject.ConfidenceProbable,
+			Exclusivity: datasubject.UnknownExclusivity,
+		}); err != nil {
+			return fmt.Errorf("add link for chunk %s: %w", cid, err)
+		}
+	}
+	return nil
 }
 
 // rememberSaveNotBuilt is the "gate passed, but the write path is not built yet" response.

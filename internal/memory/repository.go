@@ -2558,6 +2558,31 @@ func (r *Repository) DeleteByExtractedDocument(ctx context.Context, extractedDoc
 	return int(n), err
 }
 
+// ChunkIDsByArtifact returns the ids of every chunk stored for one
+// artifact within a project, ordered by chunk_index so a multi-chunk
+// deposit reads back in a stable order. Empty result is not an error —
+// a deposit gated out (dedup, secret-dump) leaves no chunks. See the
+// Indexer wrapper for why the ids are needed.
+func (r *Repository) ChunkIDsByArtifact(ctx context.Context, projectID, artifactID string) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id FROM project_memory_chunks
+		  WHERE project_id = $1 AND artifact_id = $2
+		  ORDER BY chunk_index`, projectID, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // scanHashes drains a single-column hash query, closing the rows on every path.
 func scanHashes(rows *sql.Rows) ([]string, error) {
 	defer func() { _ = rows.Close() }()

@@ -1810,6 +1810,10 @@ func (c *Container) initHTTPServer() error {
 		// Art 50 observability and the same media-perception rules.
 		uiOpts = append(uiOpts, ui.WithDisclosureMetrics(c.disclosureObserver()))
 		uiOpts = append(uiOpts, ui.WithMediaSight(c.mediaSight()))
+		// Web chat is the fifth ChannelReceiver: it owes the same shared-scope
+		// memory-write acknowledgement hook as the other four (chat memory-write
+		// design §5.3.2 step 2).
+		uiOpts = append(uiOpts, ui.WithChatMemoryConfirmations(c.chatMemoryConfirmations()))
 	}
 	// DB-backed webchat session store. Each per-project
 	// SessionStore the UI lazily constructs will write-through

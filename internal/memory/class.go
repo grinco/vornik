@@ -25,6 +25,15 @@ const (
 	// shorter-lived than swarm-produced artifacts, lower default
 	// confidence than agent output.
 	ClassCompanionNote ContentClass = "companion_note"
+	// ClassChatMemory tags content deposited from a chat channel
+	// through the dispatcher's `remember` tool (chat memory-write
+	// design, slices 4-5). A human typed it in Slack/Telegram/etc.
+	// and asked the assistant to keep it — a deliberate deposit, like
+	// a companion note, but originating in an operator conversation
+	// rather than a host-LLM companion client. Own class so its
+	// retention (90d TTL) and retrieval weight (0.3 confidence) move
+	// independently of research/decision chunks, per §5.5.
+	ClassChatMemory ContentClass = "chat_memory"
 )
 
 // ClassPolicy is the per-class behaviour bundle: default
@@ -127,6 +136,20 @@ var DefaultClassPolicies = map[ContentClass]ClassPolicy{
 		TTL:                  30 * 24 * time.Hour,
 		RoleOfRecordEligible: false,
 	},
+	// Chat-deposited memory (chat memory-write design §5.5,
+	// operator-signed-off 2026-07-30). Low confidence (0.3): a chat
+	// aside is untrusted input that loses to a verified document on
+	// any tie, but not zero — a chunk that can never win is a write
+	// path with no read path. 90-day TTL matches the shortest
+	// existing class horizon (research) rather than inventing a
+	// fourth: a chat aside is the most likely thing to be stale and
+	// the least likely to be missed. NEVER role-of-record: a chat
+	// note is a thought, not a system-of-record entry.
+	ClassChatMemory: {
+		DefaultConfidence:    0.3,
+		TTL:                  90 * 24 * time.Hour,
+		RoleOfRecordEligible: false,
+	},
 }
 
 // roleClassMap is the deterministic producer-role → content-class
@@ -218,7 +241,7 @@ func IsValidClass(s string) bool {
 	switch ContentClass(s) {
 	case ClassResearch, ClassSpec, ClassDecision, ClassCommitMsg,
 		ClassDiagnostic, ClassExternalFetch, ClassSummary, ClassUnclassified,
-		ClassCompanionNote:
+		ClassCompanionNote, ClassChatMemory:
 		return true
 	}
 	return false

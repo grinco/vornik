@@ -6,6 +6,7 @@ import (
 	"vornik.io/vornik/internal/intentjudge"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/persistence/postgres"
 	"vornik.io/vornik/internal/registry"
 )
 
@@ -280,6 +281,14 @@ func (c *Container) initDispatcher() {
 	}
 	c.Dispatcher = dispatcher.NewAgent(c.ChatClient, taskRepo, execRepo, artifactRepo, c.Registry, opts...)
 
+	// Chat memory-write activation (slices 3+5). The gate is deny-by-default
+	// (a channel writes only if a project's memory.write_channels lists it);
+	// the confirmation + audit repos back the shared-scope two-step; the
+	// pipeline + data-subject repo persist personal-scope writes and link them
+	// to the operator for Art 17. All are late-bound setters so a nil DB /
+	// unbuilt pipeline degrades cleanly (the tool reports "not built").
+	c.wireChatMemoryWrite()
+
 	if c.TelegramBot != nil {
 		// ConversationChannel slice 2: attach a ChannelReceiver over
 		// the bot so HandleMessage + auto-resume route every
@@ -289,4 +298,47 @@ func (c *Container) initDispatcher() {
 	c.Logger.Info().
 		Bool("telegram_callbacks", c.TelegramBot != nil).
 		Msg("dispatcher initialised")
+}
+
+// chatMemoryConfirmations returns the shared-scope confirmation store the
+// ChannelReceiver's acknowledgement hook stamps (chat memory-write design
+// §5.3.2 step 2). Nil-safe: an early-init container without repos yields nil,
+// which leaves the hook dormant (a shared write never advances past PROPOSED)
+// rather than panicking. Wired at every receiver construction site so a human
+// acknowledgement can discharge a pending write on any channel; the gate
+// (§5.1) is what actually decides whether a shared write may be proposed.
+func (c *Container) chatMemoryConfirmations() persistence.ChatMemoryWriteConfirmationRepository {
+	if c == nil || c.repos == nil {
+		return nil
+	}
+	return c.repos.ChatMemoryWriteConfirmations
+}
+
+// wireChatMemoryWrite activates the chat memory-write feature on the
+// dispatcher (chat memory-write design, slices 3+5):
+//
+//   - the capability gate (§5.1) — deny-by-default, granted per channel in
+//     project config (memory.write_channels). Registry-backed, no DB, so it
+//     is always wired and reflects config the moment a project loads.
+//   - the shared-scope confirmation + audit repos (slice 3, §5.3) — available
+//     on both backends via c.repos, so the receiver's acknowledgement hook can
+//     advance a PROPOSED write to AUTHORIZED.
+//   - the personal-scope write path (slice 5, §2/D4.1) — the memory pipeline
+//     persists a chat_memory chunk and the data-subject repository links it to
+//     the operator for Art 17. The link repo is postgres-only, so the pair is
+//     wired only on postgres; a sqlite dev daemon leaves the personal path
+//     reporting "not built" rather than writing an unlinkable chunk.
+func (c *Container) wireChatMemoryWrite() {
+	if c.Dispatcher == nil {
+		return
+	}
+	c.Dispatcher.SetMemoryWriteGate(newMemoryWriteGate(c.Registry))
+
+	if c.repos != nil && c.repos.ChatMemoryWriteConfirmations != nil && c.repos.ChatMemoryWriteAudit != nil {
+		c.Dispatcher.SetMemoryWriteConfirmations(c.repos.ChatMemoryWriteConfirmations, c.repos.ChatMemoryWriteAudit)
+	}
+
+	if c.memoryPipeline != nil && c.DB != nil && c.Config.Database.Driver == "postgres" {
+		c.Dispatcher.SetChatMemoryWriter(c.memoryPipeline, postgres.NewDataSubjectRepository(c.DB))
+	}
 }

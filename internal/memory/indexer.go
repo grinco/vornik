@@ -413,6 +413,31 @@ func (idx *Indexer) PatchPolicyByArtifact(ctx context.Context, projectID, artifa
 	return idx.repo.PatchPolicyByArtifact(ctx, projectID, artifactID, contentClass, confidence, producerRole, ingestExecutionID, expiresAt, repoScope)
 }
 
+// ChunkIDsByArtifact returns the ids of every chunk the indexer wrote
+// for one artifact, ordered by chunk_index. IngestText mints chunk ids
+// internally and does not surface them; IngestChatMemory needs them so
+// the dispatcher can produce a data_subject_link per chunk after the
+// write (chat memory-write design D4.1). Nil-safe.
+func (idx *Indexer) ChunkIDsByArtifact(ctx context.Context, projectID, artifactID string) ([]string, error) {
+	if idx == nil || idx.repo == nil {
+		return nil, nil
+	}
+	return idx.repo.ChunkIDsByArtifact(ctx, projectID, artifactID)
+}
+
+// DeleteByArtifact removes every chunk written for one artifact (and
+// each chunk's embedding-cache entry, in one transaction). Used by
+// IngestChatMemory's compensation path (D4.1a): when the post-insert
+// data_subject_link fails, the just-written chunk must not survive
+// unlinked, so it is deleted rather than left as a silent Art-17 gap.
+// Nil-safe.
+func (idx *Indexer) DeleteByArtifact(ctx context.Context, artifactID string) (int, error) {
+	if idx == nil || idx.repo == nil {
+		return 0, nil
+	}
+	return idx.repo.DeleteByArtifact(ctx, artifactID)
+}
+
 // PatchScopeByArtifact stamps repo_scope (migration 75) on every
 // chunk produced for a given artifact. Used by the executor's
 // ingestOutputArtifacts hook: after IngestText lands the chunks with

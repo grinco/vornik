@@ -179,6 +179,10 @@ var ProjectDeferredPaths = []string{
 	// Web write-action allowlist — deny-by-default security gate for supervised
 	// web writes; YAML-only like the other allowlists (no casual form field).
 	"web.write_allowlist",
+	// Chat memory-write channel opt-in — deny-by-default security gate for
+	// durable memory writes (chat memory-write design §5.1); YAML-only like the
+	// other allowlists so granting a channel is a deliberate config edit.
+	"memory.write_channels",
 	// MCP server wiring — complex nested blocks.
 	"mcp.servers",
 	"mcp.toolRateLimits",

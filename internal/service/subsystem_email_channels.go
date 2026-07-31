@@ -87,12 +87,13 @@ func (s *EmailChannelsSubsystem) Start(ctx context.Context) error {
 		store := newEmailSessionStore(c.Registry, project.ID, ch)
 		store.SetPersister(c.channelSessionPersister("email"))
 		receiver := &dispatcher.ChannelReceiver{
-			Channel:           ch,
-			Agent:             c.Dispatcher,
-			Sessions:          store,
-			Disclosure:        c.AIDisclosure,
-			Media:             c.mediaSight(),
-			DisclosureMetrics: c.disclosureObserver(),
+			Channel:                  ch,
+			Agent:                    c.Dispatcher,
+			Sessions:                 store,
+			Disclosure:               c.AIDisclosure,
+			Media:                    c.mediaSight(),
+			DisclosureMetrics:        c.disclosureObserver(),
+			MemoryWriteConfirmations: c.chatMemoryConfirmations(),
 		}
 
 		// Cluster gate (per-project): only the elected leader for

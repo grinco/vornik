@@ -250,9 +250,12 @@ func ProvenanceCompleteGate(c *IngestCandidate) GateOutcome {
 			Detail: "missing producer_role",
 		}
 	}
-	if isCompanionProducer(c.ProducerRole) {
-		// Companion deposits skip the artifact-ID requirement.
-		// Their provenance lives in producer_role + source_name.
+	if isDeliberateHumanProducer(c.ProducerRole) {
+		// Companion deposits (companion:<kind>) and chat deposits
+		// (chat:<channel>) skip the artifact-ID requirement. Both are
+		// inline notes a human deposited deliberately; their provenance
+		// lives in producer_role + source_name rather than an upstream
+		// artifact row. See isDeliberateHumanProducer.
 		return GateOutcome{Action: GateAllow, Gate: GateProvenanceComplete}
 	}
 	if c.SourceArtifactID == "" {
@@ -271,7 +274,36 @@ func ProvenanceCompleteGate(c *IngestCandidate) GateOutcome {
 // `[a-z][a-z0-9-]*` (the same shape `vornikctl companion grant
 // --client` enforces).
 func isCompanionProducer(role string) bool {
-	const prefix = "companion:"
+	return hasKindPrefix(role, "companion:")
+}
+
+// isChatProducer reports whether the producer role describes a chat
+// deposit made through the dispatcher's `remember` tool (chat
+// memory-write design slice 5, §2.2). Accepted form:
+// "chat:<channel>", where channel matches `[a-z][a-z0-9-]*` (slack,
+// telegram, email, github, web). A chat deposit carries a synthetic
+// artifact but is conceptually the same "a human deposited this
+// deliberately" case as a companion note, so it earns the same
+// provenance-completeness carve-out.
+func isChatProducer(role string) bool {
+	return hasKindPrefix(role, "chat:")
+}
+
+// isDeliberateHumanProducer reports whether the producer role is a
+// deliberate inline human deposit — a companion note or a chat note —
+// as opposed to a vornik agent role whose output must point at an
+// upstream artifact. The ProvenanceCompleteGate carve-out keys on
+// this rather than on either prefix alone, so both deposit kinds pass
+// and a third is a one-line addition here rather than a new branch in
+// the gate.
+func isDeliberateHumanProducer(role string) bool {
+	return isCompanionProducer(role) || isChatProducer(role)
+}
+
+// hasKindPrefix reports whether role is "<prefix><kind>" where kind
+// matches `[a-z][a-z0-9-]*`. Shared by isCompanionProducer and
+// isChatProducer so the accepted-kind shape is defined once.
+func hasKindPrefix(role, prefix string) bool {
 	if len(role) <= len(prefix) || role[:len(prefix)] != prefix {
 		return false
 	}

@@ -124,6 +124,49 @@ func TestProvenanceCompleteGate_CompanionCarveOut(t *testing.T) {
 	}
 }
 
+// TestProvenanceCompleteGate_ChatCarveOut — chat memory-write §2.2. A
+// chat deposit (chat:<channel>) carries a synthetic artifact but is the
+// same "a human deposited this deliberately" case as a companion note,
+// so it passes provenance completeness even with no SourceArtifactID.
+// The accepted-kind shape matches the companion carve-out.
+func TestProvenanceCompleteGate_ChatCarveOut(t *testing.T) {
+	cases := []struct {
+		name    string
+		role    string
+		wantAct GateAction
+	}{
+		{"slack", "chat:slack", GateAllow},
+		{"telegram", "chat:telegram", GateAllow},
+		{"hyphenated", "chat:ms-teams", GateAllow},
+		{"empty-suffix", "chat:", GateReject},
+		{"uppercase", "chat:Slack", GateReject},
+		{"bare-chat", "chat", GateReject},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validCandidate()
+			c.SourceArtifactID = "" // synthetic-artifact chat write, no upstream artifact
+			c.ProducerRole = tc.role
+			if got := ProvenanceCompleteGate(c).Action; got != tc.wantAct {
+				t.Errorf("ProvenanceCompleteGate action = %v, want %v", got, tc.wantAct)
+			}
+		})
+	}
+}
+
+// TestClassKnownGate_ChatMemoryNotDowngraded — the trap §3 warns about:
+// an unregistered class silently becomes unclassified here. chat_memory
+// is registered, so it must pass ClassKnownGate with no downgrade
+// detail.
+func TestClassKnownGate_ChatMemoryNotDowngraded(t *testing.T) {
+	c := validCandidate()
+	c.ProposedClass = ClassChatMemory
+	out := ClassKnownGate(c)
+	if out.Action != GateAllow || out.Detail != "" {
+		t.Fatalf("chat_memory should pass ClassKnownGate cleanly, got %+v", out)
+	}
+}
+
 func TestClassKnownGate(t *testing.T) {
 	// Empty class is fine — pipeline assigns.
 	c := validCandidate()

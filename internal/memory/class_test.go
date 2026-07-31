@@ -75,6 +75,33 @@ func TestIsValidClass(t *testing.T) {
 // The values matter: bumping default confidence would let companion
 // content masquerade as agent-validated output; dropping the TTL to 0
 // would let stale chat notes accumulate forever. Pin them.
+// TestChatMemoryClassRegistered — chat memory-write slice 5, §3.
+// ClassChatMemory must be a valid class (else ClassKnownGate silently
+// downgrades a chat deposit to unclassified, gates.go), carry the
+// operator-signed-off policy (90d TTL, 0.3 confidence, never
+// role-of-record), and NOT be role-of-record.
+func TestChatMemoryClassRegistered(t *testing.T) {
+	if !IsValidClass(string(ClassChatMemory)) {
+		t.Fatalf("ClassChatMemory %q is not a valid class — ClassKnownGate would downgrade it to unclassified", ClassChatMemory)
+	}
+	if string(ClassChatMemory) != "chat_memory" {
+		t.Errorf("ClassChatMemory = %q, want chat_memory", ClassChatMemory)
+	}
+	pol, ok := DefaultClassPolicies[ClassChatMemory]
+	if !ok {
+		t.Fatal("ClassChatMemory missing from DefaultClassPolicies")
+	}
+	if pol.DefaultConfidence != 0.3 {
+		t.Errorf("DefaultConfidence=%v, want 0.3", pol.DefaultConfidence)
+	}
+	if pol.TTL != 90*24*time.Hour {
+		t.Errorf("TTL=%v, want 90 days", pol.TTL)
+	}
+	if pol.RoleOfRecordEligible {
+		t.Error("chat memory must not be role-of-record")
+	}
+}
+
 func TestCompanionNoteClassPolicy(t *testing.T) {
 	pol, ok := DefaultClassPolicies[ClassCompanionNote]
 	if !ok {

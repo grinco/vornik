@@ -60,12 +60,12 @@ func TestRemember_ReportsTheResolvedScope(t *testing.T) {
 	te := &ToolExecutor{memoryWrite: gate}
 	ctx := WithCallSiteForTest(context.Background(), "slack", "T1/C1#main")
 
-	personal := te.remember(ctx, `{"content":"I prefer short answers"}`)
+	personal := te.remember(ctx, `{"content":"I prefer short answers"}`, "")
 	if !strings.Contains(strings.ToLower(personal.Content), "personal") {
 		t.Errorf("a default-scope call must say it resolved to personal: %s", personal.Content)
 	}
 
-	shared := te.remember(ctx, `{"content":"the deadline is Friday","scope":"for the team"}`)
+	shared := te.remember(ctx, `{"content":"the deadline is Friday","scope":"for the team"}`, "")
 	if !strings.Contains(strings.ToLower(shared.Content), "shared") {
 		t.Errorf("an explicit shared call must say so: %s", shared.Content)
 	}
@@ -81,7 +81,7 @@ func TestRemember_NeitherScopeImpliesTheWriteHappened(t *testing.T) {
 		`{"content":"x"}`,
 		`{"content":"x","scope":"shared"}`,
 	} {
-		low := strings.ToLower(te.remember(ctx, args).Content)
+		low := strings.ToLower(te.remember(ctx, args, "").Content)
 		for _, forbidden := range []string{"saved", "stored", "remembered"} {
 			if strings.Contains(low, forbidden) {
 				t.Errorf("args %q implies the write happened via %q", args, forbidden)

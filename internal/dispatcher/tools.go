@@ -286,6 +286,12 @@ type ToolExecutor struct {
 	// not-yet-built; personal writes never touch these.
 	memoryConfirms persistence.ChatMemoryWriteConfirmationRepository
 	memoryAudit    persistence.ChatMemoryWriteAuditRepository
+	// chatMemory persists personal-scope chat deposits as chat_memory chunks
+	// (slice 5). Nil leaves the personal path reporting "not built".
+	chatMemory ChatMemoryWriter
+	// dataSubjects links a chat_memory chunk to the operator's own data subject
+	// so Art 17 erasure finds it (design D4.1). Nil skips the link.
+	dataSubjects DataSubjectLinker
 	// allowedInputRoots is the allow-list of host directories a
 	// create_task `input_files` entry may name as a *literal*
 	// filesystem path before it is snapshotted via StoreInput.
@@ -474,7 +480,7 @@ func (te *ToolExecutor) execute(ctx context.Context, tc chat.ToolCall, activePro
 	case "report_problem":
 		return te.reportProblem(ctx, args)
 	case "remember":
-		return te.remember(ctx, args)
+		return te.remember(ctx, args, activeProject)
 	case "switch_project":
 		return te.switchProject(args, allowedProjects)
 	case "list_tasks":

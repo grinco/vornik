@@ -869,6 +869,42 @@ func (c *Container) initScheduler() error {
 						Origin:        persistence.ArtifactOriginUnknown,
 					})
 				},
+				CreateChatMemoryArtifact: func(ctx context.Context, projectID, artifactID, sourceName string, sizeBytes int64) error {
+					// Chat memory-write slice 5: same FK precondition as the
+					// companion path — the synthetic artifacts row must exist
+					// before the chunk upsert (project_memory_chunks.artifact_id).
+					size := sizeBytes
+					return artifactsRepo.Create(ctx, &persistence.Artifact{
+						ID:            artifactID,
+						ProjectID:     projectID,
+						Name:          sourceName,
+						ArtifactClass: persistence.ArtifactClassMetadata,
+						StoragePath:   "chat://inline",
+						SizeBytes:     &size,
+						Origin:        persistence.ArtifactOriginUnknown,
+					})
+				},
+				DeleteChatMemoryArtifact: func(ctx context.Context, _, artifactID string) error {
+					// D4.1a compensation: remove the synthetic artifact row.
+					return artifactsRepo.Delete(ctx, artifactID)
+				},
+				DeleteChatMemorySubjectLinks: func(ctx context.Context, projectID, artifactID string) error {
+					// D4.1a compensation: data_subject_links are polymorphic
+					// (table_name,row_id) with no FK to project_memory_chunks, so
+					// they do not cascade — remove any that reference this
+					// artifact's chunks before the chunks go.
+					if c.DB == nil {
+						return nil
+					}
+					_, err := c.DB.ExecContext(ctx, `
+						DELETE FROM data_subject_links
+						WHERE table_name = 'project_memory_chunks'
+						  AND row_id IN (
+							SELECT id FROM project_memory_chunks
+							WHERE project_id = $1 AND artifact_id = $2
+						  )`, projectID, artifactID)
+					return err
+				},
 				RecordCompanionIngest: func(ctx context.Context, ev memory.CompanionIngestAuditEvent) error {
 					if memIngestAuditRepo == nil {
 						return nil

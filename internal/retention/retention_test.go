@@ -113,6 +113,69 @@ func TestPruneOlderThanMemoryIngestAudit(t *testing.T) {
 	}
 }
 
+// TestPruneExpiredChunks_DeletesLinksThenChunks — chat memory-write
+// design §5 / parent §6.4. The always-on expires_at sweep must delete
+// the paired data_subject_links FIRST (no FK cascade backs them, review
+// C2), then the expired chunks, both in one transaction.
+func TestPruneExpiredChunks_DeletesLinksThenChunks(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	s := New(db, zerolog.Nop())
+	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM data_subject_links")).
+		WithArgs("proj-a", now).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM project_memory_chunks")).
+		WithArgs("proj-a", now).
+		WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectCommit()
+
+	n, err := s.pruneExpiredChunks(context.Background(), "proj-a", now, false)
+	if err != nil {
+		t.Fatalf("pruneExpiredChunks error = %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("pruneExpiredChunks() = %d, want 3 (chunk rows)", n)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// TestPruneExpiredChunks_PreviewCountsOnly — preview must not open a
+// transaction or delete anything; it COUNTs the expired set.
+func TestPruneExpiredChunks_PreviewCountsOnly(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	s := New(db, zerolog.Nop())
+	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM project_memory_chunks")).
+		WithArgs("proj-a", now).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
+
+	n, err := s.pruneExpiredChunks(context.Background(), "proj-a", now, true)
+	if err != nil {
+		t.Fatalf("pruneExpiredChunks(preview) error = %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("pruneExpiredChunks(preview) = %d, want 5", n)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 // TestResolve_MemoryPolicyEvalAlwaysOn confirms the firewall audit
 // retention windows are always-on with the LLD-specified split
 // defaults (allow 30, block 365), honour per-project + default
@@ -504,6 +567,10 @@ func TestSweep_OptInFieldsOffSkipsExtraQueries(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id", "storage_path"}))
 	mock.ExpectQuery("SELECT COUNT.*FROM tasks").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	mock.ExpectQuery("SELECT COUNT.*FROM executions").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	// The expires_at sweep is ALWAYS-ON (TTL-verified-to-DELETE, §6.4), so even
+	// with MemoryChunksDays==0 project_memory_chunks IS queried — by expires_at,
+	// not by the created_at operator cap (which stays off).
+	mock.ExpectQuery("SELECT COUNT.*FROM project_memory_chunks.*expires_at").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	// memory_ingest_audit is always-on (default 90d) → always queried.
 	mock.ExpectQuery("SELECT COUNT.*FROM memory_ingest_audit").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	// memory_policy_evaluations is always-on (allow + block split) → two queries.
@@ -540,7 +607,10 @@ func TestSweep_OptInFieldsOnIssuesExtraQueries(t *testing.T) {
 	// Opt-in prune queries, gated on TaskMessagesDays > 0 and
 	// MemoryChunksDays > 0.
 	mock.ExpectQuery("SELECT COUNT.*FROM task_messages").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(3))
-	mock.ExpectQuery("SELECT COUNT.*FROM project_memory_chunks").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(99))
+	// The created_at operator cap (step 7, MemoryChunksDays>0) …
+	mock.ExpectQuery("SELECT COUNT.*FROM project_memory_chunks.*created_at").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(99))
+	// … then the always-on expires_at sweep (step 7b, §6.4).
+	mock.ExpectQuery("SELECT COUNT.*FROM project_memory_chunks.*expires_at").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	// memory_ingest_audit is always-on (default 90d) → always queried.
 	mock.ExpectQuery("SELECT COUNT.*FROM memory_ingest_audit").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	// memory_policy_evaluations is always-on (allow + block split) → two queries.

@@ -329,7 +329,7 @@ func (c *Container) runRetentionOnce(ctx context.Context, sweeper *retention.Swe
 		if err != nil {
 			c.Logger.Warn().Err(err).Str("project", p.ID).Msg("retention sweep partially failed")
 		}
-		if counts.TaskLLMUsage+counts.ToolAudit+counts.Tasks+counts.Executions+counts.Artifacts+counts.TaskMessages+counts.MemoryChunks+counts.MemoryIngestAudit+counts.MemoryPolicyEvalAllow+counts.MemoryPolicyEvalBlock > 0 {
+		if counts.TaskLLMUsage+counts.ToolAudit+counts.Tasks+counts.Executions+counts.Artifacts+counts.TaskMessages+counts.MemoryChunks+counts.MemoryExpired+counts.MemoryIngestAudit+counts.MemoryPolicyEvalAllow+counts.MemoryPolicyEvalBlock > 0 {
 			c.Logger.Info().
 				Str("project", p.ID).
 				Int("llm_usage", counts.TaskLLMUsage).
@@ -340,6 +340,7 @@ func (c *Container) runRetentionOnce(ctx context.Context, sweeper *retention.Swe
 				Int("artifact_files", counts.ArtifactFiles).
 				Int("task_messages", counts.TaskMessages).
 				Int("memory_chunks", counts.MemoryChunks).
+				Int("memory_expired", counts.MemoryExpired).
 				Int("memory_ingest_audit", counts.MemoryIngestAudit).
 				Int("memory_policy_eval_allow", counts.MemoryPolicyEvalAllow).
 				Int("memory_policy_eval_block", counts.MemoryPolicyEvalBlock).

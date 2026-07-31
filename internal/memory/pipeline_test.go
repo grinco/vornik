@@ -788,6 +788,127 @@ func TestIngestCompanionNote_ArtifactRowPrecedesChunks(t *testing.T) {
 	}
 }
 
+// TestIngestChatMemory_Admitted — chat memory-write slice 5, §2. The
+// chat wrapper synthesises chat-shaped provenance, routes the candidate
+// through the standard gate stack (the chat: provenance carve-out
+// passes), admits it as ClassChatMemory, and returns the admitted chunk
+// ids so the dispatcher can link the data subject (D4.1).
+func TestIngestChatMemory_Admitted(t *testing.T) {
+	p, _, _, mock, cleanup := newPipelineTestRig(t)
+	defer cleanup()
+
+	var (
+		hookCalls    int
+		hookArtifact string
+		hookSource   string
+	)
+	p.cfg.CreateChatMemoryArtifact = func(_ context.Context, _, artifactID, sourceName string, _ int64) error {
+		hookCalls++
+		hookArtifact = artifactID
+		hookSource = sourceName
+		return nil
+	}
+
+	body := strings.Repeat("word ", 30)
+	mock.ExpectExec("INSERT INTO project_memory_chunks").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO memory_embed_queue").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// backfillClassMetadata stamps chat_memory (class/confidence/expires_at).
+	// SupersedeBySameSource is a no-op (taskID=="" short-circuits before SQL).
+	mock.ExpectExec("UPDATE project_memory_chunks").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// ChunkIDsByArtifact — only fired because Admitted > 0.
+	mock.ExpectQuery("SELECT id FROM project_memory_chunks").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("chunk-1"))
+
+	got, err := p.IngestChatMemory(context.Background(), "proj-x", "slack", "C123", body)
+	if err != nil {
+		t.Fatalf("IngestChatMemory: %v", err)
+	}
+	if got.Stats.Admitted != 1 {
+		t.Fatalf("Admitted = %d, want 1; stats=%+v", got.Stats.Admitted, got.Stats)
+	}
+	if hookCalls != 1 {
+		t.Fatalf("CreateChatMemoryArtifact calls = %d, want 1", hookCalls)
+	}
+	if !strings.HasPrefix(got.ArtifactID, "chatmem_") {
+		t.Errorf("ArtifactID = %q, want prefix 'chatmem_'", got.ArtifactID)
+	}
+	if hookArtifact != got.ArtifactID {
+		t.Errorf("hook artifactID = %q, want %q", hookArtifact, got.ArtifactID)
+	}
+	if hookSource != "chat:slack:C123" {
+		t.Errorf("hook sourceName = %q, want chat:slack:C123", hookSource)
+	}
+	if len(got.ChunkIDs) != 1 || got.ChunkIDs[0] != "chunk-1" {
+		t.Errorf("ChunkIDs = %v, want [chunk-1]", got.ChunkIDs)
+	}
+}
+
+// TestIngestChatMemory_MissingCreateHook — no CreateChatMemoryArtifact
+// wired ⇒ fail fast rather than write an orphaned chunk (§2 FK contract).
+func TestIngestChatMemory_MissingCreateHook(t *testing.T) {
+	p, _, _, _, cleanup := newPipelineTestRig(t)
+	defer cleanup()
+	p.cfg.CreateChatMemoryArtifact = nil
+	if _, err := p.IngestChatMemory(context.Background(), "proj-x", "slack", "s", "content"); err == nil {
+		t.Fatal("expected error when CreateChatMemoryArtifact is nil")
+	}
+}
+
+// TestIngestChatMemory_GatedOutNoChunkIDs — a deposit rejected by the
+// gates (empty content) leaves nothing to link: no ChunkIDsByArtifact
+// query fires and ChunkIDs is empty.
+func TestIngestChatMemory_GatedOutNoChunkIDs(t *testing.T) {
+	p, _, _, _, cleanup := newPipelineTestRig(t)
+	defer cleanup()
+	p.cfg.CreateChatMemoryArtifact = func(context.Context, string, string, string, int64) error { return nil }
+
+	got, err := p.IngestChatMemory(context.Background(), "proj-x", "slack", "s", "")
+	if err != nil {
+		t.Fatalf("IngestChatMemory: %v", err)
+	}
+	if got.Stats.Admitted != 0 {
+		t.Fatalf("Admitted = %d, want 0", got.Stats.Admitted)
+	}
+	if len(got.ChunkIDs) != 0 {
+		t.Errorf("ChunkIDs = %v, want empty (nothing landed to link)", got.ChunkIDs)
+	}
+}
+
+// TestDeleteChatMemory_CompensationOrder — DeleteChatMemory (D4.1a)
+// removes subject links FIRST, then chunks, then the artifact row, so a
+// compensated write never leaves a link pointing at a vanished chunk.
+func TestDeleteChatMemory_CompensationOrder(t *testing.T) {
+	p, _, _, mock, cleanup := newPipelineTestRig(t)
+	defer cleanup()
+
+	var order []string
+	p.cfg.DeleteChatMemorySubjectLinks = func(_ context.Context, _, artifactID string) error {
+		order = append(order, "links:"+artifactID)
+		return nil
+	}
+	p.cfg.DeleteChatMemoryArtifact = func(_ context.Context, _, artifactID string) error {
+		order = append(order, "artifact:"+artifactID)
+		return nil
+	}
+	// DeleteByArtifact: read hashes, delete chunks, (no embedding rows).
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT DISTINCT content_hash FROM project_memory_chunks").
+		WillReturnRows(sqlmock.NewRows([]string{"content_hash"}))
+	mock.ExpectExec("DELETE FROM project_memory_chunks").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	if err := p.DeleteChatMemory(context.Background(), "proj-x", "chatmem_1"); err != nil {
+		t.Fatalf("DeleteChatMemory: %v", err)
+	}
+	if len(order) != 2 || order[0] != "links:chatmem_1" || order[1] != "artifact:chatmem_1" {
+		t.Fatalf("hook order = %v, want links then artifact (chunks between via DeleteByArtifact)", order)
+	}
+}
+
 // TestIngestCompanionNote_MissingCreateHook — when the pipeline isn't
 // wired with CreateCompanionArtifact, the wrapper must fail fast
 // instead of silently fabricating an orphan artifact_id that would

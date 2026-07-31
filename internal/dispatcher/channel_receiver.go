@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -12,6 +13,7 @@ import (
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/conversation"
 	"vornik.io/vornik/internal/mediakind"
+	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 )
 
@@ -75,6 +77,20 @@ type ChannelReceiver struct {
 	//
 	// see LLD § https://docs.vornik.io §4.3
 	Media *MediaSight
+
+	// MemoryWriteConfirmations is the acknowledgement side of the shared-scope
+	// memory-write two-step (chat memory-write design §5.3.2 step 2, §5.6). When
+	// a human-originated inbound turn whose ENTIRE text is a share-acknowledgement
+	// phrase arrives, and a pending unacknowledged confirmation exists for this
+	// (channel, session), the receiver stamps acknowledged_at here — BEFORE the
+	// dispatcher runs. The tool (ToolExecutor.remember) then reads that stamp on
+	// the next remember() call to authorize the write.
+	//
+	// This is the whole reason the acknowledgement is unforgeable: it is derived
+	// from an inbound turn carrying a human SpeakerID, never from a tool argument
+	// the model authors (contrast internal/chat/parser.go:186). Nil disables the
+	// hook — a shared-scope write then never advances past PROPOSED.
+	MemoryWriteConfirmations persistence.ChatMemoryWriteConfirmationRepository
 }
 
 // DisclosureObserver receives Art 50 disclosure outcomes. Implemented by the
@@ -238,6 +254,11 @@ func (r *ChannelReceiver) Receive(ctx context.Context, msg conversation.ChannelM
 	if msg.Source != "" && msg.SpeakerID != "" {
 		operatorID = msg.Source + ":" + msg.SpeakerID
 	}
+	// Shared-scope memory-write acknowledgement (chat memory-write design §5.3.2
+	// step 2): if this human-originated turn's entire text is a share-ack phrase
+	// and a pending confirmation is waiting, stamp it before the dispatcher runs,
+	// so the next remember() call can authorize the write.
+	r.maybeAcknowledgeMemoryWrite(ctx, msg, operatorID)
 	// Channels that know their own platform identity hand it over so the
 	// agent can tell the lead which address in the thread is its own.
 	// Type-assert rather than widening Channel — same idiom as
@@ -280,6 +301,47 @@ func (r *ChannelReceiver) Receive(ctx context.Context, msg conversation.ChannelM
 		}
 	}
 	return nil
+}
+
+// maybeAcknowledgeMemoryWrite stamps a pending shared-scope memory-write confirmation when
+// this inbound turn is a human-originated acknowledgement (chat memory-write design §5.3.2
+// step 2, §5.6). No-op unless the confirmation store is wired.
+//
+// THREE GUARDS, all cheap and all before the store is touched:
+//
+//  1. isAcknowledgeableTurn — the turn carries a human SpeakerID (fails CLOSED on the empty
+//     zero value, so a synthetic/system turn can never acknowledge — §5.6.4) and is not a
+//     voice turn (ASR is probabilistic; §5.6.2).
+//  2. isShareAcknowledgement — the ENTIRE trimmed message is one of the closed phrases, never
+//     a substring. §5.6.3: a Slack file-upload caption embeds an attacker-controlled filename
+//     into a Text already containing "shared", so strings.Contains would be a forgery vector.
+//  3. a pending, unacknowledged confirmation exists for this (channel, session).
+//
+// operatorID is "<source>:<speaker>", derived exactly as the dispatcher's profile lookup does
+// and exactly as ToolExecutor.remember stored it on the pending row, so Acknowledge's
+// same-speaker check lines up. A store error is logged and swallowed: a failed ack must never
+// break the conversation — the write simply stays PROPOSED and the human can try again.
+func (r *ChannelReceiver) maybeAcknowledgeMemoryWrite(ctx context.Context, msg conversation.ChannelMessage, operatorID string) {
+	if r.MemoryWriteConfirmations == nil || operatorID == "" {
+		return
+	}
+	if !isAcknowledgeableTurn(msg) || !isShareAcknowledgement(msg.Text) {
+		return
+	}
+	channel := r.Channel.Name()
+	pending, err := r.MemoryWriteConfirmations.Get(ctx, channel, msg.SessionID)
+	if err != nil {
+		r.logger().Warn().Err(err).Str("channel", channel).Str("session", msg.SessionID).
+			Msg("dispatcher: memory-write ack: pending lookup failed")
+		return
+	}
+	if pending == nil || pending.Acknowledged() {
+		return
+	}
+	if _, err := r.MemoryWriteConfirmations.Acknowledge(ctx, channel, msg.SessionID, operatorID, time.Now()); err != nil {
+		r.logger().Warn().Err(err).Str("channel", channel).Str("session", msg.SessionID).
+			Msg("dispatcher: memory-write ack: stamp failed")
+	}
 }
 
 // loadSession resolves the per-channel session state. Nil

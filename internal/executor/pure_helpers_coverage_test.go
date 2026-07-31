@@ -114,31 +114,21 @@ func TestPureHelper_ResolveStepField_NilPaths(t *testing.T) {
 	assert.Equal(t, "deep", resolveStepField(steps, "present", "a.b"))
 }
 
-// --- extractRepoScopeFromPayload (workflow.go) ------------------------
+// --- projectRepoScope (workflow.go) ------------------------------------
 
-// TestPureHelper_ExtractRepoScope covers all four return paths:
-// empty/invalid payload → "", context.repo_scope taking precedence over
-// top-level, top-level fallback, and whitespace trimming on both. The
-// precedence rule (nested context wins) is the non-obvious behaviour.
-func TestPureHelper_ExtractRepoScope(t *testing.T) {
-	assert.Equal(t, "", extractRepoScopeFromPayload(nil), "nil payload")
-	assert.Equal(t, "", extractRepoScopeFromPayload([]byte{}), "empty payload")
-	assert.Equal(t, "", extractRepoScopeFromPayload([]byte(`{not json`)), "malformed JSON")
-	assert.Equal(t, "", extractRepoScopeFromPayload([]byte(`{}`)), "no repo_scope anywhere")
+// The payload-extraction cases this used to cover moved with the function to
+// internal/memoryscope, which owns them now (memoryscope_test.go). What is left
+// here is the part that is specific to the executor: reading the per-project
+// DEFAULT, and doing so without panicking when the resolver or project is
+// absent. A nil-unsafe read here would fail an ingest rather than land the chunk
+// unscoped, turning a cosmetic gap into lost data.
+func TestPureHelper_ProjectRepoScope_NilSafe(t *testing.T) {
+	var nilExec *Executor
+	assert.Equal(t, "", nilExec.projectRepoScope("proj-1"), "nil executor")
 
-	// Top-level only.
-	assert.Equal(t, "owner/repo",
-		extractRepoScopeFromPayload([]byte(`{"repo_scope":"owner/repo"}`)))
-
-	// context.repo_scope wins over top-level when both present.
-	both := []byte(`{"repo_scope":"top/level","context":{"repo_scope":"nested/wins"}}`)
-	assert.Equal(t, "nested/wins", extractRepoScopeFromPayload(both),
-		"nested context.repo_scope must take precedence")
-
-	// Whitespace is trimmed; a blank nested value falls through to top-level.
-	assert.Equal(t, "owner/repo",
-		extractRepoScopeFromPayload([]byte(`{"repo_scope":"  owner/repo  ","context":{"repo_scope":"   "}}`)),
-		"blank nested value falls back to trimmed top-level")
+	e := &Executor{}
+	assert.Equal(t, "", e.projectRepoScope("proj-1"), "nil workflow resolver")
+	assert.Equal(t, "", e.projectRepoScope(""), "empty project id")
 }
 
 // --- truncateWithMarker (canonical_context.go) ------------------------

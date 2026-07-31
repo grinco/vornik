@@ -63,6 +63,28 @@ type Project struct {
 	// the daemon config". project_memory_chunks is NEVER pruned regardless
 	// of these values — it's the product, not operational state.
 	Retention ProjectRetention `yaml:"retention"`
+	// RepoScope is the default repo_scope stamped on memory chunks this
+	// project produces when the task payload carries none.
+	//
+	// The scope partitions one project's RAG so an operator's many repos don't
+	// cross-pollute each other's recall (migration 75/76). Before this field
+	// existed the scope came ONLY from the task payload, which only the
+	// companion delegate handler populates — so every chunk from a task created
+	// any other way (chat, REST POST /tasks, an autonomy tick in any of its
+	// three modes, Telegram/Slack/email) landed NULL. A census on 2026-07-30
+	// found five projects at 100% NULL, none of which had ever been written to
+	// through a companion call.
+	//
+	// LEAVE IT EMPTY for a project that is not repo-bound — a job hunt, a
+	// trading account, a marketing feed. NULL is correct there, not a gap:
+	// unscoped chunks surface under every scoped recall, so they are
+	// un-partitioned rather than lost. Set "*" only for a corpus that should
+	// deliberately surface in every repo's recall.
+	//
+	// An explicit per-task repo_scope always wins over this
+	// (memoryscope.Resolve): the caller knew which repo the work concerned;
+	// this is only a guess about the common case.
+	RepoScope string `yaml:"repo_scope"`
 	// RateLimit caps task-creation frequency for the project.
 	RateLimit ProjectRateLimit `yaml:"rate_limit"`
 	// TradingRateLimit caps how fast this project may place orders

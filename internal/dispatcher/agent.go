@@ -219,6 +219,12 @@ type Agent struct {
 	// memoryWrite (optional) gates the chat memory-write capability per channel.
 	// Nil means the capability is absent. See tool_remember.go.
 	memoryWrite MemoryWriteGate
+	// memoryConfirms + memoryAudit (optional) back the shared-scope memory-write
+	// confirmation two-step (chat memory-write design §5.3). Nil leaves the tool
+	// reporting shared writes as not-yet-built. See tool_remember.go and
+	// SetMemoryWriteConfirmations.
+	memoryConfirms persistence.ChatMemoryWriteConfirmationRepository
+	memoryAudit    persistence.ChatMemoryWriteAuditRepository
 	// projectWorkspacePath — base dir for per-project workspaces;
 	// lets the ToolExecutor allow-list the per-project uploads/ dir
 	// channel attachments land in. See ToolExecutor.projectWorkspacePath.
@@ -537,6 +543,8 @@ func NewAgent(
 		channelThreads:               a.channelThreads,
 		problemReports:               a.problemReports,
 		memoryWrite:                  a.memoryWrite,
+		memoryConfirms:               a.memoryConfirms,
+		memoryAudit:                  a.memoryAudit,
 		projectWorkspacePath:         a.projectWorkspacePath,
 		attachmentAutoExtractor:      a.attachmentAutoExtractor,
 		attachmentAutoExtractTimeout: 60 * time.Second,

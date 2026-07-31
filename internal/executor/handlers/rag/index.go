@@ -7,47 +7,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/extractor"
 	"vornik.io/vornik/internal/memory"
+	"vornik.io/vornik/internal/memoryscope"
 	"vornik.io/vornik/internal/persistence"
 )
 
-// repoScopeFromPayload pulls repo_scope out of a task payload
-// (B-18). Accepts both shapes the rest of vornik uses:
-//
-//   - canonical: payload.context.repo_scope (companion delegate +
-//     REST POST go through this path via taskcreate.Creator)
-//   - legacy: payload.repo_scope (unnested; preserved for
-//     forward-compat with callers that bypass the context
-//     wrapper)
-//
-// Returns empty string when missing / malformed / whitespace.
-// Mirrors executor.extractRepoScopeFromPayload — duplicated
-// across the package boundary to keep the rag package's
-// dependencies narrow (it already imports executor for the
-// SystemHandler contract; importing for a single helper would
-// drag the whole executor surface into tests).
-func repoScopeFromPayload(payload []byte) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var p struct {
-		RepoScope string `json:"repo_scope"`
-		Context   struct {
-			RepoScope string `json:"repo_scope"`
-		} `json:"context"`
-	}
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return ""
-	}
-	if s := strings.TrimSpace(p.Context.RepoScope); s != "" {
-		return s
-	}
-	return strings.TrimSpace(p.RepoScope)
-}
+// repoScopeFromPayload (B-18) MOVED to internal/memoryscope, which this package
+// now imports. It had been a byte-identical copy of
+// executor.extractRepoScopeFromPayload — its own comment said so, justifying the
+// duplication as keeping this package's dependencies narrow. When the
+// project-default fallback needed the same rule, three copies of "where does this
+// chunk land" was one too many, and memoryscope is a stdlib-only leaf, so the
+// import costs exactly nothing in dependency surface.
 
 // extractedDocGetter is the narrow lookup surface the index
 // handler needs. Defined here (not pulled from the full
@@ -83,6 +57,9 @@ type extractedSectionsIngester interface {
 type IndexHandler struct {
 	docRepo extractedDocGetter
 	indexer extractedSectionsIngester
+	// projectScope resolves a project's default repo_scope. Optional: nil means
+	// payload-only resolution, which is the pre-2026-07-30 behaviour.
+	projectScope func(projectID string) string
 }
 
 // NewIndexHandler constructs the "rag.index" handler. Nil deps
@@ -91,6 +68,29 @@ type IndexHandler struct {
 // it operator-visible.
 func NewIndexHandler(docRepo extractedDocGetter, indexer extractedSectionsIngester) *IndexHandler {
 	return &IndexHandler{docRepo: docRepo, indexer: indexer}
+}
+
+// WithProjectScope supplies the per-project default repo_scope lookup, used only
+// when the task payload carries no scope of its own.
+//
+// An OPTION rather than a constructor parameter, deliberately: the default is
+// enrichment, not a dependency — without it the handler behaves exactly as it did
+// before the default existed (payload-only, else NULL). Threading a fifth
+// argument through twenty existing call sites to express "optional" would have
+// been churn that says the opposite.
+func (h *IndexHandler) WithProjectScope(fn func(projectID string) string) *IndexHandler {
+	if h != nil {
+		h.projectScope = fn
+	}
+	return h
+}
+
+// projectScopeFor is the nil-safe read of the optional resolver.
+func (h *IndexHandler) projectScopeFor(projectID string) string {
+	if h == nil || h.projectScope == nil || projectID == "" {
+		return ""
+	}
+	return h.projectScope(projectID)
 }
 
 // Name implements executor.SystemHandler.
@@ -181,7 +181,7 @@ func (h *IndexHandler) Execute(ctx context.Context, in executor.SystemStepInput)
 	// pre-existing tags on the artifact's chunks). Done once
 	// per source-artifact-id so the PatchScopeByArtifact UPDATE
 	// runs at most N times for N sources, not chunk-by-chunk.
-	if scope := repoScopeFromPayload(in.Task.Payload); scope != "" {
+	if scope := memoryscope.Resolve(in.Task.Payload, h.projectScopeFor(in.Task.ProjectID)); scope != "" {
 		seen := make(map[string]struct{}, len(prev.Extracted))
 		for _, entry := range prev.Extracted {
 			doc, err := h.docRepo.Get(ctx, entry.ExtractedDocumentID)

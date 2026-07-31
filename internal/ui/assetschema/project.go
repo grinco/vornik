@@ -27,6 +27,11 @@ func ProjectSchema() AssetSchema {
 					{Path: "swarmId", Label: "Swarm", Kind: KindString, Required: true, Help: "The swarm definition this project uses."},
 					{Path: "defaultWorkflowId", Label: "Default workflow", Kind: KindString, Required: true},
 					{Path: "adaptiveCandidateWorkflows", Label: "Adaptive candidate workflows", Kind: KindStringList, Help: "Menu the lead picks from in the adaptive router; each must resolve to a known workflow."},
+					// Surfaced in the form rather than deferred to YAML on purpose:
+					// invisibility is what caused the 2026-07-30 census to find five
+					// projects with every memory chunk unscoped. An operator who
+					// cannot see the setting cannot notice it is empty.
+					{Path: "repo_scope", Label: "Default memory repo scope", Kind: KindString, Help: "Stamped on memory chunks this project produces when a task does not specify one, so one operator's repos don't cross-pollute each other's recall. Use a git remote (github.com/acme/repo). Leave EMPTY for a project that isn't repo-bound — unscoped chunks still surface in every recall. \"*\" means deliberately cross-cutting."},
 				},
 			},
 			{

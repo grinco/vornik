@@ -762,7 +762,24 @@ func (c *Container) initScheduler() error {
 			extRunner := c.ExtractorRunner()
 			if extReg != nil && extRunner != nil && c.repos != nil && c.repos.Artifacts != nil && c.repos.ExtractedDocuments != nil {
 				sysHandlers.Register(rag.NewExtractHandler(extReg, extRunner, c.repos.Artifacts))
-				sysHandlers.Register(rag.NewIndexHandler(c.repos.ExtractedDocuments, mgr.Indexer))
+				// WithProjectScope: when a task payload carries no repo_scope —
+				// every creation path except a companion delegate() — fall back to
+				// the project's configured default instead of landing the chunks
+				// NULL-scoped (the 2026-07-30 census found five projects at 100%
+				// NULL for exactly this reason). Registry-nil safe; a project with
+				// no default keeps NULL, which is correct for one that is not
+				// repo-bound.
+				idx := rag.NewIndexHandler(c.repos.ExtractedDocuments, mgr.Indexer).
+					WithProjectScope(func(projectID string) string {
+						if c.Registry == nil {
+							return ""
+						}
+						if p := c.Registry.GetProject(projectID); p != nil {
+							return p.RepoScope
+						}
+						return ""
+					})
+				sysHandlers.Register(idx)
 				c.Logger.Info().
 					Strs("handlers", sysHandlers.Names()).
 					Msg("rag system handlers registered")
@@ -989,10 +1006,15 @@ func (c *Container) initScheduler() error {
 			// operator opts in. One extra LLM call per recall when on,
 			// bounded by the timeout and degrading to RRF on failure.
 			rr := c.Config.Memory.Reranker
+			// Cost accounting: the reranker fires on EVERY recall, so
+			// unwired it was the daemon's largest source of
+			// unattributed LLM spend (~1,637 calls / $3.49 per day on
+			// the instance where the gap was found). Wired 2026-07-31.
 			mgr.Searcher.SetReranker(memory.NewConfiguredReranker(
 				rr.Enabled, c.ChatClient, rr.Model,
 				rr.MaxCandidates, rr.TimeoutSeconds, rr.MaxSnippetBytes,
 				c.Logger.With().Str("component", "memory").Str("sub", "reranker").Logger(),
+				memory.WithRerankerUsage(c.repos.LLMUsage, c.pricingTable),
 			))
 
 			// Phase B of the Policy-Aware Memory Firewall: wire

@@ -16,19 +16,34 @@ import (
 	"vornik.io/vornik/internal/persistence"
 )
 
-// ---- repoScopeFromPayload coverage ----
+// ---- project-default scope resolution ----
 
-// TestRepoScopeFromPayloadCov covers the empty-payload and
-// malformed-JSON branches that the B-18 happy-path tests don't.
-func TestRepoScopeFromPayloadCov(t *testing.T) {
-	if got := repoScopeFromPayload(nil); got != "" {
-		t.Errorf("empty payload → empty scope, got %q", got)
+// repoScopeFromPayload's own cases moved to internal/memoryscope with the
+// function. What belongs here is the handler's optional project-default seam:
+// nil resolver must degrade to payload-only (the pre-2026-07-30 behaviour), not
+// panic, because an ingest that fails is worse than a chunk that lands unscoped.
+func TestProjectScopeFor_NilSafeAndWired(t *testing.T) {
+	var nilHandler *IndexHandler
+	if got := nilHandler.projectScopeFor("proj-1"); got != "" {
+		t.Errorf("nil handler → empty, got %q", got)
 	}
-	if got := repoScopeFromPayload([]byte("not json")); got != "" {
-		t.Errorf("malformed payload → empty scope, got %q", got)
+
+	h := NewIndexHandler(&fakeExtractedDocRepo{}, &fakeIndexer{})
+	if got := h.projectScopeFor("proj-1"); got != "" {
+		t.Errorf("no resolver configured → empty, got %q", got)
 	}
-	if got := repoScopeFromPayload([]byte(`{"context":{"repo_scope":"  "}}`)); got != "" {
-		t.Errorf("whitespace scope → empty, got %q", got)
+
+	h.WithProjectScope(func(projectID string) string {
+		if projectID == "proj-1" {
+			return "github.com/acme/x"
+		}
+		return ""
+	})
+	if got := h.projectScopeFor("proj-1"); got != "github.com/acme/x" {
+		t.Errorf("configured resolver → %q, got %q", "github.com/acme/x", got)
+	}
+	if got := h.projectScopeFor(""); got != "" {
+		t.Errorf("empty project id must short-circuit before the resolver, got %q", got)
 	}
 }
 

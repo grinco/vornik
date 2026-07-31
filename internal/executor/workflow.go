@@ -14,6 +14,7 @@ import (
 
 	"vornik.io/vornik/internal/counterfactual"
 	"vornik.io/vornik/internal/mediakind"
+	"vornik.io/vornik/internal/memoryscope"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/stepoutcome"
@@ -2640,11 +2641,12 @@ func (e *Executor) ingestOutputArtifacts(ctx context.Context, task *persistence.
 		return
 	}
 
-	// Migration 75/76: extract repo_scope from the task payload once.
-	// The companion delegate() stamps it into task.payload["repo_scope"]
-	// when the host LLM (or its plugin) passed it; non-companion
-	// workflows leave it absent → empty string → no-op downstream.
-	repoScope := extractRepoScopeFromPayload(task.Payload)
+	// Migration 75/76: resolve repo_scope once for the whole batch. The
+	// companion delegate() stamps it into the payload when the host LLM (or its
+	// plugin) passed it; every OTHER creation path — chat, REST POST /tasks, an
+	// autonomy tick, a channel message — leaves it absent, which is why the
+	// project default exists. Empty after both is still a no-op downstream.
+	repoScope := memoryscope.Resolve(task.Payload, e.projectRepoScope(task.ProjectID))
 
 	for _, a := range artifacts {
 		if a == nil {
@@ -2704,11 +2706,7 @@ func (e *Executor) ingestOutputArtifacts(ctx context.Context, task *persistence.
 			if e.workflows != nil && execution.WorkflowID != "" {
 				wf = e.workflows.GetWorkflow(execution.WorkflowID)
 			}
-			var scopePtr *string
-			if repoScope != "" {
-				s := repoScope
-				scopePtr = &s
-			}
+			scopePtr := memoryscope.Ptr(repoScope)
 			item := &persistence.IngestQueueItem{
 				ProjectID:          task.ProjectID,
 				SourceArtifactID:   a.ID,
@@ -2831,12 +2829,8 @@ func (e *Executor) ingestInputArtifacts(ctx context.Context, task *persistence.T
 		return
 	}
 
-	repoScope := extractRepoScopeFromPayload(task.Payload)
-	var scopePtr *string
-	if repoScope != "" {
-		s := repoScope
-		scopePtr = &s
-	}
+	repoScope := memoryscope.Resolve(task.Payload, e.projectRepoScope(task.ProjectID))
+	scopePtr := memoryscope.Ptr(repoScope)
 	var wf *registry.Workflow
 	if e.workflows != nil && execution.WorkflowID != "" {
 		wf = e.workflows.GetWorkflow(execution.WorkflowID)
@@ -2920,33 +2914,25 @@ func (e *Executor) ingestInputArtifacts(ctx context.Context, task *persistence.T
 		Msg("memory: deterministic input-artifact ingest")
 }
 
-// extractRepoScopeFromPayload pulls repo_scope out of the task
-// payload's nested `context` block. The companion delegate handler
-// (companion_mcp.go) stamps it on the payload map under
-// payload.context.repo_scope (taskcreate.Creator wraps RawContext
-// under the "context" key when building the final payload).
+// projectRepoScope returns the project's default repo_scope, or "" when the
+// project is unknown, unresolvable, or deliberately not repo-bound.
 //
-// Returns empty string on missing / decode error / whitespace,
-// which is the no-op signal at the indexer layer. We also accept
-// the legacy unnested shape (`payload.repo_scope`) for forward
-// compat with future callers that bypass the context wrapper.
-func extractRepoScopeFromPayload(payload []byte) string {
-	if len(payload) == 0 {
+// The payload extraction that used to live here moved to internal/memoryscope:
+// it had been copied byte-for-byte into internal/executor/handlers/rag, and a
+// third caller (this default) would have made three copies of the rule that
+// decides where a chunk lands.
+//
+// Nil-resolver safe. A missing project must not fail an ingest — the chunk lands
+// unscoped, which is the same outcome as before this default existed.
+func (e *Executor) projectRepoScope(projectID string) string {
+	if e == nil || e.workflows == nil || projectID == "" {
 		return ""
 	}
-	var p struct {
-		RepoScope string `json:"repo_scope"`
-		Context   struct {
-			RepoScope string `json:"repo_scope"`
-		} `json:"context"`
-	}
-	if err := json.Unmarshal(payload, &p); err != nil {
+	proj := e.workflows.GetProject(projectID)
+	if proj == nil {
 		return ""
 	}
-	if s := strings.TrimSpace(p.Context.RepoScope); s != "" {
-		return s
-	}
-	return strings.TrimSpace(p.RepoScope)
+	return proj.RepoScope
 }
 
 // producerRoleForExecution best-effort extracts the producing role

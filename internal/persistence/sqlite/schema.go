@@ -1005,6 +1005,60 @@ CREATE INDEX IF NOT EXISTS idx_chat_audit_chat_ts    ON chat_audit_log(chat_id, 
 CREATE INDEX IF NOT EXISTS idx_chat_audit_project_ts ON chat_audit_log(project_id, ts DESC) WHERE project_id <> '';
 
 -- ============================================================
+-- chat_memory_write_confirmations + chat_memory_write_audit
+-- — migration 146 parity (chat memory-write design §5.3).
+--
+-- The shared-scope confirmation two-step: the pending row is
+-- transient and unique per conversation (PK is the safety
+-- property — one pending confirmation per (channel, session_id),
+-- so a second proposal REPLACES the first and an acknowledgement
+-- can only discharge the most recent one). The audit row is
+-- append-only evidence, written on grant BEFORE the pending row
+-- is deleted, so accountability does not depend on transcript
+-- retention.
+--
+-- TIMESTAMPTZ drops to TEXT (RFC3339Nano via sqliteTime); every
+-- value is UTC in one format, so expiry sweeps and BEFORE checks
+-- stay correct. BIGSERIAL drops to INTEGER PRIMARY KEY
+-- AUTOINCREMENT. acknowledged_at is NULL on the pending row until
+-- a human acknowledges; on the audit row it is always populated,
+-- because a row is written only on grant.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS chat_memory_write_confirmations (
+    channel             TEXT NOT NULL,
+    session_id          TEXT NOT NULL,
+    content_fingerprint TEXT NOT NULL,
+    scope               TEXT NOT NULL,
+    operator_id         TEXT NOT NULL,
+    proposed_at         TEXT NOT NULL,
+    expires_at          TEXT NOT NULL,
+    acknowledged_at     TEXT,
+    PRIMARY KEY (channel, session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_memory_confirm_expiry
+    ON chat_memory_write_confirmations (expires_at);
+CREATE INDEX IF NOT EXISTS idx_chat_memory_confirm_operator
+    ON chat_memory_write_confirmations (operator_id);
+
+CREATE TABLE IF NOT EXISTS chat_memory_write_audit (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel             TEXT NOT NULL,
+    session_id          TEXT NOT NULL,
+    content_fingerprint TEXT NOT NULL,
+    scope               TEXT NOT NULL,
+    operator_id         TEXT NOT NULL,
+    proposed_at         TEXT NOT NULL,
+    acknowledged_at     TEXT NOT NULL,
+    granted_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_memory_audit_fingerprint
+    ON chat_memory_write_audit (content_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_chat_memory_audit_granted
+    ON chat_memory_write_audit (granted_at);
+
+-- ============================================================
 -- project_wizard_sessions (migration 49 — Feature #2)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS project_wizard_sessions (

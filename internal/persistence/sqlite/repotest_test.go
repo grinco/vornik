@@ -340,3 +340,14 @@ func TestChannelDisclosureRepository_Contract(t *testing.T) {
 	db := newTestDB(t)
 	repotest.RunChannelDisclosureSuite(t, sqlite.NewChannelDisclosureRepository(db.DB))
 }
+
+// TestChatMemoryWriteConfirmationRepository_Contract — the shared-scope memory-write
+// confirmation two-step (chat memory-write design §5.3). Real durable implementations on
+// SQLite, not stubs: a shared write cannot authorize without a persisted acknowledgement. The
+// shared suite runs against Postgres too, so a dialect divergence surfaces as a test failure.
+func TestChatMemoryWriteConfirmationRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunChatMemoryWriteConfirmationSuite(t,
+		sqlite.NewChatMemoryWriteConfirmationRepository(db.DB),
+		sqlite.NewChatMemoryWriteAuditRepository(db.DB))
+}

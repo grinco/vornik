@@ -1759,6 +1759,21 @@ const (
 	// the source breakdown (role column was always correct). Fixed
 	// 2026-07-15.
 	TaskLLMUsageSourceInstinctDistiller = "instinct_distiller"
+	// TaskLLMUsageSourceMemoryReranker — one row per LLM rerank call
+	// made by internal/memory.LLMReranker on the search critical
+	// path. task_id NULL (retrieval is not task-scoped); project_id
+	// comes from the candidate set, and step_id is empty because a
+	// rerank spans many chunks rather than concerning one. role =
+	// "memory_reranker".
+	//
+	// This source exists because the reranker was the largest
+	// unattributed LLM spender in the daemon: it fires on EVERY
+	// memory search, so its volume tracks retrieval rather than
+	// tasks. Found 2026-07-30 from a gateway-vs-consumer discrepancy
+	// of 1,637 calls / $3.49 over 24h; the diverging call count AND
+	// spend together showed a whole class of calls was invisible
+	// rather than mispriced. Wired 2026-07-31.
+	TaskLLMUsageSourceMemoryReranker = "memory_reranker"
 )
 
 // TaskLLMUsageFilter defines filtering options for LLM usage queries.

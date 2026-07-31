@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"sort"
 	"strings"
 
 	"vornik.io/vornik/internal/conversation"
@@ -56,6 +57,21 @@ func isShareAcknowledgement(text string) bool {
 		return false
 	}
 	return shareAcknowledgementPhrases[s]
+}
+
+// acceptedSharePhrasesText renders the closed acknowledgement set as a stable, quoted list for
+// the confirmation request and the "already proposed" reminder (§5.3.3).
+//
+// The phrases are SHOWN, not guessed: a closed set the user cannot discover is a feature that
+// refuses everyone once and is never used again (r4 review finding 4). Sorted because map
+// iteration order is not stable, and the confirmation text must be deterministic (and testable).
+func acceptedSharePhrasesText() string {
+	quoted := make([]string, 0, len(shareAcknowledgementPhrases))
+	for p := range shareAcknowledgementPhrases {
+		quoted = append(quoted, `"`+p+`"`)
+	}
+	sort.Strings(quoted)
+	return strings.Join(quoted, ", ")
 }
 
 // voiceChannelSpecificPrefix marks a turn whose Text is an ASR transcript.

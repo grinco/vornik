@@ -634,3 +634,16 @@ func TestChannelDisclosureRepository_PostgresContract(t *testing.T) {
 	resetSuiteTables(t, db, "channel_disclosure_log")
 	repotest.RunChannelDisclosureSuite(t, NewChannelDisclosureRepository(db.DB))
 }
+
+// TestChatMemoryWriteConfirmationRepository_PostgresContract — the shared-scope memory-write
+// confirmation two-step (chat memory-write design §5.3, migration 146), the same suite that
+// runs against SQLite. The dialects diverge (TIMESTAMPTZ vs RFC3339 TEXT, NULL acknowledged_at,
+// ON CONFLICT DO UPDATE), which is exactly why this must run on the integration lane.
+func TestChatMemoryWriteConfirmationRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	// Fixed fixture ids (rt-1, ack-1, ...) — see resetSuiteTables.
+	resetSuiteTables(t, db, "chat_memory_write_confirmations", "chat_memory_write_audit")
+	repotest.RunChatMemoryWriteConfirmationSuite(t,
+		NewChatMemoryWriteConfirmationRepository(db.DB),
+		NewChatMemoryWriteAuditRepository(db.DB))
+}

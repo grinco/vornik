@@ -11,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"vornik.io/vornik/internal/chat"
+	"vornik.io/vornik/internal/persistence"
 )
 
 // Reranker scores a candidate set of SearchResults against a query and
@@ -38,17 +39,42 @@ type Reranker interface {
 // and degrading to RRF on failure), AND it activates scored-sufficiency
 // retrieval, whose absolute score floor is only meaningful against calibrated
 // reranker scores.
-func NewConfiguredReranker(enabled bool, client chat.Provider, model string, maxCandidates, timeoutSeconds, maxSnippetBytes int, logger zerolog.Logger) Reranker {
+// Options are variadic so the existing call shape keeps working; cost
+// accounting is opt-in via WithRerankerUsage and applies only to the
+// LLM-backed path, since a NoopReranker never bills anything.
+func NewConfiguredReranker(enabled bool, client chat.Provider, model string, maxCandidates, timeoutSeconds, maxSnippetBytes int, logger zerolog.Logger, opts ...RerankerOption) Reranker {
 	if !enabled || client == nil {
 		return NoopReranker{}
 	}
-	return &LLMReranker{
+	r := &LLMReranker{
 		Client:          client,
 		Model:           model,
 		Timeout:         time.Duration(timeoutSeconds) * time.Second,
 		MaxCandidates:   maxCandidates,
 		MaxSnippetBytes: maxSnippetBytes,
 		Logger:          logger,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(r)
+		}
+	}
+	return r
+}
+
+// RerankerOption customises an LLMReranker at construction. Mirrors the
+// memetic package's WithInstincts / WithApplicationWriter shape rather
+// than growing an already-long positional parameter list.
+type RerankerOption func(*LLMReranker)
+
+// WithRerankerUsage attaches cost accounting. Either argument may be
+// nil: a nil recorder disables billing entirely, and a nil pricing
+// table still records the call with CostUSD 0, which keeps it visible
+// in the call-count rollup rather than absent from it.
+func WithRerankerUsage(rec UsageRecorder, pricing PricingTable) RerankerOption {
+	return func(r *LLMReranker) {
+		r.LLMUsage = rec
+		r.Pricing = pricing
 	}
 }
 
@@ -86,7 +112,21 @@ type LLMReranker struct {
 	// Logger captures rerank-time warnings (LLM timeout, parse failure
 	// → degrade to RRF). Optional.
 	Logger zerolog.Logger
+	// LLMUsage records one task_llm_usage row per BILLED rerank call.
+	// nil disables recording (failing to bill is dashboard fidelity,
+	// not correctness); production wires
+	// *postgres.TaskLLMUsageRepository. Mirrors Titler.LLMUsage.
+	LLMUsage UsageRecorder
+	// Pricing computes USD from the model's token counts. nil → the
+	// row still lands with CostUSD 0 so the call remains visible in
+	// the call-count rollup even when the model is unpriced.
+	Pricing PricingTable
 }
+
+// rerankerRole is the value stored in task_llm_usage.role for every
+// LLM rerank call. Mirrors titlerRole / classifierRole so the spend
+// breakdown groups retrieval-side cost under its own name.
+const rerankerRole = "memory_reranker"
 
 // rerankSystemPrompt instructs the model to emit relevance scores as a
 // strict JSON object so we can parse without ceremony. Closed-shape:
@@ -140,6 +180,19 @@ func (r *LLMReranker) Rerank(ctx context.Context, query string, results []Search
 	client := pickModelForTitler(r.Client, r.Model) // same override helper
 
 	resp, err := client.Complete(callCtx, msgs)
+	// Bill BEFORE classifying the result. The provider charged for the
+	// call the moment it returned, so recording after a success check
+	// would make every degrade-to-RRF path a silent spender — the exact
+	// laundering that hid ~83% of the KG extractor's spend behind
+	// "nothing found" (investigated 2026-07-31). recordUsage tolerates a
+	// nil resp. Parent ctx, not callCtx: callCtx carries the rerank
+	// timeout and may already be expired when a slow call returns.
+	billTo, ambiguous := rerankProjectID(head)
+	if ambiguous {
+		r.Logger.Warn().Str("attributed_to", billTo).Int("candidates", len(head)).
+			Msg("memory: rerank candidates span multiple projects — cost attribution is ambiguous, billing the first")
+	}
+	r.recordUsage(ctx, resp, billTo)
 	if err != nil || resp == nil || len(resp.Choices) == 0 {
 		r.Logger.Warn().Err(err).Int("candidates", len(head)).
 			Msg("memory: reranker LLM call failed — degrading to RRF ordering")
@@ -239,4 +292,81 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// rerankProjectID picks the project to attribute rerank spend to, and
+// reports whether the candidate set was ambiguous about it.
+//
+// A search is project-scoped in practice, so the first non-empty
+// ProjectID among the candidates is the right label. When none carry
+// one the call is simply not recorded (recordUsage returns early on an
+// empty projectID) — the row never lands, rather than landing and being
+// filtered out at query time.
+//
+// ambiguous is true when the candidates name more than one distinct
+// project. That should be impossible today, but the reranker cannot see
+// the query's scope, so if cross-project search is ever added this would
+// silently attribute all the spend to whichever project sorted first.
+// The caller warns and bills anyway: one imperfectly-attributed row
+// beats a lost one, and the warning is the paper trail if the
+// assumption ever breaks.
+func rerankProjectID(candidates []SearchResult) (projectID string, ambiguous bool) {
+	for _, c := range candidates {
+		if c.ProjectID == "" {
+			continue
+		}
+		if projectID == "" {
+			projectID = c.ProjectID
+			continue
+		}
+		if c.ProjectID != projectID {
+			ambiguous = true
+		}
+	}
+	return projectID, ambiguous
+}
+
+// recordUsage persists one task_llm_usage row for a billed rerank call.
+// Skipped when LLMUsage is nil, when the project cannot be attributed,
+// or when the response carries zero tokens (defensive — a provider that
+// doesn't populate Usage shouldn't pollute the dashboard with empty
+// rows). Errors are swallowed: failing to bill is dashboard fidelity,
+// not correctness, and the reranker must never fail a search.
+//
+// StepID is deliberately empty. The titler and classifier set it to a
+// chunk id because each call concerns exactly one chunk; a rerank spans
+// the whole candidate set, so there is no single chunk to name.
+func (r *LLMReranker) recordUsage(ctx context.Context, resp *chat.ChatResponse, projectID string) {
+	if r == nil || r.LLMUsage == nil || resp == nil || projectID == "" {
+		return
+	}
+	prompt := resp.Usage.PromptTokens
+	completion := resp.Usage.CompletionTokens
+	if prompt == 0 && completion == 0 {
+		return
+	}
+	model := resp.Model
+	if model == "" {
+		model = r.Model
+	}
+	var costUSD float64
+	if r.Pricing != nil {
+		costUSD = r.Pricing.CostUSD(model, prompt, completion)
+	}
+	row := &persistence.TaskLLMUsage{
+		ID:                  persistence.GenerateID("llm"),
+		ProjectID:           projectID,
+		TaskID:              nil, // retrieval is not task-scoped
+		ExecutionID:         nil,
+		Role:                rerankerRole,
+		Model:               model,
+		PromptTokens:        int64(prompt),
+		CompletionTokens:    int64(completion),
+		Iterations:          1,
+		CostUSD:             costUSD,
+		Source:              persistence.TaskLLMUsageSourceMemoryReranker,
+		CacheCreationTokens: int64(resp.Usage.CacheCreationTokens),
+		CacheReadTokens:     int64(resp.Usage.CacheReadTokens),
+	}
+	_ = r.LLMUsage.Record(ctx, row)
 }

@@ -281,6 +281,11 @@ type ToolExecutor struct {
 	problemReports ProblemReportBuilder
 	// memoryWrite gates `remember`. Nil omits the capability.
 	memoryWrite MemoryWriteGate
+	// memoryConfirms + memoryAudit back the shared-scope confirmation two-step
+	// (chat memory-write design §5.3). Nil leaves shared writes reported as
+	// not-yet-built; personal writes never touch these.
+	memoryConfirms persistence.ChatMemoryWriteConfirmationRepository
+	memoryAudit    persistence.ChatMemoryWriteAuditRepository
 	// allowedInputRoots is the allow-list of host directories a
 	// create_task `input_files` entry may name as a *literal*
 	// filesystem path before it is snapshotted via StoreInput.

@@ -30,6 +30,13 @@ import (
 // turn the model cannot author. A model that skips asking gets PROPOSED → PROPOSED, no matter
 // how many times it calls the tool.
 
+// sharedConfirmationTTL bounds how long an AUTHORIZATION stays open (design §5.3.3): long
+// enough for a human to reply in a chat thread they are not staring at, short enough that a
+// phrase typed hours later cannot discharge a proposal they have forgotten making. It is
+// deliberately unrelated to how long the resulting FACT survives (90 days, §5.5) — conflating
+// the two would either expire the fact in minutes or leave an authorization open for a quarter.
+const sharedConfirmationTTL = 15 * time.Minute
+
 // sharedWriteDecision is the outcome of the shared-scope authorization check.
 //
 // Enumerated rather than a bool so a test can assert WHY a write was refused, and so the

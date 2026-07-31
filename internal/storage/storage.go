@@ -54,7 +54,13 @@ type Repositories struct {
 	// ChannelDisclosure is the EU AI Act Art 50 disclosure record —
 	// per-session state AND the Art 99 evidence trail.
 	ChannelDisclosure persistence.ChannelDisclosureRepository
-	APIKeys           persistence.APIKeyRepository
+	// ChatMemoryWriteConfirmations backs the shared-scope memory-write
+	// confirmation two-step (chat memory-write design §5.3, migration
+	// 146). ChatMemoryWriteAudit is its append-only evidence companion,
+	// written on grant before the pending row is deleted.
+	ChatMemoryWriteConfirmations persistence.ChatMemoryWriteConfirmationRepository
+	ChatMemoryWriteAudit         persistence.ChatMemoryWriteAuditRepository
+	APIKeys                      persistence.APIKeyRepository
 	// Identity is the identity-core repository (users, groups,
 	// channel bindings) backing internal/authz. Phase 2 of
 	// oidc-identity-permissions-design.md.
@@ -337,6 +343,8 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		TaskCredentials:                sqlite.NewTaskCredentialRepository(db),
 		ChatAudit:                      sqlite.NewChatAuditRepository(db),
 		ChannelDisclosure:              sqlite.NewChannelDisclosureRepository(db),
+		ChatMemoryWriteConfirmations:   sqlite.NewChatMemoryWriteConfirmationRepository(db),
+		ChatMemoryWriteAudit:           sqlite.NewChatMemoryWriteAuditRepository(db),
 		APIKeys:                        sqlite.NewAPIKeyRepository(db),
 		Webhooks:                       sqlite.NewWebhookEventRepository(db),
 		Messages:                       sqlite.NewTaskMessageRepository(db),
@@ -448,6 +456,8 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		TaskCredentials:                postgres.NewTaskCredentialRepository(dbtx),
 		ChatAudit:                      postgres.NewChatAuditRepository(dbtx),
 		ChannelDisclosure:              postgres.NewChannelDisclosureRepository(dbtx),
+		ChatMemoryWriteConfirmations:   postgres.NewChatMemoryWriteConfirmationRepository(dbtx),
+		ChatMemoryWriteAudit:           postgres.NewChatMemoryWriteAuditRepository(dbtx),
 		APIKeys:                        postgres.NewAPIKeyRepository(dbtx),
 		Identity:                       postgres.NewIdentityRepository(dbtx),
 		UISessions:                     postgres.NewUISessionRepository(dbtx),

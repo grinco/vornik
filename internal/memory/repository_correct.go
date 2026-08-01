@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -106,6 +107,37 @@ func (r *Repository) MarkRefutedByIDs(ctx context.Context, projectID string, chu
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// ChunkPreviewByID returns a chunk's source_name + content for a
+// single (projectID, chunkID), scoped to the project (the IDOR guard:
+// a chunk id from another project resolves to found=false here, so
+// the by-id forget path can never read or touch it). found=false when
+// no such chunk exists under projectID. Used by Corrector.ForgetByID
+// to build a truthful "this is what I evicted" preview without a
+// second round-trip. No validation_status filter — an operator can
+// forget a chunk regardless of its current state (and re-forgetting an
+// already-refuted chunk is a harmless no-op at MarkRefutedByIDs).
+func (r *Repository) ChunkPreviewByID(ctx context.Context, projectID, chunkID string) (sourceName, content string, found bool, err error) {
+	if r == nil || r.db == nil {
+		return "", "", false, fmt.Errorf("memory repo: not configured")
+	}
+	if projectID == "" || chunkID == "" {
+		return "", "", false, fmt.Errorf("memory repo: project id and chunk id required")
+	}
+	const q = `
+		SELECT COALESCE(source_name, ''), COALESCE(content, '')
+		FROM project_memory_chunks
+		WHERE project_id = $1 AND id = $2`
+	row := r.db.QueryRowContext(ctx, q, projectID, chunkID)
+	switch err := row.Scan(&sourceName, &content); err {
+	case nil:
+		return sourceName, content, true, nil
+	case sql.ErrNoRows:
+		return "", "", false, nil
+	default:
+		return "", "", false, fmt.Errorf("memory repo: chunk preview by id: %w", err)
+	}
 }
 
 // insertOperatorCorrection writes a new chunk carrying an

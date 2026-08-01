@@ -17,6 +17,7 @@ import (
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/idfmt"
 	"vornik.io/vornik/internal/memory"
+	"vornik.io/vornik/internal/memory/ned"
 	"vornik.io/vornik/internal/memoryfirewall"
 	"vornik.io/vornik/internal/outputguard"
 	"vornik.io/vornik/internal/persistence"
@@ -292,6 +293,11 @@ type ToolExecutor struct {
 	// dataSubjects links a chat_memory chunk to the operator's own data subject
 	// so Art 17 erasure finds it (design D4.1). Nil skips the link.
 	dataSubjects DataSubjectLinker
+	// sharedNED is the shared-scope pre-commit named-entity resolution gate
+	// (slice 4, §6): it runs before ANY DB write on a shared deposit and is the
+	// only source of the token the shared write path requires. Nil leaves shared
+	// writes reporting "not built"; personal scope never touches it.
+	sharedNED *ned.Gate
 	// allowedInputRoots is the allow-list of host directories a
 	// create_task `input_files` entry may name as a *literal*
 	// filesystem path before it is snapshotted via StoreInput.
@@ -527,6 +533,8 @@ func (te *ToolExecutor) execute(ctx context.Context, tc chat.ToolCall, activePro
 		return te.memorySearch(ctx, args, activeProject, allowedProjects)
 	case memoryCorrectName:
 		return te.memoryCorrect(ctx, args, activeProject, allowedProjects)
+	case memoryForgetName:
+		return te.memoryForget(ctx, args, activeProject, allowedProjects)
 	case "read_artifact":
 		return te.readArtifact(ctx, args, allowedProjects)
 	case getChannelThreadName:
@@ -1667,7 +1675,10 @@ func (te *ToolExecutor) memorySearch(ctx context.Context, argsJSON, activeProjec
 	}
 	fmt.Fprintf(&b, "Found %d memory hit(s) for %q in %s:\n\n", len(results), args.Query, project)
 	for i, r := range results {
-		fmt.Fprintf(&b, "[%d] source=%s  score=%.2f\n", i+1, r.SourceName, r.Score)
+		// id= is a stable handle the model can pass to memory_forget to
+		// deterministically evict this exact chunk (no fuzzy re-search).
+		// Daemon-generated, so it sits OUTSIDE the untrusted wrapper.
+		fmt.Fprintf(&b, "[%d] id=%s  source=%s  score=%.2f\n", i+1, r.ChunkID, r.SourceName, r.Score)
 		// Per-hit trust tokens (P3, Routing only): daemon-generated, outside
 		// the untrusted wrapper. Only under Routing so the legacy per-hit line
 		// stays parse-stable for any consumer.
@@ -2409,7 +2420,7 @@ func DispatcherTools() []chat.Tool {
 			Type: "function",
 			Function: chat.ToolFunction{
 				Name:        "memory_search",
-				Description: "Search project memory for past research, task outputs, and notes. USE THIS FIRST whenever the user asks about a topic, person, or project that might already have work done on it — scheduling a new task should be the last resort, not the first. Returns top chunks with source file names and relevance scores. Pass from_date / to_date to narrow by created-at when the user asks for recent or time-bounded context.",
+				Description: "Search project memory for past research, task outputs, and notes. USE THIS FIRST whenever the user asks about a topic, person, or project that might already have work done on it — scheduling a new task should be the last resort, not the first. Returns top chunks, each printed with an 'id=<chunk id>' handle, its source file name, and a relevance score. Pass that id to memory_forget to deterministically evict a specific chunk. Pass from_date / to_date to narrow by created-at when the user asks for recent or time-bounded context.",
 				Parameters: json.RawMessage(`{
 					"type":"object",
 					"properties":{
@@ -2424,6 +2435,7 @@ func DispatcherTools() []chat.Tool {
 			},
 		},
 		memoryCorrectDescriptor(),
+		memoryForgetDescriptor(),
 		{
 			Type: "function",
 			Function: chat.ToolFunction{

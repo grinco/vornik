@@ -2731,6 +2731,24 @@ type MemoryConfig struct {
 	// daemon-side retrieval_trust_verdict + verdict-predicated DB widen.
 	RetrievalRouting MemoryRetrievalRoutingConfig `yaml:"retrieval_routing"`
 
+	// MinRefuteScore is the minimum hybrid-search (RRF) score a chunk
+	// must reach before the memory_correct tool's fuzzy claim search
+	// will down-weight (refute) it. Guards against a "wrong claim"
+	// that matches nothing well refuting an unrelated top hit
+	// (incident 2026-07-31). 0 = the built-in default (0.05). Raise
+	// to refute more conservatively; lower if genuine corrections are
+	// being missed. Does NOT affect the deterministic memory_forget
+	// by-id path, which never scores.
+	//
+	// SCOPE: applies to every corrector that can actually fuzzy-refute —
+	// the chat dispatcher, the Telegram bot, and the companion
+	// memory_correct MCP tool. The CLI evict / HTTP-evict correctors are
+	// constructed with a nil searcher and so cannot call the claim-search
+	// path at all; this knob is a no-op for them. Every searcher-backed
+	// site inherits at least the built-in default even when this is unset,
+	// so the incident guard holds regardless of configuration.
+	MinRefuteScore float64 `yaml:"min_refute_score" doc:"Minimum hybrid-search (RRF) score a chunk must reach before memory_correct's claim search will refute it (0 = default 0.05). Guards against refuting an unrelated chunk on a weak claim match."`
+
 	// EmbeddingModel is the model name to request from the embedding endpoint,
 	// e.g. "text-embedding-3-small". Required when Enabled=true.
 	EmbeddingModel string `yaml:"embedding_model" doc:"Embedding model name. Required when enabled."`

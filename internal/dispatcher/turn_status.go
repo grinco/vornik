@@ -65,6 +65,7 @@ func toolStatusLine(toolName string) string {
 // not a bug — MCP catalogues are per-deployment — it just reads less warmly.
 var friendlyToolPhrases = map[string]string{
 	"memory_search":           "searching memory…",
+	"memory_forget":           "forgetting a memory chunk…",
 	"create_task":             "scheduling the job…",
 	"list_tasks":              "checking your tasks…",
 	"get_task_status":         "checking the job status…",

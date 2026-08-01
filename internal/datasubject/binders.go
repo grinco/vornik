@@ -149,6 +149,59 @@ func BindEmailEnvelope(sender, messageRowID, projectID string) (Binding, error) 
 	return b, b.Validate()
 }
 
+// BindKGExtraction binds a subject from a knowledge-graph PERSON entity the
+// resolver matched (chat memory-write design D4.1). It is the FIRST production
+// wiring of this library — a shared chat note that names a resolved third
+// party links the chunk to that person so an Art 17 erasure for them finds it.
+//
+// matchID is the knowledge_entities row id the resolver returned
+// (Resolution.MatchID). It is recorded as a `kg_entity` identifier so a later
+// deposit naming the same entity reuses the subject rather than minting a new
+// one. When chunkID is set, a link to that project_memory_chunks row is added.
+//
+// CONFIDENCE CEILING (review I2). The source is SourceKGExtraction, whose
+// DefaultConfidence is ConfidencePossible — the widest, least-reliable net
+// (false positives, and false NEGATIVES for pronoun/nickname references). The
+// binder CLAMPS the passed confidence to that ceiling itself: AddLink
+// re-validates through Link.Validate (a hard runtime control), but
+// AddIdentifier does NOT, so a binder that trusted its caller could smuggle a
+// too-high identifier confidence past the store. Clamping here — empty, or
+// anything above ConfidencePossible, becomes ConfidencePossible — makes the
+// ceiling a property of the binder, not a convention the caller must honour.
+//
+// EXCLUSIVITY is SharedRow: a chat chunk routinely concerns people other than
+// the one matched, so asserting exclusivity would authorise deleting their
+// data on this subject's erasure.
+func BindKGExtraction(matchID, chunkID, projectID string, confidence Confidence) (Binding, error) {
+	matchID = strings.TrimSpace(matchID)
+	if matchID == "" {
+		return Binding{}, fmt.Errorf("datasubject: kg entity match id is required")
+	}
+	ceiling, err := DefaultConfidence(SourceKGExtraction)
+	if err != nil {
+		return Binding{}, err
+	}
+	// Clamp: an empty or too-high confidence collapses to the source ceiling.
+	if confidence == "" || !confidenceAtMost(confidence, ceiling) {
+		confidence = ceiling
+	}
+	b := Binding{Identifiers: []Identifier{{
+		Kind: KindKGEntity, Value: matchID,
+		Source: SourceKGExtraction, Confidence: confidence,
+	}}}
+	// The chunk id is known only after the insert mints it (a post-insert
+	// step, the same shape as backfillClassMetadata); bind the link only when
+	// it is present, mirroring BindEmailEnvelope's optional message-row link.
+	if id := strings.TrimSpace(chunkID); id != "" {
+		b.Links = append(b.Links, Link{
+			Table: TableProjectMemoryChunks, RowID: id, ProjectID: projectID,
+			Source: SourceKGExtraction, Confidence: confidence,
+			Exclusivity: SharedRow,
+		})
+	}
+	return b, b.Validate()
+}
+
 // NormaliseEmail lowercases an address and strips any display name, so
 // "Jane Doe <Jane.Doe@Example.COM>" and "jane.doe@example.com" resolve to one
 // identifier.

@@ -3,9 +3,9 @@ sources:
     - path: internal/dispatcher/render_document.go
       sha256: 978d37b59d3584d28b5260865673db9fbb40bbf123ecff1d76a3eab1c49a27fe
     - path: internal/dispatcher/tools.go
-      sha256: 529060f6812875cbeb5ce70e7b24ec1abfe0dee43e6663617ab17f2a6dbaca78
+      sha256: a17794ec0d0d46edfe37981be4de0633fb3dd54a0f30dbacab2431c4c2952e34
     - path: internal/dispatcher/agent.go
-      sha256: 0ba9dad5e3e943e0cc47472046b11cac9438b978a6a64c1a33dacc781e025770
+      sha256: fc3d9d3007a4c94630de6375a295a634ab054e7c2234ebaadaa15dbe121e043b
     - path: internal/email/channel.go
       sha256: 38058785781c8f5dad5197c282de88501a07e81a192d3cec3c6715bd57fb8a6a
 ---

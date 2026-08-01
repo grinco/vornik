@@ -1774,6 +1774,21 @@ const (
 	// spend together showed a whole class of calls was invisible
 	// rather than mispriced. Wired 2026-07-31.
 	TaskLLMUsageSourceMemoryReranker = "memory_reranker"
+	// TaskLLMUsageSourceChatRememberNED — one row per synchronous
+	// named-entity-resolution (extract+resolve) call made by the chat
+	// `remember` shared-scope pre-commit gate (chat memory-write design
+	// D6.4). task_id NULL (a chat deposit is tied to no task); project_id
+	// is the active project; step_id is empty because the gate runs over
+	// raw content, not a chunk. role = "chat_remember_ned_{extractor,resolver}".
+	//
+	// DISTINCT from kg_extraction on purpose: the extractor/resolver share
+	// the "memory.graph" chat call-site label but record task_llm_usage
+	// only inside the KG worker's Pipeline.RunChunk, so a direct
+	// synchronous caller inherits the label (passing the call-site guard)
+	// yet records NO spend — the same silent-unbilled-call-site class as
+	// the reranker (1,637 calls/day) and instinct.distiller. Attributing
+	// the gate's own spend here keeps it out of the KG worker's rollup.
+	TaskLLMUsageSourceChatRememberNED = "chat_remember_ned"
 )
 
 // TaskLLMUsageFilter defines filtering options for LLM usage queries.

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"regexp"
 	"strings"
 	"testing"
@@ -307,6 +308,249 @@ func TestChunkIDsByScope_NullBucketAndNamedScope(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != "mc_9" {
 		t.Fatalf("named scope ids = %v, want [mc_9]", ids)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// TestCorrector_RefuteByClaim_BelowFloorRefutesNothing is the
+// regression for the incident: memory_correct refuted an unrelated
+// chunk on a 0.03 non-match, 2026-07-31. The searcher's top hit sits
+// below the confidence floor, so RefuteByClaim must flip NOTHING and
+// return an empty slice (no MarkRefutedByIDs SQL is expected — its
+// absence is asserted via mock.ExpectationsWereMet with no Exec set).
+func TestCorrector_RefuteByClaim_BelowFloorRefutesNothing(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+	repo := NewRepository(db)
+
+	// NB: no mock.ExpectExec for "SET validation_status = 'refuted'" —
+	// if RefuteByClaim tried to refute, the unexpected Exec would fail.
+	c := NewCorrector(repo, &stubSearcher{results: []SearchResult{
+		{ChunkID: "chunk_noise", SourceName: "unrelated.md", Content: "totally unrelated content", Score: 0.03},
+	}})
+	refuted, err := c.RefuteByClaim(context.Background(), "janka", "a claim that matches nothing well", 5)
+	if err != nil {
+		t.Fatalf("RefuteByClaim: %v", err)
+	}
+	if len(refuted) != 0 {
+		t.Fatalf("refuted = %d, want 0 (0.03 top hit is below the floor)", len(refuted))
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected SQL executed (a below-floor hit must not refute): %v", err)
+	}
+}
+
+// TestCorrector_RefuteByClaim_AboveFloorRefutes — a hit that clears
+// the floor is refuted normally. Pins the "genuine match still works"
+// half of the fix so the guard can't be over-tightened into a no-op.
+func TestCorrector_RefuteByClaim_AboveFloorRefutes(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+	repo := NewRepository(db)
+
+	mock.ExpectExec(regexp.QuoteMeta("SET validation_status = 'refuted'")).
+		WithArgs("janka", "chunk_real").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	c := NewCorrector(repo, &stubSearcher{results: []SearchResult{
+		{ChunkID: "chunk_real", SourceName: "cv.md", Content: "Janka born 1985", Score: 0.42},
+	}})
+	refuted, err := c.RefuteByClaim(context.Background(), "janka", "born 1985", 5)
+	if err != nil {
+		t.Fatalf("RefuteByClaim: %v", err)
+	}
+	if len(refuted) != 1 || refuted[0].ID != "chunk_real" {
+		t.Fatalf("refuted = %+v, want exactly chunk_real", refuted)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// TestCorrector_RefuteByClaim_JustAboveDefaultFloorRefutes exercises
+// the MARGIN, not a well-separated score: 0.06 barely clears the 0.05
+// default floor and must still refute, while 0.04 (just below) must not.
+// This pins that the guard discriminates at the boundary — the incident's
+// 0.03 sits just under, a real both-arms match just over — rather than
+// only working for scores nowhere near the threshold.
+func TestCorrector_RefuteByClaim_JustAboveDefaultFloorRefutes(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+	repo := NewRepository(db)
+
+	// Only the 0.06 hit clears the default 0.05 floor; the 0.04 hit is
+	// left untouched, so exactly one id reaches the refute UPDATE.
+	mock.ExpectExec(regexp.QuoteMeta("SET validation_status = 'refuted'")).
+		WithArgs("janka", "chunk_edge").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	c := NewCorrector(repo, &stubSearcher{results: []SearchResult{
+		{ChunkID: "chunk_edge", SourceName: "a.md", Content: "just over the line", Score: 0.06},
+		{ChunkID: "chunk_under", SourceName: "b.md", Content: "just under", Score: 0.04},
+	}})
+	refuted, err := c.RefuteByClaim(context.Background(), "janka", "claim", 5)
+	if err != nil {
+		t.Fatalf("RefuteByClaim: %v", err)
+	}
+	if len(refuted) != 1 || refuted[0].ID != "chunk_edge" {
+		t.Fatalf("refuted = %+v, want exactly chunk_edge (0.06 clears the 0.05 default floor, 0.04 does not)", refuted)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// TestCorrector_RefuteByClaim_MixedFloor — one hit above the floor,
+// two below. Only the above-floor hit is refuted; the two below are
+// left alone (the SQL args pin that exactly one id is flipped).
+func TestCorrector_RefuteByClaim_MixedFloor(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+	repo := NewRepository(db)
+
+	mock.ExpectExec(regexp.QuoteMeta("SET validation_status = 'refuted'")).
+		WithArgs("janka", "chunk_hit"). // ONLY the above-floor id
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	c := NewCorrector(repo, &stubSearcher{results: []SearchResult{
+		{ChunkID: "chunk_hit", SourceName: "a.md", Content: "strong match", Score: 0.11},
+		{ChunkID: "chunk_lo1", SourceName: "b.md", Content: "weak", Score: 0.02},
+		{ChunkID: "chunk_lo2", SourceName: "c.md", Content: "weak", Score: 0.01},
+	}})
+	refuted, err := c.RefuteByClaim(context.Background(), "janka", "claim", 5)
+	if err != nil {
+		t.Fatalf("RefuteByClaim: %v", err)
+	}
+	if len(refuted) != 1 || refuted[0].ID != "chunk_hit" {
+		t.Fatalf("refuted = %+v, want exactly chunk_hit", refuted)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// TestCorrector_effectiveMinRefuteScore — the knob defaults to
+// DefaultMinRefuteScore when unset (<=0) and honours an explicit
+// operator value otherwise.
+func TestCorrector_effectiveMinRefuteScore(t *testing.T) {
+	c := &Corrector{}
+	if got := c.effectiveMinRefuteScore(); got != DefaultMinRefuteScore {
+		t.Errorf("unset floor = %v, want default %v", got, DefaultMinRefuteScore)
+	}
+	c.MinRefuteScore = 0.2
+	if got := c.effectiveMinRefuteScore(); got != 0.2 {
+		t.Errorf("explicit floor = %v, want 0.2", got)
+	}
+	var nilC *Corrector
+	if got := nilC.effectiveMinRefuteScore(); got != DefaultMinRefuteScore {
+		t.Errorf("nil receiver floor = %v, want default", got)
+	}
+}
+
+// TestCorrector_ForgetByID_MarksExactlyThatChunk — the deterministic
+// by-id soft-evict: look the chunk up (project-scoped), flip it
+// refuted, and return a truthful preview.
+func TestCorrector_ForgetByID_MarksExactlyThatChunk(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+	repo := NewRepository(db)
+
+	mock.ExpectQuery(regexp.QuoteMeta("FROM project_memory_chunks")).
+		WithArgs("janka", "chunk_x").
+		WillReturnRows(sqlmock.NewRows([]string{"source_name", "content"}).
+			AddRow("notes.md", "the stale fact to forget"))
+	mock.ExpectExec(regexp.QuoteMeta("SET validation_status = 'refuted'")).
+		WithArgs("janka", "chunk_x").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	c := NewCorrector(repo, &stubSearcher{})
+	got, err := c.ForgetByID(context.Background(), "janka", "chunk_x")
+	if err != nil {
+		t.Fatalf("ForgetByID: %v", err)
+	}
+	if got == nil || got.ID != "chunk_x" || got.SourceName != "notes.md" {
+		t.Fatalf("ForgetByID result = %+v, want chunk_x/notes.md", got)
+	}
+	if !strings.Contains(got.Preview, "stale fact") {
+		t.Errorf("preview missing content: %q", got.Preview)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// TestCorrector_ForgetByID_MissingChunkEvictsNothing — a wrong or
+// foreign-project id resolves to no chunk (ChunkPreviewByID returns
+// found=false), so ForgetByID must return (nil, nil) and MUST NOT run
+// the refute UPDATE (project-scope IDOR guard: a chunk id from another
+// project can't be flipped here).
+func TestCorrector_ForgetByID_MissingChunkEvictsNothing(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+	repo := NewRepository(db)
+
+	mock.ExpectQuery(regexp.QuoteMeta("FROM project_memory_chunks")).
+		WithArgs("janka", "chunk_foreign").
+		WillReturnError(sql.ErrNoRows)
+	// No ExpectExec — a missing chunk must not trigger any UPDATE.
+
+	c := NewCorrector(repo, &stubSearcher{})
+	got, err := c.ForgetByID(context.Background(), "janka", "chunk_foreign")
+	if err != nil {
+		t.Fatalf("ForgetByID: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("ForgetByID = %+v, want nil for a non-existent chunk", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected SQL (missing chunk must not refute): %v", err)
+	}
+}
+
+// TestCorrector_ForgetByID_Guards — defensive arg validation.
+func TestCorrector_ForgetByID_Guards(t *testing.T) {
+	var nilC *Corrector
+	if _, err := nilC.ForgetByID(context.Background(), "p", "c"); err == nil {
+		t.Error("nil corrector must error")
+	}
+	c := &Corrector{Repo: &Repository{}}
+	if _, err := c.ForgetByID(context.Background(), "", "c"); err == nil {
+		t.Error("empty project id must error")
+	}
+	if _, err := c.ForgetByID(context.Background(), "p", ""); err == nil {
+		t.Error("empty chunk id must error")
+	}
+}
+
+// TestChunkPreviewByID_ProjectScopedLookup pins the by-id preview
+// read: project + id bound (the IDOR guard), found=true on a row,
+// found=false on sql.ErrNoRows.
+func TestChunkPreviewByID_ProjectScopedLookup(t *testing.T) {
+	db, mock, _ := sqlmock.New()
+	defer func() { _ = db.Close() }()
+	repo := NewRepository(db)
+
+	mock.ExpectQuery(regexp.QuoteMeta("WHERE project_id = $1 AND id = $2")).
+		WithArgs("janka", "chunk_1").
+		WillReturnRows(sqlmock.NewRows([]string{"source_name", "content"}).
+			AddRow("s.md", "body"))
+	src, content, found, err := repo.ChunkPreviewByID(context.Background(), "janka", "chunk_1")
+	if err != nil || !found || src != "s.md" || content != "body" {
+		t.Fatalf("preview = (%q,%q,%v,%v)", src, content, found, err)
+	}
+
+	mock.ExpectQuery(regexp.QuoteMeta("WHERE project_id = $1 AND id = $2")).
+		WithArgs("janka", "nope").
+		WillReturnError(sql.ErrNoRows)
+	_, _, found, err = repo.ChunkPreviewByID(context.Background(), "janka", "nope")
+	if err != nil || found {
+		t.Fatalf("missing chunk: found=%v err=%v, want found=false nil", found, err)
+	}
+
+	if _, _, _, err := repo.ChunkPreviewByID(context.Background(), "", "c"); err == nil {
+		t.Error("empty project must error")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

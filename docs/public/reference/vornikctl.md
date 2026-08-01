@@ -1050,6 +1050,63 @@ vornikctl memory gist <projectID> [flags]
 |---|---|---|
 | `--json` | `false` | Emit JSON instead of a table |
 
+## vornikctl memory ned-calibrate
+
+Measure the shared-scope NED resolver decision distribution over historical chat
+
+Sample historical human chat turns (chat_audit_log.user_message), run the
+SHIPPED shared-scope NED extract→resolve path (the same billed code the chat
+`remember` tool uses) over the sample, and report the resolver decision
+distribution — match / new / ambiguous / none (design §6.2.1, §7).
+
+This is USABILITY calibration, not safety: the NED gate blocks every unresolved
+detected person by construction regardless. This answers whether shared-scope
+`remember` is USABLE — i.e. whether the normal case is blocked.
+
+Sampling frame (§7):
+  - stratified by project; >=100 turns per stratum where available
+  - the dominant project is capped at 50% of the total sample (janka holds
+    ~95% of turns — an unstratified draw measures one person)
+  - recent-only within --window
+  - projects with <100 eligible turns are reported as a separate
+    "insufficient_sample" bucket and are NOT screened or folded into the
+    aggregate (review I4)
+
+Cost: each screened turn is 1 extractor LLM call + (for person-bearing turns) a
+resolver call that short-circuits ~70% without an LLM call. The measurement's own
+spend is BILLED to task_llm_usage under source=chat_remember_ned (design D6.4).
+
+Use --dry-run FIRST: it prints the sampling plan, per-stratum counts, and a
+rough LLM-call estimate WITHOUT making a single LLM call, so cost is visible
+before any spend.
+
+The report is AGGREGATES ONLY — no chat content is ever printed.
+
+Requires chat.provider=router with chat.router.bedrock.enabled=true (the KG
+extractor/resolver models route to the bedrock sub-provider), and a postgres
+database. AWS credentials must be present in the environment for the real run
+(the systemd unit loads ~/.config/vornik/secrets/aws.env; a manual run must
+source it).
+
+Examples:
+  vornikctl memory ned-calibrate --dry-run
+  vornikctl memory ned-calibrate --dry-run --json
+  vornikctl memory ned-calibrate --sample-size 800 --window 30d
+  vornikctl memory ned-calibrate --sample-size 800 --window 30d --json
+
+```
+vornikctl memory ned-calibrate [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | `false` | Print the sampling plan + per-stratum counts + call estimate WITHOUT any LLM call |
+| `--json` | `false` | Emit JSON instead of the human-readable report |
+| `--min-per-stratum` | `100` | Minimum eligible turns for a project to be a stratum; below this it is reported as insufficient_sample |
+| `--sample-size` | `800` | Target number of turns to screen across all eligible strata |
+| `--seed` | `vornik-ned-calibration` | Deterministic sampling seed — the same seed draws the same turns (reproducible re-runs) |
+| `--window` | `30d` | Recent-only window (e.g. 30d, 720h) — only turns newer than now-window are eligible |
+
 ## vornikctl memory prune-candidates
 
 List chunks that haven't been retrieved in --since (auto-prune candidates)

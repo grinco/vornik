@@ -24,6 +24,12 @@ type memCorrector struct {
 	lastInsertProj  string
 	lastRefuteProj  string
 	insertedChunkID string
+
+	// memory_forget stub state.
+	forgetResult   *memory.RefutedChunk
+	forgetErr      error
+	lastForgetProj string
+	lastForgetID   string
 }
 
 func (m *memCorrector) RefuteByClaim(_ context.Context, projectID, claim string, max int) ([]memory.RefutedChunk, error) {
@@ -45,6 +51,14 @@ func (m *memCorrector) InsertCorrection(_ context.Context, projectID, content, _
 		m.insertedChunkID = "chunk_corr_1"
 	}
 	return m.insertedChunkID, nil
+}
+func (m *memCorrector) ForgetByID(_ context.Context, projectID, chunkID string) (*memory.RefutedChunk, error) {
+	m.lastForgetProj = projectID
+	m.lastForgetID = chunkID
+	if m.forgetErr != nil {
+		return nil, m.forgetErr
+	}
+	return m.forgetResult, nil
 }
 
 // newTestExecutor returns a ToolExecutor wired with just the
@@ -110,7 +124,7 @@ func TestMemoryCorrect_NoMatchesStillInsertsCorrection(t *testing.T) {
 
 	res := te.memoryCorrect(context.Background(), args, "janka", nil)
 	body := res.Content
-	if !strings.Contains(body, "No memory chunks matched") {
+	if !strings.Contains(body, "nothing was down-weighted") {
 		t.Errorf("missing no-match notice: %s", body)
 	}
 	if !strings.Contains(body, "chunk_corr_1") {

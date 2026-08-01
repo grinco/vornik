@@ -187,3 +187,75 @@ func TestAllBindersProduceValidBindings(t *testing.T) {
 		}
 	}
 }
+
+// TestBindKGExtraction covers the first production binder (chat memory-write
+// design D4.1): a resolved PERSON entity becomes a kg_entity identifier plus a
+// post-insert link to the chat_memory chunk it was found in.
+func TestBindKGExtraction(t *testing.T) {
+	t.Run("identifier and link at the source ceiling", func(t *testing.T) {
+		b, err := BindKGExtraction("ent-42", "chunk-7", "proj-x", ConfidencePossible)
+		if err != nil {
+			t.Fatalf("BindKGExtraction: %v", err)
+		}
+		if len(b.Identifiers) != 1 || b.Identifiers[0].Kind != KindKGEntity || b.Identifiers[0].Value != "ent-42" {
+			t.Fatalf("want one kg_entity identifier for ent-42; got %+v", b.Identifiers)
+		}
+		if b.Identifiers[0].Source != SourceKGExtraction || b.Identifiers[0].Confidence != ConfidencePossible {
+			t.Errorf("identifier source/confidence = %s/%s, want kg_extraction/possible", b.Identifiers[0].Source, b.Identifiers[0].Confidence)
+		}
+		if len(b.Links) != 1 {
+			t.Fatalf("want one link; got %+v", b.Links)
+		}
+		l := b.Links[0]
+		if l.Table != TableProjectMemoryChunks || l.RowID != "chunk-7" || l.ProjectID != "proj-x" {
+			t.Errorf("link target wrong: %+v", l)
+		}
+		if l.Confidence != ConfidencePossible || l.Exclusivity != SharedRow {
+			t.Errorf("link confidence/exclusivity = %s/%s, want possible/shared", l.Confidence, l.Exclusivity)
+		}
+	})
+
+	t.Run("clamps a too-high confidence to the ceiling", func(t *testing.T) {
+		// A caller must not be able to smuggle `certain` past AddIdentifier
+		// (which does not re-validate) — the binder clamps to the ceiling.
+		for _, in := range []Confidence{ConfidenceCertain, ConfidenceProbable, Confidence("")} {
+			b, err := BindKGExtraction("ent-1", "chunk-1", "p", in)
+			if err != nil {
+				t.Fatalf("BindKGExtraction(%q): %v", in, err)
+			}
+			if b.Identifiers[0].Confidence != ConfidencePossible || b.Links[0].Confidence != ConfidencePossible {
+				t.Errorf("confidence %q was not clamped to possible: id=%s link=%s",
+					in, b.Identifiers[0].Confidence, b.Links[0].Confidence)
+			}
+		}
+	})
+
+	t.Run("identifier only when no chunk id is known yet", func(t *testing.T) {
+		b, err := BindKGExtraction("ent-9", "", "", ConfidencePossible)
+		if err != nil {
+			t.Fatalf("BindKGExtraction: %v", err)
+		}
+		if len(b.Links) != 0 {
+			t.Errorf("no link should be produced without a chunk id; got %+v", b.Links)
+		}
+		if len(b.Identifiers) != 1 {
+			t.Errorf("the identifier must still be produced; got %+v", b.Identifiers)
+		}
+	})
+
+	t.Run("empty match id is rejected", func(t *testing.T) {
+		if _, err := BindKGExtraction("  ", "chunk-1", "p", ConfidencePossible); err == nil {
+			t.Error("an empty match id must be rejected")
+		}
+	})
+
+	// Guards the I2 assumption: the ceiling this binder clamps to IS the
+	// SourceKGExtraction default. If that default is ever raised, this fails
+	// and forces a re-think rather than silently over-claiming.
+	t.Run("ConfidencePossible is the SourceKGExtraction default", func(t *testing.T) {
+		got, err := DefaultConfidence(SourceKGExtraction)
+		if err != nil || got != ConfidencePossible {
+			t.Fatalf("DefaultConfidence(kg_extraction) = %q,%v; want possible", got, err)
+		}
+	})
+}

@@ -228,6 +228,9 @@ func (stubMemoryCorrector) RefuteByClaim(context.Context, string, string, int) (
 func (stubMemoryCorrector) InsertCorrection(context.Context, string, string, string) (string, error) {
 	return "", nil
 }
+func (stubMemoryCorrector) ForgetByID(context.Context, string, string) (*memory.RefutedChunk, error) {
+	return nil, nil
+}
 
 func TestWithMemoryCorrector(t *testing.T) {
 	c := stubMemoryCorrector{}

@@ -430,6 +430,10 @@ func (c *Container) initTelegram() error {
 		// corrects them mid-conversation. Adds a verified-correction
 		// chunk so future retrievals pick up the right fact.
 		corrector := memory.NewCorrector(c.memoryManager.Repository(), c.memoryManager.Searcher)
+		// Confidence floor for the fuzzy claim-refute path (0 → the
+		// package default). See container_dispatcher.go / incident
+		// 2026-07-31.
+		corrector.MinRefuteScore = c.Config.Memory.MinRefuteScore
 		botOpts = append(botOpts, telegram.WithMemoryCorrector(corrector))
 	}
 	if c.artifactStore != nil {

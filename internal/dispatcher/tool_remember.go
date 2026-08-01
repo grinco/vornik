@@ -12,6 +12,7 @@ import (
 
 	"vornik.io/vornik/internal/datasubject"
 	"vornik.io/vornik/internal/memory"
+	"vornik.io/vornik/internal/memory/ned"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -138,6 +139,25 @@ func (a *Agent) SetChatMemoryWriter(w ChatMemoryWriter, linker DataSubjectLinker
 	}
 }
 
+// SetChatMemoryNED wires the shared-scope pre-commit named-entity resolution
+// gate (slice 4, §6). Nil leaves shared writes reporting "not built" — the
+// gate is the containment for third-party data in a shared deposit, so a
+// shared write cannot persist without it.
+//
+// Writes through to the tool executor for the same reason SetMemoryWriteGate
+// does: NewAgent builds a.toolExecutor once, so assigning only the agent field
+// would leave the executor holding nil and the shared write path permanently
+// dark (the 1234aea37 class).
+func (a *Agent) SetChatMemoryNED(g *ned.Gate) {
+	if a == nil {
+		return
+	}
+	a.sharedNED = g
+	if a.toolExecutor != nil {
+		a.toolExecutor.sharedNED = g
+	}
+}
+
 // rememberUnavailable is the single refusal text.
 //
 // IDENTICAL whether the capability is absent or merely ungranted for this channel (review
@@ -185,14 +205,15 @@ func (te *ToolExecutor) remember(ctx context.Context, args, activeProject string
 
 	scope := resolveMemoryScope(in.Scope)
 
-	// PERSONAL scope now persists end-to-end (slice 5): a chat_memory chunk in the
-	// active project's memory, linked to the operator's own data subject. SHARED
-	// scope still runs the slice-3 confirmation machine and waits for slice 4's NED
-	// gate before it can persist (rememberShared).
+	// PERSONAL scope persists end-to-end (slice 5): a chat_memory chunk in the
+	// active project's memory, linked to the operator's own data subject. It
+	// NEVER runs the NED gate. SHARED scope runs the slice-3 confirmation
+	// machine and, once acknowledged, the slice-4 pre-commit NED gate before it
+	// can persist (rememberShared).
 	if scope != memoryScopeShared {
 		return te.rememberPersonal(ctx, channel, sessionID, activeProject, in.Content)
 	}
-	return te.rememberShared(ctx, channel, sessionID, in.Content)
+	return te.rememberShared(ctx, channel, sessionID, activeProject, in.Content)
 }
 
 // rememberPersonal persists a personal-scope chat deposit (chat memory-write design
@@ -323,15 +344,17 @@ func rememberSaveNotBuilt(scope memoryScope) ToolResult {
 //   - already-proposed-awaiting: an unacknowledged pending row for the SAME content and speaker
 //     is still live → re-list the phrases (§5.3.3), which is exactly when the user typed
 //     something that did not match. No write.
-//   - AUTHORIZED: authorizeSharedWrite grants → write the append-only audit row, delete the
-//     pending row (one-shot), and report that the write is authorized but the persist path
-//     (slices 4-5) is not built.
+//   - AUTHORIZED: authorizeSharedWrite grants → rememberSharedGranted runs the pre-commit NED
+//     gate (slice 4) and, on a proceed verdict, persists the chat_memory chunk, links any
+//     resolved third-party subjects, writes the append-only audit row and deletes the pending
+//     row (one-shot). When the write path is not fully wired it falls back to the slice-3
+//     terminal (audit + delete + "not built"). A NED block/error writes ZERO rows.
 //
 // The acknowledgement itself is stamped ELSEWHERE — ChannelReceiver.Receive, from a
 // human-originated inbound turn — never from any argument the model passes here. That is why a
 // model calling remember repeatedly in one turn only ever cycles PROPOSED → PROPOSED and can
 // never reach AUTHORIZED (the parser.go:186 mistake, §5.3.2).
-func (te *ToolExecutor) rememberShared(ctx context.Context, channel, sessionID, content string) ToolResult {
+func (te *ToolExecutor) rememberShared(ctx context.Context, channel, sessionID, activeProject, content string) ToolResult {
 	// Shared machinery not wired: report not-built rather than silently proposing into a store
 	// that does not exist.
 	if te.memoryConfirms == nil {
@@ -359,7 +382,7 @@ func (te *ToolExecutor) rememberShared(ctx context.Context, channel, sessionID, 
 
 	switch decision := authorizeSharedWrite(rec, content, operatorID, now); {
 	case decision.permits():
-		return te.rememberSharedAuthorized(ctx, rec, now)
+		return te.rememberSharedGranted(ctx, rec, channel, sessionID, activeProject, content, now)
 
 	case rec != nil && !rec.Acknowledged() && rec.OperatorID == operatorID &&
 		rec.ContentFingerprint == fp && now.Before(rec.ExpiresAt):
@@ -388,6 +411,259 @@ func (te *ToolExecutor) rememberShared(ctx context.Context, channel, sessionID, 
 			"yet. To confirm, the user must reply with exactly one of these phrases: " +
 			acceptedSharePhrasesText() + ". Relay this to the user and wait for them to type " +
 			"it; do not claim the memory was saved."}
+	}
+}
+
+// rememberSharedGranted is reached once authorizeSharedWrite has granted (the
+// speaker's acknowledgement is on record). It is where slice 4 lives.
+//
+// When the shared WRITE path is not fully wired — no NED gate, no pipeline, no
+// audit sink, or no active project — it falls back UNCHANGED to the slice-3
+// terminal (rememberSharedAuthorized: audit + one-shot delete + "not built"),
+// so a sqlite dev daemon or a partial deployment behaves exactly as slice 3
+// did and the existing slice-3 tests still hold.
+//
+// When it IS fully wired it runs the pre-commit NED gate on the RAW content
+// BEFORE any DB write (design D6.1, C1): a block/error verdict returns a
+// refusal with ZERO rows written and leaves the pending confirmation in place;
+// a proceed verdict carries the token the write path requires.
+func (te *ToolExecutor) rememberSharedGranted(
+	ctx context.Context,
+	rec *persistence.ChatMemoryWriteConfirmation,
+	channel, sessionID, activeProject, content string,
+	now time.Time,
+) ToolResult {
+	if te.sharedNED == nil || te.chatMemory == nil || te.memoryAudit == nil || activeProject == "" {
+		// Not fully wired — preserve the slice-3 terminal exactly.
+		return te.rememberSharedAuthorized(ctx, rec, now)
+	}
+
+	// NED runs on the raw content BEFORE anything is written. A block or error
+	// therefore leaves zero rows (the C1 orphan case is designed out) and the
+	// pending confirmation stays so the user can rephrase and try again.
+	decision := te.sharedNED.Screen(ctx, activeProject, content)
+	switch decision.Verdict {
+	case ned.VerdictBlock:
+		return ToolResult{Content: sharedNEDBlockRefusal(decision.BlockedPersons)}
+	case ned.VerdictError:
+		te.logger.Warn().Err(decision.Err).Str("project", activeProject).
+			Msg("remember: NED gate errored on a shared write — failing closed")
+		return ToolResult{Content: sharedNEDErrorRefusal()}
+	}
+
+	// Proceed: persist, link resolved third parties, audit, then consume the
+	// pending row. The token proves this went through the gate (I3).
+	return te.rememberSharedWrite(ctx, rec, channel, sessionID, activeProject, content,
+		now, decision.Authorization(), decision.MatchedEntityIDs)
+}
+
+// rememberSharedWrite persists an authorized, NED-cleared shared deposit.
+//
+// The `auth ned.SharedWriteAuthorization` parameter is the type-level
+// guardrail (design I3): the token can only be minted by ned.Gate on a proceed
+// verdict, so this function CANNOT be called — cannot even be compiled into a
+// caller — without a shared write having gone through the NED gate first.
+// Personal scope uses rememberPersonal, which takes no token and never runs
+// NED. The defensive Granted() check is belt-and-braces; the real guarantee is
+// that no other package can construct a granted token.
+//
+// Ordering: IngestChatMemory (create artifact → RunStandardGates → IngestText →
+// backfill) → link resolved third-party subjects (D4.1) → audit → one-shot
+// delete. A link failure compensates by deleting the just-written chunk (D4.1a)
+// so no chunk carrying a resolved third party is left without a
+// data_subject_links row (a silent Art-17 gap).
+func (te *ToolExecutor) rememberSharedWrite(
+	ctx context.Context,
+	rec *persistence.ChatMemoryWriteConfirmation,
+	channel, sessionID, activeProject, content string,
+	now time.Time,
+	auth ned.SharedWriteAuthorization,
+	matchedEntityIDs []string,
+) ToolResult {
+	if !auth.Granted() {
+		// Unreachable in practice (the caller passes a proceed-minted token);
+		// present so the guardrail also holds at runtime, not only at compile time.
+		return ToolResult{Content: "I couldn't authorize that shared write. Nothing has been saved."}
+	}
+
+	res, err := te.chatMemory.IngestChatMemory(ctx, activeProject, channel, sessionID, content)
+	if err != nil {
+		te.logger.Warn().Err(err).Str("project", activeProject).Str("channel", channel).
+			Msg("remember: shared IngestChatMemory failed")
+		return ToolResult{Content: "I hit a temporary problem saving that to shared memory, so nothing " +
+			"was kept and your confirmation still stands. Tell the user there was a problem and to try again."}
+	}
+	if res.Stats.Admitted == 0 {
+		return ToolResult{Content: "I couldn't keep that: the memory gates filtered it (it may be a " +
+			"duplicate of something already in shared memory, too short, or contain a secret). Nothing was kept."}
+	}
+
+	// Link every resolved third party to every chunk (D4.1). A resolved person
+	// carried into a shared chunk with no link is a silent Art-17 gap, so a link
+	// failure compensates the whole write away (D4.1a).
+	if len(matchedEntityIDs) > 0 {
+		if linkErr := te.linkKGEntitiesToChunks(ctx, matchedEntityIDs, activeProject, res.ChunkIDs); linkErr != nil {
+			if delErr := te.chatMemory.DeleteChatMemory(ctx, activeProject, res.ArtifactID); delErr != nil {
+				te.logger.Error().Err(delErr).Str("project", activeProject).Str("artifact", res.ArtifactID).
+					Msg("remember: COMPENSATION delete failed after shared link error — an unlinked chat_memory chunk may persist")
+			}
+			chatMemoryCompensationDeletes.Inc()
+			te.logger.Warn().Err(linkErr).Str("project", activeProject).
+				Msg("remember: shared data-subject link failed; compensated by deleting the chunk")
+			return ToolResult{Content: "I couldn't record who this shared memory concerns, so I did NOT keep " +
+				"it (a memory that can't be tied to the people in it can't be erased on request). Tell the user " +
+				"there was a temporary problem and to try again."}
+		}
+	}
+
+	// Accountability BEFORE consuming the pending row (§5.3.3). If the audit
+	// cannot be written we cannot leave a persisted-but-unaccounted shared
+	// chunk, so compensate it away and keep the pending row for a retry.
+	ackAt := now
+	if rec.AcknowledgedAt != nil {
+		ackAt = *rec.AcknowledgedAt
+	}
+	if auditErr := te.memoryAudit.Record(ctx, &persistence.ChatMemoryWriteAudit{
+		Channel:            rec.Channel,
+		SessionID:          rec.SessionID,
+		ContentFingerprint: rec.ContentFingerprint,
+		Scope:              rec.Scope,
+		OperatorID:         rec.OperatorID,
+		ProposedAt:         rec.ProposedAt,
+		AcknowledgedAt:     ackAt,
+		GrantedAt:          now,
+	}); auditErr != nil {
+		if delErr := te.chatMemory.DeleteChatMemory(ctx, activeProject, res.ArtifactID); delErr != nil {
+			te.logger.Error().Err(delErr).Str("project", activeProject).Str("artifact", res.ArtifactID).
+				Msg("remember: COMPENSATION delete failed after audit error — an unaudited chat_memory chunk may persist")
+		}
+		chatMemoryCompensationDeletes.Inc()
+		return ToolResult{Content: "The user's confirmation is valid, but I couldn't write the required " +
+			"audit record, so I did NOT keep the memory. Tell the user there was a temporary problem and to try again."}
+	}
+
+	// One-shot: remove the pending row so a second remember() for the same
+	// content finds nothing and cannot re-authorize.
+	if err := te.memoryConfirms.Delete(ctx, rec.Channel, rec.SessionID); err != nil {
+		te.logger.Warn().Err(err).Str("channel", rec.Channel).
+			Msg("remember: shared write persisted+audited but pending-row delete failed")
+		return ToolResult{Content: "The shared memory was saved and recorded, but I couldn't clear the " +
+			"pending confirmation. Do not retry; tell the user it is handled."}
+	}
+
+	return ToolResult{Content: "Saved to SHARED project memory, readable by everyone in this project — " +
+		"kept for about 90 days as low-confidence context, and anyone it names who is known to the project " +
+		"is linked so an erasure request for them would find it. Tell the user it was saved."}
+}
+
+// linkKGEntitiesToChunks records a data-subject link for every resolved
+// third-party entity (matchID = a knowledge_entities row id) against every
+// just-written chunk, via the first production binder BindKGExtraction (D4.1).
+// It reuses an existing subject when the kg_entity identifier is already known
+// and otherwise creates one, at the SourceKGExtraction confidence ceiling.
+//
+// Returns an error (which the caller compensates on) when the linker is not
+// wired but there ARE third parties to link — a shared chunk naming a resolved
+// person MUST be linked, so "no linker" is a failure here, not a skip.
+func (te *ToolExecutor) linkKGEntitiesToChunks(ctx context.Context, matchIDs []string, projectID string, chunkIDs []string) error {
+	if len(matchIDs) == 0 {
+		return nil
+	}
+	if te.dataSubjects == nil {
+		return fmt.Errorf("no data-subject linker wired, but the deposit names %d resolved subject(s)", len(matchIDs))
+	}
+	seen := map[string]bool{}
+	for _, matchID := range matchIDs {
+		if matchID == "" || seen[matchID] {
+			continue
+		}
+		seen[matchID] = true
+		if err := te.linkOneKGEntity(ctx, matchID, projectID, chunkIDs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// linkOneKGEntity resolves-or-creates the subject for a single matched entity
+// and links it to every chunk. Split out of linkKGEntitiesToChunks so each
+// half stays readable (and under the cognitive-complexity gate).
+func (te *ToolExecutor) linkOneKGEntity(ctx context.Context, matchID, projectID string, chunkIDs []string) error {
+	subjectID, err := te.dataSubjects.FindSubjectByIdentifier(ctx, datasubject.KindKGEntity, matchID)
+	if err != nil {
+		return fmt.Errorf("find subject for %s: %w", matchID, err)
+	}
+	if subjectID == "" {
+		// New subject: create it and record the kg_entity identifier (at the
+		// ceiling, enforced by the binder) so a later deposit reuses it.
+		subjectID = persistence.GenerateID("subject")
+		if err := te.dataSubjects.CreateSubject(ctx, datasubject.Subject{ID: subjectID, DisplayName: "kg:" + matchID}); err != nil {
+			return fmt.Errorf("create subject for %s: %w", matchID, err)
+		}
+		idOnly, err := datasubject.BindKGExtraction(matchID, "", projectID, datasubject.ConfidencePossible)
+		if err != nil {
+			return fmt.Errorf("bind identifier for %s: %w", matchID, err)
+		}
+		for _, id := range idOnly.Identifiers {
+			if err := te.dataSubjects.AddIdentifier(ctx, subjectID, id); err != nil {
+				return fmt.Errorf("add identifier for %s: %w", matchID, err)
+			}
+		}
+	}
+	for _, cid := range chunkIDs {
+		b, err := datasubject.BindKGExtraction(matchID, cid, projectID, datasubject.ConfidencePossible)
+		if err != nil {
+			return fmt.Errorf("bind link for %s/%s: %w", matchID, cid, err)
+		}
+		for _, l := range b.Links {
+			if err := te.dataSubjects.AddLink(ctx, subjectID, l); err != nil {
+				return fmt.Errorf("add link for %s/%s: %w", matchID, cid, err)
+			}
+		}
+	}
+	return nil
+}
+
+// sharedNEDBlockRefusal is the §6.2.1 refusal for a `new`/`ambiguous` verdict:
+// it NAMES the person(s) detected (hiding the name forces the user to guess
+// what tripped the gate) and offers the three concrete paths.
+func sharedNEDBlockRefusal(persons []string) string {
+	who := "someone"
+	if named := namedList(persons); named != "" {
+		who = named
+	}
+	return "I can't save that to shared memory: it names " + who + ", and I can't link them to a known " +
+		"person in this project, so an erasure request for them later would not find this. You can: rephrase " +
+		"it without naming them, ask me to save it to your personal profile instead, or route it through a " +
+		"task so it gets reviewed before it lands. Nothing has been saved. Relay this to the user."
+}
+
+// sharedNEDErrorRefusal is the fail-closed refusal (D6.3) — distinct from a
+// block: NED could not run, so we could not verify who the note names.
+func sharedNEDErrorRefusal() string {
+	return "I couldn't verify who that shared note might name (the check failed), so I did NOT save it — " +
+		"on shared memory I fail safe rather than risk storing something about a person we can't later erase. " +
+		"Tell the user to try again in a moment, or to save it to their personal profile instead. Nothing has been saved."
+}
+
+// namedList renders a person list for the refusal: "Alice", "Alice and Bob",
+// or "Alice, Bob and Carol". Empty/blank names are dropped.
+func namedList(persons []string) string {
+	cleaned := make([]string, 0, len(persons))
+	for _, p := range persons {
+		if p = strings.TrimSpace(p); p != "" {
+			cleaned = append(cleaned, p)
+		}
+	}
+	switch len(cleaned) {
+	case 0:
+		return ""
+	case 1:
+		return cleaned[0]
+	case 2:
+		return cleaned[0] + " and " + cleaned[1]
+	default:
+		return strings.Join(cleaned[:len(cleaned)-1], ", ") + " and " + cleaned[len(cleaned)-1]
 	}
 }
 

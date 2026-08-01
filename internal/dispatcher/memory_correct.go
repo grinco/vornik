@@ -24,6 +24,10 @@ type MemoryCorrector interface {
 	// so it passes empty; future per-request context plumbing
 	// can supply the active scope.
 	InsertCorrection(ctx context.Context, projectID, content, repoScope string) (string, error)
+	// ForgetByID deterministically soft-evicts one chunk by id,
+	// project-scoped. Returns the evicted chunk's preview, or nil when
+	// the id resolves to no chunk in the project. Backs memory_forget.
+	ForgetByID(ctx context.Context, projectID, chunkID string) (*memory.RefutedChunk, error)
 }
 
 // memoryCorrectName is the LLM-visible tool name.
@@ -129,7 +133,12 @@ func (te *ToolExecutor) memoryCorrect(ctx context.Context, argsJSON, activeProje
 
 	var b strings.Builder
 	if len(refuted) == 0 {
-		fmt.Fprintf(&b, "No memory chunks matched the wrong claim %q in project %s — nothing refuted.\n", args.WrongClaim, project)
+		// Zero refutes covers two cases the operator can't tell apart and
+		// shouldn't have to: no chunk matched at all, OR chunks matched
+		// but none confidently enough to clear the refute floor. Either
+		// way nothing was down-weighted — say so plainly and do NOT imply
+		// an eviction. The correction is still stored below.
+		fmt.Fprintf(&b, "No existing memory chunk matched the wrong claim %q confidently enough to refute in project %s — nothing was down-weighted. (If you know the exact stale chunk, use memory_search then memory_forget on its id.)\n", args.WrongClaim, project)
 	} else {
 		fmt.Fprintf(&b, "Refuted %d memory chunk(s) for %q in project %s:\n", len(refuted), args.WrongClaim, project)
 		for i, r := range refuted {

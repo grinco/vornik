@@ -327,6 +327,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `memory.retrieval_routing.max_rounds` | int | Hard cap on verdict-predicated widen rounds (0 = default 3). |
 | `memory.retrieval_routing.widen_enabled` | bool | Enable the verdict-predicated DB widen (default true; set false for verdict-only). |
 | `memory.retrieval_routing.enabled` | bool | Master switch for confidence-based retrieval routing (default true; set false to disable the feature entirely). |
+| `memory.min_refute_score` | float | Minimum hybrid-search (RRF) score a chunk must reach before memory_correct's claim search will refute it (0 = default 0.05). Guards against refuting an unrelated chunk on a weak claim match. |
 | `memory.embedding_model` | string | Embedding model name. Required when enabled. |
 | `memory.embedding_dimension` | int | Vector dimension produced by the model. |
 | `memory.embedding_endpoint` | string | Override endpoint for embedding requests. |

@@ -639,7 +639,7 @@ func toolStatusEmoji(name string) string {
 		return "🔌"
 	}
 	switch name {
-	case "memory_search", "memory_correct":
+	case "memory_search", "memory_correct", "memory_forget":
 		return "🧠"
 	case "create_task":
 		return "📋"
@@ -693,6 +693,8 @@ func humanizeToolName(name string) string {
 		return "searching memory"
 	case "memory_correct":
 		return "correcting memory"
+	case "memory_forget":
+		return "evicting memory chunk"
 	case "summarize_thread":
 		return "summarizing thread"
 	case "get_conversation_window":

@@ -1,10 +1,14 @@
 package service
 
 import (
+	"context"
+
 	"vornik.io/vornik/internal/dispatcher"
 	"vornik.io/vornik/internal/hallucination"
 	"vornik.io/vornik/internal/intentjudge"
 	"vornik.io/vornik/internal/memory"
+	"vornik.io/vornik/internal/memory/graph"
+	"vornik.io/vornik/internal/memory/ned"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/postgres"
 	"vornik.io/vornik/internal/registry"
@@ -151,6 +155,10 @@ func (c *Container) initDispatcher() {
 		// instead of scheduling a research task for known topics.
 		opts = append(opts, dispatcher.WithMemorySearcher(c.memoryManager.Searcher))
 		corrector := memory.NewCorrector(c.memoryManager.Repository(), c.memoryManager.Searcher)
+		// Confidence floor for the fuzzy claim-refute path (0 → the
+		// package default). Guards against a weak "wrong claim" match
+		// refuting an unrelated chunk (incident 2026-07-31).
+		corrector.MinRefuteScore = c.Config.Memory.MinRefuteScore
 		opts = append(opts, dispatcher.WithMemoryCorrector(corrector))
 		// Knowledge-graph overlay on memory_search (LLD §6.2). Opt-in:
 		// when the KG repos aren't wired the searcher is nil and the
@@ -340,5 +348,50 @@ func (c *Container) wireChatMemoryWrite() {
 
 	if c.memoryPipeline != nil && c.DB != nil && c.Config.Database.Driver == "postgres" {
 		c.Dispatcher.SetChatMemoryWriter(c.memoryPipeline, postgres.NewDataSubjectRepository(c.DB))
+		// The shared-scope pre-commit NED gate (slice 4, §6). It needs the same
+		// extractor/resolver the KG worker builds (startGraphWorker) plus its
+		// OWN billing wiring (LLMUsage + Pricing) so its extract/resolve spend
+		// lands under chat_remember_ned rather than going unbilled — the
+		// reranker/distiller failure class (D6.4). Postgres-only for the same
+		// reason as the writer: the third-party data-subject link is postgres-only.
+		if c.repos != nil && c.repos.KnowledgeEntities != nil && c.ChatClient != nil {
+			c.Dispatcher.SetChatMemoryNED(c.buildChatMemoryNED())
+		}
 	}
+}
+
+// buildChatMemoryNED constructs the shared-scope NED gate, mirroring
+// startGraphWorker's extractor/resolver construction (same models, catalog
+// repo, and embedder) but with its own billed call path.
+func (c *Container) buildChatMemoryNED() *ned.Gate {
+	cfg := c.Config.Memory.Graph
+	extractorModel := cfg.ExtractorModel
+	if extractorModel == "" {
+		extractorModel = "openai.gpt-oss-20b-1:0"
+	}
+	resolverModel := cfg.ResolverModel
+	if resolverModel == "" {
+		resolverModel = "openai.gpt-oss-20b-1:0"
+	}
+
+	extractor := graph.NewExtractor(c.ChatClient, extractorModel)
+	if c.memoryManager != nil && c.memoryManager.ResponseCache != nil {
+		extractor.Cache = c.memoryManager.ResponseCache
+	}
+	var embedFn graph.EmbedFn
+	if c.memoryManager != nil && c.memoryManager.Embedder != nil {
+		embedFn = func(ctx context.Context, texts []string) ([][]float32, error) {
+			return c.memoryManager.Embedder.Embed(ctx, texts)
+		}
+	}
+	resolver := graph.NewResolver(c.ChatClient, resolverModel, c.repos.KnowledgeEntities, embedFn)
+
+	g := &ned.Gate{Extractor: extractor, Resolver: resolver}
+	if c.repos.LLMUsage != nil {
+		g.Usage = c.repos.LLMUsage
+	}
+	if c.pricingTable != nil {
+		g.Pricing = c.pricingTable
+	}
+	return g
 }

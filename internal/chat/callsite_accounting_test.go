@@ -66,6 +66,15 @@ var callSiteRegistry = map[string]callSiteAccounting{
 		accounted: true,
 		note:      "Pipeline.LLMUsage + Pricing, wired container_autonomy.go; one row per stage.",
 	},
+	"chat.remember.ned": {
+		accounted: true,
+		note: "ned.Gate.Usage + Pricing (task_llm_usage source chat_remember_ned), wired " +
+			"container_dispatcher.go buildChatMemoryNED; one row per billed extract/resolve. " +
+			"The gate stamps this label but graph.completeWithRetry overwrites it with " +
+			"memory.graph for the actual provider call, so — like the reranker/distiller — a " +
+			"direct synchronous NED caller inherits a classified label yet would record no spend " +
+			"unless it billed itself; ned.Gate.record does (chat memory-write design D6.4).",
+	},
 	"memory.reranker": {
 		accounted: true,
 		note: "LLMReranker.LLMUsage + Pricing via WithRerankerUsage, wired container_scheduler.go. " +

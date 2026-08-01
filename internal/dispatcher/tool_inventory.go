@@ -81,6 +81,7 @@ func (a *Agent) InventoryTools() []ToolInfo {
 		"list_apis":      {"APIClient", te != nil && te.apiClient != nil && implementsProviderLister(te.apiClient)},
 		"memory_search":  {"MemorySearcher", a.memory != nil},
 		"memory_correct": {"MemoryCorrector", a.memoryCorrector != nil},
+		"memory_forget":  {"MemoryCorrector", a.memoryCorrector != nil},
 		"set_reminder":   {"ReminderRepository", te != nil && te.reminderRepo != nil},
 		"cancel_reminder": {
 			"ReminderRepository",

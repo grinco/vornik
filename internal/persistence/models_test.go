@@ -237,6 +237,10 @@ func TestAdditionalModelConstants(t *testing.T) {
 		assert.Equal(t, "dispatcher", TaskLLMUsageSourceDispatcher)
 		assert.Equal(t, "judge", TaskLLMUsageSourceJudge)
 		assert.Equal(t, "post_mortem", TaskLLMUsageSourcePostMortem)
+		// chat `remember` shared-scope NED gate (chat memory-write design D6.4):
+		// distinct from kg_extraction so the pre-commit gate's spend is
+		// attributable to the feature rather than folded into the KG worker.
+		assert.Equal(t, "chat_remember_ned", TaskLLMUsageSourceChatRememberNED)
 	})
 }
 

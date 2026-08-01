@@ -32,6 +32,10 @@ func (s *stubMemoryCorrector) InsertCorrection(_ context.Context, _, _, _ string
 	return "", nil
 }
 
+func (s *stubMemoryCorrector) ForgetByID(_ context.Context, _, _ string) (*memory.RefutedChunk, error) {
+	return nil, nil
+}
+
 type stubRescheduler struct{ called bool }
 
 func (s *stubRescheduler) Wake() { s.called = true }

@@ -134,12 +134,15 @@ func TestEmbeddingCacheStatsAdapter_NilReceiverSafe(t *testing.T) {
 func TestNewMemoryCompanionAdapter_RequiresAllDeps(t *testing.T) {
 	// Any missing dependency yields nil so container_http.go skips the
 	// half-wired tool surface rather than serving a tool that panics.
-	assert.Nil(t, newMemoryCompanionAdapter(nil, &memory.Pipeline{}, &memory.Repository{}))
-	assert.Nil(t, newMemoryCompanionAdapter(&memory.Searcher{}, nil, &memory.Repository{}))
-	assert.Nil(t, newMemoryCompanionAdapter(&memory.Searcher{}, &memory.Pipeline{}, nil))
+	assert.Nil(t, newMemoryCompanionAdapter(nil, &memory.Pipeline{}, &memory.Repository{}, 0))
+	assert.Nil(t, newMemoryCompanionAdapter(&memory.Searcher{}, nil, &memory.Repository{}, 0))
+	assert.Nil(t, newMemoryCompanionAdapter(&memory.Searcher{}, &memory.Pipeline{}, nil, 0))
 
-	// All three present → a live adapter.
-	require.NotNil(t, newMemoryCompanionAdapter(&memory.Searcher{}, &memory.Pipeline{}, &memory.Repository{}))
+	// All three present → a live adapter. Non-zero floor confirms the
+	// operator override is carried onto the adapter struct.
+	adapter := newMemoryCompanionAdapter(&memory.Searcher{}, &memory.Pipeline{}, &memory.Repository{}, 0.12)
+	require.NotNil(t, adapter)
+	assert.Equal(t, 0.12, adapter.(*memoryCompanionAdapter).minRefuteScore)
 }
 
 func TestMemoryCompanionAdapter_NilGuardsReturnEmpty(t *testing.T) {

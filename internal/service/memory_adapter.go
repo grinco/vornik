@@ -32,6 +32,13 @@ type memoryCompanionAdapter struct {
 	s    *memory.Searcher
 	p    *memory.Pipeline
 	repo *memory.Repository
+	// minRefuteScore is the operator-configured confidence floor for
+	// the fuzzy claim-refute path (memory.min_refute_score). Zero falls
+	// back to the package default (memory.DefaultMinRefuteScore) inside
+	// the Corrector. Plumbed here so the companion memory_correct MCP
+	// tool — the path incident 2026-07-31 fired on — honours an operator
+	// override, not just the built-in default.
+	minRefuteScore float64
 }
 
 // newMemoryCompanionAdapter wires the companion adapter. All three
@@ -39,11 +46,11 @@ type memoryCompanionAdapter struct {
 // degrade one of the tools at runtime, so the constructor returns
 // nil when any is missing and the daemon's container_http.go skips
 // api.WithMemoryCompanionAdapter entirely.
-func newMemoryCompanionAdapter(s *memory.Searcher, p *memory.Pipeline, repo *memory.Repository) api.MemoryCompanionAdapter {
+func newMemoryCompanionAdapter(s *memory.Searcher, p *memory.Pipeline, repo *memory.Repository, minRefuteScore float64) api.MemoryCompanionAdapter {
 	if s == nil || p == nil || repo == nil {
 		return nil
 	}
-	return &memoryCompanionAdapter{s: s, p: p, repo: repo}
+	return &memoryCompanionAdapter{s: s, p: p, repo: repo, minRefuteScore: minRefuteScore}
 }
 
 // Recall delegates to memory.Searcher.Search. v1 ignores
@@ -314,6 +321,12 @@ func (a *memoryCompanionAdapter) Correct(ctx context.Context, in api.CorrectInpu
 		})
 	}
 	corrector := memory.NewCorrector(a.repo, a.s)
+	// Operator confidence floor for the fuzzy claim-refute path (0 → the
+	// package default). Guards the companion memory_correct tool against
+	// a weak claim match refuting an unrelated chunk (incident
+	// 2026-07-31). Irrelevant to the by-id RefuteByIDs branch, which
+	// never scores.
+	corrector.MinRefuteScore = a.minRefuteScore
 	var out api.CorrectResult
 	if len(in.ChunkIDs) > 0 {
 		// Surgical by-id refute — flips exactly the named chunks,

@@ -613,6 +613,7 @@ func (c *Container) initHTTPServer() error {
 			c.memoryManager.Searcher,
 			c.memoryPipeline,
 			c.memoryManager.Repository(),
+			c.Config.Memory.MinRefuteScore,
 		); adapter != nil {
 			apiOpts = append(apiOpts, api.WithMemoryCompanionAdapter(adapter))
 		}

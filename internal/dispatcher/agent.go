@@ -18,6 +18,7 @@ import (
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/hallucination"
+	"vornik.io/vornik/internal/memory/ned"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/ratelimit"
@@ -232,6 +233,10 @@ type Agent struct {
 	// SetChatMemoryWriter.
 	chatMemory   ChatMemoryWriter
 	dataSubjects DataSubjectLinker
+	// sharedNED (optional) is the shared-scope pre-commit named-entity
+	// resolution gate (slice 4, §6). Nil leaves shared writes reporting
+	// "not built"; personal scope never touches it. See SetChatMemoryNED.
+	sharedNED *ned.Gate
 	// projectWorkspacePath — base dir for per-project workspaces;
 	// lets the ToolExecutor allow-list the per-project uploads/ dir
 	// channel attachments land in. See ToolExecutor.projectWorkspacePath.
@@ -554,6 +559,7 @@ func NewAgent(
 		memoryAudit:                  a.memoryAudit,
 		chatMemory:                   a.chatMemory,
 		dataSubjects:                 a.dataSubjects,
+		sharedNED:                    a.sharedNED,
 		projectWorkspacePath:         a.projectWorkspacePath,
 		attachmentAutoExtractor:      a.attachmentAutoExtractor,
 		attachmentAutoExtractTimeout: 60 * time.Second,

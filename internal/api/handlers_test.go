@@ -603,6 +603,9 @@ func (m *mockLLMUsageRepo) AggregateByRoleModel(context.Context, time.Time, time
 func (m *mockLLMUsageRepo) AggregateByProject(context.Context, time.Time, time.Time, int) ([]persistence.ProjectSpend, error) {
 	return nil, nil
 }
+func (m *mockLLMUsageRepo) AggregateByAPIKey(context.Context, time.Time, time.Time, int, string) ([]persistence.APIKeySpend, error) {
+	return nil, nil
+}
 func (m *mockLLMUsageRepo) AggregateBySource(context.Context, time.Time, time.Time, string) ([]persistence.SourceSpend, error) {
 	return nil, nil
 }

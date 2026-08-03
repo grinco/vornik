@@ -87,6 +87,7 @@ func TestUsageRecord_HappyPath_ArgsAndSQL(t *testing.T) {
 			"worker", "claude-opus-4-7", int64(100), int64(50), 2,
 			1.23, persistence.TaskLLMUsageSourceWorkflowStep, "sess-1", recorded,
 			int64(0), int64(0), // cache_creation_tokens, cache_read_tokens (phase A)
+			nil, // api_key_id (migration 149)
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -124,6 +125,7 @@ func TestUsageRecord_DefaultsSourceAndRecordedAt(t *testing.T) {
 			0.0, persistence.TaskLLMUsageSourceWorkflowStep, nil,
 			recentTimeMatcher{notBefore: before},
 			int64(0), int64(0), // cache_creation_tokens, cache_read_tokens (phase A)
+			nil, // api_key_id (migration 149)
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -166,6 +168,7 @@ func TestUsageRecord_NullableStringEmptyAndNil(t *testing.T) {
 			nil, // session_id (nil pointer -> NULL)
 			sqlmock.AnyArg(),
 			int64(0), int64(0), // cache_creation_tokens, cache_read_tokens (phase A)
+			nil, // api_key_id (migration 149)
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -280,6 +283,7 @@ func TestUsageUpsert_HappyPath_ArgsAndSQL(t *testing.T) {
 			"worker", "claude-opus", int64(200), int64(75), 3,
 			2.5, persistence.TaskLLMUsageSourceWorkflowStep, nil, recorded,
 			int64(0), int64(0),
+			nil, // api_key_id (migration 149)
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -314,6 +318,7 @@ func TestUsageUpsert_DefaultsSourceAndRecordedAt(t *testing.T) {
 			0.0, persistence.TaskLLMUsageSourceWorkflowStep, nil,
 			recentTimeMatcher{notBefore: before},
 			int64(0), int64(0),
+			nil, // api_key_id (migration 149)
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

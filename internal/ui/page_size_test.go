@@ -540,6 +540,9 @@ func (s *spendRepoStub) AggregateByRoleModel(context.Context, time.Time, time.Ti
 func (s *spendRepoStub) AggregateByProject(context.Context, time.Time, time.Time, int) ([]persistence.ProjectSpend, error) {
 	return nil, nil
 }
+func (s *spendRepoStub) AggregateByAPIKey(context.Context, time.Time, time.Time, int, string) ([]persistence.APIKeySpend, error) {
+	return nil, nil
+}
 func (s *spendRepoStub) AggregateBySource(context.Context, time.Time, time.Time, string) ([]persistence.SourceSpend, error) {
 	return nil, nil
 }

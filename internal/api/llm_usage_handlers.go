@@ -106,9 +106,17 @@ func (s *Server) IngestLLMUsage(w http.ResponseWriter, r *http.Request) {
 	// When task_id is supplied, confirm the task belongs to the
 	// claimed project. Mismatched project / task tuples would mean
 	// either a bug or a tampering attempt; either way reject rather
-	// than upsert into the wrong project's cost ledger.
+	// than upsert into the wrong project's cost ledger. Keep the
+	// fetched task around (rather than re-fetching below) so its
+	// CreatedByAPIKeyID can be copied onto the usage row — this
+	// endpoint is only ever called by the daemon-injected agent
+	// container key (see doc comment above), never the original
+	// caller's key, so the row's attribution has to come from the
+	// task, not from this request's own auth context.
+	var task *persistence.Task
 	if req.TaskID != "" && s.taskRepo != nil {
-		task, err := s.taskRepo.Get(r.Context(), req.TaskID)
+		var err error
+		task, err = s.taskRepo.Get(r.Context(), req.TaskID)
 		if err == nil && task != nil && task.ProjectID != req.ProjectID {
 			respondError(w, http.StatusForbidden, "FORBIDDEN",
 				"task_id belongs to a different project than project_id")
@@ -147,6 +155,9 @@ func (s *Server) IngestLLMUsage(w http.ResponseWriter, r *http.Request) {
 		Iterations:          req.Iterations,
 		CostUSD:             req.CostUSD,
 		Source:              persistence.TaskLLMUsageSourceWorkflowStep,
+	}
+	if task != nil {
+		row.APIKeyID = task.CreatedByAPIKeyID
 	}
 
 	if err := s.llmUsageRepo.Upsert(r.Context(), row); err != nil {

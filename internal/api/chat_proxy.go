@@ -564,6 +564,9 @@ func (s *Server) recordChatAPIUsage(ctx context.Context, r *http.Request, model 
 		Source:              persistence.TaskLLMUsageSourceExternalAPI,
 		SessionID:           &sessionID,
 		RecordedAt:          time.Now().UTC(),
+		// external_api has no task to inherit attribution from, but it's a
+		// genuine external-caller HTTP request — resolve the key directly.
+		APIKeyID: strPtr(APIKeyIDFromContext(ctx)),
 	}
 	if err := s.llmUsageRepo.Record(ctx, row); err != nil {
 		s.logger.Warn().Err(err).

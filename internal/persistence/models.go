@@ -240,6 +240,14 @@ type Task struct {
 	// "off" is expressed as NULL, never 0, killing the NULL/0 ambiguity.
 	// Operator/admin-only; never LLM-settable. See §3.1.
 	BudgetUSD *float64 `json:"budget_usd,omitempty"`
+
+	// CreatedByAPIKeyID is the api_keys.id that authenticated this task's
+	// creation, when known. Only set by the two creation paths that run
+	// under DB-backed API-key auth (REST POST /tasks via taskcreate.Creator,
+	// and the companion MCP delegate) — nil for chat/webhook/autonomy/
+	// executor-spawned tasks, which have no key behind them. Powers the
+	// spend-per-API-key UI (migration 148).
+	CreatedByAPIKeyID *string `json:"created_by_api_key_id,omitempty"`
 }
 
 // EndedUnsuccessfully reports whether the task has reached a terminal
@@ -1681,6 +1689,16 @@ type TaskLLMUsage struct {
 	// counter once pricing.yaml gains cache rates.
 	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
+
+	// APIKeyID is the api_keys.id attributed to this usage row, when known.
+	// For task-bound sources (workflow_step, judge, post_mortem) it's copied
+	// from the recording task's CreatedByAPIKeyID; for the task-less
+	// external_api source it's resolved directly from the request context.
+	// Nil for every other source (dispatcher, memory background workers,
+	// project wizard, UI authoring assist, fix-it doctor) — rendered as
+	// "Unattributed" on the spend dashboard. Powers AggregateByAPIKey
+	// (migration 149).
+	APIKeyID *string `json:"api_key_id,omitempty"`
 }
 
 // TaskLLMUsage.Source values.

@@ -175,6 +175,7 @@ func (e *Explainer) Generate(ctx context.Context, taskID string, forceRefresh bo
 			CostUSD:          cost,
 			Source:           persistence.TaskLLMUsageSourcePostMortem,
 			RecordedAt:       time.Now().UTC(),
+			APIKeyID:         task.CreatedByAPIKeyID,
 		}
 		if err := e.LLMUsage.Record(ctx, usage); err != nil {
 			e.Logger.Warn().Err(err).Str("task_id", task.ID).Msg("postmortem: usage persist failed (summary already recorded)")

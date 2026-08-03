@@ -88,6 +88,9 @@ func (s *stubLLMUsageRepo) AggregateByRoleModel(_ context.Context, since, _ time
 func (s *stubLLMUsageRepo) AggregateByProject(context.Context, time.Time, time.Time, int) ([]persistence.ProjectSpend, error) {
 	return nil, nil
 }
+func (s *stubLLMUsageRepo) AggregateByAPIKey(context.Context, time.Time, time.Time, int, string) ([]persistence.APIKeySpend, error) {
+	return nil, nil
+}
 func (s *stubLLMUsageRepo) AggregateBySource(context.Context, time.Time, time.Time, string) ([]persistence.SourceSpend, error) {
 	return nil, nil
 }

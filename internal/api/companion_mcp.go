@@ -932,11 +932,12 @@ func (s *Server) companionToolDelegate(ctx context.Context, key *persistence.API
 	}
 
 	task, err := s.taskCreator.Create(ctx, taskcreate.Params{
-		ProjectID:      key.ProjectID,
-		TaskType:       args.TaskType,
-		WorkflowID:     args.Workflow,
-		RawContext:     rawCtx,
-		CreationSource: persistence.TaskCreationSourceCompanion,
+		ProjectID:         key.ProjectID,
+		TaskType:          args.TaskType,
+		WorkflowID:        args.Workflow,
+		RawContext:        rawCtx,
+		CreationSource:    persistence.TaskCreationSourceCompanion,
+		CreatedByAPIKeyID: key.ID,
 	})
 	if err != nil {
 		// Surface taskcreate's typed errors so the host LLM sees a

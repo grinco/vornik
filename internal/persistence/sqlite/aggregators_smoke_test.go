@@ -348,4 +348,53 @@ func TestExecutionRepository_GetRoleQuality(t *testing.T) {
 	}
 }
 
+// TestTaskLLMUsage_AggregateByAPIKey pins the "spend per user" grouping
+// (migration 149): rows attributed to a real API key join against
+// api_keys for the display name/prefix; rows with no api_key_id collapse
+// into one "" (Unattributed) bucket rather than one row per project.
+func TestTaskLLMUsage_AggregateByAPIKey(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	repo := sqlite.NewTaskLLMUsageRepository(db.DB)
+
+	if _, err := db.DB.ExecContext(ctx, `INSERT INTO api_keys
+		(id, project_id, name, key_hash, key_prefix, created_at)
+		VALUES ('akey-1', 'p', 'jnovak/laptop', 'h_akey1', 'vk_abcd', datetime('now'))`); err != nil {
+		t.Fatalf("insert api_keys fixture: %v", err)
+	}
+
+	akey1 := "akey-1"
+	rows := []persistence.TaskLLMUsage{
+		{ID: "u1", ProjectID: "p", StepID: "s1", Role: "coder", Model: "m", CostUSD: 1.0, APIKeyID: &akey1},
+		{ID: "u2", ProjectID: "p", StepID: "s2", Role: "coder", Model: "m", CostUSD: 2.0, APIKeyID: &akey1},
+		{ID: "u3", ProjectID: "p", StepID: "s3", Role: "dispatcher", Model: "m", CostUSD: 0.5}, // no api_key_id
+	}
+	for i := range rows {
+		if err := repo.Record(ctx, &rows[i]); err != nil {
+			t.Fatalf("Record %s: %v", rows[i].ID, err)
+		}
+	}
+
+	out, err := repo.AggregateByAPIKey(ctx, time.Time{}, time.Time{}, 10, "p")
+	if err != nil {
+		t.Fatalf("AggregateByAPIKey: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("expected 2 buckets (attributed + unattributed), got %d: %+v", len(out), out)
+	}
+	// Cost-sorted descending — the attributed key (3.0) comes first.
+	if out[0].APIKeyID != akey1 || out[0].KeyName != "jnovak/laptop" || out[0].KeyPrefix != "vk_abcd" {
+		t.Errorf("row 0 = %+v, want attributed to akey-1/jnovak/laptop/vk_abcd", out[0])
+	}
+	if out[0].CostUSD != 3.0 || out[0].CallCount != 2 {
+		t.Errorf("row 0 cost/calls = %v/%d, want 3.0/2", out[0].CostUSD, out[0].CallCount)
+	}
+	if out[1].APIKeyID != "" || out[1].KeyName != "" {
+		t.Errorf("row 1 should be the unattributed bucket, got %+v", out[1])
+	}
+	if out[1].CostUSD != 0.5 || out[1].CallCount != 1 {
+		t.Errorf("unattributed cost/calls = %v/%d, want 0.5/1", out[1].CostUSD, out[1].CallCount)
+	}
+}
+
 func int64Ptr(v int64) *int64 { return &v }

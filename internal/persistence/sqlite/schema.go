@@ -82,6 +82,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- (LLD 2026-07-24 §3.1). NULL = inherit project default_task_budget_usd;
     -- when set, always strictly positive (write layer rejects 0).
     budget_usd          REAL,
+    -- Migration 147 parity: API key that authenticated this task's creation,
+    -- when known (REST POST /tasks or the companion MCP delegate). NULL for
+    -- chat/webhook/autonomy/executor-spawned tasks — there is no key behind
+    -- them. Powers the spend-per-API-key UI.
+    created_by_api_key_id TEXT,
     UNIQUE (project_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_project    ON tasks(project_id);
@@ -90,6 +95,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent     ON tasks(parent_task_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_lease_exp  ON tasks(lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_created    ON tasks(created_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_chat_turn  ON tasks(chat_turn_id) WHERE chat_turn_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_created_by_api_key ON tasks(created_by_api_key_id) WHERE created_by_api_key_id IS NOT NULL;
 
 -- ============================================================
 -- executions
@@ -450,10 +456,15 @@ CREATE TABLE IF NOT EXISTS task_llm_usage (
     session_id            TEXT,
     recorded_at           TEXT NOT NULL,
     cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_read_tokens     INTEGER NOT NULL DEFAULT 0
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    -- Migration 148 parity: API key attributed to this usage row (copied
+    -- from the recording task's created_by_api_key_id, or resolved from
+    -- context for task-less external_api calls). NULL = unattributed.
+    api_key_id            TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_llm_usage_project_time ON task_llm_usage(project_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task        ON task_llm_usage(task_id);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_api_key     ON task_llm_usage(api_key_id) WHERE api_key_id IS NOT NULL;
 
 -- ============================================================
 -- budget_reservations — in-flight claims on the LLM hard-cap
@@ -1483,7 +1494,7 @@ CREATE TABLE IF NOT EXISTS instinct_lift (
 CREATE INDEX IF NOT EXISTS idx_step_outcomes_role_error_time
     ON execution_step_outcomes (role, error_class, recorded_at);
 -- ============================================================
--- mcp_oauth_tokens — migration 147 parity
+-- mcp_oauth_tokens — migration 148 parity
 -- (MCP server authentication design §6).
 --
 -- Per-project OAuth service identity for MCP servers.

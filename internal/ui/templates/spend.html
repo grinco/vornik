@@ -406,6 +406,51 @@
             </div>
             {{end}}
 
+            {{/* Spend per API key — the "spend per user" breakdown, where
+                 "user" is the API key that authenticated the call. Rows
+                 with no attributed key collapse into one "Unattributed"
+                 row rather than vanishing. */}}
+            {{if .ByAPIKey}}
+            <div class="glass rounded-xl border border-dark-700 overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-dark-700/60">
+                    <h2 class="text-sm font-semibold text-gray-200">Spend per API key · {{.WindowLabel}}</h2>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="min-w-full text-sm">
+                        <thead><tr class="border-b border-dark-700/60">
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Key</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Calls</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Tokens (in/out)</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider" title="Cache hit ratio = cache_read / (cache_read + prompt_tokens).">Cache</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Cost</th>
+                            <th scope="col" class="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">% of total</th>
+                        </tr></thead>
+                        <tbody class="divide-y divide-dark-700/30">
+                            {{range .ByAPIKey}}
+                            <tr class="hover:bg-dark-700/40">
+                                <td class="px-4 py-1.5">
+                                    {{if .KeyName}}
+                                    <span class="text-gray-300" title="{{.KeyName}}">{{.KeyName}}</span>
+                                    <span class="text-gray-500 font-mono text-xs">{{.KeyPrefix}}…</span>
+                                    {{else}}
+                                    <span class="text-gray-500 italic">Unattributed</span>
+                                    {{end}}
+                                </td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{.CallCount}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{fmtTokens .PromptTokens}} / {{fmtTokens .CompletionTokens}}</td>
+                                <td class="px-4 py-1.5 text-right tabular-nums" title="cache_read tokens / (cache_read + prompt_tokens)">
+                                    {{if gt .CacheReadTokens 0}}<span class="text-emerald-700 dark:text-emerald-300">{{printf "%.0f" .CacheHitRatioPct}}%</span>{{else}}<span class="text-gray-600">—</span>{{end}}
+                                </td>
+                                <td class="px-4 py-1.5 text-right text-accent-300 font-semibold tabular-nums">{{fmtUSD .CostUSD}}</td>
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{printf "%.1f" .PctOfTotal}}%</td>
+                            </tr>
+                            {{end}}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {{end}}
+
             {{/* Phase 1 cohort table. Aggregated from
                  execution_step_outcomes over the active window —
                  one row per (worker role, model) cohort that

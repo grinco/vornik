@@ -712,6 +712,9 @@ func (f *fakeUsageRepo) AggregateByRoleModel(_ context.Context, _, _ time.Time, 
 func (f *fakeUsageRepo) AggregateByProject(_ context.Context, _, _ time.Time, _ int) ([]persistence.ProjectSpend, error) {
 	panic("not used")
 }
+func (f *fakeUsageRepo) AggregateByAPIKey(_ context.Context, _, _ time.Time, _ int, _ string) ([]persistence.APIKeySpend, error) {
+	panic("not used")
+}
 func (f *fakeUsageRepo) AggregateBySource(_ context.Context, _, _ time.Time, _ string) ([]persistence.SourceSpend, error) {
 	panic("not used")
 }

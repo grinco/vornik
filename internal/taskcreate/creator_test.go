@@ -141,6 +141,41 @@ func TestCreate_HappyPath_UsesProjectDefaults(t *testing.T) {
 	}
 }
 
+// TestCreate_CreatedByAPIKeyIDPropagates pins that Params.CreatedByAPIKeyID
+// (resolved by the caller from api.APIKeyIDFromContext) lands on the
+// created task, powering the spend-per-API-key UI. Empty stays nil rather
+// than a pointer to "" — the same ptrIfNonEmpty convention as WorkflowID.
+func TestCreate_CreatedByAPIKeyIDPropagates(t *testing.T) {
+	reg := loadTestRegistry(t)
+	repo := &mocks.MockTaskRepository{}
+	c := New(WithTaskRepository(repo), WithProjectRegistry(reg))
+
+	task, err := c.Create(context.Background(), Params{
+		ProjectID:         "demo",
+		TaskType:          "research",
+		Prompt:            "investigate",
+		CreatedByAPIKeyID: "akey-1",
+	})
+	if err != nil {
+		t.Fatalf("Create returned err: %v", err)
+	}
+	if task.CreatedByAPIKeyID == nil || *task.CreatedByAPIKeyID != "akey-1" {
+		t.Errorf("CreatedByAPIKeyID = %v, want akey-1", task.CreatedByAPIKeyID)
+	}
+
+	task2, err := c.Create(context.Background(), Params{
+		ProjectID: "demo",
+		TaskType:  "research",
+		Prompt:    "investigate",
+	})
+	if err != nil {
+		t.Fatalf("Create returned err: %v", err)
+	}
+	if task2.CreatedByAPIKeyID != nil {
+		t.Errorf("CreatedByAPIKeyID = %v, want nil when unset", task2.CreatedByAPIKeyID)
+	}
+}
+
 func TestCreate_MissingProjectID(t *testing.T) {
 	c := New(WithTaskRepository(&mocks.MockTaskRepository{}))
 	_, err := c.Create(context.Background(), Params{TaskType: "research"})

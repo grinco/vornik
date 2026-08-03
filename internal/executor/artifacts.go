@@ -591,6 +591,7 @@ func (e *Executor) recordLLMUsageFromResult(ctx context.Context, task *persisten
 			CostUSD:             costUSD,
 			Source:              persistence.TaskLLMUsageSourceWorkflowStep,
 			RecordedAt:          time.Now().UTC(),
+			APIKeyID:            task.CreatedByAPIKeyID,
 		}
 		if err := e.llmUsageRepo.Upsert(ctx, entry); err != nil {
 			e.logger.Warn().Err(err).

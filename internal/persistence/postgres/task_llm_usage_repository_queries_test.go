@@ -19,7 +19,7 @@ func usageRow() *sqlmock.Rows {
 		"id", "project_id", "task_id", "execution_id", "step_id",
 		"role", "model", "prompt_tokens", "completion_tokens", "iterations",
 		"cost_usd", "source", "session_id", "recorded_at",
-		"cache_creation_tokens", "cache_read_tokens",
+		"cache_creation_tokens", "cache_read_tokens", "api_key_id",
 	})
 }
 
@@ -36,13 +36,13 @@ func TestUsageList_HappyPath_DefaultFilter(t *testing.T) {
 			"u-1", "p-1", "t-1", "e-1", "s-1",
 			"worker", "claude", int64(100), int64(50), 1,
 			1.0, "workflow_step", "sess-1", recorded,
-			int64(0), int64(0),
+			int64(0), int64(0), nil,
 		).
 		AddRow(
 			"u-2", "p-1", nil, nil, "s-2",
 			"dispatcher", "claude", int64(40), int64(10), 0,
 			0.5, "dispatcher", nil, recorded,
-			int64(0), int64(0),
+			int64(0), int64(0), nil,
 		)
 	mock.ExpectQuery(regexp.QuoteMeta("FROM task_llm_usage WHERE 1=1")).
 		WithArgs(). // no filter args
@@ -208,6 +208,43 @@ func TestUsageAggregateByProject(t *testing.T) {
 	}
 	if out[0].CacheCreationTokens != 120 || out[0].CacheReadTokens != 800 {
 		t.Errorf("cache token columns lost in scan: %+v", out[0])
+	}
+}
+
+// TestUsageAggregateByAPIKey pins the "spend per user" grouping
+// (migration 149): the LEFT JOIN against api_keys resolves name/prefix
+// for attributed rows.
+func TestUsageAggregateByAPIKey(t *testing.T) {
+	repo, mock, cleanup := newUsageRepo(t)
+	defer cleanup()
+
+	since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	until := time.Date(2026, 5, 13, 0, 0, 0, 0, time.UTC)
+
+	rows := sqlmock.NewRows([]string{
+		"api_key_id", "key_name", "key_prefix", "key_project_id",
+		"cost_usd", "call_count", "task_count", "prompt_tokens", "completion_tokens",
+		"cache_creation_tokens", "cache_read_tokens",
+	}).
+		AddRow("akey-1", "jnovak/laptop", "vk_abcd", "p-1", 3.0, int64(2), int64(2), int64(300), int64(150), int64(0), int64(0)).
+		AddRow("", "", "", "", 0.5, int64(1), int64(0), int64(50), int64(20), int64(0), int64(0))
+
+	mock.ExpectQuery(regexp.QuoteMeta("GROUP BY u.api_key_id, k.name, k.key_prefix, k.project_id ORDER BY cost_usd DESC")).
+		WithArgs("p-1", since, until, 25).
+		WillReturnRows(rows)
+
+	out, err := repo.AggregateByAPIKey(context.Background(), since, until, 25, "p-1")
+	if err != nil {
+		t.Fatalf("AggregateByAPIKey: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("expected 2 rows, got %d", len(out))
+	}
+	if out[0].APIKeyID != "akey-1" || out[0].KeyName != "jnovak/laptop" || out[0].KeyPrefix != "vk_abcd" || out[0].CostUSD != 3.0 {
+		t.Errorf("row 0 roundtrip: %+v", out[0])
+	}
+	if out[1].APIKeyID != "" || out[1].KeyName != "" {
+		t.Errorf("row 1 should be the unattributed bucket: %+v", out[1])
 	}
 }
 

@@ -150,6 +150,23 @@ models:
 		assert.InDelta(t, 0.47175, row.CostUSD, 1e-9)
 		assert.Equal(t, persistence.TaskLLMUsageSourceWorkflowStep, row.Source)
 		assert.Nil(t, row.SessionID)
+		assert.Nil(t, row.APIKeyID, "task has no CreatedByAPIKeyID, so the usage row shouldn't either")
+	})
+
+	t.Run("copies API key attribution from the task", func(t *testing.T) {
+		registry := prometheus.NewRegistry()
+		m := NewMetrics(registry)
+		repo := newStubLLMUsageRepo()
+
+		keyID := "akey-1"
+		attributedTask := &persistence.Task{ID: "t2", ProjectID: "p1", CreatedByAPIKeyID: &keyID}
+		e := &Executor{metrics: m, llmUsageRepo: repo, logger: zerolog.Nop()}
+		body := []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"iterations":1}}`)
+		e.recordLLMUsageFromResult(context.Background(), attributedTask, exec, "step_1", "coder", "m", body)
+
+		require.Len(t, repo.rows, 1)
+		require.NotNil(t, repo.rows[0].APIKeyID)
+		assert.Equal(t, "akey-1", *repo.rows[0].APIKeyID)
 	})
 }
 
@@ -216,6 +233,9 @@ func (s *stubLLMUsageRepo) AggregateByRoleModel(_ context.Context, _, _ time.Tim
 // Spend deep-dive aggregations — empty stubs to satisfy the
 // interface; the executor doesn't exercise these.
 func (s *stubLLMUsageRepo) AggregateByProject(_ context.Context, _, _ time.Time, _ int) ([]persistence.ProjectSpend, error) {
+	return nil, nil
+}
+func (s *stubLLMUsageRepo) AggregateByAPIKey(_ context.Context, _, _ time.Time, _ int, _ string) ([]persistence.APIKeySpend, error) {
 	return nil, nil
 }
 func (s *stubLLMUsageRepo) AggregateBySource(_ context.Context, _, _ time.Time, _ string) ([]persistence.SourceSpend, error) {

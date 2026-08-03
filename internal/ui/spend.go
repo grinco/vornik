@@ -108,6 +108,11 @@ type SpendData struct {
 	// renders in this page's layout for one-screen drill-down.
 	TopRoleModels []RoleModelSpendRow
 
+	// Spend per API key — the "spend per user" breakdown (migration 149),
+	// where "user" is the API key that authenticated the call. Rows with
+	// no attributed key collapse into one "Unattributed" bucket.
+	ByAPIKey []APIKeySpendRow
+
 	// Phase 1 signal cohorts — one row per (worker role, model) seen
 	// in step-outcome hallucination signals over the active window.
 	// Distinct from HallucinationRollup, which keys on the judge's
@@ -251,6 +256,27 @@ type RoleModelSpendRow struct {
 	// Cache observability per (role, model). Sourced from the
 	// aggregation query; ratio = cache_read / (cache_read +
 	// prompt_tokens) × 100.
+	CacheCreationTokens int64
+	CacheReadTokens     int64
+	CacheHitRatioPct    float64
+}
+
+// APIKeySpendRow is the "spend per user" leaderboard row, where "user" is
+// the API key that authenticated the call (see persistence.APIKeySpend).
+// KeyName/KeyPrefix are both empty for the "Unattributed" bucket — usage
+// with no api_key_id, which today includes dispatcher chat, memory
+// background workers, project wizard, UI authoring assist, and fix-it
+// doctor traffic (none of those sites have reliable API-key identity).
+type APIKeySpendRow struct {
+	KeyName          string
+	KeyPrefix        string
+	CostUSD          float64
+	CallCount        int
+	PromptTokens     int64
+	CompletionTokens int64
+	PctOfTotal       float64
+	// Cache observability per key, same convention as the other
+	// leaderboard rows.
 	CacheCreationTokens int64
 	CacheReadTokens     int64
 	CacheHitRatioPct    float64
@@ -471,6 +497,27 @@ func (s *Server) Spend(w http.ResponseWriter, r *http.Request) {
 		// consistent.
 		data.TopRoleModels, data.TotalCacheCreationTokens, data.TotalCacheReadTokens, data.CacheHitRatioPct =
 			computeCacheHeadline(data.TopRoleModels)
+	}
+
+	{
+		rows := s.apiKeySpendForScope(ctx, iter, since)
+		for _, r := range rows {
+			row := APIKeySpendRow{
+				KeyName:             r.KeyName,
+				KeyPrefix:           r.KeyPrefix,
+				CostUSD:             r.CostUSD,
+				CallCount:           r.CallCount,
+				PromptTokens:        r.PromptTokens,
+				CompletionTokens:    r.CompletionTokens,
+				CacheCreationTokens: r.CacheCreationTokens,
+				CacheReadTokens:     r.CacheReadTokens,
+				CacheHitRatioPct:    decorateCacheRatioPct(r.PromptTokens, r.CacheReadTokens),
+			}
+			if data.TotalUSD > 0 {
+				row.PctOfTotal = r.CostUSD / data.TotalUSD * 100
+			}
+			data.ByAPIKey = append(data.ByAPIKey, row)
+		}
 	}
 
 	// Phase 1 cohorts — walk recent step outcomes for the active window,
@@ -1018,6 +1065,48 @@ func (s *Server) roleModelSpendForScope(ctx context.Context, iter []string, sinc
 		}
 	}
 	out := make([]persistence.RoleModelSpend, 0, len(order))
+	for _, k := range order {
+		out = append(out, *m[k])
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CostUSD > out[j].CostUSD })
+	if len(out) > 20 {
+		out = out[:20]
+	}
+	return out
+}
+
+// apiKeySpendForScope merges per-project AggregateByAPIKey results across
+// iter the same way roleModelSpendForScope merges role/model rows. Keying
+// on APIKeyID naturally collapses every project's "" (unattributed) bucket
+// into one combined row, which is the desired behaviour — "Unattributed"
+// should read as one total, not one row per project.
+func (s *Server) apiKeySpendForScope(ctx context.Context, iter []string, since time.Time) []persistence.APIKeySpend {
+	m := map[string]*persistence.APIKeySpend{}
+	var order []string
+	for _, pid := range iter {
+		rows, err := s.llmUsageRepo.AggregateByAPIKey(ctx, since, time.Time{}, 20, pid)
+		if err != nil {
+			s.logger.Warn().Err(err).Str("project_id", pid).Msg("spend: API key leaderboard failed")
+			continue
+		}
+		for _, r := range rows {
+			k := r.APIKeyID
+			if e := m[k]; e != nil {
+				e.CostUSD += r.CostUSD
+				e.CallCount += r.CallCount
+				e.TaskCount += r.TaskCount
+				e.PromptTokens += r.PromptTokens
+				e.CompletionTokens += r.CompletionTokens
+				e.CacheCreationTokens += r.CacheCreationTokens
+				e.CacheReadTokens += r.CacheReadTokens
+			} else {
+				cp := r
+				m[k] = &cp
+				order = append(order, k)
+			}
+		}
+	}
+	out := make([]persistence.APIKeySpend, 0, len(order))
 	for _, k := range order {
 		out = append(out, *m[k])
 	}

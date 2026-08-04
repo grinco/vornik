@@ -108,9 +108,15 @@ type SpendData struct {
 	// renders in this page's layout for one-screen drill-down.
 	TopRoleModels []RoleModelSpendRow
 
-	// Spend per API key — the "spend per user" breakdown (migration 149),
-	// where "user" is the API key that authenticated the call. Rows with
-	// no attributed key collapse into one "Unattributed" bucket.
+	// Spend per API key (migration 149) — attributed to the KEY that
+	// authenticated the call, which is deliberately not the same thing as a
+	// user. Vornik has a real user concept (admin UI accounts, sessions,
+	// approvals); an API key is a separate credential minted per
+	// (project, client, session), so one person routinely holds several and
+	// plenty of keys have no person behind them at all (CI, another daemon,
+	// a cron caller). Reading this table as "spend per person" over-reports
+	// per-key granularity and under-reports anyone holding two keys. Rows
+	// with no attributed key collapse into one "Unattributed" bucket.
 	ByAPIKey []APIKeySpendRow
 
 	// Phase 1 signal cohorts — one row per (worker role, model) seen
@@ -261,8 +267,9 @@ type RoleModelSpendRow struct {
 	CacheHitRatioPct    float64
 }
 
-// APIKeySpendRow is the "spend per user" leaderboard row, where "user" is
-// the API key that authenticated the call (see persistence.APIKeySpend).
+// APIKeySpendRow is one row of the per-API-key spend leaderboard, keyed on the
+// API key that authenticated the call — not on a user (see
+// persistence.APIKeySpend for why the two must not be conflated).
 // KeyName/KeyPrefix are both empty for the "Unattributed" bucket — usage
 // with no api_key_id, which today includes dispatcher chat, memory
 // background workers, project wizard, UI authoring assist, and fix-it

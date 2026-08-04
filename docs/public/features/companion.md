@@ -1,7 +1,7 @@
 ---
 sources:
     - path: internal/api/companion_mcp.go
-      sha256: 779662f098af6c23b0262da3a4cbd51c9ffe8c67583ff215a340fdc08282ba67
+      sha256: 836914ea3f4b4e7f52b5ca99905bc0c9c71cb2856fcb99d730db26ce6536a543
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
       sha256: 58520723d0295afa8fd1247cccdbc835821d046b7d7fdd1dc00450adf649cabb
     - path: contrib/codex-companion/.codex-plugin/plugin.json
@@ -216,7 +216,11 @@ Use `--client codex` instead when minting a key for the Codex plugin. For Codex
 memory calls that omit `repo_scope` inherit the right scope by default.
 
 The key's allowed workflows, spend cap, and memory + skill permissions are
-enforced server-side from the key itself — never from the request.
+enforced server-side from the key itself — never from the request. The spend cap
+counts what the key has spent across the tasks it created, including tasks it
+created through the REST API rather than `delegate`; the per-key row on
+[`/ui/spend`](../guides/observability.md#spend-per-api-key) is the same
+attribution, over a wider set of rows.
 
 On the **client** side, set the companion bearer token and install the plugin:
 

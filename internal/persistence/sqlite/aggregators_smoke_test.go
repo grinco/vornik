@@ -348,7 +348,7 @@ func TestExecutionRepository_GetRoleQuality(t *testing.T) {
 	}
 }
 
-// TestTaskLLMUsage_AggregateByAPIKey pins the "spend per user" grouping
+// TestTaskLLMUsage_AggregateByAPIKey pins the per-API-key grouping
 // (migration 149): rows attributed to a real API key join against
 // api_keys for the display name/prefix; rows with no api_key_id collapse
 // into one "" (Unattributed) bucket rather than one row per project.
@@ -357,7 +357,7 @@ func TestTaskLLMUsage_AggregateByAPIKey(t *testing.T) {
 	ctx := context.Background()
 	repo := sqlite.NewTaskLLMUsageRepository(db.DB)
 
-	if _, err := db.DB.ExecContext(ctx, `INSERT INTO api_keys
+	if _, err := db.ExecContext(ctx, `INSERT INTO api_keys
 		(id, project_id, name, key_hash, key_prefix, created_at)
 		VALUES ('akey-1', 'p', 'jnovak/laptop', 'h_akey1', 'vk_abcd', datetime('now'))`); err != nil {
 		t.Fatalf("insert api_keys fixture: %v", err)
@@ -394,6 +394,73 @@ func TestTaskLLMUsage_AggregateByAPIKey(t *testing.T) {
 	}
 	if out[1].CostUSD != 0.5 || out[1].CallCount != 1 {
 		t.Errorf("unattributed cost/calls = %v/%d, want 0.5/1", out[1].CostUSD, out[1].CallCount)
+	}
+}
+
+// TestTaskLLMUsage_SumCostByAPIKey_OneIdentityRule pins that the budget-cap
+// gate and the /ui/spend per-key table agree on WHOSE spend a task's usage is.
+//
+// Before migration 148 the cap resolved a key only through the companion
+// payload marker, so a key spending through REST POST /tasks was capped at
+// nothing — while the new per-key table counted it. The cap now reads
+// tasks.created_by_api_key_id first and keeps the payload marker as the
+// pre-migration fallback, so both surfaces attribute identically. Added during
+// the CE PR #6 intake.
+func TestTaskLLMUsage_SumCostByAPIKey_OneIdentityRule(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	usage := sqlite.NewTaskLLMUsageRepository(db.DB)
+
+	// t-col: attributed by the migration-148 column only (a REST-created task
+	// — no companion payload marker anywhere).
+	// t-json: attributed the legacy way only (created before the column
+	// existed, so it must still count).
+	// t-other: a different key, to prove the sum is not just "everything".
+	seed := []struct{ id, payload, col string }{
+		{"t-col", `{}`, "akey-1"},
+		{"t-json", `{"companion":{"api_key_id":"akey-1"}}`, ""},
+		{"t-other", `{}`, "akey-2"},
+	}
+	for _, s := range seed {
+		var col any
+		if s.col != "" {
+			col = s.col
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO tasks
+			(id, project_id, status, payload, created_at, updated_at, created_by_api_key_id)
+			VALUES (?, 'p', 'COMPLETED', ?, datetime('now'), datetime('now'), ?)`,
+			s.id, s.payload, col); err != nil {
+			t.Fatalf("insert task %s: %v", s.id, err)
+		}
+	}
+	akey1, akey2 := "akey-1", "akey-2"
+	tCol, tJSON, tOther := "t-col", "t-json", "t-other"
+	rows := []persistence.TaskLLMUsage{
+		{ID: "u-col", TaskID: &tCol, ProjectID: "p", StepID: "s1", Role: "coder", Model: "m", CostUSD: 1.25, APIKeyID: &akey1},
+		{ID: "u-json", TaskID: &tJSON, ProjectID: "p", StepID: "s2", Role: "coder", Model: "m", CostUSD: 0.75},
+		{ID: "u-other", TaskID: &tOther, ProjectID: "p", StepID: "s3", Role: "coder", Model: "m", CostUSD: 9.0, APIKeyID: &akey2},
+	}
+	for i := range rows {
+		if err := usage.Record(ctx, &rows[i]); err != nil {
+			t.Fatalf("Record %s: %v", rows[i].ID, err)
+		}
+	}
+
+	got, err := usage.SumCostByAPIKey(ctx, akey1, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("SumCostByAPIKey: %v", err)
+	}
+	if got != 2.0 {
+		t.Fatalf("sum = %v, want 2.0 (1.25 via the column + 0.75 via the payload fallback)", got)
+	}
+
+	// The other key's spend must not leak in — a cap is per key.
+	other, err := usage.SumCostByAPIKey(ctx, akey2, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("SumCostByAPIKey(akey-2): %v", err)
+	}
+	if other != 9.0 {
+		t.Fatalf("akey-2 sum = %v, want 9.0", other)
 	}
 }
 

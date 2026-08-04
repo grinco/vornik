@@ -212,18 +212,23 @@ func (r *TaskLLMUsageRepository) SumCostByTask(ctx context.Context, taskID strin
 	return sum, nil
 }
 
-// SumCostByAPIKey sums LLM spend across every task created by a
-// companion API key, joining task_llm_usage → tasks on the companion
-// api_key_id embedded in the task payload. SQLite extracts the JSON
-// path with json_extract (Postgres uses the -> / ->> operators). See
-// finding #2 / mitigation plan §7.2.
+// SumCostByAPIKey sums LLM spend across every task created by an API key — the
+// budget-cap gate (finding #2 / mitigation plan §7.2).
+//
+// Identity resolution matches the Postgres backend and the /ui/spend per-key
+// table: tasks.created_by_api_key_id (migration 148) first, the companion
+// payload marker only as the pre-migration fallback. SQLite extracts the JSON
+// path with json_extract (Postgres uses the -> / ->> operators). The scope
+// difference from AggregateByAPIKey is documented on the Postgres copy.
 func (r *TaskLLMUsageRepository) SumCostByAPIKey(ctx context.Context, apiKeyID string, since, until time.Time) (float64, error) {
 	var b strings.Builder
 	b.WriteString(`SELECT COALESCE(SUM(u.cost_usd), 0)
 		FROM task_llm_usage u
 		JOIN tasks t ON t.id = u.task_id
-		WHERE json_extract(t.payload, '$.companion.api_key_id') = ?`)
-	args := []any{apiKeyID}
+		WHERE (t.created_by_api_key_id = ?
+		       OR (t.created_by_api_key_id IS NULL
+		           AND json_extract(t.payload, '$.companion.api_key_id') = ?))`)
+	args := []any{apiKeyID, apiKeyID}
 	if !since.IsZero() {
 		b.WriteString(" AND u.recorded_at >= ?")
 		args = append(args, sqliteTime(since))

@@ -6338,7 +6338,8 @@ DROP TABLE IF EXISTS mcp_oauth_tokens;
 	{
 		Version: 148,
 		Name:    "tasks_created_by_api_key_id",
-		// First-class API-key attribution for tasks (spend-per-user UI). Nullable:
+		// First-class API-key attribution for tasks (the /ui/spend per-key
+		// breakdown — attribution is per KEY, never read as per user). Nullable:
 		// only the two creation paths that run under DB-backed API-key auth (REST
 		// POST /tasks via taskcreate.Creator, and the companion MCP delegate) ever
 		// set this; chat/webhook/autonomy/executor-spawned tasks correctly get

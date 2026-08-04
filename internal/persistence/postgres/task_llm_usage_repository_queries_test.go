@@ -211,7 +211,7 @@ func TestUsageAggregateByProject(t *testing.T) {
 	}
 }
 
-// TestUsageAggregateByAPIKey pins the "spend per user" grouping
+// TestUsageAggregateByAPIKey pins the per-API-key grouping
 // (migration 149): the LEFT JOIN against api_keys resolves name/prefix
 // for attributed rows.
 func TestUsageAggregateByAPIKey(t *testing.T) {

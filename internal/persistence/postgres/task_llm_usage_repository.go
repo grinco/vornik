@@ -266,17 +266,33 @@ func (r *TaskLLMUsageRepository) SumCostByTask(ctx context.Context, taskID strin
 	return total, nil
 }
 
-// SumCostByAPIKey sums LLM spend across every task created by a
-// companion API key. Joins task_llm_usage → tasks on the expression
-// indexed by migration 82. Low-frequency (the delegate gate), so the
-// JOIN is fine — the partial expression index makes the tasks-side
-// lookup an index scan and the existing idx_task_llm_usage_task covers
-// the usage side. See finding #2 / mitigation plan §7.2.
+// SumCostByAPIKey sums LLM spend across every task created by an API key —
+// the budget-cap gate (finding #2 / mitigation plan §7.2).
+//
+// Key identity comes from tasks.created_by_api_key_id (migration 148) FIRST,
+// falling back to the companion payload marker indexed by migration 82 for
+// tasks created before that column existed. One identity rule, so this gate and
+// the /ui/spend per-key table cannot disagree about whose spend it is: before
+// migration 148 the cap saw only companion-delegated tasks, so a key spending
+// through REST POST /tasks was capped at nothing.
+//
+// The SCOPE still differs from AggregateByAPIKey, deliberately: this counts
+// spend on TASKS the key created (the JOIN), while the UI table also counts
+// task-less external_api rows the chat proxy attributes to a key. Widening the
+// cap to those would silently start refusing delegates on deployments where a
+// key's proxy traffic already exceeds its cap, so that is a separate decision,
+// not a side effect of this query.
+//
+// Low-frequency (the delegate gate), so the JOIN is fine — the partial indexes
+// on both expressions make the tasks-side lookup an index scan and the existing
+// idx_task_llm_usage_task covers the usage side.
 func (r *TaskLLMUsageRepository) SumCostByAPIKey(ctx context.Context, apiKeyID string, since, until time.Time) (float64, error) {
 	query := `SELECT COALESCE(SUM(u.cost_usd), 0)
 		FROM task_llm_usage u
 		JOIN tasks t ON t.id = u.task_id
-		WHERE t.payload->'companion'->>'api_key_id' = $1`
+		WHERE (t.created_by_api_key_id = $1
+		       OR (t.created_by_api_key_id IS NULL
+		           AND t.payload->'companion'->>'api_key_id' = $1))`
 	args := []any{apiKeyID}
 	pos := 2
 	if !since.IsZero() {

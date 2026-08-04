@@ -381,9 +381,8 @@ func TestNullableStringHelpers(t *testing.T) {
 }
 
 // TestSumCostByAPIKey_JoinsTasksAndSums pins the budget-cap query
-// (finding #2 / mitigation §7.2): it joins task_llm_usage → tasks on
-// the companion api_key_id expression and sums cost_usd. The window
-// args are appended when non-zero.
+// (finding #2 / mitigation §7.2): it joins task_llm_usage → tasks and sums
+// cost_usd. The window args are appended when non-zero.
 func TestSumCostByAPIKey_JoinsTasksAndSums(t *testing.T) {
 	repo, mock, cleanup := newUsageRepo(t)
 	defer cleanup()
@@ -405,13 +404,41 @@ func TestSumCostByAPIKey_JoinsTasksAndSums(t *testing.T) {
 	}
 }
 
+// TestSumCostByAPIKey_ResolvesKeyByColumnThenPayload pins the identity rule
+// shared with AggregateByAPIKey: tasks.created_by_api_key_id (migration 148)
+// first, the legacy companion payload marker only as the pre-migration
+// fallback, both in ONE query bound to the same placeholder. Before the CE
+// PR #6 intake this gate read the payload marker alone, so a key spending
+// through REST POST /tasks was capped at nothing while the /ui/spend per-key
+// table counted every cent of it.
+func TestSumCostByAPIKey_ResolvesKeyByColumnThenPayload(t *testing.T) {
+	repo, mock, cleanup := newUsageRepo(t)
+	defer cleanup()
+
+	mock.ExpectQuery(regexp.QuoteMeta(
+		"WHERE (t.created_by_api_key_id = $1\n\t\t       OR (t.created_by_api_key_id IS NULL\n\t\t           AND t.payload->'companion'->>'api_key_id' = $1))")).
+		WithArgs("akey-3").
+		WillReturnRows(sqlmock.NewRows([]string{"sum"}).AddRow(4.25))
+
+	got, err := repo.SumCostByAPIKey(context.Background(), "akey-3", time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("SumCostByAPIKey: %v", err)
+	}
+	if got != 4.25 {
+		t.Fatalf("sum = %v, want 4.25", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
 // TestSumCostByAPIKey_UnboundedWindowOmitsTimeArgs confirms zero
 // since/until produce a single-arg query (just the key).
 func TestSumCostByAPIKey_UnboundedWindowOmitsTimeArgs(t *testing.T) {
 	repo, mock, cleanup := newUsageRepo(t)
 	defer cleanup()
 
-	mock.ExpectQuery(regexp.QuoteMeta("WHERE t.payload->'companion'->>'api_key_id' = $1")).
+	mock.ExpectQuery(regexp.QuoteMeta("WHERE (t.created_by_api_key_id = $1")).
 		WithArgs("akey-2").
 		WillReturnRows(sqlmock.NewRows([]string{"sum"}).AddRow(0))
 

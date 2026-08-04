@@ -519,10 +519,10 @@ type TaskLLMUsageRepository interface {
 
 	// AggregateByAPIKey groups spend by the API key attributed to each
 	// usage row (migration 149 — see APIKeySpend), ordered by cost
-	// descending. Powers the /ui/spend "Spend per API key" table — the
-	// "spend per user" breakdown, where "user" is defined as the API key
-	// that authenticated the call. Rows with no attributed key collapse
-	// into one "Unattributed" bucket rather than vanishing.
+	// descending. Powers the /ui/spend "Spend per API key" table. The unit
+	// is the KEY, not a user — see APIKeySpend for why those are not
+	// interchangeable. Rows with no attributed key collapse into one
+	// "Unattributed" bucket rather than vanishing.
 	// projectID is optional, same convention as AggregateBySource.
 	AggregateByAPIKey(ctx context.Context, since, until time.Time, limit int, projectID string) ([]APIKeySpend, error)
 
@@ -675,8 +675,10 @@ type ProjectSpend struct {
 }
 
 // APIKeySpend is one row of the per-API-key spend table (migration 149 —
-// "spend per user" on /ui/spend, where "user" == the API key that
-// authenticated the call). APIKeyID/KeyName/KeyPrefix are all empty for
+// "Spend per API key" on /ui/spend). The unit of attribution is the KEY, not a
+// user: keys are minted per (project, client, session), one person may hold
+// several, and many keys have no person behind them (CI, another daemon, a cron
+// caller). APIKeyID/KeyName/KeyPrefix are all empty for
 // the "Unattributed" bucket: usage rows with no api_key_id, which today
 // is most dispatcher/memory/wizard/authoring traffic — those sites have
 // neither a task nor reliable API-key context (see migration 149's

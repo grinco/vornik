@@ -406,10 +406,11 @@
             </div>
             {{end}}
 
-            {{/* Spend per API key — the "spend per user" breakdown, where
-                 "user" is the API key that authenticated the call. Rows
-                 with no attributed key collapse into one "Unattributed"
-                 row rather than vanishing. */}}
+            {{/* Spend per API key — attributed to the KEY that authenticated
+                 the call. Not "per user": a key is minted per (project,
+                 client, session), one person may hold several, and many keys
+                 have no person behind them at all. Rows with no attributed key
+                 collapse into one "Unattributed" row rather than vanishing. */}}
             {{if .ByAPIKey}}
             <div class="glass rounded-xl border border-dark-700 overflow-hidden">
                 <div class="px-5 py-3.5 border-b border-dark-700/60">

@@ -11,15 +11,16 @@ plugs in without any vornik-side change.
 
 ## What you get
 
-- **9 MCP tools** — `delegate`, `status`, `result`, `cancel`, `list`,
-  `catalog`, plus the LLD-22 RAG trio `recall`, `remember`, and
-  `recent_memory`.
-- **7 slash commands** — exposed under the plugin namespace as
-  `/vornik-companion:delegate`, `/vornik-companion:peek`,
-  `/vornik-companion:status`, `/vornik-companion:result`,
-  `/vornik-companion:review`, plus
-  `/vornik-companion:recall <query>` and
-  `/vornik-companion:remember <note>`.
+- **19 MCP tools** — the task surface `delegate`, `status`, `result`, `cancel`,
+  `list`, `catalog`, `whoami`; the LLD-22 RAG set `recall`, `remember`,
+  `recent_memory`, `list_scopes`, `memory_correct`; and the knowledge-skill set
+  `skill_propose`, `skill_search`, `skill_get`, `skill_list`, `skill_approve`,
+  `skill_reject`, `skill_set_global`.
+- **18 slash commands** — every tool above that is worth a one-liner, exposed
+  under the plugin namespace: `/vornik-companion:delegate`,
+  `:peek`, `:status`, `:result`, `:review`, `:whoami`, `:recall <query>`,
+  `:remember <note>`, `:upload`, `:rag-ingest`, `:memory-correct`, and the
+  `:skill-*` set. Run `/help` for the current list — it is authoritative.
 - **SessionStart hook** — pulls every task that completed since your
   last session ended **and** the most recently-touched RAG entries in
   the project. The host LLM opens each session knowing what the swarm

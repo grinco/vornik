@@ -12,7 +12,7 @@ packaging is different.
 ## What you get
 
 - MCP tools from the daemon: `delegate`, `status`, `result`, `cancel`, `list`,
-  `catalog`, `recall`, `remember`, `recent_memory`, `list_scopes`, and
+  `catalog`, `whoami`, `recall`, `remember`, `recent_memory`, `list_scopes`, and
   `memory_correct`.
 - A `delegate` skill that teaches Codex when to recall, delegate, attach files
   with `inputArtifacts`, and pull results.

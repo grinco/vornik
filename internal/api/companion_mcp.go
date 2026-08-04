@@ -1544,7 +1544,10 @@ type whoamiArgs struct {
 // SessionStart digest (which only fires once, at session open) has
 // scrolled out of context. No additional permission gate: this mirrors
 // catalog() in echoing the key's own bound metadata, nothing else.
-func (s *Server) companionToolWhoami(ctx context.Context, key *persistence.APIKey, raw json.RawMessage) (string, error) {
+// The ctx parameter is unused — whoami touches no store, it echoes the key row the
+// auth layer already resolved — but it is kept for signature symmetry with every
+// other companion tool handler, so the dispatch switch stays uniform.
+func (s *Server) companionToolWhoami(_ context.Context, key *persistence.APIKey, raw json.RawMessage) (string, error) {
 	var args whoamiArgs
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &args); err != nil {

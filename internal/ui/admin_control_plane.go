@@ -234,6 +234,12 @@ var cpFlashMessages = map[string]string{
 	"mcp-bad-endpoint":  "sse/streamable-http need a valid http(s) URL; stdio needs a command.",
 	"mcp-secret":        "A field looked like a literal secret — use a ${ENV_VAR} placeholder instead.",
 	"mcp-not-found":     "No MCP server by that name to remove.",
+	// Auth-block + consent outcomes. Every token a handler can redirect with
+	// needs an entry: a missing one renders a BLANK banner, which reads as
+	// "nothing happened" after a Connect that actually failed.
+	"mcp-bad-auth":       "Invalid authentication block — credential fields take a secret://NAME reference, and the mode must suit the transport.",
+	"mcp-disconnected":   "Stored OAuth grant deleted. The server's config is untouched — reconnect needs no config change.",
+	"mcp-connect-failed": "Could not start the OAuth flow — see the daemon log for the reason (it is not shown here: a vendor error body can echo the client secret).",
 	// Unified-inbox round-trip tokens (Part B §5.2): the memetic workflow-
 	// proposal and healing-candidate handlers redirect here on success when
 	// the hub form carried return_to=control-plane.

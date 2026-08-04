@@ -224,6 +224,95 @@ func TestMcpAddEdit_UnaffectedServersKeepTheirAuth(t *testing.T) {
 	}
 }
 
+// TestMcpAddEdit_IgnoresFieldsOutsideTheSubmittedMode pins the contract the form
+// relies on: the mode-toggle script only HIDES the other modes' fieldsets, so
+// every auth_* input stays in the DOM and is submitted. An operator who
+// configures oauth, switches to static and saves would otherwise carry stale
+// scopes/client_id into a static block — or worse, a credential reference for a
+// mode that is no longer in use.
+//
+// Raised by the 2026-08-04 companion review of the view fix, which could see the
+// template asserting this but not the handler proving it.
+func TestMcpAddEdit_IgnoresFieldsOutsideTheSubmittedMode(t *testing.T) {
+	t.Run("static ignores the oauth and env fields", func(t *testing.T) {
+		out, _, err := mcpAddEditWith(t, "mcp:\n  servers: []\n", "n8n", url.Values{
+			"transport":               {"streamable-http"},
+			"url":                     {"https://n8n.example.com/mcp/abc"},
+			"auth_mode":               {"static"},
+			"auth_value_from":         {"secret://N8N_TOKEN"},
+			"auth_scopes":             {"read:jira-work"},
+			"auth_client_id":          {"1234.5678"},
+			"auth_client_secret_from": {"secret://LEFTOVER"},
+			"auth_env_from":           {"STALE=secret://stale"},
+		})
+		if err != nil {
+			t.Fatalf("mcpAddEdit: %v", err)
+		}
+		got := parsedAuth(t, out, "n8n")
+		if got.Mode != mcpauth.ModeStatic || got.ValueFrom != "secret://N8N_TOKEN" {
+			t.Fatalf("auth = %+v", got)
+		}
+		if len(got.Scopes) != 0 || got.ClientID != "" || got.ClientSecretFrom != "" || len(got.EnvFrom) != 0 {
+			t.Errorf("fields from another mode survived: %+v", got)
+		}
+		if strings.Contains(string(out), "LEFTOVER") || strings.Contains(string(out), "stale") {
+			t.Errorf("another mode's credential reference reached config:\n%s", out)
+		}
+	})
+
+	t.Run("oauth ignores the static and env fields", func(t *testing.T) {
+		out, _, err := mcpAddEditWith(t, "mcp:\n  servers: []\n", "atlassian", url.Values{
+			"transport":         {"streamable-http"},
+			"url":               {"https://mcp.atlassian.com/v1/mcp/authv2"},
+			"auth_mode":         {"oauth"},
+			"auth_scopes":       {"read:jira-work"},
+			"auth_header":       {"X-Leftover"},
+			"auth_value_from":   {"secret://LEFTOVER"},
+			"auth_value_prefix": {"Bearer "},
+			"auth_env_from":     {"STALE=secret://stale"},
+		})
+		if err != nil {
+			t.Fatalf("mcpAddEdit: %v", err)
+		}
+		got := parsedAuth(t, out, "atlassian")
+		if got.Mode != mcpauth.ModeOAuth || len(got.Scopes) != 1 {
+			t.Fatalf("auth = %+v", got)
+		}
+		if got.Header != "" || got.ValueFrom != "" || got.ValuePrefix != "" || len(got.EnvFrom) != 0 {
+			t.Errorf("fields from another mode survived: %+v", got)
+		}
+		if strings.Contains(string(out), "LEFTOVER") {
+			t.Errorf("another mode's credential reference reached config:\n%s", out)
+		}
+	})
+
+	t.Run("env ignores the header and oauth fields", func(t *testing.T) {
+		out, _, err := mcpAddEditWith(t, "mcp:\n  servers: []\n", "reddit", url.Values{
+			"transport":       {"stdio"},
+			"command":         {"reddit-mcp"},
+			"auth_mode":       {"env"},
+			"auth_env_from":   {"REDDIT_CLIENT_ID=secret://rid"},
+			"auth_value_from": {"secret://LEFTOVER"},
+			"auth_scopes":     {"read:jira-work"},
+		})
+		if err != nil {
+			t.Fatalf("mcpAddEdit: %v", err)
+		}
+		got := parsedAuth(t, out, "reddit")
+		if got.EnvFrom["REDDIT_CLIENT_ID"] != "secret://rid" {
+			t.Fatalf("auth = %+v", got)
+		}
+		if got.ValueFrom != "" || len(got.Scopes) != 0 {
+			t.Errorf("fields from another mode survived: %+v", got)
+		}
+		// A static value_from on stdio would also be a validation error — the
+		// point here is that it never reaches Validate at all.
+		if strings.Contains(string(out), "LEFTOVER") {
+			t.Errorf("another mode's credential reference reached config:\n%s", out)
+		}
+	})
+}
+
 func TestParseEnvFromLines(t *testing.T) {
 	got := parseEnvFromLines("A=secret://a\n\n# comment\n B = secret://b \nMALFORMED")
 	if got["A"] != "secret://a" || got["B"] != "secret://b" {

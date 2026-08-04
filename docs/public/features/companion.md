@@ -1,11 +1,11 @@
 ---
 sources:
     - path: internal/api/companion_mcp.go
-      sha256: 23bb533251df95ce902c469a773be27421e516ee426df8a5cf27c30e325045ba
+      sha256: 779662f098af6c23b0262da3a4cbd51c9ffe8c67583ff215a340fdc08282ba67
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
-      sha256: fcf7465d69ae6f7376fa3d4c206050ec1dc87ecbd268f2ef96b3da56ab9eea61
+      sha256: 58520723d0295afa8fd1247cccdbc835821d046b7d7fdd1dc00450adf649cabb
     - path: contrib/codex-companion/.codex-plugin/plugin.json
-      sha256: a8dd0d584753ee5125bc844edcc2c280aedafeb9d0884b8ce18dc86131f59bc0
+      sha256: b27079f58e943bce23cb1c0ff7e5274f3fd8aea35ccd26530f6df5b6d791fbf2
 ---
 # Companion plugin
 
@@ -38,6 +38,8 @@ The companion exposes these MCP tools:
 | `remember` | deposit a note into the project's memory |
 | `recent_memory` | the most recently learned chunks, newest first |
 | `list_scopes` | list the repo scopes the project's memory is partitioned into |
+| `memory_correct` | soft-refute a wrong or stale memory chunk, optionally storing the correction |
+| `whoami` | show this key's project and the repo scope your calls resolve to right now |
 | `delegate` | queue an async task on vornik; returns a task id and a poll hint |
 | `status` | check a delegated task's status |
 | `result` | fetch a completed task's output inline |

@@ -188,7 +188,7 @@ which have no user to borrow a token from.
 **Precondition.** `server.public_base_url` must be set to an `https://` origin
 (loopback also works for local testing). OAuth 2.1 requires a redirect URI the
 vendor can reach, and Vornik's callback is
-`<public_base_url>/ui/mcp/oauth/callback`. Connect is refused up front when it is
+`<public_base_url>/auth/mcp/callback`. Connect is refused up front when it is
 unset — better than failing after you have already consented at the vendor.
 
 Connect from the CLI:
@@ -199,7 +199,7 @@ Connecting MCP server "atlassian" for project my-project
 
   Resource:     https://mcp.atlassian.com/v1/mcp/authv2
   Scopes:       read:jira-work offline_access
-  Redirect URI: https://vornik.example.com/ui/mcp/oauth/callback
+  Redirect URI: https://vornik.example.com/auth/mcp/callback
 
 Open this URL to consent:
 

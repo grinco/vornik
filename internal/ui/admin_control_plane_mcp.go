@@ -391,6 +391,12 @@ func (s *Server) decorateCPMCPAuth(ctx context.Context, row *AdminCPMCPRow) {
 // is what lets the resulting proposal travel through the ledger as a reviewable diff with nothing
 // sensitive in it — and it is why the mode-specific validation below rejects a literal rather than
 // trying to be helpful about it.
+//
+// Fields outside the submitted mode are IGNORED, which the switch below is the whole mechanism for.
+// The form's mode toggle only hides the other fieldsets, so every auth_* input is still submitted:
+// an operator who configures oauth, switches to static and saves would otherwise carry stale scopes
+// — or a credential reference for a mode no longer in use — into the written block. Pinned by
+// TestMcpAddEdit_IgnoresFieldsOutsideTheSubmittedMode.
 func mcpAuthFieldsFromForm(r *http.Request, transport string) (map[string]any, error) {
 	mode := strings.TrimSpace(r.FormValue("auth_mode"))
 	if mode == "" || mode == mcpauth.ModeNone {

@@ -678,6 +678,48 @@ func TestRecordChatAPIUsage_NoCacheFieldsSafeWithZeroes(t *testing.T) {
 	assert.Equal(t, int64(0), row.CacheReadTokens)
 }
 
+// TestRecordChatAPIUsage_AttributesAPIKeyFromContext — external_api rows
+// have no task to inherit attribution from, so the usage row must resolve
+// api_key_id directly from the authenticated request context (migration
+// 148). No key in context (e.g. an anonymous/unauthenticated proxy call)
+// must leave the row unattributed rather than storing an empty string.
+func TestRecordChatAPIUsage_AttributesAPIKeyFromContext(t *testing.T) {
+	repo := &capturingLLMUsageRepo{}
+	s := NewServer(
+		WithLogger(zerolog.Nop()),
+		WithLLMUsageRepository(repo),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions",
+		strings.NewReader(`{}`))
+	req.Header.Set("X-Vornik-Project-ID", "proj-key")
+	ctx := context.WithValue(req.Context(), apiKeyIDKey, "akey-1")
+
+	resp := &chat.ChatResponse{Model: "claude-sonnet-4-6"}
+	resp.Usage.PromptTokens = 10
+	resp.Usage.CompletionTokens = 5
+
+	s.recordChatAPIUsage(ctx, req, "claude-sonnet-4-6", resp)
+
+	row := repo.lastRecorded()
+	require.NotNil(t, row)
+	require.NotNil(t, row.APIKeyID)
+	assert.Equal(t, "akey-1", *row.APIKeyID)
+
+	// No key in context -> unattributed, not a pointer to "".
+	repo2 := &capturingLLMUsageRepo{}
+	s2 := NewServer(WithLogger(zerolog.Nop()), WithLLMUsageRepository(repo2))
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/chat/completions", strings.NewReader(`{}`))
+	req2.Header.Set("X-Vornik-Project-ID", "proj-key")
+	resp2 := &chat.ChatResponse{Model: "claude-sonnet-4-6"}
+	resp2.Usage.PromptTokens = 10
+	resp2.Usage.CompletionTokens = 5
+	s2.recordChatAPIUsage(req2.Context(), req2, "claude-sonnet-4-6", resp2)
+	row2 := repo2.lastRecorded()
+	require.NotNil(t, row2)
+	assert.Nil(t, row2.APIKeyID)
+}
+
 // TestChatCompletions_ModelUnhealthy503 — an open circuit fast-rejects with a
 // distinct 503 MODEL_UNHEALTHY code (LLD 2026-07-11-model-health §6), so the
 // executor can skip its retry ladder and fail over rather than hammer a dead

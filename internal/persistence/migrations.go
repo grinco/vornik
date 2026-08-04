@@ -6335,4 +6335,59 @@ DROP INDEX IF EXISTS idx_mcp_oauth_tokens_project;
 DROP TABLE IF EXISTS mcp_oauth_tokens;
 `,
 	},
+	{
+		Version: 148,
+		Name:    "tasks_created_by_api_key_id",
+		// First-class API-key attribution for tasks (the /ui/spend per-key
+		// breakdown — attribution is per KEY, never read as per user). Nullable:
+		// only the two creation paths that run under DB-backed API-key auth (REST
+		// POST /tasks via taskcreate.Creator, and the companion MCP delegate) ever
+		// set this; chat/webhook/autonomy/executor-spawned tasks correctly get
+		// NULL — there is no key behind them. Additive + nullable, no backfill,
+		// safe on a live table — same shape as migration 136 (tasks_budget_usd).
+		//
+		// This generalises the companion-only payload->'companion'->>'api_key_id'
+		// convention (migration 82) into a real, indexable column that covers
+		// every creation path with API-key context, not just companion delegate.
+		// The JSON convention is left untouched — SumCostByAPIKey's budget-cap
+		// gate still reads it — this column is additive, not a replacement.
+		Up: `
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by_api_key_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_tasks_created_by_api_key
+    ON tasks (created_by_api_key_id)
+    WHERE created_by_api_key_id IS NOT NULL;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_tasks_created_by_api_key;
+ALTER TABLE tasks DROP COLUMN IF EXISTS created_by_api_key_id;
+`,
+	},
+	{
+		Version: 149,
+		Name:    "task_llm_usage_api_key_id",
+		// Companion column to migration 148, on the usage side. Populated at
+		// record time either by copying the recording task's
+		// created_by_api_key_id (workflow_step/judge/post_mortem — the task is
+		// already in scope at every one of those call sites) or, for the one
+		// task-less source with a genuine external caller (external_api, the
+		// OpenAI/Ollama-compatible chat proxy), resolved directly from the
+		// request context. Every other source (dispatcher, memory background
+		// workers, project wizard, UI authoring assist, fix-it doctor) has
+		// neither a task nor reliable API-key context and is left NULL —
+		// renders as "Unattributed" on the spend dashboard, same convention as
+		// the existing empty `source` column.
+		//
+		// Powers TaskLLMUsageRepository.AggregateByAPIKey, the new "Spend per
+		// API key" table on /ui/spend.
+		Up: `
+ALTER TABLE task_llm_usage ADD COLUMN IF NOT EXISTS api_key_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_llm_usage_api_key
+    ON task_llm_usage (api_key_id)
+    WHERE api_key_id IS NOT NULL;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_llm_usage_api_key;
+ALTER TABLE task_llm_usage DROP COLUMN IF EXISTS api_key_id;
+`,
+	},
 }

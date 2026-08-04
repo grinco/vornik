@@ -254,6 +254,7 @@ func (r *JudgeRunner) Run(ctx context.Context, task *persistence.Task) error {
 			RecordedAt:          time.Now().UTC(),
 			CacheCreationTokens: int64(metrics.CacheCreationTokens),
 			CacheReadTokens:     int64(metrics.CacheReadTokens),
+			APIKeyID:            task.CreatedByAPIKeyID,
 		}
 		if err := r.LLMUsage.Record(ctx, usage); err != nil {
 			r.Logger.Warn().Err(err).Str("task_id", task.ID).

@@ -231,3 +231,39 @@ func TestExplainer_RefusesEmptyResponse(t *testing.T) {
 	assert.Contains(t, err.Error(), "empty summary")
 	assert.Nil(t, repo.written, "empty summary must not be persisted")
 }
+
+// recordingUsageRecorder captures the task_llm_usage row the explainer emits.
+type recordingUsageRecorder struct{ rows []*persistence.TaskLLMUsage }
+
+func (r *recordingUsageRecorder) Record(_ context.Context, u *persistence.TaskLLMUsage) error {
+	r.rows = append(r.rows, u)
+	return nil
+}
+
+// TestExplainer_UsageRowInheritsTaskAPIKeyAttribution — post-mortem cost is real
+// spend and belongs to whoever created the task. Nothing covered this row at all
+// before; raised by the 2026-08-04 review of CE PR #6, which added the
+// attribution copy here alongside the judge and executor paths.
+func TestExplainer_UsageRowInheritsTaskAPIKeyAttribution(t *testing.T) {
+	creator := "akey-creator"
+	usage := &recordingUsageRecorder{}
+	exp := &Explainer{
+		Tasks: &stubTaskRepo{task: &persistence.Task{
+			ID: "task-1", ProjectID: "p1", CreatedByAPIKeyID: &creator,
+		}},
+		PostMortems: &recordingPostMortemRepo{},
+		Chat:        &stubChat{resp: makeChatResponse("why it failed", 120, 40), model: "haiku"},
+		Model:       "haiku",
+		LLMUsage:    usage,
+		Logger:      zerolog.Nop(),
+	}
+	res, err := exp.Generate(context.Background(), "task-1", false)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+
+	require.Len(t, usage.rows, 1, "one task_llm_usage row per generated post-mortem")
+	u := usage.rows[0]
+	assert.Equal(t, persistence.TaskLLMUsageSourcePostMortem, u.Source)
+	require.NotNil(t, u.APIKeyID, "post-mortem usage row must inherit the task's api-key attribution")
+	assert.Equal(t, creator, *u.APIKeyID)
+}

@@ -50,6 +50,9 @@ func (f *forecastStubUsageRepo) AggregateByRoleModel(context.Context, time.Time,
 func (f *forecastStubUsageRepo) AggregateByProject(context.Context, time.Time, time.Time, int) ([]persistence.ProjectSpend, error) {
 	return nil, nil
 }
+func (f *forecastStubUsageRepo) AggregateByAPIKey(context.Context, time.Time, time.Time, int, string) ([]persistence.APIKeySpend, error) {
+	return nil, nil
+}
 func (f *forecastStubUsageRepo) AggregateBySource(context.Context, time.Time, time.Time, string) ([]persistence.SourceSpend, error) {
 	return nil, nil
 }

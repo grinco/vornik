@@ -68,6 +68,9 @@ func (r *recordingUsageRepo) AggregateByRoleModel(_ context.Context, _, _ time.T
 func (r *recordingUsageRepo) AggregateByProject(_ context.Context, _, _ time.Time, _ int) ([]persistence.ProjectSpend, error) {
 	return nil, nil
 }
+func (r *recordingUsageRepo) AggregateByAPIKey(_ context.Context, _, _ time.Time, _ int, _ string) ([]persistence.APIKeySpend, error) {
+	return nil, nil
+}
 func (r *recordingUsageRepo) AggregateBySource(_ context.Context, _, _ time.Time, _ string) ([]persistence.SourceSpend, error) {
 	return nil, nil
 }

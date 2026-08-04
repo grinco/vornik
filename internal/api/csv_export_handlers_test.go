@@ -147,6 +147,9 @@ func (m *mockTaskLLMUsageRepository) AggregateByRoleModel(ctx context.Context, s
 func (m *mockTaskLLMUsageRepository) AggregateByProject(ctx context.Context, since, until time.Time, limit int) ([]persistence.ProjectSpend, error) {
 	return nil, nil
 }
+func (m *mockTaskLLMUsageRepository) AggregateByAPIKey(_ context.Context, _, _ time.Time, _ int, _ string) ([]persistence.APIKeySpend, error) {
+	return nil, nil
+}
 func (m *mockTaskLLMUsageRepository) AggregateBySource(ctx context.Context, since, until time.Time, projectID string) ([]persistence.SourceSpend, error) {
 	return nil, nil
 }

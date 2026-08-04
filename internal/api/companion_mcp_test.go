@@ -289,6 +289,13 @@ func TestCompanionMCP_Delegate_HappyPath_CreatesTaskWithCompanionSource(t *testi
 	require.NotNil(t, companion, "context must include the 'companion' marker block")
 	assert.Equal(t, "claude-code", companion["client_kind"])
 	assert.Equal(t, "akey-co-alpha", companion["api_key_id"])
+	// The first-class column, not just the payload marker: the /ui/spend per-key
+	// table and the budget-cap gate both read created_by_api_key_id, so a
+	// delegate that only stamped the JSON would show as Unattributed spend and
+	// escape its own cap. Pinned after the 2026-08-04 review of CE PR #6.
+	require.NotNil(t, created.CreatedByAPIKeyID,
+		"delegate must attribute the task to the delegating key")
+	assert.Equal(t, "akey-co-alpha", *created.CreatedByAPIKeyID)
 }
 
 // stubUsageRepo satisfies persistence.TaskLLMUsageRepository by

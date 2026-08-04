@@ -57,6 +57,7 @@ func TestTaskGet_FullyPopulatedRow(t *testing.T) {
 		"chk-1",            // open_checkpoint_id
 		"chat_20260521_xx", // chat_turn_id
 		3.5,                // budget_usd
+		"key-abc",          // created_by_api_key_id
 	)
 
 	mock.ExpectQuery(regexp.QuoteMeta("FROM tasks WHERE id = $1")).
@@ -122,6 +123,9 @@ func TestTaskGet_FullyPopulatedRow(t *testing.T) {
 	}
 	if out.ChatTurnID == nil || *out.ChatTurnID != "chat_20260521_xx" {
 		t.Errorf("ChatTurnID: %+v", out.ChatTurnID)
+	}
+	if out.CreatedByAPIKeyID == nil || *out.CreatedByAPIKeyID != "key-abc" {
+		t.Errorf("CreatedByAPIKeyID: %+v", out.CreatedByAPIKeyID)
 	}
 }
 

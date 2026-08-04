@@ -484,18 +484,19 @@ func (s *Server) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	task := &persistence.Task{
-		ID:             taskID,
-		ProjectID:      projectID,
-		WorkflowID:     strPtr(workflowID),
-		IdempotencyKey: idempotencyKey,
-		CreationSource: persistence.TaskCreationSourceUser,
-		Status:         persistence.TaskStatusQueued,
-		Priority:       priority,
-		Payload:        payload,
-		Attempt:        1,
-		MaxAttempts:    3,
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
+		ID:                taskID,
+		ProjectID:         projectID,
+		WorkflowID:        strPtr(workflowID),
+		IdempotencyKey:    idempotencyKey,
+		CreationSource:    persistence.TaskCreationSourceUser,
+		Status:            persistence.TaskStatusQueued,
+		Priority:          priority,
+		Payload:           payload,
+		Attempt:           1,
+		MaxAttempts:       3,
+		CreatedAt:         time.Now(),
+		UpdatedAt:         time.Now(),
+		CreatedByAPIKeyID: strPtr(APIKeyIDFromContext(r.Context())),
 	}
 
 	// Persist task
@@ -554,12 +555,13 @@ func (s *Server) createTaskViaCreator(w http.ResponseWriter, r *http.Request, pr
 		}
 	}
 	task, err := s.taskCreator.Create(r.Context(), taskcreate.Params{
-		ProjectID:      projectID,
-		TaskType:       req.TaskType,
-		Priority:       req.Priority,
-		WorkflowID:     req.WorkflowID,
-		IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
-		RawContext:     req.Context,
+		ProjectID:         projectID,
+		TaskType:          req.TaskType,
+		Priority:          req.Priority,
+		WorkflowID:        req.WorkflowID,
+		IdempotencyKey:    strings.TrimSpace(req.IdempotencyKey),
+		RawContext:        req.Context,
+		CreatedByAPIKeyID: APIKeyIDFromContext(r.Context()),
 	})
 	if err != nil {
 		ce := taskcreate.AsError(err)

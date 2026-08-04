@@ -20,6 +20,7 @@ type extendedLLMUsageRepo struct {
 	stubLLMUsageRepo
 	bySource           []persistence.SourceSpend
 	byProject          []persistence.ProjectSpend
+	byAPIKey           []persistence.APIKeySpend
 	topTasks           []persistence.TaskSpend
 	dailySpend         []persistence.DailySpend
 	stepSpend          []persistence.StepSpend
@@ -33,6 +34,9 @@ func (s *extendedLLMUsageRepo) AggregateBySource(_ context.Context, _ time.Time,
 }
 func (s *extendedLLMUsageRepo) AggregateByProject(context.Context, time.Time, time.Time, int) ([]persistence.ProjectSpend, error) {
 	return s.byProject, nil
+}
+func (s *extendedLLMUsageRepo) AggregateByAPIKey(context.Context, time.Time, time.Time, int, string) ([]persistence.APIKeySpend, error) {
+	return s.byAPIKey, nil
 }
 func (s *extendedLLMUsageRepo) TopTasks(_ context.Context, _ time.Time, _ time.Time, _ int, projectID string) ([]persistence.TaskSpend, error) {
 	s.topTaskProjectArgs = append(s.topTaskProjectArgs, projectID)
@@ -71,6 +75,10 @@ func TestSpend_HappyPathWith7DayWindow(t *testing.T) {
 		dailySpend: []persistence.DailySpend{
 			{Day: time.Now(), CostUSD: 1.5, CallCount: 3},
 		},
+		byAPIKey: []persistence.APIKeySpend{
+			{APIKeyID: "akey-1", KeyName: "jnovak/laptop", KeyPrefix: "vk_abcd", CostUSD: 3.0, CallCount: 4},
+			{CostUSD: 1.0, CallCount: 2}, // unattributed bucket
+		},
 	}
 	repo.sum = 7.0
 	srv := NewServer(WithLLMUsageRepository(repo))
@@ -81,6 +89,9 @@ func TestSpend_HappyPathWith7DayWindow(t *testing.T) {
 	body := rec.Body.String()
 	assert.Contains(t, body, "p1", "project id should render")
 	assert.Contains(t, body, "task_a", "top task id should render")
+	assert.Contains(t, body, "jnovak/laptop", "attributed API key name should render")
+	assert.Contains(t, body, "vk_abcd", "API key prefix should render")
+	assert.Contains(t, body, "Unattributed", "unattributed bucket should render")
 }
 
 func TestSpend_RendersHTMXWindowButtons(t *testing.T) {

@@ -106,14 +106,41 @@ func (s *Server) IngestLLMUsage(w http.ResponseWriter, r *http.Request) {
 	// When task_id is supplied, confirm the task belongs to the
 	// claimed project. Mismatched project / task tuples would mean
 	// either a bug or a tampering attempt; either way reject rather
-	// than upsert into the wrong project's cost ledger.
+	// than upsert into the wrong project's cost ledger. Keep the
+	// fetched task around (rather than re-fetching below) so its
+	// CreatedByAPIKeyID can be copied onto the usage row — this
+	// endpoint is only ever called by the daemon-injected agent
+	// container key (see doc comment above), never the original
+	// caller's key, so the row's attribution has to come from the
+	// task, not from this request's own auth context.
+	var task *persistence.Task
 	if req.TaskID != "" && s.taskRepo != nil {
-		task, err := s.taskRepo.Get(r.Context(), req.TaskID)
+		var err error
+		task, err = s.taskRepo.Get(r.Context(), req.TaskID)
 		if err == nil && task != nil && task.ProjectID != req.ProjectID {
 			respondError(w, http.StatusForbidden, "FORBIDDEN",
 				"task_id belongs to a different project than project_id")
 			return
 		}
+		// A fetch failure does not fail the ingest — the cost is real and
+		// dropping it would understate spend — but it DOES cost the row its
+		// attribution, which then reads as "Unattributed" on /ui/spend with
+		// nothing saying otherwise. Log it as attribution loss specifically, so
+		// a growing unattributed bucket can be traced to this rather than
+		// mistaken for traffic that genuinely has no key behind it.
+		if err != nil || task == nil {
+			s.logger.Warn().Err(err).
+				Str("usage_id", req.UsageID).
+				Str("task_id", req.TaskID).
+				Msg("llm usage ingest: task lookup failed; recording spend WITHOUT api-key attribution")
+		}
+	} else if req.TaskID != "" {
+		// taskRepo unwired (lean deployment): same attribution loss, different
+		// cause. Named separately because the fix is configuration, not a retry.
+		s.logger.Warn().
+			Str("usage_id", req.UsageID).
+			Str("task_id", req.TaskID).
+			Msg("llm usage ingest: no task repository wired; recording spend WITHOUT api-key attribution")
 	}
 	if err := s.validateExecutionTaskBinding(r.Context(), req.TaskID, req.ExecutionID); err != nil {
 		respondError(w, http.StatusForbidden, "FORBIDDEN",
@@ -147,6 +174,9 @@ func (s *Server) IngestLLMUsage(w http.ResponseWriter, r *http.Request) {
 		Iterations:          req.Iterations,
 		CostUSD:             req.CostUSD,
 		Source:              persistence.TaskLLMUsageSourceWorkflowStep,
+	}
+	if task != nil {
+		row.APIKeyID = task.CreatedByAPIKeyID
 	}
 
 	if err := s.llmUsageRepo.Upsert(r.Context(), row); err != nil {

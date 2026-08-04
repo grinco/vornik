@@ -517,6 +517,15 @@ type TaskLLMUsageRepository interface {
 	// most LLM budget."
 	AggregateByProject(ctx context.Context, since, until time.Time, limit int) ([]ProjectSpend, error)
 
+	// AggregateByAPIKey groups spend by the API key attributed to each
+	// usage row (migration 149 — see APIKeySpend), ordered by cost
+	// descending. Powers the /ui/spend "Spend per API key" table. The unit
+	// is the KEY, not a user — see APIKeySpend for why those are not
+	// interchangeable. Rows with no attributed key collapse into one
+	// "Unattributed" bucket rather than vanishing.
+	// projectID is optional, same convention as AggregateBySource.
+	AggregateByAPIKey(ctx context.Context, since, until time.Time, limit int, projectID string) ([]APIKeySpend, error)
+
 	// AggregateBySource groups spend by the `source` column
 	// (workflow_step vs dispatcher) within the window. Critical for
 	// the deep-dive: dispatcher overhead (every chat round-trip) is
@@ -661,6 +670,34 @@ type ProjectSpend struct {
 	// CacheCreationTokens / CacheReadTokens — aggregated cache
 	// observability per project. Surface on the dashboard so
 	// operators see which projects benefit most from prompt caching.
+	CacheCreationTokens int64
+	CacheReadTokens     int64
+}
+
+// APIKeySpend is one row of the per-API-key spend table (migration 149 —
+// "Spend per API key" on /ui/spend). The unit of attribution is the KEY, not a
+// user: keys are minted per (project, client, session), one person may hold
+// several, and many keys have no person behind them (CI, another daemon, a cron
+// caller). APIKeyID/KeyName/KeyPrefix are all empty for
+// the "Unattributed" bucket: usage rows with no api_key_id, which today
+// is most dispatcher/memory/wizard/authoring traffic — those sites have
+// neither a task nor reliable API-key context (see migration 149's
+// comment for the full list).
+type APIKeySpend struct {
+	APIKeyID  string
+	KeyName   string
+	KeyPrefix string
+	// ProjectID is the owning project of the key itself (from api_keys),
+	// not necessarily the project the usage row belongs to — surfaced so
+	// an all-projects view can show which project's key is spending.
+	ProjectID        string
+	CostUSD          float64
+	CallCount        int
+	TaskCount        int
+	PromptTokens     int64
+	CompletionTokens int64
+	// CacheCreationTokens / CacheReadTokens — aggregated cache
+	// observability per API key, same convention as SourceSpend/ProjectSpend.
 	CacheCreationTokens int64
 	CacheReadTokens     int64
 }

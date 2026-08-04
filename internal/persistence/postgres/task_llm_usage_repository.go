@@ -39,12 +39,12 @@ func (r *TaskLLMUsageRepository) Record(ctx context.Context, u *persistence.Task
 			id, project_id, task_id, execution_id, step_id,
 			role, model, prompt_tokens, completion_tokens, iterations,
 			cost_usd, source, session_id, recorded_at,
-			cache_creation_tokens, cache_read_tokens
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+			cache_creation_tokens, cache_read_tokens, api_key_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
 		u.ID, u.ProjectID, nullableString(u.TaskID), nullableString(u.ExecutionID), u.StepID,
 		u.Role, u.Model, u.PromptTokens, u.CompletionTokens, u.Iterations,
 		u.CostUSD, source, nullableString(u.SessionID), recordedAt,
-		u.CacheCreationTokens, u.CacheReadTokens,
+		u.CacheCreationTokens, u.CacheReadTokens, nullableString(u.APIKeyID),
 	)
 	return mapDBError(err)
 }
@@ -86,8 +86,8 @@ func (r *TaskLLMUsageRepository) Upsert(ctx context.Context, u *persistence.Task
 			id, project_id, task_id, execution_id, step_id,
 			role, model, prompt_tokens, completion_tokens, iterations,
 			cost_usd, source, session_id, recorded_at,
-			cache_creation_tokens, cache_read_tokens
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+			cache_creation_tokens, cache_read_tokens, api_key_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (id) DO UPDATE SET
 			prompt_tokens         = EXCLUDED.prompt_tokens,
 			completion_tokens     = EXCLUDED.completion_tokens,
@@ -96,11 +96,12 @@ func (r *TaskLLMUsageRepository) Upsert(ctx context.Context, u *persistence.Task
 			model                 = EXCLUDED.model,
 			recorded_at           = EXCLUDED.recorded_at,
 			cache_creation_tokens = EXCLUDED.cache_creation_tokens,
-			cache_read_tokens     = EXCLUDED.cache_read_tokens`,
+			cache_read_tokens     = EXCLUDED.cache_read_tokens,
+			api_key_id            = EXCLUDED.api_key_id`,
 		u.ID, u.ProjectID, nullableString(u.TaskID), nullableString(u.ExecutionID), u.StepID,
 		u.Role, u.Model, u.PromptTokens, u.CompletionTokens, u.Iterations,
 		u.CostUSD, source, nullableString(u.SessionID), recordedAt,
-		u.CacheCreationTokens, u.CacheReadTokens,
+		u.CacheCreationTokens, u.CacheReadTokens, nullableString(u.APIKeyID),
 	)
 	return mapDBError(err)
 }
@@ -132,7 +133,7 @@ func (r *TaskLLMUsageRepository) List(ctx context.Context, f persistence.TaskLLM
 		SELECT id, project_id, task_id, execution_id, step_id,
 		       role, model, prompt_tokens, completion_tokens, iterations,
 		       cost_usd, source, session_id, recorded_at,
-		       cache_creation_tokens, cache_read_tokens
+		       cache_creation_tokens, cache_read_tokens, api_key_id
 		FROM task_llm_usage WHERE 1=1`
 	args := make([]any, 0, 10)
 	pos := 1
@@ -207,18 +208,20 @@ func (r *TaskLLMUsageRepository) List(ctx context.Context, f persistence.TaskLLM
 			taskID      sql.NullString
 			executionID sql.NullString
 			sessionID   sql.NullString
+			apiKeyID    sql.NullString
 		)
 		if err := rows.Scan(
 			&u.ID, &u.ProjectID, &taskID, &executionID, &u.StepID,
 			&u.Role, &u.Model, &u.PromptTokens, &u.CompletionTokens, &u.Iterations,
 			&u.CostUSD, &u.Source, &sessionID, &u.RecordedAt,
-			&u.CacheCreationTokens, &u.CacheReadTokens,
+			&u.CacheCreationTokens, &u.CacheReadTokens, &apiKeyID,
 		); err != nil {
 			return nil, err
 		}
 		u.TaskID = stringPtrOrNil(taskID)
 		u.ExecutionID = stringPtrOrNil(executionID)
 		u.SessionID = stringPtrOrNil(sessionID)
+		u.APIKeyID = stringPtrOrNil(apiKeyID)
 		out = append(out, &u)
 	}
 	return out, rows.Err()
@@ -263,17 +266,33 @@ func (r *TaskLLMUsageRepository) SumCostByTask(ctx context.Context, taskID strin
 	return total, nil
 }
 
-// SumCostByAPIKey sums LLM spend across every task created by a
-// companion API key. Joins task_llm_usage → tasks on the expression
-// indexed by migration 82. Low-frequency (the delegate gate), so the
-// JOIN is fine — the partial expression index makes the tasks-side
-// lookup an index scan and the existing idx_task_llm_usage_task covers
-// the usage side. See finding #2 / mitigation plan §7.2.
+// SumCostByAPIKey sums LLM spend across every task created by an API key —
+// the budget-cap gate (finding #2 / mitigation plan §7.2).
+//
+// Key identity comes from tasks.created_by_api_key_id (migration 148) FIRST,
+// falling back to the companion payload marker indexed by migration 82 for
+// tasks created before that column existed. One identity rule, so this gate and
+// the /ui/spend per-key table cannot disagree about whose spend it is: before
+// migration 148 the cap saw only companion-delegated tasks, so a key spending
+// through REST POST /tasks was capped at nothing.
+//
+// The SCOPE still differs from AggregateByAPIKey, deliberately: this counts
+// spend on TASKS the key created (the JOIN), while the UI table also counts
+// task-less external_api rows the chat proxy attributes to a key. Widening the
+// cap to those would silently start refusing delegates on deployments where a
+// key's proxy traffic already exceeds its cap, so that is a separate decision,
+// not a side effect of this query.
+//
+// Low-frequency (the delegate gate), so the JOIN is fine — the partial indexes
+// on both expressions make the tasks-side lookup an index scan and the existing
+// idx_task_llm_usage_task covers the usage side.
 func (r *TaskLLMUsageRepository) SumCostByAPIKey(ctx context.Context, apiKeyID string, since, until time.Time) (float64, error) {
 	query := `SELECT COALESCE(SUM(u.cost_usd), 0)
 		FROM task_llm_usage u
 		JOIN tasks t ON t.id = u.task_id
-		WHERE t.payload->'companion'->>'api_key_id' = $1`
+		WHERE (t.created_by_api_key_id = $1
+		       OR (t.created_by_api_key_id IS NULL
+		           AND t.payload->'companion'->>'api_key_id' = $1))`
 	args := []any{apiKeyID}
 	pos := 2
 	if !since.IsZero() {
@@ -398,6 +417,68 @@ func (r *TaskLLMUsageRepository) AggregateByProject(ctx context.Context, since, 
 		var s persistence.ProjectSpend
 		if err := rows.Scan(&s.ProjectID, &s.CostUSD, &s.StepCount, &s.PromptTokens, &s.CompletionTokens, &s.TaskCount,
 			&s.CacheCreationTokens, &s.CacheReadTokens); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// AggregateByAPIKey groups spend by the API key attributed to each usage
+// row (migration 149), joined against api_keys for the operator-facing
+// name/prefix. Rows with no api_key_id (dispatcher, memory background
+// workers, and any other unattributed source) collapse into one bucket
+// with an empty api_key_id/name — the /ui/spend template renders that as
+// "Unattributed", the same convention already used for source="".
+// projectID is optional, same convention as AggregateBySource.
+func (r *TaskLLMUsageRepository) AggregateByAPIKey(ctx context.Context, since, until time.Time, limit int, projectID string) ([]persistence.APIKeySpend, error) {
+	query := `
+		SELECT COALESCE(u.api_key_id, '') AS api_key_id,
+		       COALESCE(k.name, '') AS key_name,
+		       COALESCE(k.key_prefix, '') AS key_prefix,
+		       COALESCE(k.project_id, '') AS key_project_id,
+		       COALESCE(SUM(u.cost_usd), 0) AS cost_usd,
+		       COUNT(*) AS call_count,
+		       COUNT(DISTINCT u.task_id) FILTER (WHERE u.task_id IS NOT NULL) AS task_count,
+		       COALESCE(SUM(u.prompt_tokens), 0) AS prompt_tokens,
+		       COALESCE(SUM(u.completion_tokens), 0) AS completion_tokens,
+		       COALESCE(SUM(u.cache_creation_tokens), 0) AS cache_creation_tokens,
+		       COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens
+		FROM task_llm_usage u
+		LEFT JOIN api_keys k ON k.id = u.api_key_id
+		WHERE 1=1`
+	var args []any
+	pos := 1
+	if projectID != "" {
+		query += fmt.Sprintf(" AND u.project_id = $%d", pos)
+		args = append(args, projectID)
+		pos++
+	}
+	if !since.IsZero() {
+		query += fmt.Sprintf(" AND u.recorded_at >= $%d", pos)
+		args = append(args, since)
+		pos++
+	}
+	if !until.IsZero() {
+		query += fmt.Sprintf(" AND u.recorded_at < $%d", pos)
+		args = append(args, until)
+		pos++
+	}
+	query += ` GROUP BY u.api_key_id, k.name, k.key_prefix, k.project_id ORDER BY cost_usd DESC`
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", pos)
+		args = append(args, limit)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []persistence.APIKeySpend
+	for rows.Next() {
+		var s persistence.APIKeySpend
+		if err := rows.Scan(&s.APIKeyID, &s.KeyName, &s.KeyPrefix, &s.ProjectID, &s.CostUSD, &s.CallCount, &s.TaskCount,
+			&s.PromptTokens, &s.CompletionTokens, &s.CacheCreationTokens, &s.CacheReadTokens); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

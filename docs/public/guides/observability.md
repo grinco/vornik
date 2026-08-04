@@ -3,7 +3,7 @@ sources:
     - path: internal/observability/metrics.go
       sha256: 71ab1bc0f72aea69510677c929b401a7ab7030c1371905197f6504c5a71c120b
     - path: internal/ui/spend.go
-      sha256: ee090eb1f9793aee5286f54f68ff4355b9141d08575811a0dab388c2432e6396
+      sha256: d79cd98d7b5266dca11014a083f31d2572d31ff6df4de049f89010aee2b65030
     - path: internal/reminders/metrics.go
       sha256: bb22804ef50c44d048082968c16e51c5d729f4dafe5b1b892fe9719d0fc0fec6
 ---
@@ -45,8 +45,8 @@ reachability, **runtime** probes, and **cluster** leader/heartbeat status.
 ## Spend and cost-efficiency
 
 The spend dashboard (`/ui/spend`) slices cost by window (24h / 7d / 30d),
-project, source, task, and role+model. Alongside total cost and token counts it
-surfaces a few efficiency signals:
+project, source, task, role+model, and **API key**. Alongside total cost and
+token counts it surfaces a few efficiency signals:
 
 - **Input ratio** — prompt tokens as a share of total; a persistently high ratio
   flags context bloat.
@@ -58,6 +58,42 @@ surfaces a few efficiency signals:
   success than an expensive one that doesn't; the drift badge (green/amber/red)
   flags when that's getting worse. See
   [Cost and caching](cost-and-caching.md#effective-cost-per-success).
+
+### Spend per API key
+
+The **Spend per API key** table attributes LLM cost to the key that
+authenticated the call, so you can see which integration is spending — a
+companion session, a CI caller, a script hitting `POST /tasks`.
+
+Read it as *per key*, not *per person*. A key is minted per (project, client,
+session), so one teammate routinely holds several and each shows as its own row;
+plenty of keys have no person behind them at all. Vornik's user accounts (admin
+UI logins, sessions, approvals) are a separate concept and are not what this
+table groups by.
+
+Rows land in **Unattributed** when the spend has no reliable key behind it:
+dispatcher chat, memory background workers, the project wizard, UI authoring
+assist, and the fix-it doctor. Those are shown as one bucket rather than guessed
+at. Attribution starts at the migration that added it — spend recorded before
+then stays unattributed, with no backfill.
+
+A key's own **spend cap** (`vornikctl companion grant --budget-usd`) is a
+narrower number than its row here: the cap counts spend on tasks the key
+created, while the table also includes task-less calls the OpenAI-compatible
+chat proxy attributes to it. Both resolve the key the same way; they differ only
+in which rows they count.
+
+!!! warning "Upgrade note: caps may start binding where they didn't"
+
+    Before per-key attribution existed, the cap could only recognise a key
+    through the marker left by companion `delegate`, so tasks a key created
+    through the REST API (`POST /tasks`) were invisible to it — that spend was
+    effectively uncapped. After upgrading, both paths count. A key whose cap
+    looked like it had headroom may be at or over it, and its next `delegate`
+    will be refused with `BUDGET_EXCEEDED`. Nothing is retroactively billed;
+    only the gate's view widened. If you rely on caps, check
+    `vornikctl companion list` against the per-key rows on `/ui/spend` before
+    upgrading and raise any cap that was sized against companion traffic alone.
 
 From the CLI, `vornikctl cache-stats` reports cache effectiveness. (Note:
 `vornikctl cpc` is the cross-project-call ledger, not a cost command — there is no

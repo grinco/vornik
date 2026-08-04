@@ -80,6 +80,9 @@ func (s *stubScopeSpendRepo) TopTasks(_ context.Context, _, _ time.Time, _ int, 
 func (s *stubScopeSpendRepo) AggregateByRoleModel(_ context.Context, _, _ time.Time, _ int, _ string) ([]persistence.RoleModelSpend, error) {
 	return nil, nil
 }
+func (s *stubScopeSpendRepo) AggregateByAPIKey(_ context.Context, _, _ time.Time, _ int, _ string) ([]persistence.APIKeySpend, error) {
+	return nil, nil
+}
 func (s *stubScopeSpendRepo) TimeSeriesByDay(_ context.Context, _, _ time.Time, _ string) ([]persistence.DailySpend, error) {
 	return nil, nil
 }

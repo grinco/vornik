@@ -188,6 +188,7 @@ func TestLLMUsage_RecordIncrementsMetrics(t *testing.T) {
 			"worker", "claude-opus-4-7", int64(100), int64(50), 3,
 			0.0125, "workflow_step", sqlmock.AnyArg(), sqlmock.AnyArg(),
 			int64(0), int64(0), // cache_creation_tokens, cache_read_tokens (phase A)
+			nil, // api_key_id (migration 149)
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 

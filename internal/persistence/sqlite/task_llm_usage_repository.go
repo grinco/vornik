@@ -49,12 +49,12 @@ func (r *TaskLLMUsageRepository) Record(ctx context.Context, u *persistence.Task
 			id, project_id, task_id, execution_id, step_id,
 			role, model, prompt_tokens, completion_tokens, iterations,
 			cost_usd, source, session_id, recorded_at,
-			cache_creation_tokens, cache_read_tokens
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			cache_creation_tokens, cache_read_tokens, api_key_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.ProjectID, u.TaskID, u.ExecutionID, u.StepID,
 		u.Role, u.Model, u.PromptTokens, u.CompletionTokens, u.Iterations,
 		u.CostUSD, source, u.SessionID, sqliteTime(u.RecordedAt),
-		u.CacheCreationTokens, u.CacheReadTokens,
+		u.CacheCreationTokens, u.CacheReadTokens, u.APIKeyID,
 	)
 	return err
 }
@@ -76,8 +76,8 @@ func (r *TaskLLMUsageRepository) Upsert(ctx context.Context, u *persistence.Task
 			id, project_id, task_id, execution_id, step_id,
 			role, model, prompt_tokens, completion_tokens, iterations,
 			cost_usd, source, session_id, recorded_at,
-			cache_creation_tokens, cache_read_tokens
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			cache_creation_tokens, cache_read_tokens, api_key_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET
 			prompt_tokens         = excluded.prompt_tokens,
 			completion_tokens     = excluded.completion_tokens,
@@ -85,11 +85,12 @@ func (r *TaskLLMUsageRepository) Upsert(ctx context.Context, u *persistence.Task
 			cost_usd              = excluded.cost_usd,
 			recorded_at           = excluded.recorded_at,
 			cache_creation_tokens = excluded.cache_creation_tokens,
-			cache_read_tokens     = excluded.cache_read_tokens`,
+			cache_read_tokens     = excluded.cache_read_tokens,
+			api_key_id            = excluded.api_key_id`,
 		u.ID, u.ProjectID, u.TaskID, u.ExecutionID, u.StepID,
 		u.Role, u.Model, u.PromptTokens, u.CompletionTokens, u.Iterations,
 		u.CostUSD, source, u.SessionID, sqliteTime(u.RecordedAt),
-		u.CacheCreationTokens, u.CacheReadTokens,
+		u.CacheCreationTokens, u.CacheReadTokens, u.APIKeyID,
 	)
 	return err
 }
@@ -101,7 +102,7 @@ func (r *TaskLLMUsageRepository) List(ctx context.Context, f persistence.TaskLLM
 		SELECT id, project_id, task_id, execution_id, step_id,
 		       role, model, prompt_tokens, completion_tokens, iterations,
 		       cost_usd, source, session_id, recorded_at,
-		       cache_creation_tokens, cache_read_tokens
+		       cache_creation_tokens, cache_read_tokens, api_key_id
 		FROM task_llm_usage WHERE 1=1`)
 	args := make([]any, 0, 6)
 
@@ -149,12 +150,13 @@ func (r *TaskLLMUsageRepository) List(ctx context.Context, f persistence.TaskLLM
 			executionID sql.NullString
 			sessionID   sql.NullString
 			recordedAt  sqlTime
+			apiKeyID    sql.NullString
 		)
 		if err := rows.Scan(
 			&u.ID, &u.ProjectID, &taskID, &executionID, &u.StepID,
 			&u.Role, &u.Model, &u.PromptTokens, &u.CompletionTokens, &u.Iterations,
 			&u.CostUSD, &u.Source, &sessionID, &recordedAt,
-			&u.CacheCreationTokens, &u.CacheReadTokens,
+			&u.CacheCreationTokens, &u.CacheReadTokens, &apiKeyID,
 		); err != nil {
 			return nil, err
 		}
@@ -166,6 +168,9 @@ func (r *TaskLLMUsageRepository) List(ctx context.Context, f persistence.TaskLLM
 		}
 		if sessionID.Valid {
 			u.SessionID = &sessionID.String
+		}
+		if apiKeyID.Valid {
+			u.APIKeyID = &apiKeyID.String
 		}
 		u.RecordedAt = recordedAt.Time
 		out = append(out, &u)
@@ -207,18 +212,23 @@ func (r *TaskLLMUsageRepository) SumCostByTask(ctx context.Context, taskID strin
 	return sum, nil
 }
 
-// SumCostByAPIKey sums LLM spend across every task created by a
-// companion API key, joining task_llm_usage → tasks on the companion
-// api_key_id embedded in the task payload. SQLite extracts the JSON
-// path with json_extract (Postgres uses the -> / ->> operators). See
-// finding #2 / mitigation plan §7.2.
+// SumCostByAPIKey sums LLM spend across every task created by an API key — the
+// budget-cap gate (finding #2 / mitigation plan §7.2).
+//
+// Identity resolution matches the Postgres backend and the /ui/spend per-key
+// table: tasks.created_by_api_key_id (migration 148) first, the companion
+// payload marker only as the pre-migration fallback. SQLite extracts the JSON
+// path with json_extract (Postgres uses the -> / ->> operators). The scope
+// difference from AggregateByAPIKey is documented on the Postgres copy.
 func (r *TaskLLMUsageRepository) SumCostByAPIKey(ctx context.Context, apiKeyID string, since, until time.Time) (float64, error) {
 	var b strings.Builder
 	b.WriteString(`SELECT COALESCE(SUM(u.cost_usd), 0)
 		FROM task_llm_usage u
 		JOIN tasks t ON t.id = u.task_id
-		WHERE json_extract(t.payload, '$.companion.api_key_id') = ?`)
-	args := []any{apiKeyID}
+		WHERE (t.created_by_api_key_id = ?
+		       OR (t.created_by_api_key_id IS NULL
+		           AND json_extract(t.payload, '$.companion.api_key_id') = ?))`)
+	args := []any{apiKeyID, apiKeyID}
 	if !since.IsZero() {
 		b.WriteString(" AND u.recorded_at >= ?")
 		args = append(args, sqliteTime(since))
@@ -377,6 +387,65 @@ func (r *TaskLLMUsageRepository) AggregateByProject(ctx context.Context, since, 
 		var s persistence.ProjectSpend
 		if err := rows.Scan(&s.ProjectID, &s.CostUSD, &s.StepCount, &s.PromptTokens, &s.CompletionTokens, &s.TaskCount,
 			&s.CacheCreationTokens, &s.CacheReadTokens); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// AggregateByAPIKey groups spend by the API key attributed to each usage
+// row (migration 149), joined against api_keys for the operator-facing
+// name/prefix. Rows with no api_key_id (dispatcher, memory background
+// workers, and any other unattributed source) collapse into one bucket
+// with an empty APIKeyID/KeyName — the /ui/spend template renders that as
+// "Unattributed", the same convention already used for source="".
+// projectID is optional, same convention as AggregateBySource.
+func (r *TaskLLMUsageRepository) AggregateByAPIKey(ctx context.Context, since, until time.Time, limit int, projectID string) ([]persistence.APIKeySpend, error) {
+	var b strings.Builder
+	b.WriteString(`
+		SELECT COALESCE(u.api_key_id, ''),
+		       COALESCE(k.name, ''),
+		       COALESCE(k.key_prefix, ''),
+		       COALESCE(k.project_id, ''),
+		       COALESCE(SUM(u.cost_usd), 0),
+		       COUNT(*),
+		       COUNT(DISTINCT CASE WHEN u.task_id IS NOT NULL THEN u.task_id END),
+		       COALESCE(SUM(u.prompt_tokens), 0),
+		       COALESCE(SUM(u.completion_tokens), 0),
+		       COALESCE(SUM(u.cache_creation_tokens), 0),
+		       COALESCE(SUM(u.cache_read_tokens), 0)
+		FROM task_llm_usage u
+		LEFT JOIN api_keys k ON k.id = u.api_key_id
+		WHERE 1=1`)
+	args := make([]any, 0, 4)
+	if projectID != "" {
+		b.WriteString(" AND u.project_id = ?")
+		args = append(args, projectID)
+	}
+	if !since.IsZero() {
+		b.WriteString(" AND u.recorded_at >= ?")
+		args = append(args, sqliteTime(since))
+	}
+	if !until.IsZero() {
+		b.WriteString(" AND u.recorded_at < ?")
+		args = append(args, sqliteTime(until))
+	}
+	b.WriteString(" GROUP BY u.api_key_id ORDER BY 5 DESC")
+	if limit > 0 {
+		b.WriteString(" LIMIT ?")
+		args = append(args, limit)
+	}
+	rows, err := r.db.QueryContext(ctx, b.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []persistence.APIKeySpend
+	for rows.Next() {
+		var s persistence.APIKeySpend
+		if err := rows.Scan(&s.APIKeyID, &s.KeyName, &s.KeyPrefix, &s.ProjectID, &s.CostUSD, &s.CallCount, &s.TaskCount,
+			&s.PromptTokens, &s.CompletionTokens, &s.CacheCreationTokens, &s.CacheReadTokens); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

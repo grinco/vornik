@@ -125,6 +125,14 @@ type Params struct {
 	// API contract where callers ship arbitrary nested JSON. The
 	// UI form leaves this empty and uses Prompt instead.
 	RawContext json.RawMessage
+	// CreatedByAPIKeyID is the api_keys.id that authenticated this
+	// create call, when known. Empty means "no key" (chat/webhook/
+	// autonomy-originated, or a session-authenticated UI call) —
+	// resolved by the caller (api.APIKeyIDFromContext(ctx)) since this
+	// package can't import internal/api without cycling. Stored on the
+	// created task (persistence.Task.CreatedByAPIKeyID) and copied onto
+	// downstream task_llm_usage rows to power the spend-per-API-key UI.
+	CreatedByAPIKeyID string
 }
 
 // Creator bundles the dependencies the shared core needs. Both
@@ -375,18 +383,19 @@ func (c *Creator) Create(ctx context.Context, p Params) (*persistence.Task, erro
 	}
 
 	task := &persistence.Task{
-		ID:             persistence.GenerateID("task"),
-		ProjectID:      p.ProjectID,
-		WorkflowID:     ptrIfNonEmpty(workflowID),
-		IdempotencyKey: ptrIfNonEmpty(idempotencyKey),
-		CreationSource: creationSource,
-		Status:         persistence.TaskStatusQueued,
-		Priority:       priority,
-		Payload:        payload,
-		Attempt:        1,
-		MaxAttempts:    3,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID:                persistence.GenerateID("task"),
+		ProjectID:         p.ProjectID,
+		WorkflowID:        ptrIfNonEmpty(workflowID),
+		IdempotencyKey:    ptrIfNonEmpty(idempotencyKey),
+		CreationSource:    creationSource,
+		Status:            persistence.TaskStatusQueued,
+		Priority:          priority,
+		Payload:           payload,
+		Attempt:           1,
+		MaxAttempts:       3,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		CreatedByAPIKeyID: ptrIfNonEmpty(p.CreatedByAPIKeyID),
 	}
 
 	// Atomic hard-cap reservation (trading-hardening §1): claim this task's

@@ -108,6 +108,17 @@ type SpendData struct {
 	// renders in this page's layout for one-screen drill-down.
 	TopRoleModels []RoleModelSpendRow
 
+	// Spend per API key (migration 149) — attributed to the KEY that
+	// authenticated the call, which is deliberately not the same thing as a
+	// user. Vornik has a real user concept (admin UI accounts, sessions,
+	// approvals); an API key is a separate credential minted per
+	// (project, client, session), so one person routinely holds several and
+	// plenty of keys have no person behind them at all (CI, another daemon,
+	// a cron caller). Reading this table as "spend per person" over-reports
+	// per-key granularity and under-reports anyone holding two keys. Rows
+	// with no attributed key collapse into one "Unattributed" bucket.
+	ByAPIKey []APIKeySpendRow
+
 	// Phase 1 signal cohorts — one row per (worker role, model) seen
 	// in step-outcome hallucination signals over the active window.
 	// Distinct from HallucinationRollup, which keys on the judge's
@@ -251,6 +262,36 @@ type RoleModelSpendRow struct {
 	// Cache observability per (role, model). Sourced from the
 	// aggregation query; ratio = cache_read / (cache_read +
 	// prompt_tokens) × 100.
+	CacheCreationTokens int64
+	CacheReadTokens     int64
+	CacheHitRatioPct    float64
+}
+
+// APIKeySpendRow is one row of the per-API-key spend leaderboard, keyed on the
+// API key that authenticated the call — not on a user (see
+// persistence.APIKeySpend for why the two must not be conflated).
+// Unattributed is the "no api_key_id at all" bucket — dispatcher chat, memory
+// background workers, project wizard, UI authoring assist, and fix-it doctor
+// traffic, none of which have reliable API-key identity. It is deliberately ONE
+// bucket, which is why the template must branch on Unattributed rather than on
+// an empty KeyName: a row whose key id is set but whose api_keys row has since
+// been deleted also has no name, and labelling that "Unattributed" too would put
+// two differently-meaning rows under one label. Deleted keys render as their id.
+type APIKeySpendRow struct {
+	KeyName   string
+	KeyPrefix string
+	// KeyID is empty only for the genuine Unattributed bucket.
+	KeyID string
+	// Unattributed is true only when no key was attributed at all. Derived here
+	// rather than in the template so the rule lives with the definition.
+	Unattributed     bool
+	CostUSD          float64
+	CallCount        int
+	PromptTokens     int64
+	CompletionTokens int64
+	PctOfTotal       float64
+	// Cache observability per key, same convention as the other
+	// leaderboard rows.
 	CacheCreationTokens int64
 	CacheReadTokens     int64
 	CacheHitRatioPct    float64
@@ -471,6 +512,29 @@ func (s *Server) Spend(w http.ResponseWriter, r *http.Request) {
 		// consistent.
 		data.TopRoleModels, data.TotalCacheCreationTokens, data.TotalCacheReadTokens, data.CacheHitRatioPct =
 			computeCacheHeadline(data.TopRoleModels)
+	}
+
+	{
+		rows := s.apiKeySpendForScope(ctx, iter, since)
+		for _, r := range rows {
+			row := APIKeySpendRow{
+				KeyName:             r.KeyName,
+				KeyPrefix:           r.KeyPrefix,
+				KeyID:               r.APIKeyID,
+				Unattributed:        r.APIKeyID == "",
+				CostUSD:             r.CostUSD,
+				CallCount:           r.CallCount,
+				PromptTokens:        r.PromptTokens,
+				CompletionTokens:    r.CompletionTokens,
+				CacheCreationTokens: r.CacheCreationTokens,
+				CacheReadTokens:     r.CacheReadTokens,
+				CacheHitRatioPct:    decorateCacheRatioPct(r.PromptTokens, r.CacheReadTokens),
+			}
+			if data.TotalUSD > 0 {
+				row.PctOfTotal = r.CostUSD / data.TotalUSD * 100
+			}
+			data.ByAPIKey = append(data.ByAPIKey, row)
+		}
 	}
 
 	// Phase 1 cohorts — walk recent step outcomes for the active window,
@@ -1018,6 +1082,61 @@ func (s *Server) roleModelSpendForScope(ctx context.Context, iter []string, sinc
 		}
 	}
 	out := make([]persistence.RoleModelSpend, 0, len(order))
+	for _, k := range order {
+		out = append(out, *m[k])
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].CostUSD > out[j].CostUSD })
+	if len(out) > 20 {
+		out = out[:20]
+	}
+	return out
+}
+
+// apiKeySpendForScope merges per-project AggregateByAPIKey results across
+// iter the same way roleModelSpendForScope merges role/model rows. Keying
+// on APIKeyID naturally collapses every project's "" (unattributed) bucket
+// into one combined row, which is the desired behaviour — "Unattributed"
+// should read as one total, not one row per project.
+//
+// The leaderboard is "top 20 per project, merged", NOT a global top 20: the
+// per-project query truncates before this merge sees it, so on a project with
+// more than 20 keys spending more than its own unattributed traffic, that
+// project's Unattributed slice is cut and the combined total under-reports. The
+// truncation is logged rather than left to look like completeness (review
+// finding 5, 2026-08-04); a global top-N would need one query across projects,
+// which the per-project scoping this page is built on does not offer.
+func (s *Server) apiKeySpendForScope(ctx context.Context, iter []string, since time.Time) []persistence.APIKeySpend {
+	m := map[string]*persistence.APIKeySpend{}
+	var order []string
+	for _, pid := range iter {
+		const perProject = 20
+		rows, err := s.llmUsageRepo.AggregateByAPIKey(ctx, since, time.Time{}, perProject, pid)
+		if err != nil {
+			s.logger.Warn().Err(err).Str("project_id", pid).Msg("spend: API key leaderboard failed")
+			continue
+		}
+		if len(rows) == perProject {
+			s.logger.Debug().Str("project_id", pid).Int("limit", perProject).
+				Msg("spend: API key leaderboard hit the per-project cap; merged totals may under-report low-spend keys")
+		}
+		for _, r := range rows {
+			k := r.APIKeyID
+			if e := m[k]; e != nil {
+				e.CostUSD += r.CostUSD
+				e.CallCount += r.CallCount
+				e.TaskCount += r.TaskCount
+				e.PromptTokens += r.PromptTokens
+				e.CompletionTokens += r.CompletionTokens
+				e.CacheCreationTokens += r.CacheCreationTokens
+				e.CacheReadTokens += r.CacheReadTokens
+			} else {
+				cp := r
+				m[k] = &cp
+				order = append(order, k)
+			}
+		}
+	}
+	out := make([]persistence.APIKeySpend, 0, len(order))
 	for _, k := range order {
 		out = append(out, *m[k])
 	}

@@ -313,3 +313,62 @@ func TestIngestLLMUsage_RejectsTaskFromOtherProject(t *testing.T) {
 		t.Fatalf("Upsert called despite task-project mismatch: %#v", repo.row)
 	}
 }
+
+// TestIngestLLMUsage_CopiesAPIKeyAttributionFromTask — this endpoint is called
+// only by the daemon-injected agent-container key, never the original caller's
+// key, so a usage row's attribution has to come from the TASK. Raised by the
+// 2026-08-04 review of the CE PR #6 intake: the copy existed, nothing pinned it.
+func TestIngestLLMUsage_CopiesAPIKeyAttributionFromTask(t *testing.T) {
+	creator := "akey-creator"
+	repo := &capturingLLMUsageRepo{}
+	taskRepo := &mocks.MockTaskRepository{
+		GetFunc: func(_ context.Context, id string) (*persistence.Task, error) {
+			return &persistence.Task{ID: id, ProjectID: "proj-a", CreatedByAPIKeyID: &creator}, nil
+		},
+	}
+	server := NewServer(WithLogger(zerolog.Nop()), WithLLMUsageRepository(repo), WithTaskRepository(taskRepo))
+
+	body := `{"usage_id":"u1","project_id":"proj-a","task_id":"task-X","role":"coder","cost_usd":0.5}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/llm-usage", bytes.NewBufferString(body))
+	req = req.WithContext(taskScopedKeyCtx(req.Context(), "task-X", "proj-a"))
+	rec := httptest.NewRecorder()
+	server.IngestLLMUsage(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body=%s, want 204", rec.Code, rec.Body.String())
+	}
+	if repo.row == nil || repo.row.APIKeyID == nil {
+		t.Fatalf("usage row carries no api-key attribution: %#v", repo.row)
+	}
+	if *repo.row.APIKeyID != creator {
+		t.Fatalf("APIKeyID = %q, want the task's creator %q", *repo.row.APIKeyID, creator)
+	}
+}
+
+// TestIngestLLMUsage_TaskLookupFailureRecordsUnattributed — a task fetch that
+// fails must not drop the row (the cost is real; dropping it understates spend),
+// but the row then has no attribution and shows as "Unattributed". Pinned so the
+// degradation stays deliberate rather than becoming a silent 500 or a lost row.
+func TestIngestLLMUsage_TaskLookupFailureRecordsUnattributed(t *testing.T) {
+	repo := &capturingLLMUsageRepo{}
+	taskRepo := &mocks.MockTaskRepository{
+		GetFunc: func(_ context.Context, _ string) (*persistence.Task, error) {
+			return nil, errors.New("db unavailable")
+		},
+	}
+	server := NewServer(WithLogger(zerolog.Nop()), WithLLMUsageRepository(repo), WithTaskRepository(taskRepo))
+
+	body := `{"usage_id":"u1","project_id":"proj-a","task_id":"task-X","role":"coder","cost_usd":0.5}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/llm-usage", bytes.NewBufferString(body))
+	req = req.WithContext(taskScopedKeyCtx(req.Context(), "task-X", "proj-a"))
+	rec := httptest.NewRecorder()
+	server.IngestLLMUsage(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body=%s, want 204 (the spend must still be recorded)", rec.Code, rec.Body.String())
+	}
+	if repo.row == nil {
+		t.Fatal("usage row was dropped when the task lookup failed")
+	}
+	if repo.row.APIKeyID != nil {
+		t.Fatalf("APIKeyID = %v, want nil — a failed lookup must not invent attribution", *repo.row.APIKeyID)
+	}
+}

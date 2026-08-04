@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- (LLD 2026-07-24 §3.1). NULL = inherit project default_task_budget_usd;
     -- when set, always strictly positive (write layer rejects 0).
     budget_usd          REAL,
-    -- Migration 147 parity: API key that authenticated this task's creation,
+    -- Migration 148 parity: API key that authenticated this task's creation,
     -- when known (REST POST /tasks or the companion MCP delegate). NULL for
     -- chat/webhook/autonomy/executor-spawned tasks — there is no key behind
     -- them. Powers the spend-per-API-key UI.
@@ -457,7 +457,7 @@ CREATE TABLE IF NOT EXISTS task_llm_usage (
     recorded_at           TEXT NOT NULL,
     cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
     cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
-    -- Migration 148 parity: API key attributed to this usage row (copied
+    -- Migration 149 parity: API key attributed to this usage row (copied
     -- from the recording task's created_by_api_key_id, or resolved from
     -- context for task-less external_api calls). NULL = unattributed.
     api_key_id            TEXT
@@ -1494,7 +1494,7 @@ CREATE TABLE IF NOT EXISTS instinct_lift (
 CREATE INDEX IF NOT EXISTS idx_step_outcomes_role_error_time
     ON execution_step_outcomes (role, error_class, recorded_at);
 -- ============================================================
--- mcp_oauth_tokens — migration 148 parity
+-- mcp_oauth_tokens — migration 147 parity
 -- (MCP server authentication design §6).
 --
 -- Per-project OAuth service identity for MCP servers.

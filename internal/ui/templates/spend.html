@@ -433,8 +433,13 @@
                                     {{if .KeyName}}
                                     <span class="text-gray-300" title="{{.KeyName}}">{{.KeyName}}</span>
                                     <span class="text-gray-500 font-mono text-xs">{{.KeyPrefix}}…</span>
-                                    {{else}}
+                                    {{else if .Unattributed}}
                                     <span class="text-gray-500 italic">Unattributed</span>
+                                    {{else}}
+                                    {{/* Attributed to a key whose api_keys row is gone — still its
+                                         own bucket, so it must not borrow the Unattributed label. */}}
+                                    <span class="text-gray-400 font-mono text-xs" title="this key has been deleted">{{.KeyID}}</span>
+                                    <span class="text-gray-600 italic text-xs">(deleted key)</span>
                                     {{end}}
                                 </td>
                                 <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{.CallCount}}</td>

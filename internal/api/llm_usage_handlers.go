@@ -122,6 +122,25 @@ func (s *Server) IngestLLMUsage(w http.ResponseWriter, r *http.Request) {
 				"task_id belongs to a different project than project_id")
 			return
 		}
+		// A fetch failure does not fail the ingest — the cost is real and
+		// dropping it would understate spend — but it DOES cost the row its
+		// attribution, which then reads as "Unattributed" on /ui/spend with
+		// nothing saying otherwise. Log it as attribution loss specifically, so
+		// a growing unattributed bucket can be traced to this rather than
+		// mistaken for traffic that genuinely has no key behind it.
+		if err != nil || task == nil {
+			s.logger.Warn().Err(err).
+				Str("usage_id", req.UsageID).
+				Str("task_id", req.TaskID).
+				Msg("llm usage ingest: task lookup failed; recording spend WITHOUT api-key attribution")
+		}
+	} else if req.TaskID != "" {
+		// taskRepo unwired (lean deployment): same attribution loss, different
+		// cause. Named separately because the fix is configuration, not a retry.
+		s.logger.Warn().
+			Str("usage_id", req.UsageID).
+			Str("task_id", req.TaskID).
+			Msg("llm usage ingest: no task repository wired; recording spend WITHOUT api-key attribution")
 	}
 	if err := s.validateExecutionTaskBinding(r.Context(), req.TaskID, req.ExecutionID); err != nil {
 		respondError(w, http.StatusForbidden, "FORBIDDEN",

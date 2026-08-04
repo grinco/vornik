@@ -129,11 +129,18 @@ func TestJudgeRunner_RecordsLLMUsageRow(t *testing.T) {
 		Pricing:  pricingTableForJudgeTests(t),
 		Logger:   zerolog.Nop(),
 	}
-	task := &persistence.Task{ID: "task_y", ProjectID: "p1"}
+	creator := "akey-creator"
+	task := &persistence.Task{ID: "task_y", ProjectID: "p1", CreatedByAPIKeyID: &creator}
 	require.NoError(t, r.Run(context.Background(), task))
 
 	require.Len(t, usage.recorded, 1, "exactly one task_llm_usage row per judge call")
 	u := usage.recorded[0]
+	// Judge cost belongs to whoever created the task, not to nobody: an
+	// unattributed judge row shows up as "Unattributed" on the per-key spend
+	// table while the worker steps of the same task are attributed. Pinned after
+	// the 2026-08-04 review of CE PR #6.
+	require.NotNil(t, u.APIKeyID, "judge usage row must inherit the task's api-key attribution")
+	assert.Equal(t, creator, *u.APIKeyID)
 	assert.Equal(t, persistence.TaskLLMUsageSourceJudge, u.Source,
 		"source must be 'judge' so the spend dashboard can split judge cost from worker/dispatcher")
 	assert.Equal(t, "judge", u.Role)

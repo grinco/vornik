@@ -1148,7 +1148,7 @@ func scanTask(scanner interface {
 		chatTurnID sql.NullString
 		// Migration 136 — per-task cost governor budget override.
 		budgetUSD sql.NullFloat64
-		// Migration 147 — API key that authenticated task creation, when known.
+		// Migration 148 — API key that authenticated task creation, when known.
 		createdByAPIKey sql.NullString
 	)
 

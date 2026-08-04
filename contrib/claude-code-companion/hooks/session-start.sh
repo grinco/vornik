@@ -257,7 +257,15 @@ DIGEST=$(build_digest)
 # The proposed skill is a DRAFT; an operator approves it (e.g. from a
 # Telegram review prompt) before it activates. The transcript never
 # leaves this machine — only the skill_propose call (the draft) does.
-SKILL_DIRECTIVE=$(cat <<EOF
+# NOTE: the heredoc lives in a function rather than directly inside a
+# $(cat <<EOF ...) command substitution. bash 3.2 — still /bin/bash on macOS —
+# scans for the closing paren of $( ) WITHOUT honoring heredoc bodies, so a
+# prose apostrophe ("it's") inside the body is read as an opening quote and the
+# whole script dies with "unexpected EOF while looking for matching `'''". A
+# fresh macOS install hit exactly that on 2026-08-04 (line 333). Same safe
+# shape as build_digest() above.
+emit_skill_directive() {
+  cat <<EOF
 
 ## vornik: capture reusable know-how as skills
 
@@ -277,7 +285,8 @@ It lands as a **draft** and does NOT take effect until an operator
 approves it — so propose freely, but only for things genuinely worth
 reusing. Do NOT propose trivial, one-off, or secret-bearing content.
 EOF
-)
+}
+SKILL_DIRECTIVE=$(emit_skill_directive)
 DIGEST=$(printf '%s\n%s' "$DIGEST" "$SKILL_DIRECTIVE")
 
 # ----- RAG-first directive (LLD 2026-07-12-companion-rag-first-guidance) -----
@@ -287,7 +296,10 @@ DIGEST=$(printf '%s\n%s' "$DIGEST" "$SKILL_DIRECTIVE")
 # an unconditional hook — trivial literal lookups skip it. The trust boundary
 # is class-scoped (design/spec/decision chunks are authoritative; other content
 # is a hypothesis) so a poisoned chunk from a failed task isn't asserted as fact.
-RAG_FIRST_DIRECTIVE=$(cat <<'EOF'
+# Function-wrapped for the same bash 3.2 reason as emit_skill_directive:
+# "doesn'''t" in the body below would otherwise break the parse.
+emit_rag_first_directive() {
+  cat <<'EOF'
 
 ## vornik-companion: RAG-first — recall BEFORE reading code on design questions
 
@@ -321,7 +333,8 @@ architecture, history, or design rationale → recall first. For a failing unit
 test that points at a typo in a single file, fix directly — the RAG-first rule
 is for questions whose answer lives in design intent, not code syntax.
 EOF
-)
+}
+RAG_FIRST_DIRECTIVE=$(emit_rag_first_directive)
 DIGEST=$(printf '%s\n%s' "$DIGEST" "$RAG_FIRST_DIRECTIVE")
 
 if [[ -n "$DIGEST" ]]; then

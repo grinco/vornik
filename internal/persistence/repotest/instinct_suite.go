@@ -349,7 +349,17 @@ func RunInstinctSuite(t *testing.T, repo persistence.InstinctRepository) {
 		}); err != nil {
 			t.Fatalf("RecordApplication auto_applied: %v", err)
 		}
-		pending, err := repo.ListPendingRecoveryApplications(ctx, 100)
+		// The limit is deliberately far above anything this subtest creates.
+		// ListPendingRecoveryApplications orders applied_at ASC — oldest first, which
+		// is the fairness the resolver wants — so a limit interacts with rows this
+		// subtest did not create: against a SHARED integration database that has
+		// accumulated pending rows from earlier runs, a limit of 100 returned the 100
+		// OLDEST and the four rows just recorded fell outside the window, producing an
+		// empty result and a failure that looked like a query bug. It first tripped at
+		// 108 accumulated rows (2026-08-04); it would have tripped on any long-lived
+		// database eventually. The subtest already filters by its own instinct id, so
+		// the only thing the limit must not do is truncate before that filter runs.
+		pending, err := repo.ListPendingRecoveryApplications(ctx, 1_000_000)
 		if err != nil {
 			t.Fatalf("ListPendingRecoveryApplications: %v", err)
 		}

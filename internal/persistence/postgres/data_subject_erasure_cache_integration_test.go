@@ -29,20 +29,27 @@ func TestIntegrationDeleteRow_EvictsTheChunksEmbeddingCacheEntry(t *testing.T) {
 	repo := &DataSubjectRepository{db: db.DB}
 
 	const projectID = "erasure-cache-evict-test"
+	const sourceName = "integration-test"
 	content := "Called the subject about their appointment; Peter also joined."
 	hash := memory.ContentHash(content)
+	// Production keys the cache on the CONTEXTUALISED embed input, not the raw content
+	// (memory.EmbedInputHash). This fixture seeded `hash` and therefore passed against
+	// an eviction that deleted nothing on real data — 0 of 500 sampled live chunks had
+	// a cache row under content_hash, 500 of 500 had one under this key.
+	cacheKey := memory.EmbedInputHash(sourceName, content)
 
 	t.Cleanup(func() {
 		_, _ = db.ExecContext(ctx, `DELETE FROM project_memory_chunks WHERE project_id = $1`, projectID)
 		_, _ = db.ExecContext(ctx, `DELETE FROM embedding_cache WHERE content_hash = $1`, hash)
+		_, _ = db.ExecContext(ctx, `DELETE FROM embedding_cache WHERE content_hash = $1`, cacheKey)
 	})
 
 	// id is app-supplied text, not a sequence, so the seed provides it.
 	const chunkID = "chunk-erasure-cache-evict-1"
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO project_memory_chunks (id, project_id, content, content_hash, source_name)
-		VALUES ($1, $2, $3, $4, 'integration-test')`,
-		chunkID, projectID, content, hash); err != nil {
+		VALUES ($1, $2, $3, $4, $5)`,
+		chunkID, projectID, content, hash, sourceName); err != nil {
 		t.Fatalf("seed chunk: %v", err)
 	}
 
@@ -54,14 +61,14 @@ func TestIntegrationDeleteRow_EvictsTheChunksEmbeddingCacheEntry(t *testing.T) {
 			INSERT INTO embedding_cache (content_hash, model, embedding)
 			VALUES ($1, $2, $3)
 			ON CONFLICT (content_hash, model) DO NOTHING`,
-			hash, model, pgVectorLiteral(1024)); err != nil {
+			cacheKey, model, pgVectorLiteral(1024)); err != nil {
 			t.Fatalf("seed cache row for %s: %v", model, err)
 		}
 	}
 
 	var before int
 	if err := db.QueryRowContext(ctx,
-		`SELECT count(*) FROM embedding_cache WHERE content_hash = $1`, hash).Scan(&before); err != nil {
+		`SELECT count(*) FROM embedding_cache WHERE content_hash = $1`, cacheKey).Scan(&before); err != nil {
 		t.Fatalf("count cache rows: %v", err)
 	}
 	if before != 2 {
@@ -83,7 +90,7 @@ func TestIntegrationDeleteRow_EvictsTheChunksEmbeddingCacheEntry(t *testing.T) {
 
 	var after int
 	if err := db.QueryRowContext(ctx,
-		`SELECT count(*) FROM embedding_cache WHERE content_hash = $1`, hash).Scan(&after); err != nil {
+		`SELECT count(*) FROM embedding_cache WHERE content_hash = $1`, cacheKey).Scan(&after); err != nil {
 		t.Fatalf("count cache rows after: %v", err)
 	}
 	if after != 0 {

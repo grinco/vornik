@@ -1,9 +1,15 @@
-package memory
+package memory_test
 
 // Live-daemon DB shield for the memory integration suite. Lives in an
 // untagged _test.go (no `//go:build integration`) so the predicate compiles
 // and is unit-tested in the normal lane, while the integration suite
 // (ingest_recall_isolation_integration_test.go) consumes it under the tag.
+//
+// EXTERNAL test package (memory_test), 2026-08-04: the integration suite has to
+// import internal/persistence/postgres, which imports internal/memory since the
+// 5c chunk redactor (a6df93109) — an in-package test importing it is an import
+// cycle, and the whole tagged lane stopped compiling. Nothing in package memory
+// consumes this predicate, so it moves out with its consumer.
 //
 // Regression (2026-06-28): the original guard only refused "vornik_test", but
 // product default is "vornik" (postgres.DefaultConfig). A run pointed at

@@ -1,22 +1,22 @@
 //go:build integration
 
-package memory
+package memory_test
 
 // Integration coverage for the Tier-3 "memory ingest → recall" journey
 // (https://docs.vornik.io) with project scoping, exercised end-to-end against a
 // real PostgreSQL: content ingested for project A through the real
-// Pipeline (gates → Indexer → project_memory_chunks) is recalled for A
-// by the real Searcher, but is NEVER returned for project B. The
+// memory.Pipeline (gates → memory.Indexer → project_memory_chunks) is recalled for A
+// by the real memory.Searcher, but is NEVER returned for project B. The
 // fail-closed tenant gate (memoryfirewall.Evaluator under strict
 // isolation) is pinned alongside as a pure-Go characterization so the
 // "blank/blank-scope request reads nothing" invariant is asserted on the
 // same real surface the recall path delegates to.
 //
 // SEAM CHOICE: the recall arm runs with NO embedding endpoint configured,
-// so Searcher.embedQueryWithTimeout returns nil and the search degrades to
+// so memory.Searcher.embedQueryWithTimeout returns nil and the search degrades to
 // the keyword (FTS) arm — fully deterministic, no embedding backend or
 // pgvector vectors required. The ingest arm runs the real gate stack
-// (RunStandardGates) + Indexer.IngestText, so project scoping is enforced
+// (RunStandardGates) + memory.Indexer.IngestText, so project scoping is enforced
 // by the production WHERE project_id = $1 clause, not a test shim.
 //
 // GATING: skips cleanly (never fails) when TEST_DATABASE_URL is unset, so
@@ -53,6 +53,7 @@ import (
 	"github.com/lib/pq"
 	"github.com/rs/zerolog"
 
+	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/memoryfirewall"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/postgres"
@@ -176,22 +177,22 @@ func pgConfigFromURL(u *url.URL) (postgres.Config, error) {
 	return cfg, nil
 }
 
-// newIngestRecallStack wires a real Pipeline (gates → Indexer) and a
-// real Searcher over the same Repository, with NO embedding endpoint so
+// newIngestRecallStack wires a real memory.Pipeline (gates → memory.Indexer) and a
+// real memory.Searcher over the same memory.Repository, with NO embedding endpoint so
 // recall runs deterministically on the keyword (FTS) arm.
-func newIngestRecallStack(db *sql.DB) (*Pipeline, *Searcher) {
-	repo := NewRepository(db)
-	cfg := DefaultConfig()
+func newIngestRecallStack(db *sql.DB) (*memory.Pipeline, *memory.Searcher) {
+	repo := memory.NewRepository(db)
+	cfg := memory.DefaultConfig()
 	cfg.Enabled = true
 	cfg.EmbeddingEndpoint = "" // force keyword-only recall (deterministic)
 
-	indexer := NewIndexer(cfg, repo, nil, zerolog.Nop())
-	pipeline := NewPipeline(indexer, PipelineConfig{
+	indexer := memory.NewIndexer(cfg, repo, nil, zerolog.Nop())
+	pipeline := memory.NewPipeline(indexer, memory.PipelineConfig{
 		// Quarantine repo intentionally nil: the test only feeds
 		// gate-passing content, so the quarantine branch is never hit.
 		Logger: zerolog.Nop(),
 	})
-	searcher := NewSearcher(cfg, repo, nil)
+	searcher := memory.NewSearcher(cfg, repo, nil)
 	return pipeline, searcher
 }
 
@@ -217,7 +218,7 @@ ON CONFLICT (id) DO NOTHING`,
 // (gates → store). It first seeds the backing artifacts row so the
 // SchemaMatchGate (source_artifact_id required) passes and the chunk's
 // artifact_id FK resolves — matching the production agent-ingest path.
-func ingestForProject(t *testing.T, db *sql.DB, p *Pipeline, projectID, sourceName, content string) (IngestStats, string) {
+func ingestForProject(t *testing.T, db *sql.DB, p *memory.Pipeline, projectID, sourceName, content string) (memory.IngestStats, string) {
 	t.Helper()
 	artifactID := persistence.GenerateID("itest-art")
 	seedArtifact(t, db, projectID, artifactID, sourceName)
@@ -342,7 +343,7 @@ func TestIntegration_IngestRecall_ProjectScoping(t *testing.T) {
 
 // TestIntegration_IngestRecall_TenantGateFailsClosed pins the tenant
 // gate's fail-closed posture on the SAME real surface the recall path
-// delegates to (Searcher.applyFirewall → memoryfirewall.Evaluator.Decide).
+// delegates to (memory.Searcher.applyFirewall → memoryfirewall.Evaluator.Decide).
 // Pure-Go + deterministic, so it runs even without the DB — but it lives
 // here (under the integration tag) so the full ingest→recall→isolation
 // story reads as one suite. Under strict tenant isolation a request with

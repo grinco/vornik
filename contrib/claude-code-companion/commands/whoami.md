@@ -12,17 +12,23 @@ fires once and may have scrolled out of context.
 
 Call `mcp__vornik__whoami` with no arguments. Report back plainly:
 
+**Formatting: plain terminal markdown, one fact per line.** No HTML entities —
+`&nbsp;` and friends are rendered LITERALLY in the terminal, so a line built to
+align columns reads as `memory_read: ✅ &nbsp; memory_write: ✅` to the user
+(reported on a fresh macOS install, 2026-08-04). Do not pad or align; a plain
+list is correct here.
+
 - **Project**: `project_id` — this key's bound vornik project (not a
   repo_scope; keys are minted per-project via `vornikctl companion grant`).
 - **Repo scope in use**: `effective_repo_scope` — this is what
   `recall` / `remember` / `recent_memory` / `delegate` resolve to right
   now when a call omits `repo_scope`. If it's empty, calls without an
   explicit `repo_scope` are project-wide (uncategorized).
-- **Configured default**: `default_repo_scope` — the operator-set floor
-  on this key (`vornikctl companion grant --repo-scope`). Note this can
-  differ from the SessionStart hook's cwd-detected token: the hook
-  passes `repo_scope` explicitly on every call, which always overrides
-  this key default when present.
+- **Configured default**: `default_repo_scope` — the operator-set FALLBACK on
+  this key (`vornikctl companion grant --repo-scope`), used only when a call
+  omits `repo_scope`. It is not a floor or a cap: an explicit per-call
+  `repo_scope` always wins, which is exactly what the SessionStart hook does on
+  every call, so this value can differ from the scope actually in use.
 - **Client**: `client_kind` / `session_label` if present, so the user
   can tell this session's key apart from others they've granted.
 

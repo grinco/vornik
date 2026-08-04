@@ -893,10 +893,13 @@ func TestDeleteChatMemory_CompensationOrder(t *testing.T) {
 		order = append(order, "artifact:"+artifactID)
 		return nil
 	}
-	// DeleteByArtifact: read hashes, delete chunks, (no embedding rows).
+	// DeleteByArtifact: read the cache keys, delete chunks, evict (no rows here).
+	// source_name + content are selected, not just content_hash: the embedding cache is
+	// keyed on the CONTEXTUALISED embed input's hash (memory.EmbedInputHash), so the
+	// eviction needs the fields that key is derived from.
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT DISTINCT content_hash FROM project_memory_chunks").
-		WillReturnRows(sqlmock.NewRows([]string{"content_hash"}))
+	mock.ExpectQuery("SELECT source_name, content, content_hash FROM project_memory_chunks").
+		WillReturnRows(sqlmock.NewRows([]string{"source_name", "content", "content_hash"}))
 	mock.ExpectExec("DELETE FROM project_memory_chunks").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

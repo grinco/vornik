@@ -82,7 +82,7 @@ func TestMCPOAuthBegin_ReturnsTheAskAndTheRedirectURI(t *testing.T) {
 	conn := &stubConnector{
 		refOK:    true,
 		ref:      mcpconnect.ServerRef{ProjectID: "p1", ServerName: "linear"},
-		redirect: "https://v.example.com/ui/mcp/oauth/callback",
+		redirect: "https://v.example.com/auth/mcp/callback",
 		begun: mcpconnect.BeginResult{
 			AuthorizationURL: "https://auth.example/authorize?x=1",
 			Resource:         "https://mcp.example/mcp",
@@ -101,7 +101,7 @@ func TestMCPOAuthBegin_ReturnsTheAskAndTheRedirectURI(t *testing.T) {
 	assert.Equal(t, "https://auth.example/authorize?x=1", resp.AuthorizationURL)
 	assert.Equal(t, "https://mcp.example/mcp", resp.Resource)
 	assert.Equal(t, []string{"read:issues", "offline_access"}, resp.Scopes)
-	assert.Equal(t, "https://v.example.com/ui/mcp/oauth/callback", resp.RedirectURI)
+	assert.Equal(t, "https://v.example.com/auth/mcp/callback", resp.RedirectURI)
 
 	// The state must NOT leave the daemon: it is the CSRF binding for a flow
 	// the daemon's own callback completes, and the CLI has no use for it.

@@ -98,6 +98,19 @@ func (r *ChunkRedactorRepository) RedactChunk(
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// The PRE-redaction source_name + content, read inside the same transaction: they
+	// are what the pre-redaction embed input was built from, and therefore what the
+	// surviving cache key is derived from. Read before the UPDATE below overwrites the
+	// content. ErrNoRows cannot happen here — the guarded UPDATE would find no row
+	// either and return RedactionVersionChanged — but it is tolerated rather than
+	// promoted to a failure of the redaction itself.
+	var preSourceName, preContent string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT source_name, content FROM project_memory_chunks WHERE id = $1`, chunkID,
+	).Scan(&preSourceName, &preContent); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return zero, fmt.Errorf("postgres: read pre-redaction chunk fields for %s: %w", chunkID, err)
+	}
+
 	// Collision check (§4.2). content_hash is UNIQUE per (project_id, content_hash),
 	// so two chunks differing only in the erased subject's data can redact to the
 	// same text. Detected BEFORE the update so the unique index never raises, and so
@@ -152,13 +165,25 @@ func (r *ChunkRedactorRepository) RedactChunk(
 		return zero, fmt.Errorf("postgres: enqueue re-embed for %s: %w", chunkID, err)
 	}
 
-	// Evict the PRE-redaction vector (§4.4). Keyed by the old hash — the vector was
-	// computed over text that still contained the subject, so leaving it is retaining
-	// data derived from the data we were asked to erase. Every model's copy goes: the
-	// operator may have re-embedded under several models over the deployment's life.
-	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM embedding_cache WHERE content_hash = $1`, expectedHash); err != nil {
-		return zero, fmt.Errorf("postgres: evict pre-redaction embedding cache for %s: %w", chunkID, err)
+	// Evict the PRE-redaction vector (§4.4). The vector was computed over text that
+	// still contained the subject, so leaving it retains data derived from what we were
+	// asked to erase. Every model's copy goes: the operator may have re-embedded under
+	// several models over the deployment's life.
+	//
+	// Keyed by the hash of the CONTEXTUALISED embed input, not by expectedHash. The
+	// pre-2026-08-04 version evicted expectedHash (the raw content_hash) and therefore
+	// deleted nothing: measured on the live deployment, 0 of 500 sampled chunks had a
+	// cache row under content_hash and 500 of 500 had one under the embed-input hash.
+	// The pre-redaction source_name and content are read above; both keys are evicted
+	// because they coincide when the contextualisation prefix is empty.
+	for _, key := range []string{memory.EmbedInputHash(preSourceName, preContent), expectedHash} {
+		if key == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM embedding_cache WHERE content_hash = $1`, key); err != nil {
+			return zero, fmt.Errorf("postgres: evict pre-redaction embedding cache for %s: %w", chunkID, err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

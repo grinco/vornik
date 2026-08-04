@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/datasubject"
+	"vornik.io/vornik/internal/memory"
 )
 
 // DataSubjectRepository persists the GDPR data-subject axis and the rights
@@ -458,12 +459,27 @@ func (r *DataSubjectRepository) DeleteRow(ctx context.Context, table datasubject
 	// call that can fail on its own and leave the pair inconsistent.
 	//
 	// This was a gap in code already shipped by 5b, not only in 5c.
-	var cachedHash string
+	// The cache key is the hash of the CONTEXTUALISED embed input (source/section
+	// prefix + content), NOT content_hash — see memory.EmbedInputHash. Evicting by
+	// content_hash alone deleted nothing: measured on the live deployment, 0 of 500
+	// sampled chunks had a cache row under their content_hash and 500 of 500 had one
+	// under the embed-input hash. Both are evicted here because they coincide when the
+	// prefix is empty, and evicting an absent key is free.
+	var cacheKeys []string
 	if table == datasubject.TableProjectMemoryChunks {
-		if err := tx.QueryRowContext(ctx,
-			`SELECT content_hash FROM project_memory_chunks WHERE id = $1`, rowID,
-		).Scan(&cachedHash); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("postgres: read content_hash before erasing %s/%s: %w", table, rowID, err)
+		var sourceName, content, contentHash string
+		switch err := tx.QueryRowContext(ctx,
+			`SELECT source_name, content, content_hash FROM project_memory_chunks WHERE id = $1`, rowID,
+		).Scan(&sourceName, &content, &contentHash); {
+		case err == nil:
+			cacheKeys = append(cacheKeys, memory.EmbedInputHash(sourceName, content))
+			if contentHash != "" && contentHash != cacheKeys[0] {
+				cacheKeys = append(cacheKeys, contentHash)
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			// Already gone: erasure paths retry, so this is the expected second run.
+		default:
+			return fmt.Errorf("postgres: read cache keys before erasing %s/%s: %w", table, rowID, err)
 		}
 	}
 
@@ -471,8 +487,8 @@ func (r *DataSubjectRepository) DeleteRow(ctx context.Context, table datasubject
 		fmt.Sprintf(`DELETE FROM %s WHERE %s = $1`, table, spec.idCol), rowID); err != nil {
 		return fmt.Errorf("postgres: delete %s/%s: %w", table, rowID, err)
 	}
-	if cachedHash != "" {
-		// EVERY model's vector for this hash, not just the current one: the operator
+	for _, key := range cacheKeys {
+		// EVERY model's vector for this key, not just the current one: the operator
 		// may have re-embedded under several models over the deployment's life, and
 		// erasing the text while leaving an older model's vector is not erasure.
 		//
@@ -481,7 +497,7 @@ func (r *DataSubjectRepository) DeleteRow(ctx context.Context, table datasubject
 		// hit. That is deliberate and cheap — the cost is one re-embed on the next
 		// miss, against retaining a vector derived from erased data.
 		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM embedding_cache WHERE content_hash = $1`, cachedHash); err != nil {
+			`DELETE FROM embedding_cache WHERE content_hash = $1`, key); err != nil {
 			return fmt.Errorf("postgres: evict embedding cache for %s/%s: %w", table, rowID, err)
 		}
 	}

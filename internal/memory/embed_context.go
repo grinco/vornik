@@ -81,3 +81,29 @@ func applyEmbedContext(sourceName, content string) string {
 	}
 	return prefix + content
 }
+
+// EmbedInputHash is the embedding_cache key for a stored chunk.
+//
+// It is NOT the chunk's content_hash, and that distinction has already cost us
+// once. content_hash is SHA-256 over the RAW content (dedup, the UNIQUE
+// (project_id, content_hash) index, display). The cache is keyed by the hash of
+// what was actually sent to the embedding endpoint — the contextualised input,
+// content with the Source/Section prefix — because that is the string whose
+// vector is stored.
+//
+// Every erasure path evicted by content_hash until 2026-08-04, so every eviction
+// was a no-op against real data: measured on the live deployment, 0 of 500 sampled
+// chunks had a cache row under their content_hash and 500 of 500 had one under this
+// hash. A vector derived from erased text survived every erasure that reported
+// success. Erasure paths MUST evict this hash (and may evict content_hash too —
+// they coincide only when the prefix is empty).
+//
+// Caveat worth knowing: this recomputes the prefix, so it depends on
+// buildEmbedContext staying stable. Change that function and previously-cached
+// vectors become unreachable by BOTH keys — retained but never hit again, which is
+// what retention.embedding_cache_days exists to bound. A chunk-side
+// embed_input_hash column would remove that coupling; recorded in the backlog
+// rather than done here.
+func EmbedInputHash(sourceName, content string) string {
+	return ContentHash(applyEmbedContext(sourceName, content))
+}

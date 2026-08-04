@@ -2547,15 +2547,62 @@ func (r *Repository) CountByArtifact(ctx context.Context, artifactID string) (in
 
 // DeleteByExtractedDocument removes chunks derived from one extraction and
 // returns how many rows went.
+//
+// Also evicts each deleted chunk's embedding_cache entry, in the SAME transaction
+// (slice 5c §4.4) — identical to DeleteByArtifact below, and for the same reason.
+// This is the erasure cascade's FIRST call (internal/erasure: once per extracted
+// document, before the artifact's directly-linked chunks), so it is the majority
+// path for anything that arrived through document or video extraction. Until this
+// evicted, erasing a document removed every derived chunk and left every derived
+// vector, keyed by the hash of the text we were asked to erase — while reporting the
+// erasure complete. Nothing else removes those rows: the retention sweeper prunes by
+// last_hit_at age and only when retention.embedding_cache_days is set, which is
+// cold-entry pruning rather than compliance with an erasure request.
+//
+// The cache is keyed (content_hash, model) with no project column, and
+// project_memory_chunks is UNIQUE on (project_id, content_hash) — so a shared hash
+// means an identical chunk in ANOTHER project, whose cache entry this evicts. That is
+// deliberate and cheap: one re-embed on the next miss, against retaining a vector
+// derived from erased content. The other project's chunk itself is untouched.
 func (r *Repository) DeleteByExtractedDocument(ctx context.Context, extractedDocumentID string) (int, error) {
-	res, err := r.db.ExecContext(ctx,
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin extracted-document chunk delete: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Collect the cache keys BEFORE the delete — afterwards there is nothing left to
+	// compute them from. source_name + content are needed, not just content_hash:
+	// the cache is keyed by the hash of the CONTEXTUALISED embed input, so evicting
+	// by content_hash alone deletes nothing (see EmbedInputHash).
+	hashes, err := chunkCacheKeys(ctx, tx,
+		`SELECT source_name, content, content_hash FROM project_memory_chunks
+		  WHERE derived_from_extracted_document_id = $1`, extractedDocumentID)
+	if err != nil {
+		return 0, fmt.Errorf("read chunk cache keys for extracted document %s: %w", extractedDocumentID, err)
+	}
+
+	res, err := tx.ExecContext(ctx,
 		`DELETE FROM project_memory_chunks WHERE derived_from_extracted_document_id = $1`,
 		extractedDocumentID)
 	if err != nil {
 		return 0, err
 	}
 	n, err := res.RowsAffected()
-	return int(n), err
+	if err != nil {
+		return 0, err
+	}
+
+	for _, h := range hashes {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM embedding_cache WHERE content_hash = $1`, h); err != nil {
+			return 0, fmt.Errorf("evict embedding cache for extracted document %s: %w", extractedDocumentID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit extracted-document chunk delete: %w", err)
+	}
+	return int(n), nil
 }
 
 // ChunkIDsByArtifact returns the ids of every chunk stored for one
@@ -2583,18 +2630,42 @@ func (r *Repository) ChunkIDsByArtifact(ctx context.Context, projectID, artifact
 	return out, rows.Err()
 }
 
-// scanHashes drains a single-column hash query, closing the rows on every path.
-func scanHashes(rows *sql.Rows) ([]string, error) {
+// chunkCacheKeys runs a query selecting (source_name, content, content_hash) over the
+// chunks about to be deleted and returns every embedding_cache key that could hold a
+// vector derived from them, de-duplicated.
+//
+// It returns BOTH the embed-input hash (what the cache is actually keyed on — see
+// EmbedInputHash) and the raw content_hash. The raw hash is included deliberately
+// rather than defensively: the two coincide whenever the contextualisation prefix is
+// empty (no source name and no heading), and any row written before the prefix existed
+// is keyed that way too. Evicting a hash that isn't present is free.
+//
+// Shared by every chunk-delete path so the key is derived in ONE place. The 2026-08-04
+// review of the §4.4 retro-fit asked for the guarantee to be asserted at the seam
+// rather than re-implemented per call site; this is that seam, and it exists because
+// per-site duplication is exactly how the WRONG key ended up in all four of them.
+func chunkCacheKeys(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
 	defer func() { _ = rows.Close() }()
+	seen := map[string]bool{}
 	var out []string
+	add := func(h string) {
+		if h == "" || seen[h] {
+			return
+		}
+		seen[h] = true
+		out = append(out, h)
+	}
 	for rows.Next() {
-		var h string
-		if err := rows.Scan(&h); err != nil {
+		var sourceName, content, contentHash string
+		if err := rows.Scan(&sourceName, &content, &contentHash); err != nil {
 			return nil, err
 		}
-		if h != "" {
-			out = append(out, h)
-		}
+		add(EmbedInputHash(sourceName, content))
+		add(contentHash)
 	}
 	return out, rows.Err()
 }
@@ -2619,16 +2690,13 @@ func (r *Repository) DeleteByArtifact(ctx context.Context, artifactID string) (i
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Collect the hashes BEFORE the delete — afterwards there is nothing left to
-	// read them from.
-	rows, err := tx.QueryContext(ctx,
-		`SELECT DISTINCT content_hash FROM project_memory_chunks WHERE artifact_id = $1`, artifactID)
+	// Collect the cache keys BEFORE the delete. See DeleteByExtractedDocument: the
+	// key is the CONTEXTUALISED embed input's hash, not content_hash.
+	hashes, err := chunkCacheKeys(ctx, tx,
+		`SELECT source_name, content, content_hash FROM project_memory_chunks WHERE artifact_id = $1`,
+		artifactID)
 	if err != nil {
-		return 0, fmt.Errorf("read chunk hashes for artifact %s: %w", artifactID, err)
-	}
-	hashes, err := scanHashes(rows)
-	if err != nil {
-		return 0, fmt.Errorf("read chunk hashes for artifact %s: %w", artifactID, err)
+		return 0, fmt.Errorf("read chunk cache keys for artifact %s: %w", artifactID, err)
 	}
 
 	res, err := tx.ExecContext(ctx,

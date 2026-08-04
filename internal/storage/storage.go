@@ -60,7 +60,14 @@ type Repositories struct {
 	// written on grant before the pending row is deleted.
 	ChatMemoryWriteConfirmations persistence.ChatMemoryWriteConfirmationRepository
 	ChatMemoryWriteAudit         persistence.ChatMemoryWriteAuditRepository
-	APIKeys                      persistence.APIKeyRepository
+	// MCPOAuthTokens holds per-project OAuth grants for MCP servers
+	// (MCP server authentication design §6, migration 147). Keyed by
+	// (project_id, server_name) with project_id = "" meaning the
+	// daemon scope, so one operator consent serves every task in a
+	// project — including autonomous runs, which have no user to
+	// borrow a token from.
+	MCPOAuthTokens persistence.MCPOAuthTokenRepository
+	APIKeys        persistence.APIKeyRepository
 	// Identity is the identity-core repository (users, groups,
 	// channel bindings) backing internal/authz. Phase 2 of
 	// oidc-identity-permissions-design.md.
@@ -344,6 +351,7 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		ChatAudit:                      sqlite.NewChatAuditRepository(db),
 		ChannelDisclosure:              sqlite.NewChannelDisclosureRepository(db),
 		ChatMemoryWriteConfirmations:   sqlite.NewChatMemoryWriteConfirmationRepository(db),
+		MCPOAuthTokens:                 sqlite.NewMCPOAuthTokenRepository(db),
 		ChatMemoryWriteAudit:           sqlite.NewChatMemoryWriteAuditRepository(db),
 		APIKeys:                        sqlite.NewAPIKeyRepository(db),
 		Webhooks:                       sqlite.NewWebhookEventRepository(db),
@@ -457,6 +465,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		ChatAudit:                      postgres.NewChatAuditRepository(dbtx),
 		ChannelDisclosure:              postgres.NewChannelDisclosureRepository(dbtx),
 		ChatMemoryWriteConfirmations:   postgres.NewChatMemoryWriteConfirmationRepository(dbtx),
+		MCPOAuthTokens:                 postgres.NewMCPOAuthTokenRepository(dbtx),
 		ChatMemoryWriteAudit:           postgres.NewChatMemoryWriteAuditRepository(dbtx),
 		APIKeys:                        postgres.NewAPIKeyRepository(dbtx),
 		Identity:                       postgres.NewIdentityRepository(dbtx),

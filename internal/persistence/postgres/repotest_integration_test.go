@@ -647,3 +647,13 @@ func TestChatMemoryWriteConfirmationRepository_PostgresContract(t *testing.T) {
 		NewChatMemoryWriteConfirmationRepository(db.DB),
 		NewChatMemoryWriteAuditRepository(db.DB))
 }
+
+// TestMCPOAuthTokenRepository_PostgresContract — the Postgres half of the MCP OAuth token store
+// contract. This backend carries the parts SQLite cannot exercise: the conditional UPDATE's row
+// count semantics under a real dialect, and the transaction-scoped pg_advisory_xact_lock that
+// makes a cross-daemon refresh non-wasteful rather than merely safe.
+func TestMCPOAuthTokenRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	resetSuiteTables(t, db, "mcp_oauth_tokens")
+	repotest.RunMCPOAuthTokenSuite(t, NewMCPOAuthTokenRepository(db.DB))
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
 	"vornik.io/vornik/internal/forge"
+	"vornik.io/vornik/internal/mcpauth"
 	"vornik.io/vornik/internal/taintlineage"
 )
 
@@ -1773,6 +1774,18 @@ type MCPServerConfig struct {
 	// default. Raise it for servers with legitimately long-running
 	// tools (e.g. scraper web_fetch against slow / anti-bot sites).
 	TimeoutSeconds int `yaml:"timeout_seconds"`
+	// Auth configures how Vornik authenticates to this server (a bearer or
+	// API-key header, OAuth 2.1), or how it hands a stdio subprocess its own
+	// upstream credentials. The zero value is mode "none" — byte-for-byte
+	// today's unauthenticated behaviour. Credential fields hold
+	// `secret://<name>` references, never literals, and every referenced
+	// name must appear in this project's permissions.secrets.
+	//
+	// The identical shape and YAML keys exist on the daemon-level
+	// config.MCPServerConfig, so a server is configured the same way whether
+	// it is project-scoped or daemon-scoped.
+	// See https://docs.vornik.io §4.
+	Auth mcpauth.Auth `yaml:"auth,omitempty"`
 }
 
 // ProjectPermissions defines project-level access and permissions
@@ -1996,6 +2009,27 @@ func (p *Project) Validate(filename string) error {
 	// them as "no limit" (which is the runtime behaviour for ≤0,
 	// but that's the bypass-by-design path, not what an operator
 	// who explicitly wrote -1 meant).
+	// MCP auth blocks: fail at load, not at the first tool call. A malformed
+	// block otherwise presents as an unauthenticated request the server
+	// rejects — indistinguishable from a permissions problem at the vendor.
+	for i, s := range p.MCP.Servers {
+		if err := s.Auth.Validate(s.Transport); err != nil {
+			return ProjectValidationError{
+				File:    filename,
+				Field:   fmt.Sprintf("mcp.servers[%d].auth", i),
+				Message: err.Error(),
+			}
+		}
+		// permissions.secrets is enforced here — an auth block must not
+		// reach a credential the project was never granted.
+		if err := s.Auth.ValidateSecretGrants(p.Permissions.Secrets); err != nil {
+			return ProjectValidationError{
+				File:    filename,
+				Field:   fmt.Sprintf("mcp.servers[%d].auth", i),
+				Message: err.Error(),
+			}
+		}
+	}
 	for name, spec := range p.MCP.ToolRateLimits {
 		if spec.RPS < 0 {
 			return ProjectValidationError{

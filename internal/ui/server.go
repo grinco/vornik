@@ -24,6 +24,7 @@ import (
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/controlplane"
 	"vornik.io/vornik/internal/dispatcher"
+	"vornik.io/vornik/internal/mcpconnect"
 	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
@@ -214,7 +215,11 @@ type Server struct {
 	deliverableMetrics *DeliverableMetrics
 	// proposalStore + proposalApplier back the EE control-plane console
 	// (/ui/admin/control-plane). Nil-safe: the page renders "not wired".
-	proposalStore   persistence.ProposalRepository
+	proposalStore persistence.ProposalRepository
+	// mcpOAuthAdmin backs the control-plane MCP tab's auth columns and the
+	// Connect/Disconnect buttons. Nil = the columns render empty, which is
+	// what a deployment with no token store gets.
+	mcpOAuthAdmin   MCPOAuthAdmin
 	proposalApplier proposalApplier
 	diagnoser       proposalDiagnoser
 	// cpConfigPath is the deployed config.yaml the hub's ledger-gated edits
@@ -1457,6 +1462,21 @@ func WithControlPlaneConfigPath(path string) ServerOption {
 	return func(s *Server) { s.cpConfigPath = path }
 }
 
+// MCPOAuthAdmin is the connector surface the control-plane MCP tab uses. An interface so the UI
+// package needs neither a database nor an HTTP vendor in tests.
+type MCPOAuthAdmin interface {
+	ResolveServer(projectID, serverName string) (mcpconnect.ServerRef, bool)
+	Grant(ctx context.Context, projectID, serverName string) (*persistence.MCPOAuthToken, error)
+	Begin(ctx context.Context, ref mcpconnect.ServerRef, connectedBy string) (mcpconnect.BeginResult, error)
+	Disconnect(ctx context.Context, projectID, serverName, actor string) error
+	RedirectURI() (string, error)
+}
+
+// WithMCPOAuthAdmin wires the control-plane MCP tab's OAuth columns and actions.
+func WithMCPOAuthAdmin(a MCPOAuthAdmin) ServerOption {
+	return func(s *Server) { s.mcpOAuthAdmin = a }
+}
+
 // WithProposalStore + WithProposalApplier wire the control-plane console
 // (/ui/admin/control-plane). Nil-safe (page renders "not wired").
 func WithProposalStore(repo persistence.ProposalRepository) ServerOption {
@@ -2130,6 +2150,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/projects", s.Projects)
 	mux.HandleFunc("/projects/", s.projectRouter)
 	mux.HandleFunc("/setup", s.Setup)
+	if s.mcpOAuthAdmin != nil {
+		mux.HandleFunc("/admin/control-plane/mcp/connect", s.AdminControlPlaneMCPConnect)
+	}
 
 	// Guided Integrations Hub (design doc: integrations-hub-design.md,
 	// task 5.3) — catalog + guided per-kind connect flow. Scope-filtered

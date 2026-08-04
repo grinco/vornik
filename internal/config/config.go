@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"vornik.io/vornik/internal/aidisclosure"
+	"vornik.io/vornik/internal/mcpauth"
 	"vornik.io/vornik/internal/mediakind"
 )
 
@@ -963,6 +964,41 @@ type MCPServerConfig struct {
 	// streamable-http). 0 = the 30s default. Raise it for servers with
 	// legitimately long-running tools (e.g. scraper web_fetch).
 	TimeoutSeconds int `yaml:"timeout_seconds" doc:"Per-request HTTP timeout in seconds (0 = 30s default)."`
+	// Auth configures how Vornik authenticates to this server. Identical
+	// shape and YAML keys to the project-scoped registry.MCPServerConfig, so
+	// a server is configured the same way in either scope. Zero value =
+	// mode "none" = today's unauthenticated behaviour. Credential fields
+	// hold `secret://<name>` references, never literals.
+	//
+	// Daemon-scope servers are reachable from EVERY project, so a credential
+	// attached here shares one account with all of them — prefer a
+	// project-scoped server for anything account-bearing.
+	// See https://docs.vornik.io §4.
+	Auth mcpauth.Auth `yaml:"auth,omitempty" doc:"How Vornik authenticates to this server: mode none|oauth|static|env, with secret:// references for every credential."`
+}
+
+// PublicOrigin returns the externally-reachable origin of this daemon
+// (scheme://host[:port]), with no trailing slash.
+//
+// ONE fact, two historical keys. `auth.external_base_url` came first and is
+// required when a browser-login provider is configured; `server.public_base_url`
+// was added for git clone/push URLs and adopted by the MCP OAuth callback. Both
+// answer "where do we live from the outside", so every consumer must read them
+// through here rather than picking one — two fields carrying one fact can
+// disagree, and when they do, a vendor redirects to the wrong host with nothing
+// complaining anywhere.
+//
+// Precedence: server.public_base_url wins (the more generic, server-level
+// statement — operator decision 2026-08-04), falling back to
+// auth.external_base_url so no existing deployment has to edit config. Validate
+// rejects the case where both are set and disagree, so precedence never has to
+// silently pick a winner in practice.
+// see LLD § https://docs.vornik.io §6
+func (c *Config) PublicOrigin() string {
+	if v := strings.TrimRight(strings.TrimSpace(c.Server.PublicBaseURL), "/"); v != "" {
+		return v
+	}
+	return strings.TrimRight(strings.TrimSpace(c.Auth.ExternalBaseURL), "/")
 }
 
 // AuthSettings holds daemon-wide authentication settings that sit

@@ -144,6 +144,12 @@ func TestJournalArgs_AreConstantAndShellFree(t *testing.T) {
 func TestJournalTail_TakesNoCallerSteerableInput(t *testing.T) {
 	// JournalTail's only parameter is a context. If this stops compiling because a
 	// unit/filter/path argument was added, STOP: see the file header.
-	var f func(context.Context) Check = JournalTail
-	_ = f
+	assertJournalTailShape(JournalTail)
 }
+
+// assertJournalTailShape pins the collector's signature. Taking the function as
+// a typed parameter is the pin — a JournalTail that grows a caller-steerable
+// argument no longer satisfies it and the package stops compiling. (Spelled as
+// a parameter rather than `var f func(...) = JournalTail` so the explicit type
+// is load-bearing to the compiler and not merely a redundant annotation.)
+func assertJournalTailShape(fn func(context.Context) Check) { _ = fn }

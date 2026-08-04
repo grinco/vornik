@@ -698,6 +698,63 @@ vornikctl mcp call [flags]
 | `--tool` |  | Qualified tool name: mcp__{server}__{tool} (required) |
 | `-p`, `--project` |  | Project ID (required) |
 
+## vornikctl mcp connect
+
+Grant an MCP server access via OAuth (prints a URL and waits)
+
+Start the OAuth consent flow for one MCP server.
+
+Prints the resource and scopes being requested, then an authorization URL to
+open in a browser. The daemon's own callback completes the exchange; this
+command waits for it and then verifies that the recorded grant matches what was
+requested.
+
+Omit --project for a daemon-level server (config.yaml's mcp.servers). NOTE that
+a daemon-level grant is reachable from EVERY project on the daemon.
+
+Examples:
+  vornikctl mcp connect atlassian -p my-project
+  vornikctl mcp connect n8n
+
+```
+vornikctl mcp connect <server> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-p`, `--project` |  | Project ID (omit for a daemon-level server) |
+
+## vornikctl mcp disconnect
+
+Revoke Vornik's stored OAuth grant for an MCP server
+
+Delete the stored OAuth grant for one MCP server.
+
+The server's auth: block in config is untouched, so reconnecting needs no config
+change. This does NOT revoke the grant at the vendor — do that in their console
+if you want the authorization itself withdrawn.
+
+```
+vornikctl mcp disconnect <server> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `-p`, `--project` |  | Project ID (omit for a daemon-level server) |
+
+## vornikctl mcp oauth-status
+
+Show the stored OAuth grant for an MCP server
+
+```
+vornikctl mcp oauth-status <server> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | `false` | JSON output |
+| `-p`, `--project` |  | Project ID (omit for a daemon-level server) |
+
 ## vornikctl mcp servers
 
 List the daemon-level MCP server inventory

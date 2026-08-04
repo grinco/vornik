@@ -547,7 +547,10 @@ type ForkExecutorResult struct {
 // Server handles HTTP API requests for the data plane.
 // This is the primary external interface for all execution-related traffic.
 type Server struct {
-	logger         zerolog.Logger
+	logger zerolog.Logger
+	// mcpOAuth serves the MCP OAuth connect endpoints. Nil = the endpoints
+	// answer 503 (no token store wired).
+	mcpOAuth       MCPOAuthConnector
 	taskRepo       persistence.TaskRepository
 	executionRepo  persistence.ExecutionRepository
 	artifactRepo   persistence.ArtifactRepository
@@ -1291,6 +1294,13 @@ func (s *Server) SetChatCacheMetrics(m ChatCacheMetrics) {
 
 // ServerOption is a functional option for configuring the Server.
 type ServerOption func(*Server)
+
+// WithMCPOAuthConnector wires the MCP OAuth connect endpoints
+// (/api/v1/mcp/oauth/*). Admin-CLASS gated but deliberately NOT edition-gated:
+// MCP authentication is a Community feature (design §7.2's CE note).
+func WithMCPOAuthConnector(c MCPOAuthConnector) ServerOption {
+	return func(s *Server) { s.mcpOAuth = c }
+}
 
 // WithLogger sets the logger for the server.
 func WithLogger(logger zerolog.Logger) ServerOption {

@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"bufio"
-	"context"
 	"os/exec"
 	"sync"
 	"testing"
@@ -114,7 +113,7 @@ func TestStartStdio_WiresTransportAndCwd(t *testing.T) {
 		pending: make(map[int64]chan stdioResult),
 	}
 	// Allow the bare "sleep" launcher to resolve via PATH for exec.Command.
-	require.NoError(t, c.startStdio(context.Background()))
+	require.NoError(t, c.startStdio())
 	require.NotNil(t, c.cmd)
 	assert.Equal(t, "/", c.cmd.Dir, "subprocess cwd must be pinned to / per the audit")
 	require.NotNil(t, c.stdin)

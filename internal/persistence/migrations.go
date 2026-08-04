@@ -6264,4 +6264,75 @@ DROP INDEX IF EXISTS idx_chat_memory_confirm_expiry;
 DROP TABLE IF EXISTS chat_memory_write_confirmations;
 `,
 	},
+	{
+		Version: 147,
+		Name:    "mcp_oauth_tokens",
+		// Step 4 of the MCP server authentication design §6. Per-project OAuth service
+		// identity for MCP servers: one operator consents once per (project, server), and
+		// every task in that project — including autonomous and cron runs, which have no
+		// user to borrow a token from — uses that grant.
+		//
+		// project_id = '' IS the daemon scope, not a missing value. Daemon-scope servers
+		// are admin-configured and reachable from every project, so the empty string is a
+		// real key here rather than a NULL to be tolerated; making it NOT NULL keeps the
+		// primary key total and the lookup a plain equality.
+		//
+		// resource is STORED, not derived (F5). Trello and Jira share one authorization
+		// server yet are distinct resources with distinct scope sets, so the token's
+		// audience is a property of the grant. The injection path re-checks it before
+		// attaching a header — the spec's confused-deputy prohibition, made concrete.
+		//
+		// client_id lives here rather than in config because a dynamically-registered
+		// (RFC 7591) client is issued per DEPLOYMENT and must survive a restart:
+		// re-registering on every boot would accumulate unbounded garbage clients at the
+		// authorization server, and several servers rate-limit registration.
+		//
+		// refresh_token DEFAULTs to '' rather than allowing NULL so the rotation guard
+		// (`UPDATE … WHERE refresh_token = <the one we used>`) stays two-valued. A
+		// three-valued comparison would silently match nothing for a grant with no refresh
+		// token, which is the case where the update matters least but confuses most.
+		//
+		// needs_reconnect is the difference between "expired, will refresh itself" and "a
+		// human must consent again". Both the UI row status and the tool-call error path
+		// need to tell those apart; without it an operator sees "not working" and cannot
+		// tell whether waiting helps.
+		//
+		// NOT ENCRYPTED AT REST, consistent with task_credentials.value and called out as
+		// a known limitation in design §9 rather than silently skipped. An
+		// application-level secrets-encryption primitive would serve several subsystems
+		// and belongs in its own design; DB-at-rest encryption is the mitigation today.
+		//
+		// see LLD § https://docs.vornik.io §6
+		Up: `
+CREATE TABLE IF NOT EXISTS mcp_oauth_tokens (
+    project_id      TEXT        NOT NULL,
+    server_name     TEXT        NOT NULL,
+    resource        TEXT        NOT NULL,
+    client_id       TEXT        NOT NULL,
+    access_token    TEXT        NOT NULL,
+    refresh_token   TEXT        NOT NULL DEFAULT '',
+    expires_at      TIMESTAMPTZ,
+    scopes          TEXT        NOT NULL DEFAULT '',
+    connected_by    TEXT        NOT NULL DEFAULT '',
+    needs_reconnect BOOLEAN     NOT NULL DEFAULT FALSE,
+    connected_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (project_id, server_name)
+);
+
+-- The control-plane row status lists every grant for one project at a time.
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_tokens_project
+    ON mcp_oauth_tokens (project_id);
+
+-- A refresh sweep looks for grants that are near expiry and still refreshable;
+-- needs_reconnect rows are deliberately excluded by the caller, not by the index.
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_tokens_expiry
+    ON mcp_oauth_tokens (expires_at);
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_mcp_oauth_tokens_expiry;
+DROP INDEX IF EXISTS idx_mcp_oauth_tokens_project;
+DROP TABLE IF EXISTS mcp_oauth_tokens;
+`,
+	},
 }

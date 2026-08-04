@@ -239,6 +239,20 @@ type ProjectConfigFormData struct {
 	// MCPCustomRows length; templates can't compute len() on
 	// their own.
 	MCPNextCustomIndex int
+	// MCPPreservedFields carries per-server mcp.servers keys this form does
+	// not manage, keyed by server name, so a save cannot silently delete
+	// them. The form rebuilds the whole servers list from form state, so
+	// anything it does not re-emit is gone.
+	//
+	// Today that is the `auth:` block: it has no form controls (they arrive
+	// with step 6 of mcp-server-authentication-design.md), and dropping it
+	// would unauthenticate a working server the next time an operator
+	// ticked an unrelated checkbox.
+	//
+	// Populated from the project's ON-DISK config, never from the POST body,
+	// so it cannot be used to smuggle a field in — and buildMCPServersValue
+	// applies it only where the form has no value of its own.
+	MCPPreservedFields map[string]map[string]any
 }
 
 // BuiltinToolOption pairs a canonical tool name with whether the

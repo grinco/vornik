@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -111,7 +112,7 @@ func Connect(ctx context.Context, cfg ServerConfig, logger zerolog.Logger) (*Cli
 		if err := validateLauncher(cfg.Command); err != nil {
 			return nil, fmt.Errorf("mcp server %s: %w", cfg.Name, err)
 		}
-		if err := c.startStdio(ctx); err != nil {
+		if err := c.startStdio(); err != nil {
 			return nil, fmt.Errorf("mcp stdio start failed for %s: %w", cfg.Name, err)
 		}
 	case "sse":
@@ -349,14 +350,61 @@ func baseMCPEnv() []string {
 
 // --- stdio transport ---
 
-func (c *Client) startStdio(ctx context.Context) error {
-	// Expand env vars in the command config using a restricted mapper that
-	// refuses to leak the daemon's own secrets (anything prefixed VORNIK_).
-	// Callers that need a project-scoped variable can set it in their shell
-	// or systemd unit under any other name.
+// buildStdioEnv composes the environment for a stdio MCP subprocess.
+//
+// Three layers, in order, because later entries win in exec's env:
+//  1. baseMCPEnv() — the minimal inherited environment.
+//  2. cfg.Env — the legacy operator map, ${VAR}-expanded through a restricted
+//     mapper that refuses to leak the daemon's own secrets (anything prefixed
+//     VORNIK_). Callers needing a project-scoped variable name it something else.
+//  3. cfg.AuthEnv — credentials resolved from the server's `auth: {mode: env}`
+//     block, passed VERBATIM. No expansion: these are literal secret values,
+//     and expanding one would mangle any credential containing '$' (base64 and
+//     JWT-ish values routinely do) or, worse, substitute another variable's
+//     value into it.
+func buildStdioEnv(cfg ServerConfig) []string {
 	env := baseMCPEnv()
-	for k, v := range c.config.Env {
+	for k, v := range cfg.Env {
 		env = append(env, k+"="+expandSafe(v))
+	}
+	for k, v := range cfg.AuthEnv {
+		env = append(env, k+"="+v)
+	}
+	return env
+}
+
+// collidingAuthEnvKeys returns the variable names an `auth: {mode: env}` block
+// overwrites in the legacy Env map. Auth winning is the intent, but it must not
+// be silent — the header path Warns on the same collision, and an operator
+// debugging "my Env value isn't reaching the server" deserves the same clue
+// (review-20260804-350e finding 4). Kept separate from buildStdioEnv so that
+// stays a pure function.
+func collidingAuthEnvKeys(cfg ServerConfig) []string {
+	if len(cfg.AuthEnv) == 0 || len(cfg.Env) == 0 {
+		return nil
+	}
+	var out []string
+	for k := range cfg.AuthEnv {
+		if _, ok := cfg.Env[k]; ok {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// startStdio launches the subprocess. It deliberately takes NO context: see
+// the exec.Command note below — the caller's ctx bounds the connect handshake
+// and must not bound the process, so a ctx parameter here would be an
+// invitation to wire it into exec.CommandContext and reintroduce the 2026-07-15
+// regression.
+func (c *Client) startStdio() error {
+	env := buildStdioEnv(c.config)
+	if collisions := collidingAuthEnvKeys(c.config); len(collisions) > 0 {
+		c.logger.Warn().
+			Str("server", c.config.Name).
+			Strs("vars", collisions).
+			Msg("mcp: auth credentials overwriting env values of the same name")
 	}
 
 	args := make([]string, len(c.config.Args))
@@ -364,7 +412,7 @@ func (c *Client) startStdio(ctx context.Context) error {
 		args[i] = expandSafe(a)
 	}
 
-	// Deliberately NOT exec.CommandContext: the ctx passed here bounds
+	// Deliberately NOT exec.CommandContext: the caller's ctx bounds
 	// the CONNECT handshake, but the subprocess must live as long as the
 	// client — project clients are connected under a bounded startup ctx
 	// and then held for hours. Binding the process to that ctx killed
@@ -669,6 +717,7 @@ func (c *Client) callSSE(ctx context.Context, method string, params any) (json.R
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+	c.setBaseHeaders(httpReq)
 	httpReq.Header.Set("Content-Type", "application/json")
 	// Per-server fixed headers (set by the daemon when wiring
 	// each project's clients — e.g. X-Project-ID and
@@ -778,6 +827,35 @@ func (c *Client) applyConfigHeaders(httpReq *http.Request) {
 		}
 		httpReq.Header.Set(k, v)
 	}
+	c.applyAuthHeaders(httpReq)
+}
+
+// applyAuthHeaders applies credentials resolved from the server's `auth:` block
+// LAST, so an auth-managed credential deterministically wins over an
+// operator-set header of the same name (mcp-server-authentication-design.md §5).
+// The reserved-header guard still applies: config validation rejects a
+// protocol-owned header name up front, and this is the second gate for a block
+// that reached the client without it.
+//
+// Never logs a header VALUE — these are real credentials, and a Warn line is
+// exactly the kind of place one leaks from.
+func (c *Client) applyAuthHeaders(httpReq *http.Request) {
+	for k, v := range c.config.AuthHeaders {
+		if _, reserved := reservedMCPHeaders[strings.ToLower(strings.TrimSpace(k))]; reserved {
+			c.logger.Warn().
+				Str("server", c.config.Name).
+				Str("header", k).
+				Msg("mcp: ignoring auth header that collides with a protocol-owned header")
+			continue
+		}
+		if existing := httpReq.Header.Get(k); existing != "" {
+			c.logger.Warn().
+				Str("server", c.config.Name).
+				Str("header", k).
+				Msg("mcp: auth credential overwriting a configured header of the same name")
+		}
+		httpReq.Header.Set(k, v)
+	}
 }
 
 // setStreamableHeaders applies the headers common to every streamable-http
@@ -785,6 +863,7 @@ func (c *Client) applyConfigHeaders(httpReq *http.Request) {
 // assigned), the per-server configured headers (Bearer auth etc.), and the
 // ctx-forwarded task/execution attribution headers.
 func (c *Client) setStreamableHeaders(ctx context.Context, httpReq *http.Request) {
+	c.setBaseHeaders(httpReq)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 	httpReq.Header.Set("MCP-Protocol-Version", "2024-11-05")

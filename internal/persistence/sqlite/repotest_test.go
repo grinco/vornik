@@ -351,3 +351,11 @@ func TestChatMemoryWriteConfirmationRepository_Contract(t *testing.T) {
 		sqlite.NewChatMemoryWriteConfirmationRepository(db.DB),
 		sqlite.NewChatMemoryWriteAuditRepository(db.DB))
 }
+
+// TestMCPOAuthTokenRepository_Contract — the MCP OAuth token store (MCP server authentication
+// design §6). The rotation guard and the daemon-scope key are the properties worth pinning on
+// both backends; this is the SQLite half.
+func TestMCPOAuthTokenRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunMCPOAuthTokenSuite(t, sqlite.NewMCPOAuthTokenRepository(db.DB))
+}

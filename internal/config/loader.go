@@ -683,6 +683,31 @@ func (c *Config) Validate() error {
 	if _, err := c.Chat.DeclaredModalities(); err != nil {
 		return fmt.Errorf("chat.model_capabilities: %w", err)
 	}
+	// One public origin, not two. Both keys are accepted (see
+	// Config.PublicOrigin), but a DISAGREEMENT is always a mistake and its
+	// failure mode is silent misrouting — a vendor redirecting a browser to the
+	// wrong host, with no error anywhere and a stranded authorization code. A
+	// refused start naming both keys is strictly easier to diagnose, and the
+	// check is a string compare at load time, before any listener is bound.
+	// see LLD § https://docs.vornik.io §6
+	serverOrigin := strings.TrimRight(strings.TrimSpace(c.Server.PublicBaseURL), "/")
+	authOrigin := strings.TrimRight(strings.TrimSpace(c.Auth.ExternalBaseURL), "/")
+	if serverOrigin != "" && authOrigin != "" && serverOrigin != authOrigin {
+		return fmt.Errorf("server.public_base_url (%q) and auth.external_base_url (%q) disagree; they are the same fact — set one, or set both to the same value",
+			serverOrigin, authOrigin)
+	}
+
+	// MCP auth blocks: fail the boot on a malformed one rather than at the
+	// first tool call, where an unauthenticated request rejected by the
+	// vendor is indistinguishable from a permissions problem on their side.
+	// No permissions.secrets check here — daemon-scope servers are
+	// admin-configured and have no project allowlist (the project-scoped
+	// equivalent is enforced in registry.Project.Validate).
+	for i, s := range c.MCP.Servers {
+		if err := s.Auth.Validate(s.Transport); err != nil {
+			return fmt.Errorf("mcp.servers[%d].auth (%s): %w", i, s.Name, err)
+		}
+	}
 	if c.API.AuthEnabled && c.API.AuthDryRun {
 		return fmt.Errorf("api.auth_dry_run is an evaluation mode; remove it when setting api.auth_enabled: true")
 	}
@@ -748,13 +773,17 @@ func (c *Config) Validate() error {
 		if driver == "sqlite" {
 			return fmt.Errorf("auth.providers.github requires the postgres driver: the identity core (users/ui_sessions) is not available on sqlite, so login would be silently disabled")
 		}
-		// external_base_url is required when any provider is configured.
-		if c.Auth.ExternalBaseURL == "" {
-			return fmt.Errorf("auth.external_base_url is required when a login provider is configured")
+		// A public origin is required when any provider is configured. Either
+		// key satisfies it (Config.PublicOrigin), so a deployment that declares
+		// only server.public_base_url is valid — that is what lets an operator
+		// drop the duplicate rather than keep both in step.
+		origin := c.PublicOrigin()
+		if origin == "" {
+			return fmt.Errorf("a public origin is required when a login provider is configured: set server.public_base_url (preferred) or auth.external_base_url")
 		}
 		// Validate URL: must have http/https scheme, non-empty host, no path
 		// (or bare "/"), no query, no fragment.
-		if err := validateExternalBaseURL(c.Auth.ExternalBaseURL); err != nil {
+		if err := validateExternalBaseURL(origin); err != nil {
 			return err
 		}
 		// Validate github provider fields.

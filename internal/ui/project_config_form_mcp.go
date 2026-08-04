@@ -37,6 +37,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"vornik.io/vornik/internal/registry"
 )
 
@@ -122,6 +124,14 @@ func populateMCPSection(data *ProjectConfigFormData, source MCPFormRegistrySourc
 	byName := make(map[string]registry.MCPServerConfig, len(projServers))
 	for _, s := range projServers {
 		byName[s.Name] = s
+		// Capture the keys this form does not manage so the save path can
+		// re-emit them instead of dropping them (see MCPPreservedFields).
+		if preserved := preservedMCPFields(s); len(preserved) > 0 {
+			if data.MCPPreservedFields == nil {
+				data.MCPPreservedFields = make(map[string]map[string]any, len(projServers))
+			}
+			data.MCPPreservedFields[s.Name] = preserved
+		}
 	}
 
 	// Try the daemon registry. A nil source or error degrades to
@@ -178,6 +188,62 @@ func populateMCPSection(data *ProjectConfigFormData, source MCPFormRegistrySourc
 			AllowedTools: strings.Join(s.AllowedTools, "\n"),
 		})
 	}
+}
+
+// preservedMCPFields renders the mcp.servers keys this form does not manage
+// into the generic map shape the YAML patch writer takes. Round-tripping
+// through YAML rather than hand-building the map keeps the spelling of every
+// key (and every omitempty decision) owned by the config struct, so a field
+// added there is preserved here without a second edit.
+//
+// Returns nil when there is nothing to preserve, which is the common case.
+func preservedMCPFields(s registry.MCPServerConfig) map[string]any {
+	if s.Auth.IsZero() {
+		return nil
+	}
+	raw, err := yaml.Marshal(s.Auth)
+	if err != nil {
+		return nil
+	}
+	var auth map[string]any
+	if err := yaml.Unmarshal(raw, &auth); err != nil || len(auth) == 0 {
+		return nil
+	}
+	return map[string]any{"auth": auth}
+}
+
+// mcpFormManagedKeys are the mcp.servers keys the form owns. Preservation must
+// never write one of these — the form's own value is authoritative, and letting
+// a preserved key win would make a stale on-disk value silently override the
+// operator's edit.
+var mcpFormManagedKeys = map[string]struct{}{
+	"name":          {},
+	"transport":     {},
+	"url":           {},
+	"allowed_tools": {},
+	"_order":        {},
+}
+
+// applyPreservedMCPFields merges the unmanaged keys captured for serverName into
+// a rebuilt entry, extending the writer's key-order hint so they land in a
+// stable position.
+func applyPreservedMCPFields(entry map[string]any, data *ProjectConfigFormData, serverName string) {
+	preserved := data.MCPPreservedFields[serverName]
+	if len(preserved) == 0 {
+		return
+	}
+	order, _ := entry["_order"].([]string)
+	for key, value := range preserved {
+		if _, managed := mcpFormManagedKeys[key]; managed {
+			continue
+		}
+		if _, alreadySet := entry[key]; alreadySet {
+			continue
+		}
+		entry[key] = value
+		order = append(order, key)
+	}
+	entry["_order"] = order
 }
 
 // mcpRegistryFetchTimeout caps the registry probe so a wedged
@@ -283,6 +349,7 @@ func buildMCPServersValue(data *ProjectConfigFormData) (value []map[string]any, 
 		if len(allowed) > 0 {
 			entry["allowed_tools"] = allowed
 		}
+		applyPreservedMCPFields(entry, data, row.Server.Name)
 		value = append(value, entry)
 	}
 	for _, row := range data.MCPCustomRows {
@@ -299,6 +366,7 @@ func buildMCPServersValue(data *ProjectConfigFormData) (value []map[string]any, 
 		if tools := splitChipList(row.AllowedTools); len(tools) > 0 {
 			entry["allowed_tools"] = tools
 		}
+		applyPreservedMCPFields(entry, data, row.Name)
 		value = append(value, entry)
 	}
 	return value, len(value) == 0

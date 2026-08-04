@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/registry/project.go
-      sha256: 0e998b38cef706cea1f918104f00536c5a1eb5330b841c4d14e81921e964fa0d
+      sha256: ba1d7b86609d8eb3b19bb9aaec3691ce08039be908db501926857609415a7e9a
     - path: internal/mcp/client.go
-      sha256: 5d5e53e20bf973d0babfe3951651d7e5897c8c0a3520626272eb1dbbe882700c
+      sha256: 2c68d2d35da9f7a0b6cc76fcb0533408dac94a2c3d0a8281444759f3da1f070e
     - path: internal/mcp/ratelimit.go
       sha256: 19ad0c64e2abd9d25e95971e1ba5e3cfe91f34852edeca6e4f9c70825b2e901d
     - path: internal/cli/mcp.go
@@ -80,6 +80,184 @@ mcp:
       url: "http://127.0.0.1:8787"
       timeout_seconds: 90      # 0 or omitted = 30s default
 ```
+
+## Authenticating to a server
+
+Most hosted MCP servers require credentials. Add an `auth:` block to the server
+entry. Omitting it (the default) means "no authentication", which is how every
+server behaved before this block existed.
+
+Credentials are **never written in the config**. Every credential field takes a
+`secret://<name>` reference; the value lives in the secret store, and the name
+must appear in the project's `permissions.secrets`. That is what lets a server
+definition travel through the control plane as a reviewable diff without
+leaking anything.
+
+### `mode: static` — a bearer token or API key
+
+For a server that authenticates with a fixed header (n8n's MCP Server Trigger,
+and most servers that predate OAuth support):
+
+```yaml
+permissions:
+  secrets: ["N8N_MCP_TOKEN"]        # required — the reference is checked against this
+mcp:
+  servers:
+    - name: "n8n"
+      transport: "streamable-http"
+      url: "https://n8n.example.com/mcp/abc"
+      auth:
+        mode: static
+        header: "Authorization"     # optional; Authorization is the default
+        value_from: "secret://N8N_MCP_TOKEN"
+        value_prefix: "Bearer "     # optional; note the trailing space
+```
+
+The resolved header is attached to every request for that server, and it wins
+over a header of the same name set anywhere else.
+
+### `mode: env` — credentials for a stdio server's own upstream
+
+A stdio MCP server often holds its *own* account with a third party (a YouTube,
+Reddit or Instagram wrapper holding a Google or Reddit app). There is no
+handshake for vornik to run — the job is to hand the subprocess its secrets:
+
+```yaml
+permissions:
+  secrets: ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"]
+mcp:
+  servers:
+    - name: "reddit"
+      transport: "stdio"
+      command: "reddit-mcp"
+      auth:
+        mode: env
+        env_from:
+          REDDIT_CLIENT_ID: "secret://REDDIT_CLIENT_ID"
+          REDDIT_CLIENT_SECRET: "secret://REDDIT_CLIENT_SECRET"
+```
+
+Resolved values are passed to the subprocess verbatim — unlike the legacy `env`
+map, they are **not** `${VAR}`-expanded, so a credential containing `$` arrives
+intact. Prefer `env_from` over `env` for anything secret: `env` resolves from
+the daemon's own environment, so two projects on one daemon necessarily share
+the value, and it bypasses the `permissions.secrets` check.
+
+### What is validated, and when
+
+Mistakes fail at config load rather than at the first tool call:
+
+- `mode` outside `none | oauth | static | env`.
+- `mode: env` on a non-stdio server, or `static`/`oauth` on a stdio one.
+- A credential field holding a literal or a `${VAR}` placeholder instead of a
+  `secret://` reference.
+- A `secret://` name that is not in the project's `permissions.secrets`.
+- A `header` the MCP protocol owns (`Content-Type`, `Accept`,
+  `MCP-Protocol-Version`, `Mcp-Session-Id`) — it would be dropped before the
+  request was sent.
+- A field belonging to a different mode, which would otherwise be ignored
+  silently.
+
+A secret that is *missing at runtime* is reported separately: the server is
+withheld rather than connected without its credential, and the daemon log names
+the secret. A server that 401s on every call would look like a permissions
+problem at the vendor; this points at the actual cause.
+
+### `mode: oauth` — the consent flow
+
+Most hosted MCP servers (Atlassian, Linear, Notion, Slack, GitHub, …) are OAuth
+2.1 resource servers. Declare the block, then connect once per project:
+
+```yaml
+mcp:
+  servers:
+    - name: "atlassian"
+      transport: "streamable-http"
+      url: "https://mcp.atlassian.com/v1/mcp/authv2"
+      auth:
+        mode: oauth
+        scopes: ["read:jira-work", "offline_access"]
+```
+
+Vornik discovers the authorization server, registers itself as an OAuth client
+where the vendor supports it, and stores the resulting token per
+`(project, server)`. That last part matters: one operator consents once, and
+every task in the project uses that grant — including autonomous and cron runs,
+which have no user to borrow a token from.
+
+**Precondition.** `server.public_base_url` must be set to an `https://` origin
+(loopback also works for local testing). OAuth 2.1 requires a redirect URI the
+vendor can reach, and Vornik's callback is
+`<public_base_url>/ui/mcp/oauth/callback`. Connect is refused up front when it is
+unset — better than failing after you have already consented at the vendor.
+
+Connect from the CLI:
+
+```
+$ vornikctl mcp connect atlassian -p my-project
+Connecting MCP server "atlassian" for project my-project
+
+  Resource:     https://mcp.atlassian.com/v1/mcp/authv2
+  Scopes:       read:jira-work offline_access
+  Redirect URI: https://vornik.example.com/ui/mcp/oauth/callback
+
+Open this URL to consent:
+
+  https://auth.atlassian.com/authorize?...
+
+Waiting for the callback (up to 5m0s)…
+```
+
+Open the URL, consent, and the daemon's own callback completes the exchange. The
+command then **verifies** the recorded grant against what it displayed and exits
+non-zero if the resource or scopes differ — it never sees the token, so a
+matching record is the only evidence it can offer you.
+
+The control-plane MCP tab (`/ui/admin/control-plane?section=mcp`) has the same
+Connect/Disconnect buttons plus an authorized-vs-reachable status per row. Note
+that "reachable" is auth-blind: a server that 401s every call is still
+reachable, which is why the row shows the grant separately.
+
+Other commands:
+
+```
+vornikctl mcp oauth-status atlassian -p my-project   # resource, scopes, expiry
+vornikctl mcp disconnect atlassian -p my-project     # deletes the stored grant
+```
+
+**Servers with no dynamic registration** (Slack, GitHub, Box) need a
+pre-registered client — set `client_id`, and `client_secret_from` when the
+vendor issued a secret. **Servers with no discovery at all** (Intercom) need
+`authorization_endpoint` and `token_endpoint` set explicitly. Vornik tells you
+which case you are in rather than failing generically.
+
+**Refresh and reconnect.** Access tokens refresh automatically, shortly before
+expiry, and rotated refresh tokens are handled. If the vendor revokes the grant,
+the server is flagged `needs_reconnect`: its calls stop rather than retrying
+forever, `mcp oauth-status` says so, and `mcp connect` fixes it. Disconnecting
+in Vornik does **not** revoke the authorization at the vendor — do that in their
+console too if you want it withdrawn there.
+
+**If you change a server's `url`, reconnect it.** Vornik refuses to present a
+grant whose origin no longer matches the configured URL, so moving a server to a
+different host fails loudly. A change to the PATH only (`/v1` → `/v2` on the same
+host) is not detected — if that vendor scopes access per path, run
+`vornikctl mcp connect` again after the edit.
+
+**A note on the grant record.** Every Connect and Disconnect is recorded in the
+admin audit trail with who consented, to which resource, and with which scopes —
+never the token. That is what makes a grant auditable after the fact.
+
+### Daemon-level servers
+
+The same `auth:` block works in `config.yaml`'s `mcp.servers`. Note the
+difference in blast radius: a daemon-level server is reachable from **every**
+project, so a credential attached there shares one account with all of them.
+Prefer a project-scoped server for anything account-bearing.
+
+The control-plane MCP tab can edit `auth:` blocks directly. The project-config
+form has no auth fields, but it preserves a block you hand-wrote rather than
+dropping it on an unrelated save.
 
 ## Restricting tools with `allowed_tools`
 

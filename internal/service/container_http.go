@@ -34,6 +34,7 @@ import (
 	"vornik.io/vornik/internal/email"
 	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/httpx/realip"
+	"vornik.io/vornik/internal/mcpconnect"
 	"vornik.io/vornik/internal/mediahandles"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/onboarding"
@@ -168,6 +169,14 @@ func (c *Container) initHTTPServer() error {
 			return api.WithModelCapabilities(declared)
 		}(),
 		api.WithSetupSecretsDir(onboardingSecretsDir(c.ConfigPath)),
+		// MCP OAuth connect endpoints. Typed-nil-safe: the option takes an
+		// interface, so pass it only when the connector actually exists.
+		func() api.ServerOption {
+			if conn := c.mcpConnector(); conn != nil {
+				return api.WithMCPOAuthConnector(conn)
+			}
+			return func(*api.Server) {}
+		}(),
 		// Live observation subscriber (Feature #3 Phase B). The
 		// publisher itself is wired into the executor at
 		// construction; the WebSocket handler reads from the
@@ -1827,6 +1836,16 @@ func (c *Container) initHTTPServer() error {
 		// design §5.3.2 step 2).
 		uiOpts = append(uiOpts, ui.WithChatMemoryConfirmations(c.chatMemoryConfirmations()))
 	}
+	// MCP OAuth: mount the redirect target when the token store is available.
+	// Wired unconditionally rather than gated on "some server declares mode:
+	// oauth", because config reloads can introduce one at any time and a
+	// missing callback route would fail AFTER the operator consented.
+	if conn := c.mcpConnector(); conn != nil {
+		// The control-plane MCP tab's auth columns + Connect/Disconnect. The
+		// CALLBACK is not mounted here — it lives at /auth/mcp/callback on the
+		// root mux (see the callback-and-webhook-surfaces design).
+		uiOpts = append(uiOpts, ui.WithMCPOAuthAdmin(conn))
+	}
 	// DB-backed webchat session store. Each per-project
 	// SessionStore the UI lazily constructs will write-through
 	// every post-turn history slice so a daemon restart or
@@ -1956,9 +1975,50 @@ func (c *Container) initHTTPServer() error {
 		mux.Handle("/auth/", authHandler)
 		c.Logger.Info().
 			Strs("providers", sessionLogin.providerNames).
-			Str("external_base_url", c.Config.Auth.ExternalBaseURL).
+			Str("public_origin", c.Config.PublicOrigin()).
 			Bool("per_ip_limit", c.perIPLimiter != nil).
 			Msg("browser login mounted at /auth/ with per-IP limiter")
+	}
+
+	// MCP OAuth callback — /auth/mcp/callback, an EXACT pattern registered
+	// independently of the /auth/ prefix above.
+	//
+	// Three properties this placement buys, none of which a /ui mount or an
+	// /api/v1 mount would give (callback-and-webhook-surfaces design §5.1):
+	//
+	//   - It sits with the other browser-reached auth surfaces, so one
+	//     `/auth/*` rule at the edge (Cloudflare Access etc.) covers login and
+	//     MCP consent together.
+	//   - It keeps its own SESSION requirement. The /auth/ prefix is public
+	//     because that is how a browser logs in; inheriting that would silently
+	//     downgrade this callback from session+state+PKCE to state+PKCE.
+	//     http.ServeMux resolves the longest matching pattern, so the exact
+	//     path wins over the prefix regardless of registration order.
+	//   - It does not depend on a login provider being configured. The /auth/
+	//     prefix above is mounted only `if sessionLogin != nil`; this is not.
+	//
+	// The per-IP limiter is shared with the main router and the login subtree so
+	// a flood cannot get a fresh budget by picking a different prefix.
+	if conn := c.mcpConnector(); conn != nil {
+		cbHandler := conn.CallbackHandler()
+		cbAuthOpts := []api.AuthConfigOption{
+			api.WithAPIKeyLookup(c.repos.APIKeys),
+			api.WithAPIKeyToucher(c.repos.APIKeys),
+		}
+		if sessionLogin != nil {
+			cbAuthOpts = append(cbAuthOpts, api.WithSessionBackend(sessionLogin.backend))
+		}
+		wrapped := api.AuthMiddleware(api.BuildAuthConfig(c.Config, cbAuthOpts...))(cbHandler)
+		wrapped = api.PerIPLimit(
+			c.perIPLimiter,
+			c.rateLimitMetrics,
+			c.Config.API.RateLimit.PerIP.RPS,
+			c.Config.API.RateLimit.PerIP.Burst,
+		)(wrapped)
+		mux.Handle(mcpconnect.CallbackPath, wrapped)
+		c.Logger.Info().
+			Str("path", mcpconnect.CallbackPath).
+			Msg("MCP OAuth callback mounted")
 	}
 
 	// Create HTTP server with timeouts. WriteTimeout must exceed the

@@ -1482,4 +1482,42 @@ CREATE TABLE IF NOT EXISTS instinct_lift (
 );
 CREATE INDEX IF NOT EXISTS idx_step_outcomes_role_error_time
     ON execution_step_outcomes (role, error_class, recorded_at);
+-- ============================================================
+-- mcp_oauth_tokens — migration 147 parity
+-- (MCP server authentication design §6).
+--
+-- Per-project OAuth service identity for MCP servers.
+-- project_id = '' IS the daemon scope, not a missing value, so
+-- the PK stays total and lookups stay plain equality.
+--
+-- TIMESTAMPTZ drops to TEXT (RFC3339Nano via sqliteTime) and
+-- BOOLEAN to INTEGER; expires_at stays nullable because not
+-- every authorization server issues an expiry, and NULL there
+-- means "valid until it 401s" rather than "already expired".
+--
+-- refresh_token DEFAULTs to '' rather than allowing NULL so the
+-- rotation guard (UPDATE ... WHERE refresh_token = <used>) stays
+-- two-valued on this backend too — the Postgres and SQLite
+-- repositories must agree on that comparison or the shared
+-- repotest contract suite would diverge.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS mcp_oauth_tokens (
+    project_id      TEXT NOT NULL,
+    server_name     TEXT NOT NULL,
+    resource        TEXT NOT NULL,
+    client_id       TEXT NOT NULL,
+    access_token    TEXT NOT NULL,
+    refresh_token   TEXT NOT NULL DEFAULT '',
+    expires_at      TEXT,
+    scopes          TEXT NOT NULL DEFAULT '',
+    connected_by    TEXT NOT NULL DEFAULT '',
+    needs_reconnect INTEGER NOT NULL DEFAULT 0,
+    connected_at    TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    PRIMARY KEY (project_id, server_name)
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_tokens_project
+    ON mcp_oauth_tokens (project_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_tokens_expiry
+    ON mcp_oauth_tokens (expires_at);
 `

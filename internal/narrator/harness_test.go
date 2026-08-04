@@ -69,8 +69,22 @@ func newTestHarness(t *testing.T, configure ...func(n *Narrator)) *testHarness {
 // awaitLine blocks until the next narration line lands or the
 // timeout elapses (test failure on timeout — no silent false
 // negatives).
+// narrationWaitFloor raises any caller-supplied positive-wait deadline. A
+// waiting test returns the instant the line arrives, so a generous ceiling
+// costs a passing run nothing — whereas the 2s most call sites pass is a
+// runner-speed assertion rather than a behavioural one: it holds when the
+// package runs alone and fails under `go test ./...`, where every package
+// competes for CPU (TestFeedbackLoop_OwnNarrationEventIgnored, 2026-08-04).
+//
+// expectNoLine deliberately does NOT use this — there, the window IS the
+// assertion, and stretching it would only slow the suite down.
+const narrationWaitFloor = 15 * time.Second
+
 func (h *testHarness) awaitLine(timeout time.Duration) *persistence.ExecutionNarration {
 	h.t.Helper()
+	if timeout < narrationWaitFloor {
+		timeout = narrationWaitFloor
+	}
 	select {
 	case row := <-h.Lines:
 		return row

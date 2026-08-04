@@ -434,6 +434,13 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		// hand-walking every project YAML. Read-only; NEVER grants a
 		// project access to tools it hasn't explicitly declared.
 		mux.HandleFunc("/api/v1/mcp/servers", server.ListMCPServers)
+		// MCP OAuth connect (design steps 4-5). Admin-class gated inside the
+		// handlers via requireAdminClassGate — NOT requireAdminGate, which
+		// would answer 501 EDITION_UNSUPPORTED on Community and make OAuth
+		// connect Enterprise-only by accident.
+		mux.HandleFunc("/api/v1/mcp/oauth/begin", server.MCPOAuthBegin)
+		mux.HandleFunc("/api/v1/mcp/oauth/status", server.MCPOAuthStatus)
+		mux.HandleFunc("/api/v1/mcp/oauth/disconnect", server.MCPOAuthDisconnect)
 		// Daemon capabilities — discovery endpoint companion plugins
 		// (Claude Code, Codex, opencode, etc.) call on first connect to
 		// learn the daemon's version, transports, feature flags, and the

@@ -13,6 +13,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -24,6 +25,8 @@ import (
 	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/mcp"
+	"vornik.io/vornik/internal/mcpauth"
+	"vornik.io/vornik/internal/mcpconnect"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
@@ -152,6 +155,8 @@ func (c *Container) mcpDesiredServers() map[string][]mcp.ServerConfig {
 			// behavior), and a name-only entry with no daemon match
 			// falls through unchanged — the manager's existing
 			// log-and-skip path handles it.
+			auth := s.Auth
+			grants := mcpauth.Grants{Allowed: p.Permissions.Secrets}
 			if s.Transport == "" {
 				if daemon, ok := daemonServers[s.Name]; ok {
 					cfg.Transport = daemon.Transport
@@ -159,13 +164,121 @@ func (c *Container) mcpDesiredServers() map[string][]mcp.ServerConfig {
 					cfg.Args = append([]string(nil), daemon.Args...)
 					cfg.Env = maps.Clone(daemon.Env)
 					cfg.URL = daemon.URL
+					// A name-only entry means "use that daemon server", so
+					// it inherits the daemon block's credentials along with
+					// its connection fields. The project's own
+					// permissions.secrets does NOT gate an inherited block:
+					// the credential belongs to the daemon-scope server
+					// definition, which is admin-configured and reachable
+					// from every project by design (auth design §9).
+					//
+					// When BOTH sides declare auth the config is ambiguous, so
+					// the server is withheld rather than one side silently
+					// winning (review-20260804-350e finding 1). Picking either
+					// would make the load-time grant check on the project's
+					// block meaningless while leaving it able to fail the whole
+					// project — an operator would be validating a block that is
+					// then discarded.
+					if !daemon.Auth.IsZero() {
+						if !s.Auth.IsZero() {
+							c.Logger.Error().
+								Str("project", p.ID).
+								Str("server", s.Name).
+								Msg("MCP: refusing to register server — the project entry and the daemon-scope server both declare auth; give the project entry its own transport/url to own the credential, or drop its auth block to inherit the daemon's")
+							continue
+						}
+						auth = daemon.Auth
+						grants = mcpauth.Grants{Unrestricted: true}
+						c.Logger.Warn().
+							Str("project", p.ID).
+							Str("server", s.Name).
+							Msg("MCP: project uses a daemon-scope server whose credentials are shared with every project")
+					}
 				}
+			}
+			if !c.applyMCPAuth(&cfg, auth, grants, p.ID, "project "+p.ID) {
+				continue
 			}
 			servers = append(servers, cfg)
 		}
 		desired[p.ID] = servers
 	}
 	return desired
+}
+
+// applyMCPAuth resolves a server's `auth:` block into cfg.AuthHeaders /
+// cfg.AuthEnv and reports whether the server may be registered.
+//
+// Three outcomes, and the difference between them is the whole point:
+//
+//   - resolved (or nothing to resolve) -> true, credentials attached.
+//   - mode oauth -> true with no credentials, logged once. The config surface
+//     ships before the flow (design §11 steps 3-5), so an operator can write
+//     and validate the block today; the server stays usable meanwhile rather
+//     than disappearing from every agent's tool catalog.
+//   - anything else (an unresolvable secret, a block that reached here without
+//     passing config validation) -> false. Fail closed: a server registered
+//     without the credential it declares 401s on every call, which reads as a
+//     vendor permissions problem rather than a local misconfiguration.
+//
+// A deliberate deviation from design §8, which specifies "config load error"
+// for an unresolvable secret ref: presence of a secret is environment state,
+// not config text, so checking it at load would make `config validate` pass or
+// fail depending on which host ran it. Load-time validation stays syntactic and
+// this is where presence is enforced — with an ERROR naming the secret, which
+// is the diagnostic the operator needs either way.
+func (c *Container) applyMCPAuth(cfg *mcp.ServerConfig, auth mcpauth.Auth, grants mcpauth.Grants, projectID, scope string) bool {
+	if auth.IsZero() {
+		return true
+	}
+	inj, err := mcpauth.Resolve(auth, cfg.Transport, mcpauth.EnvSecretSource{}, grants)
+	switch {
+	case errors.Is(err, mcpauth.ErrOAuthNotWired):
+		// mode: oauth resolves from the token store rather than from config —
+		// the credential is a grant a human gave, not a value an operator
+		// wrote. Delegated to the connector, which refreshes as needed.
+		return c.applyMCPOAuthToken(cfg, projectID, scope)
+	case err != nil:
+		// Never log the error's cause at a level that could carry a value:
+		// mcpauth guarantees its messages name fields and secret NAMES only.
+		c.Logger.Error().
+			Err(err).
+			Str("server", cfg.Name).
+			Str("scope", scope).
+			Msg("MCP: refusing to register server — its auth block could not be resolved")
+		return false
+	}
+	cfg.AuthHeaders = inj.Headers
+	cfg.AuthEnv = inj.Env
+	return true
+}
+
+// daemonMCPServerConfigs converts the daemon-level MCP catalog (config.yaml's
+// mcp.servers) into client configs with any `auth:` block resolved. Shared by
+// the discovery registry so an authenticated daemon-scope server is probed WITH
+// its credential — without it the catalog would report every such server
+// unreachable.
+func (c *Container) daemonMCPServerConfigs() []mcp.ServerConfig {
+	servers := make([]mcp.ServerConfig, 0, len(c.Config.MCP.Servers))
+	for _, s := range c.Config.MCP.Servers {
+		cfg := mcp.ServerConfig{
+			Name:           s.Name,
+			Transport:      s.Transport,
+			Command:        s.Command,
+			Args:           s.Args,
+			Env:            s.Env,
+			URL:            s.URL,
+			AllowedTools:   s.AllowedTools,
+			TimeoutSeconds: s.TimeoutSeconds,
+		}
+		// Daemon-scope servers are admin-configured and have no project
+		// allowlist to check against.
+		if !c.applyMCPAuth(&cfg, s.Auth, mcpauth.Grants{Unrestricted: true}, "", "daemon") {
+			continue
+		}
+		servers = append(servers, cfg)
+	}
+	return servers
 }
 
 // daemonMCPServersByName indexes the daemon-level MCP server catalog
@@ -196,19 +309,7 @@ func (c *Container) initMCPRegistry() {
 		c.Logger.Debug().Msg("MCP daemon-level registry: no servers configured")
 		return
 	}
-	servers := make([]mcp.ServerConfig, 0, len(c.Config.MCP.Servers))
-	for _, s := range c.Config.MCP.Servers {
-		servers = append(servers, mcp.ServerConfig{
-			Name:           s.Name,
-			Transport:      s.Transport,
-			Command:        s.Command,
-			Args:           s.Args,
-			Env:            s.Env,
-			URL:            s.URL,
-			AllowedTools:   s.AllowedTools,
-			TimeoutSeconds: s.TimeoutSeconds,
-		})
-	}
+	servers := c.daemonMCPServerConfigs()
 	c.mcpRegistry = mcp.NewRegistry(servers, 0,
 		c.Logger.With().Str("component", "mcp-registry").Logger())
 
@@ -666,4 +767,65 @@ func (c *Container) collectDBMetrics() {
 			return
 		}
 	}
+}
+
+// applyMCPOAuthToken attaches a stored OAuth grant's access token, refreshing it first when it is
+// near expiry.
+//
+// Three outcomes, and the difference is what an operator can act on:
+//
+//   - a usable token -> attached as a bearer, exactly like mode: static.
+//   - no grant yet, or one needing re-consent -> the server is REGISTERED without a credential.
+//     Its calls will 401 at the vendor, which is honest and recoverable by `vornikctl mcp
+//     connect`; withholding the server instead would make its tools vanish from every agent's
+//     catalog and read as a missing integration rather than a missing consent.
+//   - a real failure (the store is unreachable) -> withheld, as for any other unresolvable auth.
+//
+// Note the asymmetry with mode: static, where an unresolvable secret WITHHOLDS the server. There
+// the credential is config an operator can fix in place; here it is a human consent that must be
+// given through a browser, and hiding the server would hide the thing they need to connect.
+func (c *Container) applyMCPOAuthToken(cfg *mcp.ServerConfig, projectID, scope string) bool {
+	conn := c.mcpConnector()
+	if conn == nil {
+		c.Logger.Warn().
+			Str("server", cfg.Name).
+			Str("scope", scope).
+			Msg("MCP: auth mode oauth is configured but no token store is wired — this server will connect unauthenticated")
+		return true
+	}
+	ref, ok := c.mcpServerRef(projectID, cfg.Name)
+	if !ok {
+		// Should not happen: the caller just read this server out of the same
+		// config. Register unauthenticated rather than dropping it.
+		c.Logger.Warn().Str("server", cfg.Name).Str("scope", scope).
+			Msg("MCP: could not resolve the server for OAuth injection — connecting unauthenticated")
+		return true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), mcpOAuthHTTPTimeout)
+	defer cancel()
+	token, err := conn.AccessToken(ctx, ref)
+	switch {
+	case errors.Is(err, mcpconnect.ErrNeedsReconnect):
+		c.Logger.Warn().
+			Str("server", cfg.Name).
+			Str("scope", scope).
+			Msg("MCP: the stored OAuth grant needs an operator reconnect — connecting unauthenticated (run: vornikctl mcp connect)")
+		return true
+	case err != nil:
+		c.Logger.Error().Err(err).
+			Str("server", cfg.Name).
+			Str("scope", scope).
+			Msg("MCP: refusing to register server — its OAuth grant could not be read")
+		return false
+	}
+	if token == "" {
+		c.Logger.Info().
+			Str("server", cfg.Name).
+			Str("scope", scope).
+			Msg("MCP: auth mode oauth is configured but this server is not connected yet — connecting unauthenticated (run: vornikctl mcp connect)")
+		return true
+	}
+	cfg.AuthHeaders = map[string]string{"Authorization": "Bearer " + token}
+	return true
 }

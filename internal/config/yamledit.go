@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -516,6 +517,56 @@ func setNodeValue(node *yaml.Node, val any) error {
 				Value: s,
 			})
 		}
+	case map[string]any:
+		// Nested mapping support, added for the MCP `auth:` block (MCP server
+		// authentication design step 6): the control-plane form has to be able
+		// to write a sub-mapping, and before this every writer could only
+		// produce scalars and string lists — which is why the MCP tab had to
+		// REFUSE editing a server carrying an auth block rather than preserve it.
+		//
+		// Keys are emitted in sorted order for determinism: a config diff that
+		// reshuffles on every save is unreviewable, and the control-plane
+		// ledger shows these as diffs.
+		node.Kind = yaml.MappingNode
+		node.Tag = "!!map"
+		node.Value = ""
+		node.Style = 0
+		node.Content = nil
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			kn := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: k}
+			vn := &yaml.Node{}
+			if err := setNodeValue(vn, v[k]); err != nil {
+				return fmt.Errorf("yamledit: key %q: %w", k, err)
+			}
+			node.Content = append(node.Content, kn, vn)
+		}
+	case []any:
+		// A YAML round trip of a struct (the shape the MCP auth form uses)
+		// yields []any for a string list, not []string. Converted rather than
+		// rejected, because rejecting it made the caller's own marshalled
+		// output unwritable — caught by the control-plane auth test.
+		strs := make([]string, 0, len(v))
+		for i, item := range v {
+			sv, ok := item.(string)
+			if !ok {
+				return fmt.Errorf("yamledit: element %d is %T, want string", i, item)
+			}
+			strs = append(strs, sv)
+		}
+		return setNodeValue(node, strs)
+	case map[string]string:
+		// The common shape for an env_from block; converted rather than
+		// duplicating the recursion.
+		converted := make(map[string]any, len(v))
+		for k, sv := range v {
+			converted[k] = sv
+		}
+		return setNodeValue(node, converted)
 	default:
 		return fmt.Errorf("yamledit: unsupported value type %T", val)
 	}

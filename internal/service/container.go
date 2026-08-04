@@ -92,6 +92,8 @@ import (
 	"vornik.io/vornik/internal/httpx/realip"
 	"vornik.io/vornik/internal/leaderelection"
 	"vornik.io/vornik/internal/mcp"
+	"vornik.io/vornik/internal/mcpauth"
+	"vornik.io/vornik/internal/mcpconnect"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/memory/graph"
 	"vornik.io/vornik/internal/memoryfirewall"
@@ -212,7 +214,13 @@ type Container struct {
 	// request racing daemon startup before the store) degrades every
 	// adapter to its documented fail-closed/"no result known" branch —
 	// never a panic.
-	uiServer      atomic.Pointer[ui.Server]
+	uiServer atomic.Pointer[ui.Server]
+	// mcpOAuth holds the single MCP OAuth Connector this daemon uses. One
+	// instance, because the in-flight authorization attempts (state → PKCE
+	// verifier) live inside it: a second one would reject the callback for a
+	// consent the first had started. Built lazily via mcpOAuthOnce.
+	mcpOAuth      *mcpconnect.Connector
+	mcpOAuthOnce  sync.Once
 	Observability *observability.Observability
 	// logshipForwarder is the centralised log-forwarding seam
 	// (contracts.LogForwarder over internal/enterprise/logship). Non-nil only
@@ -2262,6 +2270,17 @@ func (c *Container) shutdown() error {
 // Run initializes and starts the vornik daemon.
 // This is the main entry point called from cmd/vornik.
 func Run(version, buildDate, edition string, providers ProviderSet) error {
+	// Stamp the build version into the MCP client's outbound User-Agent
+	// before anything can connect to a server. Done here rather than
+	// alongside container.SetVersion below so no MCP traffic — including a
+	// registry refresh kicked off during startup — can slip out carrying the
+	// version.Default fallback.
+	mcp.SetVersion(version)
+	// Same stamp for the OAuth client's outbound requests. Two explicit calls
+	// rather than one hidden cross-package hop: internal/mcpauth is a leaf and
+	// must not import internal/mcp (see its package doc).
+	mcpauth.SetVersion(version)
+
 	// Create context that listens for shutdown signals
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		syscall.SIGINT, syscall.SIGTERM)

@@ -45,6 +45,27 @@ type ServerConfig struct {
 	// every JSON-RPC envelope without the agent or the prompt
 	// having to know about it. Stdio transport ignores Headers.
 	Headers map[string]string `yaml:"-" json:"-"`
+	// AuthHeaders carries credentials resolved from the server's `auth:`
+	// block (mode static today, oauth once the flow ships). Kept separate
+	// from Headers so the composition order is explicit: auth is applied
+	// LAST and deterministically wins over an operator-set header of the
+	// same name, logging once at Warn when it overwrites one.
+	//
+	// Never serialized (yaml/json "-") because unlike Headers — whose
+	// contents are the daemon's own X-Project-* metadata — this map holds
+	// real credential material, and ServerConfig is JSON-encoded into the
+	// MCP discovery API. Populated by the wiring layer; empty for every
+	// server with no auth block.
+	AuthHeaders map[string]string `yaml:"-" json:"-"`
+	// AuthEnv carries credentials resolved from an `auth: {mode: env}`
+	// block into a stdio subprocess's environment — the Plane 2 case where
+	// the MCP server holds its OWN upstream app credentials (YouTube,
+	// Reddit, Instagram wrappers) and Vornik's job is only to inject them
+	// safely. Merged AFTER Env and, unlike Env, NOT ${VAR}-expanded: a
+	// resolved secret is a literal, and expanding one would mangle any
+	// credential containing '$'. Never serialized, for the same reason as
+	// AuthHeaders. Ignored on non-stdio transports.
+	AuthEnv map[string]string `yaml:"-" json:"-"`
 	// ToolRateLimits is the daemon-resolved per-tool token-bucket
 	// configuration (rate-limit hardening sub-item 3). Populated by
 	// the wiring layer from ProjectMCP.ToolRateLimits — the YAML

@@ -146,6 +146,15 @@ determine the repository and the user wants project-wide memory.
 > is a safety net, not a substitute — for a key reused across repos, only the
 > token you pass per call is correct. Still resolve and pass it yourself.
 
+Unlike Claude Code, Codex has no SessionStart hook announcing the detected
+scope, so if you or the operator ever need to double-check "what RAG
+project/scope is this key using right now" — especially when the operator
+runs several Codex sessions a day against different repos — call
+`mcp__vornik__whoami`. It returns `project_id`, `client_kind`,
+`default_repo_scope` (the operator backstop above), and
+`effective_repo_scope` (what a call omitting `repo_scope` would resolve to
+right now; pass a candidate `repo_scope` arg to preview a different one).
+
 Pass the same scope on:
 
 - `mcp__vornik__delegate`

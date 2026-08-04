@@ -1724,6 +1724,96 @@ func TestCompanionMCP_FeatureFlag_ReflectsFullWiring(t *testing.T) {
 	assert.True(t, flags["companion-v1"])
 }
 
+// ---- whoami(): identity + RAG-scope context -------------------------
+
+// TestCompanionMCP_Whoami_ResolvesEffectiveScope covers the reason this
+// tool exists: repo_scope is resolved fresh per-call (an explicit arg,
+// else the key's DefaultRepoScope), never held as session state, so a
+// client running multiple sessions a day against different projects/
+// repos needs a way to ask "what scope would my calls use right now."
+func TestCompanionMCP_Whoami_ResolvesEffectiveScope(t *testing.T) {
+	srv, keyRepo, _ := newCompanionMCPServer(t)
+	raw, err := apikey.Generate("alpha")
+	require.NoError(t, err)
+	row := &persistence.APIKey{
+		ID:               "akey-whoami",
+		ProjectID:        "alpha",
+		Name:             "session-1",
+		KeyHash:          apikey.Hash(raw),
+		KeyPrefix:        apikey.DisplayPrefix(raw),
+		ClientKind:       "codex",
+		SessionLabel:     "test/laptop",
+		DefaultRepoScope: "github.com/grinco/vornik",
+		MemoryRead:       true,
+		CreatedAt:        time.Now().UTC(),
+	}
+	require.NoError(t, keyRepo.Create(context.Background(), row))
+
+	// No repo_scope arg — effective falls back to the key default.
+	req := mcpRequest(t, "tools/call", map[string]any{
+		"name":      "whoami",
+		"arguments": map[string]any{},
+	})
+	req = withCompanionBearer(req, raw)
+	rec := httptest.NewRecorder()
+	srv.CompanionMCPHandler(rec, req)
+
+	text, isErr := decodeToolText(t, decodeJSONRPC(t, rec.Body.Bytes()))
+	require.False(t, isErr)
+	var out map[string]any
+	require.NoError(t, json.Unmarshal([]byte(text), &out))
+	assert.Equal(t, "alpha", out["project_id"])
+	assert.Equal(t, "codex", out["client_kind"])
+	assert.Equal(t, "test/laptop", out["session_label"])
+	assert.Equal(t, "github.com/grinco/vornik", out["default_repo_scope"])
+	assert.Equal(t, "github.com/grinco/vornik", out["effective_repo_scope"])
+	assert.Equal(t, true, out["memory_read"])
+
+	// An explicit repo_scope arg overrides the key default — same
+	// precedence effectiveRepoScope enforces on recall/remember/delegate.
+	req2 := mcpRequest(t, "tools/call", map[string]any{
+		"name":      "whoami",
+		"arguments": map[string]any{"repo_scope": "popron/ccoe"},
+	})
+	req2 = withCompanionBearer(req2, raw)
+	rec2 := httptest.NewRecorder()
+	srv.CompanionMCPHandler(rec2, req2)
+
+	text2, isErr2 := decodeToolText(t, decodeJSONRPC(t, rec2.Body.Bytes()))
+	require.False(t, isErr2)
+	var out2 map[string]any
+	require.NoError(t, json.Unmarshal([]byte(text2), &out2))
+	assert.Equal(t, "popron/ccoe", out2["effective_repo_scope"])
+	assert.Equal(t, "github.com/grinco/vornik", out2["default_repo_scope"],
+		"an explicit arg previews effective_repo_scope without changing the key's stored default")
+}
+
+// TestCompanionMCP_Whoami_NoDefaultScope covers the plain project-wide
+// case: a key with no DefaultRepoScope and no repo_scope arg resolves
+// to an empty effective_repo_scope, and no special permission gate
+// blocks the call (whoami echoes the key's own bound metadata, same
+// posture as catalog()).
+func TestCompanionMCP_Whoami_NoDefaultScope(t *testing.T) {
+	srv, keyRepo, _ := newCompanionMCPServer(t)
+	raw, _ := seedCompanionKey(t, keyRepo, "alpha", nil)
+
+	req := mcpRequest(t, "tools/call", map[string]any{
+		"name":      "whoami",
+		"arguments": map[string]any{},
+	})
+	req = withCompanionBearer(req, raw)
+	rec := httptest.NewRecorder()
+	srv.CompanionMCPHandler(rec, req)
+
+	text, isErr := decodeToolText(t, decodeJSONRPC(t, rec.Body.Bytes()))
+	require.False(t, isErr)
+	var out map[string]any
+	require.NoError(t, json.Unmarshal([]byte(text), &out))
+	assert.Equal(t, "alpha", out["project_id"])
+	assert.Equal(t, "", out["default_repo_scope"])
+	assert.Equal(t, "", out["effective_repo_scope"])
+}
+
 // ---- result(): inline output artifacts (incident 2026-06-07) -------
 
 // Regression 2026-06-07: result() for a COMPLETED task returned only an

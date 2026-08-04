@@ -1,7 +1,7 @@
 {
   "name": "codex-companion",
-  "version": "0.12.0+codex.20260726",
-  "description": "Vornik async-offload companion for Codex. Delegate reviews, audits, validations, research, summarization, and project RAG memory work to a vornik daemon over MCP. 0.12.0: mirrors the claude-code 0.14.0 operator lifecycle triad — `configure-vornik` and `troubleshoot-vornik` join `report-problem`, carrying the same config-resolution hazards (fallback chain, silently skipped VORNIK_CONFIGS_DIR, cwd trap, restart-vs-reload) and the same symptom-routed diagnostic ladder. Copies are identical to the claude-code originals except that they address Codex.",
+  "version": "0.13.0+codex.20260804",
+  "description": "Vornik async-offload companion for Codex. Delegate reviews, audits, validations, research, summarization, and project RAG memory work to a vornik daemon over MCP. 0.12.0: mirrors the claude-code 0.14.0 operator lifecycle triad — `configure-vornik` and `troubleshoot-vornik` join `report-problem`, carrying the same config-resolution hazards (fallback chain, silently skipped VORNIK_CONFIGS_DIR, cwd trap, restart-vs-reload) and the same symptom-routed diagnostic ladder. Copies are identical to the claude-code originals except that they address Codex. 0.13.0: mirrors the claude-code 0.15.0 `whoami` MCP tool — since Codex has no SessionStart hook announcing the detected repo scope (unlike Claude Code), the delegate skill now points Codex at `mcp__vornik__whoami` to check project_id / default_repo_scope / effective_repo_scope on demand, useful when the operator runs several Codex sessions a day against different projects/repos.",
   "author": {
     "name": "vornik"
   },

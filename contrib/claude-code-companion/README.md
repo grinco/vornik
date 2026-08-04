@@ -177,6 +177,13 @@ Or list everything outstanding:
 > /vornik-companion:peek
 ```
 
+Running several sessions a day against different projects/repos? Check
+which RAG project/scope the current session is using:
+
+```
+> /vornik-companion:whoami
+```
+
 ## Workflows shipped on the vornik side
 
 The `companion` project template wires seven workflows out of the box. Each

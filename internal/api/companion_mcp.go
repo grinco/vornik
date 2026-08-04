@@ -285,6 +285,25 @@ func companionToolDefs() []mcpToolDef {
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		},
 		{
+			Name: "whoami",
+			Description: "Return this companion key's identity and RAG-scope context: project_id, client_kind, " +
+				"session_label, and default_repo_scope (the repo_scope recall/remember/recent_memory/delegate fall " +
+				"back to when a call omits repo_scope). Pass repo_scope to preview the effective_repo_scope a call " +
+				"with that argument would resolve to. Scope is resolved per-call, not held as session state, so this " +
+				"is the way to check 'what RAG project/scope am I in right now' — useful when the operator runs " +
+				"several sessions a day against different projects/repos and the SessionStart digest has scrolled " +
+				"out of context.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"repo_scope": map[string]any{
+						"type":        "string",
+						"description": "Optional. Preview effective_repo_scope as if this value were passed to recall/remember/delegate. Omit to see what an omitted repo_scope resolves to (the key's default_repo_scope).",
+					},
+				},
+			},
+		},
+		{
 			Name: "recall",
 			Description: "Semantic search over this key's project memory (LLD 22). Returns ranked snippets " +
 				"with provenance. Use to check what vornik already knows before paying compute for delegate(). " +
@@ -581,6 +600,8 @@ func (s *Server) handleCompanionToolCall(w http.ResponseWriter, r *http.Request,
 		result, toolErr = s.companionToolList(ctx, key, params.Arguments)
 	case "catalog":
 		result, toolErr = s.companionToolCatalog(ctx, key)
+	case "whoami":
+		result, toolErr = s.companionToolWhoami(ctx, key, params.Arguments)
 	case "recall":
 		result, toolErr = s.companionToolRecall(ctx, key, params.Arguments)
 	case "remember":
@@ -1503,6 +1524,49 @@ func (s *Server) companionToolCatalog(ctx context.Context, key *persistence.APIK
 	}
 	if key.SessionLabel != "" {
 		out["session_label"] = key.SessionLabel
+	}
+	b, _ := json.MarshalIndent(out, "", "  ")
+	return string(b), nil
+}
+
+// ---- tool: whoami ---------------------------------------------------
+
+type whoamiArgs struct {
+	RepoScope string `json:"repo_scope"`
+}
+
+// companionToolWhoami reports the identity + RAG-scope context bound to
+// this companion key. repo_scope is never live session state server-side
+// — effectiveRepoScope resolves it fresh on every recall/remember/delegate
+// call from either an explicit arg or key.DefaultRepoScope — so a client
+// running many sessions a day against different projects/repos has no
+// other way to ask "what scope would my calls use right now" once the
+// SessionStart digest (which only fires once, at session open) has
+// scrolled out of context. No additional permission gate: this mirrors
+// catalog() in echoing the key's own bound metadata, nothing else.
+func (s *Server) companionToolWhoami(ctx context.Context, key *persistence.APIKey, raw json.RawMessage) (string, error) {
+	var args whoamiArgs
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return "", fmt.Errorf("invalid arguments: %w", err)
+		}
+	}
+	out := map[string]any{
+		"project_id":           key.ProjectID,
+		"client_kind":          key.ClientKind,
+		"default_repo_scope":   key.DefaultRepoScope,
+		"effective_repo_scope": effectiveRepoScope(key, args.RepoScope),
+		"memory_read":          key.MemoryRead,
+		"memory_write":         key.MemoryWrite,
+	}
+	if key.SessionLabel != "" {
+		out["session_label"] = key.SessionLabel
+	}
+	if len(key.AllowedWorkflows) > 0 {
+		out["allowed_workflows"] = key.AllowedWorkflows
+	}
+	if key.BudgetCapUSD != nil {
+		out["budget_cap_usd"] = *key.BudgetCapUSD
 	}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	return string(b), nil

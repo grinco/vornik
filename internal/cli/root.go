@@ -18,6 +18,20 @@ func SetVersion(v string) {
 	Version = v
 }
 
+// SetBuildDate records the ldflag-stamped build date.
+//
+// REGRESSION 2026-08-03: main.BuildDate was stamped by the Makefile but never
+// forwarded here (main called only SetVersion + SetEdition), so BuildDate kept
+// its "unknown" default — `vornikctl version` said "built unknown" on every
+// release build, and the build line of a `vornikctl report` body was worthless
+// for telling two builds of the same tag apart.
+func SetBuildDate(d string) {
+	if d == "" {
+		return
+	}
+	BuildDate = d
+}
+
 // edition is the build edition reported by `vornikctl version`. Set via
 // SetEdition from cmd/vornikctl/main.go (ldflags-injected); defaults to
 // community when unstamped.

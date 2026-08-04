@@ -13,20 +13,21 @@ import (
 	"context"
 	"strings"
 
+	"vornik.io/vornik/internal/a2a/consult"
 	"vornik.io/vornik/internal/chat"
 )
 
-// ComposedMCPExecutor implements MCPExecutor by stacking a
-// built-in document-tool provider on top of the external
-// mcp.Manager. Either field may be nil — Tools/Execute degrade
-// gracefully.
+// ComposedMCPExecutor implements MCPExecutor by stacking daemon-side synthetic
+// providers (document_* tools, A2A consult tools) on top of the external
+// mcp.Manager. Any field may be nil — Tools/Execute degrade gracefully.
 type ComposedMCPExecutor struct {
 	External MCPExecutor // typically *mcp.Manager
 	Builtin  *DocumentToolProvider
+	Consult  *consult.Provider // A2A domain-expert consult tools (mcp__consult__<peer>)
 }
 
-// Tools returns the union of external MCP server tools and the
-// built-in document_* surface.
+// Tools returns the union of external MCP server tools and the built-in
+// document_* + consult_* surfaces.
 func (c *ComposedMCPExecutor) Tools(projectID string) []chat.Tool {
 	var out []chat.Tool
 	if c.External != nil {
@@ -35,16 +36,22 @@ func (c *ComposedMCPExecutor) Tools(projectID string) []chat.Tool {
 	if c.Builtin != nil {
 		out = append(out, c.Builtin.Tools(projectID)...)
 	}
+	if c.Consult != nil {
+		out = append(out, c.Consult.Tools(projectID)...)
+	}
 	return out
 }
 
-// Execute routes by the server segment of the qualified name. The
-// builtin server name is reserved — any external server registered
-// under "vornik" is shadowed (defensive against a project
-// mis-configuring an MCP server with the same name).
+// Execute routes by the server segment of the qualified name. The builtin
+// document + consult server names are reserved — an external server registered
+// under those names is shadowed (defensive against a project mis-configuring an
+// MCP server with the same name).
 func (c *ComposedMCPExecutor) Execute(ctx context.Context, projectID, qualifiedName, argsJSON string) (string, error) {
 	if c.Builtin != nil && c.Builtin.Owns(qualifiedName) {
 		return c.Builtin.Execute(ctx, projectID, qualifiedName, argsJSON)
+	}
+	if c.Consult != nil && c.Consult.Owns(qualifiedName) {
+		return c.Consult.Execute(ctx, projectID, qualifiedName, argsJSON)
 	}
 	if c.External == nil {
 		return "", errBuiltinNoExternal(qualifiedName)

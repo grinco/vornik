@@ -173,6 +173,15 @@ type WorkflowA2A struct {
 	// /a2a/v1/agents/<project>/<workflow>/tasks. The workflow's
 	// project still gates access via the existing API-key auth.
 	Publish bool `yaml:"publish,omitempty"`
+
+	// Projects lists the project IDs under which this workflow is
+	// published as an A2A agent. Workflows are a global shared
+	// library, so publishing needs an explicit project binding —
+	// without one a published workflow would appear under EVERY
+	// project (a cartesian over the registry). When empty, publish
+	// falls back to the project whose default workflow this is
+	// (back-compat with the original default-workflow-only gate).
+	Projects []string `yaml:"projects,omitempty"`
 }
 
 // WorkflowStep represents a single step in a workflow

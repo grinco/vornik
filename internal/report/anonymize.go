@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"vornik.io/vornik/internal/secrets"
+	"vornik.io/vornik/internal/version"
 )
 
 const (
@@ -35,15 +36,73 @@ const (
 var errAnonymize = errors.New("anonymization failed — cannot proceed")
 
 // Check is a doctor check summary (subset of the CLI's doctorCheck).
-type Check struct{ Name, Status, Message string }
+type Check struct {
+	Name, Status, Message string
+	// Items are the check's supporting lines — for the journal check, the actual
+	// error/fatal log lines it found.
+	//
+	// OPERATOR INSTRUCTION 2026-08-03: "make sure the appropriate logs are
+	// included". The offline doctor has always tailed the journal into Items, but
+	// the report dropped them, so a body said "5 recent error line(s)" and carried
+	// none of them — the "bug report without any logs" complaint. They render now,
+	// through the same scrubber as every other field and bounded by maxCheckItems /
+	// maxCheckItemBytes (a doctor Item is an unrestricted string over the wire, and
+	// this body has a URL budget).
+	Items []string
+}
+
+const (
+	// maxCheckItems caps rendered supporting lines per check, so one noisy check
+	// cannot crowd the rest of the report out of the URL budget.
+	maxCheckItems = 8
+	// maxCheckItemBytes caps a single rendered line.
+	maxCheckItemBytes = 200
+)
 
 // BodyInput is everything the public issue body is built from.
 type BodyInput struct {
 	Version, Edition, OS, Arch string
-	Hostname                   string // os.Hostname() — redacted literally from the body
-	DaemonUp                   bool
-	Checks                     []Check
-	Symptom                    string // the user's --summary free text (scrubbed too, #2)
+	// BuildDate is the ldflag-stamped build timestamp. A version alone does not
+	// identify a build: the same tag is rebuilt (and `git describe` on a dev
+	// checkout says nothing), so a report has to name the build too.
+	BuildDate string
+	Hostname  string // os.Hostname() — redacted literally from the body
+	DaemonUp  bool
+	Checks    []Check
+	Symptom   string // the user's --summary free text (scrubbed too, #2)
+}
+
+// EditionTag is the short CE/EE marker.
+//
+// OPERATOR REQUEST 2026-08-03: a customer filed a bug report that named neither
+// the edition nor the build, so triage could not tell whether the behaviour was
+// even reachable in the build they were running. Every report path now carries
+// both, and the tag also goes in the TITLE so maintainers can separate CE from
+// EE in the issue LIST without opening each one.
+//
+// The value comes from version.NormalizeEdition, so an unstamped or untrusted
+// ldflag string collapses to CE rather than being copied into a public title —
+// which keeps reportTitle's rule (titles are built from controlled strings only)
+// intact.
+func EditionTag(edition string) string {
+	if version.NormalizeEdition(edition) == version.EditionEnterprise {
+		return "EE"
+	}
+	return "CE"
+}
+
+// EditionLabel renders the body's edition line — "community (CE)" — spelling out
+// the normalized edition next to the tag so a reader who does not know the
+// abbreviations still knows which build filed the report.
+func EditionLabel(edition string) string {
+	return version.NormalizeEdition(edition) + " (" + EditionTag(edition) + ")"
+}
+
+// Title prefixes a controlled base title with the edition tag: "[CE] <base>".
+// Callers pass their own fixed title; only the tag is added here, so there is
+// one place that decides how edition appears in a public issue title.
+func Title(edition, base string) string {
+	return "[" + EditionTag(edition) + "] " + base
 }
 
 var (
@@ -74,6 +133,41 @@ var (
 	// so daemon-up reporting is no weaker than the install-time path.
 	reJWT       = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}`)
 	reKeyShapes = regexp.MustCompile(`\b(?:sk-ant-[A-Za-z0-9_-]{12,}|sk-[A-Za-z0-9_-]{12,}|AKIA[0-9A-Z]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})`)
+	// rePEM takes a PEM block — and everything up to its END marker, or to the end
+	// of the line if there is no END marker — in one bite.
+	//
+	// FOUND BY PROBE 2026-08-03 (design review-20260803-1094, D9): a key whose
+	// newlines a JSON logger has collapsed onto ONE line survived every other net
+	// here. secrets.Redact recognises a multi-line PEM block; this is the collapsed
+	// and the truncated form, which is exactly the shape a journal line carries.
+	// The installer's bash scrubber has covered PEM since review-20260725-a9da #3 —
+	// the Go scrubber must not be the weaker of the two (same reasoning as
+	// reKeyShapes).
+	// The label class allows HYPHENS as well as spaces (review-20260803-4d44 #1):
+	// RFC 7468 labels use spaces, but a logger that invents `ECDSA-PRIVATE-KEY`
+	// would otherwise walk the key straight through. The class is matched
+	// case-insensitively by the leading `(?i)` — the review believed otherwise,
+	// which the lowercase case in TestAnonymizeBody_PEMAdversarial disproves.
+	//
+	// Case-insensitive (review-20260803-0e1b #2): RFC 7468 spells the markers in
+	// uppercase, but a non-conformant logger that lower-cases its output would
+	// otherwise walk a private key straight into a public issue, and `(?i)` costs
+	// nothing — the `-----BEGIN`/`-----END` anchors are specific enough that
+	// over-matching prose is not a realistic risk.
+	rePEM = regexp.MustCompile(`(?i)-----BEGIN [A-Z0-9 -]{0,40}-----[\s\S]*?(?:-----END [A-Z0-9 -]{0,40}-----|$)`)
+	// rePEMResidue catches the SECOND form of the same leak: secrets.Redact
+	// replaces a single-line PEM's BEGIN header with its own marker and leaves the
+	// key material in place, which also destroys the anchor rePEM needs. So rePEM
+	// runs FIRST (below) and this net cleans up any marker-plus-material residue —
+	// e.g. from a detector version that redacts the header only.
+	// The material class deliberately excludes WHITESPACE (review-20260803-0e1b #1,
+	// CRITICAL): with `\s` in the class the net consumed newlines and went on eating
+	// every base64-ish line that followed a marker, which silently deleted the log
+	// context this feature exists to deliver. It now stops at the end of the base64
+	// run on that line, requires at least one character of material (so a bare
+	// marker is left alone), and mops up a trailing END marker if the detector left
+	// one — matched case-insensitively, like rePEM.
+	rePEMResidue = regexp.MustCompile(`(?i)\[REDACTED:[a-z_]*(?:key|pem)[a-z_]*\][A-Za-z0-9+/=]+(?:-----END [A-Z0-9 -]{0,40}-----)?`)
 )
 
 // newDetector is a package var so tests can force the fail-closed path.
@@ -130,7 +224,12 @@ func scrubber(hostname string) (func(string) string, error) {
 		hostPattern = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(host))
 	}
 	return func(s string) string {
+		// PEM FIRST, before the detector: secrets.Redact replaces a single-line
+		// block's BEGIN header with its own marker and leaves the key material
+		// behind, which destroys the anchor this net matches on (probe 2026-08-03).
+		s = rePEM.ReplaceAllString(s, "<redacted-pem>")
 		s = string(secrets.Redact([]byte(s), det.Scan([]byte(s))))
+		s = rePEMResidue.ReplaceAllString(s, "<redacted-pem>")
 		// Belt-and-suspenders key-shape nets (see reKeyShapes) — before the
 		// path/email passes so a token that happens to embed `/` or `@` is gone.
 		s = reJWT.ReplaceAllString(s, "<redacted-jwt>")
@@ -162,7 +261,11 @@ func AnonymizeBody(in BodyInput) (string, error) {
 	var b strings.Builder
 	b.WriteString("### vornik problem report\n\n")
 	fmt.Fprintf(&b, "- **version:** %s\n", inline(in.Version))
-	fmt.Fprintf(&b, "- **edition:** %s\n", inline(in.Edition))
+	// Edition and build are NOT scrubbed: EditionLabel maps them onto a
+	// two-value enum, and an empty build date says "unknown" rather than
+	// nothing, so a report never silently omits which build produced it.
+	fmt.Fprintf(&b, "- **edition:** %s\n", EditionLabel(in.Edition))
+	fmt.Fprintf(&b, "- **build:** %s\n", inline(buildDateOrUnknown(in.BuildDate)))
 	fmt.Fprintf(&b, "- **platform:** %s/%s\n", inline(in.OS), inline(in.Arch))
 	fmt.Fprintf(&b, "- **daemon:** %s\n\n", upDown(in.DaemonUp))
 
@@ -177,11 +280,85 @@ func AnonymizeBody(in BodyInput) (string, error) {
 				line += " — " + inline(m)
 			}
 			b.WriteString(line + "\n")
+			writeCheckItems(&b, c.Items, inline)
 		}
 		b.WriteString("\n")
 	}
 	b.WriteString("_Filed via `vornikctl report`. Diagnostics anonymized; a redacted bundle may be attached separately._\n")
 	return b.String(), nil
+}
+
+// BundleGuidance is the ONE copy of "here is the fuller evidence, here is where
+// it lands, inspect it, here is how to get it onto the issue" — used by
+// `vornikctl report`, the chat report_problem tool, and anything else that points
+// a reporter at a support bundle.
+//
+// OPERATOR INSTRUCTION 2026-08-03: "the user should be instructed where the
+// logs/blackbox export archive is and how to upload it". Naming the command was
+// never enough: a reporter who does not know the archive's name, that they are
+// expected to inspect it, or that GitHub takes it by drag-and-drop, does not
+// attach it — which is how a bug report arrives with no logs.
+//
+// selector is the already-formed scope flag ("--task <id>" or "--since 2h").
+// Nothing here is scrubbed because nothing here is caller data except selector,
+// which callers pass through the body scrubber before display.
+func BundleGuidance(selector string) string {
+	var b strings.Builder
+	b.WriteString("For the full evidence — task timeline, container + daemon logs, the doctor\n")
+	b.WriteString("snapshot, and (Enterprise) the task's Black Box trace — run:\n\n")
+	b.WriteString("  vornikctl support-report " + selector + "\n\n")
+	b.WriteString("It writes ONE archive named vornik-support-<scope>-<timestamp>.tar.gz into the\n")
+	b.WriteString("current directory and prints the full path (override with --output <path>).\n")
+	b.WriteString("It is redacted for secrets, but it MAY still carry project, swarm and workflow\n")
+	b.WriteString("names, task ids and prompt text — OPEN AND\n")
+	b.WriteString("INSPECT it before it leaves your machine:\n\n")
+	b.WriteString("  tar -tzf <archive>              # what is in it\n")
+	b.WriteString("  tar -xOzf <archive> MANIFEST.json   # sections, truncations, redaction counts\n\n")
+	b.WriteString("To attach it: open the prefilled issue, then drag the .tar.gz into the comment\n")
+	b.WriteString("box (GitHub accepts up to 25 MB per attachment — if the archive is larger, narrow the\n")
+	b.WriteString("scope or shrink it with --max-size). You attach it yourself, under your own\n")
+	b.WriteString("account, after reading it.")
+	return b.String()
+}
+
+// writeCheckItems renders a check's supporting lines (the journal tail's actual
+// error lines) as an indented, scrubbed, bounded sub-list. Truncation is stated
+// rather than silent — an omitted tail must not read as "that was all of it".
+func writeCheckItems(b *strings.Builder, items []string, inline func(string) string) {
+	shown := items
+	if len(shown) > maxCheckItems {
+		// Keep the MOST RECENT lines: the journal tail appends in time order and
+		// the failure that prompted the report is at the end.
+		shown = shown[len(shown)-maxCheckItems:]
+	}
+	rendered := 0
+	for _, it := range shown {
+		s := strings.TrimSpace(inline(it))
+		if s == "" {
+			// A line that scrubs down to nothing is DROPPED — and counted as
+			// omitted below (review-20260803-6eef): counting only the cap slice
+			// undercounted, so the remainder read as the whole tail.
+			continue
+		}
+		if len(s) > maxCheckItemBytes {
+			s = s[:maxCheckItemBytes] + "…"
+		}
+		fmt.Fprintf(b, "  - `%s`\n", s)
+		rendered++
+	}
+	if omitted := len(items) - rendered; omitted > 0 {
+		fmt.Fprintf(b, "  - _(%d more line(s) omitted — attach the redacted bundle for the full log)_\n", omitted)
+	}
+}
+
+// buildDateOrUnknown keeps the build line honest for an archive build with no
+// ldflags rather than dropping the field (an absent line reads as "not
+// collected"; "unknown" reads as "this build carries no stamp").
+func buildDateOrUnknown(d string) string {
+	if strings.TrimSpace(d) == "" {
+		return version.UnknownBuildDate
+	}
+	return d
 }
 
 func upDown(up bool) string {

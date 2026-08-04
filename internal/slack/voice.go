@@ -121,6 +121,40 @@ type slackFile struct {
 	URLPrivate         string `json:"url_private"`
 	Filetype           string `json:"filetype"`
 	Size               int64  `json:"size"`
+	// Shares tells us WHERE the file was posted — the message ts and, when
+	// the file was shared as a thread reply, the thread_ts. file_shared events
+	// carry neither, so this is how the image path recovers the conversation
+	// context it needs to apply the same engagement gate as text messages
+	// (2026-08-01: the bot described an image posted in an unrelated thread).
+	Shares *slackFileShares `json:"shares,omitempty"`
+}
+
+// slackFileShares mirrors files.info's file.shares: channel_id → the shares in
+// that channel (public or private).
+type slackFileShares struct {
+	Public  map[string][]slackFileShare `json:"public"`
+	Private map[string][]slackFileShare `json:"private"`
+}
+
+type slackFileShare struct {
+	Ts       string `json:"ts"`                  // the message ts the file rode on
+	ThreadTs string `json:"thread_ts,omitempty"` // set when shared inside a thread
+}
+
+// shareIn returns the message ts + thread_ts for the file's share in channelID,
+// looking in both the public and private share maps. ok=false when the file has
+// no recorded share in that channel (we then cannot gate it and drop
+// conservatively rather than answer unconditionally).
+func (m *slackFile) shareIn(channelID string) (msgTs, threadTs string, ok bool) {
+	if m == nil || m.Shares == nil {
+		return "", "", false
+	}
+	for _, set := range []map[string][]slackFileShare{m.Shares.Public, m.Shares.Private} {
+		if shares, found := set[channelID]; found && len(shares) > 0 {
+			return shares[0].Ts, shares[0].ThreadTs, true
+		}
+	}
+	return "", "", false
 }
 
 // filesInfoResponse is the relevant subset of Slack's files.info Web

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -244,9 +245,12 @@ func TestHandleTaskStream_OutOfScopeTaskIs404(t *testing.T) {
 // TestHandleTaskStream_NoExecutionYet exercises the "task created but no
 // execution row yet" branch: a single `submitted` status frame, then close.
 func TestHandleTaskStream_NoExecutionYet(t *testing.T) {
+	restore := shortExecutionWait(t)
+	defer restore()
 	h, _ := newTestHandler()
 	h.LiveSubscriber = &fakeSubscriber{ch: make(chan livepubsub.LiveEvent)}
-	// Executions lookup returns nil exec → early single-frame branch.
+	// Execution never appears → emits submitted + keepalives, then closes on
+	// the wait deadline (it no longer closes on the FIRST empty lookup).
 	wireSSEForTest(t, &SSEDeps{Tasks: fakeStreamTaskLookup{}, Executions: fakeExecLookup{exec: nil}})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/a2a/v1/agents/demo/research/tasks/demo-task", nil)
@@ -254,13 +258,14 @@ func TestHandleTaskStream_NoExecutionYet(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `"state":"submitted"`) {
-		t.Errorf("expected a single submitted frame, got:\n%s", body)
+	if !strings.Contains(rec.Body.String(), `"state":"submitted"`) {
+		t.Errorf("expected a submitted frame, got:\n%s", rec.Body.String())
 	}
 }
 
-// TestHandleTaskStream_SubscribeError surfaces a subscribe failure as a 500.
+// TestHandleTaskStream_SubscribeError surfaces a subscribe failure. Because the
+// SSE headers are already sent by the time we subscribe (we start the stream to
+// wait for the execution), the failure is an in-stream "failed" frame, not a 500.
 func TestHandleTaskStream_SubscribeError(t *testing.T) {
 	h, _ := newTestHandler()
 	h.LiveSubscriber = &fakeSubscriber{subErr: context.DeadlineExceeded}
@@ -271,9 +276,21 @@ func TestHandleTaskStream_SubscribeError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/a2a/v1/agents/demo/research/tasks/demo-task", nil)
 	h.HandleAgentRoute(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (headers already streamed)", rec.Code)
 	}
+	if !strings.Contains(rec.Body.String(), `"state":"failed"`) {
+		t.Errorf("expected an in-stream failed frame, got:\n%s", rec.Body.String())
+	}
+}
+
+// shortExecutionWait shrinks the execution-wait knobs for tests and returns a
+// restore func.
+func shortExecutionWait(t *testing.T) func() {
+	t.Helper()
+	oldT, oldP := executionWaitTimeout, executionPollInterval
+	executionWaitTimeout, executionPollInterval = 80*time.Millisecond, 15*time.Millisecond
+	return func() { executionWaitTimeout, executionPollInterval = oldT, oldP }
 }
 
 // TestHandleTaskStream_StreamsUntilTerminal drives the full streaming loop:

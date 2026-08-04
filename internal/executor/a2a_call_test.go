@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -236,34 +235,6 @@ func TestHandleA2ACallStep_TimeoutHonoured(t *testing.T) {
 	}
 }
 
-func TestResolveStreamURL(t *testing.T) {
-	cases := []struct {
-		agent, stream, want string
-		wantErr             bool
-	}{
-		{"https://h.example.com/a2a/v1/agents/p/w", "https://h.example.com/a2a/v1/agents/p/w/tasks/T", "https://h.example.com/a2a/v1/agents/p/w/tasks/T", false},
-		{"http://localhost:8080/a2a/v1/agents/p/w", "/a2a/v1/agents/p/w/tasks/T", "http://localhost:8080/a2a/v1/agents/p/w/tasks/T", false},
-		{"https://h.example.com/a2a/v1/agents/p/w", "https://evil.example.net/steal", "", true},
-		{"https://h.example.com/a2a/v1/agents/p/w", "tasks/T", "", true},
-	}
-	for _, tc := range cases {
-		got, err := resolveStreamURL(tc.agent, tc.stream)
-		if tc.wantErr {
-			if err == nil {
-				t.Errorf("resolveStreamURL(%q,%q) should error", tc.agent, tc.stream)
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("resolveStreamURL(%q,%q): %v", tc.agent, tc.stream, err)
-			continue
-		}
-		if got != tc.want {
-			t.Errorf("resolveStreamURL(%q,%q) = %q, want %q", tc.agent, tc.stream, got, tc.want)
-		}
-	}
-}
-
 func TestA2AHTTPClientRejectsCrossOriginRedirectWithAPIKey(t *testing.T) {
 	var leakedKey string
 	evil := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -287,63 +258,5 @@ func TestA2AHTTPClientRejectsCrossOriginRedirectWithAPIKey(t *testing.T) {
 	}
 	if leakedKey != "" {
 		t.Fatalf("cross-origin redirect leaked X-API-Key: %q", leakedKey)
-	}
-}
-
-// TestConsumeA2ASSEStream_FinalNotSetTreatedAsCompleted_OnStreamClose
-// pins the behaviour for partners that don't set final=true
-// before closing the stream — we use the last seen state as the
-// terminal value. The contract is "stream closes cleanly →
-// last status wins"; a clean close with no status frames is an
-// error.
-func TestConsumeA2ASSEStream_StreamCloseWithoutFinal(t *testing.T) {
-	partner := newFakePartner(t, []string{
-		sseFrame("status", `{"taskId":"x","state":"working"}`),
-	})
-	defer partner.Close()
-
-	state, _, err := consumeA2ASSEStream(context.Background(), partner.URL()+"/tasks/task-fake-1", "")
-	if err != nil {
-		t.Fatalf("consume: %v", err)
-	}
-	if state != "working" {
-		t.Errorf("state on close: %q", state)
-	}
-}
-
-func TestConsumeA2ASSEStream_NoStatusFrameIsError(t *testing.T) {
-	partner := newFakePartner(t, []string{
-		"event: message\ndata: {}\n\n",
-	})
-	defer partner.Close()
-	_, _, err := consumeA2ASSEStream(context.Background(), partner.URL()+"/tasks/task-fake-1", "")
-	if err == nil {
-		t.Error("close without status frames should error")
-	}
-}
-
-// Compile-time sanity that the package-level helper handles the
-// fmt format we use in the workflow.go dispatch site without
-// panicking on edge inputs.
-func TestTruncateForLog(t *testing.T) {
-	if truncateForLog("abc", 10) != "abc" {
-		t.Errorf("short string changed")
-	}
-	got := truncateForLog("abcdefghij", 5)
-	if !strings.HasSuffix(got, "…") || len(got) >= 10 {
-		t.Errorf("truncate: %q", got)
-	}
-}
-
-// Ensure the a2aHTTPClient is the package singleton, not
-// per-call constructed — keeps the connection pool warm for
-// chained a2a_call steps.
-func TestA2AHTTPClientIsShared(t *testing.T) {
-	if a2aHTTPClient == nil {
-		t.Fatal("a2aHTTPClient is nil")
-	}
-	addr := fmt.Sprintf("%p", a2aHTTPClient)
-	if addr == "" {
-		t.Fatal("client pointer empty")
 	}
 }

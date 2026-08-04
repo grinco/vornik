@@ -506,7 +506,11 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		if server.a2aHandler != nil {
 			mux.HandleFunc("/.well-known/agent.json", server.a2aHandler.HandleWellKnown)
 			mux.HandleFunc("/.well-known/agent.json/", server.a2aHandler.HandleWellKnown)
-			mux.HandleFunc("/a2a/v1/agents/", server.a2aHandler.HandleAgentRoute)
+			// Task submit + SSE go through a2aScopeGuard so a key can only
+			// drive a project/workflow it's scoped to (authz-bypass fix,
+			// a2a-expert-federation-design §4). The public card path above
+			// is intentionally NOT guarded.
+			mux.HandleFunc("/a2a/v1/agents/", a2aScopeGuard(server.a2aHandler.HandleAgentRoute))
 		}
 	} // end region 3: ServeAPI
 

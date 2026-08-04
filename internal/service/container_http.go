@@ -409,10 +409,20 @@ func (c *Container) initHTTPServer() error {
 			a2aHandler.PushConfigStore = c.repos.A2APushConfigs
 		}
 		if c.repos != nil && c.repos.Executions != nil && c.repos.Tasks != nil {
-			a2a.WireSSE(&a2a.SSEDeps{
+			sseDeps := &a2a.SSEDeps{
 				Executions: c.repos.Executions,
 				Tasks:      c.repos.Tasks,
-			})
+			}
+			// The answer of a completed top-level task is its OUTPUT-class
+			// artifact content; wire the lister + opener so the SSE bridge can
+			// source it (falls back to ResultEnvelope when unset).
+			if c.repos.Artifacts != nil {
+				sseDeps.Artifacts = c.repos.Artifacts
+			}
+			if c.artifactStore != nil {
+				sseDeps.ArtifactOpener = c.artifactStore
+			}
+			a2a.WireSSE(sseDeps)
 		}
 		apiOpts = append(apiOpts, api.WithA2AHandler(a2aHandler))
 	}
@@ -878,8 +888,9 @@ func (c *Container) initHTTPServer() error {
 			ArtifactRepo: c.repos.Artifacts,
 		})
 	}
-	if c.mcpManager != nil || docProvider != nil {
-		composed := &api.ComposedMCPExecutor{Builtin: docProvider}
+	consultProvider := c.buildConsultProvider()
+	if c.mcpManager != nil || docProvider != nil || consultProvider != nil {
+		composed := &api.ComposedMCPExecutor{Builtin: docProvider, Consult: consultProvider}
 		if c.mcpManager != nil {
 			// Assign only when the underlying pointer is non-nil so
 			// the interface field doesn't end up as a typed-nil

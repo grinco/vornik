@@ -2,15 +2,116 @@ package slack
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"vornik.io/vornik/internal/conversation"
 )
+
+// imageEngagement decides whether a shared image should start a turn, and the
+// thread root the reply should use. It mirrors addressedToUs for the text path,
+// which the image path historically skipped — so the bot described any image in
+// an allow-listed channel, including one posted in an unrelated thread, and
+// answered on the main channel because file_shared carries no thread_ts
+// (operator report 2026-08-01).
+//
+//   - DM: always ours.
+//   - channel/group image inside a thread: only if we are engaged in that
+//     thread (we started it or were tagged into it → we hold history for it).
+//   - channel/group image at top level: only if its own message tagged us.
+//
+// Returns (threadRoot, allowed): threadRoot is the real thread_ts for a thread,
+// or ChannelSessionThreadRoot ("main") at channel level, so the reply lands
+// where the human posted.
+func (c *Channel) imageEngagement(ctx context.Context, p eventPayload, inst *installation, meta *slackFile) (string, bool) {
+	ev := p.Event
+	if isDirectMessageChannel(ev.ChannelType, ev.Channel) {
+		return ChannelSessionThreadRoot, true
+	}
+	msgTs, threadTs, ok := meta.shareIn(ev.Channel)
+	if !ok {
+		// No recorded share for this channel — we cannot establish context, so
+		// we drop rather than answer unconditionally (a missed image is
+		// recoverable by tagging; an unsolicited one is not).
+		return "", false
+	}
+	if threadTs != "" {
+		// A thread is ours if we hold history for it (we were tagged in / have
+		// conversed), OR the thread is rooted on our own message (we started
+		// it — its first reply may arrive before any thread history exists).
+		threadSession := fmt.Sprintf("%s/%s#%s", p.TeamID, ev.Channel, threadTs)
+		if c.threadEngaged(ctx, threadSession) {
+			return threadTs, true
+		}
+		if _, rootAuthor, err := c.fetchSlackMessage(ctx, inst, ev.Channel, threadTs); err == nil {
+			if bot := p.botUserID(); bot != "" && rootAuthor == bot {
+				return threadTs, true
+			}
+		}
+		return threadTs, false
+	}
+	// Top level: ours only if the file's own message tagged us. file_shared has
+	// no text, so fetch the message.
+	text, _, err := c.fetchSlackMessage(ctx, inst, ev.Channel, msgTs)
+	if err != nil {
+		c.logger.Debug().Err(err).Str("file_id", meta.ID).
+			Msg("slack: image gate: message fetch failed; dropping")
+		return "", false
+	}
+	return ChannelSessionThreadRoot, textMentionsBot(text, p.botUserID())
+}
+
+// textMentionsBot reports whether a message body tags the bot — the encoded
+// mention <@BOTID> or the literal "@vornik" that mentionsVornik catches.
+func textMentionsBot(text, botID string) bool {
+	if mentionsVornik(text) {
+		return true
+	}
+	return botID != "" && strings.Contains(text, "<@"+botID+">")
+}
+
+// fetchSlackMessage returns the text + author of a single channel message (by
+// ts) via conversations.history. Used to detect a mention on a top-level image
+// (whose file_shared delivery carries no text) and the author of a thread root
+// (to recognise a thread the bot itself started).
+func (c *Channel) fetchSlackMessage(ctx context.Context, inst *installation, channelID, ts string) (text, user string, err error) {
+	if strings.TrimSpace(inst.botToken) == "" {
+		return "", "", fmt.Errorf("slack channel: no bot token for team %q", inst.teamID)
+	}
+	u := fmt.Sprintf("%s/conversations.history?channel=%s&latest=%s&oldest=%s&inclusive=true&limit=1",
+		c.apiBaseURL, url.QueryEscape(channelID), url.QueryEscape(ts), url.QueryEscape(ts))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+inst.botToken)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("conversations.history HTTP %d", resp.StatusCode)
+	}
+	var out struct {
+		OK       bool `json:"ok"`
+		Messages []struct {
+			Text string `json:"text"`
+			User string `json:"user"`
+		} `json:"messages"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", "", err
+	}
+	if !out.OK || len(out.Messages) == 0 {
+		return "", "", nil
+	}
+	return out.Messages[0].Text, out.Messages[0].User, nil
+}
 
 // BACKLOG 2026-07-30: a photo posted to Slack was fetched and then thrown away.
 // handleFileSharedEvent dropped everything failing isAudioMime with "not audio;
@@ -97,6 +198,21 @@ func (c *Channel) isConfiguredAPIHost(host string) bool {
 // image and then discard most of it.
 func (c *Channel) dispatchImageFile(ctx context.Context, p eventPayload, inst *installation, meta *slackFile) {
 	ev := p.Event
+
+	// Apply the same engagement gate the text path uses. Without it the bot
+	// described ANY image in an allow-listed channel — including one posted in
+	// an unrelated thread — and answered on the main channel because
+	// file_shared carries no thread_ts (operator report 2026-08-01).
+	threadRoot, allowed := c.imageEngagement(ctx, p, inst, meta)
+	if !allowed {
+		c.logger.Debug().
+			Str("event_id", p.EventID).
+			Str("file_id", meta.ID).
+			Str("channel", ev.Channel).
+			Msg("slack: shared image not addressed to us (no mention, not an engaged thread); dropping")
+		return
+	}
+
 	downloadURL := meta.URLPrivateDownload
 	if downloadURL == "" {
 		downloadURL = meta.URLPrivate
@@ -107,19 +223,14 @@ func (c *Channel) dispatchImageFile(ctx context.Context, p eventPayload, inst *i
 		return
 	}
 
-	// Same session encoding as the audio path: file_shared carries no thread_ts, so the
-	// event's own ts becomes the thread root.
-	threadRoot := ev.Ts
-	if threadRoot == "" {
-		threadRoot = ev.ThreadTs
-	}
-	if threadRoot == "" && ev.EventTs != "" {
-		threadRoot = ev.EventTs
-	}
-	if threadRoot == "" {
-		threadRoot = strconv.FormatInt(p.EventTime, 10) + ".000000"
-	}
+	// threadRoot came from the gate: the real thread_ts in a thread, or "main"
+	// at channel level — so the reply threads where the human posted instead of
+	// defaulting to the channel.
 	sessionID := fmt.Sprintf("%s/%s#%s", p.TeamID, ev.Channel, threadRoot)
+	realThreadTs := ""
+	if threadRoot != ChannelSessionThreadRoot {
+		realThreadTs = threadRoot
+	}
 
 	name := strings.TrimSpace(meta.Name)
 	if name == "" {
@@ -136,8 +247,8 @@ func (c *Channel) dispatchImageFile(ctx context.Context, p eventPayload, inst *i
 		SessionID: sessionID,
 		SpeakerID: ev.User,
 		Text:      text,
-		ThreadID:  ev.ThreadTs,
-		Timestamp: slackTsToTime(threadRoot, c.clock),
+		ThreadID:  realThreadTs,
+		Timestamp: c.clock(),
 		Attachments: []conversation.Attachment{{
 			Name:       name,
 			MimeType:   meta.Mimetype,
@@ -148,7 +259,7 @@ func (c *Channel) dispatchImageFile(ctx context.Context, p eventPayload, inst *i
 			"team_id":      p.TeamID,
 			"channel_id":   ev.Channel,
 			"channel_type": ev.ChannelType,
-			"thread_ts":    ev.ThreadTs,
+			"thread_ts":    realThreadTs,
 			"event_id":     p.EventID,
 			"event_type":   "file_shared",
 			"project_id":   inst.projectID,

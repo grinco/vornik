@@ -18,6 +18,7 @@ var (
 func main() {
 	// Set version for CLI
 	cli.SetVersion(Version)
+	cli.SetBuildDate(BuildDate)
 	cli.SetEdition(Edition)
 
 	if err := cli.Execute(); err != nil {

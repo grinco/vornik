@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/persistence"
+	reportpkg "vornik.io/vornik/internal/report"
 	"vornik.io/vornik/internal/storage"
 )
 
@@ -37,7 +36,7 @@ func buildOfflineDoctorReport(ctx context.Context) (doctorReport, string) {
 	if cfg != nil {
 		offlineCheckDatabase(ctx, cfg, &report)
 	}
-	offlineCheckJournal(&report)
+	offlineCheckJournal(ctx, &report)
 
 	failed := 0
 	for _, c := range report.Checks {
@@ -180,38 +179,13 @@ func migrationHead() int {
 // offlineCheckJournal tails the daemon's user-journal for recent fatal/panic/
 // error lines. Best-effort: if journalctl isn't available (non-systemd host),
 // it's a warn, not a fail.
-func offlineCheckJournal(r *doctorReport) {
-	out, err := exec.Command("journalctl", "--user", "-u", "vornik", "-n", "80", "--no-pager").CombinedOutput()
-	if err != nil {
-		r.Checks = append(r.Checks, doctorCheck{
-			Name: "journal", Status: "warn",
-			Message: "journalctl unavailable (skipped): " + strings.TrimSpace(err.Error()),
-		})
-		return
-	}
-	var hits []string
-	for _, line := range strings.Split(string(out), "\n") {
-		l := strings.ToLower(line)
-		if strings.Contains(l, "panic") || strings.Contains(l, "fatal") ||
-			strings.Contains(l, "\"level\":\"error\"") {
-			if len(line) > 200 {
-				line = line[:200] + "…"
-			}
-			hits = append(hits, strings.TrimSpace(line))
-		}
-	}
-	if len(hits) == 0 {
-		r.Checks = append(r.Checks, doctorCheck{
-			Name: "journal", Status: "ok", Message: "no recent fatal/panic/error lines",
-		})
-		return
-	}
-	if len(hits) > 8 {
-		hits = hits[len(hits)-8:]
-	}
+// It now delegates to report.JournalTail, which is the SAME collector the
+// daemon's chat report path uses. Two copies of "which lines count as an error
+// and how many do we keep" is how the terminal path and the chat path drift into
+// carrying different evidence (operator instruction 2026-08-03).
+func offlineCheckJournal(ctx context.Context, r *doctorReport) {
+	c := reportpkg.JournalTail(ctx)
 	r.Checks = append(r.Checks, doctorCheck{
-		Name: "journal", Status: "warn",
-		Message: fmt.Sprintf("%d recent error/fatal line(s) in the daemon journal", len(hits)),
-		Items:   hits,
+		Name: c.Name, Status: c.Status, Message: c.Message, Items: c.Items,
 	})
 }

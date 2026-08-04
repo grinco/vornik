@@ -20,6 +20,13 @@ cleanup_artifacts:
 steps:
   research:
     type: "agent"
+    # Output contract (customer report 2026-08-03): the role schema permits a
+    # declared refusal, so without this a step that writes nothing still
+    # counted as success. At least one file matching this glob must be written
+    # DURING this step or the step fails into on_fail. Filename-specific on
+    # purpose — a wildcard would be satisfied by an upstream artifact re-staged
+    # into artifacts/out/ while this step runs.
+    require_output_glob: "artifacts/out/research.md"
     role: "researcher"
     on_success: "write"
     on_fail: "recover"
@@ -31,6 +38,13 @@ steps:
       initial_delay: "30s"
   write:
     type: "agent"
+    # Output contract (customer report 2026-08-03): the role schema permits a
+    # declared refusal, so without this a step that writes nothing still
+    # counted as success. At least one file matching this glob must be written
+    # DURING this step or the step fails into on_fail. Filename-specific on
+    # purpose — a wildcard would be satisfied by an upstream artifact re-staged
+    # into artifacts/out/ while this step runs.
+    require_output_glob: "artifacts/out/deliverable.md"
     role: "writer"
     on_success: "publish"
     on_fail: "recover"

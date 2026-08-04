@@ -149,10 +149,16 @@ report_install_failure() {
   # the stdin scrubber): a literal replace, hostnames carry no glob chars.
   hn="$(uname -n 2>/dev/null || hostname 2>/dev/null || true)"
   if [ -n "$hn" ]; then cmd="$(vornik_replace_all "$cmd" "$hn" '<host>')"; fi
-  title="Install failure: exit ${ec}"
+  # This installer only ever clones grinco/vornik, so an install failure is a
+  # Community Edition failure by construction — nothing here can be EE. Marking it
+  # (body AND title, matching `vornikctl report`) is what lets triage tell which
+  # build a reporter was running (operator report 2026-08-03: a CE customer's
+  # report named neither edition nor build).
+  title="[CE] Install failure: exit ${ec}"
   body="vornik quickstart install failed.
 
 - version (REF): ${REF:-unknown}
+- edition: community (CE)
 - platform: ${os}/${arch}
 - exit code: ${ec}
 - failing command: ${cmd}

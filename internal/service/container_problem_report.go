@@ -25,12 +25,34 @@ import (
 // that the CLI produces. Reusing rather than reimplementing is the point: the scrubber is
 // the security control, and a second copy would drift from it.
 type problemReportBuilder struct {
-	version string
-	edition string
+	version   string
+	edition   string
+	buildDate string
 	// daemonUp is always true here, unlike the CLI's offline path: this code only runs
 	// inside a live daemon answering a chat turn.
 	hostname func() (string, error)
 }
+
+// SECURITY INVARIANT — this path COLLECTS NOTHING (operator decision 2026-08-03).
+//
+// A chat-triggered report carries the build identity and the reporter's own words,
+// full stop. It deliberately does NOT run the doctor and does NOT tail the journal,
+// even though both would make the report more actionable, because both spawn
+// processes on the daemon host (the doctor sweep invokes podman; the tail invokes
+// journalctl) and this path is reachable by anyone who can send the bot a message.
+// Vornik is a security-first product: the operator's ruling is that even a remote
+// possibility of RCE or DoS via a chat-reachable collector is unacceptable, and the
+// mitigations that were drafted for it — constant argv, no shell, a collection
+// cooldown — reduce the risk without eliminating the class.
+//
+// Diagnostics reach a report the ONLY way they safely can: an operator runs
+// `vornikctl report` / `vornikctl support-report` deliberately, in their own shell,
+// under their own privileges, and attaches the result after reading it. The chat
+// tool tells the reporter exactly how (report.BundleGuidance).
+//
+// Do not add a collector here. If a future report needs richer chat-side evidence,
+// it must come from data the daemon ALREADY holds in memory or in the database —
+// never from executing a program.
 
 // BuildProblemReport implements dispatcher.ProblemReportBuilder.
 //
@@ -55,13 +77,16 @@ func (b *problemReportBuilder) BuildProblemReport(ctx context.Context, symptom s
 	}
 
 	body, err := report.AnonymizeBody(report.BodyInput{
-		Version:  b.version,
-		Edition:  b.edition,
-		OS:       runtime.GOOS,
-		Arch:     runtime.GOARCH,
-		Hostname: host,
-		DaemonUp: true,
-		Symptom:  symptom,
+		Version:   b.version,
+		Edition:   b.edition,
+		BuildDate: b.buildDate,
+		OS:        runtime.GOOS,
+		Arch:      runtime.GOARCH,
+		Hostname:  host,
+		DaemonUp:  true,
+		// No Checks: see the SECURITY INVARIANT above. Collection on this path would
+		// mean a chat message spawning processes on the host.
+		Symptom: symptom,
 	})
 	if err != nil {
 		// AnonymizeBody fails CLOSED — it returns an error rather than a
@@ -69,8 +94,9 @@ func (b *problemReportBuilder) BuildProblemReport(ctx context.Context, symptom s
 		// created one, nothing was sent anywhere".
 		return "", "", err
 	}
-	_ = ctx // no I/O today; kept for a future doctor-check enrichment
-	return report.IssueURL("problem report from chat", body), body, nil
+	// The edition tag goes in the title so a maintainer can tell CE from EE in the issue
+	// LIST — the base title stays a fixed string, as the CLI's does.
+	return report.IssueURL(report.Title(b.edition, "problem report from chat"), body), body, nil
 }
 
 // problemReportBuilder returns the bug-report seam for the dispatcher.
@@ -97,9 +123,10 @@ func (c *Container) problemReportBuilder() dispatcher.ProblemReportBuilder {
 		ver = version.Default
 	}
 	return &problemReportBuilder{
-		version:  ver,
-		edition:  c.Edition(),
-		hostname: osHostname,
+		version:   ver,
+		edition:   c.Edition(),
+		buildDate: c.BuildDate(),
+		hostname:  osHostname,
 	}
 }
 

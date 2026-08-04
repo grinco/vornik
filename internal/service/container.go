@@ -562,6 +562,12 @@ type Container struct {
 	// reaching into the global scope.
 	edition string
 
+	// buildDate holds the ldflag-stamped build timestamp passed to Run. A
+	// version alone does not identify a build (the same tag gets rebuilt), and
+	// a problem report that cannot name the build is hard to triage — see
+	// container_problem_report.go.
+	buildDate string
+
 	providers ProviderSet
 
 	// adminCapabilityLogged is set to true after the first
@@ -703,6 +709,14 @@ func (c *Container) SetVersion(v string) { c.version = v }
 
 // Version returns the daemon build version set by SetVersion.
 func (c *Container) Version() string { return c.version }
+
+// SetBuildDate stores the ldflag-stamped build timestamp on the container.
+// Called by Run alongside SetVersion so the chat problem-report path can name
+// the exact build a customer is running.
+func (c *Container) SetBuildDate(d string) { c.buildDate = d }
+
+// BuildDate returns the build timestamp set by SetBuildDate.
+func (c *Container) BuildDate() string { return c.buildDate }
 
 func agentCallbackURL(address string) string {
 	url := address
@@ -2273,6 +2287,7 @@ func Run(version, buildDate, edition string, providers ProviderSet) error {
 		return fmt.Errorf("failed to initialize container: %w", err)
 	}
 	container.SetVersion(version)
+	container.SetBuildDate(buildDate)
 	container.SetEdition(edition)
 	container.Logger.Info().
 		Str("edition", container.Edition()).

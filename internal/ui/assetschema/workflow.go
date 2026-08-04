@@ -49,6 +49,11 @@ func WorkflowSchema() AssetSchema {
 					{Path: "require_input_artifacts", Label: "Require input artifacts", Kind: KindBool, Help: "Reject companion delegations that arrive without input artifacts."},
 					{Path: "ingest_input_artifacts", Label: "Ingest input artifacts", Kind: KindBool, Help: "Deterministically ingest the task's input artifacts into project RAG on completion."},
 					{Path: "a2a.publish", Label: "Publish as A2A agent", Kind: KindBool, Help: "Make this workflow discoverable + reachable via the A2A agent endpoint."},
+					// Publishing without a project binding would expose the workflow
+					// under EVERY project (workflows are a global shared library), so
+					// the binding belongs next to the publish toggle in the form — not
+					// deferred to raw YAML.
+					{Path: "a2a.projects", Label: "Publish under projects", Kind: KindStringList, Help: "Project IDs this workflow is published as an A2A agent under. Empty falls back to the project whose default workflow this is."},
 				},
 			},
 		},

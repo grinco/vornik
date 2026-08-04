@@ -88,6 +88,38 @@ func TestVersionCommandIncludesEdition(t *testing.T) {
 	}
 }
 
+// REGRESSION 2026-08-03: the Makefile stamps -X main.BuildDate, but main() only
+// called SetVersion + SetEdition, so BuildDate kept its "unknown" default —
+// every release build printed "built unknown" and a `vornikctl report` body
+// could not distinguish two builds of the same tag.
+func TestSetBuildDate_ReachesTheVersionLine(t *testing.T) {
+	orig := BuildDate
+	t.Cleanup(func() { BuildDate = orig })
+
+	SetBuildDate("2026-08-03T09:14:00Z")
+
+	var out bytes.Buffer
+	versionCmd.SetOut(&out)
+	versionCmd.Run(versionCmd, nil)
+
+	if !strings.Contains(out.String(), "2026-08-03T09:14:00Z") {
+		t.Errorf("version output %q missing the stamped build date", out.String())
+	}
+}
+
+// An unstamped ldflag must not blank out the honest fallback.
+func TestSetBuildDate_EmptyKeepsTheFallback(t *testing.T) {
+	orig := BuildDate
+	t.Cleanup(func() { BuildDate = orig })
+
+	BuildDate = "2026-08-03T09:14:00Z"
+	SetBuildDate("")
+
+	if BuildDate != "2026-08-03T09:14:00Z" {
+		t.Errorf("BuildDate = %q, an empty stamp must not overwrite it", BuildDate)
+	}
+}
+
 func TestVersionCommandDefaultsToCommunity(t *testing.T) {
 	SetEdition("") // unstamped
 	t.Cleanup(func() { SetEdition("") })

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"vornik.io/vornik/internal/report"
 	"vornik.io/vornik/internal/secrets"
 )
 
@@ -442,5 +443,55 @@ func TestRewriteManifestAndTar_NilManifest(t *testing.T) {
 	files := readArchive(t, final)
 	if _, ok := files["MANIFEST.json"]; !ok {
 		t.Error("MANIFEST.json should be created from nil manifest")
+	}
+}
+
+// OPERATOR INSTRUCTION 2026-08-03: the reporter must be told where the archive is
+// AND how to get it onto the issue. The summary is the last thing they see, so it
+// is where the attach instructions belong — for a REDACTED bundle only. A raw
+// bundle must never be nudged towards a public issue: it contains secrets.
+func TestPrintSummary_TellsThemHowToAttach(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "vornik-support-task-x.tar.gz")
+	if err := os.WriteFile(archive, []byte("gz"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	printSummary(&out, archive, dir, map[string]int{}, supportReportOptions{})
+	got := out.String()
+	for _, want := range []string{archive, "drag", "25 MB", "MANIFEST.json"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary missing %q:\n%s", want, got)
+		}
+	}
+
+	var raw bytes.Buffer
+	printSummary(&raw, archive, dir, map[string]int{}, supportReportOptions{IncludeRaw: true})
+	if strings.Contains(raw.String(), "drag") {
+		t.Errorf("a RAW bundle must NOT be pointed at a public issue:\n%s", raw.String())
+	}
+}
+
+// review-20260803-6eef MEDIUM: report.BundleGuidance hardcodes the archive naming
+// pattern with no programmatic link to resolveOutputPath, so a rename would leave
+// the guidance quietly lying to reporters. This test is that link: the guidance
+// must describe the name support-report actually writes.
+func TestBundleGuidance_MatchesRealArchiveNaming(t *testing.T) {
+	got := resolveOutputPath(supportReportOptions{}, "task")
+	base := filepath.Base(got)
+
+	prefix := "vornik-support-"
+	if !strings.HasPrefix(base, prefix) {
+		t.Fatalf("archive basename %q no longer starts with %q — update BundleGuidance", base, prefix)
+	}
+	if !strings.HasSuffix(base, ".tar.gz") {
+		t.Fatalf("archive basename %q no longer ends in .tar.gz — update BundleGuidance", base)
+	}
+	g := report.BundleGuidance("--task x")
+	for _, want := range []string{prefix, ".tar.gz", "--output", "--max-size"} {
+		if !strings.Contains(g, want) {
+			t.Errorf("guidance no longer describes %q, but support-report still uses it", want)
+		}
 	}
 }

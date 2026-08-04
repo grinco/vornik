@@ -78,11 +78,15 @@ func TestFileShared_ImageReachesTheVisionPathAsAnAttachment(t *testing.T) {
 	rec := &recordingReceiver{}
 	bindReceiver(ch, rec)
 
-	postSignedJSON(t, ch, cfg.SigningSecret, time.Now(), fileSharedPayload("channel", "C_general"))
+	// A DM image is always ours (no allow-listing, no engagement gate), so this
+	// keeps exercising the vision-path plumbing without depending on thread
+	// engagement. The channel-scoped engagement gate is covered in
+	// images_gate_test.go.
+	postSignedJSON(t, ch, cfg.SigningSecret, time.Now(), fileSharedPayload("im", "D_test"))
 
 	got := rec.snapshot()
 	if len(got) != 1 {
-		t.Fatalf("dispatch count = %d, want 1 — an image must start a turn", len(got))
+		t.Fatalf("dispatch count = %d, want 1 — a DM image must start a turn", len(got))
 	}
 	if len(got[0].Attachments) != 1 {
 		t.Fatalf("attachments = %d, want 1", len(got[0].Attachments))

@@ -376,13 +376,25 @@ func printSummary(out io.Writer, finalPath, bundleDir string, hostTally map[stri
 	_, _ = fmt.Fprintf(out, "sections: %d\n", len(files))
 	if opts.IncludeRaw {
 		_, _ = fmt.Fprintln(out, "WARNING: this is a RAW bundle — it contains UNREDACTED secrets. Keep it local.")
-	} else {
-		total := 0
-		for _, v := range hostTally {
-			total += v
-		}
-		_, _ = fmt.Fprintf(out, "host-section redactions: %d\n", total)
+		// Deliberately NO attach guidance here: a raw bundle must never be nudged
+		// toward a public issue.
+		return
 	}
+	total := 0
+	for _, v := range hostTally {
+		total += v
+	}
+	_, _ = fmt.Fprintf(out, "host-section redactions: %d\n", total)
+	// Where it is + how to get it onto a report (operator instruction 2026-08-03:
+	// naming the command was not enough — reporters never attached the bundle).
+	_, _ = fmt.Fprintln(out, "\nBefore you share it, read it:")
+	_, _ = fmt.Fprintf(out, "  tar -tzf %s\n", finalPath)
+	_, _ = fmt.Fprintf(out, "  tar -xOzf %s MANIFEST.json    # sections, truncations, redaction counts\n", finalPath)
+	_, _ = fmt.Fprintln(out, "It is redacted for secrets but MAY still carry project, swarm and workflow")
+	_, _ = fmt.Fprintln(out, "names, task ids and prompt text.")
+	_, _ = fmt.Fprintln(out, "To attach it to a problem report: run `vornikctl report` for the prefilled")
+	_, _ = fmt.Fprintln(out, "issue, then drag this .tar.gz into the GitHub comment box (25 MB per attachment max —")
+	_, _ = fmt.Fprintln(out, "narrow the scope or use --max-size if it is bigger).")
 }
 
 // ---- small helpers ----

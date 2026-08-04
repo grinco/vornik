@@ -3,6 +3,7 @@ package executor
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 
 	"vornik.io/vornik/internal/persistence"
 )
@@ -103,9 +104,14 @@ func assembleAgentPrompt(task *persistence.Task, stepPromptArg string, opts *age
 	prompt = timeContext.PromptLine + "\n\n" + prompt
 
 	// Authoritative ATTACHED FILES block — always wins over any path the
-	// dispatcher LLM put in the user prompt.
+	// dispatcher LLM put in the user prompt. The staged index comes from the
+	// artifacts the executor actually staged (stageInputArtifacts has already
+	// rewritten each entry's "path" to the container path, and it runs BEFORE
+	// task.json is written), so the prompt cannot claim a file is unavailable
+	// when it is sitting in the workspace — the customer-reported "facts
+	// document exists but was never analyzed" failure (2026-08-03).
 	if len(inputFiles) > 0 {
-		prompt += "\n\n" + buildAttachedFilesBlock(inputFiles, inputExtractions)
+		prompt += "\n\n" + buildAttachedFilesBlockStaged(inputFiles, inputExtractions, stagedArtifactIndex(opts))
 	}
 	if opts == nil {
 		return prompt, timeContext
@@ -127,6 +133,25 @@ func assembleAgentPrompt(task *persistence.Task, stepPromptArg string, opts *age
 		prompt += "\n\n" + buildRecoveryContextBlock(opts.RecoveryContext)
 	}
 	return prompt, timeContext
+}
+
+// stagedArtifactIndex maps basename → container path for the artifacts staged
+// into this step's workspace. Nil-safe: a nil opts (or no artifacts) yields nil,
+// and the block then falls back to the conventional artifacts/in/ location.
+func stagedArtifactIndex(opts *agentInputOpts) map[string]string {
+	if opts == nil || len(opts.InputArtifacts) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(opts.InputArtifacts))
+	for _, art := range opts.InputArtifacts {
+		name := art["name"]
+		path := art["path"]
+		if name == "" || path == "" {
+			continue
+		}
+		out[filepath.Base(name)] = path
+	}
+	return out
 }
 
 // buildAgentContextMap assembles the context.* block of the agent input.

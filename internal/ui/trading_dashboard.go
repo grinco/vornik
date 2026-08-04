@@ -99,6 +99,43 @@ type TradingDashboardData struct {
 	PerfChartBaseline int
 }
 
+// tradingNavEnabled reports whether the Insight → Trading destination should
+// render in the nav. Two conditions, both required:
+//
+//   - the EE trading capability is present (WithTradingEnabled) — otherwise
+//     the /trading route 404s and the link is dead;
+//   - at least one project actually has trading configured — otherwise the
+//     link leads to nothing but the "No projects have trading enabled" setup
+//     state, which is what EE operators who never bought trading complained
+//     about (2026-08-03).
+//
+// Called per nav render rather than resolved once at NewServer, so adding a
+// trading project and reloading config reveals the entry without a restart.
+// The route itself stays registered in EE: an operator who lands on
+// /ui/trading by URL still gets the setup-gap page.
+func (s *Server) tradingNavEnabled() bool {
+	return s.tradingEnabled && s.hasTradingProject()
+}
+
+// hasTradingProject reports whether any project in the registry is
+// trading-enabled. Deliberately the SAME predicate the Trading handler's
+// dropdown uses (a `broker` MCP server) so the nav can never advertise a
+// page whose project filter would come up empty. Not access-scoped — the
+// template FuncMap has no request — so a caller who can see no trading
+// project still gets the nav entry and the handler's NoAccessibleTrading
+// message; that path is unchanged.
+func (s *Server) hasTradingProject() bool {
+	if s.projectReg == nil {
+		return false
+	}
+	for _, p := range s.projectReg.ListProjects() {
+		if brokerURL(p) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // Trading renders the Insight → Trading dashboard. Registered at
 // /ui/trading (the /ui prefix + auth middleware are applied by the
 // same subtree wrapper that protects /spend).

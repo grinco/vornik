@@ -840,6 +840,9 @@ func (c *Config) Validate() error {
 	if err := composer.Validate(); err != nil {
 		return err
 	}
+	if err := c.A2A.Validate(); err != nil {
+		return err
+	}
 	// web.writes tri-state + insecure co-flag (fail startup on an invalid value
 	// or insecure without the ack).
 	webMode, err := c.Web.WritesMode()

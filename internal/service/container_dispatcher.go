@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 
+	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/dispatcher"
 	"vornik.io/vornik/internal/hallucination"
 	"vornik.io/vornik/internal/intentjudge"
@@ -100,7 +101,17 @@ func (c *Container) initDispatcher() {
 	if c.repos != nil && c.repos.Tasks != nil {
 		opts = append(opts, dispatcher.WithGroundingTaskRepo(c.repos.Tasks))
 	}
-	if c.mcpManager != nil {
+	// Give the chat agent the same MCP surface plus A2A consult tools. When
+	// peers are configured, wrap the manager in a ComposedMCPExecutor (which
+	// satisfies dispatcher.MCPExecutor structurally); otherwise pass the raw
+	// manager unchanged.
+	if cp := c.buildConsultProvider(); cp != nil {
+		composed := &api.ComposedMCPExecutor{Consult: cp}
+		if c.mcpManager != nil {
+			composed.External = c.mcpManager
+		}
+		opts = append(opts, dispatcher.WithMCPManager(composed))
+	} else if c.mcpManager != nil {
 		opts = append(opts, dispatcher.WithMCPManager(c.mcpManager))
 	}
 	if c.repos != nil && c.repos.ToolAudit != nil {

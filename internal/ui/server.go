@@ -2061,7 +2061,10 @@ func NewServer(opts ...ServerOption) *Server {
 	// navModelForPage (not the bare navModelFunc) so the "My requests"
 	// nav destination can carry a per-request attention-count badge
 	// (task 4.4, design §5.7 Q4) — see nav_model.go's doc comment.
-	fm["navModel"] = navModelForPage(s.tradingEnabled)
+	// tradingNavEnabled (not the bare s.tradingEnabled flag) so the Trading
+	// destination also disappears on an EE deployment that has no trading
+	// project configured — see its doc comment.
+	fm["navModel"] = navModelForPage(s.tradingNavEnabled)
 	// Deployments with no non-admin browser sessions (Community, or
 	// auth off) treat every caller as admin-class — mirror that in the
 	// nav so AdminOnly entries (Swarms, Workflows, the Admin area)

@@ -257,6 +257,12 @@ echo "--- report_install_failure emits a prefilled grinco/vornik issue URL ---"
 FOUT="$(REF=2026.7.4 report_install_failure 7 2>&1)"
 case "$FOUT" in *"github.com/grinco/vornik/issues/new?"*) ok "failure hook prints the grinco/vornik issue URL" ;; *) bad "no issue URL in failure output: $FOUT" ;; esac
 case "$FOUT" in *"labels=bug%2Cinstall"*) ok "issue carries bug,install labels" ;; *) bad "labels not encoded: $FOUT" ;; esac
+# REGRESSION 2026-08-03 (operator report): a CE customer's report named neither the
+# edition nor the build. This installer only ever clones grinco/vornik, so an install
+# failure is a CE failure by construction — say so in the body and the title, the same
+# way `vornikctl report` now does.
+case "$FOUT" in *"community%20%28CE%29"*) ok "install report marks the CE edition" ;; *) bad "no edition marking in install report: $FOUT" ;; esac
+case "$FOUT" in *"title=%5BCE%5D"*) ok "install report title carries the CE tag" ;; *) bad "no [CE] title tag: $FOUT" ;; esac
 # success (exit 0) must be a no-op
 SOUT="$(report_install_failure 0 2>&1)"
 case "$SOUT" in *"issues/new"*) bad "failure hook fired on exit 0" ;; *) ok "no-op on exit 0" ;; esac

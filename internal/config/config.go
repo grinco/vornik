@@ -369,6 +369,13 @@ type Config struct {
 	Tracing         TracingConfig         `yaml:"tracing"`
 	Logging         LoggingConfig         `yaml:"logging"`
 	API             APIConfig             `yaml:"api"`
+	// A2A configures outbound agent-to-agent federation: the peers this
+	// instance can consult (each materialised as an agent-callable
+	// consult_<name> tool) and the consult guardrails. Inbound A2A (this
+	// instance as a published agent) is governed by workflow a2a.publish
+	// + the API-key layer, not here. See
+	// https://docs.vornik.io
+	A2A A2AConfig `yaml:"a2a,omitempty" json:"a2a,omitempty" doc:"Outbound A2A federation: consultable peer instances + consult guardrails."`
 	// Trading configures the daemon side of the broker→daemon
 	// trading audit channel — specifically the HMAC request-auth
 	// guarding the /api/v1/internal/trading-* endpoints. Empty

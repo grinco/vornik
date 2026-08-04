@@ -222,6 +222,8 @@ func (s *Server) newBundleBuilder() *bundleBuilder {
 	b := &bundleBuilder{
 		detector: s.secretsDetector,
 		version:  version.Default,
+		// EE-only; nil on Community, which omits the section rather than erroring.
+		blackbox: s.blackboxService,
 	}
 	b.repos = supportRepos{}
 	if s.taskRepo != nil {

@@ -5,7 +5,7 @@ sources:
     - path: internal/executor/spawn_project.go
       sha256: 5ece68e724d864e53a5f78e85f2091c66a917fdbe2ac72c7be9fcfb6f91cacdc
     - path: internal/executor/a2a_call.go
-      sha256: 4d0027f05b7328c16b7d71b342693ce4f7840b1477736000478f3af05f3999d5
+      sha256: 138a2e550e367a72f367669faa9fbeaa52691e74f1146a615ab12637fe51b165
     - path: internal/registry/project.go
       sha256: 0e998b38cef706cea1f918104f00536c5a1eb5330b841c4d14e81921e964fa0d
 ---

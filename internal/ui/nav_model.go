@@ -139,15 +139,21 @@ func navModel() []navAreaDef {
 	}
 }
 
-// navModelFunc is the edition-aware nav template func. On Community
-// (tradingEnabled=false) it drops the Trading destination, which is an
-// Enterprise-only capability whose /trading route 404s (WithTradingEnabled
-// unset) — without this the data-cap hint would still render a dead link in
-// CE. Built at the template-setup site so uiFuncMap stays edition-agnostic.
-func navModelFunc(tradingEnabled bool) func() []navAreaDef {
+// navModelFunc is the capability-aware nav template func. It drops the
+// Trading destination unless tradingEnabled() reports the destination is
+// worth showing — without this the data-cap hint would still render a dead
+// or empty link. Built at the template-setup site so uiFuncMap stays
+// edition-agnostic.
+//
+// tradingEnabled is a predicate, not a bool, because the answer is not fixed
+// at server-construction time: it combines the static edition gate with a
+// live "does any project actually have trading configured" check that must
+// follow a config reload (see Server.tradingNavEnabled). It is called on
+// every nav render; nil means "hidden".
+func navModelFunc(tradingEnabled func() bool) func() []navAreaDef {
 	return func() []navAreaDef {
 		m := navModel()
-		if tradingEnabled {
+		if tradingEnabled != nil && tradingEnabled() {
 			return m
 		}
 		for i := range m {
@@ -207,7 +213,7 @@ type navAttentionCounter interface {
 // existing per-render allocation), so mutating the returned slice's
 // Dests in place below is safe — it never aliases another request's
 // copy.
-func navModelForPage(tradingEnabled bool) func(data any) []navAreaDef {
+func navModelForPage(tradingEnabled func() bool) func(data any) []navAreaDef {
 	base := navModelFunc(tradingEnabled)
 	return func(data any) []navAreaDef {
 		m := base()

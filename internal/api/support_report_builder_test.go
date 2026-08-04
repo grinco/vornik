@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
 	"time"
 
+	"vornik.io/vornik/internal/contracts"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/secrets"
 )
@@ -165,6 +167,7 @@ func fullyWiredBuilder(t *testing.T) (*bundleBuilder, map[string]string) {
 		"container": secretFor("CONTLOG0"),
 		"window":    secretFor("WINDOW00"),
 		"audit":     secretFor("AUDIT000"),
+		"blackbox":  secretFor("BLKBOX00"),
 	}
 	taskID := "task_test_1"
 	pid := "proj1"
@@ -220,6 +223,11 @@ func fullyWiredBuilder(t *testing.T) (*bundleBuilder, map[string]string) {
 		detector:   newTestDetector(t),
 		version:    "2026.6.0-test",
 		configYAML: "api_key: " + secretsByTag["config"] + "\n",
+		// OPERATOR REQUEST 2026-08-03: a bug report about a task should be able to
+		// carry the Black Box trace for that task — the derived timeline is the
+		// evidence that explains WHY a task went wrong, and it was the one per-task
+		// section the bundle never collected.
+		blackbox: &fakeBlackBoxTraces{trace: map[string]string{"summary": secretsByTag["blackbox"]}},
 	}
 	return b, secretsByTag
 }
@@ -265,6 +273,7 @@ func TestRedactionCoverage(t *testing.T) {
 	mustContainRedacted(t, res, "doctor.json")
 	mustContainRedacted(t, res, "health.json")
 	mustContainRedacted(t, res, "task/container_logs.txt")
+	mustContainRedacted(t, res, "task/blackbox_trace.json")
 	// Shipped text artifact present + redacted.
 	mustContainRedacted(t, res, "task/artifacts/art1-notes.txt")
 
@@ -456,3 +465,111 @@ var errBoom = &boomError{}
 type boomError struct{}
 
 func (*boomError) Error() string { return "boom" }
+
+// fakeBlackBoxTraces stands in for the EE blackbox.Service behind the
+// BlackBoxTraceService seam. err wins over trace when set.
+type fakeBlackBoxTraces struct {
+	trace any
+	err   error
+	calls int
+}
+
+func (f *fakeBlackBoxTraces) AssembleCached(_ context.Context, _ string) (any, bool, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, false, f.err
+	}
+	return f.trace, false, nil
+}
+
+func (f *fakeBlackBoxTraces) Compare(_, _ any) (any, error) { return nil, nil }
+
+// OPERATOR REQUEST 2026-08-03: include the task's Black Box data in the evidence
+// bundle a problem report points at. EE-only by construction — the seam is nil on
+// a Community build, and an absent section must not be an error.
+func TestBlackBoxTraceSection(t *testing.T) {
+	t.Run("collected when the seam is wired", func(t *testing.T) {
+		b, _ := fullyWiredBuilder(t)
+		res, err := b.Build(context.Background(), bundleRequest{TaskID: "task_test_1", MaxSize: 200 << 20})
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if _, ok := res.files["task/blackbox_trace.json"]; !ok {
+			t.Fatalf("blackbox trace section absent; files: %v", sortedKeys(res.files))
+		}
+	})
+
+	t.Run("omitted on a Community build with no seam", func(t *testing.T) {
+		b, _ := fullyWiredBuilder(t)
+		b.blackbox = nil
+		res, err := b.Build(context.Background(), bundleRequest{TaskID: "task_test_1", MaxSize: 200 << 20})
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if _, ok := res.files["task/blackbox_trace.json"]; ok {
+			t.Error("CE build must not produce a blackbox section")
+		}
+		if _, bad := res.sectionErrs["task/blackbox_trace.json"]; bad {
+			t.Error("an unwired seam is not a section ERROR — Black Box is EE-only")
+		}
+	})
+
+	t.Run("a task with no audit data is not an error", func(t *testing.T) {
+		b, _ := fullyWiredBuilder(t)
+		b.blackbox = &fakeBlackBoxTraces{err: contracts.ErrBlackBoxTaskNotFound}
+		res, err := b.Build(context.Background(), bundleRequest{TaskID: "task_test_1", MaxSize: 200 << 20})
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if _, ok := res.files["task/blackbox_trace.json"]; ok {
+			t.Error("no audit data must yield no section")
+		}
+		if _, bad := res.sectionErrs["task/blackbox_trace.json"]; bad {
+			t.Error("ErrBlackBoxTaskNotFound is an absence, not a failure")
+		}
+	})
+
+	t.Run("a real failure is recorded, not fatal", func(t *testing.T) {
+		b, _ := fullyWiredBuilder(t)
+		b.blackbox = &fakeBlackBoxTraces{err: errors.New("assemble exploded")}
+		res, err := b.Build(context.Background(), bundleRequest{TaskID: "task_test_1", MaxSize: 200 << 20})
+		if err != nil {
+			t.Fatalf("Build must stay best-effort: %v", err)
+		}
+		if _, ok := res.sectionErrs["task/blackbox_trace.json"]; !ok {
+			t.Error("a genuine assembly failure belongs in section_errors")
+		}
+	})
+
+	t.Run("window mode does not assemble a trace", func(t *testing.T) {
+		b, _ := fullyWiredBuilder(t)
+		fake := &fakeBlackBoxTraces{trace: map[string]string{"summary": "x"}}
+		b.blackbox = fake
+		if _, err := b.Build(context.Background(), bundleRequest{
+			Window: true, Since: time.Now().Add(-time.Hour), Until: time.Now(), MaxSize: 200 << 20,
+		}); err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		if fake.calls != 0 {
+			t.Errorf("window mode has no task id; AssembleCached called %d time(s)", fake.calls)
+		}
+	})
+}
+
+// review-20260803-6eef MEDIUM: AssembleCached returning (nil, _, nil) — no trace,
+// no error — must be an ABSENCE like the other two, not a silent section error or
+// an empty file. Untested before this.
+func TestBlackBoxTraceSection_NilTraceNoError(t *testing.T) {
+	b, _ := fullyWiredBuilder(t)
+	b.blackbox = &fakeBlackBoxTraces{trace: nil}
+	res, err := b.Build(context.Background(), bundleRequest{TaskID: "task_test_1", MaxSize: 200 << 20})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if _, ok := res.files["task/blackbox_trace.json"]; ok {
+		t.Error("a nil trace must produce no section rather than an empty file")
+	}
+	if _, bad := res.sectionErrs["task/blackbox_trace.json"]; bad {
+		t.Error("a nil trace with no error is an absence, not a failure")
+	}
+}

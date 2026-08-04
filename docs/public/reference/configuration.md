@@ -220,6 +220,12 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `api.rate_limit.per_ip.burst` | int | Per-IP burst capacity. |
 | `api.rate_limit.per_ip.trusted_proxies` | list | Deprecated: use server.real_ip.trusted_proxies. CIDRs/IPs trusted to set X-Forwarded-For. |
 
+## a2a
+
+| Key | Type | Description |
+|---|---|---|
+| `a2a` | struct | Outbound A2A federation: consultable peer instances + consult guardrails. |
+
 ## chat
 
 | Key | Type | Description |

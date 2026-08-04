@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	url2 "net/url"
 	"strings"
 	"testing"
 )
@@ -52,6 +53,80 @@ func TestProblemReportBuilder_RejectsEmptySymptom(t *testing.T) {
 	b := &problemReportBuilder{version: "1.0.0", hostname: func() (string, error) { return "h", nil }}
 	if _, _, err := b.BuildProblemReport(context.Background(), "   "); err == nil {
 		t.Fatal("expected an error for an empty symptom")
+	}
+}
+
+// REGRESSION 2026-08-03 (operator report): a CE customer's bug report named neither
+// the edition nor the build, so triage could not tell whether the behaviour was even
+// reachable in the build they ran. The chat body must mark CE/EE and the build.
+func TestProblemReportBuilder_MarksEditionAndBuild(t *testing.T) {
+	b := &problemReportBuilder{
+		version:   "2026.7.7",
+		edition:   "enterprise",
+		buildDate: "2026-08-03T09:14:00Z",
+		hostname:  func() (string, error) { return "customer-prod-01", nil },
+	}
+
+	url, body, err := b.BuildProblemReport(context.Background(), "the bot stopped answering")
+	if err != nil {
+		t.Fatalf("BuildProblemReport: %v", err)
+	}
+	for _, want := range []string{"enterprise (EE)", "2026-08-03T09:14:00Z"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q:\n%s", want, body)
+		}
+	}
+	// The title carries the tag so EE and CE reports are separable in the issue list.
+	if !strings.Contains(url, url2.QueryEscape("[EE]")) {
+		t.Errorf("url = %q, want an [EE]-tagged title", url)
+	}
+}
+
+// SECURITY INVARIANT (operator decision 2026-08-03: "we should not allow non cli
+// commands to run other shell commands — so the doctor should not be available via the
+// chat channel … even a remote possibility of an RCE or DoS is unacceptable").
+//
+// A chat-triggered report must collect NOTHING: no doctor sweep (it invokes podman), no
+// journal tail (it invokes journalctl). This test is the guard — it fails the day a
+// collector is reintroduced on this path. Diagnostics reach a report only when an
+// operator runs vornikctl report / support-report deliberately in their own shell.
+func TestProblemReportBuilder_CollectsNothingOnTheChatPath(t *testing.T) {
+	b := &problemReportBuilder{
+		version:   "2026.7.7",
+		edition:   "community",
+		buildDate: "2026-08-03T09:14:00Z",
+		hostname:  func() (string, error) { return "customer-prod-01", nil },
+	}
+
+	_, body, err := b.BuildProblemReport(context.Background(), "tasks complete with no output")
+	if err != nil {
+		t.Fatalf("BuildProblemReport: %v", err)
+	}
+	for _, forbidden := range []string{"Doctor findings", "journal", "podman"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("chat body contains %q — collection is NOT allowed on this path:\n%s", forbidden, body)
+		}
+	}
+	// It still files a useful report: build identity + the reporter's own words.
+	for _, want := range []string{"community (CE)", "2026.7.7", "tasks complete with no output"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// The container must hand the builder the build stamp, or the marking above is dead
+// code in production.
+func TestContainerProblemReportBuilder_CarriesBuildDate(t *testing.T) {
+	c := &Container{}
+	c.SetBuildDate("2026-08-03T09:14:00Z")
+
+	b, ok := c.problemReportBuilder().(*problemReportBuilder)
+	if !ok {
+		t.Fatal("builder has unexpected type")
+	}
+	if b.buildDate != "2026-08-03T09:14:00Z" {
+		t.Errorf("buildDate = %q, want the stamped value", b.buildDate)
 	}
 }
 

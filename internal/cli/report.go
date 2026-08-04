@@ -56,20 +56,21 @@ func runReport(_ *cobra.Command, _ []string) error {
 
 	host, _ := os.Hostname()
 	body, err := report.AnonymizeBody(report.BodyInput{
-		Version:  Version,
-		Edition:  edition,
-		OS:       runtime.GOOS,
-		Arch:     runtime.GOARCH,
-		Hostname: host,
-		DaemonUp: daemonUp,
-		Checks:   checks,
-		Symptom:  reportSummary,
+		Version:   Version,
+		Edition:   edition,
+		BuildDate: BuildDate,
+		OS:        runtime.GOOS,
+		Arch:      runtime.GOARCH,
+		Hostname:  host,
+		DaemonUp:  daemonUp,
+		Checks:    checks,
+		Symptom:   reportSummary,
 	})
 	if err != nil {
 		return err // static fail-closed message (never wraps the offending value)
 	}
 
-	issueURL := report.IssueURL(reportTitle(checks, daemonUp), body)
+	issueURL := report.IssueURL(report.Title(edition, reportTitle(checks, daemonUp)), body)
 
 	switch {
 	case reportDryRun:
@@ -87,18 +88,27 @@ func runReport(_ *cobra.Command, _ []string) error {
 	fmt.Println(body)
 	fmt.Println("Open this prefilled issue, review it, then submit with your GitHub account:")
 	fmt.Println("  " + issueURL)
-	if reportTask != "" || reportSince != "" {
-		sel := "--task " + reportTask
-		if reportSince != "" {
-			sel = "--since " + reportSince
-		}
-		fmt.Println()
-		fmt.Println("For a detailed bundle to attach, run:")
-		fmt.Println("  vornikctl support-report " + sel)
-		fmt.Println("  (redacted for secrets, but may carry project names — OPEN + inspect it")
-		fmt.Println("   (e.g. grep MANIFEST.json for your project name) BEFORE attaching.)")
-	}
+	// The bundle guidance is printed ALWAYS, not only when a scope flag was given.
+	// A reporter who did not think to pass --task is exactly the one who does not
+	// know the bundle exists — and a report with no logs was the complaint that
+	// prompted this (operator, 2026-08-03).
+	fmt.Println()
+	fmt.Println(report.BundleGuidance(bundleSelector()))
 	return nil
+}
+
+// bundleSelector renders the support-report scope for the guidance text: the
+// user's own --task/--since when they gave one, otherwise a placeholder that
+// shows the shape rather than pretending we know their task.
+func bundleSelector() string {
+	switch {
+	case reportSince != "":
+		return "--since " + reportSince
+	case reportTask != "":
+		return "--task " + reportTask
+	default:
+		return "--task <task-id>   # or: --since 2h"
+	}
 }
 
 // collectDoctorForReport returns (daemonUp, checks). It tries the daemon's
@@ -139,7 +149,10 @@ func onlineDoctorChecks() ([]report.Check, bool) {
 func toReportChecks(cs []doctorCheck) []report.Check {
 	out := make([]report.Check, 0, len(cs))
 	for _, c := range cs {
-		out = append(out, report.Check{Name: c.Name, Status: c.Status, Message: c.Message})
+		// Items carries the journal check's actual error lines. Dropping them was the
+		// "bug report without any logs" complaint (operator, 2026-08-03) — the body
+		// scrubs and caps them (report.writeCheckItems), so they pass through verbatim.
+		out = append(out, report.Check{Name: c.Name, Status: c.Status, Message: c.Message, Items: c.Items})
 	}
 	return out
 }

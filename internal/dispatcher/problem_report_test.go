@@ -149,3 +149,38 @@ func TestSetProblemReportBuilder_NilSafe(_ *testing.T) {
 	a.SetProblemReportBuilder(&stubReportBuilder{})
 	(&Agent{}).SetProblemReportBuilder(&stubReportBuilder{})
 }
+
+// OPERATOR INSTRUCTION 2026-08-03: "make sure the appropriate logs are included —
+// and customer has an option to review them before sending"; "the user should be
+// instructed where logs/blackbox export archive is and how to upload it".
+//
+// A chat reporter has no terminal in front of them, so the tool response is the
+// ONLY place they learn that a fuller evidence bundle exists, where it lands, and
+// that they attach it themselves after reading it.
+func TestReportProblem_TellsThemAboutTheEvidenceBundle(t *testing.T) {
+	b := &stubReportBuilder{
+		url:  "https://github.com/grinco/vornik/issues/new?title=x",
+		body: "### vornik problem report\n\n- **edition:** community (CE)\n",
+	}
+	te := &ToolExecutor{problemReports: b}
+
+	got := te.reportProblem(context.Background(), `{"summary":"tasks complete with no output"}`).Content
+
+	for _, want := range []string{
+		"support-report",  // the command that produces the logs + Black Box trace
+		"vornik-support-", // where the archive lands
+		"drag",            // how to upload it
+		"25 MB",           // the limit they will hit
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("tool response missing %q:\n%s", want, got)
+		}
+	}
+	// Review-before-send stays explicit: nothing is submitted by the tool, and the
+	// body is shown in-channel so the customer reads it first.
+	for _, want := range []string{"nothing has been submitted", "This is what it will say"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("tool response lost the review gate (%q):\n%s", want, got)
+		}
+	}
+}

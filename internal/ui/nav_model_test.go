@@ -145,24 +145,28 @@ func TestNavModelContract(t *testing.T) {
 	}
 }
 
+// navGate adapts a static bool to the func() bool predicate navModelFunc and
+// navModelForPage take. Production passes Server.tradingNavEnabled, which is
+// re-evaluated per render (see trading_nav_gate_test.go).
+func navGate(v bool) func() bool { return func() bool { return v } }
+
 // TestNavModelCommunityHidesTrading pins the 2026-06-29 fix: trading is an
 // Enterprise-only capability (the /trading route 404s on CE via
-// WithTradingEnabled), so the CE-wired nav func (navModelFunc(false)) must
-// omit the Trading destination entirely — otherwise CE renders a nav link to
-// a 404. EE (navModelFunc(true)) keeps it, and the canonical navModel() is
-// unchanged.
+// WithTradingEnabled), so a false gate must omit the Trading destination
+// entirely — otherwise CE renders a nav link to a 404. A true gate keeps it,
+// and the canonical navModel() is unchanged.
 func TestNavModelCommunityHidesTrading(t *testing.T) {
 	// Community: no "trading" dest anywhere.
-	for _, a := range navModelFunc(false)() {
+	for _, a := range navModelFunc(navGate(false))() {
 		for _, d := range a.Dests {
 			if d.Key == "trading" {
-				t.Fatalf("navModelFunc(false) must omit the Trading dest; found it under %q", a.Key)
+				t.Fatalf("navModelFunc(navGate(false)) must omit the Trading dest; found it under %q", a.Key)
 			}
 		}
 	}
 	// Enterprise keeps it (guards against an over-eager filter).
 	found := false
-	for _, a := range navModelFunc(true)() {
+	for _, a := range navModelFunc(navGate(true))() {
 		for _, d := range a.Dests {
 			if d.Key == "trading" {
 				found = true
@@ -170,7 +174,7 @@ func TestNavModelCommunityHidesTrading(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("navModelFunc(true) must keep the Trading dest")
+		t.Fatal("navModelFunc(navGate(true)) must keep the Trading dest")
 	}
 	// Canonical navModel() is edition-agnostic — always full.
 	if !navModelHasTrading(navModel()) {
@@ -180,7 +184,7 @@ func TestNavModelCommunityHidesTrading(t *testing.T) {
 	// Render-level: the CE-wired navModel func emits no trading entry; sibling
 	// Insight dests (spend) still render.
 	fm := uiFuncMap()
-	fm["navModel"] = navModelFunc(false)
+	fm["navModel"] = navModelFunc(navGate(false))
 	tmpl, err := template.New("t").Funcs(fm).
 		Parse(`{{range navModel}}{{range .Dests}}{{.Key}} {{end}}{{end}}`)
 	if err != nil {
@@ -231,7 +235,7 @@ type fakeNavCounter struct{ n int }
 func (f fakeNavCounter) NavAttentionCount() int { return f.n }
 
 func TestNavModelForPage_BadgesInboxWhenCounterPositive(t *testing.T) {
-	m := navModelForPage(true)(fakeNavCounter{n: 3})
+	m := navModelForPage(navGate(true))(fakeNavCounter{n: 3})
 	var got int
 	found := false
 	for _, a := range m {
@@ -255,7 +259,7 @@ func TestNavModelForPage_BadgesInboxWhenCounterPositive(t *testing.T) {
 // task 4.4) renders no badge — "keep it simple" per the design's hedge.
 func TestNavModelForPage_NoCounterNoBadge(t *testing.T) {
 	for _, data := range []any{nil, "a plain string", struct{ Foo string }{Foo: "bar"}} {
-		m := navModelForPage(true)(data)
+		m := navModelForPage(navGate(true))(data)
 		for _, a := range m {
 			for _, d := range a.Dests {
 				if d.Key == "inbox" && d.Badge != 0 {
@@ -269,7 +273,7 @@ func TestNavModelForPage_NoCounterNoBadge(t *testing.T) {
 // TestNavModelForPage_ZeroCounterNoBadge — an implementer reporting 0
 // (or negative) attention items must not render "(0)".
 func TestNavModelForPage_ZeroCounterNoBadge(t *testing.T) {
-	m := navModelForPage(true)(fakeNavCounter{n: 0})
+	m := navModelForPage(navGate(true))(fakeNavCounter{n: 0})
 	for _, a := range m {
 		for _, d := range a.Dests {
 			if d.Key == "inbox" && d.Badge != 0 {
@@ -282,7 +286,7 @@ func TestNavModelForPage_ZeroCounterNoBadge(t *testing.T) {
 // TestNavModelForPage_OnlyInboxDestBadged — the counter must never leak
 // onto an unrelated destination (e.g. "tasks").
 func TestNavModelForPage_OnlyInboxDestBadged(t *testing.T) {
-	m := navModelForPage(true)(fakeNavCounter{n: 5})
+	m := navModelForPage(navGate(true))(fakeNavCounter{n: 5})
 	for _, a := range m {
 		for _, d := range a.Dests {
 			if d.Key != "inbox" && d.Badge != 0 {

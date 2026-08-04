@@ -630,6 +630,23 @@ func learnedRemediationsBlock(rems []playbook.LearnedRemediation) string {
 }
 
 func buildAttachedFilesBlock(inputFiles []string, extractions []map[string]any) string {
+	return buildAttachedFilesBlockStaged(inputFiles, extractions, nil)
+}
+
+// buildAttachedFilesBlockStaged is buildAttachedFilesBlock with the executor's
+// ACTUAL staged-artifact index (basename → container path) as the source of truth.
+//
+// CUSTOMER REPORT 2026-08-03 ("facts document exists but was never analyzed"):
+// the partition used to key on "has an extraction" alone and then told the agent
+// "The raw binary is NOT staged … Do NOT attempt to file_read". But
+// extractTaskInputArtifacts DOES stage the raw file alongside an extraction when
+// extraction is insufficient for the media kind and the file fits the size cap —
+// so an agent was told to ignore a file sitting in its own workspace, and a role
+// without the document_* MCP tools (T-8f69) then had no route to the content at
+// all. Staged-ness now decides: anything staged is listed with its path (plus its
+// memory handles when it also has an extraction), and only genuinely unstaged
+// documents carry the memory-only guidance.
+func buildAttachedFilesBlockStaged(inputFiles []string, extractions []map[string]any, staged map[string]string) string {
 	if len(inputFiles) == 0 {
 		return ""
 	}
@@ -648,6 +665,13 @@ func buildAttachedFilesBlock(inputFiles []string, extractions []map[string]any) 
 			continue
 		}
 		base := filepath.Base(p)
+		// Staged-ness wins: a file in the workspace is readable whatever else
+		// is true of it, and claiming otherwise strands roles that lack the
+		// document_* tools.
+		if _, isStaged := staged[base]; isStaged {
+			legacy = append(legacy, p)
+			continue
+		}
 		if ext, ok := byBasename[base]; ok {
 			extracted = append(extracted, extractedAttachment{
 				Filename:            base,
@@ -690,8 +714,23 @@ func buildAttachedFilesBlock(inputFiles []string, extractions []map[string]any) 
 		sb.WriteString("## ATTACHED FILES\n")
 		sb.WriteString("The following files are staged inside the container. Read them at these paths regardless of any other path mentioned in the task prompt above:\n")
 		for _, p := range legacy {
-			sb.WriteString("- /app/workspace/artifacts/in/")
-			sb.WriteString(filepath.Base(p))
+			base := filepath.Base(p)
+			// Prefer the path the executor actually staged the file at; fall
+			// back to the conventional location when the caller passed no index
+			// (the pre-staging callers and the legacy wrapper).
+			path := staged[base]
+			if path == "" {
+				path = "/app/workspace/artifacts/in/" + base
+			}
+			sb.WriteString("- ")
+			sb.WriteString(path)
+			// When the same file was ALSO extracted into project memory, say so
+			// and hand over the handles — both routes are true, and the agent
+			// picks whichever its tool grants allow.
+			if ext, ok := byBasename[base]; ok {
+				fmt.Fprintf(&sb, " (also in project memory: extracted_document_id=%s, artifact_id=%s)",
+					stringField(ext, "extracted_document_id"), stringField(ext, "artifact_id"))
+			}
 			sb.WriteString("\n")
 		}
 	}

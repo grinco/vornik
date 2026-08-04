@@ -149,11 +149,12 @@ func (h *Handler) listPublishedAgents() []PublishedAgent {
 			if wf == nil || !wf.A2A.Publish {
 				continue
 			}
-			// Only publish when the project actually allows
-			// this workflow. The simplest "allows" check is
-			// "it's the project's default workflow" — refine
-			// when per-project workflow allowlists land.
-			if p.DefaultWorkflowID != wf.ID {
+			// Only publish when the project actually allows this
+			// workflow. Workflows are a global shared library, so an
+			// explicit a2a.projects binding names the publishing
+			// project(s); without one we fall back to "it's the
+			// project's default workflow" (back-compat).
+			if !projectPublishesWorkflow(p, wf) {
 				continue
 			}
 			card, err := BuildAgentCard(base, p.ID, wf, h.PushConfigStore != nil)
@@ -168,6 +169,24 @@ func (h *Handler) listPublishedAgents() []PublishedAgent {
 		}
 	}
 	return out
+}
+
+// projectPublishesWorkflow reports whether workflow wf is published as
+// an A2A agent under project p. An explicit wf.A2A.Projects binding is
+// authoritative (workflows are global, so a published workflow must
+// name its publishing projects or it would appear under every one).
+// When the binding is empty, we keep the original behaviour: publish
+// under the project whose default workflow this is.
+func projectPublishesWorkflow(p *registry.Project, wf *registry.Workflow) bool {
+	if len(wf.A2A.Projects) > 0 {
+		for _, id := range wf.A2A.Projects {
+			if id == p.ID {
+				return true
+			}
+		}
+		return false
+	}
+	return p.DefaultWorkflowID == wf.ID
 }
 
 // findPublishedAgent looks up one (project, workflow) pair.

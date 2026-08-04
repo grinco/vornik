@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"sort"
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/contracts"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/secrets"
 )
@@ -152,6 +154,12 @@ type bundleBuilder struct {
 	metrics  SupportMetricsSource
 	detector secrets.Detector
 	version  string
+	// blackbox is the EE trace seam (nil on Community, or when the deployment
+	// isn't Postgres-backed). The assembled trace is the derived timeline that
+	// explains WHY a task went the way it did, and it was the one per-task
+	// evidence the bundle never collected — so a problem report about a task
+	// could not carry it (operator request 2026-08-03).
+	blackbox BlackBoxTraceService
 	// config is the already-redacted config YAML snapshot. The
 	// handler renders it (config marshaling lives on the Server); the
 	// builder runs it through redaction again defensively.
@@ -359,6 +367,33 @@ func (b *bundleBuilder) collectTask(ctx context.Context, req bundleRequest, res 
 	b.collectPostMortem(ctx, req, res, tid)
 	b.collectArtifacts(ctx, req, res, tid)
 	b.collectContainerLogs(ctx, req, res, tid)
+	b.collectBlackBoxTrace(ctx, req, res, tid)
+}
+
+// collectBlackBoxTrace writes the task's assembled Black Box trace.
+//
+// Three absences, one failure: an unwired seam (Community build, or Black Box
+// disabled) and a task with no audit data are ABSENCES — no file, no section
+// error, because "this edition doesn't have it" is not a collection failure. A
+// genuine assembly error is recorded and the build continues (best-effort, LLD
+// §7). The trace is opaque `any` from EE and goes through writeJSON, so it is
+// redacted like every other section (the coverage gate asserts this).
+func (b *bundleBuilder) collectBlackBoxTrace(ctx context.Context, req bundleRequest, res *buildResult, tid string) {
+	if b.blackbox == nil {
+		return
+	}
+	trace, _, err := b.blackbox.AssembleCached(ctx, tid)
+	if err != nil {
+		if errors.Is(err, contracts.ErrBlackBoxTaskNotFound) {
+			return
+		}
+		res.sectionErrs["task/blackbox_trace.json"] = err.Error()
+		return
+	}
+	if trace == nil {
+		return
+	}
+	b.writeJSON(req, res, "task/blackbox_trace.json", trace)
 }
 
 func (b *bundleBuilder) collectExecutions(ctx context.Context, req bundleRequest, res *buildResult, tid string) {

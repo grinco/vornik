@@ -24,15 +24,53 @@ cleanup_artifacts:
 steps:
   research:
     type: "agent"
+    # Output contract (customer report 2026-08-03): the role schema permits a
+    # declared refusal, so without this a step that writes nothing still
+    # counted as success. At least one file matching this glob must be written
+    # DURING this step or the step fails into on_fail. Filename-specific on
+    # purpose — a wildcard would be satisfied by an upstream artifact re-staged
+    # into artifacts/out/ while this step runs.
+    require_output_glob: "artifacts/out/research.md"
     role: "researcher"
-    on_success: "plan"
+    # Outcome gates (CUSTOMER REPORT 2026-08-03). The role schema legitimately
+    # permits `written: false` + a reason — the correct way for this role to
+    # decline — and an unconditional on_success advanced that refusal all the way
+    # to the COMPLETED terminal, so tasks finished with `artifacts: []`. A refusal
+    # now routes to the lead's recovery hop instead. NOTE: gates and on_success
+    # are mutually exclusive on an agent step (Validate rejects both, because the
+    # executor short-circuits on on_success BEFORE evaluating gates), so the
+    # transition lives entirely in these gates.
+    gates:
+      - condition: "research.written == true"
+        target: "plan"
+      - condition: "research.written == false"
+        target: "recover"
     # Recovery hop on failure (see research.md for the rationale).
     on_fail: "recover"
     timeout: "30m"
   plan:
     type: "agent"
+    # Output contract (customer report 2026-08-03): the role schema permits a
+    # declared refusal, so without this a step that writes nothing still
+    # counted as success. At least one file matching this glob must be written
+    # DURING this step or the step fails into on_fail. Filename-specific on
+    # purpose — a wildcard would be satisfied by an upstream artifact re-staged
+    # into artifacts/out/ while this step runs.
+    require_output_glob: "artifacts/out/plan.md"
     role: "planner"
-    on_success: "write"
+    # Outcome gates (CUSTOMER REPORT 2026-08-03). The role schema legitimately
+    # permits `written: false` + a reason — the correct way for this role to
+    # decline — and an unconditional on_success advanced that refusal all the way
+    # to the COMPLETED terminal, so tasks finished with `artifacts: []`. A refusal
+    # now routes to the lead's recovery hop instead. NOTE: gates and on_success
+    # are mutually exclusive on an agent step (Validate rejects both, because the
+    # executor short-circuits on on_success BEFORE evaluating gates), so the
+    # transition lives entirely in these gates.
+    gates:
+      - condition: "planning.written == true"
+        target: "write"
+      - condition: "planning.written == false"
+        target: "recover"
     # A failed planner output (missing plan.md, schema mismatch) is
     # exactly the kind of failure the lead can propose alternatives
     # for (downgrade to writer-direct, retry with corrective hint).
@@ -40,8 +78,27 @@ steps:
     timeout: "20m"
   write:
     type: "agent"
+    # Output contract (customer report 2026-08-03): the role schema permits a
+    # declared refusal, so without this a step that writes nothing still
+    # counted as success. At least one file matching this glob must be written
+    # DURING this step or the step fails into on_fail. Filename-specific on
+    # purpose — a wildcard would be satisfied by an upstream artifact re-staged
+    # into artifacts/out/ while this step runs.
+    require_output_glob: "artifacts/out/summary.txt"
     role: "writer"
-    on_success: "done"
+    # Outcome gates (CUSTOMER REPORT 2026-08-03). The role schema legitimately
+    # permits `written: false` + a reason — the correct way for this role to
+    # decline — and an unconditional on_success advanced that refusal all the way
+    # to the COMPLETED terminal, so tasks finished with `artifacts: []`. A refusal
+    # now routes to the lead's recovery hop instead. NOTE: gates and on_success
+    # are mutually exclusive on an agent step (Validate rejects both, because the
+    # executor short-circuits on on_success BEFORE evaluating gates), so the
+    # transition lives entirely in these gates.
+    gates:
+      - condition: "writing.written == true"
+        target: "done"
+      - condition: "writing.written == false"
+        target: "recover"
     # Writer errors (pandoc engine fault, format mismatch) are
     # routinely recoverable — fall back to Markdown, switch engine.
     on_fail: "recover"

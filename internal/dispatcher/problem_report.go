@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"vornik.io/vornik/internal/conversation"
+	"vornik.io/vornik/internal/report"
 )
 
 // ProblemReportBuilder turns a user's description of a problem into an
@@ -105,6 +106,18 @@ func (te *ToolExecutor) reportProblem(ctx context.Context, args string) ToolResu
 	sb.WriteString(body)
 	sb.WriteString("\nHostnames, paths, IPs, emails and anything that looks like a credential are " +
 		"removed automatically, but the report goes to a PUBLIC repository — check your own " +
-		"wording for customer names or anything confidential before you submit.")
+		"wording for customer names or anything confidential before you submit.\n\n")
+	// The body carries the build identity and the reporter's words — and deliberately no
+	// collected diagnostics: running the doctor or tailing the journal from a chat-triggered
+	// path would let a chat message spawn processes on the host, which this product does not
+	// allow (operator decision 2026-08-03; see the SECURITY INVARIANT in
+	// service/container_problem_report.go). So the logs, the task timeline and the Black Box
+	// trace come from an OPERATOR-run support bundle, and this is the only place a
+	// shell-less reporter learns it exists, where it lands, and that they attach it
+	// themselves after reading it.
+	sb.WriteString(report.BundleGuidance("--task <the task id>   # or: --since 2h"))
+	sb.WriteString("\n\nRelay the steps above too if they ask for the logs — do NOT run " +
+		"support-report for them and do NOT paste its contents here: it is theirs to " +
+		"inspect and attach.")
 	return ToolResult{Content: sb.String()}
 }

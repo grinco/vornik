@@ -17,9 +17,11 @@
 package executor
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"vornik.io/vornik/internal/persistence"
 )
 
 // TestRewriteInputPathsInPrompt_ReplacesExactHostPath — the canonical
@@ -254,4 +256,92 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// CUSTOMER REPORT 2026-08-03: "Attached Companion input files were … not exposed
+// … preventing agents from locating supplied facts" — the resubmission said
+// plainly *"facts document exists but was never analyzed"*.
+//
+// The mechanism the report named (`inputArtifactsSummary`) is the delegated-CHILD
+// handoff field and does not apply to a task upload. The real defect is here: this
+// block partitioned attachments on "has an extraction" alone and then asserted
+// "The raw binary is NOT staged … Do NOT attempt to file_read these documents —
+// there is no staged file path." But extractTaskInputArtifacts DOES stage the raw
+// file alongside an extraction whenever extraction is insufficient for the media
+// kind and the file fits the size cap. So an agent was told not to read a file
+// that was sitting in its own workspace — and a role without the document_* MCP
+// tools (the reviewer-role case, T-8f69) then had NO way to reach the content at
+// all. The staged list is the source of truth, not the extraction list.
+func TestBuildAttachedFilesBlock_StagedRawWithExtractionGivesThePath(t *testing.T) {
+	extractions := []map[string]any{{
+		"artifact_id":           "art_1",
+		"extracted_document_id": "doc_1",
+		"title":                 "Facts for the plan",
+		"section_count":         3,
+		"chunks_ingested":       7,
+	}}
+	staged := map[string]string{"facts.md": "/app/workspace/artifacts/in/facts.md"}
+
+	got := buildAttachedFilesBlockStaged([]string{"/store/inputs/facts.md"}, extractions, staged)
+
+	if !strings.Contains(got, "/app/workspace/artifacts/in/facts.md") {
+		t.Errorf("staged attachment must carry its container path:\n%s", got)
+	}
+	// It must NOT tell the agent the file is unavailable.
+	for _, lie := range []string{"NOT staged", "there is no staged file path", "Do NOT attempt to file_read"} {
+		if strings.Contains(got, lie) {
+			t.Errorf("block claims %q for a file that IS staged:\n%s", lie, got)
+		}
+	}
+	// The memory route stays available — both surfaces are true here.
+	if !strings.Contains(got, "doc_1") {
+		t.Errorf("extracted_document_id should still be offered:\n%s", got)
+	}
+}
+
+// The memory-only guidance must SURVIVE for a document that genuinely was not
+// staged (extraction sufficient, or over the size cap) — that guidance is correct
+// there and removing it would send agents file_read-ing a path that does not exist.
+func TestBuildAttachedFilesBlock_UnstagedExtractionKeepsMemoryOnlyGuidance(t *testing.T) {
+	extractions := []map[string]any{{
+		"artifact_id":           "art_2",
+		"extracted_document_id": "doc_2",
+		"title":                 "Big Book",
+	}}
+	got := buildAttachedFilesBlockStaged([]string{"/store/inputs/book.epub"}, extractions, nil)
+
+	if !strings.Contains(got, "doc_2") {
+		t.Errorf("unstaged extraction must still route to the document tools:\n%s", got)
+	}
+	if !strings.Contains(got, "NOT staged") {
+		t.Errorf("unstaged extraction must keep the memory-only guidance:\n%s", got)
+	}
+	if strings.Contains(got, "/app/workspace/artifacts/in/book.epub") {
+		t.Errorf("must not invent a staged path for an unstaged document:\n%s", got)
+	}
+}
+
+// The staged index must come from the artifacts the executor actually staged, so
+// the prompt cannot drift from the workspace. Pins the wiring, not just the helper.
+func TestBuildAgentPrompt_UsesStagedArtifactsForTheAttachedBlock(t *testing.T) {
+	task := &persistence.Task{
+		ID: "task_x",
+		Payload: []byte(`{"taskType":"research","context":{"prompt":"summarise the facts",
+			"inputFiles":["/store/inputs/facts.md"],
+			"inputExtractions":[{"artifact_id":"art_1","extracted_document_id":"doc_1","title":"Facts"}]}}`),
+	}
+	opts := &agentInputOpts{InputArtifacts: []map[string]string{
+		// stageInputArtifacts has already rewritten "path" to the container path.
+		{"name": "facts.md", "path": "/app/workspace/artifacts/in/facts.md", "sourcePath": "/store/inputs/facts.md"},
+	}}
+
+	_, userPrompt, inputFiles, inputExtractions := extractAgentPayloadContext(task)
+	prompt, _ := assembleAgentPrompt(task, "", opts, userPrompt, inputFiles, inputExtractions)
+
+	if !strings.Contains(prompt, "/app/workspace/artifacts/in/facts.md") {
+		t.Errorf("prompt must name the staged container path:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "there is no staged file path") {
+		t.Errorf("prompt claims no staged path for a staged file:\n%s", prompt)
+	}
 }

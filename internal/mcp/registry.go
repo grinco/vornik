@@ -108,6 +108,51 @@ func NewRegistry(servers []ServerConfig, ttl time.Duration, logger zerolog.Logge
 	return r
 }
 
+// SetServers replaces the configured server set in place, preserving the
+// existing catalog entry for any server that is still declared.
+//
+// Exists so a config reload can pick up an added or removed daemon-level MCP
+// server without a restart. Before this the registry was built once at boot:
+// the tool-serving manager reconciled on reload (initMCP → SyncProjects) but
+// this discovery catalog did not, so an operator who added a server through
+// the control-plane hub saw the change applied, the daemon reload succeed,
+// and the MCP tab show nothing — with the proposal itself claiming "applies
+// live". The server actually worked; only the surface that reports on it was
+// stale, which is a worse kind of wrong than not working.
+//
+// Snapshots are KEPT for surviving servers rather than reset to "not yet
+// refreshed": a reload that adds one server should not blank the reachability
+// of the others. Removed servers are dropped. New ones get the same
+// placeholder NewRegistry seeds, so they render immediately.
+func (r *Registry) SetServers(servers []ServerConfig) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.servers = append([]ServerConfig(nil), servers...)
+	next := make(map[string]ServerSnapshot, len(servers))
+	now := time.Now()
+	for _, cfg := range r.servers {
+		if prev, ok := r.catalog[cfg.Name]; ok {
+			// Carry the last known status, but track endpoint edits so a
+			// retargeted server does not keep reporting the old URL's health.
+			if prev.Transport == cfg.Transport && prev.URL == cfg.URL && prev.Command == cfg.Command {
+				next[cfg.Name] = prev
+				continue
+			}
+		}
+		next[cfg.Name] = ServerSnapshot{
+			Name:          cfg.Name,
+			Transport:     cfg.Transport,
+			URL:           cfg.URL,
+			Command:       cfg.Command,
+			Reachable:     false,
+			Error:         "not yet refreshed",
+			LastCheckedAt: now,
+		}
+	}
+	r.catalog = next
+}
+
 // ServerCount returns how many daemon-level servers are configured
 // (regardless of reachability). Cheap; used by readiness logging.
 func (r *Registry) ServerCount() int {

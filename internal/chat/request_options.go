@@ -106,6 +106,51 @@ func MaxTokensFromContext(ctx context.Context) int {
 	return 0
 }
 
+type reasoningEffortContextKey struct{}
+
+// WithReasoningEffort annotates ctx with a per-request reasoning-effort hint
+// for models that expose one (the gpt-oss family, o-series, and similar).
+// Accepted values are "low", "medium" and "high"; anything else is ignored so
+// a typo cannot silently change behaviour.
+//
+// It exists because a reasoning model treats the output-token budget as a
+// budget for THINKING first and answering second. The knowledge-graph
+// extractor measured 1332 finish_reason=length against 978 stop over 24h and
+// returned empty content 83.3% of the time — the model spent the whole
+// allowance reasoning about a structured-extraction task that needs very
+// little of it. Raising the cap made each failure twice as expensive without
+// making it less likely (measured: it then consumed all 16384). Capping the
+// reasoning instead is the lever that addresses the cause.
+//
+// Providers that have no notion of reasoning effort ignore this.
+func WithReasoningEffort(ctx context.Context, effort string) context.Context {
+	switch effort {
+	case ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh:
+		return context.WithValue(ctx, reasoningEffortContextKey{}, effort)
+	default:
+		return ctx
+	}
+}
+
+// Reasoning-effort levels accepted by WithReasoningEffort.
+const (
+	ReasoningEffortLow    = "low"
+	ReasoningEffortMedium = "medium"
+	ReasoningEffortHigh   = "high"
+)
+
+// ReasoningEffortFromContext returns the per-request reasoning effort, or ""
+// when unset. Providers should treat "" as "leave the model's default alone".
+func ReasoningEffortFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(reasoningEffortContextKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
 type callSiteContextKey struct{}
 
 // WithCallSite annotates ctx with a short label identifying the

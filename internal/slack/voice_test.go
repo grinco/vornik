@@ -920,9 +920,15 @@ func TestSlackFileShared_DMBypassesChannelAllowlist(t *testing.T) {
 	if !channelAllowed(inst, "channel", "C03HTMUL2S1") {
 		t.Error("the allow-listed shared channel must be permitted")
 	}
-	// An empty allowlist means expose-all, unchanged.
-	if !channelAllowed(&installation{projectID: "p"}, "channel", "C_ANY") {
-		t.Error("an empty allowlist must permit every channel, as before")
+	// An empty allowlist DENIES as of 2026-08-05 — it used to expose every
+	// channel in the workspace, which is a dev convenience that read as an
+	// unset field rather than an open door.
+	if channelAllowed(&installation{projectID: "p"}, "channel", "C_ANY") {
+		t.Error("an empty channel allowlist must now DENY, not expose every channel")
+	}
+	// ...unless the deployment opts back in deliberately.
+	if !channelAllowed(&installation{projectID: "p", allowUnlisted: true}, "channel", "C_ANY") {
+		t.Error("allowUnlisted must restore the dev-mode pass-through")
 	}
 	// A private channel (G…) must NOT be mistaken for a DM.
 	if channelAllowed(inst, "", "G_PRIVATE") {

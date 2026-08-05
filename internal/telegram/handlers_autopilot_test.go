@@ -94,7 +94,7 @@ func makeAutopilotBot(t *testing.T) (*Bot, *[]apiCall, func()) {
 		Transport: &rewritingTransport{base: http.DefaultTransport, targetHost: srv.URL},
 	}
 	chatClient := chat.NewClient("https://api.example.com", "k", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "tok"}, chatClient, WithHTTPClient(hc))
+	bot, err := NewBot(BotConfig{Token: "tok", AllowUnlistedUsers: true}, chatClient, WithHTTPClient(hc))
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}

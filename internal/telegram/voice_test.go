@@ -600,7 +600,7 @@ func TestSendVoice_ServerError(t *testing.T) {
 
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
 	hc := &http.Client{Transport: &rewritingTransport{base: http.DefaultTransport, targetHost: srv.URL}}
-	bot, err := NewBot(BotConfig{Token: "t"}, chatClient, WithHTTPClient(hc))
+	bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient, WithHTTPClient(hc))
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}
@@ -650,7 +650,7 @@ func TestMessageToChannelMessage_VoiceTagsStamped(t *testing.T) {
 
 func TestWithVoiceProviders_AppliesDefaultCap(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "t"}, chatClient, WithVoiceProviders(VoiceProviders{}))
+	bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient, WithVoiceProviders(VoiceProviders{}))
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}
@@ -662,7 +662,7 @@ func TestWithVoiceProviders_AppliesDefaultCap(t *testing.T) {
 
 func TestWithVoiceProviders_RespectsCustomCap(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "t"}, chatClient,
+	bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient,
 		WithVoiceProviders(VoiceProviders{MaxOutboundDuration: 30_000}))
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
@@ -722,7 +722,7 @@ func TestHandleVoiceAttachment_GetFileError(t *testing.T) {
 	defer srv.Close()
 	hc := &http.Client{Transport: &rewritingTransport{base: http.DefaultTransport, targetHost: srv.URL}}
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "t"}, chatClient,
+	bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient,
 		WithHTTPClient(hc),
 		WithVoiceProviders(VoiceProviders{STT: &fakeSTT{}}))
 	if err != nil {
@@ -754,7 +754,7 @@ func TestHandleVoiceAttachment_FetchBytesError(t *testing.T) {
 	defer srv.Close()
 	hc := &http.Client{Transport: &rewritingTransport{base: http.DefaultTransport, targetHost: srv.URL}}
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "t"}, chatClient,
+	bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient,
 		WithHTTPClient(hc),
 		WithVoiceProviders(VoiceProviders{STT: &fakeSTT{}}))
 	if err != nil {

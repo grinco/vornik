@@ -137,6 +137,23 @@ type Container struct {
 	// workers' per-tick closures read it via liveSelfHealEnabled, falling back
 	// to the boot-time c.Config (which hot-reload deliberately never mutates).
 	cpSelfHealLive atomic.Pointer[bool]
+
+	// daemonMCPLive is the hot-reloadable daemon-level MCP catalog
+	// (config.yaml's mcp.servers).
+	//
+	// It exists because c.Config is deliberately never swapped on reload — too
+	// many goroutines hold that pointer — so every reader of
+	// c.Config.MCP.Servers was pinned to the BOOT value. A server added
+	// through the control-plane hub applied, reloaded successfully, and then
+	// did not exist as far as the tool manager, the discovery catalog, or
+	// `vornikctl mcp connect` were concerned. The operator's only recourse was
+	// a daemon restart, which the proposal explicitly told them was
+	// unnecessary ("applies live").
+	//
+	// Same shape as the other hot-reloadable values above: the activator
+	// publishes the freshly-parsed slice here, and readers go through
+	// daemonMCPServers() rather than touching c.Config.
+	daemonMCPLive atomic.Pointer[[]config.MCPServerConfig]
 	// cpCanaryEnabledLive is the hot-reloadable live value of
 	// control_plane.cost_tuning_canary.enabled (design 2026-07-24 §9 #2). nil
 	// until the first hot-reload stages a value; the canary guard's per-tick +

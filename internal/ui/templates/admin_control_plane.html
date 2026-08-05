@@ -360,7 +360,7 @@
                         <div class="min-w-0 flex-1">
                             <div class="flex items-center gap-2 flex-wrap">
                                 <div class="font-mono text-sm text-gray-100">{{.Name}}</div>
-                                <span class="px-1.5 py-0.5 text-[10px] font-semibold rounded {{if .Reachable}}bg-green-700/30 text-green-300 border border-green-700{{else}}bg-red-900/30 text-red-300 border border-red-800{{end}}">{{if .Reachable}}reachable{{else}}unreachable{{end}}</span>
+                                <span class="px-1.5 py-0.5 text-[10px] font-semibold rounded {{if .Reachable}}bg-green-700/30 text-green-300 border border-green-700{{else if .AuthChallenged}}bg-amber-900/30 text-amber-300 border border-amber-800{{else}}bg-red-900/30 text-red-300 border border-red-800{{end}}">{{if .Reachable}}reachable{{else if .AuthChallenged}}needs authentication{{else}}unreachable{{end}}</span>
                                 <span class="text-[10px] text-gray-500">{{.Transport}} · {{.ToolCount}} tools</span>
                                 {{/* The reachability badge above is AUTH-BLIND: a server that 401s on
                                      every call still reads "reachable". These two chips are what let an

@@ -95,3 +95,26 @@ func TestNilContext_SafeAccessors(t *testing.T) {
 		t.Errorf("nil ctx prompt_cache_key: got %q", got)
 	}
 }
+
+func TestWithReasoningEffort(t *testing.T) {
+	ctx := context.Background()
+	if got := ReasoningEffortFromContext(ctx); got != "" {
+		t.Errorf("unset must be empty, got %q", got)
+	}
+	if got := ReasoningEffortFromContext(nil); got != "" { //nolint:staticcheck // nil ctx is a real caller mistake worth covering
+		t.Errorf("nil ctx must be empty, got %q", got)
+	}
+	for _, lvl := range []string{ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh} {
+		if got := ReasoningEffortFromContext(WithReasoningEffort(ctx, lvl)); got != lvl {
+			t.Errorf("effort %q round-trip = %q", lvl, got)
+		}
+	}
+	// A typo must not silently reach the provider as a made-up level: an
+	// unrecognised value leaves the model's own default in place rather than
+	// changing behaviour in an unpredictable direction.
+	for _, bad := range []string{"", "LOW", "lowest", "none", "off", "0"} {
+		if got := ReasoningEffortFromContext(WithReasoningEffort(ctx, bad)); got != "" {
+			t.Errorf("unrecognised effort %q must be ignored, got %q", bad, got)
+		}
+	}
+}

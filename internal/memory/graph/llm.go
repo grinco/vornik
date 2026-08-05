@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -17,6 +18,38 @@ import (
 // Backoff schedule: 500ms, 2s, 8s. Permanent errors (4xx ≠ 429,
 // auth failures) bail immediately; ctx cancellation interrupts
 // the wait.
+// graphRequestMaxTokens bounds every graph-pipeline completion. It is a
+// BACKSTOP against a runaway model, not a tuning knob: if calls are hitting
+// it, the fix is almost certainly reasoning effort (see completeWithRetry),
+// because raising this only makes each failure cost more.
+const graphRequestMaxTokens = 8192
+
+// ErrTruncatedCompletion reports a completion the provider cut off at the
+// token ceiling (finish_reason=length).
+//
+// It exists because the alternative is silence. A reasoning model that spends
+// its whole budget thinking returns finish_reason=length with EMPTY content,
+// and an empty completion parses as a successful extraction of zero entities
+// — indistinguishable, downstream, from "this text genuinely names nobody".
+// The chunk is then marked extracted and the loss is permanent: measured
+// 2026-07-31, 83.3% of extractions were being laundered this way, and the
+// design's "failed parse → retry → re-flag" self-healing never fired because
+// nothing ever failed to parse.
+//
+// Returned by completeWithRetry for ALL four graph stages (extractor,
+// resolver, validator, relationship), because all four share this budget and
+// all four have the same blind spot.
+var ErrTruncatedCompletion = errors.New("graph: completion truncated at the token ceiling (finish_reason=length)")
+
+// truncated reports whether a response was cut off at the token ceiling.
+// Checked on the FIRST choice only — the graph stages send n=1.
+func truncated(resp *chat.ChatResponse) bool {
+	if resp == nil || len(resp.Choices) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(resp.Choices[0].FinishReason), "length")
+}
+
 func completeWithRetry(ctx context.Context, client chat.Provider, msgs []chat.Message, maxAttempts int) (*chat.ChatResponse, error) {
 	if maxAttempts < 1 {
 		maxAttempts = 1
@@ -26,17 +59,41 @@ func completeWithRetry(ctx context.Context, client chat.Provider, msgs []chat.Me
 	// call_site="unknown" (asked 2026-06-12). All callers live in package
 	// graph, so a single label here covers the knowledge-graph pipeline.
 	ctx = chat.WithCallSite(ctx, "memory.graph")
-	// Bound runaway reasoning models: graph extraction emits small JSON
-	// (entities/relations), but a small reasoning model (gpt-oss-20b) could
-	// loop to its 16384-token cap with finish_reason=length and empty output,
-	// burning ~80s per attempt (incident 2026-06-13). 8192 is generous for the
-	// real output (observed legit completions ≤2604 tokens) while halving the
-	// worst-case waste on any stage still on a small model.
-	ctx = chat.WithRequestMaxTokens(ctx, 8192)
+	// Cap the REASONING, not just the output.
+	//
+	// The extractor was returning empty content on 83.3% of calls, with 1332
+	// finish_reason=length against 978 stop over 24h. gpt-oss-120b is a
+	// reasoning model and treats the token allowance as a budget for thinking
+	// first and answering second, so it spent the whole thing deliberating
+	// about a structured-extraction task that needs very little of it.
+	//
+	// Raising the ceiling was tried first (8192 → 16384, 2026-08-05) and made
+	// it worse in the only way that matters: the very next live call consumed
+	// all 16384 and still returned nothing, so each failure cost twice as much
+	// while remaining just as likely. The ceiling was never the cause. Effort
+	// is, and it is the lever with a matching shape — entity extraction is
+	// recall over a closed vocabulary, not a problem that rewards deliberation.
+	// Legitimate completions measured ≤2604 tokens.
+	//
+	// Applied to all four stages: they share this budget and every one of them
+	// is extraction or classification rather than reasoning work. Providers
+	// with no notion of reasoning effort ignore it.
+	ctx = chat.WithReasoningEffort(ctx, chat.ReasoningEffortLow)
+	// The ceiling stays as the BACKSTOP it was always meant to be. Back to
+	// 8192: with reasoning capped, the extra headroom bought nothing except a
+	// more expensive failure, and a bound that never binds is not a bound.
+	ctx = chat.WithRequestMaxTokens(ctx, graphRequestMaxTokens)
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		resp, err := client.Complete(ctx, msgs)
 		if err == nil {
+			// A truncated completion is a FAILURE, not a result. Reported
+			// here so every stage sees it, and reported even when content
+			// came back — partial JSON that happens to parse is worse than
+			// none, because it looks like a complete answer.
+			if truncated(resp) {
+				return resp, ErrTruncatedCompletion
+			}
 			return resp, nil
 		}
 		lastErr = err

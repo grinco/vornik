@@ -16,7 +16,7 @@ import (
 func makeBotWithTaskRepo(t *testing.T, repo persistence.TaskRepository) *Bot {
 	t.Helper()
 	chatClient := chat.NewClient("http://nope.invalid", "k", "m")
-	bot, err := NewBot(BotConfig{Token: "x"}, chatClient)
+	bot, err := NewBot(BotConfig{Token: "x", AllowUnlistedUsers: true}, chatClient)
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}

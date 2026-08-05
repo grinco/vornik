@@ -112,7 +112,7 @@ func TestForumEnabled(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			bot, err := NewBot(BotConfig{Token: "t"}, chatClient, c.opts...)
+			bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient, c.opts...)
 			if err != nil {
 				t.Fatalf("NewBot: %v", err)
 			}
@@ -497,7 +497,7 @@ func newTestBotWithForum(t *testing.T, server *httptest.Server, opts ...BotOptio
 	t.Helper()
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
 	all := append([]BotOption{WithHTTPClient(server.Client())}, opts...)
-	bot, err := NewBot(BotConfig{Token: "t"}, chatClient, all...)
+	bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient, all...)
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}

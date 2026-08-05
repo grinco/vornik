@@ -44,7 +44,7 @@ func (c *Container) operatorAlertNotifier() *steering.OperatorAlertNotifier {
 		&containerChannelResolver{c: c},
 		telegramProjectRecipients{c: c},
 		c.steeringTaskGetter(),
-		c.Config.Auth.ExternalBaseURL,
+		c.Config.PublicOrigin(),
 		steering.OperatorAlertConfig{Channel: src.Channel, Session: src.Session, Address: src.Address},
 		c.Config.SteeringNotificationsEnabled,
 		c.Logger.With().Str("component", "operator-alert").Logger(),
@@ -67,7 +67,7 @@ func (c *Container) steeringNotifier() *steering.Notifier {
 	}
 	baseURL := ""
 	if c.Config != nil {
-		baseURL = c.Config.Auth.ExternalBaseURL
+		baseURL = c.Config.PublicOrigin()
 	}
 	enabled := c.Config != nil && c.Config.SteeringNotificationsEnabled
 	var checkpoints steering.CheckpointReader

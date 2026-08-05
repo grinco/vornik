@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"vornik.io/vornik/internal/mcp"
+	"vornik.io/vornik/internal/mcpauth"
 )
 
 // fakeProbeConn is a fake mcpProbeConn returning canned tools.
@@ -108,5 +109,74 @@ func TestMCPProbe_RejectsBadEndpointAndSecret(t *testing.T) {
 	}
 	if connectCalled {
 		t.Error("connect must not be attempted for invalid/secret input")
+	}
+}
+
+// TestMCPProbe_AuthChallengeIsReachableNotAFailure is the regression test for
+// the false negative reported 2026-08-05 while adding the Atlassian server.
+//
+// The probe connects with NO credentials, so any oauth-mode server refuses it.
+// That refusal was rendered "✗ not reachable — mcp initialize failed for
+// probe: streamable-http server returned 401", which reads as a broken config
+// — and the operator sees it immediately before Connect, the step that would
+// have worked. Per the MCP-auth survey, 17 of 18 remote vendors challenge on
+// initialize, so the button was a false negative for essentially all of them.
+//
+// A 401 carrying a Bearer challenge is the FIRST STEP of RFC 9728 discovery.
+// It proves more about reachability than a 200 would.
+func TestMCPProbe_AuthChallengeIsReachableNotAFailure(t *testing.T) {
+	origConnect, origReach := mcpProbeConnect, mcpProbeReachability
+	defer func() { mcpProbeConnect, mcpProbeReachability = origConnect, origReach }()
+
+	mcpProbeConnect = func(context.Context, mcp.ServerConfig, zerolog.Logger) (mcpProbeConn, error) {
+		return nil, errors.New("mcp initialize failed for probe: streamable-http server returned 401")
+	}
+	mcpProbeReachability = func(context.Context, string) (mcpauth.ReachabilityVerdict, error) {
+		return mcpauth.ReachabilityAuthRequired, nil
+	}
+
+	srv := NewServer()
+	rec := httptest.NewRecorder()
+	srv.AdminControlPlaneMCPProbe(rec, probeRequest(url.Values{
+		"transport": {"streamable-http"},
+		"url":       {"https://mcp.atlassian.com/v1/mcp/authv2"},
+	}))
+
+	body := rec.Body.String()
+	if strings.Contains(body, "not reachable") {
+		t.Errorf("an OAuth challenge must NOT read as unreachable: %s", body)
+	}
+	if !strings.Contains(body, "authentication required") {
+		t.Errorf("the operator must be told auth is the next step: %s", body)
+	}
+	if !strings.Contains(body, "Connect") {
+		t.Errorf("the message must name the action that resolves it: %s", body)
+	}
+}
+
+// TestMCPProbe_RefusedWithoutAChallengeStillFails — the F3 case must keep
+// reading as a failure. A WAF answering 403 with no WWW-Authenticate is a
+// genuine problem and is materially different from an auth requirement;
+// collapsing the two would trade one misleading verdict for another.
+func TestMCPProbe_RefusedWithoutAChallengeStillFails(t *testing.T) {
+	origConnect, origReach := mcpProbeConnect, mcpProbeReachability
+	defer func() { mcpProbeConnect, mcpProbeReachability = origConnect, origReach }()
+
+	mcpProbeConnect = func(context.Context, mcp.ServerConfig, zerolog.Logger) (mcpProbeConn, error) {
+		return nil, errors.New("streamable-http server returned 403")
+	}
+	mcpProbeReachability = func(context.Context, string) (mcpauth.ReachabilityVerdict, error) {
+		return mcpauth.ReachabilityRefused, nil
+	}
+
+	srv := NewServer()
+	rec := httptest.NewRecorder()
+	srv.AdminControlPlaneMCPProbe(rec, probeRequest(url.Values{
+		"transport": {"streamable-http"},
+		"url":       {"https://waf.example.com/mcp"},
+	}))
+
+	if body := rec.Body.String(); !strings.Contains(body, "not reachable") {
+		t.Errorf("a refusal with no challenge must still report failure: %s", body)
 	}
 }

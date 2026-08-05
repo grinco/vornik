@@ -17,6 +17,23 @@ import (
 // only exercise in-memory state.
 func newBareTestBot(t *testing.T, cfg BotConfig) *Bot {
 	t.Helper()
+	// Dev-mode by default for fixtures that configure no allowlist. Since
+	// 2026-08-05 an empty AllowedUsers DENIES, and the great majority of these
+	// tests are about routing, sessions, callbacks or artifacts rather than
+	// authorization — they would all fail at the gate for reasons unrelated to
+	// what they assert. A test that IS about the gate sets AllowedUsers (which
+	// takes precedence) or clears this explicitly.
+	if len(cfg.AllowedUsers) == 0 {
+		cfg.AllowUnlistedUsers = true
+	}
+	return newGatedTestBot(t, cfg)
+}
+
+// newGatedTestBot builds a Bot from cfg VERBATIM — no dev-mode default. Use it
+// for tests about the authorization gate itself, where an injected
+// AllowUnlistedUsers would defeat the assertion.
+func newGatedTestBot(t *testing.T, cfg BotConfig) *Bot {
+	t.Helper()
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
 	bot, err := NewBot(cfg, chatClient)
 	if err != nil {

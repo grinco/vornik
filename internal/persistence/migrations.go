@@ -6477,4 +6477,37 @@ DROP INDEX IF EXISTS idx_llm_usage_cache_hit;
 ALTER TABLE task_llm_usage DROP COLUMN IF EXISTS cache_hit;
 `,
 	},
+	{
+		Version: 153,
+		Name:    "chunk_graph_extraction_attempts",
+		// Bounds retries for a chunk whose extraction keeps failing.
+		//
+		// needs_graph_extraction is a boolean with no memory. That was survivable
+		// only because the dominant failure — a truncated completion — was being
+		// laundered into "found no entities" and the chunk marked DONE (measured
+		// 2026-07-31: 83.3% of extractions). Now that truncation is correctly an
+		// error, the chunk stays flagged, and without a counter the worker would
+		// re-attempt the same ~83% of chunks every 30s at a full token budget
+		// each — turning a silent data-loss bug into a runaway spend bug.
+		//
+		// The counter is the bound: after graph.MaxExtractionAttempts consecutive
+		// failures the chunk is quarantined (flag cleared, last error kept) so the
+		// queue drains, and `vornikctl memory regraph` can re-flag deliberately
+		// once the cause is fixed. Quarantine is visible, unlike the laundering it
+		// replaces.
+		Up: `
+ALTER TABLE project_memory_chunks
+    ADD COLUMN IF NOT EXISTS graph_extraction_attempts INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS graph_extraction_error    TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_chunks_graph_quarantined
+    ON project_memory_chunks (project_id)
+    WHERE graph_extraction_attempts > 0 AND needs_graph_extraction = FALSE;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_chunks_graph_quarantined;
+ALTER TABLE project_memory_chunks
+    DROP COLUMN IF EXISTS graph_extraction_attempts,
+    DROP COLUMN IF EXISTS graph_extraction_error;
+`,
+	},
 }

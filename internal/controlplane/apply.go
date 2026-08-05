@@ -26,9 +26,15 @@ import (
 // replace only; no diff-patching. All the risky logic lives here behind
 // injected deps so it's unit-testable without the full daemon.
 
-// applyMaxContentBytes caps the applied file (and thus the snapshot) — config
-// files are KB; refuse a larger apply (design §Apply step 1).
-const applyMaxContentBytes = persistence.ProposalMaxFieldBytes // 64 KiB
+// applyMaxContentBytes caps the applied file (and thus the snapshot) — refuse
+// a larger apply (design §Apply step 1).
+//
+// Tracks the whole-FILE cap, not the free-text one. It read
+// ProposalMaxFieldBytes until 2026-08-05, which put a config file under the
+// same 64 KiB bound as review prose: the live config.yaml reached 81 KB and
+// every hub config edit became un-appliable, refused here before any write
+// while Create had happily stored it (apply_content was unvalidated).
+const applyMaxContentBytes = persistence.ProposalMaxContentBytes
 
 var (
 	// ErrReviewOnly means the proposal has no apply_target (it describes a

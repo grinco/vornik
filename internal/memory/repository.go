@@ -70,12 +70,21 @@ func (r *Repository) UpsertChunks(ctx context.Context, chunks []MemoryChunk) err
 		return nil
 	}
 
+	// embed_input_hash is written HERE, at insert, rather than recomputed at
+	// eviction. The cache key is a hash of the CONTEXTUALISED input (the
+	// source-name prefix + content), so recomputing it later couples erasure
+	// to buildEmbedContext staying byte-identical forever: change the prefix
+	// format and every previously-cached vector is orphaned under both keys —
+	// retained, never hit again, and unreachable by any Art 17 path. Recording
+	// the key the embed actually used removes that coupling.
+	// See memory.EmbedInputHash and the erasure path in repository.go.
 	const q = `
 INSERT INTO project_memory_chunks
     (id, project_id, task_id, artifact_id, source_name, chunk_index, content, content_hash,
+     embed_input_hash,
      needs_graph_extraction,
      derived_from_extracted_document_id, derived_from_section_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, $9, $10)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, $11)
 ON CONFLICT (project_id, content_hash) DO NOTHING`
 
 	for _, c := range chunks {
@@ -92,6 +101,7 @@ ON CONFLICT (project_id, content_hash) DO NOTHING`
 			c.ID, c.ProjectID,
 			nullableString(c.TaskID), nullableString(c.ArtifactID),
 			c.SourceName, c.ChunkIndex, c.Content, c.ContentHash,
+			EmbedInputHash(c.SourceName, c.Content),
 			nullableString(c.DerivedFromExtractedDocumentID),
 			nullableString(c.DerivedFromSectionID),
 		)

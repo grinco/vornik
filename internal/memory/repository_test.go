@@ -130,7 +130,13 @@ func TestUpsertChunks_Happy(t *testing.T) {
 		// the driver receives, so the assertion remains exact.
 		var nilStr *string
 		mock.ExpectExec("INSERT INTO project_memory_chunks").
-			WithArgs(c.ID, c.ProjectID, c.TaskID, c.ArtifactID, c.SourceName, c.ChunkIndex, c.Content, c.ContentHash, nilStr, nilStr).
+			// embed_input_hash is asserted by VALUE, not with a wildcard: the
+			// whole point of recording it at insert is that eviction stops
+			// recomputing the contextualisation prefix, so a drift between
+			// what we store and what EmbedInputHash produces would silently
+			// re-open the orphaned-vector gap this closes.
+			WithArgs(c.ID, c.ProjectID, c.TaskID, c.ArtifactID, c.SourceName, c.ChunkIndex, c.Content, c.ContentHash,
+				EmbedInputHash(c.SourceName, c.Content), nilStr, nilStr).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	if err := r.UpsertChunks(context.Background(), chunks); err != nil {
@@ -164,7 +170,8 @@ func TestUpsertChunks_WithDocumentProvenance(t *testing.T) {
 	}
 	mock.ExpectExec("INSERT INTO project_memory_chunks").
 		WithArgs(chunk.ID, chunk.ProjectID, chunk.TaskID, chunk.ArtifactID, chunk.SourceName,
-			chunk.ChunkIndex, chunk.Content, chunk.ContentHash, &docID, &secID).
+			chunk.ChunkIndex, chunk.Content, chunk.ContentHash,
+			EmbedInputHash(chunk.SourceName, chunk.Content), &docID, &secID).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := r.UpsertChunks(context.Background(), []MemoryChunk{chunk}); err != nil {
 		t.Fatal(err)

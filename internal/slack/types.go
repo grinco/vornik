@@ -176,10 +176,14 @@ type Config struct {
 	ChannelAllowlist []string
 
 	// SenderAllowlist is the set of Slack user_ids (U…) allowed to
-	// trigger the dispatcher path. Empty allows every user — dev-mode
-	// pass-through matching the GitHub channel's SenderAllowlist
-	// semantics.
+	// trigger the dispatcher path. Empty DENIES every user unless
+	// AllowUnlistedSenders is set.
 	SenderAllowlist []string
+
+	// AllowUnlistedSenders restores fail-OPEN on an empty allowlist.
+	// See InstallationConfig.AllowUnlistedSenders for why this has to
+	// be deliberate rather than the default.
+	AllowUnlistedSenders bool
 
 	// Logger is the channel's zerolog instance. Zero-value is fine
 	// but produces no log output.
@@ -252,8 +256,21 @@ type InstallationConfig struct {
 	BotToken string
 
 	// ChannelAllowlist is the set of Slack channel_ids accepted for
-	// this workspace. Empty allows every channel in the team.
+	// this workspace. Empty DENIES every channel unless
+	// AllowUnlistedSenders is explicitly true — see that field.
 	ChannelAllowlist []string
+
+	// AllowUnlistedSenders restores the pre-2026-08-05 fail-OPEN
+	// behaviour: an empty ChannelAllowlist / SenderAllowlist admitting
+	// everyone. It must be set deliberately.
+	//
+	// The default flipped because a Slack bot is publicly addressable
+	// inside its workspace, so "no allowlist configured" silently meant
+	// "every member of this workspace can drive the dispatcher, spend
+	// budget, and reach this project's tools". That is a reasonable
+	// dev-mode convenience and an unreasonable production default, and
+	// nothing in the config made the difference visible.
+	AllowUnlistedSenders bool
 
 	// SenderAllowlist is the set of Slack user_ids allowed to trigger
 	// the dispatcher path. Empty allows every user (dev-mode
@@ -477,11 +494,12 @@ func resolveInstallations(cfg Config) ([]*installation, error) {
 			teamID = strings.TrimSpace(cfg.TeamAllowlist[0])
 		}
 		inst := buildInstallation(InstallationConfig{
-			ProjectID:        "",
-			TeamID:           teamID,
-			BotToken:         cfg.BotToken,
-			ChannelAllowlist: cfg.ChannelAllowlist,
-			SenderAllowlist:  cfg.SenderAllowlist,
+			ProjectID:            "",
+			TeamID:               teamID,
+			BotToken:             cfg.BotToken,
+			ChannelAllowlist:     cfg.ChannelAllowlist,
+			SenderAllowlist:      cfg.SenderAllowlist,
+			AllowUnlistedSenders: cfg.AllowUnlistedSenders,
 		})
 		// Add any additional allowed teams as no-token installations
 		// — inbound passes but outbound from those workspaces hits
@@ -493,9 +511,10 @@ func resolveInstallations(cfg Config) ([]*installation, error) {
 				continue
 			}
 			out = append(out, buildInstallation(InstallationConfig{
-				TeamID:           t,
-				ChannelAllowlist: cfg.ChannelAllowlist,
-				SenderAllowlist:  cfg.SenderAllowlist,
+				TeamID:               t,
+				ChannelAllowlist:     cfg.ChannelAllowlist,
+				SenderAllowlist:      cfg.SenderAllowlist,
+				AllowUnlistedSenders: cfg.AllowUnlistedSenders,
 			}))
 		}
 		return out, nil
@@ -528,6 +547,7 @@ func buildInstallation(ic InstallationConfig) *installation {
 		botToken:            ic.BotToken,
 		allowedChannels:     indexSet(ic.ChannelAllowlist),
 		senders:             indexSet(ic.SenderAllowlist),
+		allowUnlisted:       ic.AllowUnlistedSenders,
 		channelAllowlistRaw: append([]string(nil), ic.ChannelAllowlist...),
 		senderAllowlistRaw:  append([]string(nil), ic.SenderAllowlist...),
 	}
@@ -576,6 +596,10 @@ type installation struct {
 
 	channelAllowlistRaw []string
 	senderAllowlistRaw  []string
+
+	// allowUnlisted opts this installation back into fail-OPEN on an
+	// empty allowlist. Default false = an empty allowlist denies.
+	allowUnlisted bool
 }
 
 // sessionEntry holds the per-session metadata ListSessions surfaces.

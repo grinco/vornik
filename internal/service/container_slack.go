@@ -133,10 +133,11 @@ func resolveSlackConfig(p registry.ProjectSlack, projectID string) (slack.Config
 		ProgressSignalDelay: progressDelay,
 		Installations: []slack.InstallationConfig{
 			{
-				ProjectID:        projectID,
-				TeamID:           strings.TrimSpace(p.TeamID),
-				ChannelAllowlist: p.ChannelAllowlist,
-				SenderAllowlist:  p.SenderAllowlist,
+				ProjectID:            projectID,
+				TeamID:               strings.TrimSpace(p.TeamID),
+				ChannelAllowlist:     p.ChannelAllowlist,
+				SenderAllowlist:      p.SenderAllowlist,
+				AllowUnlistedSenders: p.AllowUnlistedSenders,
 			},
 		},
 	}

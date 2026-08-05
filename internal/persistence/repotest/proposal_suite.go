@@ -17,6 +17,7 @@ func RunProposalSuite(t *testing.T, repo persistence.ProposalRepository) {
 	t.Run("Create_then_GetByID_round_trips", func(t *testing.T) { proposalRoundTrip(t, repo) })
 	t.Run("daemon_scope_project_is_NULL", func(t *testing.T) { proposalDaemonScope(t, repo) })
 	t.Run("Create_rejects_oversized_field", func(t *testing.T) { proposalOversizeField(t, repo) })
+	t.Run("Whole_file_content_gets_its_own_cap", func(t *testing.T) { proposalWholeFileContent(t, repo) })
 	t.Run("GetByID_unknown_is_ErrNotFound", func(t *testing.T) { proposalGetUnknown(t, repo) })
 	t.Run("List_filters_project_and_status", func(t *testing.T) { proposalListFilters(t, repo) })
 	t.Run("SetStatus_approve_records_approver", func(t *testing.T) { proposalApprove(t, repo) })
@@ -205,6 +206,49 @@ func proposalOversizeField(t *testing.T, repo persistence.ProposalRepository) {
 	err := repo.Create(context.Background(), p)
 	if !errors.Is(err, persistence.ErrProposalFieldTooLarge) {
 		t.Fatalf("expected ErrProposalFieldTooLarge, got %v", err)
+	}
+}
+
+// proposalWholeFileContent pins the 2026-08-05 defect: a whole-FILE field
+// (apply_content, and the pre-apply snapshot taken from it) is not free-text
+// UI prose and must not share the 64 KiB free-text cap. The live config.yaml
+// is 81 KB, so under the old shared cap the hub created an MCP-add proposal
+// that Apply then refused with ErrContentTooLarge before any write — an
+// un-appliable proposal, reported as the generic "apply failed".
+func proposalWholeFileContent(t *testing.T, repo persistence.ProposalRepository) {
+	ctx := context.Background()
+	// A realistic config.yaml — over the free-text cap, under the content cap.
+	big := strings.Repeat("y", persistence.ProposalMaxFieldBytes+20_000)
+
+	p := newTestProposal("pr-wholefile", "p1")
+	p.ApplyTarget = "config.yaml"
+	p.ApplyContent = big
+	if err := repo.Create(ctx, p); err != nil {
+		t.Fatalf("a config-sized apply_content must be storable, got %v", err)
+	}
+	got, err := repo.GetByID(ctx, "pr-wholefile")
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if len(got.ApplyContent) != len(big) {
+		t.Fatalf("apply_content must round-trip whole, got %d bytes want %d", len(got.ApplyContent), len(big))
+	}
+
+	// The snapshot is the pre-image of that same file, so it needs the same
+	// headroom — otherwise MarkApplied fails AFTER the write and the engine
+	// reverses a good apply.
+	if err := repo.SetStatus(ctx, "pr-wholefile", persistence.ProposalStatusApproved, "approver"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if err := repo.MarkApplied(ctx, "pr-wholefile", "op", big); err != nil {
+		t.Fatalf("a config-sized snapshot must be storable, got %v", err)
+	}
+
+	// Still bounded: past the content cap it is refused, not truncated.
+	over := newTestProposal("pr-overcontent", "p1")
+	over.ApplyContent = strings.Repeat("z", persistence.ProposalMaxContentBytes+1)
+	if err := repo.Create(ctx, over); !errors.Is(err, persistence.ErrProposalFieldTooLarge) {
+		t.Fatalf("apply_content over the content cap must be rejected, got %v", err)
 	}
 }
 

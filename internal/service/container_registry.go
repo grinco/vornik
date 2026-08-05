@@ -144,7 +144,21 @@ func (c *Container) initRegistry() error {
 		// Close()-then-reinit here failed every in-flight tool call
 		// for the duration of the reconnects on every reload
 		// (bug-sweep follow-up 2026-06-04).
+		// Publish the freshly-parsed daemon MCP catalog BEFORE the subsystems
+		// reconcile — they all read it through c.daemonMCPServers(), and
+		// c.Config is deliberately never swapped (see applyHotConfig).
+		if c.stagedConfig != nil {
+			c.publishDaemonMCPServers(c.stagedConfig.MCP.Servers)
+		}
 		c.initMCP()
+		// ...and the DISCOVERY catalog, which is what the operator actually
+		// looks at. initMCP above reconciles the tool-serving manager, so a
+		// server added by config reload already works — but this registry was
+		// built once at boot, so the MCP tab kept showing the old set. The
+		// operator saw a proposal that said "applies live", a reload that
+		// succeeded, and a surface that had not changed, and reasonably
+		// concluded a restart was required.
+		c.refreshMCPRegistry()
 		// Apply the hot-reloadable config.yaml keys (memory gate knobs) to
 		// the live subsystems. Done last, after the registry activates, so a
 		// registry-activation failure doesn't leave config half-applied.

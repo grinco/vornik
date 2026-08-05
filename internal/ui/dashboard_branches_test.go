@@ -26,7 +26,11 @@ func (f *fakeChunkGraph) FetchUnextracted(context.Context, int) ([]persistence.C
 	return nil, nil
 }
 func (f *fakeChunkGraph) MarkExtracted(context.Context, string) error { return nil }
-func (f *fakeChunkGraph) PendingCount(context.Context) (int, error)   { return 0, nil }
+func (f *fakeChunkGraph) RecordExtractionFailure(context.Context, string, string, int) (int, bool, error) {
+	// The UI never records extraction failures; the KG worker owns that path.
+	return 0, false, nil
+}
+func (f *fakeChunkGraph) PendingCount(context.Context) (int, error) { return 0, nil }
 func (f *fakeChunkGraph) Stats(context.Context) (*persistence.KGStats, error) {
 	return f.stats, nil
 }

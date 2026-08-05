@@ -19,7 +19,7 @@ func newBotWithCustomServer(t *testing.T, handler http.HandlerFunc) *Bot {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	chatClient := chat.NewClient("https://example.com", "k", "m")
-	b, err := NewBot(BotConfig{Token: "tok"}, chatClient,
+	b, err := NewBot(BotConfig{Token: "tok", AllowUnlistedUsers: true}, chatClient,
 		WithHTTPClient(srv.Client()))
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
@@ -137,7 +137,7 @@ func TestGetFile_BadJSON(t *testing.T) {
 
 func TestGetFile_HTTPFailure(t *testing.T) {
 	chatClient := chat.NewClient("https://example.com", "k", "m")
-	b, _ := NewBot(BotConfig{Token: "tok"}, chatClient)
+	b, _ := NewBot(BotConfig{Token: "tok", AllowUnlistedUsers: true}, chatClient)
 	b.baseURL = "http://127.0.0.1:0"
 	_, err := b.getFile(context.Background(), "f-1")
 	if err == nil {

@@ -11,7 +11,15 @@ import (
 	"github.com/rs/zerolog"
 
 	"vornik.io/vornik/internal/mcp"
+	"vornik.io/vornik/internal/mcpauth"
 )
+
+// mcpProbeReachability classifies what an unauthenticated initialize says
+// about an endpoint. Package var so tests can substitute a fake and do no
+// network.
+var mcpProbeReachability = func(ctx context.Context, url string) (mcpauth.ReachabilityVerdict, error) {
+	return mcpauth.ProbeReachability(ctx, nil, url)
+}
 
 // Control-plane hub — MCP-servers tab: pre-commit PROBE (backlog #4
 // "onboarding of third-party MCP servers"). Before an operator files an add
@@ -41,6 +49,12 @@ var mcpProbeConnect = func(ctx context.Context, cfg mcp.ServerConfig, logger zer
 // mcpProbeTimeout bounds a candidate probe. Generous enough for a slow
 // initialize + tools/list, tight enough not to hang the admin request.
 const mcpProbeTimeout = 15 * time.Second
+
+// mcpChallengeTimeout bounds the auth-challenge classification that runs after
+// a failed connect. Short on purpose: it is a single header-only round trip,
+// and it must not double the operator's wait on an endpoint that is genuinely
+// down.
+const mcpChallengeTimeout = 12 * time.Second
 
 // AdminControlPlaneMCPProbe handles POST /ui/admin/control-plane/mcp/probe.
 // Connects to the operator-supplied candidate endpoint, enumerates its tools,
@@ -75,14 +89,57 @@ func (s *Server) AdminControlPlaneMCPProbe(w http.ResponseWriter, r *http.Reques
 		URL:       url,
 		Command:   command,
 	}
+	// When the operator has already declared this an oauth server, classify
+	// FIRST and skip the connect entirely. That connect carries no
+	// credentials, so it cannot succeed — and against a vendor that holds the
+	// connection open rather than refusing (mcp.atlassian.com does exactly
+	// this on an SSE-negotiating POST) it burns the whole probe budget before
+	// telling the operator anything. Measured: ~5s to a correct verdict this
+	// way versus 15s of hanging followed by the same verdict.
+	if strings.TrimSpace(r.FormValue("auth_mode")) == "oauth" && url != "" {
+		challengeCtx, challengeCancel := context.WithTimeout(r.Context(), mcpChallengeTimeout)
+		verdict, perr := mcpProbeReachability(challengeCtx, url)
+		challengeCancel()
+		if perr == nil && verdict == mcpauth.ReachabilityAuthRequired {
+			s.renderMCPProbeAuthRequired(w)
+			return
+		}
+		// Anything else — an open server, a refusal with no challenge, or a
+		// probe error — falls through to the normal connect path, which gives
+		// a better message than this classification can.
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), mcpProbeTimeout)
 	defer cancel()
 
 	logger := s.logger.With().Str("component", "mcp-probe").Logger()
 	client, err := mcpProbeConnect(ctx, cfg, logger)
 	if err != nil {
-		// Reachability failure (down, wrong URL, auth required, TLS, …). Still
-		// useful signal — distinguishes "unreachable" from "reachable".
+		// The probe connects with NO credentials, so an auth-protected server
+		// necessarily refuses. Before reporting that as unreachable, ask what
+		// the refusal actually was: a Bearer challenge means the endpoint is
+		// real, correctly protected, and ready for Connect — it is the first
+		// step of the discovery chain, not a failure. 17 of the 18 vendors in
+		// the MCP-auth survey answer that way, so treating it as unreachable
+		// was a false negative for essentially every real remote server, shown
+		// to the operator immediately before the step that would have worked.
+		// A FRESH budget, not the one the connect attempt just exhausted. When
+		// connect fails by TIMEOUT rather than by status, ctx is already done,
+		// so reusing it makes this classification fail instantly and silently
+		// — the operator sees "context deadline exceeded" and the whole
+		// auth-challenge path never runs. Derived from the request context so
+		// a disconnected client still cancels it.
+		if url != "" {
+			challengeCtx, challengeCancel := context.WithTimeout(r.Context(), mcpChallengeTimeout)
+			verdict, perr := mcpProbeReachability(challengeCtx, url)
+			challengeCancel()
+			if perr == nil && verdict == mcpauth.ReachabilityAuthRequired {
+				s.renderMCPProbeAuthRequired(w)
+				return
+			}
+		}
+		// Anything else is a real reachability failure (down, wrong URL, TLS,
+		// or a WAF 403 with no challenge — design §2.2 F3).
 		s.renderMCPProbe(w, false, shortenProbeError(err.Error()), nil)
 		return
 	}
@@ -94,6 +151,19 @@ func (s *Server) AdminControlPlaneMCPProbe(w http.ResponseWriter, r *http.Reques
 		names = append(names, t.Name)
 	}
 	s.renderMCPProbe(w, true, "", names)
+}
+
+// renderMCPProbeAuthRequired reports a server that is reachable and correctly
+// demanding authentication. Deliberately NOT rendered as a failure: the tool
+// list is unavailable only because the probe holds no credentials, and the
+// next step (Connect) is the one that supplies them.
+func (s *Server) renderMCPProbeAuthRequired(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(
+		`<div class="text-xs text-amber-400">✓ reachable — authentication required</div>` +
+			`<div class="text-[11px] text-gray-500 mt-1">The server answered with an OAuth challenge, ` +
+			`which is the expected first step. Tools cannot be listed until consent is granted: ` +
+			`apply this change, then use <strong>Connect</strong> on the server's row.</div>`))
 }
 
 // renderMCPProbe writes the inline result fragment for the Test button.

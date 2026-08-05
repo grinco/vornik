@@ -223,7 +223,7 @@ func (c *Container) chatCompletionSink() executor.CompletionNotifier {
 	baseURL := ""
 	enabled := false
 	if c.Config != nil {
-		baseURL = c.Config.Auth.ExternalBaseURL
+		baseURL = c.Config.PublicOrigin()
 		enabled = c.Config.SteeringNotificationsEnabled
 	}
 	if !enabled {
@@ -235,11 +235,23 @@ func (c *Container) chatCompletionSink() executor.CompletionNotifier {
 		&containerChannelResolver{c: c},
 		baseURL,
 		true,
-		// Slack only, for now. Telegram and email announce completion through their own
-		// auto-resume followups; adding them here would report every task twice. When
-		// either is migrated onto this durable path, remove its own notifier in the same
-		// change rather than listing it here as well.
-		map[string]bool{"slack": true},
+		// Slack and email. Telegram still announces completion through its own
+		// auto-resume followup; adding it here would report every task twice.
+		// When it migrates, remove its notifier in the SAME change rather than
+		// listing it here as well.
+		//
+		// Email moved here 2026-08-05. Its own notifier was in-memory and gated
+		// on await_completion, so a task scheduled without that flag — or one
+		// whose daemon restarted mid-flight — reported nothing at all: the same
+		// customer-visible break already fixed for Slack. Worse, its resume was
+		// composed by feeding a synthetic turn back through the dispatcher,
+		// which needs an LLM call. The 2026-07-30 incident is the proof: the
+		// resume fired and died with "LLM call failed: context deadline
+		// exceeded", so the message announcing the breakage was itself broken by
+		// the breakage. This path sends a plain composed notice with no LLM turn
+		// and resolves the origin from the DB, which is what makes it survive
+		// both a restart and a degraded model.
+		map[string]bool{"slack": true, "email": true},
 		c.Logger.With().Str("component", "chat-completion").Logger(),
 	)
 }

@@ -53,9 +53,40 @@ func (r *ChunkGraphExtractionRepository) MarkExtracted(ctx context.Context, chun
 	}
 	_, err := r.db.ExecContext(ctx, `
 		UPDATE project_memory_chunks
-		SET    needs_graph_extraction = FALSE
+		SET    needs_graph_extraction = FALSE,
+		       graph_extraction_attempts = 0,
+		       graph_extraction_error = ''
 		WHERE  id = $1`, chunkID)
 	return mapDBError(err)
+}
+
+// RecordExtractionFailure increments the failure counter and quarantines the
+// chunk once it reaches maxAttempts. Single statement so a concurrent worker
+// cannot read-modify-write a stale count.
+func (r *ChunkGraphExtractionRepository) RecordExtractionFailure(ctx context.Context, chunkID, reason string, maxAttempts int) (int, bool, error) {
+	if chunkID == "" {
+		return 0, false, fmt.Errorf("RecordExtractionFailure: chunk_id required")
+	}
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	if len(reason) > persistence.ChunkExtractionErrorMaxBytes {
+		reason = reason[:persistence.ChunkExtractionErrorMaxBytes]
+	}
+	var attempts int
+	var stillFlagged bool
+	err := r.db.QueryRowContext(ctx, `
+		UPDATE project_memory_chunks
+		SET    graph_extraction_attempts = graph_extraction_attempts + 1,
+		       graph_extraction_error    = $2,
+		       needs_graph_extraction    = (graph_extraction_attempts + 1 < $3)
+		WHERE  id = $1
+		RETURNING graph_extraction_attempts, needs_graph_extraction`,
+		chunkID, reason, maxAttempts).Scan(&attempts, &stillFlagged)
+	if err != nil {
+		return 0, false, mapDBError(err)
+	}
+	return attempts, !stillFlagged, nil
 }
 
 func (r *ChunkGraphExtractionRepository) PendingCount(ctx context.Context) (int, error) {

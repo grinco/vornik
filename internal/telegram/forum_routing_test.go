@@ -15,7 +15,7 @@ import (
 
 func TestRouteForumReplyIfApplicable_NotEnabled(t *testing.T) {
 	chatClient := chat.NewClient("x", "k", "m")
-	bot, _ := NewBot(BotConfig{Token: "t"}, chatClient)
+	bot, _ := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient)
 	handled, err := bot.routeForumReplyIfApplicable(context.Background(), &Message{
 		ChatID: -1, MessageThreadID: 99, Text: "hi",
 	})
@@ -29,7 +29,7 @@ func TestRouteForumReplyIfApplicable_NotEnabled(t *testing.T) {
 
 func TestRouteForumReplyIfApplicable_ThreadIDZero(t *testing.T) {
 	chatClient := chat.NewClient("x", "k", "m")
-	bot, _ := NewBot(BotConfig{Token: "t"}, chatClient,
+	bot, _ := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient,
 		WithForumChatID(-1, 0),
 		WithTelegramThreadRepository(newStubThreadRepo()),
 	)
@@ -44,7 +44,7 @@ func TestRouteForumReplyIfApplicable_ThreadIDZero(t *testing.T) {
 func TestRouteForumReplyIfApplicable_UnknownThreadFallsThrough(t *testing.T) {
 	chatClient := chat.NewClient("x", "k", "m")
 	repo := newStubThreadRepo()
-	bot, _ := NewBot(BotConfig{Token: "t"}, chatClient,
+	bot, _ := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient,
 		WithForumChatID(-1, 0),
 		WithTelegramThreadRepository(repo),
 	)
@@ -65,7 +65,7 @@ func TestRouteForumReplyIfApplicable_SlashCommandFallsThrough(t *testing.T) {
 	_ = repo.Insert(context.Background(), &persistence.TelegramTaskThread{
 		TaskID: "t1", ChatID: -1, ThreadID: 5, TopicName: "x",
 	})
-	bot, _ := NewBot(BotConfig{Token: "t"}, chatClient,
+	bot, _ := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient,
 		WithForumChatID(-1, 0),
 		WithTelegramThreadRepository(repo),
 	)

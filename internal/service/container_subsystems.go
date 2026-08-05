@@ -101,7 +101,7 @@ func (c *Container) initMCP() {
 // registry currently declares — the desired state SyncProjects
 // reconciles the live manager against.
 func (c *Container) mcpDesiredServers() map[string][]mcp.ServerConfig {
-	daemonServers := daemonMCPServersByName(c.Config)
+	daemonServers := indexMCPServersByName(c.daemonMCPServers())
 	desired := make(map[string][]mcp.ServerConfig)
 	for _, p := range c.Registry.ListProjects() {
 		if len(p.MCP.Servers) == 0 {
@@ -259,8 +259,9 @@ func (c *Container) applyMCPAuth(cfg *mcp.ServerConfig, auth mcpauth.Auth, grant
 // its credential — without it the catalog would report every such server
 // unreachable.
 func (c *Container) daemonMCPServerConfigs() []mcp.ServerConfig {
-	servers := make([]mcp.ServerConfig, 0, len(c.Config.MCP.Servers))
-	for _, s := range c.Config.MCP.Servers {
+	declared := c.daemonMCPServers()
+	servers := make([]mcp.ServerConfig, 0, len(declared))
+	for _, s := range declared {
 		cfg := mcp.ServerConfig{
 			Name:           s.Name,
 			Transport:      s.Transport,
@@ -281,18 +282,46 @@ func (c *Container) daemonMCPServerConfigs() []mcp.ServerConfig {
 	return servers
 }
 
+// daemonMCPServers returns the CURRENT daemon-level MCP catalog: the value a
+// reload published, or the boot config when no reload has happened yet.
+//
+// Every reader of the daemon catalog must come through here. Reading
+// c.Config.MCP.Servers directly pins the caller to the boot value, because
+// c.Config is never swapped on reload (see applyHotConfig) — that is exactly
+// how an added server ended up invisible to the tool manager, the discovery
+// registry and the connect path all at once.
+func (c *Container) daemonMCPServers() []config.MCPServerConfig {
+	if live := c.daemonMCPLive.Load(); live != nil {
+		return *live
+	}
+	if c.Config == nil {
+		return nil
+	}
+	return c.Config.MCP.Servers
+}
+
+// publishDaemonMCPServers makes a freshly-parsed catalog the live one. Called
+// from the reload activator before the MCP subsystems reconcile against it.
+func (c *Container) publishDaemonMCPServers(servers []config.MCPServerConfig) {
+	snapshot := append([]config.MCPServerConfig(nil), servers...)
+	c.daemonMCPLive.Store(&snapshot)
+}
+
 // daemonMCPServersByName indexes the daemon-level MCP server catalog
 // (config.yaml's mcp.servers block) by name so mcpDesiredServers can
 // look up connection details for a project entry that only supplies a
 // name. Returns an empty map (not nil misuse) when cfg is nil or
 // declares no daemon-level servers, so callers can index it
 // unconditionally.
-func daemonMCPServersByName(cfg *config.Config) map[string]config.MCPServerConfig {
-	byName := make(map[string]config.MCPServerConfig)
-	if cfg == nil {
-		return byName
-	}
-	for _, s := range cfg.MCP.Servers {
+// indexMCPServersByName indexes a daemon catalog slice by server name.
+//
+// Takes the SLICE, not a *config.Config: the previous
+// daemonMCPServersByName(cfg) shape is what made every caller reach for
+// c.Config, which is pinned to boot and never swapped on reload. Callers now
+// pass c.daemonMCPServers() so an added or removed server is seen live.
+func indexMCPServersByName(servers []config.MCPServerConfig) map[string]config.MCPServerConfig {
+	byName := make(map[string]config.MCPServerConfig, len(servers))
+	for _, s := range servers {
 		byName[s.Name] = s
 	}
 	return byName
@@ -305,7 +334,7 @@ func daemonMCPServersByName(cfg *config.Config) map[string]config.MCPServerConfi
 // tool access to projects. Empty / unset config block leaves
 // c.mcpRegistry nil so handlers return an empty catalog.
 func (c *Container) initMCPRegistry() {
-	if len(c.Config.MCP.Servers) == 0 {
+	if len(c.daemonMCPServers()) == 0 {
 		c.Logger.Debug().Msg("MCP daemon-level registry: no servers configured")
 		return
 	}
@@ -324,6 +353,36 @@ func (c *Container) initMCPRegistry() {
 		c.Logger.Info().
 			Int("servers", c.mcpRegistry.ServerCount()).
 			Msg("MCP daemon-level registry initial refresh complete")
+	}()
+}
+
+// refreshMCPRegistry re-points the daemon-level discovery registry at the
+// newly-activated config and re-probes it. Called from the config-reload
+// activator alongside initMCP.
+//
+// Handles the registry being nil at boot-time (no servers configured then) by
+// building it on first use, so adding the very first MCP server through the
+// hub works without a restart too — the case that would otherwise still look
+// broken after this fix.
+func (c *Container) refreshMCPRegistry() {
+	servers := c.daemonMCPServerConfigs()
+	if c.mcpRegistry == nil {
+		if len(servers) == 0 {
+			return
+		}
+		c.initMCPRegistry()
+		return
+	}
+	c.mcpRegistry.SetServers(servers)
+	// Re-probe off the reload path: RefreshAll dials every server, and the
+	// reloader holds a lock that in-flight tool calls also want.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		c.mcpRegistry.RefreshAll(ctx)
+		c.Logger.Info().
+			Int("servers", c.mcpRegistry.ServerCount()).
+			Msg("MCP daemon-level registry refreshed after config reload")
 	}()
 }
 
@@ -587,10 +646,26 @@ func (c *Container) initTelegram() error {
 		maxToolIters = c.Config.Chat.MaxToolIterations
 	}
 
+	// Say so at boot when the bot is reachable by anyone. A denial that
+	// surprises the operator is bad; an OPEN bot that never announces itself
+	// is worse, and until 2026-08-05 that was the silent default.
+	if len(allowedUsers) == 0 {
+		if c.Config.Telegram.AllowUnlistedUsers {
+			c.Logger.Warn().
+				Msg("telegram: allowed_users is empty and allow_unlisted_users is true — " +
+					"ANY Telegram user who finds this bot can drive it. Intended for dev only.")
+		} else {
+			c.Logger.Warn().
+				Msg("telegram: allowed_users is empty — every inbound message will be DENIED. " +
+					"List the user IDs, or set telegram.allow_unlisted_users: true for dev.")
+		}
+	}
+
 	bot, err := telegram.NewBot(
 		telegram.BotConfig{
 			Token:               cfg.BotToken,
 			AllowedUsers:        allowedUsers,
+			AllowUnlistedUsers:  c.Config.Telegram.AllowUnlistedUsers,
 			RateLimit:           cfg.RateLimit,
 			MaxHistory:          c.Config.Chat.MaxHistory,
 			MaxHistoryTokens:    maxHistoryTokens,

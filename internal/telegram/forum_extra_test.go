@@ -25,7 +25,7 @@ func newForumTestBot(t *testing.T, recBaseURL string, client *http.Client, opts 
 		WithTelegramThreadRepository(newStubThreadRepo()),
 	}
 	defaults = append(defaults, opts...)
-	b, err := NewBot(BotConfig{Token: "tok"}, chatClient, defaults...)
+	b, err := NewBot(BotConfig{Token: "tok", AllowUnlistedUsers: true}, chatClient, defaults...)
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestSendForumMessage_ZeroThreadIDRejected(t *testing.T) {
 func TestSendForumMessage_NoForumChatID(t *testing.T) {
 	rec := newTelegramRecorder(t)
 	chatClient := chat.NewClient("https://example.com", "k", "m")
-	b, _ := NewBot(BotConfig{Token: "tok"}, chatClient,
+	b, _ := NewBot(BotConfig{Token: "tok", AllowUnlistedUsers: true}, chatClient,
 		WithHTTPClient(rec.server.Client()))
 	b.baseURL = rec.server.URL
 	_, err := b.sendForumMessage(context.Background(), 100, "hi")
@@ -91,7 +91,7 @@ func TestSendForumMessage_HappyPath(t *testing.T) {
 func TestSendDocumentToForum_NotEnabled(t *testing.T) {
 	rec := newTelegramRecorder(t)
 	chatClient := chat.NewClient("https://example.com", "k", "m")
-	b, _ := NewBot(BotConfig{Token: "tok"}, chatClient,
+	b, _ := NewBot(BotConfig{Token: "tok", AllowUnlistedUsers: true}, chatClient,
 		WithHTTPClient(rec.server.Client()))
 	b.baseURL = rec.server.URL
 	// No forum wired.
@@ -138,7 +138,7 @@ func TestSendDocumentToForum_HappyPath(t *testing.T) {
 
 func TestCloseForumTopic_NoOpWhenNotEnabled(t *testing.T) {
 	chatClient := chat.NewClient("https://example.com", "k", "m")
-	b, _ := NewBot(BotConfig{Token: "tok"}, chatClient)
+	b, _ := NewBot(BotConfig{Token: "tok", AllowUnlistedUsers: true}, chatClient)
 	// No forum wiring → must be no-op.
 	if err := b.closeForumTopic(context.Background(), 1); err != nil {
 		t.Errorf("disabled forum: closeForumTopic returned %v, want nil", err)

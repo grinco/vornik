@@ -112,8 +112,11 @@ func (o diagnoseObserver) configSummary(project string) string {
 		}
 		sb.WriteString("\n")
 	}
-	if o.c.Config != nil {
-		for _, srv := range o.c.Config.MCP.Servers {
+	{
+		// Live catalog: this summary feeds the diagnoser, and describing the
+		// boot-time server set on a daemon that has since reloaded would have
+		// it reason about a deployment that no longer exists.
+		for _, srv := range o.c.daemonMCPServers() {
 			t := srv.TimeoutSeconds
 			if t == 0 {
 				t = 30

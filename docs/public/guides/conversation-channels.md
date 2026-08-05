@@ -155,9 +155,13 @@ is what lets vornik reply.
 
 ### Good to know
 
-- An empty `channel_allowlist` accepts **every** channel in the workspace.
-  Restrict it in production so the bot is not pulled into channels you did not
-  intend.
+- An empty `channel_allowlist` or `sender_allowlist` **denies** everything. A
+  Slack bot is addressable by every member of the workspace it is installed in,
+  so an unconfigured allowlist would otherwise mean the whole workspace could
+  drive the project — spending its budget and reaching its tools — with nothing
+  in the config saying so. List the channels and senders you intend, or set
+  `allow_unlisted_senders: true` to opt into the open behaviour deliberately
+  (dev only).
 - Slack rejects requests whose timestamps are more than five minutes off, a
   standard replay defense. If valid messages get rejected, check that your
   server's clock is in sync.

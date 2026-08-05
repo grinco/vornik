@@ -23,7 +23,7 @@ func TestHandleInbox_NilBot(t *testing.T) {
 
 func TestHandleInbox_RenderError(t *testing.T) {
 	chatClient := chat.NewClient("http://nope.invalid", "k", "m")
-	bot, _ := NewBot(BotConfig{Token: "x"}, chatClient)
+	bot, _ := NewBot(BotConfig{Token: "x", AllowUnlistedUsers: true}, chatClient)
 	bot.taskRepo = &mocks.MockTaskRepository{
 		ListFunc: func(_ context.Context, _ persistence.TaskFilter) ([]*persistence.Task, error) {
 			return nil, errors.New("db down")
@@ -37,7 +37,7 @@ func TestHandleInbox_RenderError(t *testing.T) {
 
 func TestHandleInbox_Empty(t *testing.T) {
 	chatClient := chat.NewClient("http://nope.invalid", "k", "m")
-	bot, _ := NewBot(BotConfig{Token: "x"}, chatClient)
+	bot, _ := NewBot(BotConfig{Token: "x", AllowUnlistedUsers: true}, chatClient)
 	bot.taskRepo = &mocks.MockTaskRepository{
 		ListFunc: func(_ context.Context, _ persistence.TaskFilter) ([]*persistence.Task, error) {
 			return nil, nil

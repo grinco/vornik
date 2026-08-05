@@ -182,7 +182,22 @@ func probeUnauthenticated(ctx context.Context, client *http.Client, serverURL st
 		return "", 0, fmt.Errorf("mcpauth: build discovery probe: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
+	// Deliberately NOT "application/json, text/event-stream".
+	//
+	// This probe wants response HEADERS — the WWW-Authenticate challenge — and
+	// never reads a streaming body. Advertising SSE invites the server to open
+	// a stream instead of answering, and at least one major vendor does
+	// exactly that: measured 2026-08-05, mcp.atlassian.com HANGS indefinitely
+	// on a POST whose Accept includes text/event-stream (no response line at
+	// 25s), while the identical POST with Accept: application/json returns 401
+	// in 0.11s carrying a complete RFC 9728 challenge. The hang made
+	// discovery, and therefore `vornikctl mcp connect`, impossible for
+	// Atlassian — presenting as "context deadline exceeded", which reads like
+	// a network fault rather than a content-negotiation one.
+	//
+	// Real MCP traffic in internal/mcp still negotiates SSE; it needs the
+	// stream. This probe does not.
+	req.Header.Set("Accept", "application/json")
 	req.Header.Set("MCP-Protocol-Version", "2024-11-05")
 	setUserAgent(req)
 
@@ -319,4 +334,53 @@ func fetchJSON[T any](ctx context.Context, client *http.Client, rawURL string) (
 // general conclusion. Probe with the UA the production client actually sends.
 func setUserAgent(req *http.Request) {
 	req.Header.Set("User-Agent", version.UserAgent(buildVersion()))
+}
+
+// ReachabilityVerdict classifies what an unauthenticated `initialize` says
+// about a server, for surfaces that need "is this endpoint real?" rather than
+// "can I authenticate to it?".
+type ReachabilityVerdict int
+
+const (
+	// ReachabilityUnknown — the probe itself failed (DNS, TLS, timeout).
+	ReachabilityUnknown ReachabilityVerdict = iota
+	// ReachabilityOpen — answered normally; no authentication needed.
+	ReachabilityOpen
+	// ReachabilityAuthRequired — answered with a Bearer challenge. The server
+	// is REACHABLE and correctly protected; this is the first step of the
+	// RFC 9728 discovery chain, not a failure.
+	ReachabilityAuthRequired
+	// ReachabilityRefused — refused without a challenge, the shape a vendor
+	// WAF presents (design §2.2 F3). Materially different from an auth
+	// requirement and must not be reported as one.
+	ReachabilityRefused
+)
+
+// ProbeReachability POSTs an unauthenticated `initialize` and classifies the
+// answer. It exists for the control-plane "Test endpoint" button, which
+// connects with NO credentials: for any oauth-mode server that connect
+// necessarily 401s, and reporting the endpoint as unreachable on that basis is
+// a false negative for essentially every remote MCP vendor — 17 of the 18 in
+// the design's own survey challenge on initialize.
+func ProbeReachability(ctx context.Context, client *http.Client, serverURL string) (ReachabilityVerdict, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	challenge, status, err := probeUnauthenticated(ctx, client, serverURL)
+	if err != nil {
+		return ReachabilityUnknown, err
+	}
+	if _, isBearer := parseChallenge(challenge); isBearer {
+		return ReachabilityAuthRequired, nil
+	}
+	switch {
+	case status < 400:
+		return ReachabilityOpen, nil
+	case status == http.StatusUnauthorized:
+		// 401 without a parseable Bearer challenge is still an authentication
+		// requirement — some servers answer with a bare status.
+		return ReachabilityAuthRequired, nil
+	default:
+		return ReachabilityRefused, nil
+	}
 }

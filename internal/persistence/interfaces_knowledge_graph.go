@@ -114,10 +114,24 @@ type ChunkGraphExtractionRepository interface {
 	FetchUnextracted(ctx context.Context, limit int) ([]ChunkForExtraction, error)
 
 	// MarkExtracted flips needs_graph_extraction = FALSE on
-	// successful pipeline run. Caller never invokes this on
-	// failure — the flag stays set so the chunk re-enters the
-	// next batch.
+	// successful pipeline run, and clears the failure counter.
+	// Caller never invokes this on failure — the flag stays set
+	// so the chunk re-enters the next batch.
 	MarkExtracted(ctx context.Context, chunkID string) error
+
+	// RecordExtractionFailure increments the chunk's consecutive-failure
+	// counter, stores the reason, and reports the new count. When that count
+	// reaches maxAttempts the chunk is QUARANTINED — needs_graph_extraction is
+	// cleared so it stops re-entering the batch — and quarantined=true is
+	// returned.
+	//
+	// This is the bound that makes truncation-as-an-error safe. Before it, a
+	// truncated completion was laundered into "no entities found" and the
+	// chunk marked done; making it an honest failure without a counter would
+	// instead re-attempt the same ~83% of chunks every tick at a full token
+	// budget. A quarantined chunk is re-flagged deliberately (vornikctl memory
+	// regraph) once the cause is fixed.
+	RecordExtractionFailure(ctx context.Context, chunkID, reason string, maxAttempts int) (attempts int, quarantined bool, err error)
 
 	// PendingCount reports how many chunks still need extraction.
 	// Powers the worker's "still draining" gauge so dashboards can
@@ -177,3 +191,8 @@ type ChunkForExtraction struct {
 	ProjectID string
 	Content   string
 }
+
+// ChunkExtractionErrorMaxBytes bounds the stored failure reason. An LLM or
+// gateway error can carry a whole response body; the column is for diagnosis,
+// not archival.
+const ChunkExtractionErrorMaxBytes = 2048

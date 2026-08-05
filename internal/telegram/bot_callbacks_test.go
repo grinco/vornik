@@ -55,7 +55,7 @@ func newCallbackRig(t *testing.T) *callbackRig {
 	t.Cleanup(rig.server.Close)
 
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "test-token"}, chatClient, WithHTTPClient(rig.server.Client()))
+	bot, err := NewBot(BotConfig{Token: "test-token", AllowUnlistedUsers: true}, chatClient, WithHTTPClient(rig.server.Client()))
 	require.NoError(t, err)
 	bot.baseURL = rig.server.URL
 	rig.bot = bot
@@ -255,7 +255,7 @@ func TestSendProjectPicker_NoProjectsErrors(t *testing.T) {
 // docs-pointer message rather than crashing the empty picker.
 func TestHandleProject_NoActiveAndNoProjects(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "test-token"}, chatClient)
+	bot, err := NewBot(BotConfig{Token: "test-token", AllowUnlistedUsers: true}, chatClient)
 	require.NoError(t, err)
 	// No registry wired → getProjectList returns nil.
 	got := handleProject(context.Background(), bot, 100, 0)
@@ -268,7 +268,7 @@ func TestHandleProject_NoActiveAndNoProjects(t *testing.T) {
 // "Active project: X" prose; the picker is for the no-active case.
 func TestHandleProject_ActiveProjectReturnsConfirmation(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "test-token"}, chatClient)
+	bot, err := NewBot(BotConfig{Token: "test-token", AllowUnlistedUsers: true}, chatClient)
 	require.NoError(t, err)
 	bot.setActiveProject(100, "my-proj")
 	got := handleProject(context.Background(), bot, 100, 0)
@@ -318,7 +318,7 @@ func TestAnswerCallbackQuery_PropagatesHTTPError(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "test-token"}, chatClient, WithHTTPClient(server.Client()))
+	bot, err := NewBot(BotConfig{Token: "test-token", AllowUnlistedUsers: true}, chatClient, WithHTTPClient(server.Client()))
 	require.NoError(t, err)
 	bot.baseURL = server.URL
 
@@ -333,7 +333,7 @@ func TestAnswerCallbackQuery_PropagatesHTTPError(t *testing.T) {
 // fail. Mirrors the other write paths' behaviour.
 func TestAnswerCallbackQuery_NoTokenIsNoOp(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: ""}, chatClient)
+	bot, err := NewBot(BotConfig{Token: "", AllowUnlistedUsers: true}, chatClient)
 	// NewBot may refuse an empty token; if so, this test is
 	// moot — the no-op branch is unreachable in production.
 	if err != nil {
@@ -355,7 +355,7 @@ func TestHandleProject_PickerSendFailureFallsBackToProse(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "test-token"}, chatClient, WithHTTPClient(server.Client()))
+	bot, err := NewBot(BotConfig{Token: "test-token", AllowUnlistedUsers: true}, chatClient, WithHTTPClient(server.Client()))
 	require.NoError(t, err)
 	bot.baseURL = server.URL
 

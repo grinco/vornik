@@ -44,6 +44,13 @@ func validConfig() Config {
 		// that dispatches a message event. progress_test.go sets its own delay against
 		// a stub server.
 		ProgressSignalDelay: -1,
+		// The suite configures no sender/channel allowlist because these tests
+		// are about webhook routing, signature verification and dispatch — not
+		// authorization. Since 2026-08-05 an empty allowlist DENIES, so the
+		// dev-mode pass-through has to be asked for explicitly here exactly as
+		// a real deployment must. Authorization itself is covered by the tests
+		// that set the allowlists directly.
+		AllowUnlistedSenders: true,
 	}
 }
 

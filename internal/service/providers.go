@@ -65,6 +65,15 @@ type IdentityDeps struct {
 	// Auth is the parsed auth config block (providers, session lifetime,
 	// external base URL, bootstrap admins, org-member defaults).
 	Auth config.AuthSettings
+	// PublicOrigin is the RESOLVED public origin (Config.PublicOrigin()) the
+	// OAuth callback URL is built from. Carried separately because
+	// AuthSettings cannot see server.public_base_url, and reading
+	// Auth.ExternalBaseURL directly is what made that key undroppable: the
+	// loader validates the pair through Config.PublicOrigin(), so a config
+	// setting only server.public_base_url boots fine and then hands the login
+	// flow an empty base URL. See the callback-and-webhook-surfaces LLD §6
+	// "one public origin, not two".
+	PublicOrigin string
 	// Identity is the identity-core repository (users/groups/bindings)
 	// backing the RBAC resolver. Nil on a non-Postgres backend.
 	Identity persistence.IdentityRepository

@@ -213,6 +213,12 @@ var ProjectDeferredPaths = []string{
 	// Slack connector.
 	"slack.team_id", "slack.signing_secret_env", "slack.bot_token_env",
 	"slack.channel_allowlist", "slack.sender_allowlist", "slack.verify_inbound_signature",
+	// allow_unlisted_senders re-opens an empty allowlist (see
+	// registry.Project). Deferred with its siblings rather than surfaced:
+	// the allowlist it overrides is itself YAML-only, so a form carrying the
+	// override alone would be harder to reason about, not easier. Surfacing
+	// the Slack authz block as a whole is the real fix and is backlogged.
+	"slack.allow_unlisted_senders",
 	"slack.post_message_rps", "slack.post_message_burst",
 	"slack.slash_command", "slack.progress_signal", "slack.progress_signal_gap",
 	// Voice STT/TTS providers.

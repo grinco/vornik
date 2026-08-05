@@ -21,6 +21,11 @@ type fakeProvider struct {
 type reply struct {
 	content string
 	err     error
+	// finishReason overrides the provider's finish_reason. Empty = "stop".
+	// Scriptable since 2026-08-05: every fixture hardcoded "stop", so the
+	// truncation path — the dominant real-world failure — was unreachable
+	// from any test.
+	finishReason string
 }
 
 func (f *fakeProvider) Complete(_ context.Context, _ []chat.Message) (*chat.ChatResponse, error) {
@@ -37,7 +42,7 @@ func (f *fakeProvider) Complete(_ context.Context, _ []chat.Message) (*chat.Chat
 		Index        int          `json:"index"`
 		Message      chat.Message `json:"message"`
 		FinishReason string       `json:"finish_reason"`
-	}{Message: chat.Message{Role: "assistant", Content: r.content}, FinishReason: "stop"})
+	}{Message: chat.Message{Role: "assistant", Content: r.content}, FinishReason: finishReasonOr(r.finishReason)})
 	// Stamp non-zero usage so cost-tracking tests downstream see
 	// realistic shapes. Production providers always populate this;
 	// pre-fix the fake returned zeros and recordStageUsage's
@@ -46,6 +51,14 @@ func (f *fakeProvider) Complete(_ context.Context, _ []chat.Message) (*chat.Chat
 	resp.Usage.CompletionTokens = 50
 	resp.Usage.TotalTokens = 150
 	return resp, nil
+}
+
+// finishReasonOr defaults a scripted finish_reason to "stop".
+func finishReasonOr(s string) string {
+	if s == "" {
+		return "stop"
+	}
+	return s
 }
 
 func (f *fakeProvider) CompleteWithTools(context.Context, []chat.Message, []chat.Tool) (*chat.ChatResponse, error) {
@@ -105,6 +118,9 @@ type repeatingProvider struct {
 	calls   atomic.Int32
 	content string
 	err     error
+	// finishReason overrides finish_reason ("" = "stop"). Lets a worker-level
+	// test drive the truncation path end to end.
+	finishReason string
 }
 
 func (r *repeatingProvider) Complete(_ context.Context, _ []chat.Message) (*chat.ChatResponse, error) {
@@ -117,7 +133,7 @@ func (r *repeatingProvider) Complete(_ context.Context, _ []chat.Message) (*chat
 		Index        int          `json:"index"`
 		Message      chat.Message `json:"message"`
 		FinishReason string       `json:"finish_reason"`
-	}{Message: chat.Message{Role: "assistant", Content: r.content}, FinishReason: "stop"})
+	}{Message: chat.Message{Role: "assistant", Content: r.content}, FinishReason: finishReasonOr(r.finishReason)})
 	resp.Usage.PromptTokens = 100
 	resp.Usage.CompletionTokens = 50
 	resp.Usage.TotalTokens = 150
@@ -138,6 +154,13 @@ func newRepeatingProvider(content string) *repeatingProvider {
 
 func newRepeatingErrorProvider(err error) *repeatingProvider {
 	return &repeatingProvider{err: err}
+}
+
+// newTruncatingProvider always answers with finish_reason=length and empty
+// content — the exact shape a reasoning model produces when it spends its
+// whole budget thinking.
+func newTruncatingProvider() *repeatingProvider {
+	return &repeatingProvider{content: "", finishReason: "length"}
 }
 
 func TestExtract_HappyPathArrayResponse(t *testing.T) {
@@ -397,5 +420,79 @@ func TestClassifyExtractOutcome_TableDriven(t *testing.T) {
 			t.Errorf("classifyExtractOutcome(%d,%d) = %q, want %q",
 				tc.raw, tc.validated, got, tc.want)
 		}
+	}
+}
+
+// TestExtract_TruncationIsAFailureNotAnEmptyResult is the regression test for
+// the 2026-07-31 silent-loss finding: 83.3% of extractions were recorded as
+// empty_response, the chunk marked extracted, and the content permanently
+// absent from the graph.
+//
+// The mechanism was a chain of individually-reasonable steps. A reasoning
+// model spends its whole token budget thinking and returns finish_reason=length
+// with EMPTY content; parseCandidates treats an empty completion as a valid
+// parse of zero entities; the pipeline returns nil error; the worker calls
+// MarkExtracted. Nothing failed, so the design's "failed parse → retry →
+// re-flag" self-healing never fired.
+//
+// The distinction this pins: a model that read the text and found nobody, and
+// a model that never answered, must not produce the same outcome.
+func TestExtract_TruncationIsAFailureNotAnEmptyResult(t *testing.T) {
+	for _, tc := range []struct{ name, content string }{
+		// The dominant real shape: reasoning consumed the budget.
+		{"empty content", ""},
+		// Partial output is worse, not better — it can parse and look complete.
+		{"partial content", `[{"name":"Ada","type":"PERSON"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fp := &fakeProvider{replies: []reply{{content: tc.content, finishReason: "length"}}}
+			ex := NewExtractor(fp, "")
+
+			got, m, err := ex.Extract(context.Background(), "a chunk that names Ada Lovelace")
+
+			if err == nil {
+				t.Fatalf("a truncated completion must be an error, got candidates=%+v", got)
+			}
+			if !errors.Is(err, ErrTruncatedCompletion) {
+				t.Errorf("error must be identifiable as truncation, got %v", err)
+			}
+			if got != nil {
+				t.Errorf("no candidates may be reported from a truncated completion, got %+v", got)
+			}
+			if m == nil {
+				t.Fatalf("metrics must be reported so the burned budget stays visible")
+			}
+			if m.Outcome != ExtractOutcomeTruncated {
+				t.Errorf("outcome = %q, want %q — conflating this with empty_response is what hid the loss",
+					m.Outcome, ExtractOutcomeTruncated)
+			}
+			if m.Outcome == ExtractOutcomeEmptyResponse {
+				t.Error("truncation must never be reported as empty_response")
+			}
+			// The call burned tokens; the metric must say so or the cost of the
+			// failure is invisible.
+			if m.CompletionTokens == 0 {
+				t.Error("completion tokens must be carried through so the wasted budget is measurable")
+			}
+		})
+	}
+}
+
+// TestExtract_GenuinelyEmptyStaysEmpty is the other half: a model that answers
+// properly and finds nothing is a normal, successful outcome and must NOT be
+// turned into an error by the truncation change.
+func TestExtract_GenuinelyEmptyStaysEmpty(t *testing.T) {
+	fp := &fakeProvider{replies: []reply{{content: "[]", finishReason: "stop"}}}
+	ex := NewExtractor(fp, "")
+
+	got, m, err := ex.Extract(context.Background(), "uneventful chunk")
+	if err != nil {
+		t.Fatalf("a complete answer of zero entities is success, got %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil candidates, got %+v", got)
+	}
+	if m.Outcome != ExtractOutcomeEmptyResponse {
+		t.Errorf("outcome = %q, want %q", m.Outcome, ExtractOutcomeEmptyResponse)
 	}
 }

@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -307,5 +309,95 @@ func TestChatCompletionNotifier_LinkSyntaxFollowsTheChannel(t *testing.T) {
 	}
 	if !strings.Contains(sent[0].Text, "[open the task](https://vornik.example") {
 		t.Errorf("telegram did not get Markdown link syntax:\n%s", sent[0].Text)
+	}
+}
+
+// TestChatCompletionNotifier_NotifiesEmail — email moved onto this durable path
+// on 2026-08-05.
+//
+// Its own notifier was in-memory and gated on await_completion, so a task
+// scheduled without that flag, or one whose daemon restarted mid-flight, was
+// never reported: the same break already fixed for Slack. Resolution here is
+// DB-backed, which is what survives the restart.
+func TestChatCompletionNotifier_NotifiesEmail(t *testing.T) {
+	ch := &captureChannel{name: "email"}
+	n := newChatCompletionNotifier(
+		stubAudit{rows: map[string]*persistence.ChatAuditEntry{
+			"turn-1": {ID: "turn-1", ChatID: "email:<thread-root@example.com>", ProjectID: "p"},
+		}},
+		nil,
+		stubResolveChannel{byName: map[string]conversation.Channel{"email": ch}},
+		"https://vornik.example", true,
+		map[string]bool{"slack": true, "email": true},
+		zerolog.Nop(),
+	)
+
+	n.NotifyTaskCompleted(context.Background(), turnTask("task_77", "turn-1"), true, "wrote the report")
+
+	sent := ch.snapshot()
+	if len(sent) != 1 {
+		t.Fatalf("messages sent = %d, want 1", len(sent))
+	}
+	if sent[0].SessionID != "<thread-root@example.com>" {
+		t.Errorf("SessionID = %q, want the originating email thread", sent[0].SessionID)
+	}
+	if !strings.Contains(sent[0].Text, "task_77") {
+		t.Errorf("notification must name the task: %s", sent[0].Text)
+	}
+}
+
+// TestEmailIsNotAnnouncedTwice is the guard on the half of this change that is
+// easy to lose. Email is on the durable allowlist AND must no longer be
+// registered as its own CompletionNotifier; doing both announces every task
+// twice, and a duplicate notice is the kind of regression that gets noticed by
+// a customer rather than a test.
+//
+// Asserted against the real wiring rather than a fixture: the allowlist in
+// chatCompletionSink and the notifier list in the email subsystem are the two
+// places that must agree.
+func TestEmailIsNotAnnouncedTwice(t *testing.T) {
+	root := guardRepoRootForService(t)
+
+	sink, err := os.ReadFile(filepath.Join(root, "internal", "service", "container_chat_completion.go"))
+	if err != nil {
+		t.Fatalf("read sink: %v", err)
+	}
+	if !strings.Contains(string(sink), `"email": true`) {
+		t.Fatal("email must be on the durable completion allowlist")
+	}
+
+	sub, err := os.ReadFile(filepath.Join(root, "internal", "service", "subsystem_email_channels.go"))
+	if err != nil {
+		t.Fatalf("read subsystem: %v", err)
+	}
+	// The old wiring appended every email Channel to the notifier slice.
+	if strings.Contains(string(sub), "notifiers = append(notifiers, ch)") {
+		t.Error("email channels must NOT also be registered as their own CompletionNotifier — " +
+			"they are on the durable allowlist, so this would announce every task twice")
+	}
+	// And its follow-up registrar must be gone too: only Channel's own
+	// NotifyTaskCompleted drained that map, so registering without draining
+	// leaks one entry per awaited task for the life of the process.
+	if strings.Contains(string(sub), "SetChannelFollowupRegistrar") {
+		t.Error("the email follow-up registrar must be unwired — nothing drains Channel.followups now, " +
+			"so registering grows that map unboundedly")
+	}
+}
+
+func guardRepoRootForService(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not locate go.mod")
+		}
+		dir = parent
 	}
 }

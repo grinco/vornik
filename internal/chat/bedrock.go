@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrock"
 	bedrockctltypes "github.com/aws/aws-sdk-go-v2/service/bedrock/types"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	bedrockdoc "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	bedrocktypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/rs/zerolog"
 )
@@ -401,6 +402,14 @@ func (p *BedrockProvider) CompleteWithToolsStream(ctx context.Context, messages 
 		input.InferenceConfig = &bedrocktypes.InferenceConfiguration{
 			MaxTokens: aws.Int32(int32(streamMaxTokens)),
 		}
+	}
+	// Same reasoning hint as the non-streaming path. Carried here too so a
+	// caller does not silently lose it by streaming — the streaming request is
+	// built separately and would otherwise drop the field with no error.
+	if effort := ReasoningEffortFromContext(ctx); effort != "" {
+		input.AdditionalModelRequestFields = bedrockdoc.NewLazyDocument(
+			map[string]any{"reasoning_effort": effort},
+		)
 	}
 	if bedrockTools, terr := openAIToolsToBedrock(tools); terr != nil {
 		return nil, fmt.Errorf("bedrock: translate tools: %w", terr)
@@ -861,6 +870,24 @@ func applyMaxTokens(ctx context.Context, p *BedrockProvider, input *bedrockrunti
 			MaxTokens: aws.Int32(int32(effectiveMaxTokens)),
 		}
 	}
+	applyReasoningEffort(ctx, input)
+}
+
+// applyReasoningEffort forwards a per-request reasoning-effort hint as a
+// model-specific parameter. Converse has no first-class field for it, so it
+// rides AdditionalModelRequestFields, which Bedrock passes through to the
+// model verbatim.
+//
+// Sent only when the caller asked for one, so no existing call changes shape:
+// a model that does not understand reasoning_effort never sees the key.
+func applyReasoningEffort(ctx context.Context, input *bedrockruntime.ConverseInput) {
+	effort := ReasoningEffortFromContext(ctx)
+	if effort == "" {
+		return
+	}
+	input.AdditionalModelRequestFields = bedrockdoc.NewLazyDocument(
+		map[string]any{"reasoning_effort": effort},
+	)
 }
 
 // recordMetrics emits provider-level latency + error counters when a

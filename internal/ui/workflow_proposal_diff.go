@@ -63,9 +63,18 @@ type DiffLine struct {
 // Empty current (no on-disk source wired / new workflow) yields an
 // all-add diff; identical inputs yield all-context.
 func computeWorkflowDiff(current, proposed string) []DiffLine {
-	a := splitLinesForDiff(current)
-	b := splitLinesForDiff(proposed)
+	return computeDiffLines(splitLinesForDiff(current), splitLinesForDiff(proposed))
+}
 
+// computeDiffLines is computeWorkflowDiff's line-slice core, split out so
+// callers that have already tokenised (and possibly trimmed) their input can
+// run the LCS without a lossy re-join. Joining lines back into a string and
+// letting splitLinesForDiff re-split them would silently drop a trailing
+// blank line inside a trimmed window.
+//
+// Allocates an (len(a)+1)*(len(b)+1) int table — quadratic. Callers over
+// operator-sized input must bound it; see unifiedish's maxUnifiedishLCSCells.
+func computeDiffLines(a, b []string) []DiffLine {
 	// LCS length table. lcs[i][j] = LCS length of a[i:] and b[j:].
 	lcs := make([][]int, len(a)+1)
 	for i := range lcs {

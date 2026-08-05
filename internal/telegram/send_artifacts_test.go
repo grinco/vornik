@@ -78,7 +78,7 @@ func TestSendArtifactsToWatchers_SendsToEachWatcher(t *testing.T) {
 	defer srv.Close()
 
 	chatClient := chat.NewClient("https://example.com", "k", "m")
-	b, err := NewBot(BotConfig{Token: "tok"}, chatClient,
+	b, err := NewBot(BotConfig{Token: "tok", AllowUnlistedUsers: true}, chatClient,
 		WithArtifactRepository(repo),
 		WithHTTPClient(srv.Client()),
 	)
@@ -121,7 +121,7 @@ func TestSendArtifactsToWatchers_SendDocumentErrorContinues(t *testing.T) {
 	defer srv.Close()
 
 	chatClient := chat.NewClient("https://example.com", "k", "m")
-	b, _ := NewBot(BotConfig{Token: "tok"}, chatClient,
+	b, _ := NewBot(BotConfig{Token: "tok", AllowUnlistedUsers: true}, chatClient,
 		WithArtifactRepository(repo),
 		WithHTTPClient(srv.Client()),
 	)

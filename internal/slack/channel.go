@@ -79,12 +79,18 @@ func (c *Channel) ResolveSpeaker(_ context.Context, channelSpeakerID string) (co
 }
 
 // anyInstallationAllowsSpeaker returns true when at least one
-// installation's SenderAllowlist permits the user_id (or has an empty
-// allowlist = dev-mode pass-through).
+// installation's SenderAllowlist permits the user_id.
+//
+// An EMPTY allowlist denies (2026-08-05). It used to admit everyone, which
+// meant an unconfigured installation silently let any member of the workspace
+// drive the dispatcher. Set AllowUnlistedSenders to opt back in deliberately.
 func (c *Channel) anyInstallationAllowsSpeaker(userID string) bool {
 	for _, inst := range c.installations {
 		if len(inst.senders) == 0 {
-			return true
+			if inst.allowUnlisted {
+				return true
+			}
+			continue
 		}
 		if _, ok := inst.senders[userID]; ok {
 			return true
@@ -100,10 +106,14 @@ func (c *Channel) resolveSpeakerForInstallation(inst *installation, userID strin
 	if strings.TrimSpace(userID) == "" {
 		return conversation.Speaker{}, conversation.ErrSpeakerUnknown
 	}
-	if len(inst.senders) > 0 {
-		if _, ok := inst.senders[userID]; !ok {
+	// Empty allowlist denies unless explicitly opened — see
+	// anyInstallationAllowsSpeaker for the 2026-08-05 default flip.
+	if len(inst.senders) == 0 {
+		if !inst.allowUnlisted {
 			return conversation.Speaker{}, conversation.ErrSpeakerUnknown
 		}
+	} else if _, ok := inst.senders[userID]; !ok {
+		return conversation.Speaker{}, conversation.ErrSpeakerUnknown
 	}
 	return conversation.Speaker{
 		ID:            "slack:" + userID,
@@ -736,7 +746,11 @@ func (c *Channel) addressedToUs(ctx context.Context, p eventPayload, sessionID s
 // only marker available.
 func channelAllowed(inst *installation, channelType, channelID string) bool {
 	if len(inst.allowedChannels) == 0 {
-		return true
+		// Empty denies as of 2026-08-05 unless opted open — the sender gate
+		// above is the primary control, but an unconfigured channel allowlist
+		// used to admit every channel in the workspace, which is the same
+		// fail-open shape.
+		return inst.allowUnlisted
 	}
 	if isDirectMessageChannel(channelType, channelID) {
 		return true

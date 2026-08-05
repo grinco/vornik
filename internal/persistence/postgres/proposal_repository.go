@@ -49,8 +49,17 @@ func (r *ProposalRepository) Create(ctx context.Context, p *persistence.ControlP
 }
 
 func validatePGProposalFieldSizes(p *persistence.ControlPlaneProposal) error {
-	for _, f := range []string{p.Diff, p.Rationale, p.Evidence, p.PreApplySnapshot, p.ApplyOps} {
+	// Free-text prose rendered into the review pane — tight bound.
+	for _, f := range []string{p.Diff, p.Rationale, p.Evidence} {
 		if len(f) > persistence.ProposalMaxFieldBytes {
+			return persistence.ErrProposalFieldTooLarge
+		}
+	}
+	// Whole-file payloads. ApplyContent is validated HERE for the first time:
+	// leaving it out is what let the hub create a proposal that Apply would
+	// then refuse with ErrContentTooLarge before any write (2026-08-05).
+	for _, f := range []string{p.ApplyContent, p.PreApplySnapshot, p.ApplyOps} {
+		if len(f) > persistence.ProposalMaxContentBytes {
 			return persistence.ErrProposalFieldTooLarge
 		}
 	}

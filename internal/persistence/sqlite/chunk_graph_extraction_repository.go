@@ -48,8 +48,39 @@ func (r *ChunkGraphExtractionRepository) MarkExtracted(ctx context.Context, chun
 		return fmt.Errorf("MarkExtracted: chunk_id required")
 	}
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE project_memory_chunks SET needs_graph_extraction = 0 WHERE id = ?`, chunkID)
+		`UPDATE project_memory_chunks
+		 SET needs_graph_extraction = 0, graph_extraction_attempts = 0, graph_extraction_error = ''
+		 WHERE id = ?`, chunkID)
 	return err
+}
+
+// RecordExtractionFailure increments the failure counter and quarantines the
+// chunk once it reaches maxAttempts. See the interface doc for why the bound
+// exists. Single statement with RETURNING so the read-back cannot observe
+// another writer's increment.
+func (r *ChunkGraphExtractionRepository) RecordExtractionFailure(ctx context.Context, chunkID, reason string, maxAttempts int) (int, bool, error) {
+	if chunkID == "" {
+		return 0, false, fmt.Errorf("RecordExtractionFailure: chunk_id required")
+	}
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	if len(reason) > persistence.ChunkExtractionErrorMaxBytes {
+		reason = reason[:persistence.ChunkExtractionErrorMaxBytes]
+	}
+	var attempts, flagged int
+	err := r.db.QueryRowContext(ctx,
+		`UPDATE project_memory_chunks
+		 SET graph_extraction_attempts = graph_extraction_attempts + 1,
+		     graph_extraction_error    = ?,
+		     needs_graph_extraction    = CASE WHEN graph_extraction_attempts + 1 < ? THEN 1 ELSE 0 END
+		 WHERE id = ?
+		 RETURNING graph_extraction_attempts, needs_graph_extraction`,
+		reason, maxAttempts, chunkID).Scan(&attempts, &flagged)
+	if err != nil {
+		return 0, false, err
+	}
+	return attempts, flagged == 0, nil
 }
 
 func (r *ChunkGraphExtractionRepository) PendingCount(ctx context.Context) (int, error) {

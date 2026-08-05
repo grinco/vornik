@@ -80,12 +80,13 @@ func TestE2E_AppMentionRoundTrip(t *testing.T) {
 
 	// 2. Construct the channel pointed at the stub.
 	ch, err := New(Config{
-		SigningSecret: "shh",
-		BotToken:      "xoxb-bot",
-		TeamID:        "T_E2E",
-		TeamAllowlist: []string{"T_E2E"},
-		APIBaseURL:    apiStub.URL,
-		HTTPClient:    apiStub.Client(),
+		SigningSecret:        "shh",
+		BotToken:             "xoxb-bot",
+		TeamID:               "T_E2E",
+		TeamAllowlist:        []string{"T_E2E"},
+		AllowUnlistedSenders: true, // routing test, not an authz test
+		APIBaseURL:           apiStub.URL,
+		HTTPClient:           apiStub.Client(),
 		// PostMessageRPS=0 → defaults to 1/sec; one round-trip in the
 		// test never trips it. Tests that exercise the rate limiter
 		// override directly.

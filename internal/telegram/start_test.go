@@ -138,7 +138,7 @@ func TestBotPollLoop_HitsServer(t *testing.T) {
 	defer srv.Close()
 
 	chatClient := chat.NewClient("https://example.com", "k", "m")
-	b, _ := NewBot(BotConfig{Token: "tok"}, chatClient,
+	b, _ := NewBot(BotConfig{Token: "tok", AllowUnlistedUsers: true}, chatClient,
 		WithHTTPClient(srv.Client()),
 	)
 	b.baseURL = srv.URL
@@ -172,7 +172,7 @@ func TestBotPollLoop_ServerErrorRecovery(t *testing.T) {
 	defer srv.Close()
 
 	chatClient := chat.NewClient("https://example.com", "k", "m")
-	b, _ := NewBot(BotConfig{Token: "tok"}, chatClient,
+	b, _ := NewBot(BotConfig{Token: "tok", AllowUnlistedUsers: true}, chatClient,
 		WithHTTPClient(srv.Client()))
 	b.baseURL = srv.URL
 

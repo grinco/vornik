@@ -34,9 +34,16 @@ type AdminCPMCPRow struct {
 	Transport string
 	Endpoint  string // URL or command
 	Reachable bool
-	Error     string
-	ToolCount int
-	LastCheck string
+	// AuthChallenged marks a server the health check could not reach ONLY
+	// because it demands authentication (401). Rendering that as "unreachable"
+	// sends the operator looking for a networking or URL fault when the
+	// endpoint is fine and the answer is a consent grant — reported
+	// 2026-08-05 against the atlassian server, where the row said
+	// "unreachable ... returned 401" while the endpoint was perfectly healthy.
+	AuthChallenged bool
+	Error          string
+	ToolCount      int
+	LastCheck      string
 
 	// AuthMode is none | oauth | static | env (MCP server authentication
 	// design §7 item 3).
@@ -105,6 +112,7 @@ func (s *Server) buildCPMCP(ctx context.Context, data *AdminControlPlaneData) {
 			Name: srv.Name, Transport: srv.Transport, Endpoint: endpoint,
 			Reachable: srv.Reachable, Error: srv.Error, ToolCount: len(srv.Tools), LastCheck: last,
 		}
+		row.AuthChallenged = !row.Reachable && mcpErrorIsAuthChallenge(row.Error)
 		s.decorateCPMCPAuth(ctx, &row)
 		data.MCPRows = append(data.MCPRows, row)
 	}
@@ -315,40 +323,164 @@ func mcpErrToken(err error) string {
 	}
 }
 
+// mcpErrorIsAuthChallenge reports whether a recorded health-check error is an
+// authentication demand rather than a reachability fault.
+//
+// Matches internal/mcp's "<transport> server returned <code>" text because the
+// health snapshot keeps the error as a STRING, not an error value, so
+// errors.As is unavailable at this layer. That coupling is pinned by
+// TestMCPErrorIsAuthChallenge_MatchesTheRealClientError, which builds the
+// message from the mcp client's own formatting — change the format there and
+// the test fails rather than the badge quietly going wrong again.
+func mcpErrorIsAuthChallenge(msg string) bool {
+	return strings.Contains(msg, "server returned 401")
+}
+
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
 
-// unifiedish renders a minimal old→new line diff for the proposal review pane.
-// Not a true unified diff — a compact changed-lines summary is enough for the
-// operator to see what the edit does before applying.
+// maxUnifiedishLCSCells bounds the quadratic LCS table used for a compact
+// minimal diff. config.yaml is operator-owned and can be much larger than the
+// workflow files computeWorkflowDiff was designed for. This caps the
+// transient table at ~32 MiB on a 64-bit platform (~16 MiB where int is 32
+// bits) — acceptable for a human-triggered admin action, and it refuses to
+// scale with an arbitrarily large file.
+//
+// Sized deliberately against the real deployment rather than picked round:
+// after common prefix/suffix trimming a ~1,500-line config.yaml presents a
+// changed window of ~1,100 lines (~1.3M cells), so realistic configs get the
+// MINIMAL diff and only pathological input degrades to positionalDiff. A
+// smaller cap silently sent the live config down the linear path, which
+// re-created the very bug this function was fixed for — see
+// TestUnifiedish_RealisticConfigSizeStaysMinimal.
+const maxUnifiedishLCSCells = 4_000_000
+
+// unifiedish renders an old→new line diff for the proposal review pane.
+// Small inputs use the minimal LCS diff shared with the workflow-proposal
+// panel. Larger inputs use a linear positional diff so an MCP proposal cannot
+// exhaust memory or stall the admin request on a large config.yaml.
+//
+// A prior version diffed by SET membership: every old line absent from the
+// new line set printed under a single "-" block, followed by every new line
+// absent from the old set under a single "+" block — with no positional
+// pairing between them. On config.yaml, the mcp.servers add path
+// round-trips the WHOLE file through a yaml.v3 Node encode (comment-
+// preserving, but not blank-line- or flow-spacing-preserving), so an
+// unrelated add reformats dozens of scattered lines (e.g. "{ a: 1 }" ->
+// "{a: 1}"). The bucketed diff rendered that as a wall of unrelated-looking
+// deletions with the matching (reformatted) additions scrolled far below —
+// scary and unreviewable even though nothing was actually deleted. Pairing
+// by position makes the reformat read as what it is: adjacent -/+ lines
+// carrying the same content.
 func unifiedish(oldStr, newStr string) string {
-	oldLines := strings.Split(oldStr, "\n")
-	newLines := strings.Split(newStr, "\n")
-	oldSet := map[string]bool{}
-	for _, l := range oldLines {
-		oldSet[l] = true
-	}
-	newSet := map[string]bool{}
-	for _, l := range newLines {
-		newSet[l] = true
+	oldLines := splitLinesForDiff(oldStr)
+	newLines := splitLinesForDiff(newStr)
+
+	// Trim the identical head and tail before measuring the LCS table: only
+	// the changed WINDOW needs the quadratic algorithm, and unifiedish emits
+	// nothing for unchanged lines anyway. On a config edit this is most of
+	// the file, which is what keeps a realistic config.yaml under the cap
+	// instead of degrading to positionalDiff.
+	//
+	// INVARIANT: the suffix is measured on the ALREADY prefix-trimmed slices,
+	// so the two regions can never overlap and both re-slices stay in bounds
+	// (commonSuffixLen returns at most len of the shorter remaining slice).
+	pre := commonPrefixLen(oldLines, newLines)
+	oldLines, newLines = oldLines[pre:], newLines[pre:]
+	suf := commonSuffixLen(oldLines, newLines)
+	oldLines = oldLines[:len(oldLines)-suf]
+	newLines = newLines[:len(newLines)-suf]
+
+	var lines []DiffLine
+	degraded := lcsTableTooLarge(len(oldLines), len(newLines))
+	if degraded {
+		lines = positionalDiff(oldLines, newLines)
+	} else {
+		lines = computeDiffLines(oldLines, newLines)
 	}
 	var b strings.Builder
-	for _, l := range oldLines {
-		if !newSet[l] {
-			fmt.Fprintf(&b, "- %s\n", l)
-		}
+	// Say so when the diff is not minimal. Silent degradation would leave an
+	// operator unable to tell a fallback's inflated churn from a real change,
+	// which is the same "can't trust the pane" failure this function was
+	// fixed for. Stated in the pane rather than the daemon log because the
+	// pane is where the person making the decision is looking.
+	if degraded {
+		fmt.Fprintf(&b, "(%d changed lines — too large for a minimal diff; showing a positional comparison, so shifted lines may appear as changes)\n",
+			len(oldLines)+len(newLines))
 	}
-	for _, l := range newLines {
-		if !oldSet[l] {
-			fmt.Fprintf(&b, "+ %s\n", l)
+	for _, l := range lines {
+		switch l.Op {
+		case diffRemove:
+			fmt.Fprintf(&b, "- %s\n", l.Text)
+		case diffAdd:
+			fmt.Fprintf(&b, "+ %s\n", l.Text)
 		}
 	}
 	if b.Len() == 0 {
 		return "(no line-level change)"
 	}
 	return b.String()
+}
+
+func lcsTableTooLarge(oldLineCount, newLineCount int) bool {
+	// computeDiffLines allocates an extra terminal row and column. Compared by
+	// DIVISION rather than multiplying the two counts, which would overflow on
+	// adversarially large input.
+	return oldLineCount+1 > maxUnifiedishLCSCells/(newLineCount+1)
+}
+
+// commonPrefixLen counts the leading lines a and b share.
+func commonPrefixLen(a, b []string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return n
+}
+
+// commonSuffixLen counts the trailing lines a and b share.
+func commonSuffixLen(a, b []string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[len(a)-1-i] != b[len(b)-1-i] {
+			return i
+		}
+	}
+	return n
+}
+
+// positionalDiff emits the changed lines at each position as an adjacent
+// remove/add pair. It is not minimal, but stays O(n) in memory and time while
+// retaining the review pane's important pairing property for large rewrites.
+func positionalDiff(oldLines, newLines []string) []DiffLine {
+	shared := len(oldLines)
+	if len(newLines) < shared {
+		shared = len(newLines)
+	}
+	lines := make([]DiffLine, 0, len(oldLines)+len(newLines))
+	for i := 0; i < shared; i++ {
+		if oldLines[i] == newLines[i] {
+			continue
+		}
+		lines = append(lines, DiffLine{Op: diffRemove, Text: oldLines[i]}, DiffLine{Op: diffAdd, Text: newLines[i]})
+	}
+	for _, line := range oldLines[shared:] {
+		lines = append(lines, DiffLine{Op: diffRemove, Text: line})
+	}
+	for _, line := range newLines[shared:] {
+		lines = append(lines, DiffLine{Op: diffAdd, Text: line})
+	}
+	return lines
 }
 
 // decorateCPMCPAuth fills a row's auth columns from config and the token store.

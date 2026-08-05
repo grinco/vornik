@@ -82,6 +82,81 @@ func TestApply_Success(t *testing.T) {
 	}
 }
 
+// TestApply_ConfigSizedFileApplies is the regression test for the 2026-08-05
+// un-appliable-proposal defect. applyMaxContentBytes tracked the FREE-TEXT cap
+// (64 KiB), so once the operator's config.yaml passed that size — the live one
+// is 81 KB — every whole-file hub edit was refused here before any write,
+// while Create had stored it happily because apply_content was the one field
+// it did not validate. The operator saw the generic "apply failed
+// (auto-rolled-back...)" for a config that had never been read.
+//
+// Pins both halves: a config-sized file applies end to end, and the field that
+// was previously unchecked is now checked against the whole-file cap.
+func TestApply_ConfigSizedFileApplies(t *testing.T) {
+	repo := newApplyRepo(t)
+	dir := t.TempDir()
+	file := filepath.Join(dir, "config.yaml")
+	// Comfortably past the 64 KiB free-text cap, like the real deployment.
+	big := "server:\n  address: :8080\n# " + string(make([]byte, 0)) +
+		fmt.Sprintf("%0*d", persistence.ProposalMaxFieldBytes+20_000, 0) + "\n"
+	if len(big) <= persistence.ProposalMaxFieldBytes {
+		t.Fatalf("fixture must exceed the free-text cap, got %d", len(big))
+	}
+	if err := os.WriteFile(file, []byte(oldContent), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ctx := context.Background()
+	p := &persistence.ControlPlaneProposal{
+		ID: persistence.GenerateID("cpp"), ProjectID: "janka",
+		Kind: persistence.ProposalKindConfig, BlastRadius: persistence.ProposalScopeProject,
+		Title: "add mcp server to a config-sized file", ApplyTarget: "config.yaml",
+		ApplyContent: big, Status: persistence.ProposalStatusDraft, ProposedBy: "operator-ui",
+	}
+	if err := repo.Create(ctx, p); err != nil {
+		t.Fatalf("a config-sized proposal must be creatable: %v", err)
+	}
+	if err := repo.SetStatus(ctx, p.ID, persistence.ProposalStatusApproved, "vadim"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	e := &ApplyEngine{Proposals: repo, ConfigDir: dir, Reload: func() error { return nil }, Logger: zerolog.Nop()}
+	if err := e.Apply(ctx, p.ID, "vadim", false); err != nil {
+		t.Fatalf("a config-sized apply must succeed, got %v", err)
+	}
+	if got := readFile(t, file); got != big {
+		t.Errorf("file not updated (%d bytes on disk, want %d)", len(got), len(big))
+	}
+}
+
+// TestApply_BeyondContentCapStillRefused keeps the bound real: past the
+// whole-file cap the apply is refused, and refused BEFORE any write so the
+// "nothing was written" wording of the flash message stays true.
+func TestApply_BeyondContentCapStillRefused(t *testing.T) {
+	e, _, id, file := approvedProposal(t, persistence.ProposalScopeProject)
+	p, _ := e.Proposals.GetByID(context.Background(), id)
+	p.ApplyContent = string(make([]byte, applyMaxContentBytes+1))
+	// Drive the engine directly with the oversized op rather than through
+	// Create, which now rejects it — this pins the engine's own guard.
+	e.Proposals = &oversizeProposalRepo{ProposalRepository: e.Proposals, p: p}
+	err := e.Apply(context.Background(), id, "vadim", false)
+	if !errors.Is(err, ErrContentTooLarge) {
+		t.Fatalf("expected ErrContentTooLarge, got %v", err)
+	}
+	if got := readFile(t, file); got != oldContent {
+		t.Errorf("refused apply must not write: %q", got)
+	}
+}
+
+// oversizeProposalRepo returns a doctored proposal so the engine guard can be
+// exercised independently of Create's validation.
+type oversizeProposalRepo struct {
+	persistence.ProposalRepository
+	p *persistence.ControlPlaneProposal
+}
+
+func (r *oversizeProposalRepo) GetByID(context.Context, string) (*persistence.ControlPlaneProposal, error) {
+	return r.p, nil
+}
+
 func TestApply_ReloadFailsAutoRollback(t *testing.T) {
 	e, repo, id, file := approvedProposal(t, persistence.ProposalScopeProject)
 	calls := 0

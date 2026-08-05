@@ -178,7 +178,7 @@ func TestCb_HandlerErrorPropagates(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bad, err := NewBot(BotConfig{Token: "test-token"}, chatClient, WithHTTPClient(server.Client()))
+	bad, err := NewBot(BotConfig{Token: "test-token", AllowUnlistedUsers: true}, chatClient, WithHTTPClient(server.Client()))
 	require.NoError(t, err)
 	bad.baseURL = server.URL
 

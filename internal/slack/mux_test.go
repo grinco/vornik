@@ -16,17 +16,19 @@ import (
 func TestMuxHandler_RoutesByTeamID(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	chA, _ := New(Config{
-		SigningSecret: "s-a",
-		TeamID:        "T_A",
-		TeamAllowlist: []string{"T_A"},
+		SigningSecret:        "s-a",
+		TeamID:               "T_A",
+		TeamAllowlist:        []string{"T_A"},
+		AllowUnlistedSenders: true, // routing test, not an authz test
 	})
 	chA.clock = func() time.Time { return now }
 	recA := &recordingReceiver{}
 	bindReceiver(chA, recA)
 	chB, _ := New(Config{
-		SigningSecret: "s-b",
-		TeamID:        "T_B",
-		TeamAllowlist: []string{"T_B"},
+		SigningSecret:        "s-b",
+		TeamID:               "T_B",
+		TeamAllowlist:        []string{"T_B"},
+		AllowUnlistedSenders: true, // routing test, not an authz test
 	})
 	chB.clock = func() time.Time { return now }
 	recB := &recordingReceiver{}
@@ -90,15 +92,17 @@ func TestMuxHandler_RoutesByTeamID(t *testing.T) {
 func TestMuxHandler_URLVerification(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	chWrong, _ := New(Config{
-		SigningSecret: "s-wrong",
-		TeamID:        "T_WRONG",
-		TeamAllowlist: []string{"T_WRONG"},
+		SigningSecret:        "s-wrong",
+		TeamID:               "T_WRONG",
+		TeamAllowlist:        []string{"T_WRONG"},
+		AllowUnlistedSenders: true, // routing test, not an authz test
 	})
 	chWrong.clock = func() time.Time { return now }
 	chA, _ := New(Config{
-		SigningSecret: "s-handshake",
-		TeamID:        "T_A",
-		TeamAllowlist: []string{"T_A"},
+		SigningSecret:        "s-handshake",
+		TeamID:               "T_A",
+		TeamAllowlist:        []string{"T_A"},
+		AllowUnlistedSenders: true, // routing test, not an authz test
 	})
 	chA.clock = func() time.Time { return now }
 	mux := NewMuxHandler([]*Channel{chWrong, chA}, zerolog.Nop())
@@ -124,9 +128,10 @@ func TestMuxHandler_URLVerification(t *testing.T) {
 func TestMuxHandler_UnknownTeam_DropsWith200(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	chA, _ := New(Config{
-		SigningSecret: "s-a",
-		TeamID:        "T_A",
-		TeamAllowlist: []string{"T_A"},
+		SigningSecret:        "s-a",
+		TeamID:               "T_A",
+		TeamAllowlist:        []string{"T_A"},
+		AllowUnlistedSenders: true, // routing test, not an authz test
 	})
 	chA.clock = func() time.Time { return now }
 	mux := NewMuxHandler([]*Channel{chA}, zerolog.Nop())
@@ -152,9 +157,10 @@ func TestMuxHandler_UnknownTeam_DropsWith200(t *testing.T) {
 func TestMuxHandler_MalformedJSON_RoutesToFallback(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	chA, _ := New(Config{
-		SigningSecret: "s-a",
-		TeamID:        "T_A",
-		TeamAllowlist: []string{"T_A"},
+		SigningSecret:        "s-a",
+		TeamID:               "T_A",
+		TeamAllowlist:        []string{"T_A"},
+		AllowUnlistedSenders: true, // routing test, not an authz test
 	})
 	chA.clock = func() time.Time { return now }
 	mux := NewMuxHandler([]*Channel{chA}, zerolog.Nop())

@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 75d52064b86003497110afd3661965fee995430787bbd53ae370a0e34fbcb5b4
+      sha256: a52d4d92a4861e335f225fdf413d5fa6d94699783086744d507c799817642bbe
 ---
 # Release Notes
 
@@ -14,6 +14,72 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.8.0
+
+**Vornik can authenticate to a remote MCP server on its own.** Connect a
+tool server by granting consent in the browser instead of pasting a token
+that expires. Plus a batch of fixes for things that were reporting success
+while doing nothing.
+
+- **New: OAuth 2.1 for MCP servers.** A remote MCP server that requires
+  authentication is now connected by clicking **Connect** on the MCP tab (or
+  `vornikctl mcp connect`). Vornik discovers the server's authorization
+  requirements, registers itself, runs the consent flow, and refreshes the
+  token as needed — telling you when a revoked grant needs reconnecting.
+  Servers that use a static header or a subprocess credential are supported
+  through the same `auth:` block. Verified against the published discovery
+  behaviour of eighteen well-known MCP servers.
+- **New: ask another Vornik a question.** A synchronous `consult` tool lets one
+  deployment put a question to another and wait for the answer.
+- **New: write to memory from a conversation.** Ask the assistant to remember
+  something and it will, behind an explicit confirmation step and an opt-in per
+  channel. Personal-scope notes carry their own expiry.
+- **New: richer Slack.** Inbound images are understood, there is a real App Home
+  tab, a turn that is thinking shows that it is working, threads can be followed
+  up without a mention, `/vornik` works in a DM, and the slash-command name is
+  per-deployment.
+- **Behaviour change — chat allowlists now fail CLOSED.** An empty
+  `allowed_users` (Telegram) or `sender_allowlist` / `channel_allowlist` (Slack)
+  used to admit **everyone**. Both bots are publicly addressable, so an
+  unconfigured allowlist was an open door that looked like an unset field. If you
+  rely on the old behaviour, set `telegram.allow_unlisted_users: true` or Slack's
+  `allow_unlisted_senders: true` — deliberately, and for development only.
+  Telegram logs at boot which way it will behave.
+- **Fixed: the knowledge-graph extractor was discarding most of its input.** A
+  reasoning model was spending its whole token allowance thinking and returning
+  nothing, and an empty answer was being recorded as "found no entities" and the
+  chunk marked done — so the loss was permanent and silent. Truncation is now a
+  distinct, counted outcome with bounded retries, and the graph stages request a
+  low reasoning effort. **If you raised the graph token cap to work around this,
+  put it back:** a bigger cap makes each failure more expensive, not less likely.
+  Chunks already marked extracted do not self-heal — run
+  `vornikctl memory regraph --project <id>` to reclaim them.
+- **Fixed: email now tells you when a job finishes.** Previously it only did so
+  for tasks created a particular way, and never if the daemon restarted in
+  between. The notice no longer depends on a working model to compose itself.
+- **Fixed: the control-plane proposal diff.** A configuration edit could render
+  as a wall of deletions it was not making, because unrelated lines got
+  reformatted and the diff had no positional pairing. It also had a size limit
+  below the size of a real `config.yaml`, which made whole-file edits impossible
+  to apply.
+- **Fixed: adding an MCP server no longer needs a restart.** The change applied
+  and reloaded, but every consumer of the server list was still reading the
+  boot-time configuration — so the server did not exist and could not be
+  connected.
+- **Fixed: GDPR erasure reaches entangled records.** A memory chunk concerning
+  several people can now be redacted and re-embedded rather than reported as
+  deferred.
+- **Fixed:** cron mode ignored `autonomy.workflow_id`; MCP subscriptions pinned a
+  transport and broke stdio servers; host-filesystem MCP tools were not treated
+  as mutating; the "Test endpoint" button called an authentication-protected
+  server unreachable.
+
+!!! note "New configuration keys"
+    `telegram.allow_unlisted_users`, Slack `allow_unlisted_senders`. Both default
+    to the safe value. See the configuration reference.
 
 ---
 

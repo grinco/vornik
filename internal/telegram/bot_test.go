@@ -56,10 +56,11 @@ func TestBot_IsAllowed(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
 
 	tests := []struct {
-		name         string
-		allowedUsers map[int64]UserAccess
-		userID       int64
-		want         bool
+		name          string
+		allowedUsers  map[int64]UserAccess
+		allowUnlisted bool
+		userID        int64
+		want          bool
 	}{
 		{
 			name:         "user in allowlist",
@@ -74,18 +75,31 @@ func TestBot_IsAllowed(t *testing.T) {
 			want:         false,
 		},
 		{
-			name:         "empty allowlist allows all",
+			// Flipped 2026-08-05: a Telegram bot is addressable by anyone who
+			// knows its username, so an unconfigured allowlist was an open
+			// door that looked like an unset field.
+			name:         "empty allowlist DENIES",
 			allowedUsers: nil,
 			userID:       12345,
-			want:         true,
+			want:         false,
+		},
+		{
+			// ...and the dev-mode pass-through is still available, but has to
+			// be asked for.
+			name:          "empty allowlist with the explicit opt-in allows",
+			allowedUsers:  nil,
+			allowUnlisted: true,
+			userID:        12345,
+			want:          true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			bot, err := NewBot(BotConfig{
-				Token:        "test-token",
-				AllowedUsers: tt.allowedUsers,
+				Token:              "test-token",
+				AllowedUsers:       tt.allowedUsers,
+				AllowUnlistedUsers: tt.allowUnlisted,
 			}, chatClient)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.want, bot.IsAllowed(tt.userID))
@@ -104,7 +118,7 @@ func TestBot_SendMessage(t *testing.T) {
 	defer server.Close()
 
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "test-token"}, chatClient, WithHTTPClient(server.Client()))
+	bot, err := NewBot(BotConfig{Token: "test-token", AllowUnlistedUsers: true}, chatClient, WithHTTPClient(server.Client()))
 	assert.NoError(t, err)
 	bot.baseURL = server.URL
 
@@ -120,7 +134,7 @@ func TestBot_StartStop(t *testing.T) {
 	defer server.Close()
 
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "test-token"}, chatClient, WithHTTPClient(server.Client()))
+	bot, err := NewBot(BotConfig{Token: "test-token", AllowUnlistedUsers: true}, chatClient, WithHTTPClient(server.Client()))
 	assert.NoError(t, err)
 	bot.baseURL = server.URL
 
@@ -164,8 +178,7 @@ func TestBot_CheckRateLimit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			bot, err := NewBot(BotConfig{
 				Token:     "test-token",
-				RateLimit: tt.rateLimit,
-			}, chatClient)
+				RateLimit: tt.rateLimit, AllowUnlistedUsers: true}, chatClient)
 			assert.NoError(t, err)
 
 			for i := 0; i < tt.calls; i++ {
@@ -181,8 +194,7 @@ func TestBot_GetConversation_UsesConfiguredMaxHistory(t *testing.T) {
 
 	bot, err := NewBot(BotConfig{
 		Token:      "test-token",
-		MaxHistory: 3,
-	}, chatClient)
+		MaxHistory: 3, AllowUnlistedUsers: true}, chatClient)
 	assert.NoError(t, err)
 
 	conv := bot.getConversation(12345, "")
@@ -238,7 +250,7 @@ func TestHandleNew_ResetsConversation(t *testing.T) {
 
 func TestDownloadTelegramFile_RejectsPathTraversalFileName(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "test-token"}, chatClient)
+	bot, err := NewBot(BotConfig{Token: "test-token", AllowUnlistedUsers: true}, chatClient)
 	assert.NoError(t, err)
 
 	_, err = bot.DownloadTelegramFile(context.Background(), "file-id", "../escape.txt", t.TempDir())
@@ -261,7 +273,7 @@ func TestDownloadTelegramFile_WritesWithinDestination(t *testing.T) {
 	defer server.Close()
 
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "bot-token"}, chatClient, WithHTTPClient(server.Client()))
+	bot, err := NewBot(BotConfig{Token: "bot-token", AllowUnlistedUsers: true}, chatClient, WithHTTPClient(server.Client()))
 	assert.NoError(t, err)
 	bot.baseURL = server.URL
 	bot.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -314,7 +326,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func TestHandleHelp_ReturnsCommands(t *testing.T) {
-	bot, err := NewBot(BotConfig{Token: "test"}, nil)
+	bot, err := NewBot(BotConfig{Token: "test", AllowUnlistedUsers: true}, nil)
 	assert.NoError(t, err)
 
 	result := handleHelp(context.Background(), bot, 12345, 0)
@@ -330,7 +342,7 @@ func TestHandleHelp_ReturnsCommands(t *testing.T) {
 }
 
 func TestHandleProject_ShowsActiveProject(t *testing.T) {
-	bot, err := NewBot(BotConfig{Token: "test"}, nil)
+	bot, err := NewBot(BotConfig{Token: "test", AllowUnlistedUsers: true}, nil)
 	assert.NoError(t, err)
 
 	result := handleProject(context.Background(), bot, 12345, 0)
@@ -351,7 +363,7 @@ func TestCommandsMap_AllRegistered(t *testing.T) {
 }
 
 func TestNewBot_NilClient(t *testing.T) {
-	bot, err := NewBot(BotConfig{Token: "test"}, nil)
+	bot, err := NewBot(BotConfig{Token: "test", AllowUnlistedUsers: true}, nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, bot)
 	// Bot should be created successfully even with nil chat client
@@ -414,7 +426,7 @@ func TestBotMenuCommandsAreDocumented(t *testing.T) {
 }
 
 func TestBot_HandleNewResets(t *testing.T) {
-	bot, err := NewBot(BotConfig{Token: "test"}, nil)
+	bot, err := NewBot(BotConfig{Token: "test", AllowUnlistedUsers: true}, nil)
 	assert.NoError(t, err)
 
 	// handleNew clears the in-memory conversation and confirms a fresh session.
@@ -483,10 +495,29 @@ func TestUserAccess_CanAccessProject(t *testing.T) {
 // every project. This is the friction-free default for single-operator
 // deployments.
 func TestBot_UserCanAccessProject_NoAllowlist(t *testing.T) {
-	bot, err := NewBot(BotConfig{Token: "t"}, nil)
+	bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, nil)
 	assert.NoError(t, err)
 	assert.True(t, bot.UserCanAccessProject(12345, "snake"))
 	assert.True(t, bot.UserCanAccessProject(99999, "assistant"))
+}
+
+// TestBot_FailsClosedWithoutAnAllowlist is the security assertion for the
+// 2026-08-05 default flip, kept separate from the dev-mode tests above so a
+// future sweep that adds AllowUnlistedUsers to fixtures cannot quietly delete
+// it — which is exactly what the sweep accompanying this change would
+// otherwise have done.
+//
+// A Telegram bot is addressable by anyone who knows its username. An
+// unconfigured allowlist therefore did not mean "not restricted yet"; it meant
+// "anyone who finds this bot can drive it, spend its budget and reach its
+// tools", and nothing in the config said so.
+func TestBot_FailsClosedWithoutAnAllowlist(t *testing.T) {
+	bot, err := NewBot(BotConfig{Token: "t"}, nil)
+	assert.NoError(t, err)
+	assert.False(t, bot.IsAllowed(12345),
+		"an empty allowed_users must DENY, not admit every Telegram user")
+	assert.False(t, bot.UserCanAccessProject(12345, "snake"),
+		"project access must follow the same default as IsAllowed")
 }
 
 // TestBot_UserCanAccessProject_Scoped is the main per-user scoping

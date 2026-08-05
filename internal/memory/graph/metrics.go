@@ -151,7 +151,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 				Namespace: graphNamespace,
 				Subsystem: graphSubsystem,
 				Name:      "extractor_outcomes_total",
-				Help:      "Per-chunk extractor outcome (empty_response = LLM returned nothing; dropped_all_invalid = all candidates filtered; produced = ≥1 candidate kept).",
+				Help:      "Per-chunk extractor outcome. truncated = the model never answered (cut off at the token ceiling; an infrastructure fault — a bigger model or cap makes it worse, lower the reasoning effort). empty_response = it answered and found no entities. dropped_all_invalid = all candidates filtered. produced = >=1 candidate kept.",
 			},
 			[]string{"outcome"},
 		),

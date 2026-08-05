@@ -25,7 +25,7 @@ func newTestBotWithStub(t *testing.T, server *httptest.Server, opts ...BotOption
 	t.Helper()
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
 	allOpts := append([]BotOption{WithHTTPClient(server.Client())}, opts...)
-	bot, err := NewBot(BotConfig{Token: "test-token"}, chatClient, allOpts...)
+	bot, err := NewBot(BotConfig{Token: "test-token", AllowUnlistedUsers: true}, chatClient, allOpts...)
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}

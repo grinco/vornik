@@ -70,10 +70,26 @@ const (
 // cycle.
 const CostAutoApplyActor = "cost-auto-apply"
 
-// ProposalMaxFieldBytes caps the free-text fields (diff / rationale / evidence
-// / pre_apply_snapshot) at 64 KiB — matches the knowledge-skill body cap.
-// Create rejects an oversized field rather than truncating.
+// ProposalMaxFieldBytes caps the free-text fields (diff / rationale /
+// evidence) at 64 KiB — matches the knowledge-skill body cap. Create rejects
+// an oversized field rather than truncating. These are prose rendered into
+// the review pane, so a tight bound is the point.
 const ProposalMaxFieldBytes = 65536
+
+// ProposalMaxContentBytes caps the WHOLE-FILE fields — apply_content, the
+// pre_apply_snapshot taken from the same file, and apply_ops (whose JSON
+// embeds per-op content). A config file is not prose and does not belong
+// under the free-text bound.
+//
+// Split out 2026-08-05 after the two shared one 64 KiB cap. The live
+// config.yaml had grown to 81 KB, and `apply_content` was the one field
+// Create did NOT validate — so the hub cheerfully created a daemon-scope MCP
+// proposal, showed a clean diff, and Apply then refused it with
+// ErrContentTooLarge before any write. Every whole-file config edit through
+// the control-plane hub was un-appliable on that deployment, reported as a
+// generic "apply failed". Storage was never the constraint: all three columns
+// are TEXT.
+const ProposalMaxContentBytes = 1 << 20 // 1 MiB
 
 // ErrProposalFieldTooLarge is returned by Create when a text field exceeds
 // ProposalMaxFieldBytes.

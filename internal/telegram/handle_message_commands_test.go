@@ -208,9 +208,10 @@ func TestHandleMessage_NewCommand(t *testing.T) {
 func TestHandleMessage_SaveAndLoad(t *testing.T) {
 	dir := t.TempDir()
 	cfg := BotConfig{
-		Token:        "tok",
-		SessionPath:  filepath.Join(dir, "sessions.json"),
-		AllowedUsers: map[int64]UserAccess{42: {Allowed: true, Projects: []string{"*"}}},
+		AllowUnlistedUsers: true, // dev-mode fixture: empty allowed_users denies since 2026-08-05
+		Token:              "tok",
+		SessionPath:        filepath.Join(dir, "sessions.json"),
+		AllowedUsers:       map[int64]UserAccess{42: {Allowed: true, Projects: []string{"*"}}},
 	}
 	b, rec := newBotWithRecorder(t, cfg)
 

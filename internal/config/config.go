@@ -2549,9 +2549,17 @@ type TelegramConfig struct {
 	Enabled      bool                  `yaml:"enabled" doc:"Turn the Telegram bot on."`
 	BotToken     string                `yaml:"bot_token" doc:"Bot token. Prefer an environment variable."`
 	AllowedUsers map[string]UserAccess `yaml:"allowed_users" doc:"Map of Telegram user ID to access. true = full access; a list of project IDs scopes the user. Absent users are denied."` // user IDs as strings for YAML parsing
-	RateLimit    int                   `yaml:"rate_limit" doc:"Requests per minute per user."`                                                                                             // requests per minute per user
-	SessionPath  string                `yaml:"session_path" doc:"Path for conversation persistence (empty = none)."`                                                                       // path for conversation persistence (empty = no persistence)
-	SessionTTL   string                `yaml:"session_ttl" doc:"Auto-expire idle sessions (e.g. 24h)."`                                                                                    // auto-expire idle sessions (e.g. "24h"); empty = disabled
+
+	// AllowUnlistedUsers restores the pre-2026-08-05 fail-OPEN behaviour of
+	// an EMPTY allowed_users admitting every Telegram user. A Telegram bot is
+	// addressable by anyone who knows its username, so an unconfigured
+	// allowlist was not a private default — it was an open one that looked
+	// like an unset one. Opting back in has to be deliberate and visible in
+	// the config.
+	AllowUnlistedUsers bool   `yaml:"allow_unlisted_users" doc:"When allowed_users is empty, admit every Telegram user (dev only). Default false = deny."`
+	RateLimit          int    `yaml:"rate_limit" doc:"Requests per minute per user."`                       // requests per minute per user
+	SessionPath        string `yaml:"session_path" doc:"Path for conversation persistence (empty = none)."` // path for conversation persistence (empty = no persistence)
+	SessionTTL         string `yaml:"session_ttl" doc:"Auto-expire idle sessions (e.g. 24h)."`              // auto-expire idle sessions (e.g. "24h"); empty = disabled
 	// DispatcherProjectID pins the project_id written on every
 	// dispatcher LLM usage row to a single project (typically a
 	// dedicated "assistant"). Without this, every chat round-
@@ -3210,17 +3218,39 @@ type MemoryTitlerConfig struct {
 // prefix; operators on different deployments can pin to whatever
 // the router knows about (anthropic.*, qwen.*, nvidia.*, etc.).
 //
-// Tuning note (2026-05-25 audit): the live KG showed 67% of
-// chunks producing zero entity mentions, with sampled chunks
-// containing clearly extractable in-vocab content. The
-// post-2026-05-25 prompt update (few-shot research/CV/review
-// examples) is the cheap fix; if the empty-extraction rate
-// (`vornik_memory_graph_extractor_outcomes_total{outcome=
-// "empty_response"}`) stays elevated, bumping ExtractorModel to
-// a 30b+ open-weight (qwen.qwen3-6-35b, gpt-oss-120b) is the
-// recommended next step. The trade-off is per-chunk LLM cost
-// for materially better recall. See BACKLOG §"KG extractor
-// under-extracts on research-style chunks".
+// Tuning note — READ THIS BEFORE CHANGING ExtractorModel.
+//
+// An earlier version of this comment advised that a high
+// `empty_response` rate meant the model was too small, and
+// recommended bumping the extractor to a 30b+ open-weight such as
+// gpt-oss-120b. That advice was wrong and it cost this project two
+// months of silent data loss. Following it on 2026-06-13 put a
+// REASONING model on the extractor, which then spent its entire
+// token allowance thinking and returned empty content on 83.3% of
+// calls (1332 finish_reason=length against 978 stop over 24h) —
+// and every one of those was recorded as `empty_response`, marked
+// extracted, and lost permanently. A metric that means "the model
+// found nothing" and a metric that means "the model never answered"
+// had been collapsed into one label, so the fix looked like it was
+// working while it was making things worse.
+//
+// Since 2026-08-05 the two are distinct outcomes:
+//
+//   - `truncated`      — the model never answered. This is an
+//     INFRASTRUCTURE fault, not a capability one. A bigger model
+//     makes it more likely, and a bigger token cap only makes each
+//     failure more expensive (measured: raising 8192→16384 led to a
+//     call consuming all 16384 and still returning nothing). The
+//     remedy is reasoning effort, which the graph stages now request
+//     as "low" unconditionally — entity extraction is recall over a
+//     closed vocabulary and does not reward deliberation.
+//   - `empty_response` — the model answered and genuinely found no
+//     entities. THIS is the signal the advice below applies to.
+//
+// So: only consider a larger ExtractorModel when `empty_response`
+// is elevated while `truncated` is near zero. Prefer a non-reasoning
+// instruct model at any size; if you do pin a reasoning model, watch
+// `truncated` for a week afterwards.
 type MemoryGraphConfig struct {
 	Enabled bool `yaml:"enabled" doc:"Knowledge-graph extraction pipeline."`
 

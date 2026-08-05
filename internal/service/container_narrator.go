@@ -49,7 +49,7 @@ func (c *Container) initNarrator() {
 		Audit:           c.repos.ChatAudit,
 		Resolver:        &containerChannelResolver{c: c},
 		ProjectSettings: c.narratorProjectSettings,
-		BaseURL:         c.Config.Auth.ExternalBaseURL,
+		BaseURL:         c.Config.PublicOrigin(),
 	}
 	if len(c.Config.Narrator.ChatMilestoneKinds) > 0 {
 		n.ChatMilestoneKinds = c.Config.Narrator.ChatMilestoneKinds

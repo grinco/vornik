@@ -80,6 +80,53 @@ func seedProposal(t *testing.T, repo persistence.ProposalRepository, id, title, 
 	}
 }
 
+// TestAdminControlPlane_DiffPreviewNotTruncated is the regression test for
+// the 2026-08-05 "scary diff" report: cpLedgerRow used to cap DiffPreview at
+// 600 chars (skillBodyPreview), so a reformat-heavy config diff (see
+// TestUnifiedish_PairsChangesByPosition) routinely got cut off mid-way
+// through the removed-lines block, before the paired additions ever
+// rendered — the operator saw only deletions and nothing to show they were
+// reformatted, not lost. The row already scrolls (max-h-40 overflow-auto in
+// admin_control_plane.html), so the extra char-level cap served no purpose
+// beyond hiding content.
+func TestAdminControlPlane_DiffPreviewNotTruncated(t *testing.T) {
+	repo := newProposalRepoUI(t)
+	longLine := strings.Repeat("x", 50)
+	var diff strings.Builder
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&diff, "- old %s %d\n", longLine, i)
+	}
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&diff, "+ new %s %d\n", longLine, i)
+	}
+	fullDiff := diff.String()
+	if len(fullDiff) <= 600 {
+		t.Fatalf("test fixture must exceed the old 600-char cap, got %d chars", len(fullDiff))
+	}
+	p := &persistence.ControlPlaneProposal{
+		ID: "d-long", ProjectID: "janka", Kind: persistence.ProposalKindConfig,
+		BlastRadius: persistence.ProposalScopeProject, Title: "long diff",
+		Status: persistence.ProposalStatusDraft, ProposedBy: "operator-ui",
+		ApplyTarget: "config.yaml", ApplyContent: "x: 1\n", Diff: fullDiff,
+	}
+	if err := repo.Create(context.Background(), p); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	s := NewServer(WithProposalStore(repo))
+	rec := httptest.NewRecorder()
+	s.AdminControlPlane(rec, httptest.NewRequest(http.MethodGet, "/admin/control-plane?section=proposals", nil))
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if !strings.Contains(body, "new "+longLine+" 19") {
+		t.Errorf("full diff must render — last added line was truncated away")
+	}
+	if strings.Contains(body, "old "+longLine+" 0…") {
+		t.Errorf("diff must not be cut off with an ellipsis")
+	}
+}
+
 func TestAdminControlPlane_RendersAndEscapes(t *testing.T) {
 	repo := newProposalRepoUI(t)
 	seedProposal(t, repo, "d1", "draft <script>alert(1)</script>", persistence.ProposalStatusDraft, false, "agent")

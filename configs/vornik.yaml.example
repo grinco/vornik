@@ -716,11 +716,41 @@ memory:
   # https://docs.vornik.io
   graph:
     enabled: false
+    # Per-stage models. Commented values are the built-in defaults.
+    #
+    # CHOOSING A MODEL — the one mistake worth warning about.
+    #
+    # These stages are extraction and classification, not reasoning. Putting a
+    # REASONING model here (the gpt-oss family, o-series, and similar) is
+    # actively counter-productive: such a model treats the output-token
+    # allowance as a budget for thinking first and answering second, and on a
+    # short structured-extraction prompt it can spend the whole thing
+    # deliberating and return nothing at all.
+    #
+    # This is not hypothetical. On the reference deployment, moving the
+    # extractor to gpt-oss-120b to improve recall produced empty output on
+    # 83.3% of calls (1332 finish_reason=length against 978 stop over 24h).
+    # Vornik now requests reasoning_effort=low for every graph stage, which
+    # fixes it where the provider honours that hint (measured on Bedrock
+    # gpt-oss-120b: 16384 tokens and no answer, versus 785 tokens and a
+    # correct one). Where it is NOT honoured, prefer a non-reasoning instruct
+    # model of any size.
+    #
+    # Watch vornik_memory_graph_extractor_outcomes_total after any change:
+    #   outcome="truncated"      the model never answered — infrastructure
+    #                            fault. A bigger model or a bigger token cap
+    #                            makes this WORSE, not better.
+    #   outcome="empty_response" the model answered and found nothing — this
+    #                            is the one a better model can help with.
     # extractor_model:    "openai.gpt-oss-20b-1:0"
     # resolver_model:     "openai.gpt-oss-20b-1:0"
     # validator_model:    "openai.gpt-oss-20b-1:0"
     # relationship_model: "openai.gpt-oss-120b-1:0"
     poll_interval_seconds: 30
+    # batch_size x (60/poll_interval_seconds) is the per-hour drain rate — at
+    # these defaults, 1200 chunks/hour. Raise both for a large backfill; a
+    # re-extraction sweep over tens of thousands of chunks otherwise runs for
+    # many hours, and the cost lands at whatever rate you pick.
     batch_size: 10
     max_parallel: 1
 

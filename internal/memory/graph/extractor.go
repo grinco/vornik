@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -94,6 +95,14 @@ const (
 	// ExtractOutcomeProduced — at least one valid candidate
 	// survived to the resolver stage. The healthy path.
 	ExtractOutcomeProduced = "produced"
+	// ExtractOutcomeTruncated — the provider cut the completion off at
+	// the token ceiling (finish_reason=length). Split out from
+	// empty_response on 2026-08-05: the two were indistinguishable in
+	// the metric, and conflating them is what hid a 83.3% silent loss
+	// rate behind a label that reads like a model-quality problem.
+	// A truncation is an infrastructure failure and the chunk is NOT
+	// marked extracted for it.
+	ExtractOutcomeTruncated = "truncated"
 )
 
 // Extractor runs Stage 1 of the KG pipeline: pure named-entity
@@ -190,6 +199,24 @@ func (e *Extractor) Extract(ctx context.Context, content string) ([]Candidate, *
 	}
 
 	resp, err := completeWithRetry(ctx, client, msgs, maxAttempts)
+	if errors.Is(err, ErrTruncatedCompletion) {
+		// Report the truncation with its token counts intact — the whole
+		// point is that this call BURNED a full budget and produced nothing,
+		// so it must be visible in both the outcome counter and the spend.
+		// Returning an error is what keeps the chunk flagged; the worker
+		// bounds the resulting retries.
+		m := &ExtractMetrics{Model: e.Model, Outcome: ExtractOutcomeTruncated}
+		if resp != nil {
+			m.PromptTokens = resp.Usage.PromptTokens
+			m.CompletionTokens = resp.Usage.CompletionTokens
+			if resp.Model != "" {
+				m.Model = resp.Model
+			}
+		}
+		// No "extractor:" prefix — the pipeline already wraps this stage's
+		// error with one, and doubling it reads as a bug in the log line.
+		return nil, m, err
+	}
 	if err != nil {
 		return nil, &ExtractMetrics{Model: e.Model}, fmt.Errorf("extractor LLM call failed: %w", err)
 	}

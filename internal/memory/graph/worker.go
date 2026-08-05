@@ -25,6 +25,16 @@ import (
 // Single-instance for now. Multi-instance deploys would need
 // FOR UPDATE SKIP LOCKED on FetchUnextracted; not worth the
 // complexity until backlog metrics justify horizontal scaling.
+// MaxExtractionAttempts bounds how many consecutive times a single chunk may
+// fail extraction before it is quarantined (flag cleared, error retained).
+//
+// Three is deliberately low. The failures this bounds are systemic — a
+// truncating model, a wedged gateway — not flaky ones, so extra attempts buy
+// nothing and cost a full token budget each. Requeueing is a deliberate
+// operator gesture (`vornikctl memory regraph`) after the cause is fixed,
+// which is also when a re-run has any chance of a different answer.
+const MaxExtractionAttempts = 3
+
 type Worker struct {
 	source   persistence.ChunkGraphExtractionRepository
 	pipeline *Pipeline
@@ -323,10 +333,36 @@ func (w *Worker) runOne(ctx context.Context, c persistence.ChunkForExtraction) b
 		if w.metrics != nil {
 			w.metrics.ChunksExtractedTotal.WithLabelValues("failed").Inc()
 		}
-		w.logger.Warn().Err(err).
-			Str("chunk_id", c.ID).
-			Str("project_id", c.ProjectID).
-			Msg("KG worker: pipeline run failed; chunk stays flagged")
+		// Count the failure and quarantine the chunk once it has burned
+		// MaxExtractionAttempts. Without the bound, a systemic failure —
+		// truncation being the one that prompted this — re-attempts the same
+		// chunks every tick at a full token budget, forever.
+		attempts, quarantined, rErr := w.source.RecordExtractionFailure(
+			ctx, c.ID, err.Error(), MaxExtractionAttempts)
+		switch {
+		case rErr != nil:
+			w.logger.Warn().Err(rErr).Str("chunk_id", c.ID).
+				Msg("KG worker: could not record extraction failure; chunk stays flagged")
+		case quarantined:
+			if w.metrics != nil {
+				w.metrics.ChunksExtractedTotal.WithLabelValues("quarantined").Inc()
+			}
+			// Warn, not Debug: this chunk is now permanently absent from the
+			// graph until someone re-flags it, and the whole point of the
+			// change is that such a gap is never silent again.
+			w.logger.Warn().Err(err).
+				Str("chunk_id", c.ID).
+				Str("project_id", c.ProjectID).
+				Int("attempts", attempts).
+				Msg("KG worker: chunk quarantined after repeated extraction failures; " +
+					"re-flag with `vornikctl memory regraph` once the cause is fixed")
+		default:
+			w.logger.Warn().Err(err).
+				Str("chunk_id", c.ID).
+				Str("project_id", c.ProjectID).
+				Int("attempts", attempts).
+				Msg("KG worker: pipeline run failed; chunk stays flagged")
+		}
 		return false
 	}
 	if mErr := w.source.MarkExtracted(ctx, c.ID); mErr != nil {

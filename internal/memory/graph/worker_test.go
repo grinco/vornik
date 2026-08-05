@@ -18,12 +18,16 @@ import (
 // MarkExtracted calls. Concurrency-safe so tests can exercise
 // MaxParallel > 1.
 type fakeChunkSource struct {
-	mu         sync.Mutex
-	queue      []persistence.ChunkForExtraction
-	marked     []string
-	fetchErr   error
-	markErrFor map[string]error
-	fetchCalls atomic.Int32
+	mu          sync.Mutex
+	queue       []persistence.ChunkForExtraction
+	marked      []string
+	fetchErr    error
+	markErrFor  map[string]error
+	fetchCalls  atomic.Int32
+	attempts    map[string]int
+	failReasons map[string]string
+	quarantined []string
+	failErr     error
 }
 
 func (f *fakeChunkSource) FetchUnextracted(_ context.Context, limit int) ([]persistence.ChunkForExtraction, error) {
@@ -51,6 +55,30 @@ func (f *fakeChunkSource) MarkExtracted(_ context.Context, chunkID string) error
 	}
 	f.marked = append(f.marked, chunkID)
 	return nil
+}
+
+// RecordExtractionFailure mirrors the real repositories: count consecutive
+// failures per chunk and report quarantine once the count reaches maxAttempts.
+func (f *fakeChunkSource) RecordExtractionFailure(_ context.Context, chunkID, reason string, maxAttempts int) (int, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failErr != nil {
+		return 0, false, f.failErr
+	}
+	if f.attempts == nil {
+		f.attempts = map[string]int{}
+	}
+	if f.failReasons == nil {
+		f.failReasons = map[string]string{}
+	}
+	f.attempts[chunkID]++
+	f.failReasons[chunkID] = reason
+	n := f.attempts[chunkID]
+	if n >= maxAttempts {
+		f.quarantined = append(f.quarantined, chunkID)
+		return n, true, nil
+	}
+	return n, false, nil
 }
 
 func (f *fakeChunkSource) PendingCount(context.Context) (int, error) {
@@ -262,5 +290,77 @@ func TestWorker_ParallelDoesNotDuplicate(t *testing.T) {
 			t.Errorf("duplicate mark for %s", id)
 		}
 		seen[id] = struct{}{}
+	}
+}
+
+// truncatingPipeline always truncates in the extractor stage — the systemic
+// failure this bound exists for.
+func truncatingPipeline() *Pipeline {
+	entRepo := &fakeEntityRepoForPipeline{}
+	return &Pipeline{
+		Extractor: NewExtractor(newTruncatingProvider(), "ex"),
+		Resolver:  NewResolver(newRepeatingProvider(``), "res", entRepo, fakeEmbedder),
+		Relations: NewRelationshipExtractor(newRepeatingProvider(``), "rel"),
+		Validator: NewValidator(newRepeatingProvider(``), "val"),
+		Entities:  entRepo,
+		Edges:     &fakeEdgeRepo{},
+		Mentions:  &fakeMentionRepo{},
+		Embedder:  fakeEmbedder,
+	}
+}
+
+// TestWorker_QuarantinesAfterRepeatedTruncation pins the bound that makes
+// treating truncation as an error safe.
+//
+// Before 2026-08-05 a truncated completion was laundered into "no entities
+// found" and the chunk marked extracted — silent, permanent data loss.
+// Reporting it honestly fixes that, but needs_graph_extraction is a boolean
+// with no memory, so on its own the fix would re-attempt the same ~83% of
+// chunks every tick at a full token budget: a silent data-loss bug traded for
+// a loud spend bug. The counter is what makes the honest failure affordable.
+func TestWorker_QuarantinesAfterRepeatedTruncation(t *testing.T) {
+	src := &fakeChunkSource{}
+	w := NewWorker(src, truncatingPipeline(), zerolog.New(io.Discard), WorkerConfig{BatchSize: 5})
+
+	const chunkID = "c-truncating"
+	chunk := persistence.ChunkForExtraction{ID: chunkID, ProjectID: "p1", Content: "names Ada"}
+	for attempt := 1; attempt <= MaxExtractionAttempts; attempt++ {
+		w.runOne(context.Background(), chunk)
+	}
+
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if got := src.attempts[chunkID]; got != MaxExtractionAttempts {
+		t.Errorf("attempts = %d, want %d", got, MaxExtractionAttempts)
+	}
+	if len(src.quarantined) != 1 || src.quarantined[0] != chunkID {
+		t.Errorf("chunk must be quarantined once the bound is reached, got %v", src.quarantined)
+	}
+	// Never silently marked done — that is the laundering this replaces.
+	for _, id := range src.marked {
+		if id == chunkID {
+			t.Fatal("a truncated chunk must never be marked extracted")
+		}
+	}
+	if src.failReasons[chunkID] == "" {
+		t.Error("the failure reason must be retained so the gap is diagnosable")
+	}
+}
+
+// TestWorker_SingleFailureStaysFlagged — under the bound the chunk keeps its
+// flag, so a genuinely transient failure still self-heals on the next tick.
+func TestWorker_SingleFailureStaysFlagged(t *testing.T) {
+	src := &fakeChunkSource{}
+	w := NewWorker(src, truncatingPipeline(), zerolog.New(io.Discard), WorkerConfig{BatchSize: 5})
+
+	w.runOne(context.Background(), persistence.ChunkForExtraction{ID: "c1", ProjectID: "p1", Content: "x"})
+
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	if len(src.quarantined) != 0 {
+		t.Errorf("one failure must not quarantine, got %v", src.quarantined)
+	}
+	if src.attempts["c1"] != 1 {
+		t.Errorf("attempts = %d, want 1", src.attempts["c1"])
 	}
 }

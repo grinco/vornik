@@ -298,6 +298,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | `telegram.enabled` | bool | Turn the Telegram bot on. |
 | `telegram.bot_token` | string | Bot token. Prefer an environment variable. |
 | `telegram.allowed_users` | map | Map of Telegram user ID to access. true = full access; a list of project IDs scopes the user. Absent users are denied. |
+| `telegram.allow_unlisted_users` | bool | When allowed_users is empty, admit every Telegram user (dev only). Default false = deny. |
 | `telegram.rate_limit` | int | Requests per minute per user. |
 | `telegram.session_path` | string | Path for conversation persistence (empty = none). |
 | `telegram.session_ttl` | string | Auto-expire idle sessions (e.g. 24h). |

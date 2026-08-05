@@ -252,3 +252,78 @@ func TestShortenError(t *testing.T) {
 type stringError []byte
 
 func (s stringError) Error() string { return string(s) }
+
+// TestRegistry_SetServersPicksUpAConfigReload is the regression test for the
+// 2026-08-05 operator report: "the mcp config was applied, but not reloaded —
+// it requires restart".
+//
+// The tool-serving manager reconciled on reload, so an added server actually
+// WORKED. This discovery catalog did not, so the MCP tab kept showing the old
+// set — with the proposal that made the change claiming "applies live". A
+// surface that misreports is worse than one that plainly does not work: the
+// operator restarted the daemon to fix something that was not broken.
+func TestRegistry_SetServersPicksUpAConfigReload(t *testing.T) {
+	r := NewRegistry([]ServerConfig{
+		{Name: "existing", Transport: "sse", URL: "http://existing"},
+	}, 0, zerolog.Nop())
+
+	// Pretend the first refresh landed, so we can prove it survives.
+	r.mu.Lock()
+	r.catalog["existing"] = ServerSnapshot{
+		Name: "existing", Transport: "sse", URL: "http://existing",
+		Reachable: true, Tools: []Tool{{Name: "do_thing"}},
+	}
+	r.mu.Unlock()
+
+	r.SetServers([]ServerConfig{
+		{Name: "existing", Transport: "sse", URL: "http://existing"},
+		{Name: "atlassian", Transport: "streamable-http", URL: "https://mcp.atlassian.com/v1/mcp/authv2"},
+	})
+
+	snap := r.Snapshot(context.Background())
+	byName := map[string]ServerSnapshot{}
+	for _, s := range snap {
+		byName[s.Name] = s
+	}
+	if len(snap) != 2 {
+		t.Fatalf("servers = %d, want 2 — a reload-added server must appear without a restart", len(snap))
+	}
+	// The new one renders immediately rather than waiting for a probe.
+	if got, ok := byName["atlassian"]; !ok || got.URL != "https://mcp.atlassian.com/v1/mcp/authv2" {
+		t.Errorf("added server missing or wrong: %+v", got)
+	}
+	// ...and adding it must NOT blank the health of the one already there.
+	if got := byName["existing"]; !got.Reachable || len(got.Tools) != 1 {
+		t.Errorf("existing server lost its snapshot on reload: %+v", got)
+	}
+	if r.ServerCount() != 2 {
+		t.Errorf("ServerCount = %d, want 2", r.ServerCount())
+	}
+}
+
+// TestRegistry_SetServersDropsRemovedAndRetargeted — a removed server must
+// disappear, and one whose endpoint changed must not keep reporting the OLD
+// endpoint's health, which would be a stale green badge on a URL nobody is
+// talking to any more.
+func TestRegistry_SetServersDropsRemovedAndRetargeted(t *testing.T) {
+	r := NewRegistry([]ServerConfig{
+		{Name: "gone", Transport: "sse", URL: "http://gone"},
+		{Name: "moved", Transport: "sse", URL: "http://old"},
+	}, 0, zerolog.Nop())
+	r.mu.Lock()
+	r.catalog["moved"] = ServerSnapshot{Name: "moved", Transport: "sse", URL: "http://old", Reachable: true}
+	r.mu.Unlock()
+
+	r.SetServers([]ServerConfig{{Name: "moved", Transport: "sse", URL: "http://new"}})
+
+	snap := r.Snapshot(context.Background())
+	if len(snap) != 1 || snap[0].Name != "moved" {
+		t.Fatalf("removed server must be dropped, got %+v", snap)
+	}
+	if snap[0].URL != "http://new" {
+		t.Errorf("URL = %q, want the new endpoint", snap[0].URL)
+	}
+	if snap[0].Reachable {
+		t.Error("a retargeted server must not inherit the old endpoint's reachability")
+	}
+}

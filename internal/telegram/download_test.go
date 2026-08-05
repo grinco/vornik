@@ -63,7 +63,7 @@ func TestDownloadFileEnforcesSizeCap(t *testing.T) {
 	}
 
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "unused"}, chatClient, WithHTTPClient(hc))
+	bot, err := NewBot(BotConfig{Token: "unused", AllowUnlistedUsers: true}, chatClient, WithHTTPClient(hc))
 	require.NoError(t, err)
 
 	destDir := t.TempDir()
@@ -115,7 +115,7 @@ func TestSendDocumentStreams(t *testing.T) {
 		Transport: &rewritingTransport{base: http.DefaultTransport, targetHost: server.URL},
 	}
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "unused"}, chatClient, WithHTTPClient(hc))
+	bot, err := NewBot(BotConfig{Token: "unused", AllowUnlistedUsers: true}, chatClient, WithHTTPClient(hc))
 	require.NoError(t, err)
 
 	require.NoError(t, bot.sendDocument(context.Background(), 12345, srcPath, "test caption"))
@@ -144,7 +144,7 @@ func TestDownloadFileAllowsUnderLimit(t *testing.T) {
 	}
 
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "unused"}, chatClient, WithHTTPClient(hc))
+	bot, err := NewBot(BotConfig{Token: "unused", AllowUnlistedUsers: true}, chatClient, WithHTTPClient(hc))
 	require.NoError(t, err)
 
 	destDir := t.TempDir()

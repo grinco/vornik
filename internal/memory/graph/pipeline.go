@@ -128,6 +128,14 @@ func (p *Pipeline) RunChunk(ctx context.Context, chunk ChunkInput) (*PipelineMet
 	cands, em, err := p.Extractor.Extract(ctx, chunk.Content)
 	metrics.Extract = em
 	if err != nil {
+		// Emit before returning. A truncation carries an outcome AND the token
+		// counts for a call that burned a full budget and produced nothing —
+		// exactly the thing that has to be countable. Returning first left
+		// extractor_outcomes_total blank for every failure, which is the same
+		// invisibility the truncation work exists to remove; caught on the
+		// live deployment 2026-08-05, where three real truncations produced no
+		// outcome sample at all.
+		p.emitExtractorMetrics(metrics)
 		return metrics, fmt.Errorf("extractor: %w", err)
 	}
 	// Emit the extractor metrics IMMEDIATELY — including the empty-

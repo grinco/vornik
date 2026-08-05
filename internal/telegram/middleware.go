@@ -8,12 +8,15 @@ import (
 // all. Project scoping (which projects they can /project into) is a
 // separate question answered by UserCanAccessProject.
 //
-// If no allowlist is configured (empty map), any user is allowed —
-// keeps the dev/single-user path frictionless. Explicit Allowed:false
-// entries are treated the same as missing (unauthorized).
+// An EMPTY allowlist DENIES (2026-08-05). It used to admit everyone, which
+// made an unconfigured bot open to anyone who found it — a Telegram bot is
+// publicly addressable by username, so "no allowlist" was not a private
+// default. Set telegram.allow_unlisted_users: true to keep the old
+// dev-mode behaviour deliberately. Explicit Allowed:false entries are
+// treated the same as missing (unauthorized).
 func (b *Bot) IsAllowed(userID int64) bool {
 	if len(b.config.AllowedUsers) == 0 {
-		return true
+		return b.config.AllowUnlistedUsers
 	}
 	return b.config.AllowedUsers[userID].Allowed
 }
@@ -22,11 +25,11 @@ func (b *Bot) IsAllowed(userID int64) bool {
 // into projectID or see it in list_projects output. Unauthorized users
 // return false regardless of projectID.
 //
-// When no allowlist is configured at all (dev mode), every user sees
-// every project — same "no restrictions" semantics as IsAllowed.
+// When no allowlist is configured at all, this follows IsAllowed: denied
+// unless allow_unlisted_users opts the deployment back into dev mode.
 func (b *Bot) UserCanAccessProject(userID int64, projectID string) bool {
 	if len(b.config.AllowedUsers) == 0 {
-		return true
+		return b.config.AllowUnlistedUsers
 	}
 	ua, ok := b.config.AllowedUsers[userID]
 	if !ok {

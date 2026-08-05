@@ -85,7 +85,10 @@ func (c *Container) mcpConnector() *mcpconnect.Connector {
 // mcpDesiredServers does at wiring time — otherwise `vornikctl mcp connect` would report "no such
 // server" for the name-only subscription shape the project form emits.
 func (c *Container) mcpServerRef(projectID, serverName string) (mcpconnect.ServerRef, bool) {
-	daemonServers := daemonMCPServersByName(c.Config)
+	// LIVE catalog, not c.Config: a server added by a config reload must be
+	// resolvable by `vornikctl mcp connect`, which is the whole point of
+	// adding it. c.Config is pinned to boot.
+	daemonServers := indexMCPServersByName(c.daemonMCPServers())
 
 	if projectID == "" {
 		s, ok := daemonServers[serverName]

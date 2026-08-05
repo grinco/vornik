@@ -55,6 +55,7 @@ func (c *Container) buildSessionLogin() *sessionLoginWiring {
 	}
 	if c.Config != nil {
 		deps.Auth = c.Config.Auth
+		deps.PublicOrigin = c.Config.PublicOrigin()
 	}
 	if c.repos != nil {
 		deps.Identity = c.repos.Identity

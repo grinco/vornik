@@ -128,7 +128,7 @@ func intToStr(n int64) string {
 func newTestBotWithRecorder(t *testing.T, reg *registry.Registry, rec *telegramRecorder) *Bot {
 	t.Helper()
 	chatClient := chat.NewClient("https://example.com", "k", "m")
-	bot, err := NewBot(BotConfig{Token: "tok"}, chatClient,
+	bot, err := NewBot(BotConfig{Token: "tok", AllowUnlistedUsers: true}, chatClient,
 		WithHTTPClient(rec.server.Client()),
 		WithRegistry(reg),
 	)

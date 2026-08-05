@@ -1179,3 +1179,38 @@ func TestHandleWebhook_ChannelAllowlistStillGatesSharedChannels(t *testing.T) {
 			"still be refused", got)
 	}
 }
+
+// TestSlackFailsClosedWithoutAnAllowlist is the security assertion for the
+// 2026-08-05 default flip, kept separate from the routing fixtures so a sweep
+// that adds AllowUnlistedSenders to them cannot quietly delete it.
+//
+// A Slack bot is addressable by every member of the workspace it is installed
+// in. An empty sender_allowlist therefore did not mean "not restricted yet" —
+// it meant the whole workspace could drive this project's dispatcher, spend
+// its budget and reach its tools, with nothing in the config saying so. The
+// live deployment had exactly that: assistant.yaml carried an empty
+// sender_allowlist with the comment "empty = allow everyone (dev mode)".
+func TestSlackFailsClosedWithoutAnAllowlist(t *testing.T) {
+	closed := &installation{projectID: "p"}
+	if _, err := (&Channel{}).resolveSpeakerForInstallation(closed, "U_anyone"); err == nil {
+		t.Error("an empty sender_allowlist must DENY, not admit every workspace member")
+	}
+	if (&Channel{installations: []*installation{closed}}).anyInstallationAllowsSpeaker("U_anyone") {
+		t.Error("anyInstallationAllowsSpeaker must not pass an unlisted sender on an empty allowlist")
+	}
+
+	// The dev-mode pass-through survives, but has to be asked for.
+	open := &installation{projectID: "p", allowUnlisted: true}
+	if _, err := (&Channel{}).resolveSpeakerForInstallation(open, "U_anyone"); err != nil {
+		t.Errorf("allowUnlisted must restore the dev-mode pass-through: %v", err)
+	}
+
+	// A configured allowlist is unaffected by the flip.
+	listed := &installation{projectID: "p", senders: map[string]struct{}{"U_alice": {}}}
+	if _, err := (&Channel{}).resolveSpeakerForInstallation(listed, "U_alice"); err != nil {
+		t.Errorf("a listed sender must still be admitted: %v", err)
+	}
+	if _, err := (&Channel{}).resolveSpeakerForInstallation(listed, "U_mallory"); err == nil {
+		t.Error("an unlisted sender must still be refused")
+	}
+}

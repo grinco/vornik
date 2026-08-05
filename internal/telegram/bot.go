@@ -104,14 +104,18 @@ func (u UserAccess) CanAccessProject(projectID string) bool {
 
 // BotConfig holds Telegram bot configuration.
 type BotConfig struct {
-	Token             string
-	AllowedUsers      map[int64]UserAccess
-	RateLimit         int           // requests per minute per user
-	MaxHistory        int           // hard message-count cap per conversation
-	MaxHistoryTokens  int           // soft token budget for trim; 0 disables
-	MaxToolIterations int           // dispatcher tool-call loop cap; 0 = default (10)
-	SessionPath       string        // path for conversation persistence (empty = disabled)
-	SessionTTL        time.Duration // auto-expire idle sessions; 0 = disabled
+	Token        string
+	AllowedUsers map[int64]UserAccess
+	// AllowUnlistedUsers admits every user when AllowedUsers is empty.
+	// Default false = an empty allowlist denies (2026-08-05); see
+	// IsAllowed for why the default flipped.
+	AllowUnlistedUsers bool
+	RateLimit          int           // requests per minute per user
+	MaxHistory         int           // hard message-count cap per conversation
+	MaxHistoryTokens   int           // soft token budget for trim; 0 disables
+	MaxToolIterations  int           // dispatcher tool-call loop cap; 0 = default (10)
+	SessionPath        string        // path for conversation persistence (empty = disabled)
+	SessionTTL         time.Duration // auto-expire idle sessions; 0 = disabled
 	// DispatchTimeout caps how long the bot waits for the LLM to produce
 	// a reply to one Telegram message. Zero defaults to 5 minutes — short
 	// enough that a stalled model fails visibly, long enough for the

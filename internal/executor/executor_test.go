@@ -295,6 +295,14 @@ type MockExecRepo struct {
 	execs           map[string]*persistence.Execution
 	err             error
 	updateStatusErr error // per-method override for ResumePaused error-path tests
+	// statusLog is the append-only history of UpdateStatus calls per
+	// execution. Sampling the CURRENT status is racy for any transition the
+	// code makes on its way somewhere else: ResumePaused flips Paused→Running
+	// and then hands off to a goroutine that may drive the execution onward
+	// (to FAILED, in tests with no workflow resolver wired) before the
+	// assertion reads. The history records that the transition HAPPENED,
+	// which is what those tests actually mean. See statusHistory.
+	statusLog map[string][]persistence.ExecutionStatus
 }
 
 func NewMockExecRepo() *MockExecRepo {
@@ -382,8 +390,29 @@ func (m *MockExecRepo) UpdateStatus(ctx context.Context, id string, s persistenc
 	if e, ok := m.execs[id]; ok {
 		e.Status = s
 	}
+	if m.statusLog == nil {
+		m.statusLog = map[string][]persistence.ExecutionStatus{}
+	}
+	m.statusLog[id] = append(m.statusLog[id], s)
 	m.mu.Unlock()
 	return nil
+}
+
+// statusHistory returns the ordered statuses UpdateStatus was called with for
+// id, copied under the mutex. Use this instead of snapshotStatus when the
+// status under test is TRANSIENT — a value the code passes through rather than
+// settles on.
+//
+// TestResumePaused_HappyPath_* asserted the settled value and was
+// runner-speed flaky as a result: it read RUNNING locally in under a second
+// and FAILED on the parent's slower coverage-instrumented CI, where the
+// spawned goroutine won the race. Failing a sync PR on a real transition that
+// did happen trains people to click through a red check, which is the actual
+// damage.
+func (m *MockExecRepo) statusHistory(id string) []persistence.ExecutionStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]persistence.ExecutionStatus(nil), m.statusLog[id]...)
 }
 func (m *MockExecRepo) SaveStateSnapshot(ctx context.Context, id string, snapshot []byte, currentStepID string, completedSteps []string) error {
 	m.mu.Lock()

@@ -39,7 +39,7 @@ func TestHandleStart_NilBotReturnsTerseGreeting(t *testing.T) {
 // /help. This is the post-onboarding return-visit shape.
 func TestHandleStart_ActiveProjectShowsWelcomeBack(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "test-token"}, chatClient)
+	bot, err := NewBot(BotConfig{Token: "test-token", AllowUnlistedUsers: true}, chatClient)
 	require.NoError(t, err)
 	bot.setActiveProject(100, "my-asst")
 
@@ -60,8 +60,7 @@ func TestHandleStart_NoProjectsWithWebUI(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
 	bot, err := NewBot(BotConfig{
 		Token:        "test-token",
-		WebUIBaseURL: "https://vornik.example.com/",
-	}, chatClient)
+		WebUIBaseURL: "https://vornik.example.com/", AllowUnlistedUsers: true}, chatClient)
 	require.NoError(t, err)
 	// Registry NOT wired → getProjectList returns nil → no-projects branch.
 
@@ -81,7 +80,7 @@ func TestHandleStart_NoProjectsWithWebUI(t *testing.T) {
 // self-hosted operators discovering the UI via the same hostname.
 func TestHandleStart_NoProjectsNoWebUI(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "test-token"}, chatClient)
+	bot, err := NewBot(BotConfig{Token: "test-token", AllowUnlistedUsers: true}, chatClient)
 	require.NoError(t, err)
 
 	got := handleStart(context.Background(), bot, 100, 0)
@@ -151,7 +150,7 @@ func TestHandleStart_PickerSendFailureFallsBackToProjectHint(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "test-token"}, chatClient, WithHTTPClient(server.Client()))
+	bot, err := NewBot(BotConfig{Token: "test-token", AllowUnlistedUsers: true}, chatClient, WithHTTPClient(server.Client()))
 	require.NoError(t, err)
 	bot.baseURL = server.URL
 

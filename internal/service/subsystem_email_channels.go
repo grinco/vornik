@@ -8,13 +8,16 @@ package service
 // projects fail over independently — losing one project's lease
 // doesn't take down email for the rest.
 //
-// Two responsibilities beyond per-channel start:
-//   - SetCompletionNotifier on the executor with a multi-channel
-//     fan-out (TelegramBot + every EmailChannel). Without this,
-//     tasks created in an email session resume on Telegram only.
-//   - SetChannelFollowupRegistrar on the dispatcher for each
-//     channel so create_task records sessionID→taskID against
-//     the channel that produced the inbound message.
+// One responsibility beyond per-channel start: SetCompletionNotifier on the
+// executor with a multi-channel fan-out. This subsystem rebuilds the whole
+// multiplexer, so anything omitted here is silently dropped on any deployment
+// that has email configured — which is why the A2A push, reminder and
+// chat-completion notifiers are all re-added below rather than assumed.
+//
+// Email itself is no longer in that fan-out (2026-08-05): it announces
+// completion through the durable chatCompletionSink, and the follow-up
+// registrar that fed its in-memory resume map went with it. Both halves are
+// pinned by TestEmailIsNotAnnouncedTwice.
 //
 // Pre-extraction this lived in container.go:1287-1376.
 
@@ -143,11 +146,12 @@ func (s *EmailChannelsSubsystem) Start(ctx context.Context) error {
 	if c.TelegramBot != nil {
 		notifiers = append(notifiers, c.TelegramBot)
 	}
-	for _, ch := range s.channels {
-		if ch != nil {
-			notifiers = append(notifiers, ch)
-		}
-	}
+	// Email channels are deliberately NOT registered as their own notifiers
+	// any more (2026-08-05). They announce completion through the durable
+	// chatCompletionSink below; registering both would announce every task
+	// twice. Removing this is the other half of that move, not an oversight —
+	// see the allowlist comment in container_chat_completion.go.
+	//
 	// A2A webhook push rides the same terminal-state hook.
 	if p := c.a2aPushNotifier(); p != nil {
 		notifiers = append(notifiers, p)
@@ -170,23 +174,15 @@ func (s *EmailChannelsSubsystem) Start(ctx context.Context) error {
 		c.Executor.SetCompletionNotifier(multi)
 	}
 
-	// Per-channel registrar: only one wired today (email). All
-	// email channels share the same channel name ("email") so the
-	// dispatcher's create_task picks the right registrar by
-	// Channel.Name(); each instance's pending-followup map
-	// filters by taskID so cross-project leaks are impossible.
+	// The email follow-up registrar is intentionally NOT wired (2026-08-05).
 	//
-	// Multi-email-channel deployments: the LAST one wins. Slice-2
-	// will route per-project once Request carries project-scoped
-	// channel resolution; today every email channel sees every
-	// task-completion event and filters by its own map, so the
-	// last-wins is functional but inefficient.
-	for _, ch := range s.channels {
-		if ch == nil {
-			continue
-		}
-		c.Dispatcher.SetChannelFollowupRegistrar(ch.Name(), ch)
-	}
+	// It existed to populate Channel.followups, which only Channel's own
+	// NotifyTaskCompleted drained. With email moved to the durable notifier
+	// nothing claims those entries, so registering would grow that map for the
+	// life of the process — one entry per awaited task, never released. The
+	// registration and the drain are one mechanism and both go together.
+	//
+	// Telegram keeps its registrar; it still runs its own auto-resume.
 	return nil
 }
 

@@ -753,6 +753,12 @@ CREATE TABLE IF NOT EXISTS project_memory_chunks (
     -- need not recompute the prefix — see memory.EmbedInputHash.
     embed_input_hash                   TEXT,
     needs_graph_extraction             INTEGER NOT NULL DEFAULT 0,
+    -- Migration 153 parity: consecutive-failure counter bounding extraction
+    -- retries, and the reason the last attempt failed. Without the bound,
+    -- treating a truncated completion as the error it is would re-attempt the
+    -- same chunks every tick at a full token budget.
+    graph_extraction_attempts          INTEGER NOT NULL DEFAULT 0,
+    graph_extraction_error             TEXT NOT NULL DEFAULT '',
     derived_from_extracted_document_id TEXT,
     derived_from_section_id            TEXT,
     created_at                         TEXT NOT NULL,

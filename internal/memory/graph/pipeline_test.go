@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -620,5 +621,51 @@ func TestPipeline_EmitsValidatorDropsByReason(t *testing.T) {
 	}
 	if sumLabels != totalScalar {
 		t.Errorf("label sum %v != scalar %v — counters drifted", sumLabels, totalScalar)
+	}
+}
+
+// TestPipeline_TruncationReachesTheOutcomeMetric closes a gap found on the
+// LIVE deployment on 2026-08-05, an hour after the truncation work shipped.
+//
+// Three real truncations were correctly detected, correctly retried and
+// correctly quarantined — and produced NO sample in
+// extractor_outcomes_total, because RunChunk returned the extractor error
+// before reaching emitExtractorMetrics. The counter that exists to make this
+// failure countable was the one place it stayed invisible, which is the same
+// shape as the laundering bug it was written to replace.
+//
+// Also pins the token counts: a truncated call burns a full budget (16384
+// output tokens against the raised cap, measured live) and produces nothing.
+// If that spend is not attributed to the extractor, the cost of the failure
+// is invisible too.
+func TestPipeline_TruncationReachesTheOutcomeMetric(t *testing.T) {
+	p, _, _, _ := newPipeline(t, "", "", "", "")
+	// Replace the extractor with one that always truncates.
+	p.Extractor = NewExtractor(newTruncatingProvider(), "ex")
+
+	reg := prometheus.NewRegistry()
+	p.Metrics = NewMetrics(reg)
+
+	_, err := p.RunChunk(context.Background(), ChunkInput{
+		ID: "c1", ProjectID: "p1", Content: "a chunk naming Ada Lovelace",
+	})
+	if err == nil {
+		t.Fatal("a truncated extraction must surface as an error")
+	}
+	if !errors.Is(err, ErrTruncatedCompletion) {
+		t.Errorf("error must be identifiable as truncation, got %v", err)
+	}
+
+	got := testutil.ToFloat64(p.Metrics.ExtractorOutcomesTotal.WithLabelValues(ExtractOutcomeTruncated))
+	if got != 1 {
+		t.Errorf("extractor_outcomes_total{outcome=%q} = %v, want 1 — "+
+			"a truncation that never reaches the metric is invisible, which is the bug",
+			ExtractOutcomeTruncated, got)
+	}
+	// And it must NOT be filed as the model having found nothing.
+	if empty := testutil.ToFloat64(
+		p.Metrics.ExtractorOutcomesTotal.WithLabelValues(ExtractOutcomeEmptyResponse),
+	); empty != 0 {
+		t.Errorf("truncation must not be counted as empty_response, got %v", empty)
 	}
 }

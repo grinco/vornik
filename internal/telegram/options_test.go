@@ -32,7 +32,7 @@ func TestBotOptions_AllSettersApply(t *testing.T) {
 	logger := zerolog.Nop()
 
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "t"}, chatClient,
+	bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient,
 		WithHTTPClient(hc),
 		WithLogger(logger),
 		WithRescheduler(nil),
@@ -82,7 +82,7 @@ func TestBotOptions_AllSettersApply(t *testing.T) {
 // initial bot has no metrics; after SetMetrics they're applied.
 func TestBotSetMetrics(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "t"}, chatClient)
+	bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient)
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestBotSetMetrics(t *testing.T) {
 // autonomy controller post-construction injection.
 func TestBotSetAutonomyManager(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "t"}, chatClient)
+	bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient)
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}
@@ -131,7 +131,7 @@ func (f *fakeReceiver) Receive(_ context.Context, _ conversation.ChannelMessage)
 // receiver.
 func TestBotSetReceiver_AppliesReceiver(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "t"}, chatClient)
+	bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient)
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestBotSetReceiver_AppliesReceiver(t *testing.T) {
 // case.
 func TestBotWatchTask_NoRepoSafe(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "t"}, chatClient)
+	bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient)
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestBotWatchTask_NoRepoSafe(t *testing.T) {
 // fires.
 func TestUserIDForChat_DefaultsToChatID(t *testing.T) {
 	chatClient := chat.NewClient("https://api.example.com", "test-key", "gpt-4")
-	bot, err := NewBot(BotConfig{Token: "t"}, chatClient)
+	bot, err := NewBot(BotConfig{Token: "t", AllowUnlistedUsers: true}, chatClient)
 	if err != nil {
 		t.Fatalf("NewBot: %v", err)
 	}

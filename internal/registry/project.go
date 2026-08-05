@@ -1023,10 +1023,20 @@ type ProjectSlack struct {
 	ChannelAllowlist []string `yaml:"channel_allowlist"`
 
 	// SenderAllowlist filters inbound by Slack user_id (U…). Empty
-	// allows every user (dev-mode pass-through). Mirrors the
-	// GitHubApp + Email channels' SenderAllowlist semantics —
-	// non-empty rejects unknown users without burning LLM budget.
+	// DENIES every user as of 2026-08-05 — see AllowUnlistedSenders.
+	// Non-empty rejects unknown users without burning LLM budget.
 	SenderAllowlist []string `yaml:"sender_allowlist"`
+
+	// AllowUnlistedSenders restores the old fail-OPEN behaviour where an
+	// empty ChannelAllowlist / SenderAllowlist admitted everyone.
+	//
+	// The default flipped because a Slack bot is addressable by every member
+	// of the workspace it is installed in, so an unconfigured allowlist did
+	// not mean "not yet restricted" — it meant "the whole workspace can drive
+	// this project's dispatcher, spend its budget and reach its tools", with
+	// nothing in the config saying so. Set this true only for a workspace
+	// where that is genuinely intended.
+	AllowUnlistedSenders bool `yaml:"allow_unlisted_senders"`
 
 	// VerifyInboundSignature when true (the default) enforces the
 	// HMAC + replay-window gate. Setting it to false disables the

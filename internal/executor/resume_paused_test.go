@@ -97,10 +97,14 @@ func TestResumePaused_HappyPath_ShutdownReason(t *testing.T) {
 	// failure modes are covered by sibling tests.
 	err := e.ResumePaused("e1")
 	require.NoError(t, err, "shutdown-paused execution must flip to Running and hand off to recoverExecution without error")
-	// snapshotStatus locks the mock's mutex so the read doesn't
-	// race against the runExecution goroutine recoverExecution
-	// spawns. Plain er.execs["e1"].Status is a data race.
-	assert.Equal(t, persistence.ExecutionStatusRunning, er.snapshotStatus("e1"),
+	// Assert on the TRANSITION, not the settled value. recoverExecution
+	// spawns a goroutine that can drive this execution onward (to FAILED —
+	// no workflow resolver is wired here) before the assertion reads, so
+	// sampling the current status is a race the runner's speed decides. It
+	// read RUNNING locally and FAILED on the parent's coverage-instrumented
+	// CI. What the test means is that the flip happened, and the history says
+	// so regardless of what the goroutine did next.
+	assert.Contains(t, er.statusHistory("e1"), persistence.ExecutionStatusRunning,
 		"execution status must flip Paused→Running before recoverExecution is called")
 }
 
@@ -127,7 +131,8 @@ func TestResumePaused_HappyPath_RetryFromStepReason(t *testing.T) {
 
 	err := e.ResumePaused("e1")
 	require.NoError(t, err)
-	assert.Equal(t, persistence.ExecutionStatusRunning, er.snapshotStatus("e1"))
+	// Transition, not settled value — see the sibling shutdown-reason test.
+	assert.Contains(t, er.statusHistory("e1"), persistence.ExecutionStatusRunning)
 }
 
 // TestResumePaused_FlipStatusErrorIsSurfaced — if the

@@ -226,7 +226,9 @@ var cpFlashMessages = map[string]string{
 	"stale-base":    "Refused: config.yaml changed since this proposal was drafted — re-draft it (nothing was written).",
 	"not-approved":  "Refused: only an APPROVED proposal can be applied.",
 	"apply-failed":  "Apply failed (auto-rolled-back if the config was rejected).",
-	"error":         "That action could not be completed.",
+	"content-too-large": "Refused: the file this proposal rewrites is larger than the apply size cap — " +
+		"nothing was written. Raise controlplane's content cap or split the change.",
+	"error": "That action could not be completed.",
 	// MCP-tab (hub §4) write outcomes.
 	"mcp-proposed":      "MCP change proposed — review the diff + apply on the Proposals tab.",
 	"mcp-bad-name":      "Invalid server name (use letters, digits, - or _).",
@@ -639,7 +641,12 @@ func (s *Server) cpLedgerRow(p *persistence.ControlPlaneProposal, superseded map
 	row := AdminCPRow{
 		ID: p.ID, Title: p.Title, Status: p.Status, Kind: p.Kind, BlastRadius: p.BlastRadius,
 		ProjectID: p.ProjectID, ProposedBy: p.ProposedBy, Approver: p.Approver, AppliedBy: p.AppliedBy,
-		Rationale: p.Rationale, DiffPreview: skillBodyPreview(p.Diff, 600), Evidence: p.Evidence,
+		// Full diff, not a truncated preview: the row already renders it inside a
+		// scrollable box (admin_control_plane.html's max-h-40 overflow-auto), and a
+		// hard 600-char cut routinely landed mid-diff on a reformat-heavy config
+		// change — showing only removed lines with the paired additions cut off,
+		// which read as an unreviewable, scary deletion of unrelated config.
+		Rationale: p.Rationale, DiffPreview: p.Diff, Evidence: p.Evidence,
 		CanApprove: p.Status == persistence.ProposalStatusDraft,
 		// Reject a DRAFT; withdraw an APPROVED-but-unappliable proposal
 		// (e.g. superseded by a re-draft) — both route to REJECTED.
@@ -785,6 +792,11 @@ func cpApplyOutcome(err error) string {
 		// Refused BEFORE any write (base hash mismatch) — nothing was rolled
 		// back, so the generic "apply-failed" message would mislead.
 		return "stale-base"
+	case errors.Is(err, controlplane.ErrContentTooLarge):
+		// Also refused before any write. Fell through to "apply-failed" until
+		// 2026-08-05, telling the operator their config had been rejected and
+		// rolled back when in fact it was never read — see the size-cap fix.
+		return "content-too-large"
 	default:
 		// Validation/reload failures (engine auto-rolled-back).
 		return "apply-failed"

@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -228,5 +229,71 @@ func TestCPFlash_CoversEveryMCPRedirectToken(t *testing.T) {
 		if cpFlashMessages[token] == "" {
 			t.Errorf("done=%s renders an empty flash", token)
 		}
+	}
+}
+
+// TestMCPErrorIsAuthChallenge_MatchesTheRealClientError pins the coupling
+// between this package's classifier and internal/mcp's error text.
+//
+// The health snapshot keeps the failure as a STRING, so errors.As is
+// unavailable here and the classifier has to match on the message. That is
+// fragile in exactly one way: if the client's format changes, the badge
+// silently reverts to calling an authenticating server "unreachable" — the
+// 2026-08-05 atlassian report. So the fixture is built from the client's own
+// formatting rather than hand-written, and a format change fails here.
+func TestMCPErrorIsAuthChallenge_MatchesTheRealClientError(t *testing.T) {
+	// Mirrors internal/mcp/client.go's fmt.Errorf("%s server returned %d", …),
+	// wrapped the way the health check records it.
+	realErr := fmt.Sprintf("mcp initialize failed for atlassian: %s",
+		fmt.Sprintf("streamable-http server returned %d", http.StatusUnauthorized))
+	if !mcpErrorIsAuthChallenge(realErr) {
+		t.Errorf("the real 401 error must classify as an auth challenge, got false for %q", realErr)
+	}
+
+	for _, notAuth := range []string{
+		fmt.Sprintf("streamable-http server returned %d", http.StatusForbidden),
+		fmt.Sprintf("sse server returned %d", http.StatusInternalServerError),
+		"dial tcp: connection refused",
+		"",
+	} {
+		if mcpErrorIsAuthChallenge(notAuth) {
+			t.Errorf("%q must NOT classify as an auth challenge", notAuth)
+		}
+	}
+}
+
+// TestMCPRow_AuthChallengedRendersDistinctly — a 401 must read as a consent
+// gap, not a networking fault. Reported 2026-08-05: the atlassian row said
+// "unreachable ... streamable-http server returned 401" against a perfectly
+// healthy endpoint, sending the operator to look for a broken URL.
+//
+// Driven through the real snapshot path so the classifier, the row field and
+// the template are all exercised together.
+func TestMCPRow_AuthChallengedRendersDistinctly(t *testing.T) {
+	html := renderCPMCP(t, WithMCPRegistry(cpMCPRenderRegistry{servers: []mcp.ServerSnapshot{{
+		Name: "atlassian", Transport: "streamable-http",
+		URL:       "https://mcp.atlassian.com/v1/mcp/authv2",
+		Reachable: false,
+		Error:     "mcp initialize failed for atlassian: streamable-http server returned 401",
+	}}}))
+	if !strings.Contains(html, "needs authentication") {
+		t.Errorf("a 401 row must say it needs authentication:\n%s", html)
+	}
+	if strings.Contains(html, ">unreachable<") {
+		t.Errorf("a 401 row must not be labelled unreachable:\n%s", html)
+	}
+}
+
+// TestMCPRow_GenuinelyUnreachableStillSaysSo — the badge must not become
+// permissive. A connection failure is still a reachability fault.
+func TestMCPRow_GenuinelyUnreachableStillSaysSo(t *testing.T) {
+	html := renderCPMCP(t, WithMCPRegistry(cpMCPRenderRegistry{servers: []mcp.ServerSnapshot{{
+		Name: "broken", Transport: "streamable-http",
+		URL:       "https://nope.example.com/mcp",
+		Reachable: false,
+		Error:     "dial tcp: connection refused",
+	}}}))
+	if !strings.Contains(html, ">unreachable<") {
+		t.Errorf("a real connection failure must still read unreachable:\n%s", html)
 	}
 }

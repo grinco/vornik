@@ -327,3 +327,41 @@ func TestParseEnvFromLines(t *testing.T) {
 		t.Errorf("comments and blanks must be skipped: %v", got)
 	}
 }
+
+// TestCPFlash_CoversTheDiscoveryVerdicts — every token the connect handler can
+// redirect with must have a message, or the operator gets a blank banner. §7.3
+// records that exact failure for three earlier tokens.
+//
+// These three exist because hiding them was the wrong default. The generic
+// "see the daemon log" is right for a vendor error body, which can echo request
+// parameters and therefore the client secret. It is wrong for a discovery
+// verdict: that is our own structural conclusion about the vendor, reached
+// before any token request exists, so it carries no vendor text and no secret —
+// and it is the one an operator can act on. Reported 2026-08-05 against
+// api.x.com/mcp, which answers 401 with no WWW-Authenticate and serves no
+// metadata at any well-known path, so the operator was sent to journald to
+// learn something the daemon already knew.
+func TestCPFlash_CoversTheDiscoveryVerdicts(t *testing.T) {
+	for _, token := range []string{"mcp-no-discovery", "mcp-not-protected", "mcp-server-refused"} {
+		msg, ok := cpFlashMessages[token]
+		if !ok {
+			t.Errorf("token %q has no message — it would render a blank banner", token)
+			continue
+		}
+		if strings.TrimSpace(msg) == "" {
+			t.Errorf("token %q maps to an empty message", token)
+		}
+		// Each must name an action, not just a diagnosis.
+		if !strings.ContainsAny(msg, ".") || len(msg) < 40 {
+			t.Errorf("token %q message is too thin to act on: %q", token, msg)
+		}
+	}
+	// The no-discovery message must name the two fields that fix it — that is
+	// the whole reason for surfacing it.
+	msg := cpFlashMessages["mcp-no-discovery"]
+	for _, want := range []string{"authorization_endpoint", "token_endpoint", "client_id"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("no-discovery message must name %q: %q", want, msg)
+		}
+	}
+}

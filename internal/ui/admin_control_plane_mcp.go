@@ -642,7 +642,25 @@ func (s *Server) AdminControlPlaneMCPConnect(w http.ResponseWriter, r *http.Requ
 		// Never surface the vendor's own words: an OAuth error body can echo
 		// request parameters, which on a token request means the client secret.
 		s.logger.Error().Err(err).Str("server", name).Msg("mcp oauth: connect could not start")
-		redirect("mcp-connect-failed")
+		// The discovery verdicts are the exception, and they are worth an
+		// exception because they are the ones an operator can ACT on. They are
+		// our own structural conclusions about the vendor — reached before any
+		// token request exists — so they carry no vendor body and no secret.
+		// Lumping them into the generic "see the daemon log" told an operator
+		// with a non-discoverable server to go read journald to learn something
+		// we already knew and could have said (reported 2026-08-05 against
+		// api.x.com/mcp, which answers 401 with no WWW-Authenticate and serves
+		// no metadata at any well-known path).
+		switch {
+		case errors.Is(err, mcpauth.ErrNoDiscovery):
+			redirect("mcp-no-discovery")
+		case errors.Is(err, mcpauth.ErrNotProtected):
+			redirect("mcp-not-protected")
+		case errors.Is(err, mcpauth.ErrServerRefused):
+			redirect("mcp-server-refused")
+		default:
+			redirect("mcp-connect-failed")
+		}
 		return
 	}
 	// Hand the operator straight to the vendor's consent screen. The daemon's

@@ -236,6 +236,20 @@ var cpFlashMessages = map[string]string{
 	"mcp-bad-endpoint":  "sse/streamable-http need a valid http(s) URL; stdio needs a command.",
 	"mcp-secret":        "A field looked like a literal secret — use a ${ENV_VAR} placeholder instead.",
 	"mcp-not-found":     "No MCP server by that name to remove.",
+	// Discovery verdicts, surfaced instead of hidden: each is our own
+	// structural conclusion about the vendor, reached before any token request
+	// exists, so none can carry a vendor body or a secret — and each tells the
+	// operator what to do next.
+	"mcp-no-discovery": "This server publishes no OAuth discovery metadata — no protected-resource " +
+		"document at the challenge URL or any well-known path. Vornik cannot find its endpoints " +
+		"automatically. Supply authorization_endpoint and token_endpoint on the server (and a " +
+		"client_id / client_secret, since a server without discovery almost never offers dynamic " +
+		"registration either).",
+	"mcp-not-protected": "This server answered an unauthenticated request normally, so it needs no " +
+		"OAuth grant. Set its auth mode to none.",
+	"mcp-server-refused": "This server refused the connection outright, with no authentication " +
+		"challenge — the shape a vendor WAF presents rather than an authorization failure. Check " +
+		"the URL and whether the vendor is blocking this host.",
 	// Auth-block + consent outcomes. Every token a handler can redirect with
 	// needs an entry: a missing one renders a BLANK banner, which reads as
 	// "nothing happened" after a Connect that actually failed.

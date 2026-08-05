@@ -209,3 +209,67 @@ func testVector() []float32 {
 	}
 	return v
 }
+
+// TestIntegrationDeleteByExtractedDocument_EvictsTheRecordedKeyNotARecomputedOne is
+// the reason embed_input_hash (migration 150) exists.
+//
+// Before it, erasure found the cache row by RECOMPUTING the contextualisation prefix,
+// which silently assumes buildEmbedContext is byte-stable for the life of the
+// deployment. Change the prefix format — a new label, a different separator, a
+// heading rule — and every vector cached under the old format becomes unreachable by
+// erasure while still sitting in the table.
+//
+// This test models exactly that: the chunk's recorded embed_input_hash does NOT match
+// what today's prefix would produce (as if it were embedded under an older format),
+// and the cache row exists under the RECORDED key. Erasure must still evict it.
+func TestIntegrationDeleteByExtractedDocument_EvictsTheRecordedKeyNotARecomputedOne(t *testing.T) {
+	db := openIngestRecallDB(t)
+	ctx := context.Background()
+	repo := memory.NewRepository(db)
+
+	const (
+		projectID = "p-erasure-cache-recorded-key"
+		docID     = "extdoc-erasure-cache-recorded"
+		chunkID   = "chunk-ec-recorded"
+		source    = "erasure-cache-test"
+		text      = "content embedded back when the prefix format was different"
+	)
+	// A key today's code would never derive for this row: neither the raw content
+	// hash nor the current embed-input hash.
+	legacyKey := memory.ContentHash("LEGACY PREFIX v0\n\n" + text)
+	if legacyKey == memory.EmbedInputHash(source, text) || legacyKey == memory.ContentHash(text) {
+		t.Fatal("fixture is not modelling a format change")
+	}
+
+	t.Cleanup(func() {
+		_, _ = db.ExecContext(ctx, `DELETE FROM project_memory_chunks WHERE id = $1`, chunkID)
+		_, _ = db.ExecContext(ctx, `DELETE FROM embedding_cache WHERE content_hash = $1`, legacyKey)
+	})
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO project_memory_chunks
+		   (id, project_id, source_name, content, content_hash, embed_input_hash,
+		    derived_from_extracted_document_id, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+		chunkID, projectID, source, text, memory.ContentHash(text), legacyKey, docID); err != nil {
+		t.Fatalf("seed chunk: %v", err)
+	}
+	if err := memory.NewEmbeddingCache(db).Put(ctx, legacyKey, "test-embed-model", testVector()); err != nil {
+		t.Fatalf("seed cache row under the recorded key: %v", err)
+	}
+
+	if _, err := repo.DeleteByExtractedDocument(ctx, docID); err != nil {
+		t.Fatalf("DeleteByExtractedDocument: %v", err)
+	}
+
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM embedding_cache WHERE content_hash = $1`, legacyKey).Scan(&n); err != nil {
+		t.Fatalf("count cache rows: %v", err)
+	}
+	if n != 0 {
+		t.Error("the chunk recorded which cache key its vector was stored under, and erasure " +
+			"ignored it in favour of a recomputed one — a prefix-format change now strands " +
+			"vectors derived from erased text")
+	}
+}

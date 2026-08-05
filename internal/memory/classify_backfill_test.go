@@ -88,7 +88,7 @@ func TestClassifyBackfiller_BackfillBatch_Mixed(t *testing.T) {
 	defer cleanup()
 
 	mock.ExpectQuery("FROM project_memory_chunks").
-		WithArgs("p", 10).
+		WithArgs("p", 10, 0).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}).
 			AddRow("c1", "p", "doc.md", "researcher", "first body").
 			AddRow("c2", "p", "x.md", "", "ambiguous").
@@ -157,6 +157,51 @@ func TestClassifyBackfiller_BackfillBatch_CountRemainingErrTolerated(t *testing.
 	}
 	if res.Remaining != 0 {
 		t.Fatalf("remaining should default to 0 on count failure, got %d", res.Remaining)
+	}
+}
+
+func TestClassifyBackfiller_BackfillBatch_WalksPastLLMAbstentions(t *testing.T) {
+	// This is the project-scoped path used by `vornikctl memory reclassify
+	// --use-llm`. A prior fix paged only the all-projects worker, leaving this
+	// endpoint to re-read the oldest abstained row forever.
+	bf, mock, cleanup := newClassifyBackfiller(t, []titlerReply{
+		{content: "unclassified"},
+		{content: "research"},
+	})
+	defer cleanup()
+
+	mock.ExpectQuery("FROM project_memory_chunks").WithArgs("p", 1, 0).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}).
+			AddRow("old", "p", "old.md", "unknown", "ambiguous"))
+	mock.ExpectQuery("FROM project_memory_chunks").
+		WillReturnRows(sqlmock.NewRows([]string{"role", "n"}).AddRow("unknown", 2))
+	first, err := bf.BackfillBatch(context.Background(), "p", 1)
+	if err != nil || first.Skipped != 1 {
+		t.Fatalf("first batch: %+v, %v", first, err)
+	}
+
+	// The next request must start at offset one, reaching the row that was
+	// previously hidden behind the model's abstention.
+	mock.ExpectQuery("FROM project_memory_chunks").WithArgs("p", 1, 1).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}).
+			AddRow("new", "p", "new.md", "unknown", "evidence"))
+	mock.ExpectExec("UPDATE project_memory_chunks").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("FROM project_memory_chunks").
+		WillReturnRows(sqlmock.NewRows([]string{"role", "n"}).AddRow("unknown", 1))
+	second, err := bf.BackfillBatch(context.Background(), "p", 1)
+	if err != nil || second.Succeeded != 1 {
+		t.Fatalf("second batch: %+v, %v", second, err)
+	}
+}
+
+func TestClassifyBackfiller_LockForProject_IsPerProject(t *testing.T) {
+	b := &ClassifyBackfiller{}
+	lockA := b.lockForProject("a")
+	if lockA != b.lockForProject("a") {
+		t.Fatal("one project must keep one cursor lock")
+	}
+	if lockA == b.lockForProject("b") {
+		t.Fatal("independent projects must not share a sweep lock")
 	}
 }
 

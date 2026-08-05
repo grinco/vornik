@@ -44,6 +44,10 @@ type SpendData struct {
 	TotalPromptTokens     int64
 	TotalCompletionTokens int64
 	TotalCalls            int
+	// TotalCacheHits counts stages served from the LLM RESPONSE cache. They carry no
+	// cost and no tokens (migration 152) and are excluded from TotalCalls, so
+	// "avg cost / call" divides real spend by real provider calls.
+	TotalCacheHits int
 	// InputRatioPct is prompt tokens as a percentage of total tokens.
 	// High input ratio (>90%) is a context-bloat signal — most spend
 	// is going to "model reads my history" rather than "model
@@ -391,6 +395,10 @@ func (s *Server) Spend(w http.ResponseWriter, r *http.Request) {
 			data.TotalPromptTokens += r.PromptTokens
 			data.TotalCompletionTokens += r.CompletionTokens
 			data.TotalCalls += r.CallCount
+			// Cache-served stages are NOT calls (they reached no provider) but they are
+			// not nothing either — surfacing them keeps "why is my call count lower
+			// than my stage count" answerable on the page itself.
+			data.TotalCacheHits += r.CacheHitCount
 		}
 		if total := data.TotalPromptTokens + data.TotalCompletionTokens; total > 0 {
 			data.InputRatioPct = float64(data.TotalPromptTokens) / float64(total) * 100

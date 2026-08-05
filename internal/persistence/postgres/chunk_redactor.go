@@ -104,10 +104,11 @@ func (r *ChunkRedactorRepository) RedactChunk(
 	// content. ErrNoRows cannot happen here — the guarded UPDATE would find no row
 	// either and return RedactionVersionChanged — but it is tolerated rather than
 	// promoted to a failure of the redaction itself.
+	var preRecordedKey sql.NullString
 	var preSourceName, preContent string
 	if err := tx.QueryRowContext(ctx,
-		`SELECT source_name, content FROM project_memory_chunks WHERE id = $1`, chunkID,
-	).Scan(&preSourceName, &preContent); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		`SELECT embed_input_hash, source_name, content FROM project_memory_chunks WHERE id = $1`, chunkID,
+	).Scan(&preRecordedKey, &preSourceName, &preContent); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return zero, fmt.Errorf("postgres: read pre-redaction chunk fields for %s: %w", chunkID, err)
 	}
 
@@ -176,7 +177,10 @@ func (r *ChunkRedactorRepository) RedactChunk(
 	// cache row under content_hash and 500 of 500 had one under the embed-input hash.
 	// The pre-redaction source_name and content are read above; both keys are evicted
 	// because they coincide when the contextualisation prefix is empty.
-	for _, key := range []string{memory.EmbedInputHash(preSourceName, preContent), expectedHash} {
+	// Recorded key first (migration 150): the vector was cached under whatever the
+	// embed used, which a recompute only reproduces while buildEmbedContext is
+	// unchanged.
+	for _, key := range []string{preRecordedKey.String, memory.EmbedInputHash(preSourceName, preContent), expectedHash} {
 		if key == "" {
 			continue
 		}

@@ -326,8 +326,22 @@ func (p *Pipeline) recordStageUsage(ctx context.Context, chunk ChunkInput, m *Pi
 		if s.stage.zero() {
 			continue
 		}
+		// A response-cache hit reached no provider, so it cost nothing and spent no
+		// tokens: the counts on the metrics are what a real call WOULD have used. Billing
+		// them charged every hit as real spend until 2026-08-05 — over-reporting, and it
+		// partially masked the 2026-07-30 gateway discrepancy.
+		//
+		// The row is still written, flagged: dropping it would hide the stage entirely,
+		// and the response-cache design wants hits visible as saved calls
+		// (local-llm-response-cache-design §Goals 4). Saved dollars are computed from
+		// llm_response_cache.hit_count, which /ui/spend already surfaces — this ledger
+		// answers "what did we spend", and the honest answer on a hit is nothing.
+		promptTok, completionTok := int64(s.stage.prompt), int64(s.stage.completion)
 		var costUSD float64
-		if p.Pricing != nil {
+		switch {
+		case s.stage.cacheHit:
+			promptTok, completionTok = 0, 0
+		case p.Pricing != nil:
 			costUSD = p.Pricing.CostUSD(s.stage.model, s.stage.prompt, s.stage.completion)
 		}
 		row := &persistence.TaskLLMUsage{
@@ -338,11 +352,12 @@ func (p *Pipeline) recordStageUsage(ctx context.Context, chunk ChunkInput, m *Pi
 			StepID:           stepID,
 			Role:             s.role,
 			Model:            s.stage.model,
-			PromptTokens:     int64(s.stage.prompt),
-			CompletionTokens: int64(s.stage.completion),
+			PromptTokens:     promptTok,
+			CompletionTokens: completionTok,
 			Iterations:       1,
 			CostUSD:          costUSD,
 			Source:           persistence.TaskLLMUsageSourceKGExtraction,
+			CacheHit:         s.stage.cacheHit,
 		}
 		_ = p.LLMUsage.Record(ctx, row)
 	}
@@ -357,6 +372,10 @@ type stageMetrics struct {
 	model      string
 	prompt     int
 	completion int
+	// cacheHit means the response cache served this stage. Only the extractor has a
+	// cache today; the field lives here so a second cached stage cannot be added
+	// without the recorder seeing it.
+	cacheHit bool
 }
 
 func (s stageMetrics) zero() bool {
@@ -367,7 +386,10 @@ func (m *ExtractMetrics) tokens() stageMetrics {
 	if m == nil {
 		return stageMetrics{}
 	}
-	return stageMetrics{model: m.Model, prompt: m.PromptTokens, completion: m.CompletionTokens}
+	return stageMetrics{
+		model: m.Model, prompt: m.PromptTokens, completion: m.CompletionTokens,
+		cacheHit: m.CacheHit,
+	}
 }
 
 func (m *ResolveMetrics) tokens() stageMetrics {

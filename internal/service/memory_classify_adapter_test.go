@@ -103,7 +103,7 @@ func TestMemoryClassifyBackfillAdapter_BackfillBatch_ZeroChunks(t *testing.T) {
 	// classifier call. CountRemaining gets called at the end of
 	// BackfillBatch to refresh the progress count.
 	f.mock.ExpectQuery("FROM project_memory_chunks").
-		WithArgs("p", 5).
+		WithArgs("p", 5, 0).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}))
 	f.mock.ExpectQuery("FROM project_memory_chunks").
 		WillReturnRows(sqlmock.NewRows([]string{"role", "n"}))
@@ -137,7 +137,7 @@ func TestMemoryClassifyBackfillAdapter_BackfillBatch_FieldMapping(t *testing.T) 
 	f := newClassifyAdapterFixture(t)
 	defer func() { _ = f.db.Close() }()
 	f.mock.ExpectQuery("FROM project_memory_chunks").
-		WithArgs("p", 1).
+		WithArgs("p", 1, 0).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}))
 	f.mock.ExpectQuery("FROM project_memory_chunks").
 		WillReturnRows(sqlmock.NewRows([]string{"role", "n"}).AddRow("", 17))

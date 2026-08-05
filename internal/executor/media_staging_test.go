@@ -26,7 +26,7 @@ func TestExtractTaskInputArtifacts_MediaStagedDespiteExtraction(t *testing.T) {
 		"inputFiles":["/var/lib/vornik/artifacts/assistant/inputs/artifact_x/photo.jpg"],
 		"inputExtractions":[{"extracted_document_id":"extdoc_x","section_count":1,"chunks_ingested":1}]
 	}}`)
-	got := extractTaskInputArtifacts(payload, 0)
+	got := extractTaskInputArtifacts(payload, 0, false, 0)
 	if len(got) != 1 {
 		t.Fatalf("an extracted IMAGE must still be staged (pixels are not in the extraction); got %v", got)
 	}
@@ -46,7 +46,7 @@ func TestExtractTaskInputArtifacts_DocumentsStayExtractionOnly(t *testing.T) {
 			"inputFiles":["/tmp/` + name + `"],
 			"inputExtractions":[{"extracted_document_id":"doc-1"}]
 		}}`)
-		if got := extractTaskInputArtifacts(payload, 0); got != nil {
+		if got := extractTaskInputArtifacts(payload, 0, false, 0); got != nil {
 			t.Errorf("%s: extracted document must NOT be staged, got %v", name, got)
 		}
 	}
@@ -58,7 +58,7 @@ func TestExtractTaskInputArtifacts_AudioAndVideoStagedDespiteExtraction(t *testi
 			"inputFiles":["/tmp/` + name + `"],
 			"inputExtractions":[{"extracted_document_id":"doc-1"}]
 		}}`)
-		got := extractTaskInputArtifacts(payload, 0)
+		got := extractTaskInputArtifacts(payload, 0, false, 0)
 		if len(got) != 1 {
 			t.Errorf("%s: extracted media must still be staged, got %v", name, got)
 		}
@@ -72,7 +72,7 @@ func TestExtractTaskInputArtifacts_UnknownKindStaged(t *testing.T) {
 		"inputFiles":["/tmp/mystery.xyz"],
 		"inputExtractions":[{"extracted_document_id":"doc-1"}]
 	}}`)
-	if got := extractTaskInputArtifacts(payload, 0); len(got) != 1 {
+	if got := extractTaskInputArtifacts(payload, 0, false, 0); len(got) != 1 {
 		t.Fatalf("unclassifiable input should be staged, got %v", got)
 	}
 }
@@ -85,7 +85,7 @@ func TestExtractTaskInputArtifacts_CountMismatchStillStagesMedia(t *testing.T) {
 		"inputFiles":["/tmp/a.pdf","/tmp/photo.png"],
 		"inputExtractions":[{"extracted_document_id":"doc-1"}]
 	}}`)
-	got := extractTaskInputArtifacts(payload, 0)
+	got := extractTaskInputArtifacts(payload, 0, false, 0)
 	if len(got) != 1 {
 		t.Fatalf("expected only the image staged, got %v", got)
 	}
@@ -111,7 +111,7 @@ func TestExtractTaskInputArtifacts_MediaOverCapSkipped(t *testing.T) {
 		"inputFiles":["` + big + `","` + small + `"],
 		"inputExtractions":[{"extracted_document_id":"d1"},{"extracted_document_id":"d2"}]
 	}}`)
-	got := extractTaskInputArtifacts(payload, 1024)
+	got := extractTaskInputArtifacts(payload, 1024, false, 0)
 	if len(got) != 1 {
 		t.Fatalf("expected only the under-cap image staged, got %v", got)
 	}
@@ -132,7 +132,7 @@ func TestExtractTaskInputArtifacts_ZeroCapIsUnbounded(t *testing.T) {
 		"inputFiles":["` + p + `"],
 		"inputExtractions":[{"extracted_document_id":"d1"}]
 	}}`)
-	if got := extractTaskInputArtifacts(payload, 0); len(got) != 1 {
+	if got := extractTaskInputArtifacts(payload, 0, false, 0); len(got) != 1 {
 		t.Fatalf("zero cap must not suppress staging, got %v", got)
 	}
 }
@@ -146,7 +146,7 @@ func TestExtractTaskInputArtifacts_UnstattableMediaStillStaged(t *testing.T) {
 		"inputFiles":["/nonexistent/dir/photo.jpg"],
 		"inputExtractions":[{"extracted_document_id":"d1"}]
 	}}`)
-	if got := extractTaskInputArtifacts(payload, 1024); len(got) != 1 {
+	if got := extractTaskInputArtifacts(payload, 1024, false, 0); len(got) != 1 {
 		t.Fatalf("stat failure must not drop the artifact, got %v", got)
 	}
 }
@@ -156,7 +156,7 @@ func TestExtractTaskInputArtifacts_UnstattableMediaStillStaged(t *testing.T) {
 // filepath.Base and again by safepath in stageInputArtifacts.
 func TestExtractTaskInputArtifacts_TraversalNameReducedToBasename(t *testing.T) {
 	payload := []byte(`{"context":{"inputFiles":["/tmp/../../etc/passwd"]}}`)
-	got := extractTaskInputArtifacts(payload, 0)
+	got := extractTaskInputArtifacts(payload, 0, false, 0)
 	if len(got) != 1 {
 		t.Fatalf("expected one entry, got %v", got)
 	}

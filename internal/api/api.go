@@ -174,6 +174,7 @@ type MemoryClassifyBackfillResult struct {
 	Failed    int      `json:"failed"`
 	Skipped   int      `json:"skipped"`
 	Remaining int      `json:"remaining"`
+	Exhausted bool     `json:"exhausted,omitempty"`
 	Errors    []string `json:"errors,omitempty"`
 }
 
@@ -550,7 +551,13 @@ type Server struct {
 	logger zerolog.Logger
 	// mcpOAuth serves the MCP OAuth connect endpoints. Nil = the endpoints
 	// answer 503 (no token store wired).
-	mcpOAuth       MCPOAuthConnector
+	mcpOAuth MCPOAuthConnector
+
+	// problemReports backs the companion report_problem verb. Nil = the verb refuses
+	// with "not configured" rather than returning an empty URL a client would hand a
+	// user. Same builder the chat tool uses, which collects NOTHING host-side — see
+	// companionToolReportProblem.
+	problemReports ProblemReportBuilder
 	taskRepo       persistence.TaskRepository
 	executionRepo  persistence.ExecutionRepository
 	artifactRepo   persistence.ArtifactRepository
@@ -1300,6 +1307,22 @@ type ServerOption func(*Server)
 // MCP authentication is a Community feature (design §7.2's CE note).
 func WithMCPOAuthConnector(c MCPOAuthConnector) ServerOption {
 	return func(s *Server) { s.mcpOAuth = c }
+}
+
+// ProblemReportBuilder builds an anonymised problem report and returns a prefilled issue
+// URL. Structurally identical to dispatcher.ProblemReportBuilder and satisfied by the same
+// container seam; declared here so the api package does not import the dispatcher for one
+// method.
+//
+// Implementations MUST NOT submit, and MUST NOT collect anything that requires executing a
+// program on the host (operator ruling, 2026-08-03).
+type ProblemReportBuilder interface {
+	BuildProblemReport(ctx context.Context, symptom string) (issueURL, body string, err error)
+}
+
+// WithProblemReportBuilder wires the companion report_problem verb.
+func WithProblemReportBuilder(b ProblemReportBuilder) ServerOption {
+	return func(s *Server) { s.problemReports = b }
 }
 
 // WithLogger sets the logger for the server.

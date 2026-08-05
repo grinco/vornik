@@ -33,6 +33,7 @@ func RunMCPOAuthTokenSuite(t *testing.T, repo persistence.MCPOAuthTokenRepositor
 	runMCPOAuthNeedsReconnect(t, repo)
 	runMCPOAuthDeleteAndList(t, repo)
 	runMCPOAuthRefreshLockSerialises(t, repo)
+	runMCPOAuthInvalidateStaleRedirectURIs(t, repo)
 }
 
 func mcpToken(projectID, serverName string) *persistence.MCPOAuthToken {
@@ -46,6 +47,7 @@ func mcpToken(projectID, serverName string) *persistence.MCPOAuthToken {
 		RefreshToken: "rt-1",
 		ExpiresAt:    &exp,
 		Scopes:       "read:jira-work offline_access",
+		RedirectURI:  "https://vornik.example.com/auth/mcp/callback",
 		ConnectedBy:  "operator@example.com",
 		ConnectedAt:  time.Now().Add(-time.Minute).UTC(),
 	}
@@ -351,5 +353,76 @@ func runMCPOAuthRefreshLockSerialises(t *testing.T, repo persistence.MCPOAuthTok
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("WithRefreshLock did not release the lock after fn returned an error")
+	}
+}
+
+// runMCPOAuthInvalidateStaleRedirectURIs covers §7.2a on both backends.
+//
+// A DCR registration pins its redirect_uris, so when server.public_base_url changes the
+// stored client_id is dead at the vendor. Three behaviours matter, and the third is the
+// one that is easy to get wrong: a row whose recorded URI is EMPTY predates migration
+// 151 and means "unknown", not "registered elsewhere" — dropping a working client over
+// our own missing data would break connections for nothing.
+func runMCPOAuthInvalidateStaleRedirectURIs(t *testing.T, repo persistence.MCPOAuthTokenRepository) {
+	ctx := context.Background()
+	const current = "https://now.example.com/auth/mcp/callback"
+
+	stale := mcpToken("proj-redirect-stale", "atlassian")
+	stale.RedirectURI = "https://before.example.com/auth/mcp/callback"
+	matching := mcpToken("proj-redirect-match", "atlassian")
+	matching.RedirectURI = current
+	unknown := mcpToken("proj-redirect-unknown", "atlassian")
+	unknown.RedirectURI = ""
+	for _, tok := range []*persistence.MCPOAuthToken{stale, matching, unknown} {
+		if err := repo.Upsert(ctx, tok); err != nil {
+			t.Fatalf("Upsert %s: %v", tok.ProjectID, err)
+		}
+	}
+
+	// Earlier subtests leave rows behind that also carry the fixture URI, so the sweep
+	// legitimately touches more than this subtest's own row. Assert on the rows under
+	// test, not a suite-wide count that any new subtest would break.
+	n, err := repo.InvalidateStaleRedirectURIs(ctx, current)
+	if err != nil {
+		t.Fatalf("InvalidateStaleRedirectURIs: %v", err)
+	}
+	if n < 1 {
+		t.Errorf("invalidated %d rows, want at least the stale one", n)
+	}
+
+	got, err := repo.Get(ctx, stale.ProjectID, stale.ServerName)
+	if err != nil || got == nil {
+		t.Fatalf("Get(stale): %v", err)
+	}
+	if got.ClientID != "" {
+		t.Errorf("stale grant kept client_id %q — it is unusable at the vendor", got.ClientID)
+	}
+	if !got.NeedsReconnect {
+		t.Error("stale grant was not flagged needs_reconnect, so it would fail silently at the next call")
+	}
+	if got.AccessToken == "" {
+		t.Error("the access token was destroyed; §7.2a drops the CLIENT, not the grant")
+	}
+
+	for _, keep := range []*persistence.MCPOAuthToken{matching, unknown} {
+		got, err := repo.Get(ctx, keep.ProjectID, keep.ServerName)
+		if err != nil || got == nil {
+			t.Fatalf("Get(%s): %v", keep.ProjectID, err)
+		}
+		if got.ClientID != "client-abc" || got.NeedsReconnect {
+			t.Errorf("%s was invalidated (client_id=%q needs_reconnect=%v); only a RECORDED mismatch may be",
+				keep.ProjectID, got.ClientID, got.NeedsReconnect)
+		}
+	}
+
+	// Idempotent: a second sweep with the same current URI changes nothing, because the
+	// boot path and every connect both run it.
+	again, err := repo.InvalidateStaleRedirectURIs(ctx, current)
+	if err != nil {
+		t.Fatalf("second InvalidateStaleRedirectURIs: %v", err)
+	}
+	if again != 0 {
+		t.Errorf("second sweep touched %d rows, want 0 — the sweep must clear redirect_uri "+
+			"as well as client_id, or every boot re-flags grants it already handled", again)
 	}
 }

@@ -707,16 +707,26 @@ type APIKeySpend struct {
 // in-bot chat round-trips. Surfacing this attribution answers
 // "is the dispatcher itself a major cost driver?"
 type SourceSpend struct {
-	Source           string
+	Source string
+	// CostUSD and CallCount are PROVIDER spend and PROVIDER calls. A row served from the
+	// LLM response cache is recorded with zero cost and zero tokens (migration 152) and
+	// counted in CacheHitCount below, not here — /ui/spend's headline "avg cost per
+	// call" divides by this count, and stages that reached no provider diluted it.
 	CostUSD          float64
 	CallCount        int
 	PromptTokens     int64
 	CompletionTokens int64
 	// CacheCreationTokens / CacheReadTokens — aggregated cache
 	// observability per source. external_api callers (HA, OpenWebUI)
-	// frequently benefit from caching; workflow_step less so.
+	// frequently benefit from caching; workflow_step less so. These are the PROVIDER's
+	// prompt cache on calls that did happen — unrelated to CacheHitCount.
 	CacheCreationTokens int64
 	CacheReadTokens     int64
+	// CacheHitCount is how many rows in this source were served from the LLM RESPONSE
+	// cache. Surfaced rather than filtered away: the response-cache design wants hits
+	// visible as saved calls, and a stage that silently disappears from the breakdown
+	// reads as a stage that never ran.
+	CacheHitCount int
 }
 
 // DailySpend is one bucket on the time-series chart. Day is the

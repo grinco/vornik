@@ -206,7 +206,7 @@ func TestListUnclassifiedChunks(t *testing.T) {
 	}
 	// Limit clamping: 0 → 100.
 	mock.ExpectQuery("FROM project_memory_chunks").
-		WithArgs("p", 100).
+		WithArgs("p", 100, 0).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}).
 			AddRow("c1", "p", "doc.md", "researcher", "body"))
 	got, err := r.ListUnclassifiedChunks(context.Background(), "p", 0)
@@ -215,7 +215,7 @@ func TestListUnclassifiedChunks(t *testing.T) {
 	}
 	// Limit clamping: huge → 1000.
 	mock.ExpectQuery("FROM project_memory_chunks").
-		WithArgs("p", 1000).
+		WithArgs("p", 1000, 0).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}))
 	if _, err := r.ListUnclassifiedChunks(context.Background(), "p", 9999); err != nil {
 		t.Fatal(err)
@@ -522,13 +522,24 @@ func TestUpdateEmbedding(t *testing.T) {
 	// ErrEmptyEmbedding so the worker can distinguish "stored OK"
 	// from "model returned nothing for this chunk". Pre-fix this
 	// was a silent nil return.
-	if err := r.UpdateEmbedding(context.Background(), "c1", nil); !errors.Is(err, ErrEmptyEmbedding) {
+	if err := r.UpdateEmbedding(context.Background(), "c1", nil, ""); !errors.Is(err, ErrEmptyEmbedding) {
 		t.Fatalf("expected ErrEmptyEmbedding for nil slice, got %v", err)
 	}
-	mock.ExpectExec("UPDATE project_memory_chunks SET embedding").
-		WithArgs("[1.5,2]", "c1").
+	// The embed-input hash rides in the SAME statement as the vector (migration 150),
+	// so the column cannot disagree with the cache row the embed just wrote.
+	mock.ExpectExec("UPDATE project_memory_chunks").
+		WithArgs("[1.5,2]", "c1", "cachekey-abc").
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := r.UpdateEmbedding(context.Background(), "c1", []float32{1.5, 2}); err != nil {
+	if err := r.UpdateEmbedding(context.Background(), "c1", []float32{1.5, 2}, "cachekey-abc"); err != nil {
+		t.Fatal(err)
+	}
+	// An empty hash must not blank a previously-recorded key: COALESCE(NULLIF(...))
+	// keeps whatever is there, so a vector produced outside the cached path cannot
+	// erase erasure's own handle on the row.
+	mock.ExpectExec("embed_input_hash = COALESCE").
+		WithArgs("[3,4]", "c2", "").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := r.UpdateEmbedding(context.Background(), "c2", []float32{3, 4}, ""); err != nil {
 		t.Fatal(err)
 	}
 }

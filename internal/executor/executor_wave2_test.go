@@ -3,6 +3,8 @@ package executor
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -321,7 +323,7 @@ func TestW2ExecExtractTaskInputArtifacts_ExtractedSkipped(t *testing.T) {
 		"inputFiles":["/tmp/report.epub","/tmp/data.bin"],
 		"inputExtractions":[{"extracted_document_id":"doc-1"},{}]
 	}}`)
-	got := extractTaskInputArtifacts(payload, 0)
+	got := extractTaskInputArtifacts(payload, 0, false, 0)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 staged artifact, got %v", got)
 	}
@@ -337,14 +339,14 @@ func TestW2ExecExtractTaskInputArtifacts_CountMismatchSkipsAll(t *testing.T) {
 		"inputFiles":["/tmp/a.pdf","/tmp/b.pdf"],
 		"inputExtractions":[{"extracted_document_id":"doc-1"}]
 	}}`)
-	if got := extractTaskInputArtifacts(payload, 0); got != nil {
+	if got := extractTaskInputArtifacts(payload, 0, false, 0); got != nil {
 		t.Fatalf("count mismatch should stage nothing, got %v", got)
 	}
 }
 
 func TestW2ExecExtractTaskInputArtifacts_NoExtractionsStagesAll(t *testing.T) {
 	payload := []byte(`{"context":{"inputFiles":["/tmp/a.txt","","/tmp/b.txt"]}}`)
-	got := extractTaskInputArtifacts(payload, 0)
+	got := extractTaskInputArtifacts(payload, 0, false, 0)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 staged (empty path dropped), got %v", got)
 	}
@@ -354,13 +356,13 @@ func TestW2ExecExtractTaskInputArtifacts_NoExtractionsStagesAll(t *testing.T) {
 }
 
 func TestW2ExecExtractTaskInputArtifacts_EmptyAndBad(t *testing.T) {
-	if got := extractTaskInputArtifacts(nil, 0); got != nil {
+	if got := extractTaskInputArtifacts(nil, 0, false, 0); got != nil {
 		t.Fatalf("nil payload → nil, got %v", got)
 	}
-	if got := extractTaskInputArtifacts([]byte(`{not json`), 0); got != nil {
+	if got := extractTaskInputArtifacts([]byte(`{not json`), 0, false, 0); got != nil {
 		t.Fatalf("bad json → nil, got %v", got)
 	}
-	if got := extractTaskInputArtifacts([]byte(`{"context":{"inputFiles":[]}}`), 0); got != nil {
+	if got := extractTaskInputArtifacts([]byte(`{"context":{"inputFiles":[]}}`), 0, false, 0); got != nil {
 		t.Fatalf("no files → nil, got %v", got)
 	}
 }
@@ -716,5 +718,83 @@ func TestW2ExecEvaluateGateStepTraced_EnvelopeNormalization(t *testing.T) {
 	// Trace should record both attempted gates, second matched.
 	if len(trace.Entries) != 2 || !trace.Entries[1].Matched {
 		t.Fatalf("trace unexpected: %+v", trace.Entries)
+	}
+}
+
+// TestW2ExecExtractTaskInputArtifacts_RequireInputArtifactsAlwaysStages closes the
+// creation-path-independent hole in the B-10 / T-8f69 class (five recurrences:
+// task_20260528134611, two reviews 2026-06-28, one 2026-07-03, T-8f69 2026-07-25).
+//
+// The guard against it lived at CREATION time: resolveSkipAutoExtract derives
+// skip_auto_extract from the workflow named in the request, so an upload bound for a
+// require_input_artifacts workflow is not auto-extracted and its raw file is staged.
+//
+// That derivation cannot see an ADAPTIVE re-route. A companion upload delegated to a
+// router workflow (`adaptive`, which requires no input artifacts) IS auto-extracted;
+// the router then picks a real workflow and delegateSelectedWorkflow copies the parent's
+// payload — inputExtractions included — onto the child. The child may be exactly the kind
+// of workflow that reads staged files, and by then nothing can re-decide the upload.
+//
+// So the guarantee belongs where the running workflow is finally known: the executor. A
+// workflow that DECLARES it reads staged input artifacts gets them staged, whatever
+// created the task and however it was routed.
+func TestW2ExecExtractTaskInputArtifacts_RequireInputArtifactsAlwaysStages(t *testing.T) {
+	// A document with an extraction: normally suppressed, because the extraction
+	// carries the content and staging the binary too is what let a worker file_read a
+	// 32 MB EPUB into the chat-proxy cap.
+	payload := []byte(`{"context":{
+		"inputFiles":["/tmp/design.pdf"],
+		"inputExtractions":[{"extracted_document_id":"doc-1"}]
+	}}`)
+
+	if got := extractTaskInputArtifacts(payload, 0, false, 0); got != nil {
+		t.Fatalf("without the declaration the extracted document must stay unstaged, got %v", got)
+	}
+
+	got := extractTaskInputArtifacts(payload, 0, true, 0)
+	if len(got) != 1 {
+		t.Fatalf("a require_input_artifacts workflow must get its raw file staged, got %v", got)
+	}
+	if got[0]["name"] != "design.pdf" || got[0]["sourcePath"] != "/tmp/design.pdf" {
+		t.Fatalf("unexpected staged artifact: %v", got[0])
+	}
+}
+
+// TestW2ExecExtractTaskInputArtifacts_RequireInputArtifactsRespectsTheCap — the
+// declaration cannot make a large file small.
+//
+// Raised by review-20260804-09da as a blocker on the fix above: bypassing the size check
+// entirely reintroduces the failure the suppression exists to prevent (a 32 MB EPUB staged
+// next to its extraction, T-fa9e/T-7f98/T-8889). Over the cap the extraction stands alone —
+// degraded but bounded — and the prompt's ATTACHED FILES block already distinguishes staged
+// from extracted, so the agent is never told a file is there when it is not.
+func TestW2ExecExtractTaskInputArtifacts_RequireInputArtifactsRespectsTheCap(t *testing.T) {
+	dir := t.TempDir()
+	small := filepath.Join(dir, "small.pdf")
+	big := filepath.Join(dir, "big.pdf")
+	if err := os.WriteFile(small, []byte("tiny"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(big, make([]byte, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"context":{
+		"inputFiles":["` + small + `","` + big + `"],
+		"inputExtractions":[{"extracted_document_id":"doc-1"},{"extracted_document_id":"doc-2"}]
+	}}`)
+
+	// Cap between the two files: the small one is handed over, the large one is not.
+	got := extractTaskInputArtifacts(payload, 0, true, 1024)
+	if len(got) != 1 {
+		t.Fatalf("expected exactly the under-cap file staged, got %v", got)
+	}
+	if got[0]["name"] != "small.pdf" {
+		t.Fatalf("staged the wrong file: %v", got[0])
+	}
+
+	// Unbounded cap (0) stages both — the cap is opt-in at the call site, and the
+	// executor supplies a built-in bound rather than leaving it at unlimited.
+	if got := extractTaskInputArtifacts(payload, 0, true, 0); len(got) != 2 {
+		t.Fatalf("a zero cap must mean unbounded, got %v", got)
 	}
 }

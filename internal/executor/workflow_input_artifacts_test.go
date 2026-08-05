@@ -26,7 +26,7 @@ import (
 // container.go's staging code consumes.
 func TestExtractTaskInputArtifacts_HappyPath(t *testing.T) {
 	payload := []byte(`{"context":{"inputFiles":["/opt/vornik/artifacts/assistant/inputs/artifact_xyz/cv.pdf"]}}`)
-	got := extractTaskInputArtifacts(payload, 0)
+	got := extractTaskInputArtifacts(payload, 0, false, 0)
 	assert.Equal(t, []map[string]string{
 		{"name": "cv.pdf", "sourcePath": "/opt/vornik/artifacts/assistant/inputs/artifact_xyz/cv.pdf"},
 	}, got)
@@ -37,7 +37,7 @@ func TestExtractTaskInputArtifacts_HappyPath(t *testing.T) {
 // order") matches what reaches the agent's input dir.
 func TestExtractTaskInputArtifacts_MultipleFiles(t *testing.T) {
 	payload := []byte(`{"context":{"inputFiles":["/a/first.png","/b/second.jpg"]}}`)
-	got := extractTaskInputArtifacts(payload, 0)
+	got := extractTaskInputArtifacts(payload, 0, false, 0)
 	assert.Len(t, got, 2)
 	assert.Equal(t, "first.png", got[0]["name"])
 	assert.Equal(t, "second.jpg", got[1]["name"])
@@ -48,8 +48,8 @@ func TestExtractTaskInputArtifacts_MultipleFiles(t *testing.T) {
 // Must not crash; nil result lets the caller's append act as a
 // no-op.
 func TestExtractTaskInputArtifacts_NilPayloadReturnsNil(t *testing.T) {
-	assert.Nil(t, extractTaskInputArtifacts(nil, 0))
-	assert.Nil(t, extractTaskInputArtifacts([]byte{}, 0))
+	assert.Nil(t, extractTaskInputArtifacts(nil, 0, false, 0))
+	assert.Nil(t, extractTaskInputArtifacts([]byte{}, 0, false, 0))
 }
 
 // TestExtractTaskInputArtifacts_MalformedJSONReturnsNil — best-
@@ -57,7 +57,7 @@ func TestExtractTaskInputArtifacts_NilPayloadReturnsNil(t *testing.T) {
 // must not stop the workflow. The agent runs anyway and just
 // doesn't see the inputs.
 func TestExtractTaskInputArtifacts_MalformedJSONReturnsNil(t *testing.T) {
-	assert.Nil(t, extractTaskInputArtifacts([]byte(`{not json`), 0))
+	assert.Nil(t, extractTaskInputArtifacts([]byte(`{not json`), 0, false, 0))
 }
 
 // TestExtractTaskInputArtifacts_NoInputFilesField — when the
@@ -65,7 +65,7 @@ func TestExtractTaskInputArtifacts_MalformedJSONReturnsNil(t *testing.T) {
 // tasks created without attachments), the extractor returns nil
 // so the caller's append is a no-op.
 func TestExtractTaskInputArtifacts_NoInputFilesField(t *testing.T) {
-	assert.Nil(t, extractTaskInputArtifacts([]byte(`{"context":{"prompt":"do thing"}}`), 0))
+	assert.Nil(t, extractTaskInputArtifacts([]byte(`{"context":{"prompt":"do thing"}}`), 0, false, 0))
 }
 
 // TestExtractTaskInputArtifacts_EmptyStringsFiltered — defensive:
@@ -75,7 +75,7 @@ func TestExtractTaskInputArtifacts_NoInputFilesField(t *testing.T) {
 // would silently drop with a "src empty" log.
 func TestExtractTaskInputArtifacts_EmptyStringsFiltered(t *testing.T) {
 	payload := []byte(`{"context":{"inputFiles":["","/real.txt",""]}}`)
-	got := extractTaskInputArtifacts(payload, 0)
+	got := extractTaskInputArtifacts(payload, 0, false, 0)
 	assert.Len(t, got, 1)
 	assert.Equal(t, "real.txt", got[0]["name"])
 }
@@ -84,5 +84,5 @@ func TestExtractTaskInputArtifacts_EmptyStringsFiltered(t *testing.T) {
 // inputFiles:[] is the same shape as no inputFiles field. Return
 // nil so the caller's append doesn't reserve capacity for nothing.
 func TestExtractTaskInputArtifacts_EmptyListReturnsNil(t *testing.T) {
-	assert.Nil(t, extractTaskInputArtifacts([]byte(`{"context":{"inputFiles":[]}}`), 0))
+	assert.Nil(t, extractTaskInputArtifacts([]byte(`{"context":{"inputFiles":[]}}`), 0, false, 0))
 }

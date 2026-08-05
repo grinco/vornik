@@ -6390,4 +6390,91 @@ DROP INDEX IF EXISTS idx_llm_usage_api_key;
 ALTER TABLE task_llm_usage DROP COLUMN IF EXISTS api_key_id;
 `,
 	},
+	{
+		Version: 150,
+		Name:    "chunks_embed_input_hash",
+		// The embedding_cache key, recorded on the chunk at embed time.
+		//
+		// The cache is keyed by the hash of the CONTEXTUALISED embed input (the
+		// Source/Section prefix plus content), NOT by content_hash — see
+		// memory.EmbedInputHash. Erasure paths recompute that prefix to find the row
+		// to evict, which couples erasure to buildEmbedContext staying byte-stable
+		// forever: change the prefix format and every previously-cached vector becomes
+		// unreachable under both keys, retained but never hit again.
+		//
+		// Storing the key the embed actually used removes the coupling. Written in the
+		// same statement that stores the vector (Repository.UpdateEmbedding), so the
+		// column cannot drift from what was cached — there is no window in which a
+		// vector exists under a key nothing recorded.
+		//
+		// Nullable with no backfill: rows embedded before this migration keep NULL and
+		// erasure falls back to recomputing, which is correct for them because they
+		// were cached under today's prefix format. retention.embedding_cache_days is
+		// the backstop for anything either path misses.
+		Up: `
+ALTER TABLE project_memory_chunks ADD COLUMN IF NOT EXISTS embed_input_hash TEXT;
+CREATE INDEX IF NOT EXISTS idx_memory_embed_input_hash
+    ON project_memory_chunks (embed_input_hash)
+    WHERE embed_input_hash IS NOT NULL;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_memory_embed_input_hash;
+ALTER TABLE project_memory_chunks DROP COLUMN IF EXISTS embed_input_hash;
+`,
+	},
+	{
+		Version: 151,
+		Name:    "mcp_oauth_tokens_redirect_uri",
+		// §7.2a: a DCR registration PINS its redirect_uris, so a changed
+		// server.public_base_url makes the stored client_id useless at the vendor —
+		// the authorization request is rejected for a redirect_uri the client never
+		// registered. The design says such a client is dropped and re-registered on
+		// the next connect, with existing tokens marked needs_reconnect.
+		//
+		// Nothing could detect that: no column recorded what the vendor has
+		// registered, so neither an origin change nor a path change was visible. The
+		// invalidation was specified and never implemented (recorded in BACKLOG
+		// 2026-08-04, surfaced by review-20260804-e230).
+		//
+		// Empty string = unknown, which is what every pre-migration row is. Unknown is
+		// deliberately NOT treated as a mismatch: dropping a working client because we
+		// cannot prove its redirect URI would break connections to punish our own
+		// missing data. Rows written after this migration always carry the value.
+		Up: `
+ALTER TABLE mcp_oauth_tokens ADD COLUMN IF NOT EXISTS redirect_uri TEXT NOT NULL DEFAULT '';
+`,
+		Down: `
+ALTER TABLE mcp_oauth_tokens DROP COLUMN IF EXISTS redirect_uri;
+`,
+	},
+	{
+		Version: 152,
+		Name:    "task_llm_usage_cache_hit",
+		// Distinguishes "this stage ran and was served from the response cache" from
+		// "this stage made a call that happened to cost nothing".
+		//
+		// The KG extractor's cache-hit path returned metrics carrying the CACHED token
+		// counts, and the pipeline's recorder billed them — so a hit, which never
+		// reaches a provider, landed in the spend ledger as real money. Direction
+		// matters: it made the deployment OVER-report, the inverse of the reranker bug
+		// that under-reported, and it partially masked the 2026-07-30 gateway
+		// discrepancy.
+		//
+		// The fix records the hit with zero cost and zero tokens rather than dropping
+		// the row, because a vanished row would hide the stage entirely
+		// (local-llm-response-cache-design §Goals 4: hits stay visible as saved calls).
+		// That leaves a zero-cost row ambiguous, which is what this column resolves.
+		// Saved dollars keep their existing home — llm_response_cache.hit_count,
+		// surfaced on /ui/spend.
+		Up: `
+ALTER TABLE task_llm_usage ADD COLUMN IF NOT EXISTS cache_hit BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_llm_usage_cache_hit
+    ON task_llm_usage (cache_hit)
+    WHERE cache_hit;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_llm_usage_cache_hit;
+ALTER TABLE task_llm_usage DROP COLUMN IF EXISTS cache_hit;
+`,
+	},
 }

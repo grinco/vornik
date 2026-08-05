@@ -19,7 +19,7 @@ func usageRow() *sqlmock.Rows {
 		"id", "project_id", "task_id", "execution_id", "step_id",
 		"role", "model", "prompt_tokens", "completion_tokens", "iterations",
 		"cost_usd", "source", "session_id", "recorded_at",
-		"cache_creation_tokens", "cache_read_tokens", "api_key_id",
+		"cache_creation_tokens", "cache_read_tokens", "api_key_id", "cache_hit",
 	})
 }
 
@@ -36,13 +36,17 @@ func TestUsageList_HappyPath_DefaultFilter(t *testing.T) {
 			"u-1", "p-1", "t-1", "e-1", "s-1",
 			"worker", "claude", int64(100), int64(50), 1,
 			1.0, "workflow_step", "sess-1", recorded,
-			int64(0), int64(0), nil,
+			int64(0), int64(0), nil, false,
 		).
 		AddRow(
 			"u-2", "p-1", nil, nil, "s-2",
 			"dispatcher", "claude", int64(40), int64(10), 0,
-			0.5, "dispatcher", nil, recorded,
+			// cost 0 with cache_hit=true: a cache-served stage reached no provider, so a
+			// non-zero cost on a flagged row cannot occur in production and would make
+			// this fixture lie about the shape it is standing in for.
+			0.0, "dispatcher", nil, recorded,
 			int64(0), int64(0), nil,
+			true,
 		)
 	mock.ExpectQuery(regexp.QuoteMeta("FROM task_llm_usage WHERE 1=1")).
 		WithArgs(). // no filter args
@@ -254,9 +258,11 @@ func TestUsageAggregateBySource(t *testing.T) {
 
 	rows := sqlmock.NewRows([]string{
 		"source", "cost_usd", "call_count", "prompt_tokens", "completion_tokens",
-		"cache_creation_tokens", "cache_read_tokens",
-	}).AddRow("workflow_step", 3.0, int64(5), int64(500), int64(250), int64(100), int64(700)).
-		AddRow("dispatcher", 0.5, int64(2), int64(100), int64(40), int64(0), int64(0))
+		"cache_creation_tokens", "cache_read_tokens", "cache_hit_count",
+	}).AddRow("workflow_step", 3.0, int64(5), int64(500), int64(250), int64(100), int64(700), int64(0)).
+		// Three stages of this source were served from the response cache: not calls,
+		// no cost, surfaced separately (migration 152).
+		AddRow("dispatcher", 0.5, int64(2), int64(100), int64(40), int64(0), int64(0), int64(3))
 
 	since := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2026, 5, 13, 0, 0, 0, 0, time.UTC)
@@ -274,6 +280,9 @@ func TestUsageAggregateBySource(t *testing.T) {
 	}
 	if out[0].CacheCreationTokens != 100 || out[0].CacheReadTokens != 700 {
 		t.Errorf("cache token columns lost in scan: %+v", out[0])
+	}
+	if out[1].CacheHitCount != 3 || out[1].CallCount != 2 {
+		t.Errorf("cache-hit count lost in scan, or folded into calls: %+v", out[1])
 	}
 }
 

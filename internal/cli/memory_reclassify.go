@@ -198,6 +198,7 @@ type llmReclassifyResponse struct {
 	Failed    int      `json:"failed"`
 	Skipped   int      `json:"skipped"`
 	Remaining int      `json:"remaining"`
+	Exhausted bool     `json:"exhausted,omitempty"`
 	Errors    []string `json:"errors,omitempty"`
 }
 
@@ -266,10 +267,16 @@ func runLLMReclassifyLoop(projectID string, dryRun, asJSON bool, batchSize int, 
 		if batch.Remaining == 0 {
 			break
 		}
-		// Stall guard: if the queue doesn't shrink across two
-		// consecutive batches, the LLM is rejecting every chunk and
-		// looping wastes spend. Bail out with a clear message.
-		if batch.Remaining >= prevRemaining {
+		if batch.Exhausted {
+			_, _ = fmt.Fprintln(out, "  (completed one LLM sweep; remaining rows were skipped by the model)")
+			break
+		}
+		// A non-shrinking count is not itself a stall: a batch can make
+		// real progress through rows that the model deliberately leaves
+		// unclassified. The daemon advances its project cursor after such
+		// a batch and eventually returns Exhausted. Only a response that
+		// processed no rows at all can be the old no-progress loop.
+		if batch.Processed == 0 && batch.Remaining >= prevRemaining {
 			stalled++
 		} else {
 			stalled = 0

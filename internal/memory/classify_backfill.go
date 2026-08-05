@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -42,17 +43,32 @@ type ClassifyBackfiller struct {
 	// page and is self-correcting. The complete fix is a durable per-row
 	// "attempted" marker, which needs a migration and is noted in the backlog.
 	offset int
+
+	// projectOffsets is the equivalent cursor for operator-driven,
+	// project-scoped batches.  The CLI sends one HTTP request per batch, so a
+	// local variable cannot survive from one request to the next.  Guard the
+	// same project's operation: concurrently advancing that cursor would
+	// otherwise make a batch skip arbitrary rows. Different projects must not
+	// block each other's database or LLM calls.
+	projectMu      sync.Mutex
+	projectLocks   map[string]*sync.Mutex
+	projectOffsets map[string]int
 }
 
 // ClassifyBackfillResult summarises one BackfillBatch call. Same
 // shape as title-backfill's BackfillResult so the operator UI can
 // reuse the rendering.
 type ClassifyBackfillResult struct {
-	Processed int      `json:"processed"`
-	Succeeded int      `json:"succeeded"`
-	Failed    int      `json:"failed"`
-	Skipped   int      `json:"skipped"` // classifier returned unclassified
-	Remaining int      `json:"remaining"`
+	Processed int `json:"processed"`
+	Succeeded int `json:"succeeded"`
+	Failed    int `json:"failed"`
+	Skipped   int `json:"skipped"` // classifier returned unclassified
+	Remaining int `json:"remaining"`
+	// Exhausted means this sweep reached the end of the current queue. Remaining
+	// can still be non-zero: those rows were deliberately left unclassified
+	// because the model abstained. It lets the CLI finish an exhaustive pass
+	// without mistaking honest abstentions for a livelock.
+	Exhausted bool     `json:"exhausted,omitempty"`
 	Errors    []string `json:"errors,omitempty"`
 }
 
@@ -269,9 +285,24 @@ func (b *ClassifyBackfiller) BackfillBatch(ctx context.Context, projectID string
 	if batchSize <= 0 {
 		batchSize = 10
 	}
-	rows, err := b.Repo.ListUnclassifiedChunks(ctx, projectID, batchSize)
+	lock := b.lockForProject(projectID)
+	lock.Lock()
+	defer lock.Unlock()
+	offset := b.projectOffsets[projectID]
+	rows, err := b.Repo.ListUnclassifiedChunksFrom(ctx, projectID, batchSize, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list unclassified: %w", err)
+	}
+	if len(rows) == 0 && offset > 0 {
+		// The pass reached its end. Rewind for a later operator run (new
+		// data or a changed model may make prior abstentions classifiable),
+		// but tell this run not to cycle back to its first row.
+		b.projectOffsets[projectID] = 0
+		remaining, rerr := b.CountRemaining(ctx, projectID)
+		if rerr != nil {
+			b.Logger.Debug().Err(rerr).Msg("classify backfill: count remaining failed")
+		}
+		return &ClassifyBackfillResult{Remaining: remaining, Exhausted: true}, nil
 	}
 	out := &ClassifyBackfillResult{Processed: len(rows)}
 	for _, row := range rows {
@@ -325,5 +356,34 @@ func (b *ClassifyBackfiller) BackfillBatch(ctx context.Context, projectID string
 	} else {
 		out.Remaining = remaining
 	}
+	// Deletions from successful updates shift the SQL offset. Restarting after
+	// any success is conservative but correct; advancing after a no-progress
+	// batch is what reaches rows that all preceding abstentions would hide.
+	if out.Succeeded > 0 {
+		b.projectOffsets[projectID] = 0
+	} else if out.Processed > 0 {
+		b.projectOffsets[projectID] = offset + out.Processed
+	}
 	return out, nil
+}
+
+// lockForProject returns a stable lock for one project's sweep cursor. The
+// brief map lock protects only lock/cursor creation; model calls remain
+// concurrent across projects while sequential requests to one project retain
+// the cursor's ordering guarantee.
+func (b *ClassifyBackfiller) lockForProject(projectID string) *sync.Mutex {
+	b.projectMu.Lock()
+	defer b.projectMu.Unlock()
+	if b.projectLocks == nil {
+		b.projectLocks = make(map[string]*sync.Mutex)
+	}
+	if b.projectOffsets == nil {
+		b.projectOffsets = make(map[string]int)
+	}
+	lock := b.projectLocks[projectID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		b.projectLocks[projectID] = lock
+	}
+	return lock
 }

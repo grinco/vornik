@@ -898,8 +898,8 @@ func TestDeleteChatMemory_CompensationOrder(t *testing.T) {
 	// keyed on the CONTEXTUALISED embed input's hash (memory.EmbedInputHash), so the
 	// eviction needs the fields that key is derived from.
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT source_name, content, content_hash FROM project_memory_chunks").
-		WillReturnRows(sqlmock.NewRows([]string{"source_name", "content", "content_hash"}))
+	mock.ExpectQuery("SELECT embed_input_hash, source_name, content, content_hash FROM project_memory_chunks").
+		WillReturnRows(sqlmock.NewRows([]string{"embed_input_hash", "source_name", "content", "content_hash"}))
 	mock.ExpectExec("DELETE FROM project_memory_chunks").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

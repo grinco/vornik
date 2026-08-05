@@ -49,12 +49,12 @@ func (r *TaskLLMUsageRepository) Record(ctx context.Context, u *persistence.Task
 			id, project_id, task_id, execution_id, step_id,
 			role, model, prompt_tokens, completion_tokens, iterations,
 			cost_usd, source, session_id, recorded_at,
-			cache_creation_tokens, cache_read_tokens, api_key_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			cache_creation_tokens, cache_read_tokens, api_key_id, cache_hit
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.ProjectID, u.TaskID, u.ExecutionID, u.StepID,
 		u.Role, u.Model, u.PromptTokens, u.CompletionTokens, u.Iterations,
 		u.CostUSD, source, u.SessionID, sqliteTime(u.RecordedAt),
-		u.CacheCreationTokens, u.CacheReadTokens, u.APIKeyID,
+		u.CacheCreationTokens, u.CacheReadTokens, u.APIKeyID, u.CacheHit,
 	)
 	return err
 }
@@ -76,8 +76,8 @@ func (r *TaskLLMUsageRepository) Upsert(ctx context.Context, u *persistence.Task
 			id, project_id, task_id, execution_id, step_id,
 			role, model, prompt_tokens, completion_tokens, iterations,
 			cost_usd, source, session_id, recorded_at,
-			cache_creation_tokens, cache_read_tokens, api_key_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			cache_creation_tokens, cache_read_tokens, api_key_id, cache_hit
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET
 			prompt_tokens         = excluded.prompt_tokens,
 			completion_tokens     = excluded.completion_tokens,
@@ -86,11 +86,12 @@ func (r *TaskLLMUsageRepository) Upsert(ctx context.Context, u *persistence.Task
 			recorded_at           = excluded.recorded_at,
 			cache_creation_tokens = excluded.cache_creation_tokens,
 			cache_read_tokens     = excluded.cache_read_tokens,
-			api_key_id            = excluded.api_key_id`,
+			api_key_id            = excluded.api_key_id,
+			cache_hit             = excluded.cache_hit`,
 		u.ID, u.ProjectID, u.TaskID, u.ExecutionID, u.StepID,
 		u.Role, u.Model, u.PromptTokens, u.CompletionTokens, u.Iterations,
 		u.CostUSD, source, u.SessionID, sqliteTime(u.RecordedAt),
-		u.CacheCreationTokens, u.CacheReadTokens, u.APIKeyID,
+		u.CacheCreationTokens, u.CacheReadTokens, u.APIKeyID, u.CacheHit,
 	)
 	return err
 }
@@ -102,7 +103,7 @@ func (r *TaskLLMUsageRepository) List(ctx context.Context, f persistence.TaskLLM
 		SELECT id, project_id, task_id, execution_id, step_id,
 		       role, model, prompt_tokens, completion_tokens, iterations,
 		       cost_usd, source, session_id, recorded_at,
-		       cache_creation_tokens, cache_read_tokens, api_key_id
+		       cache_creation_tokens, cache_read_tokens, api_key_id, cache_hit
 		FROM task_llm_usage WHERE 1=1`)
 	args := make([]any, 0, 6)
 
@@ -156,7 +157,7 @@ func (r *TaskLLMUsageRepository) List(ctx context.Context, f persistence.TaskLLM
 			&u.ID, &u.ProjectID, &taskID, &executionID, &u.StepID,
 			&u.Role, &u.Model, &u.PromptTokens, &u.CompletionTokens, &u.Iterations,
 			&u.CostUSD, &u.Source, &sessionID, &recordedAt,
-			&u.CacheCreationTokens, &u.CacheReadTokens, &apiKeyID,
+			&u.CacheCreationTokens, &u.CacheReadTokens, &apiKeyID, &u.CacheHit,
 		); err != nil {
 			return nil, err
 		}
@@ -459,11 +460,15 @@ func (r *TaskLLMUsageRepository) AggregateBySource(ctx context.Context, since, u
 	b.WriteString(`
 		SELECT COALESCE(source, ''),
 		       COALESCE(SUM(cost_usd), 0),
-		       COUNT(*),
+		       -- Provider calls only; see the postgres copy. SQLite has FILTER since
+		       -- 3.30 but SUM(CASE …) keeps this readable next to the older aggregates
+		       -- in this file and behaves identically.
+		       SUM(CASE WHEN cache_hit = 0 THEN 1 ELSE 0 END),
 		       COALESCE(SUM(prompt_tokens), 0),
 		       COALESCE(SUM(completion_tokens), 0),
 		       COALESCE(SUM(cache_creation_tokens), 0),
-		       COALESCE(SUM(cache_read_tokens), 0)
+		       COALESCE(SUM(cache_read_tokens), 0),
+		       SUM(CASE WHEN cache_hit <> 0 THEN 1 ELSE 0 END)
 		FROM task_llm_usage WHERE 1=1`)
 	args := make([]any, 0, 3)
 	if !since.IsZero() {
@@ -488,7 +493,7 @@ func (r *TaskLLMUsageRepository) AggregateBySource(ctx context.Context, since, u
 	for rows.Next() {
 		var s persistence.SourceSpend
 		if err := rows.Scan(&s.Source, &s.CostUSD, &s.CallCount, &s.PromptTokens, &s.CompletionTokens,
-			&s.CacheCreationTokens, &s.CacheReadTokens); err != nil {
+			&s.CacheCreationTokens, &s.CacheReadTokens, &s.CacheHitCount); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

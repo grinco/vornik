@@ -53,6 +53,18 @@ type MCPOAuthToken struct {
 	// ConnectedBy is the identity that consented. With per-project service identity the
 	// vendor's own audit log shows a single actor for all agent activity, so this is the
 	// only place the human behind the grant is recorded (design §9).
+	// RedirectURI is the callback the stored ClientID is registered under at the
+	// authorization server (§7.2a). A DCR registration PINS its redirect_uris, so a
+	// changed server.public_base_url makes the client unusable — the vendor rejects an
+	// authorization request carrying a redirect_uri it never registered. Recorded so
+	// that change is DETECTABLE: nothing could see it before, neither an origin change
+	// nor a path change.
+	//
+	// "" means unknown (every row written before migration 151). Unknown is not a
+	// mismatch: dropping a working client because we cannot prove its redirect URI
+	// would break connections to punish our own missing data.
+	RedirectURI string
+
 	ConnectedBy string
 
 	ConnectedAt time.Time
@@ -115,6 +127,19 @@ type MCPOAuthTokenRepository interface {
 	// about why beyond the flag — the reason belongs in the log, not in a row an operator
 	// might mistake for an audit record.
 	MarkNeedsReconnect(ctx context.Context, projectID, serverName string) error
+
+	// InvalidateStaleRedirectURIs drops the stored client_id and marks
+	// needs_reconnect on every grant whose recorded redirect URI is neither empty
+	// nor equal to current, returning how many rows changed (§7.2a).
+	//
+	// One statement rather than list-then-update: the sweep runs at boot and again
+	// before each connect, and a read-modify-write would race two daemons behind one
+	// public_base_url — the exact deployment shape §7.2a says must share one client.
+	//
+	// Empty recorded values are LEFT ALONE. They mean "written before migration 151",
+	// not "registered under something else", and dropping a working client over
+	// missing data of our own would break connections for no gain.
+	InvalidateStaleRedirectURIs(ctx context.Context, current string) (int, error)
 
 	// Delete removes the grant (Disconnect). Config is untouched: the `auth:` block stays,
 	// so reconnecting needs no config change.

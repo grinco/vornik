@@ -465,3 +465,62 @@ func TestTaskLLMUsage_SumCostByAPIKey_OneIdentityRule(t *testing.T) {
 }
 
 func int64Ptr(v int64) *int64 { return &v }
+
+// TestTaskLLMUsage_AggregateBySource_HitsAreNotCalls pins the read-side half of the
+// cache-hit accounting fix (migration 152).
+//
+// A response-cache hit is recorded with zero cost and zero tokens so the ledger reports
+// what was SPENT. It must not also be counted as a call: /ui/spend's headline "LLM calls"
+// and "avg cost / call" come from this aggregate, and counting stages that reached no
+// provider diluted the average with free rows. The hits are reported separately rather
+// than filtered away, because a stage that vanishes from the breakdown reads as one that
+// never ran.
+func TestTaskLLMUsage_AggregateBySource_HitsAreNotCalls(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	repo := sqlite.NewTaskLLMUsageRepository(db.DB)
+
+	const projectID = "p-cache-hit-agg"
+	rows := []persistence.TaskLLMUsage{
+		{ID: "ch-real-1", ProjectID: projectID, StepID: "s1", Role: "kg_extractor", Model: "m",
+			PromptTokens: 100, CompletionTokens: 20, CostUSD: 0.5, Source: "kg_extraction"},
+		{ID: "ch-real-2", ProjectID: projectID, StepID: "s2", Role: "kg_extractor", Model: "m",
+			PromptTokens: 60, CompletionTokens: 10, CostUSD: 0.25, Source: "kg_extraction"},
+		// Served from the response cache: recorded, unbilled, flagged.
+		{ID: "ch-hit-1", ProjectID: projectID, StepID: "s3", Role: "kg_extractor", Model: "m",
+			Source: "kg_extraction", CacheHit: true},
+		{ID: "ch-hit-2", ProjectID: projectID, StepID: "s4", Role: "kg_extractor", Model: "m",
+			Source: "kg_extraction", CacheHit: true},
+	}
+	for i := range rows {
+		if err := repo.Record(ctx, &rows[i]); err != nil {
+			t.Fatalf("Record %s: %v", rows[i].ID, err)
+		}
+	}
+
+	out, err := repo.AggregateBySource(ctx, time.Time{}, time.Time{}, projectID)
+	if err != nil {
+		t.Fatalf("AggregateBySource: %v", err)
+	}
+	var got *persistence.SourceSpend
+	for i := range out {
+		if out[i].Source == "kg_extraction" {
+			got = &out[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("no kg_extraction row: %+v", out)
+	}
+	if got.CallCount != 2 {
+		t.Errorf("CallCount = %d, want 2 — a cache hit reached no provider and is not a call", got.CallCount)
+	}
+	if got.CacheHitCount != 2 {
+		t.Errorf("CacheHitCount = %d, want 2 — hits must stay visible, not be filtered away", got.CacheHitCount)
+	}
+	if got.CostUSD != 0.75 {
+		t.Errorf("CostUSD = %v, want 0.75 (only the real calls)", got.CostUSD)
+	}
+	if got.PromptTokens != 160 || got.CompletionTokens != 30 {
+		t.Errorf("tokens = %d/%d, want 160/30", got.PromptTokens, got.CompletionTokens)
+	}
+}

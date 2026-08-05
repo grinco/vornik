@@ -65,6 +65,14 @@
                     <div class="px-5 py-4">
                         <p class="text-xs font-medium text-gray-400 uppercase tracking-wider">LLM calls</p>
                         <p class="mt-1.5 text-3xl font-bold text-gray-100 tabular-nums">{{.TotalCalls}}</p>
+                        {{/* Cache-served stages are not calls — they reached no provider — but
+                             hiding them makes a lower call count than stage count unexplainable. */}}
+                        {{if gt .TotalCacheHits 0}}
+                        <p class="mt-1 text-xs text-emerald-800 dark:text-emerald-400 tabular-nums"
+                           title="Stages served from the LLM response cache: no provider call, no cost. Excluded from the count above.">
+                            + {{.TotalCacheHits}} served from cache
+                        </p>
+                        {{end}}
                     </div>
                     <div class="h-0.5 bg-emerald-500/40"></div>
                 </div>

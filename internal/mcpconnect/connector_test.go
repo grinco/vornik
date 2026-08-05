@@ -95,6 +95,25 @@ func (f *fakeTokens) ListForProject(_ context.Context, p string) ([]*persistence
 	return out, nil
 }
 
+// InvalidateStaleRedirectURIs mirrors the real implementations, INCLUDING clearing
+// redirect_uri alongside client_id — a double that skipped that would hide the
+// non-idempotence the repotest suite exists to catch.
+func (f *fakeTokens) InvalidateStaleRedirectURIs(_ context.Context, current string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, row := range f.rows {
+		if row.RedirectURI == "" || row.RedirectURI == current {
+			continue
+		}
+		row.ClientID = ""
+		row.RedirectURI = ""
+		row.NeedsReconnect = true
+		n++
+	}
+	return n, nil
+}
+
 func (f *fakeTokens) WithRefreshLock(ctx context.Context, _, _ string, fn func(context.Context) error) error {
 	f.lockMu.Lock()
 	defer f.lockMu.Unlock()
@@ -586,4 +605,87 @@ func TestCallbackPath_MatchesTheSurfaceStandard(t *testing.T) {
 	assert.True(t, strings.HasPrefix(CallbackPath, "/auth/"))
 	assert.NotContains(t, CallbackPath, "/ui/")
 	assert.NotContains(t, CallbackPath, "/api/")
+}
+
+// TestBegin_DropsAClientRegisteredUnderAPreviousRedirectURI covers §7.2a, which was
+// specified and never implemented until 2026-08-05.
+//
+// A DCR registration PINS its redirect_uris. When server.public_base_url changes, the
+// stored client_id is dead at the vendor: the authorization request carries a
+// redirect_uri that client never registered, and the vendor rejects it — AFTER the
+// operator has been sent to a consent screen. So the stale client must be dropped
+// before Begin can reuse it, and the grant flagged rather than left to fail later.
+func TestBegin_DropsAClientRegisteredUnderAPreviousRedirectURI(t *testing.T) {
+	vendor := newOAuthServer(t, true, "read:x")
+	tokens := newFakeTokens()
+	// A grant from when the deployment answered on a different origin.
+	require.NoError(t, tokens.Upsert(context.Background(), &persistence.MCPOAuthToken{
+		ProjectID: "p1", ServerName: "atlassian",
+		ClientID:    "client-registered-at-the-old-origin",
+		AccessToken: "at-old",
+		RedirectURI: "https://before.example.com/auth/mcp/callback",
+	}))
+
+	c := newConnector(t, tokens, &fakeAudit{}, "https://now.example.com")
+	ref := ServerRef{
+		ProjectID: "p1", ServerName: "atlassian", URL: vendor.URL + "/mcp",
+		Auth: mcpauth.Auth{Mode: mcpauth.ModeOAuth},
+	}
+	if _, err := c.Begin(context.Background(), ref, "op"); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+
+	got, err := tokens.Get(context.Background(), "p1", "atlassian")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Empty(t, got.ClientID,
+		"the stale client must be dropped so this connect re-registers instead of being rejected")
+	assert.True(t, got.NeedsReconnect,
+		"the grant must be flagged, or it fails silently at the next tool call")
+	assert.NotEmpty(t, got.AccessToken,
+		"§7.2a drops the CLIENT registration, not the operator's grant")
+}
+
+// TestBegin_KeepsAClientRegisteredUnderTheCurrentRedirectURI — the other half. A sweep
+// that flagged healthy grants would turn every connect into a re-consent.
+func TestBegin_KeepsAClientRegisteredUnderTheCurrentRedirectURI(t *testing.T) {
+	vendor := newOAuthServer(t, true, "read:x")
+	tokens := newFakeTokens()
+	require.NoError(t, tokens.Upsert(context.Background(), &persistence.MCPOAuthToken{
+		ProjectID: "p1", ServerName: "atlassian",
+		ClientID:    "client-still-valid",
+		AccessToken: "at-current",
+		RedirectURI: "https://now.example.com" + CallbackPath,
+	}))
+
+	c := newConnector(t, tokens, &fakeAudit{}, "https://now.example.com")
+	ref := ServerRef{
+		ProjectID: "p1", ServerName: "atlassian", URL: vendor.URL + "/mcp",
+		Auth: mcpauth.Auth{Mode: mcpauth.ModeOAuth},
+	}
+	if _, err := c.Begin(context.Background(), ref, "op"); err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	got, err := tokens.Get(context.Background(), "p1", "atlassian")
+	require.NoError(t, err)
+	assert.Equal(t, "client-still-valid", got.ClientID)
+	assert.False(t, got.NeedsReconnect)
+}
+
+// TestComplete_RecordsTheRedirectURITheFlowUsed — without this the invalidation has
+// nothing to compare against, which is exactly why it could not be implemented before.
+func TestComplete_RecordsTheRedirectURITheFlowUsed(t *testing.T) {
+	vendor := newOAuthServer(t, true, "read:x")
+	tokens := newFakeTokens()
+	c := newConnector(t, tokens, &fakeAudit{}, "https://now.example.com")
+	ref := ServerRef{
+		ProjectID: "p1", ServerName: "atlassian", URL: vendor.URL + "/mcp",
+		Auth: mcpauth.Auth{Mode: mcpauth.ModeOAuth},
+	}
+	begun, err := c.Begin(context.Background(), ref, "op")
+	require.NoError(t, err)
+	tok, err := c.Complete(context.Background(), begun.State, "code")
+	require.NoError(t, err)
+	assert.Equal(t, "https://now.example.com"+CallbackPath, tok.RedirectURI,
+		"the grant must record the URI the vendor actually saw")
 }

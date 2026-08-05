@@ -58,6 +58,35 @@ anonymized body. If the user can point at a specific failed task or window,
 add `--task <id>` or `--since <window>` — that appends a note offering a
 detailed **attachable** support bundle (see the attachment caveat below).
 
+## When the daemon is on ANOTHER host
+
+Everything above assumes `vornikctl` can reach the daemon from the machine you
+are on. If the daemon runs elsewhere — a server, a container host, someone
+else's laptop — the CLI is not available to you, and until 2026-08-05 there was
+no way to file a report through the companion at all.
+
+Use the MCP verb instead:
+
+```
+mcp__vornik__report_problem  { "symptom": "<the user's own words>" }
+```
+
+It returns `review_url` and the anonymized `body`. Two properties matter, and
+both are deliberate:
+
+- **It collects NOTHING from the daemon host.** The report carries the build
+  identity and the reporter's words, full stop — no doctor findings, no journal
+  tail. No remotely-reachable path in Vornik may execute a program, and both of
+  those collectors would (the doctor sweep invokes `podman`, the tail invokes
+  `journalctl`). So this report is thinner than the CLI's by design, not by
+  omission.
+- **Nothing is submitted.** Show the body to the user, let them read it, and let
+  THEM open the URL — it lands under their own GitHub identity.
+
+If the report needs real diagnostics, that still comes from an operator running
+`vornikctl report` on the daemon host themselves and attaching the result. Say
+so plainly rather than implying the thin report is equivalent.
+
 ## Flags worth knowing
 
 - `--summary "<text>"` — the user's one-line description. It is anonymized like

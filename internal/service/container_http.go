@@ -177,6 +177,17 @@ func (c *Container) initHTTPServer() error {
 			}
 			return func(*api.Server) {}
 		}(),
+		// Companion report_problem verb (BACKLOG 2026-08-03): a companion user whose
+		// daemon runs on ANOTHER host cannot reach `vornikctl report`, so the report
+		// path has to exist over MCP too. Same builder the chat tool uses — it collects
+		// NOTHING from the host, which is the ruling this ships under, and sharing it
+		// keeps one scrubber rather than two that drift.
+		func() api.ServerOption {
+			if b := c.problemReportBuilder(); b != nil {
+				return api.WithProblemReportBuilder(b)
+			}
+			return func(*api.Server) {}
+		}(),
 		// Live observation subscriber (Feature #3 Phase B). The
 		// publisher itself is wired into the executor at
 		// construction; the WebSocket handler reads from the

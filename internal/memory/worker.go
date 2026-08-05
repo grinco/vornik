@@ -213,7 +213,7 @@ func (w *Worker) processBatch(ctx context.Context) {
 			_ = w.repo.DLQPark(ctx, c.ID)
 			continue
 		}
-		if err := w.repo.UpdateEmbedding(ctx, c.ID, vecs[i]); err != nil {
+		if err := w.repo.UpdateEmbedding(ctx, c.ID, vecs[i], ContentHash(texts[i])); err != nil {
 			w.logger.Warn().
 				Err(err).
 				Str("chunk_id", c.ID).
@@ -276,11 +276,14 @@ func (w *Worker) processIndividually(ctx context.Context, chunks []MemoryChunk) 
 			}
 			continue
 		}
-		w.persistEmbeddedChunk(ctx, c, vecs[0])
+		w.persistEmbeddedChunk(ctx, c, vecs[0], ContentHash(text))
 	}
 }
 
-func (w *Worker) persistEmbeddedChunk(ctx context.Context, c MemoryChunk, vec []float32) {
+// embedInputHash is the embedding_cache key the vector was stored under — the hash of
+// the exact string handed to the embedder, passed down rather than recomputed so the
+// column cannot drift from what was cached (migration 150).
+func (w *Worker) persistEmbeddedChunk(ctx context.Context, c MemoryChunk, vec []float32, embedInputHash string) {
 	dim := w.cfg.EmbeddingDimension
 	if dim <= 0 {
 		dim = 1536
@@ -301,7 +304,7 @@ func (w *Worker) persistEmbeddedChunk(ctx context.Context, c MemoryChunk, vec []
 		_ = w.repo.DLQPark(ctx, c.ID)
 		return
 	}
-	if err := w.repo.UpdateEmbedding(ctx, c.ID, vec); err != nil {
+	if err := w.repo.UpdateEmbedding(ctx, c.ID, vec, embedInputHash); err != nil {
 		w.logger.Warn().
 			Err(err).
 			Str("chunk_id", c.ID).

@@ -196,6 +196,13 @@ func (c *Connector) Begin(ctx context.Context, ref ServerRef, connectedBy string
 	if err != nil {
 		return BeginResult{}, err
 	}
+	// §7.2a: a DCR registration PINS its redirect_uris, so a client registered under a
+	// redirect URI this deployment no longer serves is dead at the vendor — the
+	// authorization request is rejected for a redirect_uri the client never registered.
+	// Drop it here, BEFORE resolveClient can pick it up, so this connect re-registers
+	// instead of walking the operator into a vendor error. Grants keep their tokens but
+	// are flagged needs_reconnect rather than failing silently later.
+	c.invalidateStaleClients(ctx, redirectURI)
 
 	md, err := c.resolveMetadata(ctx, ref)
 	if err != nil {
@@ -295,8 +302,12 @@ func (c *Connector) Complete(ctx context.Context, state, code string) (*persiste
 		RefreshToken: tr.RefreshToken,
 		ExpiresAt:    tr.ExpiresAt,
 		Scopes:       granted,
-		ConnectedBy:  p.ConnectedBy,
-		ConnectedAt:  time.Now().UTC(),
+		// What the stored ClientID is registered under (§7.2a). Recorded from the
+		// flow that just completed rather than recomputed, so it is the URI the
+		// vendor actually saw.
+		RedirectURI: p.RedirectURI,
+		ConnectedBy: p.ConnectedBy,
+		ConnectedAt: time.Now().UTC(),
 	}
 	if err := c.Tokens.Upsert(ctx, tok); err != nil {
 		return nil, fmt.Errorf("mcpconnect: persist grant: %w", err)
@@ -496,6 +507,43 @@ func (c *Connector) storedClient(ctx context.Context, ref ServerRef) (mcpauth.Cl
 		}
 	}
 	return mcpauth.ClientCredentials{}, nil
+}
+
+// InvalidateStaleClients drops stored clients registered under a redirect URI this
+// deployment no longer serves, returning how many grants were flagged.
+//
+// Called at boot and before each connect. Exported for the boot path; Begin uses the
+// unexported wrapper so a sweep failure cannot fail a connect that might still work.
+func (c *Connector) InvalidateStaleClients(ctx context.Context) (int, error) {
+	redirectURI, err := c.RedirectURI()
+	if err != nil {
+		// public_base_url unset or not https: there is no current URI to compare
+		// against, so invalidating would flag every grant on a misconfiguration.
+		// Connect already refuses in that state with an actionable error (§7.1).
+		return 0, err
+	}
+	if c.Tokens == nil {
+		return 0, nil
+	}
+	return c.Tokens.InvalidateStaleRedirectURIs(ctx, redirectURI)
+}
+
+// invalidateStaleClients is the best-effort form used on the connect path: a sweep that
+// errors must not block a consent, because the stored client may well still be valid and
+// the operator is standing there waiting.
+func (c *Connector) invalidateStaleClients(ctx context.Context, redirectURI string) {
+	if c.Tokens == nil {
+		return
+	}
+	n, err := c.Tokens.InvalidateStaleRedirectURIs(ctx, redirectURI)
+	if err != nil {
+		c.Logger.Warn().Err(err).Msg("mcpconnect: could not sweep stale redirect URIs; continuing with the stored client")
+		return
+	}
+	if n > 0 {
+		c.Logger.Warn().Int("grants", n).Str("redirect_uri", redirectURI).
+			Msg("mcpconnect: dropped stored OAuth client(s) registered under a previous redirect URI — affected grants need reconnect")
+	}
 }
 
 func (c *Connector) secretValue(name string) (string, bool) {

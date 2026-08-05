@@ -1169,6 +1169,7 @@ func (a *memoryClassifyBackfillAdapter) BackfillBatch(ctx context.Context, proje
 		Failed:    res.Failed,
 		Skipped:   res.Skipped,
 		Remaining: res.Remaining,
+		Exhausted: res.Exhausted,
 		Errors:    res.Errors,
 	}, nil
 }

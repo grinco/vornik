@@ -1690,6 +1690,17 @@ type TaskLLMUsage struct {
 	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
 
+	// CacheHit marks a row whose stage was served from the LLM RESPONSE cache
+	// (migration 152) — no provider call happened, so CostUSD and the token counts
+	// are zero. The row exists anyway so the stage stays visible in observability
+	// rather than vanishing on a hit (local-llm-response-cache-design §Goals 4);
+	// without this flag a zero-cost row is indistinguishable from a real call on a
+	// free model. Saved dollars live in llm_response_cache.hit_count, not here.
+	//
+	// Distinct from CacheCreationTokens / CacheReadTokens above, which are the
+	// PROVIDER'S prompt cache on a call that did happen.
+	CacheHit bool `json:"cache_hit,omitempty"`
+
 	// APIKeyID is the api_keys.id attributed to this usage row, when known.
 	// For task-bound sources (workflow_step, judge, post_mortem) it's copied
 	// from the recording task's CreatedByAPIKeyID; for the task-less

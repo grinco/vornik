@@ -84,6 +84,58 @@ Email also enforces a per-message attachment size cap (configurable, below):
 over-cap attachments are **skipped and logged, but the reply is still sent** —
 with the body listing the files — so the recipient is never left with nothing.
 
+## Files going IN: two different mechanisms
+
+Files reach an agent by one of two paths, and they are **not** interchangeable. A
+customer built a workflow and a gate against the wrong one, which is a documentation
+defect rather than a mistake on their part — so here they are side by side.
+
+### 1. A file you attach to a task (the usual case)
+
+You upload with `/upload` (or any companion `delegate` carrying `inputArtifacts`, or the
+REST create-task path, or a Telegram / email attachment). The task then carries:
+
+- `context.inputFiles` — the paths, and `inputArtifactIDs` alongside them;
+- an `## ATTACHED FILES` block in the agent's prompt, naming each file;
+- the raw file **staged into the container** at `artifacts/in/<name>`, which is what an
+  agent opens with an ordinary file read.
+
+There is one wrinkle worth knowing, because it is the thing that bites: a **document**
+(PDF, EPUB, DOCX…) is normally *extracted* into project memory at upload time, and the
+raw bytes are then deliberately NOT staged — the extraction carries the content, and
+staging a 32 MB EPUB alongside it once blew an agent's context. Images, audio and video
+are always staged too, because their extractions are lossy derivatives: OCR text is not
+the picture.
+
+If your workflow reads the **file itself**, declare `require_input_artifacts: true` on it.
+That declaration is the guarantee: the raw file is staged for that workflow no matter which
+path created the task, and no matter whether an adaptive route picked the workflow after the
+upload happened.
+
+> **Size bound.** The declaration cannot make a large file small. Raw staging for such a
+> workflow is capped at **8 MiB per file**; above that the extraction stands alone, because
+> staging a 32 MB document next to its extraction is what blew an agent's context the first
+> time. That is comfortably above what these workflows normally consume — a companion upload
+> caps a single file at 512 KiB — but if you need a genuinely large file *as a file*, split
+> it, or rely on the extraction and memory search instead of `require_input_artifacts`.
+
+### 2. A summary of a delegated child's output
+
+`inputArtifactsSummary` is a different thing entirely. It is the **hand-off summary from
+delegated child tasks**, and it appears only on a step that opts in with
+`stage_child_artifacts`. It has nothing to do with files you uploaded.
+
+So a gate asserting `inputArtifactsSummary` on an upload-bearing task can only ever fail:
+the field is not absent because something broke, it is absent because it describes a
+mechanism the task never used. For an upload, assert on `inputFiles` /
+`inputArtifactIDs`, or simply have the step read `artifacts/in/`.
+
+| You want… | Use | Appears when |
+|---|---|---|
+| the file a user attached | `context.inputFiles`, `artifacts/in/<name>` | any upload path |
+| the raw bytes guaranteed | `require_input_artifacts: true` on the workflow | always, once declared |
+| what a child task produced | `inputArtifactsSummary` | only with `stage_child_artifacts` |
+
 ## Configuring email delivery
 
 File delivery over Telegram works as soon as the bot is connected. Email

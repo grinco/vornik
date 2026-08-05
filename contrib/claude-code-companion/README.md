@@ -11,8 +11,8 @@ plugs in without any vornik-side change.
 
 ## What you get
 
-- **19 MCP tools** — the task surface `delegate`, `status`, `result`, `cancel`,
-  `list`, `catalog`, `whoami`; the LLD-22 RAG set `recall`, `remember`,
+- **20 MCP tools** — the task surface `delegate`, `status`, `result`, `cancel`,
+  `list`, `catalog`, `whoami`, `report_problem`; the LLD-22 RAG set `recall`, `remember`,
   `recent_memory`, `list_scopes`, `memory_correct`; and the knowledge-skill set
   `skill_propose`, `skill_search`, `skill_get`, `skill_list`, `skill_approve`,
   `skill_reject`, `skill_set_global`.

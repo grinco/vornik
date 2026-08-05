@@ -102,7 +102,8 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 	// after step 1. Operator-reported on a CV-extraction task:
 	// "writer claimed it preserved the CV but the file never
 	// reached its container".
-	taskInputArtifacts := extractTaskInputArtifacts(task.Payload, e.config.MediaStageMaxBytes)
+	taskInputArtifacts := extractTaskInputArtifacts(task.Payload, e.config.MediaStageMaxBytes,
+		plan.workflow.RequireInputArtifacts, requireInputStageMaxBytes)
 	stepArtifacts = append(stepArtifacts, taskInputArtifacts...)
 
 	// Loop protection: track how many times each step is visited.
@@ -2307,7 +2308,23 @@ func resolvePedantic(payload []byte, workflow *registry.Workflow, project *regis
 // stack.
 //
 // see LLD § https://docs.vornik.io §4.2
-func extractTaskInputArtifacts(payload []byte, maxMediaBytes int64) []map[string]string {
+// requireInputArtifacts, when true, means the RUNNING workflow declares that it reads its
+// input from the staged file (/app/workspace/artifacts/in/<name>). Then the raw bytes are
+// staged even for a document that already has an extraction.
+//
+// This is the creation-path-independent half of the B-10 / T-8f69 guarantee. The other half,
+// resolveSkipAutoExtract, derives skip_auto_extract from the workflow named in the REQUEST —
+// which cannot see an adaptive re-route: an upload delegated to a router workflow is
+// auto-extracted (the router requires no artifacts), the router picks a real workflow, and
+// delegateSelectedWorkflow copies the parent payload — inputExtractions included — onto the
+// child. By then nothing can re-decide the upload, so the child of a router could be a
+// workflow that reads staged files and finds none.
+//
+// Deciding it here, where the running workflow is finally known, makes the promise
+// unconditional: a workflow that DECLARES it reads staged input artifacts gets them, whatever
+// created the task and however it was routed. The class has recurred five times against
+// creation-side fixes.
+func extractTaskInputArtifacts(payload []byte, maxMediaBytes int64, requireInputArtifacts bool, requireStageMaxBytes int64) []map[string]string {
 	if len(payload) == 0 {
 		return nil
 	}
@@ -2355,7 +2372,20 @@ func extractTaskInputArtifacts(payload []byte, maxMediaBytes int64) []map[string
 			continue
 		}
 		base := filepath.Base(path)
-		if extractedBasenames[base] && !stageRawAlongsideExtraction(path, base, maxMediaBytes) {
+		switch {
+		case !extractedBasenames[base]:
+			// Never extracted — staging is the only way the agent sees it.
+		case requireInputArtifacts && withinStageCap(path, requireStageMaxBytes):
+			// Declared dependency, and small enough to hand over.
+		case requireInputArtifacts:
+			// Declared dependency but over the cap. Staging anyway is how a 32 MB
+			// EPUB blew an agent's context (T-fa9e/T-7f98/T-8889) — the failure this
+			// suppression exists to prevent — and the declaration cannot make a large
+			// file small. The extraction stands alone, which is degraded but bounded;
+			// the prompt's ATTACHED FILES block already distinguishes staged from
+			// extracted, so the agent is not told a file is present that is not.
+			continue
+		case !stageRawAlongsideExtraction(path, base, maxMediaBytes):
 			continue
 		}
 		out = append(out, map[string]string{
@@ -2367,6 +2397,38 @@ func extractTaskInputArtifacts(payload []byte, maxMediaBytes int64) []map[string
 		return nil
 	}
 	return out
+}
+
+// requireInputStageMaxBytes bounds the raw bytes staged for a workflow that declares
+// require_input_artifacts over an already-extracted document.
+//
+// A CONST rather than a config key, deliberately. media.stage_max_bytes exists and
+// defaults to 0 = unbounded, and "a knob nobody sets" is precisely how unbounded staging
+// became the default behaviour it took three incidents to notice. A built-in bound cannot
+// be left at unlimited by accident; if a deployment genuinely needs more, that is a config
+// addition with a real request behind it.
+//
+// 8 MiB: comfortably above the diffs and design documents the require_input_artifacts
+// workflows actually consume (the companion upload path caps a single file at 512 KiB),
+// and far below the 32 MB EPUB that blew an agent's context.
+const requireInputStageMaxBytes = 8 << 20
+
+// withinStageCap reports whether the file at path is small enough to stage. A cap of zero
+// or below means unbounded.
+//
+// A stat failure returns TRUE, matching stageRawAlongsideExtraction: stageInputArtifacts
+// is the component that actually reads the bytes and already skips sources it cannot read,
+// so refusing here would drop a readable file over a transient error on a path this
+// function only inspects.
+func withinStageCap(path string, maxBytes int64) bool {
+	if maxBytes <= 0 {
+		return true
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return true
+	}
+	return fi.Size() <= maxBytes
 }
 
 // stageRawAlongsideExtraction decides whether a file that ALREADY has an

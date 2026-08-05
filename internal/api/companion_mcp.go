@@ -304,6 +304,28 @@ func companionToolDefs() []mcpToolDef {
 			},
 		},
 		{
+			Name: "report_problem",
+			Description: "Build an anonymised Vornik problem report and return a prefilled GitHub issue URL for " +
+				"the reporter to review and submit. Use when the operator says Vornik is broken, erroring, stuck, " +
+				"or failing tasks and wants it filed upstream — especially when the daemon runs on ANOTHER host, " +
+				"where `vornikctl report` is not available to the client. It COLLECTS NOTHING from the daemon host: " +
+				"the report carries the build identity and the reporter's own words only, never doctor findings or " +
+				"logs, because no remotely-reachable path may execute a program. Richer diagnostics come from an " +
+				"operator running `vornikctl report` themselves and attaching the result. NOTHING IS SUBMITTED — " +
+				"the body is destined for a PUBLIC repository, so show it to the user and let them press submit.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"symptom": map[string]any{
+						"type":        "string",
+						"description": "What is wrong, in the reporter's own words — a paragraph or two, max 8000 bytes. Goes into a PUBLIC issue body, so do not paste secrets, customer names or logs; logs belong in an operator-run `vornikctl support-report` bundle.",
+						"maxLength":   8000,
+					},
+				},
+				"required": []any{"symptom"},
+			},
+		},
+		{
 			Name: "recall",
 			Description: "Semantic search over this key's project memory (LLD 22). Returns ranked snippets " +
 				"with provenance. Use to check what vornik already knows before paying compute for delegate(). " +
@@ -602,6 +624,8 @@ func (s *Server) handleCompanionToolCall(w http.ResponseWriter, r *http.Request,
 		result, toolErr = s.companionToolCatalog(ctx, key)
 	case "whoami":
 		result, toolErr = s.companionToolWhoami(ctx, key, params.Arguments)
+	case "report_problem":
+		result, toolErr = s.companionToolReportProblem(ctx, params.Arguments)
 	case "recall":
 		result, toolErr = s.companionToolRecall(ctx, key, params.Arguments)
 	case "remember":
@@ -1528,6 +1552,95 @@ func (s *Server) companionToolCatalog(ctx context.Context, key *persistence.APIK
 	}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	return string(b), nil
+}
+
+// ---- tool: report_problem -------------------------------------------
+
+type reportProblemArgs struct {
+	Symptom string `json:"symptom"`
+}
+
+// companionToolReportProblem builds an anonymised report and returns the review URL.
+//
+// SECURITY: this path COLLECTS NOTHING from the host, and that is a ruling rather than an
+// oversight (operator, 2026-08-03). It shares the chat tool's builder, which is
+// collector-free by construction: no doctor sweep, no journal tail, nothing that spawns a
+// process. Sharing rather than reimplementing is the point — the two-tier scrubber is the
+// security control, and a second copy would drift from it.
+//
+// Ungated for the same reason catalog() and whoami() are: it echoes the daemon's own build
+// identity plus the caller's own words, and reveals nothing the key holder cannot already
+// see. It writes nothing and submits nothing.
+//
+// NOT submitted, deliberately: the body goes to a PUBLIC repository and anonymisation
+// cannot prove the reporter's own prose is free of a customer name, so the human presses
+// submit. Same gate as the CLI, the chat tool and the report-problem skill.
+func (s *Server) companionToolReportProblem(ctx context.Context, raw json.RawMessage) (string, error) {
+	if s.problemReports == nil {
+		return "", fmt.Errorf("problem reporting is not configured on this daemon")
+	}
+	var args reportProblemArgs
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return "", fmt.Errorf("invalid arguments: %w", err)
+		}
+	}
+	symptom := strings.TrimSpace(args.Symptom)
+	if symptom == "" {
+		return "", fmt.Errorf("symptom is required — describe what is wrong in your own words")
+	}
+	// Bound the input before it reaches the anonymiser. The scrubber runs a dozen
+	// regexes over the text and IssueURL truncates the BODY to fit a URL, so an
+	// unbounded symptom is CPU work an authenticated caller can amplify for free, and
+	// the truncation would silently eat the parts a maintainer needs. A symptom is a
+	// paragraph, not a log dump — logs belong in the operator-attached bundle.
+	if len(symptom) > maxReportSymptomBytes {
+		return "", fmt.Errorf("symptom is %d bytes; keep it under %d — describe the problem, and attach logs "+
+			"via an operator-run `vornikctl support-report` instead of pasting them here",
+			len(symptom), maxReportSymptomBytes)
+	}
+	// Strip control characters the reporter cannot have meant. This text is returned to
+	// a terminal client and lands in a PUBLIC issue body: an ANSI escape would render
+	// as control output rather than as the words it appears to be, which is a poor
+	// property for a document a human is being asked to review before publishing.
+	// Newlines and tabs survive — they are legitimate prose.
+	symptom = stripControlRunes(symptom)
+	// A build failure inside the scrubber propagates: AnonymizeBody fails CLOSED rather
+	// than returning a partially-scrubbed body, and a partial scrub bound for a public
+	// repo is the one outcome worse than no report.
+	url, body, err := s.problemReports.BuildProblemReport(ctx, symptom)
+	if err != nil {
+		return "", fmt.Errorf("could not build the report (nothing was sent anywhere): %w", err)
+	}
+	out := map[string]any{
+		"review_url": url,
+		"body":       body,
+		"submitted":  false,
+		"next":       "Show the body to the user, let them read it, and let THEM open the URL and press submit. It lands under their own GitHub identity.",
+	}
+	b, _ := json.MarshalIndent(out, "", "  ")
+	return string(b), nil
+}
+
+// maxReportSymptomBytes bounds the reporter's free text. Generous for prose — several
+// paragraphs — and far below the point where the anonymiser's regex passes or the issue
+// URL's own truncation start mattering.
+const maxReportSymptomBytes = 8000
+
+// stripControlRunes removes C0/C1 control characters except newline and tab, which are
+// legitimate in prose. Used on text that is echoed to a terminal client and published to
+// a public repository.
+func stripControlRunes(in string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\t':
+			return r
+		case r < 0x20 || r == 0x7f, r >= 0x80 && r <= 0x9f:
+			return -1
+		default:
+			return r
+		}
+	}, in)
 }
 
 // ---- tool: whoami ---------------------------------------------------

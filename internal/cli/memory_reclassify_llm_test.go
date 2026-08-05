@@ -136,9 +136,9 @@ func TestRunLLMReclassifyLoop_DrainStalledBailsOut(t *testing.T) {
 	spec := &llmHandlerSpec{
 		probeRemaining: 5,
 		batchResponses: []llmReclassifyResponse{
-			{Processed: 5, Failed: 5, Remaining: 5},
-			{Processed: 5, Failed: 5, Remaining: 5},
-			{Processed: 5, Failed: 5, Remaining: 5},
+			{Remaining: 5},
+			{Remaining: 5},
+			{Remaining: 5},
 		},
 	}
 	srv := newLLMTestServer(t, spec)
@@ -154,6 +154,30 @@ func TestRunLLMReclassifyLoop_DrainStalledBailsOut(t *testing.T) {
 	}
 	if spec.batchCalls.Load() > 4 {
 		t.Fatalf("loop did not bail out: %d batches", spec.batchCalls.Load())
+	}
+}
+
+func TestRunLLMReclassifyLoop_StopsAfterExhaustiveSweep(t *testing.T) {
+	spec := &llmHandlerSpec{
+		probeRemaining: 3,
+		batchResponses: []llmReclassifyResponse{
+			{Processed: 1, Skipped: 1, Remaining: 3},
+			{Processed: 1, Skipped: 1, Remaining: 3},
+			{Processed: 0, Remaining: 3, Exhausted: true},
+		},
+	}
+	srv := newLLMTestServer(t, spec)
+	defer srv.Close()
+
+	w, read := captureStdout(t)
+	if err := runLLMReclassifyLoop("p", false, false, 1, w); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); !strings.Contains(got, "completed one LLM sweep") {
+		t.Fatalf("missing exhaustive-sweep message: %s", got)
+	}
+	if calls := spec.batchCalls.Load(); calls != 3 {
+		t.Fatalf("batch calls = %d, want 3", calls)
 	}
 }
 

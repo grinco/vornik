@@ -75,10 +75,18 @@ func TestExtractor_CacheHit_SkipsProvider(t *testing.T) {
 	if fp.calls.Load() != 0 {
 		t.Errorf("cache hit must not call provider; got %d", fp.calls.Load())
 	}
-	// Metrics surface the cached token counts so downstream cost
-	// math stays correct.
+	// Metrics surface the cached token counts — what a real call WOULD have used —
+	// and flag the row as a hit. The flag is load-bearing: this comment used to say the
+	// counts kept "downstream cost math correct", and the opposite was true. The
+	// pipeline recorder billed them, so every hit was charged as real spend
+	// (BACKLOG 2026-07-31; fixed 2026-08-05). Reporting the hit is the extractor's job;
+	// deciding what it costs is the recorder's.
 	if metrics == nil || metrics.PromptTokens != 200 || metrics.CompletionTokens != 50 {
 		t.Errorf("cached metrics not surfaced: %+v", metrics)
+	}
+	if !metrics.CacheHit {
+		t.Error("a cache-served extraction did not report itself as one, so the recorder " +
+			"cannot tell it apart from a real call and bills it")
 	}
 }
 

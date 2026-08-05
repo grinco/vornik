@@ -61,6 +61,15 @@ type ExtractMetrics struct {
 	PromptTokens     int
 	CompletionTokens int
 	Outcome          string
+
+	// CacheHit means the response cache served this extraction — no provider call
+	// happened, so the token counts above are what a real call WOULD have used rather
+	// than what was spent. The pipeline recorder must not bill them: it did until
+	// 2026-08-05, charging every hit as real spend (which made the deployment
+	// OVER-report, the inverse of the reranker bug).
+	//
+	// Reporting the hit is this layer's job; deciding what it costs is the recorder's.
+	CacheHit bool
 }
 
 // ExtractOutcome* are the stable labels under which the pipeline
@@ -172,6 +181,7 @@ func (e *Extractor) Extract(ctx context.Context, content string) ([]Candidate, *
 					PromptTokens:     pTok,
 					CompletionTokens: cTok,
 					Outcome:          classifyExtractOutcome(len(cands), len(validated)),
+					CacheHit:         true,
 				}
 				return validated, cachedMetrics, nil
 			}

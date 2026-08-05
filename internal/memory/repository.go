@@ -441,15 +441,26 @@ WHERE id IN (%s)`, strings.Join(placeholders, ","))
 // successfully-embedded ones at the caller boundary.
 var ErrEmptyEmbedding = fmt.Errorf("memory repo: refusing to store empty embedding")
 
-func (r *Repository) UpdateEmbedding(ctx context.Context, chunkID string, embedding []float32) error {
+// UpdateEmbedding stores a chunk's vector and the cache key it was computed under.
+//
+// embedInputHash is the embedding_cache key this vector was stored under — the hash of
+// the CONTEXTUALISED input the embedder was given, which the caller has and this layer
+// cannot reconstruct (the prefix depends on source_name and the content's first
+// heading). Written in the SAME statement as the vector (migration 150) so the column
+// can never disagree with what was cached; pass "" only when the vector was produced
+// without going through the cache, which leaves erasure to recompute.
+func (r *Repository) UpdateEmbedding(ctx context.Context, chunkID string, embedding []float32, embedInputHash string) error {
 	if len(embedding) == 0 {
 		return ErrEmptyEmbedding
 	}
 	lit := vectorLiteral(embedding)
 	// P1: Parameterize the vector literal instead of fmt.Sprintf to eliminate
 	// SQL injection risk.
-	query := `UPDATE project_memory_chunks SET embedding = $1::vector WHERE id = $2`
-	_, err := r.db.ExecContext(ctx, query, lit, chunkID)
+	query := `UPDATE project_memory_chunks
+	             SET embedding = $1::vector,
+	                 embed_input_hash = COALESCE(NULLIF($3, ''), embed_input_hash)
+	           WHERE id = $2`
+	_, err := r.db.ExecContext(ctx, query, lit, chunkID, embedInputHash)
 	return err
 }
 
@@ -1000,6 +1011,14 @@ type ClassifyBackfillRow struct {
 // oldest-first so the backfill is resumable. limit ≤ 0 → 100,
 // capped at 1000 to bound memory per batch.
 func (r *Repository) ListUnclassifiedChunks(ctx context.Context, projectID string, limit int) ([]ClassifyBackfillRow, error) {
+	return r.ListUnclassifiedChunksFrom(ctx, projectID, limit, 0)
+}
+
+// ListUnclassifiedChunksFrom is ListUnclassifiedChunks' paged form.  It is
+// deliberately offset-based because a declined classification leaves the row
+// unmodified; callers must be able to walk past such rows rather than asking
+// the model about the first row forever.
+func (r *Repository) ListUnclassifiedChunksFrom(ctx context.Context, projectID string, limit, offset int) ([]ClassifyBackfillRow, error) {
 	if r == nil || r.db == nil || projectID == "" {
 		return nil, nil
 	}
@@ -1018,8 +1037,11 @@ FROM project_memory_chunks
 WHERE project_id = $1
   AND COALESCE(content_class, '') IN ('', 'unclassified')
 ORDER BY created_at ASC
-LIMIT $2`
-	rows, err := r.db.QueryContext(ctx, q, projectID, limit)
+LIMIT $2 OFFSET $3`
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := r.db.QueryContext(ctx, q, projectID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("ListUnclassifiedChunks: %w", err)
 	}
@@ -2576,7 +2598,7 @@ func (r *Repository) DeleteByExtractedDocument(ctx context.Context, extractedDoc
 	// the cache is keyed by the hash of the CONTEXTUALISED embed input, so evicting
 	// by content_hash alone deletes nothing (see EmbedInputHash).
 	hashes, err := chunkCacheKeys(ctx, tx,
-		`SELECT source_name, content, content_hash FROM project_memory_chunks
+		`SELECT embed_input_hash, source_name, content, content_hash FROM project_memory_chunks
 		  WHERE derived_from_extracted_document_id = $1`, extractedDocumentID)
 	if err != nil {
 		return 0, fmt.Errorf("read chunk cache keys for extracted document %s: %w", extractedDocumentID, err)
@@ -2660,10 +2682,17 @@ func chunkCacheKeys(ctx context.Context, tx *sql.Tx, query string, args ...any) 
 		out = append(out, h)
 	}
 	for rows.Next() {
+		var embedInputHash sql.NullString
 		var sourceName, content, contentHash string
-		if err := rows.Scan(&sourceName, &content, &contentHash); err != nil {
+		if err := rows.Scan(&embedInputHash, &sourceName, &content, &contentHash); err != nil {
 			return nil, err
 		}
+		// The RECORDED key first (migration 150): it is what the embed actually
+		// cached under, so it stays correct across a change to buildEmbedContext.
+		// NULL means the row was embedded before the column existed.
+		add(embedInputHash.String)
+		// The recomputed key, for those pre-migration rows — correct for them
+		// precisely because they were cached under today's format.
 		add(EmbedInputHash(sourceName, content))
 		add(contentHash)
 	}
@@ -2693,7 +2722,7 @@ func (r *Repository) DeleteByArtifact(ctx context.Context, artifactID string) (i
 	// Collect the cache keys BEFORE the delete. See DeleteByExtractedDocument: the
 	// key is the CONTEXTUALISED embed input's hash, not content_hash.
 	hashes, err := chunkCacheKeys(ctx, tx,
-		`SELECT source_name, content, content_hash FROM project_memory_chunks WHERE artifact_id = $1`,
+		`SELECT embed_input_hash, source_name, content, content_hash FROM project_memory_chunks WHERE artifact_id = $1`,
 		artifactID)
 	if err != nil {
 		return 0, fmt.Errorf("read chunk cache keys for artifact %s: %w", artifactID, err)

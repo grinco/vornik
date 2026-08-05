@@ -460,7 +460,12 @@ CREATE TABLE IF NOT EXISTS task_llm_usage (
     -- Migration 149 parity: API key attributed to this usage row (copied
     -- from the recording task's created_by_api_key_id, or resolved from
     -- context for task-less external_api calls). NULL = unattributed.
-    api_key_id            TEXT
+    api_key_id            TEXT,
+    -- Migration 152 parity: the stage was served from the LLM RESPONSE cache,
+    -- so cost and tokens are zero and the row exists only to keep the stage
+    -- visible. Distinct from cache_*_tokens, which is the provider's prompt
+    -- cache on a call that did happen.
+    cache_hit             INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_llm_usage_project_time ON task_llm_usage(project_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task        ON task_llm_usage(task_id);
@@ -743,6 +748,10 @@ CREATE TABLE IF NOT EXISTS project_memory_chunks (
     project_id                         TEXT NOT NULL,
     content                            TEXT NOT NULL DEFAULT '',
     content_hash                       TEXT,
+    -- Migration 150 parity: the embedding_cache key the embed actually used
+    -- (hash of the CONTEXTUALISED input, not of content). Recorded so erasure
+    -- need not recompute the prefix — see memory.EmbedInputHash.
+    embed_input_hash                   TEXT,
     needs_graph_extraction             INTEGER NOT NULL DEFAULT 0,
     derived_from_extracted_document_id TEXT,
     derived_from_section_id            TEXT,
@@ -1521,6 +1530,10 @@ CREATE TABLE IF NOT EXISTS mcp_oauth_tokens (
     refresh_token   TEXT NOT NULL DEFAULT '',
     expires_at      TEXT,
     scopes          TEXT NOT NULL DEFAULT '',
+    -- Migration 151 parity: the redirect URI the stored client_id is registered
+    -- under at the vendor. '' = unknown (pre-migration), never treated as a
+    -- mismatch. See §7.2a.
+    redirect_uri    TEXT NOT NULL DEFAULT '',
     connected_by    TEXT NOT NULL DEFAULT '',
     needs_reconnect INTEGER NOT NULL DEFAULT 0,
     connected_at    TEXT NOT NULL,

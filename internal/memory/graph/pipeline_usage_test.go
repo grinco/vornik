@@ -155,3 +155,70 @@ func TestPipeline_NilUsageRecorderIsNoop(t *testing.T) {
 		t.Fatalf("RunChunk: %v", err)
 	}
 }
+
+// TestRecordStageUsage_CacheHitIsNotBilled — the KG extractor's response-cache hit path
+// returned metrics populated with the CACHED token counts, and recordStageUsage wrote a
+// task_llm_usage row from them. So a hit — which never reaches a provider and costs
+// nothing — landed in the spend ledger as real money.
+//
+// Direction matters: this makes the deployment OVER-report, the inverse of the reranker
+// bug that under-reported, and it partially masked the 2026-07-30 gateway discrepancy
+// (BACKLOG "Cost accounting — unrecorded LLM call sites").
+//
+// The titler and classifier avoid it by returning before their usage recording; the
+// extractor cannot, because its metrics ARE the recorder's input. So the recorder is
+// where the decision belongs: a hit is recorded with zero cost and zero tokens, flagged
+// CacheHit. The row stays so the stage does not vanish from observability
+// (local-llm-response-cache-design §Goals 4) while the ledger reports what was actually
+// spent — nothing. Saved dollars keep their existing home in
+// llm_response_cache.hit_count, surfaced on /ui/spend.
+func TestRecordStageUsage_CacheHitIsNotBilled(t *testing.T) {
+	p := &Pipeline{}
+	rec := &fakeUsageRecorder{}
+	p.LLMUsage = rec
+	p.Pricing = &fakePricing{perTok: 0.0001}
+
+	chunk := ChunkInput{ID: "chunk-cached", ProjectID: "proj-billing"}
+	p.recordStageUsage(context.Background(), chunk, &PipelineMetrics{
+		// Cache-served extraction: the cache returned the token counts a real call
+		// WOULD have used, which is exactly what must not be billed.
+		Extract: &ExtractMetrics{Model: "qwen3", PromptTokens: 1200, CompletionTokens: 300, CacheHit: true},
+		// A real call in the same run, to prove the zeroing is scoped to the hit.
+		Resolve: &ResolveMetrics{Model: "qwen3", PromptTokens: 100, CompletionTokens: 50},
+	})
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	byRole := map[string]persistence.TaskLLMUsage{}
+	for _, row := range rec.rows {
+		byRole[row.Role] = row
+	}
+
+	hit, ok := byRole["kg_extractor"]
+	if !ok {
+		t.Fatal("the cache-served stage produced no row at all — it must stay visible, " +
+			"just unbilled (design §Goals 4)")
+	}
+	if !hit.CacheHit {
+		t.Error("a cache-served extraction was recorded as a real call")
+	}
+	if hit.CostUSD != 0 {
+		t.Errorf("cache hit billed %v — a hit never reaches a provider", hit.CostUSD)
+	}
+	if hit.PromptTokens != 0 || hit.CompletionTokens != 0 {
+		t.Errorf("cache hit recorded %d/%d tokens as spend; the ledger is what was SPENT, "+
+			"and saved tokens belong to the cache's own stats",
+			hit.PromptTokens, hit.CompletionTokens)
+	}
+
+	called, ok := byRole["kg_resolver"]
+	if !ok {
+		t.Fatal("the real call produced no row")
+	}
+	if called.CacheHit {
+		t.Error("a real call was flagged as a cache hit")
+	}
+	if called.CostUSD == 0 || called.PromptTokens != 100 {
+		t.Errorf("the real call was zeroed too: cost=%v prompt=%d", called.CostUSD, called.PromptTokens)
+	}
+}

@@ -39,12 +39,12 @@ func (r *TaskLLMUsageRepository) Record(ctx context.Context, u *persistence.Task
 			id, project_id, task_id, execution_id, step_id,
 			role, model, prompt_tokens, completion_tokens, iterations,
 			cost_usd, source, session_id, recorded_at,
-			cache_creation_tokens, cache_read_tokens, api_key_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+			cache_creation_tokens, cache_read_tokens, api_key_id, cache_hit
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
 		u.ID, u.ProjectID, nullableString(u.TaskID), nullableString(u.ExecutionID), u.StepID,
 		u.Role, u.Model, u.PromptTokens, u.CompletionTokens, u.Iterations,
 		u.CostUSD, source, nullableString(u.SessionID), recordedAt,
-		u.CacheCreationTokens, u.CacheReadTokens, nullableString(u.APIKeyID),
+		u.CacheCreationTokens, u.CacheReadTokens, nullableString(u.APIKeyID), u.CacheHit,
 	)
 	return mapDBError(err)
 }
@@ -86,8 +86,8 @@ func (r *TaskLLMUsageRepository) Upsert(ctx context.Context, u *persistence.Task
 			id, project_id, task_id, execution_id, step_id,
 			role, model, prompt_tokens, completion_tokens, iterations,
 			cost_usd, source, session_id, recorded_at,
-			cache_creation_tokens, cache_read_tokens, api_key_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+			cache_creation_tokens, cache_read_tokens, api_key_id, cache_hit
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		ON CONFLICT (id) DO UPDATE SET
 			prompt_tokens         = EXCLUDED.prompt_tokens,
 			completion_tokens     = EXCLUDED.completion_tokens,
@@ -97,11 +97,12 @@ func (r *TaskLLMUsageRepository) Upsert(ctx context.Context, u *persistence.Task
 			recorded_at           = EXCLUDED.recorded_at,
 			cache_creation_tokens = EXCLUDED.cache_creation_tokens,
 			cache_read_tokens     = EXCLUDED.cache_read_tokens,
-			api_key_id            = EXCLUDED.api_key_id`,
+			api_key_id            = EXCLUDED.api_key_id,
+			cache_hit             = EXCLUDED.cache_hit`,
 		u.ID, u.ProjectID, nullableString(u.TaskID), nullableString(u.ExecutionID), u.StepID,
 		u.Role, u.Model, u.PromptTokens, u.CompletionTokens, u.Iterations,
 		u.CostUSD, source, nullableString(u.SessionID), recordedAt,
-		u.CacheCreationTokens, u.CacheReadTokens, nullableString(u.APIKeyID),
+		u.CacheCreationTokens, u.CacheReadTokens, nullableString(u.APIKeyID), u.CacheHit,
 	)
 	return mapDBError(err)
 }
@@ -133,7 +134,7 @@ func (r *TaskLLMUsageRepository) List(ctx context.Context, f persistence.TaskLLM
 		SELECT id, project_id, task_id, execution_id, step_id,
 		       role, model, prompt_tokens, completion_tokens, iterations,
 		       cost_usd, source, session_id, recorded_at,
-		       cache_creation_tokens, cache_read_tokens, api_key_id
+		       cache_creation_tokens, cache_read_tokens, api_key_id, cache_hit
 		FROM task_llm_usage WHERE 1=1`
 	args := make([]any, 0, 10)
 	pos := 1
@@ -214,7 +215,7 @@ func (r *TaskLLMUsageRepository) List(ctx context.Context, f persistence.TaskLLM
 			&u.ID, &u.ProjectID, &taskID, &executionID, &u.StepID,
 			&u.Role, &u.Model, &u.PromptTokens, &u.CompletionTokens, &u.Iterations,
 			&u.CostUSD, &u.Source, &sessionID, &u.RecordedAt,
-			&u.CacheCreationTokens, &u.CacheReadTokens, &apiKeyID,
+			&u.CacheCreationTokens, &u.CacheReadTokens, &apiKeyID, &u.CacheHit,
 		); err != nil {
 			return nil, err
 		}
@@ -493,11 +494,15 @@ func (r *TaskLLMUsageRepository) AggregateBySource(ctx context.Context, since, u
 	query := `
 		SELECT COALESCE(source, '') AS source,
 		       COALESCE(SUM(cost_usd), 0) AS cost_usd,
-		       COUNT(*) AS call_count,
+		       -- Provider calls only. A response-cache hit is recorded with zero cost
+		       -- and zero tokens (migration 152); counting it as a call diluted the
+		       -- headline "avg cost per call" with stages that reached no provider.
+		       COUNT(*) FILTER (WHERE NOT cache_hit) AS call_count,
 		       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
 		       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
 		       COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
-		       COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens
+		       COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		       COUNT(*) FILTER (WHERE cache_hit) AS cache_hit_count
 		FROM task_llm_usage
 		WHERE 1=1`
 	var args []any
@@ -526,7 +531,7 @@ func (r *TaskLLMUsageRepository) AggregateBySource(ctx context.Context, since, u
 	for rows.Next() {
 		var s persistence.SourceSpend
 		if err := rows.Scan(&s.Source, &s.CostUSD, &s.CallCount, &s.PromptTokens, &s.CompletionTokens,
-			&s.CacheCreationTokens, &s.CacheReadTokens); err != nil {
+			&s.CacheCreationTokens, &s.CacheReadTokens, &s.CacheHitCount); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

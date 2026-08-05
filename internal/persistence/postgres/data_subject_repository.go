@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -467,14 +468,23 @@ func (r *DataSubjectRepository) DeleteRow(ctx context.Context, table datasubject
 	// prefix is empty, and evicting an absent key is free.
 	var cacheKeys []string
 	if table == datasubject.TableProjectMemoryChunks {
+		var recordedKey sql.NullString
 		var sourceName, content, contentHash string
 		switch err := tx.QueryRowContext(ctx,
-			`SELECT source_name, content, content_hash FROM project_memory_chunks WHERE id = $1`, rowID,
-		).Scan(&sourceName, &content, &contentHash); {
+			`SELECT embed_input_hash, source_name, content, content_hash
+			   FROM project_memory_chunks WHERE id = $1`, rowID,
+		).Scan(&recordedKey, &sourceName, &content, &contentHash); {
 		case err == nil:
-			cacheKeys = append(cacheKeys, memory.EmbedInputHash(sourceName, content))
-			if contentHash != "" && contentHash != cacheKeys[0] {
-				cacheKeys = append(cacheKeys, contentHash)
+			// Recorded key first (migration 150) — it survives a change to the
+			// contextualisation prefix, which a recomputed key does not. NULL means the
+			// row predates the column, and recomputing is correct for those.
+			for _, k := range []string{recordedKey.String, memory.EmbedInputHash(sourceName, content), contentHash} {
+				if k == "" {
+					continue
+				}
+				if !slices.Contains(cacheKeys, k) {
+					cacheKeys = append(cacheKeys, k)
+				}
 			}
 		case errors.Is(err, sql.ErrNoRows):
 			// Already gone: erasure paths retry, so this is the expected second run.

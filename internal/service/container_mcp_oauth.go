@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -52,6 +53,25 @@ func (c *Container) mcpConnector() *mcpconnect.Connector {
 			BaseURL:  func() string { return c.Config.Server.PublicBaseURL },
 			Resolver: c.mcpServerRef,
 			Logger:   c.Logger.With().Str("component", "mcp-oauth").Logger(),
+		}
+		// §7.2a boot sweep: a redirect URI that changed while the daemon was down
+		// leaves stored DCR clients registered at the vendor under a callback this
+		// deployment no longer serves. Drop them once, here, so the operator sees
+		// "needs reconnect" on the tab instead of a vendor rejection mid-consent.
+		//
+		// Best-effort by construction: RedirectURI() errors when public_base_url is
+		// unset or not https, and in that state there is nothing to compare against —
+		// flagging every grant on a misconfiguration would be worse than waiting for
+		// the next connect, which refuses with an actionable error anyway.
+		ctx, cancel := context.WithTimeout(context.Background(), mcpOAuthHTTPTimeout)
+		defer cancel()
+		switch n, err := c.mcpOAuth.InvalidateStaleClients(ctx); {
+		case err != nil:
+			c.Logger.Debug().Err(err).
+				Msg("MCP OAuth: skipped the stale-redirect-URI sweep (no usable public_base_url yet)")
+		case n > 0:
+			c.Logger.Warn().Int("grants", n).
+				Msg("MCP OAuth: server.public_base_url changed — dropped stored client registrations; affected grants need reconnect")
 		}
 	})
 	return c.mcpOAuth

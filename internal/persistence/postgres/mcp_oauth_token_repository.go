@@ -34,7 +34,7 @@ func NewMCPOAuthTokenRepository(db persistence.DBTX) *MCPOAuthTokenRepository {
 var _ persistence.MCPOAuthTokenRepository = (*MCPOAuthTokenRepository)(nil)
 
 const mcpOAuthColumns = `project_id, server_name, resource, client_id, access_token,
-	refresh_token, expires_at, scopes, connected_by, needs_reconnect, connected_at, updated_at`
+	refresh_token, expires_at, scopes, redirect_uri, connected_by, needs_reconnect, connected_at, updated_at`
 
 // Get returns the grant, or nil when there is none.
 func (r *MCPOAuthTokenRepository) Get(ctx context.Context, projectID, serverName string) (*persistence.MCPOAuthToken, error) {
@@ -65,7 +65,7 @@ func (r *MCPOAuthTokenRepository) Upsert(ctx context.Context, tok *persistence.M
 	}
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO mcp_oauth_tokens (`+mcpOAuthColumns+`)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
 		 ON CONFLICT (project_id, server_name) DO UPDATE SET
 		     resource        = EXCLUDED.resource,
 		     client_id       = EXCLUDED.client_id,
@@ -73,11 +73,12 @@ func (r *MCPOAuthTokenRepository) Upsert(ctx context.Context, tok *persistence.M
 		     refresh_token   = EXCLUDED.refresh_token,
 		     expires_at      = EXCLUDED.expires_at,
 		     scopes          = EXCLUDED.scopes,
+		     redirect_uri    = EXCLUDED.redirect_uri,
 		     connected_by    = EXCLUDED.connected_by,
 		     needs_reconnect = EXCLUDED.needs_reconnect,
 		     updated_at      = EXCLUDED.updated_at`,
 		tok.ProjectID, tok.ServerName, tok.Resource, tok.ClientID, tok.AccessToken,
-		tok.RefreshToken, utcPtr(tok.ExpiresAt), tok.Scopes, tok.ConnectedBy,
+		tok.RefreshToken, utcPtr(tok.ExpiresAt), tok.Scopes, tok.RedirectURI, tok.ConnectedBy,
 		tok.NeedsReconnect, connectedAt, now,
 	)
 	if err != nil {
@@ -126,6 +127,29 @@ func (r *MCPOAuthTokenRepository) MarkNeedsReconnect(ctx context.Context, projec
 		return fmt.Errorf("postgres: mcp_oauth_tokens mark needs_reconnect: %w", err)
 	}
 	return nil
+}
+
+// InvalidateStaleRedirectURIs implements §7.2a: a stored client_id registered under a
+// redirect URI the deployment no longer serves cannot be used, so it is dropped and the
+// grant is flagged for reconnect.
+//
+// One UPDATE, so two daemons behind one public_base_url cannot race each other through a
+// read-modify-write. Rows with an empty recorded value are left alone — that means
+// "written before migration 151", not "registered elsewhere".
+func (r *MCPOAuthTokenRepository) InvalidateStaleRedirectURIs(ctx context.Context, current string) (int, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE mcp_oauth_tokens
+		    SET client_id = '', redirect_uri = '', needs_reconnect = TRUE, updated_at = $1
+		  WHERE redirect_uri <> '' AND redirect_uri <> $2`,
+		time.Now().UTC(), current)
+	if err != nil {
+		return 0, fmt.Errorf("postgres: mcp_oauth_tokens invalidate stale redirect URIs: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("postgres: mcp_oauth_tokens invalidate stale redirect URIs: rows affected: %w", err)
+	}
+	return int(n), nil
 }
 
 // Delete removes the grant (Disconnect).
@@ -218,7 +242,7 @@ func scanMCPOAuthToken(row rowScanner) (*persistence.MCPOAuthToken, error) {
 	)
 	if err := row.Scan(
 		&tok.ProjectID, &tok.ServerName, &tok.Resource, &tok.ClientID, &tok.AccessToken,
-		&tok.RefreshToken, &expiresAt, &tok.Scopes, &tok.ConnectedBy,
+		&tok.RefreshToken, &expiresAt, &tok.Scopes, &tok.RedirectURI, &tok.ConnectedBy,
 		&tok.NeedsReconnect, &tok.ConnectedAt, &tok.UpdatedAt,
 	); err != nil {
 		return nil, err

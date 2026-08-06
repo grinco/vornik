@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: a52d4d92a4861e335f225fdf413d5fa6d94699783086744d507c799817642bbe
+      sha256: ab23fe7c8cd42a00dc4d63a5bc6378629c6135822bef6e2210fe26f6fac3b0a9
 ---
 # Release Notes
 
@@ -14,6 +14,48 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.8.1
+
+**A security fix worth upgrading for.** Four built-in agent tools were available
+to every role regardless of the tool allow-list configured for it, plus fixes for
+a class of problem where a task finished successfully and its result never
+reached you.
+
+- **Security: four agent tools ignored per-role tool permissions.**
+  `memory_search`, `skill_fetch`, `get_conversation_window` and
+  `summarize_thread` were offered to, and usable by, every role — even roles whose
+  `allowedTools` did not list them. All four are read-only (project memory,
+  skills, conversation history), so this granted broader *read* access than you
+  configured rather than any ability to run commands or write data. If you rely on
+  role tool allow-lists to keep a role away from project memory, **upgrade**.
+  Deliberately ungated tools are now recorded explicitly with a reason, so the
+  distinction between "ungated on purpose" and "ungated by accident" is visible.
+- **Fixed: a finished task whose result never arrived, permanently.** The record
+  linking a task back to the chat it came from could be lost when a conversation
+  turn ran long. Once lost, the completion message and the **Send** button both
+  concluded the task had never come from a chat — and nothing ever repaired it.
+  That record is now written independently of the turn's own timing.
+- **Fixed: a delegated task's output was invisible on the task that requested it.**
+  When a request was routed to a sub-task, the page you opened showed only the
+  routing step's own small files and hid the actual deliverable. Output now
+  appears on the requesting task, and can be sent from there. Artifacts stay
+  strictly within their own project.
+- **Fixed: an unhelpful error when a result could not be delivered.** "This task
+  wasn't started from a chat channel" was shown even for tasks that plainly were.
+  The message now distinguishes a task that genuinely has no chat origin from one
+  whose origin record is missing, and offers a download link either way.
+- **Fixed: Community Edition was told to run an Enterprise-only command.**
+  `vornikctl report` pointed every reporter at `vornikctl support-report`, which
+  Community Edition does not include. It now explains what Community collects and
+  what to attach instead.
+- **Fixed: PDF output is now guaranteed by tests.** The agent image ships the PDF
+  toolchain and role prompts rely on it, but nothing verified it. A regression
+  test now renders a real PDF, including non-ASCII text.
+
+See [docs.vornik.io](https://docs.vornik.io) for the full documentation.
 
 ---
 

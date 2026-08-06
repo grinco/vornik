@@ -59,8 +59,9 @@ func (c *Channel) waitInFlight() {
 
 // ResolveSpeaker maps a Slack user_id (U…) to a conversation.Speaker.
 // Returns ErrSpeakerUnknown when no installation's SenderAllowlist
-// admits the speaker. Empty allowlists pass through (dev mode);
-// mirrors the GitHub channel's "any installation accepts ⇒ admit"
+// admits the speaker. An empty allowlist denies since 2026-08-05 unless
+// AllowUnlistedSenders opts back in — see anyInstallationAllowsSpeaker.
+// Mirrors the GitHub channel's "any installation accepts ⇒ admit"
 // posture so the channel-wide surface stays uniform while per-
 // installation enforcement on the dispatch path runs separately.
 func (c *Channel) ResolveSpeaker(_ context.Context, channelSpeakerID string) (conversation.Speaker, error) {
@@ -744,16 +745,22 @@ func (c *Channel) addressedToUs(ctx context.Context, p eventPayload, sessionID s
 // Both signals are consulted because the two inbound shapes differ: message events
 // carry channel_type, while file_shared often does not — there, the `D` prefix is the
 // only marker available.
+// The DM exemption is checked FIRST, before the empty-allowlist deny. Ordering it the
+// other way round (2026-08-05 – 2026-08-06) silently reinstated the 2026-07-30 defect
+// for the one config a DM bot must use — sender allowlist set, channel allowlist empty —
+// dropping every direct message with no reply and no error the Slack user could see. A
+// channel allowlist has no bearing on a DM whether it is populated or not, so the
+// exemption cannot live behind a branch on its length.
 func channelAllowed(inst *installation, channelType, channelID string) bool {
+	if isDirectMessageChannel(channelType, channelID) {
+		return true
+	}
 	if len(inst.allowedChannels) == 0 {
 		// Empty denies as of 2026-08-05 unless opted open — the sender gate
 		// above is the primary control, but an unconfigured channel allowlist
 		// used to admit every channel in the workspace, which is the same
 		// fail-open shape.
 		return inst.allowUnlisted
-	}
-	if isDirectMessageChannel(channelType, channelID) {
-		return true
 	}
 	_, ok := inst.allowedChannels[channelID]
 	return ok

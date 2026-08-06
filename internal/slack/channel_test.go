@@ -305,6 +305,61 @@ func TestHandleWebhook_MessageIM_Dispatches(t *testing.T) {
 	}
 }
 
+// TestHandleWebhook_MessageIM_DispatchesWithSenderAllowlistOnly regresses the
+// 2026-08-06 "bot went silent" report end to end, in the exact config a DM bot must
+// use: sender_allowlist naming the one permitted user, channel_allowlist EMPTY (a DM's
+// D… id is minted lazily by Slack and cannot be pre-listed), allow_unlisted_senders
+// unset. Between 2026-08-05 and the fix this dropped every DM before any LLM spend.
+//
+// Deliberately does not use validConfig's AllowUnlistedSenders: true — that
+// dev-mode pass-through is what hid the defect from the rest of the suite.
+func TestHandleWebhook_MessageIM_DispatchesWithSenderAllowlistOnly(t *testing.T) {
+	cfg := validConfig()
+	cfg.AllowUnlistedSenders = false
+	cfg.SenderAllowlist = []string{"U_alice"}
+	cfg.ChannelAllowlist = nil
+	now := time.Unix(1700000000, 0)
+	ch := makeChannel(t, cfg, now)
+	rec := &recordingReceiver{}
+	bindReceiver(ch, rec)
+
+	dm := func(user, eventID string) map[string]any {
+		return map[string]any{
+			"type":     "event_callback",
+			"team_id":  "T123",
+			"event_id": eventID,
+			"event": map[string]any{
+				"type":         "message",
+				"user":         user,
+				"text":         "hi",
+				"channel":      "D0BKS77EVN1",
+				"ts":           "1700000002.000300",
+				"channel_type": "im",
+			},
+		}
+	}
+
+	w := postSignedJSON(t, ch, cfg.SigningSecret, now, dm("U_alice", "Ev_dm_allowed"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if got := rec.snapshot(); len(got) != 1 {
+		t.Fatalf("Receive call count = %d, want 1 — an allow-listed sender's DM must "+
+			"dispatch even with an empty channel_allowlist", len(got))
+	}
+
+	// The sender allowlist is still the gate it was: another workspace member's DM
+	// is dropped, so the DM exemption is not a hole.
+	w = postSignedJSON(t, ch, cfg.SigningSecret, now, dm("U_stranger", "Ev_dm_denied"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if got := rec.snapshot(); len(got) != 1 {
+		t.Fatalf("Receive call count = %d, want still 1 — an unlisted sender's DM must "+
+			"be dropped", len(got))
+	}
+}
+
 // TestHandleWebhook_DuplicateEventIDDispatchesOnce regresses Slack retrying a
 // delivery while the first request is still waiting on the LLM. Every retry
 // carries the same event_id and must be acknowledged without another dispatch.

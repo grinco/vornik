@@ -188,6 +188,30 @@ func TestChannelAllowed_AppMentionShapeDoesNotBypassAllowlist(t *testing.T) {
 	}
 }
 
+// Regression (reported 2026-08-06): the 2026-08-05 fail-closed flip (62a7ad82) put the
+// empty-allowlist check BEFORE the DM exemption, so an installation with NO
+// channel_allowlist dropped every direct message — "slack: channel not on installation
+// allowlist; dropping channel=D0BKS77EVN1" — and the bot went silent. An empty channel
+// allowlist is the only workable shape for a DM bot, since Slack mints a D… id lazily on
+// first contact and it cannot be pre-listed. The sender allowlist (fail-closed since the
+// same release) is a DM's real gate; the channel allowlist never applies to one.
+func TestChannelAllowed_EmptyChannelAllowlistStillExemptsDirectMessages(t *testing.T) {
+	inst := &installation{projectID: "p"} // no channel_allowlist, NOT opted open
+	if !channelAllowed(inst, "im", "D0BKS77EVN1") {
+		t.Error("an empty channel_allowlist must not gate a DM (channel_type=im)")
+	}
+	if !channelAllowed(inst, "", "D0BKS77EVN1") {
+		t.Error("an empty channel_allowlist must not gate a DM carrying no channel_type " +
+			"(the file_shared / slash-command shape)")
+	}
+	if channelAllowed(inst, "channel", "C_ANY") {
+		t.Error("an empty channel_allowlist must still deny a real channel")
+	}
+	if channelAllowed(inst, "", "G_PRIVATE") {
+		t.Error("an empty channel_allowlist must still deny a private group")
+	}
+}
+
 // The engagement lookup runs on the DETACHED dispatch context, not the request
 // context: Slack's ack budget is three seconds and the lookup can reach the database.
 // Asserting the checker is consulted at all guards against a refactor that reinstates

@@ -155,7 +155,8 @@ is what lets vornik reply.
 
 ### Good to know
 
-- An empty `channel_allowlist` or `sender_allowlist` **denies** everything. A
+- An empty `channel_allowlist` or `sender_allowlist` **denies** everything
+  (direct messages excepted from `channel_allowlist` — see below). A
   Slack bot is addressable by every member of the workspace it is installed in,
   so an unconfigured allowlist would otherwise mean the whole workspace could
   drive the project — spending its budget and reaching its tools — with nothing
@@ -177,10 +178,15 @@ is what lets vornik reply.
 - Slash commands use a per-user, per-channel session separate from ordinary
   message threads. Their delayed answers post at channel level because a slash
   invocation has no Slack message timestamp to reply under.
-- **Direct messages are never gated by `channel_allowlist`.** A DM's channel id
-  is created by Slack the first time each person writes to the bot, so it cannot
-  be listed in advance. `sender_allowlist` is the control for DMs — and with it
-  empty, any member of the workspace can DM the bot.
+- **Direct messages are never gated by `channel_allowlist`**, whether it lists
+  channels or is left empty. A DM's channel id is created by Slack the first time
+  each person writes to the bot, so it cannot be listed in advance.
+  `sender_allowlist` is the control for DMs — so a DM-only bot lists its senders
+  and leaves `channel_allowlist` empty, which denies every real channel while
+  direct messages keep working. This covers one-to-one DMs only: a **group DM**
+  is not a DM for this purpose. Ordinary messages in a group DM are ignored
+  entirely, and an @-mention there is gated by `channel_allowlist` like any
+  channel, so it answers only once you list that conversation's id.
 - **In a thread, you only tag the bot once.** Replies inside a thread vornik is
   already part of continue the conversation without a mention. A new top-level
   message in a channel still needs an @-mention, which is what keeps the bot out

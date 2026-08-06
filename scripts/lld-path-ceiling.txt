@@ -1,0 +1,11 @@
+# Ratcheted debt counter — LLDs naming paths that do not exist
+#
+# This number may only go DOWN. lint-lld-contracts fails when the current count
+# exceeds it. Lower it with the corresponding make target once you have reduced
+# the debt.
+#
+# RAISING this number is a deliberate, reviewable act: it means new debt was
+# accepted. There is no automation that raises it, and no branch protection on
+# this repo to stop you, so the commit itself is the control. Explain why in the
+# commit message.
+219

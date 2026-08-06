@@ -1,0 +1,12 @@
+# Ratcheted debt counter — symbols neither reachable from a main nor named by a contract.
+#
+# This number may only go DOWN. `make reachability` fails when the current count
+# exceeds it. Lower it with `make reachability-ratchet` once you have reduced the debt.
+#
+# Each entry is EITHER genuinely dead code OR an undocumented entry point — the
+# analysis cannot tell which, and the fix differs (delete it, or write the
+# contract). That is why this is a report under a ceiling rather than a hard gate.
+#
+# RAISING this number means new debt was accepted. Nothing automates that, and
+# this repo has no branch protection, so the commit is the control. Say why.
+7

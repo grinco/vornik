@@ -164,6 +164,25 @@ allowed_builtin_tools_json() {
         || printf '%s\n' '["current_time","file_read","file_write","run_shell"]'
 }
 
+# SECURITY (2026-08-06): this list IS the execution-time allowlist gate. The
+# caller in exec_tool refuses a tool only when
+#   is_builtin_tool "$name" && ! builtin_tool_allowed "$name"
+# so a name MISSING here makes the first conjunct false and the per-role
+# allowlist check is skipped entirely — the tool runs for every role regardless
+# of its allowedTools. The gate fails OPEN on omission.
+#
+# memory_search, skill_fetch, get_conversation_window and summarize_thread were
+# each implemented with an exec_tool dispatch case and absent from this list,
+# so every role could call them irrespective of allowedTools — defeating the
+# role-library capability boundary that
+# https://docs.vornik.io §5.3 documents as the
+# outer bound of every composed automation.
+#
+# Do not add a dispatch case without adding the name here AND to
+# BUILTIN_TOOL_NAMES_JSON AND to internal/agenttools.builtinTools.
+# internal/contractreg's registry-disagreement check enforces that on every
+# `make lint`; deliberate exemptions live in contractreg.UngatedByDesign with a
+# stated reason, not as silent omissions.
 is_builtin_tool() {
     case "$1" in
         file_read|file_write|run_shell|current_time) return 0 ;;
@@ -172,6 +191,8 @@ is_builtin_tool() {
         test_run|lint_run|typecheck_run) return 0 ;;
         backlog_deposit|tool_result_read) return 0 ;;
         query_api|list_apis) return 0 ;;
+        memory_search|skill_fetch) return 0 ;;
+        get_conversation_window|summarize_thread) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -179,7 +200,7 @@ is_builtin_tool() {
 # Canonical list of built-in tool names — single source of truth used by the
 # allowlist gate in tool_definitions() and by builtin_tool_allowed(). Keep
 # this aligned with is_builtin_tool() above.
-BUILTIN_TOOL_NAMES_JSON='["file_read","file_write","run_shell","current_time","file_edit","read_many_files","grep","glob","git_status","git_diff","git_log","git_show","test_run","lint_run","typecheck_run","backlog_deposit","tool_result_read","query_api","list_apis"]'
+BUILTIN_TOOL_NAMES_JSON='["file_read","file_write","run_shell","current_time","file_edit","read_many_files","grep","glob","git_status","git_diff","git_log","git_show","test_run","lint_run","typecheck_run","backlog_deposit","tool_result_read","query_api","list_apis","memory_search","skill_fetch","get_conversation_window","summarize_thread"]'
 
 builtin_tool_allowed() {
     local tool="$1"

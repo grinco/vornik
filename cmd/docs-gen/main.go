@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -59,7 +60,7 @@ func main() {
 		writePage(filepath.Join(root, configPage), genHeader+renderConfig(reflect.TypeOf(config.Config{})), deny)
 		writeEditions(root, deny)
 	case "stamp":
-		stamp(root)
+		stamp(root, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "docs-gen: unknown command %q\n", os.Args[1])
 		os.Exit(2)
@@ -125,25 +126,135 @@ func repoRoot() (string, error) {
 	}
 }
 
-// stamp re-anchors provenance hashes on every docs/public page that declares a
-// sources: block. Run after reviewing a page whose source drifted.
-func stamp(root string) {
-	pub := filepath.Join(root, "docs", "public")
-	_ = filepath.WalkDir(pub, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+// stamp re-anchors provenance hashes on docs that declare a sources: block.
+//
+// Bare `docs-gen stamp` keeps its historical behaviour: re-anchor every
+// docs/public page. Those are generated narrative pages whose review model is
+// the docs-gen pipeline itself.
+//
+// An LLD is different, and stamping one requires
+// `--i-have-reviewed=https://docs.vornik.io`.
+//
+// WHY A MECHANICAL GUARD AND NOT A COMMENT (drift design §4.3, review finding 3):
+// `sha256` means "hash at last review" — the anchor is a claim that a human read
+// this document against that file. 269 of 273 LLDs are unanchored, so the
+// tempting "fix" is a loop over the corpus. That would mint 269 false review
+// claims and destroy the signal permanently and SILENTLY: every anchor would
+// match, so the staleness check would pass forever while meaning nothing.
+// Requiring one explicit flag per path makes the act deliberate and legible in
+// shell history. It does not make lying impossible; it makes lying visible.
+func stamp(root string, args []string) {
+	reviewed, err := parseReviewedFlags(args)
+	if err != nil {
+		fatal(err)
+	}
+
+	if len(reviewed) == 0 {
+		pub := filepath.Join(root, "docs", "public")
+		_ = filepath.WalkDir(pub, func(path string, d os.DirEntry, werr error) error {
+			if werr != nil || d.IsDir() || !strings.HasSuffix(path, ".md") {
+				return nil
+			}
+			changed, rerr := docsmeta.Restamp(root, path)
+			if rerr != nil {
+				fatal(rerr)
+			}
+			if changed {
+				rel, _ := filepath.Rel(root, path)
+				fmt.Printf("stamped %s\n", rel)
+			}
 			return nil
-		}
-		changed, rerr := docsmeta.Restamp(root, path)
-		if rerr != nil {
-			fatal(rerr)
-		}
-		if changed {
-			rel, _ := filepath.Rel(root, path)
-			fmt.Printf("stamped %s\n", rel)
-		}
-		return nil
-	})
+		})
+		return
+	}
+
+	for _, rel := range reviewed {
+		stampReviewedDoc(root, rel)
+	}
 }
+
+// stampReviewedDoc anchors one explicitly-reviewed document.
+func stampReviewedDoc(root, rel string) {
+	abs := filepath.Join(root, rel)
+	raw, err := os.ReadFile(abs)
+	if err != nil {
+		fatal(fmt.Errorf("--i-have-reviewed=%s: %w", rel, err))
+	}
+	// An unbuilt design has nothing to have been reviewed AGAINST, so anchoring
+	// it is meaningless by construction. This eliminates the most harmful class
+	// of false anchor at the mechanical level.
+	if class := statusClassOf(string(raw)); class == "pre-impl" {
+		fatal(fmt.Errorf("refusing to anchor %s: its status reads pre-implementation, so there is "+
+			"no shipped code for the anchor to attest a review against. Update the status when the "+
+			"design lands, then anchor it", rel))
+	}
+	changed, err := docsmeta.Restamp(root, abs)
+	if err != nil {
+		fatal(err)
+	}
+	if changed {
+		fmt.Printf("stamped %s (reviewed)\n", rel)
+		return
+	}
+	fmt.Printf("%s already current\n", rel)
+}
+
+// parseReviewedFlags collects --i-have-reviewed=<path> occurrences. Deliberately
+// accepts no glob, no directory, and no --all: one path per flag.
+func parseReviewedFlags(args []string) ([]string, error) {
+	const flag = "--i-have-reviewed="
+	var out []string
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, flag):
+			p := strings.TrimSpace(strings.TrimPrefix(a, flag))
+			if p == "" {
+				return nil, fmt.Errorf("--i-have-reviewed= needs a path")
+			}
+			if strings.ContainsAny(p, "*?[") {
+				return nil, fmt.Errorf("--i-have-reviewed=%s: globs are refused — name one document "+
+					"per flag. Anchoring asserts you read that document against its sources; a glob "+
+					"cannot make that claim", p)
+			}
+			out = append(out, p)
+		case a == "--all":
+			return nil, fmt.Errorf("--all is refused: an anchor asserts a human review, so there is " +
+				"no such thing as reviewing everything at once. Use one --i-have-reviewed=<path> per " +
+				"document you have actually read")
+		default:
+			return nil, fmt.Errorf("stamp: unknown argument %q", a)
+		}
+	}
+	return out, nil
+}
+
+// statusClassOf classifies a doc's `Status:` line the same way the drift linter
+// does: leading token only, and "" for anything ambiguous. Kept deliberately
+// simple and duplicated rather than shared, because docs-gen must not import the
+// linter and the rule is four words long.
+func statusClassOf(body string) string {
+	m := reDocStatus.FindStringSubmatch(body)
+	if m == nil {
+		return ""
+	}
+	s := strings.ToLower(strings.TrimSpace(m[1]))
+	s = strings.TrimLeft(s, "*_ ")
+	fields := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ' ' || r == '—' || r == '-' || r == '(' || r == ',' || r == ':' || r == ';'
+	})
+	if len(fields) == 0 {
+		return ""
+	}
+	switch fields[0] {
+	case "design", "draft", "proposed", "pending":
+		return "pre-impl"
+	case "implemented", "shipped", "delivered", "released", "complete":
+		return "shipped"
+	}
+	return ""
+}
+
+var reDocStatus = regexp.MustCompile(`(?im)^\s*(?:\*\*)?status(?:\*\*)?\s*[::]\s*(.+)$`)
 
 // ---------------------------------------------------------------------------
 // CLI reference generation

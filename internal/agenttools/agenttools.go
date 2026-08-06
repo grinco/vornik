@@ -46,6 +46,15 @@ var builtinTools = map[string]bool{
 	"tool_result_read": true,
 	"query_api":        true,
 	"list_apis":        true,
+	// Added 2026-08-06: each of these has an exec_tool dispatch case in
+	// images/vornik-agent/entrypoint.sh and was missing here, so the role-library
+	// validator and the prompt linters did not recognise legitimate use of them.
+	// internal/contractreg's registry-disagreement check now keeps the four
+	// agent-tool registries in agreement on every `make lint`.
+	"backlog_deposit":         true,
+	"skill_fetch":             true,
+	"get_conversation_window": true,
+	"summarize_thread":        true,
 }
 
 // mcpToolPrefix marks a tool name as MCP-provided. MCP tool names are

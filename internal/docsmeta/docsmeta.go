@@ -224,21 +224,31 @@ func Restamp(root, mdPath string) (bool, error) {
 	if !had {
 		return false, nil
 	}
-	var fm Frontmatter
-	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
+	// Mutate the parsed NODE TREE in place rather than round-tripping through
+	// the Frontmatter struct.
+	//
+	// The struct approach silently deleted every key this package does not
+	// model: unmarshal kept only `sources:`, and marshalling that back over the
+	// file dropped the rest. That was tolerable while only docs/public pages
+	// were anchored (their front matter is sources-only by convention), but the
+	// LLD corpus carries `delivers:` for drift check B, so stamping an anchored
+	// LLD would have thrown check B's coverage away — a silent regression inside
+	// the tooling built to catch silent regressions.
+	//
+	// A node tree also preserves key order and comments, so stamping no longer
+	// reformats a doc it merely re-anchors.
+	var doc yaml.Node
+	if err := yaml.Unmarshal(fmBytes, &doc); err != nil {
 		return false, fmt.Errorf("%s: %w", mdPath, err)
 	}
-	if len(fm.Sources) == 0 {
+	updated, err := restampSourcesNode(&doc, root, mdPath)
+	if err != nil {
+		return false, err
+	}
+	if !updated {
 		return false, nil
 	}
-	for i := range fm.Sources {
-		h, err := HashPath(filepath.Join(root, fm.Sources[i].Path))
-		if err != nil {
-			return false, fmt.Errorf("%s: source %q: %w", mdPath, fm.Sources[i].Path, err)
-		}
-		fm.Sources[i].SHA256 = h
-	}
-	out, err := yaml.Marshal(fm)
+	out, err := yaml.Marshal(&doc)
 	if err != nil {
 		return false, err
 	}
@@ -247,4 +257,55 @@ func Restamp(root, mdPath string) (bool, error) {
 		return false, nil
 	}
 	return true, os.WriteFile(mdPath, []byte(newContent), 0o644)
+}
+
+// restampSourcesNode rewrites each sources[].sha256 scalar in the node tree to
+// the current hash of its path, leaving every other node untouched. Reports
+// whether a `sources:` block was found at all.
+func restampSourcesNode(doc *yaml.Node, root, mdPath string) (bool, error) {
+	seq := findMappingValue(doc, "sources")
+	if seq == nil || seq.Kind != yaml.SequenceNode {
+		return false, nil
+	}
+	for _, item := range seq.Content {
+		if item.Kind != yaml.MappingNode {
+			continue
+		}
+		pathNode := findMappingValue(item, "path")
+		shaNode := findMappingValue(item, "sha256")
+		if pathNode == nil || shaNode == nil {
+			continue
+		}
+		h, err := HashPath(filepath.Join(root, pathNode.Value))
+		if err != nil {
+			return false, fmt.Errorf("%s: source %q: %w", mdPath, pathNode.Value, err)
+		}
+		shaNode.Value = h
+		shaNode.Tag = "!!str"
+		shaNode.Style = 0
+	}
+	return true, nil
+}
+
+// findMappingValue returns the value node for key in the first mapping reachable
+// from n (unwrapping a document node), or nil.
+func findMappingValue(n *yaml.Node, key string) *yaml.Node {
+	if n == nil {
+		return nil
+	}
+	if n.Kind == yaml.DocumentNode {
+		if len(n.Content) == 0 {
+			return nil
+		}
+		return findMappingValue(n.Content[0], key)
+	}
+	if n.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value == key {
+			return n.Content[i+1]
+		}
+	}
+	return nil
 }

@@ -76,11 +76,23 @@ __pycache__/
 .vornik-public-clone/
 .vornik-site/
 
-# Root build artifacts (go build ./cmd/... lands the binary at repo root)
+# Root build artifacts (go build ./cmd/... lands the binary at repo root).
+# One entry per cmd/ directory — a missing name means `go build ./cmd/x` leaves an
+# untracked binary in the tree, which `make check-no-binaries` is there to catch.
 /vornik
 /vornik-enterprise
 /vornikctl
 /vornik-broker
+/agent-helper
+/docs-gen
+/lint-lld-contracts
+/mcp-bridge
+/reachability
+/skills-site
+/ui-smoke
+
+# make reachability-map output (a local analysis artifact, regenerated on demand)
+/build/
 
 # mkdocs local build output (published from CI / manually to vornik-docs gh-pages)
 site/

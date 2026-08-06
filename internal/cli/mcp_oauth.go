@@ -101,6 +101,7 @@ type mcpOAuthStatusResp struct {
 	ConnectedAt    string   `json:"connected_at"`
 	ExpiresAt      string   `json:"expires_at"`
 	NeedsReconnect bool     `json:"needs_reconnect"`
+	InheritedFrom  string   `json:"inherited_from"`
 }
 
 func runMCPConnect(_ *cobra.Command, args []string) error {
@@ -277,7 +278,18 @@ func runMCPOAuthStatus(_ *cobra.Command, args []string) error {
 		fmt.Printf("%q is not connected for %s.\n", args[0], mcpScopeLabel())
 		return nil
 	}
-	fmt.Printf("%q is connected for %s.\n", args[0], mcpScopeLabel())
+	if got.InheritedFrom != "" {
+		// The grant is the daemon's, shared by every project that does not
+		// override it. Saying only "connected for project X" would hide where
+		// the credential lives — which is where a reconnect or a revoke has to
+		// happen, and which projects a revoke would affect.
+		fmt.Printf("%q is connected for project %s via the daemon-scope grant.\n", args[0], got.InheritedFrom)
+		fmt.Printf("  This project subscribes by name only, so it shares the daemon's credential\n")
+		fmt.Printf("  with every other project that does not declare its own. Manage it with\n")
+		fmt.Printf("  `vornikctl mcp connect/disconnect %s` (no -p flag).\n", args[0])
+	} else {
+		fmt.Printf("%q is connected for %s.\n", args[0], mcpScopeLabel())
+	}
 	fmt.Printf("  Resource:     %s\n", got.Resource)
 	fmt.Printf("  Scopes:       %s\n", mcpScopeList(got.Scopes))
 	fmt.Printf("  Connected by: %s\n", got.ConnectedBy)

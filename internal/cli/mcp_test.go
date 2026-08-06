@@ -159,3 +159,43 @@ func TestRunMCPServers_EmptyCatalog(t *testing.T) {
 		t.Errorf("expected Total: 0 in empty-catalog output, got:\n%s", buf.String())
 	}
 }
+
+// TestRunMCPServers_NeverProbedReadsAsChecking — the daemon omits
+// last_checked_at for a server it has not contacted yet (the first probe is
+// async, so this is every server for the moments after a restart). Printing
+// "unreachable" there states a verdict the daemon has not reached, which sent
+// the operator troubleshooting a healthy server twice on 2026-08-05.
+func TestRunMCPServers_NeverProbedReadsAsChecking(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// No last_checked_at key at all — the omitempty wire shape.
+		_, _ = w.Write([]byte(`{"servers":[{"name":"atlassian","transport":"streamable-http",` +
+			`"url":"https://mcp.atlassian.com/v1/mcp/authv2","reachable":false,` +
+			`"error":"not yet refreshed","tools":null}]}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("VORNIK_API_URL", srv.URL)
+	t.Setenv("VORNIK_API_KEY", "test")
+
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	mcpJSON = false
+	runErr := runMCPServers(mcpServersCmd, nil)
+	_ = w.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	os.Stdout = old
+
+	if runErr != nil {
+		t.Fatalf("runMCPServers: %v", runErr)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "checking") {
+		t.Errorf("a never-probed server must read as checking\n%s", got)
+	}
+	if strings.Contains(got, "unreachable") {
+		t.Errorf("a never-probed server must not be called unreachable\n%s", got)
+	}
+}

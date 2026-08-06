@@ -72,7 +72,7 @@ func TestSendEmail_NotConfigured(t *testing.T) {
 		Name:      "send_email",
 		Arguments: `{"to":"alice@example.com","subject":"hi","body":"hello"}`,
 	}}
-	res := te.Execute(context.Background(), tc, "proj-1", nil, 0, nil)
+	res := te.Execute(context.Background(), tc, "proj-1", nil, 0, "0", nil)
 	if !strings.Contains(strings.ToLower(res.Content), "not configured") &&
 		!strings.Contains(strings.ToLower(res.Content), "not available") {
 		t.Errorf("expected 'not configured' message, got %q", res.Content)
@@ -87,7 +87,7 @@ func TestSendEmail_InvalidJSON(t *testing.T) {
 	tc := chat.ToolCall{Function: chat.FunctionCall{
 		Name: "send_email", Arguments: `{not even close to json`,
 	}}
-	res := te.Execute(context.Background(), tc, "proj-1", nil, 0, nil)
+	res := te.Execute(context.Background(), tc, "proj-1", nil, 0, "0", nil)
 	if !strings.Contains(strings.ToLower(res.Content), "invalid arguments") {
 		t.Errorf("expected 'invalid arguments', got %q", res.Content)
 	}
@@ -115,7 +115,7 @@ func TestSendEmail_MissingRequiredFields(t *testing.T) {
 			sender := &stubEmailSender{}
 			te := newExecutor(withEmailSender(sender))
 			call := chat.ToolCall{Function: chat.FunctionCall{Name: "send_email", Arguments: tc.payload}}
-			res := te.Execute(context.Background(), call, "proj-1", nil, 0, nil)
+			res := te.Execute(context.Background(), call, "proj-1", nil, 0, "0", nil)
 			if !strings.Contains(strings.ToLower(res.Content), tc.want) {
 				t.Errorf("got %q, want substring %q", res.Content, tc.want)
 			}
@@ -136,7 +136,7 @@ func TestSendEmail_NoActiveProject(t *testing.T) {
 		Name:      "send_email",
 		Arguments: `{"to":"alice@example.com","subject":"hi","body":"hello"}`,
 	}}
-	res := te.Execute(context.Background(), tc, "", nil, 0, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 0, "0", nil)
 	if !strings.Contains(strings.ToLower(res.Content), "project") {
 		t.Errorf("expected error mentioning project, got %q", res.Content)
 	}
@@ -155,7 +155,7 @@ func TestSendEmail_ProjectNotAllowed(t *testing.T) {
 		Name:      "send_email",
 		Arguments: `{"to":"alice@example.com","subject":"hi","body":"hello"}`,
 	}}
-	res := te.Execute(context.Background(), tc, "proj-B", []string{"proj-A"}, 0, nil)
+	res := te.Execute(context.Background(), tc, "proj-B", []string{"proj-A"}, 0, "0", nil)
 	if !strings.Contains(strings.ToLower(res.Content), "not permitted") &&
 		!strings.Contains(strings.ToLower(res.Content), "not allowed") {
 		t.Errorf("expected access denial, got %q", res.Content)
@@ -179,7 +179,7 @@ func TestSendEmail_HappyPath(t *testing.T) {
 			"body":"Top stories today...\n\n- foo\n- bar"
 		}`,
 	}}
-	res := te.Execute(context.Background(), tc, "assistant", []string{"assistant"}, 0, nil)
+	res := te.Execute(context.Background(), tc, "assistant", []string{"assistant"}, 0, "0", nil)
 	if !strings.Contains(res.Content, "abc123@vornik.local") {
 		t.Errorf("response missing Message-ID; got %q", res.Content)
 	}
@@ -217,7 +217,7 @@ func TestSendEmail_SenderError(t *testing.T) {
 		Name:      "send_email",
 		Arguments: `{"to":"a@b.c","subject":"x","body":"y"}`,
 	}}
-	res := te.Execute(context.Background(), tc, "proj-1", []string{"proj-1"}, 0, nil)
+	res := te.Execute(context.Background(), tc, "proj-1", []string{"proj-1"}, 0, "0", nil)
 	if !strings.Contains(res.Content, "550 alias not permitted") {
 		t.Errorf("sender error must surface verbatim; got %q", res.Content)
 	}
@@ -241,7 +241,7 @@ func TestSendEmail_OptionalInReplyTo(t *testing.T) {
 			"in_reply_to":"<original-msg-id@b.c>"
 		}`,
 	}}
-	te.Execute(context.Background(), tc, "proj-1", []string{"proj-1"}, 0, nil)
+	te.Execute(context.Background(), tc, "proj-1", []string{"proj-1"}, 0, "0", nil)
 	calls := sender.snapshot()
 	if len(calls) != 1 {
 		t.Fatalf("calls = %d, want 1", len(calls))
@@ -287,7 +287,7 @@ func TestExecute_DispatchesSendEmail(t *testing.T) {
 		Name:      "send_email",
 		Arguments: "{}",
 	}}
-	res := te.Execute(context.Background(), tc, "proj-1", []string{"proj-1"}, 0, nil)
+	res := te.Execute(context.Background(), tc, "proj-1", []string{"proj-1"}, 0, "0", nil)
 	if strings.HasPrefix(res.Content, "Unknown tool:") {
 		t.Errorf("send_email dispatch missed: %q", res.Content)
 	}

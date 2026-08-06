@@ -67,7 +67,7 @@ func TestApplyDeferredLoading_PinnedToolsVisibleAboveThreshold(t *testing.T) {
 	mcp := bigMCPCatalog(25)
 	pinned := map[string]struct{}{"mcp__srv__tool_07": {}}
 
-	got := applyDeferredLoading(builtin, mcp, newExpandedToolStore(), 42, 20, pinned)
+	got := applyDeferredLoading(builtin, mcp, newExpandedToolStore(), "42", 20, pinned)
 	names := toolNameSet(got)
 
 	assert.Contains(t, names, "mcp__srv__tool_07",
@@ -80,10 +80,10 @@ func TestApplyDeferredLoading_PinnedAndExpandedDoNotDuplicate(t *testing.T) {
 	builtin := DispatcherTools()
 	mcp := bigMCPCatalog(25)
 	store := newExpandedToolStore()
-	store.expand(42, []string{"mcp__srv__tool_07"})
+	store.expand("42", []string{"mcp__srv__tool_07"})
 	pinned := map[string]struct{}{"mcp__srv__tool_07": {}}
 
-	got := applyDeferredLoading(builtin, mcp, store, 42, 20, pinned)
+	got := applyDeferredLoading(builtin, mcp, store, "42", 20, pinned)
 	count := 0
 	for _, tl := range got {
 		if tl.Function.Name == "mcp__srv__tool_07" {
@@ -98,7 +98,7 @@ func TestAllTools_SystemPromptPinnedToolSurvivesDeferral(t *testing.T) {
 	a := &Agent{mcpManager: mcp, toolExecutor: &ToolExecutor{expanded: newExpandedToolStore()}}
 
 	prompt := "PUBLISHING — use mcp__srv__tool_03 to protect a page."
-	got := a.allTools("assistant", 559741208, chat.TierPeak, prompt)
+	got := a.allTools("assistant", "559741208", chat.TierPeak, prompt)
 	names := toolNameSet(got)
 
 	assert.Contains(t, names, "mcp__srv__tool_03")
@@ -113,7 +113,7 @@ func TestAllTools_NegativeThresholdDisablesDeferral(t *testing.T) {
 		toolExecutor:          &ToolExecutor{expanded: newExpandedToolStore()},
 		deferredToolThreshold: -1,
 	}
-	got := a.allTools("p1", 7, chat.TierPeak, "")
+	got := a.allTools("p1", "7", chat.TierPeak, "")
 	names := toolNameSet(got)
 	assert.Contains(t, names, "mcp__srv__tool_49", "negative threshold = never defer, full catalog visible")
 	assert.NotContains(t, names, ToolSearchName)
@@ -128,13 +128,13 @@ func TestAllTools_CustomThresholdRespected(t *testing.T) {
 		toolExecutor:          &ToolExecutor{expanded: newExpandedToolStore()},
 		deferredToolThreshold: 30,
 	}
-	names := toolNameSet(a.allTools("p1", 7, chat.TierPeak, ""))
+	names := toolNameSet(a.allTools("p1", "7", chat.TierPeak, ""))
 	assert.Contains(t, names, "mcp__srv__tool_24")
 	assert.NotContains(t, names, ToolSearchName)
 
 	// Same catalog with threshold 10: deferral engages.
 	a.deferredToolThreshold = 10
-	names = toolNameSet(a.allTools("p1", 7, chat.TierPeak, ""))
+	names = toolNameSet(a.allTools("p1", "7", chat.TierPeak, ""))
 	assert.NotContains(t, names, "mcp__srv__tool_24")
 	assert.Contains(t, names, ToolSearchName)
 }

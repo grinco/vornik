@@ -19,6 +19,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/mcpauth"
 	"vornik.io/vornik/internal/registry"
 )
 
@@ -169,5 +170,166 @@ func TestMcpDesiredServers_NameOnlyNoDaemonMatch_PassesThroughUnchanged(t *testi
 	}
 	if got.Name != "unknown-server" {
 		t.Errorf("Name = %q, want unknown-server", got.Name)
+	}
+}
+
+// TestMcpCredentialScope_InheritedGrantResolvesAtDaemonScope pins the
+// resolution rule the MCP-auth design states in §9 and the code did not follow
+// until 2026-08-05.
+//
+// "Daemon-scope servers are available to all projects" is a property; the
+// mechanism is which project_id the GRANT is resolved under. A project that
+// subscribes by name only inherits the daemon server's connection fields AND
+// its credential, so the token must be resolved at "" — the scope the grant was
+// actually stored at. Resolving it under the subscribing project's id finds
+// nothing, the server registers unauthenticated (§8 registers rather than
+// withholds), initialize 401s, and the project holds the server with ZERO tools
+// while the daemon-scope registry reports it healthy with a full tool list.
+//
+// That is exactly what was observed: atlassian green on the MCP tab with 16
+// tools, absent from the dispatcher's palette, and
+// `vornikctl mcp oauth-status atlassian -p easeit-companion` correctly saying
+// it was not connected for that project.
+func TestMcpCredentialScope_InheritedGrantResolvesAtDaemonScope(t *testing.T) {
+	if got := mcpCredentialScope("easeit-companion", true); got != "" {
+		t.Errorf("inherited credential resolved at %q, want \"\" (daemon scope) — "+
+			"one grant is shared by every project that does not override it", got)
+	}
+	// A project that owns its credential keeps its own scope, so two projects
+	// with their own auth blocks stay isolated.
+	if got := mcpCredentialScope("easeit-companion", false); got != "easeit-companion" {
+		t.Errorf("own credential resolved at %q, want the project id", got)
+	}
+	if got := mcpCredentialScope("", true); got != "" {
+		t.Errorf("daemon wiring resolved at %q, want \"\"", got)
+	}
+}
+
+// TestMcpServerRef_InheritedEntryResolvesTheDaemonGrantRow closes the chain the
+// scope rule opens. mcpCredentialScope decides WHICH project_id is used; this
+// pins what that id then resolves to — the ref whose (ProjectID, ServerName)
+// pair is the literal key of the token row that Tokens.Get reads and, on
+// refresh, WithRefreshLock/refreshLocked write back to.
+//
+// Both halves matter. ProjectID "" means every inheriting project reads and
+// refreshes the ONE daemon grant instead of each minting its own row. And the
+// URL must come from the daemon entry, because the connector re-checks that a
+// token was issued for the resource it is about to be presented to
+// (assertResourceMatches) — a ref carrying the project's empty URL would fail
+// that check even with the right row.
+func TestMcpServerRef_InheritedEntryResolvesTheDaemonGrantRow(t *testing.T) {
+	reg := writeMCPInheritFixture(t, "mcp:\n  servers:\n    - name: \"server1\"\n")
+	c := &Container{
+		Logger:   zerolog.Nop(),
+		Registry: reg,
+		Config: &config.Config{
+			MCP: config.MCPConfig{
+				Servers: []config.MCPServerConfig{{
+					Name:      "server1",
+					Transport: "streamable-http",
+					URL:       "https://vendor.example.com/mcp",
+					Auth:      mcpauth.Auth{Mode: mcpauth.ModeOAuth},
+				}},
+			},
+		},
+	}
+
+	ref, ok := c.mcpServerRef(mcpCredentialScope("test-project", true), "server1")
+	if !ok {
+		t.Fatal("the daemon-scope server must be resolvable at daemon scope")
+	}
+	if ref.ProjectID != "" {
+		t.Errorf("ref.ProjectID = %q, want \"\" — this is half the token row key, "+
+			"so a non-empty value reads a row the consent never wrote", ref.ProjectID)
+	}
+	if ref.ServerName != "server1" {
+		t.Errorf("ref.ServerName = %q, want server1", ref.ServerName)
+	}
+	if ref.URL != "https://vendor.example.com/mcp" {
+		t.Errorf("ref.URL = %q, want the daemon entry's URL — the connector "+
+			"validates the grant's audience against this", ref.URL)
+	}
+	if ref.Auth.Mode != mcpauth.ModeOAuth {
+		t.Errorf("ref.Auth.Mode = %q, want oauth", ref.Auth.Mode)
+	}
+}
+
+// TestMcpServerRef_ProjectScopedLookupOfAnInheritedServerRedirectsToDaemonScope
+// covers the resolver as reached by `mcp connect/disconnect/oauth-status -p X`,
+// which pass the project's OWN id — unlike the wiring, which already applies
+// mcpCredentialScope before calling.
+//
+// The resolver must apply the same rule, because it is what those three surfaces
+// use to decide which grant row they act on. Before this, `mcp connect -p X
+// <server>` wrote a project-scope grant that the wiring — resolving at daemon
+// scope — never read: consent completed, the operator was told it succeeded, and
+// the server still had no tools.
+func TestMcpServerRef_ProjectScopedLookupOfAnInheritedServerRedirectsToDaemonScope(t *testing.T) {
+	reg := writeMCPInheritFixture(t, "mcp:\n  servers:\n    - name: \"server1\"\n")
+	c := &Container{
+		Logger:   zerolog.Nop(),
+		Registry: reg,
+		Config: &config.Config{
+			MCP: config.MCPConfig{
+				Servers: []config.MCPServerConfig{{
+					Name:      "server1",
+					Transport: "streamable-http",
+					URL:       "https://vendor.example.com/mcp",
+					Auth:      mcpauth.Auth{Mode: mcpauth.ModeOAuth},
+				}},
+			},
+		},
+	}
+
+	// Asked for at the PROJECT's id, the way the CLI asks.
+	ref, ok := c.mcpServerRef("test-project", "server1")
+	if !ok {
+		t.Fatal("the project's name-only subscription must resolve")
+	}
+	if ref.ProjectID != "" {
+		t.Errorf("ref.ProjectID = %q, want \"\" — a consent given here must land on "+
+			"the row the wiring reads, or it is written and never used", ref.ProjectID)
+	}
+	if ref.InheritedFrom != "test-project" {
+		t.Errorf("ref.InheritedFrom = %q, want test-project — the asking project must stay "+
+			"reportable so a surface can say which grant is doing the work", ref.InheritedFrom)
+	}
+}
+
+// A project that declares its OWN auth block owns its credential, so the
+// redirect must not fire — otherwise every project would collapse onto the
+// daemon's grant and the override the design allows would be unreachable.
+func TestMcpServerRef_ProjectWithItsOwnAuthKeepsItsOwnScope(t *testing.T) {
+	reg := writeMCPInheritFixture(t, `mcp:
+  servers:
+    - name: "server1"
+      auth:
+        mode: oauth
+`)
+	c := &Container{
+		Logger:   zerolog.Nop(),
+		Registry: reg,
+		Config: &config.Config{
+			MCP: config.MCPConfig{
+				Servers: []config.MCPServerConfig{{
+					Name:      "server1",
+					Transport: "streamable-http",
+					URL:       "https://vendor.example.com/mcp",
+					Auth:      mcpauth.Auth{Mode: mcpauth.ModeOAuth},
+				}},
+			},
+		},
+	}
+
+	ref, ok := c.mcpServerRef("test-project", "server1")
+	if !ok {
+		t.Fatal("the project entry must resolve")
+	}
+	if ref.ProjectID != "test-project" {
+		t.Errorf("ref.ProjectID = %q, want test-project — a project declaring its own "+
+			"auth block must keep its own credential scope", ref.ProjectID)
+	}
+	if ref.InheritedFrom != "" {
+		t.Errorf("ref.InheritedFrom = %q, want empty — nothing was inherited", ref.InheritedFrom)
 	}
 }

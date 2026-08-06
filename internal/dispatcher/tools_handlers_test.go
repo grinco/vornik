@@ -199,7 +199,7 @@ func TestExecute_DispatchesAllNamedTools(t *testing.T) {
 	for _, name := range tools {
 		t.Run(name, func(t *testing.T) {
 			tc := chat.ToolCall{Function: chat.FunctionCall{Name: name, Arguments: "{}"}}
-			res := te.Execute(context.Background(), tc, "", nil, 0, nil)
+			res := te.Execute(context.Background(), tc, "", nil, 0, "0", nil)
 			if strings.HasPrefix(res.Content, "Unknown tool:") {
 				t.Errorf("dispatch missed for tool %q: %q", name, res.Content)
 			}
@@ -210,7 +210,7 @@ func TestExecute_DispatchesAllNamedTools(t *testing.T) {
 func TestExecute_UnknownToolFallthrough(t *testing.T) {
 	te := newExecutor()
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "nope_not_real", Arguments: "{}"}}
-	res := te.Execute(context.Background(), tc, "", nil, 0, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 0, "0", nil)
 	if !strings.HasPrefix(res.Content, "Unknown tool") {
 		t.Errorf("expected Unknown-tool fallthrough, got %q", res.Content)
 	}
@@ -220,7 +220,7 @@ func TestExecute_MCPRoutesWhenAllowed(t *testing.T) {
 	mcp := &stubMCP{out: "ok"}
 	te := newExecutor(withMCP(mcp))
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "mcp__broker__quote", Arguments: "{}"}}
-	res := te.Execute(context.Background(), tc, "snake", []string{"snake"}, 0, nil)
+	res := te.Execute(context.Background(), tc, "snake", []string{"snake"}, 0, "0", nil)
 	if !strings.Contains(res.Content, "ok") {
 		t.Errorf("expected MCP output wrapped in result, got %q", res.Content)
 	}
@@ -233,7 +233,7 @@ func TestExecute_MCPRefusesDisallowedProject(t *testing.T) {
 	mcp := &stubMCP{out: "should-not-run"}
 	te := newExecutor(withMCP(mcp))
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "mcp__broker__quote", Arguments: "{}"}}
-	res := te.Execute(context.Background(), tc, "snake", []string{"other"}, 0, nil)
+	res := te.Execute(context.Background(), tc, "snake", []string{"other"}, 0, "0", nil)
 	if !strings.Contains(res.Content, "not permitted") {
 		t.Errorf("expected access-denied message, got %q", res.Content)
 	}
@@ -246,7 +246,7 @@ func TestLogAudit_RecordsEntry(t *testing.T) {
 	audit := &stubAuditRepo{}
 	te := newExecutor(withAuditRepo(audit))
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "list_projects", Arguments: "{}"}}
-	te.Execute(context.Background(), tc, "", nil, 0, nil)
+	te.Execute(context.Background(), tc, "", nil, 0, "0", nil)
 	if len(audit.entries) != 1 {
 		t.Fatalf("expected 1 audit entry, got %d", len(audit.entries))
 	}

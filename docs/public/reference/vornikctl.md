@@ -685,7 +685,11 @@ Examples:
   vornikctl mcp tools -p janka
   vornikctl mcp servers
   vornikctl mcp call -p janka --tool mcp__scraper__web_fetch \
-      --args '{"url":"https://example.com","project_id":"janka","allowed_hosts":["*"],"text_only":true,"max_bytes":2000}'
+      --args '{"url":"https://example.com","text_only":true,"max_bytes":2000}'
+
+(project_id is supplied by the daemon from -p, so don't pass it. allowed_hosts
+defaults to the URL's own host; pass it only when you expect a redirect to a
+different domain. A bare "*" is rejected — enumerate the domains instead.)
 
 ```
 vornikctl mcp call [flags]

@@ -2,9 +2,11 @@ package mcpconnect
 
 import (
 	"context"
+	"github.com/rs/zerolog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -178,4 +180,59 @@ func TestCallback_NoGrantIsPersistedOnFailure(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, rows)
 	var _ *persistence.MCPOAuthToken // documents the row type under test
+}
+
+// TestConnector_OnGrantedFiresOnConnectAndDisconnect pins the hook that makes a
+// consent take effect.
+//
+// Storing a token is not the same as using one: the access token is injected
+// when an MCP client is wired, at boot and on config reload. Before this hook a
+// completed consent changed nothing — the callback page said "Connected" while
+// the tool surface kept sending unauthenticated requests and the control-plane
+// badge kept reporting that authentication was required. Reported 2026-08-05
+// against the atlassian server, where consent at 22:21:26 did nothing and a
+// manual `vornikctl config reload` three minutes later is what connected it.
+//
+// Disconnect is covered too, and for the mirror-image reason: without the
+// re-wire the client keeps its injected Authorization header and goes on using a
+// grant the operator just revoked.
+func TestConnector_OnGrantedFiresOnConnectAndDisconnect(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	c := &Connector{
+		Logger: zerolog.Nop(),
+		OnGranted: func(projectID, serverName string) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls = append(calls, projectID+"/"+serverName)
+		},
+	}
+
+	c.notifyGranted("", "atlassian")
+	c.notifyGranted("janka", "slack")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 2 || calls[0] != "/atlassian" || calls[1] != "janka/slack" {
+		t.Fatalf("hook calls = %v, want the daemon-scope and project-scope pair", calls)
+	}
+}
+
+// TestConnector_OnGrantedNilIsSafe — the hook is optional, and the CLI path
+// wires no container.
+func TestConnector_OnGrantedNilIsSafe(_ *testing.T) {
+	c := &Connector{Logger: zerolog.Nop()}
+	c.notifyGranted("", "atlassian") // must not panic
+}
+
+// TestConnector_OnGrantedPanicDoesNotEscape — this runs on the operator's
+// callback request, after a consent that already succeeded and was already
+// persisted. A wiring bug in the hook must not turn that into a failed page or
+// a dead daemon.
+func TestConnector_OnGrantedPanicDoesNotEscape(_ *testing.T) {
+	c := &Connector{
+		Logger:    zerolog.Nop(),
+		OnGranted: func(string, string) { panic("wiring bug") },
+	}
+	c.notifyGranted("", "atlassian") // must not propagate
 }

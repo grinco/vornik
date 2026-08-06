@@ -34,10 +34,14 @@ func (f *fakeTasksNarr) Get(_ context.Context, id string) (*persistence.Task, er
 // TestSweepIdle_NoCompletionWhileTaskStillActive — execution COMPLETED but the
 // task is still RUNNING (recovery continuation coming) → NO completion line.
 func TestSweepIdle_NoCompletionWhileTaskStillActive(t *testing.T) {
+	// ForceTeardown left at its default deliberately. A short one made this
+	// negative assertion satisfiable by the STATE VANISHING rather than by
+	// the suppression logic under test — expectNoLine cannot tell "correctly
+	// suppressed" from "torn down before the sweep ever saw the terminal
+	// status", so the test could pass with the §5.8 guard removed. Nothing
+	// here waits on forceTeardownAfter, so the default costs no time.
 	h := newTestHarness(t, func(n *Narrator) {
 		n.Tasks = &fakeTasksNarr{status: persistence.TaskStatusRunning}
-		// Tear down fast so the test doesn't wait forceTeardownAfter.
-		n.ForceTeardown = 60 * time.Millisecond
 	})
 	seedRunningExecution(h)
 	h.Sub.push(testExecID, livepubsub.KindStepStarted, livepubsub.StepStartedPayload{StepID: "recover", Role: "worker"})
@@ -52,7 +56,7 @@ func TestSweepIdle_NoCompletionWhileTaskStillActive(t *testing.T) {
 func TestSweepIdle_NoCompletionWhileTaskPaused(t *testing.T) {
 	h := newTestHarness(t, func(n *Narrator) {
 		n.Tasks = &fakeTasksNarr{status: persistence.TaskStatusPaused}
-		n.ForceTeardown = 60 * time.Millisecond
+		// Default ForceTeardown — see the note above on vacuous passes.
 	})
 	seedRunningExecution(h)
 	h.Sub.push(testExecID, livepubsub.KindStepStarted, livepubsub.StepStartedPayload{StepID: "recover", Role: "worker"})
@@ -69,7 +73,7 @@ func TestSweepIdle_NoCompletionWhileTaskPaused(t *testing.T) {
 func TestSweepIdle_NoCompletionOnTaskLookupError(t *testing.T) {
 	h := newTestHarness(t, func(n *Narrator) {
 		n.Tasks = &fakeTasksNarr{err: errors.New("db blip")}
-		n.ForceTeardown = 60 * time.Millisecond
+		// Default ForceTeardown — see the note above on vacuous passes.
 	})
 	seedRunningExecution(h)
 	h.Sub.push(testExecID, livepubsub.KindStepStarted, livepubsub.StepStartedPayload{StepID: "recover", Role: "worker"})
@@ -113,9 +117,20 @@ func TestSweepIdle_NilTasksKeepsExecutionTerminalBehavior(t *testing.T) {
 // step N" looking like success. Regression for headmatch task ...9417765,
 // where a failed tester rework-loop was narrated as "everything passed".
 func TestSweepIdle_FailedAttemptNarratedWhileTaskRetrying(t *testing.T) {
+	// ForceTeardown is deliberately LEFT AT ITS DEFAULT (2h). Do not set a
+	// short one here: this test flips the execution to FAILED *after*
+	// awaiting the step-started line, and until that flip the execution is
+	// still RUNNING — so sweepIdle takes the non-terminal branch, whose only
+	// action is `if idle >= forceTeardownAfter() { teardown }`
+	// (narrator.go:570). A 60ms ForceTeardown therefore destroyed the state
+	// during the gap between the two statements, and the attempt-failed line
+	// could never be emitted. It passed alone and failed under `go test
+	// ./...`, where scheduling stretches that gap past 60ms — a flake whose
+	// symptom (a 15s awaitLine timeout) looked like slowness but was a
+	// destroyed precondition. This test asserts nothing about teardown, so
+	// the override bought nothing.
 	h := newTestHarness(t, func(n *Narrator) {
 		n.Tasks = &fakeTasksNarr{status: persistence.TaskStatusRunning} // task still active (will retry)
-		n.ForceTeardown = 60 * time.Millisecond
 	})
 	seedRunningExecution(h)
 	h.Sub.push(testExecID, livepubsub.KindStepStarted, livepubsub.StepStartedPayload{StepID: "test", Role: "tester"})

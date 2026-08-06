@@ -25,6 +25,19 @@ func (s *stubMCPRegistry) Snapshot(_ context.Context) []mcp.ServerSnapshot {
 	return s.snap
 }
 
+// listMCPServersRaw serves the given snapshot through the real handler and
+// returns the raw response body, so a test can assert on the WIRE bytes rather
+// than on a decoded struct (which would hide an omitempty regression).
+func listMCPServersRaw(t *testing.T, snap []mcp.ServerSnapshot) []byte {
+	t.Helper()
+	server := NewServer(WithLogger(zerolog.Nop()), WithMCPRegistry(&stubMCPRegistry{snap: snap}))
+	req := authDisabledReq(httptest.NewRequest(http.MethodGet, "/api/v1/mcp/servers", nil))
+	rec := httptest.NewRecorder()
+	server.ListMCPServers(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	return rec.Body.Bytes()
+}
+
 // TestServer_ListMCPServers_HappyPath covers the documented JSON
 // contract: each configured server is emitted in alphabetical order
 // with its reachable flag, tool list, and last_checked_at. The
@@ -73,7 +86,8 @@ func TestServer_ListMCPServers_HappyPath(t *testing.T) {
 	require.Len(t, resp.Servers[0].Tools, 2)
 	require.Equal(t, "web_fetch", resp.Servers[0].Tools[0].Name)
 	require.Equal(t, "Fetch a URL", resp.Servers[0].Tools[0].Description)
-	require.Equal(t, checked, resp.Servers[0].LastCheckedAt)
+	require.NotNil(t, resp.Servers[0].LastCheckedAt)
+	require.Equal(t, checked, *resp.Servers[0].LastCheckedAt)
 
 	// Unreachable server still appears — operators need to see it.
 	require.Equal(t, "broken", resp.Servers[1].Name)
@@ -130,4 +144,22 @@ func TestServer_ListMCPServers_RequiresAdmin(t *testing.T) {
 	rec := httptest.NewRecorder()
 	server.ListMCPServers(rec, req)
 	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// TestListMCPServers_NeverProbedOmitsLastChecked — the zero time used to
+// serialise as "0001-01-01T00:00:00Z", which any consumer parsing the field
+// reads as a genuine check that happened in the year 1. Absent is the honest
+// wire shape for a server the registry has not contacted yet.
+func TestListMCPServers_NeverProbedOmitsLastChecked(t *testing.T) {
+	raw := listMCPServersRaw(t, []mcp.ServerSnapshot{{
+		Name: "atlassian", Transport: "streamable-http",
+		URL:       "https://mcp.atlassian.com/v1/mcp/authv2",
+		Reachable: false,
+		Error:     "not yet refreshed",
+		// LastCheckedAt zero: never probed.
+	}})
+	require.NotContains(t, string(raw), "0001-01-01",
+		"a never-probed server must not serialise a year-0001 check time")
+	require.NotContains(t, string(raw), "last_checked_at",
+		"the field must be omitted entirely, so consumers can tell never-probed")
 }

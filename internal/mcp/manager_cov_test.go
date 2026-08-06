@@ -54,7 +54,10 @@ func managerCovSSEClient(t *testing.T, name string, toolReply func(args string) 
 // client, and the ToolResult text is returned unwrapped.
 func TestManagerExecute_HappyPathReturnsText(t *testing.T) {
 	client := managerCovSSEClient(t, "calc", func(args string) map[string]any {
-		assert.JSONEq(t, `{"x":1}`, args, "Execute must forward the args JSON verbatim")
+		// Execute forwards the caller's args AND stamps the daemon-supplied
+		// project_id over the top — the identity is the daemon's to state, not
+		// the model's to claim. The caller's own keys pass through untouched.
+		assert.JSONEq(t, `{"x":1,"project_id":"proj"}`, args)
 		return map[string]any{"content": []map[string]any{{"type": "text", "text": "result-42"}}}
 	})
 

@@ -93,7 +93,7 @@ func runReport(_ *cobra.Command, _ []string) error {
 	// know the bundle exists — and a report with no logs was the complaint that
 	// prompted this (operator, 2026-08-03).
 	fmt.Println()
-	fmt.Println(report.BundleGuidance(bundleSelector()))
+	fmt.Println(report.BundleGuidance(bundleSelector(), edition))
 	return nil
 }
 

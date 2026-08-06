@@ -154,6 +154,17 @@ type Container struct {
 	// publishes the freshly-parsed slice here, and readers go through
 	// daemonMCPServers() rather than touching c.Config.
 	daemonMCPLive atomic.Pointer[[]config.MCPServerConfig]
+
+	// publicOriginLive is the hot-reloadable public origin, for the same reason
+	// daemonMCPLive exists: c.Config is never swapped on reload.
+	//
+	// The MCP connector's BaseURL was documented as reading LIVE so that
+	// "setting public_base_url then reloading config must be enough — an
+	// operator should not have to restart the daemon to make Connect work".
+	// It read c.Config.Server.PublicBaseURL, which is pinned to boot, so the
+	// stated intent was defeated: until a restart, Connect kept building its
+	// redirect URI from whatever the origin was when the daemon started.
+	publicOriginLive atomic.Pointer[string]
 	// cpCanaryEnabledLive is the hot-reloadable live value of
 	// control_plane.cost_tuning_canary.enabled (design 2026-07-24 §9 #2). nil
 	// until the first hot-reload stages a value; the canary guard's per-tick +

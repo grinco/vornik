@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -25,6 +26,11 @@ type Manager struct {
 	mu      sync.RWMutex
 	clients map[string]map[string]*Client // projectID → serverName → client
 	logger  zerolog.Logger
+	// redialLocks holds one mutex per (projectID, serverName) so a burst of
+	// calls against a server that just died re-dials it once, not once per
+	// caller. Keyed independently of `clients` because it must outlive the
+	// entry it guards (the re-dial replaces that entry).
+	redialLocks sync.Map
 	// blockNotifier, when set, gets a post-hook on every successful tool
 	// result to push an operator Telegram alert for a solvable scraper block
 	// on a curated portal. Nil (default) → no notification. See block_notify.go.
@@ -236,6 +242,8 @@ func (m *Manager) Tools(projectID string) []chat.Tool {
 			params := t.InputSchema
 			if len(params) == 0 {
 				params = json.RawMessage(`{"type":"object","properties":{}}`)
+			} else if stripped, ok := hideDaemonSuppliedArgs(params); ok {
+				params = stripped
 			}
 			tools = append(tools, chat.Tool{
 				Type: "function",
@@ -261,23 +269,45 @@ func (m *Manager) Execute(ctx context.Context, projectID, qualifiedName, argsJSO
 		return "", fmt.Errorf("invalid MCP tool name: %s", qualifiedName)
 	}
 
-	// Hold the read lock across the whole CallTool so Close()/StartForProject
-	// can't free the client mid-call. Multiple Execute callers still run
-	// concurrently (RLock is shared); only shutdown and re-dial wait for
-	// in-flight tool calls to drain.
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	byServer := m.clients[projectID]
-	var client *Client
-	if byServer != nil {
-		client = byServer[serverName]
-	}
-	if client == nil {
-		return "", fmt.Errorf("MCP server %q not connected for project %q", serverName, projectID)
-	}
+	// The daemon owns the caller's identity, so it supplies it rather than
+	// trusting whatever the model put in the arguments.
+	argsJSON = injectDaemonSuppliedArgs(argsJSON, projectID)
 
 	start := time.Now()
-	result, err := client.CallTool(ctx, toolName, json.RawMessage(argsJSON))
+	result, err := m.callOnce(ctx, projectID, serverName, toolName, argsJSON)
+
+	// A dead stdio connection is the one failure worth retrying, because the
+	// server behind it is a subprocess we can simply start again. Everything
+	// else (bad argument, vendor 4xx, timeout) means the connection is healthy
+	// and re-dialling would kill a working server, so the sentinel check has to
+	// stay narrow.
+	if errors.Is(err, ErrClientNotReading) {
+		m.logger.Warn().
+			Err(err).
+			Str("project", projectID).
+			Str("server", serverName).
+			Msg("mcp: connection is dead — re-dialling before failing the call")
+		if redialErr := m.redial(projectID, serverName); redialErr != nil {
+			m.logger.Error().
+				Err(redialErr).
+				Str("project", projectID).
+				Str("server", serverName).
+				Msg("mcp: re-dial failed; the server is down")
+			// Say this in terms the MODEL can act on. The raw wording ("no
+			// longer reading responses", "closed stdout before responding")
+			// reads like a malformed call, and on 2026-08-05 the assistant
+			// duly blamed its own arguments for an MCP subprocess that had
+			// exited.
+			return "", fmt.Errorf("MCP server %q is not running and could not be restarted (%v) — "+
+				"this is a server fault, not a problem with the arguments, so retrying "+
+				"this call or varying its arguments will not help", serverName, redialErr)
+		}
+		m.logger.Info().
+			Str("project", projectID).
+			Str("server", serverName).
+			Msg("mcp: re-dial succeeded — retrying the tool call")
+		result, err = m.callOnce(ctx, projectID, serverName, toolName, argsJSON)
+	}
 	duration := time.Since(start)
 
 	if err != nil {
@@ -308,6 +338,91 @@ func (m *Manager) Execute(ctx context.Context, projectID, qualifiedName, argsJSO
 	// background worker — this must never affect the result just returned.
 	m.blockNotifier.MaybeNotify(projectID, toolName, argsJSON, text)
 	return text, nil
+}
+
+// callOnce resolves the client and makes exactly one tool call.
+//
+// The read lock is held across the whole CallTool so Close()/StartForProject
+// cannot free the client mid-call. Multiple callers still run concurrently
+// (RLock is shared); only shutdown and re-dial wait for in-flight calls to
+// drain — which is precisely why the re-dial happens BETWEEN two calls to this
+// helper rather than inside it. Taking the write lock while holding the read
+// lock would deadlock.
+func (m *Manager) callOnce(ctx context.Context, projectID, serverName, toolName, argsJSON string) (*ToolResult, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	byServer := m.clients[projectID]
+	var client *Client
+	if byServer != nil {
+		client = byServer[serverName]
+	}
+	if client == nil {
+		return nil, fmt.Errorf("MCP server %q not connected for project %q", serverName, projectID)
+	}
+	return client.CallTool(ctx, toolName, json.RawMessage(argsJSON))
+}
+
+// redial replaces one project's dead client for one server with a fresh
+// connection, reusing the config the dead client was built from.
+//
+// Serialised per (project, server) and double-checked, so a burst of concurrent
+// calls against a server that just died produces ONE new subprocess rather than
+// one per caller — the failure mode that makes naive reconnect logic worse than
+// none. Losers of the race find a live client on the re-check and return
+// success without dialling.
+//
+// The dial deliberately does NOT inherit the caller's context. A tool call may
+// be moments from its deadline, and the connection should be healed for
+// everyone who comes next even if THIS request gives up; the 30s bound matches
+// the other dial sites, so a hung dial cannot leak indefinitely.
+func (m *Manager) redial(projectID, serverName string) error {
+	key := projectID + "\x00" + serverName
+	lockAny, _ := m.redialLocks.LoadOrStore(key, &sync.Mutex{})
+	lock, ok := lockAny.(*sync.Mutex)
+	if !ok {
+		return fmt.Errorf("mcp: internal: bad redial lock type for %q", key)
+	}
+	lock.Lock()
+	defer lock.Unlock()
+
+	m.mu.RLock()
+	current := m.clients[projectID][serverName]
+	m.mu.RUnlock()
+	if current == nil {
+		return fmt.Errorf("server %q is no longer configured for project %q", serverName, projectID)
+	}
+	if !current.dead.Load() {
+		// Somebody else already replaced it while we waited for the lock.
+		return nil
+	}
+	cfg := current.config
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	fresh, err := connectFn(ctx, cfg, m.logger.With().Str("project", projectID).Logger())
+	if err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	byServer, stillThere := m.clients[projectID]
+	if !stillThere {
+		// The project was dropped by a reload while we dialled. Don't
+		// resurrect it — close what we just built.
+		m.mu.Unlock()
+		go func() { _ = closeFn(fresh) }()
+		return fmt.Errorf("project %q was removed while re-dialling %q", projectID, serverName)
+	}
+	displaced := byServer[serverName]
+	byServer[serverName] = fresh
+	m.mu.Unlock()
+
+	// Out of band: stdio Close does Kill + Wait and can block on a subprocess
+	// that will not reap, and this runs on a live tool-call path.
+	if displaced != nil {
+		go func() { _ = closeFn(displaced) }()
+	}
+	return nil
 }
 
 // ServerCount returns the total number of connected clients across all

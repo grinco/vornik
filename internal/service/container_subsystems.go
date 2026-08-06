@@ -157,6 +157,9 @@ func (c *Container) mcpDesiredServers() map[string][]mcp.ServerConfig {
 			// log-and-skip path handles it.
 			auth := s.Auth
 			grants := mcpauth.Grants{Allowed: p.Permissions.Secrets}
+			// Scope the CREDENTIAL is resolved under. The project's own by
+			// default; an inherited daemon credential overrides it below.
+			authProjectID := mcpCredentialScope(p.ID, false)
 			if s.Transport == "" {
 				if daemon, ok := daemonServers[s.Name]; ok {
 					cfg.Transport = daemon.Transport
@@ -189,6 +192,11 @@ func (c *Container) mcpDesiredServers() map[string][]mcp.ServerConfig {
 						}
 						auth = daemon.Auth
 						grants = mcpauth.Grants{Unrestricted: true}
+						// The credential is inherited, so the GRANT it resolves
+						// against is too — see mcpCredentialScope for why, and for
+						// what breaks when this is skipped (it was, until
+						// 2026-08-05).
+						authProjectID = mcpCredentialScope(p.ID, true)
 						c.Logger.Warn().
 							Str("project", p.ID).
 							Str("server", s.Name).
@@ -196,7 +204,15 @@ func (c *Container) mcpDesiredServers() map[string][]mcp.ServerConfig {
 					}
 				}
 			}
-			if !c.applyMCPAuth(&cfg, auth, grants, p.ID, "project "+p.ID) {
+			// The label must name BOTH the project doing the work and the
+			// scope its credential actually resolves at — a log line reading
+			// "project X" for a grant stored at project_id "" sends an
+			// operator looking up the wrong row (review-20260805-e814).
+			scopeLabel := "project " + p.ID
+			if authProjectID == "" {
+				scopeLabel = "project " + p.ID + " (credential at daemon scope)"
+			}
+			if !c.applyMCPAuth(&cfg, auth, grants, authProjectID, scopeLabel) {
 				continue
 			}
 			servers = append(servers, cfg)
@@ -204,6 +220,31 @@ func (c *Container) mcpDesiredServers() map[string][]mcp.ServerConfig {
 		desired[p.ID] = servers
 	}
 	return desired
+}
+
+// mcpCredentialScope returns the project_id an MCP server's OAuth grant is
+// resolved under.
+//
+// The design states the property — "daemon-scope servers are available to all
+// projects" (auth design §9) — and this is the mechanism. A grant is stored per
+// (project_id, server_name); a daemon-scope server's grant lives at "". So a
+// project that subscribes to a daemon server by NAME ONLY, and therefore
+// inherits its credential, must resolve that credential at "" as well. One
+// consent serves every project that does not override it, which is the whole
+// point of the daemon scope.
+//
+// A project entry that declares its own transport/url owns its own credential
+// and resolves at its own id.
+//
+// Getting this wrong is quiet: the lookup misses, the server registers
+// UNAUTHENTICATED (§8 registers rather than withholds an unconnected oauth
+// server), initialize 401s, and the project holds the server with ZERO tools
+// while the daemon-scope registry reports it healthy. Observed 2026-08-05.
+func mcpCredentialScope(projectID string, inheritedFromDaemon bool) string {
+	if inheritedFromDaemon {
+		return ""
+	}
+	return projectID
 }
 
 // applyMCPAuth resolves a server's `auth:` block into cfg.AuthHeaders /
@@ -305,6 +346,27 @@ func (c *Container) daemonMCPServers() []config.MCPServerConfig {
 func (c *Container) publishDaemonMCPServers(servers []config.MCPServerConfig) {
 	snapshot := append([]config.MCPServerConfig(nil), servers...)
 	c.daemonMCPLive.Store(&snapshot)
+}
+
+// publicOrigin returns the CURRENT public origin — the value a reload
+// published, or the boot config's when no reload has happened yet.
+//
+// Goes through Config.PublicOrigin() rather than reading
+// Server.PublicBaseURL, so the auth.external_base_url fallback is honoured
+// here too; the connector used to read the narrower field directly.
+func (c *Container) publicOrigin() string {
+	if live := c.publicOriginLive.Load(); live != nil {
+		return *live
+	}
+	if c.Config == nil {
+		return ""
+	}
+	return c.Config.PublicOrigin()
+}
+
+// publishPublicOrigin makes a freshly-parsed origin the live one.
+func (c *Container) publishPublicOrigin(origin string) {
+	c.publicOriginLive.Store(&origin)
 }
 
 // daemonMCPServersByName indexes the daemon-level MCP server catalog

@@ -118,7 +118,7 @@ func TestRateLimit_CreateTask_SharedLimiterBlocks(t *testing.T) {
 	}}
 	// allowedProjects=["*"] -> wildcard, so resolveProjectAllowed
 	// permits the named project.
-	res := te.Execute(context.Background(), tc, "burst", []string{"*"}, 0, nil)
+	res := te.Execute(context.Background(), tc, "burst", []string{"*"}, 0, "0", nil)
 
 	assert.Contains(t, res.Content, "Cannot create task",
 		"create_task must refuse the saturated project via the shared limiter; got %q", res.Content)

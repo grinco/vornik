@@ -78,14 +78,14 @@ func TestApplyDeferredLoading_DegradedTierShrinksVisibleSetEvenBelowThreshold(t 
 
 	// PEAK tier: threshold honored → everything visible.
 	peakThreshold := effectiveDeferralThreshold(DefaultDeferredToolThreshold, chat.TierPeak)
-	peakResult := applyDeferredLoading(builtin, mcp, store, 99, peakThreshold, nil)
+	peakResult := applyDeferredLoading(builtin, mcp, store, "99", peakThreshold, nil)
 	if !containsToolByName(peakResult, "mcp__a__one") {
 		t.Errorf("PEAK tier should leave 5-tool catalog fully visible: %v", peakResult)
 	}
 
 	// DEGRADING tier: threshold clamped to 1 → deferral kicks in.
 	degradedThreshold := effectiveDeferralThreshold(DefaultDeferredToolThreshold, chat.TierDegrading)
-	degradedResult := applyDeferredLoading(builtin, mcp, store, 99, degradedThreshold, nil)
+	degradedResult := applyDeferredLoading(builtin, mcp, store, "99", degradedThreshold, nil)
 	if !containsToolByName(degradedResult, ToolSearchName) {
 		t.Errorf("DEGRADING tier must inject tool_search; got %v", degradedResult)
 	}
@@ -103,7 +103,7 @@ func TestApplyDeferredLoading_BelowThresholdReturnsEverything(t *testing.T) {
 	builtin := []chat.Tool{makeMCPTool("list_projects", "list")}
 	mcp := []chat.Tool{makeMCPTool("mcp__a__one", "x"), makeMCPTool("mcp__a__two", "y")}
 	store := newExpandedToolStore()
-	got := applyDeferredLoading(builtin, mcp, store, 99, 20, nil)
+	got := applyDeferredLoading(builtin, mcp, store, "99", 20, nil)
 	if len(got) != 3 {
 		t.Fatalf("len = %d, want 3 (builtin + every MCP tool)", len(got))
 	}
@@ -125,7 +125,7 @@ func TestApplyDeferredLoading_AboveThresholdHidesMCPAndSurfacesSearch(t *testing
 		mcp[i] = makeMCPTool("mcp__a__"+string(rune('a'+i%26)), "x")
 	}
 	store := newExpandedToolStore()
-	got := applyDeferredLoading(builtin, mcp, store, 99, 20, nil)
+	got := applyDeferredLoading(builtin, mcp, store, "99", 20, nil)
 	if !containsToolByName(got, "list_projects") {
 		t.Error("built-in tools must remain visible above threshold")
 	}
@@ -151,9 +151,9 @@ func TestApplyDeferredLoading_ExpandedToolsSurface(t *testing.T) {
 		mcp[i] = makeMCPTool("mcp__a__"+string(rune('a'+i%26)), "x")
 	}
 	store := newExpandedToolStore()
-	store.expand(42, []string{"mcp__a__a", "mcp__a__c"})
+	store.expand("42", []string{"mcp__a__a", "mcp__a__c"})
 
-	got := applyDeferredLoading(builtin, mcp, store, 42, 20, nil)
+	got := applyDeferredLoading(builtin, mcp, store, "42", 20, nil)
 	if !containsToolByName(got, "mcp__a__a") || !containsToolByName(got, "mcp__a__c") {
 		t.Error("expanded MCP tools must surface in the visible set for subsequent turns")
 	}
@@ -167,18 +167,21 @@ func TestApplyDeferredLoading_ExpandedToolsSurface(t *testing.T) {
 // chatID=0; deferral has no session to anchor to, so it falls
 // back to legacy "everything visible". Important so the per-task
 // agent isn't accidentally starved of tools it should see.
-func TestApplyDeferredLoading_ChatIDZeroSkipsDeferral(t *testing.T) {
+func TestApplyDeferredLoading_EmptySessionKeySkipsDeferral(t *testing.T) {
 	builtin := []chat.Tool{makeMCPTool("list_projects", "list")}
 	mcp := make([]chat.Tool, 25)
 	for i := range mcp {
 		mcp[i] = makeMCPTool("mcp__a__"+string(rune('a'+i%26)), "x")
 	}
 	store := newExpandedToolStore()
-	// Even above threshold, chatID=0 should disable deferral.
-	got := applyDeferredLoading(builtin, mcp, store, 0, 20, nil)
+	// Even above threshold, an EMPTY session key disables deferral. That is
+	// the sub-agent / per-task path, which has no session to anchor
+	// expansions to. Note "0" is NOT empty — a Telegram chat id of 0 never
+	// reaches here, and a channel session key is never empty.
+	got := applyDeferredLoading(builtin, mcp, store, "", 20, nil)
 	for _, m := range mcp {
 		if !containsToolByName(got, m.Function.Name) {
-			t.Errorf("chatID=0 must see every MCP tool; %q missing", m.Function.Name)
+			t.Errorf("an empty session key must see every MCP tool; %q missing", m.Function.Name)
 			break
 		}
 	}
@@ -244,31 +247,36 @@ func TestScoreTools_EmptyQueryReturnsNil(t *testing.T) {
 // into the next allTools call.
 func TestExpandedToolStore_PersistsAcrossCalls(t *testing.T) {
 	s := newExpandedToolStore()
-	s.expand(42, []string{"a", "b"})
-	s.expand(42, []string{"c"})
+	s.expand("42", []string{"a", "b"})
+	s.expand("42", []string{"c"})
 	for _, want := range []string{"a", "b", "c"} {
-		if !s.contains(42, want) {
+		if !s.contains("42", want) {
 			t.Errorf("expand-then-contains lost %q", want)
 		}
 	}
-	if s.contains(99, "a") {
+	if s.contains("99", "a") {
 		t.Error("expansion must be scoped to its chatID")
 	}
 }
 
-// TestExpandedToolStore_NilSafeAndZeroChatID — nil receiver +
-// chatID=0 are common in the test helpers; the store must
-// degrade cleanly rather than panic.
-func TestExpandedToolStore_NilSafeAndZeroChatID(t *testing.T) {
+// TestExpandedToolStore_NilSafeAndEmptySessionKey — nil receiver + an empty
+// session key are common in the test helpers; the store must degrade cleanly
+// rather than panic.
+//
+// The no-session sentinel is the EMPTY STRING, not "0". It was the integer 0
+// while this keyed on Telegram chat ids; "0" is now an ordinary key (and
+// unreachable in practice — deferralSessionKey only emits a numeric form for a
+// non-zero ChatID).
+func TestExpandedToolStore_NilSafeAndEmptySessionKey(t *testing.T) {
 	var nilStore *expandedToolStore
-	nilStore.expand(1, []string{"a"})
-	if nilStore.contains(1, "a") {
+	nilStore.expand("1", []string{"a"})
+	if nilStore.contains("1", "a") {
 		t.Error("nil store must not retain anything")
 	}
 	s := newExpandedToolStore()
-	s.expand(0, []string{"a"})
-	if s.contains(0, "a") {
-		t.Error("chatID=0 must be a no-op so sub-agent paths can pass it")
+	s.expand("", []string{"a"})
+	if s.contains("", "a") {
+		t.Error("an empty session key must be a no-op so session-less paths can pass it")
 	}
 }
 
@@ -277,9 +285,9 @@ func TestExpandedToolStore_NilSafeAndZeroChatID(t *testing.T) {
 // here we just lock in the primitive.
 func TestExpandedToolStore_ResetWipesSession(t *testing.T) {
 	s := newExpandedToolStore()
-	s.expand(42, []string{"a"})
-	s.reset(42)
-	if s.contains(42, "a") {
+	s.expand("42", []string{"a"})
+	s.reset("42")
+	if s.contains("42", "a") {
 		t.Error("reset must drop the session's expanded set")
 	}
 }
@@ -290,19 +298,19 @@ func TestExpandedToolStore_ResetEdgeCases(t *testing.T) {
 	t.Run("nil receiver no-op", func(t *testing.T) {
 		var s *expandedToolStore
 		// Just verify it doesn't panic — there's nothing to assert.
-		s.reset(42)
+		s.reset("42")
 	})
-	t.Run("chatID=0 no-op", func(t *testing.T) {
+	t.Run("empty session key no-op", func(t *testing.T) {
 		s := newExpandedToolStore()
-		s.expand(42, []string{"a"})
-		s.reset(0) // does nothing
-		if !s.contains(42, "a") {
-			t.Error("reset(0) must not affect other chat IDs")
+		s.expand("42", []string{"a"})
+		s.reset("") // the no-session sentinel: nothing to wipe
+		if !s.contains("42", "a") {
+			t.Error("reset(\"\") must not affect real sessions")
 		}
 	})
 	t.Run("non-existing chatID is a silent no-op", func(t *testing.T) {
 		s := newExpandedToolStore()
-		s.reset(9999) // not registered
+		s.reset("9999") // not registered
 		// No state to check; just ensure no panic.
 	})
 }
@@ -320,11 +328,11 @@ func TestToolSearch_ExpandsAndReturnsMatches(t *testing.T) {
 		}
 	}))
 	te.expanded = newExpandedToolStore()
-	res := te.toolSearch(`{"query":"gmail send"}`, "snake", 42)
+	res := te.toolSearch(`{"query":"gmail send"}`, "snake", "42")
 	if !strings.Contains(res.Content, "mcp__gmail__send_email") {
 		t.Errorf("response must list the top match, got %q", res.Content)
 	}
-	if !te.expanded.contains(42, "mcp__gmail__send_email") {
+	if !te.expanded.contains("42", "mcp__gmail__send_email") {
 		t.Error("tool_search must expand top hit into the per-session set")
 	}
 }
@@ -337,7 +345,7 @@ func TestToolSearch_NoMatchExplains(t *testing.T) {
 		return []chat.Tool{makeMCPTool("mcp__weather__forecast", "Weather forecast.")}
 	}))
 	te.expanded = newExpandedToolStore()
-	res := te.toolSearch(`{"query":"calendar"}`, "snake", 42)
+	res := te.toolSearch(`{"query":"calendar"}`, "snake", "42")
 	if !strings.Contains(res.Content, "No tools matched") {
 		t.Errorf("expected friendly no-match copy, got %q", res.Content)
 	}
@@ -346,7 +354,7 @@ func TestToolSearch_NoMatchExplains(t *testing.T) {
 // TestToolSearch_MissingQueryRejected — defensive arg parsing.
 func TestToolSearch_MissingQueryRejected(t *testing.T) {
 	te := newExecutor()
-	res := te.toolSearch(`{}`, "snake", 42)
+	res := te.toolSearch(`{}`, "snake", "42")
 	if !strings.Contains(res.Content, "query is required") {
 		t.Errorf("got %q", res.Content)
 	}
@@ -357,7 +365,7 @@ func TestToolSearch_MissingQueryRejected(t *testing.T) {
 // message rather than dispatching against nil.
 func TestToolSearch_NoMCPManagerSurfacesFriendlyMessage(t *testing.T) {
 	te := newExecutor() // no MCP catalog
-	res := te.toolSearch(`{"query":"x"}`, "snake", 42)
+	res := te.toolSearch(`{"query":"x"}`, "snake", "42")
 	if !strings.Contains(res.Content, "not available") && !strings.Contains(res.Content, "No MCP tools") {
 		t.Errorf("expected friendly empty-state copy, got %q", res.Content)
 	}
@@ -393,4 +401,202 @@ func (s *stubMCPCatalog) Execute(_ context.Context, _, _, _ string) (string, err
 
 func withMCPCatalog(fn func(projectID string) []chat.Tool) func(*ToolExecutor) {
 	return func(te *ToolExecutor) { te.mcpManager = &stubMCPCatalog{tools: fn} }
+}
+
+// TestDeferralSessionKey_ChannelSessionsGetDeferral is the regression test for
+// the 2026-08-05 report: "the dispatcher keeps insisting it doesn't see the
+// atlassian mcp or have the tooling for mcp search".
+//
+// Request.ChatID is documented as the platform's NUMERIC chat identifier, used
+// by tools that send files back, with "leave 0 for channels that lack one" —
+// and Slack, email and GitHub all leave it 0. Deferred loading then read that
+// same field as "is there a session here at all?", so every one of those
+// channels was misclassified as a sub-agent invocation. Two consequences, both
+// invisible:
+//
+//  1. tool_search was never advertised, because it is only added on the
+//     above-threshold path. The model was told to search and had no searcher.
+//  2. Deferral never engaged, so the FULL catalog shipped every turn — 33 MCP
+//     tool descriptions on the reporting project, which is the token cost
+//     deferral exists to avoid.
+//
+// A channel session id is a perfectly good session identity; it just isn't a
+// number. The key is now derived, so Telegram keeps working off ChatID and
+// genuinely session-less callers still opt out.
+func TestDeferralSessionKey_ChannelSessionsGetDeferral(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		req  Request
+		want string
+	}{{
+		name: "slack channel session",
+		req:  Request{OriginatingChannel: "slack", OriginatingSessionID: "T123/C_general#1785367141.211839"},
+		want: "slack:T123/C_general#1785367141.211839",
+	}, {
+		name: "email thread session",
+		req:  Request{OriginatingChannel: "email", OriginatingSessionID: "<root@example.com>"},
+		want: "email:<root@example.com>",
+	}, {
+		name: "telegram falls back to the numeric chat id",
+		req:  Request{ChatID: 559741208},
+		want: "559741208",
+	}, {
+		name: "channel session wins over a numeric id",
+		req:  Request{OriginatingChannel: "slack", OriginatingSessionID: "S1", ChatID: 42},
+		want: "slack:S1",
+	}, {
+		name: "sub-agent: no session at all",
+		req:  Request{},
+		want: "",
+	}, {
+		name: "whitespace-only session id is not a session",
+		req:  Request{OriginatingChannel: "slack", OriginatingSessionID: "   "},
+		want: "",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deferralSessionKey(tc.req); got != tc.want {
+				t.Errorf("deferralSessionKey = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestApplyDeferredLoading_ChannelSessionSurfacesSearch — the consequence that
+// actually bit the operator: with a channel session key, an over-threshold
+// catalog must hide the MCP tools AND advertise tool_search. Before the fix a
+// Slack session produced neither.
+func TestApplyDeferredLoading_ChannelSessionSurfacesSearch(t *testing.T) {
+	builtin := []chat.Tool{makeMCPTool("list_projects", "list")}
+	mcp := make([]chat.Tool, 33) // easeit-companion's real count
+	for i := range mcp {
+		mcp[i] = makeMCPTool("mcp__svc__t"+string(rune('a'+i%26)), "d")
+	}
+	key := deferralSessionKey(Request{OriginatingChannel: "slack", OriginatingSessionID: "T1/C1#1"})
+	got := applyDeferredLoading(builtin, mcp, newExpandedToolStore(), key, 20, nil)
+
+	if !containsToolByName(got, ToolSearchName) {
+		t.Fatalf("a Slack session must be offered %s — without it the model is told to search and has no searcher", ToolSearchName)
+	}
+	if len(got) != len(builtin)+1 {
+		t.Errorf("visible=%d, want %d (builtin + tool_search); MCP tools must be deferred", len(got), len(builtin)+1)
+	}
+}
+
+// atlassianCatalog reproduces the real 16-tool atlassian palette from the
+// 2026-08-05 incident, descriptions included verbatim where they matter. The
+// point of the fixture is what ISN'T there: no tool named or described with
+// "jira" returns a cloudId, and every Jira tool requires one.
+func atlassianCatalog() []chat.Tool {
+	return []chat.Tool{
+		makeMCPTool("mcp__atlassian__atlassianUserInfo", "Get current user info"),
+		makeMCPTool("mcp__atlassian__getAccessibleAtlassianResources",
+			"Get cloudId to make tool calls. When a link is provided (e.g. https://site.atlassian.net/*), "+
+				"try passing the site hostname as cloudId to other tools first; if that fails, use this tool "+
+				"to list accessible resources."),
+		makeMCPTool("mcp__atlassian__getCompassComponent", "Get a Compass component by ID"),
+		makeMCPTool("mcp__atlassian__getCompassComponents", "Get a list of Compass components"),
+		makeMCPTool("mcp__atlassian__getJiraIssue", "Get issue details"),
+		makeMCPTool("mcp__atlassian__getJiraIssueRemoteIssueLinks", "Get remote links"),
+		makeMCPTool("mcp__atlassian__getJiraIssueTypeMetaWithFields", "Get field metadata"),
+		makeMCPTool("mcp__atlassian__getJiraProjectIssueTypesMetadata", "Get issue types"),
+		makeMCPTool("mcp__atlassian__getTransitionsForJiraIssue", "Get transitions"),
+		makeMCPTool("mcp__atlassian__getVisibleJiraProjects", "Get projects"),
+		makeMCPTool("mcp__atlassian__lookupJiraAccountId", "Lookup user IDs"),
+		makeMCPTool("mcp__atlassian__searchJiraIssuesUsingJql",
+			"Search issues with JQL, total counts only when explicitly requested."),
+		makeMCPTool("mcp__atlassian__getConfluencePage", "Get a Confluence page"),
+		makeMCPTool("mcp__atlassian__searchConfluence", "Search Confluence"),
+		makeMCPTool("mcp__atlassian__createJiraIssue", "Create an issue"),
+		makeMCPTool("mcp__atlassian__addCommentToJiraIssue", "Add a comment"),
+	}
+}
+
+// TestToolSearch_DomainQueryStillUnlocksTheServersBootstrapTool is the
+// regression test for the 2026-08-05 channel incident.
+//
+// The operator asked for unassigned in-progress Jira issues. The model searched
+// "Jira", got 8 Jira-NAMED tools, and every call then failed with "cloudId
+// Required". The only tool that yields a cloudId is
+// getAccessibleAtlassianResources, whose name and description contain no form of
+// "jira" — so no amount of retrying that query could ever reach it. The model
+// reasoned correctly from what it could see and concluded the tool did not
+// exist, then asked the operator for a cloudId the operator had no way to know.
+//
+// The same model in a DM minutes earlier searched "atlassian", which ranked the
+// bootstrap tool inside the cut, and succeeded. That difference was luck, and it
+// is what made this look like a DM-vs-channel bug.
+func TestToolSearch_DomainQueryStillUnlocksTheServersBootstrapTool(t *testing.T) {
+	te := newExecutor(withMCPCatalog(func(string) []chat.Tool { return atlassianCatalog() }))
+	te.expanded = newExpandedToolStore()
+
+	res := te.toolSearch(`{"query":"Jira"}`, "easeit-companion", "slack:T0/C0#main")
+
+	const bootstrap = "mcp__atlassian__getAccessibleAtlassianResources"
+	if !te.expanded.contains("slack:T0/C0#main", bootstrap) {
+		t.Errorf("a Jira query must leave the cloudId tool CALLABLE — every other "+
+			"atlassian tool requires an argument only it returns:\n%s", res.Content)
+	}
+	if !strings.Contains(res.Content, bootstrap) {
+		t.Errorf("the cloudId tool must also be VISIBLE in the result, or the model "+
+			"has no reason to look for it:\n%s", res.Content)
+	}
+	// The whole server is one account, so the rest comes along too.
+	if !te.expanded.contains("slack:T0/C0#main", "mcp__atlassian__searchConfluence") {
+		t.Error("matching a server must unlock its other tools")
+	}
+}
+
+// TestToolSearch_ReportsTheTotalNotTheTruncatedCount — "Found 8 matching
+// tool(s)" was printed after truncating to 8, so a model that had hit the cap
+// was told it had seen everything. A cap the caller cannot detect is a cap the
+// caller cannot work around.
+func TestToolSearch_ReportsTheTotalNotTheTruncatedCount(t *testing.T) {
+	te := newExecutor(withMCPCatalog(func(string) []chat.Tool { return atlassianCatalog() }))
+	te.expanded = newExpandedToolStore()
+
+	res := te.toolSearch(`{"query":"Jira","limit":3}`, "easeit-companion", "s1")
+
+	if strings.Contains(res.Content, "Found 3 matching tool(s)") {
+		t.Errorf("the header must not report the truncated count as the total:\n%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "showing the top 3") {
+		t.Errorf("truncation must be stated so the model knows to raise limit:\n%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "limit") {
+		t.Errorf("the result must name the escape hatch:\n%s", res.Content)
+	}
+}
+
+// A single-server catalog below the cap must keep the plain wording — the
+// truncation notice should appear only when something was actually cut.
+func TestToolSearch_NoTruncationNoticeWhenNothingWasCut(t *testing.T) {
+	te := newExecutor(withMCPCatalog(func(string) []chat.Tool {
+		return []chat.Tool{
+			makeMCPTool("mcp__gmail__send_email", "Send an email via Gmail."),
+			makeMCPTool("mcp__gmail__list_inbox", "List recent inbox messages."),
+		}
+	}))
+	te.expanded = newExpandedToolStore()
+	res := te.toolSearch(`{"query":"gmail"}`, "snake", "s1")
+	if strings.Contains(res.Content, "showing the top") {
+		t.Errorf("nothing was truncated, so no notice belongs here:\n%s", res.Content)
+	}
+}
+
+// Unlocking a whole server must not leak ACROSS servers: a gmail query must not
+// make the atlassian catalog callable.
+func TestToolSearch_ServerUnlockDoesNotCrossServers(t *testing.T) {
+	te := newExecutor(withMCPCatalog(func(string) []chat.Tool {
+		return append(atlassianCatalog(),
+			makeMCPTool("mcp__gmail__send_email", "Send an email via Gmail."))
+	}))
+	te.expanded = newExpandedToolStore()
+	te.toolSearch(`{"query":"gmail send"}`, "snake", "s1")
+
+	if te.expanded.contains("s1", "mcp__atlassian__getJiraIssue") {
+		t.Error("a gmail query must not unlock the atlassian server")
+	}
+	if !te.expanded.contains("s1", "mcp__gmail__send_email") {
+		t.Error("the matched tool must still be unlocked")
+	}
 }

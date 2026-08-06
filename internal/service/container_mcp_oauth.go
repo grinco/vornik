@@ -47,12 +47,25 @@ func (c *Container) mcpConnector() *mcpconnect.Connector {
 			// Read LIVE rather than captured: the connector is built once at
 			// boot, and setting public_base_url then reloading config must be
 			// enough — an operator should not have to restart the daemon to
-			// make Connect work. server.public_base_url is the same field the
-			// git clone URL uses; OAuth 2.1 needs an origin the vendor can
+			// make Connect work. OAuth 2.1 needs an origin the vendor can
 			// redirect to.
-			BaseURL:  func() string { return c.Config.Server.PublicBaseURL },
+			//
+			// This went through c.Config.Server.PublicBaseURL until 2026-08-05,
+			// which is NOT live — c.Config is never swapped on reload — so the
+			// intent above was defeated and Connect kept using the boot-time
+			// origin. c.publicOrigin reads the value a reload published, and
+			// honours the auth.external_base_url fallback the narrower field
+			// skipped.
+			BaseURL:  c.publicOrigin,
 			Resolver: c.mcpServerRef,
-			Logger:   c.Logger.With().Str("component", "mcp-oauth").Logger(),
+			// Storing a grant is not the same as USING one. The access token is
+			// injected when an MCP client is wired, so without this a completed
+			// consent changed nothing until the operator separately reloaded:
+			// the callback page said "Connected" while the tool surface kept
+			// sending unauthenticated requests and the badge kept saying
+			// authentication was required.
+			OnGranted: c.onMCPGrantChanged,
+			Logger:    c.Logger.With().Str("component", "mcp-oauth").Logger(),
 		}
 		// §7.2a boot sweep: a redirect URI that changed while the daemon was down
 		// leaves stored DCR clients registered at the vendor under a callback this
@@ -84,6 +97,39 @@ func (c *Container) mcpConnector() *mcpconnect.Connector {
 // carries no transport of its own inherits the daemon server's connection details, exactly as
 // mcpDesiredServers does at wiring time — otherwise `vornikctl mcp connect` would report "no such
 // server" for the name-only subscription shape the project form emits.
+// onMCPGrantChanged re-wires the MCP subsystems after a grant is stored or
+// revoked, so a consent takes effect without a reload.
+//
+// Runs ASYNCHRONOUSLY, and that is the whole design constraint. It executes on
+// the operator's OAuth callback request, and initMCP re-dials every configured
+// server under a 35s budget — doing that inline would leave the browser hanging
+// on the page that is supposed to say "Connected". Fired in the background, it
+// completes in the seconds the operator spends reading that page and navigating
+// back to the MCP tab.
+//
+// Reuses exactly the paths a config reload uses (initMCP for the tool-serving
+// manager, refreshMCPRegistry for the discovery catalog) rather than inventing a
+// narrower single-server reconcile: those two are already the tested seam, and a
+// second partial path is how the two surfaces drift apart again.
+func (c *Container) onMCPGrantChanged(projectID, serverName string) {
+	log := c.Logger.With().
+		Str("component", "mcp-oauth").
+		Str("project", projectID).
+		Str("server", serverName).
+		Logger()
+	go func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Error().Interface("panic", rec).
+					Msg("mcp oauth: re-wire after grant change panicked")
+			}
+		}()
+		c.initMCP()
+		c.refreshMCPRegistry()
+		log.Info().Msg("mcp oauth: re-wired after grant change — no reload needed")
+	}()
+}
+
 func (c *Container) mcpServerRef(projectID, serverName string) (mcpconnect.ServerRef, bool) {
 	// LIVE catalog, not c.Config: a server added by a config reload must be
 	// resolvable by `vornikctl mcp connect`, which is the whole point of
@@ -129,6 +175,23 @@ func (c *Container) mcpServerRef(projectID, serverName string) (mcpconnect.Serve
 				// (mcpDesiredServers), not silently resolved here.
 				if s.Auth.IsZero() {
 					ref.Auth = daemon.Auth
+					if !daemon.Auth.IsZero() {
+						// Inheriting the credential means resolving it at the
+						// scope it is STORED at, and the ref's ProjectID is
+						// half that storage key. This must agree with
+						// mcpCredentialScope in mcpDesiredServers, because the
+						// two together decide whether a consent an operator
+						// gives is the one the wiring later reads.
+						//
+						// Without it `mcp connect -p <proj> <server>` writes a
+						// project-scope grant that the wiring — resolving at
+						// daemon scope — never looks at: the operator completes
+						// consent, is told it succeeded, and the server still
+						// has no tools. Same shape as the 2026-08-05 bug this
+						// rule was written for, one surface over.
+						ref.ProjectID = mcpCredentialScope(proj.ID, true)
+						ref.InheritedFrom = proj.ID
+					}
 				}
 			}
 		}

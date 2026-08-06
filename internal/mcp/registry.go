@@ -93,16 +93,23 @@ func NewRegistry(servers []ServerConfig, ttl time.Duration, logger zerolog.Logge
 	// UI shows them even before the first refresh completes. Without
 	// this the operator's first page load (before RefreshAll fires)
 	// would look like the daemon has no servers configured.
-	now := time.Now()
 	for _, cfg := range r.servers {
 		r.catalog[cfg.Name] = ServerSnapshot{
-			Name:          cfg.Name,
-			Transport:     cfg.Transport,
-			URL:           cfg.URL,
-			Command:       cfg.Command,
-			Reachable:     false,
-			Error:         "not yet refreshed",
-			LastCheckedAt: now,
+			Name:      cfg.Name,
+			Transport: cfg.Transport,
+			URL:       cfg.URL,
+			Command:   cfg.Command,
+			Reachable: false,
+			Error:     "not yet refreshed",
+			// LastCheckedAt deliberately ZERO: this server has never been
+			// probed, and stamping `now` claimed a check that never
+			// happened. Two consequences, both fixed by leaving it zero:
+			// the UI could not tell "never checked" from "checked and
+			// unreachable" (so a freshly-restarted daemon rendered every
+			// server red until the async first probe landed — reported
+			// twice on 2026-08-05 as "atlassian is offline"), and a
+			// newly-added server looked fresh to the staleness check
+			// below, so no refresh was scheduled until the TTL expired.
 		}
 	}
 	return r
@@ -130,7 +137,6 @@ func (r *Registry) SetServers(servers []ServerConfig) {
 
 	r.servers = append([]ServerConfig(nil), servers...)
 	next := make(map[string]ServerSnapshot, len(servers))
-	now := time.Now()
 	for _, cfg := range r.servers {
 		if prev, ok := r.catalog[cfg.Name]; ok {
 			// Carry the last known status, but track endpoint edits so a
@@ -141,13 +147,21 @@ func (r *Registry) SetServers(servers []ServerConfig) {
 			}
 		}
 		next[cfg.Name] = ServerSnapshot{
-			Name:          cfg.Name,
-			Transport:     cfg.Transport,
-			URL:           cfg.URL,
-			Command:       cfg.Command,
-			Reachable:     false,
-			Error:         "not yet refreshed",
-			LastCheckedAt: now,
+			Name:      cfg.Name,
+			Transport: cfg.Transport,
+			URL:       cfg.URL,
+			Command:   cfg.Command,
+			Reachable: false,
+			Error:     "not yet refreshed",
+			// LastCheckedAt deliberately ZERO: this server has never been
+			// probed, and stamping `now` claimed a check that never
+			// happened. Two consequences, both fixed by leaving it zero:
+			// the UI could not tell "never checked" from "checked and
+			// unreachable" (so a freshly-restarted daemon rendered every
+			// server red until the async first probe landed — reported
+			// twice on 2026-08-05 as "atlassian is offline"), and a
+			// newly-added server looked fresh to Snapshot's staleness
+			// check, so no refresh was scheduled until the TTL expired.
 		}
 	}
 	r.catalog = next
@@ -176,13 +190,13 @@ func (r *Registry) Snapshot(ctx context.Context) []ServerSnapshot {
 		snap, ok := r.catalog[cfg.Name]
 		if !ok {
 			snap = ServerSnapshot{
-				Name:          cfg.Name,
-				Transport:     cfg.Transport,
-				URL:           cfg.URL,
-				Command:       cfg.Command,
-				Reachable:     false,
-				Error:         "not yet refreshed",
-				LastCheckedAt: now,
+				Name:      cfg.Name,
+				Transport: cfg.Transport,
+				URL:       cfg.URL,
+				Command:   cfg.Command,
+				Reachable: false,
+				Error:     "not yet refreshed",
+				// See the NewRegistry placeholder: zero means never probed.
 			}
 		}
 		out = append(out, snap)

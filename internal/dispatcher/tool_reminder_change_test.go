@@ -165,7 +165,7 @@ func TestCancelReminderTool_HappyPath(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "cancel_reminder",
 		Arguments: `{"reminder_id":"rem_xyz","rationale":"user said never mind"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if strings.Contains(strings.ToLower(res.Content), "error") {
 		t.Errorf("expected success, got %q", res.Content)
@@ -182,7 +182,7 @@ func TestCancelReminderTool_UnknownID(t *testing.T) {
 	te := &ToolExecutor{reminderRepo: repo}
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "cancel_reminder",
 		Arguments: `{"reminder_id":"rem_missing","rationale":"r"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 	if !strings.Contains(strings.ToLower(res.Content), "not found") {
 		t.Errorf("expected not-found refusal, got %q", res.Content)
 	}
@@ -204,7 +204,7 @@ func TestCancelReminderTool_RefusesOtherOperator(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "cancel_reminder",
 		Arguments: `{"reminder_id":"rem_other","rationale":"x"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if !strings.Contains(strings.ToLower(res.Content), "not yours") &&
 		!strings.Contains(strings.ToLower(res.Content), "different operator") {
@@ -228,7 +228,7 @@ func TestUpdateReminderTool_RescheduleViaSeconds(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_x","fire_in_seconds":1800,"rationale":"move sooner"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if strings.Contains(strings.ToLower(res.Content), "error") {
 		t.Errorf("expected success, got %q", res.Content)
@@ -255,7 +255,7 @@ func TestUpdateReminderTool_RescheduleViaRFC3339(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_x","fire_at":"2099-01-01T09:00:00Z","rationale":"explicit"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if strings.Contains(strings.ToLower(res.Content), "error") {
 		t.Errorf("expected success, got %q", res.Content)
@@ -282,7 +282,7 @@ func TestUpdateReminderTool_ContentOnly(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_x","content":"updated body","rationale":"fix typo"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if strings.Contains(strings.ToLower(res.Content), "error") {
 		t.Errorf("expected success, got %q", res.Content)
@@ -308,7 +308,7 @@ func TestUpdateReminderTool_RefusesNonPending(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_firing","fire_in_seconds":60,"rationale":"x"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if !strings.Contains(strings.ToLower(res.Content), "only pending") &&
 		!strings.Contains(strings.ToLower(res.Content), "can't be modified") {
@@ -328,7 +328,7 @@ func TestUpdateReminderTool_RefusesCrossOperator(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_other","fire_in_seconds":60,"rationale":"x"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if !strings.Contains(strings.ToLower(res.Content), "not yours") &&
 		!strings.Contains(strings.ToLower(res.Content), "different operator") {
@@ -348,7 +348,7 @@ func TestCancelReminderTool_RepoErrorSurfaces(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "cancel_reminder",
 		Arguments: `{"reminder_id":"rem_x","rationale":"x"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if !strings.Contains(strings.ToLower(res.Content), "disk full") &&
 		!strings.Contains(strings.ToLower(res.Content), "failed") {
@@ -388,7 +388,7 @@ func TestPauseReminderTool_HappyPath(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "pause_reminder",
 		Arguments: `{"reminder_id":"rem_x","rationale":"traveling this week"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if strings.Contains(strings.ToLower(res.Content), "error") {
 		t.Errorf("expected success, got %q", res.Content)
@@ -414,7 +414,7 @@ func TestPauseReminderTool_MidRunFriendlyMessage(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "pause_reminder",
 		Arguments: `{"reminder_id":"rem_x","rationale":"x"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if !strings.Contains(res.Content, "mid-run") {
 		t.Errorf("expected mid-run friendly message, got %q", res.Content)
@@ -433,7 +433,7 @@ func TestPauseReminderTool_RefusesOtherOperator(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "pause_reminder",
 		Arguments: `{"reminder_id":"rem_other","rationale":"x"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if !strings.Contains(strings.ToLower(res.Content), "not yours") &&
 		!strings.Contains(strings.ToLower(res.Content), "different operator") {
@@ -457,7 +457,7 @@ func TestResumeReminderTool_RecurringComputesNextFire(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "resume_reminder",
 		Arguments: `{"reminder_id":"rem_x","rationale":"back from vacation"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if strings.Contains(strings.ToLower(res.Content), "error") {
 		t.Errorf("expected success, got %q", res.Content)
@@ -483,7 +483,7 @@ func TestResumeReminderTool_OneShotRefused(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "resume_reminder",
 		Arguments: `{"reminder_id":"rem_x","rationale":"x"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if !strings.Contains(strings.ToLower(res.Content), "one-shot") {
 		t.Errorf("expected one-shot refusal, got %q", res.Content)
@@ -505,7 +505,7 @@ func TestResumeReminderTool_RefusesOtherOperator(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "resume_reminder",
 		Arguments: `{"reminder_id":"rem_other","rationale":"x"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if !strings.Contains(strings.ToLower(res.Content), "not yours") &&
 		!strings.Contains(strings.ToLower(res.Content), "different operator") {
@@ -532,7 +532,7 @@ func TestResumeReminderTool_NotPausedFriendlyMessage(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "resume_reminder",
 		Arguments: `{"reminder_id":"rem_x","rationale":"x"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if !strings.Contains(strings.ToLower(res.Content), "isn't paused") {
 		t.Errorf("expected not-paused friendly message, got %q", res.Content)
@@ -558,7 +558,7 @@ func TestUpdateReminderTool_EditsTaskKindContent(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_task","content":"daily news digest, focus on AI + markets","rationale":"refine prompt"}`}}
-	res := te.Execute(context.Background(), tc, "", nil, 42, nil)
+	res := te.Execute(context.Background(), tc, "", nil, 42, "42", nil)
 
 	if strings.Contains(strings.ToLower(res.Content), "error") {
 		t.Errorf("expected success, got %q", res.Content)
@@ -587,7 +587,7 @@ func TestUpdateReminderTool_EditsCron(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_task","cron":"0 9 * * *","rationale":"later slot"}`}}
-	res := te.Execute(context.Background(), tc, "", []string{"news"}, 42, nil)
+	res := te.Execute(context.Background(), tc, "", []string{"news"}, 42, "42", nil)
 
 	if strings.Contains(strings.ToLower(res.Content), "error") {
 		t.Fatalf("expected success, got %q", res.Content)
@@ -621,7 +621,7 @@ func TestUpdateReminderTool_CronWinsOverFireInSeconds(t *testing.T) {
 	// cron value took effect rather than the seconds offset.
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_task","cron":"0 9 * * *","fire_in_seconds":60,"rationale":"both"}`}}
-	res := te.Execute(context.Background(), tc, "", []string{"news"}, 42, nil)
+	res := te.Execute(context.Background(), tc, "", []string{"news"}, 42, "42", nil)
 
 	if strings.Contains(strings.ToLower(res.Content), "error") {
 		t.Fatalf("expected success, got %q", res.Content)
@@ -647,7 +647,7 @@ func TestUpdateReminderTool_RejectsInvalidCron(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_task","cron":"not a cron","rationale":"x"}`}}
-	res := te.Execute(context.Background(), tc, "", []string{"news"}, 42, nil)
+	res := te.Execute(context.Background(), tc, "", []string{"news"}, 42, "42", nil)
 
 	if !strings.Contains(strings.ToLower(res.Content), "cron") {
 		t.Errorf("expected cron validation error, got %q", res.Content)
@@ -671,7 +671,7 @@ func TestUpdateReminderTool_EditsProjectReAuthAllows(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_task","project":"markets","rationale":"move project"}`}}
-	res := te.Execute(context.Background(), tc, "", []string{"news", "markets"}, 42, nil)
+	res := te.Execute(context.Background(), tc, "", []string{"news", "markets"}, 42, "42", nil)
 
 	if strings.Contains(strings.ToLower(res.Content), "error") || strings.Contains(strings.ToLower(res.Content), "not permitted") {
 		t.Fatalf("expected success, got %q", res.Content)
@@ -699,7 +699,7 @@ func TestUpdateReminderTool_EditsProjectDeniedByACL(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_task","project":"secret","rationale":"sneaky"}`}}
-	res := te.Execute(context.Background(), tc, "", []string{"news", "markets"}, 42, nil)
+	res := te.Execute(context.Background(), tc, "", []string{"news", "markets"}, 42, "42", nil)
 
 	if !strings.Contains(strings.ToLower(res.Content), "not permitted") {
 		t.Errorf("expected ACL refusal, got %q", res.Content)
@@ -726,7 +726,7 @@ func TestUpdateReminderTool_ProjectEditRejectedOnTextKind(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_text","project":"news","rationale":"x"}`}}
-	res := te.Execute(context.Background(), tc, "", []string{"news"}, 42, nil)
+	res := te.Execute(context.Background(), tc, "", []string{"news"}, 42, "42", nil)
 
 	if !strings.Contains(strings.ToLower(res.Content), "task-kind") {
 		t.Errorf("expected text-kind rejection mentioning task-kind, got %q", res.Content)
@@ -752,7 +752,7 @@ func TestUpdateReminderTool_ContentOnlyKeepsCronAndProject(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_task","content":"new body","rationale":"x"}`}}
-	res := te.Execute(context.Background(), tc, "", []string{"news"}, 42, nil)
+	res := te.Execute(context.Background(), tc, "", []string{"news"}, 42, "42", nil)
 
 	if strings.Contains(strings.ToLower(res.Content), "error") {
 		t.Fatalf("expected success, got %q", res.Content)
@@ -787,7 +787,7 @@ func TestUpdateReminderTool_CarryForwardIgnoresStaleFireAt(t *testing.T) {
 
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_reminder",
 		Arguments: `{"reminder_id":"rem_task","content":"tweaked prompt","rationale":"edit only"}`}}
-	res := te.Execute(context.Background(), tc, "", []string{"news"}, 42, nil)
+	res := te.Execute(context.Background(), tc, "", []string{"news"}, 42, "42", nil)
 
 	if strings.Contains(strings.ToLower(res.Content), "past") || strings.Contains(strings.ToLower(res.Content), "error") {
 		t.Fatalf("carry-forward edit must not fail on a stale fire_at, got %q", res.Content)

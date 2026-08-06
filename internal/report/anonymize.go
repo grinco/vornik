@@ -302,7 +302,18 @@ func AnonymizeBody(in BodyInput) (string, error) {
 // selector is the already-formed scope flag ("--task <id>" or "--since 2h").
 // Nothing here is scrubbed because nothing here is caller data except selector,
 // which callers pass through the body scrubber before display.
-func BundleGuidance(selector string) string {
+//
+// EDITION SPLIT 2026-08-05: `vornikctl support-report` is gated behind the
+// Enterprise admin surface and answers a Community caller with a 501
+// "Enterprise-only feature". `vornikctl report` is itself a Community command,
+// so printing the Enterprise instructions unconditionally walked every CE
+// reporter into a wall at the exact moment they were trying to file a good bug.
+// edition is normalized through version.NormalizeEdition, so an unstamped or
+// untrusted build fails safe to the Community text.
+func BundleGuidance(selector, edition string) string {
+	if version.NormalizeEdition(edition) != version.EditionEnterprise {
+		return communityBundleGuidance()
+	}
 	var b strings.Builder
 	b.WriteString("For the full evidence — task timeline, container + daemon logs, the doctor\n")
 	b.WriteString("snapshot, and (Enterprise) the task's Black Box trace — run:\n\n")
@@ -318,6 +329,34 @@ func BundleGuidance(selector string) string {
 	b.WriteString("box (GitHub accepts up to 25 MB per attachment — if the archive is larger, narrow the\n")
 	b.WriteString("scope or shrink it with --max-size). You attach it yourself, under your own\n")
 	b.WriteString("account, after reading it.")
+	return b.String()
+}
+
+// communityBundleGuidance is the Community counterpart: there is no bundle
+// collector to point at, so it says so plainly and directs the reporter to what
+// they DO have rather than naming an unreachable command.
+//
+// It deliberately does NOT tell the reporter to paste journal output into the
+// issue. That output carries hostnames, paths and credentials, and the whole
+// point of this package is that anything reaching a public repo goes through
+// the scrubber first.
+func communityBundleGuidance() string {
+	var b strings.Builder
+	// Deliberately describes the collector WITHOUT printing its runnable
+	// invocation. Naming the exact command is what created the dead end: a
+	// reporter copies it, runs it, and gets a 501. Describing the capability
+	// explains the gap without handing over something that fails.
+	b.WriteString("The bundled evidence collector — the support-report archive carrying the task\n")
+	b.WriteString("timeline, container + daemon logs and Black Box trace — is an Enterprise Edition\n")
+	b.WriteString("feature and is not built into Community Edition, so there is no archive to\n")
+	b.WriteString("attach here.\n\n")
+	b.WriteString("The report above already carries what Community collects: the build identity\n")
+	b.WriteString("and the full anonymized `vornikctl doctor` findings. That is usually enough to\n")
+	b.WriteString("triage. If a maintainer needs more, they will ask on the issue for a specific\n")
+	b.WriteString("check or log line — send only what they ask for, and read it before you paste\n")
+	b.WriteString("it: journal and config output carry hostnames, paths and credentials that this\n")
+	b.WriteString("report scrubbed for you.\n\n")
+	b.WriteString("  vornikctl doctor --json    # the same findings, machine-readable, for your own review")
 	return b.String()
 }
 

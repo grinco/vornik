@@ -89,6 +89,33 @@ type mcpOAuthStatusResponse struct {
 	ConnectedAt    string   `json:"connected_at,omitempty"`
 	ExpiresAt      string   `json:"expires_at,omitempty"`
 	NeedsReconnect bool     `json:"needs_reconnect"`
+	// InheritedFrom is set when the caller asked about a PROJECT but the grant
+	// was read at daemon scope, because that project subscribes to a
+	// daemon-scope server by name only and therefore inherits its credential
+	// (design §9). Without this the answer had to be one of two half-truths:
+	// "not connected" (the row is not under that project) or a bare "connected"
+	// that hides which grant is doing the work and where to revoke it.
+	InheritedFrom string `json:"inherited_from,omitempty"`
+}
+
+// mcpGrantScope returns the project_id a grant should be READ or DELETED at for
+// a (project, server) pair, plus the asking project when the two differ.
+//
+// It defers to the resolver, which owns the inheritance rule — a name-only
+// subscriber to a daemon-scope server inherits that server's credential, so the
+// grant lives at "" no matter which project asks. Handlers that skip this and
+// trust the raw project_id disagree with the wiring: status reports "not
+// connected" for a project whose tools work, and disconnect deletes a row that
+// was never the one in use, leaving the real grant in place.
+func mcpGrantScope(conn MCPOAuthConnector, projectID, serverName string) (scope, inheritedFrom string) {
+	ref, ok := conn.ResolveServer(projectID, serverName)
+	if !ok {
+		// Unknown name in that scope. Fall back to what was asked rather than
+		// inventing a scope; the lookup below then reports nothing, which is
+		// the truth for a server that is not configured there.
+		return projectID, ""
+	}
+	return ref.ProjectID, ref.InheritedFrom
 }
 
 // MCPOAuthBegin starts an authorization attempt: POST /api/v1/mcp/oauth/begin.
@@ -159,8 +186,9 @@ func (s *Server) MCPOAuthStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	projectID := r.URL.Query().Get("project_id")
+	scope, inheritedFrom := mcpGrantScope(s.mcpOAuth, projectID, server)
 
-	tok, err := s.mcpOAuth.Grant(r.Context(), projectID, server)
+	tok, err := s.mcpOAuth.Grant(r.Context(), scope, server)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "INTERNAL", "could not read the grant")
 		return
@@ -171,6 +199,7 @@ func (s *Server) MCPOAuthStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := mcpOAuthStatusResponse{
 		Connected:      true,
+		InheritedFrom:  inheritedFrom,
 		Resource:       tok.Resource,
 		ConnectedBy:    tok.ConnectedBy,
 		ConnectedAt:    tok.ConnectedAt.UTC().Format(time.RFC3339Nano),
@@ -208,7 +237,11 @@ func (s *Server) MCPOAuthDisconnect(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "INVALID_BODY", "server is required")
 		return
 	}
-	if err := s.mcpOAuth.Disconnect(r.Context(), req.ProjectID, req.Server, mcpOAuthActor(r)); err != nil {
+	// Delete the grant the wiring READS, not the one the raw project_id names —
+	// otherwise disconnecting an inherited server reports success while leaving
+	// the credential in use.
+	scope, _ := mcpGrantScope(s.mcpOAuth, req.ProjectID, req.Server)
+	if err := s.mcpOAuth.Disconnect(r.Context(), scope, req.Server, mcpOAuthActor(r)); err != nil {
 		respondError(w, http.StatusInternalServerError, "INTERNAL", "could not disconnect")
 		return
 	}

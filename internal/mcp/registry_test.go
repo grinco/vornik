@@ -47,6 +47,33 @@ func stubMCPServer(t *testing.T, tools []Tool) (*httptest.Server, *atomic.Int64)
 	return srv, &hits
 }
 
+// stubMCPServerSlow is stubMCPServer with a fixed delay before each reply, so a
+// probe can be held in flight while other callers arrive.
+func stubMCPServerSlow(t *testing.T, delay time.Duration) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		time.Sleep(delay)
+		body, _ := io.ReadAll(r.Body)
+		var req jsonRPCRequest
+		_ = json.Unmarshal(body, &req)
+		resp := jsonRPCResponse{JSONRPC: "2.0", ID: req.ID}
+		switch req.Method {
+		case "initialize":
+			resp.Result = json.RawMessage(`{"protocolVersion":"2024-11-05"}`)
+		case "tools/list":
+			resp.Result = json.RawMessage(`{"tools":[]}`)
+		default:
+			resp.Result = json.RawMessage(`{}`)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &hits
+}
+
 // TestRegistry_RefreshAll_PopulatesReachableServers covers the happy
 // path: every configured server connects, tools/list succeeds, the
 // snapshot reports reachable=true with the advertised catalog.
@@ -326,4 +353,95 @@ func TestRegistry_SetServersDropsRemovedAndRetargeted(t *testing.T) {
 	if snap[0].Reachable {
 		t.Error("a retargeted server must not inherit the old endpoint's reachability")
 	}
+}
+
+// TestRegistry_PlaceholdersAreNotStampedAsChecked pins the "never probed"
+// sentinel: a placeholder snapshot carries a ZERO LastCheckedAt.
+//
+// Stamping time.Now() on a server nobody has contacted claimed a check that
+// never happened, with two costs. The UI could not separate "never checked"
+// from "checked and unreachable", so every server rendered as a fault for the
+// moments between startup and the first async probe (reported twice on
+// 2026-08-05 as "atlassian is offline again after the restart"). And a
+// freshly-added server looked FRESH to Snapshot's staleness comparison, so no
+// refresh was scheduled for it until a whole TTL elapsed — the placeholder
+// outlived the reason it existed.
+func TestRegistry_PlaceholdersAreNotStampedAsChecked(t *testing.T) {
+	reg := NewRegistry([]ServerConfig{
+		{Name: "atlassian", Transport: "streamable-http", URL: "http://example.invalid"},
+	}, time.Hour, zerolog.Nop())
+
+	snap := reg.Snapshot(context.Background())
+	require.Len(t, snap, 1)
+	require.True(t, snap[0].LastCheckedAt.IsZero(),
+		"a never-probed placeholder must not claim a check time")
+
+	// Same contract on the reload path, which builds its own placeholders.
+	reg.SetServers([]ServerConfig{
+		{Name: "atlassian", Transport: "streamable-http", URL: "http://example.invalid"},
+		{Name: "added-by-reload", Transport: "streamable-http", URL: "http://example.invalid"},
+	})
+	for _, s := range reg.Snapshot(context.Background()) {
+		require.True(t, s.LastCheckedAt.IsZero(),
+			"%s: a placeholder written by SetServers must not claim a check time", s.Name)
+	}
+}
+
+// TestRegistry_NeverProbedServerIsRefreshedDespiteALongTTL is the consequence
+// test for the above. With a one-hour TTL, a placeholder stamped `now` would be
+// considered fresh and never scheduled; a zero stamp is unconditionally stale,
+// so the first Snapshot triggers the probe that fills the row in.
+func TestRegistry_NeverProbedServerIsRefreshedDespiteALongTTL(t *testing.T) {
+	srv, _ := stubMCPServer(t, []Tool{{Name: "jira_search", Description: "Search Jira"}})
+	reg := NewRegistry([]ServerConfig{
+		{Name: "stub", Transport: "streamable-http", URL: srv.URL},
+	}, time.Hour, zerolog.Nop())
+
+	// First call returns the placeholder and schedules the async probe.
+	require.False(t, reg.Snapshot(context.Background())[0].Reachable)
+
+	require.Eventually(t, func() bool {
+		return reg.Snapshot(context.Background())[0].Reachable
+	}, 10*time.Second, 20*time.Millisecond,
+		"a never-probed server must be refreshed without waiting out the TTL")
+}
+
+// TestRegistry_ConcurrentSnapshotsDoNotStormANeverProbedServer substantiates
+// the safety claim behind the zero sentinel (asked for by
+// review-20260805-e814). Because a zero LastCheckedAt is unconditionally
+// stale, EVERY Snapshot before the first probe completes schedules a refresh —
+// so a UI polling the tab, several operators, and RefreshAll can all pile onto
+// the same never-probed server at once. spawnRefresh's per-name in-flight set
+// is what bounds that to one probe; without it this would hammer a slow or
+// metered vendor endpoint.
+func TestRegistry_ConcurrentSnapshotsDoNotStormANeverProbedServer(t *testing.T) {
+	// A slow server keeps the first probe in flight while the other callers
+	// arrive — without the dedupe they would each spawn their own.
+	srv, hits := stubMCPServerSlow(t, 300*time.Millisecond)
+	reg := NewRegistry([]ServerConfig{
+		{Name: "stub", Transport: "streamable-http", URL: srv.URL},
+	}, time.Hour, zerolog.Nop())
+
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			reg.Snapshot(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	require.Eventually(t, func() bool {
+		return reg.Snapshot(context.Background())[0].Reachable
+	}, 10*time.Second, 20*time.Millisecond)
+
+	// One probe is initialize + tools/list. 50 concurrent Snapshots must not
+	// multiply that; a couple of extra envelopes are tolerable (a caller that
+	// arrives in the window after the in-flight flag clears but before its
+	// own read sees the fresh stamp), a 50x fan-out is not.
+	require.LessOrEqual(t, hits.Load(), int64(6),
+		"50 concurrent Snapshots fanned out %d JSON-RPC envelopes — the "+
+			"per-name in-flight dedupe is not covering the never-probed path",
+		hits.Load())
 }

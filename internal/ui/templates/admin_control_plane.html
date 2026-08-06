@@ -360,7 +360,7 @@
                         <div class="min-w-0 flex-1">
                             <div class="flex items-center gap-2 flex-wrap">
                                 <div class="font-mono text-sm text-gray-100">{{.Name}}</div>
-                                <span class="px-1.5 py-0.5 text-[10px] font-semibold rounded {{if .Reachable}}bg-green-700/30 text-green-300 border border-green-700{{else if .AuthChallenged}}bg-amber-900/30 text-amber-300 border border-amber-800{{else}}bg-red-900/30 text-red-300 border border-red-800{{end}}">{{if .Reachable}}reachable{{else if .AuthChallenged}}needs authentication{{else}}unreachable{{end}}</span>
+                                <span class="px-1.5 py-0.5 text-[10px] font-semibold rounded {{if .Reachable}}bg-green-700/30 text-green-300 border border-green-700{{else if .NeverChecked}}bg-dark-700 text-gray-400 border border-dark-600{{else if .AuthChallenged}}bg-amber-900/30 text-amber-300 border border-amber-800{{else}}bg-red-900/30 text-red-300 border border-red-800{{end}}">{{if .Reachable}}reachable{{else if .NeverChecked}}checking…{{else if .AuthChallenged}}needs authentication{{else}}unreachable{{end}}</span>
                                 <span class="text-[10px] text-gray-500">{{.Transport}} · {{.ToolCount}} tools</span>
                                 {{/* The reachability badge above is AUTH-BLIND: a server that 401s on
                                      every call still reads "reachable". These two chips are what let an
@@ -381,7 +381,9 @@
                                 {{end}}
                             </div>
                             {{if .Endpoint}}<div class="text-[11px] text-gray-500 mt-1 font-mono truncate">{{.Endpoint}}</div>{{end}}
-                            {{if .Error}}<div class="text-[11px] text-red-400 mt-1">{{.Error}}</div>{{end}}
+                            {{/* "not yet refreshed" is the registry's placeholder, not a fault, so it
+                                 must not render in fault red alongside a "checking…" badge. */}}
+                            {{if .Error}}<div class="text-[11px] mt-1 {{if .NeverChecked}}text-gray-500{{else}}text-red-400{{end}}">{{.Error}}</div>{{end}}
                             {{if .Connected}}<div class="text-[10px] text-gray-500 mt-1">consented by {{.ConnectedBy}}{{if .TokenExpiresAt}} · token expires {{.TokenExpiresAt}}{{end}}</div>{{end}}
                             {{if .ConnectBlockedReason}}<div class="text-[11px] text-amber-400 mt-1">{{.ConnectBlockedReason}}</div>{{end}}
                             {{if .LastCheck}}<div class="text-[10px] text-gray-600 mt-1">last checked {{.LastCheck}}</div>{{end}}

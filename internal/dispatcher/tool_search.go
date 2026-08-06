@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -107,37 +108,68 @@ func extractPinnedMCPTools(systemPrompt string) map[string]struct{} {
 // agent code path that doesn't carry a chat session.
 type expandedToolStore struct {
 	mu sync.Mutex
-	// keys[chatID] -> set of fully-qualified MCP tool names
-	keys map[int64]map[string]struct{}
+	// keys[sessionKey] -> set of fully-qualified MCP tool names.
+	//
+	// Keyed by an OPAQUE session string, not a Telegram chat id. It was
+	// map[int64] until 2026-08-05, which silently disabled deferred loading —
+	// and with it tool_search — on every channel that has a session but no
+	// numeric chat id: Slack, email, GitHub. See deferralSessionKey.
+	keys map[string]map[string]struct{}
+}
+
+// deferralSessionKey is the session identity deferred loading anchors
+// expansions to. It is NOT the same thing as Request.ChatID.
+//
+// ChatID is documented as the platform's NUMERIC chat identifier, used by tools
+// that send files back, and channels without one are told to leave it 0 —
+// GitHub, Slack and email all do. Deferred loading then read that same field as
+// "is there a session here at all?", so those channels were misclassified as
+// sub-agent invocations: deferral switched itself off and tool_search was never
+// advertised. On a project with 33 MCP tools that meant the full catalog on
+// every turn AND no way for the model to search it — reported 2026-08-05 as
+// "the dispatcher says it has no tooling for mcp search".
+//
+// Order matters: a channel session id is the more specific identity, and
+// Telegram (which sets ChatID and no OriginatingSessionID) falls through to the
+// numeric form. Empty means genuinely no session — sub-agent and per-task
+// paths — where skipping deferral is correct.
+func deferralSessionKey(req Request) string {
+	if s := strings.TrimSpace(req.OriginatingSessionID); s != "" {
+		return req.OriginatingChannel + ":" + s
+	}
+	if req.ChatID != 0 {
+		return strconv.FormatInt(req.ChatID, 10)
+	}
+	return ""
 }
 
 func newExpandedToolStore() *expandedToolStore {
-	return &expandedToolStore{keys: make(map[int64]map[string]struct{})}
+	return &expandedToolStore{keys: make(map[string]map[string]struct{})}
 }
 
-func (s *expandedToolStore) expand(chatID int64, names []string) {
-	if s == nil || chatID == 0 || len(names) == 0 {
+func (s *expandedToolStore) expand(sessionKey string, names []string) {
+	if s == nil || sessionKey == "" || len(names) == 0 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	set, ok := s.keys[chatID]
+	set, ok := s.keys[sessionKey]
 	if !ok {
 		set = make(map[string]struct{}, len(names))
-		s.keys[chatID] = set
+		s.keys[sessionKey] = set
 	}
 	for _, n := range names {
 		set[n] = struct{}{}
 	}
 }
 
-func (s *expandedToolStore) contains(chatID int64, name string) bool {
-	if s == nil || chatID == 0 {
+func (s *expandedToolStore) contains(sessionKey string, name string) bool {
+	if s == nil || sessionKey == "" {
 		return false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	set, ok := s.keys[chatID]
+	set, ok := s.keys[sessionKey]
 	if !ok {
 		return false
 	}
@@ -148,13 +180,13 @@ func (s *expandedToolStore) contains(chatID int64, name string) bool {
 // reset drops one session's expanded set (e.g. /new wipes
 // conversation state). Currently unused — kept for the
 // future Telegram /new wiring.
-func (s *expandedToolStore) reset(chatID int64) {
-	if s == nil || chatID == 0 {
+func (s *expandedToolStore) reset(sessionKey string) {
+	if s == nil || sessionKey == "" {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.keys, chatID)
+	delete(s.keys, sessionKey)
 }
 
 // toolSearchDescriptor is the chat.Tool definition the
@@ -166,12 +198,12 @@ func toolSearchDescriptor() chat.Tool {
 		Type: "function",
 		Function: chat.ToolFunction{
 			Name:        ToolSearchName,
-			Description: "Search the project's MCP tool catalog by topic. Use this whenever you suspect an external integration exists for what the user asked but you don't see it in the visible tool list yet (your catalog is intentionally trimmed when many MCP servers are wired). Returns matching tools and unlocks them for direct call in subsequent turns of THIS conversation.",
+			Description: "Search the project's MCP tool catalog by topic. Use this whenever you suspect an external integration exists for what the user asked but you don't see it in the visible tool list yet (your catalog is intentionally trimmed when many MCP servers are wired). Returns matching tools and unlocks them for direct call in subsequent turns of THIS conversation — along with every other tool on the same server, because a server's tools share one account and one tenant. So if a call fails asking for an id or tenant you don't have (a cloudId, a workspace id, an account id), the tool that returns it is almost certainly already unlocked on that same server: look there before asking the user for it.",
 			Parameters: json.RawMessage(`{
 				"type":"object",
 				"properties":{
 					"query":{"type":"string","description":"Free-text topic (e.g. 'gmail send', 'calendar list events', 'place a stock order'). Match-by-overlap; doesn't have to be exact."},
-					"limit":{"type":"integer","description":"Max matching tools to return. Default 8, max 20."}
+					"limit":{"type":"integer","description":"Max matching tools to DESCRIBE in detail. Default 8, max 20. Raise it when the result says more matched than were shown. This caps the detailed matches only — every tool on a matched server is unlocked either way."}
 				},
 				"required":["query"]
 			}`),
@@ -188,15 +220,17 @@ func toolSearchDescriptor() chat.Tool {
 //
 // Pure-ish: reads from the expanded-set store but never
 // writes. tool_search execution does the writing.
-func applyDeferredLoading(builtin, mcp []chat.Tool, store *expandedToolStore, chatID int64, threshold int, pinned map[string]struct{}) []chat.Tool {
+func applyDeferredLoading(builtin, mcp []chat.Tool, store *expandedToolStore, sessionKey string, threshold int, pinned map[string]struct{}) []chat.Tool {
 	if threshold <= 0 {
 		threshold = DefaultDeferredToolThreshold
 	}
-	if chatID == 0 || len(mcp) <= threshold {
-		// chatID=0 means "no session to anchor expansions to"
-		// — sub-agent / per-task paths. Without a session
-		// there's no place to track expansions, so we fall
-		// back to legacy "everything visible".
+	if sessionKey == "" || len(mcp) <= threshold {
+		// An empty session key means "no session to anchor expansions
+		// to" — sub-agent / per-task paths. Without a session there's no
+		// place to track expansions, so we fall back to legacy
+		// "everything visible". A CHANNEL session is never empty here;
+		// it was, while this keyed on a Telegram chat id, which is how
+		// Slack/email/GitHub lost tool_search entirely.
 		//
 		// Below threshold: deferral overhead isn't worth it.
 		return append(append(make([]chat.Tool, 0, len(builtin)+len(mcp)), builtin...), mcp...)
@@ -212,7 +246,7 @@ func applyDeferredLoading(builtin, mcp []chat.Tool, store *expandedToolStore, ch
 	out = append(out, toolSearchDescriptor())
 	for _, t := range mcp {
 		_, isPinned := pinned[t.Function.Name]
-		if isPinned || store.contains(chatID, t.Function.Name) {
+		if isPinned || store.contains(sessionKey, t.Function.Name) {
 			out = append(out, t)
 		}
 	}
@@ -229,7 +263,7 @@ func applyDeferredLoading(builtin, mcp []chat.Tool, store *expandedToolStore, ch
 // — the catalog can change mid-session (operator added an
 // MCP, fsnotify reloaded) and we want the search to see the
 // current state.
-func (te *ToolExecutor) toolSearch(argsJSON string, activeProject string, chatID int64) ToolResult {
+func (te *ToolExecutor) toolSearch(argsJSON string, activeProject string, sessionKey string) ToolResult {
 	var args struct {
 		Query string `json:"query"`
 		Limit int    `json:"limit"`
@@ -256,23 +290,134 @@ func (te *ToolExecutor) toolSearch(argsJSON string, activeProject string, chatID
 		return ToolResult{Content: "No MCP tools are configured for this project."}
 	}
 	scored := scoreTools(catalog, query)
-	if len(scored) > limit {
-		scored = scored[:limit]
-	}
 	if len(scored) == 0 {
 		return ToolResult{Content: fmt.Sprintf("No tools matched %q.", query)}
 	}
+	total := len(scored)
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+
+	// Unlock the WHOLE server behind every match, not just the matched tools.
+	// Tools inside one MCP server share its tenant and auth context, and often
+	// require an argument only a sibling can produce — so a lexically-selected
+	// subset can be a palette that cannot work. Atlassian is the worked example
+	// that forced this (2026-08-05): every Jira tool REQUIRES a cloudId, and the
+	// only tool that yields one is getAccessibleAtlassianResources, whose name
+	// and description contain neither "jira" nor any other word an operator
+	// would search. tool_search("Jira") returned 8 Jira-named tools and the
+	// model, correctly reasoning from what it could see, concluded no
+	// site-enumeration tool existed and asked the user for a cloudId it had no
+	// way to supply. tool_search("atlassian") had worked minutes earlier in a
+	// DM, purely because that query happens to rank the bootstrap tool inside
+	// the cut — which is luck, not a contract.
+	matched := make(map[string]struct{}, len(scored))
+	servers := make([]string, 0, 4)
+	seenServer := make(map[string]struct{}, 4)
+	for _, hit := range scored {
+		matched[hit.tool.Function.Name] = struct{}{}
+		if srv, ok := mcpServerOfTool(hit.tool.Function.Name); ok {
+			if _, dup := seenServer[srv]; !dup {
+				seenServer[srv] = struct{}{}
+				servers = append(servers, srv)
+			}
+		}
+	}
+	siblings := make(map[string][]chat.Tool, len(servers))
+	for _, t := range catalog {
+		if _, already := matched[t.Function.Name]; already {
+			continue
+		}
+		srv, ok := mcpServerOfTool(t.Function.Name)
+		if !ok {
+			continue
+		}
+		if _, wanted := seenServer[srv]; wanted {
+			siblings[srv] = append(siblings[srv], t)
+		}
+	}
+
 	names := make([]string, 0, len(scored))
 	var b strings.Builder
-	fmt.Fprintf(&b, "Found %d matching tool(s) for %q. They are now callable in this conversation:\n\n", len(scored), query)
+	// Report the TOTAL, not the truncated count. Saying "found 8" when 9 matched
+	// tells the model it has seen everything and there is nothing left to look
+	// for — the cap has to be visible to be worked around.
+	if total > len(scored) {
+		fmt.Fprintf(&b, "Found %d tool(s) matching %q; showing the top %d (raise `limit`, max 20, to see more). Now callable in this conversation:\n\n",
+			total, query, len(scored))
+	} else {
+		fmt.Fprintf(&b, "Found %d matching tool(s) for %q. They are now callable in this conversation:\n\n", total, query)
+	}
 	for _, hit := range scored {
 		names = append(names, hit.tool.Function.Name)
 		fmt.Fprintf(&b, "• %s\n  %s\n\n", hit.tool.Function.Name, hit.tool.Function.Description)
 	}
+	for _, srv := range servers {
+		rest := siblings[srv]
+		if len(rest) == 0 {
+			continue
+		}
+		shown := rest
+		if len(shown) > maxSiblingToolsListed {
+			shown = shown[:maxSiblingToolsListed]
+		}
+		fmt.Fprintf(&b, "Also unlocked — the rest of the %q server, since its tools share one account and often need an argument only a sibling returns:\n", srv)
+		for _, t := range shown {
+			names = append(names, t.Function.Name)
+			fmt.Fprintf(&b, "• %s — %s\n", t.Function.Name, firstSentence(t.Function.Description))
+		}
+		if len(rest) > len(shown) {
+			// Unlock them anyway: callable beats listed, and the model can find
+			// the name with a narrower query.
+			for _, t := range rest[len(shown):] {
+				names = append(names, t.Function.Name)
+			}
+			fmt.Fprintf(&b, "  (+%d more from %q, unlocked but not listed — search a narrower term to see them)\n", len(rest)-len(shown), srv)
+		}
+		b.WriteString("\n")
+	}
 	if te.expanded != nil {
-		te.expanded.expand(chatID, names)
+		te.expanded.expand(sessionKey, names)
 	}
 	return ToolResult{Content: b.String(), Provenance: outputguard.ProvenanceFirstParty}
+}
+
+// maxSiblingToolsListed bounds how many same-server tools are DESCRIBED after
+// the matches. All of them are unlocked regardless; this only caps the prose, so
+// a 57-tool server does not bury the actual answer.
+const maxSiblingToolsListed = 12
+
+// mcpServerOfTool returns the server segment of an mcp__{server}__{tool} name.
+// Only the server is returned because that is all the sibling grouping needs;
+// internal/mcp has its own full parser, and the dispatcher must not import that
+// package for one string split (the dependency arrow points the other way).
+func mcpServerOfTool(name string) (server string, ok bool) {
+	const prefix = "mcp__"
+	if !strings.HasPrefix(name, prefix) {
+		return "", false
+	}
+	parts := strings.SplitN(name[len(prefix):], "__", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", false
+	}
+	return parts[0], true
+}
+
+// firstSentence trims a tool description to its first sentence so the
+// sibling list stays scannable. Atlassian's descriptions are terse ("Get issue
+// details") but some servers ship paragraphs.
+func firstSentence(desc string) string {
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		return "(no description)"
+	}
+	if i := strings.IndexByte(desc, '.'); i > 0 && i < 160 {
+		return desc[:i+1]
+	}
+	if len(desc) > 160 {
+		return desc[:157] + "..."
+	}
+	return desc
 }
 
 // toolHit pairs a chat.Tool with its computed score so the

@@ -442,14 +442,14 @@ type ReminderKicker interface {
 // meaning wildcard. This is what prevents a Telegram user pinned to
 // project A from calling memory_search(project_id="B") or
 // read_artifact on a task belonging to another operator's project.
-func (te *ToolExecutor) Execute(ctx context.Context, tc chat.ToolCall, activeProject string, allowedProjects []string, chatID int64, fs FileSender) ToolResult {
+func (te *ToolExecutor) Execute(ctx context.Context, tc chat.ToolCall, activeProject string, allowedProjects []string, chatID int64, sessionKey string, fs FileSender) ToolResult {
 	name := tc.Function.Name
 	args := tc.Function.Arguments
 
 	te.logger.Debug().Str("tool", name).Str("args", args).Msg("tool call")
 
 	start := time.Now()
-	result := te.execute(ctx, tc, activeProject, allowedProjects, chatID, fs)
+	result := te.execute(ctx, tc, activeProject, allowedProjects, chatID, sessionKey, fs)
 	te.logAudit(ctx, name, args, result.Content, activeProject, time.Since(start))
 	return result
 }
@@ -476,7 +476,7 @@ func (te *ToolExecutor) logAudit(ctx context.Context, tool, input, output, proje
 	}
 }
 
-func (te *ToolExecutor) execute(ctx context.Context, tc chat.ToolCall, activeProject string, allowedProjects []string, chatID int64, fs FileSender) ToolResult {
+func (te *ToolExecutor) execute(ctx context.Context, tc chat.ToolCall, activeProject string, allowedProjects []string, chatID int64, sessionKey string, fs FileSender) ToolResult { //nolint:funlen // pre-existing 81-line dispatch switch, unchanged by this commit: the diff adds one parameter and threads it to toolSearch. funlen reports at the declaration line, so new-from-merge-base attributes the legacy body to the signature edit. Splitting the switch is a separate refactor.
 	name := tc.Function.Name
 	args := tc.Function.Arguments
 
@@ -540,7 +540,7 @@ func (te *ToolExecutor) execute(ctx context.Context, tc chat.ToolCall, activePro
 	case getChannelThreadName:
 		return te.getChannelThread(ctx, args)
 	case ToolSearchName:
-		return te.toolSearch(args, activeProject, chatID)
+		return te.toolSearch(args, activeProject, sessionKey)
 	case composeAutomationName:
 		return te.composeAutomation(ctx, args, chatID)
 	default:

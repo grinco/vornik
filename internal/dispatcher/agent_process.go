@@ -95,13 +95,13 @@ func (a *Agent) recordLLMUsage(ctx context.Context, projectID string, chatID int
 // hide a tool the operator documented (2026-07-15 pagedrop incident —
 // see extractPinnedMCPTools). a.deferredToolThreshold overrides the
 // package default when non-zero; negative disables deferral entirely.
-func (a *Agent) allTools(projectID string, chatID int64, tier chat.ContextTier, systemPrompt string) []chat.Tool {
+func (a *Agent) allTools(projectID string, sessionKey string, tier chat.ContextTier, systemPrompt string) []chat.Tool {
 	builtin := DispatcherTools()
 	var mcp []chat.Tool
 	if a.mcpManager != nil && projectID != "" {
 		mcp = a.mcpManager.Tools(projectID)
 	}
-	if a.toolExecutor == nil || a.toolExecutor.expanded == nil || chatID == 0 || a.deferredToolThreshold < 0 {
+	if a.toolExecutor == nil || a.toolExecutor.expanded == nil || sessionKey == "" || a.deferredToolThreshold < 0 {
 		// No session state to track expansions, no expanded-store
 		// wired, or the operator disabled deferral — preserve legacy
 		// "everything visible" behaviour. Sub-agent / per-task paths
@@ -113,7 +113,7 @@ func (a *Agent) allTools(projectID string, chatID int64, tier chat.ContextTier, 
 		base = DefaultDeferredToolThreshold
 	}
 	threshold := effectiveDeferralThreshold(base, tier)
-	return applyDeferredLoading(builtin, mcp, a.toolExecutor.expanded, chatID, threshold, extractPinnedMCPTools(systemPrompt))
+	return applyDeferredLoading(builtin, mcp, a.toolExecutor.expanded, sessionKey, threshold, extractPinnedMCPTools(systemPrompt))
 }
 
 // Process runs one complete conversation turn:
@@ -161,7 +161,7 @@ func (a *Agent) Process(ctx context.Context, req Request) (result Result) {
 	}
 	audit.captureRequest(systemPrompt, userMsg, roleLabel)
 	defer func() { audit.finish(ctx, req, result) }()
-	tools := a.allTools(req.Project, req.ChatID, req.ContextTier, systemPrompt)
+	tools := a.allTools(req.Project, deferralSessionKey(req), req.ContextTier, systemPrompt)
 	a.metrics.recordContextTier(req.Project, req.ContextTier, req.ContextHeadroomPct)
 
 	// Work on a local copy so the caller's slice is not mutated.
@@ -285,7 +285,7 @@ func (a *Agent) Process(ctx context.Context, req Request) (result Result) {
 					Msg("intent judge: heuristic verdict")
 			}
 
-			tr := a.toolExecutor.Execute(ctx, tc, activeProject, req.AllowedProjects, req.ChatID, req.FileSender)
+			tr := a.toolExecutor.Execute(ctx, tc, activeProject, req.AllowedProjects, req.ChatID, deferralSessionKey(req), req.FileSender)
 			audit.recordToolCall(tc.Function.Name, tc.Function.Arguments, tr.Content, "")
 
 			if tr.ProjectSwitch != nil {
@@ -375,7 +375,7 @@ func (a *Agent) ProcessStreaming(ctx context.Context, req Request, onText chat.S
 	}
 	audit.captureRequest(systemPrompt, userMsg, roleLabel)
 	defer func() { audit.finish(ctx, req, result) }()
-	tools := a.allTools(req.Project, req.ChatID, req.ContextTier, systemPrompt)
+	tools := a.allTools(req.Project, deferralSessionKey(req), req.ContextTier, systemPrompt)
 	a.metrics.recordContextTier(req.Project, req.ContextTier, req.ContextHeadroomPct)
 
 	msgs := make([]chat.Message, len(req.Messages))
@@ -501,7 +501,7 @@ func (a *Agent) ProcessStreaming(ctx context.Context, req Request, onText chat.S
 					Msg("intent judge: heuristic verdict")
 			}
 
-			tr := a.toolExecutor.Execute(ctx, tc, activeProject, req.AllowedProjects, req.ChatID, req.FileSender)
+			tr := a.toolExecutor.Execute(ctx, tc, activeProject, req.AllowedProjects, req.ChatID, deferralSessionKey(req), req.FileSender)
 			audit.recordToolCall(tc.Function.Name, tc.Function.Arguments, tr.Content, "")
 
 			if tr.ProjectSwitch != nil {

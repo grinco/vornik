@@ -56,7 +56,7 @@ func (s *stubOpProfileRepo) List(_ context.Context, _ int) ([]*persistence.Opera
 func callTool(t *testing.T, te *ToolExecutor, ctx context.Context, args string) ToolResult {
 	t.Helper()
 	tc := chat.ToolCall{Function: chat.FunctionCall{Name: "update_operator_profile", Arguments: args}}
-	return te.Execute(ctx, tc, "", nil, 0, nil)
+	return te.Execute(ctx, tc, "", nil, 0, "0", nil)
 }
 
 // TestDispatcherTools_UpdateOperatorProfileRegistered: the

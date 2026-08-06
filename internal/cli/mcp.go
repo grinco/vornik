@@ -49,7 +49,11 @@ Examples:
   vornikctl mcp tools -p janka
   vornikctl mcp servers
   vornikctl mcp call -p janka --tool mcp__scraper__web_fetch \
-      --args '{"url":"https://example.com","project_id":"janka","allowed_hosts":["*"],"text_only":true,"max_bytes":2000}'`,
+      --args '{"url":"https://example.com","text_only":true,"max_bytes":2000}'
+
+(project_id is supplied by the daemon from -p, so don't pass it. allowed_hosts
+defaults to the URL's own host; pass it only when you expect a redirect to a
+different domain. A bare "*" is rejected — enumerate the domains instead.)`,
 		RunE: runMCPCall,
 	}
 
@@ -160,7 +164,16 @@ func runMCPServers(cmd *cobra.Command, args []string) error {
 			endpoint = s.Command
 		}
 		status := "reachable"
-		if !s.Reachable {
+		switch {
+		case s.Reachable:
+		case s.LastCheckedAt == "":
+			// Never probed, so there is no verdict to report yet — see the
+			// registry's placeholder comment. The daemon OMITS last_checked_at
+			// for such a server (it is *time.Time,omitempty there), and an
+			// absent JSON key unmarshals into this string field as "", which
+			// is what makes the empty check the never-probed test.
+			status = "checking"
+		default:
 			status = "unreachable"
 			if s.Error != "" {
 				// Cap the error so it doesn't blow up the table layout

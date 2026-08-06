@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"vornik.io/vornik/internal/report"
 	"vornik.io/vornik/internal/secrets"
+	"vornik.io/vornik/internal/version"
 )
 
 // fakeDaemon returns a canned daemon bundle tar.gz with a seeded secret
@@ -488,7 +489,9 @@ func TestBundleGuidance_MatchesRealArchiveNaming(t *testing.T) {
 	if !strings.HasSuffix(base, ".tar.gz") {
 		t.Fatalf("archive basename %q no longer ends in .tar.gz — update BundleGuidance", base)
 	}
-	g := report.BundleGuidance("--task x")
+	// support-report is Enterprise-only, so its flag guidance is asserted
+	// against the Enterprise text.
+	g := report.BundleGuidance("--task x", version.EditionEnterprise)
 	for _, want := range []string{prefix, ".tar.gz", "--output", "--max-size"} {
 		if !strings.Contains(g, want) {
 			t.Errorf("guidance no longer describes %q, but support-report still uses it", want)

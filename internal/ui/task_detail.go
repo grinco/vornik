@@ -461,6 +461,34 @@ func (s *Server) TaskDetail(w http.ResponseWriter, r *http.Request) {
 				data.Artifacts = artifacts
 			}
 
+			// Roll up the artifacts of delegated descendants (2026-08-05
+			// incident). A routing/delegating task often owns nothing but its
+			// own step responses while the deliverable the operator actually
+			// wants belongs to a child task. Filtering on task_id alone made
+			// that deliverable invisible on the only page the operator opens,
+			// so a completed 31 KB report read as "this produced two 300-byte
+			// files". Appending keeps the task's own artifacts first.
+			// Scoped to the task's own project: parent_task_id spans projects
+			// (cross-project calls), and another tenant's artifact names must
+			// not surface here.
+			for _, childID := range descendantTaskIDs(ctx, s.taskRepo, taskID, task.ProjectID) {
+				// PageSize mirrors the task's own list above. A single task
+				// producing >100 OUTPUT artifacts would be truncated here, same
+				// as it already is for the task itself — accepted because this
+				// panel is a browse surface, not an inventory, and the
+				// per-artifact page is the complete view. Worst case is
+				// lineageMaxTasks queries per render; the walk's caps are what
+				// bound that.
+				childArtifacts, cErr := s.artifactRepo.List(ctx, persistence.ArtifactFilter{
+					TaskID:   &childID,
+					PageSize: 100,
+				})
+				if cErr != nil {
+					continue // best effort; a partial list beats a blank panel
+				}
+				data.Artifacts = append(data.Artifacts, childArtifacts...)
+			}
+
 			// Tool-issued access credentials captured for this task
 			// (credential carryover), latest execution only.
 			if s.taskCredentialRepo != nil {

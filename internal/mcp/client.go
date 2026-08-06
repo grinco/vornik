@@ -24,6 +24,23 @@ import (
 	"vornik.io/vornik/internal/safepath"
 )
 
+// ErrClientNotReading marks a stdio client whose response reader has exited:
+// the subprocess died, closed stdout, or overran the scanner buffer. The
+// connection is unrecoverable, but the SERVER usually is not — it is a
+// subprocess the daemon can simply start again.
+//
+// It is a sentinel so the manager can tell "this connection is gone, re-dial
+// it" apart from every other tool-call failure, which must NOT trigger a
+// re-dial: a bad argument, a vendor 4xx, or a timeout all mean the connection
+// is fine and re-dialling would just kill a working server.
+//
+// Before this existed the dead flag was terminal for the daemon's lifetime.
+// Every later call failed in ~7µs against a pipe with nothing on the other end,
+// and the only cure was a daemon restart — observed 2026-08-05, when three
+// google-workspace drive_search calls failed instantly and the assistant
+// concluded it had misclicked its own tool.
+var ErrClientNotReading = errors.New("mcp client is no longer reading responses")
+
 // Client is a connection to a single MCP server.
 type Client struct {
 	config ServerConfig
@@ -544,9 +561,9 @@ func (c *Client) callStdio(ctx context.Context, method string, params any) (json
 	// timeout before the dispatcher noticed the failure.
 	if c.dead.Load() {
 		if reason, ok := c.deadReason.Load().(error); ok && reason != nil {
-			return nil, fmt.Errorf("mcp client %s is no longer reading responses: %w", c.config.Name, reason)
+			return nil, fmt.Errorf("%w: mcp client %s: %w", ErrClientNotReading, c.config.Name, reason)
 		}
-		return nil, fmt.Errorf("mcp client %s is no longer reading responses", c.config.Name)
+		return nil, fmt.Errorf("%w: mcp client %s", ErrClientNotReading, c.config.Name)
 	}
 	id := c.reqID.Add(1)
 	req := jsonRPCRequest{
@@ -671,6 +688,10 @@ func (c *Client) readStdioResponses() {
 	if err == nil {
 		err = fmt.Errorf("mcp server %s closed stdout before responding", c.config.Name)
 	}
+	// Wrap with the sentinel so the calls ALREADY BLOCKED here get the same
+	// re-dial treatment as ones arriving later. Without this the in-flight
+	// callers — the ones that noticed first — would be the only ones not healed.
+	drainErr := fmt.Errorf("%w: %w", ErrClientNotReading, err)
 
 	// Mark the client dead BEFORE draining pending — so any concurrent
 	// callStdio that registers between the drain and now sees the flag
@@ -692,7 +713,7 @@ func (c *Client) readStdioResponses() {
 	defer c.pendingMu.Unlock()
 	for id, respCh := range c.pending {
 		delete(c.pending, id)
-		respCh <- stdioResult{err: err}
+		respCh <- stdioResult{err: drainErr}
 		close(respCh)
 	}
 }

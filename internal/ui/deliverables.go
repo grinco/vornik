@@ -228,19 +228,47 @@ func (s *Server) DeliverableSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Defense against sending an artifact that doesn't belong to this
-	// task, or isn't a deliverable (OUTPUT) at all — a crafted artifact
-	// ID from a different task/project must not be sendable by guessing
-	// the ID, and INPUT/INTERMEDIATE artifacts are never "the
+	// task's tree, or isn't a deliverable (OUTPUT) at all — a crafted
+	// artifact ID from an unrelated task/project must not be sendable by
+	// guessing the ID, and INPUT/INTERMEDIATE artifacts are never "the
 	// deliverable" (design §5.8).
-	if artifact.TaskID == nil || *artifact.TaskID != taskID || artifact.ArtifactClass != persistence.ArtifactClassOutput {
+	//
+	// The ownership test spans the task TREE, not just this task
+	// (2026-08-05 incident): the deliverable of a delegating task belongs
+	// to its child, and a strict equality here made the one artifact the
+	// operator wanted permanently unsendable. A descendant is in scope; an
+	// unrelated task is not, so the guessing defense is intact.
+	if artifact.ArtifactClass != persistence.ArtifactClassOutput {
 		http.NotFound(w, r)
 		return
+	}
+	// Belt and braces on tenancy: the artifact's own project must match the
+	// task the requester was authorized against. artifactInTaskTree already
+	// refuses cross-project descendants, but this makes the invariant local
+	// and cheap to see — the send path must never hand out an artifact from a
+	// project the caller wasn't scope-checked for.
+	if artifact.ProjectID != task.ProjectID {
+		http.NotFound(w, r)
+		return
+	}
+	owner := ""
+	if artifact.TaskID != nil {
+		owner = *artifact.TaskID
+	}
+	if !artifactInTaskTree(ctx, s.taskRepo, taskID, task.ProjectID, owner) {
+		http.NotFound(w, r)
+		return
+	}
+
+	downloadURL := ""
+	if s.webUIBaseURL != "" {
+		downloadURL = strings.TrimRight(s.webUIBaseURL, "/") + "/ui/artifacts/" + artifact.ID
 	}
 
 	res, ok := chatorigin.Resolve(ctx, task, s.taskRepo, s.chatAudit, s.channelResolver)
 	if !ok {
 		s.renderDeliverableSendResult(w, deliverableSendResult{
-			Message: "This task wasn't started from a chat channel — nothing to send to.",
+			Message: unroutableMessage(res.Reason, res.ChannelName, downloadURL),
 		})
 		return
 	}
@@ -250,8 +278,8 @@ func (s *Server) DeliverableSend(w http.ResponseWriter, r *http.Request) {
 		mime = *artifact.MimeType
 	}
 	text := fmt.Sprintf("Here's your %s:", artifact.Name)
-	if s.webUIBaseURL != "" {
-		text += "\n" + strings.TrimRight(s.webUIBaseURL, "/") + "/ui/artifacts/" + artifact.ID
+	if downloadURL != "" {
+		text += "\n" + downloadURL
 	}
 	msg := conversation.ChannelMessage{
 		SessionID:   res.SessionID,
@@ -280,6 +308,47 @@ func (s *Server) DeliverableSend(w http.ResponseWriter, r *http.Request) {
 
 	s.deliverableMetrics.RecordSend(res.ChannelName)
 	s.renderDeliverableSendResult(w, deliverableSendResult{Ok: true, Channel: res.ChannelName})
+}
+
+// unroutableMessage renders the human-facing explanation for a deliverable
+// that cannot be routed to a chat, discriminated by WHY.
+//
+// Before 2026-08-05 every failure printed "This task wasn't started from a
+// chat channel" — a factual claim about the task. For a task that WAS
+// chat-originated but whose chat_audit_log row had gone missing, that claim
+// was false, and it cost the operator a diagnosis: they concluded that
+// parent-channel inheritance was unimplemented (it is implemented, in
+// chatorigin.TurnID) rather than that a row had been lost. Only
+// ReasonNotChatOriginated is a property of the task; the rest are faults, and
+// a fault should read like one and offer the manual fallback.
+func unroutableMessage(reason chatorigin.Reason, channelName, downloadURL string) string {
+	var msg string
+	switch reason {
+	case chatorigin.ReasonOriginRecordMissing:
+		msg = "This task came from a chat, but its chat-origin record is missing, " +
+			"so the deliverable can't be routed automatically. " +
+			"(The originating turn is recorded in chat_audit_log; that row is gone, " +
+			"and nothing backfills it.)"
+	case chatorigin.ReasonOriginRecordMalformed:
+		msg = "This task's chat-origin record is unreadable, so the deliverable " +
+			"can't be routed automatically."
+	case chatorigin.ReasonChannelUnavailable:
+		where := "that channel"
+		if channelName != "" {
+			where = channelName
+		}
+		msg = "This task came from " + where + ", but that channel isn't available " +
+			"for outbound delivery on this deployment."
+	case chatorigin.ReasonNotChatOriginated, chatorigin.ReasonNone:
+		// Genuinely not chat-originated: correct, final, no fallback needed.
+		return "This task wasn't started from a chat channel — nothing to send to."
+	default:
+		return "This task wasn't started from a chat channel — nothing to send to."
+	}
+	if downloadURL != "" {
+		msg += " Download it here instead: " + downloadURL
+	}
+	return msg
 }
 
 // deliverableSendResult is the "deliverableSendResult" partial's data.

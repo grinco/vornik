@@ -92,7 +92,25 @@ type Connector struct {
 	// layer, which owns the registry and the daemon catalog — keeping it a function means
 	// this package needs no registry dependency and stays testable with a literal.
 	Resolver ServerResolver
-	Logger   zerolog.Logger
+	// OnGranted is called after a grant is stored, with the project and server
+	// it was stored for. Optional; nil is a no-op.
+	//
+	// It exists because storing the token is not the same as USING it. The
+	// access token is injected into an MCP client's headers when that client is
+	// wired, which happens at boot and on config reload — so before this hook,
+	// a completed consent changed nothing until the operator separately
+	// reloaded or restarted. The callback page said "Connected" while the tool
+	// surface kept sending unauthenticated requests and the control-plane badge
+	// kept reporting that authentication was required. Reported 2026-08-05
+	// against the atlassian server: consent at 22:21:26 did nothing, and a
+	// manual `vornikctl config reload` at 22:24:32 is what actually connected
+	// it.
+	//
+	// The implementation is expected to re-wire and re-probe. It must not
+	// block: this runs on the operator's callback request, and re-dialling
+	// every MCP server can take tens of seconds.
+	OnGranted func(projectID, serverName string)
+	Logger    zerolog.Logger
 
 	mu      sync.Mutex
 	pending map[string]*pendingAuth
@@ -125,6 +143,16 @@ type ServerRef struct {
 	// GrantedSecrets is the project's permissions.secrets allowlist. Ignored for
 	// daemon-scope servers, which have no project allowlist (design §9).
 	GrantedSecrets []string
+	// InheritedFrom names the project whose request produced a ref that was
+	// REDIRECTED to daemon scope — a name-only subscriber inheriting the daemon
+	// server's credential (design §9). ProjectID is "" in that case, because
+	// that is where the one shared grant lives; this field keeps the asking
+	// project reportable, so a surface can say "connected for project X via the
+	// daemon-scope grant" instead of having to choose between two half-truths.
+	//
+	// Empty for a project that owns its credential and for a direct
+	// daemon-scope lookup. Never part of a storage key.
+	InheritedFrom string
 }
 
 // ServerResolver resolves a (project, server) pair to its configuration. projectID "" means the
@@ -313,6 +341,7 @@ func (c *Connector) Complete(ctx context.Context, state, code string) (*persiste
 		return nil, fmt.Errorf("mcpconnect: persist grant: %w", err)
 	}
 	c.recordGrant(ctx, "mcp.oauth.connect", tok)
+	c.notifyGranted(tok.ProjectID, tok.ServerName)
 	return tok, nil
 }
 
@@ -331,7 +360,28 @@ func (c *Connector) Disconnect(ctx context.Context, projectID, serverName, actor
 	}
 	existing.ConnectedBy = actor
 	c.recordGrant(ctx, "mcp.oauth.disconnect", existing)
+	// Disconnect needs the re-wire just as much as connect does: without it the
+	// client keeps its injected Authorization header and goes on using a grant
+	// the operator just revoked.
+	c.notifyGranted(projectID, serverName)
 	return nil
+}
+
+// notifyGranted invokes OnGranted nil-safely. Panic-guarded because this runs
+// on the operator's callback request and a wiring bug in the hook must not take
+// the response — or the daemon — down after a consent that already succeeded.
+func (c *Connector) notifyGranted(projectID, serverName string) {
+	if c.OnGranted == nil {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			c.Logger.Error().Interface("panic", rec).
+				Str("project", projectID).Str("server", serverName).
+				Msg("mcp oauth: OnGranted hook panicked; the grant is stored but the re-wire did not run")
+		}
+	}()
+	c.OnGranted(projectID, serverName)
 }
 
 // GrantRecord is the §7.2 ledger payload — no token, no config diff, so it is safe to display,

@@ -46,6 +46,11 @@ type chatAuditTurn struct {
 	hallucinationSignals []hallucination.Signal
 }
 
+// chatAuditWriteTimeout bounds the detached chat-audit write in finish().
+// Generous enough for a contended Postgres yet short enough that a deferred
+// write cannot wedge the turn's teardown.
+const chatAuditWriteTimeout = 10 * time.Second
+
 // chatTurnIDContextKey is the context key under which the dispatcher
 // stashes the current turn's chat_audit_log.id. Unexported — readers
 // use ChatTurnIDFromContext.
@@ -200,6 +205,30 @@ func (t *chatAuditTurn) finish(ctx context.Context, req Request, result Result) 
 	if t == nil || t.agent == nil || t.agent.chatAuditRepo == nil {
 		return
 	}
+	// DETACH from the turn's context before writing (2026-08-05 incident).
+	//
+	// finish() is invoked from a `defer` on the SAME context the turn ran
+	// under, so a turn that exhausted its deadline hands this function an
+	// already-done context and every write fails with "context deadline
+	// exceeded". The failure mode is worst for exactly the turns that most
+	// need auditing: the slow ones.
+	//
+	// This row is not merely an audit trail — it is the ONLY durable record
+	// of a task's originating channel. chatorigin.ResolveForTurn looks up
+	// tasks.chat_turn_id in chat_audit_log to decide where to deliver a
+	// finished task, so losing the row makes the deliverable permanently
+	// unsendable: the narrator's completion push and the UI's "Send to
+	// chat" button both conclude the task never came from a chat at all.
+	// Nothing backfills it. A ten-minute Slack turn on janka-companion lost
+	// its report this way.
+	//
+	// WithoutCancel keeps the context's values (tracing spans, logger) while
+	// dropping cancellation; the fresh timeout bounds the write so a
+	// detached call cannot hang the deferred path forever. Same pattern as
+	// api/chat_proxy.go's telemetryCtx.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), chatAuditWriteTimeout)
+	defer cancel()
+
 	// Persist the prompt body keyed by its sha256 hex digest. The
 	// row references the hash so the prompt body is stored once
 	// across every turn that used it.

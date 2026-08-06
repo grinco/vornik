@@ -8,6 +8,7 @@ import (
 
 	"vornik.io/vornik/internal/conversation"
 	"vornik.io/vornik/internal/report"
+	"vornik.io/vornik/internal/version"
 )
 
 // ProblemReportBuilder turns a user's description of a problem into an
@@ -27,6 +28,13 @@ type ProblemReportBuilder interface {
 	// NOT submit anything: see the tool's own comment on why the human clicking
 	// the link is load-bearing rather than a convenience.
 	BuildProblemReport(ctx context.Context, symptom string) (issueURL, body string, err error)
+
+	// Edition reports the build's edition (version.EditionCommunity /
+	// EditionEnterprise) so the bundle guidance can avoid naming an
+	// Enterprise-only command to a Community reporter. The dispatcher has no
+	// build metadata of its own; the service container that implements this
+	// interface already holds it.
+	Edition() string
 }
 
 // SetProblemReportBuilder wires the bug-report path. Late-bound for the same
@@ -115,9 +123,20 @@ func (te *ToolExecutor) reportProblem(ctx context.Context, args string) ToolResu
 	// trace come from an OPERATOR-run support bundle, and this is the only place a
 	// shell-less reporter learns it exists, where it lands, and that they attach it
 	// themselves after reading it.
-	sb.WriteString(report.BundleGuidance("--task <the task id>   # or: --since 2h"))
-	sb.WriteString("\n\nRelay the steps above too if they ask for the logs — do NOT run " +
-		"support-report for them and do NOT paste its contents here: it is theirs to " +
-		"inspect and attach.")
+	edition := te.problemReports.Edition()
+	sb.WriteString(report.BundleGuidance("--task <the task id>   # or: --since 2h", edition))
+	// The "don't run it for them" instruction is about a command that only
+	// exists in Enterprise. Repeating it on Community would reintroduce the
+	// dead end BundleGuidance just removed — naming a command the reporter
+	// cannot run, to a reporter who has no terminal to see the error in.
+	if version.NormalizeEdition(edition) == version.EditionEnterprise {
+		sb.WriteString("\n\nRelay the steps above too if they ask for the logs — do NOT run " +
+			"support-report for them and do NOT paste its contents here: it is theirs to " +
+			"inspect and attach.")
+	} else {
+		sb.WriteString("\n\nRelay the note above too if they ask for the logs, and do NOT collect " +
+			"or paste diagnostics for them: anything that reaches the issue is theirs to " +
+			"review and attach.")
+	}
 	return ToolResult{Content: sb.String()}
 }

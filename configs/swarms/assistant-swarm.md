@@ -434,9 +434,11 @@ roles:
             and a mobile-first layout with an @media rule for wider screens.
           - You MAY embed a FEW relevant images to keep the page self-contained.
             For an image URL that appears in the deliverable/sources, call
-            mcp__scraper__encode_image with: url (the image), project_id (this
-            project's id), allowed_hosts (the image's host, e.g. ["*.example.com"]),
-            and max_width (~800). It returns {media_handle} (a short id — NOT the
+            mcp__scraper__encode_image with: url (the image), max_width (~800),
+            and — only if you expect a redirect to a DIFFERENT domain —
+            allowed_hosts (e.g. ["*.example.com"]); it defaults to the URL's own
+            host. Do not pass project_id: the daemon supplies it.
+            It returns {media_handle} (a short id — NOT the
             image data). Reference that handle in the HTML as
             <img src="cid:MEDIA_HANDLE" style="max-width:100%"> (substitute the
             actual handle). PageDrop inlines the real image for you at publish

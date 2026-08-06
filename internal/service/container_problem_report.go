@@ -60,6 +60,16 @@ type problemReportBuilder struct {
 // PUBLIC repository and anonymisation cannot prove the user's own words are free of a
 // customer name, so the human presses submit. Same gate as the CLI and the
 // report-problem skill.
+// Edition implements dispatcher.ProblemReportBuilder. The chat tool needs it so
+// the bundle guidance never names `vornikctl support-report` — an Enterprise-only
+// command — to a Community reporter.
+func (b *problemReportBuilder) Edition() string {
+	if b == nil {
+		return version.DefaultEdition
+	}
+	return b.edition
+}
+
 func (b *problemReportBuilder) BuildProblemReport(ctx context.Context, symptom string) (string, string, error) {
 	if b == nil {
 		return "", "", fmt.Errorf("problem reporting not configured")

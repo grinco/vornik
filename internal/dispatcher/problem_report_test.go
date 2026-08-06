@@ -12,6 +12,9 @@ type stubReportBuilder struct {
 	err       error
 	calls     int
 	gotSympt  string
+	// edition drives the bundle guidance the tool appends. Empty normalizes
+	// to Community, so tests asserting the Enterprise text must say so.
+	edition string
 }
 
 func (s *stubReportBuilder) BuildProblemReport(_ context.Context, symptom string) (string, string, error) {
@@ -19,6 +22,8 @@ func (s *stubReportBuilder) BuildProblemReport(_ context.Context, symptom string
 	s.gotSympt = symptom
 	return s.url, s.body, s.err
 }
+
+func (s *stubReportBuilder) Edition() string { return s.edition }
 
 // OPERATOR REQUEST 2026-07-30: "customers expect to be able to submit the bug report via
 // the chat channels (slack/telegram/email)". vornikctl report needed shell access to the
@@ -159,8 +164,12 @@ func TestSetProblemReportBuilder_NilSafe(_ *testing.T) {
 // that they attach it themselves after reading it.
 func TestReportProblem_TellsThemAboutTheEvidenceBundle(t *testing.T) {
 	b := &stubReportBuilder{
-		url:  "https://github.com/grinco/vornik/issues/new?title=x",
-		body: "### vornik problem report\n\n- **edition:** community (CE)\n",
+		url: "https://github.com/grinco/vornik/issues/new?title=x",
+		// Enterprise: support-report only exists there, so that is the edition
+		// whose response names it. The Community response is asserted by
+		// TestReportProblem_CommunityDoesNotNameSupportReport below.
+		body:    "### vornik problem report\n\n- **edition:** enterprise (EE)\n",
+		edition: "enterprise",
 	}
 	te := &ToolExecutor{problemReports: b}
 
@@ -181,6 +190,33 @@ func TestReportProblem_TellsThemAboutTheEvidenceBundle(t *testing.T) {
 	for _, want := range []string{"nothing has been submitted", "This is what it will say"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("tool response lost the review gate (%q):\n%s", want, got)
+		}
+	}
+}
+
+// TestReportProblem_CommunityDoesNotNameSupportReport — the chat reporter has no
+// terminal, so being told to run an Enterprise-only command is worse here than
+// in the CLI: they cannot even see the 501 that would explain it. A Community
+// deployment must not name support-report in the tool response at all.
+//
+// Regression for the 2026-08-05 CE dead end.
+func TestReportProblem_CommunityDoesNotNameSupportReport(t *testing.T) {
+	b := &stubReportBuilder{
+		url:     "https://github.com/grinco/vornik/issues/new?title=x",
+		body:    "### vornik problem report\n\n- **edition:** community (CE)\n",
+		edition: "community",
+	}
+	te := &ToolExecutor{problemReports: b}
+
+	got := te.reportProblem(context.Background(), `{"summary":"tasks complete with no output"}`).Content
+
+	if strings.Contains(got, "vornikctl support-report") {
+		t.Errorf("Community response must not name the Enterprise-only bundle command:\n%s", got)
+	}
+	// It still has to explain itself rather than silently dropping the section.
+	for _, want := range []string{"Enterprise", "doctor"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Community response missing %q — it must say why there is no bundle:\n%s", want, got)
 		}
 	}
 }

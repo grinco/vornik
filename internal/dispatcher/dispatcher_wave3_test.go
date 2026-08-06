@@ -94,9 +94,9 @@ func TestW3DispApplyDeferredLoading_NilStoreAboveThresholdYieldsSearchOnly(t *te
 	for i := 0; i < 25; i++ {
 		mcp = append(mcp, makeMCPTool("mcp__svc__t", "d"))
 	}
-	// threshold 20, len(mcp)=25 > 20, chatID!=0 → above-threshold path;
+	// threshold 20, len(mcp)=25 > 20, session key set → above-threshold path;
 	// store nil → must return builtin + tool_search only.
-	got := applyDeferredLoading(builtin, mcp, nil, 7, 20, nil)
+	got := applyDeferredLoading(builtin, mcp, nil, "7", 20, nil)
 	if len(got) != 2 {
 		t.Fatalf("nil store above threshold: len=%d, want 2 (builtin + tool_search)", len(got))
 	}
@@ -120,7 +120,7 @@ func TestW3DispApplyDeferredLoading_ZeroThresholdDefaults(t *testing.T) {
 		makeMCPTool("mcp__a__5", "d"),
 	}
 	store := newExpandedToolStore()
-	got := applyDeferredLoading(builtin, mcp, store, 9, 0, nil)
+	got := applyDeferredLoading(builtin, mcp, store, "9", 0, nil)
 	if len(got) != len(builtin)+len(mcp) {
 		t.Fatalf("zero threshold should default to %d and keep all visible; len=%d want %d",
 			DefaultDeferredToolThreshold, len(got), len(builtin)+len(mcp))

@@ -92,3 +92,54 @@ func TestPublishDaemonMCPServers_Snapshots(t *testing.T) {
 		t.Errorf("live catalog aliased the caller's slice: got %q", got[0].Name)
 	}
 }
+
+// TestPublicOrigin_ReflectsAReload pins the second half of the same
+// c.Config-is-pinned-to-boot bug.
+//
+// The MCP connector's BaseURL carried a comment stating it read LIVE so that
+// "setting public_base_url then reloading config must be enough — an operator
+// should not have to restart the daemon to make Connect work." It read
+// c.Config.Server.PublicBaseURL, which is never swapped on reload, so the
+// documented intent was defeated: Connect kept building its redirect URI from
+// whatever the origin was at boot. A redirect URI that does not match what the
+// vendor has registered fails AFTER the operator consents, which is the worst
+// place to find out.
+func TestPublicOrigin_ReflectsAReload(t *testing.T) {
+	c := &Container{Config: &config.Config{}}
+	c.Config.Server.PublicBaseURL = "https://boot.example.com"
+
+	if got := c.publicOrigin(); got != "https://boot.example.com" {
+		t.Fatalf("boot origin = %q", got)
+	}
+
+	c.publishPublicOrigin("https://reloaded.example.com")
+	if got := c.publicOrigin(); got != "https://reloaded.example.com" {
+		t.Errorf("after reload = %q, want the published origin", got)
+	}
+	// c.Config must not be mutated — that invariant is why the live holder exists.
+	if c.Config.Server.PublicBaseURL != "https://boot.example.com" {
+		t.Errorf("c.Config was mutated: %q", c.Config.Server.PublicBaseURL)
+	}
+}
+
+// TestPublicOrigin_HonoursTheAuthFallback — the connector previously read
+// Server.PublicBaseURL directly, skipping the auth.external_base_url fallback
+// that Config.PublicOrigin() honours. A deployment that set only the auth key
+// therefore had a working login and a Connect button that could not build a
+// redirect URI.
+func TestPublicOrigin_HonoursTheAuthFallback(t *testing.T) {
+	c := &Container{Config: &config.Config{}}
+	c.Config.Auth.ExternalBaseURL = "https://only-auth-key.example.com"
+	if got := c.publicOrigin(); got != "https://only-auth-key.example.com" {
+		t.Errorf("origin = %q, want the auth fallback", got)
+	}
+}
+
+// TestPublicOrigin_NilConfigIsSafe — called from wiring that can run before a
+// config exists.
+func TestPublicOrigin_NilConfigIsSafe(t *testing.T) {
+	c := &Container{}
+	if got := c.publicOrigin(); got != "" {
+		t.Errorf("nil config must yield empty, got %q", got)
+	}
+}

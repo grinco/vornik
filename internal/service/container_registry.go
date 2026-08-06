@@ -149,6 +149,7 @@ func (c *Container) initRegistry() error {
 		// c.Config is deliberately never swapped (see applyHotConfig).
 		if c.stagedConfig != nil {
 			c.publishDaemonMCPServers(c.stagedConfig.MCP.Servers)
+			c.publishPublicOrigin(c.stagedConfig.PublicOrigin())
 		}
 		c.initMCP()
 		// ...and the DISCOVERY catalog, which is what the operator actually

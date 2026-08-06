@@ -41,9 +41,17 @@ type AdminCPMCPRow struct {
 	// 2026-08-05 against the atlassian server, where the row said
 	// "unreachable ... returned 401" while the endpoint was perfectly healthy.
 	AuthChallenged bool
-	Error          string
-	ToolCount      int
-	LastCheck      string
+	// NeverChecked marks a server the registry has not probed even once, which
+	// is every server for the first moments after a daemon restart or a config
+	// reload (the first probe is async). "Unreachable" is a claim about the
+	// server; before any probe there is no such claim to make, and rendering
+	// one sent the operator hunting a fault that did not exist — reported twice
+	// on 2026-08-05 as "atlassian is offline again after the restart", when the
+	// server was fine and simply had not been contacted yet.
+	NeverChecked bool
+	Error        string
+	ToolCount    int
+	LastCheck    string
 
 	// AuthMode is none | oauth | static | env (MCP server authentication
 	// design §7 item 3).
@@ -112,7 +120,10 @@ func (s *Server) buildCPMCP(ctx context.Context, data *AdminControlPlaneData) {
 			Name: srv.Name, Transport: srv.Transport, Endpoint: endpoint,
 			Reachable: srv.Reachable, Error: srv.Error, ToolCount: len(srv.Tools), LastCheck: last,
 		}
-		row.AuthChallenged = !row.Reachable && mcpErrorIsAuthChallenge(row.Error)
+		// A zero LastCheckedAt is the registry's "never probed" sentinel, so it
+		// is what separates "checking" from a real negative verdict.
+		row.NeverChecked = !row.Reachable && srv.LastCheckedAt.IsZero()
+		row.AuthChallenged = !row.Reachable && !row.NeverChecked && mcpErrorIsAuthChallenge(row.Error)
 		s.decorateCPMCPAuth(ctx, &row)
 		data.MCPRows = append(data.MCPRows, row)
 	}

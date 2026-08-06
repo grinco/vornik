@@ -3,11 +3,11 @@ sources:
     - path: internal/registry/project.go
       sha256: 0050bcd2dc23bc8050c197f4ccecaf76b0b7460ea2b080a585b758146c6dd30b
     - path: internal/mcp/client.go
-      sha256: 2c68d2d35da9f7a0b6cc76fcb0533408dac94a2c3d0a8281444759f3da1f070e
+      sha256: 9c1d50358c550b25e6188ca253742f829213904f59e04f10bdf81e6a7b07b99f
     - path: internal/mcp/ratelimit.go
       sha256: 19ad0c64e2abd9d25e95971e1ba5e3cfe91f34852edeca6e4f9c70825b2e901d
     - path: internal/cli/mcp.go
-      sha256: 7b14785dee6f77dc7c252e92c0c0cf1b270b230216440a9d6b8c262b284baed0
+      sha256: de369186aea47ddb291a199cb73fb1e34b7b0e0823ccfcc859feb49568f4e28e
 ---
 # Connect Your Tools (MCP)
 
@@ -57,10 +57,31 @@ There are two transports:
   daemon terminates the server's whole process group, so launchers that fork
   a worker process (`npx`, `tsx`, shell wrappers) are cleaned up with it —
   don't rely on an MCP subprocess outliving its connection.
+
+  If a stdio server exits or closes stdout on its own, the daemon **re-launches
+  it automatically** on the next tool call and retries that call once. You do
+  not need to restart the daemon to recover a crashed stdio server. Concurrent
+  calls against a server that has just died share one relaunch rather than
+  starting a subprocess each. If the relaunch itself fails — the command is
+  gone, or it exits immediately — the tool call returns an error saying the
+  server is not running, and the daemon log carries the launch failure.
 - **`sse`** — the daemon connects to a long-running server at `url` over HTTP.
   Use this for tools that run as their own service.
 
 `command`/`args`/`env` apply only to `stdio`; `url` applies only to `sse`.
+
+### `project_id` is supplied by the daemon
+
+If a server declares a `project_id` argument, the daemon fills it in on every
+call from the calling project and **removes it from the schema the model sees**.
+Servers use it for tenant isolation, quota accounting and per-project state, so
+it is the daemon's to state rather than the model's to claim — a model naming
+another project would otherwise be billed to it and could reach its state. It is
+also simply unknowable to a chat model, and leaving it as a `required` field
+made such tools fail validation outright.
+
+Nothing is required of a server author beyond declaring the argument as usual;
+if you call a tool by hand through `vornikctl mcp call -p <project>`, omit it.
 `name` must be unique within the project — it's how tools are namespaced and
 how you target a server from the CLI.
 
@@ -437,10 +458,28 @@ vornikctl mcp servers
 ```
 
 This is daemon-scoped (there is no `--project` flag); it reports each server's
-transport, whether it's `reachable`, how many tools it advertises, and its
-endpoint. Remember that a server appearing here is **not** automatically
-available to a project — grant access by adding it to that project's
-`mcp.servers`.
+transport, its status, how many tools it advertises, and its endpoint. Remember
+that a server appearing here is **not** automatically available to a project —
+grant access by adding it to that project's `mcp.servers`.
+
+The status column has three values, and the third is easy to mistake for a
+fault:
+
+| Status | Meaning |
+| --- | --- |
+| `reachable` | The last health probe connected and listed tools. |
+| `unreachable: <error>` | The last probe ran and failed, for the reason shown. |
+| `checking` | **No probe has run yet.** The first probe after a daemon start or a config reload is asynchronous, so every server reads `checking` for a moment. Re-run the command rather than troubleshooting the server. |
+
+The same three states appear on the Control Plane → MCP tab, where `checking`
+renders as a neutral "checking…" badge. In `--json` output, a server that has
+never been probed simply has no `last_checked_at` field.
+
+`checking` covers the *first* probe only. Once a server has a verdict, a
+re-probe does not change what you see: the row keeps showing the previous result
+and the time it was taken, until the new probe lands and replaces it. So a
+failing server reads `unreachable` continuously rather than flickering — the
+`last checked` timestamp is what tells you how old that verdict is.
 
 **Call a tool directly**, skipping the model — the fastest way to confirm a
 tool works and check its arguments:

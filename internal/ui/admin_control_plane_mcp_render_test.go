@@ -275,6 +275,9 @@ func TestMCPRow_AuthChallengedRendersDistinctly(t *testing.T) {
 		URL:       "https://mcp.atlassian.com/v1/mcp/authv2",
 		Reachable: false,
 		Error:     "mcp initialize failed for atlassian: streamable-http server returned 401",
+		// A 401 is a probe RESULT, so this row has been checked. Leaving
+		// LastCheckedAt zero would make it "checking…" instead.
+		LastCheckedAt: time.Now(),
 	}}}))
 	if !strings.Contains(html, "needs authentication") {
 		t.Errorf("a 401 row must say it needs authentication:\n%s", html)
@@ -289,11 +292,55 @@ func TestMCPRow_AuthChallengedRendersDistinctly(t *testing.T) {
 func TestMCPRow_GenuinelyUnreachableStillSaysSo(t *testing.T) {
 	html := renderCPMCP(t, WithMCPRegistry(cpMCPRenderRegistry{servers: []mcp.ServerSnapshot{{
 		Name: "broken", Transport: "streamable-http",
-		URL:       "https://nope.example.com/mcp",
-		Reachable: false,
-		Error:     "dial tcp: connection refused",
+		URL:           "https://nope.example.com/mcp",
+		Reachable:     false,
+		Error:         "dial tcp: connection refused",
+		LastCheckedAt: time.Now(), // probed, and the probe failed
 	}}}))
 	if !strings.Contains(html, ">unreachable<") {
 		t.Errorf("a real connection failure must still read unreachable:\n%s", html)
+	}
+}
+
+// TestMCPRow_NeverProbedSaysCheckingNotUnreachable — for the first moments
+// after a daemon restart or config reload the registry has not probed anything
+// yet (the first probe is async). "Unreachable" is a verdict; before any probe
+// there is no verdict, and printing one cost the operator two rounds of
+// troubleshooting on 2026-08-05 ("atlassian is offline again after the
+// restart") against a server that was perfectly healthy and simply had not
+// been contacted yet.
+func TestMCPRow_NeverProbedSaysCheckingNotUnreachable(t *testing.T) {
+	html := renderCPMCP(t, WithMCPRegistry(cpMCPRenderRegistry{servers: []mcp.ServerSnapshot{{
+		Name: "atlassian", Transport: "streamable-http",
+		URL:       "https://mcp.atlassian.com/v1/mcp/authv2",
+		Reachable: false,
+		Error:     "not yet refreshed",
+		// LastCheckedAt zero — the registry's never-probed sentinel.
+	}}}))
+	if !strings.Contains(html, "checking") {
+		t.Errorf("a never-probed row must read as checking:\n%s", html)
+	}
+	if strings.Contains(html, ">unreachable<") {
+		t.Errorf("a never-probed row must not claim unreachable:\n%s", html)
+	}
+	if strings.Contains(html, "text-red-400") {
+		t.Errorf("the placeholder error must not render in fault red:\n%s", html)
+	}
+	if strings.Contains(html, "last checked") {
+		t.Errorf("a never-probed row must not claim a last-check time:\n%s", html)
+	}
+}
+
+// A never-probed row must not be mistaken for an auth challenge either — the
+// two states have different remedies (wait vs. grant consent).
+func TestMCPRow_NeverProbedIsNotAnAuthChallenge(t *testing.T) {
+	html := renderCPMCP(t, WithMCPRegistry(cpMCPRenderRegistry{servers: []mcp.ServerSnapshot{{
+		Name: "atlassian", Transport: "streamable-http",
+		URL:       "https://mcp.atlassian.com/v1/mcp/authv2",
+		Reachable: false,
+		Error:     "not yet refreshed",
+	}}}))
+	if strings.Contains(html, "needs authentication") {
+		t.Errorf("never-probed must not read as an auth challenge:\n%s", html)
 	}
 }

@@ -22,14 +22,18 @@ type mcpServerToolJSON struct {
 // mcp.ServerSnapshot but uses JSON-shaped fields the API contract
 // commits to (tools: null when unreachable, no internal types).
 type mcpServerJSON struct {
-	Name          string              `json:"name"`
-	Transport     string              `json:"transport"`
-	URL           string              `json:"url,omitempty"`
-	Command       string              `json:"command,omitempty"`
-	Reachable     bool                `json:"reachable"`
-	Tools         []mcpServerToolJSON `json:"tools"`
-	Error         string              `json:"error,omitempty"`
-	LastCheckedAt time.Time           `json:"last_checked_at"`
+	Name      string              `json:"name"`
+	Transport string              `json:"transport"`
+	URL       string              `json:"url,omitempty"`
+	Command   string              `json:"command,omitempty"`
+	Reachable bool                `json:"reachable"`
+	Tools     []mcpServerToolJSON `json:"tools"`
+	Error     string              `json:"error,omitempty"`
+	// LastCheckedAt is ABSENT for a server the registry has not probed yet
+	// (every server for the moments after a restart — the first probe is
+	// async). It used to serialise the zero time as "0001-01-01T00:00:00Z",
+	// which reads as a real check to any consumer that parses it.
+	LastCheckedAt *time.Time `json:"last_checked_at,omitempty"`
 }
 
 // mcpServersResponse is the wire shape of GET /api/v1/mcp/servers.
@@ -70,13 +74,16 @@ func (s *Server) ListMCPServers(w http.ResponseWriter, r *http.Request) {
 // constructing a Server.
 func toJSON(s mcp.ServerSnapshot) mcpServerJSON {
 	out := mcpServerJSON{
-		Name:          s.Name,
-		Transport:     s.Transport,
-		URL:           s.URL,
-		Command:       s.Command,
-		Reachable:     s.Reachable,
-		Error:         s.Error,
-		LastCheckedAt: s.LastCheckedAt,
+		Name:      s.Name,
+		Transport: s.Transport,
+		URL:       s.URL,
+		Command:   s.Command,
+		Reachable: s.Reachable,
+		Error:     s.Error,
+	}
+	if !s.LastCheckedAt.IsZero() {
+		checked := s.LastCheckedAt
+		out.LastCheckedAt = &checked
 	}
 	if s.Reachable {
 		// Empty tool list is a legitimate state (server connected,

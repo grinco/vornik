@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"vornik.io/vornik/internal/secrets"
+	"vornik.io/vornik/internal/version"
 )
 
 // The public body must NOT leak identifiers — email, home paths (with the
@@ -351,7 +352,10 @@ func TestScrubberIPv6InContext(t *testing.T) {
 // the archive lands, that they must inspect it, or how to get it onto the issue
 // simply never attaches it. One copy of that guidance, used by every path.
 func TestBundleGuidance(t *testing.T) {
-	g := BundleGuidance("--task task_20260803110416_1b040469e7c058da")
+	// Enterprise: this test pins the bundle instructions, which only that
+	// edition can act on. The Community text is covered in
+	// bundle_guidance_edition_test.go.
+	g := BundleGuidance("--task task_20260803110416_1b040469e7c058da", version.EditionEnterprise)
 
 	for _, want := range []string{
 		"vornikctl support-report --task task_20260803110416_1b040469e7c058da", // the exact command

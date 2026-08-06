@@ -28,6 +28,14 @@ type stubConnector struct {
 	discAct   string
 	discCalls int
 	redirect  string
+
+	// The scope each call was made at. This is half the token-row key, so it is
+	// what separates "asked about the right grant" from "asked about a row
+	// nobody wrote".
+	grantScope    string
+	grantScopeSet bool
+	discScope     string
+	discScopeSet  bool
 }
 
 func (s *stubConnector) ResolveServer(string, string) (mcpconnect.ServerRef, bool) {
@@ -38,13 +46,17 @@ func (s *stubConnector) Begin(context.Context, mcpconnect.ServerRef, string) (mc
 	return s.begun, s.beginErr
 }
 
-func (s *stubConnector) Disconnect(_ context.Context, _, _, actor string) error {
+func (s *stubConnector) Disconnect(_ context.Context, projectID, _, actor string) error {
 	s.discAct = actor
+	s.discScope = projectID
+	s.discScopeSet = true
 	s.discCalls++
 	return nil
 }
 
-func (s *stubConnector) Grant(context.Context, string, string) (*persistence.MCPOAuthToken, error) {
+func (s *stubConnector) Grant(_ context.Context, projectID, _ string) (*persistence.MCPOAuthToken, error) {
+	s.grantScope = projectID
+	s.grantScopeSet = true
 	return s.grant, nil
 }
 
@@ -311,4 +323,102 @@ func TestMCPOAuthActor_NeverCarriesTheKey(t *testing.T) {
 	actor := mcpOAuthActor(r)
 	assert.NotContains(t, actor, "supersecret")
 	assert.Contains(t, actor, "api-key:")
+}
+
+// TestMCPOAuthStatus_InheritedGrantIsReportedAtDaemonScope — a project that
+// subscribes to a daemon-scope server by name only inherits its credential, so
+// the grant lives at project_id "". Reading it at the project's own id finds
+// nothing and reports "not connected" for a project whose tools demonstrably
+// work — which is what `oauth-status atlassian -p easeit-companion` did on
+// 2026-08-05 while the same project listed all 16 Atlassian tools.
+func TestMCPOAuthStatus_InheritedGrantIsReportedAtDaemonScope(t *testing.T) {
+	conn := &stubConnector{
+		refOK: true,
+		// What the resolver returns for an inherited subscription: the grant
+		// lives at daemon scope, and the asking project is carried alongside.
+		ref: mcpconnect.ServerRef{
+			ProjectID:     "",
+			InheritedFrom: "easeit-companion",
+			ServerName:    "atlassian",
+			URL:           "https://mcp.atlassian.com/v1/mcp/authv2",
+		},
+		grant: &persistence.MCPOAuthToken{
+			Resource:    "https://mcp.atlassian.com/v1/mcp/authv2",
+			ConnectedBy: "operator",
+			ConnectedAt: time.Now(),
+		},
+	}
+	s := mcpOAuthServer(t, conn)
+	w := doJSON(t, s.MCPOAuthStatus, http.MethodGet,
+		"/api/v1/mcp/oauth/status?project_id=easeit-companion&server=atlassian", nil)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.True(t, conn.grantScopeSet, "the handler must read a grant")
+	require.Equal(t, "", conn.grantScope,
+		"an inherited grant must be read at daemon scope, not at the asking project's id")
+
+	var resp mcpOAuthStatusResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.True(t, resp.Connected)
+	require.Equal(t, "easeit-companion", resp.InheritedFrom,
+		"the response must say WHICH grant is doing the work, so an operator knows "+
+			"where to reconnect or revoke and which projects that would affect")
+}
+
+// A project that owns its credential must still be read at its own scope — the
+// inheritance rule must not collapse every project onto the daemon row.
+func TestMCPOAuthStatus_OwnGrantStaysAtProjectScope(t *testing.T) {
+	conn := &stubConnector{
+		refOK: true,
+		ref: mcpconnect.ServerRef{
+			ProjectID:  "acme",
+			ServerName: "linear",
+		},
+		grant: &persistence.MCPOAuthToken{ConnectedBy: "operator", ConnectedAt: time.Now()},
+	}
+	s := mcpOAuthServer(t, conn)
+	w := doJSON(t, s.MCPOAuthStatus, http.MethodGet,
+		"/api/v1/mcp/oauth/status?project_id=acme&server=linear", nil)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "acme", conn.grantScope, "a project's own grant stays at its own scope")
+
+	var resp mcpOAuthStatusResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Empty(t, resp.InheritedFrom, "nothing was inherited, so nothing to disclose")
+}
+
+// TestMCPOAuthDisconnect_DeletesTheGrantActuallyInUse — disconnect at the raw
+// project_id deleted a row that was never the one being used, so it reported
+// success while the inherited credential stayed live. Deleting the wrong row is
+// worse than the status bug: the operator believes access is revoked.
+func TestMCPOAuthDisconnect_DeletesTheGrantActuallyInUse(t *testing.T) {
+	conn := &stubConnector{
+		refOK: true,
+		ref: mcpconnect.ServerRef{
+			ProjectID:     "",
+			InheritedFrom: "easeit-companion",
+			ServerName:    "atlassian",
+		},
+	}
+	s := mcpOAuthServer(t, conn)
+	w := doJSON(t, s.MCPOAuthDisconnect, http.MethodPost, "/api/v1/mcp/oauth/disconnect",
+		map[string]string{"project_id": "easeit-companion", "server": "atlassian"})
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.True(t, conn.discScopeSet)
+	require.Equal(t, "", conn.discScope,
+		"disconnect must delete the daemon-scope row the wiring reads")
+}
+
+// An unknown server name must not be silently reassigned to daemon scope: the
+// honest answer is "nothing configured there", which the raw scope produces.
+func TestMCPOAuthStatus_UnresolvableServerKeepsTheAskedScope(t *testing.T) {
+	conn := &stubConnector{refOK: false}
+	s := mcpOAuthServer(t, conn)
+	w := doJSON(t, s.MCPOAuthStatus, http.MethodGet,
+		"/api/v1/mcp/oauth/status?project_id=acme&server=nope", nil)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "acme", conn.grantScope)
 }

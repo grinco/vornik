@@ -116,11 +116,15 @@ func TestProgressSignal_SlowTurnPostsThenRemovesPlaceholder(t *testing.T) {
 
 	ch.beginProgressSignal(context.Background(), session)
 
-	// Wait for the placeholder to appear rather than sleeping a fixed span.
-	deadline := time.Now().Add(2 * time.Second)
-	for stub.callsTo("/chat.postMessage") == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
+	// Wait until the placeholder's ts has been RECORDED, not merely POSTed. This
+	// loop used to poll stub.callsTo("/chat.postMessage"), which is the earlier of
+	// the two moments: Send's delete only fires if it can see a stored
+	// placeholder ts, so winning that race left the placeholder undeleted and
+	// failed at "placeholder deletes = 0, want 1" — observed on the parent repo's
+	// slower CI runner (grinco/vornik-ee PR #62, 2026-08-06), never locally.
+	// awaitPlaceholder exists for exactly this and says so; the other two
+	// progress tests already used it.
+	awaitPlaceholder(t, ch, session)
 	if got := stub.callsTo("/chat.postMessage"); got != 1 {
 		t.Fatalf("placeholder posts = %d, want 1 after the delay elapsed", got)
 	}

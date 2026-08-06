@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: ab23fe7c8cd42a00dc4d63a5bc6378629c6135822bef6e2210fe26f6fac3b0a9
+      sha256: b4d88b2787cda27d81625c82d7d92e56bfc1ae7f1d065657738c08b2a674c4c2
 ---
 # Release Notes
 
@@ -14,6 +14,56 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.8.2
+
+**Upgrade if you use vornik in Slack direct messages.** 2026.8.0 stopped a Slack
+bot answering DMs entirely — silently, with no reply and no visible error.
+**Both 2026.8.0 and 2026.8.1 are affected.**
+
+- **Fixed: Slack direct messages were dropped when `channel_allowlist` was empty.**
+  2026.8.0 correctly made an unconfigured `channel_allowlist` deny rather than
+  admit every channel in your workspace. But that new check ran *before* the
+  long-standing rule that a channel allow-list never applies to a direct message,
+  so it answered first and the DM rule never got a chance to.
+
+    An empty `channel_allowlist` is not a mistake — it is the normal setup for a
+    bot people talk to in DMs. Slack creates a DM's channel id the first time each
+    person writes to the bot, so you cannot list it in advance; `sender_allowlist`
+    is what controls a DM. Every deployment set up that way lost every DM, on
+    messages, `/vornik`, file uploads and voice memos alike. Because both
+    allow-list checks drop a message before doing any work, nothing appeared in
+    Slack and no task was created — the bot simply went quiet.
+
+    Direct messages are now exempt from `channel_allowlist` whether it lists
+    channels or is empty. This does not loosen anything: `sender_allowlist` still
+    gates DMs, and it also denies by default as of 2026.8.0, so a message from
+    someone you have not listed is still refused.
+
+    **If you worked around this by setting `allow_unlisted_senders: true`, remove
+    it.** On an installation with an empty `channel_allowlist`, that flag also
+    admits every channel in the workspace. You never needed it for DMs: with a
+    populated `sender_allowlist`, it is not consulted there.
+
+- **Fixed: the App Home tab promised channel access the bot did not have.** With
+  no `channel_allowlist` configured, the **Where I answer** section said "any
+  channel I have been added to" — which stopped being true in 2026.8.0, when an
+  empty list started denying every channel. The first page a Slack user opens was
+  telling them the bot would answer in places it silently ignored them. It now
+  says what is actually configured, and what to ask an admin for.
+
+- **Clarified: group DMs are not supported.** The direct-message exemption covers
+  one-to-one DMs only. Adding the bot to a group DM produces silence rather than
+  an answer; the App Home tab and the Slack guide now both say so, instead of
+  leaving you to find out.
+
+!!! tip "If a chat bot ever goes quiet"
+    Both Slack allow-list checks log a warning and stop before any model is
+    called, so a refused message leaves no trace in Slack and no task behind.
+    Searching the daemon log for `not on installation allowlist` distinguishes an
+    allow-list refusal from a genuine failure.
 
 ---
 

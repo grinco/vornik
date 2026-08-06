@@ -44,14 +44,51 @@ func validConfig() Config {
 		// that dispatches a message event. progress_test.go sets its own delay against
 		// a stub server.
 		ProgressSignalDelay: -1,
-		// The suite configures no sender/channel allowlist because these tests
-		// are about webhook routing, signature verification and dispatch — not
-		// authorization. Since 2026-08-05 an empty allowlist DENIES, so the
-		// dev-mode pass-through has to be asked for explicitly here exactly as
-		// a real deployment must. Authorization itself is covered by the tests
-		// that set the allowlists directly.
-		AllowUnlistedSenders: true,
+		// PRODUCTION-SHAPED AUTHORIZATION, deliberately — both allowlists are
+		// POPULATED and AllowUnlistedSenders stays false, so every gate is LIVE
+		// for every test in this package.
+		//
+		// This used to be `AllowUnlistedSenders: true` with both allowlists
+		// empty, on the reasoning that these tests are about routing and
+		// signature verification rather than authorization. That flag is exactly
+		// what the two fail-closed gates consult, so the entire end-to-end suite
+		// ran in dev-mode pass-through and could not observe either one. It is
+		// how the 2026-08-06 DM outage shipped: the gate-ordering bug was
+		// invisible to 100+ webhook tests because none of them had a gate turned
+		// on. A test default that disables the mechanism under test buys passing
+		// tests at the price of the coverage they claim.
+		//
+		// The lists carry the fixtures the suite actually posts as, so routing
+		// tests still pass while any future gate-ordering defect surfaces here.
+		// NOT listed, so they stay usable as denial fixtures: C_NOT_ALLOWED,
+		// C_not_allowed, G_private, U_unknown, U_strange, U_bob, U_x. DM ids
+		// (D…) are absent ON PURPOSE — a DM must be admitted by the
+		// channel-allowlist exemption, never by being listed, which is the
+		// invariant the outage broke.
+		SenderAllowlist:  []string{"U_alice", "U1"},
+		ChannelAllowlist: []string{"C_general", "C_test", "C_ops", "C1", "C_team", "C_random", "C_gen"},
 	}
+}
+
+// dmBotConfig returns the OTHER production-shaped authorization config: a bot
+// people talk to in direct messages. Sender allowlist populated,
+// `channel_allowlist` EMPTY, no dev-mode flag.
+//
+// This shape needs its own helper because it is not a weaker validConfig — it is
+// a different, equally real deployment, and the two exercise DIFFERENT code
+// paths through channelAllowed. A populated channel allowlist reaches the DM
+// exemption no matter which order the checks run in, so validConfig cannot
+// observe a gate-ordering defect on the empty path at all. That is exactly the
+// gap the 2026-08-06 outage fell through, and it stays open if every DM test
+// inherits a channel-bot config.
+//
+// Use this for any test whose inbound is a DM. Deliberately lists no D… id:
+// Slack mints those lazily per person, so a DM must be admitted by the
+// exemption rather than by enumeration.
+func dmBotConfig() Config {
+	cfg := validConfig()
+	cfg.ChannelAllowlist = nil
+	return cfg
 }
 
 // TestNew_RejectsEmptySigningSecret — defensive boot guard. An

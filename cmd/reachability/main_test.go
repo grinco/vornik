@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"vornik.io/vornik/internal/contractreg"
@@ -130,9 +131,20 @@ func TestMainPackages_FindsEveryEntryPoint(t *testing.T) {
 		t.Fatalf("found only %d main packages (%v) — a missed entry point turns live "+
 			"code into a dead verdict", len(got), got)
 	}
-	// Both edition assembly mains must be present: that is what makes the
-	// EE/CE union fall out without an export-then-analyse dance (§5.1).
-	want := map[string]bool{"./cmd/vornik": false, "./cmd/vornik-enterprise": false}
+	// Both edition assembly mains must be present IN THE EE TREE: that is what
+	// makes the EE/CE union fall out without an export-then-analyse dance (§5.1).
+	//
+	// CE has no ./cmd/vornik-enterprise — the export strips it — so requiring it
+	// unconditionally made this test impossible to pass on grinco/vornik, where it
+	// was the sole red job (build-test) on every push. Edition is decided by the
+	// MODULE PATH rather than by probing for the directory: the export rewrites
+	// vornik.io/vornik → vornik.io/vornik, so this still fails loudly
+	// if the EE main is ever deleted from the EE tree, which a stat-based check
+	// would silently accept.
+	want := map[string]bool{"./cmd/vornik": false}
+	if isEnterpriseModule(t, root) {
+		want["./cmd/vornik-enterprise"] = false
+	}
 	for _, g := range got {
 		if _, ok := want[g]; ok {
 			want[g] = true
@@ -191,4 +203,24 @@ func repoRootForTest(t *testing.T) string {
 		t.Fatalf("repoRoot: %v", err)
 	}
 	return root
+}
+
+// isEnterpriseModule reports whether the tree under root is the enterprise
+// superset, decided by go.mod's module path. The CE export rewrites
+// vornik.io/vornik → vornik.io/vornik, so this is the one signal that
+// is guaranteed to differ between the two trees and cannot be flipped by a file
+// being added or removed.
+func isEnterpriseModule(t *testing.T, root string) bool {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatalf("read go.mod: %v", err)
+	}
+	for line := range strings.SplitSeq(string(b), "\n") {
+		if path, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
+			return strings.HasSuffix(strings.TrimSpace(path), "/enterprise")
+		}
+	}
+	t.Fatalf("no module directive in %s/go.mod", root)
+	return false
 }

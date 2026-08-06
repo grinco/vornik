@@ -184,9 +184,10 @@ is what lets vornik reply.
   `sender_allowlist` is the control for DMs — so a DM-only bot lists its senders
   and leaves `channel_allowlist` empty, which denies every real channel while
   direct messages keep working. This covers one-to-one DMs only: a **group DM**
-  is not a DM for this purpose. Ordinary messages in a group DM are ignored
-  entirely, and an @-mention there is gated by `channel_allowlist` like any
-  channel, so it answers only once you list that conversation's id.
+  is not a DM for this purpose, and vornik does not support group DMs at all —
+  the bot is not subscribed to group-DM history, and a group-DM message is
+  dropped as an unhandled conversation type. Adding the bot to a group DM
+  produces silence, not an answer.
 - **In a thread, you only tag the bot once.** Replies inside a thread vornik is
   already part of continue the conversation without a mention. A new top-level
   message in a channel still needs an @-mention, which is what keeps the bot out

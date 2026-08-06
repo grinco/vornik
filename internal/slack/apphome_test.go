@@ -181,3 +181,62 @@ func TestAppHomeOpened_AcksImmediately(t *testing.T) {
 	}
 	ch.waitInFlight()
 }
+
+// The "Where I answer" block is a claim the operator's users read and act on, so
+// it has to track the fail-closed default 2026.8.0 introduced. Before this test
+// an installation with no channel_allowlist advertised "Any channel I have been
+// added to" — the exact opposite of what the gate does, since an empty list now
+// denies every channel. Same root as the 2026-08-06 DM outage: a default flipped
+// and the surfaces describing it were not swept.
+func TestBuildHomeView_EmptyChannelAllowlistDoesNotPromiseAnyChannel(t *testing.T) {
+	ch, err := New(validConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	t.Run("fail-closed: DMs only", func(t *testing.T) {
+		view := ch.buildHomeView(&installation{projectID: "p"})
+		body := flattenHomeView(t, view)
+		if strings.Contains(body, "Any channel I have been added to") {
+			t.Errorf("empty channel_allowlist must NOT advertise any-channel access; got:\n%s", body)
+		}
+		if !strings.Contains(body, "Direct messages only") {
+			t.Errorf("empty channel_allowlist should say DMs only; got:\n%s", body)
+		}
+	})
+
+	t.Run("dev mode opted open: any channel is honest", func(t *testing.T) {
+		view := ch.buildHomeView(&installation{projectID: "p", allowUnlisted: true})
+		if body := flattenHomeView(t, view); !strings.Contains(body, "Any channel I have been added to") {
+			t.Errorf("allow_unlisted_senders DOES admit any channel; got:\n%s", body)
+		}
+	})
+}
+
+// Group DMs are dropped as an unhandled conversation type and mpim:history is
+// deliberately absent from the manifest, so a user who adds the bot to one gets
+// silence. Say so in the surface they will look at.
+func TestBuildHomeView_StatesGroupDMsAreUnsupported(t *testing.T) {
+	ch, err := New(validConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	body := flattenHomeView(t, ch.buildHomeView(&installation{projectID: "p"}))
+	if !strings.Contains(strings.ToLower(body), "group dm") {
+		t.Errorf("home view should state group DMs are unsupported; got:\n%s", body)
+	}
+}
+
+// flattenHomeView flattens every block's text so a test can assert on the view's
+// prose without coupling to block ordering.
+func flattenHomeView(t *testing.T, v homeView) string {
+	t.Helper()
+	var sb strings.Builder
+	for _, b := range v.Blocks {
+		if b.Text != nil {
+			sb.WriteString(b.Text.Text)
+			sb.WriteString("\n")
+		}
+	}
+	return sb.String()
+}

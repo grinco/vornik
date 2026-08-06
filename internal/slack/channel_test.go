@@ -277,7 +277,7 @@ func TestHandleWebhook_AppMention_Dispatches(t *testing.T) {
 // TestHandleWebhook_MessageIM_Dispatches — DM messages bypass the
 // @mention requirement; every message in a DM is for the bot.
 func TestHandleWebhook_MessageIM_Dispatches(t *testing.T) {
-	cfg := validConfig()
+	cfg := dmBotConfig() // DM inbound: channel_allowlist empty, sender gate live
 	now := time.Unix(1700000000, 0)
 	ch := makeChannel(t, cfg, now)
 	rec := &recordingReceiver{}
@@ -364,7 +364,7 @@ func TestHandleWebhook_MessageIM_DispatchesWithSenderAllowlistOnly(t *testing.T)
 // delivery while the first request is still waiting on the LLM. Every retry
 // carries the same event_id and must be acknowledged without another dispatch.
 func TestHandleWebhook_DuplicateEventIDDispatchesOnce(t *testing.T) {
-	cfg := validConfig()
+	cfg := dmBotConfig() // DM inbound: channel_allowlist empty, sender gate live
 	now := time.Unix(1700000000, 0)
 	ch := makeChannel(t, cfg, now)
 	rec := &recordingReceiver{}
@@ -395,7 +395,7 @@ func TestHandleWebhook_DuplicateEventIDDispatchesOnce(t *testing.T) {
 }
 
 func TestHandleWebhook_RetryWhileFirstReceiveInFlightDispatchesOnce(t *testing.T) {
-	cfg := validConfig()
+	cfg := dmBotConfig() // DM inbound: channel_allowlist empty, sender gate live
 	now := time.Unix(1700000000, 0)
 	ch := makeChannel(t, cfg, now)
 	rec := &blockingReceiver{started: make(chan struct{}), release: make(chan struct{})}
@@ -443,7 +443,7 @@ func TestHandleWebhook_RetryWhileFirstReceiveInFlightDispatchesOnce(t *testing.T
 }
 
 func TestHandleWebhook_RetryHeaderDropsAcrossChannelInstances(t *testing.T) {
-	cfg := validConfig()
+	cfg := dmBotConfig() // DM inbound: channel_allowlist empty, sender gate live
 	now := time.Unix(1700000000, 0)
 	first := makeChannel(t, cfg, now)
 	second := makeChannel(t, cfg, now)
@@ -789,9 +789,14 @@ func TestHandleWebhook_RecordsSession(t *testing.T) {
 	}
 }
 
-// TestResolveSpeaker_EmptyAllowlistAdmitsAny — dev-mode pass-through.
+// TestResolveSpeaker_EmptyAllowlistAdmitsAny — dev-mode pass-through. Asks for
+// dev mode explicitly: validConfig is production-shaped (both allowlists
+// populated, fail-closed), so a test asserting the pass-through has to opt into
+// it rather than inherit it.
 func TestResolveSpeaker_EmptyAllowlistAdmitsAny(t *testing.T) {
-	cfg := validConfig() // SenderAllowlist nil
+	cfg := validConfig()
+	cfg.SenderAllowlist = nil
+	cfg.AllowUnlistedSenders = true
 	ch, _ := New(cfg)
 	sp, err := ch.ResolveSpeaker(context.Background(), "U_random")
 	if err != nil {
@@ -1060,6 +1065,9 @@ func (r *ctxCapturingReceiver) capturedCtx() context.Context {
 //  1. HandleWebhook must ACK without waiting for the Receiver, or Slack times out.
 //  2. The dispatch context must SURVIVE cancellation of the request context, or the
 //     reply is killed exactly when Slack hangs up.
+//
+// Stays on validConfig: this table mixes a DM with two C1 channel cases, so it
+// needs a channel allowlist. Its DM case still rides the exemption.
 func TestHandleWebhook_EventDispatchSurvivesRequestCancellation(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -1132,7 +1140,7 @@ func TestHandleWebhook_EventDispatchSurvivesRequestCancellation(t *testing.T) {
 // The detached context must still be BOUNDED — a turn that hangs forever must not leak
 // a goroutine and an LLM call indefinitely.
 func TestHandleWebhook_EventDispatchContextHasADeadline(t *testing.T) {
-	cfg := validConfig()
+	cfg := dmBotConfig() // DM inbound: channel_allowlist empty, sender gate live
 	ch, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1171,19 +1179,24 @@ func TestHandleWebhook_EventDispatchContextHasADeadline(t *testing.T) {
 // unknown D… ids, each created lazily by Slack on first contact.
 func TestHandleWebhook_DMBypassesChannelAllowlistButNotSenderAllowlist(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		senders      []string
-		wantDispatch bool
+		name          string
+		senders       []string
+		allowUnlisted bool
+		wantDispatch  bool
 	}{
-		{"DM from an allow-listed sender is dispatched", []string{"U_alice"}, true},
-		{"DM from an unknown sender is still refused", []string{"U_someone_else"}, false},
-		{"DM with no sender allowlist is dispatched (dev mode)", nil, true},
+		{"DM from an allow-listed sender is dispatched", []string{"U_alice"}, false, true},
+		{"DM from an unknown sender is still refused", []string{"U_someone_else"}, false, false},
+		// An empty sender allowlist DENIES since 2026.8.0, so the pass-through
+		// case must ask for dev mode by name instead of relying on a permissive
+		// suite default.
+		{"DM with no sender allowlist is dispatched (dev mode)", nil, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := validConfig()
 			// The team's shared channel only — deliberately NOT any D… id.
 			cfg.ChannelAllowlist = []string{"C03HTMUL2S1"}
 			cfg.SenderAllowlist = tc.senders
+			cfg.AllowUnlistedSenders = tc.allowUnlisted
 			ch, err := New(cfg)
 			if err != nil {
 				t.Fatalf("New: %v", err)

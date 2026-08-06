@@ -167,10 +167,14 @@ collect:
 	// Close here would wedge the whole reload cycle — this, not the connect,
 	// was the actual 2026-07-08 activator hang. Detach so a slow Close can't
 	// hold up the reload; a pathological Close leaks one goroutine at worst.
+	// Pinned on this goroutine for the same reason as in redial: these closes are
+	// fire-and-forget, so reading the package seam inside them is an
+	// unsynchronised read against any test that restores it.
+	closer := closeFn
 	for projectID, byServer := range displaced {
 		for name, client := range byServer {
 			go func(projectID, name string, client *Client) {
-				if err := closeFn(client); err != nil {
+				if err := closer(client); err != nil {
 					m.logger.Warn().
 						Err(err).
 						Str("project", projectID).
@@ -404,13 +408,28 @@ func (m *Manager) redial(projectID, serverName string) error {
 		return err
 	}
 
+	// Pin the closer HERE, on the calling goroutine, rather than letting the
+	// out-of-band goroutines below read the package seam whenever they happen to
+	// run. Two reasons, and the second is why this is production code and not a
+	// test tweak:
+	//
+	//  1. Those goroutines are fire-and-forget and outlive this call, so reading
+	//     a package-level var inside them is a read with no ordering against
+	//     anything. `go test -race` reports it against the seam restore in
+	//     swapDialSeams' t.Cleanup (manager_redial_test.go) — which is a real
+	//     unsynchronised read, not a test artefact.
+	//  2. Semantically the closer that runs should be the one in force when we
+	//     DECIDED to close, not whatever is installed by the time the goroutine
+	//     is scheduled.
+	closer := closeFn
+
 	m.mu.Lock()
 	byServer, stillThere := m.clients[projectID]
 	if !stillThere {
 		// The project was dropped by a reload while we dialled. Don't
 		// resurrect it — close what we just built.
 		m.mu.Unlock()
-		go func() { _ = closeFn(fresh) }()
+		go func() { _ = closer(fresh) }()
 		return fmt.Errorf("project %q was removed while re-dialling %q", projectID, serverName)
 	}
 	displaced := byServer[serverName]
@@ -420,7 +439,7 @@ func (m *Manager) redial(projectID, serverName string) error {
 	// Out of band: stdio Close does Kill + Wait and can block on a subprocess
 	// that will not reap, and this runs on a live tool-call path.
 	if displaced != nil {
-		go func() { _ = closeFn(displaced) }()
+		go func() { _ = closer(displaced) }()
 	}
 	return nil
 }

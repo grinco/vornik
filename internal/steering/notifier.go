@@ -130,7 +130,7 @@ func (n *Notifier) NotifySteeringRequired(ctx context.Context, task *persistence
 
 	msg := conversation.ChannelMessage{
 		SessionID: res.SessionID,
-		Text:      n.composeText(task, state),
+		Text:      n.composeText(ctx, task, state),
 		Buttons:   n.buildSteeringButtons(ctx, task, state),
 	}
 	// Email's Send needs an addressable recipient + subject (it can't always
@@ -245,7 +245,53 @@ func (n *Notifier) markSent(taskID, state string) {
 
 // composeText builds the operator-facing prompt: what the task needs + a UI
 // deep link to act on it.
-func (n *Notifier) composeText(task *persistence.Task, state string) string {
+// composeTextMaxBytes caps the whole rendered prompt. Sized against the
+// SMALLEST channel limit, not Slack's: Telegram rejects over 4096 and email
+// varies, so a cap chosen for Slack's ~40 000 would produce messages Telegram
+// silently drops. 3500 leaves headroom for a channel adding its own decoration.
+const composeTextMaxBytes = 3500
+
+// TaskRef is the short handle the operator types back: the first 4 characters
+// of the task id's RANDOM suffix — for task_20260806212011_77b90a7d0e1d0e47
+// that is "77b9". Deliberately not the timestamp segment, which is
+// near-identical across same-minute tasks and would collide constantly.
+func TaskRef(taskID string) string {
+	suffix := taskID
+	if i := strings.LastIndex(taskID, "_"); i >= 0 && i+1 < len(taskID) {
+		suffix = taskID[i+1:]
+	}
+	if len(suffix) > 4 {
+		suffix = suffix[:4]
+	}
+	return suffix
+}
+
+// composeText builds the operator-facing prompt.
+//
+// The question and its options are rendered INTO THE TEXT rather than left to
+// ChannelMessage.Buttons. Only Telegram reads Buttons, so for Slack and email a
+// decision checkpoint used to arrive as a bare "needs your input" with no
+// question and no options — structurally unanswerable
+// (https://docs.vornik.io §v1.1).
+//
+// Assembly order matters: the actionable tail (options + reply instruction +
+// UI link) is composed FIRST and the question gets whatever budget is left.
+// Truncating the finished string from the end — the obvious implementation —
+// would cut the reply instruction off a long question and reproduce the very
+// bug this fixes.
+func (n *Notifier) composeText(ctx context.Context, task *persistence.Task, state string) string {
+	return n.composeTextWithHint(ctx, task, state, "")
+}
+
+// composeTextWithHint renders the prompt with a CHANNEL-SUPPLIED reply
+// instruction. The reply protocol is per-channel and, on Slack, per-DEPLOYMENT:
+// several vornik instances share one workspace, each answering its own
+// configured slash command (/vornik, /holy, …). Hardcoding "/vornik answer"
+// here would tell a /holy operator to invoke a different instance — a separate
+// daemon with a separate database, where the 4-hex ref matches nothing or, on a
+// collision, answers an unrelated task. Telegram, which answers by tapping a
+// button, passes "" and gets no reply line at all.
+func (n *Notifier) composeTextWithHint(ctx context.Context, task *persistence.Task, state, replyHint string) string {
 	var what string
 	switch state {
 	case string(persistence.TaskStatusAwaitingApproval):
@@ -253,15 +299,86 @@ func (n *Notifier) composeText(task *persistence.Task, state string) string {
 	default: // AWAITING_INPUT
 		what = "needs your input — it asked a question and paused"
 	}
-	b := &strings.Builder{}
-	fmt.Fprintf(b, "🔔 Task %s (project %s) %s.", task.ID, task.ProjectID, what)
+	head := fmt.Sprintf("🔔 Task %s (project %s) %s.", task.ID, task.ProjectID, what)
+
+	question, options := n.checkpointBody(ctx, task, state)
+
+	tail := &strings.Builder{}
+	if len(options) > 0 {
+		tail.WriteString("\n")
+		for i, o := range options {
+			fmt.Fprintf(tail, "\n  %d. %s", i+1, o)
+		}
+		if replyHint != "" {
+			fmt.Fprintf(tail, "\n\nReply:  %s", replyHint)
+		}
+	} else if question != "" && replyHint != "" {
+		fmt.Fprintf(tail, "\n\nReply:  %s", replyHint)
+	}
 	if n.baseURL != "" {
 		// Canonical UI task-detail route is /ui/tasks/{id} — the nested
 		// /ui/projects/{p}/tasks/{id} form is the API path shape and 404s in
 		// the browser (operator-reported 2026-07-08).
-		fmt.Fprintf(b, "\nOpen it: %s/ui/tasks/%s", n.baseURL, task.ID)
+		fmt.Fprintf(tail, "\nOpen:   %s/ui/tasks/%s", n.baseURL, task.ID)
 	}
-	return b.String()
+
+	// Whatever is left after the fixed parts belongs to the question.
+	budget := composeTextMaxBytes - len(head) - tail.Len() - len("\n\n")
+	if question != "" && budget > 0 {
+		if len(question) > budget {
+			cut := budget - len("…")
+			if cut < 0 {
+				cut = 0
+			}
+			question = strings.TrimSpace(question[:cut]) + "…"
+		}
+		return head + "\n\n" + question + tail.String()
+	}
+	return head + tail.String()
+}
+
+// checkpointBody reads the open checkpoint's question and option labels.
+// Returns empty values when no checkpoint reader is wired or nothing is open —
+// the caller then renders the generic nudge rather than an empty options block.
+//
+// AWAITING_APPROVAL has no checkpoint row; it renders the fixed approve/reject
+// pair so approvals and decisions share one grammar for the operator to learn.
+func (n *Notifier) checkpointBody(ctx context.Context, task *persistence.Task, state string) (string, []string) {
+	if state == string(persistence.TaskStatusAwaitingApproval) {
+		return "", []string{"approve", "reject"}
+	}
+	if n.checkpoints == nil {
+		return "", nil
+	}
+	cp, err := n.checkpoints.GetOpenCheckpoint(ctx, task.ID)
+	if err != nil || cp == nil {
+		return "", nil
+	}
+	question := strings.TrimSpace(cp.Content)
+	var meta struct {
+		Question string `json:"question"`
+		Options  []struct {
+			ID    string `json:"id"`
+			Label string `json:"label"`
+		} `json:"options"`
+	}
+	if len(cp.Metadata) > 0 {
+		_ = json.Unmarshal(cp.Metadata, &meta)
+	}
+	if question == "" {
+		question = strings.TrimSpace(meta.Question)
+	}
+	labels := make([]string, 0, len(meta.Options))
+	for _, o := range meta.Options {
+		// Same label→id fallback buildSteeringButtons applies, so the text and
+		// the buttons can never disagree about what option 2 is.
+		if o.Label != "" {
+			labels = append(labels, o.Label)
+			continue
+		}
+		labels = append(labels, o.ID)
+	}
+	return question, labels
 }
 
 // decodeChatID forwards to the shared chatorigin.DecodeChatID (kept as a

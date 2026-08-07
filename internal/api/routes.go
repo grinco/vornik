@@ -542,6 +542,13 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 			mux.HandleFunc("/api/v1/slack/webhook", server.slackWebhook)
 		}
 
+		// Slack interactivity (steering-button taps). Mounted only when the
+		// parser is wired, so a deployment without Slack 404s rather than
+		// exposing an endpoint that cannot verify anything.
+		if server.slackInteractions != nil {
+			mux.HandleFunc("/api/v1/slack/interactions", server.HandleSlackInteraction)
+		}
+
 	} // end region 4: ServeAPI || ServeWebhooks
 
 	// Region 5: chat proxy, Ollama compat, playbook, internal agent endpoints — only on ServeAPI.

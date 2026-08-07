@@ -64,6 +64,11 @@ type chatPostMessageRequest struct {
 	Channel  string `json:"channel"`
 	Text     string `json:"text"`
 	ThreadTs string `json:"thread_ts,omitempty"`
+	// Blocks carries interactive content (steering buttons). Omitted when nil,
+	// so an ordinary reply posts exactly as it always did — Text alone. Slack
+	// shows Text as the notification/fallback even when blocks are present, so
+	// both are always sent.
+	Blocks []blockElement `json:"blocks,omitempty"`
 }
 
 // sendChatPostMessage posts a Slack message via the Web API,
@@ -109,6 +114,7 @@ func (c *Channel) sendChatPostMessage(ctx context.Context, msg conversation.Chan
 		Channel:  channelID,
 		Text:     msg.Text,
 		ThreadTs: threadRoot,
+		Blocks:   buildBlocks(msg.Text, msg.Buttons),
 	})
 	if err != nil {
 		return "", fmt.Errorf("slack channel: marshal request: %w", err)

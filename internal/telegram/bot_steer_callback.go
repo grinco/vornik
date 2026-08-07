@@ -3,12 +3,13 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/steering"
 )
 
 // handleSteerCallback owns the `steer:*` callback namespace — the button
@@ -91,40 +92,38 @@ func (b *Bot) steerChoice(ctx context.Context, chatID, userID int64, callbackID 
 	if err := json.Unmarshal(cp.Metadata, &meta); err != nil || optIdx < 0 || optIdx >= len(meta.Options) {
 		return b.answerCallbackQuery(ctx, callbackID, "This button is from an older prompt.", false)
 	}
+	// Map THIS channel's 0-based callback index to the option id here, on the
+	// adapter, and hand the primitive an id. The numbering conventions (0-based
+	// wire, 1-based rendered text) never meet in shared code, so there is no
+	// off-by-one to get wrong in steering.Answerer.
 	opt := meta.Options[optIdx]
-	label := opt.Label
-	if label == "" {
-		label = opt.ID
-	}
 
-	authorID := fmt.Sprintf("tg:%d", userID)
-	metaBytes, _ := json.Marshal(map[string]any{
-		"source":  "telegram_button",
-		"chat_id": chatID,
-		"choice":  opt.ID,
-	})
-	tmsg := &persistence.TaskMessage{
-		TaskID:      task.ID,
-		MessageKind: persistence.TaskMessageKindAnswer,
-		AuthorKind:  persistence.TaskMessageAuthorOperator,
-		AuthorID:    &authorID,
-		ParentID:    &checkpointID,
-		Content:     label,
-		Metadata:    metaBytes,
-		CreatedAt:   time.Now().UTC(),
-	}
-	if err := b.taskMessageRepo.Insert(ctx, tmsg); err != nil {
+	res, err := steering.NewAnswerer(b.taskMessageRepo, b.taskRepo, b.rescheduler).
+		Answer(ctx, steering.AnswerRequest{
+			TaskID:       task.ID,
+			CheckpointID: checkpointID,
+			OptionID:     opt.ID,
+			AuthorID:     fmt.Sprintf("tg:%d", userID),
+			Source:       "telegram_button",
+		})
+	switch {
+	case errors.Is(err, steering.ErrNoOpenCheckpoint),
+		errors.Is(err, steering.ErrUnknownOption):
+		return b.answerCallbackQuery(ctx, callbackID, "This decision was already handled.", false)
+	case errors.Is(err, steering.ErrCheckpointNotChatAnswerable):
+		// Not reachable from a steering button today (buildSteeringButtons only
+		// renders plain decisions), but the primitive is the authority on which
+		// kinds may be answered outside the UI — do not paper over a refusal.
+		return b.answerCallbackQuery(ctx, callbackID, "This decision has to be made in the web UI.", true)
+	case err != nil:
 		return b.answerCallbackQuery(ctx, callbackID, "Could not record your choice: "+err.Error(), true)
 	}
-	_ = b.taskMessageRepo.MarkCheckpointResolved(ctx, task.ID, checkpointID)
-	if ok, terr := b.taskRepo.TransitionConditional(ctx, task.ID,
-		[]persistence.TaskStatus{persistence.TaskStatusAwaitingInput},
-		persistence.TaskStatusQueued,
-		persistence.TransitionOpts{ClearLease: true}); terr == nil && ok && b.rescheduler != nil {
-		b.rescheduler.Wake()
+	if res.AlreadyHandled {
+		b.markSteerRecorded(ctx, chatID, msgID, "✓ Recorded: "+res.RecordedLabel)
+		return b.answerCallbackQuery(ctx, callbackID, "This decision was already handled.", false)
 	}
-	b.markSteerRecorded(ctx, chatID, msgID, "✓ Recorded: "+label)
-	return b.answerCallbackQuery(ctx, callbackID, "Recorded: "+label, false)
+	b.markSteerRecorded(ctx, chatID, msgID, "✓ Recorded: "+res.RecordedLabel)
+	return b.answerCallbackQuery(ctx, callbackID, "Recorded: "+res.RecordedLabel, false)
 }
 
 // steerApprove resumes an AWAITING_APPROVAL task.

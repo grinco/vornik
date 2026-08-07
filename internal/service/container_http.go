@@ -1314,6 +1314,13 @@ func (c *Container) initHTTPServer() error {
 		apiOpts = append(apiOpts, api.WithSlackWebhookHandler(
 			slack.NewMuxHandler(skChannels, muxLogger).ServeHTTP,
 		))
+		// Steering-button taps land on /api/v1/slack/interactions. The parser
+		// is the transport half only — signature verification plus payload
+		// decode; internal/api holds the repos and does the authorization and
+		// the answer (steering-notifications-design §v1.2/2).
+		apiOpts = append(apiOpts, api.WithSlackInteractionParser(
+			slack.NewInteractionParserMux(skChannels),
+		))
 		for i, ch := range skChannels {
 			p := skProjects[i]
 			_ = ch

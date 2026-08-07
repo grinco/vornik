@@ -827,6 +827,12 @@ type Server struct {
 	// channel configured return 404 rather than a misleading 401 /
 	// 503. See internal/slack.
 	slackWebhook http.HandlerFunc
+
+	// slackInteractions verifies + parses Slack block_actions payloads for
+	// /api/v1/slack/interactions (the steering-button answer path). Nil when no
+	// Slack channel is configured, which leaves the route unmounted — the same
+	// 404-when-unwired posture as slackWebhook.
+	slackInteractions SlackInteractionParser
 	// apiKeyRepo backs the DB-backed bearer-token surface (replaces
 	// the operator-trusted X-Vornik-Project-ID + static YAML keys
 	// for new deployments). nil falls back to the static-keys path
@@ -1796,6 +1802,13 @@ func WithGitHubAppWebhookHandler(h http.HandlerFunc) ServerOption {
 // channel by team_id. Nil or unset leaves the route unmounted so
 // deployments without a Slack channel configured 404 the URL —
 // clearer than a 401 or 503 from a stub.
+// WithSlackInteractionParser wires the Slack interaction (button-tap) parser.
+// The service container passes the *slack.Channel, which owns signature
+// verification; this package owns the authorization and the answer.
+func WithSlackInteractionParser(p SlackInteractionParser) ServerOption {
+	return func(s *Server) { s.slackInteractions = p }
+}
+
 func WithSlackWebhookHandler(h http.HandlerFunc) ServerOption {
 	return func(s *Server) {
 		s.slackWebhook = h

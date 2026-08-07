@@ -871,7 +871,10 @@ func isPublicEndpoint(path string) bool {
 func isWebhookEndpoint(path string) bool {
 	return strings.HasPrefix(path, "/api/v1/webhooks/") ||
 		path == "/api/v1/github-app/webhook" ||
-		path == "/api/v1/slack/webhook"
+		path == "/api/v1/slack/webhook" ||
+		// Steering-button taps. Slack cannot present an API key, so omitting
+		// this 401s every tap before the handler runs.
+		path == "/api/v1/slack/interactions"
 }
 
 // hasWebhookSignatureForPath reports whether the request bears the
@@ -886,7 +889,7 @@ func isWebhookEndpoint(path string) bool {
 // scoping closes the oracle.
 func hasWebhookSignatureForPath(path string, r *http.Request) bool {
 	switch {
-	case path == "/api/v1/slack/webhook":
+	case path == "/api/v1/slack/webhook", path == "/api/v1/slack/interactions":
 		return strings.TrimSpace(r.Header.Get("X-Slack-Signature")) != ""
 	case path == "/api/v1/github-app/webhook":
 		return strings.TrimSpace(r.Header.Get("X-Hub-Signature-256")) != ""

@@ -1,6 +1,15 @@
 package api
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/slack"
+)
 
 // The button value is the only thing tying a tap back to a task. Task ids
 // contain no colon, so the index is after the LAST one — the same rule the
@@ -75,4 +84,69 @@ func containsFold(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// stubParser stands in for *slack.Channel: it is the SIGNATURE-VERIFIED half,
+// so returning an Interaction here means "this payload was authentic".
+type stubParser struct {
+	got slack.Interaction
+	err error
+}
+
+func (s stubParser) ParseInteraction(_ *http.Request, _ time.Time) (slack.Interaction, error) {
+	return s.got, s.err
+}
+
+// The route must be MOUNTED and must ack. Wiring is the part unit tests on the
+// handler cannot prove: a handler nobody routes to is the same as no feature.
+func TestSlackInteractions_RouteIsMountedAndAcksEmpty200(t *testing.T) {
+	s := NewServer(WithSlackInteractionParser(stubParser{
+		// No repos wired on this server, so the work goroutine bails
+		// immediately after the ack — which is exactly what we are asserting:
+		// the ack does not depend on anything downstream succeeding.
+		got: slack.Interaction{UserID: "U_alice", ActionValue: "steer:c:task_1:0"},
+	}))
+	h := SetupRoutes(s, &config.Config{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/slack/interactions", strings.NewReader("payload=%7B%7D"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — Slack shows the operator a timeout otherwise; body=%q",
+			w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); body != "" {
+		t.Errorf("ack body = %q, want empty — the outcome rides response_url", body)
+	}
+}
+
+// A payload that fails verification must never reach the answering half.
+func TestSlackInteractions_RefusesUnverifiedPayload(t *testing.T) {
+	s := NewServer(WithSlackInteractionParser(stubParser{err: slack.ErrNotAnInteraction}))
+	h := SetupRoutes(s, &config.Config{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/slack/interactions", strings.NewReader("payload=%7B%7D"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 for an unverified interaction", w.Code)
+	}
+}
+
+// Unwired Slack → the route must not exist at all, rather than answering with
+// an endpoint that cannot verify anything.
+func TestSlackInteractions_RouteAbsentWhenSlackNotConfigured(t *testing.T) {
+	h := SetupRoutes(NewServer(), &config.Config{})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/slack/interactions", strings.NewReader(""))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code == http.StatusOK {
+		t.Error("the interactions route must not be mounted when no Slack parser is wired")
+	}
 }

@@ -6510,4 +6510,93 @@ ALTER TABLE project_memory_chunks
     DROP COLUMN IF EXISTS graph_extraction_error;
 `,
 	},
+	{
+		Version: 154,
+		Name:    "project_skills_dedup_preflight",
+		// Knowledge-skill catalogue integrity (LLD
+		// 2026-07-07-knowledge-skill-store-design §12).
+		//
+		// embedding/embedding_model back the propose-time near-duplicate
+		// preflight. The vector is JSON-encoded TEXT, NOT a pgvector column:
+		// §1 requires this table stay backend-portable (sqlite lane), and
+		// tags/roles already use that pattern. Cosine runs in Go over the
+		// candidate set — at tens of rows that is free, and it keeps one code
+		// path across both backends. embedding_model is stored because a
+		// vector from a different model is not comparable; a mismatched row is
+		// treated as un-embedded and re-embedded lazily.
+		//
+		// Backfill is deliberately absent: a migration cannot call the
+		// embedder. Existing rows embed on first participation in a preflight.
+		//
+		// supersedes_id + distinct_justification record the two dispositions
+		// that let an author past a preflight block. supersedes_id points at
+		// the row this one replaces (which is retired, never overwritten — an
+		// approved body is bound to a hash by §6 and must stay recoverable);
+		// distinct_justification is the required "why these both exist" note,
+		// surfaced by skill_audit.
+		Up: `
+ALTER TABLE project_skills
+    ADD COLUMN IF NOT EXISTS embedding              TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS embedding_model        TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS supersedes_id          TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS distinct_justification TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_project_skills_supersedes
+    ON project_skills (supersedes_id) WHERE supersedes_id <> '';
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_project_skills_supersedes;
+ALTER TABLE project_skills
+    DROP COLUMN IF EXISTS embedding,
+    DROP COLUMN IF EXISTS embedding_model,
+    DROP COLUMN IF EXISTS supersedes_id,
+    DROP COLUMN IF EXISTS distinct_justification;
+`,
+	},
+	{
+		Version: 155,
+		Name:    "project_skill_versions",
+		// Append-only archive of superseded skill bodies (LLD
+		// 2026-07-07-knowledge-skill-store-design §12.2, exact-key case).
+		//
+		// Re-proposing an existing (project_id, repo_scope, name) used to
+		// overwrite the body in place. §6 binds approval to a body hash
+		// precisely so an approved artifact stays recoverable, so an in-place
+		// overwrite destroyed the only copy of something an operator had
+		// sanctioned.
+		//
+		// The design first called for writing a NEW ROW and retiring the old
+		// one. That is not implementable here: project_skills has
+		// UNIQUE (project_id, repo_scope, name), a second live row would
+		// violate it, and the constraint cannot be relaxed on the SQLite
+		// backend — it has no migration runner, and a table constraint cannot
+		// be dropped by ALTER. A separate table has neither problem AND is the
+		// one schema change that reaches an existing SQLite database, since
+		// CREATE TABLE IF NOT EXISTS creates a missing table (unlike a missing
+		// column). It also keeps the natural key meaning what it says: one
+		// LIVE skill per name per scope, with history beside it rather than
+		// interleaved.
+		//
+		// No FK to project_skills: the archive must outlive a hard delete of
+		// its skill, which is the one case where it matters most.
+		Up: `
+CREATE TABLE IF NOT EXISTS project_skill_versions (
+    id           TEXT PRIMARY KEY,
+    skill_id     TEXT NOT NULL,
+    version      INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    description  TEXT NOT NULL,
+    body         TEXT NOT NULL,
+    body_sha256  TEXT NOT NULL,
+    maturity     TEXT NOT NULL,
+    archived_at  TIMESTAMP WITH TIME ZONE NOT NULL,
+    UNIQUE (skill_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_skill_versions_skill
+    ON project_skill_versions (skill_id, version DESC);
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_skill_versions_skill;
+DROP TABLE IF EXISTS project_skill_versions;
+`,
+	},
 }

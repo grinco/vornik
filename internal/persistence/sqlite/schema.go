@@ -1322,12 +1322,46 @@ CREATE TABLE IF NOT EXISTS project_skills (
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     is_global       INTEGER NOT NULL DEFAULT 0,
+    -- Dedup preflight (LLD §12; Postgres parity: migration 154).
+    -- embedding is a JSON-encoded float array, NOT a vector type — this
+    -- table stays backend-portable (§1) and cosine runs in Go.
+    embedding              TEXT NOT NULL DEFAULT '',
+    embedding_model        TEXT NOT NULL DEFAULT '',
+    supersedes_id          TEXT NOT NULL DEFAULT '',
+    distinct_justification TEXT NOT NULL DEFAULT '',
     UNIQUE (project_id, repo_scope, name)
 );
 CREATE INDEX IF NOT EXISTS idx_project_skills_lookup
     ON project_skills (project_id, repo_scope, maturity);
 CREATE INDEX IF NOT EXISTS idx_project_skills_global
     ON project_skills (is_global);
+CREATE INDEX IF NOT EXISTS idx_project_skills_supersedes
+    ON project_skills (supersedes_id);
+
+-- ============================================================
+-- project_skill_versions — append-only archive of superseded skill
+-- bodies (LLD §12.2; Postgres parity: migration 155). Re-proposing an
+-- existing (project_id, repo_scope, name) archives the prior body here
+-- before the row is updated, because §6 binds approval to a body hash
+-- and an approved artifact must stay recoverable. A separate table
+-- rather than extra rows in project_skills: the natural key keeps
+-- meaning "one LIVE skill per name per scope", and unlike a new COLUMN
+-- a new TABLE also reaches already-created SQLite databases.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS project_skill_versions (
+    id           TEXT PRIMARY KEY,
+    skill_id     TEXT NOT NULL,
+    version      INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    description  TEXT NOT NULL,
+    body         TEXT NOT NULL,
+    body_sha256  TEXT NOT NULL,
+    maturity     TEXT NOT NULL,
+    archived_at  TEXT NOT NULL,
+    UNIQUE (skill_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_skill_versions_skill
+    ON project_skill_versions (skill_id, version DESC);
 
 -- ============================================================
 -- control_plane_proposals — human-gated change proposals from the

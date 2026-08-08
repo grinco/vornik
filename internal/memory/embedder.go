@@ -103,6 +103,21 @@ func (e *Embedder) configured() bool {
 	return strings.TrimSpace(e.cfg.EmbeddingEndpoint) != "" && strings.TrimSpace(e.cfg.EmbeddingModel) != ""
 }
 
+// Model returns the configured embedding model id, or "" when the embedder is
+// not configured.
+//
+// Callers that PERSIST a vector must store this alongside it: vectors from
+// different models occupy different spaces, so a stored vector is only
+// comparable to another produced by the same model. The knowledge-skill dedup
+// preflight (LLD 2026-07-07-knowledge-skill-store-design §12.2) relies on this
+// to decide whether a stored embedding can be reused or must be recomputed.
+func (e *Embedder) Model() string {
+	if !e.configured() {
+		return ""
+	}
+	return strings.TrimSpace(e.cfg.EmbeddingModel)
+}
+
 // Embed sends texts to the configured embedding backend in batches of up to
 // 512 and returns one []float32 per input text preserving order.
 // Returns nil, nil when the backend is not configured or any network/HTTP error

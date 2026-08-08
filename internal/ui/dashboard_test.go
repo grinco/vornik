@@ -314,3 +314,26 @@ func (s *stubLLMUsageRepo) SumCostByAPIKey(_ context.Context, _ string, _, _ tim
 func (s *stubLLMUsageRepo) MeanCostByWorkflow(_ context.Context, _, _ string, _, _ time.Time) (float64, int, error) {
 	return 0, 0, nil
 }
+
+// TestDashboardHasNoTradingData is an operator requirement, not a style
+// preference: the main dashboard must carry NO trading data at all.
+//
+// It previously rendered a "Trading safety" tile (live/paper/kill-switch counts
+// plus 24h safety events and breaker trips) sourced from a cross-project
+// rollup. Trading belongs on /ui/trading, which is unaffected. Removed
+// 2026-08-07 at the operator's explicit instruction; this test keeps it from
+// creeping back via a well-meaning "just a small summary tile" change.
+func TestDashboardHasNoTradingData(t *testing.T) {
+	body := renderDashboardBody(t)
+	for _, marker := range []string{
+		"Trading safety",
+		"No projects have trading enabled",
+		"kill sw.",
+		"Safety events 24h",
+		"Breaker trips 24h",
+	} {
+		if strings.Contains(body, marker) {
+			t.Errorf("main dashboard contains trading marker %q — trading data belongs on /ui/trading only", marker)
+		}
+	}
+}

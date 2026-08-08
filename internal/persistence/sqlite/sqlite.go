@@ -134,10 +134,95 @@ func Connect(ctx context.Context, cfg Config) (*DB, error) {
 
 // Migrate applies the consolidated schema. Idempotent.
 func (d *DB) Migrate(ctx context.Context) error {
+	// Additive columns FIRST. schemaSQL is CREATE TABLE IF NOT EXISTS, which
+	// is a no-op on a table that already exists — so a column added to
+	// schemaSQL after a database was created never lands there. That is
+	// survivable for a plain column (queries error) but fatal when schemaSQL
+	// also indexes it: the CREATE INDEX fails and Migrate returns an error,
+	// so the daemon will not start at all against an existing database.
+	// Reconciling before schemaSQL means the index has its column by the time
+	// it is created.
+	if err := d.applyAdditiveColumns(ctx); err != nil {
+		return err
+	}
 	if _, err := d.ExecContext(ctx, schemaSQL); err != nil {
 		return fmt.Errorf("sqlite: apply schema: %w", err)
 	}
 	return nil
+}
+
+// additiveColumn is a column added to an EXISTING table after that table first
+// shipped in schemaSQL.
+//
+// Postgres gets these through numbered migrations; SQLite has no migration
+// runner, only the idempotent starter schema, so they need this reconciler.
+// Any future column added to an existing table in schemaSQL must be registered
+// here too — otherwise it silently exists on fresh databases only.
+type additiveColumn struct {
+	table  string
+	column string
+	// ddl is the type + constraints, e.g. `TEXT NOT NULL DEFAULT ''`. SQLite's
+	// ADD COLUMN requires a non-null default when the column is NOT NULL.
+	ddl string
+}
+
+// sqliteAdditiveColumns is the registry. Keep it append-only and in the same
+// order as the corresponding Postgres migrations, so the two backends can be
+// diffed by eye.
+var sqliteAdditiveColumns = []additiveColumn{
+	// Postgres migration 154 — knowledge-skill dedup preflight (LLD §12.2).
+	{"project_skills", "embedding", `TEXT NOT NULL DEFAULT ''`},
+	{"project_skills", "embedding_model", `TEXT NOT NULL DEFAULT ''`},
+	{"project_skills", "supersedes_id", `TEXT NOT NULL DEFAULT ''`},
+	{"project_skills", "distinct_justification", `TEXT NOT NULL DEFAULT ''`},
+}
+
+// applyAdditiveColumns adds any registered column missing from an existing
+// table. Tables that don't exist yet are skipped — schemaSQL creates them with
+// the column already present, so a fresh database needs nothing here.
+func (d *DB) applyAdditiveColumns(ctx context.Context) error {
+	for _, c := range sqliteAdditiveColumns {
+		exists, err := d.tableExists(ctx, c.table)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue // fresh database; schemaSQL will create it complete
+		}
+		has, err := d.columnExists(ctx, c.table, c.column)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		// SQLite has no ADD COLUMN IF NOT EXISTS, hence the check above.
+		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", c.table, c.column, c.ddl)
+		if _, err := d.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("sqlite: add column %s.%s: %w", c.table, c.column, err)
+		}
+	}
+	return nil
+}
+
+func (d *DB) tableExists(ctx context.Context, table string) (bool, error) {
+	var n int
+	err := d.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: probe table %s: %w", table, err)
+	}
+	return n > 0, nil
+}
+
+func (d *DB) columnExists(ctx context.Context, table, column string) (bool, error) {
+	var n int
+	err := d.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: probe column %s.%s: %w", table, column, err)
+	}
+	return n > 0, nil
 }
 
 // IsReady checks that the connection is alive and the schema has

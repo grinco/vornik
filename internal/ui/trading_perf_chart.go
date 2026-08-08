@@ -232,9 +232,51 @@ func buildEquityAxis(ext perfExtents, svgWidth int) []perfAxisTick {
 		return nil
 	}
 	x := svgWidth - perfChartRightGutter + 6
+	hi, lo := fmtEquityAxisPair(ext.maxEquity, ext.minEquity)
 	return []perfAxisTick{
-		{X: x, Y: perfChartTop, Label: fmtAxisUSD(ext.maxEquity), Anchor: "start"},
-		{X: x, Y: perfChartTop + perfChartH, Label: fmtAxisUSD(ext.minEquity), Anchor: "start"},
+		{X: x, Y: perfChartTop, Label: hi, Anchor: "start"},
+		{X: x, Y: perfChartTop + perfChartH, Label: lo, Anchor: "start"},
+	}
+}
+
+// fmtEquityAxisPair renders the equity axis endpoints at whatever precision it
+// takes for them to READ DIFFERENTLY.
+//
+// The equity curve is auto-scaled to [min,max], so it uses the full plot height
+// however small the real move is. fmtAxisUSD alone then lies by omission:
+// observed 2026-08-07 on the paper account, equity ran $1,051,739 → $1,052,629
+// and both ticks rendered "$1.1M", so a chart showing a steep climb was
+// labelled with a zero-width range. The operator reported it as the graphs "not
+// matching up", which is exactly right.
+//
+// Escalate through compact forms and fall back to whole dollars, which always
+// differ for two distinct values. Distinguishability beats compactness here:
+// an axis nobody can read is worse than a slightly wide one.
+func fmtEquityAxisPair(hi, lo float64) (string, string) {
+	for _, f := range []func(float64) string{
+		fmtAxisUSD,
+		func(v float64) string { return fmtAxisUSDPrec(v, 2) },
+		func(v float64) string { return fmtAxisUSDPrec(v, 3) },
+	} {
+		a, b := f(hi), f(lo)
+		if a != b {
+			return a, b
+		}
+	}
+	return fmt.Sprintf("$%.0f", hi), fmt.Sprintf("$%.0f", lo)
+}
+
+// fmtAxisUSDPrec is fmtAxisUSD with a caller-chosen decimal count for the
+// compact k/M forms.
+func fmtAxisUSDPrec(v float64, prec int) string {
+	a := math.Abs(v)
+	switch {
+	case a >= 1_000_000:
+		return fmt.Sprintf("$%.*fM", prec, a/1_000_000)
+	case a >= 1_000:
+		return fmt.Sprintf("$%.*fk", prec, a/1_000)
+	default:
+		return fmt.Sprintf("$%.0f", a)
 	}
 }
 

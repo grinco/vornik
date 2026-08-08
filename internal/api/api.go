@@ -945,6 +945,11 @@ type Server struct {
 	// so minimal harnesses/tests keep working.
 	skillStore    persistence.SkillRepository
 	execSkillRepo persistence.ExecutionInjectedSkillRepository
+	// skillEmbedder powers the skill_propose dedup preflight (§12.2).
+	// Nil-safe by design: the preflight falls back to its lexical metric
+	// rather than failing, because an embedder outage must never block an
+	// operator from authoring a skill.
+	skillEmbedder SkillEmbedder
 	// proposalStore backs the control-plane proposal ledger (operator
 	// REST surface: propose/list/get/decide). Nil-safe.
 	proposalStore persistence.ProposalRepository
@@ -2164,6 +2169,17 @@ func WithMemoryCompanionAdapter(a MemoryCompanionAdapter) ServerOption {
 func WithSkillStore(repo persistence.SkillRepository) ServerOption {
 	return func(s *Server) {
 		s.skillStore = repo
+	}
+}
+
+// WithSkillEmbedder wires the embedder backing the knowledge-skill dedup
+// preflight (LLD 2026-07-07-knowledge-skill-store-design §12.2).
+//
+// Nil is a supported posture, not a broken one: the preflight degrades to its
+// lexical fallback. An embedder outage must never block authoring a skill.
+func WithSkillEmbedder(e SkillEmbedder) ServerOption {
+	return func(s *Server) {
+		s.skillEmbedder = e
 	}
 }
 

@@ -332,6 +332,24 @@ func WithProviders(set ProviderSet) ContainerOption {
 	return func(c *Container) { c.providers = set }
 }
 
+// WithEdition stamps the build edition during construction.
+//
+// Use this rather than calling SetEdition after NewContainer returns:
+// applyOptions runs early, whereas registerSubsystems runs at the END of
+// construction and logs c.Edition() for each EE capability. Stamping
+// afterwards meant those lines reported the community default on an
+// enterprise daemon — reported by an operator 2026-08-07, when a binary whose
+// banner said `enterprise edition` logged `"edition":"community"` for
+// instinct, trading, blackbox and clustering (all four are Enterprise
+// capabilities; see internal/editions and the featuredoctor registry).
+//
+// Gating was never affected — registration reads c.providers, not Edition() —
+// but the logs contradicted the banner for anyone diagnosing whether EE
+// features were live.
+func WithEdition(e string) ContainerOption {
+	return func(c *Container) { c.SetEdition(e) }
+}
+
 // applyOptions defaults c.providers to CommunityProviders then applies each
 // option in order. Extracted from NewContainer to keep its cognitive complexity
 // within the project lint threshold.

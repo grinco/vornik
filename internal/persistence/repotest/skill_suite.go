@@ -35,6 +35,144 @@ func RunSkillSuite(t *testing.T, repo persistence.SkillRepository) {
 	t.Run("Upsert_preserves_is_global", func(t *testing.T) { skillUpsertPreservesGlobal(t, repo) })
 	t.Run("List_IncludeGlobal_Isolation", func(t *testing.T) { skillListIncludeGlobalIsolation(t, repo) })
 	t.Run("ListAcrossProjects_filters_by_maturity", func(t *testing.T) { skillListAcrossProjects(t, repo) })
+	t.Run("Embedding_and_dedup_fields_round_trip", func(t *testing.T) { skillDedupFieldsRoundTrip(t, repo) })
+	t.Run("Upsert_archives_prior_body", func(t *testing.T) { skillUpsertArchivesPriorBody(t, repo) })
+}
+
+// skillUpsertArchivesPriorBody: re-proposing an existing (project, scope, name)
+// overwrites the row, so the prior body must be archived first.
+//
+// The failure this prevents is quiet and unrecoverable: §6 binds approval to a
+// body hash so an approved artifact stays auditable, but the hash is only
+// meaningful while the hashed text still exists. Before this, any caller with
+// skill_write could destroy an operator-approved body by re-proposing the name.
+func skillUpsertArchivesPriorBody(t *testing.T, repo persistence.SkillRepository) {
+	ctx := context.Background()
+
+	first := newTestSkill("sk-arch", "proj-arch", "github.com/x/arch", "archived-skill")
+	first.Body = "# Original approved body"
+	first.BodySHA256 = "sha-original"
+	mustCreateSkill(t, repo, first)
+	if err := repo.SetMaturity(ctx, first.ID, persistence.SkillMaturityTrusted); err != nil {
+		t.Fatalf("SetMaturity: %v", err)
+	}
+
+	edit := newTestSkill("ignored-id", "proj-arch", "github.com/x/arch", "archived-skill")
+	edit.Body = "# Rewritten body"
+	edit.BodySHA256 = "sha-rewritten"
+	updated, err := repo.Upsert(ctx, edit)
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if updated.Body != "# Rewritten body" {
+		t.Errorf("live body = %q, want the rewrite", updated.Body)
+	}
+
+	versions, err := repo.ListVersions(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("archived %d versions, want 1 — the prior approved body was destroyed", len(versions))
+	}
+	v := versions[0]
+	if v.Body != "# Original approved body" {
+		t.Errorf("archived body = %q, want the original", v.Body)
+	}
+	if v.BodySHA256 != "sha-original" {
+		t.Errorf("archived sha = %q, want sha-original — the hash §6 bound approval to", v.BodySHA256)
+	}
+	if v.Maturity != persistence.SkillMaturityTrusted {
+		t.Errorf("archived maturity = %q, want trusted: the record must say an operator had approved THIS text", v.Maturity)
+	}
+	if v.Version != first.Version {
+		t.Errorf("archived version = %d, want %d", v.Version, first.Version)
+	}
+
+	// A second edit archives again, and the first archive is untouched.
+	edit2 := newTestSkill("ignored-id", "proj-arch", "github.com/x/arch", "archived-skill")
+	edit2.Body = "# Third body"
+	if _, err := repo.Upsert(ctx, edit2); err != nil {
+		t.Fatalf("second Upsert: %v", err)
+	}
+	versions, err = repo.ListVersions(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("ListVersions after second edit: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("archived %d versions after two edits, want 2", len(versions))
+	}
+	// Newest first.
+	if versions[0].Version <= versions[1].Version {
+		t.Errorf("versions not newest-first: %d then %d", versions[0].Version, versions[1].Version)
+	}
+	if versions[1].Body != "# Original approved body" {
+		t.Errorf("the oldest archive was mutated: %q", versions[1].Body)
+	}
+
+	// A never-edited skill has no archive rows.
+	solo := newTestSkill("sk-solo", "proj-arch", "github.com/x/arch", "never-edited")
+	mustCreateSkill(t, repo, solo)
+	if vs, err := repo.ListVersions(ctx, solo.ID); err != nil || len(vs) != 0 {
+		t.Errorf("never-edited skill has %d archived versions (err=%v), want 0", len(vs), err)
+	}
+}
+
+// skillDedupFieldsRoundTrip covers the migration-154 columns backing the
+// propose-time preflight (LLD §12.2).
+//
+// The embedding is a JSON-encoded float array in a TEXT column rather than a
+// pgvector type, so the two backends encode it through the same shared codec —
+// and a float that does not survive the trip byte-exact silently changes every
+// cosine score computed against that row. A JSONB byte-exactness gap of exactly
+// this shape broke CI on 2026-07-24, which is why this lives in the shared
+// suite (both lanes) rather than in a sqlite-only test.
+func skillDedupFieldsRoundTrip(t *testing.T, repo persistence.SkillRepository) {
+	ctx := context.Background()
+
+	s := newTestSkill("sk-dedup", "proj-dedup", "github.com/x/dedup", "dedup-fields")
+	s.Embedding = []float32{0.125, -0.5, 0, 1, -0.00390625}
+	s.EmbeddingModel = "text-embedding-3-small"
+	s.SupersedesID = "sk-previous"
+	s.DistinctJustification = "narrower trigger than the flagged neighbour"
+	mustCreateSkill(t, repo, s)
+
+	got, err := repo.GetByID(ctx, "sk-dedup")
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if len(got.Embedding) != len(s.Embedding) {
+		t.Fatalf("embedding length = %d, want %d", len(got.Embedding), len(s.Embedding))
+	}
+	for i := range s.Embedding {
+		if got.Embedding[i] != s.Embedding[i] {
+			t.Errorf("embedding[%d] = %v, want %v (byte-exactness matters: every cosine score against this row shifts)", i, got.Embedding[i], s.Embedding[i])
+		}
+	}
+	if got.EmbeddingModel != s.EmbeddingModel {
+		t.Errorf("embedding_model = %q, want %q", got.EmbeddingModel, s.EmbeddingModel)
+	}
+	if got.SupersedesID != s.SupersedesID {
+		t.Errorf("supersedes_id = %q, want %q", got.SupersedesID, s.SupersedesID)
+	}
+	if got.DistinctJustification != s.DistinctJustification {
+		t.Errorf("distinct_justification = %q, want %q", got.DistinctJustification, s.DistinctJustification)
+	}
+
+	// An un-embedded row is the lazy-backfill state and must read back as a nil
+	// vector, not an empty-but-present one — the preflight branches on this.
+	bare := newTestSkill("sk-bare", "proj-dedup", "github.com/x/dedup", "bare-fields")
+	mustCreateSkill(t, repo, bare)
+	gotBare, err := repo.GetByID(ctx, "sk-bare")
+	if err != nil {
+		t.Fatalf("GetByID(bare): %v", err)
+	}
+	if len(gotBare.Embedding) != 0 {
+		t.Errorf("un-embedded row read back %d floats, want none", len(gotBare.Embedding))
+	}
+	if gotBare.EmbeddingModel != "" || gotBare.SupersedesID != "" || gotBare.DistinctJustification != "" {
+		t.Errorf("un-embedded row has unexpected dedup fields: %+v", gotBare)
+	}
 }
 
 // skillListAcrossProjects: the admin-browser query spans every project and

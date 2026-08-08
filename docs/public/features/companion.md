@@ -1,7 +1,7 @@
 ---
 sources:
     - path: internal/api/companion_mcp.go
-      sha256: 528000dd38a9527edd3fc98a9f446bc08d62289c690579c47aa3493ea2b8079f
+      sha256: 3bb0865bf2089aa9bb0baae135120ac74b24671146cf940263e6108511e2fe0c
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
       sha256: db89f329c8b6ca17dfb94c17f7a521eeb4a3f74c07acc5c17768aed1437bdfc6
     - path: contrib/codex-companion/.codex-plugin/plugin.json
@@ -65,6 +65,23 @@ approves it. A skill can also be marked **global** (`skill_propose global:true`
 or `skill_set_global`) so it injects into every project's roles, not just its
 home project — the way a procedure captured in your companion project reaches
 the autonomy roles. See [Knowledge skills](knowledge-skills.md).
+
+**Proposals are checked for near-duplicates.** Before a skill is written,
+`skill_propose` scores it against the whole catalogue — every repo scope, every
+maturity including retired, and other projects' global skills. On a hit it
+returns `{"blocked": true, "matches": [...]}` and writes nothing. Answer the
+block rather than retrying:
+
+- `supersedes: "<id>"` — this replaces that skill. The old one is retired and
+  its body kept (still readable by id); it is never overwritten.
+- `confirm_distinct: "<why they differ>"` — they are genuinely different. The
+  justification is required and is stored on the skill.
+
+You do not need to search first: the preflight already looks wider than
+`skill_search`, which filters by repo scope and so hides skills that would be
+injected alongside yours anyway. Matching is semantic where an embedding backend
+is configured, and falls back to a weaker lexical comparison otherwise — a
+preflight can miss, but it never blocks authoring when the embedder is down.
 
 In Claude Code, several tools are also wrapped as slash commands — for example
 `/recall`, `/remember`, `/delegate`, `/review` (a one-shot architectural

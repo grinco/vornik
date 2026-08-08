@@ -49,3 +49,39 @@ func TestLayoutPerfChart_YAxisRealizedOnlyWhenNoEquity(t *testing.T) {
 	assert.Len(t, c.YAxisLeft, 3)
 	assert.Empty(t, c.YAxisRight, "no equity → no right axis")
 }
+
+// TestBuildEquityAxis_LabelsMustDiffer reproduces the operator report of
+// 2026-08-07: "the graphs on top of the trading dashboard don't match up".
+//
+// Real data from the ibkr-trader paper account: equity ran $1,051,739 →
+// $1,052,629 — an $890 move (0.08%). The equity curve is auto-scaled to its own
+// min/max, so it climbed the full plot height, while fmtAxisUSD rendered BOTH
+// axis ticks as "$1.1M" because it formats to one decimal at the millions
+// scale. The chart therefore showed a dramatic rise against an axis claiming
+// the range was $1.1M to $1.1M — unreadable, and the reason it "doesn't match".
+func TestBuildEquityAxis_LabelsMustDiffer(t *testing.T) {
+	cases := []struct {
+		name     string
+		min, max float64
+	}{
+		{"observed paper account", 1_051_739, 1_052_629},
+		{"tight range at millions", 1_000_000, 1_000_400},
+		{"tight range at thousands", 10_000, 10_040},
+		{"wide range", 900_000, 1_200_000},
+		{"small account", 9_980, 10_050},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ext := perfExtents{hasEquity: true, minEquity: c.min, maxEquity: c.max}
+			ticks := buildEquityAxis(ext, 800)
+			if len(ticks) != 2 {
+				t.Fatalf("got %d ticks, want 2", len(ticks))
+			}
+			if ticks[0].Label == ticks[1].Label {
+				t.Errorf("axis top and bottom render the SAME label %q for range $%.0f–$%.0f — "+
+					"the reader cannot tell what the curve's vertical span means",
+					ticks[0].Label, c.min, c.max)
+			}
+		})
+	}
+}

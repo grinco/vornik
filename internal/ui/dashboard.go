@@ -57,9 +57,8 @@ type DashboardData struct {
 	// pages to see "is the pipeline healthy / are there safety events
 	// / how's the judge doing". All three structs zero-value cleanly
 	// when the underlying repos aren't wired.
-	Memory  DashboardMemory  // KG extraction + ingest queue snapshot
-	Trading DashboardTrading // safety-envelope rollup across projects
-	Judge   DashboardJudge   // hallucination judge rollup over 24h
+	Memory DashboardMemory // KG extraction + ingest queue snapshot
+	Judge  DashboardJudge  // hallucination judge rollup over 24h
 
 	// 2026-05-22: cache effectiveness tile so the operator sees
 	// Phase E paying off from the front door. Available=false hides
@@ -171,20 +170,6 @@ type DashboardMemory struct {
 	Mentions       int
 	IngestBacklog  int // sum across all projects (queued+processing rows)
 	IngestProjects int // number of projects with any backlog
-}
-
-// DashboardTrading is the cross-project safety-envelope rollup
-// shown on the landing page. Sourced from project YAML (Mode /
-// KillSwitch) + the safety-event audit channel (24h count). Zero-
-// values render an empty-state tile when no project has trading
-// enabled at all.
-type DashboardTrading struct {
-	EnabledCount    int   // projects with any non-empty Trading.Mode
-	LiveCount       int   // subset that are mode=live
-	PaperCount      int   // subset that are mode=paper
-	KillSwitchCount int   // subset with KillSwitch=true
-	SafetyEvents24h int64 // tradingSafetyRepo.Count over 24h
-	BreakerTrips24h int64 // safety events of kind=breaker_trip in 24h
 }
 
 // DashboardJudge is the LLM-as-judge verdict rollup shown on the
@@ -564,43 +549,6 @@ func (s *Server) Dashboard(w http.ResponseWriter, r *http.Request) {
 				data.Memory.IngestBacklog += d
 				data.Memory.IngestProjects++
 			}
-		}
-	}
-
-	// Trading safety tile (2026-05-12). Rolls per-project YAML (Mode /
-	// KillSwitch) into a daemon-wide count + counts safety events
-	// over the last 24h. Surfaces "any kill-switch tripped right now"
-	// without the operator opening each project page.
-	if s.projectReg != nil {
-		for _, p := range s.projectReg.ListProjects() {
-			if p == nil || p.Trading.Mode == "" {
-				continue
-			}
-			data.Trading.EnabledCount++
-			switch p.Trading.Mode {
-			case "live":
-				data.Trading.LiveCount++
-			case "paper":
-				data.Trading.PaperCount++
-			}
-			if p.Trading.KillSwitch {
-				data.Trading.KillSwitchCount++
-			}
-		}
-	}
-	if s.tradingSafetyRepo != nil {
-		since24 := time.Now().UTC().Add(-24 * time.Hour)
-		if n, err := s.tradingSafetyRepo.Count(ctx, persistence.TradingSafetyEventFilter{
-			Since: &since24,
-		}); err == nil {
-			data.Trading.SafetyEvents24h = n
-		}
-		breakerKind := persistence.TradingSafetyKindBreakerTrip
-		if n, err := s.tradingSafetyRepo.Count(ctx, persistence.TradingSafetyEventFilter{
-			Since: &since24,
-			Kind:  &breakerKind,
-		}); err == nil {
-			data.Trading.BreakerTrips24h = n
 		}
 	}
 

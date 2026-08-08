@@ -25,7 +25,7 @@ func NewSkillRepository(db DBTX) *SkillRepository { return &SkillRepository{db: 
 const skillColumns = `id, project_id, repo_scope, name, description, body, body_sha256,
 	domain, tags, roles, maturity, version, origin_client, origin_task, author,
 	usage_fired, usage_worked, usage_corrected, last_fired_at, created_at, updated_at,
-	is_global`
+	is_global, embedding, embedding_model, supersedes_id, distinct_justification`
 
 // scopeArg maps the Go "" convention to a NULL column value.
 func scopeArg(scope string) interface{} {
@@ -62,12 +62,14 @@ func (r *SkillRepository) insert(ctx context.Context, s *persistence.Skill) erro
 	}
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO project_skills (`+skillColumns+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		s.ID, s.ProjectID, scopeArg(s.RepoScope), s.Name, s.Description, s.Body, s.BodySHA256,
 		nullStr(s.Domain), sqliteStringArray(s.Tags), sqliteStringArray(s.Roles),
 		s.Maturity, s.Version, nullStr(s.OriginClient), nullStr(s.OriginTask), nullStr(s.Author),
 		s.UsageFired, s.UsageWorked, s.UsageCorrected, sqliteTimePtr(s.LastFiredAt),
 		sqliteTime(s.CreatedAt), sqliteTime(s.UpdatedAt), s.IsGlobal,
+		persistence.EncodeSkillVector(s.Embedding), s.EmbeddingModel,
+		s.SupersedesID, s.DistinctJustification,
 	)
 	return err
 }
@@ -85,24 +87,76 @@ func (r *SkillRepository) Upsert(ctx context.Context, s *persistence.Skill) (*pe
 	if err != nil {
 		return nil, err
 	}
+	// Archive the body we are about to destroy. §6 binds approval to a body
+	// hash, so overwriting an approved body in place removes the only copy of
+	// what the operator sanctioned. Archiving first means a failure here
+	// aborts the edit rather than losing the prior text.
+	if err := r.archiveVersion(ctx, existing); err != nil {
+		return nil, err
+	}
 	// Edit-in-place: bump version, replace mutable fields, reset to
 	// draft (an edited body must be re-approved).
 	_, err = r.db.ExecContext(ctx, `
 		UPDATE project_skills SET
 			description = ?, body = ?, body_sha256 = ?, domain = ?,
 			tags = ?, roles = ?, maturity = ?, version = ?,
-			origin_client = ?, origin_task = ?, author = ?, updated_at = ?
+			origin_client = ?, origin_task = ?, author = ?, updated_at = ?,
+			embedding = ?, embedding_model = ?,
+			supersedes_id = ?, distinct_justification = ?
 		WHERE id = ?`,
 		s.Description, s.Body, s.BodySHA256, nullStr(s.Domain),
 		sqliteStringArray(s.Tags), sqliteStringArray(s.Roles),
 		persistence.SkillMaturityDraft, existing.Version+1,
 		nullStr(s.OriginClient), nullStr(s.OriginTask), nullStr(s.Author),
-		sqliteTime(time.Now().UTC()), existing.ID,
+		sqliteTime(time.Now().UTC()),
+		persistence.EncodeSkillVector(s.Embedding), s.EmbeddingModel,
+		s.SupersedesID, s.DistinctJustification,
+		existing.ID,
 	)
 	if err != nil {
 		return nil, err
 	}
 	return r.GetByID(ctx, existing.ID)
+}
+
+// archiveVersion appends a skill's current body to project_skill_versions.
+//
+// Idempotent on (skill_id, version) via OR IGNORE, so a retried Upsert cannot
+// fail on a duplicate archive row. The archived text for a given version never
+// changes, which is what makes that safe.
+func (r *SkillRepository) archiveVersion(ctx context.Context, s *persistence.Skill) error {
+	_, err := r.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO project_skill_versions
+			(id, skill_id, version, name, description, body, body_sha256, maturity, archived_at)
+		VALUES (?,?,?,?,?,?,?,?,?)`,
+		persistence.GenerateID("skillver"), s.ID, s.Version, s.Name, s.Description,
+		s.Body, s.BodySHA256, s.Maturity, sqliteTime(time.Now().UTC()))
+	return err
+}
+
+// ListVersions returns archived prior bodies, newest first.
+func (r *SkillRepository) ListVersions(ctx context.Context, skillID string) ([]*persistence.SkillVersion, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT id, skill_id, version, name, description, body, body_sha256, maturity, archived_at
+		FROM project_skill_versions WHERE skill_id = ? ORDER BY version DESC`, skillID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*persistence.SkillVersion
+	for rows.Next() {
+		var (
+			v          persistence.SkillVersion
+			archivedAt sqlTime
+		)
+		if err := rows.Scan(&v.ID, &v.SkillID, &v.Version, &v.Name, &v.Description,
+			&v.Body, &v.BodySHA256, &v.Maturity, &archivedAt); err != nil {
+			return nil, err
+		}
+		v.ArchivedAt = archivedAt.Time
+		out = append(out, &v)
+	}
+	return out, rows.Err()
 }
 
 // GetByID fetches a skill by primary key, returning ErrNotFound if absent.
@@ -291,6 +345,20 @@ func (r *SkillRepository) SetGlobal(ctx context.Context, id string, global bool)
 	return errIfNoRows(res)
 }
 
+// SetEmbedding stores the dedup-preflight vector + its model. Deliberately
+// does NOT touch updated_at: the injection index and skill_audit both order by
+// it, and a lazy backfill of derived data must not reshuffle either or make an
+// untouched skill look freshly edited.
+func (r *SkillRepository) SetEmbedding(ctx context.Context, id string, embedding []float32, model string) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE project_skills SET embedding = ?, embedding_model = ? WHERE id = ?`,
+		persistence.EncodeSkillVector(embedding), model, id)
+	if err != nil {
+		return err
+	}
+	return errIfNoRows(res)
+}
+
 // RecordFeedback increments the usage counter for the given signal and, for
 // "fired", stamps last_fired_at.
 func (r *SkillRepository) RecordFeedback(ctx context.Context, id, signal string) error {
@@ -353,12 +421,16 @@ func scanSkill(sc skillScanner) (*persistence.Skill, error) {
 		lastFired  sql.NullString
 		createdAt  sqlTime
 		updatedAt  sqlTime
+		embedding  sql.NullString
+		embModel   sql.NullString
+		supersedes sql.NullString
+		distinctJ  sql.NullString
 	)
 	if err := sc.Scan(
 		&s.ID, &s.ProjectID, &repoScope, &s.Name, &s.Description, &s.Body, &s.BodySHA256,
 		&domain, &tags, &roles, &s.Maturity, &s.Version, &originCl, &originTask, &author,
 		&s.UsageFired, &s.UsageWorked, &s.UsageCorrected, &lastFired, &createdAt, &updatedAt,
-		&s.IsGlobal,
+		&s.IsGlobal, &embedding, &embModel, &supersedes, &distinctJ,
 	); err != nil {
 		return nil, err
 	}
@@ -376,6 +448,10 @@ func scanSkill(sc skillScanner) (*persistence.Skill, error) {
 	}
 	s.CreatedAt = createdAt.Time
 	s.UpdatedAt = updatedAt.Time
+	s.Embedding = persistence.DecodeSkillVector(embedding.String)
+	s.EmbeddingModel = embModel.String
+	s.SupersedesID = supersedes.String
+	s.DistinctJustification = distinctJ.String
 	return &s, nil
 }
 

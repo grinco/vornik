@@ -2329,13 +2329,19 @@ func Run(version, buildDate, edition string, providers ProviderSet) error {
 	// Always create with observability so the Prometheus registry is
 	// available for /metrics on the main API server, even when the
 	// dedicated metrics listener is disabled.
-	container, err := NewContainerWithObservability(cfg, configPath, obsCfg, WithProviders(providers))
+	// Edition is passed as a CONSTRUCTION option, not stamped afterwards.
+	// registerSubsystems runs at the end of NewContainer and logs c.Edition()
+	// for every EE capability; setting it after the constructor returned made
+	// those lines report the community default on an enterprise daemon
+	// (operator report 2026-08-07 — banner said enterprise, four capability
+	// lines said community). Gating was never affected, only the logs.
+	container, err := NewContainerWithObservability(cfg, configPath, obsCfg,
+		WithProviders(providers), WithEdition(edition))
 	if err != nil {
 		return fmt.Errorf("failed to initialize container: %w", err)
 	}
 	container.SetVersion(version)
 	container.SetBuildDate(buildDate)
-	container.SetEdition(edition)
 	container.Logger.Info().
 		Str("edition", container.Edition()).
 		Msg(editionpkg.BuildLine("vornik", version, buildDate, container.Edition()))

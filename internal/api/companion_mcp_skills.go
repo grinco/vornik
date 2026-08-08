@@ -37,6 +37,19 @@ type skillProposeArgs struct {
 	// Global, when true, proposes a cross-project skill: once approved it
 	// injects into EVERY project's roles, not just this key's project.
 	Global bool `json:"global"`
+
+	// Dedup-preflight dispositions (LLD §12.2). At most one may be set; both
+	// unset is the default and a near-duplicate hit soft-blocks the write.
+	//
+	// Supersedes names the skill this one replaces. The target is RETIRED and
+	// its body preserved — never overwritten, because §6 binds approval to a
+	// body hash and an approved artifact must stay recoverable.
+	Supersedes string `json:"supersedes"`
+	// ConfirmDistinct asserts the skill is genuinely distinct from what the
+	// preflight flagged. The value is the REQUIRED justification, stored on
+	// the row: without it this degenerates into a reflex bypass in exactly the
+	// state duplicates are most likely, and the guard becomes theatre.
+	ConfirmDistinct string `json:"confirm_distinct"`
 }
 
 type skillSearchArgs struct {
@@ -124,25 +137,68 @@ func (s *Server) companionToolSkillPropose(ctx context.Context, key *persistence
 		return "", fmt.Errorf("body exceeds %d bytes", skillMaxBodyBytes)
 	}
 
+	args.Supersedes = strings.TrimSpace(args.Supersedes)
+	args.ConfirmDistinct = strings.TrimSpace(args.ConfirmDistinct)
+	if args.Supersedes != "" && args.ConfirmDistinct != "" {
+		return "", errors.New("pass either supersedes or confirm_distinct, not both: they are opposite answers to the same question")
+	}
+
 	sum := sha256.Sum256([]byte(args.Body))
 	skill := &persistence.Skill{
-		ID:           persistence.GenerateID("skill"),
-		ProjectID:    key.ProjectID,
-		RepoScope:    effectiveRepoScope(key, args.RepoScope),
-		Name:         args.Name,
-		Description:  args.Description,
-		Body:         args.Body,
-		BodySHA256:   hex.EncodeToString(sum[:]),
-		Domain:       strings.TrimSpace(args.Domain),
-		Tags:         args.Tags,
-		Roles:        args.Roles,
-		Maturity:     persistence.SkillMaturityDraft,
-		Version:      1,
-		OriginClient: key.ClientKind,
-		OriginTask:   taskIDFromContext(ctx),
-		Author:       strings.TrimSpace(args.Author),
-		IsGlobal:     args.Global,
+		ID:                    persistence.GenerateID("skill"),
+		ProjectID:             key.ProjectID,
+		RepoScope:             effectiveRepoScope(key, args.RepoScope),
+		Name:                  args.Name,
+		Description:           args.Description,
+		Body:                  args.Body,
+		BodySHA256:            hex.EncodeToString(sum[:]),
+		Domain:                strings.TrimSpace(args.Domain),
+		Tags:                  args.Tags,
+		Roles:                 args.Roles,
+		Maturity:              persistence.SkillMaturityDraft,
+		Version:               1,
+		OriginClient:          key.ClientKind,
+		OriginTask:            taskIDFromContext(ctx),
+		Author:                strings.TrimSpace(args.Author),
+		IsGlobal:              args.Global,
+		DistinctJustification: args.ConfirmDistinct,
 	}
+
+	// Dedup preflight (§12.2). Skipped only when the author has already
+	// answered a block with an explicit disposition — the answer IS the
+	// acknowledgement, so re-blocking on it would be an infinite loop.
+	if args.Supersedes == "" && args.ConfirmDistinct == "" {
+		matches, err := s.runSkillDupePreflight(ctx, skill)
+		if err != nil {
+			return "", fmt.Errorf("preflight failed: %w", err)
+		}
+		if len(matches) > 0 {
+			return marshalSkill(map[string]any{
+				"blocked": true,
+				"matches": matches,
+				"note": "near-duplicate(s) found — nothing was written. Re-send with " +
+					"`supersedes: \"<id>\"` to replace one (it is retired, its body kept), " +
+					"or `confirm_distinct: \"<why these differ>\"` to author it anyway. " +
+					"The justification is required and is recorded.",
+			})
+		}
+	}
+
+	// `supersedes` writes a NEW row and retires the target — it never
+	// overwrites the target's body. An approved body is bound to a hash by §6
+	// and is the audit trail for what an operator sanctioned; replacing it in
+	// place would destroy the only copy.
+	if args.Supersedes != "" {
+		target, err := s.skillStore.GetByID(ctx, args.Supersedes)
+		if err != nil {
+			return "", fmt.Errorf("supersedes target %q: %w", args.Supersedes, err)
+		}
+		if target.ProjectID != key.ProjectID {
+			return "", errors.New("cannot supersede a skill from another project")
+		}
+		skill.SupersedesID = target.ID
+	}
+
 	// Upsert so re-proposing the same (scope,name) edits in place: it
 	// bumps the version and resets to draft, requiring fresh approval.
 	// NOTE: Upsert preserves is_global on an EDIT (it never clears an
@@ -152,18 +208,32 @@ func (s *Server) companionToolSkillPropose(ctx context.Context, key *persistence
 	if err != nil {
 		return "", fmt.Errorf("propose failed: %w", err)
 	}
+
+	// Retire the superseded row only AFTER the replacement is durably stored,
+	// so a failed write can never leave the catalogue with neither active.
+	if skill.SupersedesID != "" {
+		if err := s.skillStore.SetMaturity(ctx, skill.SupersedesID, persistence.SkillMaturityRetired); err != nil {
+			return "", fmt.Errorf("stored %s but failed to retire superseded %s: %w", stored.ID, skill.SupersedesID, err)
+		}
+	}
+
 	note := "proposed as draft — an operator must approve it before it activates"
 	if stored.IsGlobal {
 		note = "proposed as a GLOBAL draft (affects ALL projects once approved) — an operator must approve it before it activates"
 	}
-	return marshalSkill(map[string]any{
+	out := map[string]any{
 		"id":        stored.ID,
 		"name":      stored.Name,
 		"maturity":  stored.Maturity,
 		"version":   stored.Version,
 		"is_global": stored.IsGlobal,
 		"note":      note,
-	})
+	}
+	if stored.SupersedesID != "" {
+		out["supersedes"] = stored.SupersedesID
+		out["superseded_note"] = "the superseded skill is retired; its body remains readable by id"
+	}
+	return marshalSkill(out)
 }
 
 func (s *Server) companionToolSkillSearch(ctx context.Context, key *persistence.APIKey, raw json.RawMessage) (string, error) {

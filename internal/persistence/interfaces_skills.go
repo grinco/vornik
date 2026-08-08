@@ -2,6 +2,8 @@ package persistence
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -68,6 +70,24 @@ type Skill struct {
 	OriginTask   string
 	Author       string
 
+	// Embedding backs the propose-time near-duplicate preflight (LLD §12.2).
+	// Stored as a JSON-encoded float array in a TEXT column, NOT a pgvector
+	// type — §1 keeps this table backend-portable, and cosine is computed in
+	// Go over the candidate set. Empty means un-embedded (the lazy-backfill
+	// state); EmbeddingModel records which model produced it, because a
+	// vector from another model is not comparable and must be recomputed.
+	Embedding      []float32
+	EmbeddingModel string
+
+	// SupersedesID is set when this skill replaced another via the preflight's
+	// `supersedes` disposition. The target is RETIRED, never overwritten — §6
+	// binds approval to a body hash, so an approved body must stay readable.
+	SupersedesID string
+	// DistinctJustification is the required note explaining why this skill
+	// exists alongside a near-duplicate the preflight flagged. Surfaced by
+	// skill_audit so a bypass is auditable rather than silent.
+	DistinctJustification string
+
 	// Usage counters — written by RecordFeedback, not read this slice.
 	UsageFired     int64
 	UsageWorked    int64
@@ -76,6 +96,38 @@ type Skill struct {
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// EncodeSkillVector marshals an embedding for the JSON-TEXT column. A nil or
+// empty vector encodes as "" (the un-embedded state) rather than "null"/"[]",
+// so "has no embedding" is a single unambiguous value across both backends.
+//
+// Shared by the Postgres and SQLite repositories deliberately: the column is
+// backend-portable by design (LLD §12.2), so its codec must be too — two
+// implementations would be two chances to disagree about the wire form.
+func EncodeSkillVector(v []float32) string {
+	if len(v) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// DecodeSkillVector parses the JSON-TEXT embedding column. Any malformed value
+// decodes to nil (un-embedded) rather than erroring: a corrupt vector must
+// degrade the preflight to its fallback metric, never fail a skill read.
+func DecodeSkillVector(s string) []float32 {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var v []float32
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return nil
+	}
+	return v
 }
 
 // SkillListFilter narrows List. All fields are optional; the zero value
@@ -171,4 +223,37 @@ type SkillRepository interface {
 	// simply widens/narrows where it injects on its next task. Returns
 	// ErrNotFound when the id is unknown.
 	SetGlobal(ctx context.Context, id string, global bool) error
+
+	// SetEmbedding stores a skill's dedup-preflight vector and the model that
+	// produced it (LLD §12.2). Touches ONLY those two columns: this is a lazy
+	// backfill of derived data, so it must not bump version, reset maturity,
+	// or otherwise disturb an approved skill — re-embedding a trusted skill
+	// must never send it back to draft. Returns ErrNotFound for an unknown id.
+	SetEmbedding(ctx context.Context, id string, embedding []float32, model string) error
+
+	// ListVersions returns a skill's archived prior bodies, newest first.
+	// Empty for a skill that has never been edited. See SkillVersion.
+	ListVersions(ctx context.Context, skillID string) ([]*SkillVersion, error)
+}
+
+// SkillVersion is one archived prior body of a skill (LLD §12.2).
+//
+// Upsert archives the existing row here BEFORE overwriting it, so an
+// operator-approved body is never destroyed by a re-propose: §6 binds approval
+// to a body hash, which is only meaningful while the hashed text still exists.
+// The archive is append-only and is not consulted by injection, search, or the
+// preflight — it is the audit trail, not part of the working set.
+type SkillVersion struct {
+	ID          string
+	SkillID     string
+	Version     int
+	Name        string
+	Description string
+	Body        string
+	BodySHA256  string
+	// Maturity is the maturity the skill held AT ARCHIVE TIME, which is what
+	// makes the record meaningful: archiving a `trusted` body says an operator
+	// had approved exactly this text.
+	Maturity   string
+	ArchivedAt time.Time
 }

@@ -333,44 +333,6 @@
                     {{end}}
                 </div>
 
-                <!-- Trading safety tile: cross-project envelope summary.
-                     KillSwitchCount > 0 paints the tile rose so it draws
-                     the eye when something is actively halted. -->
-                {{$tradingMeta := printf "%d projects" .Trading.EnabledCount}}{{if eq .Trading.EnabledCount 1}}{{$tradingMeta = "1 project"}}{{end}}
-                <div class="glass rounded-xl border {{if gt .Trading.KillSwitchCount 0}}border-rose-700/50{{else}}border-surface-600{{end}} overflow-hidden">
-                    {{template "sectionHeader" (dict "Title" "Trading safety" "MetaText" $tradingMeta)}}
-                    {{if gt .Trading.EnabledCount 0}}
-                    <div class="px-5 py-4 space-y-3">
-                        <div class="grid grid-cols-3 gap-2 text-center text-xs">
-                            <div>
-                                <div class="text-lg font-semibold text-rose-700 dark:text-rose-300 tabular-nums">{{.Trading.LiveCount}}</div>
-                                <div class="text-ink-500">live</div>
-                            </div>
-                            <div>
-                                <div class="text-lg font-semibold text-accent-300 tabular-nums">{{.Trading.PaperCount}}</div>
-                                <div class="text-ink-500">paper</div>
-                            </div>
-                            <div>
-                                <div class="text-lg font-semibold {{if gt .Trading.KillSwitchCount 0}}text-rose-800 dark:text-rose-400{{else}}text-ink-400{{end}} tabular-nums">{{.Trading.KillSwitchCount}}</div>
-                                <div class="text-ink-500">kill sw.</div>
-                            </div>
-                        </div>
-                        <div class="text-xs border-t border-surface-600/40 pt-2 space-y-1">
-                            <div class="flex items-center justify-between">
-                                <span class="text-ink-500">Safety events 24h</span>
-                                <span class="font-mono tabular-nums {{if gt .Trading.SafetyEvents24h 0}}text-amber-700 dark:text-amber-300{{else}}text-ink-400{{end}}">{{.Trading.SafetyEvents24h}}</span>
-                            </div>
-                            <div class="flex items-center justify-between">
-                                <span class="text-ink-500">Breaker trips 24h</span>
-                                <span class="font-mono tabular-nums {{if gt .Trading.BreakerTrips24h 0}}text-rose-800 dark:text-rose-400{{else}}text-ink-400{{end}}">{{.Trading.BreakerTrips24h}}</span>
-                            </div>
-                        </div>
-                    </div>
-                    {{else}}
-                    <div class="px-5 py-6 text-center text-xs text-ink-500">No projects have trading enabled.</div>
-                    {{end}}
-                </div>
-
                 <!-- Judge tile: hallucination judge verdict distribution
                      over the rolling 24h window. The pass% bar is sized
                      vs. the headline so a healthy day reads green at a

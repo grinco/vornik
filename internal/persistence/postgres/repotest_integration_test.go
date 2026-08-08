@@ -150,6 +150,12 @@ func purgeRepotestLeftovers() error {
 		"DELETE FROM corpus_epochs_active WHERE " + cond,
 		"DELETE FROM corpus_epochs WHERE " + cond,
 		"DELETE FROM project_memory_chunks WHERE " + cond,
+		// Archived skill bodies are keyed by skill_id, not project_id, so the
+		// project-prefix condition can't reach them — delete by their parent's
+		// project instead. Without this, Upsert_archives_prior_body counts
+		// archives left behind by the PREVIOUS run and fails on the second
+		// invocation while passing on the first.
+		"DELETE FROM project_skill_versions WHERE skill_id IN (SELECT id FROM project_skills WHERE " + cond + ")",
 		"DELETE FROM project_skills WHERE " + cond,
 		// repotest seeds execution_injected_skills with 'exec-' (hyphen)
 		// fixtures; production execution IDs are 'exec_' (underscore), so

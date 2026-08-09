@@ -1,8 +1,17 @@
 # Local API gateway (Kong DB-less) fronting authenticated third-party HTTP APIs.
 # See https://docs.vornik.io
 #
-# Bring up alongside the deps (operator step; NOT run automatically):
+# LOCAL DEV / REFERENCE definition. For anything long-lived use the systemd
+# unit instead — `make gateway-install` — which supervises the container and
+# restarts it. This file being an unsupervised operator step is precisely how
+# the gateway sat dead for four days after a clean exit on 2026-08-05, taking
+# every query_api provider down with it.
+#
 #   podman compose -f deployments/podman/gateway.compose.yaml up -d
+#
+# The two definitions are coupled: published port, image tag, and the
+# template's placeholder set. Change one, change the other
+# (contrib/systemd/vornik-gateway.service + vornik-gateway-render.sh).
 #
 # The host daemon reaches the gateway over loopback (127.0.0.1:8010). Kong owns
 # the provider credential (Google Maps api_key) and injects it via

@@ -1,0 +1,103 @@
+# vornik-gateway.service — local API gateway (Kong DB-less)
+#
+# Install:
+#   make gateway-install
+# or by hand:
+#   mkdir -p ~/.config/vornik/gateway
+#   cp deployments/podman/gateway/kong.yml.template ~/.config/vornik/gateway/
+#   cp contrib/systemd/vornik-gateway-render.sh ~/.local/bin/
+#   cp contrib/systemd/vornik-gateway.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now vornik-gateway
+#
+# Logs:
+#   journalctl --user -u vornik-gateway -f
+#
+# Fronts authenticated third-party HTTP APIs for the query_api tool. Kong owns
+# the provider credentials and injects them upstream; the daemon presents only
+# the internal token and never holds a third-party secret. Published on
+# 127.0.0.1:8010 only — the daemon reaches it over loopback, nothing else can.
+#
+# The template is read from the DEPLOYED config tree (~/.config/vornik), never
+# from a source checkout: the deployed tree is the one a running host is allowed
+# to depend on, and a unit that bind-mounts a git worktree breaks the moment the
+# repo moves, is rebased, or isn't present at all on a customer host.
+#
+# Supersedes the manual `podman compose -f deployments/podman/gateway.compose.yaml
+# up -d` step for deployments. That compose file stays as the local-dev and
+# reference definition; if you change one, change both — the coupling is the
+# published port, the image tag, and the template's placeholder set.
+#
+# Why this unit exists: the container ran unsupervised, exited 0 on 2026-08-05,
+# and nothing restarted it. Every query_api provider was dark for four days —
+# the marketing feed logged "gateway request failed" into per-run artifacts that
+# no one reads, and the daemon never mentioned it once.
+
+[Unit]
+Description=vornik-gateway - Kong API gateway for authenticated third-party APIs
+Documentation=https://github.com/grinco/vornik
+After=network-online.target
+Wants=network-online.target
+
+# Don't hammer a genuinely broken config: five starts in a minute, then stop and
+# stay stopped so `systemctl --user status` shows a failed unit an operator can
+# find, rather than a restart loop that looks alive in `podman ps`.
+# These belong in [Unit] — systemd ignores them under [Service].
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+
+# Render the declarative config into the runtime dir (tmpfs) before Kong
+# starts. %t is the systemd user runtime directory; %h is the user's home.
+#
+# Two independent constraints govern whether Kong can read this file, and
+# BOTH must hold. Measured on this host (SELinux enforcing, rootless podman),
+# against a freshly rendered file:
+#
+#   mode 0600, any mount option        -> Permission denied
+#   mode 0644, mount `ro`              -> Permission denied
+#   mode 0644, mount `ro,z` or `ro,Z`  -> OK
+#
+#   1. DAC — the container's `kong` user maps to a subuid, NOT to the invoking
+#      user, so it cannot read a 0600 file this user owns. Hence 0644, with the
+#      0700 runtime directory as the actual confinement.
+#   2. SELinux — a freshly created file is `user_tmp_t`, which containers are
+#      denied; the mount needs a relabel to `container_file_t`.
+#
+# Both failures surface as the same bare "Permission denied" from Kong, so
+# fixing only one looks like no progress at all. `:z` (shared) rather than `:Z`
+# (per-container MCS): the render step rewrites this file on every start, and a
+# private label would leave a host-side write against a label this user no
+# longer owns.
+ExecStartPre=%h/.local/bin/vornik-gateway-render.sh %h/.config/vornik/gateway/kong.yml.template %t/vornik/kong.yml
+
+# Idempotently clear a stale container from a prior crashed run: --rm does not
+# cover an invocation that died before it could clean up.
+ExecStartPre=-/usr/bin/podman rm -f vornik-gateway
+
+ExecStart=/usr/bin/podman run \
+    --name vornik-gateway \
+    --replace \
+    --rm \
+    --log-driver=journald \
+    -p 127.0.0.1:8010:8000 \
+    -v %t/vornik/kong.yml:/kong/kong.yml:ro,z \
+    -e KONG_DATABASE=off \
+    -e KONG_DECLARATIVE_CONFIG=/kong/kong.yml \
+    -e KONG_PROXY_LISTEN=0.0.0.0:8000 \
+    -e KONG_ADMIN_LISTEN=off \
+    docker.io/kong:3.7
+
+ExecStop=/usr/bin/podman stop -t 5 vornik-gateway
+
+# Restart=always, NOT on-failure. The outage this unit exists to prevent was a
+# clean exit 0 — on-failure would have ignored it and left the gateway down
+# exactly as it was. For a long-running proxy, terminating at all is the fault;
+# the exit code is not the signal.
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

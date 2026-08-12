@@ -473,7 +473,6 @@ default** — read that item before upgrading.
   your inbox). If you override the macOS installer's quickstart URL it must now
   be `https://` and have a published `.sha256` alongside it.
 
-See `docs/release-notes/2026.7.5.md`.
 
 ---
 
@@ -533,7 +532,6 @@ model-health is fully visible in the doctor.
   longer silently clobber newer state — roll back the newer change first. The
   hub hides the rollback button on a proposal that's been superseded.
 
-See `docs/release-notes/2026.7.4.md`.
 
 ---
 
@@ -576,7 +574,6 @@ provider, and a broad fix batch.
   on every deployment; an inbox mobile pass; and a turnkey in-place update
   script for Community quickstart installs.
 
-See `docs/release-notes/2026.7.3.md`.
 
 ---
 

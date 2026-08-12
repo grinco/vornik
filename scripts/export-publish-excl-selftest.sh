@@ -64,9 +64,15 @@ echo "scraper make"  > "$SRC/services/scraper/Makefile"
 
 rsync -a --delete --exclude='.git/' "${EXCL[@]}" "$SRC/" "$DST/"
 
-for f in README.md LICENSE Makefile CLA.md CODE_OF_CONDUCT.md; do
+for f in LICENSE Makefile CLA.md CODE_OF_CONDUCT.md; do
   chk "root $f preserved" grep -qx 'public-root' "$DST/$f"
 done
+# The root README is deliberately NOT preserved: it syncs from
+# scripts/public-ce-templates/README.md. Preserving it is what let the public
+# landing page drift behind the maintained template, including a security-relevant
+# install instruction. If this assertion is ever flipped back, that drift returns.
+chk "root README.md SYNCS (no longer frozen — see PUBLISH_EXCL)" \
+  grep -qx 'ee-root' "$DST/README.md"
 chk "public CI workflow preserved" grep -qx 'public-ci' "$DST/.github/workflows/ci.yaml"
 chk "injected import-law test preserved" \
   grep -qx 'public-law' "$DST/internal/architecture/import_law_test.go"

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 
+	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/memory/graph"
 )
 
@@ -29,8 +30,9 @@ func (c *Container) newGraphSearcher() *graph.Searcher {
 	var embed graph.EmbedFn
 	if c.memoryManager != nil && c.memoryManager.Embedder != nil {
 		mgr := c.memoryManager
-		embed = func(ctx context.Context, texts []string) ([][]float32, error) {
-			return mgr.Embedder.Embed(ctx, texts)
+		embed = func(ctx context.Context, projectID string, texts []string) ([][]float32, error) {
+			return mgr.Embedder.Embed(ctx,
+				memory.EmbedScope{ProjectID: projectID, CallSite: memory.EmbedCallSiteKGResolve}, texts)
 		}
 	}
 

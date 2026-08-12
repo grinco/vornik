@@ -76,7 +76,7 @@ func buildFixItDoctorOrNil(c *Container, projectDoctor *projectdoctor.Doctor) ap
 		Chat:              c.ChatClient,
 		Model:             resolveFixItDoctorModel(c.Config),
 		Edition:           c.Edition(),
-		LLMUsage:          c.repos.LLMUsage,
+		Spend:             c.llmSpend(fixitdoctor.SourceFixItDoctor, fixitdoctor.RoleFixItDoctor),
 		BudgetRepo:        c.repos.LLMUsage,
 		Projects:          c.Registry,
 		Metrics:           c.fixItDoctorMetrics,

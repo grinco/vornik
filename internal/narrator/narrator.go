@@ -20,6 +20,7 @@ import (
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/chatorigin"
 	"vornik.io/vornik/internal/executor/livepubsub"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/persistence"
 )
@@ -81,9 +82,12 @@ type Narrator struct {
 	Client chat.Provider
 	Model  string
 
-	LLMUsage memory.UsageRecorder
-	Pricing  memory.PricingTable
-	Scanner  SecretScanner
+	// Spend records one task_llm_usage row per billed narration call. Pricing is
+	// still consulted separately below because narrateCost RETURNS the figure to
+	// its caller — it is not only a ledger field here.
+	Spend   llmspend.Recorder
+	Pricing memory.PricingTable
+	Scanner SecretScanner
 
 	// --- Chat push (task 2.3, chatpush.go) ---------------------------
 	//

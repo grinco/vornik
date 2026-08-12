@@ -494,6 +494,13 @@ type IngestArtifactOptions struct {
 	// any other string = a repo token. Threads through to the
 	// IngestCandidate and lands on the resulting chunks.
 	RepoScope string
+
+	// EventTime is when the content PERTAINS TO, as opposed to when it is
+	// ingested (migration 157, LLD
+	// 2026-08-10-memory-benchmark-harness-design.md §4.1). Zero = unknown and
+	// persists as NULL, so temporal recall falls back to ingest time and the
+	// chunk behaves exactly as it did before the column existed.
+	EventTime time.Time
 }
 
 // IngestArtifact runs one source artifact through the pipeline with
@@ -602,6 +609,7 @@ func (p *Pipeline) IngestArtifactWithOptions(
 		ProposedConfidence: DefaultClassPolicies[class].DefaultConfidence,
 		TTLOverride:        opts.TTLOverride,
 		RepoScope:          opts.RepoScope,
+		EventTime:          opts.EventTime,
 	}
 
 	// Path B audit (finding #4 / mitigation plan §7.3).
@@ -729,8 +737,8 @@ func (p *Pipeline) IngestArtifactWithOptions(
 		// chunk creation remains a single path. Phase 4 extends
 		// the indexer with class/confidence/expires_at parameters
 		// so chunks carry the policy-derived metadata.
-		if err := p.indexer.IngestText(ctx, projectID, taskID, artifactID, sourceName, cand.Content); err != nil {
-			return stats, fmt.Errorf("pipeline: indexer.IngestText: %w", err)
+		if err := p.indexer.IngestTextAt(ctx, projectID, taskID, artifactID, sourceName, cand.Content, cand.EventTime); err != nil {
+			return stats, fmt.Errorf("pipeline: indexer.IngestTextAt: %w", err)
 		}
 		// Best-effort backfill of the per-class metadata onto the
 		// just-written chunks. The index is on (project_id,
@@ -1037,6 +1045,7 @@ func (p *Pipeline) IngestCompanionNote(
 	class ContentClass,
 	ttlDays int,
 	repoScope string,
+	eventTime time.Time,
 ) (CompanionIngestResult, error) {
 	if p == nil {
 		return CompanionIngestResult{}, errors.New("pipeline is nil")
@@ -1076,7 +1085,7 @@ func (p *Pipeline) IngestCompanionNote(
 	// the default — the MCP schema validates `ttl_days >= 1` so the
 	// zero-means-no-expiry interpretation is reachable only from
 	// in-process callers, and none rely on it today.
-	opts := IngestArtifactOptions{ClassOverride: class, RepoScope: repoScope}
+	opts := IngestArtifactOptions{ClassOverride: class, RepoScope: repoScope, EventTime: eventTime}
 	if ttlDays > 0 {
 		d := time.Duration(ttlDays) * 24 * time.Hour
 		opts.TTLOverride = &d

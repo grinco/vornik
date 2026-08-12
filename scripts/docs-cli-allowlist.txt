@@ -3,6 +3,11 @@
 # in the generated CLI reference (docs/public/reference/vornikctl.md). Internal
 # and admin commands (admin, blackbox, operator, scraper, cpc, eval, …) are
 # intentionally absent. Add a line to publish a command group; remove to hide.
+#
+# NOTE on bench vs eval: `bench` is published because it is a tool a customer runs
+# against their OWN deployment — it scores retrieval quality on datasets they supply
+# or public ones it fetches. `eval` stays absent because it judges TASK outcomes
+# against internal expectations. They are siblings in shape, not in audience.
 init
 project
 swarm
@@ -14,6 +19,7 @@ key
 config
 doctor
 memory
+bench
 instinct
 knowledge
 control-plane

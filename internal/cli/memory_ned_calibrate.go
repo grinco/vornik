@@ -18,9 +18,11 @@ import (
 
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/memory/graph"
 	"vornik.io/vornik/internal/memory/ned"
+	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/postgres"
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/storage"
@@ -752,17 +754,28 @@ func buildCalibrationGate(ctx context.Context, cfg *config.Config, cfgPath strin
 	var embedFn graph.EmbedFn
 	if cfg.Memory.Enabled {
 		embedder := memory.NewEmbedder(buildCalibrationEmbedConfig(cfg))
-		embedFn = embedder.Embed
+		// Bound in a closure rather than passed as a method value, because
+		// graph.EmbedFn carries no scope: calibration is an operator-run tool,
+		// so its embedding spend is infrastructure, not a tenant's.
+		embedFn = func(ctx context.Context, projectID string, texts []string) ([][]float32, error) {
+			return embedder.Embed(ctx,
+				memory.EmbedScope{ProjectID: projectID, CallSite: memory.EmbedCallSiteKGResolve}, texts)
+		}
 	}
 
 	entityRepo := postgres.NewKnowledgeEntityRepository(db)
+	// The calibration harness bills its own measurement runs — the command's help
+	// text promises exactly that ("the measurement's own spend is BILLED to
+	// task_llm_usage under source=chat_remember_ned").
 	gate := &ned.Gate{
 		Extractor: graph.NewExtractor(provider, extractorModel),
 		Resolver:  graph.NewResolver(provider, resolverModel, entityRepo, embedFn),
-		Usage:     postgres.NewTaskLLMUsageRepository(db),
-	}
-	if pt := loadCalibrationPricing(cfgPath); pt != nil {
-		gate.Pricing = pt
+		Spend: llmspend.New(
+			postgres.NewTaskLLMUsageRepository(db),
+			loadCalibrationPricing(cfgPath),
+			persistence.TaskLLMUsageSourceChatRememberNED,
+			ned.RoleExtractor,
+		),
 	}
 	return gate, nil
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
 )
@@ -38,8 +39,8 @@ type JudgeRunner struct {
 	// "we have tokens but can't price them"; missing LLMUsage
 	// means "we don't write rollup-able usage rows from the
 	// judge" — both useful in test/minimal deployments.
-	Pricing  *pricing.Table
-	LLMUsage UsageRecorder
+	Pricing *pricing.Table
+	Spend   llmspend.Recorder
 	// Metrics is the Prometheus sink for verdict + cost counters.
 	// Nil-safe: callers can leave it unset in tests / minimal
 	// deployments and the runner still records verdicts to the DB,
@@ -231,35 +232,30 @@ func (r *JudgeRunner) Run(ctx context.Context, task *persistence.Task) error {
 	// (zero tokens) — there's nothing to bill, and a zero-token
 	// row would clutter spend dashboards with "successful"
 	// abstain-on-no-config rows that didn't cost anything.
-	if r.LLMUsage != nil && metrics != nil && (metrics.PromptTokens > 0 || metrics.CompletionTokens > 0) {
+	if metrics != nil && (metrics.PromptTokens > 0 || metrics.CompletionTokens > 0) {
 		taskID := task.ID
 		var execID *string
 		if in.Execution != nil && in.Execution.ID != "" {
 			id := in.Execution.ID
 			execID = &id
 		}
-		usage := &persistence.TaskLLMUsage{
-			ID:                  persistence.GenerateID("llm"),
+		// RoleOverride: the judge tags its row with the role under test, not with
+		// a fixed identity. CostUSD is passed because it was already computed
+		// above against the judge's own model resolution.
+		r.Spend.Record(ctx, llmspend.Input{
 			ProjectID:           task.ProjectID,
+			Model:               model,
+			PromptTokens:        metrics.PromptTokens,
+			CompletionTokens:    metrics.CompletionTokens,
 			TaskID:              &taskID,
 			ExecutionID:         execID,
 			StepID:              "judge",
-			Role:                roleTag,
-			Model:               model,
-			PromptTokens:        int64(metrics.PromptTokens),
-			CompletionTokens:    int64(metrics.CompletionTokens),
-			Iterations:          1,
-			CostUSD:             costUSD,
-			Source:              persistence.TaskLLMUsageSourceJudge,
-			RecordedAt:          time.Now().UTC(),
-			CacheCreationTokens: int64(metrics.CacheCreationTokens),
-			CacheReadTokens:     int64(metrics.CacheReadTokens),
+			RoleOverride:        roleTag,
+			CostUSD:             &costUSD,
 			APIKeyID:            task.CreatedByAPIKeyID,
-		}
-		if err := r.LLMUsage.Record(ctx, usage); err != nil {
-			r.Logger.Warn().Err(err).Str("task_id", task.ID).
-				Msg("judge: usage persist failed (verdict already recorded)")
-		}
+			CacheCreationTokens: metrics.CacheCreationTokens,
+			CacheReadTokens:     metrics.CacheReadTokens,
+		})
 	}
 	return nil
 }

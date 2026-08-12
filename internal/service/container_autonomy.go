@@ -17,6 +17,7 @@ import (
 	"vornik.io/vornik/internal/autonomy"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/memory/graph"
+	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/retention"
 )
 
@@ -73,11 +74,12 @@ func (c *Container) startGraphWorker(mgr *memory.Manager) {
 	// don't double-pay for endpoint config and so canonical_name
 	// vectors come from the same model the chunk vectors came from
 	// (must match for SimilarByEmbedding to work).
-	embedFn := func(ctx context.Context, texts []string) ([][]float32, error) {
+	embedFn := func(ctx context.Context, projectID string, texts []string) ([][]float32, error) {
 		if mgr.Embedder == nil {
 			return nil, nil
 		}
-		return mgr.Embedder.Embed(ctx, texts)
+		return mgr.Embedder.Embed(ctx,
+			memory.EmbedScope{ProjectID: projectID, CallSite: memory.EmbedCallSiteKGResolve}, texts)
 	}
 
 	extractor := graph.NewExtractor(c.ChatClient, extractorModel)
@@ -97,9 +99,8 @@ func (c *Container) startGraphWorker(mgr *memory.Manager) {
 		Edges:     edgeRepo,
 		Mentions:  mentionRepo,
 		Embedder:  embedFn,
-		LLMUsage:  c.repos.LLMUsage,
-		Pricing:   c.pricingTable,
 	}
+	pipeline.SetSpend(c.llmSpend(persistence.TaskLLMUsageSourceKGExtraction, graph.RoleExtractor))
 
 	wcfg := graph.WorkerConfig{
 		PollInterval:         time.Duration(cfg.PollIntervalSeconds) * time.Second,

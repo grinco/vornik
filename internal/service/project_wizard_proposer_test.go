@@ -37,6 +37,9 @@ func (f *fakeProposalRepo) MarkApplied(context.Context, string, string, string) 
 func (f *fakeProposalRepo) StagePreApplySnapshot(context.Context, string, string) error { return nil }
 func (f *fakeProposalRepo) MarkRolledBack(context.Context, string) error                { return nil }
 func (f *fakeProposalRepo) MarkRegressed(context.Context, string, string) error         { return nil }
+func (f *fakeProposalRepo) RefreshObservation(context.Context, string, string, string) error {
+	return nil
+}
 
 // TestScaffoldProposer_FilesCreateOpsBundle is the core service-layer test:
 // ProposeScaffold turns the wizard's configs-relative file set into a DRAFT

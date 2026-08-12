@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"vornik.io/vornik/internal/llmspend"
+	"vornik.io/vornik/internal/persistence"
 )
 
 // classifyFakeProvider is a deterministic chat.Provider variant for
@@ -35,7 +37,7 @@ func TestClassifier_NilGuards(t *testing.T) {
 }
 
 func TestClassifier_EmptyContent(t *testing.T) {
-	c := NewClassifier(newClassifyProvider(titlerReply{content: "research"}), "")
+	c := NewClassifier(newClassifyProvider(titlerReply{content: "research"}), "", llmspend.Disabled())
 	got, err := c.Classify(context.Background(), "   \n\t ", "s.md", "researcher", "", "")
 	if got != ClassUnclassified || err != nil {
 		t.Fatalf("empty content: %q %v", got, err)
@@ -56,7 +58,7 @@ func TestClassifier_HappyPath(t *testing.T) {
 	for raw, want := range cases {
 		t.Run(raw, func(t *testing.T) {
 			fp := newClassifyProvider(titlerReply{content: raw})
-			c := NewClassifier(fp, "")
+			c := NewClassifier(fp, "", llmspend.Disabled())
 			got, err := c.Classify(context.Background(), "some content here", "doc.md", "researcher", "", "")
 			if err != nil {
 				t.Fatalf("err: %v", err)
@@ -71,7 +73,7 @@ func TestClassifier_HappyPath(t *testing.T) {
 func TestClassifier_TruncatesLongContent(t *testing.T) {
 	long := strings.Repeat("alpha beta ", 2000) // ~22KB
 	fp := newClassifyProvider(titlerReply{content: "research"})
-	c := NewClassifier(fp, "")
+	c := NewClassifier(fp, "", llmspend.Disabled())
 	c.MaxPreviewBytes = 64
 	got, err := c.Classify(context.Background(), long, "s.md", "r", "", "")
 	if err != nil || got != ClassResearch {
@@ -85,7 +87,7 @@ func TestClassifier_TruncatesLongContent(t *testing.T) {
 
 func TestClassifier_UnrecognisedClassReturnsErr(t *testing.T) {
 	fp := newClassifyProvider(titlerReply{content: "fictional_class"})
-	c := NewClassifier(fp, "")
+	c := NewClassifier(fp, "", llmspend.Disabled())
 	got, err := c.Classify(context.Background(), "content", "s.md", "r", "", "")
 	if got != ClassUnclassified {
 		t.Fatalf("got %q", got)
@@ -100,7 +102,7 @@ func TestClassifier_LLMErrorPropagates(t *testing.T) {
 		titlerReply{err: errors.New("upstream 503")},
 		titlerReply{err: errors.New("upstream 503")},
 	)
-	c := NewClassifier(fp, "")
+	c := NewClassifier(fp, "", llmspend.Disabled())
 	c.MaxAttempts = 2
 	got, err := c.Classify(context.Background(), "content", "s.md", "r", "", "")
 	if got != ClassUnclassified || err == nil {
@@ -109,7 +111,7 @@ func TestClassifier_LLMErrorPropagates(t *testing.T) {
 }
 
 func TestClassifier_NoChoicesPropagates(t *testing.T) {
-	c := NewClassifier(&emptyChoiceProvider{}, "")
+	c := NewClassifier(&emptyChoiceProvider{}, "", llmspend.Disabled())
 	got, err := c.Classify(context.Background(), "x", "s.md", "r", "", "")
 	if got != ClassUnclassified || err == nil || !strings.Contains(err.Error(), "no choices") {
 		t.Fatalf("got %q %v", got, err)
@@ -121,7 +123,7 @@ func TestClassifier_RetriesThenSucceeds(t *testing.T) {
 		titlerReply{err: errors.New("transient")},
 		titlerReply{content: "decision"},
 	)
-	c := NewClassifier(fp, "")
+	c := NewClassifier(fp, "", llmspend.Disabled())
 	c.MaxAttempts = 2
 	got, err := c.Classify(context.Background(), "x", "s.md", "reviewer", "", "")
 	if err != nil || got != ClassDecision {
@@ -133,7 +135,7 @@ func TestClassifier_RetriesThenSucceeds(t *testing.T) {
 }
 
 func TestClassifier_ContextCancelMidRetry(t *testing.T) {
-	c := NewClassifier(&slowProvider{delay: 200 * time.Millisecond}, "")
+	c := NewClassifier(&slowProvider{delay: 200 * time.Millisecond}, "", llmspend.Disabled())
 	c.Timeout = 30 * time.Millisecond
 	c.MaxAttempts = 3
 	start := time.Now()
@@ -149,9 +151,8 @@ func TestClassifier_ContextCancelMidRetry(t *testing.T) {
 func TestClassifier_RecordsUsage(t *testing.T) {
 	fp := newClassifyProvider(titlerReply{content: "spec"})
 	rec := &fakeUsageRecorder{}
-	c := NewClassifier(fp, "fake-model")
-	c.LLMUsage = rec
-	c.Pricing = fixedPricing{}
+	c := NewClassifier(fp, "fake-model",
+		llmspend.New(rec, fixedPricing{}, persistence.TaskLLMUsageSourceMemoryClassifier, "memory_classifier"))
 	got, err := c.Classify(context.Background(), "spec content", "doc.md", "analyst", "p1", "c1")
 	if err != nil || got != ClassSpec {
 		t.Fatalf("got %q %v", got, err)
@@ -179,8 +180,8 @@ func TestClassifier_RecordsUsageOnUnusableResponse(t *testing.T) {
 	// bill the spend so the dashboard isn't undercounted.
 	fp := newClassifyProvider(titlerReply{content: "garbage_class_name"})
 	rec := &fakeUsageRecorder{}
-	c := NewClassifier(fp, "")
-	c.LLMUsage = rec
+	c := NewClassifier(fp, "",
+		llmspend.New(rec, fixedPricing{}, persistence.TaskLLMUsageSourceMemoryClassifier, "memory_classifier"))
 	got, err := c.Classify(context.Background(), "x", "s.md", "r", "p", "c")
 	if got != ClassUnclassified || err == nil {
 		t.Fatalf("got %q %v", got, err)

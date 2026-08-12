@@ -7,13 +7,12 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/chat"
-	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/llmspend"
 )
 
-// narratorRole is the value stored in task_llm_usage.role for every
-// narration LLM call. Matches the memory package's underscore
-// convention ("memory_narrative", "memory_titler", ...).
-const narratorRole = "task_narrator"
+// RoleNarrator is this component's task_llm_usage.role, exported so the wiring
+// site names it rather than repeating a literal.
+const RoleNarrator = "task_narrator"
 
 // narratorCallSite tags every narration chat.Complete call
 // (chat.WithCallSite) so provider-side logs/metrics can distinguish
@@ -206,26 +205,22 @@ func (n *Narrator) recordUsage(ctx context.Context, resp *chat.ChatResponse, st 
 	if n.Pricing != nil {
 		cost = n.Pricing.CostUSD(model, pt, ct)
 	}
-	if n.LLMUsage != nil {
-		taskID := st.taskID
-		execID := st.executionID
-		row := &persistence.TaskLLMUsage{
-			ID:                  persistence.GenerateID("llm"),
-			ProjectID:           st.projectID,
-			TaskID:              &taskID,
-			ExecutionID:         &execID,
-			Role:                narratorRole,
-			Model:               model,
-			PromptTokens:        int64(pt),
-			CompletionTokens:    int64(ct),
-			Iterations:          1,
-			CostUSD:             cost,
-			Source:              persistence.TaskLLMUsageSourceTaskNarrator,
-			CacheCreationTokens: int64(resp.Usage.CacheCreationTokens),
-			CacheReadTokens:     int64(resp.Usage.CacheReadTokens),
-		}
-		_ = n.LLMUsage.Record(ctx, row)
-	}
+	taskID := st.taskID
+	execID := st.executionID
+	// CostUSD is passed explicitly rather than left to the seam's pricing table:
+	// this function RETURNS the figure to its caller, so the ledger row and the
+	// returned value must be the same number by construction.
+	n.Spend.Record(ctx, llmspend.Input{
+		ProjectID:           st.projectID,
+		Model:               model,
+		PromptTokens:        pt,
+		CompletionTokens:    ct,
+		TaskID:              &taskID,
+		ExecutionID:         &execID,
+		CostUSD:             &cost,
+		CacheCreationTokens: resp.Usage.CacheCreationTokens,
+		CacheReadTokens:     resp.Usage.CacheReadTokens,
+	})
 	return cost
 }
 

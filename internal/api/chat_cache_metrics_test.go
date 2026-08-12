@@ -59,14 +59,7 @@ func TestSetChatCacheMetrics(t *testing.T) {
 func TestObserveChatCacheUsage_ForwardsRowFields(t *testing.T) {
 	m := &stubCacheMetrics{}
 	s := &Server{chatCacheMetrics: m}
-	row := &persistence.TaskLLMUsage{
-		Model:               "claude",
-		Role:                "external_api",
-		Source:              persistence.TaskLLMUsageSourceExternalAPI,
-		CacheCreationTokens: 100,
-		CacheReadTokens:     300,
-	}
-	s.observeChatCacheUsage(row)
+	s.observeChatCacheUsage("claude", "external_api", persistence.TaskLLMUsageSourceExternalAPI, 100, 300)
 	if assert.Len(t, m.calls, 1) {
 		c := m.calls[0]
 		assert.Equal(t, "claude", c.model)
@@ -88,31 +81,25 @@ func TestObserveChatCacheUsage_ComputesDollarsSavedFromPricing(t *testing.T) {
 
 	m := &stubCacheMetrics{}
 	s := &Server{chatCacheMetrics: m, pricingPath: pricingPath}
-	row := &persistence.TaskLLMUsage{
-		Model:           "claude-test",
-		Role:            "external_api",
-		Source:          persistence.TaskLLMUsageSourceExternalAPI,
-		CacheReadTokens: 1_000_000,
-	}
-	s.observeChatCacheUsage(row)
+	s.observeChatCacheUsage("claude-test", "external_api", persistence.TaskLLMUsageSourceExternalAPI, 0, 1_000_000)
 	require.Len(t, m.calls, 1)
 	// 1M read tokens at input $3 vs cache-read $0.30 (default 0.10×) → $2.70 saved.
 	assert.InDelta(t, 2.70, m.calls[0].dollarsSaved, 1e-6)
 }
 
 // TestObserveChatCacheUsage_SkipsWhenNoCacheTokensOrNoSink — a row with
-// no cache tokens, a nil row, or no wired sink records nothing.
+// no cache tokens or no wired sink records nothing.
 func TestObserveChatCacheUsage_SkipsWhenNoCacheTokensOrNoSink(t *testing.T) {
 	m := &stubCacheMetrics{}
 	s := &Server{chatCacheMetrics: m}
 
-	s.observeChatCacheUsage(&persistence.TaskLLMUsage{Model: "m"}) // no cache tokens
-	s.observeChatCacheUsage(nil)
+	s.observeChatCacheUsage("m", "", "", 0, 0) // no cache tokens
 	assert.Empty(t, m.calls)
 
-	// No sink wired: must not panic.
+	// No sink wired: must not panic. (The old nil-row case is gone — the
+	// signature takes fields now, so "no row" is not expressible.)
 	noSink := &Server{}
 	assert.NotPanics(t, func() {
-		noSink.observeChatCacheUsage(&persistence.TaskLLMUsage{CacheReadTokens: 5})
+		noSink.observeChatCacheUsage("m", "", "", 0, 5)
 	})
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 	"time"
+	"vornik.io/vornik/internal/llmspend"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/rs/zerolog"
@@ -14,7 +15,7 @@ func newBackfiller(t *testing.T, replies []titlerReply) (*TitleBackfiller, sqlmo
 	t.Helper()
 	r, mock, cleanup := newRepo(t)
 	fp := &titlerFakeProvider{replies: replies}
-	tr := NewTitler(fp, "")
+	tr := NewTitler(fp, "", llmspend.Disabled())
 	return &TitleBackfiller{
 		Repo:    r,
 		Titler:  tr,

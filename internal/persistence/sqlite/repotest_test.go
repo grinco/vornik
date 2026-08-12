@@ -52,6 +52,7 @@ func TestSkillRepository_Contract(t *testing.T) {
 func TestProposalRepository_Contract(t *testing.T) {
 	db := newTestDB(t)
 	repotest.RunProposalSuite(t, sqlite.NewProposalRepository(db.DB))
+	repotest.RunProposalObservationSuite(t, sqlite.NewProposalRepository(db.DB))
 }
 
 // TestCostTuningCanaryRepository_Contract — the cost/quality canary guard's row

@@ -11,7 +11,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"vornik.io/vornik/internal/chat"
-	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/llmspend"
 )
 
 // Reranker scores a candidate set of SearchResults against a query and
@@ -40,7 +40,7 @@ type Reranker interface {
 // retrieval, whose absolute score floor is only meaningful against calibrated
 // reranker scores.
 // Options are variadic so the existing call shape keeps working; cost
-// accounting is opt-in via WithRerankerUsage and applies only to the
+// accounting is opt-in via WithRerankerSpend and applies only to the
 // LLM-backed path, since a NoopReranker never bills anything.
 func NewConfiguredReranker(enabled bool, client chat.Provider, model string, maxCandidates, timeoutSeconds, maxSnippetBytes int, logger zerolog.Logger, opts ...RerankerOption) Reranker {
 	if !enabled || client == nil {
@@ -67,15 +67,11 @@ func NewConfiguredReranker(enabled bool, client chat.Provider, model string, max
 // than growing an already-long positional parameter list.
 type RerankerOption func(*LLMReranker)
 
-// WithRerankerUsage attaches cost accounting. Either argument may be
-// nil: a nil recorder disables billing entirely, and a nil pricing
-// table still records the call with CostUSD 0, which keeps it visible
-// in the call-count rollup rather than absent from it.
-func WithRerankerUsage(rec UsageRecorder, pricing PricingTable) RerankerOption {
-	return func(r *LLMReranker) {
-		r.LLMUsage = rec
-		r.Pricing = pricing
-	}
+// WithRerankerSpend wires the billing recorder. Takes an llmspend.Recorder
+// rather than a repo + pricing pair, matching every other component: the seam
+// owns the row shape, so the caller only decides WHO pays.
+func WithRerankerSpend(r llmspend.Recorder) RerankerOption {
+	return func(lr *LLMReranker) { lr.spend = r }
 }
 
 // NoopReranker preserves RRF ordering. The default — wired when the
@@ -116,7 +112,7 @@ type LLMReranker struct {
 	// nil disables recording (failing to bill is dashboard fidelity,
 	// not correctness); production wires
 	// *postgres.TaskLLMUsageRepository. Mirrors Titler.LLMUsage.
-	LLMUsage UsageRecorder
+	spend llmspend.Recorder
 	// Pricing computes USD from the model's token counts. nil → the
 	// row still lands with CostUSD 0 so the call remains visible in
 	// the call-count rollup even when the model is unpriced.
@@ -337,36 +333,42 @@ func rerankProjectID(candidates []SearchResult) (projectID string, ambiguous boo
 // chunk id because each call concerns exactly one chunk; a rerank spans
 // the whole candidate set, so there is no single chunk to name.
 func (r *LLMReranker) recordUsage(ctx context.Context, resp *chat.ChatResponse, projectID string) {
-	if r == nil || r.LLMUsage == nil || resp == nil || projectID == "" {
-		return
-	}
-	prompt := resp.Usage.PromptTokens
-	completion := resp.Usage.CompletionTokens
-	if prompt == 0 && completion == 0 {
+	if r == nil || resp == nil || projectID == "" {
 		return
 	}
 	model := resp.Model
 	if model == "" {
 		model = r.Model
 	}
-	var costUSD float64
-	if r.Pricing != nil {
-		costUSD = r.Pricing.CostUSD(model, prompt, completion)
-	}
-	row := &persistence.TaskLLMUsage{
-		ID:                  persistence.GenerateID("llm"),
+	// StepID deliberately empty: a rerank spans the whole candidate set, so no
+	// single chunk owns the call.
+	r.spend.Record(ctx, llmspend.Input{
 		ProjectID:           projectID,
-		TaskID:              nil, // retrieval is not task-scoped
-		ExecutionID:         nil,
-		Role:                rerankerRole,
 		Model:               model,
-		PromptTokens:        int64(prompt),
-		CompletionTokens:    int64(completion),
-		Iterations:          1,
-		CostUSD:             costUSD,
-		Source:              persistence.TaskLLMUsageSourceMemoryReranker,
-		CacheCreationTokens: int64(resp.Usage.CacheCreationTokens),
-		CacheReadTokens:     int64(resp.Usage.CacheReadTokens),
+		PromptTokens:        resp.Usage.PromptTokens,
+		CompletionTokens:    resp.Usage.CompletionTokens,
+		CacheCreationTokens: resp.Usage.CacheCreationTokens,
+		CacheReadTokens:     resp.Usage.CacheReadTokens,
+	})
+}
+
+// RerankerStatus reports whether reranking will actually happen, and why not when
+// it will not.
+//
+// Exists because the reranker failed SILENTLY: `reranker.enabled: true` was set,
+// SetReranker was called, and across 151,818 production LLM-usage rows not one
+// reranker call was ever made — with nothing anywhere stating which gate was
+// closed. A feature that can be configured on and still do nothing needs to say so
+// at wiring time, or the next person spends hours reading call graphs as well.
+func (s *Searcher) RerankerStatus() (active bool, reason string) {
+	if s == nil {
+		return false, "searcher not built"
 	}
-	_ = r.LLMUsage.Record(ctx, row)
+	if s.reranker == nil {
+		return false, "not wired"
+	}
+	if _, isNoop := s.reranker.(NoopReranker); isNoop {
+		return false, "disabled or no chat client"
+	}
+	return true, "active"
 }

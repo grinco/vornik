@@ -11,6 +11,7 @@ import (
 
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/rolelibrary"
 	"vornik.io/vornik/internal/templates"
@@ -175,7 +176,7 @@ type Wizard struct {
 	Priors []TemplatePrior
 	// LLMUsage records one row per call for the spend dashboard.
 	// Optional.
-	LLMUsage UsageRecorder
+	Spend llmspend.Recorder
 	// Writer commits the final proposal as a project on disk
 	// (Phase B). Optional — without it (and without Proposer), Commit
 	// returns ErrWriterUnwired. Converse works fine without a writer;
@@ -700,7 +701,7 @@ const (
 )
 
 func (w *Wizard) recordUsage(ctx context.Context, resp *chat.ChatResponse, sessionID, role string, _ []byte) {
-	if w == nil || w.LLMUsage == nil || resp == nil {
+	if w == nil || resp == nil {
 		return
 	}
 	if role == "" {
@@ -711,19 +712,16 @@ func (w *Wizard) recordUsage(ctx context.Context, resp *chat.ChatResponse, sessi
 	if prompt == 0 && completion == 0 {
 		return
 	}
-	row := &persistence.TaskLLMUsage{
-		ID:               persistence.GenerateID("llm"),
-		ProjectID:        "", // no project yet; wizard precedes project creation
-		StepID:           sessionID,
-		Role:             role,
+	// ProjectID stays empty: the wizard runs BEFORE a project exists, so there is
+	// nothing to attribute to. RoleOverride because the wizard bills under a
+	// per-turn role.
+	w.Spend.Record(ctx, llmspend.Input{
 		Model:            firstNonEmpty(resp.Model, w.Model),
-		PromptTokens:     int64(prompt),
-		CompletionTokens: int64(completion),
-		Iterations:       1,
-		Source:           "project_wizard",
-		RecordedAt:       time.Now().UTC(),
-	}
-	_ = w.LLMUsage.Record(ctx, row)
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		StepID:           sessionID,
+		RoleOverride:     role,
+	})
 }
 
 // envelopeResponseFormat returns the json_schema directive that

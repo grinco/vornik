@@ -20,8 +20,11 @@ import (
 // Embed returns nil, nil when the backend is unconfigured or a call fails —
 // that is the contract, not an error condition, and the preflight treats it as
 // "fall back to lexical".
+// projectID is a plain string rather than a memory.EmbedScope so this
+// interface keeps its deliberate independence from internal/memory (see above);
+// the service-layer adapter turns it into a billing scope.
 type SkillEmbedder interface {
-	Embed(ctx context.Context, texts []string) ([][]float32, error)
+	Embed(ctx context.Context, projectID string, texts []string) ([][]float32, error)
 	Model() string
 }
 
@@ -56,7 +59,7 @@ func (s *Server) embedSkillForPreflight(ctx context.Context, sk *persistence.Ski
 	if model == "" {
 		return false
 	}
-	vecs, err := s.skillEmbedder.Embed(ctx, []string{skillEmbeddingText(sk)})
+	vecs, err := s.skillEmbedder.Embed(ctx, sk.ProjectID, []string{skillEmbeddingText(sk)})
 	if err != nil || len(vecs) == 0 || len(vecs[0]) == 0 {
 		return false
 	}
@@ -96,7 +99,12 @@ func (s *Server) backfillSkillEmbeddings(ctx context.Context, model string, cand
 	if len(stale) == 0 {
 		return
 	}
-	vecs, err := s.skillEmbedder.Embed(ctx, texts)
+	// Grouped by project because this candidate set is deliberately UNSCOPED
+	// (see the invariant above), so one batch spans projects — and a provider
+	// call can only be billed to one. Embedding all of them under a single
+	// project would bill one tenant for another's skills
+	// (2026-08-12-embed-spend-attribution-design.md §8.4).
+	vecs, err := s.embedByProject(ctx, stale, texts)
 	if err != nil || len(vecs) != len(stale) {
 		return
 	}
@@ -112,6 +120,49 @@ func (s *Server) backfillSkillEmbeddings(ctx context.Context, model string, cand
 			_ = s.skillStore.SetEmbedding(ctx, c.ID, c.Embedding, model)
 		}
 	}
+}
+
+// embedByProject embeds one provider call per project, scattering vectors back
+// into a slice positionally aligned with skills.
+//
+// The skill-preflight candidate set is unscoped by design, so a batch spans
+// projects and a single call could not be billed truthfully. Splitting by
+// project keeps each usage row honest; a single-project batch still makes
+// exactly one call.
+//
+// Returns (nil, err) on the first failing group — the caller treats a
+// length mismatch or error as "skip the backfill", which is the pre-existing
+// degrade behaviour.
+func (s *Server) embedByProject(ctx context.Context, skills []*persistence.Skill, texts []string) ([][]float32, error) {
+	// First-seen project order keeps the call sequence deterministic; a map
+	// walk would vary it run to run.
+	order := make([]string, 0, 4)
+	byProject := make(map[string][]int, 4)
+	for i, sk := range skills {
+		if _, seen := byProject[sk.ProjectID]; !seen {
+			order = append(order, sk.ProjectID)
+		}
+		byProject[sk.ProjectID] = append(byProject[sk.ProjectID], i)
+	}
+
+	out := make([][]float32, len(skills))
+	for _, projectID := range order {
+		idxs := byProject[projectID]
+		group := make([]string, len(idxs))
+		for j, idx := range idxs {
+			group[j] = texts[idx]
+		}
+		vecs, err := s.skillEmbedder.Embed(ctx, projectID, group)
+		if err != nil {
+			return nil, err
+		}
+		for j, idx := range idxs {
+			if j < len(vecs) {
+				out[idx] = vecs[j]
+			}
+		}
+	}
+	return out, nil
 }
 
 // runSkillDupePreflight scores a proposed skill against the catalogue and

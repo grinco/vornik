@@ -24,6 +24,7 @@ import (
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/controlplane"
 	"vornik.io/vornik/internal/dispatcher"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/mcpconnect"
 	"vornik.io/vornik/internal/onboarding"
 	"vornik.io/vornik/internal/persistence"
@@ -189,7 +190,10 @@ type Server struct {
 	auditRepo          persistence.ToolAuditRepository
 	taskCredentialRepo persistence.TaskCredentialRepository
 	webhookEventRepo   persistence.WebhookEventRepository
-	llmUsageRepo       persistence.TaskLLMUsageRepository
+	// llmUsageRepo READS the ledger for /ui/spend; assistantSpend BILLS the
+	// web-authoring assistant. Two fields, two jobs.
+	llmUsageRepo   persistence.TaskLLMUsageRepository
+	assistantSpend llmspend.Recorder
 	// apiKeyRepo backs /ui/projects/{id}/keys. Nil disables the
 	// page (renders 503).
 	apiKeyRepo       persistence.APIKeyRepository
@@ -905,6 +909,9 @@ func WithArtifactReader(r ArtifactReader) ServerOption {
 func WithLLMUsageRepository(repo persistence.TaskLLMUsageRepository) ServerOption {
 	return func(s *Server) {
 		s.llmUsageRepo = repo
+		// The authoring assistant bills through the same repo; wiring both here
+		// keeps a single option from leaving one of the two jobs undone.
+		s.assistantSpend = llmspend.New(repo, nil, TaskLLMUsageSourceAuthoring, "assistant")
 	}
 }
 

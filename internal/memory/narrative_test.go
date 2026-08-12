@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"vornik.io/vornik/internal/llmspend"
 
 	"vornik.io/vornik/internal/persistence"
 )
@@ -22,7 +23,7 @@ func TestNarrativeWriter_NilGuards(t *testing.T) {
 
 func TestNarrativeWriter_EmptyInputReturnsEmpty(t *testing.T) {
 	fp := &titlerFakeProvider{replies: []titlerReply{{content: "should not fire"}}}
-	w := NewNarrativeWriter(fp, "")
+	w := NewNarrativeWriter(fp, "", llmspend.Disabled())
 	// No terms, no sample → user message is empty → short-circuit.
 	got, err := w.Write(context.Background(), nil, "  ", "")
 	if err != nil {
@@ -40,7 +41,7 @@ func TestNarrativeWriter_HappyPath(t *testing.T) {
 	fp := &titlerFakeProvider{replies: []titlerReply{
 		{content: "An automated equities trading project focused on IBKR bracket orders."},
 	}}
-	w := NewNarrativeWriter(fp, "")
+	w := NewNarrativeWriter(fp, "", llmspend.Disabled())
 	terms := []TermFrequency{{Term: "ibkr", Count: 42}, {Term: "bracket", Count: 18}}
 	sample := "Submitted bracket order for NVDA 100 shares with 2% stop"
 	got, err := w.Write(context.Background(), terms, sample, "proj-x")
@@ -56,7 +57,7 @@ func TestNarrativeWriter_StripsSurroundingQuotes(t *testing.T) {
 	fp := &titlerFakeProvider{replies: []titlerReply{
 		{content: `"A project about gardening."`},
 	}}
-	w := NewNarrativeWriter(fp, "")
+	w := NewNarrativeWriter(fp, "", llmspend.Disabled())
 	got, err := w.Write(context.Background(), []TermFrequency{{Term: "plants", Count: 5}}, "soil", "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -70,7 +71,7 @@ func TestNarrativeWriter_CollapsesWhitespace(t *testing.T) {
 	fp := &titlerFakeProvider{replies: []titlerReply{
 		{content: "Line one.\n\nLine two."},
 	}}
-	w := NewNarrativeWriter(fp, "")
+	w := NewNarrativeWriter(fp, "", llmspend.Disabled())
 	got, err := w.Write(context.Background(), []TermFrequency{{Term: "x", Count: 1}}, "y", "")
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -85,7 +86,7 @@ func TestNarrativeWriter_RetriesOnError(t *testing.T) {
 		{err: errors.New("transient")},
 		{content: "second-attempt summary"},
 	}}
-	w := NewNarrativeWriter(fp, "")
+	w := NewNarrativeWriter(fp, "", llmspend.Disabled())
 	w.MaxAttempts = 2
 	got, err := w.Write(context.Background(), []TermFrequency{{Term: "x", Count: 1}}, "y", "")
 	if err != nil {
@@ -102,9 +103,8 @@ func TestNarrativeWriter_RetriesOnError(t *testing.T) {
 func TestNarrativeWriter_RecordsUsageWhenConfigured(t *testing.T) {
 	rec := &fakeUsageRecorder{}
 	fp := &titlerFakeProvider{replies: []titlerReply{{content: "ok"}}}
-	w := NewNarrativeWriter(fp, "test-model")
-	w.LLMUsage = rec
-	w.Pricing = fixedPricing{}
+	w := NewNarrativeWriter(fp, "test-model",
+		llmspend.New(rec, fixedPricing{}, persistence.TaskLLMUsageSourceMemoryNarrative, "memory_narrative"))
 	if _, err := w.Write(context.Background(), []TermFrequency{{Term: "x", Count: 1}}, "y", "proj-a"); err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -115,8 +115,8 @@ func TestNarrativeWriter_RecordsUsageWhenConfigured(t *testing.T) {
 	if row.ProjectID != "proj-a" {
 		t.Errorf("ProjectID = %q, want proj-a", row.ProjectID)
 	}
-	if row.Role != narrativeRole {
-		t.Errorf("Role = %q, want %s", row.Role, narrativeRole)
+	if row.Role != RoleNarrative {
+		t.Errorf("Role = %q, want %s", row.Role, RoleNarrative)
 	}
 	if row.Source != persistence.TaskLLMUsageSourceMemoryNarrative {
 		t.Errorf("Source = %q", row.Source)
@@ -132,8 +132,8 @@ func TestNarrativeWriter_RecordsUsageWhenConfigured(t *testing.T) {
 func TestNarrativeWriter_SkipsUsageWhenProjectIDEmpty(t *testing.T) {
 	rec := &fakeUsageRecorder{}
 	fp := &titlerFakeProvider{replies: []titlerReply{{content: "ok"}}}
-	w := NewNarrativeWriter(fp, "")
-	w.LLMUsage = rec
+	w := NewNarrativeWriter(fp, "",
+		llmspend.New(rec, fixedPricing{}, persistence.TaskLLMUsageSourceMemoryNarrative, "memory_narrative"))
 	if _, err := w.Write(context.Background(), []TermFrequency{{Term: "x", Count: 1}}, "y", ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}

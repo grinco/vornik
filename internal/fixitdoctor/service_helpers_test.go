@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 	"time"
+	"vornik.io/vornik/internal/llmspend"
 
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/persistence"
@@ -57,7 +58,7 @@ func TestPickModel(t *testing.T) {
 
 func TestRecordUsage_NilAndZeroUsageAreNoOps(t *testing.T) {
 	usage := &fakeUsageRecorder{}
-	svc := &Service{LLMUsage: usage}
+	svc := &Service{Spend: llmspend.New(usage, nil, SourceFixItDoctor, RoleFixItDoctor)}
 	svc.recordUsage(context.Background(), nil, "sess-1")
 	if len(usage.rows) != 0 {
 		t.Fatalf("expected no usage row for a nil response")

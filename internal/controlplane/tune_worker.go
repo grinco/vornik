@@ -88,6 +88,51 @@ type StepLatencySample struct {
 	Model      string
 	P95Seconds float64
 	Count      int
+	// MaxSeconds is the slowest observed run in the window. The reclaim path
+	// floors its suggestion here rather than at p95 (design §6.1 / D4): a
+	// timeout's job is to not truncate the runs that actually happen, and the
+	// max IS one of those runs. Zero when the metrics source predates this
+	// field, in which case reclaimSuggestion degrades to the old p95 term.
+	MaxSeconds float64
+	// DegradedCount is how many runs in the window ended in a degraded outcome
+	// (timeout / schema_violation / degenerate_loop). Any non-zero value
+	// disqualifies a reclaim: a step that timed out is not over-provisioned,
+	// and because a truncated run's recorded duration is CAPPED at the timeout
+	// it also drags p95 down, making the step look more reclaimable the worse
+	// it gets.
+	DegradedCount int
+	// TimeoutCount is the subset of DegradedCount that ended in TRUNCATION
+	// (timeout / context_timeout). Only truncation may drive a timeout RAISE:
+	// a schema_violation or degenerate_loop is not short of time, and reacting
+	// to one with a raise widens the ceiling on every scan for a cause the
+	// raise cannot address (review-20260810-53f0 finding 6). The reclaim guard
+	// deliberately stays broader and refuses on ANY degradation.
+	TimeoutCount int
+}
+
+// reclaimSuggestion returns the timeout a reclaim proposal should suggest for
+// st, applying the standard 1.5 headroom multiplier to whichever of p95 and
+// the observed max is larger (design §6.1).
+func reclaimSuggestion(st StepLatencySample) time.Duration {
+	basis := st.P95Seconds
+	if st.MaxSeconds > basis {
+		basis = st.MaxSeconds
+	}
+	return time.Duration(math.Ceil(basis*1.5)) * time.Second
+}
+
+// reclaimEligible reports whether st may be proposed for a timeout reduction
+// against its current setting. Reductions are held to a higher evidence bar
+// than raises because a reduction is the only direction that can cause
+// truncation (design §6.1).
+func reclaimEligible(st StepLatencySample, current time.Duration, ratio float64, minSamplesReduce int) bool {
+	if st.DegradedCount > 0 {
+		return false
+	}
+	if st.Count < minSamplesReduce {
+		return false
+	}
+	return st.P95Seconds <= ratio*current.Seconds()
 }
 
 // MetricsSource supplies the per-project signals the Tune worker watches.
@@ -151,6 +196,30 @@ type TuneWorker struct {
 	// proposal stays informational (prior behaviour).
 	Actionize *Actionizer
 
+	// TimeoutDegradedRateThreshold is the share of runs ending in a degraded
+	// outcome at/above which a step counts as pinned against its timeout,
+	// independent of p95 (design §6). 0 → 0.05. A RATE, not a count: one
+	// timeout in a large clean window is noise.
+	TimeoutDegradedRateThreshold float64
+
+	// RejectCooldown suppresses re-filing a proposal whose TITLE an operator
+	// has already REJECTED, measured from the most recent rejection (design
+	// §7). 0 → 168h, mirroring instinct.lift.reeval_cooldown_hours.
+	//
+	// Without it a rejection suppresses nothing: fileRenderedProposal dedups
+	// only against open DRAFTs, so the detector re-files on the next streak.
+	// The 2026-08-10 ingest outage was preceded by three rejections of the
+	// identical title.
+	RejectCooldown time.Duration
+
+	// MinSamplesReduce is the sample floor for timeout REDUCTIONS, held
+	// deliberately above the shared MinSamples used by every other detector
+	// (design §6.1). A reduction is the only tuning direction that can cause
+	// truncation, so it must demand materially more evidence than a raise.
+	// 0 → 30. The 2026-08-10 ingest outage was proposed off exactly 5 samples,
+	// which cleared the shared floor's default of 5 at its bare minimum.
+	MinSamplesReduce int
+
 	// TimeoutBindingThreshold: a step's explicit timeout counts as the
 	// binding constraint when observed step p95 ≥ threshold × timeout
 	// (inclusive). 0 → 0.8 — surfaces impending truncation while normal
@@ -174,6 +243,7 @@ type TuneWorker struct {
 	latencyBreaches map[string]int
 	toolBreaches    map[ProjectToolKey]int
 	reclaimStreaks  map[WorkflowStepKey]int
+	bindingStreaks  map[WorkflowStepKey]int
 	stopped         chan struct{}
 }
 
@@ -224,6 +294,124 @@ func (w *TuneWorker) breachesToPropose() int {
 		return w.BreachesToPropose
 	}
 	return 3
+}
+
+// scanTimeoutBinding is the raise-side counterpart to scanTimeoutReclaim
+// (design §6). It watches a step against its OWN ceiling rather than waiting
+// for a project-level latency breach to surface it, which is the gap that let
+// the 2026-08-10 easeit-companion ingest step time out on every attempt while
+// on_fail:recover kept the executions completing.
+//
+// A step breaches when EITHER its degraded-outcome rate clears
+// TimeoutDegradedRateThreshold, OR its p95 is at/above the binding threshold.
+// The rate term is load-bearing, not belt-and-braces: a truncated run's
+// recorded duration is capped at the timeout, so a step that is timing out
+// constantly can still present a p95 well below the binding threshold and be
+// invisible to a p95-only test.
+func (w *TuneWorker) scanTimeoutBinding(ctx context.Context) {
+	if w.Actionize == nil {
+		return
+	}
+	if w.bindingStreaks == nil {
+		w.bindingStreaks = map[WorkflowStepKey]int{}
+	}
+	steps, err := w.Metrics.StepLatencies(ctx)
+	if err != nil {
+		w.Logger.Warn().Err(err).Msg("tune: failed to read step-latency metrics for binding scan")
+		return
+	}
+	seen := map[WorkflowStepKey]bool{}
+	for _, st := range steps {
+		key := WorkflowStepKey{Project: st.Project, Workflow: st.Workflow, Step: st.Step}
+		current, explicit, cerr := w.Actionize.CurrentStepTimeout(st.Workflow, st.Step)
+		if cerr != nil || !explicit {
+			continue // no explicit timeout to raise
+		}
+		seen[key] = true
+		candidate := st.Count >= w.minSamples() && stepTimeoutBinding(st, current, w.bindingThreshold(), w.degradedRateThreshold())
+		if !advanceStreak(w.bindingStreaks, key, candidate, w.breachesToPropose()) {
+			continue
+		}
+		w.proposeTimeoutBinding(ctx, st, current)
+	}
+	resetAbsent(w.bindingStreaks, seen)
+}
+
+// stepTimeoutBinding reports whether st is pinned against current: either its
+// degraded-outcome RATE clears rateThreshold (a rate, so one timeout in a large
+// clean window stays noise) or its p95 is at/above bindingThreshold × current.
+// The p95 comparison keeps the existing inclusive-with-epsilon boundary.
+func stepTimeoutBinding(st StepLatencySample, current time.Duration, bindingThreshold, rateThreshold float64) bool {
+	if st.Count > 0 && float64(st.TimeoutCount)/float64(st.Count) >= rateThreshold {
+		return true
+	}
+	return st.P95Seconds+1e-9 >= bindingThreshold*current.Seconds()
+}
+
+// bindingSuggestion sizes a raise for a step pinned against `current`.
+//
+// The subtlety is CENSORED DATA. Once a step starts timing out, its recorded
+// durations are right-censored at the timeout: every truncated run reads as
+// exactly `current`, and the real duration it needed is unknowable from the
+// sample. So max(p95, observedMax) × 1.5 can land BELOW `current` — on the
+// 2026-08-10 numbers it lands at 450s against a 600s ceiling — and the raise
+// renders as ErrChangeNotUseful, leaving the step to keep timing out forever.
+//
+// When truncation has actually been observed we therefore escalate relative to
+// the CURRENT timeout rather than to the censored observations. With no
+// truncation the observations are trustworthy and the usual basis applies.
+func bindingSuggestion(st StepLatencySample, current time.Duration) time.Duration {
+	suggested := reclaimSuggestion(st) // max(p95, observedMax) × 1.5
+	if st.TimeoutCount > 0 {
+		if escalated := time.Duration(math.Ceil(current.Seconds()*1.5)) * time.Second; escalated > suggested {
+			suggested = escalated
+		}
+	}
+	return suggested
+}
+
+// proposeTimeoutBinding renders + files the raise, sized by bindingSuggestion.
+func (w *TuneWorker) proposeTimeoutBinding(ctx context.Context, st StepLatencySample, current time.Duration) {
+	suggested := bindingSuggestion(st, current)
+	rc, rerr := w.Actionize.RenderStepTimeout(st.Workflow, st.Step, suggested)
+	if rerr != nil {
+		if !errors.Is(rerr, ErrChangeNotUseful) {
+			w.Logger.Warn().Err(rerr).Str("project", st.Project).Str("step", st.Step).
+				Msg("tune: step-timeout raise render failed")
+		}
+		return
+	}
+	timeoutRate := 0.0
+	if st.Count > 0 {
+		timeoutRate = float64(st.TimeoutCount) / float64(st.Count)
+	}
+	evidence := fmt.Sprintf(`{"signal":"step_timeout_binding","step_p95":%.1f,"step_max":%.1f,"step_count":%d,"timeout_count":%d,"timeout_rate":%.3f,"degraded_count":%d,"current_timeout_s":%.0f,"workflow":%q,"role":%q,"model":%q}`,
+		st.P95Seconds, st.MaxSeconds, st.Count, st.TimeoutCount, timeoutRate, st.DegradedCount, current.Seconds(), st.Workflow, st.Role, st.Model)
+	rationale := fmt.Sprintf("Step %q (workflow %s, role %s) is pinned against its %s timeout — p95 %.0fs, max %.0fs, and %d of %d runs (%.0f%%) were TRUNCATED, sustained for %d consecutive scans. Note a truncated run's duration is capped at the timeout, so p95 understates the pressure. Proposed: %s.",
+		st.Step, st.Workflow, st.Role, formatDurationShort(current), st.P95Seconds, st.MaxSeconds,
+		st.TimeoutCount, st.Count, timeoutRate*100, w.breachesToPropose(), rc.Summary)
+	w.fileRendered(ctx, st.Project, tuneTimeoutBindingTitle(st.Project, st.Step), rationale, evidence, "tune-detector", rc)
+}
+
+func (w *TuneWorker) degradedRateThreshold() float64 {
+	if w.TimeoutDegradedRateThreshold > 0 {
+		return w.TimeoutDegradedRateThreshold
+	}
+	return 0.05
+}
+
+func (w *TuneWorker) rejectCooldown() time.Duration {
+	if w.RejectCooldown > 0 {
+		return w.RejectCooldown
+	}
+	return 168 * time.Hour
+}
+
+func (w *TuneWorker) minSamplesReduce() int {
+	if w.MinSamplesReduce > 0 {
+		return w.MinSamplesReduce
+	}
+	return 30
 }
 
 func (w *TuneWorker) reclaimRatio() float64 {
@@ -295,6 +483,14 @@ func (w *TuneWorker) tick(ctx context.Context) {
 	w.scanLatency(ctx)
 	w.scanToolLatency(ctx)
 	w.scanTimeoutReclaim(ctx)
+	// Runs after the reclaim scan deliberately: the two are mutually exclusive
+	// by construction (reclaim refuses any step with a degraded outcome, and
+	// binding requires either degradation or a p95 in the 0.8+ band, while
+	// reclaim needs 0.5-), so ordering is cosmetic — but keeping the reduce
+	// scan first means a step that has just started degrading stops being
+	// proposed for reduction in the same tick it starts being proposed for a
+	// raise.
+	w.scanTimeoutBinding(ctx)
 	w.scanStaleProposals(ctx)
 }
 
@@ -373,9 +569,11 @@ func (w *TuneWorker) scanTimeoutReclaim(ctx context.Context) {
 			continue // no timeout to reclaim, or workflow unreadable
 		}
 		seen[key] = true
-		// Candidate when p95 has enough headroom below the configured
-		// timeout AND we have enough samples to trust the p95.
-		candidate := st.Count >= w.minSamples() && st.P95Seconds <= w.reclaimRatio()*current.Seconds()
+		// Candidate when p95 has enough headroom below the configured timeout,
+		// we have enough samples to trust it AGAINST THE REDUCE FLOOR (not the
+		// shared one), and the step has not actually degraded in the window
+		// (design §6.1).
+		candidate := reclaimEligible(st, current, w.reclaimRatio(), w.minSamplesReduce())
 		if !advanceStreak(w.reclaimStreaks, key, candidate, w.breachesToPropose()) {
 			continue
 		}
@@ -391,7 +589,7 @@ func (w *TuneWorker) scanTimeoutReclaim(ctx context.Context) {
 // nothing: reclaim is an optimisation, not a breach, so unlike the latency
 // path there is no informational fallback.
 func (w *TuneWorker) proposeTimeoutReclaim(ctx context.Context, st StepLatencySample, current time.Duration) {
-	suggested := time.Duration(math.Ceil(st.P95Seconds*1.5)) * time.Second
+	suggested := reclaimSuggestion(st)
 	rc, rerr := w.Actionize.RenderStepTimeoutReduction(st.Workflow, st.Step, suggested)
 	if rerr != nil {
 		if !errors.Is(rerr, ErrChangeNotUseful) {
@@ -636,7 +834,168 @@ func (w *TuneWorker) renderToolTimeout(key ProjectToolKey, suggestedSeconds int)
 // so apply re-validates the typed change against current state. Deduped on
 // the open-DRAFT title like every worker proposal.
 func (w *TuneWorker) fileRendered(ctx context.Context, project, title, rationale, evidenceJSON, proposedBy string, rc *RenderedChange) {
+	if rejectedWithinCooldown(ctx, w.Proposals, w.Logger, project, title, w.rejectCooldown()) {
+		return
+	}
+	if applyableDraftExistsForTarget(ctx, w.Proposals, w.Logger, project, title, rc) {
+		return
+	}
 	fileRenderedProposal(ctx, w.Proposals, w.Logger, project, title, rationale, evidenceJSON, proposedBy, rc)
+}
+
+// applyableDraftExistsForTarget reports whether an open applyable DRAFT already
+// edits the same file, in which case filing another is worse than noise.
+//
+// Single-op applies carry a base_hash of the target file. Two open proposals
+// against one file means that whichever applies first leaves the other
+// permanently ErrStaleBase — the exact dead-proposal state the 2026-07-23
+// live-value-edits design had to add a retire sweep for. Two detectors
+// genuinely can want the same file in one tick: scanLatency's raise path and
+// scanTimeoutBinding both size a step timeout.
+//
+// Scoped to applyable proposals on both sides: an informational proposal has no
+// target and no base_hash, so it neither blocks nor is blocked — the
+// supersede-informational-with-applyable upgrade path depends on that.
+// A same-title proposal is left to the existing dedup so its supersede
+// behaviour is unchanged.
+func applyableDraftExistsForTarget(ctx context.Context, proposals persistence.ProposalRepository, logger zerolog.Logger, project, title string, rc *RenderedChange) bool {
+	if proposals == nil || rc == nil || strings.TrimSpace(rc.ApplyTarget) == "" {
+		return false
+	}
+	open, err := proposals.List(ctx, persistence.ProposalListFilter{
+		ProjectID: project, Statuses: []string{persistence.ProposalStatusDraft},
+	})
+	if err != nil {
+		// Fail OPEN, as with the rejection cooldown: a ledger read error must
+		// not stop a real breach being surfaced.
+		logger.Warn().Err(err).Msg("control-plane: same-target lookup failed; filing anyway")
+		return false
+	}
+	for _, p := range open {
+		if p == nil || p.Title == title {
+			continue // same title → existing dedup/supersede logic owns it
+		}
+		if strings.TrimSpace(p.ApplyTarget) == strings.TrimSpace(rc.ApplyTarget) {
+			logger.Debug().Str("target", rc.ApplyTarget).Str("held_by", p.Title).Str("skipped", title).
+				Msg("control-plane: an applyable draft already edits this file; not filing a second")
+			return true
+		}
+	}
+	return false
+}
+
+// upsertObservation files a non-decidable observation, or refreshes the
+// existing one for this (project, title) if it has been seen before.
+//
+// The dedup deliberately ignores STATUS. Keying on open-DRAFT — what the
+// applyable path does, correctly, because a decided proposal is spent — is what
+// produced the 2026-08-10 inert pile: approving an informational row moved it
+// out of DRAFT, the dedup stopped matching, and the detector filed a fresh copy
+// on its next streak. An observation is a standing finding, not a one-shot
+// request, so its identity is (project, title) for as long as the row exists.
+func upsertObservation(ctx context.Context, proposals persistence.ProposalRepository, logger zerolog.Logger, project, title, rationale, evidence, proposedBy string) {
+	existing, err := proposals.List(ctx, persistence.ProposalListFilter{ProjectID: project})
+	if err != nil {
+		logger.Warn().Err(err).Str("project", project).Msg("control-plane: observation lookup failed; filing a new row")
+	}
+	for _, p := range existing {
+		if p == nil || p.Title != title || !persistence.IsObservationKind(p.Kind) {
+			continue
+		}
+		merged, occ := bumpObservationOccurrences(p.Evidence, evidence)
+		if rerr := proposals.RefreshObservation(ctx, p.ID, rationale, merged); rerr != nil {
+			logger.Warn().Err(rerr).Str("proposal_id", p.ID).Msg("control-plane: observation refresh failed")
+			return
+		}
+		logger.Debug().Str("proposal_id", p.ID).Str("title", title).Int("occurrences", occ).
+			Msg("control-plane: observation recurred; refreshed in place")
+		return
+	}
+	merged, _ := bumpObservationOccurrences("", evidence)
+	p := &persistence.ControlPlaneProposal{
+		ID:          persistence.GenerateID("cpp"),
+		ProjectID:   project,
+		Kind:        persistence.ProposalKindObservation,
+		BlastRadius: persistence.ProposalScopeProject,
+		Title:       title,
+		Rationale:   rationale,
+		Evidence:    merged,
+		Status:      persistence.ProposalStatusDraft,
+		ProposedBy:  proposedBy,
+	}
+	if err := proposals.Create(ctx, p); err != nil {
+		logger.Warn().Err(err).Str("project", project).Msg("control-plane: failed to create observation")
+		return
+	}
+	logger.Info().Str("proposal_id", p.ID).Str("title", title).Msg("control-plane: observation filed")
+}
+
+// bumpObservationOccurrences merges the newest evidence with a running
+// occurrence count carried on the prior row, and returns the merged JSON plus
+// the new count. The count is what tells an operator "still happening" — without
+// it, refreshing in place would silently hide that a finding is persistent
+// rather than a one-off blip.
+func bumpObservationOccurrences(priorEvidence, newEvidence string) (string, int) {
+	occ := 1
+	if strings.TrimSpace(priorEvidence) != "" {
+		var prior map[string]any
+		if err := json.Unmarshal([]byte(priorEvidence), &prior); err == nil {
+			if n, ok := prior["occurrences"].(float64); ok {
+				occ = int(n) + 1
+			}
+		}
+	}
+	fields := map[string]any{}
+	if strings.TrimSpace(newEvidence) != "" {
+		if err := json.Unmarshal([]byte(newEvidence), &fields); err != nil {
+			fields = map[string]any{"raw": newEvidence}
+		}
+	}
+	fields["occurrences"] = occ
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return newEvidence, occ
+	}
+	return string(out), occ
+}
+
+// rejectedWithinCooldown reports whether an operator has REJECTED a proposal
+// with this title recently enough that re-filing it would be nagging rather
+// than informing (design §7).
+//
+// Measured from the MOST RECENT rejection, so a detector that re-files the
+// instant a cooldown lapses and is rejected again backs off again instead of
+// oscillating. Per-title, not per-project: a global cooldown would let one
+// rejection mute every unrelated detector.
+func rejectedWithinCooldown(ctx context.Context, proposals persistence.ProposalRepository, logger zerolog.Logger, project, title string, cooldown time.Duration) bool {
+	if proposals == nil || cooldown <= 0 {
+		return false
+	}
+	rejected, err := proposals.List(ctx, persistence.ProposalListFilter{
+		ProjectID: project, Statuses: []string{persistence.ProposalStatusRejected},
+	})
+	if err != nil {
+		// Fail OPEN: a ledger read error must not silently stop the detectors
+		// from surfacing a real breach. Worst case we re-file something the
+		// operator rejected, which is the pre-2026-08-10 behaviour.
+		logger.Warn().Err(err).Msg("control-plane: rejection-cooldown lookup failed; filing anyway")
+		return false
+	}
+	var latest time.Time
+	for _, p := range rejected {
+		if p == nil || p.Title != title || p.DecidedAt == nil {
+			continue
+		}
+		if p.DecidedAt.After(latest) {
+			latest = *p.DecidedAt
+		}
+	}
+	if latest.IsZero() || time.Since(latest) >= cooldown {
+		return false
+	}
+	logger.Debug().Str("title", title).Time("rejected_at", latest).Dur("cooldown", cooldown).
+		Msg("control-plane: suppressed re-filing a recently rejected proposal")
+	return true
 }
 
 // advanceStreak increments key's consecutive-breach counter and reports whether
@@ -691,6 +1050,16 @@ func fileProposal(ctx context.Context, proposals persistence.ProposalRepository,
 // {"base_hash", "change"} (the apply engine's staleness gate + apply-time
 // re-validation input).
 func fileRenderedProposal(ctx context.Context, proposals persistence.ProposalRepository, logger zerolog.Logger, project, title, rationale, evidence, proposedBy string, rc *RenderedChange) {
+	// No rendered change ⇒ an OBSERVATION, not a decidable proposal. Handled
+	// FIRST, ahead of the open-DRAFT dedup below: that dedup returns early on a
+	// title match, which would swallow the recurrence and leave the occurrence
+	// count frozen at 1. Observations key on (project, title) across EVERY
+	// status — keying on DRAFT is what produced the 2026-08-10 inert pile, since
+	// approving a row moved it out of DRAFT and the detector filed a fresh copy.
+	if rc == nil {
+		upsertObservation(ctx, proposals, logger, project, title, rationale, evidence, proposedBy)
+		return
+	}
 	existing, err := proposals.List(ctx, persistence.ProposalListFilter{
 		ProjectID: project, Statuses: []string{persistence.ProposalStatusDraft},
 	})
@@ -785,6 +1154,13 @@ func tuneLatencyTitle(project string) string {
 // one project coexist as distinct proposals.
 func tuneTimeoutReclaimTitle(project, step string) string {
 	return fmt.Sprintf("Tune: reclaim over-provisioned timeout for %s on %s", step, project)
+}
+
+// tuneTimeoutBindingTitle keys the raise proposal per (project, step), mirroring
+// the reclaim title so the two dedup independently of each other and of the
+// project-keyed latency proposal.
+func tuneTimeoutBindingTitle(project, step string) string {
+	return fmt.Sprintf("Tune: raise binding timeout for %s on %s", step, project)
 }
 
 func instinctToolTimeoutTitle(k ProjectToolKey) string {

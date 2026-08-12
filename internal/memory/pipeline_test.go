@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"vornik.io/vornik/internal/llmspend"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -634,6 +635,7 @@ func TestIngestCompanionNote_Admitted(t *testing.T) {
 		"", // class — default (companion_note via ClassifyByRole)
 		0,  // ttl_days — default (class policy)
 		"",
+		time.Time{}, // event_time — unknown (migration 157)
 	)
 	if err != nil {
 		t.Fatalf("IngestCompanionNote: %v", err)
@@ -665,6 +667,7 @@ func TestIngestCompanionNote_Rejected_EmptyContent(t *testing.T) {
 		"",
 		0,
 		"",
+		time.Time{}, // event_time — unknown (migration 157)
 	)
 	if err != nil {
 		t.Fatalf("err = %v", err)
@@ -694,6 +697,7 @@ func TestIngestCompanionNote_RejectsOversizedTTLBeforeArtifact(t *testing.T) {
 		"",
 		maxCompanionNoteTTLDays+1,
 		"",
+		time.Time{}, // event_time — unknown (migration 157)
 	)
 	if err == nil {
 		t.Fatal("expected oversized ttl_days to fail")
@@ -761,6 +765,7 @@ func TestIngestCompanionNote_ArtifactRowPrecedesChunks(t *testing.T) {
 		"",
 		0,
 		"",
+		time.Time{}, // event_time — unknown (migration 157)
 	)
 	if err != nil {
 		t.Fatalf("IngestCompanionNote: %v", err)
@@ -932,6 +937,7 @@ func TestIngestCompanionNote_MissingCreateHook(t *testing.T) {
 		"",
 		0,
 		"",
+		time.Time{}, // event_time — unknown (migration 157)
 	)
 	if err == nil {
 		t.Fatal("expected error when CreateCompanionArtifact is nil")
@@ -964,6 +970,7 @@ func TestIngestCompanionNote_CreateHookErrorPropagates(t *testing.T) {
 		"",
 		0,
 		"",
+		time.Time{}, // event_time — unknown (migration 157)
 	)
 	if err == nil || !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want chain containing %v", err, sentinel)
@@ -1003,6 +1010,7 @@ func TestIngestCompanionNote_AuditRowOnAdmit(t *testing.T) {
 		"",
 		0,
 		"",
+		time.Time{}, // event_time — unknown (migration 157)
 	)
 	if err != nil {
 		t.Fatalf("IngestCompanionNote: %v", err)
@@ -1064,6 +1072,7 @@ func TestIngestCompanionNote_AuditRowOnReject(t *testing.T) {
 		"",
 		0,
 		"",
+		time.Time{}, // event_time — unknown (migration 157)
 	)
 	if err != nil {
 		t.Fatalf("err = %v", err)
@@ -1107,6 +1116,7 @@ func TestIngestCompanionNote_AuditHookFailureDoesNotFailDeposit(t *testing.T) {
 		"",
 		0,
 		"",
+		time.Time{}, // event_time — unknown (migration 157)
 	)
 	if err != nil {
 		t.Fatalf("deposit failed because of audit failure: %v", err)
@@ -1152,6 +1162,7 @@ func TestIngestCompanionNote_ClassOverride(t *testing.T) {
 		ClassSpec, // override — would be ClassCompanionNote without it
 		0,
 		"",
+		time.Time{}, // event_time — unknown (migration 157)
 	)
 	if err != nil {
 		t.Fatalf("IngestCompanionNote: %v", err)
@@ -1234,7 +1245,7 @@ func TestIngestCompanionNote_RequiredArgs(t *testing.T) {
 		{"p", "claude-code", ""},
 	}
 	for _, tc := range cases {
-		_, err := p.IngestCompanionNote(context.Background(), tc.project, tc.client, tc.key, "", "body", "", 0, "")
+		_, err := p.IngestCompanionNote(context.Background(), tc.project, tc.client, tc.key, "", "body", "", 0, "", time.Time{})
 		if err == nil {
 			t.Errorf("expected err for project=%q client=%q key=%q", tc.project, tc.client, tc.key)
 		}
@@ -1386,7 +1397,7 @@ func TestPipeline_SetClassifier(t *testing.T) {
 	if p.cfg.Classifier != nil || p.cfg.ClassifierInlineFallback {
 		t.Fatal("rig defaults: classifier should be nil and flag off")
 	}
-	cl := NewClassifier(newClassifyProvider(), "")
+	cl := NewClassifier(newClassifyProvider(), "", llmspend.Disabled())
 	p.SetClassifier(cl, true)
 	if p.cfg.Classifier != cl || !p.cfg.ClassifierInlineFallback {
 		t.Fatalf("setter did not propagate: %+v", p.cfg)
@@ -1413,7 +1424,7 @@ func TestIngestArtifact_InlineFallbackDisabledByDefault(t *testing.T) {
 	// reply would surface as an error if the classifier ran, so
 	// the absence of any LLM activity is verified by clean admit.
 	fp := newClassifyProvider(titlerReply{err: errors.New("LLM should not run when flag is off")})
-	p.SetClassifier(NewClassifier(fp, ""), false)
+	p.SetClassifier(NewClassifier(fp, "", llmspend.Disabled()), false)
 
 	body := strings.Repeat("word ", 30)
 	mock.ExpectExec("INSERT INTO project_memory_chunks").
@@ -1441,7 +1452,7 @@ func TestIngestArtifact_InlineFallbackEnabled_PromotesUnclassified(t *testing.T)
 	p, _, _, mock, cleanup := newPipelineTestRig(t)
 	defer cleanup()
 	fp := newClassifyProvider(titlerReply{content: "research"})
-	p.SetClassifier(NewClassifier(fp, ""), true)
+	p.SetClassifier(NewClassifier(fp, "", llmspend.Disabled()), true)
 
 	body := strings.Repeat("word ", 30)
 	mock.ExpectExec("INSERT INTO project_memory_chunks").
@@ -1471,7 +1482,7 @@ func TestIngestArtifact_InlineFallbackSkippedWhenRoleResolves(t *testing.T) {
 	p, _, _, mock, cleanup := newPipelineTestRig(t)
 	defer cleanup()
 	fp := newClassifyProvider(titlerReply{err: errors.New("LLM must not run when role-map resolves")})
-	p.SetClassifier(NewClassifier(fp, ""), true)
+	p.SetClassifier(NewClassifier(fp, "", llmspend.Disabled()), true)
 
 	body := strings.Repeat("word ", 30)
 	mock.ExpectExec("INSERT INTO project_memory_chunks").
@@ -1504,7 +1515,7 @@ func TestIngestArtifact_InlineFallbackLLMErrorIngestsAsUnclassified(t *testing.T
 		titlerReply{err: errors.New("upstream 503")},
 		titlerReply{err: errors.New("upstream 503")},
 	)
-	p.SetClassifier(NewClassifier(fp, ""), true)
+	p.SetClassifier(NewClassifier(fp, "", llmspend.Disabled()), true)
 
 	body := strings.Repeat("word ", 30)
 	mock.ExpectExec("INSERT INTO project_memory_chunks").
@@ -1532,7 +1543,7 @@ func TestIngestArtifact_InlineFallbackUnclassifiedFromLLMStaysUnclassified(t *te
 	p, _, _, mock, cleanup := newPipelineTestRig(t)
 	defer cleanup()
 	fp := newClassifyProvider(titlerReply{content: "unclassified"})
-	p.SetClassifier(NewClassifier(fp, ""), true)
+	p.SetClassifier(NewClassifier(fp, "", llmspend.Disabled()), true)
 
 	body := strings.Repeat("word ", 30)
 	mock.ExpectExec("INSERT INTO project_memory_chunks").

@@ -30,13 +30,21 @@ plugs in without any vornik-side change.
   on the delegate prompt and attaches the strongest hits to the
   response. The host LLM surfaces "vornik already knows X — still
   delegate?" before swarm compute starts.
-- **Four skills:**
+- **Six skills:**
   - `delegate` — when to reach for the companion rather than spending
     Claude's own tokens on a long task, and the "recall before delegate"
     rule that keeps memory-redundant work off the swarm.
+  - `vornik-docs` — where the documentation lives, with the real site map
+    and the rule that the installed CLI's own `--help` outranks recall.
+    Guards against the characteristic failure: a confident, plausible,
+    nonexistent config key.
   - `configure-vornik` — configuring a deployment: finding the config
     tree the daemon actually reads, scaffolding projects and swarms, and
     the validate → reload → confirm loop.
+  - `validate-install` — checking a deployment against the published
+    reference architecture: strictly read-only, resolved state over
+    configured state, and a severity split that keeps absent optional
+    subsystems out of the report.
   - `troubleshoot-vornik` — diagnosing a deployment that is down,
     degraded, or failing tasks, routing by symptom through the doctor,
     the failure-class playbook, and task post-mortems.
@@ -44,9 +52,12 @@ plugs in without any vornik-side change.
     failure as a prefilled `github.com/grinco/vornik` issue the user
     reviews and submits themselves.
 
-  The last three form the operator lifecycle triad and cross-reference
-  each other: configure → troubleshoot when a change doesn't take,
-  troubleshoot → report when the diagnostic ladder bottoms out.
+  The last four form the operator lifecycle and cross-reference each
+  other: validate → configure to fix a divergence, configure →
+  troubleshoot when a change doesn't take, troubleshoot → report when the
+  diagnostic ladder bottoms out. `validate-install` starts from the
+  reference shape and looks for divergence; `troubleshoot-vornik` starts
+  from a symptom and works toward a cause.
 
 ## Prerequisites
 

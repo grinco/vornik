@@ -1,0 +1,17 @@
+[
+  {
+    "sample_id": "conv-1",
+    "session_1_date_time": "1:56 pm on 8 May, 2023",
+    "session_1": [
+      {"speaker": "Caroline", "dia_id": "D1:1", "text": "I adopted a dog last week."},
+      {"speaker": "Melanie", "dia_id": "D1:2", "text": "What breed?"}
+    ],
+    "session_2_date_time": "10:10 am on 20 May, 2023",
+    "session_2": [
+      {"speaker": "Caroline", "dia_id": "D2:1", "text": "She is a beagle named Pepper."}
+    ],
+    "qa": [
+      {"question": "What pet did Caroline adopt?", "answer": "a beagle named Pepper", "evidence": ["D2:1"], "category": 1}
+    ]
+  }
+]

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/chat"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
 )
@@ -547,34 +548,22 @@ func (s *Server) recordChatAPIUsage(ctx context.Context, r *http.Request, model 
 	if sessionID == "" {
 		sessionID = "unknown-client"
 	}
-	row := &persistence.TaskLLMUsage{
-		ID:                  persistence.GenerateID("llm"),
+	// An external caller has no task to inherit attribution from, so the key is
+	// resolved directly and the turn is billed against a session.
+	s.externalAPISpend.Record(ctx, llmspend.Input{
 		ProjectID:           projectID,
-		TaskID:              nil,
-		ExecutionID:         nil,
-		StepID:              "",
-		Role:                "external_api",
 		Model:               effectiveModel,
-		PromptTokens:        int64(resp.Usage.PromptTokens),
-		CompletionTokens:    int64(resp.Usage.CompletionTokens),
-		CacheCreationTokens: int64(resp.Usage.CacheCreationTokens),
-		CacheReadTokens:     int64(resp.Usage.CacheReadTokens),
-		Iterations:          1,
-		CostUSD:             costUSD,
-		Source:              persistence.TaskLLMUsageSourceExternalAPI,
+		PromptTokens:        resp.Usage.PromptTokens,
+		CompletionTokens:    resp.Usage.CompletionTokens,
+		CostUSD:             &costUSD,
 		SessionID:           &sessionID,
-		RecordedAt:          time.Now().UTC(),
-		// external_api has no task to inherit attribution from, but it's a
-		// genuine external-caller HTTP request — resolve the key directly.
-		APIKeyID: strPtr(APIKeyIDFromContext(ctx)),
-	}
-	if err := s.llmUsageRepo.Record(ctx, row); err != nil {
-		s.logger.Warn().Err(err).
-			Str("project_id", projectID).
-			Str("model", effectiveModel).
-			Msg("chat proxy: external_api usage row persist failed")
-	}
-	s.observeChatCacheUsage(row)
+		APIKeyID:            strPtr(APIKeyIDFromContext(ctx)),
+		CacheCreationTokens: resp.Usage.CacheCreationTokens,
+		CacheReadTokens:     resp.Usage.CacheReadTokens,
+	})
+	s.observeChatCacheUsage(effectiveModel, "external_api",
+		persistence.TaskLLMUsageSourceExternalAPI,
+		int64(resp.Usage.CacheCreationTokens), int64(resp.Usage.CacheReadTokens))
 }
 
 // observeChatCacheUsage surfaces one recorded TaskLLMUsage row's
@@ -585,18 +574,21 @@ func (s *Server) recordChatAPIUsage(ctx context.Context, r *http.Request, model 
 // Prometheus surface. Shared by the external-API proxy recorder and
 // the internal workflow-step llm-usage handler so both traffic classes
 // land on the same series (split by the source label).
-func (s *Server) observeChatCacheUsage(row *persistence.TaskLLMUsage) {
-	if s.chatCacheMetrics == nil || row == nil {
+// Takes the fields it needs rather than a ledger row: since billing moved into
+// llmspend, the caller no longer builds a row to hand over, and reconstructing
+// one purely to satisfy this signature would be a row that never reaches the
+// ledger — an easy thing to mistake for a second write.
+func (s *Server) observeChatCacheUsage(model, role, source string, cacheCreation, cacheRead int64) {
+	if s.chatCacheMetrics == nil {
 		return
 	}
-	if row.CacheCreationTokens == 0 && row.CacheReadTokens == 0 {
+	if cacheCreation == 0 && cacheRead == 0 {
 		return
 	}
 	var dollarsSaved float64
 	if table := s.pricingTableLoaded(); table != nil {
-		dollarsSaved = table.CacheSavingsUSD(row.Model, int(row.CacheReadTokens))
+		dollarsSaved = table.CacheSavingsUSD(model, int(cacheRead))
 	}
 	s.chatCacheMetrics.ObserveCacheUsage(
-		row.Model, row.Role, row.Source,
-		row.CacheCreationTokens, row.CacheReadTokens, dollarsSaved)
+		model, role, source, cacheCreation, cacheRead, dollarsSaved)
 }

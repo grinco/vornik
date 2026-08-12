@@ -24,7 +24,25 @@ const (
 	// instinct-lift-measurement-design.md §4.5): applying it retires an
 	// instinct via InstinctRepository rather than rewriting a config file.
 	ProposalKindInstinctRetire = "instinct_retire"
+	// ProposalKindObservation is a detector finding with NO applyable change —
+	// "p95 latency is high on this project; investigate". It is browsable and
+	// auditable like any other row, but it is NOT decidable: there is nothing to
+	// approve or apply, so the hub renders it read-only and Approve/Apply refuse
+	// it.
+	//
+	// Introduced 2026-08-10 after a live-ledger audit found 19 proposals sitting
+	// in APPROVED with apply_target, apply_ops and apply_content all empty.
+	// Approving them accomplished nothing, and because approval moved them out
+	// of DRAFT — the only status the title dedup consulted — the detector
+	// re-filed the identical title days later. 10 of the 19 were re-files of a
+	// title already in APPROVED: clearing the inbox was what refilled it.
+	ProposalKindObservation = "observation"
 )
+
+// IsObservationKind reports whether a proposal is a non-decidable observation.
+// Approve/apply paths refuse these: there is no change to act on, and offering
+// a decision for something with no action is how the inert-APPROVED pile formed.
+func IsObservationKind(kind string) bool { return kind == ProposalKindObservation }
 
 // KindApplierManaged reports whether this kind is applied by a registered
 // state-mutating KindApplier (internal/controlplane) rather than the
@@ -109,6 +127,13 @@ const ErrProposalNotDraft RepositoryError = "control-plane proposal not in DRAFT
 // terminal (REJECTED/APPLIED/ROLLED_BACK). Reject is allowed from DRAFT (reject
 // a pending proposal) or APPROVED (withdraw an approved-but-unappliable one).
 const ErrProposalNotPending RepositoryError = "control-plane proposal not in a pending (DRAFT/APPROVED) state"
+
+// ErrProposalNotDecidable is returned by SetStatus when APPROVE is attempted on
+// an OBSERVATION. An observation carries no applyable change, so approving it
+// can never do anything — which is precisely how 19 inert rows accumulated in
+// APPROVED before 2026-08-10. Reject is still permitted: dismissing an
+// observation is the legitimate way to clear one.
+const ErrProposalNotDecidable RepositoryError = "control-plane proposal is an observation and cannot be approved"
 
 // ErrProposalNotApproved is returned by MarkApplied when the proposal is not
 // APPROVED (only an APPROVED proposal can be applied; idempotent single-apply).
@@ -232,6 +257,15 @@ type ProposalRepository interface {
 	// MarkRolledBack transitions an APPLIED proposal to ROLLED_BACK. Only
 	// APPLIED → ROLLED_BACK is allowed (ErrProposalNotApplied otherwise).
 	MarkRolledBack(ctx context.Context, id string) error
+
+	// RefreshObservation updates an OBSERVATION row's rationale + evidence in
+	// place, leaving its status and id untouched. Observations recur, and a
+	// recurrence is an update to an existing finding rather than a new one —
+	// re-filing instead is what produced the 2026-08-10 inert-APPROVED pile.
+	// Leaving status alone is deliberate: an observation the operator has
+	// already dismissed stays dismissed even while it keeps happening; the
+	// evidence's occurrence count is what records that it is still live.
+	RefreshObservation(ctx context.Context, id, rationale, evidence string) error
 
 	// MarkRegressed stamps the "auto-rolled-back due to regression" audit badge
 	// (REGRESSED), recording the trip reason. It accepts BOTH APPLIED→REGRESSED

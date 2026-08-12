@@ -282,16 +282,22 @@
             </div>
 
             <!-- "Health & knowledge" row (2026-05-12). Memory pipeline,
-                 trading safety envelope, judge quality — three subsystems
-                 that landed after this page was last rebuilt. Each tile
-                 silently empties when its repo isn't wired so older
-                 deployments don't crash. -->
+                 learning, judge quality — three subsystems that landed
+                 after this page was last rebuilt. Each tile silently
+                 empties when its repo isn't wired so older deployments
+                 don't crash.
+
+                 The middle slot held a "Trading safety" tile until
+                 2026-08-07, when all trading data was removed from this
+                 page at the operator's instruction (see
+                 TestDashboardHasNoTradingData). It is now the Learning
+                 tile — do NOT reintroduce trading here. -->
             <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
 
                 <!-- Memory pipeline tile: KG extraction progress + ingest
                      backlog summed across projects. Drives the operator
                      question "is RAG keeping up with what tasks emit?". -->
-                <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div data-tile="memory" class="glass rounded-xl border border-surface-600 overflow-hidden">
                     {{template "sectionHeader" (dict "Title" "Memory pipeline" "Href" "/ui/memory" "HrefLabel" "drill in →")}}
                     {{if .Memory.Enabled}}
                     <div class="px-5 py-4 space-y-3">
@@ -333,12 +339,63 @@
                     {{end}}
                 </div>
 
+                <!-- Learning tile: what the deployment has distilled from its
+                     own runs. The draft count is the only actionable number
+                     in the row — a draft skill injects nowhere until an
+                     operator approves it — so it gets the amber/emerald
+                     treatment the Memory tile gives its ingest backlog.
+                     The instinct row is Enterprise-only (see
+                     DashboardLearning); Community renders one row fewer.
+                     data-tile is the seam the render tests slice on (they
+                     bound the fragment at the next data-tile, since
+                     html/template strips marker comments). -->
+                <div data-tile="learning" class="glass rounded-xl border border-surface-600 overflow-hidden">
+                    {{template "sectionHeader" (dict "Title" "Learning" "Href" "/ui/admin/skills" "HrefLabel" "review →")}}
+                    {{if .Learning.Enabled}}
+                    <div class="px-5 py-4 space-y-3">
+                        <div class="grid grid-cols-3 gap-2 text-center text-xs">
+                            <div>
+                                <div class="text-lg font-semibold text-emerald-800 dark:text-emerald-400 tabular-nums">{{.Learning.Trusted}}</div>
+                                <div class="text-ink-500">trusted</div>
+                            </div>
+                            <div>
+                                <div class="text-lg font-semibold text-ink-200 tabular-nums">{{.Learning.Active}}</div>
+                                <div class="text-ink-500">active</div>
+                            </div>
+                            <div>
+                                <div class="text-lg font-semibold {{if gt .Learning.Draft 0}}text-amber-700 dark:text-amber-300{{else}}text-ink-400{{end}} tabular-nums">{{.Learning.Draft}}</div>
+                                <div class="text-ink-500">draft</div>
+                            </div>
+                        </div>
+                        <div class="text-xs border-t border-surface-600/40 pt-2 flex items-center justify-between">
+                            <span class="text-ink-500">Review queue</span>
+                            {{if gt .Learning.Draft 0}}
+                            <a href="/ui/admin/skills" class="font-mono tabular-nums text-amber-700 dark:text-amber-300 hover:underline">{{.Learning.Draft}} awaiting approval</a>
+                            {{else}}
+                            <span class="font-mono text-emerald-800 dark:text-emerald-400">review queue clear</span>
+                            {{end}}
+                        </div>
+                        {{if .Learning.InstinctsAvailable}}
+                        <div class="text-xs flex items-center justify-between">
+                            <span class="text-ink-500">Instincts live</span>
+                            <a href="/ui/admin/instincts" class="font-mono tabular-nums text-ink-300 hover:underline">{{.Learning.InstinctsLive}}</a>
+                        </div>
+                        {{end}}
+                        <div class="text-[11px] text-ink-500 tabular-nums">{{.Learning.Total}} skills in the store</div>
+                    </div>
+                    {{else if .Learning.Restricted}}
+                    <div class="px-5 py-6 text-center text-xs text-ink-500">Instance-wide totals — admin only.</div>
+                    {{else}}
+                    <div class="px-5 py-6 text-center text-xs text-ink-500">Skill store not wired.</div>
+                    {{end}}
+                </div>
+
                 <!-- Judge tile: hallucination judge verdict distribution
                      over the rolling 24h window. The pass% bar is sized
                      vs. the headline so a healthy day reads green at a
                      glance and a regression day reads rose-heavy. -->
                 {{$judgeMeta := printf "%d verdicts" .Judge.Total}}{{if eq .Judge.Total 1}}{{$judgeMeta = "1 verdict"}}{{end}}
-                <div class="glass rounded-xl border border-surface-600 overflow-hidden">
+                <div data-tile="judge" class="glass rounded-xl border border-surface-600 overflow-hidden">
                     {{template "sectionHeader" (dict "Title" "Judge · last 24h" "MetaText" $judgeMeta)}}
                     {{if .Judge.Enabled}}
                         {{if gt .Judge.Total 0}}

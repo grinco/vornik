@@ -280,10 +280,67 @@ type StepLatencyStat struct {
 	Model      string
 	P95Seconds float64
 	Count      int64
+	// MaxSeconds is the slowest run in the window. Reported separately from
+	// P95Seconds because the timeout-reclaim detector floors its suggestion
+	// here (LLD 2026-08-10-canary-class-registry-step-outcome §6.1 / D4): p95
+	// discards exactly the tail a timeout exists to accommodate.
+	MaxSeconds float64
+	// DegradedCount is how many rows in the window ended in a degraded outcome
+	// (timeout / schema_violation / degenerate_loop). Non-zero disqualifies a
+	// timeout reclaim: a step that timed out is not over-provisioned, and a
+	// truncated run's duration is capped at the timeout, which drags p95 down.
+	DegradedCount int64
+	// TimeoutCount is the subset of DegradedCount that ended in TRUNCATION
+	// (timeout / context_timeout). Only truncation justifies RAISING a timeout;
+	// a schema_violation or degenerate_loop is not short of time
+	// (review-20260810-53f0 finding 6).
+	TimeoutCount int64
+}
+
+// DegradedStepOutcomes are the step outcomes that count as degradation for the
+// reclaim guard and the step-outcome canary class. Kept in one place so the SQL
+// aggregations and the control-plane detectors cannot drift apart.
+var DegradedStepOutcomes = []string{"timeout", "schema_violation", "degenerate_loop"}
+
+// TimeoutStepOutcomes are the degraded outcomes that mean TRUNCATION — the
+// only ones a timeout raise can address.
+var TimeoutStepOutcomes = []string{"timeout", "context_timeout"}
+
+// IsTimeoutStepOutcome reports whether outcome means the step was truncated.
+func IsTimeoutStepOutcome(outcome string) bool {
+	for _, d := range TimeoutStepOutcomes {
+		if outcome == d {
+			return true
+		}
+	}
+	return false
+}
+
+// IsDegradedStepOutcome reports whether outcome counts as degradation.
+func IsDegradedStepOutcome(outcome string) bool {
+	for _, d := range DegradedStepOutcomes {
+		if outcome == d {
+			return true
+		}
+	}
+	return false
 }
 
 // P95Seconds returns the 95th-percentile value of durs (seconds) by the
 // nearest-rank method. Returns 0 for an empty input. Mutates order (sorts).
+// MaxSeconds returns the largest value in durs, or 0 for an empty input.
+// Order-independent, so it is safe to call before or after P95Seconds (which
+// sorts in place).
+func MaxSeconds(durs []float64) float64 {
+	m := 0.0
+	for _, d := range durs {
+		if d > m {
+			m = d
+		}
+	}
+	return m
+}
+
 func P95Seconds(durs []float64) float64 {
 	n := len(durs)
 	if n == 0 {
@@ -653,6 +710,13 @@ type RoleModelSpend struct {
 	// caching-capable provider produced traffic in the window.
 	CacheCreationTokens int64
 	CacheReadTokens     int64
+	// AnyTokensEstimated is true when AT LEAST ONE row in this (role, model)
+	// group carried derived rather than provider-reported token counts. It is
+	// deliberately "any", not "all": a mixed group's totals are part-measured,
+	// and presenting them as a clean measurement is the thing migration 159
+	// exists to prevent. Surfaces on /ui/spend as a marker on the token
+	// columns.
+	AnyTokensEstimated bool
 }
 
 // ProjectSpend is one row of the per-project spend table.

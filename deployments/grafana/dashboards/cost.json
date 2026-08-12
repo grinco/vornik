@@ -171,6 +171,48 @@
       ],
       "title": "Iterations Rate by Role+Model",
       "type": "timeseries"
+    },
+    {
+      "id": 206,
+      "type": "timeseries",
+      "title": "Ledger write failures (unattributed spend)",
+      "description": "Non-zero means real LLM spend happened and was NOT recorded in task_llm_usage. The provider already charged, so these dollars cannot be recovered from the ledger and must be reconciled from the provider bill. Any sustained non-zero value is a billing-integrity incident, not a dashboard glitch. See 2026-08-12-ledger-completeness-design.md.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "targets": [
+        {
+          "expr": "sum by (source) (rate(vornik_llm_usage_record_failures_total[5m]))",
+          "legendFormat": "{{source}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.0001
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
     }
   ],
   "refresh": "30s",

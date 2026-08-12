@@ -17,9 +17,13 @@ packaging is different.
 - A `delegate` skill that teaches Codex when to recall, delegate, attach files
   with `inputArtifacts`, and pull results.
 - A `knowledge` skill for the daemon-owned knowledge-skill store.
-- The operator lifecycle triad, mirrored from the Claude Code bundle:
+- The operator lifecycle skills, mirrored from the Claude Code bundle:
+  `vornik-docs` (where the documentation lives, with the real site map, and
+  `vornikctl --help` ahead of recall so Codex quotes flags that exist),
   `configure-vornik` (find the config tree the daemon actually reads,
-  scaffold, then validate → reload → confirm), `troubleshoot-vornik`
+  scaffold, then validate → reload → confirm), `validate-install` (check a
+  deployment against the published reference architecture, read-only, on
+  resolved state rather than configured state), `troubleshoot-vornik`
   (route by symptom through the doctor, the failure-class playbook, and
   task post-mortems), and `report-problem` (file an anonymized issue on
   `github.com/grinco/vornik` that the user submits themselves). They

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"vornik.io/vornik/internal/llmspend"
 
 	"vornik.io/vornik/internal/chat"
 )
@@ -145,7 +146,7 @@ func TestW2MemEmbedderPartialHitReassemblesByOriginalIndex(t *testing.T) {
 
 	e := w2Embedder(srv.URL, "m", cache)
 	in := []string{"a", "b", "c", "d", "e"}
-	out, err := e.Embed(context.Background(), in)
+	out, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, in)
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
@@ -186,7 +187,7 @@ func TestW2MemEmbedderPopulatesCacheForMissesOnly(t *testing.T) {
 	cache.data[ContentHash("hit")+":m"] = []float32{42}
 
 	e := w2Embedder(srv.URL, "m", cache)
-	if _, err := e.Embed(context.Background(), []string{"hit", "miss1", "miss2"}); err != nil {
+	if _, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, []string{"hit", "miss1", "miss2"}); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
 	// Only the two misses are written back; the pre-existing hit is not
@@ -224,7 +225,7 @@ func TestW2MemEmbedderGetErrorTreatedAsMiss(t *testing.T) {
 	cache.data[ContentHash("x")+":m"] = []float32{999}
 
 	e := w2Embedder(srv.URL, "m", cache)
-	out, err := e.Embed(context.Background(), []string{"x"})
+	out, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, []string{"x"})
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
@@ -245,7 +246,7 @@ func TestW2MemEmbedderPutErrorDoesNotFailEmbed(t *testing.T) {
 	cache.putErr = true // populate write fails
 
 	e := w2Embedder(srv.URL, "m", cache)
-	out, err := e.Embed(context.Background(), []string{"a", "b"})
+	out, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, []string{"a", "b"})
 	if err != nil {
 		t.Fatalf("Put error must be swallowed, got err=%v", err)
 	}
@@ -266,7 +267,7 @@ func TestW2MemEmbedderCacheKeyedByModelNamespace(t *testing.T) {
 	cache.data[ContentHash("doc")+":m1"] = []float32{1}
 
 	e := w2Embedder(srv.URL, "m2", cache)
-	out, err := e.Embed(context.Background(), []string{"doc"})
+	out, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, []string{"doc"})
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
@@ -293,7 +294,7 @@ func TestW2MemEmbedderDuplicateTextsBothMissAndPopulate(t *testing.T) {
 
 	cache := newW2EmbedCache()
 	e := w2Embedder(srv.URL, "m", cache)
-	out, err := e.Embed(context.Background(), []string{"same", "same"})
+	out, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, []string{"same", "same"})
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
@@ -317,7 +318,7 @@ func TestW2MemEmbedderUpstreamFailureReturnsNilNotPartial(t *testing.T) {
 	cache := newW2EmbedCache()
 	cache.data[ContentHash("cached")+":m"] = []float32{5}
 	e := w2Embedder(srv.URL, "m", cache)
-	out, err := e.Embed(context.Background(), []string{"cached", "miss"})
+	out, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, []string{"cached", "miss"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -339,7 +340,7 @@ func TestW2MemEmbedderAllHitsSkipsUpstreamEntirely(t *testing.T) {
 	cache.data[ContentHash("two")+":m"] = []float32{22}
 
 	e := w2Embedder(srv.URL, "m", cache)
-	out, err := e.Embed(context.Background(), []string{"one", "two"})
+	out, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, []string{"one", "two"})
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
@@ -372,7 +373,7 @@ func TestW2MemEmbedderMissesSpanBatchBoundaryWithCache(t *testing.T) {
 		in[i] = "tok-" + string(rune('A'+i%26)) + "-" + itoaW2(i)
 	}
 	e := w2Embedder(srv.URL, "m", cache)
-	out, err := e.Embed(context.Background(), in)
+	out, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, in)
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
@@ -561,7 +562,7 @@ func (p *w2CapturingProvider) Complete(_ context.Context, msgs []chat.Message) (
 
 func TestW2MemNarrativeWriteAssemblesTermsAndSampleIntoUserPrompt(t *testing.T) {
 	capP := &w2CapturingProvider{}
-	w := NewNarrativeWriter(capP, "")
+	w := NewNarrativeWriter(capP, "", llmspend.Disabled())
 	terms := []TermFrequency{{Term: "trading", Count: 9}, {Term: "ibkr", Count: 4}}
 	got, err := w.Write(context.Background(), terms, "Submitted bracket order for NVDA.", "")
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"vornik.io/vornik/internal/llmspend"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"vornik.io/vornik/internal/config"
@@ -625,7 +626,7 @@ func TestConverse_TierThree_UsesAutomationComposerRole(t *testing.T) {
 	rec := &captureRecorder{}
 	w, _, _ := newWizardForTest(tier3Reply(t, "Here is your automation.", true, validComposedBundle()))
 	wireComposer(w)
-	w.LLMUsage = rec
+	w.Spend = llmspend.New(rec, nil, "project_wizard", RoleProjectWizard)
 
 	_, err := w.Converse(context.Background(), "", "op_1", "totally unrelated custom request with no template match at all")
 	if err != nil {

@@ -39,12 +39,14 @@ func (r *TaskLLMUsageRepository) Record(ctx context.Context, u *persistence.Task
 			id, project_id, task_id, execution_id, step_id,
 			role, model, prompt_tokens, completion_tokens, iterations,
 			cost_usd, source, session_id, recorded_at,
-			cache_creation_tokens, cache_read_tokens, api_key_id, cache_hit
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+			cache_creation_tokens, cache_read_tokens, api_key_id, cache_hit,
+			tokens_estimated
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
 		u.ID, u.ProjectID, nullableString(u.TaskID), nullableString(u.ExecutionID), u.StepID,
 		u.Role, u.Model, u.PromptTokens, u.CompletionTokens, u.Iterations,
 		u.CostUSD, source, nullableString(u.SessionID), recordedAt,
 		u.CacheCreationTokens, u.CacheReadTokens, nullableString(u.APIKeyID), u.CacheHit,
+		u.TokensEstimated,
 	)
 	return mapDBError(err)
 }
@@ -86,8 +88,9 @@ func (r *TaskLLMUsageRepository) Upsert(ctx context.Context, u *persistence.Task
 			id, project_id, task_id, execution_id, step_id,
 			role, model, prompt_tokens, completion_tokens, iterations,
 			cost_usd, source, session_id, recorded_at,
-			cache_creation_tokens, cache_read_tokens, api_key_id, cache_hit
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+			cache_creation_tokens, cache_read_tokens, api_key_id, cache_hit,
+			tokens_estimated
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 		ON CONFLICT (id) DO UPDATE SET
 			prompt_tokens         = EXCLUDED.prompt_tokens,
 			completion_tokens     = EXCLUDED.completion_tokens,
@@ -98,11 +101,13 @@ func (r *TaskLLMUsageRepository) Upsert(ctx context.Context, u *persistence.Task
 			cache_creation_tokens = EXCLUDED.cache_creation_tokens,
 			cache_read_tokens     = EXCLUDED.cache_read_tokens,
 			api_key_id            = EXCLUDED.api_key_id,
-			cache_hit             = EXCLUDED.cache_hit`,
+			cache_hit             = EXCLUDED.cache_hit,
+			tokens_estimated      = EXCLUDED.tokens_estimated`,
 		u.ID, u.ProjectID, nullableString(u.TaskID), nullableString(u.ExecutionID), u.StepID,
 		u.Role, u.Model, u.PromptTokens, u.CompletionTokens, u.Iterations,
 		u.CostUSD, source, nullableString(u.SessionID), recordedAt,
 		u.CacheCreationTokens, u.CacheReadTokens, nullableString(u.APIKeyID), u.CacheHit,
+		u.TokensEstimated,
 	)
 	return mapDBError(err)
 }
@@ -134,7 +139,8 @@ func (r *TaskLLMUsageRepository) List(ctx context.Context, f persistence.TaskLLM
 		SELECT id, project_id, task_id, execution_id, step_id,
 		       role, model, prompt_tokens, completion_tokens, iterations,
 		       cost_usd, source, session_id, recorded_at,
-		       cache_creation_tokens, cache_read_tokens, api_key_id, cache_hit
+		       cache_creation_tokens, cache_read_tokens, api_key_id, cache_hit,
+		       tokens_estimated
 		FROM task_llm_usage WHERE 1=1`
 	args := make([]any, 0, 10)
 	pos := 1
@@ -216,6 +222,7 @@ func (r *TaskLLMUsageRepository) List(ctx context.Context, f persistence.TaskLLM
 			&u.Role, &u.Model, &u.PromptTokens, &u.CompletionTokens, &u.Iterations,
 			&u.CostUSD, &u.Source, &sessionID, &u.RecordedAt,
 			&u.CacheCreationTokens, &u.CacheReadTokens, &apiKeyID, &u.CacheHit,
+			&u.TokensEstimated,
 		); err != nil {
 			return nil, err
 		}
@@ -694,7 +701,8 @@ func (r *TaskLLMUsageRepository) AggregateByRoleModel(ctx context.Context, since
 		       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
 		       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
 		       COALESCE(SUM(cache_creation_tokens), 0) AS cache_creation_tokens,
-		       COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens
+		       COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+		       COALESCE(BOOL_OR(tokens_estimated), FALSE) AS any_tokens_estimated
 		FROM task_llm_usage
 		WHERE 1=1`
 	var args []any
@@ -729,7 +737,7 @@ func (r *TaskLLMUsageRepository) AggregateByRoleModel(ctx context.Context, since
 	for rows.Next() {
 		var s persistence.RoleModelSpend
 		if err := rows.Scan(&s.Role, &s.Model, &s.CostUSD, &s.StepCount, &s.PromptTokens, &s.CompletionTokens,
-			&s.CacheCreationTokens, &s.CacheReadTokens); err != nil {
+			&s.CacheCreationTokens, &s.CacheReadTokens, &s.AnyTokensEstimated); err != nil {
 			return nil, err
 		}
 		out = append(out, s)

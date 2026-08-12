@@ -11,6 +11,7 @@ import (
 
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/hallucination"
+	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/postmortem"
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/registry"
@@ -126,8 +127,8 @@ func (c *Container) buildJudgeRunner() *hallucination.JudgeRunner {
 		// judge call lands a task_llm_usage row with
 		// source="judge" so the spend dashboard splits judge
 		// cost from worker + dispatcher cost.
-		Pricing:  c.pricingTable,
-		LLMUsage: c.repos.LLMUsage,
+		Pricing: c.pricingTable,
+		Spend:   c.llmSpend(persistence.TaskLLMUsageSourceJudge, "judge"),
 	}
 }
 
@@ -205,7 +206,7 @@ func (c *Container) buildPostMortemExplainer() ui.PostMortemExplainer {
 		Outcomes:    c.repos.StepOutcomes,
 		Audits:      c.repos.ToolAudit,
 		PostMortems: c.repos.PostMortems,
-		LLMUsage:    c.repos.LLMUsage,
+		Spend:       c.llmSpend(persistence.TaskLLMUsageSourcePostMortem, "post_mortem"),
 		Logs:        logSrc,
 		Chat:        c.ChatClient,
 		Model:       model,

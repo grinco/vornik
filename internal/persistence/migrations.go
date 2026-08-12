@@ -6599,4 +6599,137 @@ DROP INDEX IF EXISTS idx_skill_versions_skill;
 DROP TABLE IF EXISTS project_skill_versions;
 `,
 	},
+	{
+		Version: 156,
+		Name:    "control_plane_proposals_kind_observation",
+		// observation (2026-07-11-control-plane-actionable-proposals-design.md
+		// §11): a detector finding with NO applyable change. Relaxes the kind
+		// CHECK last set by migration 129.
+		//
+		// A live-ledger audit on 2026-08-10 found 19 proposals in APPROVED with
+		// apply_target, apply_ops AND apply_content all empty. Approving them
+		// did nothing, and since approval moved them out of DRAFT — the only
+		// status the title dedup consulted — the detector re-filed the same
+		// title days later; 10 of the 19 were re-files of a title already in
+		// APPROVED. Giving observations their own kind lets the hub render them
+		// read-only and lets the dedup key on title across ALL statuses.
+		Up: `
+ALTER TABLE control_plane_proposals DROP CONSTRAINT IF EXISTS control_plane_proposals_kind_check;
+ALTER TABLE control_plane_proposals ADD CONSTRAINT control_plane_proposals_kind_check
+    CHECK (kind IN ('config','model','scaffold','instinct_retire','observation'));
+`,
+		Down: `
+UPDATE control_plane_proposals SET kind = 'config' WHERE kind = 'observation';
+ALTER TABLE control_plane_proposals DROP CONSTRAINT IF EXISTS control_plane_proposals_kind_check;
+ALTER TABLE control_plane_proposals ADD CONSTRAINT control_plane_proposals_kind_check
+    CHECK (kind IN ('config','model','scaffold','instinct_retire'));
+`,
+	},
+	{
+		Version: 157,
+		Name:    "memory_chunks_event_time",
+		// Slice 0a of 2026-08-10-memory-benchmark-harness-design.md §4.1.
+		//
+		// project_memory_chunks carried only created_at — when we WROTE the
+		// chunk. Every temporal filter used it, including the from_date/to_date
+		// the memory_search tool exposes to the model, so "what changed in
+		// July" answered with whatever was INGESTED in July. For a RAG-ingested
+		// doc set, which lands as one batch under one timestamp, that is either
+		// everything or nothing.
+		//
+		// event_time is when the content PERTAINS TO. Deliberately NULLABLE and
+		// deliberately NOT backfilled: setting event_time = created_at on
+		// existing rows would assert a fact we do not have. The read path
+		// expresses the fallback instead, as COALESCE(event_time, created_at),
+		// which makes the change strictly widening — every pre-migration chunk
+		// behaves exactly as before, so no caller migrates.
+		//
+		// The index is partial because the overwhelming majority of rows will
+		// have NULL event_time for the foreseeable future (only the companion
+		// remember path and the benchmark harness set it), and indexing those
+		// NULLs would cost write throughput for no read benefit.
+		Up: `
+ALTER TABLE project_memory_chunks ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_memory_chunks_event_time
+    ON project_memory_chunks (project_id, event_time)
+    WHERE event_time IS NOT NULL;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_memory_chunks_event_time;
+ALTER TABLE project_memory_chunks DROP COLUMN IF EXISTS event_time;
+`,
+	},
+	{
+		Version: 158,
+		Name:    "memory_embed_queue_lease",
+		// The embed queue was at-MOST-once, and vornik states that restarts are
+		// safe.
+		//
+		// DequeueEmbedBatch deleted its queue rows and COMMITTED, then the worker
+		// embedded and stored. A stop in that window left chunks with no queue
+		// row, no DLQ row and no embedding: permanently unretrievable by semantic
+		// search, and invisible to every signal the product exposes —
+		// GET /api/v1/memory/stats showed an embedded count that never reached the
+		// total, an EMPTY queue and an EMPTY DLQ, with nothing logged. The
+		// function's own comment predicted exactly this. Observed for real on
+		// 2026-08-11: 100 of 3,214 chunks orphaned by ordinary daemon restarts,
+		// found only by comparing count(*) against count(embedding).
+		//
+		// This matters most for the deployments least able to tolerate it:
+		// customers running continuously have no quiet window, so the fragile
+		// path is hit routinely rather than rarely.
+		//
+		// claimed_at turns the delete-on-claim into a LEASE. A claim marks the
+		// row; only a successful embed (or a hand-off to the DLQ, which then owns
+		// retry) removes it. An abandoned claim ages out and is re-claimed. That
+		// is at-LEAST-once delivery, which is safe here because re-embedding a
+		// chunk overwrites the same value — the operation is idempotent.
+		//
+		// NULLABLE with no backfill: a NULL claim means "never claimed", which is
+		// exactly the state every pre-migration row is in, so the change is
+		// strictly widening. The index is partial for the same reason the
+		// event_time one is — the steady state is an empty queue, and unclaimed
+		// rows are the common case a claim scan must find quickly.
+		Up: `
+ALTER TABLE memory_embed_queue ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_embed_queue_claim
+    ON memory_embed_queue (enqueued_at)
+    WHERE claimed_at IS NULL;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_embed_queue_claim;
+ALTER TABLE memory_embed_queue DROP COLUMN IF EXISTS claimed_at;
+`,
+	},
+	{
+		Version: 159,
+		Name:    "task_llm_usage_tokens_estimated",
+		// Slice 2 of 2026-08-12-embed-spend-attribution-design.md §8.3.
+		//
+		// Embedding backends disagree about token reporting: an
+		// OpenAI-compatible /v1/embeddings response carries usage.prompt_tokens
+		// and Bedrock Titan carries inputTextTokenCount, but Bedrock Cohere
+		// reports no token count at all. So a single "tokens" number would be
+		// measured on some providers and derived on others, with nothing in the
+		// row to say which.
+		//
+		// That distinction is the difference between a ledger and a guess.
+		// Reconciling a provider bill needs to separate "we measured 1.29M
+		// tokens" from "we inferred 1.29M from corpus bytes"; without the flag
+		// the two are indistinguishable and every derived count silently
+		// launders itself into a measurement.
+		//
+		// Deliberately a flag rather than a second source value
+		// (memory_embedder_estimated): a distinct source would fragment every
+		// existing per-role rollup. The flag qualifies the TOKEN columns only —
+		// cost_usd is unaffected, so SUM(cost_usd) consumers need no change.
+		Up: `
+ALTER TABLE task_llm_usage ADD COLUMN IF NOT EXISTS tokens_estimated BOOLEAN NOT NULL DEFAULT FALSE;
+`,
+		Down: `
+ALTER TABLE task_llm_usage DROP COLUMN IF EXISTS tokens_estimated;
+`,
+	},
 }

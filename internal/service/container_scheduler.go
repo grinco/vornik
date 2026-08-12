@@ -432,6 +432,7 @@ func (c *Container) initScheduler() error {
 			c.repos.Tasks,
 		),
 		executor.WithLLMUsageRepository(c.repos.LLMUsage),
+		executor.WithSpend(c.llmSpend(persistence.TaskLLMUsageSourceWorkflowStep, "worker")),
 		executor.WithBudgetReservationRepository(c.repos.BudgetReservations),
 		executor.WithSteeringNotifier(c.combinedSteeringNotifier()),
 		executor.WithStepOutcomeRepository(c.repos.StepOutcomes),
@@ -1050,8 +1051,30 @@ func (c *Container) initScheduler() error {
 				rr.Enabled, c.ChatClient, rr.Model,
 				rr.MaxCandidates, rr.TimeoutSeconds, rr.MaxSnippetBytes,
 				c.Logger.With().Str("component", "memory").Str("sub", "reranker").Logger(),
-				memory.WithRerankerUsage(c.repos.LLMUsage, c.pricingTable),
+				memory.WithRerankerSpend(c.llmSpend(
+					persistence.TaskLLMUsageSourceMemoryReranker, "memory_reranker")),
 			))
+			// Report the RESOLVED state, not the configured intent.
+			//
+			// This was invisible before, and the gap was expensive: reranker.enabled
+			// was true, this line ran, and across 151,818 production LLM-usage rows
+			// not one reranker call was ever made. A feature that can be configured
+			// on and still be inert has to announce which gate closed.
+			if active, reason := mgr.Searcher.RerankerStatus(); active {
+				c.Logger.Info().
+					Str("component", "memory").Str("sub", "reranker").
+					Str("model", rr.Model).
+					Msg("memory reranker ACTIVE — context-assembly recall will rerank")
+			} else {
+				c.Logger.Warn().
+					Str("component", "memory").Str("sub", "reranker").
+					Bool("config_enabled", rr.Enabled).
+					Bool("chat_client", c.ChatClient != nil).
+					Str("model", rr.Model).
+					Str("reason", reason).
+					Msg("memory reranker INERT — recall stays RRF-ordered and " +
+						"scored-sufficiency cannot activate")
+			}
 
 			// Phase B of the Policy-Aware Memory Firewall: wire
 			// the evaluator + non-blocking audit writer into the
@@ -1121,22 +1144,32 @@ func (c *Container) initScheduler() error {
 			// the chat router via ModelOverridable like the KG
 			// pipeline.
 			if c.Config.Memory.Titler.Enabled && c.ChatClient != nil {
-				titler := memory.NewTitler(c.ChatClient, c.Config.Memory.Titler.Model)
+				// Embedding spend attribution (slice 2 of
+				// 2026-08-12-embed-spend-attribution-design.md). Wired
+				// post-construction like the titler/classifier below, because
+				// memory.NewManager builds the Embedder from config alone and has
+				// no usage repo.
+				//
+				// Until this line existed the embed path wrote NO usage row on any
+				// provider: re-embedding this corpus is ~1.29M tokens, roughly
+				// $0.60-0.75 per pass on a hosted embedder, and vornik reported
+				// $0.00. Local embedding is why that was free here, not why it was
+				// invisible.
+				if mgr.Embedder != nil {
+					mgr.Embedder.SetSpend(c.llmSpend(
+						persistence.TaskLLMUsageSourceMemoryEmbedder, memory.RoleEmbedder))
+				}
+
+				// Billing is now a constructor argument, so this component cannot be
+				// built without a decision about its spend
+				// (2026-08-12-ledger-completeness-design.md §5).
+				titler := memory.NewTitler(c.ChatClient, c.Config.Memory.Titler.Model,
+					c.llmSpend(persistence.TaskLLMUsageSourceMemoryTitler, memory.RoleTitler))
 				if secs := c.Config.Memory.Titler.TimeoutSeconds; secs > 0 {
 					titler.Timeout = time.Duration(secs) * time.Second
 				}
 				if mb := c.Config.Memory.Titler.MaxPreviewBytes; mb > 0 {
 					titler.MaxPreviewBytes = mb
-				}
-				// Wire cost attribution so each title call lands a
-				// task_llm_usage row (role="memory_titler", source=
-				// "memory_titler"). The spend dashboard groups it
-				// alongside KG and judge cost; per-project totals
-				// in the project UI pick it up automatically since
-				// the row carries project_id.
-				titler.LLMUsage = c.repos.LLMUsage
-				if c.pricingTable != nil {
-					titler.Pricing = c.pricingTable
 				}
 				// Phase E — share the manager's response cache so
 				// titler reruns over identical chunks skip the LLM.
@@ -1165,16 +1198,13 @@ func (c *Container) initScheduler() error {
 			// without paying for inline title generation. Shares the
 			// chat client and pricing table.
 			if c.Config.Memory.Classifier.Enabled && c.ChatClient != nil {
-				classifier := memory.NewClassifier(c.ChatClient, c.Config.Memory.Classifier.Model)
+				classifier := memory.NewClassifier(c.ChatClient, c.Config.Memory.Classifier.Model,
+					c.llmSpend(persistence.TaskLLMUsageSourceMemoryClassifier, memory.RoleClassifier))
 				if secs := c.Config.Memory.Classifier.TimeoutSeconds; secs > 0 {
 					classifier.Timeout = time.Duration(secs) * time.Second
 				}
 				if mb := c.Config.Memory.Classifier.MaxPreviewBytes; mb > 0 {
 					classifier.MaxPreviewBytes = mb
-				}
-				classifier.LLMUsage = c.repos.LLMUsage
-				if c.pricingTable != nil {
-					classifier.Pricing = c.pricingTable
 				}
 				// Phase E — share the manager's response cache so
 				// `vornikctl memory reclassify --use-llm` reruns over
@@ -1238,11 +1268,8 @@ func (c *Container) initScheduler() error {
 				// projects without an existing gist row so order
 				// of arrival is irrelevant.
 				if c.Config.Memory.LLMConsolidateEnabled && c.ChatClient != nil {
-					nw := memory.NewNarrativeWriter(c.ChatClient, c.Config.Memory.LLMConsolidateModel)
-					nw.LLMUsage = c.repos.LLMUsage
-					if c.pricingTable != nil {
-						nw.Pricing = c.pricingTable
-					}
+					nw := memory.NewNarrativeWriter(c.ChatClient, c.Config.Memory.LLMConsolidateModel,
+						c.llmSpend(persistence.TaskLLMUsageSourceMemoryNarrative, memory.RoleNarrative))
 					c.memoryLLMConsolidateWorker = &memory.LLMConsolidateWorker{
 						Writer:     nw,
 						Repo:       mgr.Repository(),

@@ -23,6 +23,11 @@ type stubInstinctRepo struct {
 	// is returned instead so the fail-soft path can be exercised.
 	listApplicationCounts    map[string]*persistence.InstinctApplicationCounts
 	listApplicationCountsErr error
+	// domainStatusCounts backs CountByDomainStatus, which the dashboard
+	// Learning tile calls to count live instincts; domainStatusErr, when
+	// set, exercises its fail-soft path.
+	domainStatusCounts []persistence.InstinctDomainStatusCount
+	domainStatusErr    error
 }
 
 func (s *stubInstinctRepo) Upsert(context.Context, *persistence.Instinct) (string, error) {
@@ -71,8 +76,12 @@ func (s *stubInstinctRepo) List(_ context.Context, filter persistence.InstinctFi
 func (s *stubInstinctRepo) CountActiveProjects(context.Context, string) (int, error) {
 	panic("not used by ui tests")
 }
+
+// CountByDomainStatus serves canned counts for the dashboard Learning tile
+// (the only UI caller). Left as a nil/no-error return when unset so the
+// admin-instincts tests, which never touch it, keep working unchanged.
 func (s *stubInstinctRepo) CountByDomainStatus(context.Context) ([]persistence.InstinctDomainStatusCount, error) {
-	panic("not used by ui tests")
+	return s.domainStatusCounts, s.domainStatusErr
 }
 func (s *stubInstinctRepo) Retire(_ context.Context, id string) error {
 	for _, r := range s.rows {

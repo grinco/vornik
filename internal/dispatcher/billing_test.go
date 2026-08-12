@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"vornik.io/vornik/internal/llmspend"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -94,8 +95,9 @@ func (r *recordingUsageRepo) TaskCostBreakdown(context.Context, string) ([]persi
 func TestRecordLLMUsage_NoBillingProjectKeepsActiveProject(t *testing.T) {
 	repo := &recordingUsageRepo{}
 	a := &Agent{
-		llmUsageRepo: repo,
-		logger:       zerolog.Nop(),
+		spend: llmspend.New(repo, nil,
+			persistence.TaskLLMUsageSourceDispatcher, "dispatcher"),
+		logger: zerolog.Nop(),
 	}
 	resp := &chat.ChatResponse{Model: "test-model"}
 	resp.Usage.PromptTokens = 100
@@ -117,7 +119,8 @@ func TestRecordLLMUsage_NoBillingProjectKeepsActiveProject(t *testing.T) {
 func TestRecordLLMUsage_BillingProjectOverridesActive(t *testing.T) {
 	repo := &recordingUsageRepo{}
 	a := &Agent{
-		llmUsageRepo:     repo,
+		spend: llmspend.New(repo, nil,
+			persistence.TaskLLMUsageSourceDispatcher, "dispatcher"),
 		billingProjectID: "assistant",
 		logger:           zerolog.Nop(),
 	}

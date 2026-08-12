@@ -1568,10 +1568,15 @@ func (te *ToolExecutor) memorySearch(ctx context.Context, argsJSON, activeProjec
 		ProjectID string `json:"project_id"`
 		Limit     int    `json:"limit"`
 		// FromDate / ToDate are optional ISO-8601 (YYYY-MM-DD or
-		// full RFC3339) bounds on chunk created_at. Added 2026.6.0
-		// for the external-research-inspired retrofit so the LLM
-		// can answer "what did we discuss last week" without
-		// dragging in every prior matching chunk.
+		// full RFC3339) bounds on the chunk's EVENT time — when its
+		// content pertains to — falling back to ingest time when the
+		// event time is unknown (migration 157, LLD
+		// 2026-08-10-memory-benchmark-harness-design.md §4.1).
+		//
+		// These filtered created_at until 2026-08-10, which meant the
+		// model asking "what changed in July" got whatever was WRITTEN
+		// in July. For a RAG-ingested doc set — one batch, one
+		// timestamp — that answered either everything or nothing.
 		FromDate string `json:"from_date"`
 		ToDate   string `json:"to_date"`
 	}
@@ -2427,8 +2432,8 @@ func DispatcherTools() []chat.Tool {
 						"query":{"type":"string","description":"Natural-language query (e.g. 'Vadim Grinco background', 'Linux audio projects', 'sensor integration notes')"},
 						"project_id":{"type":"string","description":"Project to search (optional — uses active project if omitted)"},
 						"limit":{"type":"integer","description":"Max chunks to return. Default 5, max 20."},
-						"from_date":{"type":"string","description":"Optional lower bound on chunk created_at. ISO date (YYYY-MM-DD) or full RFC3339. Empty = no bound."},
-						"to_date":{"type":"string","description":"Optional upper bound on chunk created_at. ISO date (YYYY-MM-DD) or full RFC3339. Empty = no bound."}
+						"from_date":{"type":"string","description":"Optional lower bound on when the content pertains to (its event time, falling back to when it was stored if unknown). ISO date (YYYY-MM-DD) or full RFC3339. Empty = no bound."},
+						"to_date":{"type":"string","description":"Optional upper bound on when the content pertains to (its event time, falling back to when it was stored if unknown). ISO date (YYYY-MM-DD) or full RFC3339. Empty = no bound."}
 					},
 					"required":["query"]
 				}`),

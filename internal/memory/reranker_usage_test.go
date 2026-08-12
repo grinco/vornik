@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"vornik.io/vornik/internal/llmspend"
 
 	"github.com/rs/zerolog"
 
@@ -27,11 +28,10 @@ func TestLLMReranker_RecordsUsageForBilledCall(t *testing.T) {
 	}}
 	rec := &fakeUsageRecorder{}
 	rr := &LLMReranker{
-		Client:   fp,
-		Model:    "rerank-model",
-		Logger:   zerolog.Nop(),
-		LLMUsage: rec,
-		Pricing:  fixedPricing{},
+		Client: fp,
+		Model:  "rerank-model",
+		Logger: zerolog.Nop(),
+		spend:  llmspend.New(rec, fixedPricing{}, persistence.TaskLLMUsageSourceMemoryReranker, rerankerRole),
 	}
 
 	in := []SearchResult{
@@ -82,10 +82,9 @@ func TestLLMReranker_RecordsUsageWhenParseFails(t *testing.T) {
 	}}
 	rec := &fakeUsageRecorder{}
 	rr := &LLMReranker{
-		Client:   fp,
-		Logger:   zerolog.Nop(),
-		LLMUsage: rec,
-		Pricing:  fixedPricing{},
+		Client: fp,
+		Logger: zerolog.Nop(),
+		spend:  llmspend.New(rec, fixedPricing{}, persistence.TaskLLMUsageSourceMemoryReranker, rerankerRole),
 	}
 
 	in := []SearchResult{
@@ -128,7 +127,8 @@ func TestLLMReranker_NilRecorderIsSafe(t *testing.T) {
 func TestLLMReranker_NoUsageWhenCallSkipped(t *testing.T) {
 	fp := &titlerFakeProvider{}
 	rec := &fakeUsageRecorder{}
-	rr := &LLMReranker{Client: fp, Logger: zerolog.Nop(), LLMUsage: rec}
+	rr := &LLMReranker{Client: fp, Logger: zerolog.Nop(),
+		spend: llmspend.New(rec, nil, persistence.TaskLLMUsageSourceMemoryReranker, rerankerRole)}
 
 	in := []SearchResult{{ChunkID: "only", ProjectID: "p"}}
 	if _, err := rr.Rerank(context.Background(), "q", in); err != nil {
@@ -148,17 +148,19 @@ func TestNewConfiguredReranker_WiresUsageRecorder(t *testing.T) {
 	rec := &fakeUsageRecorder{}
 	r := NewConfiguredReranker(
 		true, &titlerFakeProvider{}, "m", 20, 8, 600, zerolog.Nop(),
-		WithRerankerUsage(rec, fixedPricing{}),
+		WithRerankerSpend(llmspend.New(rec, fixedPricing{}, persistence.TaskLLMUsageSourceMemoryReranker, rerankerRole)),
 	)
 	lr, ok := r.(*LLMReranker)
 	if !ok {
 		t.Fatalf("expected *LLMReranker, got %T", r)
 	}
-	if lr.LLMUsage == nil {
-		t.Error("LLMUsage not wired — rerank spend would stay invisible")
+	// Enabled() distinguishes a configured recorder from both the zero value and
+	// a deliberate Disabled() — the two nil-checks this replaces could not.
+	if !lr.spend.Enabled() {
+		t.Error("spend recorder not wired — rerank spend would stay invisible")
 	}
-	if lr.Pricing == nil {
-		t.Error("Pricing not wired — rows would land at $0")
+	if lr.spend.Source() != persistence.TaskLLMUsageSourceMemoryReranker {
+		t.Errorf("recorder source = %q, want the reranker's", lr.spend.Source())
 	}
 }
 
@@ -168,7 +170,7 @@ func TestNewConfiguredReranker_UsageOptionDoesNotEnable(t *testing.T) {
 	rec := &fakeUsageRecorder{}
 	r := NewConfiguredReranker(
 		false, &titlerFakeProvider{}, "m", 20, 8, 600, zerolog.Nop(),
-		WithRerankerUsage(rec, fixedPricing{}),
+		WithRerankerSpend(llmspend.New(rec, fixedPricing{}, persistence.TaskLLMUsageSourceMemoryReranker, rerankerRole)),
 	)
 	if _, ok := r.(NoopReranker); !ok {
 		t.Fatalf("disabled reranker must stay Noop, got %T", r)
@@ -190,10 +192,9 @@ func TestLLMReranker_WarnsWhenCandidatesSpanProjects(t *testing.T) {
 	}}
 	rec := &fakeUsageRecorder{}
 	rr := &LLMReranker{
-		Client:   fp,
-		Logger:   zerolog.New(&logs),
-		LLMUsage: rec,
-		Pricing:  fixedPricing{},
+		Client: fp,
+		Logger: zerolog.New(&logs),
+		spend:  llmspend.New(rec, fixedPricing{}, persistence.TaskLLMUsageSourceMemoryReranker, rerankerRole),
 	}
 
 	in := []SearchResult{
@@ -221,10 +222,10 @@ func TestLLMReranker_NoWarnForSingleProject(t *testing.T) {
 		{content: `{"scores":{"0":0.9,"1":0.1}}`},
 	}}
 	rr := &LLMReranker{
-		Client:   fp,
-		Logger:   zerolog.New(&logs),
-		LLMUsage: &fakeUsageRecorder{},
-		Pricing:  fixedPricing{},
+		Client: fp,
+		Logger: zerolog.New(&logs),
+		spend: llmspend.New(&fakeUsageRecorder{}, fixedPricing{},
+			persistence.TaskLLMUsageSourceMemoryReranker, rerankerRole),
 	}
 	in := []SearchResult{{ChunkID: "a", ProjectID: "p"}, {ChunkID: "b", ProjectID: "p"}}
 	if _, err := rr.Rerank(context.Background(), "q", in); err != nil {

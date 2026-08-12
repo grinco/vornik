@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"vornik.io/vornik/internal/llmspend"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -128,7 +129,8 @@ models:
 		table, err := pricing.Load(path)
 		require.NoError(t, err)
 
-		e := &Executor{metrics: m, pricing: table, llmUsageRepo: repo, logger: zerolog.Nop()}
+		e := &Executor{metrics: m, pricing: table, logger: zerolog.Nop(),
+			spend: llmspend.New(repo, table, persistence.TaskLLMUsageSourceWorkflowStep, "worker")}
 		body := []byte(`{"usage":{"prompt_tokens":1000000,"completion_tokens":500000,"cache_creation_tokens":100000,"cache_read_tokens":200000,"iterations":3}}`)
 		e.recordLLMUsageFromResult(context.Background(), task, exec, "step_42", "coder", "qwen-coder", body)
 
@@ -160,7 +162,8 @@ models:
 
 		keyID := "akey-1"
 		attributedTask := &persistence.Task{ID: "t2", ProjectID: "p1", CreatedByAPIKeyID: &keyID}
-		e := &Executor{metrics: m, llmUsageRepo: repo, logger: zerolog.Nop()}
+		e := &Executor{metrics: m, logger: zerolog.Nop(),
+			spend: llmspend.New(repo, nil, persistence.TaskLLMUsageSourceWorkflowStep, "worker")}
 		body := []byte(`{"usage":{"prompt_tokens":10,"completion_tokens":5,"iterations":1}}`)
 		e.recordLLMUsageFromResult(context.Background(), attributedTask, exec, "step_1", "coder", "m", body)
 

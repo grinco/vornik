@@ -21,7 +21,12 @@ var resolverSystemPrompt string
 // is the success contract; an empty slice means "embeddings
 // disabled" and the resolver falls back to a name-equality check
 // before deferring to the LLM.
-type EmbedFn func(ctx context.Context, texts []string) ([][]float32, error)
+// projectID is required: embedding spend is billed per project, and the
+// resolver/searcher/pipeline all know their project at call time even though the
+// closure is wired at daemon level. Without it, KG-side embedding spend could
+// only be attributed to "infrastructure", which would be a lie about project
+// work (2026-08-12-embed-spend-attribution-design.md §8.4).
+type EmbedFn func(ctx context.Context, projectID string, texts []string) ([][]float32, error)
 
 // Resolution is the resolver's verdict for a single candidate,
 // returned in input order so the orchestrator can zip it back
@@ -172,7 +177,7 @@ func (r *Resolver) shortlist(ctx context.Context, projectID string, c Candidate)
 	}
 	var vec []float32
 	if r.Embedder != nil {
-		vecs, err := r.Embedder(ctx, []string{c.Name})
+		vecs, err := r.Embedder(ctx, projectID, []string{c.Name})
 		if err == nil && len(vecs) == 1 {
 			vec = vecs[0]
 		}

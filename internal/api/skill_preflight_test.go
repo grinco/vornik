@@ -21,7 +21,7 @@ type stubSkillEmbedder struct {
 
 func (e *stubSkillEmbedder) Model() string { return e.model }
 
-func (e *stubSkillEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+func (e *stubSkillEmbedder) Embed(_ context.Context, _ string, texts []string) ([][]float32, error) {
 	e.calls++
 	if e.fail {
 		// Mirrors the real contract: nil, nil on failure, never an error.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"vornik.io/vornik/internal/llmspend"
 
 	"vornik.io/vornik/internal/persistence"
 )
@@ -28,6 +29,20 @@ func (f *fakeUsageRecorder) Record(_ context.Context, u *persistence.TaskLLMUsag
 	defer f.mu.Unlock()
 	f.rows = append(f.rows, *u)
 	return nil
+}
+
+// Upsert satisfies llmspend.UsageRepo (replace-by-id, like the real repo).
+func (f *fakeUsageRecorder) Upsert(ctx context.Context, u *persistence.TaskLLMUsage) error {
+	f.mu.Lock()
+	for i, existing := range f.rows {
+		if existing.ID == u.ID {
+			f.rows[i] = *u
+			f.mu.Unlock()
+			return nil
+		}
+	}
+	f.mu.Unlock()
+	return f.Record(ctx, u)
 }
 
 // fakePricing returns a fixed per-token rate so tests assert
@@ -56,8 +71,7 @@ func TestPipeline_RecordsLLMUsagePerStage(t *testing.T) {
 
 	p, _, _, _ := newPipeline(t, extractReply, resolveReply, relReply, valReply)
 	rec := &fakeUsageRecorder{}
-	p.LLMUsage = rec
-	p.Pricing = &fakePricing{perTok: 0.0001}
+	p.SetSpend(llmspend.New(rec, &fakePricing{perTok: 0.0001}, persistence.TaskLLMUsageSourceKGExtraction, RoleExtractor))
 
 	_, err := p.RunChunk(context.Background(), chunk)
 	if err != nil {
@@ -103,8 +117,7 @@ func TestPipeline_SkipsUsageWhenStageEmittedZeroTokens(t *testing.T) {
 	chunk := ChunkInput{ID: "chunk-empty", ProjectID: "proj-1", Content: "uneventful chunk"}
 	p, _, _, _ := newPipeline(t, `[]`, ``, ``, ``)
 	rec := &fakeUsageRecorder{}
-	p.LLMUsage = rec
-	p.Pricing = &fakePricing{perTok: 0.001}
+	p.SetSpend(llmspend.New(rec, &fakePricing{perTok: 0.001}, persistence.TaskLLMUsageSourceKGExtraction, RoleExtractor))
 
 	_, err := p.RunChunk(context.Background(), chunk)
 	if err != nil {
@@ -130,8 +143,8 @@ func TestPipeline_RecordsUsageWithoutPricing(t *testing.T) {
 	resolveReply := `[{"candidate_id":"cand-0","decision":"new"}]`
 	p, _, _, _ := newPipeline(t, extractReply, resolveReply, "[]", "[]")
 	rec := &fakeUsageRecorder{}
-	p.LLMUsage = rec
-	// Pricing intentionally nil.
+	// Pricing intentionally nil: the row must still land with tokens, cost 0.
+	p.SetSpend(llmspend.New(rec, nil, persistence.TaskLLMUsageSourceKGExtraction, RoleExtractor))
 
 	_, err := p.RunChunk(context.Background(), chunk)
 	if err != nil {
@@ -175,8 +188,7 @@ func TestPipeline_NilUsageRecorderIsNoop(t *testing.T) {
 func TestRecordStageUsage_CacheHitIsNotBilled(t *testing.T) {
 	p := &Pipeline{}
 	rec := &fakeUsageRecorder{}
-	p.LLMUsage = rec
-	p.Pricing = &fakePricing{perTok: 0.0001}
+	p.SetSpend(llmspend.New(rec, &fakePricing{perTok: 0.0001}, persistence.TaskLLMUsageSourceKGExtraction, RoleExtractor))
 
 	chunk := ChunkInput{ID: "chunk-cached", ProjectID: "proj-billing"}
 	p.recordStageUsage(context.Background(), chunk, &PipelineMetrics{

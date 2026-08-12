@@ -38,6 +38,16 @@ type Searcher struct {
 	// post-rerank MMR pass. 0 disables MMR entirely (default).
 	// 0.7–0.8 is the sweet spot once enabled.
 	mmrLambda float64
+	// temporalBeta is the proximity coefficient for windowed searches
+	// (design §4.3). 0 disables — and disabled is byte-identical to the
+	// pre-slice ordering, which is why both this and spreadWindow ship
+	// dark and are enabled deliberately.
+	temporalBeta float64
+	// spreadWindow enables bucket-spread selection across a bounded window
+	// (design §4.4). Off by default: it changes WHICH results a windowed
+	// search returns, so it is an opt-in behaviour change rather than a
+	// silent one.
+	spreadWindow bool
 	// queryExpander (optional) widens the FTS query with terms drawn
 	// from the knowledge graph. Nil disables expansion (default).
 	queryExpander QueryExpander
@@ -213,9 +223,31 @@ func (s *Searcher) setMetrics(m *Metrics) { s.metrics = m }
 // no-ops on that side; both empty means "behave like the legacy
 // Search(query, limit) call".
 type SearchOptions struct {
-	Limit    int       // 0 falls back to the Search() default (10)
-	FromDate time.Time // chunks created on/after; zero = no lower bound
-	ToDate   time.Time // chunks created on/before; zero = no upper bound
+	Limit int // 0 falls back to the Search() default (10)
+	// FromDate / ToDate bound the chunk's EVENT time — when its content
+	// pertains to — falling back to ingest time when the event time is
+	// unknown, via COALESCE(event_time, created_at) (migration 157, LLD
+	// 2026-08-10-memory-benchmark-harness-design.md §4.1). Zero = no bound.
+	//
+	// Before 2026-08-10 these bounded created_at, i.e. when we wrote the
+	// chunk. No caller wanted that: all three ask when the content pertains
+	// to. The COALESCE fallback makes the switch behaviour-preserving for
+	// every chunk stored without an event time.
+	FromDate time.Time
+	ToDate   time.Time
+
+	// ParseQueryWindow opts this search into deriving a temporal window from
+	// the query text itself via ParseWindow (design §4.2) — so "what shipped
+	// last spring" bounds the search without the caller pre-parsing the date.
+	//
+	// Off by default, and deliberately so: deriving windows for every caller
+	// would silently narrow existing recalls, and a false positive on an
+	// ordinary query makes results vanish with nothing to explain why.
+	//
+	// An explicit FromDate or ToDate always wins — a caller that passed a
+	// bound has already decided, and overriding it from prose would make the
+	// explicit argument unreliable.
+	ParseQueryWindow bool
 	// RepoScope — migration 75. When non-empty, the SQL filters
 	// chunks to those matching this scope OR repo_scope = '*' (cross-
 	// cutting) OR repo_scope IS NULL (uncategorized — kept visible
@@ -312,8 +344,27 @@ func (s *Searcher) ListRepoScopes(ctx context.Context, projectID string) ([]Repo
 // report traced to the previous inline call passing the full request
 // context and discarding the result, so a contended-backend timeout
 // was both slow and invisible.
+// queryEmbeddingUnavailable reports that there is no usable embedder, so recall
+// must run keyword-only.
+//
+// It asks the EMBEDDER whether it is configured instead of re-deriving that from
+// one transport's settings. The previous form gated on cfg.EmbeddingEndpoint being
+// non-empty, which is true for the OpenAI-compatible path and NEVER true for
+// Bedrock — that transport needs a model and a region and no endpoint at all. So
+// every Bedrock deployment embedded its documents, stored the vectors, and then
+// silently searched without them.
+//
+// Three things hid it. The guard returned before the degrade warning, so nothing was
+// logged; ingest was unaffected, so stats reported 100% embedded; and the keyword arm
+// returns plausible results. It surfaced only when two different Bedrock embedders
+// produced byte-identical rankings across 30 benchmark questions while a local
+// embedder differed on 28 of them.
+func (s *Searcher) queryEmbeddingUnavailable() bool {
+	return s.embedder == nil || !s.embedder.configured()
+}
+
 func (s *Searcher) embedQueryWithTimeout(ctx context.Context, projectID, query string) []float32 {
-	if s.cfg.EmbeddingEndpoint == "" || s.embedder == nil {
+	if s.queryEmbeddingUnavailable() {
 		return nil
 	}
 	timeout := s.queryEmbedTimeout
@@ -324,9 +375,15 @@ func (s *Searcher) embedQueryWithTimeout(ctx context.Context, projectID, query s
 	defer cancel()
 
 	start := time.Now()
-	vecs, err := s.embedder.Embed(embedCtx, []string{query})
-	if err == nil && len(vecs) > 0 && len(vecs[0]) > 0 {
-		return vecs[0]
+	// EmbedQuery, not Embed: asymmetric embedders (Cohere v3+) need the SEARCH
+	// instruction here so the query lands in the same region as the documents that
+	// answer it. Embedding a query with the document instruction measurably
+	// degrades retrieval. For symmetric providers (Titan, OpenAI-compatible) this
+	// is byte-identical to Embed.
+	vec, err := s.embedder.EmbedQuery(embedCtx,
+		EmbedScope{ProjectID: projectID, CallSite: EmbedCallSiteSearchQuery}, query)
+	if err == nil && len(vec) > 0 {
+		return vec
 	}
 	// Embed() returns (nil, nil) on a non-fatal degrade (network error,
 	// non-200, timeout), so an empty result — with or without err — is
@@ -344,6 +401,11 @@ func (s *Searcher) embedQueryWithTimeout(ctx context.Context, projectID, query s
 }
 
 func (s *Searcher) searchInternal(ctx context.Context, projectID, query string, opts SearchOptions) ([]SearchResult, error) {
+	// Derive a temporal window from the query text when the caller opted in and
+	// supplied no bounds of its own (design §4.2). No-op for every existing
+	// caller, since ParseQueryWindow defaults false.
+	opts = resolveQueryWindow(query, opts, time.Now())
+
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 10
@@ -429,11 +491,26 @@ func (s *Searcher) searchInternal(ctx context.Context, projectID, query string, 
 			s.metrics.SearchRerankDuration.Observe(time.Since(rerankStart).Seconds())
 		}
 	}
+	// Temporal proximity (design §4.3) — a small boost toward the centre of a
+	// bounded window. Runs after rerank so it nudges a calibrated ordering
+	// rather than raw RRF values, and before MMR so diversity has the final
+	// say. Inert unless the search is windowed AND beta is non-zero, and
+	// beta == 0 is byte-identical to skipping it.
+	if err == nil && s.temporalBeta != 0 && len(results) > 1 {
+		results = applyTemporalProximity(results, opts.FromDate, opts.ToDate, s.temporalBeta)
+	}
 	// MMR diversification — cheap pure-Go pass over whatever ordering
 	// we have (RRF or reranked). Disabled when lambda is 0 (default),
 	// or when there are fewer than 3 results (nothing to diversify).
 	if err == nil && s.mmrLambda > 0 && len(results) >= 3 {
 		results = applyMMR(results, s.mmrLambda)
+	}
+	// Window spreading (design §4.4) — stop a batch-ingested cluster from
+	// swamping a wide window. Applied last, at the caller's limit rather than
+	// the inflated fetchLimit, because it is a SELECTION step: it decides
+	// which of the ranked candidates survive into the returned budget.
+	if err == nil && s.spreadWindow && len(results) > 1 {
+		results = spreadAcrossWindow(results, opts.FromDate, opts.ToDate, limit)
 	}
 	// Migration 75 safety net: HybridSearchWithEpochs SQL applies the
 	// repo_scope filter when the epoch path is active, but the

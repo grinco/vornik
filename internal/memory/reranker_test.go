@@ -220,3 +220,44 @@ func TestTruncateHelper(t *testing.T) {
 		t.Fatalf("over: %q", got)
 	}
 }
+
+// TestRerankerActive_ReportsWhy — the reranker failing silently cost a long
+// investigation: config said enabled, SetReranker was called, and nothing
+// reranked, with no way to see which gate was closed. RerankerStatus makes the
+// resolved state observable at wiring time.
+func TestRerankerActive_ReportsWhy(t *testing.T) {
+	cases := []struct {
+		name       string
+		reranker   Reranker
+		wantActive bool
+		wantReason string
+	}{
+		{"never wired", nil, false, "not wired"},
+		{"explicitly noop", NoopReranker{}, false, "disabled or no chat client"},
+		{"live", &LLMReranker{}, true, "active"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewSearcher(Config{}, nil, nil)
+			if tc.reranker != nil {
+				s.SetReranker(tc.reranker)
+			}
+			active, reason := s.RerankerStatus()
+			if active != tc.wantActive {
+				t.Errorf("active = %v, want %v", active, tc.wantActive)
+			}
+			if reason != tc.wantReason {
+				t.Errorf("reason = %q, want %q", reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+// TestRerankerStatus_NilSearcher — the container logs this during wiring, where a
+// nil receiver is possible; it must not panic there.
+func TestRerankerStatus_NilSearcher(t *testing.T) {
+	var s *Searcher
+	if active, reason := s.RerankerStatus(); active || reason == "" {
+		t.Errorf("nil searcher: active=%v reason=%q, want false with a reason", active, reason)
+	}
+}

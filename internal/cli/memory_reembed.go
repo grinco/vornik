@@ -20,6 +20,7 @@ var (
 	reembedJSON     bool
 	reembedNoWatch  bool
 	reembedInterval time.Duration
+	reembedMissing  bool
 )
 
 var memoryReembedCmd = &cobra.Command{
@@ -52,6 +53,11 @@ func init() {
 	memoryReembedCmd.Flags().StringVarP(&reembedProject, "project", "p", "", "Project ID (required)")
 	memoryReembedCmd.Flags().BoolVar(&reembedJSON, "json", false, "Emit machine-readable JSON summary (implies --no-watch)")
 	memoryReembedCmd.Flags().BoolVar(&reembedNoWatch, "no-watch", false, "Detach after enqueueing instead of polling for progress")
+	memoryReembedCmd.Flags().BoolVar(&reembedMissing, "only-missing", false,
+		"Enqueue ONLY chunks that have no embedding yet, instead of the whole project. "+
+			"Use this to repair gaps (a restart can leave chunks unembedded with an empty "+
+			"queue); use the default after changing the embedding model or dimension, when "+
+			"every vector must genuinely be recomputed.")
 	memoryReembedCmd.Flags().DurationVar(&reembedInterval, "interval", 3*time.Second, "Progress poll interval (with --watch)")
 	_ = memoryReembedCmd.MarkFlagRequired("project")
 	memoryCmd.AddCommand(memoryReembedCmd)
@@ -84,7 +90,13 @@ func runMemoryReembed(_ *cobra.Command, _ []string) error {
 		return err
 	}
 	repo := memory.NewRepository(db)
-	enqueued, err := repo.RequeueAllForEmbedding(enqueueCtx, reembedProject)
+	// --only-missing repairs gaps; the default recomputes everything, which is what a
+	// model or dimension change requires.
+	requeue := repo.RequeueAllForEmbedding
+	if reembedMissing {
+		requeue = repo.RequeueMissingForEmbedding
+	}
+	enqueued, err := requeue(enqueueCtx, reembedProject)
 	if err != nil {
 		return fmt.Errorf("re-enqueue: %w", err)
 	}

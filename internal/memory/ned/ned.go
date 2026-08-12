@@ -40,6 +40,7 @@ import (
 	"fmt"
 
 	"vornik.io/vornik/internal/chat"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/memory/graph"
 	"vornik.io/vornik/internal/persistence"
 )
@@ -141,13 +142,18 @@ type PricingTable interface {
 type Gate struct {
 	Extractor Extractor
 	Resolver  Resolver
-	Usage     UsageRecorder
-	Pricing   PricingTable
+	// Spend records one task_llm_usage row per billed stage. Exported because the
+	// Gate is assembled as a struct literal by its containers; a zero value is
+	// loud rather than silent, which is the property that matters here.
+	Spend llmspend.Recorder
 }
 
+// The two task_llm_usage roles this gate bills under. Exported so wiring sites
+// name them rather than repeating literals; RoleExtractor is the Recorder's
+// default and the resolver stage overrides it per call.
 const (
-	roleExtractor = "chat_remember_ned_extractor"
-	roleResolver  = "chat_remember_ned_resolver"
+	RoleExtractor = "chat_remember_ned_extractor"
+	RoleResolver  = "chat_remember_ned_resolver"
 )
 
 // Screen runs extract → filter PERSON → resolve and maps the result to a
@@ -347,14 +353,14 @@ func (g *Gate) recordExtract(ctx context.Context, projectID string, m *graph.Ext
 	if m == nil {
 		return
 	}
-	g.record(ctx, projectID, roleExtractor, m.Model, m.PromptTokens, m.CompletionTokens)
+	g.record(ctx, projectID, RoleExtractor, m.Model, m.PromptTokens, m.CompletionTokens)
 }
 
 func (g *Gate) recordResolve(ctx context.Context, projectID string, m *graph.ResolveMetrics) {
 	if m == nil {
 		return
 	}
-	g.record(ctx, projectID, roleResolver, m.Model, m.PromptTokens, m.CompletionTokens)
+	g.record(ctx, projectID, RoleResolver, m.Model, m.PromptTokens, m.CompletionTokens)
 }
 
 // record writes one task_llm_usage row for a billed stage. Mirrors
@@ -364,27 +370,16 @@ func (g *Gate) recordResolve(ctx context.Context, projectID string, m *graph.Res
 // errors are swallowed because failing to bill is a dashboard-fidelity
 // issue, never a reason to fail the gate.
 func (g *Gate) record(ctx context.Context, projectID, role, model string, prompt, completion int) {
-	if g.Usage == nil || projectID == "" {
+	if projectID == "" {
 		return
 	}
-	if prompt == 0 && completion == 0 {
-		return
-	}
-	var costUSD float64
-	if g.Pricing != nil {
-		costUSD = g.Pricing.CostUSD(model, prompt, completion)
-	}
-	_ = g.Usage.Record(ctx, &persistence.TaskLLMUsage{
-		ID:               persistence.GenerateID("llm"),
+	// RoleOverride: the gate bills under two roles (extractor, resolver) from one
+	// component. TaskID stays nil — a chat deposit is tied to no task.
+	g.Spend.Record(ctx, llmspend.Input{
 		ProjectID:        projectID,
-		TaskID:           nil, // a chat deposit is tied to no task
-		ExecutionID:      nil,
-		Role:             role,
 		Model:            model,
-		PromptTokens:     int64(prompt),
-		CompletionTokens: int64(completion),
-		Iterations:       1,
-		CostUSD:          costUSD,
-		Source:           persistence.TaskLLMUsageSourceChatRememberNED,
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		RoleOverride:     role,
 	})
 }

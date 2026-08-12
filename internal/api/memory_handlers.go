@@ -40,10 +40,23 @@ func (s *Server) MemoryStats(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = filtered
 	}
-	respondJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"projects": rows,
 		"total":    len(rows),
-	})
+	}
+	// The RESOLVED embedder, when the deployment can report one. Absent rather
+	// than empty-valued when it cannot, so a caller can tell "no embedder wired"
+	// from "an embedder whose identity we failed to read".
+	if s.memoryEmbedder != nil {
+		if provider, model, dims := s.memoryEmbedder.Embedder(); model != "" {
+			emb := map[string]any{"provider": provider, "model": model}
+			if dims > 0 {
+				emb["dimensions"] = dims
+			}
+			out["embedder"] = emb
+		}
+	}
+	respondJSON(w, http.StatusOK, out)
 }
 
 // MemoryCacheStats handles GET /api/v1/memory/cache-stats. Returns

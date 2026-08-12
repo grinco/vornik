@@ -18,6 +18,7 @@ import (
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/hallucination"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/memory/ned"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
@@ -183,8 +184,13 @@ type Agent struct {
 	memory                MemorySearcher
 	graphSearcher         GraphSearcher
 	memoryCorrector       MemoryCorrector
-	llmUsageRepo          persistence.TaskLLMUsageRepository
-	reservRepo            persistence.BudgetReservationRepository
+	// spend BILLS chat turns; llmUsageRepo is the same table READ for budget
+	// enforcement in the tool executor (budget.Check / ForecastTask). Two fields
+	// because they are two different jobs — conflating them is what made the
+	// billing wiring look optional.
+	spend        llmspend.Recorder
+	llmUsageRepo persistence.TaskLLMUsageRepository
+	reservRepo   persistence.BudgetReservationRepository
 	// operatorProfiles (optional) DB-backs the per-operator
 	// preferences + notes the dispatcher injects into the
 	// system prompt at the start of every turn. Nil keeps the

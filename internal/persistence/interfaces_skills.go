@@ -218,6 +218,18 @@ type SkillRepository interface {
 	// (oldest-first review queue) and the per-project List.
 	ListAcrossProjects(ctx context.Context, maturities []string, limit int) ([]*Skill, error)
 
+	// CountByMaturity returns row counts across ALL projects keyed by
+	// maturity, including retired. Maturities with no rows are absent from
+	// the map rather than present-and-zero.
+	//
+	// This exists so the dashboard "Learning" tile can count without
+	// hydrating rows: ListAcrossProjects selects every column, and a skill
+	// row carries its full Markdown Body plus a JSON-encoded Embedding.
+	// Counting through that on the landing page — the most-requested page,
+	// uncached — would read hundreds of KB per render to display three
+	// integers.
+	CountByMaturity(ctx context.Context) (map[string]int, error)
+
 	// SetGlobal flips a skill's cross-project reach (is_global). Does NOT
 	// change maturity — an already-approved skill stays approved and
 	// simply widens/narrows where it injects on its next task. Returns

@@ -24,6 +24,7 @@ import (
 	"vornik.io/vornik/internal/executor/livepubsub"
 	"vornik.io/vornik/internal/extractor"
 	"vornik.io/vornik/internal/featuredoctor"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/mcp"
 	"vornik.io/vornik/internal/mediahandles"
 	"vornik.io/vornik/internal/mediakind"
@@ -103,6 +104,18 @@ type ReadinessCheck struct {
 // but not stats (or vice versa) can wire them independently.
 type MemoryStatsProvider interface {
 	Stats(ctx context.Context) ([]MemoryProjectStats, error)
+}
+
+// MemoryEmbedderReporter reports the deployment's RESOLVED embedder for
+// GET /api/v1/memory/stats.
+//
+// Optional, and separate from MemoryStatsProvider, because a deployment can serve
+// stats without an embedder configured at all. Exposed because a config file states
+// intent while this states fact — the distinction that let a benchmark mislabel
+// which embedding model produced the vectors it was scoring, with nothing in the
+// product able to contradict it.
+type MemoryEmbedderReporter interface {
+	Embedder() (provider, model string, dimensions int)
 }
 
 // MemoryCacheStatsProvider returns the embedding + response cache
@@ -727,8 +740,13 @@ type Server struct {
 	// snapshots from either path are immediately visible to the
 	// other (idempotent on content hash).
 	inputArtifactStore InputArtifactStore
-	llmUsageRepo       persistence.TaskLLMUsageRepository
-	reservRepo         persistence.BudgetReservationRepository
+	// llmUsageRepo READS the ledger (spend endpoints, budget checks).
+	// externalAPISpend and workflowStepSpend BILL the two writing paths: the
+	// OpenAI-compatible proxy and the agent's streaming usage reports.
+	llmUsageRepo      persistence.TaskLLMUsageRepository
+	externalAPISpend  llmspend.Recorder
+	workflowStepSpend llmspend.Recorder
+	reservRepo        persistence.BudgetReservationRepository
 	// chatAuditRepo persists one chat_audit_log row per external
 	// chat-proxy + ollama-proxy call so the operator can answer
 	// "what did agent X / external client Y ask the LLM at 03:14?"
@@ -933,6 +951,7 @@ type Server struct {
 	apiMetrics     *APIMetrics
 	memorySearcher MemorySearcher
 	memoryStats    MemoryStatsProvider
+	memoryEmbedder MemoryEmbedderReporter
 	// memoryCompanion powers the companion MCP server's `recall` and
 	// `remember` tools (LLD 22). Nil-safe: those tools return a
 	// "memory subsystem not wired on this daemon" error when this
@@ -1660,6 +1679,12 @@ func WithArtifactOpener(o ArtifactOpener) ServerOption {
 func WithLLMUsageRepository(repo persistence.TaskLLMUsageRepository) ServerOption {
 	return func(s *Server) {
 		s.llmUsageRepo = repo
+		// Both writers are wired from the same option, so a deployment cannot end
+		// up reading the ledger while silently not writing to it.
+		s.externalAPISpend = llmspend.New(repo, nil,
+			persistence.TaskLLMUsageSourceExternalAPI, "external_api")
+		s.workflowStepSpend = llmspend.New(repo, nil,
+			persistence.TaskLLMUsageSourceWorkflowStep, "worker")
 	}
 }
 
@@ -2355,6 +2380,14 @@ func WithIngestQueueRepo(repo persistence.IngestQueueRepository) ServerOption {
 func WithMemoryStats(sp MemoryStatsProvider) ServerOption {
 	return func(s *Server) {
 		s.memoryStats = sp
+	}
+}
+
+// WithMemoryEmbedderReporter wires the RESOLVED-embedder block into
+// GET /api/v1/memory/stats. nil simply omits the block.
+func WithMemoryEmbedderReporter(r MemoryEmbedderReporter) ServerOption {
+	return func(s *Server) {
+		s.memoryEmbedder = r
 	}
 }
 

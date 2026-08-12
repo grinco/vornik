@@ -136,7 +136,11 @@ func TestUpsertChunks_Happy(t *testing.T) {
 			// what we store and what EmbedInputHash produces would silently
 			// re-open the orphaned-vector gap this closes.
 			WithArgs(c.ID, c.ProjectID, c.TaskID, c.ArtifactID, c.SourceName, c.ChunkIndex, c.Content, c.ContentHash,
-				EmbedInputHash(c.SourceName, c.Content), nilStr, nilStr).
+				EmbedInputHash(c.SourceName, c.Content), nilStr, nilStr,
+				// event_time (migration 157): these fixtures set no EventTime,
+				// so it must arrive as NULL — the fallback that keeps
+				// pre-event-time chunks behaving exactly as before.
+				nil).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 	if err := r.UpsertChunks(context.Background(), chunks); err != nil {
@@ -171,7 +175,8 @@ func TestUpsertChunks_WithDocumentProvenance(t *testing.T) {
 	mock.ExpectExec("INSERT INTO project_memory_chunks").
 		WithArgs(chunk.ID, chunk.ProjectID, chunk.TaskID, chunk.ArtifactID, chunk.SourceName,
 			chunk.ChunkIndex, chunk.Content, chunk.ContentHash,
-			EmbedInputHash(chunk.SourceName, chunk.Content), &docID, &secID).
+			EmbedInputHash(chunk.SourceName, chunk.Content), &docID, &secID,
+			nil). // event_time — unset on this fixture (migration 157)
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := r.UpsertChunks(context.Background(), []MemoryChunk{chunk}); err != nil {
 		t.Fatal(err)
@@ -434,12 +439,14 @@ func TestRequeueAllForEmbedding(t *testing.T) {
 func TestDequeueEmbedBatch_EmptyQueue(t *testing.T) {
 	r, mock, cleanup := newRepo(t)
 	defer cleanup()
-	// 2026-05-29 audit fix: DequeueEmbedBatch wraps DELETE-RETURNING
-	// + chunk SELECT in one tx so a crash between them can't
-	// silently strand chunks. Empty-queue still commits.
+	// Migration 158: DequeueEmbedBatch CLAIMS (UPDATE ... SET claimed_at) rather
+	// than deleting, so a crash before the embedding is stored leaves the chunk
+	// re-claimable instead of orphaned. The 2026-05-29 single-tx wrapping was not
+	// enough on its own: the tx committed the DELETE, so a crash after the commit
+	// still stranded the batch. Empty-queue still commits.
 	mock.ExpectBegin()
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").
-		WithArgs(10).
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").
+		WithArgs(10, EmbedClaimReclaimAfter.String()).
 		WillReturnRows(sqlmock.NewRows([]string{"chunk_id"}))
 	mock.ExpectCommit()
 	got, err := r.DequeueEmbedBatch(context.Background(), 10)
@@ -452,8 +459,8 @@ func TestDequeueEmbedBatch_Happy(t *testing.T) {
 	r, mock, cleanup := newRepo(t)
 	defer cleanup()
 	mock.ExpectBegin()
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").
-		WithArgs(2).
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").
+		WithArgs(2, EmbedClaimReclaimAfter.String()).
 		WillReturnRows(sqlmock.NewRows([]string{"chunk_id"}).AddRow("c1").AddRow("c2"))
 
 	createdAt := time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC)
@@ -479,7 +486,7 @@ func TestDequeueEmbedBatch_Happy(t *testing.T) {
 func TestDequeueEmbedBatch_DequeueErr(t *testing.T) {
 	r, mock, cleanup := newRepo(t)
 	defer cleanup()
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").WillReturnError(errors.New("x"))
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").WillReturnError(errors.New("x"))
 	if _, err := r.DequeueEmbedBatch(context.Background(), 1); err == nil {
 		t.Fatal("want err")
 	}
@@ -488,7 +495,7 @@ func TestDequeueEmbedBatch_DequeueErr(t *testing.T) {
 func TestDequeueEmbedBatch_FetchErr(t *testing.T) {
 	r, mock, cleanup := newRepo(t)
 	defer cleanup()
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").
 		WillReturnRows(sqlmock.NewRows([]string{"chunk_id"}).AddRow("c1"))
 	mock.ExpectQuery("SELECT id, project_id").
 		WillReturnError(errors.New("x"))
@@ -505,11 +512,11 @@ func TestDequeueEmbedBatch_FetchErr(t *testing.T) {
 // permanent chunk loss. Now both run in one tx; the fetch error
 // must roll back the DELETE. Pin the rollback expectation so a
 // future refactor that drops the tx wrapper gets caught.
-func TestDequeueEmbedBatch_FetchErrRollsBackDelete(t *testing.T) {
+func TestDequeueEmbedBatch_FetchErrRollsBackClaim(t *testing.T) {
 	r, mock, cleanup := newRepo(t)
 	defer cleanup()
 	mock.ExpectBegin()
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").
 		WillReturnRows(sqlmock.NewRows([]string{"chunk_id"}).AddRow("c1"))
 	mock.ExpectQuery("SELECT id, project_id").
 		WillReturnError(errors.New("fetch boom"))
@@ -1080,7 +1087,7 @@ func TestHybridSearchWithEpochs_DisabledStillAppliesTemporalBounds(t *testing.T)
 	// 2026-05-29: keywordSearchTemporal (no-pgvector path) already
 	// threaded repoScope at $6. The added scope arg is nil (empty
 	// repoScope, lenient strict).
-	mock.ExpectQuery(regexp.QuoteMeta("c.created_at >= $4")).
+	mock.ExpectQuery(regexp.QuoteMeta("COALESCE(c.event_time, c.created_at) >= $4")).
 		WithArgs("p", "q", 5, from, to, nil, "q").
 		WillReturnRows(makeRR([]string{"c1"}, []float64{0.4}))
 	got, err := r.HybridSearchWithEpochs(context.Background(), "p", nil, "q", 5, nil, false, from, to, "", false)
@@ -1096,7 +1103,7 @@ func TestHybridSearchWithEpochs_TemporalKeywordErrorFallsBackToBoundedSubstring(
 	to := time.Date(2026, 5, 15, 23, 59, 59, 0, time.UTC)
 	mock.ExpectQuery("SELECT EXISTS.*pg_extension").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
-	mock.ExpectQuery(regexp.QuoteMeta("c.created_at >= $4")).
+	mock.ExpectQuery(regexp.QuoteMeta("COALESCE(c.event_time, c.created_at) >= $4")).
 		WillReturnError(errors.New("tsvector down"))
 	// 2026-05-29 audit fix: substringSearchTemporal now threads
 	// repoScope at $6 via scopeFilterSQL so the ILIKE fallback no
@@ -1638,5 +1645,47 @@ func TestSupersedeBySameSource_RecordsRestoreProvenance(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("provenance capture missing from supersede UPDATE: %v", err)
+	}
+}
+
+// TestRequeueMissingForEmbedding_OnlyTargetsUnembeddedChunks — recovering orphaned
+// chunks must not re-embed the whole project.
+//
+// The 2026-08-11 at-most-once queue defect left 52 production chunks permanently
+// unembedded (queue empty, DLQ empty, nothing logged). The only recovery tool was
+// RequeueAllForEmbedding, which enqueues EVERY chunk in the project — 14,667 across the
+// two affected projects to recompute 52 vectors. On a deployment embedding locally that
+// is tens of minutes of CPU contention on a live host, which makes the safe action
+// expensive enough to postpone.
+func TestRequeueMissingForEmbedding_OnlyTargetsUnembeddedChunks(t *testing.T) {
+	r, mock, cleanup := newRepo(t)
+	defer cleanup()
+	mock.ExpectExec("INSERT INTO memory_embed_queue").
+		WithArgs("p1").
+		WillReturnResult(sqlmock.NewResult(0, 52))
+
+	n, err := r.RequeueMissingForEmbedding(context.Background(), "p1")
+	if err != nil {
+		t.Fatalf("RequeueMissingForEmbedding: %v", err)
+	}
+	if n != 52 {
+		t.Errorf("enqueued %d, want 52", n)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRequeueMissingForEmbedding_FiltersOnNullEmbedding — the filter IS the feature, so
+// pin it in the SQL. Without the predicate this is just RequeueAllForEmbedding under a
+// name that promises otherwise.
+func TestRequeueMissingForEmbedding_FiltersOnNullEmbedding(t *testing.T) {
+	r, mock, cleanup := newRepo(t)
+	defer cleanup()
+	mock.ExpectExec("embedding IS NULL").
+		WithArgs("p1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if _, err := r.RequeueMissingForEmbedding(context.Background(), "p1"); err != nil {
+		t.Fatalf("query must filter on embedding IS NULL: %v", err)
 	}
 }

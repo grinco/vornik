@@ -31,8 +31,6 @@ package ui
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -41,7 +39,7 @@ import (
 
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/budget"
-	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/registry"
 )
@@ -270,26 +268,18 @@ func (s *Server) recordAssistantUsage(ctx context.Context, proj *registry.Projec
 	if s.assistantPricing != nil {
 		cost = s.assistantPricing.CostUSDWithCache(model, result.PromptTokens, result.CompletionTokens, result.CacheCreationTokens, result.CacheReadTokens)
 	}
-	idBytes := make([]byte, 12)
-	_, _ = rand.Read(idBytes)
-	row := &persistence.TaskLLMUsage{
-		ID:                  "auth_" + hex.EncodeToString(idBytes),
+	// The row's id was hand-rolled as "auth_"+random; the seam generates it now.
+	// Nothing keys on that prefix (checked), and one id convention beats two.
+	s.assistantSpend.Record(ctx, llmspend.Input{
 		ProjectID:           proj.ID,
-		StepID:              "_authoring",
-		Role:                "assistant",
 		Model:               model,
-		PromptTokens:        int64(result.PromptTokens),
-		CompletionTokens:    int64(result.CompletionTokens),
-		CacheCreationTokens: int64(result.CacheCreationTokens),
-		CacheReadTokens:     int64(result.CacheReadTokens),
-		Iterations:          1,
-		CostUSD:             cost,
-		Source:              TaskLLMUsageSourceAuthoring,
-		RecordedAt:          time.Now().UTC(),
-	}
-	if err := s.llmUsageRepo.Record(ctx, row); err != nil && s.logger.GetLevel() <= 1 {
-		s.logger.Warn().Err(err).Str("project_id", proj.ID).Msg("assistant usage record failed")
-	}
+		PromptTokens:        result.PromptTokens,
+		CompletionTokens:    result.CompletionTokens,
+		StepID:              "_authoring",
+		CostUSD:             &cost,
+		CacheCreationTokens: result.CacheCreationTokens,
+		CacheReadTokens:     result.CacheReadTokens,
+	})
 }
 
 // pricing.Table is opaque here — the daemon wiring decides

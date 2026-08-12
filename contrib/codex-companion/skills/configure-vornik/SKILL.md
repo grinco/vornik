@@ -73,6 +73,29 @@ For `vornikctl` that is the user's shell; the same command gives different
 answers from `~` than from a repo checkout. Never run config-mutating
 `vornikctl` commands from a directory that happens to contain a `configs/`.
 
+## Step 1a — Point `vornikctl` at the right daemon
+
+Every command below talks to a daemon over HTTP, and **`vornikctl` resolves which
+one from `VORNIK_API_URL`**. Unset, it falls back to `http://localhost:8080`.
+
+On a single-host deployment that default **is the production daemon**, so a command
+you believed was aimed at a test instance lands on production instead. The failure is
+quiet in the worst way: read-only commands return production's data (looking merely
+"wrong"), and a mutating command like `vornikctl companion grant` succeeds against
+production if the project name happens to exist there.
+
+```
+echo "${VORNIK_API_URL:-http://localhost:8080 (default!)}"
+vornikctl config show | head          # confirm it is the daemon you meant
+```
+
+**Do not confuse it with `VORNIK_URL`.** That is a *different* variable, read by
+companion/bench clients rather than by `vornikctl`. Setting only `VORNIK_URL` and
+assuming the CLI follows is a real and easy mistake — the CLI silently keeps using
+its own default. When you operate more than one instance on a host, set
+`VORNIK_API_URL` explicitly per command rather than exporting it, so no later command
+inherits a target you have stopped thinking about.
+
 ## Step 2 — Scaffold, don't hand-write
 
 ```

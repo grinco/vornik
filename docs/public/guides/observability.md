@@ -3,7 +3,7 @@ sources:
     - path: internal/observability/metrics.go
       sha256: 71ab1bc0f72aea69510677c929b401a7ab7030c1371905197f6504c5a71c120b
     - path: internal/ui/spend.go
-      sha256: 6777841bda4118de1a7048d5aff7451f1b56ac35c76464b97e06cb4d94ad3a2c
+      sha256: 73130096111f0b64f6c9955058678174f0ede5563c565fba7642ee1596fe482f
     - path: internal/reminders/metrics.go
       sha256: bb22804ef50c44d048082968c16e51c5d729f4dafe5b1b892fe9719d0fc0fec6
 ---
@@ -46,12 +46,23 @@ reachability, **runtime** probes, and **cluster** leader/heartbeat status.
 
 The spend dashboard (`/ui/spend`) slices cost by window (24h / 7d / 30d),
 project, source, task, role+model, and **API key**. Alongside total cost and
-token counts it surfaces a few efficiency signals:
+token counts it surfaces a few efficiency signals.
+
+Embedding spend appears under the role **Memory · Embedder** and the source
+**Memory embedding**. It is included in every rollup on the page — a deployment using a hosted embedder can see what
+ingest and retrieval cost, not only what chat cost.
 
 - **Input ratio** — prompt tokens as a share of total; a persistently high ratio
   flags context bloat.
 - **Cache hit ratio** and **dollars saved** — how much
   [prompt/embedding caching](cost-and-caching.md) is actually saving.
+- **Estimated token counts** — a `~` before a token figure means at least one
+  call behind that line reported no token count, so the total is partly derived
+  from text length rather than measured by the provider. Embedding backends
+  differ here: an OpenAI-compatible endpoint reports usage and Bedrock Titan
+  reports an input-token count, while Bedrock Cohere reports neither. The marker
+  exists so an inferred number is never mistaken for a measured one when
+  reconciling a provider bill.
 - **Effective cost per success** and its **drift ratio** — cost per *useful*
   result (spend divided by successful outcomes), and how the recent window
   compares to a baseline. A cheap model that fails often can cost more per

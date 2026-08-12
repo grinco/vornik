@@ -1283,6 +1283,65 @@ func RunTaskLLMUsageSuite(t *testing.T, repo persistence.TaskLLMUsageRepository)
 		}
 	}
 
+	// TokensEstimated must survive the round trip on BOTH backends. It is a
+	// boolean that qualifies the token columns, and a backend that silently
+	// dropped it would report every derived count as a provider measurement —
+	// which is exactly the distinction migration 159 exists to preserve. A
+	// JSONB/boolean round-trip gap of this shape broke CI on 2026-07-24, which
+	// is why this lives in the shared suite rather than a sqlite-only test.
+	t.Run("TokensEstimated_round_trips", func(t *testing.T) {
+		// Its OWN project: the sibling aggregate subtests count rows in
+		// `project`, so adding a fixture there would fail them for a reason
+		// that has nothing to do with what they assert.
+		estProject := uniqueID("proj-est")
+		estimated := persistence.TaskLLMUsage{
+			ID: uniqueID("u"), ProjectID: estProject, StepID: "s-est",
+			Role: "memory_embedder", Model: "embed-m",
+			PromptTokens: 4096, Iterations: 1,
+			Source:          persistence.TaskLLMUsageSourceMemoryEmbedder,
+			TokensEstimated: true,
+		}
+		if err := repo.Record(ctx, &estimated); err != nil {
+			t.Fatalf("Record estimated row: %v", err)
+		}
+		// A sibling row WITHOUT the flag, so the default-false half of this
+		// assertion has something to bite on inside the isolated project.
+		measured := persistence.TaskLLMUsage{
+			ID: uniqueID("u"), ProjectID: estProject, StepID: "s-meas",
+			Role: "memory_embedder", Model: "embed-m",
+			PromptTokens: 1024, Iterations: 1,
+			Source: persistence.TaskLLMUsageSourceMemoryEmbedder,
+		}
+		if err := repo.Record(ctx, &measured); err != nil {
+			t.Fatalf("Record measured row: %v", err)
+		}
+
+		got, err := repo.List(ctx, persistence.TaskLLMUsageFilter{ProjectID: &estProject})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		var found *persistence.TaskLLMUsage
+		for _, r := range got {
+			if r.ID == estimated.ID {
+				found = r
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("estimated row %s not returned by List", estimated.ID)
+		}
+		if !found.TokensEstimated {
+			t.Error("TokensEstimated came back false — a derived count would masquerade as measured")
+		}
+		// And the default must be false, so pre-existing rows and every
+		// provider-reported count keep reading as measured.
+		for _, r := range got {
+			if r.ID != estimated.ID && r.TokensEstimated {
+				t.Errorf("row %s has TokensEstimated=true but was recorded without it", r.ID)
+			}
+		}
+	})
+
 	t.Run("SumCostByProject_returns_sum", func(t *testing.T) {
 		total, err := repo.SumCostByProject(ctx, project, time.Time{}, time.Time{})
 		if err != nil {
@@ -4332,6 +4391,18 @@ func RunStepLatencySuite(t *testing.T, outcomes persistence.ExecutionStepOutcome
 		}
 	}
 
+	recordOutcome := func(t *testing.T, execID, step, role, model string, durMS int64, outcome string, at time.Time) {
+		t.Helper()
+		d := durMS
+		if err := outcomes.Record(ctx, &persistence.ExecutionStepOutcome{
+			ID: uniqueID("oc"), ProjectID: project, TaskID: uniqueID("t"),
+			ExecutionID: execID, StepID: step, Role: role, Model: model,
+			Outcome: outcome, DurationMS: &d, RecordedAt: at,
+		}); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+
 	now := time.Now().UTC()
 	execA := seedExec(t, "wf-a")
 	execB := seedExec(t, "wf-b")
@@ -4345,12 +4416,27 @@ func RunStepLatencySuite(t *testing.T, outcomes persistence.ExecutionStepOutcome
 	record(t, execA, "implement", "coder", "m1", -1, now)
 	// Out-of-window row must be excluded.
 	record(t, execA, "implement", "coder", "m1", 999_000, now.Add(-48*time.Hour))
+	// "tail" reproduces the 2026-08-10 ingest incident's shape: 19 fast runs
+	// and one slow one, so p95 (nearest-rank 19th of 20) sits at 10s while the
+	// observed max is 100s. The reclaim path floors its suggestion at the MAX,
+	// so the two must be reported separately (LLD 2026-08-10 §6.1 / D4).
+	for i := 0; i < 19; i++ {
+		record(t, execA, "tail", "coder", "m1", 10_000, now)
+	}
+	record(t, execA, "tail", "coder", "m1", 100_000, now)
+	// "truncated" carries a degraded outcome. A step that timed out is not
+	// over-provisioned, so the count must reach the detector.
+	recordOutcome(t, execA, "truncated", "coder", "m1", 30_000, "ok", now)
+	recordOutcome(t, execA, "truncated", "coder", "m1", 60_000, "timeout", now)
+	// "schema" degrades WITHOUT truncating.
+	recordOutcome(t, execA, "schema", "coder", "m1", 20_000, "ok", now)
+	recordOutcome(t, execA, "schema", "coder", "m1", 25_000, "schema_violation", now)
 
 	stats, err := outcomes.StepLatencyP95ByStep(ctx, now.Add(-time.Hour))
 	if err != nil {
 		t.Fatalf("StepLatencyP95ByStep: %v", err)
 	}
-	var implement, review *persistence.StepLatencyStat
+	var implement, review, tail, truncated, schema *persistence.StepLatencyStat
 	for i := range stats {
 		s := &stats[i]
 		if s.ProjectID != project {
@@ -4361,7 +4447,36 @@ func RunStepLatencySuite(t *testing.T, outcomes persistence.ExecutionStepOutcome
 			implement = s
 		case "review":
 			review = s
+		case "tail":
+			tail = s
+		case "truncated":
+			truncated = s
+		case "schema":
+			schema = s
 		}
+	}
+	if tail == nil || truncated == nil {
+		t.Fatalf("missing tail/truncated aggregation rows: %+v", stats)
+	}
+	if tail.P95Seconds != 10 || tail.MaxSeconds != 100 {
+		t.Errorf("tail p95/max: got (%v, %v), want (10, 100) — max must be reported separately from p95",
+			tail.P95Seconds, tail.MaxSeconds)
+	}
+	if truncated.DegradedCount != 1 || truncated.TimeoutCount != 1 {
+		t.Errorf("truncated Degraded/Timeout = (%d, %d), want (1, 1)",
+			truncated.DegradedCount, truncated.TimeoutCount)
+	}
+	// A non-timeout degradation counts as degraded (so no reclaim) but NOT as a
+	// timeout (so no raise): raising a ceiling cannot fix a schema violation.
+	if schema == nil {
+		t.Fatalf("missing schema aggregation row: %+v", stats)
+	}
+	if schema.DegradedCount != 1 || schema.TimeoutCount != 0 {
+		t.Errorf("schema Degraded/Timeout = (%d, %d), want (1, 0)",
+			schema.DegradedCount, schema.TimeoutCount)
+	}
+	if implement.DegradedCount != 0 {
+		t.Errorf("implement DegradedCount = %d, want 0 (all rows are ok)", implement.DegradedCount)
 	}
 	if implement == nil || review == nil {
 		t.Fatalf("missing aggregation rows: %+v", stats)

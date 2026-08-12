@@ -10,6 +10,7 @@ import (
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/hallucination"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/ratelimit"
@@ -121,8 +122,17 @@ func WithDeferredToolThreshold(n int) AgentOption {
 // dispatcher. When set, create_task calls run a budget check before
 // scheduling new work and refuse with a user-facing message when the
 // project is over its configured daily or monthly hard cap.
+// WithLLMUsageRepository wires the ledger for BUDGET READS (budget.Check,
+// ForecastTask in the tool executor). Billing goes through WithSpend.
 func WithLLMUsageRepository(repo persistence.TaskLLMUsageRepository) AgentOption {
 	return func(a *Agent) { a.llmUsageRepo = repo }
+}
+
+// WithSpend wires the recorder that BILLS chat turns (source dispatcher).
+// Separate from WithLLMUsageRepository above, which wires the same table for
+// budget READS — two jobs that used to share one field and one assignment.
+func WithSpend(r llmspend.Recorder) AgentOption {
+	return func(a *Agent) { a.spend = r }
 }
 
 // WithBudgetReservationRepository wires the reservation ledger so the

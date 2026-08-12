@@ -9,14 +9,18 @@ import (
 	"unicode/utf8"
 
 	"vornik.io/vornik/internal/chat"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/persistence"
 )
 
-// titlerRole is the value stored in task_llm_usage.role for every
+// RoleTitler is the value stored in task_llm_usage.role for every
 // title-generation call. Matches the underscore convention used by
 // the KG stages ("kg_extractor", "kg_resolver", …) so the spend
 // dashboard groups all memory background consumers together.
-const titlerRole = "memory_titler"
+// RoleTitler is this component's task_llm_usage.role. Exported so the wiring site
+// references the component's own identity instead of repeating a string
+// literal the component would then not control.
+const RoleTitler = "memory_titler"
 
 // UsageRecorder is the narrow interface the Titler needs from
 // persistence.TaskLLMUsageRepository — only Record. Defined locally
@@ -84,16 +88,11 @@ type Titler struct {
 	// doesn't stall the ingest worker indefinitely.
 	Timeout time.Duration
 
-	// LLMUsage records one task_llm_usage row per successful title
-	// call so the operator UI's spend dashboards (/ui/spend, the
-	// per-project cost breakdown) attribute titler cost to the
-	// "memory_titler" role. Optional — nil-safe; tests leave it
-	// nil and production wires *postgres.TaskLLMUsageRepository.
-	LLMUsage UsageRecorder
-	// Pricing computes USD from the model's token counts. nil →
-	// cost_usd is stamped 0 so the row still lands (token volume
-	// remains visible) on un-priced models.
-	Pricing PricingTable
+	// spend records one task_llm_usage row per billed title call, so /ui/spend
+	// attributes titler cost to the "memory_titler" role. Unexported and set only
+	// by NewTitler: the field used to be assignable after construction, which is
+	// how a component could be built with no biller at all and nobody notice.
+	spend llmspend.Recorder
 	// Cache memoises (model, system+user prompt) → raw response so
 	// re-runs (e.g. vornikctl memory backfill-titles after restart)
 	// skip the upstream LLM call. Optional — nil disables. See
@@ -102,13 +101,17 @@ type Titler struct {
 }
 
 // NewTitler builds a Titler with sane defaults.
-func NewTitler(client chat.Provider, model string) *Titler {
+// spend is REQUIRED: a Titler cannot be constructed without a decision about its
+// billing (llmspend.Disabled() is the explicit "no" — see
+// https://docs.vornik.io §5).
+func NewTitler(client chat.Provider, model string, spend llmspend.Recorder) *Titler {
 	return &Titler{
 		Client:          client,
 		Model:           model,
 		MaxAttempts:     2,
 		MaxPreviewBytes: 2 * 1024,
 		Timeout:         30 * time.Second,
+		spend:           spend,
 	}
 }
 
@@ -240,42 +243,27 @@ func truncateUTF8Bytes(s string, maxBytes int) string {
 // pollute the dashboard with empty rows). Errors are swallowed:
 // failing to bill is dashboard fidelity, not correctness.
 func (t *Titler) recordUsage(ctx context.Context, resp *chat.ChatResponse, projectID, chunkID string) {
-	if t == nil || t.LLMUsage == nil || resp == nil {
+	if t == nil || resp == nil {
 		return
 	}
 	if projectID == "" && chunkID == "" {
-		return
-	}
-	prompt := resp.Usage.PromptTokens
-	completion := resp.Usage.CompletionTokens
-	if prompt == 0 && completion == 0 {
 		return
 	}
 	model := resp.Model
 	if model == "" {
 		model = t.Model
 	}
-	var costUSD float64
-	if t.Pricing != nil {
-		costUSD = t.Pricing.CostUSD(model, prompt, completion)
-	}
-	row := &persistence.TaskLLMUsage{
-		ID:                  persistence.GenerateID("llm"),
+	// Row shape, id generation, cost and the TaskID-nil convention live in the
+	// seam now; what stays here is the attribution only this caller knows.
+	t.spend.Record(ctx, llmspend.Input{
 		ProjectID:           projectID,
-		TaskID:              nil, // background consumer, no task scope
-		ExecutionID:         nil,
-		StepID:              chunkID,
-		Role:                titlerRole,
 		Model:               model,
-		PromptTokens:        int64(prompt),
-		CompletionTokens:    int64(completion),
-		Iterations:          1,
-		CostUSD:             costUSD,
-		Source:              persistence.TaskLLMUsageSourceMemoryTitler,
-		CacheCreationTokens: int64(resp.Usage.CacheCreationTokens),
-		CacheReadTokens:     int64(resp.Usage.CacheReadTokens),
-	}
-	_ = t.LLMUsage.Record(ctx, row)
+		PromptTokens:        resp.Usage.PromptTokens,
+		CompletionTokens:    resp.Usage.CompletionTokens,
+		StepID:              chunkID, // exactly one chunk per title call
+		CacheCreationTokens: resp.Usage.CacheCreationTokens,
+		CacheReadTokens:     resp.Usage.CacheReadTokens,
+	})
 }
 
 // pickModelForTitler applies a per-call model override when the

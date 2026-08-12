@@ -84,6 +84,15 @@ type IngestCandidate struct {
 	// refused) so scoped recall can filter without LIKE-scanning
 	// source_name. Threaded through IngestArtifactOptions.
 	RepoScope string
+
+	// EventTime is when this candidate's content PERTAINS TO, as distinct
+	// from when it is being ingested (migration 157, LLD
+	// 2026-08-10-memory-benchmark-harness-design.md §4.1). Zero = unknown and
+	// lands as NULL, so temporal recall falls back to ingest time via
+	// COALESCE and the chunk behaves as it did before the column existed.
+	// Threaded through IngestArtifactOptions from the remember() MCP tool's
+	// `event_time` arg.
+	EventTime time.Time
 }
 
 // GateOutcome is what a gate decides about one candidate.

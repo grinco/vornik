@@ -22,6 +22,7 @@ import (
 	"vornik.io/vornik/internal/executor/agenthealth"
 	"vornik.io/vornik/internal/executor/livepubsub"
 	"vornik.io/vornik/internal/hallucination"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/observability"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
@@ -327,12 +328,15 @@ type Executor struct {
 	// draft skill. Nil disables distillation.
 	distillerLLM   chat.Provider
 	distillLimiter skillDistillLimiter
-	llmUsageRepo   persistence.TaskLLMUsageRepository
-	reservRepo     persistence.BudgetReservationRepository
-	outcomeRepo    persistence.ExecutionStepOutcomeRepository
-	notifier       CompletionNotifier
-	steering       SteeringNotifier
-	memoryIndexer  MemoryIndexer
+	// llmUsageRepo READS the ledger for budget env injection; spend BILLS the
+	// step. Two jobs, two fields.
+	llmUsageRepo  persistence.TaskLLMUsageRepository
+	spend         llmspend.Recorder
+	reservRepo    persistence.BudgetReservationRepository
+	outcomeRepo   persistence.ExecutionStepOutcomeRepository
+	notifier      CompletionNotifier
+	steering      SteeringNotifier
+	memoryIndexer MemoryIndexer
 	// budgetNotifier receives per-task cost-governor soft-breach + hard-park
 	// alerts (LLD 2026-07-24 §3.5/§3.6). Optional — nil no-ops (same pattern
 	// as CompletionNotifier). Deduped once per task via taskBudgetWarned.
@@ -757,6 +761,12 @@ func WithConversationalLifecycle(
 // WithLLMUsageRepository sets the per-step LLM usage persistence repo. A nil
 // repo disables DB writes — Prometheus metrics still fire, the UI spend panel
 // just shows "n/a" because there's no row to drill into.
+// WithSpend wires the recorder that BILLS each step (source workflow_step).
+func WithSpend(r llmspend.Recorder) Option {
+	return func(e *Executor) { e.spend = r }
+}
+
+// WithLLMUsageRepository wires the ledger for budget READS.
 func WithLLMUsageRepository(repo persistence.TaskLLMUsageRepository) Option {
 	return func(e *Executor) {
 		e.llmUsageRepo = repo

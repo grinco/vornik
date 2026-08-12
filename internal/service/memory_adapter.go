@@ -83,13 +83,7 @@ func (a *memoryCompanionAdapter) Recall(ctx context.Context, projectID, query st
 	// default-on routing means legacy SearchWithOptions ALSO flows
 	// through the firewall, but RecallWithContext lets us attach
 	// dispatcher metadata to the audit row.
-	searchOpts := memory.SearchOptions{
-		Limit:       opts.Limit,
-		FromDate:    opts.FromDate,
-		ToDate:      opts.ToDate,
-		RepoScope:   opts.RepoScope,
-		StrictScope: opts.StrictScope,
-	}
+	searchOpts := recallSearchOptions(opts)
 	reqCtx := memoryfirewall.RequestContext{
 		Role:       opts.ActorKind, // "companion:claude-code" etc.
 		OperatorID: opts.ActorID,   // the companion API-key id
@@ -148,14 +142,7 @@ func (a *memoryCompanionAdapter) RecallRouting(ctx context.Context, projectID, q
 			ActorID:   opts.ActorID,
 		})
 	}
-	searchOpts := memory.SearchOptions{
-		Limit:       opts.Limit,
-		FromDate:    opts.FromDate,
-		ToDate:      opts.ToDate,
-		RepoScope:   opts.RepoScope,
-		StrictScope: opts.StrictScope,
-		Routing:     true,
-	}
+	searchOpts := recallRoutingSearchOptions(opts)
 	reqCtx := memoryfirewall.RequestContext{
 		Role:       opts.ActorKind,
 		OperatorID: opts.ActorID,
@@ -282,6 +269,7 @@ func (a *memoryCompanionAdapter) Remember(ctx context.Context, in api.RememberIn
 		memory.ContentClass(in.Class),
 		in.TTLDays,
 		in.RepoScope,
+		in.EventTime,
 	)
 	if err != nil {
 		return api.RememberResult{}, err
@@ -301,6 +289,48 @@ func (a *memoryCompanionAdapter) Remember(ctx context.Context, in api.RememberIn
 		Rejected:    res.Stats.Rejected,
 		GatesFailed: res.Stats.GatesFailed,
 	}, nil
+}
+
+// recallSearchOptions maps a companion RecallOptions onto memory.SearchOptions.
+//
+// Extracted so the mapping has ONE home. It previously existed as two struct
+// literals, and the routing one omitted Sufficient — a caller could ask for the
+// context-assembly retrieval mode, have it accepted at the tool boundary, and have
+// it discarded here. RecallSufficient is the only thing that sets opts.Rerank, so
+// dropping the field meant the reranker never fired from the companion surface
+// however correctly it was wired: 151,818 production LLM-usage rows, zero reranker
+// calls.
+//
+// Two literals that must agree is a standing invitation to this bug. One function
+// with a test per field is the fix.
+func recallSearchOptions(opts api.RecallOptions) memory.SearchOptions {
+	return memory.SearchOptions{
+		Limit:       opts.Limit,
+		FromDate:    opts.FromDate,
+		ToDate:      opts.ToDate,
+		RepoScope:   opts.RepoScope,
+		StrictScope: opts.StrictScope,
+		// Sufficient maps onto Rerank, which is the flag searchInternal actually
+		// consults (rerankOn := opts.Rerank && s.rerankerActive()).
+		//
+		// memory.SearchOptions has no Sufficient field: the Recall path expresses
+		// the mode by CHOOSING RecallSufficient, which sets Rerank internally. The
+		// routing path had no such branch and no Rerank, so the mode vanished.
+		// Setting Rerank here works for both — and on the routing path it is
+		// strictly better than switching methods, because the widen comes from the
+		// confidence verdict and the rerank comes from this flag, so neither is
+		// given up for the other.
+		Rerank: opts.Sufficient,
+	}
+}
+
+// recallRoutingSearchOptions is recallSearchOptions plus the P3 confidence-routing
+// flag. Built on the shared mapping so a field added to one path cannot silently
+// go missing from the other.
+func recallRoutingSearchOptions(opts api.RecallOptions) memory.SearchOptions {
+	so := recallSearchOptions(opts)
+	so.Routing = true
+	return so
 }
 
 // Correct soft-refutes the chunks best matching in.WrongClaim and,
@@ -723,6 +753,26 @@ type memoryStatsAdapter struct {
 // newMemoryStatsAdapter creates a new adapter.
 func newMemoryStatsAdapter(m *memory.Manager) api.MemoryStatsProvider {
 	return &memoryStatsAdapter{m: m}
+}
+
+// memoryEmbedderAdapter reports the deployment's resolved embedder.
+type memoryEmbedderAdapter struct {
+	m *memory.Manager
+}
+
+// Embedder returns the transport, model and configured dimension in force.
+//
+// Reads the live Embedder rather than the config file, which is the whole point:
+// the config states what was asked for, this states what is running.
+func (a *memoryEmbedderAdapter) Embedder() (string, string, int) {
+	if a.m == nil || a.m.Embedder == nil {
+		return "", "", 0
+	}
+	return a.m.Embedder.Provider(), a.m.Embedder.Model(), a.m.Embedder.Dimension()
+}
+
+func newMemoryEmbedderAdapter(m *memory.Manager) api.MemoryEmbedderReporter {
+	return &memoryEmbedderAdapter{m: m}
 }
 
 // memoryCacheStatsAdapter satisfies api.MemoryCacheStatsProvider
@@ -1173,3 +1223,20 @@ func (a *memoryClassifyBackfillAdapter) BackfillBatch(ctx context.Context, proje
 		Errors:    res.Errors,
 	}, nil
 }
+
+// skillEmbedderAdapter satisfies api.SkillEmbedder over *memory.Embedder.
+//
+// It exists to convert a plain projectID into a memory.EmbedScope. The api
+// package deliberately does not import internal/memory (see the SkillEmbedder
+// doc comment), so the billing scope cannot appear in that interface —
+// translating it is this layer's job, the same shape as the other adapters here.
+type skillEmbedderAdapter struct {
+	e *memory.Embedder
+}
+
+func (a skillEmbedderAdapter) Embed(ctx context.Context, projectID string, texts []string) ([][]float32, error) {
+	return a.e.Embed(ctx,
+		memory.EmbedScope{ProjectID: projectID, CallSite: memory.EmbedCallSiteSkillPreflight}, texts)
+}
+
+func (a skillEmbedderAdapter) Model() string { return a.e.Model() }

@@ -337,6 +337,32 @@ func (r *SkillRepository) ListAcrossProjects(ctx context.Context, maturities []s
 	return scanPGSkillList(rows, err)
 }
 
+// CountByMaturity returns per-maturity row counts across every project.
+//
+// Deliberately a GROUP BY rather than len(ListAcrossProjects(...)): the
+// caller is the dashboard tile, and pgSkillColumns pulls each row's full
+// Markdown body plus its JSON-encoded embedding. Counting through that on
+// the landing page would read hundreds of KB per render to show three
+// integers.
+func (r *SkillRepository) CountByMaturity(ctx context.Context) (map[string]int, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT maturity, COUNT(*) FROM project_skills GROUP BY maturity`)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[string]int)
+	for rows.Next() {
+		var maturity string
+		var n int
+		if err := rows.Scan(&maturity, &n); err != nil {
+			return nil, err
+		}
+		out[maturity] = n
+	}
+	return out, rows.Err()
+}
+
 // SetMaturity transitions a skill to the given maturity state.
 func (r *SkillRepository) SetMaturity(ctx context.Context, id, maturity string) error {
 	res, err := r.db.ExecContext(ctx,

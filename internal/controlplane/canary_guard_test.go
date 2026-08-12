@@ -153,6 +153,19 @@ func (g *guardProposals) MarkRolledBack(_ context.Context, id string) error {
 	}
 	return nil
 }
+
+// RefreshObservation is required by the repository interface (observations,
+// 2026-08-10). The canary guard never files or refreshes observations, so this
+// fake only needs to satisfy the contract.
+func (g *guardProposals) RefreshObservation(_ context.Context, id, rationale, evidence string) error {
+	p, ok := g.rows[id]
+	if !ok || p.Kind != persistence.ProposalKindObservation {
+		return persistence.ErrNotFound
+	}
+	p.Rationale, p.Evidence = rationale, evidence
+	return nil
+}
+
 func (g *guardProposals) MarkRegressed(_ context.Context, id, _ string) error {
 	g.markRegressedCalls++
 	if g.markRegressedErr != nil {

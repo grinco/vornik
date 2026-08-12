@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"vornik.io/vornik/internal/llmspend"
 
 	"vornik.io/vornik/internal/memory/graph"
 	"vornik.io/vornik/internal/persistence"
@@ -45,6 +46,12 @@ type recordingUsage struct {
 func (r *recordingUsage) Record(_ context.Context, u *persistence.TaskLLMUsage) error {
 	r.rows = append(r.rows, u)
 	return nil
+}
+
+// Upsert satisfies llmspend.UsageRepo; the NED gate only ever calls Record, so
+// this just delegates.
+func (r *recordingUsage) Upsert(ctx context.Context, u *persistence.TaskLLMUsage) error {
+	return r.Record(ctx, u)
 }
 
 // fixedPricing returns a constant cost so the billing test can assert a
@@ -196,8 +203,8 @@ func TestScreen_RecordsBillingRows(t *testing.T) {
 			resns:   []graph.Resolution{{Decision: "match", MatchID: "ent-alice"}},
 			metrics: &graph.ResolveMetrics{Model: "gpt-oss-120b", PromptTokens: 500, CompletionTokens: 20},
 		},
-		Usage:   usage,
-		Pricing: fixedPricing{usd: 0.0021},
+		Spend: llmspend.New(usage, fixedPricing{usd: 0.0021},
+			persistence.TaskLLMUsageSourceChatRememberNED, RoleExtractor),
 	}
 	if d := g.Screen(context.Background(), "proj-b", "Alice again"); !d.Proceeds() {
 		t.Fatalf("expected proceed; verdict=%d", d.Verdict)
@@ -219,8 +226,8 @@ func TestScreen_RecordsBillingRows(t *testing.T) {
 			t.Errorf("cost_usd = %v, want 0.0021 (from pricing)", r.CostUSD)
 		}
 	}
-	if usage.rows[0].Role != roleExtractor || usage.rows[1].Role != roleResolver {
-		t.Errorf("roles = %q,%q; want %q,%q", usage.rows[0].Role, usage.rows[1].Role, roleExtractor, roleResolver)
+	if usage.rows[0].Role != RoleExtractor || usage.rows[1].Role != RoleResolver {
+		t.Errorf("roles = %q,%q; want %q,%q", usage.rows[0].Role, usage.rows[1].Role, RoleExtractor, RoleResolver)
 	}
 }
 
@@ -237,7 +244,8 @@ func TestScreen_ZeroTokenStageNotBilled(t *testing.T) {
 			resns:   []graph.Resolution{{Decision: "match", MatchID: "ent-alice"}},
 			metrics: &graph.ResolveMetrics{Model: "m"}, // short-circuit: 0 tokens
 		},
-		Usage: usage,
+		Spend: llmspend.New(usage, fixedPricing{usd: 0.0021},
+			persistence.TaskLLMUsageSourceChatRememberNED, RoleExtractor),
 	}
 	g.Screen(context.Background(), "proj", "Alice")
 	if len(usage.rows) != 1 {
@@ -365,8 +373,8 @@ func TestClassify_RecordsBillingRows(t *testing.T) {
 			resns:   []graph.Resolution{{Decision: "new"}},
 			metrics: &graph.ResolveMetrics{Model: "gpt-oss-20b", PromptTokens: 500, CompletionTokens: 20},
 		},
-		Usage:   usage,
-		Pricing: fixedPricing{usd: 0.0021},
+		Spend: llmspend.New(usage, fixedPricing{usd: 0.0021},
+			persistence.TaskLLMUsageSourceChatRememberNED, RoleExtractor),
 	}
 	if got, _ := g.Classify(context.Background(), "proj-c", "Alice"); got != OutcomeNew {
 		t.Fatalf("outcome = %s, want new", got)

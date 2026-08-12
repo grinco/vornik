@@ -32,6 +32,94 @@ vornikctl backup [flags]
 |---|---|---|
 | `--out` |  | output archive path (default auto-generated) |
 
+## vornikctl bench
+
+Benchmark subsystems against labelled datasets
+
+## vornikctl bench memory
+
+Score memory retrieval quality on a labelled dataset
+
+Score memory retrieval quality on a labelled dataset.
+
+Reports three tiers separately and never blended: judge-free retrieval
+metrics (context recall/precision/MRR), judged answer accuracy, and
+cost/latency. The judge-free tier is the one cheap enough to gate on.
+
+## vornikctl bench memory aggregate
+
+Summarise repeated runs: mean, spread, and the gate tolerance each metric needs
+
+Summarise repeated runs of the same experiment.
+
+The variance of a metric — not its value — is what decides whether the
+metric can be gated at all. A metric identical across every run can carry
+an exact-equality gate; one that moves needs a tolerance, reported here as
+3 standard deviations.
+
+Refuses to average runs whose comparability keys differ, and refuses any
+run already marked untrustworthy.
+
+```
+vornikctl bench memory aggregate <run-dir>... [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | `false` | Print the aggregation as JSON |
+
+## vornikctl bench memory compare
+
+Compare two runs, refusing when they are not comparable
+
+```
+vornikctl bench memory compare <run-dir-a> <run-dir-b>
+```
+
+## vornikctl bench memory report
+
+Print the scoreboard for a completed run
+
+```
+vornikctl bench memory report <run-dir>
+```
+
+## vornikctl bench memory run
+
+Run the benchmark and write a manifest, journal and results
+
+```
+vornikctl bench memory run [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--answer-model` |  | Model that answers from retrieved context |
+| `--category` |  | Only run this category |
+| `--corpus-dir` |  | Directory of documents forming the haystack for the native dataset. Required with --dataset native, whose gold set names documents in this directory; the longmemeval and locomo datasets carry their own haystacks and ignore it. |
+| `--database` |  | Target database name (required) |
+| `--dataset-path` |  | Path to the dataset file (or gold set, for native) |
+| `--dataset-sha256` |  | Expected dataset digest; verified before the run |
+| `--dataset` |  | Dataset: longmemeval \| locomo \| native (required) |
+| `--external-config-path` |  | Route reporting the external system's effective config; unset marks the comparability key PARTIAL |
+| `--external-ingest-path` |  | Override the external ingest route (default: a conventional shape) |
+| `--external-recall-path` |  | Override the external recall route |
+| `--external-token` |  | Bearer token for the external system |
+| `--external-url` |  | Base URL of the external system (--system external) |
+| `--i-know-this-wipes` |  | Name the database this run will bulk-write (required) |
+| `--json` | `false` | Print results as JSON |
+| `--judge-model` |  | Model that grades answers |
+| `--max-degraded-rate` | `0` | Tighten the untrustworthy threshold below the 20% ceiling (0 = ceiling) |
+| `--max-items-per-category` | `0` | Cap items per category (0 = all) |
+| `--max-items` | `0` | Cap total items (0 = all) |
+| `--max-tokens` | `4096` | Context budget requested from the system |
+| `--our-extraction-model` |  | The daemon's OWN ingest/retrieval model (titler, classifier, reranker) for the comparability key. Unset marks the key partial — the companion surface cannot report it, and guessing would misrepresent the run. |
+| `--profile` |  | Model profile: local \| judged \| cloud (required unless every model flag is set) |
+| `--recall-method` |  | The retrieval path actually EXERCISED, for the comparability key — e.g. context-assembly+rerank \| context-assembly \| interactive. Verify it against the usage ledger, not the config: a reranker can be enabled and correctly wired and still never fire, in which case the flag you requested proves nothing. Unset records the method as unknown rather than assuming one. |
+| `--resume` | `false` | Skip items already judged in the run directory's journal |
+| `--run-dir` |  | Directory for journal/manifest/results (default: bench-runs/<timestamp>) |
+| `--system` | `vornik` | System under test: vornik \| external |
+
 ## vornikctl config
 
 Inspect and control daemon configuration
@@ -1377,6 +1465,7 @@ vornikctl memory reembed [flags]
 | `--interval` | `3s` | Progress poll interval (with --watch) |
 | `--json` | `false` | Emit machine-readable JSON summary (implies --no-watch) |
 | `--no-watch` | `false` | Detach after enqueueing instead of polling for progress |
+| `--only-missing` | `false` | Enqueue ONLY chunks that have no embedding yet, instead of the whole project. Use this to repair gaps (a restart can leave chunks unembedded with an empty queue); use the default after changing the embedding model or dimension, when every vector must genuinely be recomputed. |
 | `-p`, `--project` |  | Project ID (required) |
 
 ## vornikctl memory regraph

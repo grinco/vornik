@@ -83,8 +83,9 @@ INSERT INTO project_memory_chunks
     (id, project_id, task_id, artifact_id, source_name, chunk_index, content, content_hash,
      embed_input_hash,
      needs_graph_extraction,
-     derived_from_extracted_document_id, derived_from_section_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, $11)
+     derived_from_extracted_document_id, derived_from_section_id,
+     event_time)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, $11, $12)
 ON CONFLICT (project_id, content_hash) DO NOTHING`
 
 	for _, c := range chunks {
@@ -104,6 +105,10 @@ ON CONFLICT (project_id, content_hash) DO NOTHING`
 			EmbedInputHash(c.SourceName, c.Content),
 			nullableString(c.DerivedFromExtractedDocumentID),
 			nullableString(c.DerivedFromSectionID),
+			// A zero EventTime must arrive as NULL, not '0001-01-01': a
+			// non-NULL zero date would satisfy COALESCE and thereby exclude
+			// the chunk from every temporal window (design §4.1).
+			nullableTime(c.EventTime),
 		)
 		if err != nil {
 			return fmt.Errorf("upsert chunk %s: %w", c.ID, err)
@@ -316,6 +321,34 @@ ON CONFLICT (chunk_id) DO NOTHING`
 	return int(n), nil
 }
 
+// RequeueMissingForEmbedding enqueues only the chunks that have NO embedding.
+//
+// The recovery path for orphaned chunks. RequeueAllForEmbedding is the right tool after
+// an intentional model or dimension change, where every vector genuinely must be
+// recomputed; it is the wrong tool for repairing a handful of gaps, because it enqueues
+// the entire project. On the 2026-08-11 production incident that meant 14,667 chunks
+// across two projects to recover 52 — tens of minutes of local-embedder CPU on a live
+// host, which is enough friction to make an operator defer the safe action.
+//
+// Idempotent: ON CONFLICT DO NOTHING, so re-running while the queue still holds rows
+// adds nothing and cannot double-embed.
+func (r *Repository) RequeueMissingForEmbedding(ctx context.Context, projectID string) (int, error) {
+	if r == nil || r.db == nil || projectID == "" {
+		return 0, nil
+	}
+	const q = `
+INSERT INTO memory_embed_queue (chunk_id, project_id)
+SELECT id, project_id FROM project_memory_chunks
+WHERE project_id = $1 AND embedding IS NULL
+ON CONFLICT (chunk_id) DO NOTHING`
+	res, err := r.db.ExecContext(ctx, q, projectID)
+	if err != nil {
+		return 0, fmt.Errorf("RequeueMissingForEmbedding: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // DequeueEmbedBatch atomically selects and deletes up to limit rows from the
 // embed queue using SKIP LOCKED to allow safe concurrent workers.
 // DequeueEmbedBatch atomically pulls a batch of pending embed
@@ -328,9 +361,12 @@ ON CONFLICT (chunk_id) DO NOTHING`
 //
 // Pre-2026-05-29 (audit-agent finding): the DELETE-RETURNING and
 // fetchChunksByIDs were separate auto-committed statements.
-// A crash between them would purge the queue rows + the worker
-// got nothing back, silently leaving the chunks permanently
-// un-embedded with no DLQ trace.
+// Delivery is at-LEAST-once by design (migration 158). Claiming marks
+// the row rather than removing it, so a crash before the embedding is
+// stored leaves the chunk claimable again instead of orphaning it with
+// no queue row and no DLQ trace — the failure this function's previous
+// delete-on-claim shape produced for real. Re-embedding a chunk
+// overwrites the same value, so a duplicate delivery is harmless.
 func (r *Repository) DequeueEmbedBatch(ctx context.Context, limit int) ([]MemoryChunk, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -341,17 +377,23 @@ func (r *Repository) DequeueEmbedBatch(ctx context.Context, limit int) ([]Memory
 	// would leak the transaction.
 	defer func() { _ = tx.Rollback() }()
 
-	const deleteQ = `
-DELETE FROM memory_embed_queue
+	// CLAIM, do not delete. The row survives until the work is acknowledged, so a
+	// crash between this commit and the embedding write leaves the chunk in the
+	// queue to be re-claimed instead of orphaning it. An abandoned claim ages past
+	// embedClaimReclaimAfter and becomes visible again.
+	const claimQ = `
+UPDATE memory_embed_queue
+SET claimed_at = now()
 WHERE chunk_id IN (
     SELECT chunk_id FROM memory_embed_queue
+    WHERE claimed_at IS NULL OR claimed_at < now() - $2::interval
     ORDER BY enqueued_at
     LIMIT $1
     FOR UPDATE SKIP LOCKED
 )
 RETURNING chunk_id`
 
-	rows, err := tx.QueryContext(ctx, deleteQ, limit)
+	rows, err := tx.QueryContext(ctx, claimQ, limit, EmbedClaimReclaimAfter.String())
 	if err != nil {
 		return nil, fmt.Errorf("dequeue embed batch: %w", err)
 	}
@@ -1485,17 +1527,18 @@ WITH q AS (
            websearch_to_tsquery('vornik_english', $5) AS relaxed_q
 ),
 semantic AS (
-    SELECT id, row_number() OVER (ORDER BY embedding <=> $4::vector) AS rank
+    SELECT id, row_number() OVER (ORDER BY embedding <=> $4::vector, id) AS rank
     FROM project_memory_chunks
     WHERE project_id = $1 AND embedding IS NOT NULL
       AND (expires_at IS NULL OR expires_at > NOW())
-    ORDER BY embedding <=> $4::vector LIMIT 20
+    ORDER BY embedding <=> $4::vector, id LIMIT 20
 ),
 keyword AS (
     SELECT id, row_number() OVER (
         ORDER BY CASE WHEN tsv @@ q.strict_q THEN 0 ELSE 1 END,
                  ts_rank(tsv, q.strict_q) DESC,
-                 ts_rank(tsv, q.relaxed_q) DESC
+                 ts_rank(tsv, q.relaxed_q) DESC,
+                 id
     ) AS rank
     FROM project_memory_chunks, q
     WHERE project_id = $1 AND (tsv @@ q.strict_q OR tsv @@ q.relaxed_q)
@@ -1511,7 +1554,7 @@ FROM project_memory_chunks c
 LEFT JOIN semantic s ON s.id = c.id
 LEFT JOIN keyword  k ON k.id = c.id
 WHERE s.id IS NOT NULL OR k.id IS NOT NULL
-ORDER BY score DESC LIMIT $3`
+ORDER BY score DESC, c.id LIMIT $3`
 
 	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, limit, vecLit, relaxedQueryText)
 	if err != nil {
@@ -1544,26 +1587,27 @@ WITH q AS (
            websearch_to_tsquery('vornik_english', $8) AS relaxed_q
 ),
 semantic AS (
-    SELECT id, row_number() OVER (ORDER BY embedding <=> $4::vector) AS rank
+    SELECT id, row_number() OVER (ORDER BY embedding <=> $4::vector, id) AS rank
     FROM project_memory_chunks
     WHERE project_id = $1 AND embedding IS NOT NULL
       AND (expires_at IS NULL OR expires_at > NOW())
-      AND ($5::timestamptz IS NULL OR created_at >= $5::timestamptz)
-      AND ($6::timestamptz IS NULL OR created_at <= $6::timestamptz)
+      AND ($5::timestamptz IS NULL OR COALESCE(event_time, created_at) >= $5::timestamptz)
+      AND ($6::timestamptz IS NULL OR COALESCE(event_time, created_at) <= $6::timestamptz)
       %[1]s
-    ORDER BY embedding <=> $4::vector LIMIT 20
+    ORDER BY embedding <=> $4::vector, id LIMIT 20
 ),
 keyword AS (
     SELECT id, row_number() OVER (
         ORDER BY CASE WHEN tsv @@ q.strict_q THEN 0 ELSE 1 END,
                  ts_rank(tsv, q.strict_q) DESC,
-                 ts_rank(tsv, q.relaxed_q) DESC
+                 ts_rank(tsv, q.relaxed_q) DESC,
+                 id
     ) AS rank
     FROM project_memory_chunks, q
     WHERE project_id = $1 AND (tsv @@ q.strict_q OR tsv @@ q.relaxed_q)
       AND (expires_at IS NULL OR expires_at > NOW())
-      AND ($5::timestamptz IS NULL OR created_at >= $5::timestamptz)
-      AND ($6::timestamptz IS NULL OR created_at <= $6::timestamptz)
+      AND ($5::timestamptz IS NULL OR COALESCE(event_time, created_at) >= $5::timestamptz)
+      AND ($6::timestamptz IS NULL OR COALESCE(event_time, created_at) <= $6::timestamptz)
       %[1]s
     LIMIT 20
 )
@@ -1574,12 +1618,12 @@ SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
        c.is_alive, c.last_checked_at,
        COALESCE(c.repo_scope, '') AS repo_scope,
        COALESCE(c.confidence, 0), COALESCE(c.validation_status, ''),
-       c.created_at, c.expires_at
+       c.created_at, c.expires_at, c.event_time
 FROM project_memory_chunks c
 LEFT JOIN semantic s ON s.id = c.id
 LEFT JOIN keyword  k ON k.id = c.id
 WHERE s.id IS NOT NULL OR k.id IS NOT NULL
-ORDER BY score DESC LIMIT $3`, scopeClause)
+ORDER BY score DESC, c.id LIMIT $3`, scopeClause)
 
 	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, limit, vecLit, nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope), relaxedQueryText)
 	if err != nil {
@@ -1635,23 +1679,24 @@ WITH q AS (
            websearch_to_tsquery('vornik_english', $9) AS relaxed_q
 ),
 semantic AS (
-    SELECT id, row_number() OVER (ORDER BY embedding <=> $4::vector) AS rank
+    SELECT id, row_number() OVER (ORDER BY embedding <=> $4::vector, id) AS rank
     FROM project_memory_chunks
     WHERE project_id = $1 AND embedding IS NOT NULL
       AND lifecycle_state = 'published'
       AND validation_status NOT IN ('refuted','superseded')
       AND (expires_at IS NULL OR expires_at > NOW())
       AND (epoch_id IS NULL OR epoch_id = ANY($5::text[]))
-      AND ($6::timestamptz IS NULL OR created_at >= $6::timestamptz)
-      AND ($7::timestamptz IS NULL OR created_at <= $7::timestamptz)
+      AND ($6::timestamptz IS NULL OR COALESCE(event_time, created_at) >= $6::timestamptz)
+      AND ($7::timestamptz IS NULL OR COALESCE(event_time, created_at) <= $7::timestamptz)
       %[1]s
-    ORDER BY embedding <=> $4::vector LIMIT 20
+    ORDER BY embedding <=> $4::vector, id LIMIT 20
 ),
 keyword AS (
     SELECT id, row_number() OVER (
         ORDER BY CASE WHEN tsv @@ q.strict_q THEN 0 ELSE 1 END,
                  ts_rank(tsv, q.strict_q) DESC,
-                 ts_rank(tsv, q.relaxed_q) DESC
+                 ts_rank(tsv, q.relaxed_q) DESC,
+                 id
     ) AS rank
     FROM project_memory_chunks, q
     WHERE project_id = $1 AND (tsv @@ q.strict_q OR tsv @@ q.relaxed_q)
@@ -1659,8 +1704,8 @@ keyword AS (
       AND validation_status NOT IN ('refuted','superseded')
       AND (expires_at IS NULL OR expires_at > NOW())
       AND (epoch_id IS NULL OR epoch_id = ANY($5::text[]))
-      AND ($6::timestamptz IS NULL OR created_at >= $6::timestamptz)
-      AND ($7::timestamptz IS NULL OR created_at <= $7::timestamptz)
+      AND ($6::timestamptz IS NULL OR COALESCE(event_time, created_at) >= $6::timestamptz)
+      AND ($7::timestamptz IS NULL OR COALESCE(event_time, created_at) <= $7::timestamptz)
       %[1]s
     LIMIT 20
 )
@@ -1671,12 +1716,12 @@ SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
        c.is_alive, c.last_checked_at,
        COALESCE(c.repo_scope, '') AS repo_scope,
        COALESCE(c.confidence, 0), COALESCE(c.validation_status, ''),
-       c.created_at, c.expires_at
+       c.created_at, c.expires_at, c.event_time
 FROM project_memory_chunks c
 LEFT JOIN semantic s ON s.id = c.id
 LEFT JOIN keyword  k ON k.id = c.id
 WHERE s.id IS NOT NULL OR k.id IS NOT NULL
-ORDER BY score DESC LIMIT $3`, scopeClause)
+ORDER BY score DESC, c.id LIMIT $3`, scopeClause)
 
 	rows, err := r.db.QueryContext(ctx, query, projectID, queryText, limit, vecLit, pqStringArray(activeEpochs), nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope), relaxedQueryText)
 	if err != nil {
@@ -1724,14 +1769,14 @@ SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
        c.is_alive, c.last_checked_at,
        COALESCE(c.repo_scope, '') AS repo_scope,
        COALESCE(c.confidence, 0), COALESCE(c.validation_status, ''),
-       c.created_at, c.expires_at
+       c.created_at, c.expires_at, c.event_time
 FROM project_memory_chunks c, q
 WHERE c.project_id = $1 AND (c.tsv @@ q.strict_q OR c.tsv @@ q.relaxed_q)
   AND (c.expires_at IS NULL OR c.expires_at > NOW())
-  AND ($4::timestamptz IS NULL OR c.created_at >= $4::timestamptz)
-  AND ($5::timestamptz IS NULL OR c.created_at <= $5::timestamptz)
+  AND ($4::timestamptz IS NULL OR COALESCE(c.event_time, c.created_at) >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR COALESCE(c.event_time, c.created_at) <= $5::timestamptz)
   %s
-ORDER BY score DESC LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictScope, 6), "repo_scope", "c.repo_scope"))
+ORDER BY score DESC, c.id LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictScope, 6), "repo_scope", "c.repo_scope"))
 	rows, err := r.db.QueryContext(ctx, q, projectID, queryText, limit, nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope), relaxedQueryText)
 	if err != nil {
 		return r.substringSearchTemporal(ctx, projectID, queryText, limit, fromDate, toDate, repoScope, strictScope)
@@ -1759,17 +1804,17 @@ SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
        c.is_alive, c.last_checked_at,
        COALESCE(c.repo_scope, '') AS repo_scope,
        COALESCE(c.confidence, 0), COALESCE(c.validation_status, ''),
-       c.created_at, c.expires_at
+       c.created_at, c.expires_at, c.event_time
 FROM project_memory_chunks c, q
 WHERE c.project_id = $1 AND (c.tsv @@ q.strict_q OR c.tsv @@ q.relaxed_q)
   AND c.lifecycle_state = 'published'
   AND c.validation_status NOT IN ('refuted','superseded')
   AND (c.expires_at IS NULL OR c.expires_at > NOW())
   AND (c.epoch_id IS NULL OR c.epoch_id = ANY($4::text[]))
-  AND ($5::timestamptz IS NULL OR c.created_at >= $5::timestamptz)
-  AND ($6::timestamptz IS NULL OR c.created_at <= $6::timestamptz)
+  AND ($5::timestamptz IS NULL OR COALESCE(c.event_time, c.created_at) >= $5::timestamptz)
+  AND ($6::timestamptz IS NULL OR COALESCE(c.event_time, c.created_at) <= $6::timestamptz)
   %s
-ORDER BY score DESC LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictScope, 7), "repo_scope", "c.repo_scope"))
+ORDER BY score DESC, c.id LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictScope, 7), "repo_scope", "c.repo_scope"))
 	rows, err := r.db.QueryContext(ctx, q, projectID, queryText, limit, pqStringArray(activeEpochs), nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope), relaxedQueryText)
 	if err != nil {
 		return r.substringSearchWithEpochsTemporal(ctx, projectID, queryText, limit, activeEpochs, fromDate, toDate, repoScope, strictScope)
@@ -1817,7 +1862,7 @@ SELECT c.id, c.project_id, COALESCE(c.task_id,''), c.source_name, c.content,
 FROM project_memory_chunks c, q
 WHERE project_id = $1 AND (tsv @@ q.strict_q OR tsv @@ q.relaxed_q)
   AND (c.expires_at IS NULL OR c.expires_at > NOW())
-ORDER BY score DESC LIMIT $3`
+ORDER BY score DESC, c.id LIMIT $3`
 
 	rows, err := r.db.QueryContext(ctx, q, projectID, queryText, limit, relaxedQueryText)
 	if err != nil {
@@ -2055,8 +2100,8 @@ FROM project_memory_chunks c
 WHERE c.project_id = $1 AND c.content ILIKE '%%' || $2 || '%%' ESCAPE '\'
   AND c.lifecycle_state = 'published'
   AND (c.expires_at IS NULL OR c.expires_at > NOW())
-  AND ($4::timestamptz IS NULL OR c.created_at >= $4::timestamptz)
-  AND ($5::timestamptz IS NULL OR c.created_at <= $5::timestamptz)
+  AND ($4::timestamptz IS NULL OR COALESCE(c.event_time, c.created_at) >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR COALESCE(c.event_time, c.created_at) <= $5::timestamptz)
   %s
 ORDER BY c.created_at DESC LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictScope, 6), "repo_scope", "c.repo_scope"))
 	rows, err := r.db.QueryContext(ctx, sql, projectID, escapeLikeWildcards(q), limit, nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope))
@@ -2083,8 +2128,8 @@ WHERE c.project_id = $1 AND c.content ILIKE '%%' || $2 || '%%' ESCAPE '\'
   AND c.validation_status NOT IN ('refuted','superseded')
   AND (c.expires_at IS NULL OR c.expires_at > NOW())
   AND (c.epoch_id IS NULL OR c.epoch_id = ANY($4::text[]))
-  AND ($5::timestamptz IS NULL OR c.created_at >= $5::timestamptz)
-  AND ($6::timestamptz IS NULL OR c.created_at <= $6::timestamptz)
+  AND ($5::timestamptz IS NULL OR COALESCE(c.event_time, c.created_at) >= $5::timestamptz)
+  AND ($6::timestamptz IS NULL OR COALESCE(c.event_time, c.created_at) <= $6::timestamptz)
   %s
 ORDER BY c.created_at DESC LIMIT $3`, strings.ReplaceAll(scopeFilterSQL(strictScope, 7), "repo_scope", "c.repo_scope"))
 	rows, err := r.db.QueryContext(ctx, sql, projectID, escapeLikeWildcards(q), limit, pqStringArray(activeEpochs), nullableTime(fromDate), nullableTime(toDate), nullableString(repoScope))
@@ -2167,6 +2212,34 @@ ON CONFLICT (chunk_id) DO UPDATE SET
 // DLQPark marks a DLQ row as never-auto-retry (retry_count = -1). For
 // permanent failure classes (dimension mismatch, content too large)
 // where auto-retry would just burn cycles.
+// EmbedClaimReclaimAfter is how long a claimed-but-unacknowledged queue row waits
+// before another worker may take it.
+//
+// Long enough that a slow embedding backend is not treated as a crash — a batch of
+// 512 chunks against a contended local model can take minutes — and short enough
+// that a genuine restart recovers without operator action. The cost of being wrong
+// in the generous direction is one duplicated embed, which is idempotent; the cost
+// of being wrong in the tight direction is two workers embedding the same chunk on
+// every tick.
+const EmbedClaimReclaimAfter = 15 * time.Minute
+
+// AckEmbedQueue removes queue rows whose work is finished — either the embedding was
+// stored, or the chunk was handed to the DLQ, which owns retry from that point.
+//
+// Called only AFTER the outcome is durable. Acking earlier would reproduce the
+// at-most-once hazard migration 158 exists to remove.
+func (r *Repository) AckEmbedQueue(ctx context.Context, chunkIDs []string) error {
+	if len(chunkIDs) == 0 {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx,
+		`DELETE FROM memory_embed_queue WHERE chunk_id = ANY($1)`, pq.Array(chunkIDs))
+	if err != nil {
+		return fmt.Errorf("ack embed queue: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) DLQPark(ctx context.Context, chunkID string) error {
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE memory_embed_dlq SET retry_count = -1, last_failed_at = now() WHERE chunk_id = $1`,
@@ -2411,11 +2484,13 @@ func scanSearchResults(rows *sql.Rows) ([]SearchResult, error) {
 	}
 	// Column tiers (each strictly more-permissive than the one
 	// below it; the loop picks the highest that matches):
+	//   15 cols → +event_time        (migration 157 — temporal proximity / bucketing)
 	//   14 cols → +trust fields     (confidence/validation_status/created_at/expires_at — P3 routing)
 	//   10 cols → +repo_scope        (post-B-6-followup; UI surface)
 	//    9 cols → +liveness / class
 	//    7 cols → +class only
 	//    6 cols → bare legacy result
+	withEventTime := len(cols) >= 15
 	withTrust := len(cols) >= 14
 	withRepoScope := len(cols) >= 10
 	withLiveness := len(cols) >= 9
@@ -2433,13 +2508,25 @@ func scanSearchResults(rows *sql.Rows) ([]SearchResult, error) {
 			var vstatus sql.NullString
 			var createdAt sql.NullTime
 			var expiresAt sql.NullTime
-			if err := rows.Scan(
+			var eventTime sql.NullTime
+			// The event_time column is appended last, so the 15-col tier
+			// scans one extra destination and the 14-col tier is untouched.
+			// Keeps a newer binary working against an older query shape,
+			// which is the whole point of the tiering.
+			dest := []any{
 				&sr.ChunkID, &sr.ProjectID, &sr.TaskID,
 				&sr.SourceName, &sr.Content, &sr.Score, &class,
 				&alive, &checked, &scope,
 				&confidence, &vstatus, &createdAt, &expiresAt,
-			); err != nil {
+			}
+			if withEventTime {
+				dest = append(dest, &eventTime)
+			}
+			if err := rows.Scan(dest...); err != nil {
 				return nil, err
+			}
+			if eventTime.Valid {
+				sr.EventTime = eventTime.Time
 			}
 			if class.Valid {
 				sr.ContentClass = class.String

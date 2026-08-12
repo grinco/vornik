@@ -332,6 +332,7 @@ func TestProposalRepository_PostgresContract(t *testing.T) {
 	// Fixed fixture ids (pr-1, lf-a, ...) — see resetSuiteTables.
 	resetSuiteTables(t, db, "control_plane_proposals")
 	repotest.RunProposalSuite(t, NewProposalRepository(db.DB))
+	repotest.RunProposalObservationSuite(t, NewProposalRepository(db.DB))
 }
 
 // TestCostTuningCanaryRepository_PostgresContract — the cost/quality canary

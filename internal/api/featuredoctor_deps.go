@@ -79,7 +79,13 @@ type embeddingProberAdapter struct{}
 
 func (embeddingProberAdapter) ProbeEmbedding(ctx context.Context, cfg memory.Config) bool {
 	emb := memory.NewEmbedder(cfg)
-	vecs, _ := emb.Embed(ctx, []string{"vornik embedding reachability probe"})
+	// Infrastructure scope: a doctor probe has no project to charge. The error
+	// stays discarded — this function's contract is reachability, and Embed
+	// degrades to (nil, nil) — but note a scope error would also land here, so
+	// the scope is a constant, not caller input.
+	vecs, _ := emb.Embed(ctx,
+		memory.EmbedScope{CallSite: memory.EmbedCallSiteInfraProbe},
+		[]string{"vornik embedding reachability probe"})
 	return len(vecs) > 0 && len(vecs[0]) > 0
 }
 

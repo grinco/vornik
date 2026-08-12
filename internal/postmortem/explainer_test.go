@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"vornik.io/vornik/internal/llmspend"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -254,7 +255,7 @@ func TestExplainer_UsageRowInheritsTaskAPIKeyAttribution(t *testing.T) {
 		PostMortems: &recordingPostMortemRepo{},
 		Chat:        &stubChat{resp: makeChatResponse("why it failed", 120, 40), model: "haiku"},
 		Model:       "haiku",
-		LLMUsage:    usage,
+		Spend:       llmspend.New(usage, nil, persistence.TaskLLMUsageSourcePostMortem, "post_mortem"),
 		Logger:      zerolog.Nop(),
 	}
 	res, err := exp.Generate(context.Background(), "task-1", false)
@@ -266,4 +267,10 @@ func TestExplainer_UsageRowInheritsTaskAPIKeyAttribution(t *testing.T) {
 	assert.Equal(t, persistence.TaskLLMUsageSourcePostMortem, u.Source)
 	require.NotNil(t, u.APIKeyID, "post-mortem usage row must inherit the task's api-key attribution")
 	assert.Equal(t, creator, *u.APIKeyID)
+}
+
+// Upsert satisfies llmspend.UsageRepo. This fake's component only calls Record,
+// so it delegates.
+func (r *recordingUsageRecorder) Upsert(ctx context.Context, u *persistence.TaskLLMUsage) error {
+	return r.Record(ctx, u)
 }

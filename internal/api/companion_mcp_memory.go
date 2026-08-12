@@ -298,6 +298,10 @@ type RememberInput struct {
 	// repos share a project without polluting each other's recall
 	// results.
 	RepoScope string
+	// EventTime is when the deposited content PERTAINS TO, distinct from the
+	// deposit timestamp (migration 157, design §4.1). Zero = unknown, stored
+	// as NULL so temporal recall falls back to ingest time.
+	EventTime time.Time
 }
 
 // NOTE: the LLD-22 `tags` arg is intentionally NOT a field on
@@ -342,6 +346,15 @@ type recallArgs struct {
 	// to verify "is anything scoped to X" without the noise of
 	// uncategorized chunks. 2026-05-28 investigation closure.
 	StrictScope bool `json:"strict_scope"`
+	// Sufficient selects the PRODUCTION context-assembly retrieval mode:
+	// scored-sufficiency widening plus the LLM reranker (RecallSufficient sets
+	// opts.Rerank internally).
+	//
+	// Off by default because it costs an extra LLM call per recall and the
+	// interactive path is latency-sensitive. On when the caller cares about
+	// retrieval quality more than turnaround — a benchmark measuring the agent
+	// path, or an operator digging for something the fast path missed.
+	Sufficient bool `json:"sufficient"`
 }
 
 type recallHit struct {
@@ -411,16 +424,17 @@ func (s *Server) companionToolRecall(ctx context.Context, key *persistence.APIKe
 		ActorID:     key.ID,
 		RepoScope:   effectiveRepoScope(key, args.RepoScope),
 		StrictScope: args.StrictScope,
+		Sufficient:  args.Sufficient,
 	}
 	if args.FromDate != "" {
-		t, err := time.Parse(time.RFC3339, args.FromDate)
+		t, err := parseRecallDateBound(args.FromDate, false)
 		if err != nil {
 			return "", fmt.Errorf("from_date: %w", err)
 		}
 		opts.FromDate = t
 	}
 	if args.ToDate != "" {
-		t, err := time.Parse(time.RFC3339, args.ToDate)
+		t, err := parseRecallDateBound(args.ToDate, true)
 		if err != nil {
 			return "", fmt.Errorf("to_date: %w", err)
 		}
@@ -674,6 +688,13 @@ type rememberArgs struct {
 	// the class-policy default TTL. <= 0 means "use class default";
 	// positive value pins `expires_at = NOW() + ttl_days * 24h`.
 	TTLDays int `json:"ttl_days"`
+	// EventTime — migration 157, LLD
+	// 2026-08-10-memory-benchmark-harness-design.md §4.1. When the content
+	// PERTAINS TO, as opposed to when it is being deposited. Empty = unknown,
+	// which persists as NULL so temporal recall falls back to ingest time.
+	// Accepts a bare YYYY-MM-DD or full RFC3339, matching memory_search's
+	// from_date/to_date so the two tools agree on date syntax.
+	EventTime string `json:"event_time"`
 	// RepoScope — migration 75. Partitions the deposit within the
 	// project's RAG so the operator's many repos don't pollute
 	// each other's recall results. Empty = uncategorized; "*" =
@@ -765,6 +786,59 @@ type rememberResult struct {
 	GatesFailed []string `json:"gates_failed,omitempty"`
 }
 
+// parseEventTime resolves the optional event_time arg. Empty yields the zero
+// time, meaning "unknown" — the write path stores that as NULL and temporal
+// recall falls back to ingest time via COALESCE (design §4.1).
+//
+// A malformed value is an ERROR, deliberately not a silent fallback to now:
+// defaulting would file the deposit under the wrong clock invisibly, which is
+// the precise failure the event-time work exists to remove.
+func (a rememberArgs) parseEventTime() (time.Time, error) {
+	raw := strings.TrimSpace(a.EventTime)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	// Date-only first: memory_search's bounds accept YYYY-MM-DD, and a model
+	// using both tools in one turn should not have to remember that they
+	// differ.
+	if t, err := time.Parse("2006-01-02", raw); err == nil {
+		return t.UTC(), nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("event_time %q is not a date: want YYYY-MM-DD or RFC3339", raw)
+	}
+	return t.UTC(), nil
+}
+
+// parseRecallDateBound accepts a bare YYYY-MM-DD or a full RFC3339 timestamp.
+//
+// Date-only support is not a convenience — it is the documented contract. The
+// recall tool's own JSON schema says "ISO date (YYYY-MM-DD) or full RFC3339", and
+// the agent-side memory_search tool accepts both, so requiring RFC3339 here made
+// the companion surface reject the exact input its schema advertises. Caught by a
+// benchmark smoke test against a live daemon:
+//
+//	from_date: parsing time "2023-01-01" as "2006-01-02T15:04:05Z07:00"
+//
+// endOfDay extends a date-only UPPER bound to 23:59:59.999999999 so an inclusive
+// "to 2023-12-31" covers that whole day rather than stopping at its first instant,
+// which would silently exclude everything stamped later that day.
+func parseRecallDateBound(raw string, endOfDay bool) (time.Time, error) {
+	v := strings.TrimSpace(raw)
+	if t, err := time.Parse("2006-01-02", v); err == nil {
+		if endOfDay {
+			return t.Add(24*time.Hour - time.Nanosecond).UTC(), nil
+		}
+		return t.UTC(), nil
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%q is not a date: want YYYY-MM-DD or RFC3339", v)
+	}
+	return t.UTC(), nil
+}
+
 func (s *Server) companionToolRemember(ctx context.Context, key *persistence.APIKey, raw json.RawMessage) (string, error) {
 	if !key.MemoryWrite {
 		return "", errors.New("this key lacks memory_write; ask the operator for `vornikctl companion grant --memory-write`")
@@ -811,6 +885,12 @@ func (s *Server) companionToolRemember(ctx context.Context, key *persistence.API
 	sourceName := strings.TrimSpace(args.SourceName)
 	className := strings.TrimSpace(args.Class)
 	repoScope := effectiveRepoScope(key, args.RepoScope)
+	// Rejected loudly rather than defaulted to now: a misparsed date filed
+	// under the wrong clock is invisible at the call site (design §4.1).
+	eventTime, err := args.parseEventTime()
+	if err != nil {
+		return "", err
+	}
 	if args.TTLDays > rememberMaxTTLDays {
 		return "", fmt.Errorf("ttl_days must be <= %d", rememberMaxTTLDays)
 	}
@@ -850,6 +930,7 @@ func (s *Server) companionToolRemember(ctx context.Context, key *persistence.API
 		Class:      className,
 		TTLDays:    args.TTLDays,
 		RepoScope:  repoScope,
+		EventTime:  eventTime,
 	})
 	if err != nil {
 		return "", fmt.Errorf("remember failed: %w", err)

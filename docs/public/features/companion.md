@@ -1,11 +1,11 @@
 ---
 sources:
     - path: internal/api/companion_mcp.go
-      sha256: 3bb0865bf2089aa9bb0baae135120ac74b24671146cf940263e6108511e2fe0c
+      sha256: 49c8f24ac213a727b25e7d0d08dfdf8af622e0b10ab7581f3996dc6106118740
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
-      sha256: db89f329c8b6ca17dfb94c17f7a521eeb4a3f74c07acc5c17768aed1437bdfc6
+      sha256: 196896e35ab351314d10a5552857df572bf914079edd164c193a8a43ba81785b
     - path: contrib/codex-companion/.codex-plugin/plugin.json
-      sha256: 5e9135606a21eed63cfbd7d9b484596d384a1ab5b750a9e6f1d7146a9c47e949
+      sha256: 7e541b638971d6afd5ea577ea17b3f536daed02dfa145d51131e3e5441d8dc38
 ---
 # Companion plugin
 
@@ -91,11 +91,21 @@ that teaches the same recall-before-delegate and file-attachment rules.
 
 ## Operator skills
 
-Both companion plugins bundle an **operator lifecycle triad** — three skills
-that ship enabled by default and teach your host LLM to drive Vornik's own
-tooling instead of improvising. They cross-reference each other, so a session
-can walk from "set this up" to "why is it broken" to "file it upstream"
-without you naming the next step.
+Both companion plugins bundle **five operator skills** that ship enabled by
+default and teach your host LLM to drive Vornik's own tooling instead of
+improvising. They cross-reference each other, so a session can walk from "where
+is this documented" to "set this up" to "is it set up right" to "why is it
+broken" to "file it upstream" without you naming the next step.
+
+**`vornik-docs`** — where the documentation lives. It carries the site map and
+an order of preference that puts your **installed** CLI's own `--help` first,
+then a local checkout, then this site, and the model's own recall last — used to
+decide where to look, never as the answer. It exists because the characteristic
+failure when answering Vornik questions is a confident, plausible, nonexistent
+config key or CLI flag, and that failure is expensive: unknown keys are
+frequently ignored, so you get no error and the setting silently does nothing.
+The skill also states where the docs deliberately stop, so an honest gap is
+reported rather than filled in.
 
 **`configure-vornik`** — configuring a deployment: daemon settings, projects,
 swarms, workflows, models, secrets, channels. It leads with the config
@@ -110,6 +120,19 @@ with no error at all. The skill then pins the apply loop — validate with
 `vornikctl config reload-status`, where validation errors actually surface —
 and the restart-versus-reload boundary: systemd resolves the daemon's
 environment only at start, so unit and env-file edits need a restart.
+
+**`validate-install`** — checking a deployment against the
+[reference architecture](../reference/reference-architecture.md): the expected
+shape of a healthy install, and where yours diverges. Strictly read-only, which
+matters more than it sounds — `POST /api/v1/config/reload` looks like the natural
+way to ask whether the registry is valid, and it answers by *applying* the tree,
+so an audit could push a half-edited file into service. The skill's discipline is
+**configured versus observed**: a config value is a statement of intent, never
+evidence of behaviour, so it reads the daemon's resolved state from the boot log
+and then the usage ledger that proves the subsystem actually ran. Findings are
+split by severity, because the failure mode of a validator is noise — absence of
+an optional subsystem is never reported, and neither are your names or model
+choices.
 
 **`troubleshoot-vornik`** — diagnosing a deployment that is down, degraded,
 or failing tasks, routed by symptom. Daemon down goes to
@@ -177,6 +200,44 @@ populated.
 Notes go through vornik's full ingest pipeline (secret scanning, dedup, policy),
 and large content should be sent through the ingest workflow rather than a single
 `remember` call.
+
+### Digging harder when the fast answer misses
+
+`recall` is tuned for interactive use: one search pass, ranked by fusing semantic
+and keyword matches, back in well under a second. When that misses something you
+are confident is in there, pass `sufficient` to switch to the slower,
+higher-quality retrieval mode:
+
+```text
+/recall sufficient=true which design covers the fork-bomb PID limit
+```
+
+That mode widens the search when the first pass returns too few strongly-relevant
+results, and re-orders candidates with a model rather than by fusion score alone.
+It costs an extra model call and takes noticeably longer, which is why it is off by
+default — but it is the same mode agents use when assembling context for a task, so
+it is the closest thing to "search the way the swarm searches".
+
+### Dating a note
+
+By default a note is filed under the moment you deposited it, and `recall`'s
+date filters match on that. When you are recording something that *happened* at
+a different time — an incident from last March, a decision taken in Q1, a
+meeting note written up a week later — pass `event_time` so date-filtered recall
+finds it by when it happened rather than by when you stored it:
+
+```text
+/remember event_time=2026-03-14 the ibgateway warm-up outage traced to a stale session cookie
+```
+
+It accepts `YYYY-MM-DD` or full RFC3339. Leave it off when you don't know, and
+recall falls back to the deposit time exactly as before. A value that isn't a
+date is rejected rather than quietly ignored, so a typo can't file the note
+under the wrong clock without telling you.
+
+This matters most for bulk ingests: a whole document set deposited in one pass
+shares a single deposit timestamp, so without `event_time` a query like "what
+changed in July" matches all of it or none of it.
 
 ## Delegation
 

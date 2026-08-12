@@ -121,7 +121,11 @@ func (c *Container) initDispatcher() {
 		opts = append(opts, dispatcher.WithChatAuditRepo(c.repos.ChatAudit))
 	}
 	if c.repos != nil && c.repos.LLMUsage != nil {
+		// Two wirings, two jobs: the repo for budget READS in the tool executor,
+		// the recorder for BILLING chat turns.
 		opts = append(opts, dispatcher.WithLLMUsageRepository(c.repos.LLMUsage))
+		opts = append(opts, dispatcher.WithSpend(
+			c.llmSpend(persistence.TaskLLMUsageSourceDispatcher, "dispatcher")))
 	}
 	if c.repos != nil && c.repos.BudgetReservations != nil {
 		opts = append(opts, dispatcher.WithBudgetReservationRepository(c.repos.BudgetReservations))
@@ -391,18 +395,17 @@ func (c *Container) buildChatMemoryNED() *ned.Gate {
 	}
 	var embedFn graph.EmbedFn
 	if c.memoryManager != nil && c.memoryManager.Embedder != nil {
-		embedFn = func(ctx context.Context, texts []string) ([][]float32, error) {
-			return c.memoryManager.Embedder.Embed(ctx, texts)
+		embedFn = func(ctx context.Context, projectID string, texts []string) ([][]float32, error) {
+			return c.memoryManager.Embedder.Embed(ctx,
+				memory.EmbedScope{ProjectID: projectID, CallSite: memory.EmbedCallSiteKGResolve}, texts)
 		}
 	}
 	resolver := graph.NewResolver(c.ChatClient, resolverModel, c.repos.KnowledgeEntities, embedFn)
 
-	g := &ned.Gate{Extractor: extractor, Resolver: resolver}
-	if c.repos.LLMUsage != nil {
-		g.Usage = c.repos.LLMUsage
+	return &ned.Gate{
+		Extractor: extractor,
+		Resolver:  resolver,
+		Spend: c.llmSpend(
+			persistence.TaskLLMUsageSourceChatRememberNED, ned.RoleExtractor),
 	}
-	if c.pricingTable != nil {
-		g.Pricing = c.pricingTable
-	}
-	return g
 }

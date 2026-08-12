@@ -257,6 +257,11 @@ type RoleModelSpendRow struct {
 	// spend below the floor. The template renders the column as
 	// a colored badge: green <1, gray ≈1, amber 1–2, rose >2.
 	DriftRatio float64
+	// AnyTokensEstimated is true when at least one row behind this line had
+	// DERIVED token counts (some embedding backends report none). The template
+	// marks the token cells so a reader is never shown an inferred number
+	// dressed as a measured one.
+	AnyTokensEstimated bool
 	// DriftHasBaseline distinguishes "insufficient baseline data"
 	// (false) from "ratio is exactly zero" (false but with current
 	// data) so the template can render "—" rather than a misleading
@@ -493,6 +498,7 @@ func (s *Server) Spend(w http.ResponseWriter, r *http.Request) {
 				CompletionTokens:    r.CompletionTokens,
 				CacheCreationTokens: r.CacheCreationTokens,
 				CacheReadTokens:     r.CacheReadTokens,
+				AnyTokensEstimated:  r.AnyTokensEstimated,
 			}
 			if r.StepCount > 0 {
 				row.CostPerStepUSD = r.CostUSD / float64(r.StepCount)
@@ -747,6 +753,11 @@ func displaySource(s string) string {
 		return "Memory content classification"
 	case "memory_narrative":
 		return "Memory project narrative"
+	case "memory_embedder":
+		// Embedding spend: chunk ingest, query-time retrieval, KG entity
+		// resolution, skill preflight and infrastructure probes. Unlabelled
+		// until 2026-08-12, when it started appearing here at all.
+		return "Memory embedding"
 	case "task_narrator":
 		return "Execution narration"
 	case "fix_it_doctor":
@@ -796,6 +807,8 @@ func displayRole(s string) string {
 		return "Memory · Content Classifier"
 	case "memory_narrative":
 		return "Memory · Project Narrator"
+	case "memory_embedder":
+		return "Memory · Embedder"
 	case "rag-ingester":
 		// Swarm role (companion-example-swarm) whose whole job is async
 		// ingestion into RAG memory — group it with the Memory family

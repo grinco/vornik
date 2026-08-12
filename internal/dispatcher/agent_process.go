@@ -12,10 +12,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"vornik.io/vornik/internal/chat"
-	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/registry"
 )
 
@@ -30,7 +29,7 @@ import (
 // row per LLM call, unlike workflow_step rows which aggregate across a
 // container's internal tool loop.
 func (a *Agent) recordLLMUsage(ctx context.Context, projectID string, chatID int64, resp *chat.ChatResponse) {
-	if a == nil || a.llmUsageRepo == nil || resp == nil {
+	if a == nil || resp == nil {
 		return
 	}
 	if resp.Usage.PromptTokens == 0 && resp.Usage.CompletionTokens == 0 {
@@ -50,30 +49,19 @@ func (a *Agent) recordLLMUsage(ctx context.Context, projectID string, chatID int
 		billingProject = a.billingProjectID
 	}
 	sessionID := strconv.FormatInt(chatID, 10)
-	entry := &persistence.TaskLLMUsage{
-		ID:                  persistence.GenerateID("llm"),
+	// A chat turn is billed against a SESSION, not a task — hence SessionID and
+	// a nil TaskID. CostUSD is passed because it was computed above against the
+	// dispatcher's own model resolution.
+	a.spend.Record(ctx, llmspend.Input{
 		ProjectID:           billingProject,
-		TaskID:              nil,
-		ExecutionID:         nil,
-		StepID:              "",
-		Role:                "dispatcher",
 		Model:               model,
-		PromptTokens:        int64(resp.Usage.PromptTokens),
-		CompletionTokens:    int64(resp.Usage.CompletionTokens),
-		Iterations:          1,
-		CostUSD:             costUSD,
-		Source:              persistence.TaskLLMUsageSourceDispatcher,
+		PromptTokens:        resp.Usage.PromptTokens,
+		CompletionTokens:    resp.Usage.CompletionTokens,
+		CostUSD:             &costUSD,
 		SessionID:           &sessionID,
-		RecordedAt:          time.Now().UTC(),
-		CacheCreationTokens: int64(resp.Usage.CacheCreationTokens),
-		CacheReadTokens:     int64(resp.Usage.CacheReadTokens),
-	}
-	if err := a.llmUsageRepo.Record(ctx, entry); err != nil {
-		a.logger.Warn().Err(err).
-			Str("project", projectID).
-			Str("session", sessionID).
-			Msg("dispatcher: failed to persist llm usage row")
-	}
+		CacheCreationTokens: resp.Usage.CacheCreationTokens,
+		CacheReadTokens:     resp.Usage.CacheReadTokens,
+	})
 }
 
 // allTools returns built-in dispatcher tools merged with MCP-discovered

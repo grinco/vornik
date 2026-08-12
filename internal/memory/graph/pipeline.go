@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -49,17 +50,29 @@ type Pipeline struct {
 	// tests usually leave this nil.
 	Metrics *Metrics
 
-	// LLMUsage records one task_llm_usage row per stage per
-	// chunk so KG extraction spend lands on the same dashboards
-	// as worker / dispatcher / judge spend. Optional — nil-safe.
-	// Pricing is wired separately so cost_usd computes against
-	// the same table the rest of the system uses.
-	LLMUsage UsageRecorder
-	// Pricing computes USD from token counts. nil → cost_usd is
-	// stamped 0 and the row still lands so the spend dashboard
-	// shows token volume even on un-priced models.
-	Pricing PricingTable
+	// spend records one task_llm_usage row per stage per chunk, so KG extraction
+	// lands on the same dashboards as worker / dispatcher / judge spend. Set by
+	// the wiring site; a zero value reports itself loudly rather than silently
+	// billing nothing.
+	spend llmspend.Recorder
 }
+
+// SetSpend wires the billing recorder. Pipeline is constructed as a struct
+// literal by its container rather than through a constructor, so this is the
+// narrowest way to keep the field unexported — an exported field could be left
+// unset with nothing noticing, which is the defect this migration removes.
+func (p *Pipeline) SetSpend(r llmspend.Recorder) { p.spend = r }
+
+// The four task_llm_usage roles this pipeline records under — one component,
+// four stages, each billed separately so /ui/spend can show which stage of KG
+// extraction is expensive. Exported so the wiring site names them rather than
+// repeating string literals the pipeline would then not control.
+const (
+	RoleExtractor    = "kg_extractor"
+	RoleResolver     = "kg_resolver"
+	RoleRelationship = "kg_relationship"
+	RoleValidator    = "kg_validator"
+)
 
 // UsageRecorder is the narrow interface the KG pipeline needs
 // from persistence.TaskLLMUsageRepository — only Record. Defined
@@ -317,17 +330,17 @@ func (p *Pipeline) RunChunk(ctx context.Context, chunk ChunkInput) (*PipelineMet
 // the chunk is already extracted; failing to bill it is a
 // dashboard-fidelity issue, not a correctness issue.
 func (p *Pipeline) recordStageUsage(ctx context.Context, chunk ChunkInput, m *PipelineMetrics) {
-	if p.LLMUsage == nil || m == nil {
+	if m == nil {
 		return
 	}
 	stages := []struct {
 		role  string
 		stage stageMetrics
 	}{
-		{"kg_extractor", m.Extract.tokens()},
-		{"kg_resolver", m.Resolve.tokens()},
-		{"kg_relationship", m.Relations.tokens()},
-		{"kg_validator", m.Validate.tokens()},
+		{RoleExtractor, m.Extract.tokens()},
+		{RoleResolver, m.Resolve.tokens()},
+		{RoleRelationship, m.Relations.tokens()},
+		{RoleValidator, m.Validate.tokens()},
 	}
 	stepID := chunk.ID
 	for _, s := range stages {
@@ -344,30 +357,22 @@ func (p *Pipeline) recordStageUsage(ctx context.Context, chunk ChunkInput, m *Pi
 		// (local-llm-response-cache-design §Goals 4). Saved dollars are computed from
 		// llm_response_cache.hit_count, which /ui/spend already surfaces — this ledger
 		// answers "what did we spend", and the honest answer on a hit is nothing.
-		promptTok, completionTok := int64(s.stage.prompt), int64(s.stage.completion)
-		var costUSD float64
-		switch {
-		case s.stage.cacheHit:
+		promptTok, completionTok := s.stage.prompt, s.stage.completion
+		if s.stage.cacheHit {
 			promptTok, completionTok = 0, 0
-		case p.Pricing != nil:
-			costUSD = p.Pricing.CostUSD(s.stage.model, s.stage.prompt, s.stage.completion)
 		}
-		row := &persistence.TaskLLMUsage{
-			ID:               persistence.GenerateID("llm"),
+		// RoleOverride per stage: one component records under four roles, which a
+		// Recorder's fixed role cannot express. The seam handles the cache-hit
+		// zero-token row rather than dropping it.
+		p.spend.Record(ctx, llmspend.Input{
 			ProjectID:        chunk.ProjectID,
-			TaskID:           nil, // background pipeline, not task-scoped
-			ExecutionID:      nil,
-			StepID:           stepID,
-			Role:             s.role,
 			Model:            s.stage.model,
 			PromptTokens:     promptTok,
 			CompletionTokens: completionTok,
-			Iterations:       1,
-			CostUSD:          costUSD,
-			Source:           persistence.TaskLLMUsageSourceKGExtraction,
+			StepID:           stepID,
+			RoleOverride:     s.role,
 			CacheHit:         s.stage.cacheHit,
-		}
-		_ = p.LLMUsage.Record(ctx, row)
+		})
 	}
 }
 
@@ -524,7 +529,7 @@ func (p *Pipeline) insertEntityIdempotent(ctx context.Context, projectID string,
 		}
 	}
 	if p.Embedder != nil {
-		if vecs, err := p.Embedder(ctx, []string{c.Name}); err == nil && len(vecs) == 1 {
+		if vecs, err := p.Embedder(ctx, projectID, []string{c.Name}); err == nil && len(vecs) == 1 {
 			ent.Embedding = vecs[0]
 		}
 	}

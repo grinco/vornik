@@ -392,7 +392,14 @@
                                 <td class="px-4 py-1.5 text-gray-300 capitalize">{{.Role}}</td>
                                 <td class="px-4 py-1.5 text-gray-500 font-mono text-xs">{{.Model}}</td>
                                 <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{.StepCount}}</td>
-                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{fmtTokens .PromptTokens}} / {{fmtTokens .CompletionTokens}}</td>
+                                {{/* A "~" prefix marks token counts where at least one
+                                     underlying row was DERIVED rather than reported by the
+                                     provider — some embedding backends (Bedrock Cohere)
+                                     return no token count at all. Without the marker the
+                                     panel would present an inferred number exactly like a
+                                     measured one, which is what migration 159's
+                                     tokens_estimated flag exists to prevent. */}}
+                                <td class="px-4 py-1.5 text-right text-gray-400 tabular-nums">{{if .AnyTokensEstimated}}<span class="text-amber-700 dark:text-amber-400" title="At least one call behind this line reported no token count, so the total is partly derived from text length rather than measured by the provider.">~</span>{{end}}{{fmtTokens .PromptTokens}} / {{fmtTokens .CompletionTokens}}</td>
                                 <td class="px-4 py-1.5 text-right tabular-nums {{if gt .InputRatioPct 90.0}}text-rose-800 dark:text-rose-400{{else if gt .InputRatioPct 80.0}}text-amber-800 dark:text-amber-400{{else}}text-gray-500{{end}}">{{printf "%.0f" .InputRatioPct}}%</td>
                                 <td class="px-4 py-1.5 text-right tabular-nums">
                                     {{if not .DriftHasBaseline}}<span class="text-gray-600">—</span>

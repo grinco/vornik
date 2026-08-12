@@ -15,6 +15,7 @@ import (
 
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/chat"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
 )
@@ -39,7 +40,7 @@ type Explainer struct {
 	Outcomes    persistence.ExecutionStepOutcomeRepository
 	Audits      persistence.ToolAuditRepository
 	PostMortems persistence.TaskPostMortemRepository
-	LLMUsage    UsageRecorder
+	Spend       llmspend.Recorder
 	Logs        LogTailFetcher
 	Chat        chat.Provider
 	Model       string
@@ -155,31 +156,25 @@ func (e *Explainer) Generate(ctx context.Context, taskID string, forceRefresh bo
 		return nil, fmt.Errorf("persist post-mortem: %w", err)
 	}
 
-	if e.LLMUsage != nil && (resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0) {
+	if resp.Usage.PromptTokens > 0 || resp.Usage.CompletionTokens > 0 {
 		taskID := task.ID
 		var execID *string
 		if executionID != "" {
 			execID = &executionID
 		}
-		usage := &persistence.TaskLLMUsage{
-			ID:               persistence.GenerateID("llm"),
+		// CostUSD is passed because it was already computed above and also stored
+		// on the post-mortem row itself; the two must agree.
+		e.Spend.Record(ctx, llmspend.Input{
 			ProjectID:        task.ProjectID,
+			Model:            model,
+			PromptTokens:     resp.Usage.PromptTokens,
+			CompletionTokens: resp.Usage.CompletionTokens,
 			TaskID:           &taskID,
 			ExecutionID:      execID,
 			StepID:           "post_mortem",
-			Role:             "post_mortem",
-			Model:            model,
-			PromptTokens:     int64(resp.Usage.PromptTokens),
-			CompletionTokens: int64(resp.Usage.CompletionTokens),
-			Iterations:       1,
-			CostUSD:          cost,
-			Source:           persistence.TaskLLMUsageSourcePostMortem,
-			RecordedAt:       time.Now().UTC(),
+			CostUSD:          &cost,
 			APIKeyID:         task.CreatedByAPIKeyID,
-		}
-		if err := e.LLMUsage.Record(ctx, usage); err != nil {
-			e.Logger.Warn().Err(err).Str("task_id", task.ID).Msg("postmortem: usage persist failed (summary already recorded)")
-		}
+		})
 	}
 
 	e.Logger.Info().

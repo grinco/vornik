@@ -205,3 +205,33 @@ func TestHumanizeDuration(t *testing.T) {
 // left as a placeholder so a future re-add of a per-page shortening
 // algorithm has to take a test slot, prompting the author to think
 // about consistency before duplicating logic.
+
+// TestDisplayRole_EmbedderIsLabelled: slice 4 of the embed-spend-attribution
+// design. Embedding rows land under role "memory_embedder", and displayRole
+// falls through unknown roles unchanged — so without this case the spend panel
+// would show a raw column value where every sibling memory role reads as prose.
+func TestDisplayRole_EmbedderIsLabelled(t *testing.T) {
+	assert.Equal(t, "Memory · Embedder", displayRole("memory_embedder"))
+}
+
+// TestSpendMarksEstimatedTokens: the whole point of migration 159 is that a
+// derived token count must not read as a measured one. The flag has to survive
+// from the aggregate into the display row, or the panel silently launders it.
+func TestSpendMarksEstimatedTokens(t *testing.T) {
+	row := RoleModelSpendRow{
+		Role:               displayRole("memory_embedder"),
+		Model:              "cohere.embed-v4",
+		PromptTokens:       4096,
+		AnyTokensEstimated: true,
+	}
+	assert.True(t, row.AnyTokensEstimated,
+		"the estimated marker must reach the template, or an inferred count renders as measured")
+}
+
+// TestDisplaySource_EmbedderIsLabelled closes a gap slice 4 missed and only a
+// look at the real page revealed: the by-source table uses displaySource, not
+// displayRole, so labelling one left embedding spend rendering as the raw column
+// value "memory_embedder" beside siblings reading as prose.
+func TestDisplaySource_EmbedderIsLabelled(t *testing.T) {
+	assert.Equal(t, "Memory embedding", displaySource("memory_embedder"))
+}

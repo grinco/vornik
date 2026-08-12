@@ -68,7 +68,12 @@ func NewMemoryValidator() MemoryValidator {
 	return MemoryValidator{
 		probe: func(ctx context.Context, cfg memory.Config) ([]float32, error) {
 			emb := memory.NewEmbedder(cfg)
-			vecs, err := emb.Embed(ctx, []string{"vornik embedding reachability probe"})
+			// Billed to infrastructure, not to a project: a reachability probe
+			// has no tenant to charge. Recorded rather than skipped — "too small
+			// to bill" is the judgement that left embedding spend invisible.
+			vecs, err := emb.Embed(ctx,
+				memory.EmbedScope{CallSite: memory.EmbedCallSiteInfraProbe},
+				[]string{"vornik embedding reachability probe"})
 			if err != nil {
 				return nil, err
 			}

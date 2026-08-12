@@ -294,7 +294,7 @@ func buildProjectWizard(c *Container) *projectwizard.Wizard { //nolint:funlen //
 		// per-turn prompt size.
 		Model:             resolveWizardModel(c.Config),
 		Priors:            priors,
-		LLMUsage:          c.repos.LLMUsage,
+		Spend:             c.llmSpend("project_wizard", projectwizard.RoleProjectWizard),
 		Validator:         projectwizard.RegistryValidator{},
 		Templates:         templateSource,
 		TemplateMeta:      templateMeta,

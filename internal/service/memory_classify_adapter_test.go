@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"testing"
+	"vornik.io/vornik/internal/llmspend"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/rs/zerolog"
@@ -51,7 +52,7 @@ func newClassifyAdapterFixture(t *testing.T) *classifyAdapterTestFixture {
 		t.Fatal(err)
 	}
 	repo := memory.NewRepository(db)
-	classifier := memory.NewClassifier(stubChatNoop{}, "")
+	classifier := memory.NewClassifier(stubChatNoop{}, "", llmspend.Disabled())
 	bf := &memory.ClassifyBackfiller{
 		Repo:       repo,
 		Classifier: classifier,

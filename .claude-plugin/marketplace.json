@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "vornik-companion",
-      "description": "Async-offload companion. Delegate reviews, audits, validations, research, summarization, and bulk RAG ingest to vornik-managed agents over MCP; results re-enter Claude's context via a SessionStart digest hook. Per-repo scoping (migration 75) so one project's RAG cleanly serves multiple repos. Also bundles an operator lifecycle triad of skills — configure-vornik, troubleshoot-vornik, and report-problem — so your assistant drives Vornik's own tooling (config validate/reload, the doctor, the failure-class playbook, and the anonymized problem reporter) instead of improvising.",
+      "description": "Async-offload companion. Delegate reviews, audits, validations, research, summarization, and bulk RAG ingest to vornik-managed agents over MCP; results re-enter Claude's context via a SessionStart digest hook. Per-repo scoping (migration 75) so one project's RAG cleanly serves multiple repos. Also bundles operator lifecycle skills — configure-vornik, validate-install, troubleshoot-vornik, and report-problem — so your assistant drives Vornik's own tooling (config validate/reload, the published reference architecture, the doctor, the failure-class playbook, and the anonymized problem reporter) instead of improvising.",
       "author": {
         "name": "vornik"
       },

@@ -349,6 +349,10 @@ func companionToolDefs() []mcpToolDef {
 						"type":        "string",
 						"description": "Optional repo scope filter (migration 75). Default match = this scope OR '*' OR NULL. Empty / unset = project-wide. Plugin auto-detects from cwd at session start.",
 					},
+					"sufficient": map[string]any{
+						"type":        "boolean",
+						"description": "Optional: use the higher-quality retrieval mode agents use for context assembly — scored-sufficiency widening plus an LLM reranker. Costs one extra model call and is slower, so it is off by default for interactive use. Turn it on when retrieval quality matters more than turnaround, or when the fast path missed something you expect to be there.",
+					},
 					"strict_scope": map[string]any{
 						"type":        "boolean",
 						"description": "When true AND repo_scope is non-empty, drops the NULL-scope fallthrough. Use this to spot NULL-scoped leaks or to verify a scope is actually populated.",
@@ -377,6 +381,10 @@ func companionToolDefs() []mcpToolDef {
 						"type":        "integer",
 						"minimum":     1,
 						"description": "Optional per-deposit TTL override in days. <= 0 / unset uses the class-policy default (companion_note = 30 days; spec / decision typically much longer).",
+					},
+					"event_time": map[string]any{
+						"type":        "string",
+						"description": "Optional: when this content PERTAINS TO, as opposed to now. Accepts YYYY-MM-DD or full RFC3339. Set it when depositing dated material (an incident from last March, a decision made in Q1) so date-filtered recall finds it by when it happened rather than by when you stored it. Unset = unknown, and temporal recall falls back to the deposit time. A value that isn't a date is rejected, not ignored.",
 					},
 					"repo_scope": map[string]any{
 						"type":        "string",

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -159,27 +160,31 @@ func (s *Server) IngestLLMUsage(w http.ResponseWriter, r *http.Request) {
 		execPtr = &req.ExecutionID
 	}
 
-	row := &persistence.TaskLLMUsage{
-		ID:                  req.UsageID,
+	// The streaming shape: a STABLE caller-supplied id, so each cumulative report
+	// overwrites the last rather than adding a row. RoleOverride and CostUSD come
+	// from the agent — it ran as a particular role and computed its own cost
+	// inside the container.
+	var apiKeyID *string
+	if task != nil {
+		apiKeyID = task.CreatedByAPIKeyID
+	}
+	in := llmspend.Input{
 		ProjectID:           req.ProjectID,
+		Model:               req.Model,
+		PromptTokens:        int(req.PromptTokens),
+		CompletionTokens:    int(req.CompletionTokens),
 		TaskID:              taskPtr,
 		ExecutionID:         execPtr,
 		StepID:              req.StepID,
-		Role:                req.Role,
-		Model:               req.Model,
-		PromptTokens:        req.PromptTokens,
-		CompletionTokens:    req.CompletionTokens,
-		CacheCreationTokens: req.CacheCreationTokens,
-		CacheReadTokens:     req.CacheReadTokens,
+		RoleOverride:        req.Role,
+		CostUSD:             &req.CostUSD,
+		APIKeyID:            apiKeyID,
 		Iterations:          req.Iterations,
-		CostUSD:             req.CostUSD,
-		Source:              persistence.TaskLLMUsageSourceWorkflowStep,
-	}
-	if task != nil {
-		row.APIKeyID = task.CreatedByAPIKeyID
+		CacheCreationTokens: int(req.CacheCreationTokens),
+		CacheReadTokens:     int(req.CacheReadTokens),
 	}
 
-	if err := s.llmUsageRepo.Upsert(r.Context(), row); err != nil {
+	if err := s.workflowStepSpend.Upsert(r.Context(), req.UsageID, in); err != nil {
 		s.logger.Warn().
 			Err(err).
 			Str("usage_id", req.UsageID).
@@ -190,7 +195,9 @@ func (s *Server) IngestLLMUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.observeChatCacheUsage(row)
+	s.observeChatCacheUsage(req.Model, req.Role,
+		persistence.TaskLLMUsageSourceWorkflowStep,
+		req.CacheCreationTokens, req.CacheReadTokens)
 
 	w.WriteHeader(http.StatusNoContent)
 }

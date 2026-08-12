@@ -208,7 +208,7 @@ func (s *Searcher) FindEntities(ctx context.Context, projectID, query string, ty
 	// vector search over the whole catalog isn't what the repo
 	// exposes, and the name pass already covered the common UX.
 	if s.embed != nil && query != "" && len(types) > 0 {
-		vecs, embErr := s.embed(ctx, []string{query})
+		vecs, embErr := s.embed(ctx, projectID, []string{query})
 		if embErr == nil && len(vecs) == 1 && len(vecs[0]) > 0 {
 			for _, t := range types {
 				sim, simErr := s.entities.SimilarByEmbedding(ctx, projectID, t, vecs[0], limit)

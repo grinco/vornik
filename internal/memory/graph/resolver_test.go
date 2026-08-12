@@ -44,7 +44,7 @@ func (f *fakeEntityRepo) SimilarByEmbedding(_ context.Context, projectID, entity
 func (f *fakeEntityRepo) UpdateLifecycle(context.Context, string, string) error { panic("not used") }
 func (f *fakeEntityRepo) AddAlias(context.Context, string, string) error        { panic("not used") }
 
-func fakeEmbedder(_ context.Context, texts []string) ([][]float32, error) {
+func fakeEmbedder(_ context.Context, _ string, texts []string) ([][]float32, error) {
 	out := make([][]float32, len(texts))
 	for i := range texts {
 		out[i] = []float32{0.1, 0.2, 0.3}

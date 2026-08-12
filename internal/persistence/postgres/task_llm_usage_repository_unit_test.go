@@ -89,6 +89,7 @@ func TestUsageRecord_HappyPath_ArgsAndSQL(t *testing.T) {
 			int64(0), int64(0), // cache_creation_tokens, cache_read_tokens (phase A)
 			nil,   // api_key_id (migration 149)
 			false, // cache_hit (migration 152) — a real call, not a response-cache hit
+			false, // tokens_estimated (migration 159) — provider-reported counts
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -128,6 +129,7 @@ func TestUsageRecord_DefaultsSourceAndRecordedAt(t *testing.T) {
 			int64(0), int64(0), // cache_creation_tokens, cache_read_tokens (phase A)
 			nil,   // api_key_id (migration 149)
 			false, // cache_hit (migration 152)
+			false, // tokens_estimated (migration 159) — provider-reported counts
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -172,6 +174,7 @@ func TestUsageRecord_NullableStringEmptyAndNil(t *testing.T) {
 			int64(0), int64(0), // cache_creation_tokens, cache_read_tokens (phase A)
 			nil,   // api_key_id (migration 149)
 			false, // cache_hit (migration 152)
+			false, // tokens_estimated (migration 159) — provider-reported counts
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -288,6 +291,7 @@ func TestUsageUpsert_HappyPath_ArgsAndSQL(t *testing.T) {
 			int64(0), int64(0),
 			nil,   // api_key_id (migration 149)
 			false, // cache_hit (migration 152)
+			false, // tokens_estimated (migration 159) — provider-reported counts
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -324,6 +328,7 @@ func TestUsageUpsert_DefaultsSourceAndRecordedAt(t *testing.T) {
 			int64(0), int64(0),
 			nil,   // api_key_id (migration 149)
 			false, // cache_hit (migration 152)
+			false, // tokens_estimated (migration 159) — provider-reported counts
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

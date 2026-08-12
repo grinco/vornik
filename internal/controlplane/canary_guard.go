@@ -69,6 +69,10 @@ type CanaryGuardWorker struct {
 	// Nil ⇒ never trading (the container always wires the real check).
 	IsTradingSwarm func(swarm string) bool
 
+	// Classes is the canary class registry — which applied changes this guard
+	// knows how to watch (design §4). Nil ⇒ defaultCanaryClasses().
+	Classes []CanaryClass
+
 	MinSamples   int
 	A2MinSamples int
 	A2Subwindows int
@@ -226,8 +230,14 @@ func (w *CanaryGuardWorker) discover(ctx context.Context) {
 		w.Logger.Warn().Err(err).Msg("canary: list applied proposals failed")
 		return
 	}
+	classes := w.classes()
 	for _, p := range applied {
-		if p == nil || p.ProposedBy != costQualityDetectorProposedBy {
+		// Which class owns this proposal? nil = no evaluator for this change
+		// kind, so the guard must not open a canary it cannot judge. Replaces
+		// the two hardcoded constants that excluded workflow_step_timeout
+		// proposals on both axes (design §4).
+		cls := canaryClassFor(classes, p)
+		if cls == nil {
 			continue
 		}
 		// Already canaried (any status)? Discovery keys on NO canary row,
@@ -239,14 +249,14 @@ func (w *CanaryGuardWorker) discover(ctx context.Context) {
 			w.Logger.Warn().Err(gerr).Str("proposal_id", p.ID).Msg("canary: canary lookup failed")
 			continue
 		}
-		swarm, role, knob, ok := parseSwarmRoleEnvChange(p.Evidence)
+		swarm, role, knob, ok := cls.Locus(p)
 		if !ok {
-			// Coverage gap (I8): an APPLIED cost-tuning proposal whose Evidence
-			// didn't yield a swarm_role_env change — a silent stringly-typed
+			// Coverage gap (I8): an APPLIED proposal the class claimed but whose
+			// Evidence didn't yield a usable locus — a silent stringly-typed
 			// contract drift made visible rather than a silent no-op.
 			w.Metrics.incCoverageGap()
-			w.Logger.Warn().Str("proposal_id", p.ID).
-				Msg("canary: APPLIED cost-tuning proposal opened no canary (unmatched Evidence.change.kind)")
+			w.Logger.Warn().Str("proposal_id", p.ID).Str("class", cls.Name()).
+				Msg("canary: APPLIED proposal opened no canary (unmatched Evidence.change.kind)")
 			continue
 		}
 		if p.AppliedAt == nil {
@@ -327,6 +337,15 @@ func (w *CanaryGuardWorker) openCanary(ctx context.Context, p *persistence.Contr
 	w.Logger.Info().Str("proposal_id", p.ID).Str("swarm", swarm).Str("role", role).Str("knob", knob).
 		Time("baseline_start", baselineStart).Time("window_until", c.WindowUntil).
 		Bool("a1_baseline_sufficient", baseline.A1Sufficient).Msg("canary: opened")
+}
+
+// classes returns the canary class registry. A field override keeps the seam
+// testable without reaching into package state; nil ⇒ the shipped default.
+func (w *CanaryGuardWorker) classes() []CanaryClass {
+	if len(w.Classes) > 0 {
+		return w.Classes
+	}
+	return defaultCanaryClasses()
 }
 
 // blastRadius nil-safely resolves the (swarm) → (projects, workflows) watch set.

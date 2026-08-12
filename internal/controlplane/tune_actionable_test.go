@@ -324,8 +324,13 @@ func TestTune_TimeoutReclaimFilesReduction(t *testing.T) {
 	repo := newTuneTestRepo(t)
 	m := &fakeMetrics{
 		// No latency breach; step p95 50s vs 300s timeout (ratio 0.17 ≤ 0.5).
+		// Count is 30, not the 9 this test used before 2026-08-10: reductions
+		// now clear MinSamplesReduce (default 30) rather than the shared
+		// MinSamples, because a reduction is the only tuning direction that can
+		// truncate a run. See LLD 2026-08-10-canary-class-registry-step-outcome
+		// §6.1 and tune_reclaim_test.go for the floor's own tests.
 		steps: []StepLatencySample{
-			{Project: "janka", Workflow: "wf-a", Step: "slow", Role: "coder", Model: "m1", P95Seconds: 50, Count: 9},
+			{Project: "janka", Workflow: "wf-a", Step: "slow", Role: "coder", Model: "m1", P95Seconds: 50, Count: 30},
 		},
 	}
 	w := newTuneWorker(repo, m)

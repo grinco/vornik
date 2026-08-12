@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "questions": [
+    {
+      "id": "n0001",
+      "category": "architecture",
+      "question": "What fusion algorithm does memory retrieval use to combine the semantic and keyword arms?",
+      "gold_answer": "Reciprocal Rank Fusion at k=60, scaled by the chunk's utility score.",
+      "gold_documents": ["memory-hardening-proposal.md"]
+    },
+    {
+      "id": "n0002",
+      "category": "decision",
+      "question": "Why is chunk event_time nullable rather than backfilled from created_at?",
+      "gold_answer": "Backfilling would assert a fact we do not have; the read path expresses the fallback with COALESCE instead, which makes the change strictly widening.",
+      "gold_documents": ["2026-08-10-memory-benchmark-harness-design.md"]
+    }
+  ]
+}

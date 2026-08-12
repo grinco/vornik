@@ -33,12 +33,14 @@ func envOrDefault(key, fallback string) string {
 	return fallback
 }
 
-// freshTestDB creates a per-test database with a unique name + a
-// DatabaseConfig pointed at it. Returns the config plus a cleanup
-// callback that drops the DB. Skips the test when postgres isn't
-// reachable so the suite stays green on hosts without a local
-// daemon.
-func freshTestDB(t *testing.T) (*config.DatabaseConfig, func()) {
+// freshTestDB creates a per-test database with a unique name and returns a
+// DatabaseConfig pointed at it. Teardown is registered with t.Cleanup, so callers
+// do NOT get (and must not need) a cleanup callback — see the comment at the
+// registration below for why that ordering is load-bearing.
+//
+// Skips the test when postgres isn't reachable so the suite stays green on hosts
+// without a local daemon.
+func freshTestDB(t *testing.T) *config.DatabaseConfig {
 	t.Helper()
 	adminCfg := config.DatabaseConfig{
 		Host:     envOrDefault("POSTGRES_HOST", "localhost"),
@@ -68,13 +70,40 @@ func freshTestDB(t *testing.T) (*config.DatabaseConfig, func()) {
 		_ = admin.Close()
 		t.Fatalf("create test DB: %v", err)
 	}
-	cleanup := func() {
-		_, _ = admin.Exec("DROP DATABASE IF EXISTS " + dbName)
+
+	// Drop via t.Cleanup, NOT a returned defer.
+	//
+	// This leaked 138 databases before being fixed. Deferred functions in a test
+	// body run BEFORE any t.Cleanup callback, so a `defer cleanup()` here fired
+	// DROP DATABASE while openDB's connection to that same database was still
+	// open — and Postgres refuses to drop a database with a live session. The
+	// error was discarded by `_, _ =`, so every run silently left a database
+	// behind.
+	//
+	// t.Cleanup callbacks run last-added-first, and this one is registered at
+	// creation time — before any openDB call — so it runs AFTER their connection
+	// closes. That ordering is the fix; terminating stragglers below is belt and
+	// braces for pooled connections that outlive a Close.
+	t.Cleanup(func() {
+		// A *sql.DB is a pool: Close returns before the server has necessarily
+		// reaped every backend, and one straggler is enough to block the drop.
+		if _, err := admin.Exec(
+			`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+			  WHERE datname = $1 AND pid <> pg_backend_pid()`, dbName,
+		); err != nil {
+			t.Logf("terminate backends on %s: %v", dbName, err)
+		}
+		// Reported, never discarded. A silent drop failure is exactly how this
+		// leaked unnoticed for months; a visible one fails the test that caused it.
+		if _, err := admin.Exec("DROP DATABASE IF EXISTS " + dbName); err != nil {
+			t.Errorf("leaked test database %s: %v", dbName, err)
+		}
 		_ = admin.Close()
-	}
+	})
+
 	cfg := adminCfg
 	cfg.Name = dbName
-	return &cfg, cleanup
+	return &cfg
 }
 
 func openDB(t *testing.T, cfg *config.DatabaseConfig) *sql.DB {
@@ -96,8 +125,7 @@ func openDB(t *testing.T, cfg *config.DatabaseConfig) *sql.DB {
 // row-count gate already permits, so the new probe doesn't
 // regress the documented "restore into a brand-new DB" path.
 func TestSchemaGate_EmptyDBPassesProbe(t *testing.T) {
-	cfg, cleanup := freshTestDB(t)
-	defer cleanup()
+	cfg := freshTestDB(t)
 	if err := checkTargetSchemaAbsent(cfg); err != nil {
 		t.Fatalf("empty DB tripped schema gate: %v", err)
 	}
@@ -108,8 +136,7 @@ func TestSchemaGate_EmptyDBPassesProbe(t *testing.T) {
 // migration. The probe MUST refuse — that's the reproducible
 // fresh-install failure mode the bug report described.
 func TestSchemaGate_PopulatedMigrationsTableFails(t *testing.T) {
-	cfg, cleanup := freshTestDB(t)
-	defer cleanup()
+	cfg := freshTestDB(t)
 	db := openDB(t, cfg)
 	if _, err := db.Exec(`CREATE TABLE migrations (version INT)`); err != nil {
 		t.Fatalf("create migrations: %v", err)
@@ -131,8 +158,7 @@ func TestSchemaGate_PopulatedMigrationsTableFails(t *testing.T) {
 // migrations table but artifact_class defined, the dump's
 // `CREATE TYPE artifact_class` will collide. Probe must catch it.
 func TestSchemaGate_OwnedTypeFails(t *testing.T) {
-	cfg, cleanup := freshTestDB(t)
-	defer cleanup()
+	cfg := freshTestDB(t)
 	db := openDB(t, cfg)
 	if _, err := db.Exec(`CREATE TYPE artifact_class AS ENUM ('INPUT', 'OUTPUT')`); err != nil {
 		t.Fatalf("create type: %v", err)
@@ -150,8 +176,7 @@ func TestSchemaGate_OwnedTypeFails(t *testing.T) {
 // the schema AND recreate it with the right owner so the
 // subsequent psql -f actually has a schema to populate.
 func TestSchemaGate_DropTargetSchemaWipes(t *testing.T) {
-	cfg, cleanup := freshTestDB(t)
-	defer cleanup()
+	cfg := freshTestDB(t)
 	db := openDB(t, cfg)
 	if _, err := db.Exec(`CREATE TABLE migrations (version INT)`); err != nil {
 		t.Fatalf("create migrations: %v", err)
@@ -175,5 +200,60 @@ func TestSchemaGate_DropTargetSchemaWipes(t *testing.T) {
 	// CREATE on the schema).
 	if _, err := db.Exec(`CREATE TABLE post_clean_probe (id INT)`); err != nil {
 		t.Errorf("post-clean: CREATE TABLE failed — schema not granted to user: %v", err)
+	}
+}
+
+// TestFreshTestDB_DropsItsDatabase is the regression test for a leak that went
+// unnoticed long enough to accumulate 138 orphaned databases.
+//
+// The original helper dropped the database from a `defer` in the caller. Deferred
+// functions run BEFORE t.Cleanup callbacks, so the drop fired while openDB's
+// connection to that database was still open; Postgres refuses to drop a database
+// with a live session, and the error was discarded by `_, _ =`.
+//
+// This test reproduces the exact shape that failed — create the database, open a
+// connection to it as the real tests do — then asserts from an INDEPENDENT
+// connection that the database is gone once the subtest's cleanups have run.
+// Asserting from outside the subtest is the whole point: nothing inside it can
+// observe its own teardown.
+func TestFreshTestDB_DropsItsDatabase(t *testing.T) {
+	var dbName string
+
+	t.Run("inner", func(t *testing.T) {
+		cfg := freshTestDB(t)
+		dbName = cfg.Name
+		// Open a connection and actually use it, mirroring the real tests. A
+		// lazily-opened *sql.DB would not reproduce the failure: the session that
+		// blocks the drop only exists once a query has run.
+		db := openDB(t, cfg)
+		if _, err := db.Exec(`CREATE TABLE probe (id INT)`); err != nil {
+			t.Fatalf("exec against fresh DB: %v", err)
+		}
+	})
+
+	if dbName == "" {
+		t.Skip("inner subtest skipped (postgres unreachable)")
+	}
+
+	admin, err := sql.Open("postgres", fmt.Sprintf(
+		"host=%s port=5432 user=%s password=%s dbname=postgres sslmode=disable",
+		envOrDefault("POSTGRES_HOST", "localhost"),
+		envOrDefault("POSTGRES_USER", "swarmd"),
+		envOrDefault("POSTGRES_PASSWORD", "swarmd"),
+	))
+	if err != nil {
+		t.Skipf("admin connection unavailable: %v", err)
+	}
+	defer func() { _ = admin.Close() }()
+
+	var n int
+	if err := admin.QueryRow(
+		`SELECT count(*) FROM pg_database WHERE datname = $1`, dbName,
+	).Scan(&n); err != nil {
+		t.Fatalf("query pg_database: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("test database %s survived its own cleanup — the suite is leaking "+
+			"one database per run", dbName)
 	}
 }

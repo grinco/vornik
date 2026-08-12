@@ -465,7 +465,11 @@ CREATE TABLE IF NOT EXISTS task_llm_usage (
     -- so cost and tokens are zero and the row exists only to keep the stage
     -- visible. Distinct from cache_*_tokens, which is the provider's prompt
     -- cache on a call that did happen.
-    cache_hit             INTEGER NOT NULL DEFAULT 0
+    cache_hit             INTEGER NOT NULL DEFAULT 0,
+    -- Migration 159 parity: the token counts were DERIVED, not reported by the
+    -- provider (some embedding backends return none). Qualifies the token
+    -- columns only; cost_usd is unaffected.
+    tokens_estimated      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_llm_usage_project_time ON task_llm_usage(project_id, recorded_at DESC);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task        ON task_llm_usage(task_id);
@@ -762,6 +766,15 @@ CREATE TABLE IF NOT EXISTS project_memory_chunks (
     derived_from_extracted_document_id TEXT,
     derived_from_section_id            TEXT,
     created_at                         TEXT NOT NULL,
+    -- event_time is when the chunk's CONTENT pertains to, as distinct from
+    -- created_at, which is when we wrote it. NULL = unknown, and the read
+    -- path falls back via COALESCE(event_time, created_at) so a chunk stored
+    -- without one behaves exactly as it did before the column existed.
+    -- Mirrors postgres migration 157; see
+    -- 2026-08-10-memory-benchmark-harness-design.md §4.1. Carried here for
+    -- column-shape parity: UpsertChunks writes this column unconditionally,
+    -- so omitting it would break every sqlite-backed insert.
+    event_time                         TEXT,
     -- repo_scope partitions deposits within a single project so the
     -- operator's many repos don't pollute each other's RAG. NULL =
     -- uncategorized; "*" = cross-cutting; any other string = repo
@@ -1372,7 +1385,7 @@ CREATE INDEX IF NOT EXISTS idx_skill_versions_skill
 CREATE TABLE IF NOT EXISTS control_plane_proposals (
     id                 TEXT PRIMARY KEY,
     project_id         TEXT,
-    kind               TEXT NOT NULL CHECK (kind IN ('config','model','scaffold','instinct_retire')),
+    kind               TEXT NOT NULL CHECK (kind IN ('config','model','scaffold','instinct_retire','observation')),
     blast_radius       TEXT NOT NULL CHECK (blast_radius IN ('model','project','swarm','daemon')),
     title              TEXT NOT NULL,
     diff               TEXT NOT NULL DEFAULT '',

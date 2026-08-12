@@ -26,6 +26,7 @@ import (
 
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 )
@@ -120,7 +121,7 @@ type Service struct {
 	Edition string
 	// LLMUsage records one row per call for the spend dashboard, with
 	// Role/Source = fix_it_doctor. Optional.
-	LLMUsage UsageRecorder
+	Spend llmspend.Recorder
 	// BudgetRepo backs the budget.Check spend-cap gate. Optional — a
 	// nil repo (or a ref with no ProjectID) skips the gate.
 	BudgetRepo budget.Repo
@@ -575,7 +576,7 @@ func (s *Service) buildChatMessages(bundle GroundingBundle, stateChangedNotice s
 }
 
 func (s *Service) recordUsage(ctx context.Context, resp *chat.ChatResponse, sessionID string) {
-	if s == nil || s.LLMUsage == nil || resp == nil {
+	if s == nil || resp == nil {
 		return
 	}
 	prompt := resp.Usage.PromptTokens
@@ -583,18 +584,13 @@ func (s *Service) recordUsage(ctx context.Context, resp *chat.ChatResponse, sess
 	if prompt == 0 && completion == 0 {
 		return
 	}
-	row := &persistence.TaskLLMUsage{
-		ID:               persistence.GenerateID("llm"),
-		StepID:           sessionID,
-		Role:             RoleFixItDoctor,
+	// ProjectID empty: the doctor is a daemon-level diagnostic, not project work.
+	s.Spend.Record(ctx, llmspend.Input{
 		Model:            firstNonEmpty(resp.Model, s.Model),
-		PromptTokens:     int64(prompt),
-		CompletionTokens: int64(completion),
-		Iterations:       1,
-		Source:           SourceFixItDoctor,
-		RecordedAt:       time.Now().UTC(),
-	}
-	_ = s.LLMUsage.Record(ctx, row)
+		PromptTokens:     prompt,
+		CompletionTokens: completion,
+		StepID:           sessionID,
+	})
 }
 
 // decodeTranscript handles the empty-blob case explicitly, mirroring

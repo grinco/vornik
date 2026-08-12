@@ -220,3 +220,9 @@ func TestChatCompletions_ResponseDoesNotWaitForSlowUsageSink(t *testing.T) {
 		t.Errorf("recorded %d usage rows, want 1 (telemetry must be deferred, not dropped)", got)
 	}
 }
+
+// Upsert satisfies llmspend.UsageRepo. This fake's component only calls Record,
+// so it delegates.
+func (r *lgBlockingUsageRepo) Upsert(ctx context.Context, u *persistence.TaskLLMUsage) error {
+	return r.Record(ctx, u)
+}

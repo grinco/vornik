@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"testing"
+	"vornik.io/vornik/internal/llmspend"
 
 	"vornik.io/vornik/internal/chat"
 )
@@ -10,7 +11,7 @@ import (
 func TestClassifier_CacheHit_SkipsProvider(t *testing.T) {
 	fp := newClassifyProvider()
 	cache := newFakeResponseCache()
-	c := NewClassifier(fp, "")
+	c := NewClassifier(fp, "", llmspend.Disabled())
 	c.Cache = cache
 
 	user := buildClassifierUserPrompt("some content here", "doc.md", "researcher")
@@ -36,7 +37,7 @@ func TestClassifier_CacheHit_SkipsProvider(t *testing.T) {
 func TestClassifier_CacheMiss_PopulatesCache(t *testing.T) {
 	fp := newClassifyProvider(titlerReply{content: "decision"})
 	cache := newFakeResponseCache()
-	c := NewClassifier(fp, "")
+	c := NewClassifier(fp, "", llmspend.Disabled())
 	c.Cache = cache
 
 	got, err := c.Classify(context.Background(), "approved: switch retry layer", "decision.md", "lead", "", "")
@@ -65,7 +66,7 @@ func TestClassifier_CacheMiss_PopulatesCache(t *testing.T) {
 
 func TestClassifier_NilCache_AlwaysCallsProvider(t *testing.T) {
 	fp := newClassifyProvider(titlerReply{content: "research"}, titlerReply{content: "research"})
-	c := NewClassifier(fp, "")
+	c := NewClassifier(fp, "", llmspend.Disabled())
 	c.Cache = nil
 
 	if _, err := c.Classify(context.Background(), "x", "f", "r", "", ""); err != nil {

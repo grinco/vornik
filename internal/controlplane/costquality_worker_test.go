@@ -26,11 +26,12 @@ func (f *fakeProposals) List(context.Context, persistence.ProposalListFilter) ([
 func (f *fakeProposals) GetByID(context.Context, string) (*persistence.ControlPlaneProposal, error) {
 	return nil, nil
 }
-func (f *fakeProposals) SetStatus(context.Context, string, string, string) error     { return nil }
-func (f *fakeProposals) MarkApplied(context.Context, string, string, string) error   { return nil }
-func (f *fakeProposals) StagePreApplySnapshot(context.Context, string, string) error { return nil }
-func (f *fakeProposals) MarkRolledBack(context.Context, string) error                { return nil }
-func (f *fakeProposals) MarkRegressed(context.Context, string, string) error         { return nil }
+func (f *fakeProposals) SetStatus(context.Context, string, string, string) error          { return nil }
+func (f *fakeProposals) MarkApplied(context.Context, string, string, string) error        { return nil }
+func (f *fakeProposals) StagePreApplySnapshot(context.Context, string, string) error      { return nil }
+func (f *fakeProposals) MarkRolledBack(context.Context, string) error                     { return nil }
+func (f *fakeProposals) MarkRegressed(context.Context, string, string) error              { return nil }
+func (f *fakeProposals) RefreshObservation(context.Context, string, string, string) error { return nil }
 
 type fakeQual struct{ rep quality.Report }
 

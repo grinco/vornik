@@ -35,6 +35,7 @@ func RunSkillSuite(t *testing.T, repo persistence.SkillRepository) {
 	t.Run("Upsert_preserves_is_global", func(t *testing.T) { skillUpsertPreservesGlobal(t, repo) })
 	t.Run("List_IncludeGlobal_Isolation", func(t *testing.T) { skillListIncludeGlobalIsolation(t, repo) })
 	t.Run("ListAcrossProjects_filters_by_maturity", func(t *testing.T) { skillListAcrossProjects(t, repo) })
+	t.Run("CountByMaturity_counts_every_state", func(t *testing.T) { skillCountByMaturity(t, repo) })
 	t.Run("Embedding_and_dedup_fields_round_trip", func(t *testing.T) { skillDedupFieldsRoundTrip(t, repo) })
 	t.Run("Upsert_archives_prior_body", func(t *testing.T) { skillUpsertArchivesPriorBody(t, repo) })
 }
@@ -207,6 +208,61 @@ func skillListAcrossProjects(t *testing.T, repo persistence.SkillRepository) {
 	}))
 	if !all["lap-a-draft"] || !all["lap-a-active"] || !all["lap-b-active"] {
 		t.Errorf("empty maturities must return every state: %v", keys(all))
+	}
+}
+
+// skillCountByMaturity: the aggregate behind the dashboard "Learning" tile.
+// It spans every project and buckets by maturity, including retired (the
+// caller decides what to render).
+//
+// Assertions are DELTAS, not absolute totals: this suite shares one database
+// across its subtests, so rows written by earlier behaviors are legitimately
+// still present. An absolute-count assertion here would pass or fail on
+// subtest ordering rather than on the query being right.
+func skillCountByMaturity(t *testing.T, repo persistence.SkillRepository) {
+	ctx := context.Background()
+	before, err := repo.CountByMaturity(ctx)
+	if err != nil {
+		t.Fatalf("CountByMaturity (before): %v", err)
+	}
+
+	mk := func(id, proj, maturity string) {
+		s := newTestSkill(id, proj, "github.com/x/cbm", "n-"+id)
+		s.Maturity = maturity
+		mustCreateSkill(t, repo, s)
+	}
+	// Two projects per state where possible — the count must not be
+	// project-scoped.
+	mk("cbm-a", "p1", persistence.SkillMaturityTrusted)
+	mk("cbm-b", "p2", persistence.SkillMaturityTrusted)
+	mk("cbm-c", "p1", persistence.SkillMaturityActive)
+	mk("cbm-d", "p1", persistence.SkillMaturityDraft)
+	mk("cbm-e", "p2", persistence.SkillMaturityRetired)
+
+	after, err := repo.CountByMaturity(ctx)
+	if err != nil {
+		t.Fatalf("CountByMaturity (after): %v", err)
+	}
+	for _, tc := range []struct {
+		maturity string
+		want     int
+	}{
+		{persistence.SkillMaturityTrusted, 2},
+		{persistence.SkillMaturityActive, 1},
+		{persistence.SkillMaturityDraft, 1},
+		{persistence.SkillMaturityRetired, 1},
+	} {
+		if got := after[tc.maturity] - before[tc.maturity]; got != tc.want {
+			t.Errorf("maturity %q: count delta = %d, want %d (before=%d after=%d)",
+				tc.maturity, got, tc.want, before[tc.maturity], after[tc.maturity])
+		}
+	}
+
+	// A maturity nobody has written must be absent from the map, not
+	// present-and-zero: the dashboard distinguishes "no skills in this
+	// state" from "this state exists" only by key presence.
+	if n, ok := after["not-a-real-maturity"]; ok {
+		t.Errorf("unwritten maturity must be absent from the map, got %d", n)
 	}
 }
 

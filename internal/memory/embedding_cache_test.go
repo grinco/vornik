@@ -149,7 +149,7 @@ func TestEmbedder_CacheHitsShortCircuit(t *testing.T) {
 		},
 		Cache: cache,
 	}
-	out, err := e.Embed(context.Background(), []string{"a", "b"})
+	out, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, []string{"a", "b"})
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestEmbedder_CacheHitsShortCircuit(t *testing.T) {
 func TestEmbedder_NoCacheNoCacheCall(t *testing.T) {
 	// Cache=nil + endpoint="" → Embed returns nil, nil; no panic.
 	e := &Embedder{cfg: Config{EmbeddingModel: "test-model"}}
-	out, err := e.Embed(context.Background(), []string{"x"})
+	out, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, []string{"x"})
 	if err != nil {
 		t.Errorf("err: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestEmbedder_CacheRequiresModel(t *testing.T) {
 	cache := newFakeEmbedCache()
 	e := NewEmbedder(Config{})
 	e.Cache = cache
-	if _, err := e.Embed(context.Background(), []string{"x"}); err != nil {
+	if _, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, []string{"x"}); err != nil {
 		t.Fatalf("Embed: %v", err)
 	}
 	if cache.gets != 0 {

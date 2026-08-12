@@ -57,8 +57,9 @@ type DashboardData struct {
 	// pages to see "is the pipeline healthy / are there safety events
 	// / how's the judge doing". All three structs zero-value cleanly
 	// when the underlying repos aren't wired.
-	Memory DashboardMemory // KG extraction + ingest queue snapshot
-	Judge  DashboardJudge  // hallucination judge rollup over 24h
+	Memory   DashboardMemory   // KG extraction + ingest queue snapshot
+	Judge    DashboardJudge    // hallucination judge rollup over 24h
+	Learning DashboardLearning // skill-store maturity + instinct rollup
 
 	// 2026-05-22: cache effectiveness tile so the operator sees
 	// Phase E paying off from the front door. Available=false hides
@@ -185,6 +186,40 @@ type DashboardJudge struct {
 	Abstain     int
 	Total       int
 	PercentPass float64 // Pass / Total * 100, 0 when Total == 0
+}
+
+// DashboardLearning is the "Learning" tile — what the deployment has
+// distilled from its own runs, and what of that is waiting on the operator.
+// It fills the third slot of the "Health & knowledge" row, empty since the
+// trading tile was removed (2026-08-07).
+//
+// The skill half ships in both editions. The instinct half does not:
+// instincts are Enterprise-only (every existing entry point sits behind
+// .EnterpriseAdmin), so InstinctsAvailable gates that row and a Community
+// dashboard simply renders one row fewer — no empty slot, no upsell.
+type DashboardLearning struct {
+	// Enabled means the counts below are real: skillRepo is wired AND the
+	// caller may see instance-wide totals.
+	Enabled bool
+	// Restricted distinguishes "you may not see this" from "this isn't
+	// wired". Both render an empty tile, but conflating them would tell a
+	// project-scoped operator their deployment lacks a skill store.
+	Restricted bool
+	Trusted    int
+	Active     int
+	Draft      int // == the operator review-queue depth
+	Retired    int // counted but not rendered; excluded from Total
+	// Total is trusted+active+draft. Retired skills inject nowhere, so
+	// including them would overstate what the store contributes.
+	Total int
+
+	// InstinctsAvailable is true only in an Enterprise build with the
+	// instinct repo wired.
+	InstinctsAvailable bool
+	// InstinctsLive counts active + promoted. A promoted instinct is still
+	// firing, so excluding it would under-report; candidates and retired
+	// instincts fire nowhere and are excluded.
+	InstinctsLive int
 }
 
 // DashboardSpend is the headline $ summary shown on the dashboard.
@@ -583,7 +618,56 @@ func (s *Server) Dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	s.buildLearningTile(ctx, r, &data)
+
 	s.render(w, "dashboard.html", data)
+}
+
+// buildLearningTile fills the "Learning" tile: skill-store maturity
+// distribution, the draft review-queue depth, and (Enterprise only) the count
+// of live instincts.
+//
+// Both counts are instance-wide aggregates with no project filter, so they are
+// gated to all-access callers exactly like the spend and KG rollups above — a
+// project-scoped session must not read cross-project totals.
+func (s *Server) buildLearningTile(ctx context.Context, r *http.Request, data *DashboardData) {
+	if s.skillRepo == nil {
+		return
+	}
+	if !requestHasAllProjectAccess(r) {
+		data.Learning.Restricted = true
+		return
+	}
+
+	counts, err := s.skillRepo.CountByMaturity(ctx)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("failed to count skills by maturity for dashboard")
+		return
+	}
+	data.Learning.Enabled = true
+	data.Learning.Trusted = counts[persistence.SkillMaturityTrusted]
+	data.Learning.Active = counts[persistence.SkillMaturityActive]
+	data.Learning.Draft = counts[persistence.SkillMaturityDraft]
+	data.Learning.Retired = counts[persistence.SkillMaturityRetired]
+	data.Learning.Total = data.Learning.Trusted + data.Learning.Active + data.Learning.Draft
+
+	// Instincts are Enterprise-only. enterpriseAdmin (not repo presence) is
+	// the edition switch — some EE features have their repo wired in CE too.
+	if !s.enterpriseAdmin || s.instinctRepo == nil {
+		return
+	}
+	byDomain, err := s.instinctRepo.CountByDomainStatus(ctx)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("failed to count instincts for dashboard")
+		return
+	}
+	data.Learning.InstinctsAvailable = true
+	for _, c := range byDomain {
+		switch c.Status {
+		case persistence.InstinctStatusActive, persistence.InstinctStatusPromoted:
+			data.Learning.InstinctsLive += c.Count
+		}
+	}
 }
 
 // humanizeAgo formats a positive duration as "3m 24s ago"-style

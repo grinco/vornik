@@ -633,13 +633,14 @@ func (c *Container) initHTTPServer() error {
 	if c.memoryManager != nil {
 		apiOpts = append(apiOpts, api.WithMemorySearcher(newMemorySearchAdapter(c.memoryManager.Searcher)))
 		apiOpts = append(apiOpts, api.WithMemoryStats(newMemoryStatsAdapter(c.memoryManager)))
+		apiOpts = append(apiOpts, api.WithMemoryEmbedderReporter(newMemoryEmbedderAdapter(c.memoryManager)))
 		// Knowledge-skill dedup preflight (LLD §12.2). Reuses the memory
 		// subsystem's embedder — the skill store keeps its own JSON-TEXT
 		// vector column and shares no storage or retrieval path with RAG;
 		// this is the embedding CLIENT only. Nil-safe downstream: without it
 		// the preflight degrades to its lexical metric.
 		if c.memoryManager.Embedder != nil {
-			apiOpts = append(apiOpts, api.WithSkillEmbedder(c.memoryManager.Embedder))
+			apiOpts = append(apiOpts, api.WithSkillEmbedder(skillEmbedderAdapter{e: c.memoryManager.Embedder}))
 		}
 		// LLD 22: wire the companion RAG adapter only when the
 		// searcher, pipeline, AND repository are live.

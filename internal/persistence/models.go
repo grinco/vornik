@@ -1690,6 +1690,19 @@ type TaskLLMUsage struct {
 	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
 	CacheReadTokens     int64 `json:"cache_read_tokens,omitempty"`
 
+	// TokensEstimated marks a row whose token counts were DERIVED rather than
+	// reported by the provider. Some embedding backends return no token count at
+	// all (Bedrock Cohere), so the only options are to estimate or to record
+	// nothing — and recording nothing is the defect that hid embedding spend
+	// entirely. The flag qualifies the token columns, not CostUSD, so existing
+	// SUM(cost_usd) consumers are unaffected.
+	//
+	// It exists because presenting a bytes-derived guess as a provider
+	// measurement makes the ledger stop being evidence: a future bill
+	// reconciliation must be able to tell "we measured 1.29M tokens" from
+	// "we inferred 1.29M tokens".
+	TokensEstimated bool `json:"tokens_estimated,omitempty"`
+
 	// CacheHit marks a row whose stage was served from the LLM RESPONSE cache
 	// (migration 152) — no provider call happened, so CostUSD and the token counts
 	// are zero. The row exists anyway so the stage stays visible in observability
@@ -1803,6 +1816,14 @@ const (
 	// spend together showed a whole class of calls was invisible
 	// rather than mispriced. Wired 2026-07-31.
 	TaskLLMUsageSourceMemoryReranker = "memory_reranker"
+
+	// TaskLLMUsageSourceMemoryEmbedder attributes EMBEDDING spend — the ingest
+	// worker, query-time retrieval, KG entity resolution, skill preflight, and
+	// infrastructure probes. Before this existed the embed path wrote no usage
+	// row on any provider, so embedding spend appeared in no ledger, no spend
+	// panel and no per-project view
+	// (2026-08-12-embed-spend-attribution-design.md).
+	TaskLLMUsageSourceMemoryEmbedder = "memory_embedder"
 	// TaskLLMUsageSourceChatRememberNED — one row per synchronous
 	// named-entity-resolution (extract+resolve) call made by the chat
 	// `remember` shared-scope pre-commit gate (chat memory-write design

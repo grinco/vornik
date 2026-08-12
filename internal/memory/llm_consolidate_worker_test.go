@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"testing"
 	"time"
+	"vornik.io/vornik/internal/llmspend"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/rs/zerolog"
@@ -33,7 +34,7 @@ func TestLLMConsolidateWorker_TickHappyPath(t *testing.T) {
 		{content: "narrative for proj-b"},
 	}}
 	w := &LLMConsolidateWorker{
-		Writer:   NewNarrativeWriter(fp, ""),
+		Writer:   NewNarrativeWriter(fp, "", llmspend.Disabled()),
 		Repo:     repo,
 		Projects: &stubProjectLister{ids: []string{"proj-a", "proj-b"}},
 		Interval: time.Hour,
@@ -87,7 +88,7 @@ func TestLLMConsolidateWorker_SkipsProjectWithoutGist(t *testing.T) {
 	repo := NewRepository(db)
 	fp := &titlerFakeProvider{replies: []titlerReply{{content: "should not fire"}}}
 	w := &LLMConsolidateWorker{
-		Writer:   NewNarrativeWriter(fp, ""),
+		Writer:   NewNarrativeWriter(fp, "", llmspend.Disabled()),
 		Repo:     repo,
 		Projects: &stubProjectLister{ids: []string{"orphan"}},
 		Interval: time.Hour,
@@ -119,7 +120,7 @@ func TestLLMConsolidateWorker_OneProjectFailsOtherSucceeds(t *testing.T) {
 		{content: "good-project narrative"},
 	}}
 	w := &LLMConsolidateWorker{
-		Writer:   NewNarrativeWriter(fp, ""),
+		Writer:   NewNarrativeWriter(fp, "", llmspend.Disabled()),
 		Repo:     repo,
 		Projects: &stubProjectLister{ids: []string{"bad-project", "good-project"}},
 		Interval: time.Hour,
@@ -166,7 +167,7 @@ func TestLLMConsolidateWorker_EmptyNarrativePreservesExisting(t *testing.T) {
 		{content: "   "},
 	}}
 	w := &LLMConsolidateWorker{
-		Writer:   NewNarrativeWriter(fp, ""),
+		Writer:   NewNarrativeWriter(fp, "", llmspend.Disabled()),
 		Repo:     repo,
 		Projects: &stubProjectLister{ids: []string{"proj-x"}},
 		Interval: time.Hour,
@@ -205,7 +206,7 @@ func TestLLMConsolidateWorker_DisabledByInterval(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	repo := NewRepository(db)
 	w := &LLMConsolidateWorker{
-		Writer:   NewNarrativeWriter(&titlerFakeProvider{}, ""),
+		Writer:   NewNarrativeWriter(&titlerFakeProvider{}, "", llmspend.Disabled()),
 		Repo:     repo,
 		Projects: &stubProjectLister{ids: []string{"p"}},
 		Interval: 0,

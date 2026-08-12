@@ -7,14 +7,17 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/chat"
-	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/llmspend"
 )
 
-// classifierRole is the value stored in task_llm_usage.role for every
+// RoleClassifier is the value stored in task_llm_usage.role for every
 // LLM classify call. Mirrors titlerRole / kg_extractor so the spend
 // dashboard groups every memory background consumer under one
 // "memory_*" prefix.
-const classifierRole = "memory_classifier"
+// RoleClassifier is this component's task_llm_usage.role. Exported so the wiring site
+// references the component's own identity instead of repeating a string
+// literal the component would then not control.
+const RoleClassifier = "memory_classifier"
 
 // classifierSystemPrompt asks the LLM to pick exactly one
 // ContentClass for a chunk. Closed-shape output — one lowercase
@@ -89,13 +92,10 @@ type Classifier struct {
 	// Timeout per LLM call. 0 → 30s. Same rationale as Titler.
 	Timeout time.Duration
 
-	// LLMUsage records one task_llm_usage row per call so the
-	// operator UI's spend dashboards attribute classifier cost to
-	// the "memory_classifier" role. Optional — nil-safe.
-	LLMUsage UsageRecorder
-	// Pricing computes USD from the model's token counts. nil →
-	// cost_usd is stamped 0 (token volume still visible).
-	Pricing PricingTable
+	// spend records one task_llm_usage row per billed classify call, attributing
+	// it to the "memory_classifier" role. Unexported and set only by
+	// NewClassifier — see the note on Titler.spend.
+	spend llmspend.Recorder
 	// Cache memoises (model, system+user prompt) → raw response so
 	// `vornikctl memory reclassify` reruns skip the upstream LLM
 	// call. Optional — nil disables. See llm-caching-design.md
@@ -104,13 +104,15 @@ type Classifier struct {
 }
 
 // NewClassifier builds a Classifier with sane defaults.
-func NewClassifier(client chat.Provider, model string) *Classifier {
+// spend is REQUIRED — see NewTitler.
+func NewClassifier(client chat.Provider, model string, spend llmspend.Recorder) *Classifier {
 	return &Classifier{
 		Client:          client,
 		Model:           model,
 		MaxAttempts:     2,
 		MaxPreviewBytes: 2 * 1024,
 		Timeout:         30 * time.Second,
+		spend:           spend,
 	}
 }
 
@@ -286,42 +288,25 @@ func parseClassifierResponse(raw string) (ContentClass, bool) {
 // Errors are swallowed: failing to bill is dashboard fidelity, not
 // correctness.
 func (c *Classifier) recordUsage(ctx context.Context, resp *chat.ChatResponse, projectID, chunkID string) {
-	if c == nil || c.LLMUsage == nil || resp == nil {
+	if c == nil || resp == nil {
 		return
 	}
 	if projectID == "" && chunkID == "" {
-		return
-	}
-	prompt := resp.Usage.PromptTokens
-	completion := resp.Usage.CompletionTokens
-	if prompt == 0 && completion == 0 {
 		return
 	}
 	model := resp.Model
 	if model == "" {
 		model = c.Model
 	}
-	var costUSD float64
-	if c.Pricing != nil {
-		costUSD = c.Pricing.CostUSD(model, prompt, completion)
-	}
-	row := &persistence.TaskLLMUsage{
-		ID:                  persistence.GenerateID("llm"),
+	c.spend.Record(ctx, llmspend.Input{
 		ProjectID:           projectID,
-		TaskID:              nil,
-		ExecutionID:         nil,
-		StepID:              chunkID,
-		Role:                classifierRole,
 		Model:               model,
-		PromptTokens:        int64(prompt),
-		CompletionTokens:    int64(completion),
-		Iterations:          1,
-		CostUSD:             costUSD,
-		Source:              persistence.TaskLLMUsageSourceMemoryClassifier,
-		CacheCreationTokens: int64(resp.Usage.CacheCreationTokens),
-		CacheReadTokens:     int64(resp.Usage.CacheReadTokens),
-	}
-	_ = c.LLMUsage.Record(ctx, row)
+		PromptTokens:        resp.Usage.PromptTokens,
+		CompletionTokens:    resp.Usage.CompletionTokens,
+		StepID:              chunkID,
+		CacheCreationTokens: resp.Usage.CacheCreationTokens,
+		CacheReadTokens:     resp.Usage.CacheReadTokens,
+	})
 }
 
 func truncForClassifier(s string, n int) string {

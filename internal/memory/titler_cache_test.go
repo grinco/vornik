@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"testing"
+	"vornik.io/vornik/internal/llmspend"
 
 	"vornik.io/vornik/internal/chat"
 )
@@ -12,7 +13,7 @@ import (
 func TestTitler_CacheHit_SkipsProvider(t *testing.T) {
 	fp := &titlerFakeProvider{}
 	cache := newFakeResponseCache()
-	tr := NewTitler(fp, "")
+	tr := NewTitler(fp, "", llmspend.Disabled())
 	tr.Cache = cache
 
 	// Pre-seed cache with the exact key Title() will compute. The
@@ -46,7 +47,7 @@ func TestTitler_CacheHit_SkipsProvider(t *testing.T) {
 func TestTitler_CacheMiss_PopulatesCache(t *testing.T) {
 	fp := &titlerFakeProvider{replies: []titlerReply{{content: "Fresh Topic"}}}
 	cache := newFakeResponseCache()
-	tr := NewTitler(fp, "")
+	tr := NewTitler(fp, "", llmspend.Disabled())
 	tr.Cache = cache
 
 	got, err := tr.Title(context.Background(), "novel content", "", "")
@@ -82,7 +83,7 @@ func TestTitler_NilCache_AlwaysCallsProvider(t *testing.T) {
 	fp := &titlerFakeProvider{
 		replies: []titlerReply{{content: "Title A"}, {content: "Title A"}},
 	}
-	tr := NewTitler(fp, "")
+	tr := NewTitler(fp, "", llmspend.Disabled())
 	tr.Cache = nil
 
 	if _, err := tr.Title(context.Background(), "x", "", ""); err != nil {

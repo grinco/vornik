@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 	"time"
+	"vornik.io/vornik/internal/llmspend"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/rs/zerolog"
@@ -14,7 +15,7 @@ func newClassifyBackfiller(t *testing.T, replies []titlerReply) (*ClassifyBackfi
 	t.Helper()
 	r, mock, cleanup := newRepo(t)
 	fp := newClassifyProvider(replies...)
-	cl := NewClassifier(fp, "")
+	cl := NewClassifier(fp, "", llmspend.Disabled())
 	return &ClassifyBackfiller{
 		Repo:       r,
 		Classifier: cl,

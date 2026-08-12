@@ -132,6 +132,9 @@ func (r *ProposalRepository) SetStatus(ctx context.Context, id, status, actor st
 	whereStates := "status = 'DRAFT'"
 	switch status {
 	case persistence.ProposalStatusApproved:
+		if persistence.IsObservationKind(existing.Kind) {
+			return persistence.ErrProposalNotDecidable
+		}
 		if existing.Status != persistence.ProposalStatusDraft {
 			return persistence.ErrProposalNotDraft
 		}
@@ -281,4 +284,30 @@ func scanPGProposal(sc pgSkillScanner) (*persistence.ControlPlaneProposal, error
 		p.AppliedAt = &t
 	}
 	return &p, nil
+}
+
+// RefreshObservation updates an observation's rationale + evidence in place.
+// Status and id are untouched: a recurrence is an update to an existing
+// finding, not a new one, and an observation the operator has already dismissed
+// stays dismissed while its occurrence count records that it is still live.
+// Scoped to the observation kind so it can never rewrite a decidable proposal's
+// prose out from under a review.
+func (r *ProposalRepository) RefreshObservation(ctx context.Context, id, rationale, evidence string) error {
+	if len(rationale) > persistence.ProposalMaxFieldBytes || len(evidence) > persistence.ProposalMaxFieldBytes {
+		return persistence.ErrProposalFieldTooLarge
+	}
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE control_plane_proposals SET rationale = $1, evidence = $2
+		WHERE id = $3 AND kind = $4`, rationale, evidence, id, persistence.ProposalKindObservation)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return persistence.ErrNotFound
+	}
+	return nil
 }

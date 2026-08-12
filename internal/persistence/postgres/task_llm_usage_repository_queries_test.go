@@ -20,6 +20,7 @@ func usageRow() *sqlmock.Rows {
 		"role", "model", "prompt_tokens", "completion_tokens", "iterations",
 		"cost_usd", "source", "session_id", "recorded_at",
 		"cache_creation_tokens", "cache_read_tokens", "api_key_id", "cache_hit",
+		"tokens_estimated",
 	})
 }
 
@@ -37,6 +38,7 @@ func TestUsageList_HappyPath_DefaultFilter(t *testing.T) {
 			"worker", "claude", int64(100), int64(50), 1,
 			1.0, "workflow_step", "sess-1", recorded,
 			int64(0), int64(0), nil, false,
+			false,
 		).
 		AddRow(
 			"u-2", "p-1", nil, nil, "s-2",
@@ -47,6 +49,7 @@ func TestUsageList_HappyPath_DefaultFilter(t *testing.T) {
 			0.0, "dispatcher", nil, recorded,
 			int64(0), int64(0), nil,
 			true,
+			false, // tokens_estimated (migration 159)
 		)
 	mock.ExpectQuery(regexp.QuoteMeta("FROM task_llm_usage WHERE 1=1")).
 		WithArgs(). // no filter args
@@ -386,8 +389,8 @@ func TestUsageAggregateByRoleModel(t *testing.T) {
 	until := time.Date(2026, 5, 13, 0, 0, 0, 0, time.UTC)
 	rows := sqlmock.NewRows([]string{
 		"role", "model", "cost_usd", "step_count", "prompt_tokens", "completion_tokens",
-		"cache_creation_tokens", "cache_read_tokens",
-	}).AddRow("worker", "claude", 5.0, int64(10), int64(1000), int64(500), int64(60), int64(2400))
+		"cache_creation_tokens", "cache_read_tokens", "any_tokens_estimated",
+	}).AddRow("worker", "claude", 5.0, int64(10), int64(1000), int64(500), int64(60), int64(2400), false)
 
 	mock.ExpectQuery(regexp.QuoteMeta("GROUP BY role, model ORDER BY cost_usd DESC")).
 		WithArgs(since, until, "p-1", 5).

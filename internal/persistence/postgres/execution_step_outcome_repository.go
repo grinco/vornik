@@ -464,7 +464,7 @@ func nullableTime(v *time.Time) sql.NullTime {
 // latency aggregations.
 func (r *ExecutionStepOutcomeRepository) StepLatencyP95ByStep(ctx context.Context, since time.Time) ([]persistence.StepLatencyStat, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT o.project_id, e.workflow_id, o.step_id, o.role, o.model, o.duration_ms
+		SELECT o.project_id, e.workflow_id, o.step_id, o.role, o.model, o.duration_ms, o.outcome
 		FROM execution_step_outcomes o
 		JOIN executions e ON e.id = o.execution_id
 		WHERE o.recorded_at >= $1 AND o.duration_ms IS NOT NULL AND o.duration_ms >= 0`, since.UTC())
@@ -480,13 +480,22 @@ func (r *ExecutionStepOutcomeRepository) StepLatencyP95ByStep(ctx context.Contex
 func scanStepLatencyRows(rows *sql.Rows) ([]persistence.StepLatencyStat, error) {
 	type key struct{ project, workflow, step, role, model string }
 	byKey := make(map[key][]float64)
+	degraded := make(map[key]int64)
+	timeouts := make(map[key]int64)
 	for rows.Next() {
 		var k key
 		var durMs int64
-		if err := rows.Scan(&k.project, &k.workflow, &k.step, &k.role, &k.model, &durMs); err != nil {
+		var outcome string
+		if err := rows.Scan(&k.project, &k.workflow, &k.step, &k.role, &k.model, &durMs, &outcome); err != nil {
 			return nil, err
 		}
 		byKey[k] = append(byKey[k], float64(durMs)/1000.0)
+		if persistence.IsDegradedStepOutcome(outcome) {
+			degraded[k]++
+		}
+		if persistence.IsTimeoutStepOutcome(outcome) {
+			timeouts[k]++
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -497,6 +506,8 @@ func scanStepLatencyRows(rows *sql.Rows) ([]persistence.StepLatencyStat, error) 
 			ProjectID: k.project, WorkflowID: k.workflow, StepID: k.step,
 			Role: k.role, Model: k.model,
 			P95Seconds: persistence.P95Seconds(durs), Count: int64(len(durs)),
+			MaxSeconds: persistence.MaxSeconds(durs), DegradedCount: degraded[k],
+			TimeoutCount: timeouts[k],
 		})
 	}
 	return out, nil

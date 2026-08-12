@@ -7,14 +7,17 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/chat"
-	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/llmspend"
 )
 
-// narrativeRole is the value stored in task_llm_usage.role for every
+// RoleNarrative is the value stored in task_llm_usage.role for every
 // LLM-tier consolidation call. Matches Titler's underscore convention
 // so the spend dashboard groups all memory background consumers
 // together.
-const narrativeRole = "memory_narrative"
+// RoleNarrative is this component's task_llm_usage.role. Exported so the wiring site
+// references the component's own identity instead of repeating a string
+// literal the component would then not control.
+const RoleNarrative = "memory_narrative"
 
 // narrativeSystemPrompt instructs the LLM to write a short summary
 // of a project. Closed-shape output — 1-3 sentences, plain prose —
@@ -59,22 +62,21 @@ type NarrativeWriter struct {
 	// Timeout per LLM call. 0 → 30s.
 	Timeout time.Duration
 
-	// LLMUsage records one task_llm_usage row per successful call
-	// so the spend dashboard attributes narrative cost to the
-	// "memory_narrative" role. Optional — nil-safe.
-	LLMUsage UsageRecorder
-	// Pricing computes USD from token counts. nil → cost_usd
-	// is stamped 0.
-	Pricing PricingTable
+	// spend records one task_llm_usage row per billed call, attributing narrative
+	// cost to the "memory_narrative" role. Unexported and set only by
+	// NewNarrativeWriter — see the note on Titler.spend.
+	spend llmspend.Recorder
 }
 
 // NewNarrativeWriter builds one with sensible defaults.
-func NewNarrativeWriter(client chat.Provider, model string) *NarrativeWriter {
+// spend is REQUIRED — see NewTitler.
+func NewNarrativeWriter(client chat.Provider, model string, spend llmspend.Recorder) *NarrativeWriter {
 	return &NarrativeWriter{
 		Client:      client,
 		Model:       model,
 		MaxAttempts: 2,
 		Timeout:     30 * time.Second,
+		spend:       spend,
 	}
 }
 
@@ -207,36 +209,20 @@ func pickModelForNarrative(client chat.Provider, model string) chat.Provider {
 // (the spend dashboard misses a row but the narrative still
 // reaches the operator).
 func (w *NarrativeWriter) recordUsage(ctx context.Context, resp *chat.ChatResponse, projectID string) {
-	if w == nil || w.LLMUsage == nil || resp == nil || projectID == "" {
-		return
-	}
-	pt, ct := resp.Usage.PromptTokens, resp.Usage.CompletionTokens
-	if pt == 0 && ct == 0 {
+	if w == nil || resp == nil || projectID == "" {
 		return
 	}
 	model := resp.Model
 	if model == "" {
 		model = w.Model
 	}
-	cost := 0.0
-	if w.Pricing != nil {
-		cost = w.Pricing.CostUSD(model, pt, ct)
-	}
-	row := &persistence.TaskLLMUsage{
-		ID:                  persistence.GenerateID("llm"),
+	// StepID stays empty: a narrative spans a whole project, not one chunk.
+	w.spend.Record(ctx, llmspend.Input{
 		ProjectID:           projectID,
-		TaskID:              nil,
-		ExecutionID:         nil,
-		StepID:              "",
-		Role:                narrativeRole,
 		Model:               model,
-		PromptTokens:        int64(pt),
-		CompletionTokens:    int64(ct),
-		Iterations:          1,
-		CostUSD:             cost,
-		Source:              persistence.TaskLLMUsageSourceMemoryNarrative,
-		CacheCreationTokens: int64(resp.Usage.CacheCreationTokens),
-		CacheReadTokens:     int64(resp.Usage.CacheReadTokens),
-	}
-	_ = w.LLMUsage.Record(ctx, row)
+		PromptTokens:        resp.Usage.PromptTokens,
+		CompletionTokens:    resp.Usage.CompletionTokens,
+		CacheCreationTokens: resp.Usage.CacheCreationTokens,
+		CacheReadTokens:     resp.Usage.CacheReadTokens,
+	})
 }

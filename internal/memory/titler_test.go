@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"vornik.io/vornik/internal/llmspend"
 
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/persistence"
@@ -63,6 +64,21 @@ func (f *fakeUsageRecorder) Record(_ context.Context, u *persistence.TaskLLMUsag
 	return nil
 }
 
+// Upsert satisfies llmspend.UsageRepo. Replace-by-id, mirroring the real repo's
+// ON CONFLICT DO UPDATE, so a test that streams cumulative usage sees one row.
+func (f *fakeUsageRecorder) Upsert(_ context.Context, u *persistence.TaskLLMUsage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, existing := range f.rows {
+		if existing.ID == u.ID {
+			f.rows[i] = u
+			return nil
+		}
+	}
+	f.rows = append(f.rows, u)
+	return nil
+}
+
 // fixedPricing is a deterministic PricingTable for testing: $1 per
 // 1k prompt tokens + $2 per 1k completion tokens, regardless of model.
 type fixedPricing struct{}
@@ -82,7 +98,7 @@ func (f *titlerFakeProvider) SetMetrics(*chat.Metrics) {}
 
 func TestTitler_Title_HappyPath(t *testing.T) {
 	fp := &titlerFakeProvider{replies: []titlerReply{{content: "Quarterly Sales Forecast"}}}
-	tr := NewTitler(fp, "")
+	tr := NewTitler(fp, "", llmspend.Disabled())
 	got, err := tr.Title(context.Background(), "Some content about Q3 sales numbers", "", "")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -94,7 +110,7 @@ func TestTitler_Title_HappyPath(t *testing.T) {
 
 func TestTitler_Title_EmptyContent(t *testing.T) {
 	fp := &titlerFakeProvider{replies: []titlerReply{{content: "Should Not Be Used"}}}
-	tr := NewTitler(fp, "")
+	tr := NewTitler(fp, "", llmspend.Disabled())
 	got, err := tr.Title(context.Background(), "   \n\t ", "", "")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -123,7 +139,7 @@ func TestTitler_Title_StripsCommonNoise(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			fp := &titlerFakeProvider{replies: []titlerReply{{content: c.raw}}}
-			tr := NewTitler(fp, "")
+			tr := NewTitler(fp, "", llmspend.Disabled())
 			got, err := tr.Title(context.Background(), "anything", "", "")
 			if err != nil {
 				t.Fatalf("unexpected err: %v", err)
@@ -137,7 +153,7 @@ func TestTitler_Title_StripsCommonNoise(t *testing.T) {
 
 func TestTitler_Title_RejectsGarbage(t *testing.T) {
 	fp := &titlerFakeProvider{replies: []titlerReply{{content: "...!!!"}}}
-	tr := NewTitler(fp, "")
+	tr := NewTitler(fp, "", llmspend.Disabled())
 	got, err := tr.Title(context.Background(), "anything", "", "")
 	// Garbage response → empty title + non-nil err so the backfill
 	// CLI can count it as a failure but the worker still falls back.
@@ -154,7 +170,7 @@ func TestTitler_Title_RetriesOnTransientError(t *testing.T) {
 		{err: errors.New("connection reset")},
 		{content: "Recovered Title"},
 	}}
-	tr := NewTitler(fp, "")
+	tr := NewTitler(fp, "", llmspend.Disabled())
 	tr.MaxAttempts = 2
 	got, err := tr.Title(context.Background(), "anything", "", "")
 	if err != nil {
@@ -173,7 +189,7 @@ func TestTitler_Title_BoundsLongResponse(t *testing.T) {
 	// paragraph. Cap protects the UI layout.
 	long := strings.Repeat("Word ", 50) // > 80 chars
 	fp := &titlerFakeProvider{replies: []titlerReply{{content: long}}}
-	tr := NewTitler(fp, "")
+	tr := NewTitler(fp, "", llmspend.Disabled())
 	got, err := tr.Title(context.Background(), "anything", "", "")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -193,9 +209,8 @@ func TestTitler_NilReceiver(t *testing.T) {
 func TestTitler_RecordsUsage(t *testing.T) {
 	fp := &titlerFakeProvider{replies: []titlerReply{{content: "Q3 Pipeline Review"}}}
 	rec := &fakeUsageRecorder{}
-	tr := NewTitler(fp, "")
-	tr.LLMUsage = rec
-	tr.Pricing = fixedPricing{}
+	tr := NewTitler(fp, "",
+		llmspend.New(rec, fixedPricing{}, persistence.TaskLLMUsageSourceMemoryTitler, "memory_titler"))
 
 	got, err := tr.Title(context.Background(), "some chunk content", "proj-7", "chunk-42")
 	if err != nil {
@@ -208,8 +223,8 @@ func TestTitler_RecordsUsage(t *testing.T) {
 		t.Fatalf("expected 1 usage row, got %d", len(rec.rows))
 	}
 	r := rec.rows[0]
-	if r.Role != titlerRole {
-		t.Errorf("role: got %q, want %q", r.Role, titlerRole)
+	if r.Role != RoleTitler {
+		t.Errorf("role: got %q, want %q", r.Role, RoleTitler)
 	}
 	if r.Source != persistence.TaskLLMUsageSourceMemoryTitler {
 		t.Errorf("source: got %q, want %q", r.Source, persistence.TaskLLMUsageSourceMemoryTitler)
@@ -241,8 +256,8 @@ func TestTitler_RecordsUsage(t *testing.T) {
 func TestTitler_SkipsUsageWhenUnconfigured(t *testing.T) {
 	fp := &titlerFakeProvider{replies: []titlerReply{{content: "Topic"}}}
 	rec := &fakeUsageRecorder{}
-	tr := NewTitler(fp, "")
-	tr.LLMUsage = rec
+	tr := NewTitler(fp, "",
+		llmspend.New(rec, fixedPricing{}, persistence.TaskLLMUsageSourceMemoryTitler, "memory_titler"))
 
 	// Empty projectID + chunkID → skip recording even though
 	// LLMUsage is wired. Lets tests + nil-safe paths run without
@@ -260,9 +275,8 @@ func TestTitler_RecordsUsageEvenOnUnusableResponse(t *testing.T) {
 	// response was unparseable.
 	fp := &titlerFakeProvider{replies: []titlerReply{{content: "...!!!"}}}
 	rec := &fakeUsageRecorder{}
-	tr := NewTitler(fp, "")
-	tr.LLMUsage = rec
-	tr.Pricing = fixedPricing{}
+	tr := NewTitler(fp, "",
+		llmspend.New(rec, fixedPricing{}, persistence.TaskLLMUsageSourceMemoryTitler, "memory_titler"))
 
 	_, err := tr.Title(context.Background(), "content", "proj", "chunk")
 	if err == nil {

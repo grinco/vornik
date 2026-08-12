@@ -232,6 +232,11 @@ func (r *fakeUsageRecorder) Record(_ context.Context, u *persistence.TaskLLMUsag
 	return nil
 }
 
+// Upsert satisfies llmspend.UsageRepo; the narrator only calls Record.
+func (r *fakeUsageRecorder) Upsert(ctx context.Context, u *persistence.TaskLLMUsage) error {
+	return r.Record(ctx, u)
+}
+
 func (r *fakeUsageRecorder) all() []*persistence.TaskLLMUsage {
 	r.mu.Lock()
 	defer r.mu.Unlock()

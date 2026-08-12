@@ -15,6 +15,18 @@ type MemoryChunk struct {
 	Embedding   []float32 `json:"embedding,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 
+	// EventTime is when this chunk's CONTENT pertains to, as distinct from
+	// CreatedAt, which is when we wrote it (migration 157, LLD
+	// 2026-08-10-memory-benchmark-harness-design.md §4.1). Zero = unknown,
+	// which persists as SQL NULL and is NOT the same as "now": the read path
+	// falls back via COALESCE(event_time, created_at), so an unknown event
+	// time behaves exactly as before the column existed.
+	//
+	// Do not reach for this when you mean "how long ago did we learn this" —
+	// TTL freshness, recency digests and backfill ordering all belong on
+	// CreatedAt. See §4.1.1 for why conflating the two breaks live behaviour.
+	EventTime time.Time `json:"event_time,omitempty"`
+
 	// Document-extraction provenance (added 2026-05-21 alongside the
 	// extracted_documents table). When this chunk was produced by the
 	// document-ingest path these fields point at the source extracted
@@ -61,6 +73,12 @@ type SearchResult struct {
 	// "matched my scope", "cross-cutting (*)", or "uncategorized
 	// (NULL leak-through)".
 	RepoScope string `json:"repo_scope,omitempty"`
+	// EventTime is when this chunk's content pertains to (migration 157,
+	// design §4.1). Zero = unknown, which is the overwhelming majority of the
+	// corpus and must read as "no signal" rather than "old" — see
+	// temporalProximity. Populated by the search SQL so the proximity signal
+	// (§4.3) and window bucketing (§4.4) can work without a second DB hop.
+	EventTime time.Time `json:"event_time,omitempty"`
 	// PolicyProof carries the firewall's evaluation decision for
 	// this chunk. Non-nil only on results returned by
 	// RecallWithContext (the firewall-aware retrieval path); the

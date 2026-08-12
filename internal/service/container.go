@@ -91,6 +91,7 @@ import (
 	"vornik.io/vornik/internal/hallucination"
 	"vornik.io/vornik/internal/httpx/realip"
 	"vornik.io/vornik/internal/leaderelection"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/mcp"
 	"vornik.io/vornik/internal/mcpauth"
 	"vornik.io/vornik/internal/mcpconnect"
@@ -624,6 +625,10 @@ type Container struct {
 	// nil-safe — startGraphWorker / stopGraphWorker guard.
 	graphWorker  *graph.Worker
 	pricingTable *pricing.Table
+	// llmSpendFailures counts ledger writes that failed, across every billing
+	// component. Lazily created on first use by llmSpendFailureSink so the
+	// counter is registered once per process rather than once per component.
+	llmSpendFailures llmspend.FailureSink
 	// secretsDetector + secretsActions are kept on the container
 	// so future bring-ups (Telegram replies, artifact uploads,
 	// memory ingest) can attach themselves to the same instance

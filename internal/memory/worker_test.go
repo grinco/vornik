@@ -82,10 +82,11 @@ func TestProcessBatch_EmptyQueueNoop(t *testing.T) {
 			"chunk_id", "project_id", "reason", "last_error",
 			"retry_count", "retry_after", "first_failed_at", "last_failed_at",
 		}))
-	// 2026-05-29 audit fix: DequeueEmbedBatch wraps in tx.
+	// Migration 158: the batch is CLAIMED, not deleted, so a crash before the
+	// embedding is stored leaves it re-claimable. An empty claim acks nothing.
 	mock.ExpectBegin()
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").
-		WithArgs(workerBatchSize).
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").
+		WithArgs(workerBatchSize, EmbedClaimReclaimAfter.String()).
 		WillReturnRows(sqlmock.NewRows([]string{"chunk_id"}))
 	mock.ExpectCommit()
 	w.processBatch(context.Background())
@@ -107,7 +108,7 @@ func TestProcessBatch_EmbeddingFailureMovesToDLQ(t *testing.T) {
 			"chunk_id", "project_id", "reason", "last_error",
 			"retry_count", "retry_after", "first_failed_at", "last_failed_at",
 		}))
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").
 		WillReturnRows(sqlmock.NewRows([]string{"chunk_id"}).AddRow("c1"))
 	mock.ExpectQuery("SELECT id, project_id").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -140,7 +141,7 @@ func TestProcessBatch_EmptyEmbeddingParksInDLQ(t *testing.T) {
 			"chunk_id", "project_id", "reason", "last_error",
 			"retry_count", "retry_after", "first_failed_at", "last_failed_at",
 		}))
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").
 		WillReturnRows(sqlmock.NewRows([]string{"chunk_id"}).AddRow("c1"))
 	mock.ExpectQuery("SELECT id, project_id").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -171,7 +172,7 @@ func TestProcessBatch_DimensionMismatchParks(t *testing.T) {
 			"chunk_id", "project_id", "reason", "last_error",
 			"retry_count", "retry_after", "first_failed_at", "last_failed_at",
 		}))
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").
 		WillReturnRows(sqlmock.NewRows([]string{"chunk_id"}).AddRow("c1"))
 	mock.ExpectQuery("SELECT id, project_id").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -201,7 +202,7 @@ func TestProcessBatch_HappyPathStoresAndTitles(t *testing.T) {
 			"chunk_id", "project_id", "reason", "last_error",
 			"retry_count", "retry_after", "first_failed_at", "last_failed_at",
 		}))
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").
 		WillReturnRows(sqlmock.NewRows([]string{"chunk_id"}).AddRow("c1"))
 	mock.ExpectQuery("SELECT id, project_id").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -227,7 +228,7 @@ func TestProcessBatch_StoreFailureMovesToDLQ(t *testing.T) {
 			"chunk_id", "project_id", "reason", "last_error",
 			"retry_count", "retry_after", "first_failed_at", "last_failed_at",
 		}))
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").
 		WillReturnRows(sqlmock.NewRows([]string{"chunk_id"}).AddRow("c1"))
 	mock.ExpectQuery("SELECT id, project_id").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -272,8 +273,8 @@ func TestProcessBatch_BatchFailureFallsBackToPerChunk(t *testing.T) {
 			"retry_count", "retry_after", "first_failed_at", "last_failed_at",
 		}))
 	mock.ExpectBegin()
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").
-		WithArgs(workerBatchSize).
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").
+		WithArgs(workerBatchSize, EmbedClaimReclaimAfter.String()).
 		WillReturnRows(sqlmock.NewRows([]string{"chunk_id"}).AddRow("c1").AddRow("c2"))
 	mock.ExpectQuery("SELECT id, project_id").
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -288,6 +289,10 @@ func TestProcessBatch_BatchFailureFallsBackToPerChunk(t *testing.T) {
 	mock.ExpectExec("DELETE FROM memory_embed_queue").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO memory_embed_dlq").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
+	// Both chunks are now terminal — one stored, one parked in the DLQ — so the
+	// worker releases the leases. Without this ack the claims would age out and the
+	// chunks would be embedded again on a later tick.
+	mock.ExpectExec("DELETE FROM memory_embed_queue").WillReturnResult(sqlmock.NewResult(0, 2))
 
 	w.processBatch(context.Background())
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -305,7 +310,7 @@ func TestProcessBatch_DequeueErrorReturns(t *testing.T) {
 			"chunk_id", "project_id", "reason", "last_error",
 			"retry_count", "retry_after", "first_failed_at", "last_failed_at",
 		}))
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").WillReturnError(errors.New("boom"))
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").WillReturnError(errors.New("boom"))
 	w.processBatch(context.Background())
 }
 
@@ -366,7 +371,7 @@ func TestStartStop_ContextCancel(t *testing.T) {
 			"chunk_id", "project_id", "reason", "last_error",
 			"retry_count", "retry_after", "first_failed_at", "last_failed_at",
 		}))
-	mock.ExpectQuery("DELETE FROM memory_embed_queue").
+	mock.ExpectQuery("UPDATE memory_embed_queue SET claimed_at").
 		WillReturnRows(sqlmock.NewRows([]string{"chunk_id"}))
 
 	ctx, cancel := context.WithCancel(context.Background())

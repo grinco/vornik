@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"vornik.io/vornik/internal/llmspend"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
@@ -91,7 +92,7 @@ func TestJudgeRunner_RecordsCostOnVerdict(t *testing.T) {
 	r := &JudgeRunner{
 		Judge:    stub,
 		Verdicts: verdicts,
-		LLMUsage: usage,
+		Spend:    llmspend.New(usage, nil, persistence.TaskLLMUsageSourceJudge, "judge"),
 		Pricing:  pricingTableForJudgeTests(t),
 		Logger:   zerolog.Nop(),
 	}
@@ -125,7 +126,7 @@ func TestJudgeRunner_RecordsLLMUsageRow(t *testing.T) {
 	r := &JudgeRunner{
 		Judge:    stub,
 		Verdicts: verdicts,
-		LLMUsage: usage,
+		Spend:    llmspend.New(usage, nil, persistence.TaskLLMUsageSourceJudge, "judge"),
 		Pricing:  pricingTableForJudgeTests(t),
 		Logger:   zerolog.Nop(),
 	}
@@ -169,7 +170,7 @@ func TestJudgeRunner_SkipsUsageOnZeroTokens(t *testing.T) {
 	r := &JudgeRunner{
 		Judge:    stub,
 		Verdicts: verdicts,
-		LLMUsage: usage,
+		Spend:    llmspend.New(usage, nil, persistence.TaskLLMUsageSourceJudge, "judge"),
 		Pricing:  pricingTableForJudgeTests(t),
 		Logger:   zerolog.Nop(),
 	}
@@ -200,7 +201,7 @@ func TestJudgeRunner_NoPricingMeansZeroCostNotZeroUsage(t *testing.T) {
 	r := &JudgeRunner{
 		Judge:    stub,
 		Verdicts: verdicts,
-		LLMUsage: usage,
+		Spend:    llmspend.New(usage, nil, persistence.TaskLLMUsageSourceJudge, "judge"),
 		// Pricing intentionally nil
 		Logger: zerolog.Nop(),
 	}
@@ -210,4 +211,10 @@ func TestJudgeRunner_NoPricingMeansZeroCostNotZeroUsage(t *testing.T) {
 	require.Len(t, usage.recorded, 1, "usage still recorded — tokens were spent")
 	assert.Equal(t, 0.0, usage.recorded[0].CostUSD, "no pricing → cost = 0; tokens still tracked")
 	assert.Equal(t, int64(100), usage.recorded[0].PromptTokens)
+}
+
+// Upsert satisfies llmspend.UsageRepo. This fake's component only calls Record,
+// so it delegates.
+func (f *fakeUsageRepo) Upsert(ctx context.Context, u *persistence.TaskLLMUsage) error {
+	return f.Record(ctx, u)
 }

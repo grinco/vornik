@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/executor/livepubsub"
+	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/safepath"
 	"vornik.io/vornik/internal/stepoutcome"
@@ -556,7 +557,7 @@ func (e *Executor) recordLLMUsageFromResult(ctx context.Context, task *persisten
 			parsed.Usage.CacheCreationTokens, parsed.Usage.CacheReadTokens, e.pricing)
 	}
 
-	if e.llmUsageRepo != nil {
+	{
 		costUSD := 0.0
 		if e.pricing != nil {
 			costUSD = e.pricing.CostUSDWithCache(model,
@@ -575,25 +576,25 @@ func (e *Executor) recordLLMUsageFromResult(ctx context.Context, task *persisten
 		// the batch (final). The deterministic ID makes them the
 		// same row, with the finalize path always winning the last
 		// write because it runs after the last stream call.
-		entry := &persistence.TaskLLMUsage{
-			ID:                  "tu_" + taskID + "_" + stepID + "_" + role,
+		// Same deterministic id the agent's per-iteration stream uses, so the
+		// finalize batch and the streaming path collide on the PK and upsert
+		// cleanly instead of producing two rows per step. The finalize path runs
+		// last, so it wins the final write.
+		if err := e.spend.Upsert(ctx, "tu_"+taskID+"_"+stepID+"_"+role, llmspend.Input{
 			ProjectID:           task.ProjectID,
+			Model:               model,
+			PromptTokens:        parsed.Usage.PromptTokens,
+			CompletionTokens:    parsed.Usage.CompletionTokens,
 			TaskID:              &taskID,
 			ExecutionID:         &execID,
 			StepID:              stepID,
-			Role:                role,
-			Model:               model,
-			PromptTokens:        int64(parsed.Usage.PromptTokens),
-			CompletionTokens:    int64(parsed.Usage.CompletionTokens),
-			CacheCreationTokens: int64(parsed.Usage.CacheCreationTokens),
-			CacheReadTokens:     int64(parsed.Usage.CacheReadTokens),
-			Iterations:          parsed.Usage.Iterations,
-			CostUSD:             costUSD,
-			Source:              persistence.TaskLLMUsageSourceWorkflowStep,
-			RecordedAt:          time.Now().UTC(),
+			RoleOverride:        role,
+			CostUSD:             &costUSD,
 			APIKeyID:            task.CreatedByAPIKeyID,
-		}
-		if err := e.llmUsageRepo.Upsert(ctx, entry); err != nil {
+			Iterations:          parsed.Usage.Iterations,
+			CacheCreationTokens: parsed.Usage.CacheCreationTokens,
+			CacheReadTokens:     parsed.Usage.CacheReadTokens,
+		}); err != nil {
 			e.logger.Warn().Err(err).
 				Str("execution_id", execution.ID).
 				Str("step", stepID).

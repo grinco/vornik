@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/narrator"
+	"vornik.io/vornik/internal/persistence"
 )
 
 // initNarrator constructs the Narrated Execution worker (task 2.1)
@@ -37,7 +38,7 @@ func (c *Container) initNarrator() {
 		Executions: c.repos.Executions,
 		Client:     c.ChatClient,
 		Model:      c.Config.Narrator.Model,
-		LLMUsage:   c.repos.LLMUsage,
+		Spend:      c.llmSpend(persistence.TaskLLMUsageSourceTaskNarrator, narrator.RoleNarrator),
 		Scanner:    c.secretsDetector,
 		Logger:     c.Logger.With().Str("component", "narrator").Logger(),
 		// Chat push (task 2.3) — Tasks/Audit/Resolver are the SAME

@@ -582,6 +582,12 @@ func (s execMetricsSource) StepLatencies(ctx context.Context) ([]controlplane.St
 			Project: st.ProjectID, Workflow: st.WorkflowID, Step: st.StepID,
 			Role: st.Role, Model: st.Model,
 			P95Seconds: st.P95Seconds, Count: int(st.Count),
+			// Carried so the reclaim guard is not inert: without MaxSeconds the
+			// suggestion silently degrades to the old p95 basis, and without
+			// DegradedCount a timing-out step still reads as over-provisioned
+			// (LLD 2026-08-10-canary-class-registry-step-outcome §6.1).
+			MaxSeconds: st.MaxSeconds, DegradedCount: int(st.DegradedCount),
+			TimeoutCount: int(st.TimeoutCount),
 		})
 	}
 	return out, nil

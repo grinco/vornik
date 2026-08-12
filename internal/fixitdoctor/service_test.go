@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"vornik.io/vornik/internal/llmspend"
 
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/persistence"
@@ -289,7 +290,7 @@ func TestConverse_RecordsUsageWithFixItDoctorRoleAndSource(t *testing.T) {
 	tasks := failedTaskWith(persistence.TaskStatusFailed)
 	svc, _, _ := newTestService(t, tasks, svcChatReply{content: envOK})
 	usage := &fakeUsageRecorder{}
-	svc.LLMUsage = usage
+	svc.Spend = llmspend.New(usage, nil, SourceFixItDoctor, RoleFixItDoctor)
 
 	if _, err := svc.Converse(context.Background(), "", "op1", FailureRef{Kind: FailureKindFailedTask, ID: "t1", ProjectID: "proj-1"}, "help"); err != nil {
 		t.Fatalf("Converse: %v", err)
@@ -474,4 +475,10 @@ func TestConverse_NewSessionRequiresFailureRef(t *testing.T) {
 	if _, err := svc.Converse(context.Background(), "", "op1", FailureRef{}, "help"); !errors.Is(err, ErrFailureRefRequired) {
 		t.Fatalf("expected ErrFailureRefRequired, got %v", err)
 	}
+}
+
+// Upsert satisfies llmspend.UsageRepo. This fake's component only calls Record,
+// so it delegates.
+func (f *fakeUsageRecorder) Upsert(ctx context.Context, u *persistence.TaskLLMUsage) error {
+	return f.Record(ctx, u)
 }

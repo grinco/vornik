@@ -3,6 +3,7 @@ package narrator
 import (
 	"testing"
 	"time"
+	"vornik.io/vornik/internal/llmspend"
 
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/executor/livepubsub"
@@ -18,7 +19,8 @@ func TestLLM_RecordsUsageWithTaskAndExecutionID(t *testing.T) {
 	usage := &fakeUsageRecorder{}
 	h := newTestHarness(t, func(n *Narrator) {
 		n.Client = fp
-		n.LLMUsage = usage
+		n.Spend = llmspend.New(usage, nil,
+			persistence.TaskLLMUsageSourceTaskNarrator, RoleNarrator)
 		n.Pricing = fakePricing{perCall: 0.001}
 	})
 	seedRunningExecution(h)

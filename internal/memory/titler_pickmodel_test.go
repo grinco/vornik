@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 	"unicode/utf8"
+	"vornik.io/vornik/internal/llmspend"
 
 	"vornik.io/vornik/internal/chat"
 )
@@ -61,7 +62,7 @@ func TestTitle_NilReceiverOrClient(t *testing.T) {
 
 func TestTitle_TruncatesLongContent(t *testing.T) {
 	fp := &titlerFakeProvider{replies: []titlerReply{{content: "Short Topic"}}}
-	tr := NewTitler(fp, "model-x")
+	tr := NewTitler(fp, "model-x", llmspend.Disabled())
 	tr.MaxPreviewBytes = 16
 	long := "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu"
 	if _, err := tr.Title(context.Background(), long, "", ""); err != nil {

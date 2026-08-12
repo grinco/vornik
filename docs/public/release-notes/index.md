@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: b4d88b2787cda27d81625c82d7d92e56bfc1ae7f1d065657738c08b2a674c4c2
+      sha256: ab5af26c3b9456efef4eea5072e5a7d0e1d32570c6780b5f8eea8a828dd0e995
 ---
 # Release Notes
 
@@ -14,6 +14,40 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.8.3
+
+**Upgrade if you use Bedrock embeddings — semantic search has been silently
+keyword-only.** The query vector was never computed on that transport, so hybrid
+search ran with no semantic arm while `memory/stats` still reported 100% embedded
+and nothing was logged. Recall changes noticeably after upgrading, and reranker
+cost appears where it previously did not.
+
+**Embedding spend now appears in your spend rollups.** It was never recorded
+before, on any provider — re-embedding a mid-sized corpus is roughly $0.60–0.75 on
+a hosted embedder and was reported as `$0.00`. This is not new spend; it is spend
+that was always happening and never billed. Look for the role **Memory · Embedder**
+on `/ui/spend`. A `~` before a token count means the provider reported no token
+count and the total is derived from text length rather than measured.
+
+**New: `vornikctl bench memory`** — a retrieval-quality benchmark with a pinned
+dataset, an LLM judge and a per-run journal. It is what found the defects above,
+plus two more: recall was not reproducible (ranking ties broke arbitrarily), and
+the embed queue could lose chunks across a restart, leaving them permanently
+unretrievable by semantic search.
+
+**The main dashboard gains a Learning tile** — skill-store maturity and the count
+of proposed skills waiting on your review, which nothing else on the landing page
+surfaced.
+
+Also: filter memory on when content *happened* rather than when it was stored,
+Cohere embeddings on Bedrock, `memory reembed --only-missing` for cheap gap
+repair, answer a steering checkpoint from a Slack button, and near-duplicate
+detection when a skill is proposed.
+
+Migrations apply automatically and are additive; no configuration changes.
 
 ---
 

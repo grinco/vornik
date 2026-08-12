@@ -1,0 +1,40 @@
+[
+  {
+    "question_id": "q0001",
+    "question_type": "multi-session",
+    "question": "Where does Alice work?",
+    "answer": "Google",
+    "haystack_session_ids": ["s1", "s2", "s3"],
+    "haystack_dates": ["2023/05/14 (Sun) 09:30", "2023/06/02 (Fri) 14:00", "2023/07/19 (Wed) 08:15"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I just started at Google.", "has_answer": true},
+        {"role": "assistant", "content": "Congratulations!"}
+      ],
+      [
+        {"role": "user", "content": "The weather is nice today."},
+        {"role": "assistant", "content": "Glad to hear it."}
+      ],
+      [
+        {"role": "user", "content": "My commute to the office is 40 minutes.", "has_answer": true},
+        {"role": "assistant", "content": "That is a long ride."}
+      ]
+    ]
+  },
+  {
+    "question_id": "q0002",
+    "question_type": "temporal-reasoning",
+    "question": "How many days after the outage did we ship the fix?",
+    "answer": "18",
+    "haystack_session_ids": ["t1", "t2"],
+    "haystack_dates": ["2024/01/03 (Wed) 10:00", "2024/01/21 (Sun) 16:45"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "We had an outage today.", "has_answer": true}
+      ],
+      [
+        {"role": "user", "content": "The fix shipped this morning.", "has_answer": true}
+      ]
+    ]
+  }
+]

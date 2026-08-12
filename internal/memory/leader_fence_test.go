@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"vornik.io/vornik/internal/llmspend"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/rs/zerolog"
@@ -109,7 +110,7 @@ func TestProcessOne_StaleLeader_NoLLMCall(t *testing.T) {
 	gate.leader.Store(true)
 	gate.epochOK.Store(false)
 	w := &LLMConsolidateWorker{
-		Writer:     NewNarrativeWriter(fp, ""),
+		Writer:     NewNarrativeWriter(fp, "", llmspend.Disabled()),
 		Repo:       repo,
 		Projects:   &stubProjectLister{ids: []string{"proj-a"}},
 		Interval:   time.Hour,
@@ -143,7 +144,7 @@ func TestProcessOne_CurrentLeader_Writes(t *testing.T) {
 	gate.leader.Store(true)
 	gate.epochOK.Store(true)
 	w := &LLMConsolidateWorker{
-		Writer:     NewNarrativeWriter(fp, ""),
+		Writer:     NewNarrativeWriter(fp, "", llmspend.Disabled()),
 		Repo:       repo,
 		Projects:   &stubProjectLister{ids: []string{"proj-a"}},
 		Interval:   time.Hour,

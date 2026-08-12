@@ -362,3 +362,79 @@ func proposalIDs(ps []*persistence.ControlPlaneProposal) map[string]bool {
 	}
 	return m
 }
+
+// RunProposalObservationSuite pins the observation kind's contract (2026-08-10):
+// an observation is browsable and dismissable but NOT decidable. Approving one
+// is what created the inert pile the audit found — 19 rows in APPROVED with no
+// applyable change and nothing an approval could ever do.
+func RunProposalObservationSuite(t *testing.T, repo persistence.ProposalRepository) {
+	t.Helper()
+	ctx := context.Background()
+
+	mk := func(t *testing.T, id string) *persistence.ControlPlaneProposal {
+		t.Helper()
+		p := &persistence.ControlPlaneProposal{
+			ID: id, ProjectID: uniqueID("proj"), Kind: persistence.ProposalKindObservation,
+			BlastRadius: persistence.ProposalScopeProject, Title: "Observation: p95 high",
+			Rationale: "first", Evidence: `{"occurrences":1}`,
+			Status: persistence.ProposalStatusDraft, ProposedBy: "tune-detector",
+		}
+		if err := repo.Create(ctx, p); err != nil {
+			t.Fatalf("create observation: %v", err)
+		}
+		return p
+	}
+
+	t.Run("approve is refused", func(t *testing.T) {
+		p := mk(t, uniqueID("cpp"))
+		err := repo.SetStatus(ctx, p.ID, persistence.ProposalStatusApproved, "session:admin")
+		if !errors.Is(err, persistence.ErrProposalNotDecidable) {
+			t.Fatalf("approve on an observation returned %v, want ErrProposalNotDecidable", err)
+		}
+		got, gerr := repo.GetByID(ctx, p.ID)
+		if gerr != nil {
+			t.Fatalf("get: %v", gerr)
+		}
+		if got.Status != persistence.ProposalStatusDraft {
+			t.Fatalf("status = %q after a refused approve, want DRAFT", got.Status)
+		}
+	})
+
+	t.Run("reject is allowed — dismissing is how you clear one", func(t *testing.T) {
+		p := mk(t, uniqueID("cpp"))
+		if err := repo.SetStatus(ctx, p.ID, persistence.ProposalStatusRejected, "session:admin"); err != nil {
+			t.Fatalf("reject on an observation: %v", err)
+		}
+	})
+
+	t.Run("RefreshObservation updates prose in place", func(t *testing.T) {
+		p := mk(t, uniqueID("cpp"))
+		if err := repo.RefreshObservation(ctx, p.ID, "second", `{"occurrences":2}`); err != nil {
+			t.Fatalf("refresh: %v", err)
+		}
+		got, err := repo.GetByID(ctx, p.ID)
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got.Rationale != "second" || got.Evidence != `{"occurrences":2}` {
+			t.Fatalf("refresh did not persist: rationale=%q evidence=%q", got.Rationale, got.Evidence)
+		}
+		if got.Status != persistence.ProposalStatusDraft {
+			t.Fatalf("refresh changed status to %q; it must leave status alone", got.Status)
+		}
+	})
+
+	t.Run("RefreshObservation refuses a decidable proposal", func(t *testing.T) {
+		p := &persistence.ControlPlaneProposal{
+			ID: uniqueID("cpp"), ProjectID: uniqueID("proj"), Kind: persistence.ProposalKindConfig,
+			BlastRadius: persistence.ProposalScopeProject, Title: "Config: real change",
+			Rationale: "keep", Status: persistence.ProposalStatusDraft, ProposedBy: "tune-detector",
+		}
+		if err := repo.Create(ctx, p); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		if err := repo.RefreshObservation(ctx, p.ID, "hacked", "{}"); !errors.Is(err, persistence.ErrNotFound) {
+			t.Fatalf("RefreshObservation on a config proposal returned %v, want ErrNotFound", err)
+		}
+	})
+}

@@ -3,6 +3,7 @@ package projectwizard
 import (
 	"context"
 	"testing"
+	"vornik.io/vornik/internal/llmspend"
 
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/persistence"
@@ -26,7 +27,7 @@ func resp() *chat.ChatResponse {
 
 func TestRecordUsageRoleParameterized(t *testing.T) {
 	rec := &captureRecorder{}
-	w := &Wizard{LLMUsage: rec}
+	w := &Wizard{Spend: llmspend.New(rec, nil, "project_wizard", RoleProjectWizard)}
 
 	w.recordUsage(context.Background(), resp(), "sess-1", RoleAutomationComposer, nil)
 	if len(rec.rows) != 1 {
@@ -48,7 +49,7 @@ func TestRecordUsageRoleParameterized(t *testing.T) {
 
 func TestRecordUsageEmptyRoleDefaults(t *testing.T) {
 	rec := &captureRecorder{}
-	w := &Wizard{LLMUsage: rec}
+	w := &Wizard{Spend: llmspend.New(rec, nil, "project_wizard", RoleProjectWizard)}
 	w.recordUsage(context.Background(), resp(), "s", "", nil)
 	if len(rec.rows) != 1 || rec.rows[0].Role != RoleProjectWizard {
 		t.Fatalf("empty role should default to project_wizard, got %+v", rec.rows)
@@ -57,7 +58,7 @@ func TestRecordUsageEmptyRoleDefaults(t *testing.T) {
 
 func TestRecordUsageGuards(t *testing.T) {
 	rec := &captureRecorder{}
-	w := &Wizard{LLMUsage: rec}
+	w := &Wizard{Spend: llmspend.New(rec, nil, "project_wizard", RoleProjectWizard)}
 
 	// nil response → no row.
 	w.recordUsage(context.Background(), nil, "s", RoleProjectWizard, nil)
@@ -70,4 +71,10 @@ func TestRecordUsageGuards(t *testing.T) {
 	if len(rec.rows) != 0 {
 		t.Errorf("expected no rows, got %d", len(rec.rows))
 	}
+}
+
+// Upsert satisfies llmspend.UsageRepo. This fake's component only calls Record,
+// so it delegates.
+func (c *captureRecorder) Upsert(ctx context.Context, u *persistence.TaskLLMUsage) error {
+	return c.Record(ctx, u)
 }

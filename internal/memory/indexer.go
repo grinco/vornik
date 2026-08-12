@@ -121,7 +121,27 @@ func (idx *Indexer) scanContentForSecrets(projectID, taskID, sourceName, content
 // IngestText chunks and stores text content. Embedding is queued asynchronously.
 // Returns an error only if chunk insertion into the DB fails — embedding failures
 // are always async and do not propagate here.
+//
+// Signature deliberately unchanged by the event-time work (migration 157): this
+// method is declared as an interface in TWO packages
+// (internal/executor/executor.go, internal/memory/ingest_worker.go) and has five
+// production call sites, so a seventh positional parameter would churn every
+// caller and mock for a field only two paths populate. Callers that know an
+// event time use IngestTextAt; this remains exactly "ingest with event time
+// unknown".
 func (idx *Indexer) IngestText(ctx context.Context, projectID, taskID, artifactID, sourceName, content string) error {
+	return idx.IngestTextAt(ctx, projectID, taskID, artifactID, sourceName, content, time.Time{})
+}
+
+// IngestTextAt is IngestText plus the event time the content pertains to —
+// distinct from the ingest timestamp, which is always now (LLD
+// 2026-08-10-memory-benchmark-harness-design.md §4.1).
+//
+// A zero eventTime means "unknown" and persists as SQL NULL, so the read path's
+// COALESCE(event_time, created_at) falls back to ingest time. That is what makes
+// IngestText's delegation above behaviour-preserving rather than merely
+// signature-preserving.
+func (idx *Indexer) IngestTextAt(ctx context.Context, projectID, taskID, artifactID, sourceName, content string, eventTime time.Time) error {
 	if content == "" {
 		return nil
 	}
@@ -158,6 +178,7 @@ func (idx *Indexer) IngestText(ctx context.Context, projectID, taskID, artifactI
 			Content:     rc.Text,
 			ContentHash: rc.Hash,
 			CreatedAt:   time.Now(),
+			EventTime:   eventTime,
 		})
 	}
 

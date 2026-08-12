@@ -206,7 +206,7 @@ func TestFindEntities_EmbeddingErrorPropagates(t *testing.T) {
 
 // erroringEmbedder returns an error so FindEntities' `embErr == nil`
 // guard is false and the embedding pass is silently skipped.
-func erroringEmbedder(_ context.Context, _ []string) ([][]float32, error) {
+func erroringEmbedder(_ context.Context, _ string, _ []string) ([][]float32, error) {
 	return nil, errors.New("embed down")
 }
 

@@ -290,3 +290,61 @@ func TestCompanionMCP_Recall_StrictScopeReachesAdapter(t *testing.T) {
 	// And the repo_scope still threads through.
 	assert.Equal(t, "github.com/test/repo", fc.recallCalls[0].Opts.RepoScope)
 }
+
+// TestCompanionMCP_Recall_SufficientReachesAdapter — the companion recall surface
+// had no way to request the PRODUCTION context-assembly retrieval mode.
+//
+// RecallSufficient sets opts.Rerank = true internally, so `sufficient` is the only
+// switch that turns on scored-sufficiency widening AND the LLM reranker. Without it
+// exposed, every companion recall — including the benchmark harness's — measured
+// the interactive RRF path while the agent context-assembly path it was meant to
+// protect went untested.
+func TestCompanionMCP_Recall_SufficientReachesAdapter(t *testing.T) {
+	srv, keyRepo, _ := newCompanionMCPServer(t)
+	raw, _ := seedCompanionKeyWithCaps(t, keyRepo, "alpha", nil, true, false)
+	fc := &fakeMemoryCompanion{}
+	srv.memoryCompanion = fc
+
+	body, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{
+			"name":      "recall",
+			"arguments": map[string]any{"query": "x", "sufficient": true},
+		},
+	})
+	req := httptest.NewRequest("POST", "/api/v1/mcp/companion", bytes.NewReader(body))
+	req = withCompanionBearer(req, raw)
+	rec := httptest.NewRecorder()
+	srv.CompanionMCPHandler(rec, req)
+
+	require.Len(t, fc.recallCalls, 1)
+	assert.True(t, fc.recallCalls[0].Opts.Sufficient,
+		"sufficient=true on the wire must reach RecallOptions.Sufficient, which is "+
+			"what routes through RecallSufficient and enables the reranker")
+}
+
+// TestCompanionMCP_Recall_SufficientDefaultsOff — the interactive default must not
+// change. Reranking costs an extra LLM call per recall, so an operator's ad-hoc
+// recall stays single-shot unless it asks otherwise.
+func TestCompanionMCP_Recall_SufficientDefaultsOff(t *testing.T) {
+	srv, keyRepo, _ := newCompanionMCPServer(t)
+	raw, _ := seedCompanionKeyWithCaps(t, keyRepo, "alpha", nil, true, false)
+	fc := &fakeMemoryCompanion{}
+	srv.memoryCompanion = fc
+
+	body, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{
+			"name":      "recall",
+			"arguments": map[string]any{"query": "x"},
+		},
+	})
+	req := httptest.NewRequest("POST", "/api/v1/mcp/companion", bytes.NewReader(body))
+	req = withCompanionBearer(req, raw)
+	rec := httptest.NewRecorder()
+	srv.CompanionMCPHandler(rec, req)
+
+	require.Len(t, fc.recallCalls, 1)
+	assert.False(t, fc.recallCalls[0].Opts.Sufficient,
+		"an omitted sufficient must leave the interactive single-shot path unchanged")
+}

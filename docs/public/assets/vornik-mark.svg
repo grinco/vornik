@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="Vornik">
+  <title>Vornik</title>
+  <!-- The product glyph (internal/ui/static/icon.svg), re-cut for a README hero:
+       same cadet-teal ground, same peach centre, but the orbiting nodes are drawn
+       at full opacity and slightly larger, because a 96px hero is not a 16px
+       favicon and the mesh reads as noise when it is too faint. -->
+  <rect width="256" height="256" rx="56" fill="#558A98"/>
+  <g transform="translate(128 128) scale(7) translate(-14 -14)" fill="none" stroke-linejoin="round">
+    <path d="M14 3L24 8.5v11L14 25 4 19.5v-11L14 3z" stroke="#EEF5F7" stroke-width="1.5"/>
+    <line x1="14" y1="7"    x2="14"   y2="11.5" stroke="#EEF5F7" stroke-width="0.9" opacity="0.75"/>
+    <line x1="20.2" y1="10.5" x2="16.3" y2="12.9" stroke="#EEF5F7" stroke-width="0.9" opacity="0.75"/>
+    <line x1="7.8"  y1="10.5" x2="11.7" y2="12.9" stroke="#EEF5F7" stroke-width="0.9" opacity="0.75"/>
+    <line x1="20.2" y1="17.5" x2="16.3" y2="15.1" stroke="#EEF5F7" stroke-width="0.9" opacity="0.75"/>
+    <line x1="7.8"  y1="17.5" x2="11.7" y2="15.1" stroke="#EEF5F7" stroke-width="0.9" opacity="0.75"/>
+    <circle cx="14"   cy="14"   r="2.6" fill="#FFCAB1"/>
+    <circle cx="14"   cy="7"    r="1.7" fill="#EEF5F7"/>
+    <circle cx="20.2" cy="10.5" r="1.7" fill="#EEF5F7"/>
+    <circle cx="20.2" cy="17.5" r="1.7" fill="#EEF5F7"/>
+    <circle cx="14"   cy="21"   r="1.7" fill="#EEF5F7"/>
+    <circle cx="7.8"  cy="17.5" r="1.7" fill="#EEF5F7"/>
+    <circle cx="7.8"  cy="10.5" r="1.7" fill="#EEF5F7"/>
+  </g>
+</svg>

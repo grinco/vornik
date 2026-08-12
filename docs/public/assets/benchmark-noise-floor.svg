@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 300" width="760" height="300" role="img"
+     aria-label="Comparison of measurement stability across ten identical runs. Judged accuracy varied from 0.750 to 0.875, a spread of 12.5 points, needing a plus or minus 10.2 point gate. Judge-free context precision was identical in every run, standard deviation 0.0000, so it can be gated on exact equality.">
+  <title>Why Vornik gates on the judge-free metric</title>
+  <desc>Ten identical runs, same items, same models, nothing changed but sampling.</desc>
+
+  <rect width="760" height="300" rx="10" fill="#EEF5F7"/>
+
+  <text x="32" y="38" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="19" font-weight="600" fill="#1F3B44">We measured our own noise floor first</text>
+  <text x="32" y="60" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="13" fill="#4A6D78">10 identical runs · 24 items · nothing changed but the models&#8217; own sampling</text>
+
+  <!-- scale: 0.70 -> x=140, 1.00 -> x=700  (560px per 0.30, 1866.7px per 1.0) -->
+  <g font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" fill="#7A9AA5">
+    <line x1="140" y1="232" x2="700" y2="232" stroke="#B9CDD4" stroke-width="1.5"/>
+    <g stroke="#B9CDD4" stroke-width="1.5">
+      <line x1="140" y1="232" x2="140" y2="238"/>
+      <line x1="326" y1="232" x2="326" y2="238"/>
+      <line x1="513" y1="232" x2="513" y2="238"/>
+      <line x1="700" y1="232" x2="700" y2="238"/>
+    </g>
+    <text x="140" y="254" text-anchor="middle">0.70</text>
+    <text x="326" y="254" text-anchor="middle">0.80</text>
+    <text x="513" y="254" text-anchor="middle">0.90</text>
+    <text x="700" y="254" text-anchor="middle">1.00</text>
+  </g>
+
+  <!-- Judged accuracy: 0.750 to 0.875, mean 0.8241 -->
+  <g>
+    <text x="32" y="112" font-family="system-ui,sans-serif" font-size="14" font-weight="600" fill="#8A5A38">Judged by an LLM</text>
+    <text x="32" y="131" font-family="system-ui,sans-serif" font-size="11.5" fill="#7A9AA5">answer graded by a model</text>
+    <rect x="233" y="98" width="234" height="30" rx="4" fill="#E8A87C" opacity="0.55"/>
+    <line x1="233" y1="94" x2="233" y2="132" stroke="#8A5A38" stroke-width="2"/>
+    <line x1="467" y1="94" x2="467" y2="132" stroke="#8A5A38" stroke-width="2"/>
+    <circle cx="372" cy="113" r="5" fill="#8A5A38"/>
+    <text x="481" y="118" font-family="system-ui,sans-serif" font-size="13" fill="#1F3B44">0.750 &#8211; 0.875 &#160;(sd 0.034)</text>
+    <text x="233" y="150" font-family="system-ui,sans-serif" font-size="11.5" fill="#8A5A38">3 of 24 verdicts flipped between identical runs</text>
+  </g>
+
+  <!-- Context precision: exactly 0.9410 every run -->
+  <g>
+    <text x="32" y="192" font-family="system-ui,sans-serif" font-size="14" font-weight="600" fill="#2F5A66">Judge-free (tier 2)</text>
+    <text x="32" y="211" font-family="system-ui,sans-serif" font-size="11.5" fill="#7A9AA5">retrieved ids vs gold labels</text>
+    <rect x="588" y="178" width="4" height="30" rx="2" fill="#558A98"/>
+    <circle cx="590" cy="193" r="5" fill="#2F5A66"/>
+    <text x="606" y="198" font-family="system-ui,sans-serif" font-size="13" fill="#1F3B44">0.941 &#160;(sd 0.0000)</text>
+    <text x="606" y="216" font-family="system-ui,sans-serif" font-size="11.5" fill="#2F5A66">identical in all 10 runs &#8212; gateable on exact equality</text>
+  </g>
+
+  <text x="32" y="286" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" fill="#4A6D78">A judged-accuracy gate would need &#177;10.2 points to avoid firing on noise &#8212; wider than most real improvements.</text>
+</svg>

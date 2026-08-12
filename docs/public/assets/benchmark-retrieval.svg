@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 400" width="760" height="400" role="img"
+     aria-label="Grouped bar chart of retrieval quality. Context recall: Vornik 1.000, hindsight 1.000 — tied. Context precision: Vornik 0.944, hindsight 0.681. MRR: Vornik 0.944, hindsight 0.729. Error bars show one standard deviation across repeated runs.">
+  <title>Retrieval quality: Vornik vs hindsight 0.9.0 on LongMemEval</title>
+  <desc>Judge-free tier-2 metrics. Higher is better. Both systems measured cold, as shipped, on the same six items and the same 4096-token budget.</desc>
+
+  <!-- Card background: an explicit light ground so the chart reads the same on
+       GitHub's light and dark themes, where an SVG with no background inherits
+       whatever is behind it. -->
+  <rect width="760" height="400" rx="10" fill="#EEF5F7"/>
+
+  <text x="32" y="38" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="19" font-weight="600" fill="#1F3B44">Retrieval quality — judge-free (tier 2)</text>
+  <text x="32" y="60" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="13" fill="#4A6D78">LongMemEval v1-cleaned · 6 items · higher is better · error bars = 1 sd across runs</text>
+
+  <!-- y axis -->
+  <g font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12" fill="#4A6D78">
+    <line x1="92" y1="90" x2="92" y2="330" stroke="#B9CDD4" stroke-width="1.5"/>
+    <line x1="92" y1="330" x2="728" y2="330" stroke="#B9CDD4" stroke-width="1.5"/>
+    <g stroke="#D5E3E8" stroke-width="1">
+      <line x1="92" y1="330" x2="728" y2="330"/>
+      <line x1="92" y1="270" x2="728" y2="270"/>
+      <line x1="92" y1="210" x2="728" y2="210"/>
+      <line x1="92" y1="150" x2="728" y2="150"/>
+      <line x1="92" y1="90"  x2="728" y2="90"/>
+    </g>
+    <text x="84" y="334" text-anchor="end">0.00</text>
+    <text x="84" y="274" text-anchor="end">0.25</text>
+    <text x="84" y="214" text-anchor="end">0.50</text>
+    <text x="84" y="154" text-anchor="end">0.75</text>
+    <text x="84" y="94"  text-anchor="end">1.00</text>
+  </g>
+
+  <!-- Group 1: context recall — 1.000 vs 1.000 (240px = 1.00) -->
+  <g>
+    <rect x="150" y="90" width="62" height="240" rx="3" fill="#558A98"/>
+    <rect x="218" y="90" width="62" height="240" rx="3" fill="#E8A87C"/>
+    <text x="181" y="82" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" font-weight="600" fill="#1F3B44">1.000</text>
+    <text x="249" y="82" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" font-weight="600" fill="#1F3B44">1.000</text>
+    <text x="215" y="352" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#1F3B44">Context recall</text>
+    <text x="215" y="370" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11.5" fill="#7A9AA5">tied — both retrieve every gold document</text>
+  </g>
+
+  <!-- Group 2: context precision — 0.9444 vs 0.6806 (sd 0 vs 0.0833 = 20px) -->
+  <g>
+    <rect x="360" y="103" width="62" height="227" rx="3" fill="#558A98"/>
+    <rect x="428" y="167" width="62" height="163" rx="3" fill="#E8A87C"/>
+    <text x="391" y="95"  text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" font-weight="600" fill="#1F3B44">0.944</text>
+    <text x="459" y="139" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" font-weight="600" fill="#1F3B44">0.681</text>
+    <g stroke="#8A5A38" stroke-width="1.6">
+      <line x1="459" y1="147" x2="459" y2="187"/>
+      <line x1="451" y1="147" x2="467" y2="147"/>
+      <line x1="451" y1="187" x2="467" y2="187"/>
+    </g>
+    <text x="425" y="352" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#1F3B44">Context precision</text>
+    <text x="425" y="370" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11.5" fill="#7A9AA5">less noise in what the agent reads</text>
+  </g>
+
+  <!-- Group 3: MRR — 0.9444 (sd .0481 = 11.5px) vs 0.7292 (sd .125 = 30px) -->
+  <g>
+    <rect x="570" y="103" width="62" height="227" rx="3" fill="#558A98"/>
+    <rect x="638" y="155" width="62" height="175" rx="3" fill="#E8A87C"/>
+    <text x="601" y="95"  text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" font-weight="600" fill="#1F3B44">0.944</text>
+    <text x="669" y="127" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" font-weight="600" fill="#1F3B44">0.729</text>
+    <g stroke="#2F5A66" stroke-width="1.6">
+      <line x1="601" y1="91" x2="601" y2="114"/>
+      <line x1="593" y1="91" x2="609" y2="91"/>
+      <line x1="593" y1="114" x2="609" y2="114"/>
+    </g>
+    <g stroke="#8A5A38" stroke-width="1.6">
+      <line x1="669" y1="125" x2="669" y2="185"/>
+      <line x1="661" y1="125" x2="677" y2="125"/>
+      <line x1="661" y1="185" x2="677" y2="185"/>
+    </g>
+    <text x="635" y="352" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#1F3B44">MRR</text>
+    <text x="635" y="370" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11.5" fill="#7A9AA5">the right document ranked first</text>
+  </g>
+
+  <!-- legend -->
+  <g font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="13">
+    <rect x="560" y="30" width="13" height="13" rx="2.5" fill="#558A98"/>
+    <text x="580" y="41" fill="#1F3B44">Vornik</text>
+    <rect x="644" y="30" width="13" height="13" rx="2.5" fill="#E8A87C"/>
+    <text x="664" y="41" fill="#1F3B44">hindsight 0.9.0</text>
+  </g>
+</svg>

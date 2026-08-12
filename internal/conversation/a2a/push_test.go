@@ -146,6 +146,7 @@ func TestValidateWebhookURL(t *testing.T) {
 		"https://localhost/x",  // localhost
 		"http://127.0.0.1/x",   // loopback
 		"http://10.0.0.5/x",    // private
+		"http://100.64.0.1/x",  // RFC 6598 carrier-grade NAT (non-public)
 		"http://169.254.1.1/x", // link-local
 		"http://[::1]/x",       // ipv6 loopback
 		"not a url at all %%%", // unparseable

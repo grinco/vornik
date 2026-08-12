@@ -144,6 +144,21 @@ func TestIsPublicEndpoint_CoreHealthPaths(t *testing.T) {
 	}
 }
 
+func TestIsPublicEndpoint_A2AOnlyExposesDiscoveryCards(t *testing.T) {
+	for _, path := range []string{
+		"/a2a/v1/agents/project-a/research/card",
+		"/a2a/v1/agents/project-a/research/tasks",
+		"/a2a/v1/agents/project-a/research/tasks/task-1",
+		"/a2a/v1/agents/project-a/research/tasks/task-1/pushNotificationConfig",
+		"/a2a/v1/agents/project-a/research/card/extra",
+	} {
+		want := path == "/a2a/v1/agents/project-a/research/card"
+		if got := isPublicEndpoint(path); got != want {
+			t.Errorf("isPublicEndpoint(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
 // TestIsWebhookEndpoint_PathPrefix — webhook routes get the
 // HMAC-or-key relaxation. Pin the prefix-match shape so a
 // route rename doesn't silently break webhook auth.

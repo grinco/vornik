@@ -122,6 +122,23 @@ func TestPublicOrigin_ReflectsAReload(t *testing.T) {
 	}
 }
 
+func TestA2ABaseURLProvider_UsesLiveCanonicalOrigin(t *testing.T) {
+	c := &Container{Config: &config.Config{}}
+	c.Config.Server.PublicBaseURL = "https://boot.example.com"
+	// This legacy Telegram-only value must not control machine-facing A2A
+	// discovery documents.
+	c.Config.Telegram.WebUIBaseURL = "https://telegram-links.example.com"
+
+	p := c.a2aBaseURLProvider()
+	if got := p.PublicBaseURL(); got != "https://boot.example.com" {
+		t.Fatalf("boot A2A base URL = %q", got)
+	}
+	c.publishPublicOrigin("https://reloaded.example.com")
+	if got := p.PublicBaseURL(); got != "https://reloaded.example.com" {
+		t.Errorf("reloaded A2A base URL = %q, want live canonical origin", got)
+	}
+}
+
 // TestPublicOrigin_HonoursTheAuthFallback — the connector previously read
 // Server.PublicBaseURL directly, skipping the auth.external_base_url fallback
 // that Config.PublicOrigin() honours. A deployment that set only the auth key

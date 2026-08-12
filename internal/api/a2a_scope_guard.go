@@ -41,6 +41,15 @@ func a2aScopeGuard(next http.HandlerFunc) http.HandlerFunc {
 		}
 		projectID, workflowID := parts[0], parts[1]
 
+		// Agent cards are deliberately public: A2A clients discover an
+		// agent before they have a credential with which to submit work.
+		// Keep this exception exact; tasks, streams, and push-config routes
+		// remain subject to the project and workflow checks below.
+		if len(parts) == 3 && parts[2] == "card" {
+			next(w, r)
+			return
+		}
+
 		if !RequestAllowsProject(r, projectID) {
 			respondError(w, http.StatusForbidden, "FORBIDDEN", "Access denied to project")
 			return

@@ -24,6 +24,7 @@ import (
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/conversation/a2a"
 	"vornik.io/vornik/internal/mcp"
 	"vornik.io/vornik/internal/mcpauth"
 	"vornik.io/vornik/internal/mcpconnect"
@@ -362,6 +363,13 @@ func (c *Container) publicOrigin() string {
 		return ""
 	}
 	return c.Config.PublicOrigin()
+}
+
+// a2aBaseURLProvider keeps published A2A cards on the same canonical public
+// origin as OAuth callbacks. The provider reads live so a config reload updates
+// future discovery documents without a daemon restart.
+func (c *Container) a2aBaseURLProvider() a2a.PublicBaseURLProvider {
+	return a2a.PublicBaseURLFunc(c.publicOrigin)
 }
 
 // publishPublicOrigin makes a freshly-parsed origin the live one.

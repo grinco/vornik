@@ -843,6 +843,13 @@ func isPublicEndpoint(path string) bool {
 	if path == "/.well-known/agent.json" || strings.HasPrefix(path, "/.well-known/agent.json/") {
 		return true
 	}
+	// The per-agent card is the second public A2A discovery endpoint. Do
+	// not make the whole /a2a/v1/agents/ tree public: only the exact
+	// <project>/<workflow>/card shape is metadata; sibling paths create
+	// work, stream task output, or configure webhooks.
+	if a2aAgentCardPath(path) {
+		return true
+	}
 	// Static UI assets (htmx, icons, PWA manifest) carry no data and
 	// are referenced by the login screen's chrome — without this
 	// exemption the pre-login page renders with 401'd favicon/manifest
@@ -861,6 +868,15 @@ func isPublicEndpoint(path string) bool {
 		return true
 	}
 	return false
+}
+
+func a2aAgentCardPath(path string) bool {
+	const prefix = "/a2a/v1/agents/"
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(path, prefix), "/")
+	return len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] == "card"
 }
 
 // isWebhookEndpoint reports whether the path matches an HMAC-signed

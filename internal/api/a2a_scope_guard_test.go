@@ -65,6 +65,21 @@ func TestA2AScopeGuard_AuthOff_PassesThrough(t *testing.T) {
 	}
 }
 
+func TestA2AScopeGuard_PublicCardBypassesProjectScope(t *testing.T) {
+	guard := a2aScopeGuard(passThroughOK)
+	req := httptest.NewRequest(http.MethodGet, "/a2a/v1/agents/companion-example/product-qa/card", nil)
+	// Discovery is intentionally credential-free, so a scoped key for a
+	// different project must not turn the published card into a 403.
+	req = req.WithContext(ContextWithProjectScope(req.Context(), "janka"))
+	rec := httptest.NewRecorder()
+
+	guard(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != "reached-handler" {
+		t.Fatalf("public card: status=%d body=%q, want 200/reached-handler", rec.Code, rec.Body.String())
+	}
+}
+
 func TestA2AScopeGuard_WorkflowNotInKeyAllowlist_Forbidden(t *testing.T) {
 	guard := a2aScopeGuard(passThroughOK)
 	req := httptest.NewRequest(http.MethodPost, "/a2a/v1/agents/companion-example/product-qa/tasks", nil)

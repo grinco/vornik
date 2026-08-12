@@ -102,6 +102,7 @@ vornikctl bench memory run [flags]
 | `--dataset-path` |  | Path to the dataset file (or gold set, for native) |
 | `--dataset-sha256` |  | Expected dataset digest; verified before the run |
 | `--dataset` |  | Dataset: longmemeval \| locomo \| native (required) |
+| `--external-bank-delete-path` |  | Route template that DELETES one bank, e.g. '/v1/default/banks/{bank}'. Without it teardown is a no-op and each run re-ingests into the previous run's bank: the corpus accumulates, precision falls run over run, and repeated runs are not comparable. Hindsight measured 0.806 then 0.639 precision on identical items for exactly this reason |
 | `--external-config-path` |  | Route reporting the external system's effective config; unset marks the comparability key PARTIAL |
 | `--external-dialect` |  | Request-BODY shape for --system external: empty = the conventional guess, 'hindsight' = the shape verified against hindsight 0.9.0 (batched `items[]` ingest keyed `timestamp`, idempotent PUT bank create). Paths stay separately configurable; only bodies and the create method differ |
 | `--external-ingest-path` |  | Override the external ingest route (default: a conventional shape) |

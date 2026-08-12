@@ -305,6 +305,17 @@ func TestIsBlockedPushIP_PublicAddressAllowed(t *testing.T) {
 	}
 }
 
+func TestIsBlockedPushIP_CarrierGradeNATIsBlocked(t *testing.T) {
+	for _, raw := range []string{"100.64.0.1", "100.127.255.254"} {
+		if !isBlockedPushIP(net.ParseIP(raw)) {
+			t.Errorf("%s is RFC 6598 shared address space and must be blocked", raw)
+		}
+	}
+	if isBlockedPushIP(net.ParseIP("100.63.255.255")) || isBlockedPushIP(net.ParseIP("100.128.0.1")) {
+		t.Error("addresses adjacent to the RFC 6598 range must remain allowed")
+	}
+}
+
 // TestPushNotifier_NilRepoIsNoOp: a notifier built with a nil repo never
 // panics and never POSTs.
 func TestPushNotifier_NilRepoIsNoOp(t *testing.T) {

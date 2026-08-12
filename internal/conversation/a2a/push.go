@@ -42,14 +42,24 @@ import (
 var blockPushIP = isBlockedPushIP
 
 func isBlockedPushIP(ip net.IP) bool {
-	return ip == nil ||
+	if ip == nil ||
 		ip.IsLoopback() ||
 		ip.IsLinkLocalUnicast() ||
 		ip.IsLinkLocalMulticast() ||
 		ip.IsInterfaceLocalMulticast() ||
 		ip.IsMulticast() ||
 		ip.IsUnspecified() ||
-		ip.IsPrivate()
+		ip.IsPrivate() {
+		return true
+	}
+	// RFC 6598 shared address space (carrier-grade NAT) is intentionally
+	// excluded from net.IP.IsPrivate. It is nevertheless non-public address
+	// space and commonly routes to provider-internal services, so accepting it
+	// would leave the webhook SSRF guard with a bypass.
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return true
+	}
+	return false
 }
 
 // PushConfigGetter is the narrow read the pusher needs.

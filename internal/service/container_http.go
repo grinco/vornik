@@ -413,12 +413,12 @@ func (c *Container) initHTTPServer() error {
 	// subscriber + execution/task repos. See
 	// https://docs.vornik.io
 	if c.Registry != nil && taskCreator != nil {
-		baseURL := ""
-		if c.Config != nil {
-			baseURL = c.Config.Telegram.WebUIBaseURL
-		}
 		a2aHandler := &a2a.Handler{
-			BaseURLProvider: a2a.PublicBaseURLFunc(func() string { return baseURL }),
+			// A2A agent cards are consumed by machines outside the Telegram
+			// channel. Use the daemon's canonical, reloadable public origin;
+			// telegram.web_ui_base_url is only an onboarding-link setting and
+			// can legitimately point somewhere else (or be empty).
+			BaseURLProvider: c.a2aBaseURLProvider(),
 			Registry:        c.Registry,
 			TaskCreator:     a2aTaskCreatorAdapter{inner: taskCreator},
 			LiveSubscriber:  c.livePub,

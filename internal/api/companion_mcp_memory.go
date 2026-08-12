@@ -10,6 +10,7 @@ import (
 
 	"vornik.io/vornik/internal/counterfactual"
 	"vornik.io/vornik/internal/mcp"
+	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -393,6 +394,20 @@ type recallResult struct {
 	Guidance              string                   `json:"guidance,omitempty"`
 	VerdictBasis          *RoutingVerdictBasisWire `json:"verdict_basis,omitempty"`
 	WidenRounds           int                      `json:"widen_rounds,omitempty"`
+	// RetrievalMethod is the path this recall actually took —
+	// "context-assembly+rerank" or "context-assembly" — observed from what the
+	// searcher did, not derived from configuration. A rerank runs only when it
+	// is enabled AND non-Noop AND requested AND there are multiple results, and
+	// can still lose its deadline and be discarded, so config cannot answer the
+	// question.
+	//
+	// Deliberately NOT omitempty. An unreranked recall and a daemon too old to
+	// report would otherwise both send nothing, making "verified: no rerank"
+	// indistinguishable from "no idea" — and a consumer treating the empty case
+	// as "not reranked" would have a check that passes exactly when it learned
+	// nothing. Three tier-2-only benchmark runs billed 30 cloud reranker calls
+	// on 2026-08-12 because no such report existed.
+	RetrievalMethod string `json:"retrieval_method"`
 }
 
 func (s *Server) companionToolRecall(ctx context.Context, key *persistence.APIKey, raw json.RawMessage) (string, error) {
@@ -442,6 +457,11 @@ func (s *Server) companionToolRecall(ctx context.Context, key *persistence.APIKe
 	}
 
 	start := time.Now()
+	// Stamp a writable observation so the search path can report what it DID.
+	// Values on a ctx are additive, so this survives the adapter's own
+	// WithRetrievalContext and needs no signature change anywhere below.
+	obs := &memory.RetrievalObservation{}
+	ctx = memory.WithRetrievalObservation(ctx, obs)
 	// Prefer the confidence-based retrieval routing path (P3) when the
 	// adapter supports it: recall then carries the retrieval_trust_verdict +
 	// guidance + per-hit trust fields. Adapters without it use the plain
@@ -512,6 +532,8 @@ func (s *Server) companionToolRecall(ctx context.Context, key *persistence.APIKe
 		Hits:      hits,
 		Returned:  len(hits),
 		ElapsedMS: time.Since(start).Milliseconds(),
+		// Observed, not requested: obs was filled in by the search path itself.
+		RetrievalMethod: obs.Method(),
 	}
 	if verdict != nil {
 		out.RetrievalTrustVerdict = verdict.Verdict

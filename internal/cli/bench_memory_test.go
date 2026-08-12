@@ -552,3 +552,32 @@ func TestResolveDataset_OtherDatasetsDoNotNeedCorpusDir(t *testing.T) {
 		}
 	}
 }
+
+// TestRunBenchMemory_Tier2OnlyNeedsNoModelSelection is the flag's reason for
+// existing, asserted at the CLI boundary rather than only in the runner.
+//
+// A gate that required --profile could not run on a fork PR: the profiles resolve
+// to models, models need an endpoint and credentials, and a gate that bills per PR
+// gets switched off. So --tier2-only must get PAST the model-selection refusal
+// that every other run hits.
+//
+// It is asserted by the error it does NOT produce. The run still fails here — the
+// test has no database or dataset — but it must fail on something later than model
+// selection, because reaching a later check is the proof that this one was skipped.
+func TestRunBenchMemory_Tier2OnlyNeedsNoModelSelection(t *testing.T) {
+	withFlags(t)
+	benchDatabase, benchConfirmWipe = "bench_db", "bench_db"
+	benchProfile, benchAnswerModel, benchJudgeModel = "", "", ""
+	benchTier2Only = true
+
+	err := runBenchMemory(newBenchTestCmd(), nil)
+	if err == nil {
+		// Would mean the run somehow completed without a dataset; not this test's
+		// business, but it certainly means model selection did not block it.
+		return
+	}
+	if strings.Contains(err.Error(), "model selection required") {
+		t.Errorf("--tier2-only was still refused for having no model: %v\n"+
+			"That refusal is what makes the flag useless for the CI gate it exists to serve.", err)
+	}
+}

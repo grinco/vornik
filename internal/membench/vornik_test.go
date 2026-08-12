@@ -460,16 +460,37 @@ func TestVornik_EmptyContentReplyErrors(t *testing.T) {
 	}
 }
 
+// Readiness and pending-ingest now come from the companion `whoami` payload, not
+// from /api/v1/memory/stats.
+//
+// That route is ADMIN-only and this adapter authenticates with a COMPANION key, so
+// the old implementation returned 403 on every run ever made with one. The error was
+// mapped to "readiness unknown", unknown was treated as acceptable, and the signal
+// built in §13.11 to catch a partially-embedded corpus never fired once. It took a
+// fabricated head-to-head result to notice.
+
+func whoamiServer(t *testing.T, payload string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/api/v1/mcp/companion") {
+			t.Errorf("requested %q, want the companion MCP route — readiness must use a "+
+				"surface the companion key can actually reach", r.URL.Path)
+		}
+		body, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "id": 1,
+			"result": map[string]any{"content": []any{map[string]any{"type": "text", "text": payload}}},
+		})
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 // TestVornik_EmbeddingReadiness — the fraction that tells a reader whether the
 // tier-2 numbers describe semantic or keyword-dominant retrieval.
 func TestVornik_EmbeddingReadiness(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/api/v1/memory/stats") {
-			t.Errorf("requested %q, want the memory stats route", r.URL.Path)
-		}
-		_, _ = w.Write([]byte(`{"projects":[{"projectId":"p","chunksTotal":200,"chunksEmbedded":50}],"total":1}`))
-	}))
-	defer srv.Close()
+	srv := whoamiServer(t, `{"project_id":"p","embedding_readiness":0.25,
+		"memory_chunks_total":200,"memory_chunks_embedded":50,"memory_embed_queue_depth":150}`)
 
 	sys := NewVornikSystem(VornikConfig{BaseURL: srv.URL, Client: srv.Client()})
 	got, err := sys.EmbeddingReadiness(context.Background())
@@ -481,42 +502,46 @@ func TestVornik_EmbeddingReadiness(t *testing.T) {
 	}
 }
 
-// TestVornik_EmbeddingReadiness_SumsProjects — the number must stay meaningful if
-// a daemon ever serves more than one project to this key.
-func TestVornik_EmbeddingReadiness_SumsProjects(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"projects":[
-			{"chunksTotal":100,"chunksEmbedded":100},
-			{"chunksTotal":100,"chunksEmbedded":0}],"total":2}`))
-	}))
-	defer srv.Close()
+// TestVornik_PendingIngest — the signal settle actually waits on. Distinct from
+// readiness: a corpus can be 25% embedded and climbing, or 25% embedded and stable
+// because no embedder is wired, and only the first is worth waiting for.
+func TestVornik_PendingIngest(t *testing.T) {
+	srv := whoamiServer(t, `{"embedding_readiness":0.25,"memory_embed_queue_depth":150}`)
 
 	sys := NewVornikSystem(VornikConfig{BaseURL: srv.URL, Client: srv.Client()})
-	got, err := sys.EmbeddingReadiness(context.Background())
+	got, err := sys.PendingIngest(context.Background())
 	if err != nil {
-		t.Fatalf("EmbeddingReadiness: %v", err)
+		t.Fatalf("PendingIngest: %v", err)
 	}
-	if got != 0.5 {
-		t.Errorf("readiness = %v, want 0.5 across two projects", got)
+	if got != 150 {
+		t.Errorf("pending = %d, want 150", got)
 	}
 }
 
-// TestVornik_EmbeddingReadiness_EmptyStoreIsAnError — an empty store is not "0%
-// ready"; there is nothing to be ready. Returning 0 would make a fresh database
-// look like a broken embedder, and the runner would print a misleading warning.
-func TestVornik_EmbeddingReadiness_EmptyStoreIsAnError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"projects":[],"total":0}`))
-	}))
-	defer srv.Close()
+// TestVornik_PendingIngest_UnreportedIsAnError — a daemon that reports no memory
+// stats would otherwise present as queue depth 0, i.e. "settled", which is exactly
+// the false-clear that let a mid-drain corpus be scored.
+func TestVornik_PendingIngest_UnreportedIsAnError(t *testing.T) {
+	srv := whoamiServer(t, `{"project_id":"p","database":"bench"}`)
+
+	sys := NewVornikSystem(VornikConfig{BaseURL: srv.URL, Client: srv.Client()})
+	if _, err := sys.PendingIngest(context.Background()); err == nil {
+		t.Error("a daemon reporting no memory stats was treated as a settled corpus")
+	}
+}
+
+// TestVornik_EmbeddingReadiness_UnreportedIsAnError — absent is not 0.0 and not
+// 1.0. A caller must be able to tell "nothing embedded" from "cannot say".
+func TestVornik_EmbeddingReadiness_UnreportedIsAnError(t *testing.T) {
+	srv := whoamiServer(t, `{"project_id":"p"}`)
 
 	sys := NewVornikSystem(VornikConfig{BaseURL: srv.URL, Client: srv.Client()})
 	if _, err := sys.EmbeddingReadiness(context.Background()); err == nil {
-		t.Error("an empty store reported a readiness fraction instead of erroring")
+		t.Error("an unreported readiness was returned as a fraction instead of erroring")
 	}
 }
 
-// TestVornik_EmbeddingReadiness_HTTPErrorSurfaces — an unreachable stats route
+// TestVornik_EmbeddingReadiness_HTTPErrorSurfaces — an unreachable companion route
 // leaves readiness UNKNOWN rather than reporting a fabricated fraction.
 func TestVornik_EmbeddingReadiness_HTTPErrorSurfaces(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

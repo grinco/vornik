@@ -2203,3 +2203,79 @@ func TestCompanionMCP_MemoryCorrect_ByID_PartialFlipNote(t *testing.T) {
 	assert.Equal(t, 1, out.RefutedCount)
 	assert.Contains(t, out.Note, "flipped 1 of 2")
 }
+
+// TestCompanionMCP_Whoami_ReportsTheWriteTargetDatabase pins the field the memory
+// benchmark's destructive-run guard reads.
+//
+// The guard used to validate --database as a string and could not check where
+// writes would land; on 2026-08-12 a run naming a throwaway database wrote twelve
+// documents into a production corpus. The fix has the guard ask the daemon, and it
+// FAILS CLOSED when the answer is absent — so this field going missing does not
+// silently restore the old behaviour, it stops every benchmark run instead.
+//
+// It is asserted on the whoami TOOL specifically because the first attempt at this
+// change put the field in a different handler's response map. Everything compiled,
+// the daemon shipped, and whoami still reported no database.
+func TestCompanionMCP_Whoami_ReportsTheWriteTargetDatabase(t *testing.T) {
+	srv, keyRepo, _ := newCompanionMCPServer(t)
+	srv.databaseName = "bench_scratch"
+
+	raw, err := apikey.Generate("alpha")
+	require.NoError(t, err)
+	require.NoError(t, keyRepo.Create(context.Background(), &persistence.APIKey{
+		ID:         "akey-whoami-db",
+		ProjectID:  "alpha",
+		Name:       "session-db",
+		KeyHash:    apikey.Hash(raw),
+		KeyPrefix:  apikey.DisplayPrefix(raw),
+		ClientKind: "codex",
+		MemoryRead: true,
+		CreatedAt:  time.Now().UTC(),
+	}))
+
+	req := mcpRequest(t, "tools/call", map[string]any{
+		"name":      "whoami",
+		"arguments": map[string]any{},
+	})
+	req = withCompanionBearer(req, raw)
+	rec := httptest.NewRecorder()
+	srv.CompanionMCPHandler(rec, req)
+
+	text, isErr := decodeToolText(t, decodeJSONRPC(t, rec.Body.Bytes()))
+	require.False(t, isErr)
+	var out map[string]any
+	require.NoError(t, json.Unmarshal([]byte(text), &out))
+	assert.Equal(t, "bench_scratch", out["database"],
+		"whoami must report the database this daemon writes; the benchmark guard fails "+
+			"closed without it, so every run stops")
+}
+
+// TestCompanionMCP_Whoami_OmitsAnUnknownDatabase: unknown must be ABSENT rather
+// than an empty string. The guard treats empty as a refusal too, but a present-yet-
+// empty field invites a reader to treat it as "no database", which is a different
+// claim from "this daemon did not tell us".
+func TestCompanionMCP_Whoami_OmitsAnUnknownDatabase(t *testing.T) {
+	srv, keyRepo, _ := newCompanionMCPServer(t)
+	srv.databaseName = ""
+
+	raw, err := apikey.Generate("alpha")
+	require.NoError(t, err)
+	require.NoError(t, keyRepo.Create(context.Background(), &persistence.APIKey{
+		ID: "akey-whoami-nodb", ProjectID: "alpha", Name: "s",
+		KeyHash: apikey.Hash(raw), KeyPrefix: apikey.DisplayPrefix(raw),
+		ClientKind: "codex", MemoryRead: true, CreatedAt: time.Now().UTC(),
+	}))
+
+	req := withCompanionBearer(mcpRequest(t, "tools/call", map[string]any{
+		"name": "whoami", "arguments": map[string]any{},
+	}), raw)
+	rec := httptest.NewRecorder()
+	srv.CompanionMCPHandler(rec, req)
+
+	text, isErr := decodeToolText(t, decodeJSONRPC(t, rec.Body.Bytes()))
+	require.False(t, isErr)
+	var out map[string]any
+	require.NoError(t, json.Unmarshal([]byte(text), &out))
+	_, present := out["database"]
+	assert.False(t, present, "an unknown database must be omitted, not reported as empty")
+}

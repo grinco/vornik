@@ -33,13 +33,39 @@ type LongMemEval struct{}
 func (LongMemEval) Name() string { return "longmemeval" }
 
 type lmeItem struct {
-	QuestionID   string             `json:"question_id"`
-	QuestionType string             `json:"question_type"`
-	Question     string             `json:"question"`
-	Answer       string             `json:"answer"`
-	SessionIDs   []string           `json:"haystack_session_ids"`
-	Dates        []string           `json:"haystack_dates"`
-	Sessions     [][]map[string]any `json:"haystack_sessions"`
+	QuestionID   string `json:"question_id"`
+	QuestionType string `json:"question_type"`
+	Question     string `json:"question"`
+	// Answer is json.Number-tolerant: 32 of 500 items in longmemeval-cleaned
+	// answer with a bare number (counting questions), and a plain string field
+	// makes encoding/json reject the entire file.
+	Answer     lmeAnswer          `json:"answer"`
+	SessionIDs []string           `json:"haystack_session_ids"`
+	Dates      []string           `json:"haystack_dates"`
+	Sessions   [][]map[string]any `json:"haystack_sessions"`
+}
+
+// lmeAnswer decodes LongMemEval's `answer`, which is a string for most items and
+// a bare JSON number for the counting questions.
+//
+// It keeps the DIGITS rather than going through float64: `any` would decode 3 as
+// float64(3), and a formatter change turning that into "3e+00" would have the judge
+// mark every counting question wrong for a reason invisible in the results.
+type lmeAnswer string
+
+func (a *lmeAnswer) UnmarshalJSON(b []byte) error {
+	// A JSON string: decode normally so escapes are handled.
+	if len(b) > 0 && b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*a = lmeAnswer(s)
+		return nil
+	}
+	// A number (or anything else scalar): keep the literal text verbatim.
+	*a = lmeAnswer(strings.TrimSpace(string(b)))
+	return nil
 }
 
 // Load reads the dataset and applies limits.
@@ -110,7 +136,7 @@ func (in lmeItem) toBenchItem() (BenchItem, error) {
 
 	bi.QAs = []QA{{
 		Question:        in.Question,
-		GoldAnswer:      in.Answer,
+		GoldAnswer:      string(in.Answer),
 		GoldDocumentIDs: gold,
 	}}
 	return bi, nil

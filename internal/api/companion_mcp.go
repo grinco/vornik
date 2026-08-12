@@ -287,7 +287,9 @@ func companionToolDefs() []mcpToolDef {
 		{
 			Name: "whoami",
 			Description: "Return this companion key's identity and RAG-scope context: project_id, client_kind, " +
-				"session_label, and default_repo_scope (the repo_scope recall/remember/recent_memory/delegate fall " +
+				"session_label, database (the database this daemon writes to, so a destructive tool can verify " +
+				"its target rather than trust a typed name), and default_repo_scope (the repo_scope " +
+				"recall/remember/recent_memory/delegate fall " +
 				"back to when a call omits repo_scope). Pass repo_scope to preview the effective_repo_scope a call " +
 				"with that argument would resolve to. Scope is resolved per-call, not held as session state, so this " +
 				"is the way to check 'what RAG project/scope am I in right now' — useful when the operator runs " +
@@ -1671,7 +1673,7 @@ type whoamiArgs struct {
 // The ctx parameter is unused — whoami touches no store, it echoes the key row the
 // auth layer already resolved — but it is kept for signature symmetry with every
 // other companion tool handler, so the dispatch switch stays uniform.
-func (s *Server) companionToolWhoami(_ context.Context, key *persistence.APIKey, raw json.RawMessage) (string, error) {
+func (s *Server) companionToolWhoami(ctx context.Context, key *persistence.APIKey, raw json.RawMessage) (string, error) {
 	var args whoamiArgs
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &args); err != nil {
@@ -1685,6 +1687,44 @@ func (s *Server) companionToolWhoami(_ context.Context, key *persistence.APIKey,
 		"effective_repo_scope": effectiveRepoScope(key, args.RepoScope),
 		"memory_read":          key.MemoryRead,
 		"memory_write":         key.MemoryWrite,
+	}
+	// The database this daemon writes to. Present so a destructive tool can VERIFY
+	// its target instead of trusting a name typed at a command line — the memory
+	// benchmark's guard did the latter and wrote a production corpus on 2026-08-12.
+	// Omitted rather than guessed when unknown; the guard fails closed on absence.
+	if s.databaseName != "" {
+		out["database"] = s.databaseName
+	}
+	// Embedding readiness for THIS key's project: the fraction of its chunks that
+	// are semantically searchable, plus the raw counts.
+	//
+	// Exposed here because the benchmark harness authenticates with a companion key
+	// and its readiness check called an ADMIN-only stats route, so it returned 403
+	// on every run ever made — the signal built to catch a partially-embedded corpus
+	// had never once worked, and a cold corpus scored exactly like a warm one.
+	//
+	// Omitted entirely when it cannot be computed, never defaulted to 1.0: a caller
+	// waiting for a corpus to settle must be able to tell "fully embedded" from
+	// "this daemon cannot say", and only one of those is safe to score.
+	if s.memoryStats != nil {
+		if rows, err := s.memoryStats.Stats(ctx); err == nil {
+			for _, row := range rows {
+				if row.ProjectID != key.ProjectID {
+					continue
+				}
+				out["memory_chunks_total"] = row.ChunksTotal
+				out["memory_chunks_embedded"] = row.ChunksEmbedded
+				out["memory_embed_queue_depth"] = row.QueueDepth
+				// An empty corpus is vacuously ready: there is nothing unembedded,
+				// and reporting 0.0 would stall a caller waiting for 1.0 forever.
+				readiness := 1.0
+				if row.ChunksTotal > 0 {
+					readiness = float64(row.ChunksEmbedded) / float64(row.ChunksTotal)
+				}
+				out["embedding_readiness"] = readiness
+				break
+			}
+		}
 	}
 	if key.SessionLabel != "" {
 		out["session_label"] = key.SessionLabel

@@ -27,6 +27,16 @@ const (
 	// OutcomeError — an HTTP fault, timeout or 4xx from a system under test.
 	// An infrastructure problem, not a wrong answer.
 	OutcomeError Outcome = "error"
+	// OutcomeUnjudged — retrieval was scored and NOTHING WAS JUDGED, because the
+	// run was tier-2-only. Not a verdict and not a fault: the item ran, its
+	// retrieval produced context recall / precision / MRR, and no answer was ever
+	// generated to grade.
+	//
+	// It is a distinct outcome rather than a reuse of OutcomeInvalid because the
+	// two mean opposite things to an operator. Invalid means the judge spoke and we
+	// could not read it — a degraded run. Unjudged means we deliberately did not
+	// ask, and the run is fully trustworthy for what it measured.
+	OutcomeUnjudged Outcome = "unjudged"
 )
 
 // MaxDegradedThreshold is the hard ceiling on the tolerated (invalid + error)
@@ -52,6 +62,11 @@ type OutcomeCounts struct {
 	Incorrect int `json:"incorrect"`
 	Invalid   int `json:"invalid"`
 	Error     int `json:"error"`
+	// Unjudged is items whose retrieval was scored with no verdict sought
+	// (tier-2-only). Counted in Total because they ran, excluded from Judged so
+	// they cannot move accuracy, and excluded from DegradedRate because nothing
+	// went wrong.
+	Unjudged int `json:"unjudged,omitempty"`
 }
 
 // Add increments the tally for one outcome.
@@ -65,12 +80,14 @@ func (c *OutcomeCounts) Add(o Outcome) {
 		c.Invalid++
 	case OutcomeError:
 		c.Error++
+	case OutcomeUnjudged:
+		c.Unjudged++
 	}
 }
 
 // Total is every question attempted.
 func (c OutcomeCounts) Total() int {
-	return c.Correct + c.Incorrect + c.Invalid + c.Error
+	return c.Correct + c.Incorrect + c.Invalid + c.Error + c.Unjudged
 }
 
 // Judged is the population an accuracy figure can legitimately be computed over.

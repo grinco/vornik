@@ -18,6 +18,7 @@ control CLI — on a single deployable daemon.
 | [Architecture](architecture.md) | The core concepts: daemon, tasks, leases, executor, workflows, MCP |
 | [CLI reference](cli.md) | `vornik` (daemon) and `vornikctl` (control) |
 | [Editions](editions.md) | Community vs Enterprise — the feature matrix |
+| [Benchmarks](benchmarks/index.md) | How memory retrieval is measured, per-release results, and how to reproduce them |
 | [Contributing](contributing.md) | Dev setup, the CLA, and how to submit changes |
 | [Security](security.md) | Supported versions and how to report a vulnerability |
 | [Support](support.md) | Community help and commercial support |

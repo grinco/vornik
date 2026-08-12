@@ -233,6 +233,9 @@ func (c *Container) initHTTPServer() error {
 		api.WithExecutionStepOutcomeRepository(c.repos.StepOutcomes),
 		api.WithArchiveService(c.archiveLifecycle),
 		api.WithLLMUsageRepository(c.repos.LLMUsage),
+		// Lets companion whoami report the real write target, so a destructive tool
+		// can verify rather than trust a typed name.
+		api.WithDatabaseName(c.Config.Database.Name),
 		api.WithBudgetReservationRepository(c.repos.BudgetReservations),
 		api.WithChatAuditRepository(c.repos.ChatAudit),
 		api.WithWebhookEventRepository(c.repos.Webhooks),

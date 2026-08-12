@@ -96,3 +96,9 @@ __pycache__/
 
 # mkdocs local build output (published from CI / manually to vornik-docs gh-pages)
 site/
+
+# LongMemEval haystacks — 15 MB (oracle) and 265 MB (_s), fetched from
+# huggingface.co/datasets/xiaowu0162/longmemeval-cleaned (v1-cleaned, Sept 2025).
+# Never committed: the comparability key pins the revision by dataset_sha256, so
+# the file is reproducible from its digest rather than from our history.
+bench/longmemeval/*.json

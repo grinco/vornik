@@ -740,6 +740,12 @@ type Server struct {
 	// snapshots from either path are immediately visible to the
 	// other (idempotent on content hash).
 	inputArtifactStore InputArtifactStore
+	// databaseName is the database this daemon writes to, surfaced by the
+	// companion whoami tool so a destructive tool can VERIFY its target rather
+	// than trusting a name an operator typed. Empty when the container did not
+	// supply it, which the benchmark guard treats as a refusal.
+	databaseName string
+
 	// llmUsageRepo READS the ledger (spend endpoints, budget checks).
 	// externalAPISpend and workflowStepSpend BILL the two writing paths: the
 	// OpenAI-compatible proxy and the agent's streaming usage reports.
@@ -1676,6 +1682,18 @@ func WithArtifactOpener(o ArtifactOpener) ServerOption {
 // WithLLMUsageRepository sets the per-step LLM usage repository. When set,
 // POST /tasks runs a budget check and returns 429 when the project is over
 // its configured daily or monthly hard cap.
+// WithDatabaseName records the database this daemon writes to, so companion
+// whoami can report it.
+//
+// It exists for the destructive-run guard in the memory benchmark. That guard
+// validated the database name an operator typed and could not check where writes
+// would actually land; on 2026-08-12 a benchmark run naming a throwaway database
+// wrote twelve documents into the production corpus. Reporting the real target is
+// what lets the guard fail closed instead of guessing.
+func WithDatabaseName(name string) ServerOption {
+	return func(s *Server) { s.databaseName = name }
+}
+
 func WithLLMUsageRepository(repo persistence.TaskLLMUsageRepository) ServerOption {
 	return func(s *Server) {
 		s.llmUsageRepo = repo

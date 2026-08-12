@@ -1,6 +1,7 @@
 package membench
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -118,4 +119,74 @@ func configuredDenials() []string {
 		}
 	}
 	return out
+}
+
+// WriteTargetReporter is an optional MemorySystem capability: the database the
+// system actually bulk-writes, as the system itself reports it.
+//
+// It exists because the destructive-run guard could not previously tell the
+// difference between the database an operator NAMED and the one that would be
+// written. Those turned out to be different things, and the gap was not
+// theoretical — see VerifyWriteTarget.
+type WriteTargetReporter interface {
+	// WriteTargetDatabase returns the database this system writes to. An error
+	// means the system could not establish it, which the guard treats as a refusal
+	// rather than as permission.
+	WriteTargetDatabase(ctx context.Context) (string, error)
+}
+
+// VerifyWriteTarget refuses a destructive run unless the system under test
+// confirms it writes the database the operator named.
+//
+// WHY THIS EXISTS, precisely. CheckDestructiveTarget validates --database and
+// --i-know-this-wipes as strings: it proves the operator typed a name twice and
+// that the name is not denylisted. It cannot prove the run will write THAT
+// database. On 2026-08-12 it did not: a run naming a freshly-created throwaway put
+// twelve fixture documents into the production corpus, because the vornik adapter
+// reaches a running daemon over companion MCP and the daemon writes to whatever
+// database it is configured with. The named database was left with zero tables.
+//
+// A guard that reads as containment and provides none is worse than no guard,
+// because the flag name is what stops an operator looking further.
+//
+// IT FAILS CLOSED. A system that cannot report its write target — an older daemon,
+// a broken token, an adapter with no such capability — is refused, not waved
+// through. Passing on "could not verify" is precisely the behaviour that caused the
+// incident, and an unverified guard is indistinguishable from an absent one while
+// still looking like protection.
+func VerifyWriteTarget(ctx context.Context, sys MemorySystem, database string) error {
+	want := strings.TrimSpace(database)
+
+	reporter, ok := sys.(WriteTargetReporter)
+	if !ok {
+		return fmt.Errorf("refusing to run: the %q system cannot report which database it "+
+			"writes, so naming %q proves nothing about where this run's writes will land. "+
+			"That gap put fixture documents into a production corpus on 2026-08-12. Use an "+
+			"adapter that reports its write target",
+			sys.Name(), want)
+	}
+
+	got, err := reporter.WriteTargetDatabase(ctx)
+	if err != nil {
+		return fmt.Errorf("refusing to run: could not establish which database the %q system "+
+			"writes (%w). The guard fails closed — 'unverified' is not 'safe', and treating it "+
+			"as safe is what let a benchmark write production",
+			sys.Name(), err)
+	}
+
+	got = strings.TrimSpace(got)
+	if got == "" {
+		return fmt.Errorf("refusing to run: the %q system reported an EMPTY write target, "+
+			"which names no database. Treating empty as agreement would re-open the hole for "+
+			"any deployment whose reporting is misconfigured", sys.Name())
+	}
+	if !strings.EqualFold(got, want) {
+		return fmt.Errorf("refusing to run: you named %q but the %q system actually writes "+
+			"%q. This is the check that was missing on 2026-08-12, when a run naming a "+
+			"throwaway database wrote twelve documents into the production corpus and left "+
+			"the named database empty. Point the system at %q, or name %q if that is really "+
+			"the target",
+			want, sys.Name(), got, want, got)
+	}
+	return nil
 }

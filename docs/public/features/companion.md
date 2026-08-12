@@ -1,7 +1,7 @@
 ---
 sources:
     - path: internal/api/companion_mcp.go
-      sha256: 49c8f24ac213a727b25e7d0d08dfdf8af622e0b10ab7581f3996dc6106118740
+      sha256: 79343c8c6c2bb8dbff8dc79be1e98ee4d7fe6d6fcc5715f6ba394506fe38b105
     - path: contrib/claude-code-companion/.claude-plugin/plugin.json
       sha256: 196896e35ab351314d10a5552857df572bf914079edd164c193a8a43ba81785b
     - path: contrib/codex-companion/.codex-plugin/plugin.json
@@ -39,7 +39,7 @@ The companion exposes these MCP tools:
 | `recent_memory` | the most recently learned chunks, newest first |
 | `list_scopes` | list the repo scopes the project's memory is partitioned into |
 | `memory_correct` | soft-refute a wrong or stale memory chunk, optionally storing the correction |
-| `whoami` | show this key's project and the repo scope your calls resolve to right now |
+| `whoami` | show this key's project, the repo scope your calls resolve to right now, the database this daemon writes (so a destructive tool can verify its target instead of trusting a name you typed), and this project's embedding readiness — how much of its memory is semantically searchable, plus the embed-queue depth, so a caller can wait for ingest to finish instead of querying a half-indexed corpus |
 | `report_problem` | build an anonymized problem report + prefilled issue URL for you to review and submit |
 | `delegate` | queue an async task on vornik; returns a task id and a poll hint |
 | `status` | check a delegated task's status |

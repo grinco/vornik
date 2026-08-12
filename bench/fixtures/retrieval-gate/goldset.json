@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "_notes": "FROZEN fixture gold set for the retrieval CI gate. Deliberately NOT the native gold set over docs/low-level-design: that corpus IS the haystack, so any PR touching a design doc would shift corpus_sha256 and fail the gate for an unrelated reason. This fixture also ships to CE, where bench/native-goldset.json is excluded as IP.\n\nTwelve documents in six deliberately CROWDED pairs \u2014 every question's keywords match at least one sibling \u2014 so retrieval must discriminate rather than keyword-match, and a ranking change is observable.\n\nThe gate's blocking check (verify-determinism) needs no gold answers at all: it compares what two runs RETRIEVED. gold_document_ids are carried anyway so the same fixture can serve a tier-2 baseline check later without being re-authored, and gold_answer is empty because nothing here judges.\n\nFIXTURE AUTHORING GOTCHA, learned by getting both wrong on 2026-08-12: the field is gold_documents (NOT gold_document_ids), and each entry is the corpus FILENAME INCLUDING .md, because Native.loadCorpus sets DocumentID to e.Name(). Getting either wrong yields gold_documents: null in the artifacts and 'scored: 0' with all metrics at 0 \u2014 which reads like broken retrieval and is actually missing labels. The harness is right to refuse rather than score: ContextRecall returns NaN for an unlabelled item precisely so the two cannot be confused.",
+  "questions": [
+    {
+      "id": "g01",
+      "category": "retrieval-gate",
+      "question": "Why did a daemon restart lose chunks that were waiting to be embedded?",
+      "gold_answer": "",
+      "gold_documents": [
+        "embed-queue-lease.md"
+      ]
+    },
+    {
+      "id": "g02",
+      "category": "retrieval-gate",
+      "question": "What happens to a chunk that cannot be embedded after several retries?",
+      "gold_answer": "",
+      "gold_documents": [
+        "embed-queue-dlq.md"
+      ]
+    },
+    {
+      "id": "g03",
+      "category": "retrieval-gate",
+      "question": "Why could two identical searches return results in a different order while every metric said they matched?",
+      "gold_answer": "",
+      "gold_documents": [
+        "rrf-tie-order.md"
+      ]
+    },
+    {
+      "id": "g04",
+      "category": "retrieval-gate",
+      "question": "Why are the keyword and semantic arms combined by rank instead of by score?",
+      "gold_answer": "",
+      "gold_documents": [
+        "rrf-weights.md"
+      ]
+    },
+    {
+      "id": "g05",
+      "category": "retrieval-gate",
+      "question": "Why was semantic search silently keyword-only on one embedding transport?",
+      "gold_answer": "",
+      "gold_documents": [
+        "query-embedding-bedrock.md"
+      ]
+    },
+    {
+      "id": "g06",
+      "category": "retrieval-gate",
+      "question": "What does the reranker do when it times out?",
+      "gold_answer": "",
+      "gold_documents": [
+        "reranker-degrade.md"
+      ]
+    },
+    {
+      "id": "g07",
+      "category": "retrieval-gate",
+      "question": "Why did clearing a cached vector by content hash alone fail to evict anything?",
+      "gold_answer": "",
+      "gold_documents": [
+        "embedding-cache-key.md"
+      ]
+    },
+    {
+      "id": "g08",
+      "category": "retrieval-gate",
+      "question": "Why can a model with a different native vector width not simply be truncated to fit the schema?",
+      "gold_answer": "",
+      "gold_documents": [
+        "embedding-dimension.md"
+      ]
+    },
+    {
+      "id": "g09",
+      "category": "retrieval-gate",
+      "question": "How is a chunk's stored text distinguished from what actually gets embedded?",
+      "gold_answer": "",
+      "gold_documents": [
+        "chunk-context-prefix.md"
+      ]
+    },
+    {
+      "id": "g10",
+      "category": "retrieval-gate",
+      "question": "Which timestamp do temporal filters use, and which one should they use?",
+      "gold_answer": "",
+      "gold_documents": [
+        "chunk-event-time.md"
+      ]
+    }
+  ]
+}

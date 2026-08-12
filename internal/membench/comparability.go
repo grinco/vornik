@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -35,6 +36,18 @@ type ComparabilityFields struct {
 	JudgeModel  string `json:"judge_model"`
 
 	RecallParams string `json:"recall_params"`
+	// ObservedRecallMethod is the retrieval path the SYSTEM reported taking, not
+	// one an operator declared — the same observed-over-declared rule as
+	// ObservedEmbedder, and for the same reason. Empty when the system cannot
+	// report it, which marks the key partial: a run that cannot say whether it
+	// reranked is not comparable to one that can.
+	ObservedRecallMethod string `json:"observed_recall_method,omitempty"`
+	// RetrievalPathUnverified marks a tier-2 run that did NOT establish its
+	// retrieval path was deterministic — permitted only via
+	// --accept-unverified-path, and required for any external system, which cannot
+	// report our retrieval method. In the key because a proven-deterministic run
+	// and an assumed one are different experiments.
+	RetrievalPathUnverified bool `json:"retrieval_path_unverified,omitempty"`
 	// CorpusSHA256 identifies the external haystack a shared-corpus run ingested.
 	// Empty when the dataset carries its own, which dataset_sha256 covers.
 	CorpusSHA256 string `json:"corpus_sha256,omitempty"`
@@ -56,6 +69,16 @@ type ComparabilityFields struct {
 	// than matching.
 	ExternalConfigSHA256 string `json:"external_config_sha256,omitempty"`
 
+	// Tier2Only marks a run that scored RETRIEVAL ONLY — no answer generated, no
+	// verdict sought. It belongs in the key for the same reason RecallMethod does:
+	// it is a different experiment, not a cheaper version of the same one, and its
+	// accuracy is undefined rather than low.
+	//
+	// Without it a tier-2-only run and a judged run over the same dataset and
+	// models would produce a byte-identical key and compare clean — exactly how
+	// the 2026-08-11 pre-fix and post-fix reranker runs did.
+	Tier2Only bool `json:"tier2_only,omitempty"`
+
 	// SingleSystem marks a run with no external system, so the absence of
 	// external fields is by design rather than a verification gap.
 	SingleSystem bool `json:"single_system,omitempty"`
@@ -75,11 +98,14 @@ func (f ComparabilityFields) fieldPairs() [][2]string {
 		{"answer_model", f.AnswerModel},
 		{"judge_model", f.JudgeModel},
 		{"recall_params", f.RecallParams},
+		{"observed_recall_method", f.ObservedRecallMethod},
+		{"retrieval_path_unverified", fmt.Sprintf("%t", f.RetrievalPathUnverified)},
 		{"corpus_sha256", f.CorpusSHA256},
 		{"observed_embedder", f.ObservedEmbedder},
 		{"answer_prompt_sha256", f.AnswerPromptSHA256},
 		{"judge_prompt_sha256", f.JudgePromptSHA256},
 		{"external_config_sha256", f.ExternalConfigSHA256},
+		{"tier2_only", strconv.FormatBool(f.Tier2Only)},
 	}
 }
 

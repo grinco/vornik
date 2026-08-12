@@ -81,7 +81,10 @@ func (f *fakeSystem) Recall(_ context.Context, scope string, q Query) (Recalled,
 	if f.failRealScopes != nil && !isProbe(scope) {
 		return Recalled{}, f.failRealScopes
 	}
-	var out Recalled
+	// The fake fuses nothing and reranks nothing, so it reports the unreranked
+	// path truthfully. Reporting NOTHING would be a different claim — "cannot
+	// say" — which a tier-2-only run refuses by design.
+	out := Recalled{RetrievalMethod: "context-assembly"}
 	pools := [][]Item{f.stored[scope]}
 	if f.leaky {
 		pools = pools[:0]
@@ -664,6 +667,16 @@ func (r *readySystem) EmbeddingReadiness(context.Context) (float64, error) {
 // saying so. A reader would have taken them for semantic-retrieval scores.
 //
 // Readiness must therefore be recorded, and a low value must be visible.
+//
+// SUPERSEDED IN PART on 2026-08-12: recording a low value and scoring anyway was
+// not enough. It let a head-to-head report vornik losing recall 0.917 to 1.000 when
+// the identical items over the same, settled corpus scored 1.000 — the run was
+// racing its own embed queue. The runner now WAITS for readiness and refuses when
+// it never settles (see settle_test.go).
+//
+// This test keeps the reporting half of the contract, with settling explicitly
+// disabled: an operator who chooses to score a cold corpus must still SEE how cold
+// it was.
 func TestRunner_RecordsEmbeddingReadiness(t *testing.T) {
 	sys := &readySystem{fakeSystem: newFakeSystem("ready"), fraction: 0.04}
 	llm := &stubLLM{replies: []string{"a", `{"correct":true}`, "b", `{"correct":true}`}}
@@ -676,6 +689,7 @@ func TestRunner_RecordsEmbeddingReadiness(t *testing.T) {
 		RunDir:    dir,
 		MaxTokens: 4096,
 	}
+	r.SettleDisabled() // scoring a cold corpus is now an explicit choice
 	res, err := r.Run(context.Background(), "")
 	if err != nil {
 		t.Fatalf("Run: %v", err)

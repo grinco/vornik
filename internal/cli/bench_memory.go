@@ -28,6 +28,10 @@ var (
 	benchCorpusDir       string
 	benchSystem          string
 	benchProfile         string
+	benchTier2Only       bool
+	benchExternalDialect string
+	benchAcceptUnverif   bool
+	benchExternalDelete  string
 	benchMaxItems        int
 	benchPerCategory     int
 	benchCategory        string
@@ -77,6 +81,26 @@ var benchMemoryReportCmd = &cobra.Command{
 	RunE:  runBenchMemoryReport,
 }
 
+// verify-determinism is a DIFFERENT question from `compare`. That one asks
+// whether two runs of different configurations may be plotted on one axis; this
+// one asks whether the SAME configuration reproduces itself.
+var benchMemoryVerifyDeterminismCmd = &cobra.Command{
+	Use:   "verify-determinism <run-dir-a> <run-dir-b>",
+	Short: "Require two runs of the same fixture to have retrieved byte-identically",
+	Long: "Compare the per-question retrieval of two runs and fail on any difference.\n\n" +
+		"This is the blocking half of the retrieval CI gate. It needs no committed\n" +
+		"baseline, so it can never go stale: there is nothing to re-bless when\n" +
+		"retrieval legitimately improves.\n\n" +
+		"It compares the CHUNK-LEVEL RANK ORDER, not the metrics. On 2026-08-11 RRF\n" +
+		"ties broke arbitrarily and two identical runs ranked differently, while every\n" +
+		"metric said they matched — tier-2 collapses chunks to documents and the\n" +
+		"document set was unchanged. A metrics-based check is blind to the defect this\n" +
+		"exists to catch.\n\n" +
+		"Intended use: run the fixture twice with --tier2-only, then verify.",
+	Args: cobra.ExactArgs(2),
+	RunE: runBenchMemoryVerifyDeterminism,
+}
+
 var benchMemoryAggregateCmd = &cobra.Command{
 	Use:   "aggregate <run-dir>...",
 	Short: "Summarise repeated runs: mean, spread, and the gate tolerance each metric needs",
@@ -113,6 +137,32 @@ func init() {
 	f.IntVar(&benchMaxTokens, "max-tokens", 4096, "Context budget requested from the system")
 	f.StringVar(&benchRunDir, "run-dir", "", "Directory for journal/manifest/results (default: bench-runs/<timestamp>)")
 	f.BoolVar(&benchResume, "resume", false, "Skip items already judged in the run directory's journal")
+	f.BoolVar(&benchTier2Only, "tier2-only", false,
+		"Score RETRIEVAL only (context recall/precision/MRR): no answer generation, no judge, "+
+			"no model credentials. Accuracy is reported as undefined, not zero. This is the mode "+
+			"a CI gate uses — the RRF retrieval path is deterministic where judged accuracy has "+
+			"sd ~4.5% at n=30 and would fire on noise. It also stops REQUESTING the reranked "+
+			"path, and REFUSES the run if recall reports a rerank happened anyway or cannot say "+
+			"which path it took: an LLM reranker is billed per call and reorders between "+
+			"identical runs, so it must be off on the deployment under test "+
+			"(memory.reranker.enabled: false) — this flag alone cannot disable it")
+	f.StringVar(&benchExternalDelete, "external-bank-delete-path", "",
+		"Route template that DELETES one bank, e.g. '/v1/default/banks/{bank}'. Without it "+
+			"teardown is a no-op and each run re-ingests into the previous run's bank: the "+
+			"corpus accumulates, precision falls run over run, and repeated runs are not "+
+			"comparable. Hindsight measured 0.806 then 0.639 precision on identical items "+
+			"for exactly this reason")
+	f.BoolVar(&benchAcceptUnverif, "accept-unverified-path", false,
+		"Permit a --tier2-only run whose retrieval path cannot be shown deterministic: an "+
+			"external service that does not report a retrieval method, or a competitor that "+
+			"reranks internally. REQUIRED for --system external. It does not silence the "+
+			"check — the run is stamped retrieval_path_unverified in its comparability key, "+
+			"so it can never compare clean against a gate baseline that proved determinism")
+	f.StringVar(&benchExternalDialect, "external-dialect", "",
+		"Request-BODY shape for --system external: empty = the conventional guess, "+
+			"'hindsight' = the shape verified against hindsight 0.9.0 (batched `items[]` "+
+			"ingest keyed `timestamp`, idempotent PUT bank create). Paths stay separately "+
+			"configurable; only bodies and the create method differ")
 	f.StringVar(&benchConfirmWipe, "i-know-this-wipes", "", "Name the database this run will bulk-write (required)")
 	f.StringVar(&benchDatabase, "database", "", "Target database name (required)")
 	f.StringVar(&benchDatasetHash, "dataset-sha256", "", "Expected dataset digest; verified before the run")
@@ -139,6 +189,7 @@ func init() {
 	f.BoolVar(&benchJSON, "json", false, "Print results as JSON")
 
 	benchMemoryAggregateCmd.Flags().BoolVar(&benchJSON, "json", false, "Print the aggregation as JSON")
+	benchMemoryCmd.AddCommand(benchMemoryVerifyDeterminismCmd)
 	benchMemoryCmd.AddCommand(benchMemoryRunCmd, benchMemoryReportCmd,
 		benchMemoryAggregateCmd, benchMemoryCompareCmd)
 	benchCmd.AddCommand(benchMemoryCmd)
@@ -176,9 +227,14 @@ func runBenchMemory(cmd *cobra.Command, _ []string) error {
 
 	// "No default" has to mean refusal, or it silently becomes a default nobody
 	// chose (design §5.6).
-	if benchProfile == "" && (benchAnswerModel == "" || benchJudgeModel == "") {
-		return fmt.Errorf("model selection required: pass --profile (local|judged|cloud) " +
-			"or set both --answer-model and --judge-model explicitly")
+	// --tier2-only needs NO model selection, which is the entire point: a gate that
+	// required a judge could not run on a fork PR, and one that billed per PR gets
+	// switched off. Requiring a profile here anyway would have made the flag
+	// useless for the job it exists to do.
+	if !benchTier2Only && benchProfile == "" && (benchAnswerModel == "" || benchJudgeModel == "") {
+		return fmt.Errorf("model selection required: pass --profile (local|judged|cloud), " +
+			"set both --answer-model and --judge-model explicitly, or pass --tier2-only to " +
+			"score retrieval without any model")
 	}
 	if err := applyProfile(); err != nil {
 		return err
@@ -202,6 +258,16 @@ func runBenchMemory(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// The string guard above proves the operator typed a name twice and that it is
+	// not denylisted. It cannot prove the run will write THAT database — and on
+	// 2026-08-12 it did not: a run naming a freshly-created throwaway wrote twelve
+	// fixture documents into the production corpus, leaving the named database with
+	// zero tables. This asks the system where its writes actually land, and fails
+	// closed when it cannot say.
+	if err := membench.VerifyWriteTarget(cmd.Context(), sys, benchDatabase); err != nil {
+		return err
+	}
+
 	runDir := benchRunDir
 	if runDir == "" {
 		runDir = filepath.Join("bench-runs", time.Now().UTC().Format("20060102-150405"))
@@ -210,33 +276,45 @@ func runBenchMemory(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("create run dir: %w", err)
 	}
 
-	llm, err := newBenchLLM()
-	if err != nil {
-		return err
+	// In tier-2-only mode NO LLM client is constructed at all. Building one and
+	// then not calling it would still require an endpoint and credentials, which
+	// is precisely what makes the gate un-runnable on a fork PR — the flag has to
+	// remove the dependency, not merely the traffic.
+	var generator *membench.AnswerGenerator
+	var judge *membench.Judge
+	if !benchTier2Only {
+		llm, err := newBenchLLM()
+		if err != nil {
+			return err
+		}
+		// The judge may run on a different model from the answerer — that split IS
+		// the "judged" profile, and folding them into one client would make it
+		// unexpressible.
+		judgeLLM := llm.withModel(benchJudgeModel)
+		generator = membench.NewAnswerGenerator(llm)
+		judge = membench.NewJudge(judgeLLM)
 	}
-	// The judge may run on a different model from the answerer — that split IS
-	// the "judged" profile, and folding them into one client would make it
-	// unexpressible.
-	judgeLLM := llm.withModel(benchJudgeModel)
 
 	runner := &membench.Runner{
-		System:            sys,
-		Dataset:           ds,
-		Generator:         membench.NewAnswerGenerator(llm),
-		Judge:             membench.NewJudge(judgeLLM),
-		RunDir:            runDir,
-		MaxTokens:         benchMaxTokens,
-		Limits:            membench.Limits{MaxItems: benchMaxItems, MaxItemsPerCategory: benchPerCategory, Category: benchCategory},
-		Resume:            benchResume,
-		DegradedThreshold: benchDegradedRate,
-		HarnessVersion:    harnessVersion,
-		AnswerModel:       benchAnswerModel,
-		JudgeModel:        benchJudgeModel,
-		DatasetPath:       path,
-		DatasetSHA256:     actualHash,
-		SingleSystem:      benchSystem != "external",
-		RecallMethod:      benchRecallMethod,
-		DeclaredEmbedder:  benchExtractionModel,
+		System:               sys,
+		Dataset:              ds,
+		Generator:            generator,
+		Judge:                judge,
+		RunDir:               runDir,
+		MaxTokens:            benchMaxTokens,
+		Limits:               membench.Limits{MaxItems: benchMaxItems, MaxItemsPerCategory: benchPerCategory, Category: benchCategory},
+		Resume:               benchResume,
+		Tier2Only:            benchTier2Only,
+		AcceptUnverifiedPath: benchAcceptUnverif,
+		DegradedThreshold:    benchDegradedRate,
+		HarnessVersion:       harnessVersion,
+		AnswerModel:          benchAnswerModel,
+		JudgeModel:           benchJudgeModel,
+		DatasetPath:          path,
+		DatasetSHA256:        actualHash,
+		SingleSystem:         benchSystem != "external",
+		RecallMethod:         benchRecallMethod,
+		DeclaredEmbedder:     benchExtractionModel,
 	}
 
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "running %s on %s (run dir %s)\n", sys.Name(), ds.Name(), runDir)
@@ -346,6 +424,10 @@ func resolveSystem() (membench.MemorySystem, error) {
 			BaseURL:         url,
 			Token:           token,
 			ExtractionModel: benchExtractionModel,
+			// Tier-2-only stops REQUESTING the reranked path. It cannot switch off
+			// a reranker the daemon applies anyway, which is why the runner also
+			// verifies the observed method per recall and refuses on a rerank.
+			NoRerank: membench.GateSuppressesRerank(benchTier2Only, benchAcceptUnverif),
 		}), nil
 	case "external":
 		if benchExternalURL == "" {
@@ -360,6 +442,8 @@ func resolveSystem() (membench.MemorySystem, error) {
 			IngestPath:      benchExternalIngest,
 			RecallPath:      benchExternalRecall,
 			ConfigPath:      benchExternalCfgPath,
+			Dialect:         benchExternalDialect,
+			BankDeletePath:  benchExternalDelete,
 			ExtractionModel: benchAnswerModel,
 		}), nil
 	default:
@@ -435,6 +519,23 @@ func runBenchMemoryReport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	return printResult(cmd, res, args[0])
+}
+
+func runBenchMemoryVerifyDeterminism(cmd *cobra.Command, args []string) error {
+	a, err := loadResult(args[0])
+	if err != nil {
+		return err
+	}
+	b, err := loadResult(args[1])
+	if err != nil {
+		return err
+	}
+	if err := membench.CompareRetrieval(a.Retrievals, b.Retrievals); err != nil {
+		return fmt.Errorf("retrieval is NOT deterministic: %w", err)
+	}
+	cmd.Printf("retrieval is deterministic: %d questions retrieved identically across both runs\n",
+		len(a.Retrievals))
+	return nil
 }
 
 func runBenchMemoryCompare(cmd *cobra.Command, args []string) error {

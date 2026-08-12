@@ -479,6 +479,13 @@ func (s *Searcher) searchInternal(ctx context.Context, projectID, query string, 
 	}
 	if err == nil && rerankOn && len(results) > 1 {
 		rerankStart := time.Now()
+		// Observation is stamped from what HAPPENS here, never from rerankOn:
+		// a rerank that errors below leaves the caller holding RRF order, and
+		// the 2026-08-14 baseline lost 45 of 400 reranks to the 8s deadline.
+		obs := RetrievalObservationFromContext(ctx)
+		if obs != nil {
+			obs.RerankAttempted = true
+		}
 		reordered, rerr := s.reranker.Rerank(ctx, query, results)
 		if rerr != nil {
 			s.logger.Warn().Err(rerr).
@@ -486,6 +493,9 @@ func (s *Searcher) searchInternal(ctx context.Context, projectID, query string, 
 				Msg("memory: reranker error — keeping RRF order")
 		} else {
 			results = reordered
+			if obs != nil {
+				obs.Reranked = true
+			}
 		}
 		if s.metrics != nil {
 			s.metrics.SearchRerankDuration.Observe(time.Since(rerankStart).Seconds())

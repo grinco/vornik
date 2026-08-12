@@ -45,6 +45,10 @@ resolved_configs_dir="$(unit_env VORNIK_CONFIGS_DIR || true)"
 
 secrets_dir="${CONFIG_DIR}/secrets"
 
+# The database THIS deployment writes, read out of its own config so the value is
+# never hardcoded in shipped source. Used only to DENY it as a benchmark target.
+resolved_db="$(sed -n 's/^[[:space:]]*name:[[:space:]]*\(.*\)$/\1/p' "$resolved_config" 2>/dev/null | head -1 | tr -d '"'"'"' ')"
+
 mkdir -p "$(dirname "$OUT")"
 cat >"$OUT" <<EOF
 # shellcheck shell=sh
@@ -63,6 +67,19 @@ cat >"$OUT" <<EOF
 export VORNIK_CONFIG="${resolved_config}"
 export VORNIK_CONFIGS_DIR="${resolved_configs_dir}"
 export VORNIK_DATA_DIR="${resolved_data}"
+
+# Deny this deployment's own database as a memory-benchmark target.
+#
+# The benchmark bulk-writes and CLEARS its target. Its guard denies the generic
+# names (prod / production / live) and asks the daemon which database it actually
+# writes — but a name that agrees with the daemon is allowed, so a production
+# database whose name reads like a scratch one is not protected by either check.
+# This deployment's does. Naming it here is what denies it at all.
+#
+# The variable may only ADD denials, so inheriting it into child processes cannot
+# weaken anything: the worst case of forgetting it is a denial that does not
+# happen, never a protection silently removed.
+${resolved_db:+export VORNIK_BENCH_DENY_DATABASES="${resolved_db}"}
 
 # Secrets: sourced from the 0600 files the unit's own EnvironmentFile= lines
 # use, so there is exactly ONE copy of each secret on disk. Never inline a

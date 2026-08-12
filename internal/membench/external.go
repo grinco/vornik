@@ -42,6 +42,13 @@ const (
 	// bankPlaceholder is substituted in a path template for a service that
 	// namespaces in the URL rather than in the body.
 	bankPlaceholder = "{bank}"
+	// DialectHindsight is the body dialect of vectorize-io/hindsight, established
+	// against 0.9.0. Two differences from the conventional guess: ingest takes a
+	// BATCH envelope (`items[]`) with the event time keyed `timestamp`, and bank
+	// creation is an idempotent PUT whose id comes from the path. Its recall
+	// contract needs no dialect — it already matched.
+	DialectHindsight = "hindsight"
+
 	// bankScopeTokenMax bounds the readable part of a bank id. Truncation is safe
 	// because the digest suffix — not the readable part — carries uniqueness.
 	bankScopeTokenMax = 48
@@ -77,6 +84,12 @@ type ExternalConfig struct {
 	// Two concurrent runs against one service account MUST differ here or they
 	// write into each other's haystacks.
 	BankPrefix string
+
+	// Dialect selects the request-BODY shape. Empty is the conventional guess
+	// documented in §12.1; DialectHindsight is the shape verified against
+	// hindsight 0.9.0 by driving it. Paths stay separately configurable — only
+	// the bodies and the bank-create METHOD differ between dialects.
+	Dialect string
 
 	// TopKOnly declares that the service accepts a result count rather than a
 	// token budget. The conversion is then performed AND recorded, because a
@@ -159,7 +172,13 @@ func (e *ExternalSystem) Prepare(ctx context.Context, scope string) error {
 	}
 	bank := e.BankID(scope)
 	path := e.resolvePath(e.cfg.BankCreatePath, "", bank)
-	if err := e.doJSON(ctx, http.MethodPost, path, map[string]any{"bank": bank}, nil); err != nil {
+	method, body := http.MethodPost, any(map[string]any{"bank": bank})
+	if e.cfg.Dialect == DialectHindsight {
+		// PUT upserts and takes the id from the path. Idempotence matters: Prepare
+		// runs once per item scope and a retried run repeats it.
+		method, body = http.MethodPut, any(map[string]any{})
+	}
+	if err := e.doJSON(ctx, method, path, body, nil); err != nil {
 		return fmt.Errorf("create bank %s: %w", bank, err)
 	}
 	return nil
@@ -236,17 +255,7 @@ func (e *ExternalSystem) Ingest(ctx context.Context, scope string, items []Item)
 		if item.Context != "" {
 			body = item.Context + "\n\n" + item.Content
 		}
-		payload := map[string]any{
-			"bank":        bank,
-			"document_id": item.DocumentID,
-			"content":     body,
-		}
-		if !item.EventTime.IsZero() {
-			// Omitted when unknown rather than sent as year 0001: a fabricated date
-			// would place the document outside every temporal window instead of
-			// leaving it unfiltered.
-			payload["event_time"] = item.EventTime.UTC().Format(time.RFC3339)
-		}
+		payload := e.retainPayload(bank, item, body)
 
 		var reply externalRetainReply
 		if err := e.doJSON(ctx, http.MethodPost, path, payload, &reply); err != nil {
@@ -508,4 +517,64 @@ func sanitizeBankToken(scope string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
+}
+
+// retainPayload builds one ingest body in the configured dialect.
+//
+// The conventional shape is a flat document; hindsight 0.9.0 takes a BATCH
+// envelope and keys the event time `timestamp`. One item per call in both cases,
+// deliberately: batching would trade per-item error attribution for a round trip,
+// and knowing WHICH document a service refused is worth more than the latency,
+// because a silently incomplete haystack measures an easier task than the dataset
+// poses.
+func (e *ExternalSystem) retainPayload(bank string, item Item, content string) map[string]any {
+	// A fabricated date is worse than none in both dialects: it places the
+	// document outside every temporal window instead of leaving it unfiltered.
+	eventTime := ""
+	if !item.EventTime.IsZero() {
+		eventTime = item.EventTime.UTC().Format(time.RFC3339)
+	}
+
+	if e.cfg.Dialect == DialectHindsight {
+		mem := map[string]any{
+			"content":     content,
+			"document_id": item.DocumentID,
+		}
+		if eventTime != "" {
+			mem["timestamp"] = eventTime
+		}
+		return map[string]any{
+			"items": []any{mem},
+			// Explicitly synchronous. An async retain lets the run recall before
+			// ingest finishes, scoring a corpus that is still being written.
+			"async": false,
+		}
+	}
+
+	payload := map[string]any{
+		"bank":        bank,
+		"document_id": item.DocumentID,
+		"content":     content,
+	}
+	if eventTime != "" {
+		payload["event_time"] = eventTime
+	}
+	return payload
+}
+
+// WriteTargetDatabase reports where this adapter's writes actually land.
+//
+// A remote service has no database name, but it does have a blast radius, and the
+// destructive-run guard's question — "name the thing you are about to bulk-write"
+// — still has an answer: the service itself. Reporting the base URL keeps the
+// guard meaningful rather than skipped, which matters most for the arm we
+// understand least. The denylist applies unchanged; a production endpoint belongs
+// on it exactly as a production database name does.
+func (e *ExternalSystem) WriteTargetDatabase(_ context.Context) (string, error) {
+	base := strings.TrimRight(strings.TrimSpace(e.cfg.BaseURL), "/")
+	if base == "" {
+		// Empty is not an answer. Fail closed, as the guard does everywhere else.
+		return "", errors.New("external system has no base URL configured")
+	}
+	return base, nil
 }

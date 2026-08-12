@@ -165,11 +165,62 @@ type Runner struct {
 	// carries its own haystacks, which dataset_sha256 already covers.
 	CorpusItems []Item
 
+	// Tier2Only scores retrieval and skips answering and judging entirely.
+	//
+	// It exists so a retrieval gate can run per-change: tier-2 metrics need no
+	// judge, no answer model and no cloud credentials, and the RRF path they
+	// measure is deterministic (sd 0.0000) where judged accuracy is not (sd ~4.5%
+	// at n=30). A gate on the judged number would fire on noise; a gate needing
+	// secrets cannot run on a fork PR at all.
+	//
+	// Items come back OutcomeUnjudged — never OutcomeCorrect and never
+	// OutcomeIncorrect — so accuracy is undefined rather than zero, and the run's
+	// comparability key records the flag so it cannot be compared with a judged
+	// run.
+	Tier2Only bool
+
 	// DeclaredEmbedder is what the OPERATOR says the system embeds with. It is
 	// checked against the observed value and never substituted for it: a run whose
 	// declaration contradicts the system is refused, because the alternative is a
 	// number labelled with a model that did not produce it.
 	DeclaredEmbedder string
+
+	// SettleTimeout bounds the wait for an ingested corpus to become searchable.
+	// Zero uses the default; set SettleDisabled to skip waiting entirely.
+	SettleTimeout time.Duration
+	// SettlePollInterval is how often readiness is re-read while waiting.
+	SettlePollInterval time.Duration
+	// settleDisabled is set via SettleDisabled() and skips the wait.
+	settleDisabled bool
+
+	// AcceptUnverifiedPath permits a tier-2-only run whose retrieval path cannot be
+	// shown deterministic — an external service that does not report a method, or a
+	// competitor that reranks internally.
+	//
+	// Needed because --tier2-only carries two separable properties: "no judge, no
+	// answer generation" and "the path was proven deterministic". A CI gate needs
+	// both; a head-to-head against a shipping product needs the first and cannot
+	// have the second. Refusing those runs made the external arm unmeasurable.
+	//
+	// It does not silence the check — it records the gap in the comparability key,
+	// so an unverified run can never compare clean against a gate baseline.
+	AcceptUnverifiedPath bool
+
+	// observedRecallMethods is the set of retrieval paths recall reported during
+	// this run, which is what the comparability key records — not RecallMethod,
+	// the free-text label an operator types. Three runs on 2026-08-12 were stamped
+	// `--recall-method context-assembly` while the reranker fired on every query,
+	// and nothing objected, because nothing was comparing the label to reality.
+	//
+	// A set rather than one value: the reranked path loses some queries to its
+	// deadline, so a run can legitimately contain both orderings and the key has
+	// to say so.
+	observedRecallMethods map[string]struct{}
+
+	// scoringReadiness is the WORST embedding readiness observed at a moment
+	// scoring was allowed to begin — the number that describes what was measured,
+	// unlike a post-hoc sample of a drained queue.
+	scoringReadiness *float64
 }
 
 // EmbedderReporter is an optional MemorySystem capability: the embedder actually in
@@ -245,6 +296,24 @@ func (r *Runner) preflight(ctx context.Context, datasetPath string) ([]BenchItem
 	}
 	if r.RunDir == "" {
 		return nil, errors.New("membench: no run directory configured")
+	}
+	// Fresh per Run so a reused Runner cannot carry a previous run's observed
+	// methods into this run's comparability key.
+	r.observedRecallMethods = map[string]struct{}{}
+	r.scoringReadiness = nil
+	// A judged run needs both. Refused here rather than tolerated, because the
+	// alternative — judging only when a judge happens to be wired — lets a
+	// misconfigured full run silently report itself as a retrieval-only run.
+	// Tier2Only makes that same absence a stated decision instead.
+	if !r.Tier2Only {
+		if r.Generator == nil {
+			return nil, errors.New("membench: no answer generator configured; set Tier2Only " +
+				"to score retrieval only, or wire a generator")
+		}
+		if r.Judge == nil {
+			return nil, errors.New("membench: no judge configured; set Tier2Only to score " +
+				"retrieval only, or wire a judge")
+		}
 	}
 	if datasetPath == "" {
 		datasetPath = r.DatasetPath
@@ -338,7 +407,13 @@ func (r *Runner) Run(ctx context.Context, datasetPath string) (Result, error) {
 	}
 
 	res := r.assemble(ctx, counts, recalls, precisions, mrrs, worstLoss)
-	res.EmbeddingReadiness = r.readiness(ctx)
+	// The readiness observed while SCORING, not a sample taken now: every queue has
+	// drained by the time a run assembles its result, so a fresh read would report
+	// 1.0 for a run that scored its second item against a half-indexed corpus.
+	res.EmbeddingReadiness = r.scoringReadiness
+	if res.EmbeddingReadiness == nil {
+		res.EmbeddingReadiness = r.readiness(ctx)
+	}
 	res.Retrievals = retrievals
 	if err := r.writeArtifacts(res); err != nil {
 		return res, err
@@ -417,6 +492,22 @@ func (r *Runner) scoreQA(
 		})
 		return OutcomeError, fmt.Errorf("recall: %w", err)
 	}
+	// Verify the path this recall actually took, per recall.
+	//
+	// Requesting an unreranked path (VornikConfig.NoRerank) is not the same as
+	// getting one, and a run is not uniform: the reranked path lost 45 of 400
+	// queries to its 8s deadline in the 2026-08-14 baseline, so a single up-front
+	// check would pass a mixture. Terminal rather than an item error — a
+	// tier-2-only run on a reranked path is not a degraded measurement, it is a
+	// measurement of a different path than the one the mode gates.
+	if r.Tier2Only && !r.AcceptUnverifiedPath {
+		if err := verifyTier2Path(recalled.RetrievalMethod); err != nil {
+			return "", err
+		}
+	}
+	if recalled.RetrievalMethod != "" {
+		r.observedRecallMethods[recalled.RetrievalMethod] = struct{}{}
+	}
 	_ = journal.Record(JournalEntry{ItemID: item.ID, Phase: PhaseRecalled, Category: item.Category})
 
 	// Tier-2 metrics come from the retrieved DOCUMENT ids against the gold ids —
@@ -433,6 +524,15 @@ func (r *Runner) scoreQA(
 	recalls[item.Category] = append(recalls[item.Category], ContextRecall(ids, qa.GoldDocumentIDs))
 	precisions[item.Category] = append(precisions[item.Category], ContextPrecision(ids, qa.GoldDocumentIDs))
 	mrrs[item.Category] = append(mrrs[item.Category], MRR(ids, qa.GoldDocumentIDs))
+
+	// Tier-2-only: the retrieval is scored and the item is done. OutcomeUnjudged
+	// rather than any verdict, so accuracy stays undefined instead of reading as
+	// zero, and the journal records that this item reached its terminal phase
+	// legitimately rather than stopping early.
+	if r.Tier2Only {
+		_ = journal.Record(JournalEntry{ItemID: item.ID, Phase: PhaseRecalled, Category: item.Category})
+		return OutcomeUnjudged, nil
+	}
 
 	answer, err := r.Generator.Answer(ctx, qa.Question, recalled.Hits)
 	if err != nil {
@@ -495,6 +595,20 @@ func (r *Runner) runItem(
 		}
 	}
 	_ = journal.Record(JournalEntry{ItemID: item.ID, Phase: PhaseIngested, Category: item.Category})
+
+	// Wait for what was just ingested to be searchable. Scoring a queue mid-drain
+	// measures keyword-only retrieval and reports it as if it were semantic.
+	ready, serr := r.settle(ctx)
+	if serr != nil {
+		return "", stats, serr
+	}
+	if ready != nil {
+		// Keep the WORST readiness seen while scoring: one item scored cold
+		// invalidates the run, and a later fully-drained sample would hide it.
+		if r.scoringReadiness == nil || *ready < *r.scoringReadiness {
+			r.scoringReadiness = ready
+		}
+	}
 
 	// One QA per item in every dataset we load today; the loop keeps the shape
 	// honest for a dataset that carries several.
@@ -629,6 +743,7 @@ func (r *Runner) comparabilityFields(ctx context.Context) ComparabilityFields {
 		cfg = ""
 	}
 	f := ComparabilityFields{
+		Tier2Only:          r.Tier2Only,
 		HarnessVersion:     r.HarnessVersion,
 		DatasetName:        r.Dataset.Name(),
 		DatasetSHA256:      r.DatasetSHA256,
@@ -636,12 +751,18 @@ func (r *Runner) comparabilityFields(ctx context.Context) ComparabilityFields {
 		OurExtractionModel: cfg,
 		AnswerModel:        r.AnswerModel,
 		JudgeModel:         r.JudgeModel,
-		RecallParams:       fmt.Sprintf("max_tokens=%d;method=%s", r.MaxTokens, recallMethodOrUnknown(r.RecallMethod)),
-		CorpusSHA256:       CorpusDigest(r.CorpusItems),
-		ObservedEmbedder:   r.observedEmbedder(ctx),
-		AnswerPromptSHA256: AnswerPromptSHA256(),
-		JudgePromptSHA256:  JudgePromptSHA256(),
-		SingleSystem:       r.SingleSystem,
+		// The OBSERVED method wins over the declared one. A label the system
+		// contradicts must never reach the key: three runs on 2026-08-12 were
+		// stamped context-assembly while every query was reranked, and the key
+		// recorded the operator's belief rather than the experiment.
+		RecallParams:            fmt.Sprintf("max_tokens=%d;method=%s", r.MaxTokens, recallMethodOrUnknown(r.effectiveRecallMethod())),
+		ObservedRecallMethod:    observedRecallMethod(r.observedRecallMethods),
+		RetrievalPathUnverified: r.Tier2Only && r.AcceptUnverifiedPath,
+		CorpusSHA256:            CorpusDigest(r.CorpusItems),
+		ObservedEmbedder:        r.observedEmbedder(ctx),
+		AnswerPromptSHA256:      AnswerPromptSHA256(),
+		JudgePromptSHA256:       JudgePromptSHA256(),
+		SingleSystem:            r.SingleSystem,
 	}
 	if r.SingleSystem {
 		return f
@@ -649,6 +770,16 @@ func (r *Runner) comparabilityFields(ctx context.Context) ComparabilityFields {
 	f.TheirExtractionModel = cfg
 	f.ExternalConfigSHA256 = cfg
 	return f
+}
+
+// effectiveRecallMethod is what the key records: what the system was OBSERVED to
+// do, falling back to the operator's declaration only when nothing was observed
+// (a system that cannot report, which a tier-2-only run already refuses).
+func (r *Runner) effectiveRecallMethod() string {
+	if observed := observedRecallMethod(r.observedRecallMethods); observed != "" {
+		return observed
+	}
+	return r.RecallMethod
 }
 
 // recallMethodOrUnknown keeps an unset method visibly unknown in the key.

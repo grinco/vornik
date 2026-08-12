@@ -89,6 +89,17 @@ type Recalled struct {
 	// CostUSD is nil when the system reports no cost. Nil rather than 0 so
 	// "free" and "unknown" stay distinguishable in tier-3 reporting.
 	CostUSD *float64 `json:"cost_usd,omitempty"`
+	// RetrievalMethod is the path the system says this recall ACTUALLY took —
+	// "context-assembly+rerank" or "context-assembly". Empty when the system
+	// cannot report it, which is treated as unverified rather than as "no
+	// rerank": a tier-2-only run refuses on empty for the same reason the
+	// write-target guard fails closed.
+	//
+	// Per-recall rather than per-run because the reranked path is a mixture. The
+	// 2026-08-14 baseline reranked 355 of 400 queries and lost 45 to the 8s
+	// deadline, so one run legitimately contains both orderings and a single
+	// up-front check would miss it.
+	RetrievalMethod string `json:"retrieval_method,omitempty"`
 }
 
 // SourceIDs is the retrieved document identities in rank order, which is the

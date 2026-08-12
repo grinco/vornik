@@ -94,6 +94,7 @@ vornikctl bench memory run [flags]
 
 | Flag | Default | Description |
 |---|---|---|
+| `--accept-unverified-path` | `false` | Permit a --tier2-only run whose retrieval path cannot be shown deterministic: an external service that does not report a retrieval method, or a competitor that reranks internally. REQUIRED for --system external. It does not silence the check — the run is stamped retrieval_path_unverified in its comparability key, so it can never compare clean against a gate baseline that proved determinism |
 | `--answer-model` |  | Model that answers from retrieved context |
 | `--category` |  | Only run this category |
 | `--corpus-dir` |  | Directory of documents forming the haystack for the native dataset. Required with --dataset native, whose gold set names documents in this directory; the longmemeval and locomo datasets carry their own haystacks and ignore it. |
@@ -102,6 +103,7 @@ vornikctl bench memory run [flags]
 | `--dataset-sha256` |  | Expected dataset digest; verified before the run |
 | `--dataset` |  | Dataset: longmemeval \| locomo \| native (required) |
 | `--external-config-path` |  | Route reporting the external system's effective config; unset marks the comparability key PARTIAL |
+| `--external-dialect` |  | Request-BODY shape for --system external: empty = the conventional guess, 'hindsight' = the shape verified against hindsight 0.9.0 (batched `items[]` ingest keyed `timestamp`, idempotent PUT bank create). Paths stay separately configurable; only bodies and the create method differ |
 | `--external-ingest-path` |  | Override the external ingest route (default: a conventional shape) |
 | `--external-recall-path` |  | Override the external recall route |
 | `--external-token` |  | Bearer token for the external system |
@@ -119,6 +121,29 @@ vornikctl bench memory run [flags]
 | `--resume` | `false` | Skip items already judged in the run directory's journal |
 | `--run-dir` |  | Directory for journal/manifest/results (default: bench-runs/<timestamp>) |
 | `--system` | `vornik` | System under test: vornik \| external |
+| `--tier2-only` | `false` | Score RETRIEVAL only (context recall/precision/MRR): no answer generation, no judge, no model credentials. Accuracy is reported as undefined, not zero. This is the mode a CI gate uses — the RRF retrieval path is deterministic where judged accuracy has sd ~4.5% at n=30 and would fire on noise. It also stops REQUESTING the reranked path, and REFUSES the run if recall reports a rerank happened anyway or cannot say which path it took: an LLM reranker is billed per call and reorders between identical runs, so it must be off on the deployment under test (memory.reranker.enabled: false) — this flag alone cannot disable it |
+
+## vornikctl bench memory verify-determinism
+
+Require two runs of the same fixture to have retrieved byte-identically
+
+Compare the per-question retrieval of two runs and fail on any difference.
+
+This is the blocking half of the retrieval CI gate. It needs no committed
+baseline, so it can never go stale: there is nothing to re-bless when
+retrieval legitimately improves.
+
+It compares the CHUNK-LEVEL RANK ORDER, not the metrics. On 2026-08-11 RRF
+ties broke arbitrarily and two identical runs ranked differently, while every
+metric said they matched — tier-2 collapses chunks to documents and the
+document set was unchanged. A metrics-based check is blind to the defect this
+exists to catch.
+
+Intended use: run the fixture twice with --tier2-only, then verify.
+
+```
+vornikctl bench memory verify-determinism <run-dir-a> <run-dir-b>
+```
 
 ## vornikctl config
 

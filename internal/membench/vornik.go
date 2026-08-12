@@ -35,6 +35,11 @@ type VornikConfig struct {
 	// ExtractionModel is recorded in the comparability key. The adapter cannot
 	// discover it, so the caller supplies what it configured.
 	ExtractionModel string
+	// NoRerank stops the adapter requesting the reranked context-assembly path.
+	// Set by tier-2-only runs, whose whole premise is a deterministic retrieval
+	// path: an LLM reranker reorders between identical runs (§13.9) and is
+	// billed per call.
+	NoRerank bool
 }
 
 // VornikSystem implements MemorySystem against a running daemon.
@@ -140,7 +145,13 @@ func (v *VornikSystem) Recall(ctx context.Context, scope string, q Query) (Recal
 		// fired (rerankOn := opts.Rerank && s.rerankerActive(), and the interactive
 		// surface leaves Rerank false for latency). A gate on the wrong path can go
 		// green while the path that matters regresses.
-		"sufficient": true,
+		//
+		// Unset in tier-2-only mode: an LLM in the retrieval path destroys the
+		// determinism that mode exists to gate on (§13.9), and requesting it is
+		// what billed 30 cloud reranker calls across three supposedly-free runs on
+		// 2026-08-12. Requesting is only half the fix — the runner also verifies
+		// the observed method, because a request is not an outcome.
+		"sufficient": !v.cfg.NoRerank,
 	}
 	if q.MaxTokens > 0 {
 		// The recall tool takes a result count, not a token budget. Convert with
@@ -162,7 +173,7 @@ func (v *VornikSystem) Recall(ctx context.Context, scope string, q Query) (Recal
 	if err := v.call(ctx, "recall", args, &reply); err != nil {
 		return Recalled{}, err
 	}
-	out := Recalled{Latency: time.Since(start)}
+	out := Recalled{Latency: time.Since(start), RetrievalMethod: reply.RetrievalMethod}
 	for _, h := range reply.Hits {
 		out.Hits = append(out.Hits, Hit{
 			// SourceName is the DOCUMENT identity the dataset labels; chunk_id is
@@ -227,6 +238,11 @@ type recallReply struct {
 		Content    string  `json:"content"`
 		Score      float64 `json:"score"`
 	} `json:"hits"`
+	// RetrievalMethod is what the daemon says the search DID. Absent from
+	// daemons older than the reporting change, which reads as unverified — the
+	// runner refuses a tier-2-only run on an empty value rather than assuming
+	// the benign reading.
+	RetrievalMethod string `json:"retrieval_method"`
 }
 
 // call performs one JSON-RPC tools/call against the companion endpoint and
@@ -392,35 +408,59 @@ func (v *VornikSystem) fetchStats(ctx context.Context) (memoryStatsReply, error)
 // daemon by companion key, which binds it to a single project anyway, and summing
 // keeps the number meaningful if that ever stops being true.
 func (v *VornikSystem) EmbeddingReadiness(ctx context.Context) (float64, error) {
-	url := strings.TrimRight(v.cfg.BaseURL, "/") + "/api/v1/memory/stats"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return 0, fmt.Errorf("build stats request: %w", err)
+	var reply whoamiReply
+	if err := v.call(ctx, "whoami", map[string]any{}, &reply); err != nil {
+		return 0, fmt.Errorf("whoami: %w", err)
 	}
-	if v.cfg.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+v.cfg.Token)
+	if reply.EmbeddingReadiness == nil {
+		// Absent is not 1.0. A caller waiting for a settled corpus must be able to
+		// tell "fully embedded" from "this daemon cannot say".
+		return 0, errors.New("daemon did not report embedding_readiness (upgrade it, or " +
+			"disable settling explicitly)")
 	}
-	resp, err := v.client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("memory stats: %w", err)
+	return *reply.EmbeddingReadiness, nil
+}
+
+func (v *VornikSystem) WriteTargetDatabase(ctx context.Context) (string, error) {
+	var reply whoamiReply
+	if err := v.call(ctx, "whoami", map[string]any{}, &reply); err != nil {
+		return "", fmt.Errorf("whoami: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("memory stats: http %d", resp.StatusCode)
+	return reply.Database, nil
+}
+
+// whoamiReply is the subset of the companion `whoami` payload this adapter reads.
+//
+// EmbeddingReadiness is a POINTER because absent and 0.0 mean opposite things: a
+// daemon too old to report cannot be distinguished from a corpus with nothing
+// embedded unless absence has its own representation. Treating absence as ready is
+// how a cold corpus came to be scored as warm.
+type whoamiReply struct {
+	Database           string   `json:"database"`
+	EmbeddingReadiness *float64 `json:"embedding_readiness"`
+	ChunksTotal        int64    `json:"memory_chunks_total"`
+	ChunksEmbedded     int64    `json:"memory_chunks_embedded"`
+	QueueDepth         int64    `json:"memory_embed_queue_depth"`
+}
+
+// PendingIngest reports how many chunks are still queued for embedding, satisfying
+// IngestQueueReporter.
+//
+// Read from the companion `whoami` payload rather than the admin stats route. That
+// distinction is the whole fix: the readiness check this replaces called
+// /api/v1/memory/stats, which is admin-only, while this adapter authenticates with a
+// companion key — so it returned 403 on every run ever made with one, the error was
+// mapped to "unknown", and unknown was treated as acceptable.
+func (v *VornikSystem) PendingIngest(ctx context.Context) (int64, error) {
+	var reply whoamiReply
+	if err := v.call(ctx, "whoami", map[string]any{}, &reply); err != nil {
+		return 0, fmt.Errorf("whoami: %w", err)
 	}
-	var out memoryStatsReply
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return 0, fmt.Errorf("decode memory stats: %w", err)
+	if reply.EmbeddingReadiness == nil {
+		// The daemon reports no memory stats at all, so queue depth read as 0 would
+		// be indistinguishable from "settled". Refuse rather than assume.
+		return 0, errors.New("daemon did not report memory stats in whoami (upgrade it, " +
+			"or disable settling explicitly)")
 	}
-	var total, embedded int
-	for _, p := range out.Projects {
-		total += p.ChunksTotal
-		embedded += p.ChunksEmbedded
-	}
-	if total == 0 {
-		// No content is not "0% ready" — there is nothing to be ready. Reporting 0
-		// would make an empty store look like a broken embedder.
-		return 0, fmt.Errorf("memory stats: no chunks stored")
-	}
-	return float64(embedded) / float64(total), nil
+	return reply.QueueDepth, nil
 }

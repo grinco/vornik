@@ -103,6 +103,10 @@ type agentInputOpts struct {
 	// Permissions, when set, overrides the hardcoded permission defaults
 	// in buildAgentInput with the actual swarm role config values.
 	Permissions *registry.SwarmRolePermissions
+	// ToolGrantAvailable reports whether mcp__vornik__grant_step_tools is advertised
+	// to this step. Gates the tool-budget prompt block: telling an agent to call a
+	// tool it does not have wastes tokens and invites a hallucinated call.
+	ToolGrantAvailable bool
 	// AdaptiveCandidateWorkflows lists the workflow IDs the lead is
 	// allowed to pick from when running the strict adaptive route
 	// step. Injected into the agent's context.adaptiveCandidateWorkflows
@@ -691,6 +695,12 @@ func buildAttachedFilesBlockStaged(inputFiles []string, extractions []map[string
 	if len(extracted) > 0 {
 		sb.WriteString("## ATTACHED DOCUMENTS (already in project memory)\n")
 		sb.WriteString("These documents have been extracted into structured text + indexed into project memory at task-creation time. The raw binary is NOT staged in the container — access the content via mcp__vornik__document_get_outline / document_read_section / document_get_metadata (use the extracted_document_id below), or via memory_search for cross-document queries. Do NOT attempt to file_read these documents — there is no staged file path.\n")
+		// The WHY and the PAGING CONTRACT, moved here from assistant-swarm's
+		// rolePrelude (LLD 09 §13.5b). In the preset they were config-borne — paid
+		// on every step of every role whether or not anything was attached, and
+		// present on exactly one deployment. Here they are paid only when an
+		// unstaged extracted document actually exists, on every deployment.
+		sb.WriteString("Read in bounded slices: document_read_section takes offset_chars + limit_chars, and returns next_offset with has_more — page with those rather than pulling a section whole. A raw read of a 600 KB EPUB or a 30 MB PDF blows the context window of every model in the fallback chain, which is why there is no staged path to read.\n")
 		for _, e := range extracted {
 			sb.WriteString("- ")
 			if e.Title != "" {

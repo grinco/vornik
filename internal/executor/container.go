@@ -448,6 +448,9 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	if len(opts.Skills) == 0 {
 		opts.Skills = e.resolveSkillIndex(ctx, task.ProjectID, step.Role)
 	}
+	// Tool-budget guidance is injected only when the grant tool actually exists for
+	// this deployment (see tool_grant_prompt.go).
+	opts.ToolGrantAvailable = e.toolGrantsWired
 	input := buildAgentInput(task, execution.ID, plan.workflow.ID, swarmID, stepID, step.Role, step.Prompt, opts)
 	// 0o600 — task.json holds the step prompt + any inline
 	// secrets / credentials passed from project config.

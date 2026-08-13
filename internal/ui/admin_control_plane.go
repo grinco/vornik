@@ -55,11 +55,14 @@ type AdminCPRow struct {
 	DiffPreview string
 	Evidence    string
 	// Gates for the action buttons (mirror the daemon state machine).
-	CanApprove  bool // DRAFT
-	CanReject   bool // DRAFT (reject) or APPROVED (withdraw)
-	CanApply    bool // APPROVED + has an apply target
-	CanRollback bool // APPLIED
-	ReviewOnly  bool // APPROVED but no apply target → "action by hand"
+	CanApprove bool // DRAFT, and not an observation (those cannot be approved)
+	CanReject  bool // DRAFT (reject) or APPROVED (withdraw)
+	// IsObservation marks an informational row. It has no approvable change, so
+	// the page says so rather than leaving a lone Reject button unexplained.
+	IsObservation bool
+	CanApply      bool // APPROVED + has an apply target
+	CanRollback   bool // APPLIED
+	ReviewOnly    bool // APPROVED but no apply target → "action by hand"
 	// RollbackSuperseded: an APPLIED proposal that is no longer the live
 	// top-of-stack for its targets — a later overlapping apply overwrote it,
 	// so its rollback is unavailable (the engine guard would refuse it).
@@ -220,12 +223,14 @@ var cpFlashMessages = map[string]string{
 	"applied":       "Proposal applied (config hot-reloaded).",
 	"rolled-back":   "Proposal rolled back.",
 	"self-approval": "Rejected: you can't approve your own proposal.",
-	"busy":          "Refused: tasks are running in scope — retry when idle.",
-	"ack-required":  "Refused: a daemon- or swarm-scope change needs the blast-radius acknowledgement checkbox.",
-	"review-only":   "This proposal has no applyable change — action it by hand.",
-	"stale-base":    "Refused: config.yaml changed since this proposal was drafted — re-draft it (nothing was written).",
-	"not-approved":  "Refused: only an APPROVED proposal can be applied.",
-	"apply-failed":  "Apply failed (auto-rolled-back if the config was rejected).",
+	"not-decidable": "This is an observation — informational only, so there is nothing to approve. " +
+		"Dismiss it with Reject once you've read it.",
+	"busy":         "Refused: tasks are running in scope — retry when idle.",
+	"ack-required": "Refused: a daemon- or swarm-scope change needs the blast-radius acknowledgement checkbox.",
+	"review-only":  "This proposal has no applyable change — action it by hand.",
+	"stale-base":   "Refused: config.yaml changed since this proposal was drafted — re-draft it (nothing was written).",
+	"not-approved": "Refused: only an APPROVED proposal can be applied.",
+	"apply-failed": "Apply failed (auto-rolled-back if the config was rejected).",
 	"content-too-large": "Refused: the file this proposal rewrites is larger than the apply size cap — " +
 		"nothing was written. Raise controlplane's content cap or split the change.",
 	"error": "That action could not be completed.",
@@ -661,7 +666,14 @@ func (s *Server) cpLedgerRow(p *persistence.ControlPlaneProposal, superseded map
 		// change — showing only removed lines with the paired additions cut off,
 		// which read as an unreviewable, scary deletion of unrelated config.
 		Rationale: p.Rationale, DiffPreview: p.Diff, Evidence: p.Evidence,
-		CanApprove: p.Status == persistence.ProposalStatusDraft,
+		// Observations are informational: SetStatus refuses to approve them
+		// (ErrProposalNotDecidable), so offering the button invites an action the
+		// domain forbids — the operator clicks Approve, the row does not move, and
+		// the only feedback is a generic "could not be completed". Dismissing via
+		// Reject IS allowed, so that button stays.
+		CanApprove: p.Status == persistence.ProposalStatusDraft &&
+			!persistence.IsObservationKind(p.Kind),
+		IsObservation: persistence.IsObservationKind(p.Kind),
 		// Reject a DRAFT; withdraw an APPROVED-but-unappliable proposal
 		// (e.g. superseded by a re-draft) — both route to REJECTED.
 		CanReject:          p.Status == persistence.ProposalStatusDraft || p.Status == persistence.ProposalStatusApproved,
@@ -784,6 +796,8 @@ func (s *Server) cpApproveReject(ctx context.Context, id, status, actor string, 
 		redirect(status)
 	case errors.Is(err, persistence.ErrProposalSelfApprove):
 		redirect("self-approval")
+	case errors.Is(err, persistence.ErrProposalNotDecidable):
+		redirect("not-decidable")
 	default:
 		redirect("error")
 	}

@@ -433,6 +433,11 @@ func (c *Container) initScheduler() error {
 		),
 		executor.WithLLMUsageRepository(c.repos.LLMUsage),
 		executor.WithSpend(c.llmSpend(persistence.TaskLLMUsageSourceWorkflowStep, "worker")),
+		// Declares that mcp__vornik__grant_step_tools is served, so agents receive the
+		// tool-budget guidance. Keyed off the same condition that wires the provider,
+		// so the prompt block and the tool appear and disappear together.
+		executor.WithToolGrantsAvailable(c.repos != nil &&
+			c.repos.ExecutionToolGrants != nil && c.repos.Executions != nil),
 		executor.WithBudgetReservationRepository(c.repos.BudgetReservations),
 		executor.WithSteeringNotifier(c.combinedSteeringNotifier()),
 		executor.WithStepOutcomeRepository(c.repos.StepOutcomes),

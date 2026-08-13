@@ -24,6 +24,10 @@ type ComposedMCPExecutor struct {
 	External MCPExecutor // typically *mcp.Manager
 	Builtin  *DocumentToolProvider
 	Consult  *consult.Provider // A2A domain-expert consult tools (mcp__consult__<peer>)
+	// Grants serves mcp__vornik__grant_step_tools — the lead narrowing which tools a
+	// step is advertised (registry design §10.1). Nil leaves the ceiling as the only
+	// narrowing, which is the pre-feature behaviour.
+	Grants *ToolGrantProvider
 }
 
 // Tools returns the union of external MCP server tools and the built-in
@@ -39,6 +43,9 @@ func (c *ComposedMCPExecutor) Tools(projectID string) []chat.Tool {
 	if c.Consult != nil {
 		out = append(out, c.Consult.Tools(projectID)...)
 	}
+	if c.Grants != nil {
+		out = append(out, c.Grants.Tools(projectID)...)
+	}
 	return out
 }
 
@@ -52,6 +59,9 @@ func (c *ComposedMCPExecutor) Execute(ctx context.Context, projectID, qualifiedN
 	}
 	if c.Consult != nil && c.Consult.Owns(qualifiedName) {
 		return c.Consult.Execute(ctx, projectID, qualifiedName, argsJSON)
+	}
+	if c.Grants != nil && c.Grants.Owns(qualifiedName) {
+		return c.Grants.Execute(ctx, projectID, qualifiedName, argsJSON)
 	}
 	if c.External == nil {
 		return "", errBuiltinNoExternal(qualifiedName)

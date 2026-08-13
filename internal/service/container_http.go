@@ -921,8 +921,22 @@ func (c *Container) initHTTPServer() error {
 		})
 	}
 	consultProvider := c.buildConsultProvider()
-	if c.mcpManager != nil || docProvider != nil || consultProvider != nil {
-		composed := &api.ComposedMCPExecutor{Builtin: docProvider, Consult: consultProvider}
+	// grant_step_tools — the lead narrowing which tools a step is ADVERTISED
+	// (registry design §10.1). Requires the grant store AND the execution repo: the
+	// grant is scoped to (execution, step), so without either it cannot resolve what
+	// it would be scoping. Left nil in that case, which keeps the role ceiling as the
+	// only narrowing — the behaviour before grants existed.
+	var grantProvider *api.ToolGrantProvider
+	if c.repos != nil && c.repos.ExecutionToolGrants != nil && c.repos.Executions != nil {
+		grantProvider = &api.ToolGrantProvider{
+			Grants:     c.repos.ExecutionToolGrants,
+			Executions: c.repos.Executions,
+			Ceiling:    c.roleToolCeiling,
+		}
+		apiOpts = append(apiOpts, api.WithToolGrants(c.repos.ExecutionToolGrants))
+	}
+	if c.mcpManager != nil || docProvider != nil || consultProvider != nil || grantProvider != nil {
+		composed := &api.ComposedMCPExecutor{Builtin: docProvider, Consult: consultProvider, Grants: grantProvider}
 		if c.mcpManager != nil {
 			// Assign only when the underlying pointer is non-nil so
 			// the interface field doesn't end up as a typed-nil

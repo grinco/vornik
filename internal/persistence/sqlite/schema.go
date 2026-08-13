@@ -1597,4 +1597,26 @@ CREATE INDEX IF NOT EXISTS idx_mcp_oauth_tokens_project
     ON mcp_oauth_tokens (project_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_oauth_tokens_expiry
     ON mcp_oauth_tokens (expires_at);
+
+-- execution_tool_grants — per-execution tool grants (registry design §10.1-§10.4).
+-- Append-only: the newest row for (execution_id, step_id) is the current grant and
+-- every earlier row is the audit trail. requested_tools holds the lead's REQUEST,
+-- never the resolved set, so resolution is recomputed against the live ceiling.
+CREATE TABLE IF NOT EXISTS execution_tool_grants (
+    id                  TEXT PRIMARY KEY,
+    execution_id        TEXT NOT NULL,
+    project_id          TEXT NOT NULL,
+    step_id             TEXT NOT NULL,
+    role                TEXT NOT NULL DEFAULT '',
+    requested_tools     TEXT NOT NULL DEFAULT '[]',
+    accepted            BOOLEAN NOT NULL DEFAULT 0,
+    refused_tools       TEXT NOT NULL DEFAULT '[]',
+    is_escalation       BOOLEAN NOT NULL DEFAULT 0,
+    ceiling_hash        TEXT NOT NULL DEFAULT '',
+    ceiling_modified_at TIMESTAMP,
+    actor               TEXT NOT NULL DEFAULT '',
+    created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_execution_tool_grants_lookup
+    ON execution_tool_grants (execution_id, step_id, created_at DESC);
 `

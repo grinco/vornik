@@ -189,6 +189,15 @@ func buildAgentContextMap(taskType, prompt string, timeContext currentDateTimeCo
 		// directive channel (system prompt), appended after canonical
 		// context (LLD 2026-07-07-knowledge-skill-store-design §4).
 		sp = composeSystemPromptWithSkillIndex(sp, opts.Skills)
+		// Tool-budget guidance rides the binary, not the swarm preset, so an upgrade
+		// reaches every existing deployment's agents (see tool_grant_prompt.go).
+		sp = composeSystemPromptWithToolGrant(sp, opts.ToolGrantAvailable)
+		// Reporting integrity states an invariant every deployment enforces
+		// (verifyRoleClaims). Inside this guard, NOT above it: when nothing else
+		// composes a system prompt the entrypoint applies its own default, and
+		// emitting a bare block here would REPLACE that default with three
+		// sentences — a worse outcome than the gap it closes.
+		sp = composeSystemPromptWithClaimVerification(sp)
 		contextMap["systemPrompt"] = sp
 	}
 	// Adaptive candidate list — the lead picks a value from this slice

@@ -261,12 +261,13 @@
                                     <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-green-700 hover:bg-green-600 text-white">✅ Approve</button>
                                 </form>
                                 {{end}}
+                                {{if .IsObservation}}<div class="text-[11px] text-gray-500 max-w-[13rem]">Observation — informational. Nothing to approve; dismiss it once read.</div>{{end}}
                                 {{if .CanReject}}
                                 <form method="POST" action="/ui/admin/control-plane">
                                     <input type="hidden" name="id" value="{{.ID}}">
                                     <input type="hidden" name="status" value="{{$.Filter}}">
                                     <input type="hidden" name="action" value="reject">
-                                    <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-red-800 hover:bg-red-700 text-white">{{if eq .Status "APPROVED"}}🚫 Withdraw{{else}}❌ Reject{{end}}</button>
+                                    <button type="submit" class="px-3 py-1.5 text-xs rounded-md bg-red-800 hover:bg-red-700 text-white">{{if .IsObservation}}✔ Dismiss{{else if eq .Status "APPROVED"}}🚫 Withdraw{{else}}❌ Reject{{end}}</button>
                                 </form>
                                 {{end}}
                                 {{if .CanApply}}

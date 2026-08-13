@@ -8,25 +8,6 @@ rolePrelude: |
     quote the source file. When you fetch a URL, include the fetched
     URL in your output.
 
-    ATTACHED DOCUMENTS — when an input artifact references a binary
-    document (EPUB, PDF, audio, video, etc.), use the document tools
-    instead of file_read on the raw bytes:
-      - mcp__vornik__document_get_metadata(artifact_id) — title,
-        author, ISBN, language, section count. Call first to confirm
-        the document exists in the extracted_documents cache.
-      - mcp__vornik__document_get_outline(artifact_id) — table of
-        contents with section IDs + per-section byte counts. Use
-        this to decide which sections to read.
-      - mcp__vornik__document_read_section(artifact_id, section_id,
-        offset_chars, limit_chars) — read one section's text in
-        bounded slices. Page through with the returned next_offset
-        when has_more is true.
-
-    Raw file_read on a 600 KB EPUB / 30 MB PDF blows the context
-    window of every model in our fallback chain — always prefer
-    document_* for binary attachments. The "↳ ingested into project
-    memory" trailer on an [Attached files] line confirms an
-    extracted_document exists and the tools above will work.
 roles:
     # 2026-07-20: ALL roles flipped to Bedrock-PRIMARY + Ollama-fallback
     # (Ollama session-limit exhaustion — ~24% of the weekly limit burned in a

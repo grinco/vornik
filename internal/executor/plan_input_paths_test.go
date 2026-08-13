@@ -345,3 +345,42 @@ func TestBuildAgentPrompt_UsesStagedArtifactsForTheAttachedBlock(t *testing.T) {
 		t.Errorf("prompt claims no staged path for a staged file:\n%s", prompt)
 	}
 }
+
+// TestBuildAttachedFilesBlock_CarriesWhyAndPagingContract pins backport (b) of
+// LLD 09 §13.5: the two facts that used to live only in assistant-swarm's
+// rolePrelude — WHY there is no staged path (a 600 KB EPUB blows the context
+// window) and HOW to page (offset_chars/limit_chars, next_offset while has_more).
+//
+// In the preset they were config-borne: paid on every step of every role whether
+// or not anything was attached, and true on exactly one deployment. Here they are
+// conditional on an unstaged extracted document existing, and ship in the binary.
+func TestBuildAttachedFilesBlock_CarriesWhyAndPagingContract(t *testing.T) {
+	got := buildAttachedFilesBlock([]string{"/x/book.epub"}, []map[string]any{{
+		"artifact_id":           "art_1",
+		"extracted_document_id": "doc_1",
+		"title":                 "A Book",
+		"section_count":         12,
+		"chunks_ingested":       40,
+	}})
+
+	for _, want := range []string{"offset_chars", "limit_chars", "next_offset", "has_more"} {
+		assert.Contains(t, got, want,
+			"paging contract incomplete: without it an agent pulls a whole section and "+
+				"blows the context window it was being steered away from")
+	}
+	assert.Contains(t, got, "context window",
+		"the WHY is missing; a rule with no reason gets reasoned around")
+}
+
+// TestBuildAttachedFilesBlock_NoDocumentGuidanceWithoutADocument is the other half:
+// the guidance is CONDITIONAL. A step with a plain staged file must not pay for
+// document_* paging prose it has no use for — that cost, on every step of every
+// role, is what moving this out of the prelude fixes.
+func TestBuildAttachedFilesBlock_NoDocumentGuidanceWithoutADocument(t *testing.T) {
+	got := buildAttachedFilesBlock([]string{"/x/notes.txt"}, nil)
+
+	for _, unwanted := range []string{"offset_chars", "has_more", "context window", "EPUB"} {
+		assert.NotContains(t, got, unwanted,
+			"document-paging guidance leaked onto a step with no extracted document")
+	}
+}

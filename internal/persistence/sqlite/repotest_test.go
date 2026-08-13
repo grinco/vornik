@@ -360,3 +360,12 @@ func TestMCPOAuthTokenRepository_Contract(t *testing.T) {
 	db := newTestDB(t)
 	repotest.RunMCPOAuthTokenSuite(t, sqlite.NewMCPOAuthTokenRepository(db.DB))
 }
+
+// TestExecutionToolGrantRepository_Contract — per-execution tool grants (registry
+// design §10.1-§10.4). The store carries a privilege decision, so both backends must
+// agree that a REFUSED grant never becomes current, that a superseding grant appends
+// rather than replaces, and that escalations count refused attempts.
+func TestExecutionToolGrantRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunExecutionToolGrantSuite(t, sqlite.NewExecutionToolGrantRepository(db.DB))
+}

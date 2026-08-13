@@ -15,6 +15,7 @@ import (
 
 	"vornik.io/vornik/internal/auth"
 	"vornik.io/vornik/internal/budget"
+	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/mcp"
@@ -1566,6 +1567,17 @@ func (s *Server) ListMCPTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tools := s.mcpExecutor.Tools(projectID)
+	// Narrow to the calling role's allowedTools. The agent's mcp-bridge reads this
+	// list and turns it into the tool schemas sent to the model on EVERY iteration,
+	// so an unneeded tool here is a recurring cost, not a one-off. Callers with no
+	// task context (vornikctl, the UI) resolve to no allowlist and see everything.
+	ceiling := s.roleToolAllowlist(r.Context(), mcpCallerTaskID(r))
+	// advertised = project ∩ ceiling ∩ grant (§10.4). The grant is recomputed here on
+	// every call rather than stored resolved, so a ceiling tightened by hot reload
+	// takes effect immediately and a stale grant cannot outlive it. /mcp/call enforces
+	// the ceiling alone and never consults the grant — that is what keeps a hostile
+	// grant to a wasted iteration rather than an escalation.
+	tools = GrantedTools(tools, ceiling, s.stepToolGrant(r.Context(), mcpCallerTaskID(r)))
 	respondJSON(w, http.StatusOK, map[string]any{"tools": tools})
 }
 
@@ -1744,40 +1756,96 @@ func (s *Server) CallMCPTool(w http.ResponseWriter, r *http.Request) {
 // authored in swarm config, falling back to the bare tool segment so an
 // operator can allowlist either shape.
 func (s *Server) roleAllowsMCPTool(ctx context.Context, taskID, qualifiedName string) bool {
-	if taskID == "" || s.executionRepo == nil || s.projectRegistry == nil {
-		return true
-	}
-	exec, err := s.executionRepo.GetByTaskID(ctx, taskID)
-	if err != nil || exec == nil || exec.CurrentStepID == nil || *exec.CurrentStepID == "" {
-		return true
-	}
-	project, workflow, err := s.projectRegistry.GetProjectWithWorkflow(exec.ProjectID)
-	if err != nil || project == nil || workflow == nil {
-		return true
-	}
-	step, ok := workflow.Steps[*exec.CurrentStepID]
-	if !ok || step.Role == "" {
-		return true
-	}
-	_, swarm, err := s.projectRegistry.GetProjectWithSwarm(exec.ProjectID)
-	if err != nil || swarm == nil {
-		return true
-	}
-	var allowed []string
-	found := false
-	for i := range swarm.Roles {
-		if swarm.Roles[i].Name == step.Role {
-			allowed = swarm.Roles[i].Permissions.AllowedTools
-			found = true
-			break
-		}
-	}
-	// Role not declared in the swarm, or declared with no allowedTools
-	// → unrestricted (preserve pre-B2 behavior).
-	if !found || len(allowed) == 0 {
+	allowed := s.roleToolAllowlist(ctx, taskID)
+	// No resolvable allowlist → unrestricted (preserve pre-B2 behavior).
+	if len(allowed) == 0 {
 		return true
 	}
 	return mcpRoleToolAllowed(allowed, qualifiedName)
+}
+
+// roleToolAllowlist resolves the calling task's current role and returns that
+// role's declared allowedTools, or nil when there is no allowlist to apply.
+//
+// Nil covers every resolution gap AND the "role declares none" case, because both
+// mean the same thing to callers: do not narrow. FAIL-OPEN by design — the project
+// gate (ProjectAuthMiddleware) remains in force either way.
+//
+// Extracted 2026-08-12 so the ADVERTISED tool list (ListMCPTools) and the
+// invoke-time gate resolve the role through exactly one path. Two paths could
+// drift, and the dangerous direction is advertising a tool /mcp/call then refuses:
+// the agent spends an iteration to earn a guaranteed 403.
+func (s *Server) roleToolAllowlist(ctx context.Context, taskID string) []string {
+	if taskID == "" || s.executionRepo == nil || s.projectRegistry == nil {
+		return nil
+	}
+	exec, err := s.executionRepo.GetByTaskID(ctx, taskID)
+	if err != nil || exec == nil || exec.CurrentStepID == nil || *exec.CurrentStepID == "" {
+		return nil
+	}
+	project, workflow, err := s.projectRegistry.GetProjectWithWorkflow(exec.ProjectID)
+	if err != nil || project == nil || workflow == nil {
+		return nil
+	}
+	step, ok := workflow.Steps[*exec.CurrentStepID]
+	if !ok || step.Role == "" {
+		return nil
+	}
+	_, swarm, err := s.projectRegistry.GetProjectWithSwarm(exec.ProjectID)
+	if err != nil || swarm == nil {
+		return nil
+	}
+	for i := range swarm.Roles {
+		if swarm.Roles[i].Name == step.Role {
+			return swarm.Roles[i].Permissions.AllowedTools
+		}
+	}
+	return nil
+}
+
+// advertisedTools narrows a project's tool catalog to what one role may invoke.
+//
+// Tokens are spent when a tool is ADVERTISED, not when it is called: every schema
+// is re-sent on every iteration of the agent's tool loop. One project measured
+// 11,937 tokens of MCP schemas going to every role, including roles that need a
+// handful (registry design §10).
+//
+// Decided by mcpRoleToolAllowed — the same predicate the invoke-time gate uses —
+// so the advertised set can never exceed the permitted set. An empty allowlist is
+// passthrough, matching the fail-open rule everywhere else.
+//
+// This is an optimisation, NOT a security boundary. Per the §09 runtime-contract
+// review the agent container is untrusted and can name a tool it was never shown,
+// so /mcp/call must keep refusing regardless of what was advertised.
+func advertisedTools(all []chat.Tool, allowed []string) []chat.Tool {
+	if len(allowed) == 0 || len(all) == 0 {
+		return all
+	}
+	out := make([]chat.Tool, 0, len(all))
+	for _, t := range all {
+		if mcpRoleToolAllowed(allowed, t.Function.Name) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// mcpCallerTaskID resolves which task an MCP request belongs to, preferring the
+// task-scoped API key over the header.
+//
+// Mirrors the precedence CallMCPTool applies: a task-scoped key BINDS the task, so
+// a disagreeing header is ignored here (this path only narrows what is advertised,
+// so the safe fallback is the key's own task). Empty when neither is present — an
+// operator CLI or the UI — which resolves to no allowlist and no narrowing.
+func mcpCallerTaskID(r *http.Request) string {
+	if id := IdentityFromContext(r.Context()); id != nil {
+		if row, ok := id.Extra[auth.ExtraDBKeyRow].(*persistence.APIKey); ok {
+			if boundTaskID, isTaskKey := persistence.TaskIDFromKeyName(row.Name); isTaskKey {
+				return boundTaskID
+			}
+		}
+	}
+	return r.Header.Get("X-Task-ID")
 }
 
 // mcpRoleToolAllowed applies a resolved (non-empty) role allowlist to one
@@ -2701,4 +2769,23 @@ func (s *Server) projectWizardRouter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+// stepToolGrant returns the lead's accepted tool grant for the calling step, or nil.
+//
+// Nil at every gap — no task, no store, no execution, no grant — so the advertise
+// path falls back to the ceiling alone, which is the behaviour before grants existed.
+func (s *Server) stepToolGrant(ctx context.Context, taskID string) []string {
+	if taskID == "" || s.toolGrants == nil || s.executionRepo == nil {
+		return nil
+	}
+	exec, err := s.executionRepo.GetByTaskID(ctx, taskID)
+	if err != nil || exec == nil || exec.CurrentStepID == nil || *exec.CurrentStepID == "" {
+		return nil
+	}
+	g, err := s.toolGrants.Current(ctx, exec.ID, *exec.CurrentStepID)
+	if err != nil || g == nil {
+		return nil
+	}
+	return g.RequestedTools
 }

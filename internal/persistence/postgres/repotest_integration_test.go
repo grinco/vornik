@@ -664,3 +664,15 @@ func TestMCPOAuthTokenRepository_PostgresContract(t *testing.T) {
 	resetSuiteTables(t, db, "mcp_oauth_tokens")
 	repotest.RunMCPOAuthTokenSuite(t, NewMCPOAuthTokenRepository(db.DB))
 }
+
+// TestExecutionToolGrantRepository_PostgresContract — per-execution tool grants
+// (registry design §10.1-§10.4), the same suite that runs against SQLite.
+//
+// Worth running on the pgvector lane specifically: the requested_tools /
+// refused_tools columns are JSONB here and TEXT in SQLite, and a byte-exact JSONB
+// round-trip is exactly what diverged once before between the two backends.
+func TestExecutionToolGrantRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	resetSuiteTables(t, db, "execution_tool_grants")
+	repotest.RunExecutionToolGrantSuite(t, NewExecutionToolGrantRepository(db.DB))
+}

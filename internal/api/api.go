@@ -1112,6 +1112,9 @@ type Server struct {
 	// the key-scoped CheckKey surface is available.
 	tradingRateLimiter *ratelimit.Limiter
 	mcpExecutor        MCPExecutor
+	// toolGrants reads per-execution tool grants for the advertise path (registry
+	// design §10.1). Nil leaves the ceiling as the only narrowing.
+	toolGrants persistence.ExecutionToolGrantRepository
 	// mediaHandles stashes large MCP tool outputs (image data URIs) out of
 	// the agent's context and re-injects them into a sink tool's call. Nil =
 	// disabled (pass-through). See internal/mediahandles.
@@ -2734,4 +2737,11 @@ func WireDoctorAPIMetrics(m *APIMetrics) {
 		return
 	}
 	doctorHandlers.SetAPIMetrics(m)
+}
+
+// WithToolGrants wires the per-execution tool-grant store used by the advertise
+// path (registry design §10.1). Nil-safe: without it, a step's advertised tools are
+// bounded by the role ceiling alone — the behaviour before grants existed.
+func WithToolGrants(repo persistence.ExecutionToolGrantRepository) ServerOption {
+	return func(s *Server) { s.toolGrants = repo }
 }

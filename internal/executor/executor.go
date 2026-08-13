@@ -306,15 +306,19 @@ type SteeringNotifier interface {
 
 // Executor runs workflow instances for tasks.
 type Executor struct {
-	config         *Config
-	runtime        RuntimeManager
-	warmPool       WarmPool
-	execRepo       ExecutionRepository
-	artifactRepo   ArtifactRepository
-	artifactStore  ArtifactStore
-	taskRepo       TaskRepository
-	auditRepo      persistence.ToolAuditRepository
-	recoveryEvents persistence.RecoveryEventRepository
+	config  *Config
+	runtime RuntimeManager
+	// toolGrantsWired reports whether mcp__vornik__grant_step_tools is served to
+	// agents. Set by the container when the grant store is wired; gates the
+	// tool-budget prompt block so agents are never told about a tool they lack.
+	toolGrantsWired bool
+	warmPool        WarmPool
+	execRepo        ExecutionRepository
+	artifactRepo    ArtifactRepository
+	artifactStore   ArtifactStore
+	taskRepo        TaskRepository
+	auditRepo       persistence.ToolAuditRepository
+	recoveryEvents  persistence.RecoveryEventRepository
 	// skillRepo backs knowledge-skill injection into role context
 	// (LLD 2026-07-07-knowledge-skill-store-design). Nil disables
 	// injection — roles simply don't receive learned skills.
@@ -2976,4 +2980,15 @@ func (e *Executor) pruneAllWorktrees(ctx context.Context, preserve map[string]st
 			pruneWorktrees(ctx, projectDir, e.logger, preserve)
 		}()
 	}
+}
+
+// WithToolGrantsAvailable declares that mcp__vornik__grant_step_tools is advertised
+// to agents, so the tool-budget guidance block is injected into their system prompt.
+//
+// The guidance ships with the BINARY rather than with swarm presets: an existing
+// deployment's swarm YAML is the operator's file and an upgrade does not rewrite it,
+// so preset-only guidance would reach new installs and nobody else. Injecting it here
+// means an upgrade updates every deployment's agents at once.
+func WithToolGrantsAvailable(available bool) Option {
+	return func(e *Executor) { e.toolGrantsWired = available }
 }

@@ -6732,4 +6732,47 @@ ALTER TABLE task_llm_usage ADD COLUMN IF NOT EXISTS tokens_estimated BOOLEAN NOT
 ALTER TABLE task_llm_usage DROP COLUMN IF EXISTS tokens_estimated;
 `,
 	},
+	{
+		Version: 160,
+		Name:    "execution_tool_grants",
+		// Per-execution tool grants (02-project-and-swarm-registry §10.1-§10.4).
+		//
+		// APPEND-ONLY BY DESIGN. The current grant for a step is the newest row for
+		// (execution_id, step_id); every earlier row is the audit trail. One table
+		// serves both because a grant IS a privilege decision, and separating
+		// "current state" from "what was decided" invites the two to disagree.
+		//
+		// requested_tools stores the lead's REQUEST verbatim, never the resolved
+		// effective set. Resolution is recomputed on every advertise call against the
+		// live ceiling, so an operator tightening a role by hot reload takes effect
+		// immediately and a stale grant cannot outlive it (§10.4 drift).
+		//
+		// ceiling_hash + ceiling_modified_at exist so a later reviewer can separate
+		// "this tool was never in the ceiling" from "the ceiling was tightened after
+		// the grant" — contents alone cannot distinguish those. refused_tools carries
+		// the names withheld from the agent (§10.3(4): echoing them to the agent would
+		// let injected text enumerate the ceiling by probing).
+		Up: `
+CREATE TABLE IF NOT EXISTS execution_tool_grants (
+    id                  TEXT PRIMARY KEY,
+    execution_id        TEXT NOT NULL,
+    project_id          TEXT NOT NULL,
+    step_id             TEXT NOT NULL,
+    role                TEXT NOT NULL DEFAULT '',
+    requested_tools     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    accepted            BOOLEAN NOT NULL DEFAULT FALSE,
+    refused_tools       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    is_escalation       BOOLEAN NOT NULL DEFAULT FALSE,
+    ceiling_hash        TEXT NOT NULL DEFAULT '',
+    ceiling_modified_at TIMESTAMPTZ,
+    actor               TEXT NOT NULL DEFAULT '',
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_execution_tool_grants_lookup
+    ON execution_tool_grants (execution_id, step_id, created_at DESC);
+`,
+		Down: `
+DROP TABLE IF EXISTS execution_tool_grants;
+`,
+	},
 }

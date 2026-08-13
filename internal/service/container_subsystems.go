@@ -974,3 +974,37 @@ func (c *Container) applyMCPOAuthToken(cfg *mcp.ServerConfig, projectID, scope s
 	cfg.AuthHeaders = map[string]string{"Authorization": "Bearer " + token}
 	return true
 }
+
+// roleToolCeiling resolves the ceiling (role allowedTools) for a task, for the
+// grant_step_tools provider to validate a grant against.
+//
+// Returns nil at every resolution gap, which the provider treats as "unrestricted" —
+// the same fail-open rule the advertise filter and the invoke gate use. A grant
+// against a nil ceiling can still only narrow, so the invariant holds.
+func (c *Container) roleToolCeiling(ctx context.Context, taskID string) []string {
+	if c == nil || c.repos == nil || c.repos.Executions == nil || c.Registry == nil {
+		return nil
+	}
+	exec, err := c.repos.Executions.GetByTaskID(ctx, taskID)
+	if err != nil || exec == nil || exec.CurrentStepID == nil || *exec.CurrentStepID == "" {
+		return nil
+	}
+	_, workflow, err := c.Registry.GetProjectWithWorkflow(exec.ProjectID)
+	if err != nil || workflow == nil {
+		return nil
+	}
+	step, ok := workflow.Steps[*exec.CurrentStepID]
+	if !ok || step.Role == "" {
+		return nil
+	}
+	_, swarm, err := c.Registry.GetProjectWithSwarm(exec.ProjectID)
+	if err != nil || swarm == nil {
+		return nil
+	}
+	for i := range swarm.Roles {
+		if swarm.Roles[i].Name == step.Role {
+			return swarm.Roles[i].Permissions.AllowedTools
+		}
+	}
+	return nil
+}

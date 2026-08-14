@@ -37,9 +37,17 @@ type ToolGrantProvider struct {
 	// provider is testable without standing one up, and so the dependency states what
 	// it actually uses.
 	Executions ExecutionByTaskReader
-	// Ceiling resolves the role ceiling for a task. Injected rather than reaching
-	// for the registry directly so this file stays testable without one.
-	Ceiling func(ctx context.Context, taskID string) []string
+	// Ceiling resolves the calling role AND its tool ceiling for a task. Injected
+	// rather than reaching for the registry directly so this file stays testable
+	// without one.
+	//
+	// It returns the ROLE as well because the audit row must record who asked.
+	// The resolver already knows it — it walks the workflow step to find the role
+	// before looking up that role's allowedTools — and an earlier version dropped
+	// it on the floor, leaving every execution_tool_grants row with an empty role.
+	// A privilege-request audit trail that cannot say WHO requested is not an
+	// audit trail (found by the agent-quality benchmark, 2026-08-14).
+	Ceiling func(ctx context.Context, taskID string) (role string, tools []string)
 }
 
 // Tools advertises grant_step_tools when the provider is wired.
@@ -128,8 +136,9 @@ func (p *ToolGrantProvider) Execute(ctx context.Context, projectID, qualifiedNam
 	}
 
 	var ceiling []string
+	var role string
 	if p.Ceiling != nil {
-		ceiling = p.Ceiling(ctx, taskID)
+		role, ceiling = p.Ceiling(ctx, taskID)
 	}
 
 	// Escalation budget is checked BEFORE evaluating, so a refused escalation still
@@ -146,6 +155,7 @@ func (p *ToolGrantProvider) Execute(ctx context.Context, projectID, qualifiedNam
 	outcome := EvaluateToolGrant(args.Tools, ceiling)
 	row := &persistence.ExecutionToolGrant{
 		ExecutionID: exec.ID, ProjectID: projectID, StepID: stepID,
+		Role:           role,
 		RequestedTools: args.Tools,
 		Accepted:       len(outcome.RefusedNames) == 0,
 		RefusedTools:   outcome.RefusedNames,

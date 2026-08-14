@@ -1,0 +1,16 @@
+{
+  "role": "lead",
+  "swarm": "bench-suppressed",
+  "rolePrompt": "You are the lead of a Vornik swarm. Plan the work, delegate it, and verify what comes back.",
+  "suppressedGuidanceBlocks": ["canonical-context"],
+  "toolGrantAvailable": true,
+  "canonicalContext": {
+    "ProjectContext": "This project builds a benchmark harness. Prefer measured claims to argued ones.",
+    "UserGuidance": "Commit in small slices. Run make lint before every commit.",
+    "Source": "dot_autonomy"
+  },
+  "skills": [
+    {"Name": "deploy-vornik", "Description": "Deploy the daemon and verify the units came up."},
+    {"Name": "triage-failed-task", "Description": "Route a failed task to the right playbook."}
+  ]
+}

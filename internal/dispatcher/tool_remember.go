@@ -597,7 +597,13 @@ func (te *ToolExecutor) linkOneKGEntity(ctx context.Context, matchID, projectID 
 		// New subject: create it and record the kg_entity identifier (at the
 		// ceiling, enforced by the binder) so a later deposit reuses it.
 		subjectID = persistence.GenerateID("subject")
-		if err := te.dataSubjects.CreateSubject(ctx, datasubject.Subject{ID: subjectID, DisplayName: "kg:" + matchID}); err != nil {
+		// Through the shared helper: KG resolution (increment 4) recognises a
+		// placeholder BY THIS NAME when it folds one into an identified person.
+		// If the two spellings diverged, every subject minted here would present
+		// as an un-adoptable conflict and one person would keep two subject rows.
+		if err := te.dataSubjects.CreateSubject(ctx, datasubject.Subject{
+			ID: subjectID, DisplayName: datasubject.PlaceholderSubjectName(matchID),
+		}); err != nil {
 			return fmt.Errorf("create subject for %s: %w", matchID, err)
 		}
 		idOnly, err := datasubject.BindKGExtraction(matchID, "", projectID, datasubject.ConfidencePossible)

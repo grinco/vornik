@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"vornik.io/vornik/internal/promptblock"
 )
 
 // The aggregate budget for injected guidance blocks (LLD 09 §13.3(2)).
@@ -61,12 +63,42 @@ func TestInjectedBlockRegistry_IsComplete(t *testing.T) {
 		}
 	}
 	for _, b := range injectedBlocks {
-		if b.Name == "" || b.Class == "" {
-			t.Errorf("registry entry %+v is missing a name or class; the class decides what an "+
-				"operator may suppress (LLD 09 §13.3(4))", b)
+		if b.Name == "" {
+			t.Errorf("registry entry %+v is missing a name; the name is what an operator writes "+
+				"in suppressedGuidanceBlocks and what carries the class (LLD 09 §13.3(4))", b)
+			continue
 		}
-		if b.Class != blockAdvisory && b.Class != blockInvariant {
-			t.Errorf("block %q has class %q, which is neither advisory nor invariant", b.Name, b.Class)
+		if _, ok := promptblock.ClassOf(b.Name); !ok {
+			t.Errorf("block %q is registered here but not declared in internal/promptblock, so it "+
+				"has no class — config validation cannot decide whether an operator may "+
+				"suppress it (LLD 09 §13.3(4))", b.Name)
+		}
+	}
+}
+
+// TestInjectedBlockRegistry_MatchesPromptblockDeclaration keeps the two halves of the
+// registry in step. The TEXT lives here, next to the composition that emits it; the
+// NAME and CLASS live in internal/promptblock, because internal/registry has to
+// validate an operator's suppression list and cannot import this package.
+//
+// A block declared there but never registered here is a name an operator can suppress
+// with no effect. One registered here but not declared there has no class, so
+// suppression cannot reason about it at all. Both directions are failures.
+func TestInjectedBlockRegistry_MatchesPromptblockDeclaration(t *testing.T) {
+	registered := map[string]bool{}
+	for _, b := range injectedBlocks {
+		registered[b.Name] = true
+	}
+	for _, name := range promptblock.Names() {
+		if !registered[name] {
+			t.Errorf("promptblock declares %q but no registry entry emits it: an operator could "+
+				"suppress a block that does not exist and see no change", name)
+		}
+	}
+	for name := range registered {
+		if !promptblock.Known(name) {
+			t.Errorf("registry emits %q but promptblock does not declare it: the block has no "+
+				"advisory/invariant class", name)
 		}
 	}
 }
@@ -78,10 +110,12 @@ func TestInjectedBlockRegistry_IsComplete(t *testing.T) {
 func TestInjectedBlockRegistry_ReportingIntegrityIsInvariant(t *testing.T) {
 	for _, b := range injectedBlocks {
 		if b.Const == "claimVerificationSystemPromptBlock" {
-			if b.Class != blockInvariant {
+			if b.Name != promptblock.ReportingIntegrity {
+				t.Fatalf("reporting-integrity block is registered under name %q", b.Name)
+			}
+			if c, _ := promptblock.ClassOf(b.Name); c != promptblock.Invariant {
 				t.Errorf("reporting integrity is classed %q; verifyRoleClaims runs whatever the "+
-					"prompt says, so suppressing the block removes the warning and not the rule",
-					b.Class)
+					"prompt says, so suppressing the block removes the warning and not the rule", c)
 			}
 			return
 		}

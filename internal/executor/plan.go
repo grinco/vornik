@@ -107,6 +107,11 @@ type agentInputOpts struct {
 	// to this step. Gates the tool-budget prompt block: telling an agent to call a
 	// tool it does not have wastes tokens and invites a hallucinated call.
 	ToolGrantAvailable bool
+	// SuppressedGuidanceBlocks carries the owning swarm's
+	// suppressedGuidanceBlocks list — the daemon-authored ADVISORY guidance
+	// blocks this swarm's operator has switched off (LLD 09 §13.3.1).
+	// Invariant blocks are never suppressible; see suppressesGuidanceBlock.
+	SuppressedGuidanceBlocks []string
 	// AdaptiveCandidateWorkflows lists the workflow IDs the lead is
 	// allowed to pick from when running the strict adaptive route
 	// step. Injected into the agent's context.adaptiveCandidateWorkflows

@@ -1873,11 +1873,28 @@ func mcpCallerTaskID(r *http.Request) string {
 // starving the RAG (2026-06-20). The fix is to GRANT the tool in the role
 // config (here + the distributed swarm presets), not to fail open.
 func mcpRoleToolAllowed(allowed []string, qualifiedName string) bool {
-	// Bare tool segment (after the last "__") so an allowlist authored as
-	// either the qualified or bare name both match.
+	// Bare tool segment so an allowlist authored as either the qualified or the
+	// bare name both match.
+	//
+	// TWO namespace conventions reach this check, and only one used to be
+	// handled. MCP qualifies with "__" (mcp__vornik__file_read); the
+	// OpenAI-compatible function schema qualifies with "." (functions.file_read),
+	// and that is the form a model emits when it names a tool back to us. Handling
+	// only "__" meant every grant request phrased the second way was refused
+	// against a ceiling of bare names — so a reviewer asking for
+	// "functions.git_status" was denied a tool its role plainly allows, retried
+	// with four different spellings, and burned nine tool calls failing. Found by
+	// the agent-quality benchmark against real refusal rows, 2026-08-14.
+	//
+	// This widens matching only in the direction the operator already intended:
+	// an allowlist entry "file_read" means the file_read tool however the caller
+	// spelled it. Exact entries are still matched first and are unaffected.
 	bare := qualifiedName
 	if idx := strings.LastIndex(qualifiedName, "__"); idx >= 0 {
 		bare = qualifiedName[idx+2:]
+	}
+	if idx := strings.LastIndex(bare, "."); idx >= 0 {
+		bare = bare[idx+1:]
 	}
 	isMCP := strings.HasPrefix(qualifiedName, "mcp__")
 	for _, a := range allowed {

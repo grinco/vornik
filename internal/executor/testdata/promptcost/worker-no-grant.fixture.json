@@ -1,0 +1,10 @@
+{
+  "role": "worker",
+  "swarm": "bench",
+  "rolePrompt": "You are a worker. Do exactly the step you were given and report what you actually did.",
+  "toolGrantAvailable": false,
+  "canonicalContext": {
+    "ProjectContext": "This project builds a benchmark harness. Prefer measured claims to argued ones.",
+    "Source": "dot_autonomy"
+  }
+}

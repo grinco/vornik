@@ -1,0 +1,23 @@
+{
+  "role": "lead",
+  "swarm": "bench-suppressed",
+  "sources": [
+    {
+      "name": "role-prompt",
+      "bytes": 91
+    },
+    {
+      "name": "skill-index",
+      "bytes": 415
+    },
+    {
+      "name": "tool-budget",
+      "bytes": 676
+    },
+    {
+      "name": "reporting-integrity",
+      "bytes": 365
+    }
+  ],
+  "totalBytes": 1547
+}

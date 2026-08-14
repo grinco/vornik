@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/promptblock"
 )
 
 // extractAgentPayloadContext parses task.Payload into the pieces the agent
@@ -154,6 +156,26 @@ func stagedArtifactIndex(opts *agentInputOpts) map[string]string {
 	return out
 }
 
+// suppressesGuidanceBlock reports whether the owning swarm switched this
+// guidance block off.
+//
+// Mirrors registry.Swarm.SuppressesGuidanceBlock rather than calling it,
+// because by this point the executor holds the list and not the swarm. Both
+// refuse to suppress an INVARIANT block: config validation rejects such a list
+// at load, and this is the second lock — "the rule runs whatever the prompt
+// says" should not depend on which door the value came through.
+func (o *agentInputOpts) suppressesGuidanceBlock(name string) bool {
+	if o == nil || !promptblock.Suppressible(name) {
+		return false
+	}
+	for _, listed := range o.SuppressedGuidanceBlocks {
+		if strings.TrimSpace(listed) == name {
+			return true
+		}
+	}
+	return false
+}
+
 // buildAgentContextMap assembles the context.* block of the agent input.
 // Extracted from buildAgentInput (behaviour-preserving). Empty optional fields
 // are skipped so a project without a given convention doesn't see noisy
@@ -184,19 +206,35 @@ func buildAgentContextMap(taskType, prompt string, timeContext currentDateTimeCo
 	// something, so the agent reads context.projectContext / userGuidance
 	// before walking the workspace (LLD §3.2).
 	if opts.SystemPrompt != "" || !opts.CanonicalContext.Empty() || len(opts.Skills) > 0 {
-		sp := composeSystemPromptWithCanonicalContext(opts.SystemPrompt, opts.CanonicalContext)
+		// An operator may switch off ADVISORY blocks for their swarm (LLD 09
+		// §13.3.1). suppressed() answers false for the invariant block whatever
+		// the config says — config validation refuses such a list, and this is
+		// the second lock on the same rule.
+		suppressed := opts.suppressesGuidanceBlock
+		sp := opts.SystemPrompt
+		if !suppressed(promptblock.CanonicalContext) {
+			sp = composeSystemPromptWithCanonicalContext(sp, opts.CanonicalContext)
+		}
 		// Learned skills are operator-approved, so they ride the trusted
 		// directive channel (system prompt), appended after canonical
-		// context (LLD 2026-07-07-knowledge-skill-store-design §4).
+		// context (LLD 2026-07-07-knowledge-skill-store-design §4). Not a
+		// daemon-authored block and so not suppressible here: an operator who
+		// wants fewer skills manages the skill store.
 		sp = composeSystemPromptWithSkillIndex(sp, opts.Skills)
 		// Tool-budget guidance rides the binary, not the swarm preset, so an upgrade
 		// reaches every existing deployment's agents (see tool_grant_prompt.go).
-		sp = composeSystemPromptWithToolGrant(sp, opts.ToolGrantAvailable)
+		if !suppressed(promptblock.ToolBudget) {
+			sp = composeSystemPromptWithToolGrant(sp, opts.ToolGrantAvailable)
+		}
 		// Reporting integrity states an invariant every deployment enforces
 		// (verifyRoleClaims). Inside this guard, NOT above it: when nothing else
 		// composes a system prompt the entrypoint applies its own default, and
 		// emitting a bare block here would REPLACE that default with three
 		// sentences — a worse outcome than the gap it closes.
+		//
+		// Unconditional, and deliberately not routed through suppressed(): the
+		// gate runs on every step of every deployment, so switching the block off
+		// would remove the warning and not the rule.
 		sp = composeSystemPromptWithClaimVerification(sp)
 		contextMap["systemPrompt"] = sp
 	}

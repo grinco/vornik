@@ -1,0 +1,110 @@
+[
+  {
+    "id": "sw-01-flag",
+    "name": "simple/easy: add a read-only --json flag",
+    "workflow": "simple-workflow",
+    "prompt": "In a NEW file scratch/statusfmt/statusfmt.go (package statusfmt), write a function RenderStatus(name string, healthy bool, checks map[string]bool) string that renders a plain-text status block, plus RenderStatusJSON(...) returning the same data as JSON. Add scratch/statusfmt/statusfmt_test.go covering: a healthy status, an unhealthy one, an empty checks map, and that the JSON form round-trips. Do not modify any existing file."
+  },
+  {
+    "id": "sw-02-offbyone",
+    "name": "simple/easy: bounded truncation without an off-by-one",
+    "workflow": "simple-workflow",
+    "prompt": "In a NEW file scratch/trunc/trunc.go (package trunc), write Truncate(s string, max int) string that returns s unchanged when it fits, and otherwise exactly max bytes with the last 3 replaced by '...'. It must never return more than max bytes and must handle max < 3 by returning the first max bytes verbatim. Add scratch/trunc/trunc_test.go pinning every boundary: len(s) == max, max-1, max+1, max == 0, max == 3, and a multi-byte UTF-8 string. Do not modify any existing file."
+  },
+  {
+    "id": "sw-03-refusal",
+    "name": "simple/medium: a validation that fails closed",
+    "workflow": "simple-workflow",
+    "prompt": "In a NEW file scratch/retention/retention.go (package retention), write ParseWindow(s string) (time.Duration, error) accepting values like '30d', '12h', '45m'. It must REFUSE rather than default: an empty string, a bare number, a negative value, a zero value, and an unknown unit each return a distinct error naming what was wrong. Add scratch/retention/retention_test.go with a case per refusal and three accepted values. Do not modify any existing file."
+  },
+  {
+    "id": "sw-04-extract",
+    "name": "simple/medium: extract a duplicated helper",
+    "workflow": "simple-workflow",
+    "prompt": "Create scratch/dedupe/dedupe.go (package dedupe) containing two functions that each independently deduplicate a []string while preserving order \u2014 write them deliberately as near-duplicates first, then extract the shared logic into one unexported helper both call, keeping both exported signatures unchanged. Add scratch/dedupe/dedupe_test.go proving order preservation, empty input, all-duplicates, and that both exported functions agree on 20 random-ish inputs. Do not modify any existing file."
+  },
+  {
+    "id": "sw-05-table-test",
+    "name": "simple/easy: table-driven tests for a pure function",
+    "workflow": "simple-workflow",
+    "prompt": "In a NEW file scratch/semver/semver.go (package semver), write Compare(a, b string) (int, error) implementing major.minor.patch ordering, returning an error for anything unparseable. Add scratch/semver/semver_test.go as a single table-driven test covering: equality, each field differing, multi-digit fields (1.10.0 vs 1.9.0), and three malformed inputs. Do not modify any existing file."
+  },
+  {
+    "id": "dp-01-nilguard",
+    "name": "pipeline/medium: nil guard plus regression test",
+    "workflow": "dev-pipeline",
+    "prompt": "In a NEW file scratch/registry/registry.go (package registry), write a Registry type with Add(name string, v any) error and Get(name string) (any, bool). Every exported method must be safe to call on a nil *Registry \u2014 Get returns (nil,false), Add returns a named error rather than panicking. Add scratch/registry/registry_test.go that calls every method on a nil receiver and fails if any panics. Do not modify any existing file."
+  },
+  {
+    "id": "dp-02-parser-hardening",
+    "name": "pipeline/hard: harden a parser against malformed input",
+    "workflow": "dev-pipeline",
+    "prompt": "In a NEW file scratch/kvline/kvline.go (package kvline), write Parse(line string) (map[string]string, error) for 'k=v k2=\"quoted v\"' input. It must reject rather than guess: unterminated quotes, a key with no '=', a duplicate key, an empty key, and trailing garbage \u2014 each with a distinct error. Add scratch/kvline/kvline_test.go with a case per rejection plus five well-formed lines including escaped quotes and empty values. Do not modify any existing file."
+  },
+  {
+    "id": "dp-03-metric",
+    "name": "pipeline/medium: a counter with a documented cardinality bound",
+    "workflow": "dev-pipeline",
+    "prompt": "In a NEW file scratch/metrics/metrics.go (package metrics), write a small counter registry: Inc(name string, labels map[string]string) and Snapshot() map[string]int. Label cardinality must be bounded \u2014 refuse a label set with more than 4 keys, and document in a comment why an unbounded label set is a memory leak rather than a nuisance. Add scratch/metrics/metrics_test.go covering the refusal, ordering-independence of label maps in the key, and concurrent Inc from 50 goroutines. Do not modify any existing file."
+  },
+  {
+    "id": "dp-04-concurrency",
+    "name": "pipeline/hard: a bounded worker pool that cannot leak",
+    "workflow": "dev-pipeline",
+    "prompt": "In a NEW file scratch/pool/pool.go (package pool), write Run(ctx context.Context, items []string, workers int, fn func(context.Context, string) error) error that runs fn over items with at most `workers` concurrent, returns the FIRST error, and guarantees every goroutine has exited before it returns even on early error or context cancellation. Add scratch/pool/pool_test.go covering: happy path ordering-independence, an early error, context cancellation mid-run, workers > len(items), and workers <= 0 (refuse). Do not modify any existing file."
+  },
+  {
+    "id": "sw-06-idempotent",
+    "name": "simple/medium: an idempotent operation",
+    "workflow": "simple-workflow",
+    "prompt": "In a NEW file scratch/ensure/ensure.go (package ensure), write EnsureLine(path, line string) error that appends line to the file only if an identical line is not already present, creating the file when absent. It must be safe to call repeatedly. Add scratch/ensure/ensure_test.go proving: first call creates, second call is a no-op, a line that is a prefix of an existing line is still appended, and a file ending without a trailing newline is handled. Do not modify any existing file."
+  },
+  {
+    "id": "sw-07-parse-refuse",
+    "name": "simple/medium: a parser that refuses ambiguity",
+    "workflow": "simple-workflow",
+    "prompt": "In a NEW file scratch/csvish/csvish.go (package csvish), write SplitFields(line string) ([]string, error) for comma-separated values with optional double quotes. It must REFUSE rather than guess on: an unterminated quote, a quote appearing mid-field (a\"b), and a trailing comma with nothing after it \u2014 each a distinct error. Empty fields between commas are legal and preserved. Add scratch/csvish/csvish_test.go with a case per refusal and five well-formed lines including an empty field and an escaped quote. Do not modify any existing file."
+  },
+  {
+    "id": "sw-08-clamp",
+    "name": "simple/easy: a clamp with explicit bound handling",
+    "workflow": "simple-workflow",
+    "prompt": "In a NEW file scratch/clamp/clamp.go (package clamp), write Clamp(v, lo, hi int) (int, error) returning v bounded to [lo,hi], and an error when lo > hi rather than silently swapping them. Add scratch/clamp/clamp_test.go covering: v below, inside and above the range; v exactly at each bound; lo == hi; and the lo > hi refusal. Do not modify any existing file."
+  },
+  {
+    "id": "sw-09-stable-sort",
+    "name": "simple/medium: a sort whose tie-break is specified",
+    "workflow": "simple-workflow",
+    "prompt": "In a NEW file scratch/rank/rank.go (package rank), write SortByScore(items []Item) []Item where Item has Name string and Score int. Sort by Score descending, breaking ties by Name ascending, and do not mutate the input slice. Add scratch/rank/rank_test.go proving the tie-break, that the input is unmodified, and that an empty and a single-element slice both work. Do not modify any existing file."
+  },
+  {
+    "id": "sw-10-no-clean-answer",
+    "name": "simple/hard: an under-specified requirement",
+    "workflow": "simple-workflow",
+    "prompt": "In a NEW file scratch/window/window.go (package window), implement 'a function that returns the busiest hour from a list of timestamps'. The requirement does NOT say what to do when two hours tie, whether hours are local or UTC, or whether the range is half-open. Do not silently pick answers: implement one defensible interpretation, and write the ambiguities and your chosen resolution into a comment block at the top of the file. Add scratch/window/window_test.go covering your stated interpretation, including the tie case. Do not modify any existing file."
+  },
+  {
+    "id": "dp-05-retry-backoff",
+    "name": "pipeline/medium: bounded retry that honours cancellation",
+    "workflow": "dev-pipeline",
+    "prompt": "In a NEW file scratch/retry/retry.go (package retry), write Do(ctx context.Context, attempts int, fn func() error) error which retries fn up to `attempts` times with a fixed 10ms delay, returns the LAST error, and returns immediately when ctx is cancelled. attempts <= 0 is refused with an error rather than treated as infinite. Add scratch/retry/retry_test.go covering: success on the first try, success on the last, exhaustion, cancellation mid-retry, and the attempts <= 0 refusal. Do not modify any existing file."
+  },
+  {
+    "id": "dp-06-idempotent-merge",
+    "name": "pipeline/hard: a merge with a stated conflict rule",
+    "workflow": "dev-pipeline",
+    "prompt": "In a NEW file scratch/mergemap/mergemap.go (package mergemap), write Merge(base, overlay map[string]string) (map[string]string, error). Overlay wins on conflict EXCEPT when the overlay value is empty, which must be treated as 'not set' rather than 'set to empty' \u2014 document why in a comment. Neither input may be mutated. Add scratch/mergemap/mergemap_test.go proving overlay precedence, the empty-value rule, non-mutation of both inputs, and nil inputs on each side. Do not modify any existing file."
+  },
+  {
+    "id": "dp-07-bounded-cache",
+    "name": "pipeline/hard: an LRU that cannot grow without bound",
+    "workflow": "dev-pipeline",
+    "prompt": "In a NEW file scratch/lru/lru.go (package lru), write a fixed-capacity LRU cache with Get(k) (string,bool) and Put(k,v). Capacity is set at construction and a capacity <= 0 is refused. Eviction is strictly least-recently-USED, where Get counts as a use. Add scratch/lru/lru_test.go proving: eviction order after interleaved Get/Put, that Get refreshes recency, capacity 1, the capacity <= 0 refusal, and that size never exceeds capacity across 100 mixed operations. Do not modify any existing file."
+  },
+  {
+    "id": "dp-08-error-wrapping",
+    "name": "pipeline/medium: errors that survive wrapping",
+    "workflow": "dev-pipeline",
+    "prompt": "In a NEW file scratch/errclass/errclass.go (package errclass), define a sentinel ErrNotFound and a function Classify(err error) string returning \"not-found\" for anything wrapping ErrNotFound (however deeply), \"timeout\" for anything wrapping context.DeadlineExceeded, and \"other\" otherwise. Add scratch/errclass/errclass_test.go covering: a bare sentinel, one wrapped twice with fmt.Errorf %w, a joined error containing it, a look-alike error with the same message but no wrapping (must be \"other\"), and nil. Do not modify any existing file."
+  }
+]

@@ -450,7 +450,32 @@ func runSubjectExport(_ *cobra.Command, args []string) error {
 	}
 	fmt.Printf("\nrequest %s actioned; report hash %s\n", req.ID, hash)
 	fmt.Printf("%d item(s); %d withheld under Art 15(4)\n", len(exp.Items), countWithheld(exp))
+	warnIfKGUnresolved(ids, req.SubjectID)
 	return nil
+}
+
+// warnIfKGUnresolved tells the operator when a request has been served without
+// the knowledge-graph binder ever having been resolved for this subject.
+//
+// Increment 4 is resolve-on-demand by controller decision, which means it does
+// not run unless someone runs it — so the failure mode is a report that is
+// narrower than it could have been, produced without anyone noticing. The
+// subject-facing artefact already states the coverage limit; this line is for
+// the operator, who is the only one who can still do something about it.
+//
+// Printed AFTER the report rather than as a gate: refusing to export because an
+// optional widening step was skipped would put the Art 12(3) clock at risk over
+// a judgement that is the operator's to make.
+func warnIfKGUnresolved(ids []datasubject.Identifier, subjectID string) {
+	for _, id := range ids {
+		if id.Kind == datasubject.KindKGEntity {
+			return
+		}
+	}
+	fmt.Printf("\nNOTE: no knowledge-graph entity is bound to this subject, so records that name\n")
+	fmt.Printf("them only in prose were not covered. If they may be NAMED in ingested content:\n\n")
+	fmt.Printf("  vornikctl subject resolve-kg %s\n\n", subjectID)
+	fmt.Printf("It previews candidates and writes nothing until you name one.\n")
 }
 
 func countWithheld(e *datasubject.Export) int {

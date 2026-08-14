@@ -47,6 +47,66 @@ func (r *DataSubjectRepository) GetSubject(ctx context.Context, id string) (data
 	return s, nil
 }
 
+// DeleteSubject removes a subject. Its identifiers and links go with it: both
+// children are ON DELETE CASCADE, because the index is itself personal data and
+// must never outlive the subject it describes (design §8).
+//
+// Used by KG adoption to remove the placeholder subject the chat memory-write
+// path minted, once its links have moved to the identified person. Deleting a
+// subject that still holds links would destroy the index rather than move it,
+// so callers move first — see datasubject.KGResolver.adopt for the ordering.
+func (r *DataSubjectRepository) DeleteSubject(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM data_subjects WHERE id = $1`, id)
+	return mapDBError(err)
+}
+
+// ReassignLinks moves every link from one subject to another, returning how
+// many rows the source held.
+//
+// INSERT-then-DELETE rather than UPDATE, in one transaction. The primary key is
+// (subject_id, table_name, row_id), so an UPDATE collides on any row the target
+// already carries — and that collision is the COMMON case here, since the
+// operator resolving a person often binds an entity whose chunks are already
+// linked. ON CONFLICT DO NOTHING keeps the target's existing row (identical in
+// everything but created_at) and the delete then clears the source either way.
+//
+// The count is the source's row total, not the insert's: a row that was already
+// on the target is still one the target now covers, and reporting only the
+// newly-inserted ones would understate what moved.
+func (r *DataSubjectRepository) ReassignLinks(ctx context.Context, fromSubjectID, toSubjectID string) (int, error) {
+	if fromSubjectID == "" || toSubjectID == "" || fromSubjectID == toSubjectID {
+		return 0, fmt.Errorf("datasubject: reassign needs two different subject ids")
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, mapDBError(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var n int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM data_subject_links WHERE subject_id = $1`, fromSubjectID).Scan(&n); err != nil {
+		return 0, mapDBError(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO data_subject_links
+		    (subject_id, table_name, row_id, project_id, source, confidence, exclusivity, created_at)
+		SELECT $2, table_name, row_id, project_id, source, confidence, exclusivity, created_at
+		  FROM data_subject_links WHERE subject_id = $1
+		ON CONFLICT (subject_id, table_name, row_id) DO NOTHING`,
+		fromSubjectID, toSubjectID); err != nil {
+		return 0, mapDBError(err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM data_subject_links WHERE subject_id = $1`, fromSubjectID); err != nil {
+		return 0, mapDBError(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, mapDBError(err)
+	}
+	return n, nil
+}
+
 // ListSubjects returns subjects, newest first.
 func (r *DataSubjectRepository) ListSubjects(ctx context.Context, limit int) ([]datasubject.Subject, error) {
 	if limit <= 0 {

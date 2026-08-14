@@ -20,6 +20,7 @@ import (
 	"vornik.io/vornik/internal/persistence/postgres"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/safepath"
+	"vornik.io/vornik/internal/swarmclass"
 )
 
 // diagnoseObserver assembles the diagnose evidence bundle from the daemon's
@@ -654,9 +655,15 @@ func (c *Container) newActionizer() *controlplane.Actionizer {
 
 // isTradingSwarm reports whether a swarm id is on the trading path, which the
 // cost/quality detector must never touch (design §F, detector-side exclusion).
+//
+// The rule itself moved to internal/swarmclass when a third consumer appeared —
+// the agent-quality benchmark's scan-time exclusion, which cannot import this
+// package. This wrapper stays because D3 injects it as a func value and the
+// call sites here read better unqualified; it is a name, not a second
+// implementation. Copying the rule instead would have re-created precisely the
+// divergence D3 exists to prevent.
 func isTradingSwarm(swarmID string) bool {
-	s := strings.ToLower(swarmID)
-	return strings.Contains(s, "trader") || strings.Contains(s, "broker") || strings.Contains(s, "trading")
+	return swarmclass.IsTrading(swarmID)
 }
 
 // costTuningSwarmMap returns parallel (projectIDs, swarmIDs) from the registry

@@ -36,6 +36,121 @@ vornikctl backup [flags]
 
 Benchmark subsystems against labelled datasets
 
+## vornikctl bench agent
+
+Score agent decision quality: tool grants, schema following, tool use
+
+Score the decisions Vornik's control logic makes.
+
+Three probes, reported as vectors and never blended into one score:
+  tool-grant       did the lead grant what the task demonstrably needed
+  schema-following did each role produce output matching its schema
+  tool-use         did the agent call real tools with valid arguments
+
+schema-following and tool-use need no gold set — their ground truth is
+configuration, not a recording — so they can gate before any gold pass.
+
+## vornikctl bench agent compare
+
+Diff two runs, refusing incomparable arms
+
+```
+vornikctl bench agent compare <journal-a> <journal-b> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | `false` | emit JSON instead of a table |
+
+## vornikctl bench agent gold
+
+Record ground truth from an unrestricted-ceiling arm
+
+Record ground truth by running the task set with no grant ceiling and
+keeping the tools each PASSING run actually invoked.
+
+Refuses when the task set is unchanged: regenerating against the same set
+replaces the ground truth the gate measures against, which makes prior
+numbers incomparable and future ones unfalsifiable. To rebuild anyway,
+delete the pinned manifest — that is a reviewable diff.
+
+```
+vornikctl bench agent gold [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--benchmark-project` |  | the only project this deployment permits benchmarking in |
+| `--database` |  | target database |
+| `--gold` | `gold.json` | pinned gold manifest to write, and to fence against if it exists |
+| `--i-know-this-wipes` |  | must equal --database; this run bulk-writes and clears it |
+| `--project` |  | project to run in |
+| `--runs` | `3` | unrestricted-ceiling runs per task; a task no run passes is excluded |
+| `--swarm` |  | swarm whose roles execute the tasks |
+| `--task-set-hash` |  | digest of the task set being recorded; the regeneration fence compares against it |
+| `--tasks` |  | JSON task set to run |
+
+## vornikctl bench agent report
+
+Print a run's scoreboard
+
+```
+vornikctl bench agent report <journal> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | `false` | emit JSON instead of a table |
+
+## vornikctl bench agent rollup
+
+Print the customer figures: cost, efficiency, accuracy, success rate
+
+```
+vornikctl bench agent rollup <journal> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--json` | `false` | emit JSON instead of a table |
+
+## vornikctl bench agent run
+
+Run one arm and journal its probe verdicts
+
+```
+vornikctl bench agent run [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--arm` |  | name of the arm being run |
+| `--benchmark-project` |  | the only project this deployment permits benchmarking in |
+| `--database` |  | target database |
+| `--gold` |  | pinned gold manifest; omit to run only the probes that need none |
+| `--i-know-this-wipes` |  | must equal --database; this run bulk-writes and clears it |
+| `--journal` | `journal.json` | where to write the run journal |
+| `--preregistration` |  | REQUIRED: committed manifest stating the arms, metric, intended delta and computed n |
+| `--project` |  | project to run in |
+| `--repeats` | `1` | runs per task; repeats shrink a task's contribution to sigma_d but add no pairs |
+| `--run-id` |  | identifier for this run |
+| `--swarm` |  | swarm whose roles execute the tasks |
+| `--tasks` |  | JSON task set to run |
+
+## vornikctl bench agent taskset-hash
+
+Print a task set's digest, which the gold fence compares against
+
+Print a task set's digest.
+
+This is what --task-set-hash takes and what the regeneration fence compares
+against, so it must be computed the same way the harness computes it —
+order-independent and length-prefixed, not a sha256 of the file.
+
+```
+vornikctl bench agent taskset-hash <tasks.json>
+```
+
 ## vornikctl bench memory
 
 Score memory retrieval quality on a labelled dataset

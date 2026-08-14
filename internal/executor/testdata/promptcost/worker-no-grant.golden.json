@@ -1,0 +1,19 @@
+{
+  "role": "worker",
+  "swarm": "bench",
+  "sources": [
+    {
+      "name": "role-prompt",
+      "bytes": 86
+    },
+    {
+      "name": "canonical-context",
+      "bytes": 700
+    },
+    {
+      "name": "reporting-integrity",
+      "bytes": 365
+    }
+  ],
+  "totalBytes": 1151
+}

@@ -1,0 +1,5 @@
+# sha256 of each pinned L1 fixture (§3.1c law 2).
+# Regenerate with: go test ./internal/executor/ -run PromptCost -update
+ae2928ee9ed0633690dad35e22fb0eb421a04388482263fa2ca96453b0c0ef80  lead-all-blocks.fixture.json
+273729865d3b1ff66bfe98878e06646017c0db802c17a32cb796b04741d82e0f  lead-canonical-suppressed.fixture.json
+4a309447cde7b41820d11b9de5d8f1e255baeec3553f0dc6becb62c4e0373f72  worker-no-grant.fixture.json

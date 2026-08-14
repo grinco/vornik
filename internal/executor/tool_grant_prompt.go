@@ -1,6 +1,10 @@
 package executor
 
-import "strings"
+import (
+	"strings"
+
+	"vornik.io/vornik/internal/registry"
+)
 
 // Tool-grant guidance injected into the agent system prompt.
 //
@@ -50,4 +54,55 @@ func composeSystemPromptWithToolGrant(prompt string, grantToolAvailable bool) st
 		return toolGrantSystemPromptBlock
 	}
 	return prompt + "\n" + toolGrantSystemPromptBlock
+}
+
+// grantStepToolsName is the qualified name a role must be permitted to call
+// before the tool-budget block is worth injecting.
+const grantStepToolsName = "mcp__vornik__grant_step_tools"
+
+// RoleMayGrantTools reports whether a role's ceiling permits calling
+// grant_step_tools.
+//
+// WHY THE BLOCK NEEDS THIS. ToolGrantAvailable used to be a GLOBAL "is the
+// feature wired" flag, so the block was injected into every role of every swarm
+// whether or not that role could call the tool. Measured consequence: a reviewer
+// whose ceiling omitted the tool called it NINE times in one step, each a 403,
+// guessing four spellings before giving up — nine wasted tool calls per step,
+// every run, on a swarm where no role had the tool at all
+// (2026-08-13-agent-quality-benchmark-design.md §12.6a).
+//
+// An empty ceiling means unrestricted here, matching EvaluateToolGrant.
+// Comparison is on the bare segment so an operator may write either spelling.
+func RoleMayGrantTools(swarm *registry.Swarm, role string) bool {
+	if swarm == nil || role == "" {
+		return false
+	}
+	for i := range swarm.Roles {
+		if swarm.Roles[i].Name != role {
+			continue
+		}
+		allowed := swarm.Roles[i].Permissions.AllowedTools
+		if len(allowed) == 0 {
+			return true
+		}
+		for _, a := range allowed {
+			if a == grantStepToolsName || bareToolName(a) == bareToolName(grantStepToolsName) {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// bareToolName reduces a qualified tool name to its final segment, handling both
+// the MCP ("__") and function-namespace (".") conventions.
+func bareToolName(name string) string {
+	if i := strings.LastIndex(name, "__"); i >= 0 {
+		name = name[i+2:]
+	}
+	if i := strings.LastIndex(name, "."); i >= 0 {
+		name = name[i+1:]
+	}
+	return name
 }

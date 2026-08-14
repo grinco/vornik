@@ -202,6 +202,45 @@ func BindKGExtraction(matchID, chunkID, projectID string, confidence Confidence)
 	return b, b.Validate()
 }
 
+// BindKGEntityRow binds the knowledge-graph entity ROW itself — not the chunks
+// it is mentioned in, which is BindKGExtraction's job.
+//
+// WHY THE ROW IS PERSONAL DATA. The closed table set says it outright: "a PERSON
+// entity IS data about that person". The row carries the subject's canonical
+// name and every alias the extractor learned about them. An erasure that removed
+// the chunks and left the entity would report success while a row literally named
+// after the subject survived — and the graph would go on offering that name to
+// every downstream reader.
+//
+// EXCLUSIVITY IS ExclusiveRow, unlike the chunk links. A memory chunk routinely
+// concerns several people, so its link is shared and erasure redacts it. A PERSON
+// entity is about exactly one person by construction, so it is deleted in full:
+// there is no way to redact someone out of their own entity row, and no other
+// subject's data to preserve inside it. `entity_mentions.entity_id` is
+// ON DELETE CASCADE, so the mention rows go with it.
+//
+// Confidence is clamped to the source ceiling, the same as BindKGExtraction: the
+// row was identified by the same name search, so it inherits the same doubt.
+func BindKGEntityRow(entityID, projectID string, confidence Confidence) (Binding, error) {
+	entityID = strings.TrimSpace(entityID)
+	if entityID == "" {
+		return Binding{}, fmt.Errorf("datasubject: kg entity id is required")
+	}
+	ceiling, err := DefaultConfidence(SourceKGExtraction)
+	if err != nil {
+		return Binding{}, err
+	}
+	if confidence == "" || !confidenceAtMost(confidence, ceiling) {
+		confidence = ceiling
+	}
+	b := Binding{Links: []Link{{
+		Table: TableKnowledgeEntities, RowID: entityID, ProjectID: projectID,
+		Source: SourceKGExtraction, Confidence: confidence,
+		Exclusivity: ExclusiveRow,
+	}}}
+	return b, b.Validate()
+}
+
 // NormaliseEmail lowercases an address and strips any display name, so
 // "Jane Doe <Jane.Doe@Example.COM>" and "jane.doe@example.com" resolve to one
 // identifier.

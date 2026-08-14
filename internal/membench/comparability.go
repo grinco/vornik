@@ -116,8 +116,20 @@ func (f ComparabilityFields) fieldPairs() [][2]string {
 // names and selection strings. Including the field NAME in the digest means a
 // future reordering of fieldPairs cannot silently change a key either.
 func (f ComparabilityFields) Key() string {
+	return ComparabilityKeyOf(f.fieldPairs())
+}
+
+// ComparabilityKeyOf hashes an ordered (name, value) list into a run key.
+//
+// Extracted from ComparabilityFields.Key so a SECOND benchmark family can key
+// its runs with this exact implementation instead of a lookalike
+// (2026-08-13-agent-quality-benchmark-design.md §6.1 shares the guard and the
+// comparability key, and nothing else, because those are the two places where
+// two implementations means one wrong answer). The byte layout is unchanged, so
+// every already-published memory key still verifies.
+func ComparabilityKeyOf(pairs [][2]string) string {
 	h := sha256.New()
-	for _, kv := range f.fieldPairs() {
+	for _, kv := range pairs {
 		// The \x00 cannot appear in any of these values, so no value can forge a
 		// field boundary. hash.Hash.Write never returns an error, so the writes
 		// are unchecked by contract rather than by omission.
@@ -127,6 +139,25 @@ func (f ComparabilityFields) Key() string {
 		_, _ = h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// DiffComparabilityPairs names every differing field between two ordered pair
+// lists, or nil when they match.
+//
+// Listing all of them rather than the first matters in practice: an operator who
+// fixes one difference and re-runs only to hit the next has been sent round a
+// loop the tool could have short-circuited.
+func DiffComparabilityPairs(a, b [][2]string) []string {
+	var diffs []string
+	for i := range a {
+		if i >= len(b) {
+			break
+		}
+		if a[i][1] != b[i][1] {
+			diffs = append(diffs, fmt.Sprintf("%s (%q vs %q)", a[i][0], a[i][1], b[i][1]))
+		}
+	}
+	return diffs
 }
 
 // Partial reports whether the key covers everything it should. A partial key
@@ -156,13 +187,7 @@ func CheckComparable(a, b ComparabilityFields) error {
 	if a.Key() == b.Key() {
 		return nil
 	}
-	ap, bp := a.fieldPairs(), b.fieldPairs()
-	var diffs []string
-	for i := range ap {
-		if ap[i][1] != bp[i][1] {
-			diffs = append(diffs, fmt.Sprintf("%s (%q vs %q)", ap[i][0], ap[i][1], bp[i][1]))
-		}
-	}
+	diffs := DiffComparabilityPairs(a.fieldPairs(), b.fieldPairs())
 	if len(diffs) == 0 {
 		// Keys differ but no enumerated field does: fieldPairs has drifted out of
 		// sync with Key. Report it rather than claiming the runs are comparable.

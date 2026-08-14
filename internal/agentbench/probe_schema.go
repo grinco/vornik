@@ -1,0 +1,325 @@
+package agentbench
+
+import (
+	"context"
+	"sort"
+)
+
+// Schema-following probe (§3.2, second probe).
+//
+// WHY THIS IS THE CHEAPEST PROBE IN THE DESIGN. Its ground truth is the role's
+// DECLARED output schema — configuration, not a recording — so unlike the
+// tool-grant probe it needs no unrestricted-ceiling pass, no gold manifest and
+// no operator review of a gold set. It can gate from the first run.
+//
+// WHY IT MATTERS MORE THAN ITS COST SUGGESTS. Schema conformance is a gate for
+// most roles rather than a score: a step whose output does not parse, or parses
+// into the wrong shape, does not degrade — it fails, retries, and burns a round
+// trip per attempt. That makes it simultaneously a quality metric and a cost
+// metric, which is why the verdict reports both conformance and the retries it
+// took to get there.
+//
+// RELATIONSHIP TO THE LIVE METRIC. internal/executor already exports
+// model_schema_violation_rate (schema_violation / total_terminal, per model).
+// That is production telemetry over whatever traffic happened to arrive. This is
+// a controlled measurement over a fixed task set, per role, per arm — the two
+// answer different questions and neither replaces the other.
+
+// Step outcomes, mirroring the taxonomy owned by the migration that created
+// execution_step_outcomes. TestOutcomeConstants_MatchTheMigrationTaxonomy fails
+// if the two drift.
+const (
+	OutcomeOK                 = "ok"
+	OutcomePendingValidation  = "pending_validation"
+	OutcomeParseError         = "parse_error"
+	OutcomeSchemaViolation    = "schema_violation"
+	OutcomeRefused            = "refused"
+	OutcomeIterationExhausted = "iteration_exhausted"
+	OutcomeDegenerateLoop     = "degenerate_loop"
+	OutcomeDownstreamRejected = "downstream_rejected"
+	OutcomeGateFailed         = "gate_failed"
+	OutcomeTimeout            = "timeout"
+	OutcomeCancelled          = "cancelled"
+	OutcomeFailed             = "failed"
+)
+
+// AllStepOutcomes is the vocabulary this package scores.
+func AllStepOutcomes() []string {
+	return []string{
+		OutcomeOK, OutcomePendingValidation, OutcomeParseError, OutcomeSchemaViolation,
+		OutcomeRefused, OutcomeIterationExhausted, OutcomeDegenerateLoop,
+		OutcomeDownstreamRejected, OutcomeGateFailed, OutcomeTimeout,
+		OutcomeCancelled, OutcomeFailed,
+	}
+}
+
+// StepOutcome is one recorded step result from execution_step_outcomes.
+type StepOutcome struct {
+	StepID  string `json:"stepId"`
+	Role    string `json:"role"`
+	Model   string `json:"model"`
+	Outcome string `json:"outcome"`
+	// Attempt is 1 for a first emission; higher values are retries after a
+	// shape failure.
+	Attempt    int    `json:"attempt"`
+	ErrorClass string `json:"errorClass,omitempty"`
+}
+
+// RoleConformance is one role's schema-following record.
+type RoleConformance struct {
+	Terminal         int     `json:"terminal"`
+	Conforming       int     `json:"conforming"`
+	Conformance      float64 `json:"conformance"`
+	ParseErrors      int     `json:"parseErrors"`
+	SchemaViolations int     `json:"schemaViolations"`
+}
+
+// SchemaVerdict is the schema probe's vector.
+type SchemaVerdict struct {
+	Probe       string `json:"probe"`
+	ExecutionID string `json:"executionId"`
+	TaskID      string `json:"taskId"`
+
+	// Terminal counts steps that resolved. pending_validation is excluded: it
+	// has not answered yet, and counting it either way invents a result the
+	// ledger has not recorded.
+	Terminal int `json:"terminal"`
+
+	// Judged is the conformance denominator: resolved steps that produced
+	// output a schema could be applied to. NoOutput is the remainder — crashed,
+	// timed out, refused, exhausted — which is a reliability fact rather than a
+	// schema one.
+	Judged   int `json:"judged"`
+	NoOutput int `json:"noOutput"`
+
+	// SchemaConformance is conforming / JUDGED — did the step end up conformant,
+	// however many attempts it took, over the steps that produced output at all.
+	SchemaConformance        float64 `json:"schemaConformance"`
+	SchemaConformanceDefined bool    `json:"schemaConformanceDefined"`
+
+	// FirstEmissionConformance is the honest headline: conformant on attempt 1.
+	// A role that always gets there on attempt 3 is not "conformant" in any
+	// sense a cost model cares about.
+	FirstEmissionConformance        float64 `json:"firstEmissionConformance"`
+	FirstEmissionConformanceDefined bool    `json:"firstEmissionConformanceDefined"`
+
+	// RetriesToValid is the wasted round trips: every non-first attempt that
+	// followed a shape failure.
+	RetriesToValid int `json:"retriesToValid"`
+
+	// ParseErrors and SchemaViolations are kept apart because they need
+	// different fixes — unparseable output and wrong-shaped output are not the
+	// same defect, and retry.go already distinguishes them for its corrective
+	// hints.
+	ParseErrors      int `json:"parseErrors"`
+	SchemaViolations int `json:"schemaViolations"`
+
+	// DownstreamRejected and GateFailed are schema-VALID outputs that were
+	// still unusable — the role obeyed its contract and produced the wrong
+	// thing. Neither counts as a schema failure.
+	DownstreamRejected int `json:"downstreamRejected"`
+	GateFailed         int `json:"gateFailed"`
+
+	// ByRole breaks the above down, because schema following is gated per role
+	// and a blended figure hides which role needs the fix.
+	ByRole map[string]RoleConformance `json:"byRole"`
+}
+
+// SchemaProbe scores schema following.
+type SchemaProbe struct{}
+
+// Name implements Probe.
+func (SchemaProbe) Name() string { return "schema-following" }
+
+// isShapeFailure reports the two outcomes that mean "the output did not conform".
+func isShapeFailure(outcome string) bool {
+	return outcome == OutcomeParseError || outcome == OutcomeSchemaViolation
+}
+
+// isJudgeable reports whether a step produced output a schema could be applied
+// to.
+//
+// FOUND BY HAND-CHECKING THE FIRST REAL RUN. A step whose container exited
+// non-zero, timed out, was cancelled, refused, or exhausted its iterations
+// emitted NOTHING. Counting those as conformant — which the first implementation
+// did, because they are simply "not a shape failure" — inflates conformance with
+// steps that never produced a thing to conform. On the first live run that
+// turned a true 2/7 into a reported 3/8.
+//
+// They are not counted as violations either: a crashed container is a
+// reliability fact, not a schema fact, and folding it in would make this metric
+// mean two things at once. They leave the denominator and are reported as
+// NoOutput.
+func isJudgeable(outcome string) bool {
+	switch outcome {
+	case OutcomeOK, OutcomeParseError, OutcomeSchemaViolation,
+		OutcomeDownstreamRejected, OutcomeGateFailed:
+		// downstream_rejected and gate_failed DID produce schema-valid output —
+		// it was rejected for other reasons — so they belong in the denominator
+		// as conforming, and are tracked separately besides.
+		return true
+	default:
+		return false
+	}
+}
+
+// isTerminalOutcome reports whether an outcome has resolved.
+func isTerminalOutcome(outcome string) bool {
+	return outcome != "" && outcome != OutcomePendingValidation
+}
+
+// ScoreSchema scores schema following for one execution.
+//
+// Takes no Gold: the ground truth is the declared schema, and demanding a gold
+// manifest here would impose the tool-grant probe's whole generation pass on a
+// measurement that does not need it.
+func (p SchemaProbe) ScoreSchema(trace Trace, task TaskRef) SchemaVerdict {
+	v := SchemaVerdict{
+		Probe:       p.Name(),
+		ExecutionID: trace.ExecutionID,
+		TaskID:      task.ID,
+		ByRole:      map[string]RoleConformance{},
+	}
+
+	// THE UNIT IS THE STEP, NOT THE ROW. A step that violated twice and then
+	// conformed IS conformant — it produced usable output — and counting each
+	// attempt as its own outcome would report that step as 33% conformant,
+	// conflating "did it get there" with "how expensively". Those are the two
+	// separate numbers this verdict reports: SchemaConformance resolves each
+	// step to its final attempt, RetriesToValid carries the cost.
+	final := p.tallyRows(&v, trace.Outcomes)
+	conforming := p.tallySteps(&v, final)
+
+	if v.Judged > 0 {
+		v.SchemaConformance = float64(conforming) / float64(v.Judged)
+		v.SchemaConformanceDefined = true
+	}
+	return v
+}
+
+// tallyRows walks every recorded row: per-EVENT counters (shape failures,
+// retries, downstream rejections, first-emission conformance) and, as it goes,
+// resolves each step to its last terminal attempt.
+func (p SchemaProbe) tallyRows(v *SchemaVerdict, outcomes []StepOutcome) map[string]StepOutcome {
+	final := map[string]StepOutcome{}
+	firstEmissions, firstConforming := 0, 0
+
+	for _, o := range outcomes {
+		switch o.Outcome {
+		case OutcomeDownstreamRejected:
+			v.DownstreamRejected++
+		case OutcomeGateFailed:
+			v.GateFailed++
+		}
+
+		switch {
+		case o.Attempt > 1 && isJudgeable(o.Outcome):
+			// Every attempt past the first exists because an earlier one did
+			// not conform. That is the cost of poor schema following, in round
+			// trips.
+			v.RetriesToValid++
+		case o.Attempt <= 1 && isJudgeable(o.Outcome):
+			firstEmissions++
+			if !isShapeFailure(o.Outcome) {
+				firstConforming++
+			}
+		}
+
+		countShapeFailure(o.Outcome, &v.ParseErrors, &v.SchemaViolations)
+
+		// A later terminal attempt supersedes an earlier one; a non-terminal
+		// row never supersedes a resolved result.
+		if !isTerminalOutcome(o.Outcome) {
+			continue
+		}
+		if prev, ok := final[o.StepID]; !ok || o.Attempt >= prev.Attempt {
+			final[o.StepID] = o
+		}
+	}
+
+	if firstEmissions > 0 {
+		v.FirstEmissionConformance = float64(firstConforming) / float64(firstEmissions)
+		v.FirstEmissionConformanceDefined = true
+	}
+	return final
+}
+
+// tallySteps scores the resolved steps — the unit conformance is measured in —
+// and fills the per-role breakdown. Returns the conforming step count.
+func (p SchemaProbe) tallySteps(v *SchemaVerdict, final map[string]StepOutcome) int {
+	conforming := 0
+	roleTotals := map[string]RoleConformance{}
+
+	for _, o := range final {
+		v.Terminal++
+		if !isJudgeable(o.Outcome) {
+			v.NoOutput++
+			continue
+		}
+		v.Judged++
+		rc := roleTotals[o.Role]
+		rc.Terminal++
+		if isShapeFailure(o.Outcome) {
+			countShapeFailure(o.Outcome, &rc.ParseErrors, &rc.SchemaViolations)
+		} else {
+			conforming++
+			rc.Conforming++
+		}
+		roleTotals[o.Role] = rc
+	}
+
+	for role, rc := range roleTotals {
+		if rc.Terminal > 0 {
+			rc.Conformance = float64(rc.Conforming) / float64(rc.Terminal)
+		}
+		v.ByRole[role] = rc
+	}
+	return conforming
+}
+
+// countShapeFailure increments whichever counter the outcome names, keeping the
+// parse/violation split in one place so the two call sites cannot disagree.
+func countShapeFailure(outcome string, parseErrors, violations *int) {
+	switch outcome {
+	case OutcomeParseError:
+		*parseErrors++
+	case OutcomeSchemaViolation:
+		*violations++
+	}
+}
+
+// Score implements Probe by projecting the schema verdict onto the shared
+// Verdict shape, so a runner can hold every probe uniformly.
+//
+// The projection is deliberately lossy and the full vector stays available via
+// ScoreSchema — collapsing schema following to one number is exactly what the
+// per-role breakdown exists to prevent, so the journal records both.
+func (p SchemaProbe) Score(_ context.Context, task TaskRef, _ Gold, trace Trace) (Verdict, error) {
+	s := p.ScoreSchema(trace, task)
+	return Verdict{
+		Probe:       p.Name(),
+		ExecutionID: trace.ExecutionID,
+		TaskID:      task.ID,
+		Schema:      &s,
+	}, nil
+}
+
+// WorstRoles lists roles below a conformance threshold, worst first. Schema
+// following gates per role, so the actionable output is which roles fail, not
+// an average that no single role experiences.
+func (v SchemaVerdict) WorstRoles(threshold float64) []string {
+	var out []string
+	for role, rc := range v.ByRole {
+		if rc.Terminal > 0 && rc.Conformance < threshold {
+			out = append(out, role)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := v.ByRole[out[i]], v.ByRole[out[j]]
+		if a.Conformance != b.Conformance {
+			return a.Conformance < b.Conformance
+		}
+		return out[i] < out[j]
+	})
+	return out
+}

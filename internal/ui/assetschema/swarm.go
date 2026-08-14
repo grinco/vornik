@@ -32,6 +32,7 @@ func SwarmSchema() AssetSchema {
 					{Path: "displayName", Label: "Display name", Kind: KindString},
 					{Path: "leadRole", Label: "Lead role", Kind: KindString, Help: "Name of the role that acts as the lead/planner. Must match one of the roles below."},
 					{Path: "rolePrelude", Label: "Role prelude", Kind: KindString, Multiline: true, Help: "Operator text prepended to every role's system prompt (after the built-in safety prelude)."},
+					{Path: "suppressedGuidanceBlocks", Label: "Suppressed guidance blocks", Kind: KindStringList, Advanced: true, Help: "Daemon-authored ADVISORY guidance blocks this swarm's agents should NOT receive: canonical-context, tool-budget. A list of block names, never prompt text — to ADD guidance use the role prelude. reporting-integrity is invariant and cannot be listed: the check behind it runs whatever the prompt says, so suppressing it would remove the warning and not the rule."},
 				},
 			},
 		},

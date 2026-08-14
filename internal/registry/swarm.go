@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"vornik.io/vornik/internal/mediakind"
+	"vornik.io/vornik/internal/promptblock"
 )
 
 // Swarm represents a swarm definition loaded from swarms/*.md
@@ -27,6 +28,97 @@ type Swarm struct {
 	// BuildEffectiveRolePrompt composes this with the daemon's
 	// BuiltinRolePrelude and the role's own SystemPrompt.
 	RolePrelude string `yaml:"rolePrelude"`
+	// SuppressedGuidanceBlocks names daemon-authored ADVISORY guidance
+	// blocks this swarm's agents should not receive (LLD 09 §13.3.1).
+	// Compiling guidance into the binary is what makes an upgrade reach
+	// every existing deployment, but it also takes away an operator's
+	// ability to switch off a block that is redundant for their swarm —
+	// this is that knob.
+	//
+	// A LIST OF NAMES, NEVER TEXT. Suppression toggles blocks the daemon
+	// wrote; it does not accept operator prose. A text field here would
+	// be an arbitrary write into the system prompt — the trusted
+	// directive channel — through the config tree (§13.7). An operator
+	// who wants to ADD guidance already has RolePrelude, which is
+	// additive and needs no override mechanism.
+	//
+	// Invariant blocks cannot be listed: see validateSuppressedGuidance.
+	SuppressedGuidanceBlocks []string `yaml:"suppressedGuidanceBlocks"`
+}
+
+// SuppressesGuidanceBlock reports whether this swarm has switched off the named
+// guidance block.
+//
+// Defence in depth against the config path: an invariant block is never
+// suppressed, whatever the list says. Validation already refuses such a config,
+// but a Swarm can also reach this code from a hand-edited file loaded by an
+// older binary or from a struct built in code, and "the rule runs whatever the
+// prompt says" should not depend on which door the value came through.
+func (s *Swarm) SuppressesGuidanceBlock(name string) bool {
+	if s == nil || !promptblock.Suppressible(name) {
+		return false
+	}
+	for _, listed := range s.SuppressedGuidanceBlocks {
+		if strings.TrimSpace(listed) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// UnknownSuppressedGuidanceBlocks returns listed names this binary does not
+// declare, in the order written, for the caller to surface as warnings.
+//
+// Unknown is a WARNING and not a validation failure on purpose: block names are
+// a config contract across releases, so a name a later binary no longer declares
+// must not take an existing deployment's swarms offline on upgrade. The cost is
+// that a typo suppresses nothing silently — hence the warning, which is loud in
+// the daemon log and in the config-validation surface.
+func (s *Swarm) UnknownSuppressedGuidanceBlocks() []string {
+	if s == nil {
+		return nil
+	}
+	var out []string
+	for _, listed := range s.SuppressedGuidanceBlocks {
+		name := strings.TrimSpace(listed)
+		if name == "" || promptblock.Known(name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// validateSuppressedGuidance refuses a swarm that tries to suppress an INVARIANT
+// block.
+//
+// Hard failure rather than a warning, because the two mistakes are not
+// symmetric. An unknown name suppresses nothing and the deployment is left
+// exactly where it was. Naming an invariant block asks for something the daemon
+// will never do — verifyRoleClaims runs on every step regardless of the prompt —
+// so honouring the config "as far as possible" would leave an operator believing
+// they had switched off a rule that is still enforced. Better to refuse the file
+// and say why.
+func validateSuppressedGuidance(filename string, blocks []string) error {
+	for i, listed := range blocks {
+		name := strings.TrimSpace(listed)
+		if name == "" || !promptblock.Known(name) {
+			continue // unknown → warning channel, not a failure
+		}
+		if promptblock.Suppressible(name) {
+			continue
+		}
+		return SwarmValidationError{
+			File:  filename,
+			Field: "suppressedGuidanceBlocks",
+			Message: fmt.Sprintf(
+				"%q is an invariant guidance block and cannot be suppressed (entry %d): it states a "+
+					"rule the daemon enforces whatever the prompt says, so switching the block off "+
+					"would remove the warning and not the rule. Suppressible blocks: %s",
+				name, i, strings.Join(promptblock.SuppressibleNames(), ", ")),
+		}
+	}
+	return nil
 }
 
 // BuiltinRolePrelude is the always-on hardening clause prepended to
@@ -337,6 +429,9 @@ func (s *Swarm) Validate(filename string) error {
 	if len(s.Roles) == 0 {
 		return SwarmValidationError{File: filename, Field: "roles", Message: "at least one role is required"}
 	}
+	if err := validateSuppressedGuidance(filename, s.SuppressedGuidanceBlocks); err != nil {
+		return err
+	}
 
 	// Track role names for uniqueness
 	roleNames := make(map[string]bool)
@@ -477,6 +572,20 @@ func LoadSwarms(dir string) (map[string]*Swarm, error) {
 		// Validate the swarm
 		if err := swarm.Validate(name); err != nil {
 			return nil, err
+		}
+
+		// A suppression entry this binary does not declare suppresses nothing.
+		// That is deliberately not fatal (a block removed in a later release
+		// must not take an operator's swarms offline on upgrade), so the only
+		// thing standing between an operator and a silently-inert typo is this
+		// line. Printed straight to stderr at the strongest level this
+		// logger-free package supports, matching the autonomy.workflow_id
+		// precedent in registry.go.
+		for _, unknown := range swarm.UnknownSuppressedGuidanceBlocks() {
+			fmt.Fprintf(os.Stderr,
+				"vornik/registry: ERROR: swarm '%s' (%s) suppressedGuidanceBlocks names unknown block "+
+					"'%s' — NOTHING is suppressed for it. Known blocks: %s\n",
+				swarm.ID, name, unknown, strings.Join(promptblock.Names(), ", "))
 		}
 
 		// Check for duplicate IDs

@@ -1,0 +1,62 @@
+[
+  {
+    "id": "rg-01-mcp-spec",
+    "name": "research/medium: gather on a external spec",
+    "workflow": "companion-research-gather",
+    "prompt": "Gather current, citable information on the Model Context Protocol's tool-definition schema: what fields a tool declaration carries, how input schemas are expressed, and what the specification says about tool-name uniqueness. Cite the primary specification wherever possible and state plainly where you could not find an authoritative answer."
+  },
+  {
+    "id": "rg-02-longcontext",
+    "name": "research/medium: gather on long-context benchmarks",
+    "workflow": "companion-research-gather",
+    "prompt": "Gather information on how the RULER and NoLiMa long-context benchmarks construct their tasks: what varies across difficulty levels, how the answer position is controlled, and what each claims to measure that a plain needle-in-a-haystack test does not. Cite the papers. Note explicitly any claim you could only find second-hand."
+  },
+  {
+    "id": "rg-03-tokenizers",
+    "name": "research/easy: gather on tokenizer variance",
+    "workflow": "companion-research-gather",
+    "prompt": "Gather information on how much token counts for the same text differ between major tokenizer families, and what that implies for anyone budgeting prompts in tokens rather than bytes. Prefer primary sources with reproducible numbers over blog assertions."
+  },
+  {
+    "id": "rg-04-postgres-jsonb",
+    "name": "research/medium: gather on a database behaviour",
+    "workflow": "companion-research-gather",
+    "prompt": "Gather authoritative information on PostgreSQL JSONB: whether key order is preserved, whether duplicate keys are retained, and how those two behaviours differ from the json type. Cite the PostgreSQL documentation. State the version the behaviour applies to."
+  },
+  {
+    "id": "dv-01-schema-conform",
+    "name": "validation/easy: validate records against a stated schema",
+    "workflow": "companion-data-validation",
+    "prompt": "Validate these five records against the schema {id: non-empty string, qty: integer >= 0, sku: matches ^[A-Z]{3}-[0-9]{4}$}. Records: (1) id=a1 qty=3 sku=ABC-1234; (2) id= qty=1 sku=ABC-1234; (3) id=a3 qty=-2 sku=ABC-1234; (4) id=a4 qty=0 sku=abc-1234; (5) id=a5 qty=2 sku=AB-1234. Report per record which constraint failed, and report the total conforming count."
+  },
+  {
+    "id": "dv-02-ambiguous",
+    "name": "validation/medium: an under-specified schema",
+    "workflow": "companion-data-validation",
+    "prompt": "Validate these records against the schema {started_at: timestamp, duration: number}. Records: (1) started_at=2026-08-13T10:00:00Z duration=5; (2) started_at=2026-08-13 duration=5.5; (3) started_at=1755079200 duration=\"5\"; (4) started_at=2026-08-13T10:00:00+02:00 duration=0. The schema does not state a timestamp format or a duration unit. Do NOT guess: say which records cannot be decided and what the schema would have to state to decide them."
+  },
+  {
+    "id": "dv-03-contradiction",
+    "name": "validation/medium: a self-contradictory schema",
+    "workflow": "companion-data-validation",
+    "prompt": "Validate the record {status: \"archived\", deleted_at: null} against the schema: 'status is one of active|archived|deleted; a record with status archived or deleted MUST have a non-null deleted_at; deleted_at MUST be null unless status is deleted'. Report the outcome. If the schema cannot be satisfied by any archived record, say so and name the two clauses that conflict rather than picking one."
+  },
+  {
+    "id": "ca-01-coverage-gap",
+    "name": "audit/medium: find the untested branches",
+    "workflow": "companion-test-coverage-audit",
+    "prompt": "Audit test coverage for a function with this shape: ParseWindow(s string) (time.Duration, error) which returns distinct errors for empty input, a bare number, a negative value, a zero value, and an unknown unit, and accepts suffixes d/h/m. Its existing test covers only '30d' and ''. List every untested branch, name the input that would reach each, and give a coverage-delta estimate."
+  },
+  {
+    "id": "ca-02-assertion-quality",
+    "name": "audit/hard: tests that run but assert nothing",
+    "workflow": "companion-test-coverage-audit",
+    "prompt": "Audit this test for adequacy: it calls Truncate(s, max) for six inputs, and for each asserts only that the result is non-empty. Coverage tooling reports 100% of Truncate's statements. Explain what the coverage figure is hiding, list the properties that are unasserted, and state whether 100% statement coverage is evidence of anything here."
+  },
+  {
+    "id": "ca-03-concurrency-coverage",
+    "name": "audit/hard: coverage on a concurrent path",
+    "workflow": "companion-test-coverage-audit",
+    "prompt": "Audit coverage for a bounded worker pool: Run(ctx, items, workers, fn) which must return the first error and guarantee no goroutine outlives it. The existing tests cover the happy path and an early error, both with workers=1. Identify what workers=1 cannot exercise, what a race detector would and would not catch here, and which specific interleavings need a test."
+  }
+]

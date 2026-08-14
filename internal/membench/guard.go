@@ -155,15 +155,33 @@ type WriteTargetReporter interface {
 // incident, and an unverified guard is indistinguishable from an absent one while
 // still looking like protection.
 func VerifyWriteTarget(ctx context.Context, sys MemorySystem, database string) error {
-	want := strings.TrimSpace(database)
-
 	reporter, ok := sys.(WriteTargetReporter)
 	if !ok {
 		return fmt.Errorf("refusing to run: the %q system cannot report which database it "+
 			"writes, so naming %q proves nothing about where this run's writes will land. "+
 			"That gap put fixture documents into a production corpus on 2026-08-12. Use an "+
 			"adapter that reports its write target",
-			sys.Name(), want)
+			sys.Name(), strings.TrimSpace(database))
+	}
+	return VerifyWriteTargetOf(ctx, sys.Name(), reporter, database)
+}
+
+// VerifyWriteTargetOf is VerifyWriteTarget without the MemorySystem.
+//
+// Extracted so the agent-quality benchmark performs the SAME check rather than a
+// lookalike: its system under test is a daemon, not a memory adapter, but the
+// hole is identical — a harness that validates the name an operator typed and
+// never asks where the writes land is a guard that reads as containment and
+// provides none.
+func VerifyWriteTargetOf(ctx context.Context, systemName string, reporter WriteTargetReporter, database string) error {
+	want := strings.TrimSpace(database)
+
+	if reporter == nil {
+		return fmt.Errorf("refusing to run: the %q system cannot report which database it "+
+			"writes, so naming %q proves nothing about where this run's writes will land. "+
+			"That gap put fixture documents into a production corpus on 2026-08-12. Use an "+
+			"adapter that reports its write target",
+			systemName, want)
 	}
 
 	got, err := reporter.WriteTargetDatabase(ctx)
@@ -171,14 +189,14 @@ func VerifyWriteTarget(ctx context.Context, sys MemorySystem, database string) e
 		return fmt.Errorf("refusing to run: could not establish which database the %q system "+
 			"writes (%w). The guard fails closed — 'unverified' is not 'safe', and treating it "+
 			"as safe is what let a benchmark write production",
-			sys.Name(), err)
+			systemName, err)
 	}
 
 	got = strings.TrimSpace(got)
 	if got == "" {
 		return fmt.Errorf("refusing to run: the %q system reported an EMPTY write target, "+
 			"which names no database. Treating empty as agreement would re-open the hole for "+
-			"any deployment whose reporting is misconfigured", sys.Name())
+			"any deployment whose reporting is misconfigured", systemName)
 	}
 	if !strings.EqualFold(got, want) {
 		return fmt.Errorf("refusing to run: you named %q but the %q system actually writes "+
@@ -186,7 +204,7 @@ func VerifyWriteTarget(ctx context.Context, sys MemorySystem, database string) e
 			"throwaway database wrote twelve documents into the production corpus and left "+
 			"the named database empty. Point the system at %q, or name %q if that is really "+
 			"the target",
-			want, sys.Name(), got, want, got)
+			want, systemName, got, want, got)
 	}
 	return nil
 }

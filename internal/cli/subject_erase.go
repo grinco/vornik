@@ -151,6 +151,14 @@ func runSubjectErase(_ *cobra.Command, args []string) error {
 	}
 
 	printErasurePlan(plan)
+
+	// Before the confirmation, not after: this is the last moment the operator
+	// can widen coverage, and an erasure that reports success while prose
+	// records naming the subject survive is the exact failure §5.1 warns about.
+	if ids, idErr := deps.Repo.ListIdentifiers(ctx, req.SubjectID); idErr == nil {
+		warnIfKGUnresolved(ids, req.SubjectID)
+	}
+
 	if len(plan.Actions) == 0 {
 		fmt.Println("\nNothing identifiable about this subject was found — nothing to erase.")
 		fmt.Println("The request is left open: record the outcome with 'subject refuse' or close it once")

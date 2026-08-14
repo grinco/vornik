@@ -1,5 +1,7 @@
 package executor
 
+import "vornik.io/vornik/internal/promptblock"
+
 // Registry of the static capability-guidance blocks injected into agent system
 // prompts (LLD 09 §13).
 //
@@ -12,28 +14,21 @@ package executor
 // declared block constant appears here, so a new block cannot be both injected and
 // unbudgeted.
 //
-// It also makes §13.3(4)'s advisory/invariant declaration a fact in code rather than
-// a sentence in a design doc — the distinction decides what an operator may suppress,
-// so it needs somewhere to live that a future selector can read.
-type injectedBlockClass string
-
-const (
-	// blockAdvisory helps an agent use a capability well. An operator may suppress it
-	// for their swarm (the knob is not built yet; it is tracked in the backlog as
-	// "Advisory-block suppression"). Nobody may reword it.
-	blockAdvisory injectedBlockClass = "advisory"
-	// blockInvariant states a rule the daemon enforces whatever the prompt says.
-	// Neither suppressible nor rewordable: rewording it cannot change enforcement, it
-	// only lets a deployment misdescribe a rule it is still subject to.
-	blockInvariant injectedBlockClass = "invariant"
-)
-
+// WHERE THE CLASS LIVES. §13.3(4)'s advisory/invariant declaration is a fact in code
+// rather than a sentence in a design doc, because it decides what an operator may
+// suppress. It sits in internal/promptblock rather than here: the suppression knob is
+// a swarm config field, so internal/registry validates an operator's list at load
+// time and cannot import this package. Names + classes there, text + seam here, with
+// TestInjectedBlockRegistry_MatchesPromptblockDeclaration requiring the two sets to
+// match in both directions.
+//
 // injectedBlock is one registered block. Text is the literal appended to the prompt;
-// Const is the identifier declaring it, which the completeness law matches against.
+// Const is the identifier declaring it, which the completeness law matches against;
+// Name is promptblock's identifier for it, and the string an operator writes in
+// suppressedGuidanceBlocks.
 type injectedBlock struct {
 	Name  string
 	Const string
-	Class injectedBlockClass
 	Text  string
 }
 
@@ -44,21 +39,18 @@ type injectedBlock struct {
 // size to budget. Its cost is bounded by the skill store, not by this ceiling.
 var injectedBlocks = []injectedBlock{
 	{
-		Name:  "canonical-context",
+		Name:  promptblock.CanonicalContext,
 		Const: "canonicalContextSystemPromptBlock",
-		Class: blockAdvisory,
 		Text:  canonicalContextSystemPromptBlock,
 	},
 	{
-		Name:  "tool-budget",
+		Name:  promptblock.ToolBudget,
 		Const: "toolGrantSystemPromptBlock",
-		Class: blockAdvisory,
 		Text:  toolGrantSystemPromptBlock,
 	},
 	{
-		Name:  "reporting-integrity",
+		Name:  promptblock.ReportingIntegrity,
 		Const: "claimVerificationSystemPromptBlock",
-		Class: blockInvariant,
 		Text:  claimVerificationSystemPromptBlock,
 	},
 }

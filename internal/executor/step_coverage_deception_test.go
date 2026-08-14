@@ -129,9 +129,17 @@ func TestStepCoverage_DeceptionDetectionFiresEndToEnd(t *testing.T) {
 // 5-line edit, not a rewrite.
 func TestStepCoverage_DeceptionDetectionAllowsHonestPass(t *testing.T) {
 	rt := NewMockRuntime()
+	// An honest pass carries a run that actually produced something: since
+	// the 2026-08-13 tightening of resultHasExecutionToolCall, a bare
+	// {"tool": "run_shell"} with no command and no output is no longer
+	// evidence a check ran.
 	rt.outputJSON = `{
 		"testing": {"passed": true, "summary": "all green"},
-		"toolAudit": [{"tool": "run_shell"}]
+		"toolAudit": [{
+			"tool": "run_shell",
+			"input": "{\"command\":\"go test ./...\"}",
+			"output": "ok  vornik.io/vornik/internal/executor 0.42s"
+		}]
 	}`
 	er := NewMockExecRepo()
 	ar := NewMockArtifactRepo()

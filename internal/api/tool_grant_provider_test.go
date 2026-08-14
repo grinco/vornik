@@ -46,7 +46,9 @@ func grantProvider(t *testing.T, store *fakeGrantStore, ceiling []string) (*Tool
 	p := &ToolGrantProvider{
 		Grants:     store,
 		Executions: &fakeExecLookup{exec: &persistence.Execution{ID: "exec1", CurrentStepID: &step}},
-		Ceiling:    func(context.Context, string) []string { return ceiling },
+		Ceiling: func(context.Context, string) (string, []string) {
+			return "researcher", ceiling
+		},
 	}
 	ctx := context.WithValue(context.Background(), mcp.TaskIDHeaderKey{}, "task1")
 	return p, ctx
@@ -169,5 +171,59 @@ func TestGrantProvider_RejectsEmptyAndUnscopedRequests(t *testing.T) {
 	// No task context — an operator or UI caller is not a step.
 	if _, err := p.Execute(context.Background(), "p1", grantTool, `{"tools":["a"]}`); err == nil {
 		t.Error("a grant with no task context was accepted")
+	}
+}
+
+// The audit row must record WHO asked. Every production row carried an empty
+// role until 2026-08-14, because the resolver computed the role to find its
+// ceiling and then dropped it — leaving a privilege-request audit trail that
+// could not say which role requested the privilege. Found by the agent-quality
+// benchmark against real grant rows, not by any unit test.
+func TestToolGrant_RecordsTheCallingRole(t *testing.T) {
+	store := &fakeGrantStore{}
+	p, ctx := grantProvider(t, store, []string{"file_read", "grep"})
+
+	if _, err := p.Execute(ctx, "proj", grantTool, `{"tools":["file_read"]}`); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if len(store.recorded) != 1 {
+		t.Fatalf("recorded %d rows, want 1", len(store.recorded))
+	}
+	if got := store.recorded[0].Role; got != "researcher" {
+		t.Errorf("recorded role = %q, want %q — an audit row that cannot name the "+
+			"requester is not an audit row", got, "researcher")
+	}
+}
+
+// A model names tools back to us in the OpenAI function-namespace form
+// ("functions.git_status"). The ceiling holds bare names. Before 2026-08-14 the
+// bare-segment derivation split only on "__", so every dotted request was
+// refused against a ceiling that plainly allowed the tool — the reviewer role
+// was denied git_status/file_read/run_shell, retried with four spellings, and
+// burned nine tool calls per step failing.
+func TestToolGrant_AcceptsTheFunctionNamespaceForm(t *testing.T) {
+	store := &fakeGrantStore{}
+	p, ctx := grantProvider(t, store, []string{"git_status", "file_read", "run_shell"})
+
+	if _, err := p.Execute(ctx, "proj", grantTool,
+		`{"tools":["functions.git_status","functions.file_read"]}`); err != nil {
+		t.Fatalf("a dotted request naming allowed tools was refused: %v", err)
+	}
+	if len(store.recorded) != 1 || !store.recorded[0].Accepted {
+		t.Fatalf("grant not accepted: %+v", store.recorded)
+	}
+}
+
+// Widening the bare-name match must not admit a tool the ceiling omits,
+// whichever way it is spelled.
+func TestToolGrant_StillRefusesToolsOutsideTheCeiling(t *testing.T) {
+	store := &fakeGrantStore{}
+	p, ctx := grantProvider(t, store, []string{"file_read"})
+
+	for _, spelling := range []string{"run_shell", "functions.run_shell", "mcp__vornik__run_shell"} {
+		if _, err := p.Execute(ctx, "proj", grantTool,
+			`{"tools":["`+spelling+`"]}`); err == nil {
+			t.Errorf("spelling %q escaped the ceiling", spelling)
+		}
 	}
 }

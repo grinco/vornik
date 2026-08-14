@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +41,19 @@ func TestParseRoleClaims_PinsExpandedFields(t *testing.T) {
 	})
 }
 
+// shellAudit builds a run_shell audit entry in the shape the agent image
+// actually writes (entrypoint.sh:3207): `input` is the tool-call arguments
+// JSON as a string, `output` the captured stdout+stderr.
+func shellAudit(command, output string) string {
+	args, _ := json.Marshal(map[string]string{"command": command})
+	entry, _ := json.Marshal(map[string]string{
+		"tool":   "run_shell",
+		"input":  string(args),
+		"output": output,
+	})
+	return string(entry)
+}
+
 // TestResultHasExecutionToolCall covers the toolAudit scan that
 // testing.passed:true verification depends on.
 func TestResultHasExecutionToolCall(t *testing.T) {
@@ -51,13 +65,73 @@ func TestResultHasExecutionToolCall(t *testing.T) {
 		{"empty body", `{}`, false},
 		{"toolAudit absent", `{"testing": {"passed": true}}`, false},
 		{"empty toolAudit array", `{"toolAudit": []}`, false},
-		{"only file_read", `{"toolAudit": [{"tool": "file_read"}]}`, false},
-		{"test_run present", `{"toolAudit": [{"tool": "test_run"}]}`, true},
-		{"lint_run present", `{"toolAudit": [{"tool": "lint_run"}]}`, true},
-		{"typecheck_run present", `{"toolAudit": [{"tool": "typecheck_run"}]}`, true},
-		{"run_shell present (covers go test ./...)", `{"toolAudit": [{"tool": "run_shell"}]}`, true},
-		{"mix of read + run_shell", `{"toolAudit": [{"tool": "file_read"}, {"tool": "run_shell"}]}`, true},
+		{"only file_read", `{"toolAudit": [{"tool": "file_read", "output": "x"}]}`, false},
+		{"test_run present", `{"toolAudit": [{"tool": "test_run", "output": "{\"passed\":3}"}]}`, true},
+		{"lint_run present", `{"toolAudit": [{"tool": "lint_run", "output": "{\"issues\":0}"}]}`, true},
+		{"typecheck_run present", `{"toolAudit": [{"tool": "typecheck_run", "output": "{\"errors\":0}"}]}`, true},
+		{"run_shell present (covers go test ./...)",
+			`{"toolAudit": [` + shellAudit("go test ./...", "ok  vornik/internal/executor 0.4s") + `]}`, true},
+		{"mix of read + run_shell",
+			`{"toolAudit": [{"tool": "file_read", "output": "x"}, ` + shellAudit("pytest -q", "12 passed") + `]}`, true},
 		{"malformed JSON", `not json`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resultHasExecutionToolCall([]byte(tc.body)); got != tc.want {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResultHasExecutionToolCall_RequiresSubstantiveExecution is the
+// regression test for the §13 design-review follow-up of 2026-08-13
+// (LLD 09 §13.5a, "known limitation of the gate itself"): the detector
+// used to accept ANY execution-class entry, so `run_shell: echo ok`
+// satisfied a testing.passed:true claim without a test having run.
+//
+// The gate now requires the call to have produced something (a run that
+// printed nothing is no evidence a check ran) and, for run_shell, that the
+// command is not purely trivial. It is NOT a trust boundary — the agent
+// authors toolAudit inside the container (https://docs.vornik.io, "Do not let the
+// toolAudit fold be mistaken for a trust boundary") — it raises the cost of
+// a sham from one token to a deliberate forgery.
+func TestResultHasExecutionToolCall_RequiresSubstantiveExecution(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		// The shape named in the backlog item.
+		{"echo ok", `{"toolAudit": [` + shellAudit("echo ok", "ok") + `]}`, false},
+		{"true", `{"toolAudit": [` + shellAudit("true", "") + `]}`, false},
+		{"the wrapper dodge", `{"toolAudit": [` + shellAudit(`bash -c "echo ok"`, "ok") + `]}`, false},
+		{"nested wrapper dodge", `{"toolAudit": [` + shellAudit(`sh -c 'bash -c "echo ok"'`, "ok") + `]}`, false},
+		{"inspection only", `{"toolAudit": [` + shellAudit("ls -la && pwd", "total 4\n/app") + `]}`, false},
+
+		// Real runs must keep passing — a false positive here hard-fails a
+		// step that genuinely ran its tests.
+		{"go test", `{"toolAudit": [` + shellAudit("go test ./...", "ok  pkg 0.2s") + `]}`, true},
+		{"project wrapper script", `{"toolAudit": [` + shellAudit("./scripts/ci.sh", "all checks passed") + `]}`, true},
+		{"make verify", `{"toolAudit": [` + shellAudit("make verify", "PASS") + `]}`, true},
+		{"cd then test — trivial FIRST segment", `{"toolAudit": [` + shellAudit("cd project && go test ./...", "ok  pkg") + `]}`, true},
+		{"echo then test — trivial first segment", `{"toolAudit": [` + shellAudit("echo running tests; pytest -q", "12 passed") + `]}`, true},
+		{"wrapper around a real run", `{"toolAudit": [` + shellAudit(`bash -c "go test ./..."`, "ok  pkg") + `]}`, true},
+		{"env prefix", `{"toolAudit": [` + shellAudit("CGO_ENABLED=0 go test ./...", "ok  pkg") + `]}`, true},
+
+		// Silence is not evidence, whichever tool produced it.
+		{"real command, no output", `{"toolAudit": [` + shellAudit("go test ./...", "") + `]}`, false},
+		{"real command, whitespace output", `{"toolAudit": [` + shellAudit("go test ./...", "  \n ") + `]}`, false},
+		{"test_run with empty output", `{"toolAudit": [{"tool": "test_run", "output": ""}]}`, false},
+		{"test_run with no output field", `{"toolAudit": [{"tool": "test_run"}]}`, false},
+
+		// A command we cannot read is judged on output alone: an image whose
+		// argument encoding differs must not hard-fail every honest step.
+		{"unparseable input", `{"toolAudit": [{"tool": "run_shell", "input": "not json", "output": "ok  pkg"}]}`, true},
+		{"input absent", `{"toolAudit": [{"tool": "run_shell", "output": "ok  pkg"}]}`, true},
+
+		// One substantive call anywhere in the audit is enough.
+		{"trivial then real", `{"toolAudit": [` + shellAudit("echo ok", "ok") + `,` + shellAudit("go test ./...", "ok  pkg") + `]}`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,7 +151,7 @@ func TestVerifyRoleClaims_TestingPassedRequiresExecution(t *testing.T) {
 	t.Run("passed:true with run_shell in audit → ok", func(t *testing.T) {
 		body := []byte(`{
 			"testing": {"passed": true},
-			"toolAudit": [{"tool": "run_shell"}]
+			"toolAudit": [` + shellAudit("go test ./...", "ok  pkg 0.2s") + `]
 		}`)
 		if err := e.verifyRoleClaims(context.Background(), body, "", "", ""); err != nil {
 			t.Errorf("unexpected error: %v", err)

@@ -448,9 +448,19 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	if len(opts.Skills) == 0 {
 		opts.Skills = e.resolveSkillIndex(ctx, task.ProjectID, step.Role)
 	}
-	// Tool-budget guidance is injected only when the grant tool actually exists for
-	// this deployment (see tool_grant_prompt.go).
-	opts.ToolGrantAvailable = e.toolGrantsWired
+	// Tool-budget guidance is injected only when the grant tool exists for this
+	// deployment AND this role may actually call it. The second half was missing:
+	// the block told every role to call a tool most of them were forbidden, and
+	// they obediently tried (§12.6a of the agent-quality design).
+	opts.ToolGrantAvailable = e.toolGrantsWired && RoleMayGrantTools(plan.swarm, step.Role)
+	// Advisory guidance blocks this swarm's operator switched off (LLD 09
+	// §13.3.1). Read fresh from the plan's swarm on every step rather than
+	// cached on the executor, so a config reload takes effect on the next step
+	// like every other swarm field. Invariant blocks are unaffected — neither
+	// the config loader nor the composition seam will suppress one.
+	if plan.swarm != nil {
+		opts.SuppressedGuidanceBlocks = plan.swarm.SuppressedGuidanceBlocks
+	}
 	input := buildAgentInput(task, execution.ID, plan.workflow.ID, swarmID, stepID, step.Role, step.Prompt, opts)
 	// 0o600 — task.json holds the step prompt + any inline
 	// secrets / credentials passed from project config.

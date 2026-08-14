@@ -58,6 +58,7 @@ roles:
         - "git_status"
         - "git_log"
         - "current_time"
+        - "mcp__vornik__grant_step_tools"
       delegationAllowed: true
       autonomousTaskCreation: true
       # 2026-05-14: 10 → 20. Long-running TDD pipelines can spawn

@@ -156,3 +156,17 @@ func TestClassifyOverflowSource(t *testing.T) {
 		})
 	}
 }
+
+// The agent did its work and the BENCHMARK's workspace was dirty. Blaming the
+// agent for that inflates the number this benchmark exists to report honestly —
+// and the gold builder would drop the task as one the unrestricted arm never
+// passed. Observed verbatim on the first full gold pass, task 3 of 18.
+func TestClassifyFailure_ADirtyWorkspaceIsOurFailureNotTheAgents(t *testing.T) {
+	msg := "agent steps succeeded but changes could not be merged to master: " +
+		"main workspace has uncommitted changes"
+
+	if got := ClassifyFailure(false, msg); got != FailureHarness {
+		t.Errorf("got %q, want %q — the agent's steps SUCCEEDED; the workspace was ours",
+			got, FailureHarness)
+	}
+}

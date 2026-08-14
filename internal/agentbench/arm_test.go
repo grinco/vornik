@@ -7,7 +7,9 @@ import (
 
 func baseArm() ArmFields {
 	return ArmFields{
-		HarnessVersion: "1",
+		// The CONSTANT, not a literal: a version test that hardcodes the current
+		// value compares a number with itself and passes forever.
+		HarnessVersion: HarnessVersion,
 		Name:           "baseline",
 		BinarySHA256:   "aaaa",
 		ConfigSHA256:   "bbbb",
@@ -165,4 +167,38 @@ func TestTaskSetDigest(t *testing.T) {
 			t.Errorf("digest of an empty set = %q; a hash of nothing looks like a real set", got)
 		}
 	})
+}
+
+// A scoring change makes old numbers incomparable even when every other axis
+// matches. The key is what turns that from something to remember into something
+// enforced — but only if the version actually moves when semantics do.
+func TestArmFields_HarnessVersionSplitsTheKey(t *testing.T) {
+	a := baseArm()
+	b := baseArm()
+	b.HarnessVersion = "0-previous"
+
+	if a.Key() == b.Key() {
+		t.Fatal("two harness versions produced the same key")
+	}
+	err := CheckComparable(a, b)
+	if err == nil || !strings.Contains(err.Error(), "harness_version") {
+		t.Errorf("want a refusal naming harness_version, got: %v", err)
+	}
+}
+
+// Observed models, not declared ones. A router fallback that serves a different
+// model on a different provider must split the key, or two runs compare clean
+// having measured different systems.
+func TestArmFields_AnObservedModelChangeSplitsTheKey(t *testing.T) {
+	a := baseArm()
+	b := baseArm()
+	b.Models = map[string]string{"lead": "zai.glm-5", "worker": "qwen3.6:35b"} // fell back to Bedrock
+
+	if a.Key() == b.Key() {
+		t.Fatal("a silent provider fallback left the key unchanged — the runs would " +
+			"compare clean having used different models")
+	}
+	if err := CheckComparable(a, b); err == nil || !strings.Contains(err.Error(), "models") {
+		t.Errorf("want a refusal naming models, got: %v", err)
+	}
 }

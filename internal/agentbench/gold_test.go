@@ -152,3 +152,103 @@ func TestCheckRegeneration_ConfigOnlyChangeCannotRegenerateGold(t *testing.T) {
 			"measuring against ground truth produced under the very config it is testing")
 	}
 }
+
+// A task every run failed IN THE HARNESS is unmeasured, not impossible. Recording
+// it as "the arm never passed this task" would drop a perfectly good task from the
+// ground truth on the strength of our own dirty workspace — observed on the first
+// full gold pass.
+func TestBuildGold_DistinguishesHarnessFailuresFromTaskFailures(t *testing.T) {
+	m, err := BuildGold("tset", []UnrestrictedRun{
+		{TaskID: "ours", Passed: false,
+			ErrorText: "agent steps succeeded but changes could not be merged to master"},
+		{TaskID: "ours", Passed: false,
+			ErrorText: "agent steps succeeded but changes could not be merged to master"},
+		{TaskID: "theirs", Passed: false, ErrorText: "acceptance criteria not met"},
+	}, 2)
+	if err != nil {
+		t.Fatalf("build gold: %v", err)
+	}
+
+	ours, _ := m.Lookup("ours")
+	if !ours.Excluded || !strings.Contains(ours.ExcludedReason, "not measured") {
+		t.Errorf("harness-only failures recorded as %q; want an unmeasured exclusion",
+			ours.ExcludedReason)
+	}
+	theirs, _ := m.Lookup("theirs")
+	if !theirs.Excluded || !strings.Contains(theirs.ExcludedReason, "never passed") {
+		t.Errorf("a genuine task failure recorded as %q", theirs.ExcludedReason)
+	}
+}
+
+// A task that passed at least once is unaffected by an earlier harness failure.
+func TestBuildGold_APassOverridesAnEarlierHarnessFailure(t *testing.T) {
+	m, err := BuildGold("tset", []UnrestrictedRun{
+		{TaskID: "t1", Passed: false, ErrorText: "could not be merged to master"},
+		{TaskID: "t1", Passed: true, Invoked: []string{"a", "b"}},
+	}, 2)
+	if err != nil {
+		t.Fatalf("build gold: %v", err)
+	}
+	if g, _ := m.Lookup("t1"); g.Excluded || len(g.Paths) != 1 {
+		t.Errorf("a task that passed once was excluded: %+v", g)
+	}
+}
+
+// Batching exists so a dropped session costs one batch, not the pass. That only
+// works if the partial manifests combine into the single pinned gold the fence
+// and the arm key expect.
+func TestMergeGold_AccumulatesPathsAcrossBatches(t *testing.T) {
+	a, _ := BuildGold("tset", []UnrestrictedRun{{TaskID: "t1", Passed: true, Invoked: []string{"a"}}}, 1)
+	b, _ := BuildGold("tset", []UnrestrictedRun{{TaskID: "t1", Passed: true, Invoked: []string{"b"}}}, 1)
+
+	m, err := MergeGold(a, b)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	g, _ := m.Lookup("t1")
+	if len(g.Paths) != 2 {
+		t.Errorf("paths = %v, want both routes — more runs of a task is what repeats are for", g.Paths)
+	}
+	if m.Runs != 2 {
+		t.Errorf("runs = %d, want 2 summed across batches", m.Runs)
+	}
+}
+
+// A task excluded in one batch and passed in another WAS measurable.
+func TestMergeGold_APassAnywhereClearsAnExclusion(t *testing.T) {
+	excluded, _ := BuildGold("tset", []UnrestrictedRun{{TaskID: "t1", Passed: false, ErrorText: "criteria not met"}}, 1)
+	passed, _ := BuildGold("tset", []UnrestrictedRun{{TaskID: "t1", Passed: true, Invoked: []string{"a"}}}, 1)
+
+	for _, order := range [][]GoldManifest{{excluded, passed}, {passed, excluded}} {
+		m, err := MergeGold(order...)
+		if err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		if g, _ := m.Lookup("t1"); g.Excluded {
+			t.Error("a task that passed in one batch stayed excluded — that discards ground " +
+				"truth we actually have")
+		}
+	}
+}
+
+func TestMergeGold_RefusesMismatchedTaskSets(t *testing.T) {
+	a, _ := BuildGold("one", []UnrestrictedRun{{TaskID: "t1", Passed: true, Invoked: []string{"a"}}}, 1)
+	b, _ := BuildGold("two", []UnrestrictedRun{{TaskID: "t2", Passed: true, Invoked: []string{"b"}}}, 1)
+
+	if _, err := MergeGold(a, b); err == nil {
+		t.Fatal("merged manifests from different task sets — the result pins neither")
+	}
+}
+
+func TestMergeGold_KeepsAnExclusionNoBatchDisproved(t *testing.T) {
+	a, _ := BuildGold("tset", []UnrestrictedRun{{TaskID: "t1", Passed: false, ErrorText: "criteria not met"}}, 1)
+	b, _ := BuildGold("tset", []UnrestrictedRun{{TaskID: "t1", Passed: false, ErrorText: "criteria not met"}}, 1)
+
+	m, err := MergeGold(a, b)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if g, _ := m.Lookup("t1"); !g.Excluded {
+		t.Error("a task no batch ever passed lost its exclusion")
+	}
+}

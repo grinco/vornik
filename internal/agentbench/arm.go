@@ -23,10 +23,27 @@ import (
 // misleading axes on every manifest.
 
 // HarnessVersion is this package's scoring contract. Bump it when a probe's
-// definition changes: old numbers become incomparable even when every other axis
+// DEFINITION changes: old numbers become incomparable even when every other axis
 // matches, and the arm key is what makes that refusal automatic rather than
 // remembered.
-const HarnessVersion = "1"
+//
+// It is not the release version and it is not a build stamp. It moves only when
+// the meaning of a number changes.
+//
+//	v1  first implementation
+//	v2  2026-08-14. Four scoring changes in one day, each of which silently
+//	    invalidates a v1 figure:
+//	      - schema conformance excludes steps that produced NO output (a crashed
+//	        container was previously counted as CONFORMANT)
+//	      - grants are scored per EXECUTION, not per step
+//	      - a trace with no grant activity is skipped rather than scored 0
+//	      - tool names are compared in a bare form, so "functions.git_status"
+//	        matches gold's "git_status"
+//
+// v1 was never bumped through any of those, which is the failure this comment
+// exists to prevent: the mechanism refused nothing because nobody moved the
+// number it keys on.
+const HarnessVersion = "2"
 
 // ArmFields enumerates every axis that makes two agent-benchmark runs
 // incomparable.

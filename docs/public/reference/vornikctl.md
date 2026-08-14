@@ -90,6 +90,27 @@ vornikctl bench agent gold [flags]
 | `--task-set-hash` |  | digest of the task set being recorded; the regeneration fence compares against it |
 | `--tasks` |  | JSON task set to run |
 
+## vornikctl bench agent gold-merge
+
+Combine per-batch gold manifests into one pinned set
+
+Combine per-batch gold manifests into one.
+
+A full gold pass is hours long; losing it to a dropped session means
+re-spending all of it. Running in batches caps that loss to one batch —
+this is what makes the partials usable afterwards.
+
+Paths accumulate across batches. An exclusion survives only if NO batch
+recorded a path, because a task that passed once was measurable.
+
+```
+vornikctl bench agent gold-merge <batch.json>... [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--out` | `gold.json` | where to write the merged manifest |
+
 ## vornikctl bench agent report
 
 Print a run's scoreboard
@@ -126,6 +147,9 @@ vornikctl bench agent run [flags]
 |---|---|---|
 | `--arm` |  | name of the arm being run |
 | `--benchmark-project` |  | the only project this deployment permits benchmarking in |
+| `--context-policy` |  | REQUIRED: names the policy under test (suppression set, advert gating, ceiling). It is the independent variable, so a run that does not name it cannot be compared |
+| `--daemon-binary` |  | path to the daemon binary under test; hashed into the arm key so a release change refuses comparison instead of silently producing one |
+| `--daemon-config` |  | path to the config the daemon reads; hashed into the arm key |
 | `--database` |  | target database |
 | `--gold` |  | pinned gold manifest; omit to run only the probes that need none |
 | `--i-know-this-wipes` |  | must equal --database; this run bulk-writes and clears it |

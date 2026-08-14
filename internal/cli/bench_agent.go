@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -41,6 +42,9 @@ var (
 	benchAgentRunID        string
 	benchAgentArm          string
 	benchAgentRepeats      int
+	benchAgentContextPol   string
+	benchAgentDaemonBinary string
+	benchAgentDaemonConfig string
 	benchAgentJSON         bool
 )
 
@@ -88,6 +92,19 @@ var benchAgentRollupCmd = &cobra.Command{
 	RunE:  runBenchAgentRollup,
 }
 
+var benchAgentGoldMergeCmd = &cobra.Command{
+	Use:   "gold-merge <batch.json>...",
+	Short: "Combine per-batch gold manifests into one pinned set",
+	Long: "Combine per-batch gold manifests into one.\n\n" +
+		"A full gold pass is hours long; losing it to a dropped session means\n" +
+		"re-spending all of it. Running in batches caps that loss to one batch —\n" +
+		"this is what makes the partials usable afterwards.\n\n" +
+		"Paths accumulate across batches. An exclusion survives only if NO batch\n" +
+		"recorded a path, because a task that passed once was measurable.",
+	Args: cobra.MinimumNArgs(2),
+	RunE: runBenchAgentGoldMerge,
+}
+
 var benchAgentTaskSetHashCmd = &cobra.Command{
 	Use:   "taskset-hash <tasks.json>",
 	Short: "Print a task set's digest, which the gold fence compares against",
@@ -133,6 +150,14 @@ func init() {
 	benchAgentRunCmd.Flags().StringVar(&benchAgentArm, "arm", "", "name of the arm being run")
 	benchAgentRunCmd.Flags().IntVar(&benchAgentRepeats, "repeats", 1,
 		"runs per task; repeats shrink a task's contribution to sigma_d but add no pairs")
+	benchAgentRunCmd.Flags().StringVar(&benchAgentContextPol, "context-policy", "",
+		"REQUIRED: names the policy under test (suppression set, advert gating, ceiling). "+
+			"It is the independent variable, so a run that does not name it cannot be compared")
+	benchAgentRunCmd.Flags().StringVar(&benchAgentDaemonBinary, "daemon-binary", "",
+		"path to the daemon binary under test; hashed into the arm key so a release change "+
+			"refuses comparison instead of silently producing one")
+	benchAgentRunCmd.Flags().StringVar(&benchAgentDaemonConfig, "daemon-config", "",
+		"path to the config the daemon reads; hashed into the arm key")
 	for _, c := range []*cobra.Command{benchAgentGoldCmd, benchAgentRunCmd} {
 		c.Flags().StringVar(&benchAgentTaskSetPath, "tasks", "", "JSON task set to run")
 	}
@@ -142,7 +167,10 @@ func init() {
 	}
 
 	benchAgentCmd.AddCommand(benchAgentGoldCmd, benchAgentRunCmd, benchAgentReportCmd,
-		benchAgentRollupCmd, benchAgentCompareCmd, benchAgentTaskSetHashCmd)
+		benchAgentRollupCmd, benchAgentCompareCmd, benchAgentTaskSetHashCmd,
+		benchAgentGoldMergeCmd)
+	benchAgentGoldMergeCmd.Flags().StringVar(&benchAgentGoldPath, "out", "gold.json",
+		"where to write the merged manifest")
 	benchCmd.AddCommand(benchAgentCmd)
 }
 
@@ -201,6 +229,7 @@ func runBenchAgentGold(cmd *cobra.Command, _ []string) error {
 			}
 			observed = append(observed, agentbench.UnrestrictedRun{
 				TaskID: spec.ID, Passed: outcome.Succeeded, Invoked: invoked,
+				ErrorText: outcome.ErrorText,
 			})
 		}
 	}
@@ -269,17 +298,8 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 	if err := checkAgentRunScope(); err != nil {
 		return err
 	}
-	if benchAgentPreRegPath == "" {
-		return fmt.Errorf("--preregistration is required. Choosing what to compare after " +
-			"seeing results is the line between a benchmark and a press release, so the " +
-			"comparison is committed before the run and its hash is journaled beside every " +
-			"figure")
-	}
-	preReg, err := loadPreRegistration(benchAgentPreRegPath)
+	preReg, err := requirePreRegistration()
 	if err != nil {
-		return err
-	}
-	if err := preReg.Validate(); err != nil {
 		return err
 	}
 	if benchAgentGoldPath != "" {
@@ -310,6 +330,11 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	arm, err := buildArm(tasks, gold)
+	if err != nil {
+		return err
+	}
+
 	r := &agentbench.Runner{
 		Tasks:  daemon,
 		Traces: store,
@@ -320,7 +345,7 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 	}
 	journal, err := r.Run(cmd.Context(), agentbench.RunConfig{
 		RunID:           benchAgentRunID,
-		Arm:             agentbench.ArmFields{Name: benchAgentArm, HarnessVersion: agentbench.HarnessVersion},
+		Arm:             arm,
 		Scope:           agentRunScope(),
 		PreRegistration: preReg,
 		Power:           power,
@@ -332,6 +357,8 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	stampObservedModels(cmd.Context(), store, &journal)
+
 	f, err := os.Create(filepath.Clean(benchAgentJournalPath))
 	if err != nil {
 		return fmt.Errorf("create journal: %w", err)
@@ -341,12 +368,129 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	reportRunWritten(cmd, journal)
+	return nil
+}
+
+// reportRunWritten prints the warning BEFORE the confirmation, so a degraded
+// run's journal path is never read without the reason it is degraded.
+func reportRunWritten(cmd *cobra.Command, journal agentbench.Journal) {
 	if err := journal.CheckReadable(); err != nil {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: %v\n", err)
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "wrote %s: %d execution(s)\n",
 		benchAgentJournalPath, len(journal.Records))
-	return nil
+}
+
+// requirePreRegistration loads and validates the committed pre-registration.
+//
+// Required, not encouraged: choosing what to compare after seeing results is the
+// line between a benchmark and a press release, so the comparison is committed
+// before the run and its hash is journaled beside every figure.
+func requirePreRegistration() (agentbench.PreRegistration, error) {
+	if benchAgentPreRegPath == "" {
+		return agentbench.PreRegistration{}, fmt.Errorf("--preregistration is required. " +
+			"Choosing what to compare after seeing results is the line between a benchmark " +
+			"and a press release, so the comparison is committed before the run and its hash " +
+			"is journaled beside every figure")
+	}
+	preReg, err := loadPreRegistration(benchAgentPreRegPath)
+	if err != nil {
+		return agentbench.PreRegistration{}, err
+	}
+	if err := preReg.Validate(); err != nil {
+		return agentbench.PreRegistration{}, err
+	}
+	return preReg, nil
+}
+
+// stampObservedModels fills the arm's model map from the LEDGER after the run.
+//
+// Observed, not declared: a router fallback can serve a different model on a
+// different provider without anything declaring the arm changed. This deployment
+// did exactly that — glm-5.2 (Ollama) silently became zai.glm-5 (Bedrock) for
+// 473k tokens — so two runs would key identically having measured different
+// systems.
+//
+// Best-effort: a store that cannot answer leaves the models empty, which keeps
+// the key PARTIAL rather than asserting a model set nobody verified.
+func stampObservedModels(ctx context.Context, store *agentbench.SQLTraceStore, journal *agentbench.Journal) {
+	var execIDs []string
+	for _, rec := range journal.Records {
+		if rec.ExecutionID != "" {
+			execIDs = append(execIDs, rec.ExecutionID)
+		}
+	}
+	observed, err := store.ObservedModels(ctx, execIDs)
+	if err != nil || len(observed) == 0 {
+		return
+	}
+	journal.Manifest.Arm.Models = observed
+	journal.Manifest.ArmKey = journal.Manifest.Arm.Key()
+	journal.Manifest.ArmPartial = journal.Manifest.Arm.Partial()
+}
+
+// buildArm assembles the comparability key from everything knowable BEFORE the
+// run. Models are filled in afterwards from the ledger (see runBenchAgentRun).
+//
+// WHY THIS MATTERS FOR RELEASES. The key is what makes two runs comparable or
+// refuses them. Until 2026-08-14 the CLI populated only the arm's NAME and the
+// harness version, so every run reported PARTIAL and the key refused nothing —
+// the mechanism was fully tested and fed nothing. Release-over-release
+// comparison needs the binary, the config, the task set, the gold set, the probe
+// set and the policy, or "apples to apples" is an assertion rather than a check.
+func buildArm(tasks []agentbench.TaskSpec, gold *agentbench.GoldManifest) (agentbench.ArmFields, error) {
+	if strings.TrimSpace(benchAgentContextPol) == "" {
+		return agentbench.ArmFields{}, fmt.Errorf("--context-policy is required: it names the " +
+			"independent variable, and a run that does not say what policy it tested cannot be " +
+			"compared with one that does")
+	}
+
+	ids := make([]string, 0, len(tasks))
+	bodies := make(map[string]string, len(tasks))
+	for _, t := range tasks {
+		ids = append(ids, t.ID)
+		bodies[t.ID] = t.Workflow + "\x00" + t.Prompt
+	}
+
+	arm := agentbench.ArmFields{
+		HarnessVersion: agentbench.HarnessVersion,
+		Name:           benchAgentArm,
+		ContextPolicy:  benchAgentContextPol,
+		TaskSetSHA256:  agentbench.TaskSetDigest(ids, bodies),
+		Probes:         probeNames(gold != nil),
+	}
+	if gold != nil {
+		h, err := gold.SHA256()
+		if err != nil {
+			return agentbench.ArmFields{}, err
+		}
+		arm.GoldSHA256 = h
+	}
+	if benchAgentDaemonBinary != "" {
+		h, err := sha256File(benchAgentDaemonBinary)
+		if err != nil {
+			return agentbench.ArmFields{}, fmt.Errorf("hash daemon binary: %w", err)
+		}
+		arm.BinarySHA256 = h
+	}
+	if benchAgentDaemonConfig != "" {
+		h, err := sha256File(benchAgentDaemonConfig)
+		if err != nil {
+			return agentbench.ArmFields{}, fmt.Errorf("hash daemon config: %w", err)
+		}
+		arm.ConfigSHA256 = h
+	}
+	return arm, nil
+}
+
+// probeNames lists the probes a run will use, sorted by the arm key itself.
+func probeNames(haveGold bool) []string {
+	names := make([]string, 0, 3)
+	for _, p := range probeSet(haveGold) {
+		names = append(names, p.Name())
+	}
+	return names
 }
 
 // probeSet returns the probes for a run. The two whose ground truth is
@@ -545,6 +689,44 @@ func runBenchAgentRollup(cmd *cobra.Command, args []string) error {
 			r.RequestPrecision, r.Efficiency.Escalations)
 	}
 	return w.Flush()
+}
+
+// runBenchAgentGoldMerge combines per-batch manifests.
+func runBenchAgentGoldMerge(cmd *cobra.Command, args []string) error {
+	manifests := make([]agentbench.GoldManifest, 0, len(args))
+	for _, path := range args {
+		m, err := loadGoldIfPresent(path)
+		if err != nil {
+			return err
+		}
+		if m == nil {
+			return fmt.Errorf("batch manifest not found: %s", path)
+		}
+		manifests = append(manifests, *m)
+	}
+
+	merged, err := agentbench.MergeGold(manifests...)
+	if err != nil {
+		return err
+	}
+	blob, err := json.MarshalIndent(merged, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal merged manifest: %w", err)
+	}
+	if err := os.WriteFile(benchAgentGoldPath, append(blob, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write merged manifest: %w", err)
+	}
+
+	excluded := 0
+	for _, e := range merged.Entries {
+		if e.Excluded {
+			excluded++
+		}
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+		"merged %d batch(es) -> %s: %d task(s), %d excluded, %d run(s) total\n",
+		len(manifests), benchAgentGoldPath, len(merged.Entries), excluded, merged.Runs)
+	return nil
 }
 
 // runBenchAgentTaskSetHash prints the digest for a task set.

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // SQL trace assembly (§3.2).
@@ -88,6 +89,56 @@ func (s *SQLTraceStore) Executions(ctx context.Context, taskID string) ([]string
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// ObservedModels reports the role -> model map a run ACTUALLY used.
+//
+// OBSERVED, NOT DECLARED, and that distinction is the point. An arm names its
+// models in configuration, but a router fallback can silently serve a different
+// model — on a different provider — mid-run. Two runs would then key identically
+// and be incomparable. Measured on this deployment: `glm-5.2` fell back to
+// `zai.glm-5` on Bedrock for 473k tokens without anything recording that the arm
+// had changed.
+//
+// membench applies the same rule to its embedder (ObservedEmbedder) for the same
+// reason: a titan-versus-cohere comparison once matched clean because the key
+// recorded what an operator declared rather than what ran.
+func (s *SQLTraceStore) ObservedModels(ctx context.Context, executionIDs []string) (map[string]string, error) {
+	if s == nil || s.DB == nil {
+		return nil, fmt.Errorf("trace store has no database")
+	}
+	out := map[string]string{}
+	for _, execID := range executionIDs {
+		rows, err := s.DB.QueryContext(ctx, fmt.Sprintf(`
+			SELECT role, model FROM task_llm_usage
+			 WHERE execution_id = %s AND role <> '' AND model <> ''`,
+			s.Dialect.arg(1)), execID)
+		if err != nil {
+			return nil, fmt.Errorf("read models for %s: %w", execID, err)
+		}
+		for rows.Next() {
+			var role, model string
+			if err := rows.Scan(&role, &model); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scan model: %w", err)
+			}
+			// A role that served two models in one run is itself a finding: the
+			// key records both, so such a run cannot silently match a clean one.
+			prev, seen := out[role]
+			switch {
+			case !seen:
+				out[role] = model
+			case prev != model && !strings.Contains(prev, model):
+				out[role] = prev + "+" + model
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		_ = rows.Close()
+	}
+	return out, nil
 }
 
 // Assemble returns the execution's record and one trace per step.

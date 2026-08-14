@@ -52,11 +52,23 @@ const (
 )
 
 // harnessMarkers identify a failure in the measurement rather than the measured.
+//
+// The workspace entries were added after the first full gold pass: task 3 of 18
+// failed with "agent steps succeeded but changes could not be merged to master:
+// main workspace has uncommitted changes". The agent had done its work — the
+// benchmark's own workspace was dirty from earlier runs. Classified as a TASK
+// failure, that blames the agent for the harness's housekeeping and, worse, the
+// gold builder records the task as one the unrestricted arm never passed and
+// drops it from the ground truth entirely.
 var harnessMarkers = []string{
 	"gold",
 	"no recorded paths",
 	"excluded from gold",
 	"assemble trace",
+	// The workspace is the benchmark's environment, not the system under test.
+	"could not be merged",
+	"workspace has uncommitted changes",
+	"agent steps succeeded but",
 }
 
 // leaseMarkers identify lease loss, which is infra: the daemon lost the

@@ -94,6 +94,10 @@ type UnrestrictedRun struct {
 	Passed bool
 	// Invoked is the tool set this run used. Meaningful only when Passed.
 	Invoked []string
+	// ErrorText is why it failed, so a HARNESS failure is not mistaken for
+	// evidence about the task. Without it, a dirty benchmark workspace reads as
+	// "the model cannot do this" and the task is dropped from gold on that basis.
+	ErrorText string
 }
 
 // BuildGold turns unrestricted-ceiling runs into a pinned manifest.
@@ -112,11 +116,20 @@ func BuildGold(taskSetSHA256 string, runs []UnrestrictedRun, runCount int) (Gold
 
 	byTask := map[string][][]string{}
 	attempted := map[string]bool{}
+	// harnessOnly[t] stays true while every failure for t was the harness's own.
+	harnessOnly := map[string]bool{}
 	for _, r := range runs {
-		attempted[r.TaskID] = true
+		if !attempted[r.TaskID] {
+			attempted[r.TaskID] = true
+			harnessOnly[r.TaskID] = true
+		}
 		if !r.Passed {
+			if ClassifyFailure(false, r.ErrorText) != FailureHarness {
+				harnessOnly[r.TaskID] = false
+			}
 			continue
 		}
+		harnessOnly[r.TaskID] = false
 		byTask[r.TaskID] = append(byTask[r.TaskID], sortedCopy(dedupe(r.Invoked)))
 	}
 
@@ -124,6 +137,16 @@ func BuildGold(taskSetSHA256 string, runs []UnrestrictedRun, runCount int) (Gold
 	for taskID := range attempted {
 		paths := byTask[taskID]
 		switch {
+		case len(paths) == 0 && harnessOnly[taskID]:
+			// Every failure was OURS. That is not evidence about the task, so the
+			// exclusion says what actually happened rather than implying the
+			// model could not do it.
+			m.Entries = append(m.Entries, Gold{
+				TaskID:   taskID,
+				Excluded: true,
+				ExcludedReason: "not measured: every run failed inside the harness " +
+					"(see the run journal); re-run before treating this as a task the arm cannot pass",
+			})
 		case len(paths) == 0:
 			m.Entries = append(m.Entries, Gold{
 				TaskID:         taskID,
@@ -186,4 +209,62 @@ func shortHash(h string) string {
 		return h[:12]
 	}
 	return h
+}
+
+// MergeGold combines per-batch manifests into one.
+//
+// WHY BATCHING NEEDS THIS. A 54-run pass is hours long, and losing it to a
+// session drop or a capacity blip means re-spending all of it. Running in small
+// batches caps that loss to one batch — but only if the partial manifests can be
+// combined into the single pinned gold the fence and the arm key expect.
+//
+// Merge rules, in the order they matter:
+//
+//   - A task with recorded paths in ANY batch keeps them, and paths from several
+//     batches accumulate. More runs of the same task is exactly what repeats are
+//     for, so a later batch adds routes rather than replacing them.
+//   - An exclusion survives only if NO batch recorded a path. A task excluded in
+//     one batch and passed in another was measurable; treating it as excluded
+//     would drop ground truth we actually have.
+//   - Batches must agree on the task-set hash. Merging across task sets would
+//     produce a manifest that pins nothing.
+func MergeGold(manifests ...GoldManifest) (GoldManifest, error) {
+	var out GoldManifest
+	byTask := map[string]Gold{}
+	runs := 0
+
+	for _, m := range manifests {
+		if m.TaskSetSHA256 == "" {
+			return GoldManifest{}, fmt.Errorf("refusing to merge a manifest with no task-set hash")
+		}
+		if out.TaskSetSHA256 == "" {
+			out.TaskSetSHA256 = m.TaskSetSHA256
+		} else if out.TaskSetSHA256 != m.TaskSetSHA256 {
+			return GoldManifest{}, fmt.Errorf("refusing to merge manifests from different task "+
+				"sets (%s vs %s): the result would pin neither",
+				shortHash(out.TaskSetSHA256), shortHash(m.TaskSetSHA256))
+		}
+		runs += m.Runs
+
+		for _, e := range m.Entries {
+			prev, seen := byTask[e.TaskID]
+			switch {
+			case !seen:
+				byTask[e.TaskID] = e
+			case len(e.Paths) > 0:
+				// Accumulate routes; a pass anywhere clears an exclusion.
+				merged := append(append([][]string{}, prev.Paths...), e.Paths...)
+				byTask[e.TaskID] = Gold{TaskID: e.TaskID, Paths: merged}
+			case len(prev.Paths) == 0:
+				// Both excluded — keep the first reason.
+				byTask[e.TaskID] = prev
+			}
+		}
+	}
+
+	out.Runs = runs
+	for _, e := range byTask {
+		out.Entries = append(out.Entries, e)
+	}
+	return out.canonical(), nil
 }

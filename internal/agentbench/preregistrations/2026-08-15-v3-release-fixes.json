@@ -1,0 +1,10 @@
+{
+  "arms": ["qwen-local", "qwen-local-fixed"],
+  "metric": "task_success_rate",
+  "targetDelta": 0.05,
+  "sigmaD": 0.0651,
+  "sigmaN": 10,
+  "computedPairs": 14,
+  "independentAxes": ["binary_sha256"],
+  "rationale": "Prices the 2026.8.4 bug fixes against the completed n=10 baseline, on the SAME model, tasks, gold and context policy. sigmaD 0.0651 is the measured chunk-to-chunk sd of task success from that baseline (n=10), not a carried-forward guess, so the pair count is grounded for the first time. TWO HONEST LIMITS, registered BEFORE the run rather than explained after. FIRST: the agent image changed too — the response_format, schema-finalization and no-tool-nudge fixes all live in the container — and ArmFields does not include the agent image, so the key cannot see it. The declared independent axis is therefore nominally binary_sha256 but is really 'the release', and any observed delta prices the daemon and image changes TOGETHER. It cannot attribute the delta to either alone, and must not be reported as if it could. SECOND: the baseline arm predates the independentAxes field, so bench agent compare will refuse the pair on differing pre-registrations. That refusal is correct — the baseline never registered this comparison — and the fix is NOT to edit its pre-registration after the fact, which is precisely what pre-registration exists to prevent. The comparison will therefore be made from the two rollups by hand and labelled as such. EXPECTED DIRECTION, stated in advance: task success should RISE, because the fabrication-retry and output-contract fixes each convert a class of task-killing failure into a recoverable one. If it falls, the fixes made something worse and that is the finding."
+}

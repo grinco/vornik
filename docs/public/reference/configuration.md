@@ -125,6 +125,14 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 |---|---|---|
 | `scheduler.max_concurrent_tasks` | int | Maximum tasks running at once across all projects. |
 | `scheduler.lease_timeout` | string | How long a task lease is held before it is considered stale. |
+| `scheduler.speed_aware_timeouts.enabled` | bool | Scale time budgets by measured decode speed. Off by default; off is byte-identical to not having the feature. |
+| `scheduler.speed_aware_timeouts.reference_tokens_per_sec` | float | Decode rate the shipped base timeouts were calibrated against. Must be declared; a local measurement cannot serve as its own reference. |
+| `scheduler.speed_aware_timeouts.min_factor` | float | Floor, so fast hardware cannot starve a step of startup time. |
+| `scheduler.speed_aware_timeouts.max_factor` | float | Ceiling. Deliberately below what the slowest hardware demands: hitting it is reported, because the honest answer there is that the hardware cannot run the workload at this shape. |
+| `scheduler.speed_aware_timeouts.observed_tokens_per_sec` | float | This host's measured decode rate (see: vornikctl profile). Zero disables scaling. |
+| `scheduler.speed_aware_timeouts.min_samples` | int | Steps required before a fitted profile is trusted at all. |
+| `scheduler.speed_aware_timeouts.window` | string | Rolling window the profile is fitted over. |
+| `scheduler.default_step_timeout` | string | Ceiling for a step whose workflow declares no timeout. Empty = 30m. |
 
 ## watchdog
 

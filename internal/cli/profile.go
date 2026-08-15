@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/http"
@@ -8,6 +9,9 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/storage"
 
 	"github.com/spf13/cobra"
 
@@ -71,26 +75,25 @@ func init() {
 
 func runProfile(cmd *cobra.Command, _ []string) error {
 	// A probe needs no history, so it runs on a deployment that has never
-	// executed a task — which is exactly the cold-start case a fit cannot serve.
-	if profileEndpoint != "" && profileDSN == "" && os.Getenv("VORNIK_PROFILE_DSN") == "" &&
-		os.Getenv("VORNIK_BENCH_DSN") == "" {
+	// executed a task — exactly the cold-start case a fit cannot serve. Tried
+	// FIRST, and the database is only consulted if the probe alone was not asked
+	// for: requiring a reachable database to run a pure endpoint probe was the
+	// same defect as requiring a DSN at all.
+	if profileEndpoint != "" && profileDSN == "" &&
+		os.Getenv("VORNIK_PROFILE_DSN") == "" && os.Getenv("VORNIK_BENCH_DSN") == "" {
 		return probeOnly(cmd)
 	}
 
-	dsn := profileDSN
-	for _, env := range []string{"VORNIK_PROFILE_DSN", "VORNIK_BENCH_DSN"} {
-		if dsn == "" {
-			dsn = os.Getenv(env)
-		}
-	}
-	if dsn == "" {
-		return fmt.Errorf("no database given: pass --dsn or set VORNIK_PROFILE_DSN")
-	}
-	db, err := sql.Open("postgres", dsn)
+	// The daemon already knows which database it writes, so asking the operator
+	// for a DSN was a defect, not a safeguard: `vornikctl profile` failed on a
+	// clean install with "no database given" and no hint that the answer was
+	// sitting in the daemon's own config. Explicit --dsn and the env vars still
+	// win, for pointing at a bench or a copy.
+	db, closeDB, err := openProfileDB()
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return err
 	}
-	defer func() { _ = db.Close() }()
+	defer closeDB()
 
 	ctx := cmd.Context()
 	models, err := speedprofile.Models(ctx, db, profileWindow)
@@ -155,6 +158,10 @@ func probeOnly(cmd *cobra.Command) error {
 	res, err := runProbe(cmd)
 	if err != nil {
 		return err
+	}
+	if profileSuggest {
+		suggestFromProbe(cmd, res)
+		return nil
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 		"%s: %.0f tok/s median marginal decode (%.0f-%.0f over %d pairs), "+
@@ -298,4 +305,70 @@ would ask for ~%.0fx and hit the ceiling, which is reported rather than
 silently satisfied.
 `, slowest.DecodeTokensPerSec(), slowest.Model, speedprofile.MinSamples,
 		slowest.DecodeTokensPerSec(), slowest.DecodeTokensPerSec()/12)
+}
+
+// openProfileDB resolves the database to profile, preferring an explicit
+// override and falling back to the daemon's own configuration.
+func openProfileDB() (*sql.DB, func(), error) {
+	dsn := profileDSN
+	for _, env := range []string{"VORNIK_PROFILE_DSN", "VORNIK_BENCH_DSN"} {
+		if dsn == "" {
+			dsn = os.Getenv(env)
+		}
+	}
+	if dsn != "" {
+		db, err := sql.Open("postgres", dsn)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open database from --dsn: %w", err)
+		}
+		return db, func() { _ = db.Close() }, nil
+	}
+
+	cfg, _, err := config.Load()
+	if err != nil {
+		return nil, nil, fmt.Errorf("no --dsn given and the daemon config could not be read (%w).\n"+
+			"Either point VORNIK_CONFIG at the daemon's config file, or pass --dsn, or\n"+
+			"profile an endpoint directly with --probe-endpoint and --probe-model, which\n"+
+			"needs no database at all", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	backend, err := storage.Open(ctx, cfg.Database)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open the daemon's database: %w", err)
+	}
+	db, err := requirePostgresDB(backend, "vornikctl profile")
+	if err != nil {
+		_ = backend.Close()
+		return nil, nil, err
+	}
+	return db, func() { _ = backend.Close() }, nil
+}
+
+// suggestFromProbe emits the config block from a probe alone.
+//
+// A fresh install has no history to fit, which is precisely when an operator is
+// deciding whether the hardware is usable. Requiring a database here would mean
+// the feature could only be configured after running the workload it is meant to
+// protect.
+func suggestFromProbe(cmd *cobra.Command, res speedprofile.ProbeResult) {
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), `
+SUGGESTED CONFIG — from a PROBE (no workload history on this install yet).
+
+scheduler:
+  speed_aware_timeouts:
+    enabled: true
+    reference_tokens_per_sec: <the rate your timeouts were tuned for>
+    observed_tokens_per_sec: %.0f   # measured here, on %s
+    min_factor: 0.5
+    max_factor: 8.0
+
+Fill in the reference yourself: it is the rate at which the CURRENT timeouts are
+known to work, which this box cannot tell you. If this is the machine those
+timeouts were chosen on, the two are the same number and the feature is a no-op
+until you run it somewhere slower.
+
+Re-run with a database once real work has flowed, and the fitted rate will
+replace this one — the fit reflects the workload, the probe only the hardware.
+`, res.MedianTokensPerSec, res.Model)
 }

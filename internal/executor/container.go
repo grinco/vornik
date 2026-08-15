@@ -461,6 +461,11 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	if plan.swarm != nil {
 		opts.SuppressedGuidanceBlocks = plan.swarm.SuppressedGuidanceBlocks
 	}
+	// Tell the agent its REAL budget. Hardcoding 30m here made the runtime
+	// contract's timeoutSeconds a number that was usually wrong.
+	if opts != nil {
+		opts.StepTimeout = timeout
+	}
 	input := buildAgentInput(task, execution.ID, plan.workflow.ID, swarmID, stepID, step.Role, step.Prompt, opts)
 	// 0o600 — task.json holds the step prompt + any inline
 	// secrets / credentials passed from project config.

@@ -1631,6 +1631,22 @@ func (s StorageConfig) Validate() error {
 type SchedulerConfig struct {
 	MaxConcurrentTasks int    `yaml:"max_concurrent_tasks" doc:"Maximum tasks running at once across all projects."`
 	LeaseTimeout       string `yaml:"lease_timeout" doc:"How long a task lease is held before it is considered stale."`
+	// SpeedAwareTimeouts stretches time budgets on hardware slower than the one
+	// the defaults were calibrated on. OFF by default: enabled:false is
+	// byte-identical to not having the feature.
+	//
+	// The lease timeout comes FIRST because it is the binding constraint.
+	// Measured 2026-08-15: on a 12 tok/s host, replaying 702 real step shapes
+	// puts 16% of steps past the 5m lease, against 0% on a 206 tok/s host.
+	// Scaling a step timeout while the lease stays fixed changes nothing for
+	// those steps — the task is re-leased mid-flight and the container dies
+	// regardless.
+	SpeedAwareTimeouts SpeedAwareTimeoutsConfig `yaml:"speed_aware_timeouts"`
+	// DefaultStepTimeout is the ceiling for a step whose workflow declares
+	// none. It was a 30m constant in executor.DefaultConfig with no way to
+	// reach it, which on slow hardware is the difference between a step that
+	// finishes and one killed mid-work. Empty keeps the 30m default.
+	DefaultStepTimeout string `yaml:"default_step_timeout" doc:"Ceiling for a step whose workflow declares no timeout. Empty = 30m."`
 }
 
 // RuntimeConfig holds container runtime configuration.
@@ -3507,4 +3523,23 @@ func (m MediaConfig) InlineLimits() (perImage, total int64, count int) {
 		count = DefaultMediaInlineMaxImages
 	}
 	return perImage, total, count
+}
+
+// SpeedAwareTimeoutsConfig scales absolute time budgets by measured inference
+// speed. See https://docs.vornik.io 6.2.
+type SpeedAwareTimeoutsConfig struct {
+	Enabled bool `yaml:"enabled" doc:"Scale time budgets by measured decode speed. Off by default; off is byte-identical to not having the feature."`
+	// ReferenceTokensPerSec is DECLARED, never inferred. Inferring it from the
+	// local deployment would make every host its own reference and collapse the
+	// factor to 1.0 everywhere — a profile that can never fire.
+	ReferenceTokensPerSec float64 `yaml:"reference_tokens_per_sec" doc:"Decode rate the shipped base timeouts were calibrated against. Must be declared; a local measurement cannot serve as its own reference."`
+	MinFactor             float64 `yaml:"min_factor" doc:"Floor, so fast hardware cannot starve a step of startup time."`
+	MaxFactor             float64 `yaml:"max_factor" doc:"Ceiling. Deliberately below what the slowest hardware demands: hitting it is reported, because the honest answer there is that the hardware cannot run the workload at this shape."`
+	// ObservedTokensPerSec is THIS host's measured decode rate, as reported by
+	// `vornikctl profile`. Declared rather than read live because the lease is
+	// fixed once at scheduler construction: a value drifting with a rolling fit
+	// would leave running tasks holding leases computed under a different number.
+	ObservedTokensPerSec float64 `yaml:"observed_tokens_per_sec" doc:"This host's measured decode rate (see: vornikctl profile). Zero disables scaling."`
+	MinSamples           int     `yaml:"min_samples" doc:"Steps required before a fitted profile is trusted at all."`
+	Window               string  `yaml:"window" doc:"Rolling window the profile is fitted over."`
 }

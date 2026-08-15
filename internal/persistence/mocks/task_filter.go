@@ -24,6 +24,10 @@ import "vornik.io/vornik/internal/persistence"
 //     Statuses is "no constraint from this field" (never an empty
 //     IN() that matches nothing) — see persistence.TaskFilter.Statuses.
 //   - UpdatedBefore is an exclusive upper bound on UpdatedAt.
+//   - UpdatedSince is an INCLUSIVE lower bound on UpdatedAt, matching the
+//     repos' `updated_at >= ?`.
+//   - FailedSince is an INCLUSIVE lower bound on FailedAt; a nil FailedAt never
+//     matches, mirroring the repos' `failed_at IS NOT NULL AND failed_at >= ?`.
 func FilterTasks(tasks []*persistence.Task, f persistence.TaskFilter) []*persistence.Task {
 	out := make([]*persistence.Task, 0, len(tasks))
 	for _, t := range tasks {
@@ -47,6 +51,12 @@ func FilterTasks(tasks []*persistence.Task, f persistence.TaskFilter) []*persist
 			continue
 		}
 		if f.UpdatedBefore != nil && !t.UpdatedAt.Before(*f.UpdatedBefore) {
+			continue
+		}
+		if f.UpdatedSince != nil && t.UpdatedAt.Before(*f.UpdatedSince) {
+			continue
+		}
+		if f.FailedSince != nil && (t.FailedAt == nil || t.FailedAt.Before(*f.FailedSince)) {
 			continue
 		}
 		out = append(out, t)

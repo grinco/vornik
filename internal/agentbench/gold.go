@@ -22,6 +22,56 @@ import (
 // prevents post-hoc comparison shopping; this prevents PRE-hoc ground-truth
 // corruption, which nothing else in the design addressed.
 
+// Tools that must never enter ground truth, whatever an agent happened to call.
+//
+// Gold records tools USED, not tools REQUIRED (§3.2). That limitation is
+// tolerable for ordinary workload tools — an agent reaching for `grep` it did not
+// strictly need only makes coverage slightly generous. It is NOT tolerable for
+// two categories, both found in the first real gold set and confirmed by review
+// (review-20260814-d068):
+//
+//	META — the tool that DECIDES which tools a step gets. Recording
+//	grant_step_tools as a tool the task "needed" makes the scoring circular: a
+//	grant policy would be scored on whether it granted the grant-decider. It
+//	appeared in 10 of 18 task paths.
+//
+//	SIDE-EFFECTING — a tool that changes state outside the task. `backlog_deposit`
+//	writes to a project backlog; it appeared in dp-04-concurrency, whose prompt is
+//	"write a bounded worker pool in a new scratch file". A benchmark task must
+//	never REQUIRE a side effect, so a policy correctly refusing one must never be
+//	penalised for it.
+//
+// Deliberately NOT here: memory_search and skill_fetch. Review flagged both as
+// possible habit — they appeared in paths for self-contained tasks — and the
+// operator's ruling (2026-08-14) was that they should be granted to every role
+// everywhere instead, because both only read what the project already knows.
+// That makes their presence in a path unremarkable rather than suspicious: a
+// tool every role has is not evidence of anything, and a grant policy covers it
+// for free. See agenttools.AlwaysGranted.
+var goldExcludedTools = map[string]string{
+	"grant_step_tools": "meta: decides the grant being scored, so including it is circular",
+	"backlog_deposit":  "side-effecting: writes outside the task; no task may REQUIRE a side effect",
+}
+
+// ExcludedFromGold reports whether a tool must be kept out of ground truth, and
+// why. Matching is on the bare name so a qualified spelling cannot smuggle one in.
+func ExcludedFromGold(tool string) (string, bool) {
+	reason, ok := goldExcludedTools[normaliseTool(tool)]
+	return reason, ok
+}
+
+// filterGoldPath drops excluded tools from one recorded path.
+func filterGoldPath(path []string) []string {
+	out := make([]string, 0, len(path))
+	for _, t := range path {
+		if _, excluded := ExcludedFromGold(t); excluded {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
 // GoldManifest is a pinned gold set.
 type GoldManifest struct {
 	// TaskSetSHA256 is what the gold was generated FROM. The fence compares
@@ -130,7 +180,7 @@ func BuildGold(taskSetSHA256 string, runs []UnrestrictedRun, runCount int) (Gold
 			continue
 		}
 		harnessOnly[r.TaskID] = false
-		byTask[r.TaskID] = append(byTask[r.TaskID], sortedCopy(dedupe(r.Invoked)))
+		byTask[r.TaskID] = append(byTask[r.TaskID], sortedCopy(filterGoldPath(dedupe(r.Invoked))))
 	}
 
 	m := GoldManifest{TaskSetSHA256: taskSetSHA256, Runs: runCount}
@@ -247,6 +297,18 @@ func MergeGold(manifests ...GoldManifest) (GoldManifest, error) {
 		runs += m.Runs
 
 		for _, e := range m.Entries {
+			// Filter at merge as well as at build: the per-batch manifests stay
+			// the RAW record of what ran, and the merged gold is the cleaned
+			// measuring stick. Keeping both means a later question about what an
+			// agent actually did is still answerable.
+			filtered := make([][]string, 0, len(e.Paths))
+			for _, p := range e.Paths {
+				if fp := filterGoldPath(p); len(fp) > 0 {
+					filtered = append(filtered, fp)
+				}
+			}
+			e.Paths = filtered
+
 			prev, seen := byTask[e.TaskID]
 			switch {
 			case !seen:

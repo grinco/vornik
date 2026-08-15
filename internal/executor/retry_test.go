@@ -406,3 +406,32 @@ func TestStepIDForInfraAttempt(t *testing.T) {
 		}
 	}
 }
+
+// A fabricated claim is as correctable as an unmet one. It was the single most
+// common failure across both benchmark arms (2026-08-15): a reviewer that
+// inspected no commit still has to fill review.checked_commit, so it invented
+// "current" / "working" / "HEAD=1b" / "N/A —", the verifier proved the object
+// did not exist, and the task died with no corrective turn — while a schema or
+// plausibility violation got one.
+func TestClassifyShapeFailure_FabricationEarnsACorrectiveRetry(t *testing.T) {
+	err := errors.New("agent fabrication detected: review.checked_commit:current claimed " +
+		"but that object does not exist in the project repo")
+
+	if got := classifyShapeFailure(err); got != shapeFailurePlausibility {
+		t.Errorf("classifyShapeFailure = %v, want shapeFailurePlausibility — a fabricated "+
+			"claim currently kills the task outright while lesser faults are corrected", got)
+	}
+}
+
+// The refusal must stay a refusal: correcting is a second chance, not a pass.
+func TestClassifyShapeFailure_StillClassifiesRealFaults(t *testing.T) {
+	for msg, want := range map[string]shapeFailureKind{
+		"plausibility violation: role \"tester\" failed 1 rule(s)": shapeFailurePlausibility,
+		"schema violation: output contract for step \"x\" not met": shapeFailureJSON,
+		"something entirely unrelated":                             shapeFailureNone,
+	} {
+		if got := classifyShapeFailure(errors.New(msg)); got != want {
+			t.Errorf("%q -> %v, want %v", msg, got, want)
+		}
+	}
+}

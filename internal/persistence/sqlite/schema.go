@@ -68,6 +68,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     expected_by         TEXT,
     closed_at           TEXT,
     closed_by           TEXT,
+    -- Migration 161 parity: when the task entered FAILED, as distinct from
+    -- when its row was last written. updated_at cannot answer that — it is
+    -- stamped on any modification, so a sweep touching an old FAILED row made
+    -- it look freshly broken.
+    failed_at           TEXT,
     message_count       INTEGER NOT NULL DEFAULT 0,
     open_checkpoint_id  TEXT,
     -- Migration v46 parity: soft link to the dispatcher turn that

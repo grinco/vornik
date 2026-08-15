@@ -391,7 +391,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 				// instead of failing the entire execution.
 				if step.OnFail != "" {
 					completedSteps = append(completedSteps, currentStepID)
-					state.LastResult = []byte(fmt.Sprintf(`{"error":%q}`, err.Error()))
+					state.LastResult = errorResultJSON(err)
 					// Capture structured failure signals so the recovery step
 					// can propose alternatives. nil in pedantic mode (recovery
 					// opted out) — leave any prior PendingRecovery untouched, so
@@ -663,7 +663,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 						return "", nil, completedSteps, err
 					}
 					completedSteps = append(completedSteps, currentStepID)
-					state.LastResult = []byte(fmt.Sprintf(`{"error":%q}`, err.Error()))
+					state.LastResult = errorResultJSON(err)
 					state.PlanSteps = nil
 					state.PlanIndex = 0
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
@@ -712,7 +712,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 						return "", nil, completedSteps, err
 					}
 					completedSteps = append(completedSteps, currentStepID)
-					state.LastResult = []byte(fmt.Sprintf(`{"error":%q}`, err.Error()))
+					state.LastResult = errorResultJSON(err)
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
 					}
@@ -724,10 +724,12 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 				return "", nil, completedSteps, err
 			}
 			completedSteps = append(completedSteps, currentStepID)
-			state.LastResult = []byte(fmt.Sprintf(
-				`{"spawned_project":%q,"spawn_id":%q,"initial_task_id":%q,"skipped":%t}`,
-				result.SpawnedProject, result.SpawnID, result.InitialTaskID, result.Skipped,
-			))
+			state.LastResult = resultJSON(map[string]any{
+				"spawned_project": result.SpawnedProject,
+				"spawn_id":        result.SpawnID,
+				"initial_task_id": result.InitialTaskID,
+				"skipped":         result.Skipped,
+			})
 			if err := e.saveCheckpoint(ctx, execution, step.OnSuccess, completedSteps, state); err != nil {
 				return "", nil, completedSteps, err
 			}
@@ -755,7 +757,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 						return "", nil, completedSteps, err
 					}
 					completedSteps = append(completedSteps, currentStepID)
-					state.LastResult = []byte(fmt.Sprintf(`{"error":%q}`, err.Error()))
+					state.LastResult = errorResultJSON(err)
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
 					}
@@ -773,7 +775,10 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 			// mirrors the in-project delegation pause shape.
 			completedSteps = append(completedSteps, currentStepID)
 			nextStep := step.OnSuccess
-			state.LastResult = []byte(fmt.Sprintf(`{"cross_project_call_id":%q,"callee_task_id":%q}`, result.CPCId, result.CalleeTaskID))
+			state.LastResult = resultJSON(map[string]any{
+				"cross_project_call_id": result.CPCId,
+				"callee_task_id":        result.CalleeTaskID,
+			})
 			state.PausedReason = result.PauseReason
 			if err := e.saveCheckpoint(ctx, execution, nextStep, completedSteps, state); err != nil {
 				return "", nil, completedSteps, err
@@ -815,10 +820,10 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 						if buf, _ := json.Marshal(result); len(buf) > 0 {
 							state.LastResult = buf
 						} else {
-							state.LastResult = []byte(fmt.Sprintf(`{"error":%q}`, callErr.Error()))
+							state.LastResult = errorResultJSON(callErr)
 						}
 					} else {
-						state.LastResult = []byte(fmt.Sprintf(`{"error":%q}`, callErr.Error()))
+						state.LastResult = errorResultJSON(callErr)
 					}
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
@@ -869,7 +874,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 					// message. state.LastResult is unchanged (bare error) so a
 					// downstream step's PrevResult sees the same shape as before.
 					lastResultMessage = fmt.Sprintf("system step %s failed: %s", step.Handler, err.Error())
-					state.LastResult = []byte(fmt.Sprintf(`{"error":%q}`, err.Error()))
+					state.LastResult = errorResultJSON(err)
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
 					}
@@ -902,7 +907,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 					// handler. state.LastResult keeps the bare error for the
 					// next step's PrevResult (unchanged shape).
 					lastResultMessage = fmt.Sprintf("system step %s failed: %s", step.Handler, sysErr.Error())
-					state.LastResult = []byte(fmt.Sprintf(`{"error":%q}`, sysErr.Error()))
+					state.LastResult = errorResultJSON(sysErr)
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
 					}
@@ -4031,4 +4036,42 @@ func (e *Executor) cancelBlockedDependents(ctx context.Context, taskID, reason s
 		// downstream dependents (the rest of a SEQUENTIAL tail).
 		e.cancelBlockedDependents(ctx, dep.ID, reason, seen)
 	}
+}
+
+// errorResultJSON renders an error as the {"error": "..."} step result.
+//
+// Not fmt.Sprintf with %q. Go's %q is GO quoting, not JSON quoting: it escapes a
+// non-printable byte as \xNN, which JSON has no such escape for. The malformed
+// bytes then sit in executionState.LastResult (a json.RawMessage) until the next
+// checkpoint tries to marshal them, and the execution dies with
+//
+//	failed to marshal execution checkpoint: json: error calling MarshalJSON for
+//	type json.RawMessage: invalid character 'x' in string escape code
+//
+// several steps away from the error that actually caused it. A step error is
+// recoverable; this turned it into a fatal execution failure whenever the error
+// text happened to carry a byte %q escapes differently from JSON. Seen 3 times
+// in 60 benchmark runs (2026-08-14), always on an error message quoting agent
+// output.
+func errorResultJSON(err error) json.RawMessage {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	return resultJSON(map[string]any{"error": msg})
+}
+
+// resultJSON marshals a step result, falling back to a valid diagnostic rather
+// than storing bytes that cannot round-trip.
+//
+// The fallback matters more than it looks: the caller stores the result into a
+// json.RawMessage and moves on, so invalid bytes do not fail HERE — they fail at
+// the next checkpoint, taking the whole execution with them. Returning something
+// valid keeps the blast radius at "this step's result is a diagnostic".
+func resultJSON(fields map[string]any) json.RawMessage {
+	b, err := json.Marshal(fields)
+	if err != nil {
+		return json.RawMessage(`{"error":"step result could not be encoded"}`)
+	}
+	return b
 }

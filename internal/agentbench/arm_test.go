@@ -202,3 +202,61 @@ func TestArmFields_AnObservedModelChangeSplitsTheKey(t *testing.T) {
 		t.Errorf("want a refusal naming models, got: %v", err)
 	}
 }
+
+// Without a declared independent variable the benchmark cannot do the one thing
+// it exists for: comparing two RELEASES means the binary differs by definition,
+// and CheckComparable refuses any difference — so `bench agent compare` refused
+// every release comparison the README advertises it for.
+func TestCheckComparableExcept_AllowsTheDeclaredAxisOnly(t *testing.T) {
+	a, b := baseArm(), baseArm()
+	b.BinarySHA256 = "a-newer-build"
+
+	if err := CheckComparableExcept(a, b, []string{"binary_sha256"}); err != nil {
+		t.Fatalf("a declared release comparison was refused: %v", err)
+	}
+	// An undeclared axis moving alongside it must still refuse — otherwise the
+	// comparison silently has two variables.
+	b.ContextPolicy = "suppression=canonical-context;advert=gated"
+	err := CheckComparableExcept(a, b, []string{"binary_sha256"})
+	if err == nil {
+		t.Fatal("an undeclared axis moved and the comparison was accepted")
+	}
+	if !strings.Contains(err.Error(), "context_policy") {
+		t.Errorf("refusal does not name the undeclared axis: %v", err)
+	}
+	if strings.Contains(err.Error(), "binary_sha256") {
+		t.Errorf("refusal names the DECLARED axis, which is the one allowed to move: %v", err)
+	}
+}
+
+// Forgiving everything compares nothing.
+func TestCheckComparableExcept_RefusesDeclaringEveryAxis(t *testing.T) {
+	a, b := baseArm(), baseArm()
+	b.BinarySHA256 = "other"
+
+	err := CheckComparableExcept(a, b, ComparabilityAxes())
+	if err == nil || !strings.Contains(err.Error(), "compares nothing") {
+		t.Fatalf("declaring every axis was accepted: %v", err)
+	}
+}
+
+// A typo must not silently widen what is forgiven.
+func TestCheckComparableExcept_RefusesAnUnknownAxis(t *testing.T) {
+	a, b := baseArm(), baseArm()
+	b.BinarySHA256 = "other"
+
+	err := CheckComparableExcept(a, b, []string{"binary_sha"})
+	if err == nil || !strings.Contains(err.Error(), "unknown independent axis") {
+		t.Fatalf("unknown axis accepted: %v", err)
+	}
+}
+
+// No declaration keeps the strict behaviour every existing run relies on.
+func TestCheckComparableExcept_EmptyDeclarationIsStrict(t *testing.T) {
+	a, b := baseArm(), baseArm()
+	b.BinarySHA256 = "other"
+
+	if err := CheckComparableExcept(a, b, nil); err == nil {
+		t.Fatal("an undeclared binary change compared clean")
+	}
+}

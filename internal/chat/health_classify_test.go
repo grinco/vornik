@@ -94,3 +94,40 @@ func TestIsContextOverflow(t *testing.T) {
 		})
 	}
 }
+
+// A quota wall makes EVERY remaining call fail. Filing it as a model-quality
+// failure would report a total collapse in agent quality at the moment the
+// agents were never asked anything — the single most misleading number this
+// classifier can produce. Added 2026-08-14 with the prepaid Ollama allowance at
+// 87.9% and a two-day reset.
+func TestIsUpstreamInfraError_ThrottlingAndQuotaAreInfra(t *testing.T) {
+	for _, msg := range []string{
+		"rate limit exceeded, retry after 60s",
+		"error: rate_limit_exceeded",
+		"HTTP 429: Too Many Requests",
+		"quota exceeded for this billing period",
+		"insufficient credits remaining",
+		"insufficient_quota",
+		"monthly usage limit reached",
+		"ThrottlingException: Rate exceeded",
+	} {
+		if !IsUpstreamInfraError(errors.New(msg)) {
+			t.Errorf("%q classified as a MODEL failure; a spent allowance is not the agent's fault", msg)
+		}
+	}
+}
+
+// The markers must not swallow a genuine agent failure that happens to mention
+// a limit — the benchmark's whole value is that a task failure stays a task
+// failure.
+func TestIsUpstreamInfraError_DoesNotSwallowOrdinaryFailures(t *testing.T) {
+	for _, msg := range []string{
+		"the function must clamp values to the configured limit",
+		"schema validation failed: missing field",
+		"test failed: expected 3, got 4",
+	} {
+		if IsUpstreamInfraError(errors.New(msg)) {
+			t.Errorf("%q misfiled as infra; a real failure would vanish from the results", msg)
+		}
+	}
+}

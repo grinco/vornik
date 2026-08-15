@@ -125,7 +125,17 @@ func (r *Runner) Run(ctx context.Context, cfg RunConfig) (Journal, error) {
 		repeats = 1
 	}
 
+	// Consecutive infra failures mean the provider is down or the allowance is
+	// spent, and every remaining task will fail the same way. Continuing burns
+	// a paid allowance to journal a wall of failures that say nothing about the
+	// system under test — and on a prepaid plan the cost of that is measured in
+	// DAYS until reset, not dollars. Stop, and say why.
+	infraStreak := 0
+
 	for _, spec := range cfg.Tasks {
+		if infraStreak >= consecutiveInfraFailuresBeforeAbort {
+			break
+		}
 		if gold, ok := r.goldFor(cfg.Gold, spec.ID); ok && gold.Excluded {
 			// Recorded, not silently skipped: an exclusion nobody can see is
 			// indistinguishable from a task that was never in the set.
@@ -137,8 +147,23 @@ func (r *Runner) Run(ctx context.Context, cfg RunConfig) (Journal, error) {
 			continue
 		}
 		for i := 0; i < repeats; i++ {
-			j.Records = append(j.Records, r.runOnce(ctx, cfg, spec)...)
+			records := r.runOnce(ctx, cfg, spec)
+			j.Records = append(j.Records, records...)
+			infraStreak = updateInfraStreak(infraStreak, records)
+			if infraStreak >= consecutiveInfraFailuresBeforeAbort {
+				break
+			}
 		}
+	}
+	if infraStreak >= consecutiveInfraFailuresBeforeAbort {
+		// Marked, never silently truncated: a short journal that does not say it
+		// was cut short reads as a complete pass over a smaller task set.
+		j.Manifest.Untrustworthy = true
+		j.Manifest.UntrustworthyReason = fmt.Sprintf(
+			"aborted after %d consecutive infra failures: the provider was unavailable "+
+				"or the allowance was spent, so the remaining tasks were not attempted",
+			infraStreak)
+		return j, nil
 	}
 
 	// A run whose executions mostly failed to yield evidence is not a result.
@@ -330,4 +355,36 @@ func SortTasks(tasks []TaskSpec) []TaskSpec {
 	out := append([]TaskSpec(nil), tasks...)
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// consecutiveInfraFailuresBeforeAbort is how many infra failures in a row end
+// the run.
+//
+// Three, not one: a single provider blip is normal and a run that gave up on it
+// would be useless. Three in a row is a wall, not weather.
+const consecutiveInfraFailuresBeforeAbort = 3
+
+// updateInfraStreak advances or resets the consecutive-infra counter for one
+// task's records.
+//
+// ANY success resets it. The streak is about "is the provider answering at
+// all", and a task that completed proves it is — even if a sibling execution in
+// the same task failed on infra.
+func updateInfraStreak(streak int, records []ExecutionRecord) int {
+	sawInfra := false
+	for _, rec := range records {
+		if rec.Succeeded {
+			return 0
+		}
+		if ClassifyFailure(rec.Succeeded, rec.ErrorText) == FailureInfra {
+			sawInfra = true
+		}
+	}
+	if !sawInfra {
+		// A task failure is not evidence the provider is gone, so it neither
+		// advances the streak nor clears it: an alternating infra/task pattern
+		// is still a provider problem.
+		return streak
+	}
+	return streak + 1
 }

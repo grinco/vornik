@@ -153,3 +153,49 @@ func TestRollup_EmptyRunReportsNothingRatherThanZeroes(t *testing.T) {
 		t.Errorf("attempted = %d, want 0", r.Attempted)
 	}
 }
+
+// Substitution (v3) is right, but it leaves one blind spot: a lead that lazily
+// grants a shell for every step scores a PERFECT zero on core misses while
+// making the worst possible grant decision. This counter is what stops a clean
+// core-miss sheet being read as a tight policy.
+func TestBuildRollup_CountsCoreRequirementsCoveredOnlyByAShell(t *testing.T) {
+	records := []ExecutionRecord{{
+		TaskID: "t1", Succeeded: true,
+		Verdicts: []Verdict{{
+			Probe: grantProbeName, PathCoverage: 0.8,
+			GrantPrecision: 0.4, GrantPrecisionDefined: true,
+			CoreSubstitutions: map[string]string{
+				"git_status":      "run_shell", // the lazy-shell case
+				"read_many_files": "file_read", // a genuine peer
+			},
+		}},
+	}}
+
+	r := BuildRollup("baseline", records)
+
+	if r.Accuracy.CoreMisses != 0 {
+		t.Errorf("core misses = %d, want 0", r.Accuracy.CoreMisses)
+	}
+	if r.Accuracy.CoreShellCovered != 1 {
+		t.Errorf("shell-covered = %d, want 1 (only git_status came from the shell)",
+			r.Accuracy.CoreShellCovered)
+	}
+	if r.Accuracy.CoreSubstituted != 2 {
+		t.Errorf("substituted = %d, want 2", r.Accuracy.CoreSubstituted)
+	}
+}
+
+// A grant that names the tools itself must not look like shell laundering.
+func TestBuildRollup_ExactGrantsCountAsNoSubstitution(t *testing.T) {
+	records := []ExecutionRecord{{
+		TaskID: "t1", Succeeded: true,
+		Verdicts: []Verdict{{Probe: grantProbeName, PathCoverage: 1}},
+	}}
+
+	r := BuildRollup("baseline", records)
+
+	if r.Accuracy.CoreShellCovered != 0 || r.Accuracy.CoreSubstituted != 0 {
+		t.Errorf("an exact grant reported substitutions: shell=%d total=%d",
+			r.Accuracy.CoreShellCovered, r.Accuracy.CoreSubstituted)
+	}
+}

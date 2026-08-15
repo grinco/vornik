@@ -6775,4 +6775,38 @@ CREATE INDEX IF NOT EXISTS idx_execution_tool_grants_lookup
 DROP TABLE IF EXISTS execution_tool_grants;
 `,
 	},
+	{
+		Version: 161,
+		Name:    "tasks_failed_at",
+		// When a task actually FAILED, as distinct from when its row was last
+		// written.
+		//
+		// The dashboard's "N failed in last 24h" card counted
+		// `updated_at >= now() - 24h`, and a BEFORE UPDATE trigger stamps
+		// updated_at on ANY modification. So a lease sweep, an orphan
+		// reconciliation, a backfill — anything that touches the row — made a
+		// months-old failure look like it had just happened. The operator hit
+		// this twice: the card claimed one recent failure and the only task
+		// behind it had been created 90 days earlier and failed then.
+		//
+		// updated_at cannot be repaired in place; it is a row-modification
+		// timestamp and every other consumer depends on that meaning. So the
+		// event gets its own column.
+		//
+		// Additive, nullable, no backfill: pre-existing FAILED rows keep a NULL
+		// failed_at, which reads correctly as "we do not know when this failed"
+		// rather than inventing a time from updated_at — that invention is the
+		// bug. A recency query treats NULL as not-recent, so the card goes quiet
+		// for historical failures instead of shouting about them.
+		Up: `
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS failed_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_tasks_failed_at
+    ON tasks (failed_at DESC)
+    WHERE failed_at IS NOT NULL;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_tasks_failed_at;
+ALTER TABLE tasks DROP COLUMN IF EXISTS failed_at;
+`,
+	},
 }

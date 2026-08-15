@@ -156,6 +156,30 @@ func (s *SQLTraceStore) Assemble(ctx context.Context, taskID, executionID string
 		return ExecutionRecord{}, nil, err
 	}
 
+	traces, err := s.assembleTraces(ctx, executionID, &rec)
+	if err != nil {
+		return ExecutionRecord{}, nil, err
+	}
+	return rec, traces, nil
+}
+
+// AssembleTraces rebuilds an execution's per-step traces from the ledger
+// WITHOUT its usage figures.
+//
+// Split out for re-scoring. Everything a probe reads keys on execution_id
+// alone; only the cost roll-up needs the task id, and a re-score already has
+// the cost in the journal it is re-scoring. Requiring the ledger's task id
+// would mean either storing it in every journal or joining to find it, for a
+// number already in hand.
+func (s *SQLTraceStore) AssembleTraces(ctx context.Context, executionID string) ([]Trace, error) {
+	if s == nil || s.DB == nil {
+		return nil, fmt.Errorf("trace store has no database")
+	}
+	var discard ExecutionRecord
+	return s.assembleTraces(ctx, executionID, &discard)
+}
+
+func (s *SQLTraceStore) assembleTraces(ctx context.Context, executionID string, rec *ExecutionRecord) ([]Trace, error) {
 	byStep := map[string]*Trace{}
 	step := func(stepID, role string) *Trace {
 		t, ok := byStep[stepID]
@@ -170,20 +194,20 @@ func (s *SQLTraceStore) Assemble(ctx context.Context, taskID, executionID string
 	}
 
 	if err := s.loadGrants(ctx, executionID, step); err != nil {
-		return ExecutionRecord{}, nil, err
+		return nil, err
 	}
-	if err := s.loadCalls(ctx, executionID, step, &rec); err != nil {
-		return ExecutionRecord{}, nil, err
+	if err := s.loadCalls(ctx, executionID, step, rec); err != nil {
+		return nil, err
 	}
 	if err := s.loadOutcomes(ctx, executionID, step); err != nil {
-		return ExecutionRecord{}, nil, err
+		return nil, err
 	}
 
 	traces := make([]Trace, 0, len(byStep))
 	for _, t := range byStep {
 		traces = append(traces, *t)
 	}
-	return rec, traces, nil
+	return traces, nil
 }
 
 // loadUsage sums the execution's spend. Cost is per (task, execution, step,

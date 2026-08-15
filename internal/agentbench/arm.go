@@ -39,11 +39,18 @@ import (
 //	      - a trace with no grant activity is skipped rather than scored 0
 //	      - tool names are compared in a bare form, so "functions.git_status"
 //	        matches gold's "git_status"
+//	v3  2026-08-14. Core-miss scoring is substitution-aware: a core tool counts
+//	    as satisfied when the grant holds any tool of the same capability. The
+//	    first baseline's five core misses were all the old rule misfiring —
+//	    demanding git_status from a lead that granted run_shell, and
+//	    read_many_files from one that granted file_read and grep. Operator
+//	    ruling; see equivalence.go for why run_shell is a member of every
+//	    CLI-expressible class.
 //
 // v1 was never bumped through any of those, which is the failure this comment
 // exists to prevent: the mechanism refused nothing because nobody moved the
 // number it keys on.
-const HarnessVersion = "2"
+const HarnessVersion = "3"
 
 // ArmFields enumerates every axis that makes two agent-benchmark runs
 // incomparable.
@@ -103,6 +110,59 @@ func (a ArmFields) fieldPairs() [][2]string {
 		{"gold_sha256", a.GoldSHA256},
 		{"probes", strings.Join(sortedCopy(a.Probes), ",")},
 	}
+}
+
+// ComparabilityAxes are the axis names CheckComparable reports, and the only
+// values a pre-registration may nominate as its independent variable.
+func ComparabilityAxes() []string {
+	pairs := ArmFields{}.fieldPairs()
+	out := make([]string, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, p[0])
+	}
+	return out
+}
+
+// CheckComparableExcept is CheckComparable with a declared independent variable.
+//
+// Without it the benchmark cannot do the one thing it exists for. Comparing two
+// RELEASES means the binary differs by definition, and CheckComparable refuses
+// any difference — so `bench agent compare` refused every release comparison,
+// which is what the README advertises it for.
+//
+// The axes must be DECLARED IN THE PRE-REGISTRATION, before the runs. That is
+// the whole safeguard: choosing after the fact which difference to forgive is
+// how a comparison becomes a press release. Every axis not named still refuses.
+func CheckComparableExcept(a, b ArmFields, allowed []string) error {
+	if len(allowed) == 0 {
+		return CheckComparable(a, b)
+	}
+	permitted := set(allowed)
+	// Forgiving everything is not a comparison. Refused explicitly rather than
+	// left to produce a meaningless clean verdict.
+	if len(permitted) >= len(ComparabilityAxes()) {
+		return fmt.Errorf("pre-registration declares every axis as independent; "+
+			"that compares nothing — declare the one variable under test, from: %s",
+			strings.Join(ComparabilityAxes(), ", "))
+	}
+	for _, axis := range allowed {
+		if !containsString(ComparabilityAxes(), axis) {
+			return fmt.Errorf("pre-registration declares unknown independent axis %q; known axes: %s",
+				axis, strings.Join(ComparabilityAxes(), ", "))
+		}
+	}
+	var refused []string
+	for i, pa := range a.fieldPairs() {
+		pb := b.fieldPairs()[i]
+		if pa[1] != pb[1] && !permitted[pa[0]] {
+			refused = append(refused, fmt.Sprintf("%s (%q vs %q)", pa[0], pa[1], pb[1]))
+		}
+	}
+	if len(refused) > 0 {
+		return fmt.Errorf("arms %q and %q differ on axes the pre-registration did NOT "+
+			"declare independent: %s", a.Name, b.Name, strings.Join(refused, ", "))
+	}
+	return nil
 }
 
 // Key is this arm's comparability key, computed by membench's implementation.

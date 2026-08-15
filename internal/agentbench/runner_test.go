@@ -376,3 +376,49 @@ func TestMergeTraces_UnionsAcrossSteps(t *testing.T) {
 		t.Errorf("budget=%d used=%d, want 40 and 8", got.ToolBudget, got.ToolCallsUsed)
 	}
 }
+
+func infraRec(msg string) []ExecutionRecord {
+	return []ExecutionRecord{{TaskID: "t", Succeeded: false, ErrorText: msg}}
+}
+
+// A spent allowance makes every remaining call fail identically. Continuing
+// burns a prepaid quota — measured in DAYS to reset, not dollars — to journal a
+// wall of failures that say nothing about the system under test.
+func TestUpdateInfraStreak(t *testing.T) {
+	const quota = "quota exceeded for this billing period"
+
+	t.Run("infra failures accumulate", func(t *testing.T) {
+		streak := 0
+		for i := 1; i <= 3; i++ {
+			streak = updateInfraStreak(streak, infraRec(quota))
+			if streak != i {
+				t.Fatalf("after %d infra failures streak = %d", i, streak)
+			}
+		}
+	})
+
+	t.Run("any success resets it", func(t *testing.T) {
+		streak := updateInfraStreak(2, []ExecutionRecord{{TaskID: "t", Succeeded: true}})
+		if streak != 0 {
+			t.Errorf("streak = %d after a success; the provider is demonstrably answering", streak)
+		}
+	})
+
+	// Otherwise an alternating infra/task pattern — which is still a provider
+	// problem — would never trip the breaker.
+	t.Run("a task failure neither advances nor clears it", func(t *testing.T) {
+		streak := updateInfraStreak(2, infraRec("schema validation failed: missing field"))
+		if streak != 2 {
+			t.Errorf("streak = %d, want it held at 2", streak)
+		}
+	})
+}
+
+// One blip is weather; three in a row is a wall. A run that gave up on the
+// first would be useless.
+func TestConsecutiveInfraFailuresBeforeAbort_IsNotOne(t *testing.T) {
+	if consecutiveInfraFailuresBeforeAbort < 2 {
+		t.Fatalf("breaker trips at %d: a single provider blip would abort every run",
+			consecutiveInfraFailuresBeforeAbort)
+	}
+}

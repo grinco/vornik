@@ -86,10 +86,28 @@ var benchAgentReportCmd = &cobra.Command{
 }
 
 var benchAgentRollupCmd = &cobra.Command{
-	Use:   "rollup <journal>",
+	Use:   "rollup <journal>...",
 	Short: "Print the customer figures: cost, efficiency, accuracy, success rate",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runBenchAgentRollup,
+	Long: "Print the customer figures for one run, or for several batches of one run.\n\n" +
+		"Several journals are merged before rolling up, and merging REFUSES arms\n" +
+		"that disagree — a batched pass is one experiment or it is not a pass.",
+	Args: cobra.MinimumNArgs(1),
+	RunE: runBenchAgentRollup,
+}
+
+var benchAgentRescoreCmd = &cobra.Command{
+	Use:   "rescore <journal>",
+	Short: "Re-score a completed journal under the current contract, without re-running",
+	Long: "Re-score a completed journal under the CURRENT scoring contract.\n\n" +
+		"Bumping HarnessVersion correctly makes every earlier figure incomparable,\n" +
+		"and until this existed the only way back was to re-run the pass — hours of\n" +
+		"wall clock and, on a prepaid allowance, days of waiting for a quota reset.\n" +
+		"The evidence a probe reads is already in the ledger, so this re-scores the\n" +
+		"evidence instead of re-buying it. No agent runs.\n\n" +
+		"Cost, tokens, success and every arm axis describing the RUN are preserved:\n" +
+		"re-scoring changes what a number MEANS, not what happened.",
+	Args: cobra.ExactArgs(1),
+	RunE: runBenchAgentRescore,
 }
 
 var benchAgentGoldMergeCmd = &cobra.Command{
@@ -168,7 +186,13 @@ func init() {
 
 	benchAgentCmd.AddCommand(benchAgentGoldCmd, benchAgentRunCmd, benchAgentReportCmd,
 		benchAgentRollupCmd, benchAgentCompareCmd, benchAgentTaskSetHashCmd,
-		benchAgentGoldMergeCmd)
+		benchAgentGoldMergeCmd, benchAgentRescoreCmd)
+	benchAgentRescoreCmd.Flags().StringVar(&benchAgentJournalPath, "out", "",
+		"where to write the re-scored journal (required)")
+	benchAgentRescoreCmd.Flags().StringVar(&benchAgentGoldPath, "gold", "",
+		"gold manifest the grant probe scores against")
+	benchAgentRescoreCmd.Flags().StringVar(&benchAgentDatabase, "database", "",
+		"the benchmark database to READ traces from")
 	benchAgentGoldMergeCmd.Flags().StringVar(&benchAgentGoldPath, "out", "gold.json",
 		"where to write the merged manifest")
 	benchCmd.AddCommand(benchAgentCmd)
@@ -606,8 +630,32 @@ func runBenchAgentReport(cmd *cobra.Command, args []string) error {
 	return w.Flush()
 }
 
+// loadMergedJournal reads one or more journal batches as a single experiment.
+//
+// Merging enforces that the batches ARE one experiment — it refuses arms that
+// disagree. Rolling each up separately and eyeballing the numbers would not.
+func loadMergedJournal(cmd *cobra.Command, paths []string) (agentbench.Journal, error) {
+	journals := make([]agentbench.Journal, 0, len(paths))
+	for _, path := range paths {
+		loaded, err := loadJournal(path)
+		if err != nil {
+			return agentbench.Journal{}, err
+		}
+		journals = append(journals, loaded)
+	}
+	merged, err := agentbench.MergeJournals(journals...)
+	if err != nil {
+		return agentbench.Journal{}, err
+	}
+	if len(journals) > 1 {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "merged %d journal(s), %d execution record(s)\n\n",
+			len(journals), len(merged.Records))
+	}
+	return merged, nil
+}
+
 func runBenchAgentRollup(cmd *cobra.Command, args []string) error {
-	j, err := loadJournal(args[0])
+	j, err := loadMergedJournal(cmd, args)
 	if err != nil {
 		return err
 	}
@@ -673,12 +721,7 @@ func runBenchAgentRollup(cmd *cobra.Command, args []string) error {
 	if r.Accuracy.ArgumentErrors > 0 {
 		_, _ = fmt.Fprintf(w, "  bad arguments\t%d\n", r.Accuracy.ArgumentErrors)
 	}
-	if r.Accuracy.PathCoverageDefined {
-		_, _ = fmt.Fprintf(w, "path coverage\t%.3f\n", r.Accuracy.PathCoverage)
-	}
-	if r.Accuracy.CoreMisses > 0 {
-		_, _ = fmt.Fprintf(w, "  core misses\t%d\n", r.Accuracy.CoreMisses)
-	}
+	printGrantAccuracy(w, r)
 
 	// Printed apart from EFFICIENCY, and labelled, because it improves when the
 	// lead asks for less: rolled into an efficiency headline it would reward the
@@ -835,4 +878,68 @@ func loadPreRegistration(path string) (agentbench.PreRegistration, error) {
 		return agentbench.PreRegistration{}, fmt.Errorf("parse pre-registration: %w", err)
 	}
 	return p, nil
+}
+
+func runBenchAgentRescore(cmd *cobra.Command, args []string) error {
+	if benchAgentJournalPath == "" {
+		return fmt.Errorf("--out is required: re-scoring writes a NEW journal rather than " +
+			"overwriting the original, so the figure a decision was made on stays readable")
+	}
+	journal, err := loadJournal(args[0])
+	if err != nil {
+		return err
+	}
+	gold, err := loadGoldIfPresent(benchAgentGoldPath)
+	if err != nil {
+		return err
+	}
+
+	db, err := openBenchDB()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+	store := &agentbench.SQLTraceStore{DB: db, Dialect: agentbench.Postgres}
+
+	rescored, err := agentbench.Rescore(cmd.Context(), journal, store, probeSet(gold != nil), gold)
+	if err != nil {
+		return err
+	}
+
+	blob, err := json.MarshalIndent(rescored, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode re-scored journal: %w", err)
+	}
+	if err := os.WriteFile(benchAgentJournalPath, append(blob, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", benchAgentJournalPath, err)
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+		"re-scored %d execution(s) from harness %s to %s -> %s\n",
+		len(rescored.Records), journal.Manifest.Arm.HarnessVersion,
+		agentbench.HarnessVersion, benchAgentJournalPath)
+	return nil
+}
+
+// printGrantAccuracy writes the tool-grant half of the ACCURACY block.
+//
+// Extracted so the shell-coverage qualifier stays adjacent to the core-miss
+// figure it qualifies: those two lines must be read together, and separating
+// them in the code is the first step toward separating them on the page.
+func printGrantAccuracy(w *tabwriter.Writer, r agentbench.Rollup) {
+	if r.Accuracy.PathCoverageDefined {
+		_, _ = fmt.Fprintf(w, "path coverage\t%.3f\n", r.Accuracy.PathCoverage)
+	}
+	if r.Accuracy.CoreMisses > 0 {
+		_, _ = fmt.Fprintf(w, "  core misses\t%d\n", r.Accuracy.CoreMisses)
+	}
+	// Printed whenever ANY core requirement was met by a shell, including when
+	// core misses are zero — that is exactly the case it exists to qualify. A
+	// clean core-miss sheet earned through blanket shell grants is not a tight
+	// policy, and the reader is pointed at the metric that says so.
+	if r.Accuracy.CoreShellCovered > 0 {
+		_, _ = fmt.Fprintf(w, "  core covered VIA SHELL\t%d of %d substitution(s) — read against grant precision (%.3f)\n",
+			r.Accuracy.CoreShellCovered, r.Accuracy.CoreSubstituted, r.Efficiency.GrantPrecision)
+	} else if r.Accuracy.CoreSubstituted > 0 {
+		_, _ = fmt.Fprintf(w, "  core covered by an equivalent\t%d\n", r.Accuracy.CoreSubstituted)
+	}
 }

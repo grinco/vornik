@@ -83,8 +83,16 @@ func (e *Executor) verifyRoleClaims(
 	// looked at); presence in the object DB is the deterministic check.
 	if claims.claimedCheckedCommit != "" && projectDir != "" {
 		if !gitObjectExists(ctx, projectDir, claims.claimedCheckedCommit) {
+			// Says what to do instead. The retry prompt carries this text
+			// verbatim, and "does not exist" alone left the model to guess —
+			// it typically guessed another placeholder. Leaving the field
+			// EMPTY is already accepted (the check above skips it), but
+			// nothing told the agent so.
 			problems = append(problems, fmt.Sprintf(
-				"review.checked_commit:%s claimed but that object does not exist in the project repo",
+				"review.checked_commit:%s claimed but that object does not exist in the "+
+					"project repo. Cite a commit you actually inspected, or leave "+
+					"review.checked_commit empty if you inspected none — an empty value is "+
+					"accepted, an invented one is not",
 				short(claims.claimedCheckedCommit)))
 		}
 	}

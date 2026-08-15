@@ -359,6 +359,15 @@ func TestBenchAgent_ShippedTaskSetLoads(t *testing.T) {
 
 	seen := map[string]bool{}
 	for path, allowed := range sets {
+		// The task sets are EE-only assets: the CE export prunes
+		// internal/agentbench/tasksets (design 7 — a task definition or gold set
+		// reaching the public artifact would let anyone tune against the
+		// benchmark). This test ships to CE, so it must skip rather than fail
+		// there; failing would make the CE export refuse to publish over an
+		// asset it deliberately removed.
+		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+			t.Skipf("%s absent — expected in a CE tree, which prunes EE task sets", path)
+		}
 		tasks, err := loadTaskSet(path)
 		if err != nil {
 			t.Fatalf("load %s: %v", path, err)

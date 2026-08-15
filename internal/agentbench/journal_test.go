@@ -224,3 +224,91 @@ func TestCompareJournals_AboveTheFloorReportsAResult(t *testing.T) {
 		t.Errorf("a resolvable delta was called inconclusive: %q", got)
 	}
 }
+
+func jrnl(runID string, mutate func(*Journal)) Journal {
+	j := Journal{
+		Manifest: RunManifest{
+			RunID:               runID,
+			Arm:                 baseArm(),
+			ArmKey:              baseArm().Key(),
+			PreRegistrationHash: "prereghash",
+		},
+		Records: []ExecutionRecord{{TaskID: "t-" + runID}},
+	}
+	if mutate != nil {
+		mutate(&j)
+	}
+	return j
+}
+
+// A batched scoring pass is only usable if the batches can be recombined.
+func TestMergeJournals_ConcatenatesRecordsOfTheSameArm(t *testing.T) {
+	m, err := MergeJournals(jrnl("a", nil), jrnl("b", nil), jrnl("c", nil))
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if len(m.Records) != 3 {
+		t.Errorf("got %d records, want 3", len(m.Records))
+	}
+	if m.Manifest.RunID != "a+2" {
+		t.Errorf("runID = %q; a merged journal must not pass as one of its parts", m.Manifest.RunID)
+	}
+}
+
+// Averaging two arms produces a number describing neither system.
+func TestMergeJournals_RefusesDifferentArms(t *testing.T) {
+	other := jrnl("b", func(j *Journal) {
+		j.Manifest.Arm.ContextPolicy = "suppression=canonical-context;advert=gated"
+	})
+	_, err := MergeJournals(jrnl("a", nil), other)
+	if err == nil {
+		t.Fatal("merged two different arms")
+	}
+	if !strings.Contains(err.Error(), "context_policy") {
+		t.Errorf("error does not name the differing axis: %v", err)
+	}
+}
+
+// "Unverified" twice over is not evidence that two runs matched.
+func TestMergeJournals_RefusesPartialKeys(t *testing.T) {
+	partial := jrnl("b", func(j *Journal) { j.Manifest.ArmPartial = true })
+	if _, err := MergeJournals(jrnl("a", nil), partial); err == nil {
+		t.Fatal("merged a journal with a PARTIAL arm key")
+	}
+	// ...including when it is the FIRST one, which a loop starting at index 1 misses.
+	if _, err := MergeJournals(partial, jrnl("a", nil)); err == nil {
+		t.Fatal("a partial FIRST journal was accepted")
+	}
+}
+
+func TestMergeJournals_RefusesDifferentPreRegistrations(t *testing.T) {
+	other := jrnl("b", func(j *Journal) { j.Manifest.PreRegistrationHash = "different" })
+	_, err := MergeJournals(jrnl("a", nil), other)
+	if err == nil || !strings.Contains(err.Error(), "pre-registration") {
+		t.Fatalf("want a refusal naming the pre-registration, got: %v", err)
+	}
+}
+
+// A degraded batch must not be laundered by the clean ones it merges with.
+func TestMergeJournals_UntrustworthinessIsContagious(t *testing.T) {
+	bad := jrnl("b", func(j *Journal) {
+		j.Manifest.Untrustworthy = true
+		j.Manifest.UntrustworthyReason = "ledger gap"
+	})
+	m, err := MergeJournals(jrnl("a", nil), bad)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if !m.Manifest.Untrustworthy {
+		t.Fatal("a merged journal containing a degraded batch read as clean")
+	}
+	if !strings.Contains(m.Manifest.UntrustworthyReason, "ledger gap") {
+		t.Errorf("reason lost the original cause: %q", m.Manifest.UntrustworthyReason)
+	}
+}
+
+func TestMergeJournals_RefusesAnEmptySet(t *testing.T) {
+	if _, err := MergeJournals(); err == nil {
+		t.Fatal("merging nothing produced a journal")
+	}
+}

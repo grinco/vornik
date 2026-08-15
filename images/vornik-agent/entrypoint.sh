@@ -607,6 +607,24 @@ llm_call() {
 }
 
 build_llm_request_file() {
+    # A response_format directive sent ALONGSIDE tools makes tool calling
+    # IMPOSSIBLE on any server that implements response_format with guided
+    # decoding: the model is constrained to emit schema-shaped JSON, so it can
+    # never emit a tool call. Measured 2026-08-15 against a self-hosted vLLM
+    # server, with an identical request but for this field:
+    #     tools only                 -> finish_reason=tool_calls   (calls a tool)
+    #     tools + json_object        -> finish_reason=stop, no call
+    #     tools + json_schema strict -> finish_reason=stop, no call
+    #
+    # Hosted APIs tolerate the combination, so this was invisible on cloud
+    # models and fatal on a self-hosted one. Every agent answered in ~18 tokens
+    # of prose on iteration 1; the loop saw a final response, logged "completed
+    # successfully", and the step then failed its output contract because no
+    # file had been written. 8 of 10 benchmark tasks died this way.
+    #
+    # So the directive is omitted whenever tools are offered. The caller re-asks
+    # TOOL-FREE for the structured answer once the tool phase is over, which is
+    # the same shape as the existing prompt-budget finalization call.
     local out_file="$1" msgs_file="$2" tools_file="$3" schema_name="$4" response_format="$5" response_schema_json="${6:-null}"
     jq -n --arg model "$LLM_MODEL" \
         --slurpfile msgs "$msgs_file" \
@@ -619,13 +637,15 @@ build_llm_request_file() {
         '{"model":$model,"messages":$msgs[0],"tools":$tools[0]}
          | if $max_tokens > 0 then . + {"max_tokens":$max_tokens} else . end
          | if $ctx_size > 0 then . + {"options":{"num_ctx":$ctx_size}} else . end
-         | if $response_format == "json_schema" and ($response_schema != null) then
+         | if ($tools[0] | length) > 0 then . else
+             if $response_format == "json_schema" and ($response_schema != null) then
                . + {"response_format":{"type":"json_schema","json_schema":{"name":$schema_name,"schema":$response_schema,"strict":true}}}
            elif $response_format == "json_schema" then
                . + {"response_format":{"type":"json_object"}}
            elif $response_format != "" then
                . + {"response_format":{"type":$response_format}}
-           else . end' > "$out_file"
+           else . end
+           end' > "$out_file"
 }
 
 # Build a tool definition JSON array for the LLM.
@@ -2127,6 +2147,26 @@ def detect():
     return "unknown"
 def cap(s, n=20000):
     return s if len(s) <= n else s[:n] + f"\n[... truncated at {n} of {len(s)} bytes]"
+def tool_timeout(default):
+    """Seconds a build/test/lint subprocess may run.
+
+    These were hardcoded, and unlike the LLM and shell timeouts they had no
+    knob at all — so on hardware slower than the image was tuned for, a
+    perfectly healthy `go build` is killed with no way to grant it more.
+
+    Scaled by VORNIK_TOOL_TIMEOUT_FACTOR rather than set absolutely: the
+    ratios between these budgets were chosen deliberately (a Rust build gets
+    longer than a typecheck), and a single override would flatten them. The
+    factor is NOT the decode-speed factor — these are compute-bound, and a
+    build does not get faster because the model does.
+    """
+    try:
+        f = float(os.environ.get("VORNIK_TOOL_TIMEOUT_FACTOR", "1") or "1")
+    except ValueError:
+        f = 1.0
+    if f <= 0:
+        f = 1.0
+    return int(default * f)
 lang = detect()
 out = {"language": lang, "mode": mode}
 def run_go_test():
@@ -2134,7 +2174,7 @@ def run_go_test():
         return {"error": "go toolchain not available in agent image", "runner": "go test"}
     args = ["go", "test", "-json", "-count=1"]
     args += paths if paths else ["./..."]
-    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=600)
+    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=tool_timeout(600))
     passed = failed = skipped = 0
     failures = []
     for line in r.stdout.splitlines():
@@ -2153,7 +2193,7 @@ def run_go_vet():
     if not have("go"):
         return {"error": "go toolchain not available in agent image", "runner": "go vet"}
     args = ["go", "vet"] + (paths if paths else ["./..."])
-    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=300)
+    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=tool_timeout(300))
     issues = []
     for line in r.stderr.splitlines():
         m = re.match(r"([^:]+):(\d+):(?:\d+:)?\s*(.*)", line)
@@ -2165,7 +2205,7 @@ def run_go_build():
     if not have("go"):
         return {"error": "go toolchain not available in agent image", "runner": "go build"}
     args = ["go", "build"] + (paths if paths else ["./..."])
-    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=600)
+    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=tool_timeout(600))
     errors = []
     for line in r.stderr.splitlines():
         m = re.match(r"([^:]+):(\d+):(?:\d+:)?\s*(.*)", line)
@@ -2177,7 +2217,7 @@ def run_pytest():
     if not have("pytest"):
         return {"error": "pytest not available in agent image", "runner": "pytest"}
     args = ["pytest", "-q", "--tb=short"] + paths
-    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=600)
+    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=tool_timeout(600))
     passed = failed = skipped = 0
     for line in reversed(r.stdout.splitlines()):
         m = re.search(r"(\d+)\s+passed", line);  passed = int(m.group(1)) if m else passed
@@ -2191,7 +2231,7 @@ def run_ruff():
     if not have("ruff"):
         return {"error": "ruff not available in agent image", "runner": "ruff check"}
     args = ["ruff", "check", "--output-format=json"] + (paths if paths else ["."])
-    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=120)
+    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=tool_timeout(120))
     issues = []
     try:
         for d in json.loads(r.stdout or "[]"):
@@ -2205,7 +2245,7 @@ def run_mypy():
     if not have("mypy"):
         return {"error": "mypy not available in agent image", "runner": "mypy"}
     args = ["mypy", "--no-color-output"] + (paths if paths else ["."])
-    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=300)
+    r = subprocess.run(args, cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=tool_timeout(300))
     errors = []
     for line in r.stdout.splitlines():
         m = re.match(r"([^:]+):(\d+):\s*(error|note):\s*(.*)", line)
@@ -2216,13 +2256,13 @@ def run_mypy():
 def run_node_script(script):
     if not have("npm"):
         return {"error": "node/npm toolchain not available in agent image", "runner": f"npm run {script}"}
-    r = subprocess.run(["npm", "run", script, "--silent"], cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=600)
+    r = subprocess.run(["npm", "run", script, "--silent"], cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=tool_timeout(600))
     return {"runner": f"npm run {script}", "ok": r.returncode == 0,
             "output": cap(r.stdout + r.stderr)}
 def run_cargo(sub):
     if not have("cargo"):
         return {"error": "rust toolchain not available in agent image", "runner": f"cargo {sub}"}
-    r = subprocess.run(["cargo", sub], cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=900)
+    r = subprocess.run(["cargo", sub], cwd=repo, env=SAFE_ENV, capture_output=True, text=True, timeout=tool_timeout(900))
     return {"runner": f"cargo {sub}", "ok": r.returncode == 0,
             "output": cap(r.stdout + r.stderr)}
 if lang == "go":
@@ -2738,7 +2778,15 @@ ${previous_result}
         # observability — appears in upstream gateway tooling as the
         # schema identifier.
         local schema_name="${role}_result"
-        build_llm_request_file "$req_file" "$msgs_file" "$tools_file" "$schema_name" "$response_format" "${response_schema:-null}"
+        # SCHEMA_FINALIZE_PENDING is set when the tool phase has ended and the
+        # step still owes a schema-shaped answer. Building tool-free is what
+        # lets build_llm_request_file emit the response_format directive at all.
+        local step_tools_file="$tools_file"
+        if [ "${SCHEMA_FINALIZE_PENDING:-0}" = "1" ]; then
+            printf '[]\n' > "$WORKSPACE/.empty_tools.json"
+            step_tools_file="$WORKSPACE/.empty_tools.json"
+        fi
+        build_llm_request_file "$req_file" "$msgs_file" "$step_tools_file" "$schema_name" "$response_format" "${response_schema:-null}"
         local request
         request=$(cat "$req_file")
 
@@ -2997,6 +3045,44 @@ ${previous_result}
                     ;;
             esac
 
+            # The tool phase suppressed response_format, because sending it
+            # alongside tools makes tool calling impossible under guided
+            # decoding. If this step declares a schema, spend ONE more
+            # tool-free turn so the structured answer is still produced rather
+            # than left to free-form prose. Once only — SCHEMA_FINALIZE_PENDING
+            # is not cleared on the way back in, so a model that ignores the
+            # schema cannot spin here.
+            # A model that answered in prose WITHOUT ever calling a tool has not
+            # finished a tool phase — it never started one. Finalizing here
+            # removes the tools and makes a declared output file unwritable, which
+            # is exactly how the research step failed three times over (initial,
+            # shape retry and model fallback) while never issuing a single tool
+            # call. Nudge once instead, keeping the tools, then let the normal
+            # path run.
+            if [ "${TOOL_PHASE_HAPPENED:-0}" = "0" ] && \
+               [ "${NO_TOOL_NUDGE_SENT:-0}" = "0" ] && \
+               [ "$(jq 'length' "$tools_file" 2>/dev/null || echo 0)" -gt 0 ]; then
+                NO_TOOL_NUDGE_SENT=1
+                log "no-tool nudge: step ended on iteration $iteration without a single tool call"
+                printf '%s' "$response" | jq -c '[.choices[0].message]' > "$WORKSPACE/.notool_msg.json"
+                jq --slurpfile msg "$WORKSPACE/.notool_msg.json" \
+                   '. + $msg[0] + [{"role":"user","content":"You produced a text answer without calling any tool. If this step must write a file, you have not written it yet — use the provided tools to do the work now, then finish. Do not answer in prose alone."}]' \
+                   "$msgs_file" > "$msgs_file.tmp" && mv "$msgs_file.tmp" "$msgs_file"
+                continue
+            fi
+
+            if [ -n "$response_format" ] && \
+               [ "${SCHEMA_FINALIZE_PENDING:-0}" = "0" ] && \
+               [ "${TOOL_PHASE_HAPPENED:-0}" = "1" ] && \
+               [ "$(jq 'length' "$tools_file" 2>/dev/null || echo 0)" -gt 0 ]; then
+                SCHEMA_FINALIZE_PENDING=1
+                log "schema finalization: tool phase ended, re-asking tool-free so response_format applies"
+                printf '%s' "$response" | jq -c '[.choices[0].message]' > "$WORKSPACE/.final_msg.json"
+                jq --slurpfile msg "$WORKSPACE/.final_msg.json" '. + $msg[0]' "$msgs_file" > "$msgs_file.tmp" \
+                    && mv "$msgs_file.tmp" "$msgs_file"
+                continue
+            fi
+
             debug "LLM returned final response (${#content} chars)"
             write_result "COMPLETED" "$content" "$content" "$(get_duration)"
             log "completed successfully"
@@ -3012,6 +3098,11 @@ ${previous_result}
         tool_calls=$(printf '%s' "$response" | jq -c '.choices[0].message.tool_calls // []')
         local tc_count
         tc_count=$(printf '%s' "$tool_calls" | jq 'length')
+        # Whether a tool phase happened AT ALL this step. Schema finalization is
+        # a post-tool-phase move; without this it fires on a first-turn prose
+        # reply, strips the tools, and guarantees a declared output file can
+        # never be written.
+        TOOL_PHASE_HAPPENED=1
 
         debug "processing $tc_count tool call(s)"
 

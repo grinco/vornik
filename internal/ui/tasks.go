@@ -6,7 +6,9 @@ package ui
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -97,6 +99,17 @@ func (s *Server) Tasks(w http.ResponseWriter, r *http.Request) {
 		projectID = r.URL.Query().Get("project")
 	}
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	// ?updated_within=24h narrows to tasks touched inside a recent window.
+	// The dashboard's attention cards count over such a window and link here
+	// with the same one, so clicking a card lands on exactly the rows it
+	// counted rather than on every task that ever had that status.
+	updatedWithin, updatedWithinErr := parseRecencyWindow(r.URL.Query().Get("updated_within"))
+	// ?failed_within= selects by when the task FAILED, which is what the
+	// dashboard card counts. Distinct from updated_within because updated_at is
+	// a row-modification timestamp: a sweep touching a months-old FAILED row
+	// made it look freshly broken, and a card counting one thing while linking
+	// to another is the disagreement this pair exists to prevent.
+	failedWithin, failedWithinErr := parseRecencyWindow(r.URL.Query().Get("failed_within"))
 	// Same page-size options as /ui/audit for consistency — see
 	// page_size.go for the shared validator + allowlist. Default 20
 	// matches the audit page.
@@ -113,8 +126,25 @@ func (s *Server) Tasks(w http.ResponseWriter, r *http.Request) {
 		Int("limit", limit).
 		Msg("rendering tasks page")
 
+	if updatedWithinErr != nil {
+		http.Error(w, updatedWithinErr.Error(), http.StatusBadRequest)
+		return
+	}
+	if failedWithinErr != nil {
+		http.Error(w, failedWithinErr.Error(), http.StatusBadRequest)
+		return
+	}
+
 	filter := persistence.TaskFilter{
 		PageSize: limit,
+	}
+	if updatedWithin > 0 {
+		since := time.Now().Add(-updatedWithin)
+		filter.UpdatedSince = &since
+	}
+	if failedWithin > 0 {
+		since := time.Now().Add(-failedWithin)
+		filter.FailedSince = &since
 	}
 
 	if status != "" {
@@ -439,4 +469,39 @@ var taskColumns = map[string]func(a, b *persistence.Task) int{
 	"priority": func(a, b *persistence.Task) int { return cmp.Compare(a.Priority, b.Priority) },
 	"attempt":  func(a, b *persistence.Task) int { return cmp.Compare(a.Attempt, b.Attempt) },
 	"created":  func(a, b *persistence.Task) int { return a.CreatedAt.Compare(b.CreatedAt) },
+}
+
+// recencyWindows are the windows ?updated_within accepts.
+//
+// An allowlist rather than a duration parser: the value reaches a SQL predicate,
+// and the set of windows any card actually links with is small and known. A
+// free-form parser would accept "8760h" and quietly turn a filtered view back
+// into the unfiltered one that caused the bug.
+var recencyWindows = map[string]time.Duration{
+	"1h":  time.Hour,
+	"24h": 24 * time.Hour,
+	"7d":  7 * 24 * time.Hour,
+	"30d": 30 * 24 * time.Hour,
+}
+
+// parseRecencyWindow resolves an ?updated_within value. Empty means no window.
+//
+// An unrecognised value is an ERROR, not a silent no-op. Falling back to "no
+// filter" would show every task ever and look like the filter had simply found
+// a lot — which is precisely the failure this parameter exists to fix.
+func parseRecencyWindow(v string) (time.Duration, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, nil
+	}
+	d, ok := recencyWindows[v]
+	if !ok {
+		allowed := make([]string, 0, len(recencyWindows))
+		for k := range recencyWindows {
+			allowed = append(allowed, k)
+		}
+		sort.Strings(allowed)
+		return 0, fmt.Errorf("unknown updated_within %q; allowed: %s", v, strings.Join(allowed, ", "))
+	}
+	return d, nil
 }

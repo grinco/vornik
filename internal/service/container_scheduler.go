@@ -36,6 +36,7 @@ import (
 	"vornik.io/vornik/internal/scheduler"
 	"vornik.io/vornik/internal/schemaregistry"
 	"vornik.io/vornik/internal/secrets"
+	"vornik.io/vornik/internal/speedprofile"
 	"vornik.io/vornik/internal/storage"
 	"vornik.io/vornik/internal/templates"
 	"vornik.io/vornik/internal/toolbudget"
@@ -236,6 +237,19 @@ func (c *Container) initScheduler() error {
 	executorConfig.ProjectWorkspacePath = resolveProjectWorkspacePath(c.Config.Runtime.ProjectWorkspacePath)
 
 	executorConfig.LogLevel = c.Config.Logging.Level
+
+	// The execution default was a 30m constant with no config path. A step whose
+	// workflow declares no timeout inherits it, so on hardware slower than the
+	// default was chosen for it decides whether that step finishes or is killed
+	// mid-work. Invalid or empty leaves the built-in default untouched.
+	if d := c.Config.Scheduler.DefaultStepTimeout; d != "" {
+		if parsed, err := time.ParseDuration(d); err == nil && parsed > 0 {
+			executorConfig.DefaultTimeout = parsed
+		} else {
+			c.Logger.Warn().Str("default_step_timeout", d).
+				Msg("scheduler.default_step_timeout is not a positive duration — keeping the built-in default")
+		}
+	}
 
 	// Dynamic per-role tool budget: resolve the daemon tool_budget block
 	// (defaults applied) into the executor's pre-resolved config. Disabled
@@ -1397,6 +1411,12 @@ func (c *Container) initScheduler() error {
 			cfg.LeaseDurationSeconds = int(leaseTimeout.Seconds())
 		}
 	}
+	// The lease is the FIRST budget to break on slow hardware: replaying 702 real
+	// step shapes at 12 tok/s put 16% of them past the 5m default, against 0% on
+	// a 206 tok/s host (LLD 6.2.1). Scaling step timeouts while this stayed fixed
+	// would change nothing for exactly those steps — the task is re-leased
+	// mid-flight and the container dies regardless.
+	cfg.LeaseDurationSeconds = c.scaleLeaseForSpeed(cfg.LeaseDurationSeconds)
 
 	schedulerOptions := []scheduler.Option{
 		scheduler.WithLogger(c.Logger),
@@ -1749,4 +1769,51 @@ func retrievalRoutingConfig(rr config.MemoryRetrievalRoutingConfig) memory.Retri
 		out.SetEnabled(*rr.Enabled)
 	}
 	return out
+}
+
+// scaleLeaseForSpeed stretches the lease on hardware slower than the reference.
+//
+// Off unless speed_aware_timeouts is enabled AND a reference is declared, in
+// which case this returns its argument untouched — the disabled path is
+// byte-identical to not having the feature.
+//
+// Uses the DECLARED reference against the configured decode rate rather than a
+// live profile: the lease is fixed once at scheduler construction, so a value
+// that drifted with a rolling fit would leave running tasks holding leases
+// computed under a different number. A profile-driven variant belongs with the
+// step timeout, which is resolved per step.
+func (c *Container) scaleLeaseForSpeed(baseSeconds int) int {
+	sat := c.Config.Scheduler.SpeedAwareTimeouts
+	if !sat.Enabled || baseSeconds <= 0 {
+		return baseSeconds
+	}
+	factor, clamped, err := speedprofile.Factor(sat.ObservedTokensPerSec, speedprofile.FactorConfig{
+		ReferenceTokensPerSec: sat.ReferenceTokensPerSec,
+		MinFactor:             sat.MinFactor,
+		MaxFactor:             sat.MaxFactor,
+	})
+	if err != nil {
+		c.Logger.Warn().Err(err).
+			Msg("speed_aware_timeouts is enabled but unusable — lease timeout left unscaled")
+		return baseSeconds
+	}
+	if factor == 1 {
+		return baseSeconds
+	}
+	scaled := int(float64(baseSeconds) * factor)
+	ev := c.Logger.Info()
+	if clamped {
+		// Reported, not buried: an operator whose factor was capped otherwise
+		// sees an ordinary lease expiry with nothing to suggest the budget was
+		// never adequate for this hardware.
+		ev = c.Logger.Warn()
+	}
+	ev.Int("lease_seconds_base", baseSeconds).
+		Int("lease_seconds_scaled", scaled).
+		Float64("factor", factor).
+		Bool("clamped_at_max", clamped).
+		Float64("observed_tokens_per_sec", sat.ObservedTokensPerSec).
+		Float64("reference_tokens_per_sec", sat.ReferenceTokensPerSec).
+		Msg("lease timeout scaled for measured inference speed")
+	return scaled
 }

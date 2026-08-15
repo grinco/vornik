@@ -1,0 +1,9 @@
+{
+  "arms": ["baseline", "canonical-context-suppressed"],
+  "metric": "schema_conformance",
+  "targetDelta": 0.05,
+  "sigmaD": 0.0604,
+  "sigmaN": 10,
+  "computedPairs": 12,
+  "rationale": "Registers the comparison the v2 baseline is being measured FOR: per-swarm suppression of the canonical-context block (commit 22989f97) against no suppression, both with advertisements gated. L1 prices that block at 700 bytes, 31% of a dev-swarm lead's composed prompt; the open question is whether removing a third of the prompt costs decision quality, and schema conformance is the gate role assignment already depends on. A 5pp delta is the smallest that would change the recommendation: below it the byte saving wins on cost alone, above it suppression is a quality regression that needs a narrower knob. SIGMA CAVEAT, stated before the run rather than after: sigmaD 0.0604 is a PROVISIONAL sizing input carried from harness v1, measured at n=10 but on a three-task subset and under four scoring definitions that have since changed. Replacing it with a v2-scored sigma over the full 18-task set is this pass's primary purpose, so the pair count above is an estimate of what the comparison will need, not a claim about what it needs. If the v2 sigma lands materially higher, the comparison is re-registered at the larger n before the second arm is run rather than quietly declared adequate. This pass scores the BASELINE arm only; the suppressed arm follows once the noise floor is known."
+}

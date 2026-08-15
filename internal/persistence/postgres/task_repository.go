@@ -255,6 +255,16 @@ func (r *TaskRepository) List(ctx context.Context, filter persistence.TaskFilter
 		args = append(args, *filter.UpdatedBefore)
 		argPos++
 	}
+	if filter.UpdatedSince != nil {
+		query += fmt.Sprintf(" AND updated_at >= $%d", argPos)
+		args = append(args, *filter.UpdatedSince)
+		argPos++
+	}
+	if filter.FailedSince != nil {
+		query += fmt.Sprintf(" AND failed_at IS NOT NULL AND failed_at >= $%d", argPos)
+		args = append(args, *filter.FailedSince)
+		argPos++
+	}
 
 	query += " ORDER BY created_at DESC"
 	if filter.PageSize > 0 {
@@ -319,6 +329,14 @@ func (r *TaskRepository) Count(ctx context.Context, filter persistence.TaskFilte
 
 // UpdateStatus atomically updates task status.
 func (r *TaskRepository) UpdateStatus(ctx context.Context, id string, status persistence.TaskStatus) error {
+	// failed_at rides along with the status write for the same reason it does
+	// in TransitionConditional: the dashboard's recency card is only as honest
+	// as the least-careful path into FAILED.
+	if status == persistence.TaskStatusFailed {
+		_, err := r.db.ExecContext(ctx,
+			`UPDATE tasks SET status = $2, updated_at = NOW(), failed_at = NOW() WHERE id = $1`, id, status)
+		return mapDBError(err)
+	}
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE tasks SET status = $2, updated_at = NOW() WHERE id = $1`, id, status)
 	return mapDBError(err)
@@ -369,6 +387,14 @@ func (r *TaskRepository) TransitionConditional(
 	sets := []string{"status = $1", "updated_at = NOW()"}
 	args := []any{string(to)}
 	pos := 2
+
+	// Stamped here, not by the caller: FAILED is reached from several paths
+	// (executor, lease release, sweeps) and an opt-in flag would be missed by
+	// one of them. Only set on the way INTO failure, so a task that later
+	// succeeds does not keep a stale timestamp.
+	if to == persistence.TaskStatusFailed {
+		sets = append(sets, "failed_at = NOW()")
+	}
 
 	if opts.SetClosedAtNow {
 		sets = append(sets, "closed_at = NOW()")
@@ -912,8 +938,8 @@ func (r *TaskRepository) CountByStatus(ctx context.Context, projectID string) (m
 	return counts, rows.Err()
 }
 
-// CountRecentFailures counts FAILED tasks in a project whose
-// updated_at is at or after `since`, optionally filtered to one of
+// CountRecentFailures counts FAILED tasks in a project that FAILED at or after
+// `since` — by failed_at, not updated_at, optionally filtered to one of
 // `errorClasses`. Powers the per-project circuit breaker (handleFailure
 // path in the executor) — a high count within a short window pauses
 // autonomy on the project so a stuck loop can't burn through budget.
@@ -931,7 +957,8 @@ func (r *TaskRepository) CountRecentFailures(ctx context.Context, projectID stri
 		FROM tasks
 		WHERE project_id = $1
 		  AND status = 'FAILED'
-		  AND updated_at >= $2`
+		  AND failed_at IS NOT NULL
+		  AND failed_at >= $2`
 	args := []any{projectID, since}
 	if len(errorClasses) > 0 {
 		// Build a placeholder list ($3, $4, ...) for the IN clause.
@@ -952,12 +979,20 @@ func (r *TaskRepository) CountRecentFailures(ctx context.Context, projectID stri
 
 // CountRecentFailuresByProject returns recent-failure counts per project in
 // one grouped query (E2, audit 2026-07-03).
+// failed_at, NOT updated_at. A BEFORE UPDATE trigger stamps updated_at on
+// ANY row modification, so a lease sweep or a backfill made a months-old
+// failure look like it had just happened — the dashboard card claimed a
+// recent failure and the task behind it was 90 days old. Rows that failed
+// before this column existed have NULL and are correctly treated as
+// not-recent: "we do not know when this failed" is the truth, and
+// inventing a time from updated_at is exactly the bug.
 func (r *TaskRepository) CountRecentFailuresByProject(ctx context.Context, errorClasses []string, since time.Time) (map[string]int, error) {
 	query := `
 		SELECT project_id, COUNT(*)
 		FROM tasks
 		WHERE status = 'FAILED'
-		  AND updated_at >= $1`
+		  AND failed_at IS NOT NULL
+		  AND failed_at >= $1`
 	args := []any{since}
 	if len(errorClasses) > 0 {
 		placeholders := make([]string, len(errorClasses))

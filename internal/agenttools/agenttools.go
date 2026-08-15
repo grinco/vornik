@@ -57,6 +57,48 @@ var builtinTools = map[string]bool{
 	"summarize_thread":        true,
 }
 
+// alwaysGranted are the built-in tools every role gets whatever its
+// allowedTools declares.
+//
+// A role's allowlist exists to bound what an agent can DO — write files,
+// run shell, reach an external API. These two only let it find out what
+// the project already knows: memory_search reads project memory,
+// skill_fetch reads the skill index. Neither writes, executes, or leaves
+// the deployment, so gating them buys no containment and costs the agent
+// the context that would have kept it from guessing.
+//
+// Operator ruling, 2026-08-14. It came out of a benchmark gold review:
+// both tools showed up in recorded paths for tasks that did not obviously
+// need them, which read as agent habit contaminating the ground truth.
+// The operator's answer was that they should be universal, which makes
+// the observation unremarkable rather than suspicious — a tool everyone
+// has is not evidence of anything.
+//
+// Daemon-side rather than in the swarm presets for the same reason the
+// tool-grant guidance is: a preset reaches new installs only, because an
+// upgrade does not rewrite an operator's own swarm file.
+var alwaysGranted = []string{
+	"memory_search",
+	"skill_fetch",
+}
+
+// AlwaysGranted returns the built-in tools every role may call regardless
+// of its allowedTools list. The returned slice is a copy — callers append
+// to it.
+func AlwaysGranted() []string {
+	return append([]string(nil), alwaysGranted...)
+}
+
+// IsAlwaysGranted reports whether a tool is in the universal baseline.
+func IsAlwaysGranted(name string) bool {
+	for _, t := range alwaysGranted {
+		if t == name {
+			return true
+		}
+	}
+	return false
+}
+
 // mcpToolPrefix marks a tool name as MCP-provided. MCP tool names are
 // `mcp__<server>__<tool>` and can only be validated against the live
 // daemon's configured servers, not statically.

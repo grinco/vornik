@@ -42,6 +42,13 @@ type PreRegistration struct {
 	// Rationale is why this comparison is worth spending on. Free text, but
 	// required: a pre-registration nobody had to think about registers nothing.
 	Rationale string `json:"rationale"`
+	// IndependentAxes names the arm axes this comparison is ALLOWED to vary —
+	// "binary_sha256" for a release comparison, "context_policy" for a policy
+	// one. Empty means every axis must match, which is the old behaviour.
+	//
+	// Declared here, before the runs, on purpose: deciding afterwards which
+	// difference to forgive is how a comparison becomes a press release.
+	IndependentAxes []string `json:"independentAxes,omitempty"`
 }
 
 // Validate refuses a pre-registration that does not commit to anything.
@@ -174,7 +181,16 @@ func (j Journal) CheckReadable() error {
 // with it (§5.5): suppressing a real measurement would be its own dishonesty,
 // and what inconclusive forbids is the claim, not the figure.
 func CompareJournals(a, b Journal, observedDelta float64) (string, error) {
-	if err := CheckComparable(a.Manifest.Arm, b.Manifest.Arm); err != nil {
+	// Both journals must declare the SAME independent axes. If they disagree,
+	// one of them was registered for a different experiment and the pair is not
+	// the comparison either of them committed to.
+	if !sameStrings(a.Manifest.PreRegistration.IndependentAxes, b.Manifest.PreRegistration.IndependentAxes) {
+		return "", fmt.Errorf("the two runs declare different independent axes "+
+			"(%v vs %v): they were registered for different experiments",
+			a.Manifest.PreRegistration.IndependentAxes, b.Manifest.PreRegistration.IndependentAxes)
+	}
+	if err := CheckComparableExcept(a.Manifest.Arm, b.Manifest.Arm,
+		a.Manifest.PreRegistration.IndependentAxes); err != nil {
 		return "", err
 	}
 	floor := a.Manifest.Power.ResolvableDelta
@@ -187,4 +203,78 @@ func CompareJournals(a, b Journal, observedDelta float64) (string, error) {
 		return fmt.Sprintf("delta = %.4f (INCONCLUSIVE, floor %.4f)", observedDelta, floor), nil
 	}
 	return fmt.Sprintf("delta = %.4f (floor %.4f)", observedDelta, floor), nil
+}
+
+// MergeJournals combines several journals of the SAME arm into one.
+//
+// A 180-run scoring pass is hours long, and §12.7 already paid for learning that
+// a pass which cannot be batched is a pass that gets abandoned. Gold learned it
+// first and got batching; scoring did not, so its journals had no way to be
+// combined afterwards and a batched scoring pass produced N unrelated rollups.
+//
+// The arm key is the guard. Merging journals from different arms would silently
+// average two experiments into a number describing neither — precisely the
+// failure the comparability key exists to prevent, arriving through a side door.
+// A PARTIAL key is refused outright: "unverified" twice over is not evidence
+// that two runs matched.
+func MergeJournals(journals ...Journal) (Journal, error) {
+	if len(journals) == 0 {
+		return Journal{}, fmt.Errorf("no journals to merge")
+	}
+	out := journals[0]
+	if out.Manifest.ArmPartial {
+		return Journal{}, fmt.Errorf("journal %q has a PARTIAL arm key; merging unverified "+
+			"runs cannot establish that they measured the same system", out.Manifest.RunID)
+	}
+	out.Records = append([]ExecutionRecord(nil), out.Records...)
+
+	for _, j := range journals[1:] {
+		if j.Manifest.ArmPartial {
+			return Journal{}, fmt.Errorf("journal %q has a PARTIAL arm key; merging unverified "+
+				"runs cannot establish that they measured the same system", j.Manifest.RunID)
+		}
+		if err := CheckComparable(out.Manifest.Arm, j.Manifest.Arm); err != nil {
+			return Journal{}, fmt.Errorf("refusing to merge %q into %q: %w",
+				j.Manifest.RunID, out.Manifest.RunID, err)
+		}
+		// The pre-registration is part of what a figure means. Two batches run
+		// against different registered comparisons are not one experiment.
+		if j.Manifest.PreRegistrationHash != out.Manifest.PreRegistrationHash {
+			return Journal{}, fmt.Errorf("refusing to merge %q into %q: different "+
+				"pre-registrations (%s vs %s)", j.Manifest.RunID, out.Manifest.RunID,
+				short(out.Manifest.PreRegistrationHash), short(j.Manifest.PreRegistrationHash))
+		}
+		// Untrustworthiness is contagious: a merged journal containing a
+		// degraded batch is degraded, and must say so rather than let the
+		// clean batches launder it.
+		if j.Manifest.Untrustworthy && !out.Manifest.Untrustworthy {
+			out.Manifest.Untrustworthy = true
+			out.Manifest.UntrustworthyReason = fmt.Sprintf("merged batch %q: %s",
+				j.Manifest.RunID, j.Manifest.UntrustworthyReason)
+		}
+		out.Records = append(out.Records, j.Records...)
+	}
+	out.Manifest.RunID = fmt.Sprintf("%s+%d", journals[0].Manifest.RunID, len(journals)-1)
+	return out, nil
+}
+
+func short(h string) string {
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
+}
+
+// sameStrings compares two axis declarations order-insensitively.
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := set(a)
+	for _, v := range b {
+		if !seen[v] {
+			return false
+		}
+	}
+	return true
 }

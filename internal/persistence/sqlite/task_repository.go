@@ -253,6 +253,14 @@ func (r *TaskRepository) List(ctx context.Context, filter persistence.TaskFilter
 		b.WriteString(" AND updated_at < ?")
 		args = append(args, *filter.UpdatedBefore)
 	}
+	if filter.UpdatedSince != nil {
+		b.WriteString(" AND updated_at >= ?")
+		args = append(args, sqliteTime(*filter.UpdatedSince))
+	}
+	if filter.FailedSince != nil {
+		b.WriteString(" AND failed_at IS NOT NULL AND failed_at >= ?")
+		args = append(args, sqliteTime(*filter.FailedSince))
+	}
 	b.WriteString(" ORDER BY created_at DESC")
 	if filter.PageSize > 0 {
 		b.WriteString(" LIMIT ?")
@@ -351,9 +359,19 @@ func (r *TaskRepository) Count(ctx context.Context, filter persistence.TaskFilte
 
 // UpdateStatus atomically updates task status.
 func (r *TaskRepository) UpdateStatus(ctx context.Context, id string, status persistence.TaskStatus) error {
+	now := sqliteTime(time.Now().UTC())
+	// failed_at rides along with the status write, as it does in
+	// TransitionConditional: the dashboard's recency card is only as honest as
+	// the least-careful path into FAILED.
+	if status == persistence.TaskStatusFailed {
+		_, err := r.db.ExecContext(ctx,
+			`UPDATE tasks SET status = ?, updated_at = ?, failed_at = ? WHERE id = ?`,
+			string(status), now, now, id)
+		return err
+	}
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?`,
-		string(status), sqliteTime(time.Now().UTC()), id)
+		string(status), now, id)
 	return err
 }
 
@@ -391,6 +409,14 @@ func (r *TaskRepository) TransitionConditional(
 	now := sqliteTime(time.Now().UTC())
 	sets := []string{"status = ?", "updated_at = ?"}
 	args := []any{string(to), now}
+
+	// Same reasoning as the postgres repo: stamped on the way into FAILED so
+	// no call site can forget, and never on any other transition. Appended to
+	// sets AND args together, because the placeholders are positional.
+	if to == persistence.TaskStatusFailed {
+		sets = append(sets, "failed_at = ?")
+		args = append(args, now)
+	}
 
 	if opts.SetClosedAtNow {
 		sets = append(sets, "closed_at = ?")
@@ -804,7 +830,7 @@ func (r *TaskRepository) CountRecentFailures(ctx context.Context, projectID stri
 		return 0, fmt.Errorf("CountRecentFailures: projectID is required")
 	}
 	var b strings.Builder
-	b.WriteString(`SELECT COUNT(*) FROM tasks WHERE project_id = ? AND status = 'FAILED' AND updated_at >= ?`)
+	b.WriteString(`SELECT COUNT(*) FROM tasks WHERE project_id = ? AND status = 'FAILED' AND failed_at IS NOT NULL AND failed_at >= ?`)
 	args := []any{projectID, sqliteTime(since)}
 
 	if len(errorClasses) > 0 {
@@ -826,7 +852,7 @@ func (r *TaskRepository) CountRecentFailures(ctx context.Context, projectID stri
 // one grouped query (E2, audit 2026-07-03).
 func (r *TaskRepository) CountRecentFailuresByProject(ctx context.Context, errorClasses []string, since time.Time) (map[string]int, error) {
 	var b strings.Builder
-	b.WriteString(`SELECT project_id, COUNT(*) FROM tasks WHERE status = 'FAILED' AND updated_at >= ?`)
+	b.WriteString(`SELECT project_id, COUNT(*) FROM tasks WHERE status = 'FAILED' AND failed_at IS NOT NULL AND failed_at >= ?`)
 	args := []any{sqliteTime(since)}
 	if len(errorClasses) > 0 {
 		placeholders := make([]string, len(errorClasses))

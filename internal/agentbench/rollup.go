@@ -62,6 +62,26 @@ type AccuracyRollup struct {
 	PathCoverage        float64 `json:"pathCoverage"`
 	PathCoverageDefined bool    `json:"pathCoverageDefined"`
 	CoreMisses          int     `json:"coreMisses"`
+	// CoreShellCovered counts core requirements met ONLY because a shell was
+	// granted, and it is why CoreMisses must never be quoted alone.
+	//
+	// Substitution (harness v3) is right: a lead that granted run_shell and
+	// withheld git_status blocked the agent from nothing, and the v2 rule that
+	// called that a hard failure was wrong five times out of five. But it
+	// leaves one blind spot — a lead that lazily grants a shell for every step
+	// scores a perfect zero on core misses while making the worst possible
+	// grant decision.
+	//
+	// That laziness IS caught, by grant precision, which fell to 0.20 and 0.40
+	// on exactly those executions. Keeping the two metrics separate is
+	// deliberate: core miss asks "could the agent do the work", precision asks
+	// "was the grant tight". This counter is the bridge, so a clean core-miss
+	// sheet earned entirely through shell grants cannot be read as a tight
+	// policy.
+	CoreShellCovered int `json:"coreShellCovered"`
+	// CoreSubstituted counts core requirements met by ANY equivalent tool,
+	// shell or peer. CoreShellCovered is a subset of it.
+	CoreSubstituted int `json:"coreSubstituted"`
 }
 
 // Rollup is one arm's customer-facing figures.
@@ -169,6 +189,12 @@ func accumulateGrant(r *Rollup, v Verdict, grantSum, grantN, reqSum, reqN, cover
 	r.Efficiency.Escalations += v.Escalations
 	if v.CoreMiss {
 		r.Accuracy.CoreMisses++
+	}
+	for _, via := range v.CoreSubstitutions {
+		r.Accuracy.CoreSubstituted++
+		if via == shellTool {
+			r.Accuracy.CoreShellCovered++
+		}
 	}
 	if v.Probe == grantProbeName {
 		*coverageSum += v.PathCoverage

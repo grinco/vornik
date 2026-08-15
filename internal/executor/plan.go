@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/agenttools"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/playbook"
 	"vornik.io/vornik/internal/registry"
@@ -112,6 +113,17 @@ type agentInputOpts struct {
 	// blocks this swarm's operator has switched off (LLD 09 §13.3.1).
 	// Invariant blocks are never suppressible; see suppressesGuidanceBlock.
 	SuppressedGuidanceBlocks []string
+
+	// StepTimeout is THIS step's effective wall-clock, after any scaling.
+	//
+	// The payload's config.timeoutSeconds is part of the agent runtime contract
+	// (LLD 09) — "the maximum time the agent has to complete the task" — and the
+	// fake agent enforces it. It was hardcoded to 30 minutes regardless of the
+	// step's real budget, so the contract advertised a number that was usually
+	// false and, once step timeouts scale, would be false in the direction that
+	// matters. Zero falls back to the old constant so a caller that does not know
+	// its timeout behaves as before.
+	StepTimeout time.Duration
 	// AdaptiveCandidateWorkflows lists the workflow IDs the lead is
 	// allowed to pick from when running the strict adaptive route
 	// step. Injected into the agent's context.adaptiveCandidateWorkflows
@@ -429,6 +441,11 @@ func buildAgentInput(task *persistence.Task, executionID, workflowID, swarmID, s
 			allowedTools = opts.Permissions.AllowedTools
 		}
 	}
+	// The universal read-only baseline is added AFTER the role's list, so a
+	// role that narrows to three tools still gets it. These two only let an
+	// agent read what the project already knows; withholding them buys no
+	// containment and costs it the context that would have kept it guessing.
+	allowedTools = withAlwaysGrantedTools(allowedTools)
 
 	input := map[string]any{
 		"taskId":    task.ID,
@@ -444,7 +461,7 @@ func buildAgentInput(task *persistence.Task, executionID, workflowID, swarmID, s
 		},
 		"context": contextMap,
 		"config": map[string]any{
-			"timeoutSeconds": int(30 * time.Minute / time.Second),
+			"timeoutSeconds": agentTimeoutSeconds(opts),
 			"permissions": map[string]any{
 				"delegationAllowed": delegationAllowed,
 				"allowedTools":      allowedTools,
@@ -1393,4 +1410,33 @@ func generateExecutionID(_ string) string {
 // generateArtifactID creates a unique artifact ID.
 func generateArtifactID(_ string) string {
 	return persistence.GenerateID("artifact")
+}
+
+// withAlwaysGrantedTools unions the universal read-only baseline into a role's
+// allowlist, preserving order and never duplicating an entry a role already
+// declared.
+func withAlwaysGrantedTools(allowed []string) []string {
+	have := make(map[string]bool, len(allowed))
+	for _, t := range allowed {
+		have[t] = true
+	}
+	out := append([]string(nil), allowed...)
+	for _, t := range agenttools.AlwaysGranted() {
+		if !have[t] {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// defaultAgentTimeout is the fallback when a caller cannot supply the step's
+// real budget. Matches the executor's own DefaultTimeout.
+const defaultAgentTimeout = 30 * time.Minute
+
+// agentTimeoutSeconds is what the payload tells the agent it has.
+func agentTimeoutSeconds(opts *agentInputOpts) int {
+	if opts != nil && opts.StepTimeout > 0 {
+		return int(opts.StepTimeout / time.Second)
+	}
+	return int(defaultAgentTimeout / time.Second)
 }

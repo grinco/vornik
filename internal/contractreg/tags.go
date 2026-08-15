@@ -50,11 +50,21 @@ func (a TagAudit) NeverSet() []string {
 func AuditBuildTags(root string, plumbing []string) (TagAudit, error) {
 	audit := TagAudit{FilesByTag: map[string][]string{}, SetTags: map[string]bool{}}
 
+	// The root itself is never "uninteresting", even when its name matches the
+	// export-copy prefix. The CE export lives in .vornik-export/ and its tests
+	// run INSIDE it, so pruning by name alone skipped the whole tree: the audit
+	// reported zero integration-tagged files in a tree holding 36, and the
+	// export refused to publish on a parser that was blind rather than a real
+	// fault.
+	rootClean := filepath.Clean(root)
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // an unreadable subtree is not fatal to the audit
 		}
 		if d.IsDir() {
+			if filepath.Clean(path) == rootClean {
+				return nil
+			}
 			return skipUninterestingDir(d)
 		}
 		if !strings.HasSuffix(path, ".go") {

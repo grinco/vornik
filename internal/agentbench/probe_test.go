@@ -216,9 +216,74 @@ func TestGrantProbe_ComparesToolNamesInABareForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("score: %v", err)
 	}
-	// 4 of 5: everything but git_log, regardless of how each was spelled.
+	// 4 of 5: everything but git_log, regardless of how each was spelled. Path
+	// coverage is deliberately literal — it measures how much of a demonstrated
+	// route the grant actually holds, and substitution belongs to core-miss.
 	approx(t, "path coverage", v.PathCoverage, 0.8)
+
+	// git_log was NOT granted, but git_status was, and both inspect VCS state.
+	// Under harness v2 this was a core miss; v3 credits the peer, and records
+	// which one so the pass is auditable rather than silent.
+	if v.CoreMiss {
+		t.Errorf("git_log reported as a core miss though git_status was granted: %v", v.CoreMissing)
+	}
+	if v.CoreSubstitutions["git_log"] != "git_status" {
+		t.Errorf("substitution not recorded: %v", v.CoreSubstitutions)
+	}
+}
+
+// A boolean says the hard-fail class fired but not what fired it, and a rollup
+// may never re-query the ledger to find out. Diagnosing the first five core
+// misses this benchmark produced (2026-08-14) meant reading
+// execution_tool_grants by hand while the traces happened to still exist.
+func TestGrantProbe_NamesTheMissingCoreTools(t *testing.T) {
+	gold := Gold{TaskID: "t1", Paths: [][]string{
+		{"file_read", "git_status", "run_shell"},
+		{"file_read", "git_status", "run_shell", "glob"},
+	}}
+	trace := Trace{
+		ExecutionID: "exec1",
+		Requested:   []string{"file_read", "glob"},
+		Accepted:    []string{"file_read", "glob"},
+		Invoked:     []string{"file_read"},
+	}
+
+	v, err := GrantProbe{}.Score(context.Background(), TaskRef{ID: "t1"}, gold, trace)
+	if err != nil {
+		t.Fatalf("score: %v", err)
+	}
+
 	if !v.CoreMiss {
-		t.Error("git_log is in every path and was not granted — that is a core miss")
+		t.Fatal("two core tools were not granted and CoreMiss stayed false")
+	}
+	// BOTH, not just the first: five misses that are one repeated defect read
+	// very differently from five distinct ones.
+	want := map[string]bool{"git_status": true, "run_shell": true}
+	if len(v.CoreMissing) != 2 {
+		t.Fatalf("CoreMissing = %v, want both missing tools named", v.CoreMissing)
+	}
+	for _, got := range v.CoreMissing {
+		if !want[got] {
+			t.Errorf("CoreMissing names %q, which is not a missing core tool", got)
+		}
+	}
+}
+
+func TestGrantProbe_NoCoreMissNamesNothing(t *testing.T) {
+	gold := Gold{TaskID: "t1", Paths: [][]string{{"file_read", "run_shell"}}}
+	trace := Trace{
+		ExecutionID: "exec1",
+		Requested:   []string{"file_read", "run_shell"},
+		Accepted:    []string{"file_read", "run_shell"},
+		Invoked:     []string{"file_read"},
+	}
+
+	v, err := GrantProbe{}.Score(context.Background(), TaskRef{ID: "t1"}, gold, trace)
+	if err != nil {
+		t.Fatalf("score: %v", err)
+	}
+
+	if v.CoreMiss || len(v.CoreMissing) != 0 {
+		t.Errorf("a fully-covered grant reported CoreMissing=%v", v.CoreMissing)
 	}
 }

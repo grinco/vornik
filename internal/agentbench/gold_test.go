@@ -252,3 +252,74 @@ func TestMergeGold_KeepsAnExclusionNoBatchDisproved(t *testing.T) {
 		t.Error("a task no batch ever passed lost its exclusion")
 	}
 }
+
+// The grant tool decides the grant being scored. Recording it as a tool the task
+// NEEDED makes coverage circular — a policy would be scored on whether it granted
+// the grant-decider. It appeared in 10 of 18 paths in the first real gold set.
+func TestBuildGold_ExcludesTheGrantToolItself(t *testing.T) {
+	m, err := BuildGold("tset", []UnrestrictedRun{
+		{TaskID: "t1", Passed: true, Invoked: []string{"file_read", "mcp__vornik__grant_step_tools", "run_shell"}},
+	}, 1)
+	if err != nil {
+		t.Fatalf("build gold: %v", err)
+	}
+	g, _ := m.Lookup("t1")
+	for _, tool := range g.Paths[0] {
+		if normaliseTool(tool) == "grant_step_tools" {
+			t.Fatalf("the grant tool entered ground truth: %v", g.Paths[0])
+		}
+	}
+	if len(g.Paths[0]) != 2 {
+		t.Errorf("path = %v, want the two real tools kept", g.Paths[0])
+	}
+}
+
+// A benchmark task must never REQUIRE a side effect. backlog_deposit appeared in
+// dp-04-concurrency, whose prompt is "write a bounded worker pool in a new
+// scratch file" — a policy correctly refusing it would have been penalised.
+func TestBuildGold_ExcludesSideEffectingTools(t *testing.T) {
+	m, err := BuildGold("tset", []UnrestrictedRun{
+		{TaskID: "t1", Passed: true, Invoked: []string{"file_write", "backlog_deposit"}},
+	}, 1)
+	if err != nil {
+		t.Fatalf("build gold: %v", err)
+	}
+	if g, _ := m.Lookup("t1"); len(g.Paths[0]) != 1 || g.Paths[0][0] != "file_write" {
+		t.Errorf("path = %v, want only file_write", g.Paths[0])
+	}
+	if reason, ok := ExcludedFromGold("backlog_deposit"); !ok || reason == "" {
+		t.Error("exclusion carries no reason; a rule nobody can justify gets deleted later")
+	}
+}
+
+// Merging filters too, so gold produced before the rule existed is cleaned
+// without re-running the agents — the per-batch manifests stay the raw record.
+func TestMergeGold_FiltersExcludedToolsFromExistingBatches(t *testing.T) {
+	raw := GoldManifest{TaskSetSHA256: "tset", Runs: 1, Entries: []Gold{
+		{TaskID: "t1", Paths: [][]string{{"file_read", "mcp__vornik__grant_step_tools", "backlog_deposit"}}},
+	}}
+	m, err := MergeGold(raw)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	g, _ := m.Lookup("t1")
+	if len(g.Paths) != 1 || len(g.Paths[0]) != 1 || g.Paths[0][0] != "file_read" {
+		t.Errorf("paths = %v, want only [file_read]", g.Paths)
+	}
+}
+
+// A path that was ONLY excluded tools is dropped rather than kept empty: an empty
+// path would score as trivially covered.
+func TestMergeGold_DropsAPathThatWasEntirelyExcluded(t *testing.T) {
+	raw := GoldManifest{TaskSetSHA256: "tset", Runs: 1, Entries: []Gold{
+		{TaskID: "t1", Paths: [][]string{{"mcp__vornik__grant_step_tools"}, {"file_read"}}},
+	}}
+	m, err := MergeGold(raw)
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	g, _ := m.Lookup("t1")
+	if len(g.Paths) != 1 {
+		t.Errorf("paths = %v, want the all-excluded path dropped", g.Paths)
+	}
+}

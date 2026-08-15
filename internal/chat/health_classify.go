@@ -69,6 +69,25 @@ var upstreamInfraMarkers = []string{
 	"Connection refused",
 	"no such host",
 	"i/o timeout",
+	// Throttling and quota exhaustion arriving as TEXT rather than a typed
+	// status. isInfraStatus already covers a typed 429, but an agent's
+	// result.json carries the provider's body as a string, and these are the
+	// phrasings Ollama Cloud, OpenAI-compat marketplaces and Bedrock use.
+	//
+	// Getting this wrong is worse than it looks: a quota wall makes EVERY
+	// remaining call fail, so misfiling it as a task failure reports a total
+	// collapse in agent quality at the exact moment the agents were never
+	// asked anything. Added 2026-08-14 with the Ollama prepaid allowance at
+	// 87.9% and two days to reset.
+	"rate limit exceeded",
+	"rate_limit_exceeded",
+	"Too Many Requests",
+	"quota exceeded",
+	"quota_exceeded",
+	"insufficient credits",
+	"insufficient_quota",
+	"usage limit",
+	"ThrottlingException", // Bedrock
 }
 
 // IsUpstreamInfraError reports whether err represents a transport/upstream

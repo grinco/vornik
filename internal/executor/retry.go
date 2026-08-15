@@ -831,6 +831,16 @@ func classifyShapeFailure(err error) shapeFailureKind {
 	switch {
 	case strings.Contains(msg, "plausibility violation"):
 		return shapeFailurePlausibility
+	// A fabricated claim is as correctable as an unmet one, and was the single
+	// most common failure across both benchmark arms (2026-08-15): a reviewer
+	// that inspected no commit still has to fill review.checked_commit, so it
+	// invents "current" / "working" / "HEAD=1b" / "N/A —", the verifier proves
+	// the object does not exist, and the task dies with no corrective turn —
+	// while a schema or plausibility violation gets one. The gate is right to
+	// refuse; refusing WITHOUT offering the correction is the defect. Retries
+	// stay bounded, and an agent that fabricates again is refused again.
+	case strings.Contains(msg, "agent fabrication detected"):
+		return shapeFailurePlausibility
 	// Broad "schema violation:" prefix, NOT "schema violation: role" (T-1089).
 	// container.go emits that prefix from two guards: the role
 	// requiredOutputKeys check ("… role %q result.json is missing required

@@ -123,12 +123,42 @@ vornikctl bench agent report <journal> [flags]
 |---|---|---|
 | `--json` | `false` | emit JSON instead of a table |
 
+## vornikctl bench agent rescore
+
+Re-score a completed journal under the current contract, without re-running
+
+Re-score a completed journal under the CURRENT scoring contract.
+
+Bumping HarnessVersion correctly makes every earlier figure incomparable,
+and until this existed the only way back was to re-run the pass — hours of
+wall clock and, on a prepaid allowance, days of waiting for a quota reset.
+The evidence a probe reads is already in the ledger, so this re-scores the
+evidence instead of re-buying it. No agent runs.
+
+Cost, tokens, success and every arm axis describing the RUN are preserved:
+re-scoring changes what a number MEANS, not what happened.
+
+```
+vornikctl bench agent rescore <journal> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--database` |  | the benchmark database to READ traces from |
+| `--gold` |  | gold manifest the grant probe scores against |
+| `--out` |  | where to write the re-scored journal (required) |
+
 ## vornikctl bench agent rollup
 
 Print the customer figures: cost, efficiency, accuracy, success rate
 
+Print the customer figures for one run, or for several batches of one run.
+
+Several journals are merged before rolling up, and merging REFUSES arms
+that disagree — a batched pass is one experiment or it is not a pass.
+
 ```
-vornikctl bench agent rollup <journal> [flags]
+vornikctl bench agent rollup <journal>... [flags]
 ```
 
 | Flag | Default | Description |

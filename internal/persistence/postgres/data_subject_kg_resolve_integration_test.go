@@ -50,6 +50,7 @@ func TestIntegrationKGIndex_FindsPersonByAliasNotOnlyCanonicalName(t *testing.T)
 	idx := NewDataSubjectKGIndex(db.DB)
 
 	const project = "kg-resolve-alias-test"
+	resetKGFixture(t, db, project, "ds_real", "ds_ph", "ds_1", "ds_2")
 	seedEntity(t, db, "ent_alias", project, "J. Doe", `["Jane Doe","Janey"]`)
 	seedEntity(t, db, "ent_canon", project, "Jane Doe", `[]`)
 	seedEntity(t, db, "ent_other", project, "Someone Else", `[]`)
@@ -87,6 +88,7 @@ func TestIntegrationKGIndex_SkipsUnpublishedEntities(t *testing.T) {
 	idx := NewDataSubjectKGIndex(db.DB)
 
 	const project = "kg-resolve-lifecycle-test"
+	resetKGFixture(t, db, project, "ds_real", "ds_ph", "ds_1", "ds_2")
 	seedEntity(t, db, "ent_live", project, "Jane Doe", `[]`)
 	// A DIFFERENT canonical name, because (project_id, type, canonical_name) is
 	// UNIQUE — a superseded entity and its replacement cannot share one. Both
@@ -114,6 +116,7 @@ func TestIntegrationKGIndex_MentionChunksAreDistinct(t *testing.T) {
 	idx := NewDataSubjectKGIndex(db.DB)
 
 	const project = "kg-resolve-mentions-test"
+	resetKGFixture(t, db, project, "ds_real", "ds_ph", "ds_1", "ds_2")
 	seedEntity(t, db, "ent_m", project, "Jane Doe", `[]`)
 	// entity_mentions.chunk_id is a FOREIGN KEY into project_memory_chunks, so
 	// the chunks have to exist first — the same constraint that makes the
@@ -151,6 +154,7 @@ func TestIntegrationReassignLinks_SurvivesRowsTheTargetAlreadyHas(t *testing.T) 
 	repo := &DataSubjectRepository{db: db.DB}
 
 	const project = "kg-reassign-test"
+	resetKGFixture(t, db, project, "ds_real", "ds_ph", "ds_1", "ds_2")
 	for id, name := range map[string]string{"ds_real": "Jane Doe", "ds_ph": "kg:ent_x"} {
 		if err := repo.CreateSubject(ctx, datasubject.Subject{ID: id, DisplayName: name}); err != nil {
 			t.Fatalf("create %s: %v", id, err)
@@ -245,5 +249,32 @@ func TestIntegrationDeleteSubject_TakesIdentifiersAndLinksWithIt(t *testing.T) {
 	}
 	if len(links) != 0 {
 		t.Errorf("links outlived their subject: %+v", links)
+	}
+}
+
+// resetKGFixture removes this test's seed rows before it writes them.
+//
+// These tests share one integration database, and none of them cleaned up: they
+// passed on a fresh DB and failed on every re-run with "duplicate key". That is
+// not a harmless quirk — it makes the lane un-rerunnable, so a developer who
+// runs it twice sees failures that have nothing to do with their change and
+// learns to distrust it. Cleaning BEFORE the seed rather than after also
+// survives a previous run that crashed midway.
+func resetKGFixture(t *testing.T, db *DB, project string, subjectIDs ...string) {
+	t.Helper()
+	for _, stmt := range []string{
+		`DELETE FROM data_subject_links WHERE project_id = $1`,
+		`DELETE FROM knowledge_mentions WHERE project_id = $1`,
+		`DELETE FROM knowledge_entities WHERE project_id = $1`,
+		`DELETE FROM project_memory_chunks WHERE project_id = $1`,
+	} {
+		if _, err := db.DB.Exec(stmt, project); err != nil {
+			t.Logf("reset %s: %v", stmt, err)
+		}
+	}
+	for _, id := range subjectIDs {
+		if _, err := db.DB.Exec(`DELETE FROM data_subjects WHERE id = $1`, id); err != nil {
+			t.Logf("reset subject %s: %v", id, err)
+		}
 	}
 }

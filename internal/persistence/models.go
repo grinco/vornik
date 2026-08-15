@@ -200,11 +200,18 @@ type Task struct {
 	// Phase 23 — conversational lifecycle. All nullable / default-zero
 	// so existing tasks read back unchanged. See
 	// https://docs.vornik.io §4.3.
-	BriefAmendedAt   *time.Time `json:"brief_amended_at,omitempty"`
-	CurrentPhase     *string    `json:"current_phase,omitempty"`
-	ExpectedBy       *time.Time `json:"expected_by,omitempty"` // populated for AWAITING_EXTERNAL
-	ClosedAt         *time.Time `json:"closed_at,omitempty"`
-	ClosedBy         *string    `json:"closed_by,omitempty"`
+	BriefAmendedAt *time.Time `json:"brief_amended_at,omitempty"`
+	CurrentPhase   *string    `json:"current_phase,omitempty"`
+	ExpectedBy     *time.Time `json:"expected_by,omitempty"` // populated for AWAITING_EXTERNAL
+	ClosedAt       *time.Time `json:"closed_at,omitempty"`
+	ClosedBy       *string    `json:"closed_by,omitempty"`
+	// FailedAt is when the task entered FAILED, as distinct from when its row
+	// was last written. updated_at cannot answer this: a BEFORE UPDATE trigger
+	// stamps it on any modification, so a sweep touching an old FAILED row made
+	// it look freshly broken. Nil for rows that failed before the column
+	// existed — correctly read as "unknown", never back-filled from updated_at,
+	// because that invention is the bug.
+	FailedAt         *time.Time `json:"failed_at,omitempty"`
 	MessageCount     int        `json:"message_count"`
 	OpenCheckpointID *string    `json:"open_checkpoint_id,omitempty"` // task_messages.id of the open checkpoint, if any
 	// ChatTurnID is the chat_audit_log.id of the dispatcher turn that
@@ -2439,8 +2446,25 @@ type TaskFilter struct {
 	// flagged the unbounded scan as a per-tick latency hazard for
 	// the external_wait monitor's adjacent re-queue path.
 	UpdatedBefore *time.Time
-	PageSize      int
-	Offset        int
+	// FailedSince is the lower bound on tasks.failed_at. Nil = no bound.
+	//
+	// Separate from UpdatedSince because they answer different questions and
+	// the difference is what caused the bug: updated_at is a row-modification
+	// timestamp, so a sweep touching an old FAILED row made it look freshly
+	// broken. A card that COUNTS by failed_at must hand over a list filtered
+	// the same way, or the two disagree again.
+	FailedSince *time.Time
+	// UpdatedSince is the lower bound on tasks.updated_at. Nil = no bound.
+	//
+	// Added 2026-08-14 for the dashboard's "N failed in last 24h" card, which
+	// COUNTS with a 24h recency window but linked to an unwindowed list. The
+	// operator clicked through, saw every failure ever recorded sorted by
+	// creation date, closed one, and the banner did not move — because the task
+	// it was counting was 32 rows down and months old. A card must be able to
+	// hand the operator the same set it counted.
+	UpdatedSince *time.Time
+	PageSize     int
+	Offset       int
 }
 
 // ExecutionFilter defines filtering options for execution queries.

@@ -138,6 +138,19 @@ type Verdict struct {
 	PathCoverage float64 `json:"pathCoverage"`
 	// CoreMiss reports a tool every path needed that was not granted.
 	CoreMiss bool `json:"coreMiss"`
+	// CoreSubstitutions records core tools met by an EQUIVALENT granted tool
+	// rather than by themselves, as core→substitute. A pass earned by a
+	// substitute is a different fact from a pass earned by the tool itself, and
+	// a metric that hides which one happened cannot be audited later.
+	CoreSubstitutions map[string]string `json:"coreSubstitutions,omitempty"`
+	// CoreMissing NAMES those tools. A boolean says the hard-fail class fired
+	// but not what fired it, and a rollup may never re-query the ledger to find
+	// out (§6.2: verdicts are journaled rather than referenced precisely so a
+	// retention window cannot erase the evidence). Diagnosing the first five
+	// core misses this benchmark ever produced meant reaching into
+	// execution_tool_grants by hand while the traces happened to still exist —
+	// which is exactly the situation the journal exists to prevent.
+	CoreMissing []string `json:"coreMissing,omitempty"`
 
 	GrantPrecision        float64 `json:"grantPrecision"`
 	GrantPrecisionDefined bool    `json:"grantPrecisionDefined"`
@@ -230,12 +243,10 @@ func (p GrantProbe) Score(_ context.Context, task TaskRef, gold Gold, trace Trac
 		}
 	}
 
-	for _, tool := range gold.Core() {
-		if !accepted[tool] {
-			v.CoreMiss = true
-			break
-		}
-	}
+	// No early break: the SECOND missing core tool is as diagnostic as the
+	// first, and stopping at one would have hidden whether the five misses in
+	// the first baseline were five problems or one repeated.
+	scoreCore(&v, gold.Core(), accepted)
 
 	if invoked := normaliseTools(trace.Invoked); len(trace.Accepted) > 0 {
 		acceptedNames := normaliseTools(trace.Accepted)
@@ -322,4 +333,31 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// scoreCore records, for every tool in the core, whether the grant covers it —
+// by itself, by an equivalent, or not at all.
+//
+// Extracted from Score so the substitution rule can be read on its own: it is
+// the half of the verdict most likely to be argued with, and the first
+// baseline's five core misses were all this rule misfiring.
+func scoreCore(v *Verdict, core []string, accepted map[string]bool) {
+	for _, tool := range core {
+		via, ok := coreSatisfiedBy(tool, accepted)
+		if !ok {
+			// No early exit: the SECOND missing core tool is as diagnostic as
+			// the first, and stopping at one hides whether several misses are
+			// several problems or one repeated.
+			v.CoreMiss = true
+			v.CoreMissing = append(v.CoreMissing, tool)
+			continue
+		}
+		if via == tool {
+			continue
+		}
+		if v.CoreSubstitutions == nil {
+			v.CoreSubstitutions = map[string]string{}
+		}
+		v.CoreSubstitutions[tool] = via
+	}
 }

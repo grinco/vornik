@@ -145,3 +145,67 @@ func TestFilterTasks_NilTaskSkipped(t *testing.T) {
 		t.Fatalf("got %+v, want exactly [a]", got)
 	}
 }
+
+// UpdatedSince is INCLUSIVE, matching the repos' `updated_at >= ?`. The
+// dashboard counts failures with exactly that predicate, so an exclusive
+// bound here would make the list drop a row the card counted — the same
+// count/list disagreement the filter was added to fix.
+func TestFilterTasks_UpdatedSince(t *testing.T) {
+	cutoff := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	tasks := []*persistence.Task{
+		{ID: "stale", UpdatedAt: cutoff.Add(-time.Second)},
+		{ID: "exactly-at-cutoff", UpdatedAt: cutoff},
+		{ID: "fresh", UpdatedAt: cutoff.Add(time.Second)},
+	}
+
+	got := mocks.FilterTasks(tasks, persistence.TaskFilter{UpdatedSince: &cutoff})
+
+	if len(got) != 2 || got[0].ID != "exactly-at-cutoff" || got[1].ID != "fresh" {
+		ids := make([]string, len(got))
+		for i, g := range got {
+			ids[i] = g.ID
+		}
+		t.Fatalf("UpdatedSince = %v, want [exactly-at-cutoff fresh]", ids)
+	}
+}
+
+// Both bounds together describe a window, which is what a "between these
+// times" view needs.
+func TestFilterTasks_UpdatedSinceAndBeforeBoundAWindow(t *testing.T) {
+	lo := time.Date(2026, 8, 14, 10, 0, 0, 0, time.UTC)
+	hi := time.Date(2026, 8, 14, 14, 0, 0, 0, time.UTC)
+	tasks := []*persistence.Task{
+		{ID: "before", UpdatedAt: lo.Add(-time.Hour)},
+		{ID: "inside", UpdatedAt: lo.Add(time.Hour)},
+		{ID: "after", UpdatedAt: hi.Add(time.Hour)},
+	}
+
+	got := mocks.FilterTasks(tasks, persistence.TaskFilter{UpdatedSince: &lo, UpdatedBefore: &hi})
+
+	if len(got) != 1 || got[0].ID != "inside" {
+		t.Fatalf("window filter = %+v, want exactly [inside]", got)
+	}
+}
+
+// A task that failed before failed_at existed has NULL, and must read as
+// not-recent. Back-filling it from updated_at is precisely the bug.
+func TestFilterTasks_FailedSinceTreatsUnknownAsNotRecent(t *testing.T) {
+	cutoff := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	fresh := cutoff.Add(time.Minute)
+	stale := cutoff.Add(-90 * 24 * time.Hour)
+	tasks := []*persistence.Task{
+		{ID: "unknown-when", UpdatedAt: fresh}, // touched recently, FailedAt nil
+		{ID: "failed-long-ago", UpdatedAt: fresh, FailedAt: &stale},
+		{ID: "failed-just-now", UpdatedAt: fresh, FailedAt: &fresh},
+	}
+
+	got := mocks.FilterTasks(tasks, persistence.TaskFilter{FailedSince: &cutoff})
+
+	if len(got) != 1 || got[0].ID != "failed-just-now" {
+		ids := make([]string, len(got))
+		for i, g := range got {
+			ids[i] = g.ID
+		}
+		t.Fatalf("FailedSince = %v, want only [failed-just-now]", ids)
+	}
+}

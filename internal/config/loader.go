@@ -525,6 +525,17 @@ func DefaultConfig() *Config {
 		Scheduler: SchedulerConfig{
 			MaxConcurrentTasks: 4,
 			LeaseTimeout:       "5m",
+			SpeedAwareTimeouts: SpeedAwareTimeoutsConfig{
+				Enabled: false, // off is byte-identical to not having the feature
+				// No reference default on purpose: a wrong one silently
+				// mis-scales every timeout, and there is no safe guess. The
+				// operator declares the hardware the defaults were chosen on.
+				ReferenceTokensPerSec: 0,
+				MinFactor:             0.5,
+				MaxFactor:             8.0,
+				MinSamples:            30,
+				Window:                "24h",
+			},
 		},
 		// ApprovalTimeoutHours pre-set so an omitted key keeps the 96h
 		// default (the watchdog cancels stale AWAITING_APPROVAL tasks);

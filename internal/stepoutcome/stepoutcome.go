@@ -168,6 +168,19 @@ const (
 	// request would have exceeded the configured cumulative prompt-token
 	// ceiling for the step.
 	ClassPromptTokenBudget = "prompt_token_budget"
+	// ClassContextOverflow — the agent could not fit the conversation into
+	// the model's window, after exhausting its in-container overflow
+	// rescues. Distinct from ClassContextTimeout (wall clock ran out) and
+	// from ClassPromptTokenBudget (a self-imposed ceiling, not the model's).
+	// 14 of the 2026-08-16 long-horizon arm's 73 failures, concentrated in
+	// the analyst role.
+	ClassContextOverflow = "context_overflow"
+	// ClassPlausibilityViolation — a gate-mode plausibility rule fired on
+	// an otherwise schema-valid result.json. Kept apart from the generic
+	// schema classes because the fix differs: the shape was right and the
+	// content was not. The single largest failure cause in the 2026-08-16
+	// long-horizon arm (32 of 73).
+	ClassPlausibilityViolation = "plausibility_violation"
 	// ClassEmptyDelegation — a step that pins delegated_workflow finished a
 	// fresh pass with zero delegatedTasks, so no subtasks were scheduled.
 	// Paired with SchemaViolation (empty required collection). Without the

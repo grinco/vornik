@@ -339,7 +339,23 @@ func (e *Executor) executeAgentStepWithFallback(
 		Str("error", truncateForPrompt(err.Error(), 200)).
 		Msg("model fallback: re-running step with secondary model")
 
-	cid2, result2, err2 := e.executeAgentStepWithShapeRetry(ctx, task, execution, &fallbackPlan, fallbackStepID, step, timeout, opts)
+	// The step's declared timeout sizes the PRIMARY. The fallback is a
+	// different model on (usually) a different provider, cold and larger, so
+	// inheriting that budget sets the failover up to lose — see
+	// fallbackStepTimeout. Two executions died this way on 2026-08-16 when
+	// Ollama's weekly limit opened the breaker and the Bedrock fallback got
+	// the route step's 46s.
+	fallbackTimeout := fallbackStepTimeout(timeout)
+	if fallbackTimeout != timeout {
+		e.logger.Info().
+			Str("execution_id", execution.ID).
+			Str("step", stepID).
+			Dur("primary_timeout", timeout).
+			Dur("fallback_timeout", fallbackTimeout).
+			Msg("model fallback: widened the step budget for the secondary model")
+	}
+
+	cid2, result2, err2 := e.executeAgentStepWithShapeRetry(ctx, task, execution, &fallbackPlan, fallbackStepID, step, fallbackTimeout, opts)
 	if err2 == nil {
 		// executeAgentStep records harvested output artifacts on the plan so
 		// workflow.go can stage them for the next step. The fallback attempt

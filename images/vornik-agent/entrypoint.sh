@@ -36,6 +36,44 @@ output_contract_satisfied() {
     [ -n "$matches" ]
 }
 
+# plausibility_violations prints the gate-mode plausibility rules a candidate
+# result.json breaks, as "rule: field" entries joined by "; ". Empty output
+# means clean.
+#
+# WHY THIS RUNS IN THE CONTAINER. The daemon evaluates these rules AFTER the
+# container exits (executor/container.go EvaluatePlausibility), and until
+# 2026-08-16 nothing told the agent they existed. That was the single largest
+# failure cause in the long-horizon arm: 32 of 73 steps set testing.passed=true
+# without the fields passed_requires_pinned_validation demands and were failed
+# for a contract they were never shown.
+#
+# The rules are deliberately absent from the provider JSON Schema
+# (registry/output_schema.go: conditional draft-2019-09 support is uneven
+# across providers), so the prompt and this check are the only channels.
+#
+# Mirrors EvaluatePlausibility's semantics exactly: a rule fires when EVERY
+# entry in `when` matches — an empty `when` means always — and reports each
+# `require` field that is missing or empty. warnOnly rules never gate.
+plausibility_violations() {
+    local candidate="$1"
+    [ -z "${PLAUSIBILITY_RULES:-}" ] && return 0
+    [ "$(printf '%s' "$PLAUSIBILITY_RULES" | jq 'length' 2>/dev/null || echo 0)" -gt 0 ] || return 0
+    printf '%s' "$candidate" | jq -e . >/dev/null 2>&1 || return 0
+    printf '%s' "$PLAUSIBILITY_RULES" | jq -r --argjson res "$candidate" '
+        [ .[]
+          | select(.warnOnly != true)
+          | . as $rule
+          | select(
+              ($rule.when // {}) | to_entries
+              | all(. as $c | ($res | getpath($c.key | split("."))) == $c.value)
+            )
+          | ($rule.require // [])[] as $f
+          | ($res | getpath($f | split("."))) as $v
+          | select($v == null or $v == "" or $v == [] or $v == {})
+          | "\($rule.name): \($f)"
+        ] | join("; ")' 2>/dev/null
+}
+
 
 OUTPUT_FILE="${OUTPUT_FILE:-/app/output/result.json}"
 CANCEL_FILE="${CANCEL_FILE:-/app/input/CANCEL}"
@@ -536,6 +574,15 @@ write_result() {
         base_result=$(printf '%s' "$base_result" | jq \
             --arg outcome "prompt_token_budget" \
             --arg detail "$PROMPT_TOKEN_BUDGET_DETAIL" \
+            '. + {outcome: $outcome, outcomeDetail: $detail}')
+    elif [ -n "${ITERATION_CAP_DETAIL:-}" ]; then
+        # Same shape again: the step exhausted its tool budget but produced a
+        # real answer on the forced tool-free turn, so the workflow should not
+        # take a failure transition — while the quality row must still say
+        # iteration_exhausted rather than ok. Set by the cap branch below.
+        base_result=$(printf '%s' "$base_result" | jq \
+            --arg outcome "iteration_exhausted" \
+            --arg detail "$ITERATION_CAP_DETAIL" \
             '. + {outcome: $outcome, outcomeDetail: $detail}')
     fi
 
@@ -2400,6 +2447,10 @@ main() {
     # was never told to write. Knowing the glob lets the agent notice and fix it
     # inside the same step instead of burning a shape-retry.
     REQUIRE_OUTPUT_GLOB=$(jq -r '.workflow.requireOutputGlob // ""' "$INPUT_FILE")
+    # The role's gate-mode plausibility rules. Role-level, not step-level —
+    # unlike requireOutputGlob above — because that is where they are declared.
+    # See plausibility_violations for why the agent needs them at all.
+    PLAUSIBILITY_RULES=$(jq -c '.swarm.plausibilityRules // []' "$INPUT_FILE")
     # project_id + execution_id are needed for the realtime
     # tool-audit POST per call. Extracted here so they're in scope
     # inside the tool-call loop. Pre-existing audit-file writes
@@ -2454,6 +2505,31 @@ You have four tools: file_read, file_write, run_shell, and current_time.
 
 ## Tool call budget
 You have a budget of ${MAX_TOOL_ITERATIONS} tool calls for this task. Plan accordingly: prioritise the most important reads and writes, and avoid redundant or exploratory calls. When the budget is nearly exhausted, stop starting new work and produce your best output with what you have."
+
+    # Conditional output requirements. These are enforced by the daemon after
+    # this container exits and are deliberately NOT in the provider JSON schema
+    # (conditional schema support is uneven across providers), so this prompt
+    # block is the only place the model can learn they exist. Rendering them in
+    # the rule's own terms — "if you set X, you must also provide Y" — is what
+    # turns a post-hoc rejection into something the model can comply with.
+    if [ "$(printf '%s' "${PLAUSIBILITY_RULES:-[]}" | jq '[.[] | select(.warnOnly != true)] | length' 2>/dev/null || echo 0)" -gt 0 ]; then
+        local _plaus_lines
+        _plaus_lines=$(printf '%s' "$PLAUSIBILITY_RULES" | jq -r '
+            .[] | select(.warnOnly != true)
+            | if ((.when // {}) | length) == 0 then
+                "- You must always provide: " + ((.require // []) | join(", ")) + "."
+              else
+                "- If " + (((.when // {}) | to_entries | map("`" + .key + "` is " + (.value | tostring)) | join(" and "))) +
+                ", you must also provide: " + ((.require // []) | join(", ")) + "."
+              end' 2>/dev/null)
+        if [ -n "$_plaus_lines" ]; then
+            system_prompt="${system_prompt}
+
+## Conditional output requirements
+Your result is checked against these rules after you finish. A rule that fires with a missing or empty field FAILS the step, even if the JSON shape is otherwise valid. An empty string, empty array or empty object counts as missing.
+${_plaus_lines}"
+        fi
+    fi
 
     system_prompt="${system_prompt}
 
@@ -2584,11 +2660,29 @@ ${previous_result}
     fi
 
     # Degenerate loop detection: if the same tool call (name+args) repeats
-    # consecutively, the LLM is stuck. Break out after 3 identical repeats
-    # instead of burning the entire iteration budget.
+    # CONSECUTIVELY, the LLM is stuck.
+    #
+    # Consecutive is load-bearing: any different call resets repeat_count
+    # below, so two counted repeats are necessarily adjacent, and nothing can
+    # have mutated between them. An edit-then-retest cycle — file_edit followed
+    # by an identical `go test ./...` — breaks the chain and is never
+    # suppressed. That adjacency is why no run_shell result cache is needed
+    # here, and why one must not be added: a cache keyed on anything broader
+    # would report "unchanged" to an agent whose edit HAD changed things.
+    #
+    # 3 -> 4 (2026-08-16). Degenerate loops were 23 of the 73 failures in the
+    # long-horizon arm, spread across coder (12), analyst (8) and tester (3) —
+    # a harness defect, not role tuning. The detector killed the step without
+    # ever telling the model it was repeating itself, and its third call was
+    # wasted work whose result was already known. The second adjacent repeat is
+    # now answered with the previous result plus an explicit nudge (see
+    # DEGENERATE_NUDGE_AT); the kill moves to the fourth, so a model that
+    # ignores the nudge is still stopped.
     local last_tool_sig=""
     local repeat_count=0
-    MAX_REPEATS=3
+    local last_tool_result=""
+    MAX_REPEATS=4
+    DEGENERATE_NUDGE_AT=2
 
     # Per-turn file_read cache. Two maps keyed by resolved absolute path:
     #   FILE_READ_CACHE[path] = "<iter>|<body>"   (successful reads)
@@ -3143,6 +3237,34 @@ ${previous_result}
                 continue
             fi
 
+            # Plausibility pre-check, symmetric with the output-contract nudge
+            # above and for the same reason: the daemon applies these rules
+            # AFTER this container exits, so a violation discovered there costs
+            # the whole step. One nudge, naming the exact rule and field — if
+            # the agent ignores it the daemon still fails the step, so this
+            # converts the commonest miss into a self-correction without
+            # inventing a new way to loop.
+            #
+            # Must run BEFORE finalisation completes: once the tool-free turn
+            # has happened there are no tools left to fix anything with, which
+            # is the trap the require_output_glob fix documented.
+            if [ "${PLAUSIBILITY_NUDGED:-0}" = "0" ]; then
+                local _plaus_bad
+                _plaus_bad=$(plausibility_violations "$content")
+                if [ -n "$_plaus_bad" ]; then
+                    PLAUSIBILITY_NUDGED=1
+                    log "plausibility violation before finish ($_plaus_bad) — nudging"
+                    printf '%s' "$response" | jq -c '[.choices[0].message]' > "$WORKSPACE/.final_msg.json"
+                    jq --slurpfile msg "$WORKSPACE/.final_msg.json" '. + $msg[0]' "$msgs_file" > "$msgs_file.tmp" \
+                        && mv "$msgs_file.tmp" "$msgs_file"
+                    jq --arg v "$_plaus_bad" \
+                       '. + [{"role":"user","content":("Your result breaks a required output rule and the step will FAIL as written: " + $v + ". Either supply those fields with real values, or change the condition that triggered the rule if it is not actually true. Re-emit the complete result.")}]' \
+                       "$msgs_file" > "$msgs_file.tmp" && mv "$msgs_file.tmp" "$msgs_file"
+                    SCHEMA_FINALIZE_PENDING=0
+                    continue
+                fi
+            fi
+
             debug "LLM returned final response (${#content} chars)"
             write_result "COMPLETED" "$content" "$content" "$(get_duration)"
             log "completed successfully"
@@ -3223,6 +3345,18 @@ ${previous_result}
                 local tool_sig="${tc_name}:${tc_args}"
                 if [ "$tool_sig" = "$last_tool_sig" ]; then
                     repeat_count=$((repeat_count + 1))
+                    # Second adjacent identical call: do not execute it. The
+                    # arguments are byte-identical and nothing has run in
+                    # between — adjacency guarantees that — so the result
+                    # cannot differ, and re-running it is pure waste. Return
+                    # what it produced last time with an explicit statement
+                    # that repeating will not help. This is the only channel
+                    # that tells the model WHY the step is about to die.
+                    if [ "$repeat_count" -ge "$DEGENERATE_NUDGE_AT" ] && [ -n "$last_tool_result" ]; then
+                        log "degenerate repeat $repeat_count/$MAX_REPEATS on $tc_name — returning the previous result with a nudge instead of re-running"
+                        tool_result=$(printf '[identical to your previous %s call, which ran with the same arguments. Nothing has changed since, so calling it again will return this same result. Change your approach or produce your final answer now.]\n\n%s' "$tc_name" "$last_tool_result")
+                        tc_cache_hit=1
+                    fi
                     if [ "$repeat_count" -ge "$MAX_REPEATS" ]; then
                         log "ERROR: degenerate loop detected — $tc_name called $MAX_REPEATS times with identical args"
                         local last_content
@@ -3267,6 +3401,12 @@ ${previous_result}
             if [ "$tc_cache_hit" = "0" ]; then
                 debug "tool: $tc_name (id=$tc_id)"
                 tool_result=$(exec_tool "$tc_name" "$tc_args" 2>&1 | head -c "$TOOL_RESULT_MAX_BYTES")
+                # Kept so an adjacent identical repeat can be answered with
+                # what this call produced instead of re-running it. Only the
+                # most recent executed result is retained — the degenerate
+                # detector is consecutive-only, so nothing older can ever be
+                # the answer to a repeat.
+                last_tool_result="$tool_result"
 
                 # Populate the cache / miss tracker AFTER exec_tool for
                 # file_read. Must happen here (parent shell) — the
@@ -3431,12 +3571,53 @@ ${previous_result}
         done
     done
 
-    # Iteration cap reached — fail deterministically so the executor does not
-    # advance to the next workflow step with incomplete output.
-    log "ERROR: tool iteration cap reached ($MAX_TOOL_ITERATIONS)"
+    # Iteration cap reached. ONE forced tool-free turn before giving up.
+    #
+    # WHY. The agent is TOLD about its budget — the system prompt says "when
+    # the budget is nearly exhausted, stop starting new work and produce your
+    # best output with what you have", and a warning fires at 80% — but at the
+    # cap it was never given a turn in which to comply. The step produced
+    # nothing at all, so it was not even judgeable: it left the schema
+    # denominator entirely and landed in NoOutput.
+    #
+    # In the 2026-08-16 ctx32k arm this was 14 of 47 failed steps (30%), and
+    # every one sat EXACTLY at its budget — analyst 50 used 50/51/52/53, coder
+    # 250 used 258. A wall, not a tail.
+    #
+    # This is the same shape as the prompt-token-budget finalisation above,
+    # which already does exactly this for its own ceiling. Applying an
+    # established pattern to a path that lacked it, not inventing one.
+    #
+    # NOT A SILENT PASS. The result carries outcome=iteration_exhausted, so the
+    # ledger still records the budget exhaustion and the quality row never
+    # reads ok. Raising the caps is deliberately NOT the fix here: the analyst
+    # is already at 50 and the tester at 100, and the degenerate-loop nudge
+    # reduces wasted iterations at the source.
+    log "tool iteration cap reached ($MAX_TOOL_ITERATIONS) — one tool-free finalization turn before giving up"
     local last_content
-    last_content=$(jq -r 'map(select(.role=="assistant" and .content != null)) | last.content // "Agent reached iteration limit without final response"' "$msgs_file")
-    write_result "FAILED" "Tool iteration limit ($MAX_TOOL_ITERATIONS) reached. The task was too complex for the configured limit. Increase VORNIK_MAX_TOOL_ITERATIONS or simplify the task." "$last_content" "$(get_duration)" "tool iteration cap reached ($MAX_TOOL_ITERATIONS iterations)"
+    last_content=$(jq -r 'map(select(.role=="assistant" and .content != null)) | last.content // ""' "$msgs_file")
+
+    jq --argjson cap "$MAX_TOOL_ITERATIONS" \
+       '. + [{"role":"user","content":("You have used all " + ($cap|tostring) + " of your tool calls and no more are available. Do not call tools. Using only what you already have, produce your best complete final answer now, in the required output format. If some part is unfinished, say so explicitly rather than omitting it.")}]' \
+       "$msgs_file" > "$msgs_file.tmp" && mv "$msgs_file.tmp" "$msgs_file"
+
+    printf '[]\n' > "$WORKSPACE/.empty_tools.json"
+    local cap_req="$WORKSPACE/.cap_final_request.json" cap_resp cap_content=""
+    build_llm_request_file "$cap_req" "$msgs_file" "$WORKSPACE/.empty_tools.json" \
+        "${role}_result" "$response_format" "${response_schema:-null}"
+    if cap_resp=$(llm_call "$(cat "$cap_req")" 2>/dev/null); then
+        cap_content=$(printf '%s' "$cap_resp" | jq -r '.choices[0].message.content // ""' 2>/dev/null)
+    fi
+
+    if [ -n "$cap_content" ]; then
+        ITERATION_CAP_DETAIL="tool iteration cap reached ($MAX_TOOL_ITERATIONS iterations); answered on a forced tool-free finalization turn"
+        log "iteration cap: produced a final answer without tools (${#cap_content} chars)"
+        write_result "COMPLETED" "$cap_content" "$cap_content" "$(get_duration)"
+        return 0
+    fi
+
+    log "ERROR: tool iteration cap reached ($MAX_TOOL_ITERATIONS) and the tool-free finalization produced nothing"
+    write_result "FAILED" "Tool iteration limit ($MAX_TOOL_ITERATIONS) reached and a final tool-free turn produced no answer. The task was too complex for the configured limit. Increase VORNIK_MAX_TOOL_ITERATIONS or simplify the task." "$last_content" "$(get_duration)" "tool iteration cap reached ($MAX_TOOL_ITERATIONS iterations)"
     log "failed (iteration cap)"
     return 1
 }

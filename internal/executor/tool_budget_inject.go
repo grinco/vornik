@@ -171,3 +171,50 @@ func resolveRoleToolBudget(roleConfig *registry.SwarmRole, tier toolbudget.Tier,
 	base := roleToolBudgetBase(roleConfig)
 	return toolbudget.Resolve(base, tier, autonomous, cfg), true
 }
+
+// fallbackTimeoutFactor and fallbackTimeoutFloor size a model-fallback
+// attempt's step budget.
+//
+// WHY A FALLBACK NEEDS ITS OWN NUMBER. A step's declared timeout describes its
+// PRIMARY. The fallback is, by construction, a different model — usually on a
+// different provider, cold, and larger. Handing it the primary's budget sets
+// the failover up to lose.
+//
+// Measured on 2026-08-16: configs/workflows/adaptive.md declares 30s for the
+// route step, applyStepTimeoutBudget scaled it to 46s, Ollama Cloud 429'd its
+// weekly limit eight times, the health breaker opened on glm-5.2, and the
+// failover to zai.glm-5 died on "podman wait timed out after 46s". With
+// perCallStepTimeoutFraction the LLM call inside it had ~23s for a 15KB prompt
+// on Bedrock. Two executions failed this way in four minutes
+// (exec_20260816163416_c5bac4bb8bc1196e, exec_20260816163619_a23b35f3b3349f30).
+//
+// The factor doubles; the floor keeps a small step from producing a fallback
+// budget no cold cross-provider call could meet. 90s leaves ~45s for the LLM
+// call after the per-call fraction, which is the scale the observed Bedrock
+// call needed.
+//
+// This is NOT the perCallTimeoutForStep invariant, which stops a single call
+// outliving its step and is correct. Tightening per-call time makes this
+// failure worse, not better.
+const (
+	fallbackTimeoutFactor = 2
+	fallbackTimeoutFloor  = 90 * time.Second
+)
+
+// fallbackStepTimeout returns the wall-clock budget for a model-fallback
+// attempt, given the primary's.
+//
+// Guarantees the fallback never gets LESS time than the primary that just
+// failed. A zero primary means the caller imposes no per-step bound, and is
+// passed through unchanged: inventing a bound here would tighten a step that
+// deliberately had none.
+func fallbackStepTimeout(primary time.Duration) time.Duration {
+	if primary <= 0 {
+		return 0
+	}
+	scaled := primary * fallbackTimeoutFactor
+	if scaled < fallbackTimeoutFloor {
+		return fallbackTimeoutFloor
+	}
+	return scaled
+}

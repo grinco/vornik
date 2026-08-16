@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: abca88d0f8f23eaf6ad1171d0f0360a4c6f35a87b8ec3b7924b50e524f56c271
+      sha256: 6076dc0ddaedb79e565ecc8ddd8ba374484baf8d651c5d0383964a38188d010f
 ---
 # Release Notes
 
@@ -14,6 +14,46 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.8.6
+
+**Upgrade if you run any role on Bedrock with a declared output schema — those
+steps have been failing outright.** The agent's final turn deliberately offers
+no tools, but the conversation still carried tool records, and Bedrock rejects
+that pairing. The step produced no result at all. Fixed by converting those
+records to plain text on the final turn.
+
+**A failed step now tells you why it failed.** Previously almost every agent
+failure was recorded as "the container exited non-zero", collapsing four
+distinct faults into one label. Failures are now recorded with their actual
+cause — a stuck tool loop, an exhausted tool budget, a context overflow, or a
+broken output rule.
+
+**Agents are now shown the output rules they are judged against.** A role can
+require that, say, a claim of passing tests is accompanied by the list of cases
+checked. Those rules were enforced after the fact and never communicated, so
+work was rejected for a contract the agent had never seen. The rules are now
+part of the agent's instructions and are checked before it finishes, with one
+chance to correct.
+
+**An agent that repeats itself is warned before the step is ended**, and an
+agent that runs out of tool calls now produces its best answer instead of
+nothing. The record still shows the budget was exhausted, so this improves the
+output without hiding the cause.
+
+**A fallback model gets its own time budget.** When a primary model was
+unavailable, the replacement inherited a timeout sized for the original and
+could not finish in it — so failover reliably failed. It now gets a budget of
+its own.
+
+**The daemon no longer refuses to start when a container-runtime check is
+merely slow**, and benchmark runs now verify the model's real context window
+against the endpoint instead of trusting configuration.
+
+No configuration changes are required. If you pin per-model context windows,
+confirm they match what your endpoint actually serves.
 
 ---
 

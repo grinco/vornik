@@ -176,6 +176,62 @@ func (e *Executor) effectiveRoleModelForTask(task *persistence.Task, roleConfig 
 	return e.effectiveRoleModel(roleConfig)
 }
 
+// refineAgentFailureOutcome recovers the agent's own diagnosis from a failed
+// step's error text, so the ledger records WHY the container exited rather
+// than only that it did.
+//
+// WHY THIS EXISTS. The agent diagnoses itself precisely — entrypoint.sh names
+// the looping tool and repeat count, the cap path names the cap, the overflow
+// path names the window — and all of it was being discarded. The 2026-08-16
+// long-horizon arm produced 73 failed steps, every one recorded as
+// failed/container_non_zero_exit, and the outcomes `degenerate_loop` and
+// `iteration_exhausted` had NEVER been written anywhere in the bench DB.
+//
+// The handling was not missing. The defer's degenerate-loop arm is an
+// `else if degenerateLoopDetail != ""` that requires err == nil — its comment
+// reads "Container exit was clean but the tool loop got stuck". But the guard
+// ends `write_result "FAILED" … ; return 1`, so the container always exits
+// non-zero, err != nil, and the first branch consumes the case. The else-if is
+// unreachable for the failure it names. This refinement therefore sits INSIDE
+// the err != nil path rather than beside it.
+//
+// MATCH THE SPECIFIC PHRASE, IN PRECEDENCE ORDER. Bare keywords do not work
+// here, for two independent reasons:
+//
+//   - error_detail has the container log appended, and those lines contain
+//     "context_size=…". A `context` keyword match therefore captures
+//     iteration-cap failures as context overflows. That artefact is what made
+//     an earlier analysis report "iteration cap: zero rows" when the true
+//     figure was 4.
+//   - The degenerate-loop message DISCUSSES the context window in prose
+//     ("Context was only 11% full … so this is NOT context exhaustion"), so it
+//     must be matched before any context rule.
+//
+// Matching is case-insensitive deliberately: this function only picks a label,
+// so tolerating a capitalisation change is free. classifyShapeFailure is the
+// opposite case — it routes the corrective retry, matches case-sensitively,
+// and its message contract is pinned by test (incident T-1089). Do not
+// harmonise the two.
+//
+// Unrecognised text returns today's values, so this is purely additive.
+func refineAgentFailureOutcome(detail string) (stepoutcome.Outcome, string) {
+	lowered := strings.ToLower(detail)
+	switch {
+	case strings.Contains(lowered, "plausibility violation"):
+		return stepoutcome.SchemaViolation, stepoutcome.ClassPlausibilityViolation
+	case strings.Contains(lowered, "degenerate loop"):
+		return stepoutcome.DegenerateLoop, stepoutcome.ClassDegenerateLoop
+	case strings.Contains(lowered, "tool iteration limit"):
+		return stepoutcome.IterationExhausted, stepoutcome.ClassIterationCap
+	case strings.Contains(lowered, "context window"):
+		// Reached only after the degenerate-loop case above has claimed the
+		// messages that merely mention the window.
+		return stepoutcome.Failed, stepoutcome.ClassContextOverflow
+	default:
+		return stepoutcome.Failed, stepoutcome.ClassContainerNonZeroExit
+	}
+}
+
 // classifyStepOutcome maps an agent step's (ctx, err) to the outcome label
 // used by vornik_executor_agent_step_outcomes_total. Context cancellation
 // wins over err — a cancelled run that incidentally also returns an error
@@ -239,6 +295,11 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// dollar budget tripwire: clean agent exit, but not an unconstrained
 	// OK because the wrapper forced a tool-free finalization answer.
 	var promptTokenBudgetDetail string
+	// iterationCapDetail is the tool-budget analogue of the two above: the
+	// agent exhausted its tool-call cap, produced a real answer on a forced
+	// tool-free turn, and exited cleanly. The workflow must not take a failure
+	// transition, but the quality row must not read ok either.
+	var iterationCapDetail string
 	// agentStamp carries the migration-106 budget columns stamped on the
 	// outcome row for agent steps only. Populated from the resolved budget
 	// (resolveRoleToolBudget) and the tool-audit count (persistToolAuditFromResult);
@@ -290,8 +351,16 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 				outcome = string(stepoutcome.ParseError)
 				errClass = stepoutcome.ClassVerifyFailed
 			default:
-				outcome = string(stepoutcome.Failed)
-				errClass = stepoutcome.ClassContainerNonZeroExit
+				// The agent names its own cause in result.json, and that
+				// text reaches us in err. Recover it rather than recording
+				// only "the container exited non-zero" — the whole
+				// 2026-08-16 long-horizon arm was one indistinguishable
+				// bucket because this was thrown away. Falls back to
+				// Failed/container_non_zero_exit for anything unrecognised,
+				// so the change is additive.
+				refinedOutcome, refinedClass := refineAgentFailureOutcome(err.Error())
+				outcome = string(refinedOutcome)
+				errClass = refinedClass
 			}
 			errDetail = err.Error()
 			// Hallucination-driven failures get a distinct error class
@@ -322,6 +391,10 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 			outcome = string(stepoutcome.BudgetTripwire)
 			errClass = stepoutcome.ClassBudgetTripwire
 			errDetail = budgetTripwireDetail
+		} else if iterationCapDetail != "" {
+			outcome = string(stepoutcome.IterationExhausted)
+			errClass = stepoutcome.ClassIterationCap
+			errDetail = iterationCapDetail
 		} else if promptTokenBudgetDetail != "" {
 			// Agent voluntarily stopped the tool loop before prompt
 			// replay crossed the configured per-step token ceiling.
@@ -419,6 +492,12 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// check.
 	if opts.RequireOutputGlob == "" {
 		opts.RequireOutputGlob = step.RequireOutputGlob
+	}
+	// Same reasoning for the role's plausibility rules: set HERE, on the one
+	// path that also EVALUATES them below, so an agent told about a rule is
+	// always told about the rule the daemon will actually apply.
+	if len(opts.PlausibilityRules) == 0 && roleConfig != nil {
+		opts.PlausibilityRules = roleConfig.PlausibilityRules
 	}
 	// Layer 1 of the context-discovery hardening: pre-load the
 	// project's canonical context files (PROJECT_CONTEXT.md +
@@ -816,6 +895,18 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 				promptTokenBudgetDetail = resultStatus.OutcomeDetail
 				if promptTokenBudgetDetail == "" {
 					promptTokenBudgetDetail = "agent self-finalized on prompt-token budget (no detail provided)"
+				}
+			case string(stepoutcome.IterationExhausted):
+				// The agent hit its tool-call cap and answered on a forced
+				// tool-free turn rather than dying with no output at all.
+				// Clean exit so the workflow does not take a failure
+				// transition, but the quality row must still record the
+				// exhaustion — 14 of 47 failed steps in the 2026-08-16 ctx32k
+				// arm were iteration caps, every one sitting exactly at its
+				// budget, and before this they produced nothing judgeable.
+				iterationCapDetail = resultStatus.OutcomeDetail
+				if iterationCapDetail == "" {
+					iterationCapDetail = "agent self-finalized on the tool iteration cap (no detail provided)"
 				}
 			}
 		}

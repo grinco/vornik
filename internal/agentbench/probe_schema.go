@@ -113,6 +113,27 @@ type SchemaVerdict struct {
 	// remainder it exists to explain.
 	NoOutputByOutcome map[string]int `json:"noOutputByOutcome,omitempty"`
 
+	// NoOutputByErrorClass breaks NoOutput down by ERROR CLASS.
+	//
+	// NoOutputByOutcome answers "what outcome did the ledger record", which
+	// for a crashed container is always `failed`. The cause lives in
+	// error_class, and until 2026-08-16 nothing wrote a useful one: the
+	// long-horizon arm's 73 failures were all container_non_zero_exit, and
+	// the real split — plausibility 32, degenerate loop 23, context overflow
+	// 14, iteration cap 4 — had to be recovered by hand from error_detail
+	// prose. Getting that recovery wrong is easy: error_detail carries the
+	// container log, whose lines mention context_size, so a keyword query
+	// mis-attributes iteration-cap failures as context overflows.
+	//
+	// Keyed by raw class string, for the same reason its sibling is keyed by
+	// raw outcome: a cause this map cannot name would vanish into the
+	// remainder it exists to explain. Steps with no class recorded bucket as
+	// "unclassified" rather than being dropped, so the shares always sum to
+	// NoOutput.
+	//
+	// Additive to the journal — does not affect arm comparability.
+	NoOutputByErrorClass map[string]int `json:"noOutputByErrorClass,omitempty"`
+
 	// SchemaConformance is conforming / JUDGED — did the step end up conformant,
 	// however many attempts it took, over the steps that produced output at all.
 	SchemaConformance        float64 `json:"schemaConformance"`
@@ -279,6 +300,17 @@ func (p SchemaProbe) tallySteps(v *SchemaVerdict, final map[string]StepOutcome) 
 				v.NoOutputByOutcome = map[string]int{}
 			}
 			v.NoOutputByOutcome[o.Outcome]++
+			if v.NoOutputByErrorClass == nil {
+				v.NoOutputByErrorClass = map[string]int{}
+			}
+			class := o.ErrorClass
+			if class == "" {
+				// Named rather than dropped: a step whose cause nothing
+				// recorded is itself a finding, and silently omitting it
+				// would make the breakdown's shares not sum to NoOutput.
+				class = "unclassified"
+			}
+			v.NoOutputByErrorClass[class]++
 			continue
 		}
 		v.Judged++

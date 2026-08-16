@@ -105,6 +105,29 @@ type agentInputOpts struct {
 	// glob lets the agent notice and fix it inside the same step instead of
 	// burning a shape retry. Empty for steps with no contract.
 	RequireOutputGlob string
+	// PlausibilityRules mirrors the ROLE's gate-mode plausibility rules into
+	// the agent payload.
+	//
+	// Same defect as RequireOutputGlob above, and the largest single failure
+	// cause in the 2026-08-16 long-horizon arm: 32 of 73 steps set
+	// testing.passed=true without the fields passed_requires_pinned_validation
+	// demands, and the daemon failed them at container.go:866 AFTER the
+	// container exited, for a contract nothing had shown them.
+	//
+	// The rules were invisible in every channel. registry/output_schema.go:389
+	// excludes the plausibility block from the generated provider schema BY
+	// DECISION — conditional JSON Schema is unevenly supported across providers
+	// and EvaluatePlausibility runs post-receipt anyway — and no other channel
+	// carried it. That exclusion stands; this closes the omission.
+	//
+	// Sourced from the ROLE, not the step: unlike RequireOutputGlob (a
+	// WorkflowStep field), plausibility rules are role-level, reconciled from
+	// the legacy roles[].plausibilityRules and roles[].outputSchema.plausibility
+	// by DerivePlausibilityRules at config load.
+	//
+	// Nil for roles with no rules, so their payloads are unchanged and an older
+	// agent image simply ignores the field.
+	PlausibilityRules []registry.PlausibilityRule
 	// PreviousResult is the message from the preceding step's result.json.
 	PreviousResult string
 	// SystemPrompt overrides the default system prompt for this role.
@@ -493,6 +516,25 @@ func buildAgentInput(task *persistence.Task, executionID, workflowID, swarmID, s
 	// unchanged and an older agent image simply ignores the field.
 	if opts != nil && opts.RequireOutputGlob != "" {
 		input["workflow"].(map[string]any)["requireOutputGlob"] = opts.RequireOutputGlob
+	}
+	// Plausibility rules ride in the SWARM block because they are a property of
+	// the role, not the step — the asymmetry with requireOutputGlob above is
+	// deliberate and mirrors where each is declared. Additive: absent for roles
+	// with no rules.
+	if opts != nil && len(opts.PlausibilityRules) > 0 {
+		encoded := make([]map[string]any, 0, len(opts.PlausibilityRules))
+		for _, r := range opts.PlausibilityRules {
+			encoded = append(encoded, map[string]any{
+				"name":    r.Name,
+				"when":    r.When,
+				"require": r.Require,
+				// warnOnly rules do not fail the step, so the agent should
+				// know which ones are advisory rather than treating every
+				// rule as a gate.
+				"warnOnly": r.WarnOnly,
+			})
+		}
+		input["swarm"].(map[string]any)["plausibilityRules"] = encoded
 	}
 	// resultEmissionTool (item 9): the strongest portable enforcement — the
 	// model emits its result via a tool call whose args ARE result.json, which

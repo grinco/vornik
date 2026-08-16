@@ -1218,3 +1218,83 @@ func bedrockStopReasonToOpenAI(s bedrocktypes.StopReason) string {
 		return "stop"
 	}
 }
+
+// flattenToolBlocks rewrites ToolUse / ToolResult content blocks into plain
+// text blocks.
+//
+// WHY. Bedrock Converse validates tool blocks against toolConfig and rejects
+// the whole request when the history carries them and toolConfig is absent:
+// "The toolConfig field must be defined when using toolUse and toolResult
+// content blocks". The agent's tool-free finalisation turn deliberately
+// offers no tools while the history is full of them, so every Bedrock-backed
+// role with an outputSchema that reached the json_object branch died on its
+// final turn and produced no result.json. Reproduced against the production
+// daemon 2026-08-16 16:17:53 (tool_count=0, message_count=4).
+//
+// WHY FLATTEN RATHER THAN RE-SUPPLY THE DEFINITIONS. Attaching toolConfig
+// leaves ToolChoice at Bedrock's default (auto), so the model may call a tool
+// on the one turn whose purpose is to produce the final answer — the failure
+// the tool-free turn exists to prevent, and the reason the ToolChoice=any
+// forcing was removed from buildConverseInput in the first place.
+//
+// The exchange survives as readable text: the finalisation turn still needs
+// to know what it ran and what came back.
+func flattenToolBlocks(msgs []bedrocktypes.Message) []bedrocktypes.Message {
+	out := make([]bedrocktypes.Message, 0, len(msgs))
+	for _, m := range msgs {
+		blocks := make([]bedrocktypes.ContentBlock, 0, len(m.Content))
+		for _, b := range m.Content {
+			switch v := b.(type) {
+			case *bedrocktypes.ContentBlockMemberToolUse:
+				name := aws.ToString(v.Value.Name)
+				if name == "" {
+					name = "unknown"
+				}
+				args := ""
+				if raw, err := documentToJSON(v.Value.Input); err == nil {
+					args = string(raw)
+				}
+				blocks = append(blocks, &bedrocktypes.ContentBlockMemberText{
+					Value: strings.TrimSpace(fmt.Sprintf("[tool call: %s %s]", name, args)),
+				})
+			case *bedrocktypes.ContentBlockMemberToolResult:
+				blocks = append(blocks, &bedrocktypes.ContentBlockMemberText{
+					Value: "[tool result: " + toolResultBlockText(v.Value) + "]",
+				})
+			default:
+				blocks = append(blocks, b)
+			}
+		}
+		// An assistant turn carrying only a tool call would otherwise flatten
+		// to an empty content array, which Bedrock also rejects — trading one
+		// 400 for another.
+		if len(blocks) == 0 {
+			blocks = append(blocks, &bedrocktypes.ContentBlockMemberText{
+				Value: "[tool exchange omitted]",
+			})
+		}
+		m.Content = blocks
+		out = append(out, m)
+	}
+	return out
+}
+
+// toolResultBlockText extracts the textual payload of a ToolResultBlock,
+// which the SDK models as its own content-block union.
+func toolResultBlockText(tr bedrocktypes.ToolResultBlock) string {
+	var sb strings.Builder
+	for _, c := range tr.Content {
+		t, ok := c.(*bedrocktypes.ToolResultContentBlockMemberText)
+		if !ok {
+			continue
+		}
+		if sb.Len() > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(t.Value)
+	}
+	if sb.Len() == 0 {
+		return "(empty)"
+	}
+	return sb.String()
+}

@@ -851,6 +851,16 @@ func (p *BedrockProvider) buildConverseInput(ctx context.Context, messages []Mes
 		// tool — there the synthetic tool IS the final answer
 		// carrier, so forcing it is correct.
 		input.ToolConfig = &bedrocktypes.ToolConfiguration{Tools: bedrockTools}
+	} else {
+		// No tools offered. Any toolUse/toolResult blocks still in the
+		// history would make Bedrock demand a toolConfig we are
+		// deliberately not sending, and reject the request outright:
+		// "The toolConfig field must be defined when using toolUse and
+		// toolResult content blocks". This is the agent's tool-free
+		// finalisation turn. Flatten the blocks to text rather than
+		// attaching tools we do not want the model to call.
+		// Regression 2026-08-16.
+		input.Messages = flattenToolBlocks(input.Messages)
 	}
 	return input, nil
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -362,6 +363,9 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 	}
 	defer closeDB()
 	if err := verifyDaemonTarget(cmd.Context(), daemon); err != nil {
+		return err
+	}
+	if err := verifyModelWindow(cmd.Context(), cmd); err != nil {
 		return err
 	}
 
@@ -1085,4 +1089,64 @@ func printGrantAccuracy(w *tabwriter.Writer, r agentbench.Rollup) {
 	} else if r.Accuracy.CoreSubstituted > 0 {
 		_, _ = fmt.Fprintf(w, "  core covered by an equivalent\t%d\n", r.Accuracy.CoreSubstituted)
 	}
+}
+
+// verifyModelWindow compares the context window the arm is CONFIGURED for
+// against the one the serving endpoint actually reports.
+//
+// WHY THIS IS A PREFLIGHT AND NOT A NOTE. context_size drives the agent's
+// whole compaction budget: entrypoint.sh allows
+// (context - max_tokens - 2048) * 3 bytes/token * 80%. A model with no
+// agent_llm.model_limits entry silently inherits the daemon-wide global, and
+// nothing reports the substitution. That produced the 2026-07-12 overflow
+// incident and then 14 of the 73 failures in the 2026-08-16 long-horizon arm,
+// where Qwen/Qwen3.8-27B-FP8 ran against a declared 100000 and a real 32768.
+//
+// A misconfigured window does not fail loudly at config-read time. It fails
+// mid-run, as overflows, hours in — which is exactly the class of fault a
+// preflight exists to convert into a refusal.
+//
+// Opt-in by environment, mirroring VORNIK_BENCH_DSN: without an endpoint and
+// model there is nothing to probe, and a bench run against a provider this
+// check cannot reach must not be blocked by it. Skipping is reported, never
+// silent — an unrun check that looks like a passed one is how the scoring
+// harness went 27 commits stale unnoticed.
+func verifyModelWindow(ctx context.Context, cmd *cobra.Command) error {
+	endpoint := strings.TrimSpace(os.Getenv("VORNIK_BENCH_MODEL_ENDPOINT"))
+	model := strings.TrimSpace(os.Getenv("VORNIK_BENCH_MODEL"))
+	if endpoint == "" || model == "" {
+		cmd.PrintErrln("  ..  model window: not checked (set VORNIK_BENCH_MODEL_ENDPOINT and " +
+			"VORNIK_BENCH_MODEL to verify the arm's context_size against the endpoint)")
+		return nil
+	}
+
+	configured := 0
+	if raw := strings.TrimSpace(os.Getenv("VORNIK_BENCH_MODEL_CONTEXT")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("VORNIK_BENCH_MODEL_CONTEXT=%q is not an integer", raw)
+		}
+		configured = n
+	}
+
+	discovered, err := agentbench.DiscoverModelWindow(ctx, endpoint, os.Getenv("VORNIK_BENCH_MODEL_API_KEY"), model)
+	if err != nil {
+		// A probe that cannot reach the endpoint says nothing about the
+		// configuration. Report it and continue rather than blocking a run on
+		// a diagnostic's own failure.
+		cmd.PrintErrf("  ..  model window: probe failed (%v) — configured value unverified\n", err)
+		return nil
+	}
+
+	v := agentbench.CheckConfiguredWindow(model, configured, discovered)
+	if v.Fatal {
+		return fmt.Errorf("model window: %s", v.Message)
+	}
+	switch v.Verdict {
+	case agentbench.WindowOK:
+		cmd.PrintErrf("  ok  model window: %s\n", v.Message)
+	default:
+		cmd.PrintErrf("  !!  model window: %s\n", v.Message)
+	}
+	return nil
 }

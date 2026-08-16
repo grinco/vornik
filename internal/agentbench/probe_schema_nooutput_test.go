@@ -96,3 +96,66 @@ func TestBuildRollup_AggregatesNoOutputCauses(t *testing.T) {
 		t.Errorf("rolled-up %s = %d, want 1", OutcomeIterationExhausted, got)
 	}
 }
+
+// NoOutputByOutcome alone cannot name a cause: every container failure arrives
+// as outcome "failed". The 2026-08-16 long-horizon arm's 73 failures were one
+// indistinguishable bucket, and the real split had to be recovered by hand
+// from error_detail prose. Error class is the axis that separates them.
+func TestScoreSchema_NoOutputByErrorClass(t *testing.T) {
+	trace := Trace{
+		ExecutionID: "exec-nobec-1",
+		Outcomes: []StepOutcome{
+			{StepID: "s1", Role: "tester", Outcome: OutcomeSchemaViolation, Attempt: 1, ErrorClass: "plausibility_violation"},
+			{StepID: "s2", Role: "coder", Outcome: OutcomeDegenerateLoop, Attempt: 1, ErrorClass: "degenerate_loop"},
+			{StepID: "s3", Role: "analyst", Outcome: OutcomeFailed, Attempt: 1, ErrorClass: "context_overflow"},
+			{StepID: "s4", Role: "analyst", Outcome: OutcomeDegenerateLoop, Attempt: 1, ErrorClass: "degenerate_loop"},
+			{StepID: "s5", Role: "analyst", Outcome: OutcomeIterationExhausted, Attempt: 1, ErrorClass: "iteration_cap"},
+			{StepID: "s6", Role: "coder", Outcome: OutcomeOK, Attempt: 1},
+		},
+	}
+
+	v := SchemaProbe{}.ScoreSchema(trace, TaskRef{ID: "lh-01"})
+
+	// s1 is a schema_violation, which IS judgeable — it produced output. The
+	// other four produced nothing.
+	if v.NoOutput != 4 {
+		t.Fatalf("NoOutput: got %d want 4 (byClass=%v)", v.NoOutput, v.NoOutputByErrorClass)
+	}
+	want := map[string]int{
+		"degenerate_loop":  2,
+		"context_overflow": 1,
+		"iteration_cap":    1,
+	}
+	for class, n := range want {
+		if v.NoOutputByErrorClass[class] != n {
+			t.Errorf("class %q: got %d want %d", class, v.NoOutputByErrorClass[class], n)
+		}
+	}
+	if len(v.NoOutputByErrorClass) != len(want) {
+		t.Errorf("unexpected classes present: %v", v.NoOutputByErrorClass)
+	}
+
+	// The breakdown must account for every no-output step, or it misleads
+	// exactly where it is meant to explain.
+	sum := 0
+	for _, n := range v.NoOutputByErrorClass {
+		sum += n
+	}
+	if sum != v.NoOutput {
+		t.Errorf("class shares sum to %d but NoOutput is %d", sum, v.NoOutput)
+	}
+}
+
+// A no-output step whose class nothing recorded must still be counted, under a
+// name that says so. Dropping it would break the sum-to-NoOutput property and
+// hide the very steps most in need of attention.
+func TestScoreSchema_NoOutputByErrorClass_EmptyClassBucketsAsUnclassified(t *testing.T) {
+	trace := Trace{
+		ExecutionID: "exec-nobec-2",
+		Outcomes:    []StepOutcome{{StepID: "s1", Role: "coder", Outcome: OutcomeFailed, Attempt: 1}},
+	}
+	v := SchemaProbe{}.ScoreSchema(trace, TaskRef{ID: "lh-02"})
+	if v.NoOutputByErrorClass["unclassified"] != 1 {
+		t.Errorf(`empty error class must bucket as "unclassified", got %v`, v.NoOutputByErrorClass)
+	}
+}

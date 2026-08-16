@@ -208,6 +208,38 @@ func New(opts ...ManagerOption) (*Manager, error) {
 	return m, nil
 }
 
+// podmanVersionUsable reports whether a `podman version --format json`
+// invocation proves podman works, EVEN IF the process itself errored.
+//
+// WHY THE EXIT STATUS IS NOT THE ANSWER. On 2026-08-16 the vornik-ee#66 CI
+// E2E lane failed with `error="signal: killed"` while the captured output was
+// a complete, valid version document: podman had answered correctly and was
+// then killed when the 5s check timeout expired on a loaded nested-podman
+// runner. The daemon concluded podman was unavailable, scheduler
+// initialisation failed, /healthz never came up, and the lane timed out.
+//
+// A slow-but-functional podman must not take the daemon down. If the output
+// parses as a version document naming a client version, podman is
+// demonstrably working whatever happened to the process afterwards.
+//
+// The check stays strict where it matters: no output, truncated output,
+// non-JSON noise, or well-formed JSON that is not a version document all
+// remain failures. Only "it answered, then died" is forgiven.
+func podmanVersionUsable(output []byte, err error) bool {
+	if err == nil {
+		return true
+	}
+	var doc struct {
+		Client struct {
+			Version string `json:"Version"`
+		} `json:"Client"`
+	}
+	if jsonErr := json.Unmarshal(output, &doc); jsonErr != nil {
+		return false
+	}
+	return strings.TrimSpace(doc.Client.Version) != ""
+}
+
 // verifyPodmanAvailable checks that podman is functional.
 func (m *Manager) verifyPodmanAvailable() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -215,6 +247,15 @@ func (m *Manager) verifyPodmanAvailable() error {
 
 	cmd := exec.CommandContext(ctx, m.podmanPath, "version", "--format", "json")
 	output, err := cmd.CombinedOutput()
+	if err != nil && podmanVersionUsable(output, err) {
+		// Answered, then died. See podmanVersionUsable — refusing to start
+		// here cost the vornik-ee#66 E2E lane a full run.
+		m.logger.Warn().
+			Err(err).
+			Str("command", m.podmanPath+" version --format json").
+			Msg("podman version check errored but returned a valid version document — treating podman as available")
+		return nil
+	}
 	if err != nil {
 		m.logger.Error().
 			Err(err).

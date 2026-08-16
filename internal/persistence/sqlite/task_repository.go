@@ -179,7 +179,20 @@ func (r *TaskRepository) Update(ctx context.Context, task *persistence.Task) err
 		    last_error = ?,
 		    last_error_class = ?,
 		    budget_usd = ?,
-		    updated_at = ?
+		    updated_at = ?,
+		    -- See the postgres twin for the full rationale. Short version:
+		    -- this full-row Update is the path the executor's terminal
+		    -- failure actually takes, 7e7b2cef stamped only UpdateStatus and
+		    -- TransitionConditional, and the dashboard's recency card —
+		    -- which filters on failed_at — therefore went silent while tasks
+		    -- were visibly failing. COALESCE keeps the FIRST failure time so
+		    -- a later row touch cannot make an old failure look fresh;
+		    -- leaving FAILED clears it.
+		    -- NOTE the placeholder rather than a bare status column: inside
+		    -- an UPDATE, a column reference yields the row's OLD value, so
+		    -- testing the column would ask what the task WAS, not what it
+		    -- is becoming.
+		    failed_at = CASE WHEN ? = 'FAILED' THEN COALESCE(failed_at, ?) ELSE NULL END
 		WHERE id = ?`,
 		task.ProjectID, task.WorkflowID, task.IdempotencyKey, task.ParentTaskID, string(task.CreationSource),
 		nullableDelegationMode(task.DelegationMode), string(task.Status), task.Priority,
@@ -187,6 +200,10 @@ func (r *TaskRepository) Update(ctx context.Context, task *persistence.Task) err
 		task.LeaseID, sqliteTimePtr(task.LeasedAt), task.LeasedBy, sqliteTimePtr(task.LeaseExpiresAt),
 		task.Attempt, task.MaxAttempts, task.LastError, task.LastErrorClass,
 		task.BudgetUSD,
+		sqliteTime(task.UpdatedAt),
+		// failed_at's CASE: the NEW status, then the fallback instant (same
+		// as updated_at, so a row entering FAILED gets a coherent pair).
+		string(task.Status),
 		sqliteTime(task.UpdatedAt),
 		task.ID,
 	)

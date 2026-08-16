@@ -242,6 +242,11 @@ func TestTaskUpdate_HappyPath(t *testing.T) {
 			nil, nil, nil, nil,
 			1, 3, nil, nil,
 			sqlmock.AnyArg(), nil,
+			// $22 — the status repeated for the failed_at CASE. A separate
+			// placeholder rather than reusing $8, because a parameter both
+			// assigned to a column and compared to a literal makes postgres
+			// refuse to deduce its type.
+			string(persistence.TaskStatusRunning),
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

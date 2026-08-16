@@ -108,3 +108,59 @@ func buildTestAgentInput(t *testing.T, opts *agentInputOpts) map[string]any {
 	}
 	return raw
 }
+
+// THE TEST THAT WAS MISSING, and why the fix shipped broken once.
+//
+// TestBuildAgentInput_CarriesPlausibilityRules proves the payload BUILDER
+// carries rules when opts already has them. It says nothing about whether the
+// executor ever puts them in opts — and the first version of this fix read the
+// outer roleConfig variable ~74 lines before it was assigned, guarded by a
+// `roleConfig != nil` check that made the mistake a silent no-op.
+//
+// Result: rules never reached any payload, the in-container nudge never fired
+// once across an entire benchmark arm, and the tester kept being failed for a
+// contract it still could not see. The unit tests were green throughout.
+//
+// This asserts the resolution the executor actually performs at that point in
+// executeAgentStep: role lookup off the plan's swarm, not a variable that is
+// still nil.
+func TestExecutorResolvesPlausibilityRulesBeforeBuildingThePayload(t *testing.T) {
+	sw := &registry.Swarm{
+		ID: "dev-swarm",
+		Roles: []registry.SwarmRole{
+			{Name: "analyst"}, // deliberately first, and rule-free
+			{Name: "tester", PlausibilityRules: []registry.PlausibilityRule{{
+				Name:    "passed_requires_pinned_validation",
+				When:    map[string]any{"testing.passed": true},
+				Require: []string{"testing.pinned_cases_validated", "testing.cases"},
+			}}},
+		},
+	}
+
+	rc, err := findSwarmRole(sw, "tester")
+	if err != nil || rc == nil {
+		t.Fatalf("findSwarmRole(tester): %v", err)
+	}
+	if len(rc.PlausibilityRules) == 0 {
+		t.Fatal("the lookup the executor performs must yield the tester's rules")
+	}
+
+	raw := buildTestAgentInput(t, &agentInputOpts{PlausibilityRules: rc.PlausibilityRules})
+	swarmBlock, _ := raw["swarm"].(map[string]any)
+	rules, _ := swarmBlock["plausibilityRules"].([]any)
+	if len(rules) != 1 {
+		t.Fatalf("rules resolved from the plan's swarm must reach the payload, got %#v", swarmBlock["plausibilityRules"])
+	}
+
+	// A rule-free role must still produce no key, so rule-free payloads are
+	// byte-identical to before.
+	rcAnalyst, err := findSwarmRole(sw, "analyst")
+	if err != nil || rcAnalyst == nil {
+		t.Fatalf("findSwarmRole(analyst): %v", err)
+	}
+	rawAnalyst := buildTestAgentInput(t, &agentInputOpts{PlausibilityRules: rcAnalyst.PlausibilityRules})
+	analystSwarm, _ := rawAnalyst["swarm"].(map[string]any)
+	if _, present := analystSwarm["plausibilityRules"]; present {
+		t.Errorf("a rule-free role must not gain the key, got %#v", analystSwarm["plausibilityRules"])
+	}
+}

@@ -496,8 +496,18 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// Same reasoning for the role's plausibility rules: set HERE, on the one
 	// path that also EVALUATES them below, so an agent told about a rule is
 	// always told about the rule the daemon will actually apply.
-	if len(opts.PlausibilityRules) == 0 && roleConfig != nil {
-		opts.PlausibilityRules = roleConfig.PlausibilityRules
+	//
+	// Resolved locally rather than read from the outer roleConfig: that
+	// variable is not assigned until well AFTER buildAgentInput has already
+	// run, so reading it here yields nil and the rules never reach the
+	// payload. The first version of this did exactly that, guarded by a
+	// `roleConfig != nil` check that turned the mistake into a silent no-op —
+	// the agent kept being failed for rules it was never shown, and the
+	// in-container nudge never fired once across a whole benchmark arm.
+	if len(opts.PlausibilityRules) == 0 && plan != nil && plan.swarm != nil {
+		if rc, rcErr := findSwarmRole(plan.swarm, step.Role); rcErr == nil && rc != nil {
+			opts.PlausibilityRules = rc.PlausibilityRules
+		}
 	}
 	// Layer 1 of the context-discovery hardening: pre-load the
 	// project's canonical context files (PROJECT_CONTEXT.md +

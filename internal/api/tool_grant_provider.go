@@ -72,7 +72,7 @@ func (p *ToolGrantProvider) Tools(_ string) []chat.Tool {
 				"properties": {
 					"step_id": {"type": "string", "description": "Step to scope. Defaults to the current step."},
 					"tools":   {"type": "array", "items": {"type": "string"},
-					            "description": "Fully-qualified tool names (mcp__server__tool) this step needs."},
+					            "description": "A SUBSET of the tools you already have available in this step, named exactly as they appear in your tool list. This narrows what a step is offered; it cannot add a tool you do not already hold, and naming one refuses the whole request. Do not guess at names."},
 					"escalation": {"type": "boolean", "description": "True when widening an earlier grant for the same step."}
 				},
 				"required": ["tools"]

@@ -174,7 +174,28 @@ func (r *TaskRepository) Update(ctx context.Context, task *persistence.Task) err
 		    last_error = $18,
 		    last_error_class = $19,
 		    updated_at = $20,
-		    budget_usd = $21
+		    budget_usd = $21,
+		    -- failed_at rides along here too, and this is the path that
+		    -- MATTERS: the executor's terminal-failure branch
+		    -- (handleFailure, workflow.go) mutates the struct and calls this
+		    -- full-row Update, not UpdateStatus or TransitionConditional.
+		    -- 7e7b2cef stamped the other two and missed this one, so every
+		    -- real task failure landed with failed_at NULL and the
+		    -- dashboard's recency card — which filters on it — went silent
+		    -- while tasks were visibly failing. 34 of 34 FAILED rows on the
+		    -- production ledger, four of them same-day.
+		    --
+		    -- COALESCE keeps the FIRST failure time: a lease sweep or
+		    -- backfill touching an already-FAILED row must not make an old
+		    -- failure look fresh, which is the bug 7e7b2cef existed to fix.
+		    -- Leaving FAILED clears it, so a task that later succeeds stops
+		    -- being counted.
+		    -- $22 repeats the status rather than reusing $8: a parameter
+		    -- that is both ASSIGNED to a column and COMPARED to an untyped
+		    -- literal makes postgres refuse to deduce one type for it
+		    -- ("inconsistent types deduced for parameter $8"). A separate
+		    -- placeholder is unambiguous, and the redundant arg is free.
+		    failed_at = CASE WHEN $22 = 'FAILED' THEN COALESCE(failed_at, NOW()) ELSE NULL END
 		WHERE id = $1
 	`,
 		task.ID, task.ProjectID, task.WorkflowID, task.IdempotencyKey, task.ParentTaskID, task.CreationSource,
@@ -182,6 +203,7 @@ func (r *TaskRepository) Update(ctx context.Context, task *persistence.Task) err
 		task.LeaseID, task.LeasedAt, task.LeasedBy, task.LeaseExpiresAt,
 		task.Attempt, task.MaxAttempts, task.LastError, task.LastErrorClass, task.UpdatedAt,
 		task.BudgetUSD,
+		string(task.Status),
 	)
 	if err != nil {
 		return mapDBError(err)

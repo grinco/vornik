@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -89,8 +90,27 @@ func EvaluateToolGrant(requested, ceiling []string) GrantOutcome {
 		out.Accepted = nil
 		// Deliberately names no tool. The count is safe: it leaks one integer, not
 		// the ceiling's membership.
-		out.Message = "grant refused: it names tools outside this role's allowed set " +
-			"(see the audit trail for details); narrow the request and retry"
+		//
+		// STATE THE INVARIANT, because the old message did not and the cost was
+		// measured: 58 of 98 grants ever made were refused, and the refused names
+		// were overwhelmingly tools the role does not hold — including invented
+		// variants of an imagined scraper tool (fetch_url / web_fetch /
+		// fetch_markdown / scrape_url). One adaptive route step made SIX attempts,
+		// narrowing 4 tools to 3 to 2, and still failed. It was brute-force
+		// searching its own ceiling, one LLM round trip per guess, which turned a
+		// workflow-selection step into 8 calls and 66-90k prompt tokens and
+		// eventually finalised with no selected_workflow.
+		//
+		// "narrow the request and retry" reads as encouragement to keep guessing.
+		// Saying that a grant can only NARROW WHAT THE ROLE ALREADY HAS points at
+		// the tool list the agent can already see, and leaks nothing it could not
+		// read off its own prompt.
+		out.Message = fmt.Sprintf(
+			"grant refused: %d requested tool(s) are not in this role's allowed set. "+
+				"A grant can only NARROW the tools you already have — it cannot add one the "+
+				"role lacks. Re-request using only names from the tools available to you in "+
+				"this step, or proceed without a grant. (Refused names are in the audit trail.)",
+			len(out.RefusedNames))
 	}
 	return out
 }

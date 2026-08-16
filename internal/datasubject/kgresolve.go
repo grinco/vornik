@@ -82,9 +82,8 @@ type KGBindResult struct {
 	LinksAdded  int
 	LinksMoved  int
 	AdoptedFrom string
-	// MentionsTruncated is true when the entity has more mentions than
-	// MaxMentions. Reported rather than swallowed: a coverage report that
-	// looks complete and is not is the failure this design exists to avoid.
+	// MentionsTruncated is retained for wire compatibility with older clients.
+	// Current binds fetch every distinct mention and therefore leave it false.
 	MentionsTruncated bool
 }
 
@@ -93,8 +92,8 @@ type KGIndex interface {
 	// FindPersonEntities returns PERSON entities in projectID whose canonical
 	// name or an alias matches name.
 	FindPersonEntities(ctx context.Context, projectID, name string, limit int) ([]KGEntity, error)
-	// MentionChunks returns the memory-chunk ids the entity is mentioned in,
-	// capped at limit.
+	// MentionChunks returns the memory-chunk ids the entity is mentioned in.
+	// A positive limit caps the result; zero requests every distinct chunk.
 	MentionChunks(ctx context.Context, entityID string, limit int) ([]string, error)
 	// Projects lists the project ids holding a knowledge graph.
 	Projects(ctx context.Context) ([]string, error)
@@ -115,16 +114,16 @@ type KGResolveStore interface {
 	DeleteSubject(ctx context.Context, id string) error
 }
 
-// defaultMaxMentions bounds how many chunk links one entity can produce in a
-// single bind. Generous — the point is to stop one runaway entity writing an
-// unbounded number of rows in a command an operator is watching, not to sample.
+// defaultMaxMentions is the legacy-named cap on entity candidates returned for
+// one name search. Mention linking itself is complete and is never capped.
 const defaultMaxMentions = 5000
 
 // KGResolver resolves a data subject's knowledge-graph entities on demand.
 type KGResolver struct {
 	Store KGResolveStore
 	Index KGIndex
-	// MaxMentions caps links per entity per bind; 0 uses defaultMaxMentions.
+	// MaxMentions is retained for compatibility and caps entity candidates per
+	// name search; 0 uses defaultMaxMentions. It does not cap mention linking.
 	MaxMentions int
 }
 
@@ -212,7 +211,7 @@ func (r *KGResolver) Candidates(ctx context.Context, subjectID string, names, pr
 }
 
 func (r *KGResolver) mentionCount(ctx context.Context, entityID string) (int, error) {
-	chunks, err := r.Index.MentionChunks(ctx, entityID, r.maxMentions())
+	chunks, err := r.Index.MentionChunks(ctx, entityID, 0)
 	if err != nil {
 		return 0, fmt.Errorf("mentions of %s: %w", entityID, err)
 	}
@@ -426,12 +425,16 @@ func (r *KGResolver) linkMentions(ctx context.Context, subjectID string, e KGEnt
 		added++
 	}
 
-	ceiling := r.maxMentions()
-	chunks, err := r.Index.MentionChunks(ctx, e.ID, ceiling)
+	// Fetch every distinct mention. The former ceiling fetched the same first
+	// page on every retry, so an entity with N+1 mentions could never have its
+	// final row linked even though the CLI instructed the operator to rerun.
+	// The repository streams the SQL rows; this slice is bounded by the actual
+	// number of distinct chunks for one entity rather than an arbitrary page.
+	chunks, err := r.Index.MentionChunks(ctx, e.ID, 0)
 	if err != nil {
 		return 0, false, fmt.Errorf("mentions of %s: %w", e.ID, err)
 	}
-	truncated = len(chunks) >= ceiling
+	truncated = false
 	for _, chunkID := range chunks {
 		b, bErr := BindKGExtraction(e.ID, chunkID, e.ProjectID, ConfidencePossible)
 		if bErr != nil {

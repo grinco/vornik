@@ -465,3 +465,51 @@ func TestConcreteProjects(t *testing.T) {
 		t.Errorf("no projects = %v, want empty", got)
 	}
 }
+
+func TestSpendScopes_NeverWidensAMultiProjectScope(t *testing.T) {
+	got := spendScopes([]string{"allowed-a", "allowed-b"})
+	if len(got) != 2 || got[0] != "allowed-a" || got[1] != "allowed-b" {
+		t.Fatalf("spend scopes = %v, want both explicit projects", got)
+	}
+	global := spendScopes(nil)
+	if len(global) != 1 || global[0] != "" {
+		t.Fatalf("global spend scopes = %v, want one unfiltered query", global)
+	}
+}
+
+func TestApplySpendActivity_CountsUnattributedAndAllRows(t *testing.T) {
+	var st adoptionStats
+	rows := map[string]*keyRow{}
+	row := func(id string) *keyRow {
+		if rows[id] == nil {
+			rows[id] = &keyRow{KeyID: id}
+		}
+		return rows[id]
+	}
+	applySpendActivity(&st, []persistence.APIKeySpend{
+		{APIKeyID: "k1", CallCount: 2, CostUSD: 1.25, PromptTokens: 10, CompletionTokens: 5},
+		{APIKeyID: "", CallCount: 3, CostUSD: 2.75, PromptTokens: 20, CompletionTokens: 7},
+	}, row)
+	if st.Activity.LLMCalls != 5 || st.Activity.CostUSD != 4 || st.Activity.Tokens != 42 {
+		t.Fatalf("totals = %+v, want all attributed and unattributed spend", st.Activity)
+	}
+	if len(rows) != 1 || rows["k1"].LLMCalls != 2 {
+		t.Fatalf("leaderboard rows = %+v, want only the attributed key", rows)
+	}
+}
+
+func TestLimitKeyRows_HappensAfterEphemeralFolding(t *testing.T) {
+	rows := make([]keyRow, 25)
+	for i := range rows {
+		rows[i] = keyRow{KeyID: "key-fragment", RAGQueries: 100 - i}
+	}
+	rows = append(rows, keyRow{KeyID: "real", RAGQueries: 1})
+	if got := limitKeyRows(rows, 20); len(got) != 20 {
+		t.Fatalf("limited rows = %d, want 20", len(got))
+	}
+	// Collection itself must retain every row so the 25 fragments can first
+	// collapse to one system row; truncating here would lose the real key.
+	if len(rows) != 26 || rows[25].KeyID != "real" {
+		t.Fatal("the pre-fold collection was truncated")
+	}
+}

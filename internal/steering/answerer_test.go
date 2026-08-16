@@ -233,3 +233,30 @@ func TestAnswerer_NoOpenCheckpoint(t *testing.T) {
 		t.Error("must not transition when there is no checkpoint")
 	}
 }
+
+func TestAnswerer_RefusesAStaleCheckpointReference(t *testing.T) {
+	a, store, tr, _ := newAnswerer(plainDecisionCP("cp-new"), true)
+	_, err := a.Answer(context.Background(), AnswerRequest{
+		TaskID: "t", CheckpointID: "cp-old", OptionID: "roller", AuthorID: "slack:U_alice",
+	})
+	if !errors.Is(err, ErrNoOpenCheckpoint) {
+		t.Fatalf("err = %v, want stale reference refusal", err)
+	}
+	if len(store.inserted) != 0 || tr.called != 0 {
+		t.Fatal("a stale button wrote an answer against the replacement checkpoint")
+	}
+}
+
+func TestAnswerer_RefusesBlankFreeText(t *testing.T) {
+	meta, _ := json.Marshal(map[string]any{"kind": "action_required"})
+	a, store, tr, _ := newAnswerer(&persistence.TaskMessage{ID: "cp1", Metadata: meta}, true)
+	_, err := a.Answer(context.Background(), AnswerRequest{
+		TaskID: "t", CheckpointID: "cp1", FreeText: "  ", AuthorID: "slack:U_alice",
+	})
+	if !errors.Is(err, ErrEmptyAnswer) {
+		t.Fatalf("err = %v, want ErrEmptyAnswer", err)
+	}
+	if len(store.inserted) != 0 || tr.called != 0 {
+		t.Fatal("a blank answer must not resolve and requeue the task")
+	}
+}

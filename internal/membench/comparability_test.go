@@ -23,8 +23,9 @@ func baseFields() ComparabilityFields {
 		ExternalConfigSHA256: "ext1",
 		// Present so Partial() exercises the EXTERNAL-config path these tests are
 		// about; an unreported embedder is separately partial by design.
-		ObservedEmbedder: "bedrock/cohere.embed-v4:0",
-		CorpusSHA256:     "corpus1",
+		ObservedEmbedder:     "bedrock/cohere.embed-v4:0",
+		ObservedRecallMethod: "vector_rerank",
+		CorpusSHA256:         "corpus1",
 	}
 }
 
@@ -57,9 +58,11 @@ func TestComparabilityKey_EveryFieldMatters(t *testing.T) {
 		"answer model":           func(f *ComparabilityFields) { f.AnswerModel = "other" },
 		"judge model":            func(f *ComparabilityFields) { f.JudgeModel = "other" },
 		"recall params":          func(f *ComparabilityFields) { f.RecallParams = "max_tokens=8192" },
+		"observed recall method": func(f *ComparabilityFields) { f.ObservedRecallMethod = "lexical" },
 		"answer prompt":          func(f *ComparabilityFields) { f.AnswerPromptSHA256 = "p9" },
 		"judge prompt":           func(f *ComparabilityFields) { f.JudgePromptSHA256 = "p9" },
 		"external config":        func(f *ComparabilityFields) { f.ExternalConfigSHA256 = "ext9" },
+		"single system":          func(f *ComparabilityFields) { f.SingleSystem = true },
 	}
 
 	base := baseFields().Key()

@@ -255,8 +255,13 @@ func (e *Embedder) Embed(ctx context.Context, scope EmbedScope, texts []string) 
 		for i, t := range texts {
 			hash := ContentHash(t)
 			if vec, ok, err := e.Cache.Get(ctx, hash, e.cfg.EmbeddingModel); err == nil && ok {
-				result[i] = vec
-				continue
+				// A dimension change under the same model id must invalidate the
+				// old cache row; returning it guarantees the later pgvector write
+				// fails every time.
+				if e.cfg.EmbeddingDimension <= 0 || len(vec) == e.cfg.EmbeddingDimension {
+					result[i] = vec
+					continue
+				}
 			}
 			misses = append(misses, t)
 			missIndices = append(missIndices, i)
@@ -451,9 +456,29 @@ func (e *Embedder) embedBatchOpenAICompat(ctx context.Context, scope EmbedScope,
 	}
 
 	vecs := make([][]float32, len(texts))
+	seen := make([]bool, len(texts))
+	dimension := e.cfg.EmbeddingDimension
 	for _, d := range embResp.Data {
 		if d.Index >= 0 && d.Index < len(vecs) {
+			if seen[d.Index] || len(d.Embedding) == 0 {
+				return nil, nil
+			}
+			if dimension == 0 {
+				dimension = len(d.Embedding)
+			}
+			if len(d.Embedding) != dimension {
+				return nil, nil
+			}
 			vecs[d.Index] = d.Embedding
+			seen[d.Index] = true
+		}
+	}
+	for _, ok := range seen {
+		if !ok {
+			// A partial response cannot be aligned with the input batch. Passing
+			// nil slots onward turns an upstream protocol error into corrupt
+			// persisted state.
+			return nil, nil
 		}
 	}
 	return vecs, nil

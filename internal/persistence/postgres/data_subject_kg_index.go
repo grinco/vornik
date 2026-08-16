@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 
 	"vornik.io/vornik/internal/datasubject"
 )
@@ -82,7 +83,8 @@ func (r *DataSubjectKGIndex) FindPersonEntities(ctx context.Context, projectID, 
 	return out, rows.Err()
 }
 
-// MentionChunks returns the memory-chunk ids the entity is mentioned in.
+// MentionChunks returns the memory-chunk ids the entity is mentioned in. A
+// positive limit caps the result; zero returns every distinct chunk.
 //
 // DISTINCT because entity_mentions carries one row per OCCURRENCE (with
 // char offsets), and several mentions in one chunk are still one row of
@@ -91,14 +93,16 @@ func (r *DataSubjectKGIndex) MentionChunks(ctx context.Context, entityID string,
 	if entityID == "" {
 		return nil, nil
 	}
-	if limit <= 0 {
-		limit = 1000
-	}
-	rows, err := r.db.QueryContext(ctx, `
+	query := `
 		SELECT DISTINCT chunk_id FROM entity_mentions
 		 WHERE entity_id = $1
-		 ORDER BY chunk_id ASC
-		 LIMIT $2`, entityID, limit)
+		 ORDER BY chunk_id ASC`
+	args := []any{entityID}
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", len(args)+1)
+		args = append(args, limit)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, mapDBError(err)
 	}

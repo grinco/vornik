@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 )
 
@@ -75,6 +76,26 @@ func (p PreRegistration) Validate() error {
 	if p.TargetDelta <= 0 {
 		return fmt.Errorf("pre-registration sets no target delta: a run with no intended " +
 			"effect size cannot be underpowered, which is the point of declaring one")
+	}
+	if p.SigmaD <= 0 || math.IsNaN(p.SigmaD) || math.IsInf(p.SigmaD, 0) {
+		return fmt.Errorf("pre-registration needs a finite positive sigma_d")
+	}
+	if p.SigmaN <= 0 {
+		return fmt.Errorf("pre-registration needs a positive sigma_n")
+	}
+	if p.ComputedPairs <= 0 {
+		return fmt.Errorf("pre-registration needs a positive computed pair count")
+	}
+	axisSeen := map[string]bool{}
+	knownAxes := set(ComparabilityAxes())
+	for _, axis := range p.IndependentAxes {
+		if !knownAxes[axis] {
+			return fmt.Errorf("pre-registration declares unknown independent axis %q", axis)
+		}
+		if axisSeen[axis] {
+			return fmt.Errorf("pre-registration declares independent axis %q twice", axis)
+		}
+		axisSeen[axis] = true
 	}
 	if strings.TrimSpace(p.Rationale) == "" {
 		return fmt.Errorf("pre-registration has no rationale: one nobody had to think " +
@@ -216,6 +237,21 @@ func (j Journal) CheckReadable() error {
 // with it (§5.5): suppressing a real measurement would be its own dishonesty,
 // and what inconclusive forbids is the claim, not the figure.
 func CompareJournals(a, b Journal, observedDelta float64) (string, error) {
+	// Comparisons intentionally admit underpowered and legacy-unregistered
+	// journals: the result is then INCONCLUSIVE or explicitly UNVERIFIED. They
+	// must never admit data already known to be corrupt, however.
+	if a.Manifest.Untrustworthy {
+		return "", fmt.Errorf("first journal is untrustworthy: %s", a.Manifest.UntrustworthyReason)
+	}
+	if b.Manifest.Untrustworthy {
+		return "", fmt.Errorf("second journal is untrustworthy: %s", b.Manifest.UntrustworthyReason)
+	}
+	if a.Manifest.ArmPartial || b.Manifest.ArmPartial {
+		return "", fmt.Errorf("cannot compare a journal with a partial arm key")
+	}
+	if math.IsNaN(observedDelta) || math.IsInf(observedDelta, 0) {
+		return "", fmt.Errorf("observed delta must be finite")
+	}
 	// Both journals must declare the SAME independent axes. If they disagree,
 	// one of them was registered for a different experiment and the pair is not
 	// the comparison either of them committed to.
@@ -270,7 +306,7 @@ func CompareJournals(a, b Journal, observedDelta float64) (string, error) {
 			"it predates the declaration, so %v was assumed and NOT confirmed against it]",
 			undeclared, declaredAxes)
 	}
-	if floor > 0 && observedDelta < floor {
+	if floor > 0 && math.Abs(observedDelta) < floor {
 		return fmt.Sprintf("delta = %.4f (INCONCLUSIVE, floor %.4f)%s", observedDelta, floor, caveat), nil
 	}
 	return fmt.Sprintf("delta = %.4f (floor %.4f)%s", observedDelta, floor, caveat), nil

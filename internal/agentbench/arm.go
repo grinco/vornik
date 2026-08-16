@@ -177,7 +177,9 @@ func (a ArmFields) Key() string {
 // is the common cause: two runs against different daemons would otherwise key
 // alike and compare clean.
 func (a ArmFields) Partial() bool {
-	return a.BinarySHA256 == "" || a.ConfigSHA256 == "" || a.TaskSetSHA256 == ""
+	return strings.TrimSpace(a.HarnessVersion) == "" || a.BinarySHA256 == "" ||
+		a.ConfigSHA256 == "" || len(a.Models) == 0 || strings.TrimSpace(a.ContextPolicy) == "" ||
+		a.TaskSetSHA256 == "" || len(a.Probes) == 0
 }
 
 // CheckComparable refuses a diff between runs that do not agree, naming every

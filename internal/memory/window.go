@@ -62,6 +62,9 @@ var (
 	quarterRE  = regexp.MustCompile(`\bq([1-4])\s+(\d{4})\b`)
 	monthYRE   = regexp.MustCompile(`\b([a-z]+)\s+(\d{4})\b`)
 	agoRE      = regexp.MustCompile(`\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(day|week|month|year)s?\s+ago\b`)
+	seasonRE   = regexp.MustCompile(`\b(last|this)\s+(winter|spring|summer|autumn|fall)\b`)
+	relativeRE = regexp.MustCompile(`\b(last|this)\s+(year|month|week)\b`)
+	dayRE      = regexp.MustCompile(`\b(today|yesterday)\b`)
 	numberWord = map[string]int{
 		"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
 		"six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
@@ -115,38 +118,35 @@ func ParseWindow(query string, now time.Time) (from, to time.Time, ok bool) {
 
 	// Seasons. "last winter" spans a year boundary, which is why the range
 	// helper takes an explicit year for each end rather than assuming one.
-	for name, months := range seasonMonths {
-		if !strings.Contains(q, name) {
-			continue
-		}
-		startY, endY := seasonYears(months, q, now)
+	if m := seasonRE.FindStringSubmatch(q); m != nil {
+		months := seasonMonths[m[2]]
+		startY, endY := seasonYears(months, m[1], now)
 		return monthRange(startY, months[0], endY, months[1])
 	}
 
 	// Relative calendar units.
-	switch {
-	case strings.Contains(q, "last year"):
-		return yearRange(now.Year() - 1)
-	case strings.Contains(q, "this year"):
-		return yearRange(now.Year())
-	case strings.Contains(q, "last month"):
-		t := now.AddDate(0, -1, 0)
-		return monthRange(t.Year(), t.Month(), t.Year(), t.Month())
-	case strings.Contains(q, "this month"):
-		return monthRange(now.Year(), now.Month(), now.Year(), now.Month())
-	case strings.Contains(q, "last week"):
-		// The seven days ending yesterday. Calendar-week semantics (Mon-Sun)
-		// would be defensible too, but "last week" in a question about work is
-		// nearly always "the recent past", and a rolling window never produces
-		// the surprise of an empty result on a Monday morning.
-		end := startOfDay(now.AddDate(0, 0, -1))
-		start := startOfDay(now.AddDate(0, 0, -7))
-		return start, endOfDay(end), true
-	case strings.Contains(q, "yesterday"):
-		d := startOfDay(now.AddDate(0, 0, -1))
-		return d, endOfDay(d), true
-	case strings.Contains(q, "today"):
+	if m := relativeRE.FindStringSubmatch(q); m != nil {
+		switch m[1] + " " + m[2] {
+		case "last year":
+			return yearRange(now.Year() - 1)
+		case "this year":
+			return yearRange(now.Year())
+		case "last month":
+			t := now.AddDate(0, -1, 0)
+			return monthRange(t.Year(), t.Month(), t.Year(), t.Month())
+		case "this month":
+			return monthRange(now.Year(), now.Month(), now.Year(), now.Month())
+		case "last week":
+			end := startOfDay(now.AddDate(0, 0, -1))
+			start := startOfDay(now.AddDate(0, 0, -7))
+			return start, endOfDay(end), true
+		}
+	}
+	if m := dayRE.FindStringSubmatch(q); m != nil {
 		d := startOfDay(now)
+		if m[1] == "yesterday" {
+			d = startOfDay(now.AddDate(0, 0, -1))
+		}
 		return d, endOfDay(d), true
 	}
 
@@ -157,16 +157,20 @@ func ParseWindow(query string, now time.Time) (from, to time.Time, ok bool) {
 			switch m[2] {
 			case "day":
 				d := startOfDay(now.AddDate(0, 0, -n))
-				return d, endOfDay(d), true
+				return plausibleWindow(d, endOfDay(d))
 			case "week":
 				end := startOfDay(now.AddDate(0, 0, -7*n+6))
 				start := startOfDay(now.AddDate(0, 0, -7*n))
-				return start, endOfDay(end), true
+				return plausibleWindow(start, endOfDay(end))
 			case "month":
 				t := now.AddDate(0, -n, 0)
-				return monthRange(t.Year(), t.Month(), t.Year(), t.Month())
+				if plausibleYear(t.Year()) {
+					return monthRange(t.Year(), t.Month(), t.Year(), t.Month())
+				}
 			case "year":
-				return yearRange(now.Year() - n)
+				if plausibleYear(now.Year() - n) {
+					return yearRange(now.Year() - n)
+				}
 			}
 		}
 	}
@@ -185,11 +189,11 @@ func ParseWindow(query string, now time.Time) (from, to time.Time, ok bool) {
 // spring" means the most recent spring that has already ENDED — if we are in
 // August 2026, that is spring 2026; if we are in February 2026, spring 2026
 // hasn't happened, so it means spring 2025.
-func seasonYears(months [2]time.Month, q string, now time.Time) (startY, endY int) {
+func seasonYears(months [2]time.Month, qualifier string, now time.Time) (startY, endY int) {
 	y := now.Year()
 	wrapsYear := months[0] > months[1] // winter: Dec → Feb
 
-	if strings.Contains(q, "last") {
+	if qualifier == "last" {
 		// Step back a year when this year's season has not finished yet.
 		if wrapsYear {
 			// Winter Dec(y-1)..Feb(y) has ended once we're past February.
@@ -201,9 +205,19 @@ func seasonYears(months [2]time.Month, q string, now time.Time) (startY, endY in
 		}
 	}
 	if wrapsYear {
+		if qualifier == "this" && now.Month() >= months[0] {
+			return y, y + 1
+		}
 		return y - 1, y
 	}
 	return y, y
+}
+
+func plausibleWindow(from, to time.Time) (time.Time, time.Time, bool) {
+	if !plausibleYear(from.Year()) || !plausibleYear(to.Year()) || from.After(to) {
+		return time.Time{}, time.Time{}, false
+	}
+	return from, to, true
 }
 
 func plausibleYear(y int) bool { return y >= minPlausibleYear && y <= maxPlausibleYear }

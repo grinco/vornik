@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"vornik.io/vornik/internal/persistence"
@@ -61,6 +62,9 @@ var (
 	// its own authorization and side effects, and must be answered where that
 	// authorization is enforced (the web UI). See chatAnswerableKind.
 	ErrCheckpointNotChatAnswerable = errors.New("steering: checkpoint kind is not answerable from chat")
+	// ErrEmptyAnswer prevents a blank chat reply from resolving a checkpoint
+	// and waking a task with no operator decision to consume.
+	ErrEmptyAnswer = errors.New("steering: answer is empty")
 )
 
 // NewAnswerer wires the primitive. waker may be nil.
@@ -136,6 +140,26 @@ func chatAnswerableKind(m checkpointMeta) bool {
 	}
 }
 
+func answerLabel(req AnswerRequest, meta checkpointMeta) (string, error) {
+	if req.OptionID == "" {
+		label := strings.TrimSpace(req.FreeText)
+		if label == "" {
+			return "", ErrEmptyAnswer
+		}
+		return label, nil
+	}
+	for _, option := range meta.Options {
+		if option.ID != req.OptionID {
+			continue
+		}
+		if option.Label != "" {
+			return option.Label, nil
+		}
+		return option.ID, nil // same fallback buildSteeringButtons uses
+	}
+	return "", ErrUnknownOption
+}
+
 // Answer records the operator's reply to the open checkpoint and re-queues the
 // task. Errors are sentinels (see above); a nil error with
 // AlreadyHandled=true means the answer landed but somebody beat us to the
@@ -149,6 +173,11 @@ func (a *Answerer) Answer(ctx context.Context, req AnswerRequest) (AnswerResult,
 		return AnswerResult{}, fmt.Errorf("load open checkpoint: %w", err)
 	}
 	if cp == nil {
+		return AnswerResult{}, ErrNoOpenCheckpoint
+	}
+	if req.CheckpointID != "" && req.CheckpointID != cp.ID {
+		// The caller answered a prompt that has since been replaced. Never map
+		// its positional/button choice onto the new checkpoint.
 		return AnswerResult{}, ErrNoOpenCheckpoint
 	}
 
@@ -166,23 +195,9 @@ func (a *Answerer) Answer(ctx context.Context, req AnswerRequest) (AnswerResult,
 
 	// Resolve the recorded content BEFORE writing anything, so a bad option id
 	// leaves no trace.
-	label := req.FreeText
-	if req.OptionID != "" {
-		found := false
-		for _, o := range meta.Options {
-			if o.ID != req.OptionID {
-				continue
-			}
-			label = o.Label
-			if label == "" {
-				label = o.ID // same fallback buildSteeringButtons uses
-			}
-			found = true
-			break
-		}
-		if !found {
-			return AnswerResult{}, ErrUnknownOption
-		}
+	label, err := answerLabel(req, meta)
+	if err != nil {
+		return AnswerResult{}, err
 	}
 
 	checkpointID := req.CheckpointID

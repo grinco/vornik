@@ -52,7 +52,7 @@ func TestSteerCallback_Choice(t *testing.T) {
 		},
 	}
 	msgRepo := &stubTaskMessageRepo{openByTask: map[string]*persistence.TaskMessage{
-		"task_x": {Metadata: optionsMeta(t)},
+		"task_x": {ID: cpID, Metadata: optionsMeta(t)},
 	}}
 	b := steerBot(t, taskRepo, msgRepo)
 

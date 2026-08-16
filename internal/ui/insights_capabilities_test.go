@@ -3,6 +3,8 @@ package ui
 import (
 	"testing"
 	"time"
+
+	"vornik.io/vornik/internal/persistence"
 )
 
 type capUsageRow struct {
@@ -87,8 +89,23 @@ func TestCapabilityCatalogue_ExcludesSignalsWhoseAbsenceIsGood(t *testing.T) {
 // "nothing is used" are different claims and the panel must not conflate them.
 func TestCollectCapabilities_NilRepoYieldsNoRows(t *testing.T) {
 	s := &Server{}
-	got := s.collectCapabilities(t.Context(), time.Now().Add(-30*24*time.Hour))
+	got := s.collectCapabilities(t.Context(), time.Now().Add(-30*24*time.Hour), nil)
 	if len(got.Rows) != 0 || len(got.Teams) != 0 {
 		t.Errorf("nil repo produced %d rows / %d teams, want none", len(got.Rows), len(got.Teams))
+	}
+}
+
+func TestFilterCapabilityUsage_EnforcesProjectScope(t *testing.T) {
+	usage := []persistence.CapabilityUsage{
+		{Key: "tasks", ProjectID: "allowed", Count: 2},
+		{Key: "tasks", ProjectID: "secret", Count: 9},
+		{Key: "gdpr_dsr", ProjectID: "", Count: 4},
+	}
+	got := filterCapabilityUsage(usage, []string{"allowed"})
+	if len(got) != 1 || got[0].ProjectID != "allowed" || got[0].Count != 2 {
+		t.Fatalf("scoped usage = %+v, want only the allowed project", got)
+	}
+	if global := filterCapabilityUsage(usage, nil); len(global) != len(usage) {
+		t.Fatalf("all-access usage lost rows: %+v", global)
 	}
 }

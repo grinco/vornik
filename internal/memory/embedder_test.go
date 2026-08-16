@@ -185,6 +185,63 @@ func TestEmbed_OutOfRangeIndexDropped(t *testing.T) {
 	}
 }
 
+func TestEmbed_MissingOrDuplicateIndexesDegradeTheWholeBatch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data []struct {
+			Index     int       `json:"index"`
+			Embedding []float32 `json:"embedding"`
+		}
+	}{
+		{name: "missing", data: []struct {
+			Index     int       `json:"index"`
+			Embedding []float32 `json:"embedding"`
+		}{{Index: 0, Embedding: []float32{1}}}},
+		{name: "duplicate", data: []struct {
+			Index     int       `json:"index"`
+			Embedding []float32 `json:"embedding"`
+		}{{Index: 0, Embedding: []float32{1}}, {Index: 0, Embedding: []float32{2}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(embeddingResponse{Data: tc.data})
+			}))
+			defer srv.Close()
+			e := NewEmbedder(Config{EmbeddingEndpoint: srv.URL, EmbeddingModel: "m"})
+			got, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, []string{"a", "b"})
+			if err != nil || got != nil {
+				t.Fatalf("got=%v err=%v, want graceful whole-batch degradation", got, err)
+			}
+		})
+	}
+}
+
+func TestEmbed_WrongDimensionResponseAndCacheEntriesAreRejected(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_ = json.NewEncoder(w).Encode(embeddingResponse{Data: []struct {
+			Index     int       `json:"index"`
+			Embedding []float32 `json:"embedding"`
+		}{{Index: 0, Embedding: []float32{1, 2}}}})
+	}))
+	defer srv.Close()
+	cache := newW2EmbedCache()
+	cache.data[ContentHash("x")+":m"] = []float32{9}
+	e := NewEmbedder(Config{EmbeddingEndpoint: srv.URL, EmbeddingModel: "m", EmbeddingDimension: 2})
+	e.Cache = cache
+	got, err := e.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, []string{"x"})
+	if err != nil || requests != 1 || len(got) != 1 || len(got[0]) != 2 {
+		t.Fatalf("got=%v err=%v requests=%d, want stale cache miss and valid upstream vector", got, err, requests)
+	}
+
+	bad := NewEmbedder(Config{EmbeddingEndpoint: srv.URL, EmbeddingModel: "m", EmbeddingDimension: 3})
+	got, err = bad.Embed(context.Background(), EmbedScope{ProjectID: "p1", CallSite: EmbedCallSiteIngest}, []string{"x"})
+	if err != nil || got != nil {
+		t.Fatalf("wrong provider dimension got=%v err=%v, want degradation", got, err)
+	}
+}
+
 func TestEmbed_TrailingSlashEndpoint(t *testing.T) {
 	hit := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

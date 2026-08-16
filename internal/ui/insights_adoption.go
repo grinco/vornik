@@ -507,9 +507,8 @@ func (s *Server) InsightsAdoption(w http.ResponseWriter, r *http.Request) {
 
 	since := time.Now().AddDate(0, 0, -adoptionDays)
 	s.collectKeyActivity(ctx, &data.Stats, queryIDs, data.AllowedProjects, since)
-	s.resolveEphemeralKeys(ctx, &data.Stats, queryIDs)
-	s.collectActivityTotals(&data.Stats)
-	data.Capabilities = s.collectCapabilities(ctx, since)
+	s.resolveEphemeralKeys(ctx, &data.Stats, concreteProjects(queryIDs, data.AllowedProjects))
+	data.Capabilities = s.collectCapabilities(ctx, since, queryIDs)
 
 	switch {
 	case data.Stats.Activity.Tasks == 0 && data.Stats.Activity.RAGQueries == 0 &&
@@ -577,7 +576,7 @@ func (s *Server) collectKeyActivity(ctx context.Context, st *adoptionStats, quer
 
 	s.addRAGActivity(ctx, st, queryIDs, since, row)
 	s.addMemoryWrites(ctx, st, concreteProjects(queryIDs, allowed), row)
-	s.addSpendActivity(ctx, queryIDs, since, row)
+	s.addSpendActivity(ctx, st, queryIDs, since, row)
 
 	for _, r := range rows {
 		st.Keys = append(st.Keys, *r)
@@ -594,9 +593,9 @@ func (s *Server) collectKeyActivity(ctx context.Context, st *adoptionStats, quer
 		}
 		return st.Keys[i].KeyID < st.Keys[j].KeyID
 	})
-	if len(st.Keys) > 20 {
-		st.Keys = st.Keys[:20]
-	}
+	// Do not truncate here. Per-task credentials are folded later; taking the
+	// top 20 before that can fill the page with fragments and discard every
+	// real credential before the fragments collapse to one row.
 }
 
 // shortKeyID renders a credential id compactly without losing its identity —
@@ -606,18 +605,6 @@ func shortKeyID(id string) string {
 		return id
 	}
 	return id[:12] + "…" + id[len(id)-6:]
-}
-
-// collectActivityTotals counts the surfaces that carry no per-key identity but
-// are still real product use. Shown as instance totals rather than dropped:
-// "54,462 chat turns" is the difference between a dashboard that says the
-// product is used and one that says it is not.
-func (s *Server) collectActivityTotals(st *adoptionStats) {
-	for _, r := range st.Keys {
-		st.Activity.LLMCalls += r.LLMCalls
-		st.Activity.CostUSD += r.CostUSD
-		st.Activity.Tokens += r.Tokens
-	}
 }
 
 // addRAGActivity credits memory retrievals to the credential that made them.
@@ -685,30 +672,47 @@ func (s *Server) addRAGActivity(ctx context.Context, st *adoptionStats, queryIDs
 // addSpendActivity attaches LLM calls, tasks and spend per credential.
 // AggregateByAPIKey already backs the spend UI; reused rather than re-derived so
 // the two surfaces cannot quietly disagree about what a key cost.
-func (s *Server) addSpendActivity(ctx context.Context, queryIDs []string, since time.Time, row func(string) *keyRow) {
+func (s *Server) addSpendActivity(ctx context.Context, st *adoptionStats, queryIDs []string, since time.Time, row func(string) *keyRow) {
 	if s.llmUsageRepo == nil {
 		return
 	}
-	scope := ""
-	if len(queryIDs) == 1 {
-		scope = queryIDs[0]
+	for _, scope := range spendScopes(queryIDs) {
+		spends, err := s.llmUsageRepo.AggregateByAPIKey(ctx, since, time.Now(), adoptionSampleCap, scope)
+		if err != nil {
+			continue
+		}
+		if len(spends) >= adoptionSampleCap {
+			st.Activity.Truncated = true
+		}
+		applySpendActivity(st, spends, row)
 	}
-	spends, err := s.llmUsageRepo.AggregateByAPIKey(ctx, since, time.Now(), 50, scope)
-	if err != nil {
-		return
+}
+
+func spendScopes(queryIDs []string) []string {
+	if queryIDs == nil {
+		return []string{""}
 	}
+	return queryIDs
+}
+
+func applySpendActivity(st *adoptionStats, spends []persistence.APIKeySpend, row func(string) *keyRow) {
 	for _, sp := range spends {
+		st.Activity.LLMCalls += sp.CallCount
+		st.Activity.CostUSD += sp.CostUSD
+		st.Activity.Tokens += sp.PromptTokens + sp.CompletionTokens
 		if sp.APIKeyID == "" {
+			// Unattributed spend is still real activity, but it is not a
+			// credential and must not become a leaderboard row.
 			continue
 		}
 		r := row(sp.APIKeyID)
 		if sp.KeyName != "" {
 			r.Label = sp.KeyName
 		}
-		r.LLMCalls = sp.CallCount
-		r.Tasks = sp.TaskCount
-		r.CostUSD = sp.CostUSD
-		r.Tokens = sp.PromptTokens + sp.CompletionTokens
+		r.LLMCalls += sp.CallCount
+		r.Tasks += sp.TaskCount
+		r.CostUSD += sp.CostUSD
+		r.Tokens += sp.PromptTokens + sp.CompletionTokens
 	}
 }
 
@@ -748,15 +752,16 @@ const warmAgentKeyNamePrefix = "agent:warm_"
 // audit rows naming it survive, so the name is unavailable for most of them.
 const systemKeyIDPrefix = "key_"
 
-func (s *Server) resolveEphemeralKeys(ctx context.Context, st *adoptionStats, queryIDs []string) {
+func (s *Server) resolveEphemeralKeys(ctx context.Context, st *adoptionStats, projects []string) {
 	if s.apiKeyRepo == nil {
+		st.Keys = limitKeyRows(st.Keys, 20)
 		return
 	}
 	// Key id -> name, for every key the caller can see. One pass per project
 	// rather than a lookup per row: the leaderboard is capped at 20 rows but
 	// the audit rows behind it are thousands.
 	names := map[string]string{}
-	for _, pid := range projectsToIterate(queryIDs) {
+	for _, pid := range projects {
 		keys, err := s.apiKeyRepo.ListByProject(ctx, pid)
 		if err != nil {
 			continue
@@ -854,9 +859,14 @@ func (s *Server) resolveEphemeralKeys(ctx context.Context, st *adoptionStats, qu
 		}
 		return st.Keys[i].KeyID < st.Keys[j].KeyID
 	})
-	if len(st.Keys) > 20 {
-		st.Keys = st.Keys[:20]
+	st.Keys = limitKeyRows(st.Keys, 20)
+}
+
+func limitKeyRows(rows []keyRow, limit int) []keyRow {
+	if limit <= 0 || len(rows) <= limit {
+		return rows
 	}
+	return rows[:limit]
 }
 
 // machineInitiated reports whether a creation source has no human behind it by
@@ -907,8 +917,15 @@ func (s *Server) addMemoryWrites(ctx context.Context, st *adoptionStats, project
 		if err != nil {
 			continue
 		}
+		if len(audits) >= adoptionSampleCap {
+			st.Activity.Truncated = true
+		}
 		for _, a := range audits {
-			if a == nil || a.ActorID == nil || *a.ActorID == "" {
+			if a == nil {
+				continue
+			}
+			st.Activity.MemoryWrites++
+			if a.ActorID == nil || *a.ActorID == "" {
 				continue
 			}
 			// Only credential-shaped actors. An "agent" row names a role.
@@ -917,7 +934,6 @@ func (s *Server) addMemoryWrites(ctx context.Context, st *adoptionStats, project
 			}
 			r := row(*a.ActorID)
 			r.MemoryWrites++
-			st.Activity.MemoryWrites++
 			if r.Kind == "" {
 				r.Kind = *a.ActorKind
 			}

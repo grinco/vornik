@@ -34,16 +34,21 @@ const zAlphaBetaSquared = 7.8489
 // the noise floor has not been measured yet — and §5.4 forbids a gate before it
 // has been.
 func RequiredPairs(sigmaD, delta float64) (int, error) {
-	if sigmaD <= 0 {
+	if math.IsNaN(sigmaD) || math.IsInf(sigmaD, 0) || sigmaD <= 0 {
 		return 0, fmt.Errorf("sigma_d must be positive: an unmeasured noise floor cannot " +
 			"size a run, and §5.4 forbids gating before the noise-floor pass reports one")
 	}
-	if delta <= 0 {
+	if math.IsNaN(delta) || math.IsInf(delta, 0) || delta <= 0 {
 		return 0, fmt.Errorf("delta must be positive: resolving an effect of zero needs " +
 			"infinitely many pairs")
 	}
 	ratio := sigmaD / delta
-	return int(math.Ceil(zAlphaBetaSquared * ratio * ratio)), nil
+	required := math.Ceil(zAlphaBetaSquared * ratio * ratio)
+	maxInt := float64(int(^uint(0) >> 1))
+	if math.IsNaN(required) || math.IsInf(required, 0) || required > maxInt {
+		return 0, fmt.Errorf("required pair count overflows int for sigma_d=%g delta=%g", sigmaD, delta)
+	}
+	return int(required), nil
 }
 
 // ResolvableDelta inverts RequiredPairs: the smallest effect that n pairs can
@@ -53,13 +58,17 @@ func RequiredPairs(sigmaD, delta float64) (int, error) {
 // "no change" from a run that could never have seen the change is the specific
 // dishonesty §5.5 exists to prevent.
 func ResolvableDelta(sigmaD float64, pairs int) (float64, error) {
-	if sigmaD <= 0 {
+	if math.IsNaN(sigmaD) || math.IsInf(sigmaD, 0) || sigmaD <= 0 {
 		return 0, fmt.Errorf("sigma_d must be positive")
 	}
 	if pairs <= 0 {
 		return 0, fmt.Errorf("pairs must be positive")
 	}
-	return sigmaD * math.Sqrt(zAlphaBetaSquared/float64(pairs)), nil
+	result := sigmaD * math.Sqrt(zAlphaBetaSquared/float64(pairs))
+	if math.IsNaN(result) || math.IsInf(result, 0) {
+		return 0, fmt.Errorf("resolvable delta is non-finite")
+	}
+	return result, nil
 }
 
 // PowerCheck is a run's sizing verdict.
@@ -84,6 +93,9 @@ type PowerCheck struct {
 // spread manufactures significance because it is the denominator, so the n the
 // σ came from travels with it into every report.
 func CheckPower(sigmaD float64, sigmaN int, targetDelta float64, availablePairs int) (PowerCheck, error) {
+	if sigmaN <= 0 {
+		return PowerCheck{}, fmt.Errorf("sigma_n must be positive")
+	}
 	required, err := RequiredPairs(sigmaD, targetDelta)
 	if err != nil {
 		return PowerCheck{}, err
@@ -114,13 +126,30 @@ const MinimumSigmaRuns = 10
 // because "you need 47 pairs and have 20" leaves an operator to work out what
 // their 20 are good for, and the usual answer to that is to run it anyway.
 func (p PowerCheck) Refuse() error {
-	if p.SigmaN > 0 && p.SigmaN < MinimumSigmaRuns {
+	if p.SigmaN <= 0 {
+		return fmt.Errorf("refusing to gate: sigma_n must be positive")
+	}
+	required, err := RequiredPairs(p.SigmaD, p.TargetDelta)
+	if err != nil {
+		return fmt.Errorf("refusing to gate: invalid power inputs: %w", err)
+	}
+	resolvable, err := ResolvableDelta(p.SigmaD, p.AvailablePairs)
+	if err != nil {
+		return fmt.Errorf("refusing to gate: invalid available pairs: %w", err)
+	}
+	derivedAdequate := p.AvailablePairs >= required
+	tolerance := math.Max(1e-3, resolvable*0.01)
+	resolvableMismatch := p.ResolvableDelta > 0 && math.Abs(p.ResolvableDelta-resolvable) > tolerance
+	if p.RequiredPairs != required || resolvableMismatch || p.Adequate != derivedAdequate {
+		return fmt.Errorf("refusing to gate: serialized power verdict is inconsistent with its inputs")
+	}
+	if p.SigmaN < MinimumSigmaRuns {
 		return fmt.Errorf("refusing to gate: sigma_d=%.4f was measured from only n=%d runs. "+
 			"An sigma from a handful of runs is a direction, not a verdict — underestimating "+
 			"spread manufactures significance because it is the denominator. Collect at least "+
 			"%d", p.SigmaD, p.SigmaN, MinimumSigmaRuns)
 	}
-	if p.Adequate {
+	if derivedAdequate {
 		return nil
 	}
 	return fmt.Errorf("refusing to gate: resolving delta=%.4f at sigma_d=%.4f needs %d paired "+

@@ -574,10 +574,9 @@ func TestKGResolver_BindRefusesAnEntityTheSearchNeverProposed(t *testing.T) {
 	}
 }
 
-// No silent caps: an entity with more mentions than the ceiling reports the
-// truncation, because a report that looks complete and is not is the specific
-// failure this whole design set out to avoid.
-func TestKGResolver_BindReportsMentionTruncation(t *testing.T) {
+// Regression: the old ceiling always fetched the same first page. Re-running
+// could therefore never reach mention N+1, despite the CLI promising it would.
+func TestKGResolver_BindCoversEveryMentionBeyondTheOldCeiling(t *testing.T) {
 	store := newFakeStore()
 	store.realSubject("ds_1", "Jane Doe")
 	many := make([]string, 5)
@@ -593,11 +592,11 @@ func TestKGResolver_BindReportsMentionTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
-	if !res.MentionsTruncated {
-		t.Error("hit the mention ceiling without reporting truncation")
+	if res.MentionsTruncated {
+		t.Error("a complete paged/all-row bind must not report permanent truncation")
 	}
-	if res.LinksAdded != 4 {
-		t.Errorf("LinksAdded = %d, want the ceiling (3 chunks) plus the entity row", res.LinksAdded)
+	if res.LinksAdded != 6 {
+		t.Errorf("LinksAdded = %d, want all 5 chunks plus the entity row", res.LinksAdded)
 	}
 }
 

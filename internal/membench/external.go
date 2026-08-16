@@ -52,6 +52,9 @@ const (
 	// bankScopeTokenMax bounds the readable part of a bank id. Truncation is safe
 	// because the digest suffix — not the readable part — carries uniqueness.
 	bankScopeTokenMax = 48
+	// maxExternalResponseBytes prevents an external comparison service from
+	// exhausting the benchmark process with an unbounded JSON response.
+	maxExternalResponseBytes = 8 * 1024 * 1024
 )
 
 // ExternalConfig configures the adapter.
@@ -464,14 +467,22 @@ func (e *ExternalSystem) doJSON(ctx context.Context, method, path string, body, 
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
 		return externalStatusError(method, path, resp.StatusCode)
 	}
 	if out == nil {
+		// Drain successful bodiless/uninteresting responses so the transport can
+		// reuse its connection across thousands of ingest calls.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxExternalResponseBytes+1))
 		return nil
 	}
-	payload, err := io.ReadAll(resp.Body)
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxExternalResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("read %s %s response: %w", method, path, err)
+	}
+	if len(payload) > maxExternalResponseBytes {
+		return fmt.Errorf("read %s %s response: body too large (limit %d bytes)",
+			method, path, maxExternalResponseBytes)
 	}
 	if len(bytes.TrimSpace(payload)) == 0 {
 		// A bodiless success is legitimate for a retain or a bank create; the caller

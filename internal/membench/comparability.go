@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Comparability key (design §5.6).
@@ -106,6 +107,7 @@ func (f ComparabilityFields) fieldPairs() [][2]string {
 		{"judge_prompt_sha256", f.JudgePromptSHA256},
 		{"external_config_sha256", f.ExternalConfigSHA256},
 		{"tier2_only", strconv.FormatBool(f.Tier2Only)},
+		{"single_system", strconv.FormatBool(f.SingleSystem)},
 	}
 }
 
@@ -149,13 +151,24 @@ func ComparabilityKeyOf(pairs [][2]string) string {
 // loop the tool could have short-circuited.
 func DiffComparabilityPairs(a, b [][2]string) []string {
 	var diffs []string
-	for i := range a {
-		if i >= len(b) {
-			break
+	shared := len(a)
+	if len(b) < shared {
+		shared = len(b)
+	}
+	for i := 0; i < shared; i++ {
+		if a[i][0] != b[i][0] {
+			diffs = append(diffs, fmt.Sprintf("field[%d] name (%q vs %q)", i, a[i][0], b[i][0]))
+			continue
 		}
 		if a[i][1] != b[i][1] {
 			diffs = append(diffs, fmt.Sprintf("%s (%q vs %q)", a[i][0], a[i][1], b[i][1]))
 		}
+	}
+	for i := shared; i < len(a); i++ {
+		diffs = append(diffs, fmt.Sprintf("%s (%q vs missing)", a[i][0], a[i][1]))
+	}
+	for i := shared; i < len(b); i++ {
+		diffs = append(diffs, fmt.Sprintf("%s (missing vs %q)", b[i][0], b[i][1]))
 	}
 	return diffs
 }
@@ -168,7 +181,7 @@ func (f ComparabilityFields) Partial() bool {
 	// two runs on different embedding models produce the same key, which is how a
 	// titan-versus-cohere comparison once matched clean. Admitted rather than
 	// assumed unchanged, on the same principle as an unreadable external config.
-	if f.ObservedEmbedder == "" {
+	if f.ObservedEmbedder == "" || f.ObservedRecallMethod == "" {
 		return true
 	}
 	if f.SingleSystem {
@@ -225,8 +238,16 @@ func CorpusDigest(items []Item) string {
 	}
 	perDoc := make([]string, 0, len(items))
 	for _, it := range items {
-		h := sha256.Sum256([]byte(fmt.Sprintf("%d:%s%d:%s",
-			len(it.DocumentID), it.DocumentID, len(it.Content), it.Content)))
+		eventTime := ""
+		if !it.EventTime.IsZero() {
+			eventTime = it.EventTime.UTC().Format(time.RFC3339Nano)
+		}
+		payload := fmt.Sprintf("%d:%s%d:%s%d:%s%d:%s",
+			len(it.DocumentID), it.DocumentID,
+			len(it.Context), it.Context,
+			len(it.Content), it.Content,
+			len(eventTime), eventTime)
+		h := sha256.Sum256([]byte(payload))
 		perDoc = append(perDoc, hex.EncodeToString(h[:]))
 	}
 	sort.Strings(perDoc)

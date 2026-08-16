@@ -109,7 +109,7 @@ type capabilityStats struct {
 // collectCapabilities builds the adoption picture. Nil repo yields zero rows,
 // and the caller renders nothing rather than an empty table — "not wired" must
 // not read as "nothing is used".
-func (s *Server) collectCapabilities(ctx context.Context, since time.Time) capabilityStats {
+func (s *Server) collectCapabilities(ctx context.Context, since time.Time, projectScope []string) capabilityStats {
 	var out capabilityStats
 	if s.capabilityUsage == nil {
 		return out
@@ -118,8 +118,32 @@ func (s *Server) collectCapabilities(ctx context.Context, since time.Time) capab
 	if err != nil {
 		return out
 	}
+	usage = filterCapabilityUsage(usage, projectScope)
 	out.Rows, out.Total, out.Unused = capabilityRows(usage)
 	out.Teams = teamBreadths(usage, out.Rows)
+	return out
+}
+
+// filterCapabilityUsage applies the already-resolved UI scope to the
+// repository's instance-wide result. A non-nil scope must never inherit rows
+// from another project, nor instance-only signals whose owners cannot be
+// established.
+func filterCapabilityUsage(usage []persistence.CapabilityUsage, projectScope []string) []persistence.CapabilityUsage {
+	if projectScope == nil {
+		return usage
+	}
+	allowed := make(map[string]bool, len(projectScope))
+	for _, id := range projectScope {
+		if id != "" {
+			allowed[id] = true
+		}
+	}
+	out := make([]persistence.CapabilityUsage, 0, len(usage))
+	for _, u := range usage {
+		if allowed[u.ProjectID] {
+			out = append(out, u)
+		}
+	}
 	return out
 }
 

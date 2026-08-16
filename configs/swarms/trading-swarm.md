@@ -35,6 +35,7 @@ roles:
             - "mcp__ta__trix"
             - "mcp__ta__regime"
             - "mcp__ta__scorecard"
+            - "memory_search"
       requiredOutputKeys: ["proposals"]
       plausibilityRules:
         # If the strategist proposes anything, every proposal needs
@@ -59,6 +60,7 @@ roles:
             - "mcp__broker__get_account_summary"
             - "mcp__broker__get_positions"
             - "mcp__broker__get_orders"
+            - "memory_search"
       requiredOutputKeys: ["approved", "rejected"]
       plausibilityRules:
         # Risk decisions must explain themselves — both approvals
@@ -82,6 +84,7 @@ roles:
             - "mcp__broker__place_order"
             - "mcp__broker__cancel_order"
             - "mcp__broker__get_orders"
+            - "memory_search"
       requiredOutputKeys: ["placed", "fills_observed"]
 ---
 

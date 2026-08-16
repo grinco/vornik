@@ -589,7 +589,7 @@ roles:
         envVars:
             VORNIK_MAX_TOOL_ITERATIONS: "30"
       permissions:
-        allowedTools: ["file_read", "read_many_files", "grep", "glob", "file_write", "current_time"]
+        allowedTools: ["file_read", "read_many_files", "grep", "glob", "file_write", "current_time", "memory_search"]
         delegationAllowed: false
     # added by `vornikctl doctor --fix`: dispatcher cost attribution stub (telegram bot doesn't run as a container)
     - name: dispatcher

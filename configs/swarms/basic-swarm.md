@@ -34,7 +34,7 @@ roles:
             # autonomous runs.
             VORNIK_MAX_TOOL_ITERATIONS: "20"
       permissions:
-        allowedTools: ["file_read", "file_write", "run_shell", "read_many_files", "grep", "glob", "git_status", "git_log", "current_time"]
+        allowedTools: ["file_read", "file_write", "run_shell", "read_many_files", "grep", "glob", "git_status", "git_log", "current_time", "memory_search"]
         delegationAllowed: true
         autonomousTaskCreation: true
         maxDelegations: 20
@@ -78,7 +78,7 @@ roles:
         envVars:
             VORNIK_MAX_TOOL_ITERATIONS: "20"
       permissions:
-        allowedTools: ["file_read", "run_shell", "read_many_files", "grep", "glob", "git_status", "git_log", "current_time"]
+        allowedTools: ["file_read", "run_shell", "read_many_files", "grep", "glob", "git_status", "git_log", "current_time", "memory_search"]
         delegationAllowed: false
     - name: "analyst"
       description: "Selects/specs the next code task in CURRENT_TASK.md"
@@ -107,7 +107,7 @@ roles:
         envVars:
             VORNIK_MAX_TOOL_ITERATIONS: "35"
       permissions:
-        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_log", "current_time", "backlog_deposit"]
+        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_log", "current_time", "backlog_deposit", "memory_search"]
         delegationAllowed: false
     - name: "coder"
       description: "Implements focused code changes and commits them"
@@ -163,6 +163,7 @@ roles:
             - "lint_run"
             - "typecheck_run"
             - "backlog_deposit"
+            - "memory_search"
         delegationAllowed: false
     - name: "tester"
       description: "Runs focused tests and reports JSON pass/fail"
@@ -205,7 +206,7 @@ roles:
         envVars:
             VORNIK_MAX_TOOL_ITERATIONS: "70"
       permissions:
-        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_diff", "git_log", "test_run", "lint_run", "typecheck_run", "current_time", "backlog_deposit"]
+        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_diff", "git_log", "test_run", "lint_run", "typecheck_run", "current_time", "backlog_deposit", "memory_search"]
         delegationAllowed: false
     - name: "reviewer"
       description: "Reviews the latest code change against the spec"
@@ -249,7 +250,7 @@ roles:
         envVars:
             VORNIK_MAX_TOOL_ITERATIONS: "60"
       permissions:
-        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_diff", "git_log", "git_show", "test_run", "lint_run", "typecheck_run", "current_time", "backlog_deposit"]
+        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_diff", "git_log", "git_show", "test_run", "lint_run", "typecheck_run", "current_time", "backlog_deposit", "memory_search"]
         delegationAllowed: false
     - name: "scout"
       description: "Writes concise PROJECT_CONTEXT.md for a project"
@@ -294,7 +295,7 @@ roles:
         envVars:
             VORNIK_MAX_TOOL_ITERATIONS: "50"
       permissions:
-        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_log", "current_time"]
+        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_log", "current_time", "memory_search"]
         delegationAllowed: false
     - name: "architect"
       description: "Updates roadmap/backlog from recent progress"
@@ -338,7 +339,7 @@ roles:
         envVars:
             VORNIK_MAX_TOOL_ITERATIONS: "35"
       permissions:
-        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_diff", "git_log", "git_show", "current_time"]
+        allowedTools: ["file_read", "file_write", "run_shell", "file_edit", "read_many_files", "grep", "glob", "git_status", "git_diff", "git_log", "git_show", "current_time", "memory_search"]
         delegationAllowed: false
 ---
 

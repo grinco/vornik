@@ -59,6 +59,7 @@ roles:
         - "git_log"
         - "current_time"
         - "mcp__vornik__grant_step_tools"
+        - "memory_search"
       delegationAllowed: true
       autonomousTaskCreation: true
       # 2026-05-14: 10 → 20. Long-running TDD pipelines can spawn
@@ -126,6 +127,7 @@ roles:
         - "git_status"
         - "git_log"
         - "current_time"
+        - "memory_search"
       delegationAllowed: false
   - name: "analyst"
     description: "Selects/specs the next code task in CURRENT_TASK.md"
@@ -198,6 +200,7 @@ roles:
         - "git_log"
         - "current_time"
         - "backlog_deposit"
+        - "memory_search"
       delegationAllowed: false
   - name: "coder"
     description: "Implements focused code changes and commits them"
@@ -274,6 +277,7 @@ roles:
         - "lint_run"
         - "typecheck_run"
         - "backlog_deposit"
+        - "memory_search"
       delegationAllowed: false
   - name: "tester"
     description: "Runs focused tests and reports JSON pass/fail"
@@ -371,6 +375,7 @@ roles:
         - "typecheck_run"
         - "current_time"
         - "backlog_deposit"
+        - "memory_search"
       delegationAllowed: false
   - name: "reviewer"
     description: "Reviews the latest code change against the spec"
@@ -459,6 +464,7 @@ roles:
         - "typecheck_run"
         - "current_time"
         - "backlog_deposit"
+        - "memory_search"
       delegationAllowed: false
   - name: "scout"
     description: "Writes concise PROJECT_CONTEXT.md for a project"
@@ -535,6 +541,7 @@ roles:
         - "git_status"
         - "git_log"
         - "current_time"
+        - "memory_search"
       delegationAllowed: false
   - name: "architect"
     description: "Updates roadmap/backlog from recent progress"
@@ -602,6 +609,7 @@ roles:
         - "git_log"
         - "git_show"
         - "current_time"
+        - "memory_search"
       delegationAllowed: false
   - name: "github-classifier"
     description: "Classifies a GitHub event, rebases the workspace, then delegates code work to dev-pipeline or posts a PR review"

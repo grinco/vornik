@@ -995,7 +995,26 @@ TOOLS_EOF
   }
 MEM_EOF
 )
-        extras_ungated=$(printf '%s' "$extras_ungated" | jq --argjson tool "$memory_tool" '. + [$tool]')
+        # GATED, not ungated (2026-08-16). memory_search is in
+        # is_builtin_tool, so the execution gate applies the per-role
+        # allowlist to it — advertising it ungated meant every role SAW a
+        # tool most of them could not call. That made it the second most
+        # refused tool grant on this deployment (12), and one adaptive route
+        # step reached for it twice, the second time as the invented
+        # "/memory_search", because it could see the tool and could not use
+        # it.
+        #
+        # Same defect and same fix as grant_step_tools on 2026-08-14: the
+        # advertisement must follow the ceiling (RoleMayGrantTools), not
+        # bypass it. Ungating it instead would revert the 2026.8.1 security
+        # fix (356e74cd) that closed exactly this allowlist bypass for
+        # memory_search, skill_fetch, get_conversation_window and
+        # summarize_thread.
+        #
+        # A role that should search memory declares memory_search in its
+        # allowedTools; per-chunk `permitted_roles` in the Memory Firewall
+        # remains the finer-grained control.
+        extras_gated=$(printf '%s' "$extras_gated" | jq --argjson tool "$memory_tool" '. + [$tool]')
     fi
 
     # Phase 32 — task-lifecycle working-memory tools.

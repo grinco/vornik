@@ -6809,4 +6809,41 @@ DROP INDEX IF EXISTS idx_tasks_failed_at;
 ALTER TABLE tasks DROP COLUMN IF EXISTS failed_at;
 `,
 	},
+	{
+		Version: 162,
+		Name:    "tasks_created_by_actor",
+		// WHO caused this task to exist, as one parseable value across every
+		// entry point. Adoption-leaderboard design 2026-08-15 §3.1.
+		//
+		// This does NOT replace created_by_api_key_id. That column stays as the
+		// raw key reference; this one carries the RESOLVED actor, which may be a
+		// user, a system path, or the anonymous bucket — none of which are keys.
+		// Two columns because they answer different questions, and folding them
+		// would make "which key authenticated this" unanswerable for a task
+		// created by autonomy.
+		//
+		// Format is `<kind>:<id>`, kinds fixed at api_key / user / system /
+		// anonymous (internal/actor). Deliberately TEXT rather than an enum plus
+		// id pair: the leaderboard groups on the whole value, and an enum would
+		// need a migration every time a new system path appears.
+		//
+		// Additive and nullable, with no backfill. A NULL means "we did not
+		// record an actor", which is honest for the 5,400 rows that predate this
+		// column — inventing one from created_by_api_key_id would look like
+		// coverage we do not have, and the dashboard's whole credibility rests
+		// on stating coverage truthfully (§5). Coverage climbs from new rows.
+		//
+		// The partial index carries the leaderboard's access pattern: group by
+		// actor over a time window, skipping unattributed rows entirely.
+		Up: `
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS created_by_actor TEXT;
+CREATE INDEX IF NOT EXISTS idx_tasks_created_by_actor
+    ON tasks (created_by_actor, created_at DESC)
+    WHERE created_by_actor IS NOT NULL;
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_tasks_created_by_actor;
+ALTER TABLE tasks DROP COLUMN IF EXISTS created_by_actor;
+`,
+	},
 }

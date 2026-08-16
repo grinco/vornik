@@ -118,13 +118,13 @@ func TestResolveOpenRouterEndpoint(t *testing.T) {
 // TestOpenRouterAttributionHeaders verifies the default identity (vornik
 // by name+version, no website URL) and that operator overrides win.
 func TestOpenRouterAttributionHeaders(t *testing.T) {
-	def := openRouterAttributionHeaders("", "")
+	def := openRouterAttributionHeaders("2026.8.4", "", "")
 	assert.Equal(t, "vornik", def["X-Title"])
 	assert.True(t, strings.HasPrefix(def["HTTP-Referer"], "vornik/"),
 		"default referer identifies vornik by version, not a URL; got %q", def["HTTP-Referer"])
 	assert.NotContains(t, def["HTTP-Referer"], "http", "default referer must not be a website URL")
 
-	custom := openRouterAttributionHeaders("https://my.app", "MyApp")
+	custom := openRouterAttributionHeaders("2026.8.4", "https://my.app", "MyApp")
 	assert.Equal(t, "https://my.app", custom["HTTP-Referer"])
 	assert.Equal(t, "MyApp", custom["X-Title"])
 }

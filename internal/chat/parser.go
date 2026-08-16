@@ -279,6 +279,17 @@ func executeCreateTask(ctx context.Context, action Action, taskRepo persistence.
 	if priority == 0 {
 		priority = 50
 	}
+	// ATTRIBUTION GAP, deliberate (adoption-leaderboard LLD 2026-08-15 §3.1).
+	// CreatedByActor is intentionally NOT set here. A chat-created task has a
+	// real person behind it, but the only identity reaching this function is
+	// action.ChatTurnID; the user lives in chat_audit_log.user_id and resolving
+	// it to `user:<id>` needs a user_identities lookup this package cannot do
+	// without taking a repository dependency.
+	//
+	// Left NULL rather than guessed: the dashboard reports coverage honestly
+	// (§5), so an absent actor understates coverage, whereas a wrong one
+	// silently credits the wrong person and cannot be detected downstream.
+	// Closing this means plumbing the resolved actor in alongside ChatTurnID.
 	task := &persistence.Task{
 		ID:             persistence.GenerateID("task"),
 		ProjectID:      action.Project,

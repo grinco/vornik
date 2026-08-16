@@ -568,19 +568,16 @@ func (e *Executor) recordLLMUsageFromResult(ctx context.Context, task *persisten
 		}
 		taskID := task.ID
 		execID := execution.ID
-		// Use the same deterministic ID the agent's per-iteration
-		// stream uses (tu_<task>_<step>_<role>) so the step-finalize
-		// batch and the streaming path collide on the (id) PK and
-		// upsert cleanly. Without this, every step would create TWO
-		// rows: one from the stream (latest cumulative) and one from
-		// the batch (final). The deterministic ID makes them the
-		// same row, with the finalize path always winning the last
-		// write because it runs after the last stream call.
-		// Same deterministic id the agent's per-iteration stream uses, so the
-		// finalize batch and the streaming path collide on the PK and upsert
+		// Same deterministic id the agent's per-iteration stream lands on, so the
+		// finalize batch and the streaming path collide on the (id) PK and upsert
 		// cleanly instead of producing two rows per step. The finalize path runs
 		// last, so it wins the final write.
-		if err := e.spend.Upsert(ctx, "tu_"+taskID+"_"+stepID+"_"+role, llmspend.Input{
+		//
+		// Derived in llmspend rather than formatted here: the id must name the
+		// EXECUTION as well as the step. Without it a retry overwrote the
+		// execution it retried, erasing that attempt's spend from the ledger
+		// entirely (see llmspend/stepusage.go).
+		if err := e.spend.Upsert(ctx, llmspend.StepUsageID(taskID, execID, stepID, role), llmspend.Input{
 			ProjectID:           task.ProjectID,
 			Model:               model,
 			PromptTokens:        parsed.Usage.PromptTokens,

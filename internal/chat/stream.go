@@ -77,9 +77,23 @@ func (c *Client) CompleteWithToolsStream(ctx context.Context, messages []Message
 		return nil, ErrEmptyMessages
 	}
 
+	// streamOptions asks an OpenAI-compatible server to emit a final usage
+	// chunk. WITHOUT include_usage a streamed response carries no usage at all
+	// — not merely no cache detail — so every streamed completion recorded zero
+	// prompt tokens, zero completion tokens and zero cost.
+	//
+	// The parser below has always read usage, including
+	// prompt_tokens_details.cached_tokens; it was simply never sent anything to
+	// read. Confirmed against the self-hosted vLLM on 2026-08-16: prefix
+	// caching is enabled and working there (~2.9x on a hit), and usage
+	// reporting is gated behind exactly this flag.
+	type streamOptions struct {
+		IncludeUsage bool `json:"include_usage"`
+	}
 	type streamRequest struct {
 		ChatRequest
-		Stream bool `json:"stream"`
+		Stream        bool          `json:"stream"`
+		StreamOptions streamOptions `json:"stream_options"`
 	}
 	// MaxTokens / ResponseFormat / PromptCacheKey must be carried — pre-fix
 	// this literal copied only Model / Messages / Tools / Options, so any
@@ -99,7 +113,8 @@ func (c *Client) CompleteWithToolsStream(ctx context.Context, messages []Message
 			ResponseFormat: ResponseFormatStructFromContext(ctx),
 			PromptCacheKey: PromptCacheKeyFromContext(ctx),
 		},
-		Stream: true,
+		Stream:        true,
+		StreamOptions: streamOptions{IncludeUsage: true},
 	}
 	c.prepareRequestForProvider(&req.ChatRequest)
 

@@ -72,7 +72,7 @@ const taskSelectColumns = `id, project_id, workflow_id, idempotency_key, parent_
 		lease_id, leased_at, leased_by, lease_expires_at,
 		attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
 		brief_amended_at, current_phase, expected_by, closed_at, closed_by, message_count, open_checkpoint_id,
-		chat_turn_id, budget_usd, created_by_api_key_id`
+		chat_turn_id, budget_usd, created_by_api_key_id, created_by_actor`
 
 // Create inserts a new task row.
 func (r *TaskRepository) Create(ctx context.Context, task *persistence.Task) error {
@@ -110,15 +110,15 @@ func (r *TaskRepository) Create(ctx context.Context, task *persistence.Task) err
 			delegation_mode, status, priority, payload, dependencies,
 			lease_id, leased_at, leased_by, lease_expires_at,
 			attempt, max_attempts, last_error, last_error_class, created_at, updated_at,
-			chat_turn_id, budget_usd, created_by_api_key_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			chat_turn_id, budget_usd, created_by_api_key_id, created_by_actor
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.ProjectID, task.WorkflowID, task.IdempotencyKey, task.ParentTaskID, string(task.CreationSource),
 		nullableDelegationMode(task.DelegationMode), string(task.Status), task.Priority,
 		nullableBlob(task.Payload), sqliteStringArray(task.Dependencies),
 		task.LeaseID, sqliteTimePtr(task.LeasedAt), task.LeasedBy, sqliteTimePtr(task.LeaseExpiresAt),
 		task.Attempt, task.MaxAttempts, task.LastError, task.LastErrorClass,
 		sqliteTime(task.CreatedAt), sqliteTime(task.UpdatedAt),
-		task.ChatTurnID, task.BudgetUSD, task.CreatedByAPIKeyID,
+		task.ChatTurnID, task.BudgetUSD, task.CreatedByAPIKeyID, task.CreatedByActor,
 	)
 	return err
 }
@@ -1044,6 +1044,7 @@ func scanSqliteTask(scanner interface{ Scan(dest ...any) error }) (*persistence.
 		chatTurnID       sql.NullString
 		budgetUSD        sql.NullFloat64
 		createdByAPIKey  sql.NullString
+		createdByActor   sql.NullString
 	)
 	err := scanner.Scan(
 		&task.ID, &task.ProjectID, &workflowID, &idempotencyKey, &parentTaskID, &task.CreationSource,
@@ -1051,7 +1052,7 @@ func scanSqliteTask(scanner interface{ Scan(dest ...any) error }) (*persistence.
 		&leaseID, &leasedAt, &leasedBy, &leaseExpiresAt,
 		&task.Attempt, &task.MaxAttempts, &lastError, &lastErrorClass, &createdAt, &updatedAt,
 		&briefAmendedAt, &currentPhase, &expectedBy, &closedAt, &closedBy, &messageCount, &openCheckpointID,
-		&chatTurnID, &budgetUSD, &createdByAPIKey,
+		&chatTurnID, &budgetUSD, &createdByAPIKey, &createdByActor,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1131,6 +1132,9 @@ func scanSqliteTask(scanner interface{ Scan(dest ...any) error }) (*persistence.
 	}
 	if createdByAPIKey.Valid {
 		task.CreatedByAPIKeyID = &createdByAPIKey.String
+	}
+	if createdByActor.Valid {
+		task.CreatedByActor = &createdByActor.String
 	}
 	return &task, nil
 }

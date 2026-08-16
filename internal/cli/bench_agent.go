@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -46,6 +47,11 @@ var (
 	benchAgentDaemonBinary string
 	benchAgentDaemonConfig string
 	benchAgentJSON         bool
+
+	// benchAgentAllowUnreproducible accepts a harness whose build cannot be
+	// traced to a commit. Named rather than inferred: see
+	// checkScoringProvenance.
+	benchAgentAllowUnreproducible bool
 )
 
 var benchAgentCmd = &cobra.Command{
@@ -176,6 +182,9 @@ func init() {
 			"refuses comparison instead of silently producing one")
 	benchAgentRunCmd.Flags().StringVar(&benchAgentDaemonConfig, "daemon-config", "",
 		"path to the config the daemon reads; hashed into the arm key")
+	benchAgentRunCmd.Flags().BoolVar(&benchAgentAllowUnreproducible, "i-know-this-is-unreproducible", false,
+		"score with a dirty or unstamped harness. The resulting figures cannot be "+
+			"regenerated from any commit and must not be published")
 	for _, c := range []*cobra.Command{benchAgentGoldCmd, benchAgentRunCmd} {
 		c.Flags().StringVar(&benchAgentTaskSetPath, "tasks", "", "JSON task set to run")
 	}
@@ -340,6 +349,13 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	// Checked after the cheap declarative guards and before anything is built or
+	// spent. Ordering is deliberate: a run with no pre-registration has a more
+	// fundamental problem than an unreproducible scorer, and an operator sent
+	// round a loop of refusals fixes the last one they were shown.
+	if err := checkScoringProvenance(cmd); err != nil {
+		return err
+	}
 	daemon, store, closeDB, err := buildRunnerParts()
 	if err != nil {
 		return err
@@ -376,6 +392,7 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 		Tasks:           agentbench.SortTasks(tasks),
 		Gold:            gold,
 		Repeats:         benchAgentRepeats,
+		DaemonBuild:     agentbench.BinaryBuild(benchAgentDaemonBinary),
 	})
 	if err != nil {
 		return err
@@ -617,6 +634,16 @@ func runBenchAgentReport(cmd *cobra.Command, args []string) error {
 	_, _ = fmt.Fprintf(w, "run\t%s\n", j.Manifest.RunID)
 	_, _ = fmt.Fprintf(w, "arm\t%s\n", j.Manifest.Arm.Name)
 	_, _ = fmt.Fprintf(w, "arm key\t%s\n", shortKey(j.Manifest.ArmKey))
+	// Printed beside the key because it is the axis the key deliberately does
+	// NOT cover: which binary computed these numbers. A stale one journals
+	// zeros for metrics it is too old to read while every keyed axis matches.
+	if b := j.Manifest.HarnessBuild; b != "" {
+		if agentbench.HarnessBuildTrustworthy(b) {
+			_, _ = fmt.Fprintf(w, "scored by\t%s\n", b)
+		} else {
+			_, _ = fmt.Fprintf(w, "scored by\t%s — NOT reproducible from any commit\n", b)
+		}
+	}
 	if j.Manifest.ArmPartial {
 		_, _ = fmt.Fprintf(w, "\tPARTIAL — comparability unverified\n")
 	}
@@ -709,9 +736,7 @@ func runBenchAgentRollup(cmd *cobra.Command, args []string) error {
 	_, _ = fmt.Fprintf(w, "schema retries\t%d\n", r.Efficiency.SchemaRetries)
 
 	_, _ = fmt.Fprintf(w, "\nACCURACY\t\n")
-	if r.Accuracy.SchemaConformanceDefined {
-		_, _ = fmt.Fprintf(w, "schema conformance\t%.3f\n", r.Accuracy.SchemaConformance)
-	}
+	printSchemaAccuracy(w, r)
 	if r.Accuracy.ToolCallValidityDefined {
 		_, _ = fmt.Fprintf(w, "tool call validity\t%.3f\n", r.Accuracy.ToolCallValidity)
 	}
@@ -925,6 +950,124 @@ func runBenchAgentRescore(cmd *cobra.Command, args []string) error {
 // Extracted so the shell-coverage qualifier stays adjacent to the core-miss
 // figure it qualifies: those two lines must be read together, and separating
 // them in the code is the first step toward separating them on the page.
+// checkScoringProvenance refuses a scoring pass whose own numbers could not be
+// traced back to a commit, and prints the identities of every binary that
+// determines them before hours are spent.
+//
+// THE INCIDENT (2026-08-16). A long-horizon arm journaled durationMs=0 for all
+// 14 records while the ledger held the durations. The read code was correct and
+// present in the tree; the vornikctl running it was 27 commits stale and
+// predated the fix. The arm key pinned the DAEMON — which was current — and the
+// scoring contract version, which matched, so nothing refused and nothing warned.
+// The stale binary was reached through a bare `vornikctl` on $PATH.
+//
+// Two halves, matching the two ways that failed.
+//
+// It REFUSES a harness that is dirty or unstamped, because such a run cannot be
+// reproduced from any commit and a benchmark whose own provenance is unknown has
+// no business publishing a figure. The override exists because a developer
+// smoke-testing harness changes has a legitimate dirty tree — but it must be
+// asked for by name, so the unreproducibility is a decision someone made rather
+// than a default nobody saw.
+//
+// It PRINTS the harness and daemon revisions together, because the two coming
+// from different commits is legitimate (scoring an old release with the current
+// harness is the point of release comparison) and only a human can say whether
+// this particular pairing was intended. Nothing put them side by side before.
+func checkScoringProvenance(cmd *cobra.Command) error {
+	harness := agentbench.HarnessBuild()
+	daemon := agentbench.BinaryBuild(benchAgentDaemonBinary)
+
+	w := cmd.ErrOrStderr()
+	_, _ = fmt.Fprintf(w, "provenance: harness %s", harness)
+	if daemon != "" {
+		_, _ = fmt.Fprintf(w, ", daemon %s", daemon)
+	}
+	_, _ = fmt.Fprintln(w)
+
+	if err := scoringProvenanceError(harness, benchAgentAllowUnreproducible); err != nil {
+		return err
+	}
+	if !agentbench.HarnessBuildTrustworthy(harness) {
+		_, _ = fmt.Fprintf(w, "WARNING: scoring with an unreproducible harness (%s) "+
+			"because --i-know-this-is-unreproducible was given; these figures cannot "+
+			"be regenerated from any commit and must not be published\n", harness)
+	}
+	return nil
+}
+
+// scoringProvenanceError is the decision checkScoringProvenance makes, split
+// from the printing so it can be tested without a build stamp of its own — a
+// test binary's VCS metadata is not something a test may depend on.
+func scoringProvenanceError(harness string, allowUnreproducible bool) error {
+	if agentbench.HarnessBuildTrustworthy(harness) || allowUnreproducible {
+		return nil
+	}
+	return fmt.Errorf("refusing to score with harness build %q: a run whose own scoring "+
+		"binary cannot be traced to a commit cannot be reproduced, and a stale one "+
+		"silently journals zeros for metrics it is too old to read (which is exactly "+
+		"how durationMs was lost on 2026-08-16).\n"+
+		"  Build the harness from the tree you mean to score with, or pass "+
+		"--i-know-this-is-unreproducible to accept unpublishable figures", harness)
+}
+
+// printSchemaAccuracy prints conformance WITH the denominator it was computed
+// over, and the reliability half beside it.
+//
+// The rollup has carried SchemaJudged and SchemaNoOutput since 2026-08-16
+// precisely so a reader can tell "0.912 conformance" over 58% of steps from
+// 0.912 over all of them — but this printer showed only the ratio, so the
+// figure that reached a terminal was the flattering one. A struct field nobody
+// prints is not published.
+func printSchemaAccuracy(w *tabwriter.Writer, r agentbench.Rollup) {
+	a := r.Accuracy
+	terminal := a.SchemaJudged + a.SchemaNoOutput
+
+	if a.SchemaConformanceDefined {
+		if terminal > 0 {
+			_, _ = fmt.Fprintf(w, "schema conformance\t%.3f  (over %d of %d terminal steps)\n",
+				a.SchemaConformance, a.SchemaJudged, terminal)
+		} else {
+			_, _ = fmt.Fprintf(w, "schema conformance\t%.3f\n", a.SchemaConformance)
+		}
+	} else if terminal > 0 {
+		// Undefined is a RESULT, not an absence: every terminal step produced
+		// nothing a schema could apply to. Printing nothing here would read as
+		// "not measured".
+		_, _ = fmt.Fprintf(w, "schema conformance\tundefined (0 of %d terminal steps produced output)\n",
+			terminal)
+	}
+
+	if a.SchemaNoOutput > 0 {
+		pct := 0.0
+		if terminal > 0 {
+			pct = 100 * float64(a.SchemaNoOutput) / float64(terminal)
+		}
+		_, _ = fmt.Fprintf(w, "no output at all\t%d (%.1f%%)\n", a.SchemaNoOutput, pct)
+		// Sorted so two runs of the same arm print the same order — an
+		// unstable diff invites reading noise as change.
+		for _, cause := range sortedCauses(a.SchemaNoOutputByOutcome) {
+			_, _ = fmt.Fprintf(w, "  %s\t%d\n", cause, a.SchemaNoOutputByOutcome[cause])
+		}
+	}
+}
+
+// sortedCauses orders a cause breakdown by count descending, then name, so the
+// remedy with the most steps behind it reads first.
+func sortedCauses(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if m[out[i]] != m[out[j]] {
+			return m[out[i]] > m[out[j]]
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
 func printGrantAccuracy(w *tabwriter.Writer, r agentbench.Rollup) {
 	if r.Accuracy.PathCoverageDefined {
 		_, _ = fmt.Fprintf(w, "path coverage\t%.3f\n", r.Accuracy.PathCoverage)

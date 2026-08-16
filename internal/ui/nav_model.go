@@ -123,6 +123,7 @@ func navModel() []navAreaDef {
 			{Key: "spend", Label: "Spend", Href: "/ui/spend", Icon: "navIconSpend"},
 			{Key: "trends", Label: "Trends", Href: "/ui/insights/trends", Icon: "navIconInsight"},
 			{Key: "insights", Label: "Tool budget", Href: "/ui/insights/tool-budget", Icon: "navIconGauge"},
+			{Key: "adoption", Label: "Adoption", Href: "/ui/insights/adoption", Icon: "navIconAdoption"},
 			{Key: "trading", Label: "Trading", Href: "/ui/trading", Icon: "navIconTrading", Cap: "trading"},
 			{Key: "audit", Label: "Audit", Href: "/ui/audit", Icon: "navIconAudit", AdminOnly: true},
 			// MCP moved to the control-plane hub's MCP tab (the canonical

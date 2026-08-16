@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"vornik.io/vornik/internal/actor"
 	"vornik.io/vornik/internal/executor/livepubsub"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
@@ -255,11 +256,18 @@ func (e *Executor) handleCallProjectStep(
 	calleePayload := buildCalleePayload(payloadBytes, proposedDepth)
 	now := time.Now()
 	callee := &persistence.Task{
-		ID:                 calleeTaskID,
-		ProjectID:          step.TargetProject,
-		WorkflowID:         &calleeWorkflowID,
-		ParentTaskID:       &task.ID,
-		CreationSource:     persistence.TaskCreationSourceDelegation,
+		ID:             calleeTaskID,
+		ProjectID:      step.TargetProject,
+		WorkflowID:     &calleeWorkflowID,
+		ParentTaskID:   &task.ID,
+		CreationSource: persistence.TaskCreationSourceDelegation,
+		// Rule 2's BOUNDARY, and the reason the rule is scoped to same-project:
+		// this row lands in the CALLEE's project, behind the acceptCallsFrom
+		// consent boundary that exists to stop cross-project flows. Carrying the
+		// caller's person across it would let project B's leaderboard credit
+		// someone with no relationship to project B — a tenancy leak, not a
+		// feature.
+		CreatedByActor:     actor.Ptr(actor.CrossProjectCall),
 		Status:             persistence.TaskStatusQueued,
 		Priority:           50,
 		Payload:            calleePayload,

@@ -33,7 +33,7 @@ func newLedgerDB(t *testing.T) *sql.DB {
 		`CREATE TABLE execution_step_outcomes (
 			execution_id TEXT, step_id TEXT, role TEXT, model TEXT, outcome TEXT,
 			error_class TEXT, effective_tool_budget INTEGER, tool_calls_used INTEGER,
-			recorded_at TEXT)`,
+			duration_ms INTEGER, recorded_at TEXT)`,
 	}
 	for _, stmt := range schema {
 		if _, err := db.Exec(stmt); err != nil {
@@ -67,11 +67,11 @@ func seedLedger(t *testing.T, db *sql.DB) {
 		('e1','s1','made_up','{"isError":true,"error":"unknown tool: made_up"}','2026-08-13T10:03:00Z')`)
 
 	exec(`INSERT INTO execution_step_outcomes VALUES
-		('e1','s1','lead','m','schema_violation','shape',20,7,'2026-08-13T10:04:00Z')`)
+		('e1','s1','lead','m','schema_violation','shape',20,7,1500,'2026-08-13T10:04:00Z')`)
 	exec(`INSERT INTO execution_step_outcomes VALUES
-		('e1','s1','lead','m','ok','',20,7,'2026-08-13T10:05:00Z')`)
+		('e1','s1','lead','m','ok','',20,7,2500,'2026-08-13T10:05:00Z')`)
 	exec(`INSERT INTO execution_step_outcomes VALUES
-		('e1','s2','worker','m','ok','',10,2,'2026-08-13T10:06:00Z')`)
+		('e1','s2','worker','m','ok','',10,2,4000,'2026-08-13T10:06:00Z')`)
 }
 
 func assembleFixture(t *testing.T) (ExecutionRecord, []Trace) {
@@ -280,5 +280,46 @@ func TestSQLTraceStore_ExecutionsRefusesWithoutADatabase(t *testing.T) {
 	var s *SQLTraceStore
 	if _, err := s.Executions(context.Background(), "t1"); err == nil {
 		t.Fatal("listed executions from a nil store")
+	}
+}
+
+// Regression, 2026-08-16. ExecutionRecord.DurationMS was declared, JSON-tagged
+// and written by NOTHING: loadUsage read cost and tokens from task_llm_usage,
+// which has no duration column, and loadOutcomes read execution_step_outcomes
+// without selecting duration_ms. Every journal recorded 0, and the rollup
+// reported a confident 0 ms/task that nobody could tell from a measurement.
+//
+// It surfaced only because the qwen-local-fixed arm's journal had durationMs=0
+// on all 46 records — a benchmark that silently measures nothing is worse than
+// one that fails, which is the same lesson the Executions docstring records.
+func TestSQLTraceStore_SumsStepDurationsIntoTheExecutionRecord(t *testing.T) {
+	db := newLedgerDB(t)
+	seedLedger(t, db)
+	store := &SQLTraceStore{DB: db, Dialect: SQLite}
+
+	rec, traces, err := store.Assemble(context.Background(), "t1", "e1")
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+
+	// 1500 + 2500 + 4000. A SUM, not a max or a last-write-wins: the fixture
+	// values are distinct so any of those would produce a different number.
+	if rec.DurationMS != 8000 {
+		t.Errorf("DurationMS = %d, want 8000 (the sum of every step's duration)", rec.DurationMS)
+	}
+
+	// Per-step durations survive too — the speed-aware timeout fit regresses
+	// duration on completion tokens and tool calls PER STEP, and an
+	// execution-level total cannot separate a slow model from a slow tool.
+	var seen int
+	for _, tr := range traces {
+		for _, o := range tr.Outcomes {
+			if o.DurationMS > 0 {
+				seen++
+			}
+		}
+	}
+	if seen != 3 {
+		t.Errorf("step outcomes carrying a duration = %d, want 3", seen)
 	}
 }

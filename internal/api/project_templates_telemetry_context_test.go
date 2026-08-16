@@ -24,7 +24,7 @@ func TestCreateProjectFromTemplate_EmitsEvenWhenClientDisconnects(t *testing.T) 
 
 	var calls int
 	var sawContextErr error
-	srv.telemetryVersion = "2026.7.4"
+	srv.buildVersion = "2026.7.4"
 	srv.lifecycleTelemetry = telemetryclient.Client{
 		Endpoint: "https://telemetry.example.test/v1/collect.json",
 		Enabled:  true,

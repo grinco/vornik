@@ -465,6 +465,7 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkOrphanFKRows(ctx, fix))
 	report.Checks = append(report.Checks, h.checkPodmanConfig(ctx))
 	report.Checks = append(report.Checks, h.checkEnvFileFreshness())
+	report.Checks = append(report.Checks, h.checkBuildProvenance())
 	report.Checks = append(report.Checks, h.checkAgentImages(ctx))
 	report.Checks = append(report.Checks, h.checkAgentLLMTopology())
 	report.Checks = append(report.Checks, h.checkAgentLLMAPIKey(ctx))

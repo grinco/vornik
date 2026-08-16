@@ -182,6 +182,7 @@ vornikctl bench agent run [flags]
 | `--daemon-config` |  | path to the config the daemon reads; hashed into the arm key |
 | `--database` |  | target database |
 | `--gold` |  | pinned gold manifest; omit to run only the probes that need none |
+| `--i-know-this-is-unreproducible` | `false` | score with a dirty or unstamped harness. The resulting figures cannot be regenerated from any commit and must not be published |
 | `--i-know-this-wipes` |  | must equal --database; this run bulk-writes and clears it |
 | `--journal` | `journal.json` | where to write the run journal |
 | `--preregistration` |  | REQUIRED: committed manifest stating the arms, metric, intended delta and computed n |

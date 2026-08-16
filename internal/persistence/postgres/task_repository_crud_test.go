@@ -23,7 +23,7 @@ func taskRow() *sqlmock.Rows {
 		"lease_id", "leased_at", "leased_by", "lease_expires_at",
 		"attempt", "max_attempts", "last_error", "last_error_class", "created_at", "updated_at",
 		"brief_amended_at", "current_phase", "expected_by", "closed_at", "closed_by", "message_count", "open_checkpoint_id",
-		"chat_turn_id", "budget_usd", "created_by_api_key_id",
+		"chat_turn_id", "budget_usd", "created_by_api_key_id", "created_by_actor",
 	})
 }
 
@@ -38,7 +38,7 @@ func fullTaskValues(id, projectID string) []driver.Value {
 		nil, nil, nil, nil,
 		1, 3, nil, nil, now, now,
 		nil, nil, nil, nil, nil, 0, nil,
-		nil, nil, nil,
+		nil, nil, nil, nil,
 	}
 }
 
@@ -84,7 +84,7 @@ func TestTaskCreate_HappyPath_DefaultsApplied(t *testing.T) {
 			nil, nil, nil, nil,
 			1, 3, nil, nil,
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
-			nil, nil, nil,
+			nil, nil, nil, nil,
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -123,7 +123,7 @@ func TestTaskCreate_ChatTurnID(t *testing.T) {
 			nil, nil, nil, nil,
 			1, 3, nil, nil,
 			sqlmock.AnyArg(), sqlmock.AnyArg(),
-			&turn, nil, nil,
+			&turn, nil, nil, nil,
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -133,7 +133,7 @@ func TestTaskCreate_ChatTurnID(t *testing.T) {
 
 	// Roundtrip via Get.
 	vals := fullTaskValues("task-1", "p-1")
-	vals[len(vals)-3] = turn // chat_turn_id is third-from-last (budget_usd, created_by_api_key_id follow)
+	vals[len(vals)-4] = turn // chat_turn_id is fourth-from-last (budget_usd, created_by_api_key_id, created_by_actor follow)
 	rows := taskRow().AddRow(vals...)
 	mock.ExpectQuery(regexp.QuoteMeta("FROM tasks WHERE id = $1")).
 		WithArgs("task-1").

@@ -104,6 +104,18 @@ func (e *Executor) scheduleCheckpointFollowUp(ctx context.Context, parent *persi
 		WorkflowID:     parent.WorkflowID,
 		ParentTaskID:   &parentID,
 		CreationSource: persistence.TaskCreationSourceCheckpoint,
+		// Rule 5: a checkpoint CONTINUATION inherits the original actor, dated
+		// by its own creation — it is the same person's work, continued, and it
+		// counts in the period it actually ran.
+		//
+		// A review argued this rule was void because "checkpoint continuation
+		// does not create a task row". That conflated two mechanisms: RESUME
+		// answers an AWAITING_INPUT checkpoint and mints a fresh EXECUTION on
+		// the SAME row (so there is no actor decision to make there), while
+		// CONTINUATION — this code — builds a genuinely new child Task. The
+		// finding was rejected with this line as the evidence; see design
+		// §3.1.3.
+		CreatedByActor: parent.CreatedByActor,
 		Status:         persistence.TaskStatusQueued,
 		Priority:       parent.Priority,
 		Payload:        payload,

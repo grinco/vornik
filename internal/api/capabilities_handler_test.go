@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"vornik.io/vornik/internal/registry"
+	"vornik.io/vornik/internal/telemetryclient"
 	"vornik.io/vornik/internal/version"
 )
 
@@ -130,6 +131,8 @@ func TestGetCapabilities_NilRegistry(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	resp := decodeCapabilities(t, rec.Body.Bytes())
+	// A server with no build version wired reports the fallback — all an
+	// unidentifiable build can honestly claim.
 	assert.Equal(t, version.Default, resp.Version)
 	assert.Equal(t, "v1", resp.APIVersion)
 	assert.ElementsMatch(t, []string{"http", "sse"}, resp.Transports)
@@ -214,4 +217,67 @@ func TestGetCapabilities_FeatureFlagsContractStable(t *testing.T) {
 		_, ok := resp.Features[key]
 		assert.Truef(t, ok, "feature flag %q must be present in capabilities response", key)
 	}
+}
+
+// Regression, 2026-08-15. GetCapabilities reported the version.Default CONSTANT
+// to every client regardless of what the daemon was actually running, so a
+// companion plugin gating on server version saw the same ancient number from
+// every deployment. The only version on the Server was named telemetryVersion,
+// which read as belonging to telemetry rather than being the build version.
+func TestGetCapabilities_ReportsTheDaemonsRealBuildVersion(t *testing.T) {
+	server := NewServer()
+	server.buildVersion = "2026.8.4"
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
+	rec := httptest.NewRecorder()
+	server.GetCapabilities(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	resp := decodeCapabilities(t, rec.Body.Bytes())
+	assert.Equal(t, "2026.8.4", resp.Version,
+		"capabilities must report the running build, not a compile-time constant")
+	assert.NotEqual(t, version.Default, resp.Version)
+}
+
+// Regression, 2026-08-15. The daemon builds the API server's options BEFORE
+// container.SetVersion runs, so WithLifecycleTelemetry's eagerly-evaluated
+// c.Version() captured "" and /api/v1/capabilities reported an empty version
+// on every real daemon — which is what made the endpoint look like it served a
+// hardcoded constant. internal/ui had already hit and solved this with a lazy
+// WithVersionFunc; the API side had not.
+//
+// The test models the real ordering: wire the option first, set the version
+// after, then serve.
+func TestGetCapabilities_LazyBuildVersionSurvivesSetVersionOrdering(t *testing.T) {
+	daemonVersion := "" // not yet known when the server is constructed
+	server := NewServer(WithBuildVersionFunc(func() string { return daemonVersion }))
+
+	// ... container.SetVersion happens here, after the server exists.
+	daemonVersion = "2026.8.4-6-g4cff7746"
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/capabilities", nil)
+	rec := httptest.NewRecorder()
+	server.GetCapabilities(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	resp := decodeCapabilities(t, rec.Body.Bytes())
+	assert.Equal(t, "2026.8.4-6-g4cff7746", resp.Version,
+		"the version must be read at request time, not at option-build time")
+}
+
+// The eager setter still works for callers that genuinely have a version, and
+// an empty eager value must not clobber a good lazy one.
+func TestServer_BuildVersion_PrefersLazyAndIgnoresEmptyEager(t *testing.T) {
+	s := NewServer(
+		WithLifecycleTelemetry(telemetryclient.Client{}, ""), // empty eager — the daemon's real case
+		WithBuildVersionFunc(func() string { return "2026.8.4" }),
+	)
+	assert.Equal(t, "2026.8.4", s.BuildVersion())
+
+	// No lazy source wired: fall back to whatever was set eagerly.
+	s2 := NewServer(WithLifecycleTelemetry(telemetryclient.Client{}, "2026.7.1"))
+	assert.Equal(t, "2026.7.1", s2.BuildVersion())
+
+	// Neither wired: empty, and the caller decides what to report.
+	assert.Empty(t, NewServer().BuildVersion())
 }

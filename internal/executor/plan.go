@@ -94,6 +94,17 @@ type agentInputOpts struct {
 	// silently proceeding. nil for every non-opting step. See
 	// https://docs.vornik.io §3.4.
 	InputArtifactsSummary *childArtifactSummary
+	// RequireOutputGlob is the step's declared output-file contract, mirrored
+	// into the agent payload.
+	//
+	// The daemon enforces this AFTER the container exits
+	// (executor/container.go), and until 2026-08-16 the agent was never told it
+	// existed — so it would finish, report success, and only then have the step
+	// failed for a file nothing had asked it to write. Worse, the tool-free
+	// schema finalization makes the file unwritable once entered. Passing the
+	// glob lets the agent notice and fix it inside the same step instead of
+	// burning a shape retry. Empty for steps with no contract.
+	RequireOutputGlob string
 	// PreviousResult is the message from the preceding step's result.json.
 	PreviousResult string
 	// SystemPrompt overrides the default system prompt for this role.
@@ -477,6 +488,11 @@ func buildAgentInput(task *persistence.Task, executionID, workflowID, swarmID, s
 	// Additive — runtimes that don't recognise it fall back to responseFormat.
 	if opts != nil && opts.ResponseSchema != nil {
 		input["config"].(map[string]any)["responseSchema"] = opts.ResponseSchema
+	}
+	// Additive: absent for steps with no contract, so their payloads are
+	// unchanged and an older agent image simply ignores the field.
+	if opts != nil && opts.RequireOutputGlob != "" {
+		input["workflow"].(map[string]any)["requireOutputGlob"] = opts.RequireOutputGlob
 	}
 	// resultEmissionTool (item 9): the strongest portable enforcement — the
 	// model emits its result via a tool call whose args ARE result.json, which
@@ -1066,6 +1082,10 @@ func (e *Executor) delegateSelectedWorkflow(ctx context.Context, parent *persist
 		WorkflowID:     &chosen,
 		ParentTaskID:   &parent.ID,
 		CreationSource: persistence.TaskCreationSourceRoute,
+		// Rule 2: a SAME-PROJECT child inherits its parent's actor. Without
+		// this, a task tree loses its actor at the first hop — which is exactly
+		// how workflow_step reached 61 attributed rows out of 8,888.
+		CreatedByActor: parent.CreatedByActor,
 		DelegationMode: &mode,
 		Status:         persistence.TaskStatusQueued,
 		Priority:       parent.Priority,
@@ -1361,6 +1381,8 @@ func (e *Executor) createDelegatedTasks(ctx context.Context, parent *persistence
 			WorkflowID:     childWorkflowID, // nil = project default; pinned when the spec sets a workflow
 			ParentTaskID:   &parent.ID,
 			CreationSource: persistence.TaskCreationSourceDelegation,
+			// Rule 2, same-project delegation: still that person's work.
+			CreatedByActor: parent.CreatedByActor,
 			DelegationMode: &childMode,
 			Status:         persistence.TaskStatusQueued,
 			Priority:       priority,

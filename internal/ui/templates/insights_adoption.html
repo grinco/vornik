@@ -1,0 +1,296 @@
+{{define "insights_adoption.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-dark-900 text-gray-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-6">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+                <h1 class="text-xl font-semibold text-gray-100">Adoption</h1>
+                {{if .AllowedProjects}}
+                <form method="get" action="/ui/insights/adoption" class="flex items-center gap-2">
+                    <select name="projectId" onchange="this.form.submit()" class="text-sm bg-dark-800 border border-dark-700 text-gray-200 rounded-md px-2 py-1.5">
+                        <option value="">{{if .AllAccess}}All projects{{else}}All my projects{{end}}</option>
+                        {{range .AllowedProjects}}
+                        <option value="{{.}}" {{if eq . $.ProjectID}}selected{{end}}>{{.}}</option>
+                        {{end}}
+                    </select>
+                    <noscript><button type="submit" class="text-xs px-2 py-1 rounded bg-brand-600/80 text-white">Apply</button></noscript>
+                </form>
+                {{end}}
+            </div>
+
+            {{/* Machine-level, said plainly and not in a footnote. A key is not a
+                 person: three companion keys may be one engineer on three
+                 laptops. Per-person roll-up arrives with read-time resolution
+                 and needs no backfill. */}}
+            <p class="text-[11px] text-gray-500">
+                Task activity per <strong class="text-gray-400">API key / actor</strong> over the last {{.Stats.Days}} days,
+                from the most recent {{.Stats.Sample}} tasks. This is a <strong class="text-gray-400">machine-level</strong>
+                view — an actor is a credential or a system path, not a named person.
+            </p>
+
+            {{if .Notice}}
+            <div class="glass rounded-xl border border-dark-700 px-5 py-8 text-center text-gray-500 text-sm">{{.Notice}}</div>
+            {{else}}
+
+            {{/* Activity across SURFACES, not just tasks. Most product use never
+                 schedules a task — a companion recall is a RAG query, not a
+                 task — so a tasks-only headline understates adoption badly. */}}
+            <div class="grid gap-3 grid-cols-2 sm:grid-cols-5">
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.Activity.RAGQueries}}{{if .Stats.Activity.Truncated}}+{{end}}</div><div class="text-[11px] text-gray-500 mt-0.5">RAG queries{{if .Stats.Activity.Truncated}} (at least){{end}}</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.Activity.LLMCalls}}</div><div class="text-[11px] text-gray-500 mt-0.5">Attributed LLM calls</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">${{printf "%.2f" .Stats.Activity.CostUSD}}</div><div class="text-[11px] text-gray-500 mt-0.5">Attributed spend</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{len .Stats.Keys}}</div><div class="text-[11px] text-gray-500 mt-0.5">Active credentials</div></div>
+                <div class="glass rounded-xl border border-dark-700 px-4 py-3"><div class="text-2xl font-semibold text-gray-100">{{.Stats.Total}}</div><div class="text-[11px] text-gray-500 mt-0.5">Tasks in window</div></div>
+            </div>
+
+            {{/* Coverage is stated as a banner, never a footnote — people act on
+                 a table and not on the caveat under it. Below the floor the
+                 ranking is still shown, with identities suppressed, so the
+                 shape of activity is visible without naming anyone on the
+                 strength of very little data. */}}
+            <div class="glass rounded-xl border border-dark-700 p-4 overflow-x-auto">
+                <h2 class="text-sm font-medium text-gray-300 mb-1">
+                    Credential activity <span class="text-[11px] text-gray-500 font-normal">— who uses Vornik, how much, and how often</span>
+                </h2>
+                <p class="text-[11px] text-gray-500 mb-3">
+                    From <code class="text-gray-400">memory_retrieval_audit</code> and <code class="text-gray-400">task_llm_usage</code>,
+                    which record the credential directly — so these rows are real today, independent of task attribution.
+                    Credentials the system issues to itself (a fresh key per task execution, plus warm-pool keys) are
+                    folded into one row each rather than listed individually — they are the agent runtime doing someone's
+                    work, not separate users.
+                    <strong class="text-gray-400">Active days</strong> is the retention signal: a credential
+                    active on most days is a habit, one with a single busy day is a trial.
+                    <strong class="text-gray-400">Memory writes</strong> are deposits into project memory —
+                    teaching Vornik something rather than asking it, which is the stronger adoption signal.
+                    Chat activity is attributed per CHANNEL OPERATOR (telegram:42, slack:U123) and does not
+                    yet merge with the same person's API-key activity: linking channel identities to one
+                    account is designed but not wired.
+                </p>
+                {{if .Stats.Keys}}
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="text-[11px] uppercase tracking-wider text-gray-500 border-b border-dark-700">
+                            <th class="text-left py-2 pr-3">Credential</th>
+                            <th class="text-left py-2 pr-3">Channel</th>
+                            <th class="text-right py-2 px-3">RAG queries</th>
+                            <th class="text-right py-2 px-3">Memory writes</th>
+                            <th class="text-right py-2 px-3">Active days</th>
+                            <th class="text-right py-2 px-3">Projects</th>
+                            <th class="text-right py-2 px-3">LLM calls</th>
+                            <th class="text-right py-2 px-3">Tasks</th>
+                            <th class="text-right py-2 pl-3">Spend</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Stats.Keys}}
+                        <tr class="border-b border-dark-800/60 last:border-0">
+                            <td class="py-2 pr-3">
+                                <span class="font-mono text-xs text-gray-200">{{.Label}}</span>
+                                {{if .Ephemeral}}<span class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-dark-700 text-gray-400">{{.FoldedKeys}} system-issued key{{if ne .FoldedKeys 1}}s{{end}}</span>{{end}}
+                            </td>
+                            <td class="py-2 pr-3"><span class="text-[10px] px-1.5 py-0.5 rounded bg-dark-700 text-gray-300">{{if .Kind}}{{.Kind}}{{else}}—{{end}}</span></td>
+                            <td class="py-2 px-3 text-right tabular-nums text-gray-100">{{.RAGQueries}}</td>
+                            <td class="py-2 px-3 text-right tabular-nums text-gray-300">{{.MemoryWrites}}</td>
+                            <td class="py-2 px-3 text-right tabular-nums text-gray-100">{{.ActiveDays}}<span class="text-gray-600">/{{$.Stats.Days}}</span></td>
+                            <td class="py-2 px-3 text-right tabular-nums text-gray-300">{{.Projects}}</td>
+                            <td class="py-2 px-3 text-right tabular-nums text-gray-300">{{.LLMCalls}}</td>
+                            <td class="py-2 px-3 text-right tabular-nums text-gray-300">{{.Tasks}}</td>
+                            <td class="py-2 pl-3 text-right tabular-nums text-gray-300">${{printf "%.2f" .CostUSD}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+                {{else}}
+                <p class="text-sm text-gray-500 py-4">No credential-attributed activity in this window.</p>
+                {{end}}
+            </div>
+
+            <div class="glass rounded-xl border border-dark-700 p-4">
+                <h2 class="text-sm font-medium text-gray-300 mb-3">
+                    Delivered work <span class="text-[11px] text-gray-500 font-normal">— task outcomes across the instance, attributed or not</span>
+                </h2>
+                <div class="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+                    <div><div class="text-xl font-semibold text-emerald-800 dark:text-emerald-400">{{.Stats.Features.Completed}}</div><div class="text-[11px] text-gray-500 mt-0.5">Completed</div></div>
+                    <div><div class="text-xl font-semibold text-rose-800 dark:text-rose-400">{{.Stats.Features.Failed}}</div><div class="text-[11px] text-gray-500 mt-0.5">Failed</div></div>
+                    <div><div class="text-xl font-semibold text-gray-100">{{.Stats.Features.SuccessPct}}%</div><div class="text-[11px] text-gray-500 mt-0.5">Success rate</div></div>
+                    <div><div class="text-xl font-semibold text-gray-100">{{.Stats.Features.Workflows}}</div><div class="text-[11px] text-gray-500 mt-0.5">Workflows used</div></div>
+                    <div><div class="text-xl font-semibold text-gray-100">{{.Stats.Features.Projects}}</div><div class="text-[11px] text-gray-500 mt-0.5">Projects active</div></div>
+                    <div><div class="text-xl font-semibold text-gray-100">{{.Stats.Features.Delegations}}</div><div class="text-[11px] text-gray-500 mt-0.5">Delegated tasks</div></div>
+                </div>
+                <p class="text-[11px] text-gray-500 mt-3">
+                    Active on {{.Stats.Features.ActiveDays}} of the last {{.Stats.Days}} days{{if .Stats.Features.BusiestDay}}; busiest {{.Stats.Features.BusiestDay}}{{end}}.
+                    These figures do not depend on authentication — they hold even when no activity is attributed.
+                </p>
+            </div>
+
+            {{/* Zero attribution is the EXPECTED state with auth off, and is
+                 explained above a table that still shows the work rather than
+                 replacing the panel with an apology. */}}
+            {{if .Capabilities.Rows}}
+            {{/* Breadth, not volume. Ranking teams on event counts would crown
+                 whoever ran the most autonomy ticks; ranking on how many
+                 DISTINCT capabilities they have exercised makes the way to
+                 climb "try the next feature". */}}
+            <div class="glass rounded-xl border border-dark-700 p-4 overflow-x-auto">
+                <h2 class="text-sm font-medium text-gray-300 mb-1">
+                    Capability breadth <span class="text-[11px] text-gray-500 font-normal">— how much of the product each team has exercised</span>
+                </h2>
+                <p class="text-[11px] text-gray-500 mb-3">
+                    Scored on distinct capabilities used, not event volume: a team climbs by trying something
+                    new rather than by using one feature harder. Measured against the
+                    {{len .Capabilities.Rows}} catalogued capabilities, of which
+                    <strong class="text-gray-400">{{.Capabilities.Unused}}</strong> are untouched by every team.
+                </p>
+                {{if .Capabilities.Teams}}
+                <table class="w-full text-sm mb-4">
+                    <thead>
+                        <tr class="text-[11px] uppercase tracking-wider text-gray-500 border-b border-dark-700">
+                            <th class="text-left py-2 pr-3">#</th>
+                            <th class="text-left py-2 pr-3">Team / project</th>
+                            <th class="text-right py-2 px-3">Capabilities used</th>
+                            <th class="text-left py-2 pl-3">Not yet tried</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range $i, $t := .Capabilities.Teams}}
+                        <tr class="border-b border-dark-800/60 last:border-0">
+                            <td class="py-2 pr-3 text-gray-500 tabular-nums">{{add $i 1}}</td>
+                            <td class="py-2 pr-3 font-mono text-xs text-gray-200">{{$t.ProjectID}}</td>
+                            <td class="py-2 px-3 text-right tabular-nums text-gray-100">{{$t.Used}}<span class="text-gray-600">/{{$t.Total}}</span> <span class="text-[11px] text-gray-500">({{$t.Pct}}%)</span></td>
+                            <td class="py-2 pl-3 text-[11px] text-gray-500">{{if $t.Missing}}{{range $j, $m := $t.Missing}}{{if $j}}, {{end}}{{$m}}{{end}}{{else}}<span class="text-emerald-800 dark:text-emerald-400">everything others use</span>{{end}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+                {{end}}
+
+                <h3 class="text-[11px] uppercase tracking-wider text-gray-500 mb-2">Capability adoption across all teams</h3>
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="text-[11px] uppercase tracking-wider text-gray-500 border-b border-dark-700">
+                            <th class="text-left py-2 pr-3">Capability</th>
+                            <th class="text-left py-2 pr-3">Area</th>
+                            <th class="text-right py-2 px-3">Teams</th>
+                            <th class="text-right py-2 px-3">Events</th>
+                            <th class="text-left py-2 pl-3"></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Capabilities.Rows}}
+                        <tr class="border-b border-dark-800/60 last:border-0 {{if .Unused}}opacity-70{{end}}">
+                            <td class="py-2 pr-3 text-gray-200">{{.Label}}</td>
+                            <td class="py-2 pr-3 text-[11px] text-gray-500">{{.Group}}</td>
+                            <td class="py-2 px-3 text-right tabular-nums {{if .Unused}}text-gray-600{{else}}text-gray-100{{end}}">{{.Teams}}</td>
+                            <td class="py-2 px-3 text-right tabular-nums text-gray-400">{{.Events}}</td>
+                            <td class="py-2 pl-3 text-[11px]">
+                                {{if .Unused}}<span class="px-1.5 py-0.5 rounded bg-amber-900/30 text-amber-300/90">never used</span>{{end}}
+                                {{if .Hint}}<span class="text-gray-500 ml-1">{{.Hint}}</span>{{end}}
+                            </td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+                <p class="text-[11px] text-gray-500 mt-3">
+                    A capability no team has used is one the customer never discovered; one that a single team uses
+                    is the enablement session with evidence behind it. Capabilities whose absence is GOOD — security
+                    incidents, dead-letter queues — are deliberately not catalogued, since an empty incident table is
+                    a success rather than an unexplored feature.
+                </p>
+            </div>
+            {{end}}
+
+            {{if gt .Stats.MachineInitiated 0}}
+            <p class="text-[11px] text-gray-500">
+                {{.Stats.MachineInitiated}} of {{.Stats.Total}} tasks in this window were started by the system itself
+                (autonomy, scheduled runs, and executor-spawned children). They have no person behind them by
+                construction and are excluded from the coverage figure — crediting a scheduled run to someone
+                would be worse than leaving it uncredited. Coverage is measured over the
+                {{.Stats.HumanInitiatable}} task{{if ne .Stats.HumanInitiatable 1}}s{{end}} a person could have started.
+            </p>
+            {{end}}
+
+            {{if eq .Stats.Attributed 0}}
+            <div class="glass rounded-xl border border-dark-700 px-4 py-3 text-sm text-gray-400">
+                <strong class="text-gray-300">No human-started task in this window carries an identity.</strong>
+                Task-level attribution is recorded from creation onward and was not backfilled, so it climbs
+                as new work arrives. The credential table below is unaffected — it reads the retrieval and
+                spend ledgers, which have carried identities for months.
+            </div>
+            {{end}}
+
+            {{if and .Stats.IdentitiesSuppressed (gt .Stats.Attributed 0)}}
+            <div class="glass rounded-xl border border-amber-700/50 px-4 py-3 text-sm text-amber-200/90">
+                <strong>Task-level identities withheld.</strong>
+                {{.Stats.CoveragePct}}% of the {{.Stats.HumanInitiatable}} human-started tasks in this window
+                carry a task-level identity, below the confidence floor. The ranking is real, but at this
+                coverage it would mostly reflect which path happened to record an identity rather than who
+                uses Vornik most, so those rows are shown unnamed.
+                <span class="block mt-1 text-amber-200/70">
+                    This applies only to the task table. The credential activity above is attributed and named —
+                    it reads the retrieval and spend ledgers directly.
+                </span>
+            </div>
+            {{end}}
+
+            <div class="glass rounded-xl border border-dark-700 p-4 overflow-x-auto">
+                <h2 class="text-sm font-medium text-gray-300 mb-3">
+                    Task attribution <span class="text-[11px] text-gray-500 font-normal">— who started scheduled work; the thinnest signal on this page</span>
+                </h2>
+                {{if .Stats.Rows}}
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="text-[11px] uppercase tracking-wider text-gray-500 border-b border-dark-700">
+                            <th class="text-left py-2 pr-3">#</th>
+                            <th class="text-left py-2 pr-3">Actor</th>
+                            <th class="text-right py-2 px-3">Created</th>
+                            <th class="text-right py-2 px-3">Completed</th>
+                            <th class="text-right py-2 px-3">Failed</th>
+                            <th class="text-right py-2 pl-3">Success</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range $i, $row := .Stats.Rows}}
+                        <tr class="border-b border-dark-800/60 last:border-0">
+                            <td class="py-2 pr-3 text-gray-500 tabular-nums">{{add $i 1}}</td>
+                            <td class="py-2 pr-3">
+                                <span class="font-mono text-xs text-gray-200">{{$row.Label}}</span>
+                                {{if $row.IsSystem}}
+                                <span class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-sky-900/40 text-sky-300 align-middle">machine</span>
+                                {{end}}
+                                {{if $row.Unattributed}}
+                                <span class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-dark-700 text-gray-400 align-middle">no identity recorded</span>
+                                {{end}}
+                            </td>
+                            <td class="py-2 px-3 text-right tabular-nums text-gray-300">{{$row.Created}}</td>
+                            <td class="py-2 px-3 text-right tabular-nums text-emerald-800 dark:text-emerald-400">{{$row.Completed}}</td>
+                            <td class="py-2 px-3 text-right tabular-nums text-rose-800 dark:text-rose-400">{{$row.Failed}}</td>
+                            <td class="py-2 pl-3 text-right tabular-nums text-gray-300">{{$row.SuccessPct}}%</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+                {{else}}
+                <p class="text-sm text-gray-500 py-4">No activity in this window.</p>
+                {{end}}
+            </div>
+
+            {{/* Machine work is SHOWN and marked, never hidden: hiding it makes
+                 human usage look larger than it is, and folding it into a person
+                 is worse. */}}
+            <p class="text-[11px] text-gray-500">
+                Machine actors (autonomy, background workers, cross-project calls, replay) are shown and
+                marked rather than hidden — omitting them would make human usage look larger than it is.
+                This table counts TASKS only. Most companion use never schedules one, so credential activity
+                above is the better adoption measure and this is included for completeness.
+            </p>
+
+            {{end}}
+        </div>
+    </main>
+</body>
+</html>
+{{end}}

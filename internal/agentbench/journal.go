@@ -103,6 +103,41 @@ type RunManifest struct {
 	ArmKey     string `json:"armKey"`
 	ArmPartial bool   `json:"armPartial"`
 
+	// HarnessBuild names the binary that SCORED this run — the vornikctl that
+	// assembled the traces and ran the probes, not the daemon under test.
+	//
+	// Provenance, deliberately NOT part of the arm key. HarnessVersion is the
+	// scoring CONTRACT and moves only when a number changes meaning; putting a
+	// build stamp in the key would make every rebuild incomparable with itself,
+	// which is the failure the key exists to avoid.
+	//
+	// It is recorded because on 2026-08-16 a long-horizon arm journaled
+	// durationMs=0 for all 14 records while the ledger held the durations: the
+	// scoring vornikctl was 27 commits stale and predated the fix that reads
+	// them. The manifest pinned the daemon's binary sha — which was current —
+	// so nothing in the journal could show that the metrics were computed by
+	// old code. Two arms could agree on every keyed axis and still differ in
+	// which numbers they were CAPABLE of recording.
+	//
+	// "unknown" when the binary carries no VCS data; a "+dirty" suffix marks an
+	// uncommitted tree, whose numbers are not reproducible from any commit.
+	HarnessBuild string `json:"harnessBuild,omitempty"`
+
+	// DaemonBuild is the commit the daemon UNDER TEST was built from.
+	//
+	// The arm key already pins that daemon by content hash, which is what makes
+	// two runs comparable. This is the human-readable other half: a sha256 says
+	// "not the same binary" and a revision says WHICH, so an operator reading a
+	// journal can tell a release apart from a rebuild without a lookup table.
+	//
+	// Recorded beside HarnessBuild specifically so the pair is visible at once.
+	// The two coming from different commits is normal and legitimate — scoring
+	// an older release with the current harness is the point of release
+	// comparison — but on 2026-08-16 the harness was the OLDER one, silently
+	// lacking a metric it was too old to read, and nothing in the journal put
+	// the two revisions next to each other where that would have been obvious.
+	DaemonBuild string `json:"daemonBuild,omitempty"`
+
 	PreRegistrationHash string          `json:"preRegistrationHash"`
 	PreRegistration     PreRegistration `json:"preRegistration"`
 
@@ -184,13 +219,40 @@ func CompareJournals(a, b Journal, observedDelta float64) (string, error) {
 	// Both journals must declare the SAME independent axes. If they disagree,
 	// one of them was registered for a different experiment and the pair is not
 	// the comparison either of them committed to.
-	if !sameStrings(a.Manifest.PreRegistration.IndependentAxes, b.Manifest.PreRegistration.IndependentAxes) {
+	//
+	// EXCEPT when one side declares NONE. IndependentAxes was added on
+	// 2026-08-15, and every journal written before it has the field absent — so
+	// requiring both sides to match made every pre-existing baseline
+	// permanently incomparable with every new run. That was a migration
+	// oversight in the field's introduction, not a property anyone chose: the
+	// normal scientific workflow is to register a NEW arm against an EXISTING
+	// baseline, and this forbade exactly that.
+	//
+	// An empty declaration is "did not say", not "said something different". So
+	// the pair is allowed and marked UNVERIFIED, reusing the same idea the arm
+	// key already uses for a partial match — comparability that has not been
+	// checked is not the same as comparability that has been checked and
+	// passed, and the output must not let a reader mistake one for the other.
+	axesA, axesB := a.Manifest.PreRegistration.IndependentAxes, b.Manifest.PreRegistration.IndependentAxes
+	declaredAxes := axesA
+	undeclared := ""
+	switch {
+	case len(axesA) == 0 && len(axesB) == 0:
+		// Neither declared: nothing to reconcile, and CheckComparableExcept
+		// below will demand every axis match exactly.
+	case len(axesA) == 0:
+		declaredAxes = axesB
+		undeclared = "the first"
+	case len(axesB) == 0:
+		declaredAxes = axesA
+		undeclared = "the second"
+	case !sameStrings(axesA, axesB):
 		return "", fmt.Errorf("the two runs declare different independent axes "+
 			"(%v vs %v): they were registered for different experiments",
-			a.Manifest.PreRegistration.IndependentAxes, b.Manifest.PreRegistration.IndependentAxes)
+			axesA, axesB)
 	}
 	if err := CheckComparableExcept(a.Manifest.Arm, b.Manifest.Arm,
-		a.Manifest.PreRegistration.IndependentAxes); err != nil {
+		declaredAxes); err != nil {
 		return "", err
 	}
 	floor := a.Manifest.Power.ResolvableDelta
@@ -199,10 +261,19 @@ func CompareJournals(a, b Journal, observedDelta float64) (string, error) {
 		// least-powered side.
 		floor = bf
 	}
-	if floor > 0 && observedDelta < floor {
-		return fmt.Sprintf("delta = %.4f (INCONCLUSIVE, floor %.4f)", observedDelta, floor), nil
+	// The caveat rides ON the verdict string rather than a log line, so it
+	// cannot be separated from the number it qualifies when someone pastes the
+	// result into a report.
+	caveat := ""
+	if undeclared != "" {
+		caveat = fmt.Sprintf(" [UNVERIFIED: %s run declared no independent axes — "+
+			"it predates the declaration, so %v was assumed and NOT confirmed against it]",
+			undeclared, declaredAxes)
 	}
-	return fmt.Sprintf("delta = %.4f (floor %.4f)", observedDelta, floor), nil
+	if floor > 0 && observedDelta < floor {
+		return fmt.Sprintf("delta = %.4f (INCONCLUSIVE, floor %.4f)%s", observedDelta, floor, caveat), nil
+	}
+	return fmt.Sprintf("delta = %.4f (floor %.4f)%s", observedDelta, floor, caveat), nil
 }
 
 // MergeJournals combines several journals of the SAME arm into one.
@@ -243,6 +314,33 @@ func MergeJournals(journals ...Journal) (Journal, error) {
 			return Journal{}, fmt.Errorf("refusing to merge %q into %q: different "+
 				"pre-registrations (%s vs %s)", j.Manifest.RunID, out.Manifest.RunID,
 				short(out.Manifest.PreRegistrationHash), short(j.Manifest.PreRegistrationHash))
+		}
+		// Chunks of one experiment must have been scored by ONE apparatus. A
+		// build difference is not a contract difference — HarnessVersion covers
+		// that — but the contract says what a number MEANS, not what the binary
+		// was capable of recording. On 2026-08-16 a stale vornikctl journaled
+		// durationMs=0 for every record while the ledger held the durations; a
+		// current binary scoring the next chunk would have made
+		// wallClockMsPerTask "defined" over a third of the records, which is the
+		// confident-number-over-a-partial-denominator failure this package
+		// guards everywhere else.
+		//
+		// Degraded rather than refused: the records are real measurements and
+		// discarding them would also discard the evidence of the mismatch.
+		//
+		// Only flagged when BOTH sides name a build. An absent stamp means a
+		// journal written before provenance was recorded at all, and treating
+		// "unknown" as a difference would mark every merge involving historical
+		// data untrustworthy on no evidence.
+		if out.Manifest.HarnessBuild != "" && j.Manifest.HarnessBuild != "" &&
+			out.Manifest.HarnessBuild != j.Manifest.HarnessBuild &&
+			!out.Manifest.Untrustworthy {
+			out.Manifest.Untrustworthy = true
+			out.Manifest.UntrustworthyReason = fmt.Sprintf(
+				"batches were scored by DIFFERENT harness builds (%s vs %s): a metric "+
+					"one build records and the other does not is rolled up over only the "+
+					"chunks that could measure it",
+				out.Manifest.HarnessBuild, j.Manifest.HarnessBuild)
 		}
 		// Untrustworthiness is contagious: a merged journal containing a
 		// degraded batch is degraded, and must say so rather than let the

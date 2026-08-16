@@ -223,6 +223,25 @@ func (b *ClassifyBackfiller) BackfillBatchAcrossProjects(ctx context.Context, ba
 		if ctx.Err() != nil {
 			return out, ctx.Err()
 		}
+		// Deterministic role map FIRST. It is free, it is what the ingest
+		// path itself uses, and for a known producer_role it is the
+		// authoritative answer — so consulting a paid model ahead of it
+		// bought nothing. Doing so billed one request per row for rows the
+		// map could already answer: 25 Bedrock calls every ten minutes,
+		// abstaining on all 25, forever (2026-08-15).
+		if byRole, pol := ClassifyByRole(row.ProducerRole); byRole != ClassUnclassified {
+			if uerr := b.Repo.UpdateChunkClass(ctx, row.ID, string(byRole), pol.TTL); uerr != nil {
+				out.Failed++
+				if len(out.Errors) < 5 {
+					out.Errors = append(out.Errors, fmt.Sprintf("%s: persist: %v", row.ID, uerr))
+				}
+				b.Logger.Warn().Err(uerr).Str("chunk_id", row.ID).Str("project_id", row.ProjectID).
+					Msg("classify backfill: persist failed (role map)")
+				continue
+			}
+			out.Succeeded++
+			continue
+		}
 		class, cerr := b.Classifier.Classify(ctx, row.Content, row.SourceName, row.ProducerRole, row.ProjectID, row.ID)
 		if cerr != nil {
 			out.Failed++
@@ -233,18 +252,10 @@ func (b *ClassifyBackfiller) BackfillBatchAcrossProjects(ctx context.Context, ba
 				Msg("classify backfill: LLM failed")
 			continue
 		}
+		// Role map had no mapping and the LLM abstained too — genuinely
+		// ambiguous. Counted as skipped so the operator sees how many
+		// rows neither path could resolve.
 		if class == "" || class == ClassUnclassified {
-			// The LLM abstained. Before giving up, try the deterministic role map —
-			// it is what the ingest path itself uses, and for a chunk whose
-			// producer_role is known it is a better answer than leaving the row
-			// unclassified forever.
-			if byRole, _ := ClassifyByRole(row.ProducerRole); byRole != ClassUnclassified {
-				if uerr := b.Repo.UpdateChunkClass(ctx, row.ID, string(byRole),
-					DefaultClassPolicies[byRole].TTL); uerr == nil {
-					out.Succeeded++
-					continue
-				}
-			}
 			out.Skipped++
 			continue
 		}
@@ -309,6 +320,20 @@ func (b *ClassifyBackfiller) BackfillBatch(ctx context.Context, projectID string
 		if ctx.Err() != nil {
 			return out, ctx.Err()
 		}
+		// Deterministic role map FIRST — see the sibling loop in
+		// BackfillBatchAcrossProjects for why the order matters.
+		if byRole, pol := ClassifyByRole(row.ProducerRole); byRole != ClassUnclassified {
+			if uerr := b.Repo.UpdateChunkClass(ctx, row.ID, string(byRole), pol.TTL); uerr != nil {
+				out.Failed++
+				if len(out.Errors) < 5 {
+					out.Errors = append(out.Errors, fmt.Sprintf("%s: persist: %v", row.ID, uerr))
+				}
+				b.Logger.Warn().Err(uerr).Str("chunk_id", row.ID).Msg("classify backfill: persist failed (role map)")
+				continue
+			}
+			out.Succeeded++
+			continue
+		}
 		class, cerr := b.Classifier.Classify(ctx, row.Content, row.SourceName, row.ProducerRole, row.ProjectID, row.ID)
 		if cerr != nil {
 			out.Failed++
@@ -318,21 +343,10 @@ func (b *ClassifyBackfiller) BackfillBatch(ctx context.Context, projectID string
 			b.Logger.Warn().Err(cerr).Str("chunk_id", row.ID).Msg("classify backfill: LLM failed")
 			continue
 		}
-		// LLM said unclassified → leave the chunk alone. Counted as
-		// skipped so the operator sees how many genuinely ambiguous
-		// chunks the model couldn't resolve.
+		// Neither the role map nor the LLM could place it — genuinely
+		// ambiguous. Counted as skipped so the operator sees how many
+		// chunks neither path resolved.
 		if class == "" || class == ClassUnclassified {
-			// The LLM abstained. Before giving up, try the deterministic role map —
-			// it is what the ingest path itself uses, and for a chunk whose
-			// producer_role is known it is a better answer than leaving the row
-			// unclassified forever.
-			if byRole, _ := ClassifyByRole(row.ProducerRole); byRole != ClassUnclassified {
-				if uerr := b.Repo.UpdateChunkClass(ctx, row.ID, string(byRole),
-					DefaultClassPolicies[byRole].TTL); uerr == nil {
-					out.Succeeded++
-					continue
-				}
-			}
 			out.Skipped++
 			continue
 		}

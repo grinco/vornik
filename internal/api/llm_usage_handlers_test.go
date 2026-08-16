@@ -175,7 +175,9 @@ func TestIngestLLMUsage_UpsertsWorkflowStepUsage(t *testing.T) {
 	if repo.row == nil {
 		t.Fatal("expected Upsert row")
 	}
-	if repo.row.ID != "tu_task1_step1_coder" || repo.row.ProjectID != "p1" || repo.row.StepID != "step1" {
+	// The id is re-derived from the validated task/execution/step/role, NOT
+	// taken from the agent's usage_id (which omits the execution).
+	if repo.row.ID != "tu_task1_exec1_step1_coder" || repo.row.ProjectID != "p1" || repo.row.StepID != "step1" {
 		t.Fatalf("unexpected row identity: %#v", repo.row)
 	}
 	if repo.row.TaskID == nil || *repo.row.TaskID != "task1" {
@@ -198,6 +200,76 @@ func TestIngestLLMUsage_UpsertsWorkflowStepUsage(t *testing.T) {
 	}
 	if repo.row.Source != persistence.TaskLLMUsageSourceWorkflowStep {
 		t.Fatalf("Source = %q", repo.row.Source)
+	}
+}
+
+// Regression, 2026-08-16: a retry's stream erased the spend of the execution it
+// retried.
+//
+// The agent sends the SAME usage_id for both attempts — it is built from
+// (task, step, role) and knows nothing about executions — so trusting it made
+// the second attempt's upsert overwrite the first attempt's row, rewriting its
+// execution_id along the way. On a preserved ledger that erased 1,158 rows.
+//
+// Pre-fix this fails: both requests land on tu_task1_step1_coder.
+func TestIngestLLMUsage_RetryDoesNotOverwriteEarlierExecution(t *testing.T) {
+	post := func(execID string) string {
+		repo := &capturingLLMUsageRepo{}
+		server := NewServer(WithLogger(zerolog.Nop()), WithLLMUsageRepository(repo))
+		body := `{
+			"usage_id":"tu_task1_step1_coder",
+			"project_id":"p1",
+			"task_id":"task1",
+			"execution_id":"` + execID + `",
+			"step_id":"step1",
+			"role":"coder",
+			"model":"gpt-test",
+			"prompt_tokens":10,
+			"iterations":1
+		}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/llm-usage", bytes.NewBufferString(body))
+		rec := httptest.NewRecorder()
+		server.IngestLLMUsage(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status = %d body=%s, want 204", rec.Code, rec.Body.String())
+		}
+		if repo.row == nil {
+			t.Fatal("expected Upsert row")
+		}
+		return repo.row.ID
+	}
+
+	first, retry := post("exec1"), post("exec2")
+	if first == retry {
+		t.Fatalf("retry collided with the execution it retried; both wrote %q", first)
+	}
+}
+
+// A request with no task keeps the caller's own id: the derived shape would
+// degenerate to tu__<step>_<role> and collide across every such caller, which is
+// strictly worse than what it replaced.
+func TestIngestLLMUsage_NoTaskKeepsCallerSuppliedID(t *testing.T) {
+	repo := &capturingLLMUsageRepo{}
+	server := NewServer(WithLogger(zerolog.Nop()), WithLLMUsageRepository(repo))
+
+	body := `{
+		"usage_id":"dispatcher-run-7",
+		"project_id":"p1",
+		"role":"dispatcher",
+		"model":"gpt-test",
+		"prompt_tokens":5,
+		"iterations":1
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/llm-usage", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+
+	server.IngestLLMUsage(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body=%s, want 204", rec.Code, rec.Body.String())
+	}
+	if repo.row == nil || repo.row.ID != "dispatcher-run-7" {
+		t.Fatalf("taskless request must keep its own id, got %#v", repo.row)
 	}
 }
 

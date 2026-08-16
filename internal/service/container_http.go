@@ -885,6 +885,12 @@ func (c *Container) initHTTPServer() error {
 		telemetryclient.ProductionClient(telemetryEnabled && telemetryErr == nil),
 		c.Version(),
 	))
+	// LAZY, and it has to be: SetVersion runs AFTER this server is built, so the
+	// c.Version() above evaluates to "" and every /api/v1/capabilities response
+	// reported an empty build version. Same ordering trap ui.WithVersionFunc
+	// works around a few lines further down; the API side had kept the eager
+	// call. Caught by the build_provenance doctor check on 2026-08-15.
+	apiOpts = append(apiOpts, api.WithBuildVersionFunc(c.Version))
 	// Workflow rollbacker — Slice 5 of the memetic-workflows arc.
 	// Mirror of the applier wiring; nil-safe at the endpoint.
 	workflowRollbacker := newWorkflowRollbacker(
@@ -2152,6 +2158,9 @@ func (c *Container) adminUIOptions(deps adminUIDeps) []ui.ServerOption { //nolin
 	}
 	if c.repos != nil && c.repos.MemoryIngestAudit != nil {
 		opts = append(opts, ui.WithMemoryIngestAuditRepository(c.repos.MemoryIngestAudit))
+	}
+	if c.repos != nil && c.repos.CapabilityUsage != nil {
+		opts = append(opts, ui.WithCapabilityUsageRepository(c.repos.CapabilityUsage))
 	}
 	if c.repos != nil && c.repos.WorkflowProposals != nil {
 		opts = append(opts, ui.WithWorkflowProposalsRepository(c.repos.WorkflowProposals))

@@ -18,6 +18,25 @@ set -eu
 # always uses the /app/* defaults; test harnesses source this script with
 # INPUT_FILE / WORKSPACE / etc. pointed at a temp dir.
 INPUT_FILE="${INPUT_FILE:-/app/input/task.json}"
+
+# output_contract_satisfied reports whether a file matching the step's declared
+# REQUIRE_OUTPUT_GLOB exists in the workspace.
+#
+# Mirrors the daemon's post-exit check (executor/container.go outputGlobSatisfied)
+# closely enough to catch the common miss BEFORE the container exits. It is
+# deliberately the weaker test: existence only, no mtime window. A false
+# "satisfied" here costs nothing — the daemon still runs the authoritative
+# check — while a false "unsatisfied" would nudge an agent that had already
+# done the work.
+output_contract_satisfied() {
+    [ -z "${REQUIRE_OUTPUT_GLOB:-}" ] && return 0
+    local matches
+    # shellcheck disable=SC2086 # the glob must expand
+    matches=$(cd "$WORKSPACE" 2>/dev/null && ls -1 $REQUIRE_OUTPUT_GLOB 2>/dev/null | head -1)
+    [ -n "$matches" ]
+}
+
+
 OUTPUT_FILE="${OUTPUT_FILE:-/app/output/result.json}"
 CANCEL_FILE="${CANCEL_FILE:-/app/input/CANCEL}"
 WORKSPACE="${WORKSPACE:-/app/workspace}"
@@ -2374,6 +2393,13 @@ main() {
     task_id=$(jq -r '.taskId // "unknown"' "$INPUT_FILE")
     role=$(jq -r '.swarm.role // "agent"' "$INPUT_FILE")
     STEP_ID=$(jq -r '.workflow.stepId // "unknown"' "$INPUT_FILE")
+    # The step's declared output-file contract, when it has one. The daemon
+    # enforces this AFTER the agent exits (executor/container.go), so before
+    # 2026-08-16 the agent could not know it existed: it would finish, log
+    # "completed successfully", and only then have the step failed for a file it
+    # was never told to write. Knowing the glob lets the agent notice and fix it
+    # inside the same step instead of burning a shape-retry.
+    REQUIRE_OUTPUT_GLOB=$(jq -r '.workflow.requireOutputGlob // ""' "$INPUT_FILE")
     # project_id + execution_id are needed for the realtime
     # tool-audit POST per call. Extracted here so they're in scope
     # inside the tool-call loop. Pre-existing audit-file writes
@@ -2801,6 +2827,11 @@ ${previous_result}
         if [ "$prompt_tokens_estimate" -gt "${MAX_PROMPT_TOKENS_ESTIMATE:-0}" ] 2>/dev/null; then
             MAX_PROMPT_TOKENS_ESTIMATE="$prompt_tokens_estimate"
         fi
+        # Kept for diagnostics that fire LATER in the step (the degenerate-loop
+        # guard below). Without it those messages can only guess at context
+        # pressure, and a guess printed as a cause sends operators to the wrong
+        # knob — see the message built at the guard.
+        LAST_PROMPT_TOKENS_ESTIMATE="$prompt_tokens_estimate"
         log "preflight task_id=${task_id:-} execution_id=${execution_id:-} step_id=${STEP_ID:-} role=${role:-} iteration=$iteration request_bytes=$req_size prompt_tokens_estimate=$prompt_tokens_estimate context_size=${LLM_CONTEXT_SIZE:-0} max_tokens=${LLM_MAX_TOKENS:-0} visible_tools=$visible_tools_count mcp_catalog_tools=$mcp_tools_count"
 
         local step_prompt_budget prompt_tokens_budget_base projected_prompt_tokens
@@ -3083,6 +3114,35 @@ ${previous_result}
                 continue
             fi
 
+            # LAST CHANCE to satisfy a declared output-file contract.
+            #
+            # The daemon fails the step if no file matches the glob, and by the
+            # time it looks the container is gone — so an agent that simply
+            # forgot loses the whole step. Worse, the tool-free schema
+            # finalization above GUARANTEES the file can never be written once
+            # entered, because no tools are offered there.
+            #
+            # Observed 2026-08-16: dp-02-parser-hardening failed 3/3 runs this
+            # way. The agent logged "completed successfully" and the step failed
+            # on a missing artifacts/out/CHANGELOG-partial.md.
+            #
+            # One nudge only. If the agent ignores it, the daemon's check still
+            # fails the step — this converts a common miss into a self-correction
+            # without inventing a new way to loop.
+            if [ -n "${REQUIRE_OUTPUT_GLOB:-}" ] && [ "${OUTPUT_CONTRACT_NUDGED:-0}" = "0" ] \
+               && ! output_contract_satisfied; then
+                OUTPUT_CONTRACT_NUDGED=1
+                log "output contract unmet ($REQUIRE_OUTPUT_GLOB) — nudging before finish"
+                printf '%s' "$response" | jq -c '[.choices[0].message]' > "$WORKSPACE/.final_msg.json"
+                jq --slurpfile msg "$WORKSPACE/.final_msg.json" '. + $msg[0]' "$msgs_file" > "$msgs_file.tmp" \
+                    && mv "$msgs_file.tmp" "$msgs_file"
+                jq --arg g "$REQUIRE_OUTPUT_GLOB" \
+                   '. + [{"role":"user","content":("This step declares a required output file and no file matching " + $g + " has been written yet. Write it now with the file_write tool, then finish. The step will FAIL without it.")}]' \
+                   "$msgs_file" > "$msgs_file.tmp" && mv "$msgs_file.tmp" "$msgs_file"
+                SCHEMA_FINALIZE_PENDING=0
+                continue
+            fi
+
             debug "LLM returned final response (${#content} chars)"
             write_result "COMPLETED" "$content" "$content" "$(get_duration)"
             log "completed successfully"
@@ -3167,7 +3227,29 @@ ${previous_result}
                         log "ERROR: degenerate loop detected — $tc_name called $MAX_REPEATS times with identical args"
                         local last_content
                         last_content=$(jq -r 'map(select(.role=="assistant" and .content != null)) | last.content // "Agent entered degenerate loop"' "$msgs_file")
-                        write_result "FAILED" "Agent entered a degenerate loop (repeated $tc_name $MAX_REPEATS times with the same arguments). This usually means the context window is exhausted." "$last_content" "$(get_duration)" "degenerate tool loop"
+                        # Report MEASURED context pressure, not a guess.
+                        #
+                        # This message used to assert "This usually means the
+                        # context window is exhausted." The 2026-08-16 benchmark
+                        # arm falsified that: sw-10-no-clean-answer looped 3/3
+                        # runs at prompt_tokens_estimate=16603 against
+                        # context_size=100000 — 17% used. An operator reading
+                        # the old text would raise the context size, which was
+                        # never the constraint.
+                        local _ctx_used="${LAST_PROMPT_TOKENS_ESTIMATE:-0}"
+                        local _ctx_size="${LLM_CONTEXT_SIZE:-0}"
+                        local _ctx_note
+                        if [ "${_ctx_size:-0}" -gt 0 ] 2>/dev/null; then
+                            local _ctx_pct=$(( _ctx_used * 100 / _ctx_size ))
+                            if [ "$_ctx_pct" -ge 80 ]; then
+                                _ctx_note="Context was ${_ctx_pct}% full (~${_ctx_used}/${_ctx_size} tokens), so context exhaustion is the likely cause."
+                            else
+                                _ctx_note="Context was only ${_ctx_pct}% full (~${_ctx_used}/${_ctx_size} tokens), so this is NOT context exhaustion — the model is repeating itself for another reason (commonly an unsatisfiable instruction, or a tool whose result does not change)."
+                            fi
+                        else
+                            _ctx_note="Context utilisation unknown."
+                        fi
+                        write_result "FAILED" "Agent entered a degenerate loop (repeated $tc_name $MAX_REPEATS times with the same arguments). ${_ctx_note}" "$last_content" "$(get_duration)" "degenerate tool loop"
                         return 1
                     fi
                 else

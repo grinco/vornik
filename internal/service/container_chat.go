@@ -578,7 +578,7 @@ func (c *Container) initChatRouter(cfg config.ChatConfig) error {
 			// name + build version (NOT a website URL) so the daemon
 			// shows up coherently in OpenRouter's analytics without
 			// advertising a domain. Operators override per config.
-			chat.WithExtraHeaders(openRouterAttributionHeaders(rcfg.OpenRouter.Referer, rcfg.OpenRouter.Title)),
+			chat.WithExtraHeaders(openRouterAttributionHeaders(c.Version(), rcfg.OpenRouter.Referer, rcfg.OpenRouter.Title)),
 		}
 		// free_only: surface only zero-cost models in discovery so
 		// `vornikctl models list` against OpenRouter's 300+ catalogue is
@@ -1010,9 +1010,18 @@ func resolveOllamaCloudEndpoint(endpoint string) string {
 // OpenRouter uses for app attribution. Defaults identify vornik by name +
 // build version (no website URL, per operator preference): referer
 // "vornik/<version>", title "vornik". Operator config overrides either.
-func openRouterAttributionHeaders(referer, title string) map[string]string {
+//
+// buildVersion is the daemon's live version; it used to be version.Default,
+// which meant every deployment attributed itself to the same stale constant in
+// OpenRouter's analytics regardless of what was actually running. Empty falls
+// back to the constant, which is all an unidentifiable build can honestly say.
+func openRouterAttributionHeaders(buildVersion, referer, title string) map[string]string {
 	if referer == "" {
-		referer = "vornik/" + version.Default
+		v := strings.TrimSpace(buildVersion)
+		if v == "" {
+			v = version.Default
+		}
+		referer = "vornik/" + v
 	}
 	if title == "" {
 		title = "vornik"

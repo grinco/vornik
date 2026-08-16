@@ -54,13 +54,13 @@ func TestClaudeSubscription_RecordMetricsAndTokens(t *testing.T) {
 func TestClaudeSubscription_RecordMetrics_NilMetricsNoop(t *testing.T) {
 	c := NewClaudeSubscriptionClient("claude-opus-4-7")
 	c.recordMetrics(time.Now(), "ok") // c.metrics == nil
-	c.recordTokens(&ChatResponse{Usage: struct {
-		PromptTokens        int `json:"prompt_tokens"`
-		CompletionTokens    int `json:"completion_tokens"`
-		TotalTokens         int `json:"total_tokens"`
-		CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
-		CacheReadTokens     int `json:"cache_read_tokens,omitempty"`
-	}{PromptTokens: 1}})
+	// Fields are set individually rather than by re-declaring the anonymous
+	// Usage struct: a literal has to repeat every field, so adding one to
+	// ChatResponse breaks this test for no reason. It did exactly that when
+	// PromptTokensDetails was added on 2026-08-16.
+	resp := &ChatResponse{}
+	resp.Usage.PromptTokens = 1
+	c.recordTokens(resp)
 }
 
 func TestCLIClient_RecordMetrics(t *testing.T) {

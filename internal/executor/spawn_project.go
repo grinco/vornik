@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+	"vornik.io/vornik/internal/actor"
 	"vornik.io/vornik/internal/executor/livepubsub"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
@@ -344,6 +345,12 @@ func (e *Executor) seedInitialTask(
 		WorkflowID:     wfID,
 		ParentTaskID:   &parentTask.ID,
 		CreationSource: persistence.TaskCreationSourceDelegation,
+		// This row lands in the SPAWNED project, so the same tenancy reasoning
+		// as call_project applies: the parent's person must not appear on a
+		// different project's leaderboard. Design §3.1.4 puts project OWNERSHIP
+		// out of scope; the task row it creates still crosses the boundary and
+		// needs an answer, and this is it.
+		CreatedByActor: actor.Ptr(actor.CrossProjectCall),
 		Status:         persistence.TaskStatusQueued,
 		Priority:       50,
 		Payload:        body,

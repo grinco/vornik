@@ -63,6 +63,13 @@ type StepOutcome struct {
 	// shape failure.
 	Attempt    int    `json:"attempt"`
 	ErrorClass string `json:"errorClass,omitempty"`
+	// DurationMS is the step's wall clock, from execution_step_outcomes.
+	// PER-STEP rather than only summed per execution because the speed-aware
+	// timeout fit regresses duration on completion tokens and tool calls, and
+	// that regression is per step — an execution-level total cannot separate a
+	// slow model from a slow tool. Zero means the ledger row had no duration,
+	// which is distinct from a step that genuinely took no time.
+	DurationMS int64 `json:"durationMs,omitempty"`
 }
 
 // RoleConformance is one role's schema-following record.
@@ -91,6 +98,20 @@ type SchemaVerdict struct {
 	// schema one.
 	Judged   int `json:"judged"`
 	NoOutput int `json:"noOutput"`
+
+	// NoOutputByOutcome breaks NoOutput down by the outcome that caused it.
+	//
+	// NoOutput on its own is not actionable. The 2026-08-16 long-horizon arm
+	// reported 32 of 57 terminal steps (56.1%) producing nothing, which is the
+	// single largest reliability fact in the run — and the journal could not say
+	// whether that was containers exiting non-zero, steps timing out, or agents
+	// exhausting their iterations. Those have three different fixes, and the
+	// bare count picks none of them.
+	//
+	// Keyed by the raw outcome string rather than a closed enum: the taxonomy
+	// grows, and a cause this map cannot name would otherwise vanish into the
+	// remainder it exists to explain.
+	NoOutputByOutcome map[string]int `json:"noOutputByOutcome,omitempty"`
 
 	// SchemaConformance is conforming / JUDGED — did the step end up conformant,
 	// however many attempts it took, over the steps that produced output at all.
@@ -254,6 +275,10 @@ func (p SchemaProbe) tallySteps(v *SchemaVerdict, final map[string]StepOutcome) 
 		v.Terminal++
 		if !isJudgeable(o.Outcome) {
 			v.NoOutput++
+			if v.NoOutputByOutcome == nil {
+				v.NoOutputByOutcome = map[string]int{}
+			}
+			v.NoOutputByOutcome[o.Outcome]++
 			continue
 		}
 		v.Judged++

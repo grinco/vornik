@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -228,6 +229,22 @@ func (s *Server) postInteractionReply(ctx context.Context, responseURL, text str
 	if strings.TrimSpace(responseURL) == "" {
 		return
 	}
+	// response_url arrives INSIDE the interaction payload, so it is attacker-
+	// chosen data that we then POST to. ParseInteraction already HMAC-verifies
+	// the payload against the signing secret (and enforces a replay window), so
+	// forging one means holding the secret — but that is authentication, not
+	// authorization of the destination, and it is the only thing standing
+	// between this and an SSRF that also exfiltrates the reply text.
+	//
+	// Slack always issues response_url on its own host, so pinning it costs
+	// nothing and removes the class. Flagged as go/request-forgery (critical) on
+	// the public CE repo, correctly: the taint is real even though reaching it
+	// requires the secret.
+	if !isSlackResponseURL(responseURL) {
+		s.logger.Warn().Str("response_url", responseURL).
+			Msg("slack interaction: refusing to post to a non-Slack response_url")
+		return
+	}
 	payload := map[string]any{"text": text}
 	if replace {
 		payload["replace_original"] = true
@@ -250,4 +267,27 @@ func (s *Server) postInteractionReply(ctx context.Context, responseURL, text str
 		return
 	}
 	_ = resp.Body.Close()
+}
+
+// slackResponseHost is the only host Slack issues interaction response_urls on.
+// Kept as an exact match rather than a suffix test: a suffix check on
+// "slack.com" would accept "slack.com.evil.tld", which is the usual way this
+// mitigation is written wrong.
+const slackResponseHost = "hooks.slack.com"
+
+// isSlackResponseURL reports whether u is an https URL on Slack's response host.
+// Scheme is checked too — an http:// response_url would put the reply text on
+// the wire in clear, and Slack never issues one.
+func isSlackResponseURL(u string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(u))
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "https" {
+		return false
+	}
+	// Hostname() strips any :port and the [] of an IPv6 literal, and userinfo
+	// lives in parsed.User — so "https://hooks.slack.com@evil.tld/x" yields
+	// "evil.tld" here rather than being mistaken for the allowed host.
+	return strings.EqualFold(parsed.Hostname(), slackResponseHost)
 }

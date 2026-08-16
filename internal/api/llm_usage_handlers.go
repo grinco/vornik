@@ -15,9 +15,13 @@ import (
 // ID so successive flushes upsert into the same DB row instead
 // of inserting duplicates.
 //
-// The deterministic ID is the agent's responsibility:
-// `tu_<task_id>_<step_id>_<role>`. Postgres' ON CONFLICT (id)
-// DO UPDATE handles the upsert atomically.
+// The deterministic ID is the DAEMON's responsibility as of
+// 2026-08-16: the agent still sends `usage_id`, but any request
+// naming a task has its id re-derived by llmspend.StepUsageID from
+// the validated task/execution/step/role. The agent's shape omitted
+// the execution, so a retry's stream overwrote the row of the
+// execution it retried. Postgres' ON CONFLICT (id) DO UPDATE handles
+// the upsert atomically either way.
 //
 // Why this matters: per-step `Record` rows only land in
 // task_llm_usage at step finalize time. When an agent's
@@ -184,10 +188,29 @@ func (s *Server) IngestLLMUsage(w http.ResponseWriter, r *http.Request) {
 		CacheReadTokens:     int(req.CacheReadTokens),
 	}
 
-	if err := s.workflowStepSpend.Upsert(r.Context(), req.UsageID, in); err != nil {
+	// The id is RE-DERIVED here rather than taken from req.UsageID. The agent
+	// sends `tu_<task>_<step>_<role>`, which does not name the execution, so a
+	// retry's stream overwrote the row of the execution it retried and erased
+	// that attempt's spend. Deriving server-side from the already-validated
+	// task/execution binding (checked above) fixes both writers at once — the
+	// executor's finalize path derives the same id — without requiring the agent
+	// container image to be redeployed in lockstep with the daemon.
+	//
+	// req.UsageID remains REQUIRED above: a caller that cannot name its own row
+	// is malformed, and dropping the field would silently accept those.
+	//
+	// Only a request that names its TASK is re-derived. With an empty task the
+	// derived id degenerates to `tu__<step>_<role>`, which would collide across
+	// every caller that shares a step and role — strictly worse than the id the
+	// caller chose. The dispatcher path has no task row, so it keeps its own.
+	usageID := req.UsageID
+	if req.TaskID != "" {
+		usageID = llmspend.StepUsageID(req.TaskID, req.ExecutionID, req.StepID, req.Role)
+	}
+	if err := s.workflowStepSpend.Upsert(r.Context(), usageID, in); err != nil {
 		s.logger.Warn().
 			Err(err).
-			Str("usage_id", req.UsageID).
+			Str("usage_id", usageID).
 			Str("task_id", req.TaskID).
 			Str("step_id", req.StepID).
 			Msg("llm usage upsert failed")

@@ -30,6 +30,10 @@ var (
 )
 
 func main() {
+	// See cmd/vornik-enterprise/main.go for why this runs here and not in the
+	// var block: ldflags only override a constant initializer.
+	Version, BuildDate = version.Resolve(Version, BuildDate)
+
 	if err := service.Run(Version, BuildDate, version.EditionCommunity, service.CommunityProviders()); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

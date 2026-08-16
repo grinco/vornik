@@ -260,9 +260,25 @@ func (t *chatAuditTurn) finish(ctx context.Context, req Request, result Result) 
 	}
 
 	entry := &persistence.ChatAuditEntry{
-		ID:                       t.id,
-		Timestamp:                time.Now().UTC(),
-		ChatID:                   resolveChatID(req),
+		ID:        t.id,
+		Timestamp: time.Now().UTC(),
+		ChatID:    resolveChatID(req),
+		// WHO said it. Populated by the channel receiver as
+		// "<source>:<speaker>" (telegram:42, slack:U123) and simply never
+		// copied here, so every chat_audit_log row carried an empty user_id —
+		// 54,537 of them in a single 30-day window on the reference
+		// deployment. The column, the model field and the value all existed;
+		// only the assignment was missing.
+		//
+		// That made every chat channel invisible to per-person reporting:
+		// Telegram, Slack and email usage could be counted in total but never
+		// attributed, which for an operator whose team works mostly in chat is
+		// the majority of their engagement.
+		//
+		// Empty for synthesised turns (autonomy, retry-from-step, post-mortem
+		// builders) because those have no speaker — correct, and distinct from
+		// "a person spoke and we failed to record them".
+		UserID:                   req.OperatorID,
 		ProjectID:                req.Project,
 		RoleUsed:                 t.roleUsed,
 		Model:                    t.model,

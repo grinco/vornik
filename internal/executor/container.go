@@ -413,6 +413,13 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	if opts.ProjectTimezone == "" && plan.project != nil {
 		opts.ProjectTimezone = plan.project.Budget.Timezone
 	}
+	// Mirror the step's output-file contract into the payload. Set HERE, on the
+	// one path that also enforces it below, so the two cannot drift: an agent
+	// told about a glob is always told about the same glob the daemon will
+	// check.
+	if opts.RequireOutputGlob == "" {
+		opts.RequireOutputGlob = step.RequireOutputGlob
+	}
 	// Layer 1 of the context-discovery hardening: pre-load the
 	// project's canonical context files (PROJECT_CONTEXT.md +
 	// USER_GUIDANCE.md) so the agent doesn't burn tool calls

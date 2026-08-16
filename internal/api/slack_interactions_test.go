@@ -150,3 +150,39 @@ func TestSlackInteractions_RouteAbsentWhenSlackNotConfigured(t *testing.T) {
 		t.Error("the interactions route must not be mounted when no Slack parser is wired")
 	}
 }
+
+// go/request-forgery (critical) on the public CE repo, 2026-08-15. response_url
+// arrives inside the interaction payload — attacker-chosen data the daemon then
+// POSTs the reply text to. HMAC verification proves WHO sent the payload; it
+// says nothing about where the URL points, so the destination needs its own
+// check.
+func TestIsSlackResponseURL(t *testing.T) {
+	allowed := []string{
+		"https://hooks.slack.com/actions/T1/2/abc",
+		"https://HOOKS.SLACK.COM/actions/T1/2/abc", // host compare is case-insensitive
+	}
+	for _, u := range allowed {
+		if !isSlackResponseURL(u) {
+			t.Errorf("isSlackResponseURL(%q) = false, want true", u)
+		}
+	}
+
+	refused := map[string]string{
+		"http://hooks.slack.com/actions/x":    "plaintext would put the reply on the wire in clear",
+		"https://evil.tld/collect":            "unrelated host",
+		"https://slack.com.evil.tld/collect":  "suffix-match bypass — the classic way this check is written wrong",
+		"https://hooks.slack.com.evil.tld/x":  "same, one label deeper",
+		"https://hooks.slack.com@evil.tld/x":  "userinfo before the real host",
+		"https://evil.tld/?x=hooks.slack.com": "allowed host only in the query",
+		"https://evil.tld#hooks.slack.com":    "allowed host only in the fragment",
+		"//hooks.slack.com/actions/x":         "scheme-relative, so no https guarantee",
+		"":                                    "empty",
+		"   ":                                 "blank",
+		"::not a url::":                       "unparseable",
+	}
+	for u, why := range refused {
+		if isSlackResponseURL(u) {
+			t.Errorf("isSlackResponseURL(%q) = true, want false (%s)", u, why)
+		}
+	}
+}

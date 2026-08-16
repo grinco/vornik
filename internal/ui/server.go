@@ -625,6 +625,10 @@ type Server struct {
 	// wired" hint when so.
 	memoryRetrievalAudit persistence.MemoryRetrievalAuditRepository
 	memoryIngestAudit    persistence.MemoryIngestAuditRepository
+	// capabilityUsage backs the adoption page's capability-breadth panel. Nil
+	// disables the panel rather than rendering an empty one — a missing repo is
+	// "not wired", which must not look like "no capabilities in use".
+	capabilityUsage persistence.CapabilityUsageRepository
 	// workflowProposalsRepo backs /ui/admin/workflow-proposals
 	// (list + drill-down + decide). Same nil-safe convention as
 	// the other admin surfaces. Slice 3c of the memetic-workflows
@@ -1923,6 +1927,11 @@ func WithMemoryIngestAuditRepository(repo persistence.MemoryIngestAuditRepositor
 	return func(s *Server) { s.memoryIngestAudit = repo }
 }
 
+// WithCapabilityUsageRepository wires the capability-adoption reader.
+func WithCapabilityUsageRepository(repo persistence.CapabilityUsageRepository) ServerOption {
+	return func(s *Server) { s.capabilityUsage = repo }
+}
+
 // WithAdminReadinessProvider wires an in-process readiness source
 // for the admin landing tile. Same checks /readyz runs over HTTP;
 // keeping them in-process avoids the daemon self-curling itself.
@@ -2190,6 +2199,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/spend", s.Spend)
 	mux.HandleFunc("/insights/tool-budget", s.InsightsToolBudget)
 	mux.HandleFunc("/insights/trends", s.InsightsTrends)
+	mux.HandleFunc("/insights/adoption", s.InsightsAdoption)
 
 	// Trading dashboard — end-to-end trading overview (broker account
 	// snapshot, recent trades, safety events) with a trading-enabled

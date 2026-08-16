@@ -35,6 +35,14 @@ type EfficiencyRollup struct {
 	TokensPerTask      float64 `json:"tokensPerTask"`
 	ToolCallsPerTask   float64 `json:"toolCallsPerTask"`
 	WallClockMSPerTask float64 `json:"wallClockMsPerTask"`
+	// WallClockDefined distinguishes "the steps took no measurable time" from
+	// "no duration was recorded". Every journal written before 2026-08-16 is the
+	// SECOND case: ExecutionRecord.DurationMS was declared and never populated,
+	// so the rollup emitted a confident 0 ms/task. Re-scoring such a journal
+	// cannot recover the number — the durations were never journaled — so the
+	// flag is how an old rollup admits it rather than reporting a zero someone
+	// might compare against a real one.
+	WallClockDefined bool `json:"wallClockDefined"`
 
 	// GrantPrecision is over-granting: schema tokens advertised and never used.
 	GrantPrecision        float64 `json:"grantPrecision"`
@@ -51,6 +59,28 @@ type EfficiencyRollup struct {
 type AccuracyRollup struct {
 	SchemaConformance        float64 `json:"schemaConformance"`
 	SchemaConformanceDefined bool    `json:"schemaConformanceDefined"`
+	// SchemaJudged and SchemaNoOutput are conformance's two halves.
+	//
+	// Judged is the denominator: terminal steps that produced output a schema
+	// could be applied to. NoOutput is the remainder — crashed, timed out,
+	// refused, exhausted. The probe is right to keep them apart (a crashed
+	// container is a reliability fact, not a schema fact), but the ROLLUP
+	// published only the ratio, so the reliability half vanished.
+	//
+	// Measured 2026-08-16 on the qwen-local-fixed arm: 825 terminal steps, 479
+	// judged, 346 — 41.9% — producing no output at all. "Conformance 0.912"
+	// reads as near-perfect until you know it describes 58% of the steps.
+	// Publishing both makes the number interpretable instead of flattering.
+	SchemaJudged   int `json:"schemaJudged"`
+	SchemaNoOutput int `json:"schemaNoOutput"`
+
+	// SchemaNoOutputByOutcome is the reliability half, broken down by cause.
+	//
+	// The count alone says how much of the run produced nothing; it does not say
+	// what to fix. On the 2026-08-16 long-horizon arm that count was 56.1% of
+	// terminal steps — the run's largest single fact — and container exits,
+	// timeouts and iteration exhaustion have three different remedies.
+	SchemaNoOutputByOutcome map[string]int `json:"schemaNoOutputByOutcome,omitempty"`
 
 	ToolCallValidity        float64 `json:"toolCallValidity"`
 	ToolCallValidityDefined bool    `json:"toolCallValidityDefined"`
@@ -61,7 +91,24 @@ type AccuracyRollup struct {
 	// set existed for the run.
 	PathCoverage        float64 `json:"pathCoverage"`
 	PathCoverageDefined bool    `json:"pathCoverageDefined"`
-	CoreMisses          int     `json:"coreMisses"`
+	// PathCoverageN is HOW MANY executions the coverage figure averages.
+	//
+	// Its denominator is not the task set and never was: GrantProbe refuses to
+	// score an execution that made no grant request (probe.go), deliberately,
+	// because scoring those 0.0 would drag every real measurement to zero. So
+	// coverage measures executions that USED the grant feature, which is a
+	// self-selected subset.
+	//
+	// Measured 2026-08-16 on the qwen-local-fixed arm: 16 scored out of 139
+	// executions (11.5%), and every dp-* task contributed ZERO — that whole
+	// workflow family never requests a grant, so it cannot appear in the
+	// headline accuracy number at all.
+	//
+	// PathCoverageDefined said "there is a number"; it could not say "from how
+	// many". Publishing 0.548 without the count invites reading it as a
+	// property of the task set rather than of a fraction of it.
+	PathCoverageN int `json:"pathCoverageN"`
+	CoreMisses    int `json:"coreMisses"`
 	// CoreShellCovered counts core requirements met ONLY because a shell was
 	// granted, and it is why CoreMisses must never be quoted alone.
 	//
@@ -149,7 +196,10 @@ func BuildRollup(arm string, records []ExecutionRecord) Rollup {
 
 	r.Efficiency.TokensPerTask = tokens / n
 	r.Efficiency.ToolCallsPerTask = toolCalls / n
-	r.Efficiency.WallClockMSPerTask = wallClock / n
+	if wallClock > 0 {
+		r.Efficiency.WallClockMSPerTask = wallClock / n
+		r.Efficiency.WallClockDefined = true
+	}
 	if grantN > 0 {
 		r.Efficiency.GrantPrecision = grantSum / grantN
 		r.Efficiency.GrantPrecisionDefined = true
@@ -163,6 +213,7 @@ func BuildRollup(arm string, records []ExecutionRecord) Rollup {
 	if schemaWeight > 0 {
 		r.Accuracy.SchemaConformance = schemaSum / schemaWeight
 		r.Accuracy.SchemaConformanceDefined = true
+		r.Accuracy.SchemaJudged = int(schemaWeight)
 	}
 	if toolValidityWeight > 0 {
 		r.Accuracy.ToolCallValidity = toolValiditySum / toolValidityWeight
@@ -171,6 +222,7 @@ func BuildRollup(arm string, records []ExecutionRecord) Rollup {
 	if coverageN > 0 {
 		r.Accuracy.PathCoverage = coverageSum / coverageN
 		r.Accuracy.PathCoverageDefined = true
+		r.Accuracy.PathCoverageN = int(coverageN)
 	}
 	return r
 }
@@ -211,6 +263,16 @@ func accumulateSchema(r *Rollup, v Verdict, sum, weight *float64) {
 		return
 	}
 	r.Efficiency.SchemaRetries += s.RetriesToValid
+	// Accumulated even when conformance is undefined: an execution whose steps
+	// ALL produced no output contributes nothing to the ratio but is exactly
+	// what a reader needs to see. Skipping it here would hide the worst cases.
+	r.Accuracy.SchemaNoOutput += s.NoOutput
+	for outcome, n := range s.NoOutputByOutcome {
+		if r.Accuracy.SchemaNoOutputByOutcome == nil {
+			r.Accuracy.SchemaNoOutputByOutcome = map[string]int{}
+		}
+		r.Accuracy.SchemaNoOutputByOutcome[outcome] += n
+	}
 	if s.SchemaConformanceDefined && s.Judged > 0 {
 		*sum += s.SchemaConformance * float64(s.Judged)
 		*weight += float64(s.Judged)

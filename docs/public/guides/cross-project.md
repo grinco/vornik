@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/executor/call_project.go
-      sha256: af067e625043247a2b3ee0b433fb2cac8191ab3b7944d5b5259b21db18e10206
+      sha256: 708c4363f26794b4a7abdc6eace9d3d676d664d808b93a6f2b29faf1c29b272f
     - path: internal/executor/spawn_project.go
-      sha256: 5ece68e724d864e53a5f78e85f2091c66a917fdbe2ac72c7be9fcfb6f91cacdc
+      sha256: d78601b2d5a63d23df7e3e09250a72bf70b553a0c4d6866f376db50fb544a24c
     - path: internal/executor/a2a_call.go
       sha256: 138a2e550e367a72f367669faa9fbeaa52691e74f1146a615ab12637fe51b165
     - path: internal/registry/project.go

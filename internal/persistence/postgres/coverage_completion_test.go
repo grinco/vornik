@@ -58,6 +58,7 @@ func TestTaskGet_FullyPopulatedRow(t *testing.T) {
 		"chat_20260521_xx", // chat_turn_id
 		3.5,                // budget_usd
 		"key-abc",          // created_by_api_key_id
+		"api_key:key-abc",  // created_by_actor
 	)
 
 	mock.ExpectQuery(regexp.QuoteMeta("FROM tasks WHERE id = $1")).

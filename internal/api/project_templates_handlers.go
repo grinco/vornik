@@ -317,7 +317,7 @@ func (s *Server) CreateProjectFromTemplate(w http.ResponseWriter, r *http.Reques
 	emitCtx, cancelEmit := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Second)
 	defer cancelEmit()
 	_ = s.lifecycleTelemetry.Emit(emitCtx, telemetryclient.ProjectEvent(
-		s.telemetryVersion,
+		s.BuildVersion(),
 		telemetryclient.SourceAPITemplate,
 		req.Slug,
 		true,

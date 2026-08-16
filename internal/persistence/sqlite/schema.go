@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- chat/webhook/autonomy/executor-spawned tasks — there is no key behind
     -- them. Powers the spend-per-API-key UI.
     created_by_api_key_id TEXT,
+    created_by_actor TEXT,
     UNIQUE (project_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_project    ON tasks(project_id);
@@ -101,6 +102,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_lease_exp  ON tasks(lease_expires_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_created    ON tasks(created_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_chat_turn  ON tasks(chat_turn_id) WHERE chat_turn_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_created_by_api_key ON tasks(created_by_api_key_id) WHERE created_by_api_key_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_created_by_actor ON tasks(created_by_actor, created_at DESC) WHERE created_by_actor IS NOT NULL;
 
 -- ============================================================
 -- executions

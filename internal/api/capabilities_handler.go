@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"vornik.io/vornik/internal/version"
@@ -48,8 +49,16 @@ func (s *Server) GetCapabilities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The daemon's real build version, not the fallback constant. Clients use
+	// this field to gate on server capability, so answering with a hardcoded
+	// constant made every deployment look like the same ancient build.
+	reportedVersion := s.BuildVersion()
+	if strings.TrimSpace(reportedVersion) == "" {
+		reportedVersion = version.Default
+	}
+
 	resp := CapabilitiesResponse{
-		Version:    version.Default,
+		Version:    reportedVersion,
 		APIVersion: "v1",
 		Transports: []string{"http", "sse"},
 		Features:   s.featureFlags(),

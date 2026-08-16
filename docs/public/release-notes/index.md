@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: c77edbc52bb844a96691b07ab3fe240e373ddc3786d25eae164e8012b5a417ef
+      sha256: abca88d0f8f23eaf6ad1171d0f0360a4c6f35a87b8ec3b7924b50e524f56c271
 ---
 # Release Notes
 
@@ -14,6 +14,62 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.8.5
+
+**Upgrade if your tasks ever retry — retried work has not been billed to
+anything.** A workflow step's spend was stored under an id that did not name the
+execution, so when a task retried, the retry overwrote the row of the attempt it
+retried. On a measured ledger, 24.8% of step-spend rows were missing, and 98.9%
+of those were this collision. Budget enforcement, the spend dashboard and
+per-key attribution all understated by the cost of every retry. Historical rows
+cannot be recovered — the figures were overwritten, not merely hidden — but new
+spend records correctly from this release.
+
+**Cached prompt tokens are counted on streamed calls.** Streamed completions were
+not asking for usage, so cache hits recorded nothing. Prefix caching on
+self-hosted servers was already working and simply invisible.
+
+**New: an adoption dashboard at `/ui/insights/adoption`.** Shows how much of the
+product each team has actually exercised — companion usage, RAG queries, memory
+writes and channel activity, not just task counts — and names the capabilities
+nobody has tried yet. Designed to be useful on deployments that have *not*
+enabled auth, where everything is attributed to nobody.
+
+**Security.** Slack interaction responses are now pinned to Slack's own host, so
+a forged payload cannot redirect a response elsewhere. Go 1.26.6 picks up fixes
+for 7 standard-library CVEs.
+
+**Rebuild your agent image** (`make build-agent`). The degenerate-loop diagnostic
+used to assert the context window was exhausted; a measured run found a loop at
+17% of context, so an operator following that text would raise a limit that was
+never the constraint. It now reports the measured figure and says plainly when
+context is *not* the cause.
+
+---
+
+## 2026.8.4
+
+**Upgrade if you run open-weight models on your own hardware — agentic work did
+not function at all.** Vornik sent a `response_format` directive alongside its
+tool definitions. Any server implementing that with guided decoding then
+constrains the model to emit schema-shaped JSON, so it can never emit a tool
+call. Hosted APIs tolerated the combination; self-hosted endpoints did not.
+Agents answered in a few tokens of prose, the loop recorded success, and the
+step then failed its output contract. The directive is now withheld whenever
+tools are offered.
+
+**Timeouts no longer assume fast inference.** New optional
+`speed_aware_timeouts` and `default_step_timeout` settings; both default to
+previous behavior.
+
+**Dashboard failures are counted by when they failed**, not by when their task
+was created, so a spike lands on the day it happened.
+
+**Rebuild your agent image** (`make build-agent`) — the `response_format`,
+finalization and nudge fixes live in the container, not the daemon.
 
 ---
 

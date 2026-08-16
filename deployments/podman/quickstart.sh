@@ -57,7 +57,7 @@ REPO_URL="${VORNIK_REPO_URL:-https://github.com/grinco/vornik}"
 # (`make quickstart-stamp-ref REF=<tag>`), so the PUBLISHED installer pins a
 # concrete release rather than a moving branch. Keep it a real, recent tag in
 # the repo. Override at runtime with VORNIK_REF (e.g. VORNIK_REF=main).
-DEFAULT_VORNIK_REF="2026.8.4"
+DEFAULT_VORNIK_REF="2026.8.5"
 REF="${VORNIK_REF:-$DEFAULT_VORNIK_REF}"
 DIR="${VORNIK_DIR:-$HOME/vornik}"
 HTTP_PORT="${VORNIK_HTTP_PORT:-8080}"

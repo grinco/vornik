@@ -408,9 +408,28 @@ type ChatResponse struct {
 		// the provider's prompt cache, replacing what would
 		// otherwise have been fresh prompt-tokens. Pricing
 		// typically charges ~10% of the fresh rate for these.
-		// Populated by Bedrock + Anthropic; zero for the other
-		// sub-providers.
+		// Populated by Bedrock + Anthropic under this name.
 		CacheReadTokens int `json:"cache_read_tokens,omitempty"`
+		// PromptTokensDetails carries the OPENAI-COMPATIBLE spelling of the
+		// same quantity, which is what a self-hosted vLLM (and OpenAI itself)
+		// actually returns.
+		//
+		// This struct previously read `cache_read_tokens` only, and its comment
+		// asserted caching was "zero for the other sub-providers" — true when
+		// written in 2026-05, and stale since. vLLM does automatic prefix
+		// caching and reports it as usage.prompt_tokens_details.cached_tokens,
+		// so the daemon was reading a field the server never sends and
+		// recording 0.
+		//
+		// That mattered more than an absent statistic: the 2026-08 benchmark
+		// arm measured 70.4M prompt tokens against 985k completion (71.5:1), so
+		// prompt is 98.6% of everything processed. Whether any of it was served
+		// from cache was unobservable, uncostable, and impossible to optimise
+		// against — for a deployment whose binding constraint is GPU time spent
+		// on prefill.
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 	// ExtractionWarning is set by the Bedrock converter when one or
 	// more tool-call argument blocks failed to marshal. The response
@@ -951,6 +970,7 @@ func (c *Client) doComplete(ctx context.Context, req ChatRequest) (*ChatResponse
 			Msg("chat completion response parse failed")
 		return nil, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
 	}
+	normalizeCachedTokens(&chatResp)
 
 	c.logger.Info().
 		Str("url", url).
@@ -1016,4 +1036,31 @@ func truncateLogString(s string, limit int) string {
 		return s
 	}
 	return s[:limit] + "...(truncated)"
+}
+
+// normalizeCachedTokens folds the OpenAI-compatible spelling of cached input
+// tokens into the field the rest of the system reads.
+//
+// OpenAI and vLLM report usage.prompt_tokens_details.cached_tokens; Bedrock and
+// Anthropic report their own field, which this struct already carried. Only the
+// latter was parsed, so an OpenAI-compatible server's cache reporting was
+// dropped on the floor — and with it any chance to observe, cost-credit or
+// optimise against it.
+//
+// MEASURED 2026-08-16 on the self-hosted endpoint: an identical 3.6k-token
+// prefix answers in ~0.09s against ~0.26s for a unique one, so prefix caching
+// is demonstrably ACTIVE (~2.9x on a hit). That server does not populate
+// prompt_tokens_details at all, so this parse changes nothing there — the
+// caching is real and remains unreported at the source. It is fixed anyway
+// because the alternative is reading a field no OpenAI-compatible server sends,
+// which guarantees a zero forever and makes "no caching" indistinguishable from
+// "not measured".
+//
+// Never overwrites a value a provider already set: Bedrock/Anthropic populate
+// CacheReadTokens directly and must win.
+func normalizeCachedTokens(resp *ChatResponse) {
+	if resp == nil || resp.Usage.CacheReadTokens != 0 {
+		return
+	}
+	resp.Usage.CacheReadTokens = resp.Usage.PromptTokensDetails.CachedTokens
 }

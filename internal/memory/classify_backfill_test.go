@@ -88,12 +88,15 @@ func TestClassifyBackfiller_BackfillBatch_Mixed(t *testing.T) {
 	})
 	defer cleanup()
 
+	// Every role here is deliberately ABSENT from roleClassMap, so each
+	// row reaches the LLM — which is the branch this test covers. Rows
+	// with a mapped role never call the model at all (2026-08-15).
 	mock.ExpectQuery("FROM project_memory_chunks").
 		WithArgs("p", 10, 0).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}).
-			AddRow("c1", "p", "doc.md", "researcher", "first body").
+			AddRow("c1", "p", "doc.md", "dispatcher", "first body").
 			AddRow("c2", "p", "x.md", "", "ambiguous").
-			AddRow("c3", "p", "y.md", "writer", "third body"))
+			AddRow("c3", "p", "y.md", "dispatcher", "third body"))
 
 	// c1 → UPDATE.
 	mock.ExpectExec("UPDATE project_memory_chunks").
@@ -348,12 +351,14 @@ func TestClassifyBackfiller_BackfillBatchAcrossProjects_PerRowErrorsRecorded(t *
 		{content: "spec"},
 	})
 	defer cleanup()
+	// Unmapped roles throughout: these four paths are the LLM's, and a
+	// role in roleClassMap would short-circuit past it (2026-08-15).
 	mock.ExpectQuery("SELECT id, project_id").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}).
-			AddRow("c1", "p-a", "alpha.md", "researcher", "alpha").
-			AddRow("c2", "p-b", "beta.md", "writer", "beta").
-			AddRow("c3", "p-c", "gamma.md", "analyst", "gamma").
-			AddRow("c4", "p-d", "delta.md", "analyst", "delta"))
+			AddRow("c1", "p-a", "alpha.md", "dispatcher", "alpha").
+			AddRow("c2", "p-b", "beta.md", "dispatcher", "beta").
+			AddRow("c3", "p-c", "gamma.md", "dispatcher", "gamma").
+			AddRow("c4", "p-d", "delta.md", "dispatcher", "delta"))
 	// c1 succeeds → UPDATE.
 	mock.ExpectExec("UPDATE project_memory_chunks").WillReturnResult(sqlmock.NewResult(0, 1))
 	// c4 persist fails.
@@ -459,13 +464,13 @@ func TestClassifyBackfiller_AdvancesPastRowsNothingCanClassify(t *testing.T) {
 	}
 }
 
-// When the LLM abstains, the deterministic role map is consulted before giving up: it is
-// what the ingest path itself uses, and for a chunk whose producer_role is known it is a
-// better answer than leaving the row unclassified forever.
+// The deterministic role map is consulted BEFORE the LLM: it is free, it is what the
+// ingest path itself uses, and for a known producer_role it is the authoritative answer.
+// The LLM is reserved for roles the map cannot place.
 func TestClassifyByRole_ProvidesATerminalAnswerForKnownRoles(t *testing.T) {
 	if got, _ := ClassifyByRole("researcher"); got == ClassUnclassified {
-		t.Error("a known producer role must map to a real class, or the fallback " +
-			"cannot rescue an LLM abstention")
+		t.Error("a known producer role must map to a real class, or the backfill " +
+			"cannot classify the row without paying for a model call")
 	}
 	// A companion deposit is its own class, and must not be relabelled.
 	if got, _ := ClassifyByRole("companion:claude-code"); got != ClassCompanionNote {
@@ -474,5 +479,127 @@ func TestClassifyByRole_ProvidesATerminalAnswerForKnownRoles(t *testing.T) {
 	// An unknown role genuinely has no answer — the fallback must not invent one.
 	if got, _ := ClassifyByRole("some-role-nobody-registered"); got != ClassUnclassified {
 		t.Errorf("unknown role = %q, want unclassified rather than a guess", got)
+	}
+}
+
+// newClassifyBackfillerProbe is newClassifyBackfiller plus a handle on the fake
+// provider, so a test can assert the model was never called.
+func newClassifyBackfillerProbe(t *testing.T, replies []titlerReply) (*ClassifyBackfiller, *classifyFakeProvider, sqlmock.Sqlmock, func()) {
+	t.Helper()
+	r, mock, cleanup := newRepo(t)
+	fp := newClassifyProvider(replies...)
+	cl := NewClassifier(fp, "", llmspend.Disabled())
+	return &ClassifyBackfiller{
+		Repo:       r,
+		Classifier: cl,
+		Logger:     zerolog.Nop(),
+		Metrics:    freshMetrics(),
+	}, fp, mock, cleanup
+}
+
+// Regression, 2026-08-15. The companion-rag-ingest workflow stamps producer_role
+// "rag-ingester" on every operator-deposited document — in practice the LLDs. That
+// role was missing from roleClassMap, and the backfill consulted the paid model
+// BEFORE the map, so each tick billed 25 Bedrock requests, had the model abstain on
+// all 25, then fell back to a map that had no answer either. 497 chunks sat at
+// ClassUnclassified (0.3 confidence, never role-of-record) while the loop re-billed
+// them every ten minutes indefinitely.
+//
+// Pre-fix this test fails twice over: calls == 1 (the model was asked) and
+// Succeeded == 0 / Skipped == 1 (nothing was classified).
+func TestClassifyBackfiller_RagIngestedDocClassifiedWithoutPayingForAModelCall(t *testing.T) {
+	bf, fp, mock, cleanup := newClassifyBackfillerProbe(t, nil)
+	defer cleanup()
+
+	mock.ExpectQuery("FROM project_memory_chunks").
+		WithArgs("companion-example", 10, 0).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}).
+			AddRow("c1", "companion-example", "some-design.md", "rag-ingester", "a design document"))
+	mock.ExpectExec("UPDATE project_memory_chunks").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("FROM project_memory_chunks").
+		WillReturnRows(sqlmock.NewRows([]string{"role", "n"}).AddRow("rag-ingester", 0))
+
+	res, err := bf.BackfillBatch(context.Background(), "companion-example", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Succeeded != 1 || res.Skipped != 0 {
+		t.Fatalf("an ingested design must be classified deterministically, got %+v", res)
+	}
+	if n := fp.calls.Load(); n != 0 {
+		t.Fatalf("classifier called %d time(s) for a row the free role map can place; "+
+			"that is the per-request billing this fix exists to stop", n)
+	}
+}
+
+// The auto-loop runs the cross-project sibling, so it is the one that was actually
+// burning requests every ten minutes. Same guarantee.
+func TestClassifyBackfiller_AcrossProjects_RagIngestedDocSkipsTheModel(t *testing.T) {
+	bf, fp, mock, cleanup := newClassifyBackfillerProbe(t, nil)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT id, project_id").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}).
+			AddRow("c1", "companion-example", "lld.md", "rag-ingester", "body"))
+	mock.ExpectExec("UPDATE project_memory_chunks").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT COUNT").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	res, err := bf.BackfillBatchAcrossProjects(context.Background(), 25)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Succeeded != 1 || res.Skipped != 0 {
+		t.Fatalf("counts: %+v", res)
+	}
+	if n := fp.calls.Load(); n != 0 {
+		t.Fatalf("auto-loop called the model %d time(s) for a mapped role", n)
+	}
+}
+
+// The complement: a role the map genuinely cannot place must still reach the LLM.
+// Without this, "skip the model" could be over-applied into never classifying
+// anything the map does not already know.
+func TestClassifyBackfiller_UnmappedRoleStillReachesTheModel(t *testing.T) {
+	bf, fp, mock, cleanup := newClassifyBackfillerProbe(t, []titlerReply{{content: "research"}})
+	defer cleanup()
+
+	mock.ExpectQuery("FROM project_memory_chunks").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "project_id", "source_name", "producer_role", "content"}).
+			AddRow("c1", "p", "x.md", "dispatcher", "body"))
+	mock.ExpectExec("UPDATE project_memory_chunks").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("FROM project_memory_chunks").
+		WillReturnRows(sqlmock.NewRows([]string{"role", "n"}).AddRow("dispatcher", 0))
+
+	res, err := bf.BackfillBatch(context.Background(), "p", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Succeeded != 1 {
+		t.Fatalf("counts: %+v", res)
+	}
+	if n := fp.calls.Load(); n != 1 {
+		t.Fatalf("classifier called %d time(s); an unmapped role must still be asked", n)
+	}
+}
+
+// rag-ingest is the operator's canonical path for depositing design documents, and
+// the retrieval rule that treats LLDs as the authoritative design record keys on the
+// spec class. Mapped anywhere lower, recall ranks agent-produced review artifacts
+// (decision, 0.9) above the designs they review.
+func TestRoleClassMap_RagIngesterIsSpec(t *testing.T) {
+	got, pol := ClassifyByRole("rag-ingester")
+	if got != ClassSpec {
+		t.Fatalf("rag-ingester = %q, want spec", got)
+	}
+	if !pol.RoleOfRecordEligible {
+		t.Error("an ingested design must be eligible as role-of-record")
+	}
+	if unc := DefaultClassPolicies[ClassUnclassified]; pol.DefaultConfidence <= unc.DefaultConfidence {
+		t.Errorf("spec confidence %v must exceed unclassified %v, or the fix changes "+
+			"nothing about retrieval ranking", pol.DefaultConfidence, unc.DefaultConfidence)
 	}
 }

@@ -154,7 +154,7 @@ func TestCreateProjectFromTemplate_EmitsExactlyOnceAfterCreation(t *testing.T) {
 			}, nil
 		})},
 	}
-	srv.telemetryVersion = "2026.7.4"
+	srv.buildVersion = "2026.7.4"
 
 	body := bytes.NewBufferString(`{"slug":"demo","parameters":{"projectId":"my-project"}}`)
 	req := templateAdminReq(httptest.NewRequest(http.MethodPost, "/api/v1/projects/from-template", body))

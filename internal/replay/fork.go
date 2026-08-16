@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/actor"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -200,6 +201,9 @@ func (f *Forker) Fork(ctx context.Context, sourceExecutionID string, req ForkReq
 		WorkflowID:     &workflowID,
 		ParentTaskID:   &parentTaskID,
 		CreationSource: persistence.TaskCreationSourceFork,
+		// Rule 6: a fork RE-EXECUTES someone's earlier work for analysis.
+		// Inheriting would make that person double-count work they did once.
+		CreatedByActor: actor.Ptr(actor.Counterfactual),
 		Status:         persistence.TaskStatusQueued,
 		Payload:        payload,
 		Attempt:        1,

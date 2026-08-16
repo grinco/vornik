@@ -209,6 +209,22 @@ var roleClassMap = map[string]ContentClass{
 	"risk-officer": ClassDecision,
 	"executor":     ClassCommitMsg,
 
+	// Document-ingest shape. The companion-rag-ingest workflow stamps
+	// this role on every file an operator deposits through
+	// /vornik-companion:rag-ingest — in practice the low-level designs,
+	// which are the project's authoritative design record. Its absence
+	// here left 497 chunks stuck at ClassUnclassified (0.3 confidence,
+	// never role-of-record), so recall ranked agent-produced review
+	// artifacts ABOVE the designs they review, and the LLM backfill
+	// re-billed the same rows every tick forever (2026-08-15).
+	//
+	// spec rather than a narrower class because the dominant content is
+	// design documents and spec is what the "LLDs are the design record"
+	// retrieval rule keys on. Operators ingesting non-design files
+	// through the same path inherit spec authority; that is the accepted
+	// trade of a generic deposit path having one role.
+	"rag-ingester": ClassSpec,
+
 	// Deliberately omitted (chat routing is ephemeral — chunks from
 	// these roles aren't load-bearing project knowledge; classify
 	// keeps them unclassified so operators can decide whether to

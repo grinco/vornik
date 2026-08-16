@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"vornik.io/vornik/internal/actor"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
@@ -133,6 +134,24 @@ type Params struct {
 	// created task (persistence.Task.CreatedByAPIKeyID) and copied onto
 	// downstream task_llm_usage rows to power the spend-per-API-key UI.
 	CreatedByAPIKeyID string
+
+	// Actor is WHO caused this task to exist, for the adoption leaderboard
+	// (LLD 2026-08-15 §3.1 rule 1). Zero means "not recorded", which is stored
+	// as NULL rather than guessed at — a wrong actor is worse than an absent
+	// one, because the dashboard reports coverage honestly and a guess would
+	// inflate it.
+	//
+	// This lives here, on the ONE canonical creator every operator surface
+	// routes through (REST, companion MCP, chat, UI, A2A), so attribution is a
+	// single change rather than a discipline each future surface must remember.
+	// Paths that do NOT route through here — autonomy, checkpoint continuation,
+	// cross-project calls, replay, webhooks — set the actor themselves, each
+	// with a reasoned rule; see §3.1 and §3.1.1.
+	//
+	// When Actor is zero and CreatedByAPIKeyID is set, Create derives
+	// `api_key:<id>` rather than dropping the attribution on the floor: a
+	// caller that supplied a key has already told us who it was.
+	Actor actor.Actor
 }
 
 // Creator bundles the dependencies the shared core needs. Both
@@ -396,6 +415,7 @@ func (c *Creator) Create(ctx context.Context, p Params) (*persistence.Task, erro
 		CreatedAt:         now,
 		UpdatedAt:         now,
 		CreatedByAPIKeyID: ptrIfNonEmpty(p.CreatedByAPIKeyID),
+		CreatedByActor:    ptrIfNonEmpty(resolveActor(p).String()),
 	}
 
 	// Atomic hard-cap reservation (trading-hardening §1): claim this task's
@@ -569,4 +589,24 @@ func ptrIfNonEmpty(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// resolveActor decides the actor recorded on a task created through this core.
+//
+// The fallback to the API key matters more than it looks: before this existed,
+// only ONE creation path set any attribution at all, which is why
+// tasks.created_by_api_key_id sat at 66 of 5,470 rows (1.2%) while
+// task_llm_usage.api_key_id reached 7.6%. Callers that authenticate with a key
+// have already told us who they are; making them ALSO pass an Actor would
+// reproduce exactly the "every surface must remember" failure that number
+// records.
+//
+// An explicit Actor still wins, because a UI session resolves to `user:<id>`
+// even when an API key is present on the request, and the person is the better
+// answer.
+func resolveActor(p Params) actor.Actor {
+	if !p.Actor.IsZero() {
+		return p.Actor
+	}
+	return actor.APIKey(p.CreatedByAPIKeyID)
 }

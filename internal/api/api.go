@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -914,7 +915,17 @@ type Server struct {
 	templateOptions     templates.OptionsResolver
 	configsDir          string
 	lifecycleTelemetry  telemetryclient.Client
-	telemetryVersion    string
+	// buildVersionFn defers the build-version read to request time. Required in
+	// the daemon, where SetVersion runs after this server is constructed; see
+	// WithBuildVersionFunc. Read through Server.BuildVersion(), never directly.
+	buildVersionFn func() string
+	// buildVersion is the daemon's build version (Container.Version()), wired
+	// alongside the telemetry client. It was called telemetryVersion until
+	// 2026-08-15, and the name cost us: GetCapabilities reported the
+	// version.Default CONSTANT to every client because the only version on the
+	// Server looked like it belonged to telemetry. It does not — it is the
+	// build version, and it is the right answer for any surface that needs one.
+	buildVersion string
 	// projectDoctor serves the per-project readiness endpoints
 	// (report, per-check run, secret set). Nil in deployments that
 	// haven't wired it — the doctor endpoints answer 503 rather than
@@ -2146,11 +2157,48 @@ func WithConfigsDir(dir string) ServerOption {
 }
 
 // WithLifecycleTelemetry wires anonymous project-creation telemetry.
+//
+// version is captured EAGERLY and is empty in the daemon, because the service
+// container calls SetVersion AFTER it builds the HTTP server. Prefer
+// WithBuildVersionFunc, which defers the read; this parameter is kept so
+// existing callers and tests that do have a version in hand still work.
 func WithLifecycleTelemetry(client telemetryclient.Client, version string) ServerOption {
 	return func(s *Server) {
 		s.lifecycleTelemetry = client
-		s.telemetryVersion = version
+		if version != "" {
+			s.buildVersion = version
+		}
 	}
+}
+
+// WithBuildVersionFunc wires a LAZY read of the daemon's build version.
+//
+// The eager form cannot work in the daemon: initHTTPServer builds the API
+// server's options before container.SetVersion runs, so c.Version() evaluated
+// at option-build time yields "". internal/ui hit this first and solved it the
+// same way (ui.WithVersionFunc, container_http.go — "lazy, SetVersion runs
+// after this server is built"); the API side kept the eager call and so
+// reported an empty version from /api/v1/capabilities on every real daemon,
+// which is why that endpoint appeared to serve a hardcoded constant.
+//
+// Found 2026-08-15 by the build_provenance doctor check, which reported "no
+// build version" on a daemon whose binary was correctly stamped.
+func WithBuildVersionFunc(fn func() string) ServerOption {
+	return func(s *Server) { s.buildVersionFn = fn }
+}
+
+// BuildVersion returns the daemon's build version, preferring the lazy source.
+// Empty when neither was wired — callers decide what to report for that.
+func (s *Server) BuildVersion() string {
+	if s == nil {
+		return ""
+	}
+	if s.buildVersionFn != nil {
+		if v := strings.TrimSpace(s.buildVersionFn()); v != "" {
+			return v
+		}
+	}
+	return strings.TrimSpace(s.buildVersion)
 }
 
 // WithExecutor sets the executor.

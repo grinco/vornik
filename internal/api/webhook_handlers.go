@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/actor"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
@@ -394,6 +395,12 @@ func (s *Server) createWebhookTask(ctx context.Context, project *registry.Projec
 		WorkflowID:     strPtr(workflowID),
 		IdempotencyKey: &idempotencyKey,
 		CreationSource: persistence.TaskCreationSourceUser,
+		// Rule 7: this path reaches enqueueVerifiedWebhook only after a SIGNATURE
+		// check, not an API key, so there is no person and no credential to name
+		// — the actor is the webhook source itself. Naming the source (rather
+		// than a bare "system:webhook") keeps two different integrations posting
+		// into one project from merging into a single leaderboard row.
+		CreatedByActor: actor.Ptr(actor.System("webhook:" + source.Name)),
 		Status:         persistence.TaskStatusQueued,
 		Priority:       priority,
 		Payload:        payload,

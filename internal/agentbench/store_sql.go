@@ -58,8 +58,16 @@ type SQLTraceStore struct {
 	Dialect Dialect
 }
 
-// NewSQLTraceStore constructs the store for the production backend.
-func NewSQLTraceStore(db DBTX) *SQLTraceStore { return &SQLTraceStore{DB: db} }
+// Construct this with a struct literal that sets BOTH fields, as every call
+// site in internal/cli/bench_agent.go does:
+//
+//	&SQLTraceStore{DB: db, Dialect: Postgres}
+//
+// There was a NewSQLTraceStore(db) constructor here until 2026-08-15. Nothing
+// called it — not even a test — and it could not have been called safely: it
+// left Dialect at its zero value, so placeholder rendering would have silently
+// used the wrong dialect. Deleted rather than fixed, because a constructor that
+// takes only half the required state is the bug.
 
 // Executions lists the executions a task produced, newest last.
 //
@@ -199,7 +207,7 @@ func (s *SQLTraceStore) assembleTraces(ctx context.Context, executionID string, 
 	if err := s.loadCalls(ctx, executionID, step, rec); err != nil {
 		return nil, err
 	}
-	if err := s.loadOutcomes(ctx, executionID, step); err != nil {
+	if err := s.loadOutcomes(ctx, executionID, step, rec); err != nil {
 		return nil, err
 	}
 
@@ -303,11 +311,11 @@ func (s *SQLTraceStore) loadCalls(ctx context.Context, executionID string, step 
 }
 
 // loadOutcomes reads the per-step outcome taxonomy plus the tool budget.
-func (s *SQLTraceStore) loadOutcomes(ctx context.Context, executionID string, step func(string, string) *Trace) error {
+func (s *SQLTraceStore) loadOutcomes(ctx context.Context, executionID string, step func(string, string) *Trace, rec *ExecutionRecord) error {
 	rows, err := s.DB.QueryContext(ctx, fmt.Sprintf(`
 		SELECT step_id, role, model, outcome,
 		       COALESCE(error_class, ''), COALESCE(effective_tool_budget, 0),
-		       COALESCE(tool_calls_used, 0)
+		       COALESCE(tool_calls_used, 0), COALESCE(duration_ms, 0)
 		  FROM execution_step_outcomes
 		 WHERE execution_id = %s
 		 ORDER BY recorded_at ASC`, s.Dialect.arg(1)), executionID)
@@ -323,8 +331,18 @@ func (s *SQLTraceStore) loadOutcomes(ctx context.Context, executionID string, st
 	for rows.Next() {
 		var stepID, role, model, outcome, errorClass string
 		var budget, used int
-		if err := rows.Scan(&stepID, &role, &model, &outcome, &errorClass, &budget, &used); err != nil {
+		var durationMS int64
+		if err := rows.Scan(&stepID, &role, &model, &outcome, &errorClass, &budget, &used, &durationMS); err != nil {
 			return fmt.Errorf("scan step outcome: %w", err)
+		}
+		if rec != nil {
+			// The execution's wall clock is the sum of its steps'. Accumulated
+			// here rather than in loadUsage because task_llm_usage has no
+			// duration column at all — which is why ExecutionRecord.DurationMS
+			// was declared, JSON-tagged and written by NOTHING until 2026-08-16,
+			// so every journal recorded 0 and the rollup's wallClockMsPerTask
+			// reported a confident zero.
+			rec.DurationMS += durationMS
 		}
 		attempts[stepID]++
 		t := step(stepID, role)
@@ -335,6 +353,7 @@ func (s *SQLTraceStore) loadOutcomes(ctx context.Context, executionID string, st
 			Outcome:    outcome,
 			Attempt:    attempts[stepID],
 			ErrorClass: errorClass,
+			DurationMS: durationMS,
 		})
 		if budget > 0 {
 			t.ToolBudget = budget

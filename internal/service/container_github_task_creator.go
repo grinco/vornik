@@ -145,6 +145,14 @@ func (g *githubTaskCreator) Create(ctx context.Context, ev github.TaskCreationEv
 
 	now := time.Now()
 	idempotencyKey := ev.IdempotencyKey
+	// ATTRIBUTION GAP, deliberate — same shape as the chat path, same reason.
+	// A GitHub issue/PR has a real author, and user_identities already models
+	// (user_id, channel='github', external_id). But the observed identity here
+	// is a GitHub LOGIN, and the actor kinds are fixed at api_key / user /
+	// system / anonymous — so writing it truthfully needs the login resolved to
+	// a users.id first. Storing `system:github` instead would be a lie about a
+	// human action; storing the login as a user id would invent a parallel
+	// person-id space the design explicitly forbids (§3.1.2).
 	task := &persistence.Task{
 		ID:             persistence.GenerateID("task"),
 		ProjectID:      g.project.ID,

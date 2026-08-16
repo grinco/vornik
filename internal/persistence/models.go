@@ -255,6 +255,25 @@ type Task struct {
 	// executor-spawned tasks, which have no key behind them. Powers the
 	// spend-per-API-key UI (migration 148).
 	CreatedByAPIKeyID *string `json:"created_by_api_key_id,omitempty"`
+
+	// CreatedByActor is WHO caused this task to exist, as `<kind>:<id>` with
+	// kinds fixed at api_key / user / system / anonymous (internal/actor).
+	// Powers the adoption leaderboard (LLD 2026-08-15 §3.1).
+	//
+	// Distinct from CreatedByAPIKeyID, which stays as the raw key reference:
+	// this one carries the RESOLVED actor, which may be a user, a machine path
+	// or the anonymous bucket — none of which are keys.
+	//
+	// IMMUTABLE after creation. Retry, resume and human messages all look like
+	// attribution events and are not (§3.1.1): retry is a same-row requeue, so
+	// re-attributing would credit whoever cleans up after others; resume mints a
+	// fresh execution on the same row; a human message writes task_messages,
+	// which carries its own author. Immutability is also why leaderboard
+	// aggregates do not move under a reader between two runs of one query.
+	//
+	// Nil for rows predating migration 162, and for any path that genuinely has
+	// no actor — read as "not recorded", never as anonymous.
+	CreatedByActor *string `json:"created_by_actor,omitempty"`
 }
 
 // EndedUnsuccessfully reports whether the task has reached a terminal

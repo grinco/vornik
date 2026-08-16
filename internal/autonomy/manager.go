@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"vornik.io/vornik/internal/actor"
 	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
@@ -2113,6 +2114,11 @@ func (m *Manager) createAutonomousTask(ctx context.Context, project *registry.Pr
 		ID:             persistence.GenerateID("task"),
 		ProjectID:      project.ID,
 		CreationSource: persistence.TaskCreationSourceAutonomous,
+		// Rule 3: NEVER the operator who configured autonomy months ago, and
+		// never the actor of a task read for context. Crediting a person for
+		// what a cron did is the fastest way to make the leaderboard
+		// untrustworthy (LLD 2026-08-15 §3.1).
+		CreatedByActor: actor.Ptr(actor.Autonomy),
 		Status:         status,
 		Priority:       project.DefaultPriority,
 		Payload:        payload,

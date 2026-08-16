@@ -74,6 +74,12 @@ type RunConfig struct {
 	// Repeats is how many times each task runs. Repeats reduce a task's
 	// contribution to sigma_d; they do not add pairs.
 	Repeats int
+
+	// DaemonBuild is the commit the daemon under test was built from, recorded
+	// beside the harness's own so a journal shows both halves of what produced
+	// its numbers. Optional: an unidentifiable daemon is still worth running,
+	// it is just worth saying so. See RunManifest.DaemonBuild.
+	DaemonBuild string
 }
 
 // Runner executes one arm.
@@ -115,6 +121,8 @@ func (r *Runner) Run(ctx context.Context, cfg RunConfig) (Journal, error) {
 		Arm:                 cfg.Arm,
 		ArmKey:              cfg.Arm.Key(),
 		ArmPartial:          cfg.Arm.Partial(),
+		HarnessBuild:        HarnessBuild(),
+		DaemonBuild:         cfg.DaemonBuild,
 		PreRegistrationHash: preRegHash,
 		PreRegistration:     cfg.PreRegistration,
 		Power:               cfg.Power,

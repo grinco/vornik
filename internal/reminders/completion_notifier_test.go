@@ -4,8 +4,10 @@
 package reminders
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +17,39 @@ import (
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/conversation"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/persistence/mocks"
 )
+
+type captureReminderFileSender struct {
+	names []string
+	data  [][]byte
+}
+
+func (s *captureReminderFileSender) SendArtifactFile(_ context.Context, name string, content io.Reader, _ string) error {
+	b, err := io.ReadAll(content)
+	if err != nil {
+		return err
+	}
+	s.names = append(s.names, name)
+	s.data = append(s.data, b)
+	return nil
+}
+
+type stubReminderFileResolver struct{ sender ReminderFileSender }
+
+func (r stubReminderFileResolver) ResolveReminderFileSender(_, _ string) ReminderFileSender {
+	return r.sender
+}
+
+type stubReminderArtifactReader map[string][]byte
+
+func (r stubReminderArtifactReader) Retrieve(_ context.Context, id string) ([]byte, error) {
+	b, ok := r[id]
+	if !ok {
+		return nil, errors.New("missing artifact bytes")
+	}
+	return bytes.Clone(b), nil
+}
 
 // TestCompletionNotifierDeliversAndFinalizes: a successful task
 // completion for a recurring task-kind reminder sends exactly one
@@ -47,6 +81,57 @@ func TestCompletionNotifierDeliversAndFinalizes(t *testing.T) {
 	}
 	if repo.finalizedTerminal {
 		t.Error("recurring reminder must finalize with terminal=false")
+	}
+}
+
+// TestCompletionNotifierDeliversOutputArtifacts pins the scheduled-report
+// promise: when a Slack task produces PDF/HTML outputs, completion delivers
+// those files into the original thread instead of only posting a task link.
+func TestCompletionNotifierDeliversOutputArtifacts(t *testing.T) {
+	rem := &persistence.Reminder{
+		ID: "rem_report", Kind: persistence.ReminderKindTask, Channel: "slack",
+		ChannelRef: "T123/D_JANKA#main", Content: "Research and write a report",
+	}
+	repo := newStubRepo()
+	repo.claim = rem
+	ch := &stubChannel{}
+	artifactRepo := &mocks.MockArtifactRepository{
+		ListFunc: func(_ context.Context, f persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
+			if f.TaskID == nil || *f.TaskID != "task_report" {
+				t.Fatalf("artifact filter task = %v, want task_report", f.TaskID)
+			}
+			return []*persistence.Artifact{
+				{ID: "a_pdf", Name: "report.pdf", ArtifactClass: persistence.ArtifactClassOutput},
+				{ID: "a_tmp", Name: "notes.tmp", ArtifactClass: persistence.ArtifactClassIntermediate},
+			}, nil
+		},
+	}
+	files := &captureReminderFileSender{}
+	n := NewCompletionNotifier(
+		repo,
+		&stubResolver{channels: map[string]conversation.Channel{"slack": ch}},
+		nil, zerolog.Nop(), time.Now,
+		WithArtifactDelivery(
+			artifactRepo,
+			stubReminderArtifactReader{"a_pdf": []byte("pdf bytes")},
+			stubReminderFileResolver{sender: files},
+		),
+	)
+
+	n.NotifyTaskCompleted(context.Background(), &persistence.Task{ID: "task_report"}, true, "done")
+	// A duplicate executor callback loses ClaimDelivery and must not upload the
+	// same report again. This is the attachment-specific side of the reminder's
+	// existing at-most-once delivery contract.
+	n.NotifyTaskCompleted(context.Background(), &persistence.Task{ID: "task_report"}, true, "done")
+
+	if len(files.names) != 1 || files.names[0] != "report.pdf" {
+		t.Fatalf("delivered names = %v, want [report.pdf]", files.names)
+	}
+	if string(files.data[0]) != "pdf bytes" {
+		t.Errorf("delivered bytes = %q", files.data[0])
+	}
+	if !repo.finalized {
+		t.Fatal("successful attachment delivery must finalize the reminder")
 	}
 }
 

@@ -194,7 +194,8 @@ are **pluggable**: vornik ships a Telegram bot and an email channel, and the
 set is meant to grow. They share one contract for sending replies and one
 **channel-agnostic** way of delivering files, so a task's artifacts go out
 the same way regardless of where the request came from — as documents in a
-Telegram chat, or as attachments on a threaded email reply.
+Telegram chat, uploads in a Slack thread, or attachments on a threaded email
+reply.
 
 ## Operating a fleet
 

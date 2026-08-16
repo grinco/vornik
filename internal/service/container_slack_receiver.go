@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"io"
 	"strings"
 	"sync"
 
@@ -42,6 +43,7 @@ type slackSessionStore struct {
 	projectID        string
 	maxHistory       int
 	maxHistoryTokens int
+	channel          *slack.Channel
 
 	mu      sync.Mutex
 	history map[string][]chat.Message
@@ -52,9 +54,29 @@ type slackSessionStore struct {
 	persister *sessionstore.Persister
 }
 
+// slackFileSender binds the dispatcher's channel-agnostic file surface to one
+// Slack thread. The channel resolves the workspace installation from the
+// session ID and performs Slack's external-upload sequence.
+type slackFileSender struct {
+	channel   *slack.Channel
+	sessionID string
+}
+
+func (s slackFileSender) SendArtifactFile(ctx context.Context, fileName string, content io.Reader, caption string) error {
+	_, err := s.channel.SendFile(ctx, s.sessionID, fileName, content, caption)
+	return err
+}
+
 // SetPersister wires the DB-backed persistence layer.
 func (s *slackSessionStore) SetPersister(p *sessionstore.Persister) {
 	s.persister = p
+}
+
+// SetChannel enables send_artifact and render_document for sessions loaded by
+// this store. Kept as late binding because the HTTP subsystem rebuilds Slack
+// channel instances before lifecycle Start.
+func (s *slackSessionStore) SetChannel(ch *slack.Channel) {
+	s.channel = ch
 }
 
 // newSlackSessionStore constructs a per-channel session store pinned
@@ -139,6 +161,9 @@ func (s *slackSessionStore) Load(ctx context.Context, msg conversation.ChannelMe
 	sess := dispatcher.Session{
 		History:       history,
 		ActiveProject: s.projectID,
+	}
+	if s.channel != nil {
+		sess.FileSender = slackFileSender{channel: s.channel, sessionID: msg.SessionID}
 	}
 	_, estimatedTokens := s.boundedHistory(history)
 	estimatedTokens += len(msg.Text) / 4

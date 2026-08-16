@@ -37,6 +37,9 @@ Slack-side hiccup.
 - Slash commands require one Slack-side step: create `/vornik`, point it at
   the same `/api/v1/slack/webhook` URL as Events API, add the `commands` OAuth
   scope, and reinstall the App. Then use `/vornik <prompt>`.
+- Returning reports, rendered documents, and other task artifacts to the
+  originating Slack thread requires the `files:write` OAuth scope. Adding a
+  scope to an existing app requires reinstalling it to the workspace.
 - Channel and sender allowlisting, and Slack's request-timestamp replay
   protection, are covered in the **Slack** section of
   [Conversation Channels](../guides/conversation-channels.md#slack).

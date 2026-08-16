@@ -94,6 +94,7 @@ func (s *SlackChannelsSubsystem) Start(ctx context.Context) error {
 			maxHistoryTokens,
 		)
 		store.SetPersister(c.channelSessionPersister("slack"))
+		store.SetChannel(ch)
 		// Back get_channel_thread so the lead can pull an earlier thread in the
 		// same channel when a channel-level follow-up refers to one.
 		// Late-bound: stores are built here, after the dispatcher agent.

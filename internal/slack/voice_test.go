@@ -629,6 +629,66 @@ func TestUploadAudioV2_NoBotToken(t *testing.T) {
 	}
 }
 
+// TestSendFile_HappyPath regresses Slack chat sessions lacking the
+// dispatcher's FileSender even though this channel already implements Slack's
+// external-upload protocol for voice replies.
+func TestSendFile_HappyPath(t *testing.T) {
+	vts := newSlackVoiceTestServer(t, "", nil)
+	defer vts.Close()
+	ch := newSlackVoiceChannel(t, vts, VoiceProviders{})
+
+	fileID, err := ch.SendFile(
+		context.Background(),
+		"T123/C_test#1700000010.000200",
+		"report.pdf",
+		strings.NewReader("pdf-report-body"),
+		"Research report",
+	)
+	if err != nil {
+		t.Fatalf("SendFile: %v", err)
+	}
+	if fileID != "F0001" {
+		t.Errorf("file id = %q, want F0001", fileID)
+	}
+	if vts.getUploadURLHits != 1 || vts.uploadPostHits != 1 || vts.completeUploadHits != 1 {
+		t.Fatalf("upload calls = get:%d post:%d complete:%d, want 1 each",
+			vts.getUploadURLHits, vts.uploadPostHits, vts.completeUploadHits)
+	}
+	if !strings.Contains(string(vts.uploadPostBody), "pdf-report-body") {
+		t.Error("uploaded multipart body does not contain the report bytes")
+	}
+}
+
+func TestSendFile_ExceedsCap(t *testing.T) {
+	vts := newSlackVoiceTestServer(t, "", nil)
+	defer vts.Close()
+	ch := newSlackVoiceChannel(t, vts, VoiceProviders{})
+
+	_, err := ch.SendFile(
+		context.Background(),
+		"T123/C_test#1700000010.000200",
+		"oversized.pdf",
+		io.LimitReader(repeatingByteReader{}, maxOutboundFileBytes+1),
+		"Oversized report",
+	)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("SendFile error = %v, want size-limit error", err)
+	}
+	if vts.getUploadURLHits != 0 || vts.uploadPostHits != 0 || vts.completeUploadHits != 0 {
+		t.Fatalf("oversized file reached Slack: get:%d post:%d complete:%d",
+			vts.getUploadURLHits, vts.uploadPostHits, vts.completeUploadHits)
+	}
+}
+
+type repeatingByteReader struct{}
+
+func (repeatingByteReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+	return len(p), nil
+}
+
 func TestSendVoiceReply_NoTTS(t *testing.T) {
 	vts := newSlackVoiceTestServer(t, "", nil)
 	defer vts.Close()

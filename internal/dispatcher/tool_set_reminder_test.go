@@ -144,6 +144,40 @@ func TestSetReminder_HappyPath_FireInSeconds(t *testing.T) {
 	}
 }
 
+// TestSetReminder_SlackSession pins the non-Telegram scheduling path. Slack's
+// reminder runner + completion notifier already know how to route a durable
+// channel ref; the dispatcher used to reject the turn before inserting it
+// merely because Slack has no numeric Telegram-style ChatID.
+func TestSetReminder_SlackSession(t *testing.T) {
+	repo := &stubReminderRepo{}
+	te := newSetReminderExecutor(repo, nil)
+	ctx := WithOperatorID(context.Background(), "slack:U_JANKA")
+
+	res := te.setReminderForSession(
+		ctx,
+		`{"fire_in_seconds": 7200, "content": "research this and write report.pdf", "kind":"task"}`,
+		0,
+		"slack:T_TEAM/D_JANKA#main",
+		"janka", []string{"janka"},
+	)
+	if !strings.Contains(res.Content, "Scheduled update") {
+		t.Fatalf("response = %q, want scheduled update confirmation", res.Content)
+	}
+	if len(repo.rows) != 1 {
+		t.Fatalf("repo row count = %d, want 1", len(repo.rows))
+	}
+	row := repo.rows[0]
+	if row.OperatorID != "slack:U_JANKA" {
+		t.Errorf("operator_id = %q", row.OperatorID)
+	}
+	if row.Channel != "slack" {
+		t.Errorf("channel = %q", row.Channel)
+	}
+	if row.ChannelRef != "T_TEAM/D_JANKA#main" {
+		t.Errorf("channel_ref = %q", row.ChannelRef)
+	}
+}
+
 // TestSetReminder_RFC3339Path mirrors the timestamp branch.
 func TestSetReminder_RFC3339Path(t *testing.T) {
 	repo := &stubReminderRepo{}
@@ -196,10 +230,9 @@ func TestSetReminder_RejectsBeyondCap(t *testing.T) {
 	}
 }
 
-// TestSetReminder_RefusesNonTelegram chatID == 0 means the
-// caller isn't on a Telegram session. Phase A returns a clean
-// message rather than silently dropping.
-func TestSetReminder_RefusesNonTelegram(t *testing.T) {
+// TestSetReminder_RefusesMissingDestination covers synthetic/tool-only calls
+// that have neither a channel session key nor Telegram's legacy numeric ID.
+func TestSetReminder_RefusesMissingDestination(t *testing.T) {
 	repo := &stubReminderRepo{}
 	te := newSetReminderExecutor(repo, nil)
 	res := te.setReminder(
@@ -207,8 +240,8 @@ func TestSetReminder_RefusesNonTelegram(t *testing.T) {
 		`{"fire_in_seconds": 60, "content": "x"}`,
 		0, "p", nil,
 	)
-	if !strings.Contains(res.Content, "Telegram") {
-		t.Errorf("expected Telegram-only message; got %q", res.Content)
+	if !strings.Contains(res.Content, "no channel of record") {
+		t.Errorf("expected missing-destination message; got %q", res.Content)
 	}
 }
 

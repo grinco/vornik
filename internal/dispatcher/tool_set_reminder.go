@@ -4,10 +4,9 @@ package dispatcher
 // outbound message that the reminders heartbeat
 // (internal/reminders) will deliver at the requested time.
 //
-// v1 (Phase A) is Telegram-only on the channel side: any
-// non-Telegram session (chatID == 0) is refused with a clear
-// "no channel of record" message. Phase B will resolve the
-// active channel from the session and wire webchat / email.
+// The destination is resolved from the dispatcher session key. Telegram's
+// legacy numeric ChatID remains as a compatibility fallback for direct tests
+// and older callers.
 //
 // See https://docs.vornik.io
 
@@ -88,14 +87,19 @@ type setReminderArgs struct {
 	Project string `json:"project"`
 }
 
+// setReminder is the legacy Telegram-shaped entry point retained for focused
+// handler tests. Live dispatcher turns call setReminderForSession.
 func (te *ToolExecutor) setReminder(ctx context.Context, argsJSON string, chatID int64, activeProject string, allowedProjects []string) ToolResult {
+	return te.setReminderForSession(ctx, argsJSON, chatID, "", activeProject, allowedProjects)
+}
+
+func (te *ToolExecutor) setReminderForSession(ctx context.Context, argsJSON string, chatID int64, sessionKey, activeProject string, allowedProjects []string) ToolResult {
 	if te.reminderRepo == nil {
 		return ToolResult{Content: "Reminders are not configured on this daemon. Ask the operator to enable the reminders subsystem."}
 	}
-	if chatID == 0 {
-		// Phase A: only Telegram is wired. Webchat / email land
-		// in Phase B alongside per-channel resolution.
-		return ToolResult{Content: "set_reminder is only available on Telegram in v1; the current session has no Telegram chat of record."}
+	channel, channelRef, operatorID, destErr := resolveReminderDestination(ctx, chatID, sessionKey)
+	if destErr != nil {
+		return ToolResult{Content: "set_reminder: " + destErr.Error()}
 	}
 
 	var args setReminderArgs
@@ -114,8 +118,6 @@ func (te *ToolExecutor) setReminder(ctx context.Context, argsJSON string, chatID
 	if strings.EqualFold(strings.TrimSpace(args.Kind), "task") {
 		kind = persistence.ReminderKindTask
 	}
-
-	operatorID := "telegram:" + strconv.FormatInt(chatID, 10)
 
 	fireAt, cronExpr, errResult := resolveReminderSchedule(args)
 	if errResult != nil {
@@ -139,8 +141,8 @@ func (te *ToolExecutor) setReminder(ctx context.Context, argsJSON string, chatID
 
 	rem := &persistence.Reminder{
 		OperatorID: operatorID,
-		Channel:    "telegram",
-		ChannelRef: strconv.FormatInt(chatID, 10),
+		Channel:    channel,
+		ChannelRef: channelRef,
 		ProjectID:  project,
 		FireAt:     fireAt.UTC(),
 		Content:    args.Content,
@@ -170,6 +172,39 @@ func (te *ToolExecutor) setReminder(ctx context.Context, argsJSON string, chatID
 		Content:    fmt.Sprintf("Reminder %s set for %s. The bot will message you here when it fires.", rem.ID, fireAt.Format(time.RFC1123)),
 		Provenance: outputguard.ProvenanceFirstParty,
 	}
+}
+
+// resolveReminderDestination turns the opaque dispatcher session key back into
+// the durable (channel, channel_ref) pair consumed by reminders.Runner. Only
+// channels registered by containerChannelResolver are accepted; creating a row
+// for web chat/GitHub would acknowledge a reminder that can never fire.
+func resolveReminderDestination(ctx context.Context, chatID int64, sessionKey string) (channel, channelRef, operatorID string, err error) {
+	if key := strings.TrimSpace(sessionKey); key != "" {
+		sep := strings.IndexByte(key, ':')
+		if sep <= 0 || sep == len(key)-1 {
+			return "", "", "", fmt.Errorf("current chat session has no deliverable channel destination")
+		}
+		channel, channelRef = key[:sep], key[sep+1:]
+		switch channel {
+		case "telegram", "slack", "email":
+		default:
+			return "", "", "", fmt.Errorf("reminders are not supported on channel %q", channel)
+		}
+		operatorID, _ = operatorIDFromContext(ctx)
+		if operatorID == "" {
+			return "", "", "", fmt.Errorf("current chat session has no operator identity")
+		}
+		return channel, channelRef, operatorID, nil
+	}
+	if chatID == 0 {
+		return "", "", "", fmt.Errorf("current session has no channel of record")
+	}
+	channelRef = strconv.FormatInt(chatID, 10)
+	operatorID, _ = operatorIDFromContext(ctx)
+	if operatorID == "" {
+		operatorID = "telegram:" + channelRef
+	}
+	return "telegram", channelRef, operatorID, nil
 }
 
 // resolveReminderSchedule resolves the fire schedule for a

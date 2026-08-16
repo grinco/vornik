@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +45,10 @@ const (
 	// truncates the seekable region; treating 5 minutes as the
 	// MVP-supported ceiling mirrors the design doc's §"Length cap".
 	slackAudioMaxDurationMs int64 = 300_000
+	// maxOutboundFileBytes matches the dispatcher's cross-channel artifact
+	// envelope. It also keeps a malicious/accidental reader from making the
+	// daemon buffer an unbounded document before Slack returns an upload URL.
+	maxOutboundFileBytes int64 = 50 * 1024 * 1024
 )
 
 // audioMIMEs is the set of inbound Content-Type prefixes the channel
@@ -393,6 +398,17 @@ type uploadAudioParams struct {
 	Audio    voice.Audio
 }
 
+// uploadFileParams is the channel-generic payload for Slack's external upload
+// API. The voice path adapts voice.Audio into this shape; dispatcher artifacts
+// use it directly.
+type uploadFileParams struct {
+	Channel        string
+	ThreadTs       string
+	Filename       string
+	Bytes          []byte
+	InitialComment string
+}
+
 // getUploadURLResponse mirrors the relevant subset of
 // files.getUploadURLExternal's response.
 type getUploadURLResponse struct {
@@ -406,9 +422,10 @@ type getUploadURLResponse struct {
 // Slack accepts both JSON and form-encoded; we use JSON for symmetry
 // with chat.postMessage.
 type completeUploadRequest struct {
-	Files     []completeUploadFile `json:"files"`
-	ChannelID string               `json:"channel_id,omitempty"`
-	ThreadTs  string               `json:"thread_ts,omitempty"`
+	Files          []completeUploadFile `json:"files"`
+	ChannelID      string               `json:"channel_id,omitempty"`
+	ThreadTs       string               `json:"thread_ts,omitempty"`
+	InitialComment string               `json:"initial_comment,omitempty"`
 }
 
 type completeUploadFile struct {
@@ -428,40 +445,67 @@ type completeUploadResponse struct {
 // files.upload_v2 family. Returns the new file_id (used as the
 // upstream message id for InReplyTo correlation).
 func (c *Channel) uploadAudioV2(ctx context.Context, inst *installation, p uploadAudioParams) (string, error) {
-	if strings.TrimSpace(inst.botToken) == "" {
-		return "", ErrOutboundNotConfigured
-	}
 	if len(p.Audio.Bytes) == 0 {
 		return "", errors.New("slack channel: uploadAudio with empty audio")
 	}
-	// Step 1: get the upload URL.
-	urlGet := fmt.Sprintf("%s/files.getUploadURLExternal?filename=%s&length=%d",
-		c.apiBaseURL, p.Filename, len(p.Audio.Bytes))
-	reqGet, err := http.NewRequestWithContext(ctx, http.MethodGet, urlGet, nil)
+	return c.uploadFileV2(ctx, inst, uploadFileParams{
+		Channel: p.Channel, ThreadTs: p.ThreadTs, Filename: p.Filename, Bytes: p.Audio.Bytes,
+	})
+}
+
+// uploadFileV2 implements Slack's files.upload_v2 family for arbitrary
+// documents. Returns the new file_id.
+func (c *Channel) uploadFileV2(ctx context.Context, inst *installation, p uploadFileParams) (string, error) {
+	if strings.TrimSpace(inst.botToken) == "" {
+		return "", ErrOutboundNotConfigured
+	}
+	if len(p.Bytes) == 0 {
+		return "", errors.New("slack channel: upload file is empty")
+	}
+	target, err := c.getExternalUploadURL(ctx, inst, p.Filename, len(p.Bytes))
 	if err != nil {
 		return "", err
+	}
+	if err := c.postExternalUpload(ctx, target.UploadURL, p.Filename, p.Bytes); err != nil {
+		return "", err
+	}
+	if err := c.completeExternalUpload(ctx, inst, target.FileID, p); err != nil {
+		return "", err
+	}
+	return target.FileID, nil
+}
+
+func (c *Channel) getExternalUploadURL(ctx context.Context, inst *installation, fileName string, size int) (getUploadURLResponse, error) {
+	urlGet := fmt.Sprintf("%s/files.getUploadURLExternal?filename=%s&length=%d",
+		c.apiBaseURL, url.QueryEscape(fileName), size)
+	reqGet, err := http.NewRequestWithContext(ctx, http.MethodGet, urlGet, nil)
+	if err != nil {
+		return getUploadURLResponse{}, err
 	}
 	reqGet.Header.Set("Authorization", "Bearer "+inst.botToken)
 	respGet, err := c.httpClient.Do(reqGet)
 	if err != nil {
-		return "", fmt.Errorf("slack channel: getUploadURLExternal: %w", err)
+		return getUploadURLResponse{}, fmt.Errorf("slack channel: getUploadURLExternal: %w", err)
 	}
 	bodyGet, _ := io.ReadAll(io.LimitReader(respGet.Body, maxOutboundResponseBytes))
 	_ = respGet.Body.Close()
 	if respGet.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("slack channel: getUploadURLExternal HTTP %d: %s",
+		return getUploadURLResponse{}, fmt.Errorf("slack channel: getUploadURLExternal HTTP %d: %s",
 			respGet.StatusCode, truncateBody(string(bodyGet)))
 	}
 	var resGet getUploadURLResponse
 	if err := json.Unmarshal(bodyGet, &resGet); err != nil {
-		return "", fmt.Errorf("slack channel: getUploadURLExternal parse: %w", err)
+		return getUploadURLResponse{}, fmt.Errorf("slack channel: getUploadURLExternal parse: %w", err)
 	}
 	if !resGet.OK || resGet.UploadURL == "" || resGet.FileID == "" {
-		return "", fmt.Errorf("slack channel: getUploadURLExternal: ok=%v err=%q url=%q id=%q",
+		return getUploadURLResponse{}, fmt.Errorf("slack channel: getUploadURLExternal: ok=%v err=%q url=%q id=%q",
 			resGet.OK, resGet.Error, resGet.UploadURL, resGet.FileID)
 	}
+	return resGet, nil
+}
 
-	// Step 2: POST the bytes to the upload URL as multipart/form-data
+func (c *Channel) postExternalUpload(ctx context.Context, uploadURL, fileName string, data []byte) error {
+	// POST the bytes to the upload URL as multipart/form-data
 	// with field name "file". Slack's external upload accepts a
 	// straight file part — no Content-Type required (it picks up
 	// the binary as-is) but we set it for hygiene.
@@ -470,66 +514,107 @@ func (c *Channel) uploadAudioV2(ctx context.Context, inst *installation, p uploa
 	go func() {
 		defer func() { _ = pw.Close() }()
 		defer func() { _ = writer.Close() }()
-		part, err := writer.CreateFormFile("file", p.Filename)
+		part, err := writer.CreateFormFile("file", fileName)
 		if err != nil {
 			_ = pw.CloseWithError(err)
 			return
 		}
-		if _, err := part.Write(p.Audio.Bytes); err != nil {
+		if _, err := part.Write(data); err != nil {
 			_ = pw.CloseWithError(err)
 			return
 		}
 	}()
-	reqUp, err := http.NewRequestWithContext(ctx, http.MethodPost, resGet.UploadURL, pr)
+	reqUp, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, pr)
 	if err != nil {
 		_ = pr.Close()
-		return "", err
+		return err
 	}
 	reqUp.Header.Set("Content-Type", writer.FormDataContentType())
 	respUp, err := c.httpClient.Do(reqUp)
 	if err != nil {
-		return "", fmt.Errorf("slack channel: upload POST: %w", err)
+		return fmt.Errorf("slack channel: upload POST: %w", err)
 	}
 	bodyUp, _ := io.ReadAll(io.LimitReader(respUp.Body, maxOutboundResponseBytes))
 	_ = respUp.Body.Close()
 	if respUp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("slack channel: upload POST HTTP %d: %s",
+		return fmt.Errorf("slack channel: upload POST HTTP %d: %s",
 			respUp.StatusCode, truncateBody(string(bodyUp)))
 	}
+	return nil
+}
 
-	// Step 3: complete the upload — this is what surfaces the file
-	// in the channel.
+func (c *Channel) completeExternalUpload(ctx context.Context, inst *installation, fileID string, p uploadFileParams) error {
+	// Completing the upload is what surfaces the file in the channel.
 	completeReq := completeUploadRequest{
-		Files:     []completeUploadFile{{ID: resGet.FileID, Title: p.Filename}},
-		ChannelID: p.Channel,
-		ThreadTs:  p.ThreadTs,
+		Files:          []completeUploadFile{{ID: fileID, Title: p.Filename}},
+		ChannelID:      p.Channel,
+		ThreadTs:       p.ThreadTs,
+		InitialComment: p.InitialComment,
 	}
 	cbody, _ := json.Marshal(completeReq)
 	reqDone, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.apiBaseURL+"/files.completeUploadExternal", bytes.NewReader(cbody))
 	if err != nil {
-		return "", err
+		return err
 	}
 	reqDone.Header.Set("Authorization", "Bearer "+inst.botToken)
 	reqDone.Header.Set("Content-Type", "application/json")
 	respDone, err := c.httpClient.Do(reqDone)
 	if err != nil {
-		return "", fmt.Errorf("slack channel: completeUploadExternal: %w", err)
+		return fmt.Errorf("slack channel: completeUploadExternal: %w", err)
 	}
 	defer func() { _ = respDone.Body.Close() }()
 	bodyDone, _ := io.ReadAll(io.LimitReader(respDone.Body, maxOutboundResponseBytes))
 	if respDone.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("slack channel: completeUploadExternal HTTP %d: %s",
+		return fmt.Errorf("slack channel: completeUploadExternal HTTP %d: %s",
 			respDone.StatusCode, truncateBody(string(bodyDone)))
 	}
 	var resDone completeUploadResponse
 	if err := json.Unmarshal(bodyDone, &resDone); err != nil {
-		return "", fmt.Errorf("slack channel: completeUploadExternal parse: %w", err)
+		return fmt.Errorf("slack channel: completeUploadExternal parse: %w", err)
 	}
 	if !resDone.OK {
-		return "", fmt.Errorf("slack channel: completeUploadExternal: %s", resDone.Error)
+		return fmt.Errorf("slack channel: completeUploadExternal: %s", resDone.Error)
 	}
-	return resGet.FileID, nil
+	return nil
+}
+
+// SendFile uploads an arbitrary document into the Slack destination encoded by
+// sessionID. It is intentionally streaming at the dispatcher boundary even
+// though Slack requires the byte length before issuing an upload URL.
+func (c *Channel) SendFile(ctx context.Context, sessionID, fileName string, content io.Reader, caption string) (string, error) {
+	if c == nil {
+		return "", errors.New("slack channel: nil channel")
+	}
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" {
+		return "", errors.New("slack channel: file name is required")
+	}
+	if content == nil {
+		return "", errors.New("slack channel: file content is required")
+	}
+	teamID, channelID, threadRoot, err := parseSlackSessionID(sessionID)
+	if err != nil {
+		return "", err
+	}
+	inst, ok := c.installationsByID[teamID]
+	if !ok {
+		return "", fmt.Errorf("%w: team_id %q not configured", ErrUnknownSession, teamID)
+	}
+	data, err := io.ReadAll(io.LimitReader(content, maxOutboundFileBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("slack channel: read outbound file: %w", err)
+	}
+	if int64(len(data)) > maxOutboundFileBytes {
+		return "", fmt.Errorf("slack channel: outbound file exceeds %d byte limit", maxOutboundFileBytes)
+	}
+	return c.uploadFileV2(ctx, inst, uploadFileParams{
+		Channel:        channelID,
+		ThreadTs:       resolveThreadTs(threadRoot),
+		Filename:       fileName,
+		Bytes:          data,
+		InitialComment: strings.TrimSpace(caption),
+	})
 }
 
 // sendVoiceReply is the integration helper Channel.Send calls when

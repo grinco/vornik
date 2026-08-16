@@ -8,6 +8,9 @@ package service
 
 import (
 	"context"
+	"io"
+	"strconv"
+	"strings"
 
 	"vornik.io/vornik/internal/conversation"
 	"vornik.io/vornik/internal/executor"
@@ -25,6 +28,54 @@ import (
 // outbound today.
 type containerChannelResolver struct {
 	c *Container
+}
+
+type reminderTelegramFileSender struct {
+	bot    *telegram.Bot
+	chatID int64
+}
+
+func (s reminderTelegramFileSender) SendArtifactFile(ctx context.Context, fileName string, content io.Reader, caption string) error {
+	return s.bot.SendDocumentReader(ctx, s.chatID, content, fileName, caption)
+}
+
+// containerReminderFileSenderResolver mirrors containerChannelResolver for
+// attachment-capable destinations. Slack is selected by the team prefix in its
+// durable session ref so multi-workspace deployments do not upload through the
+// first unrelated bot token.
+type containerReminderFileSenderResolver struct{ c *Container }
+
+func (r *containerReminderFileSenderResolver) ResolveReminderFileSender(channel, channelRef string) reminders.ReminderFileSender {
+	if r == nil || r.c == nil {
+		return nil
+	}
+	switch channel {
+	case "slack":
+		for i, ch := range r.c.SlackChannels {
+			if ch == nil || i >= len(r.c.SlackProjects) || r.c.SlackProjects[i] == nil {
+				continue
+			}
+			teamID := strings.TrimSpace(r.c.SlackProjects[i].Slack.TeamID)
+			if teamID != "" && strings.HasPrefix(channelRef, teamID+"/") {
+				return slackFileSender{channel: ch, sessionID: channelRef}
+			}
+		}
+	case "email":
+		for _, ch := range r.c.EmailChannels {
+			if ch != nil {
+				return emailFileSender{ch: ch, sessionID: channelRef}
+			}
+		}
+	case "telegram":
+		if r.c.TelegramBot == nil {
+			return nil
+		}
+		chatID, err := strconv.ParseInt(channelRef, 10, 64)
+		if err == nil {
+			return reminderTelegramFileSender{bot: r.c.TelegramBot, chatID: chatID}
+		}
+	}
+	return nil
 }
 
 // ResolveChannel returns the conversation.Channel for the given
@@ -148,11 +199,20 @@ func (c *Container) reminderCompletionNotifier() executor.CompletionNotifier {
 	if c.Config == nil || c.Config.Database.Driver != "postgres" {
 		return nil
 	}
+	var opts []reminders.CompletionOption
+	if c.repos.Artifacts != nil && c.artifactStore != nil {
+		opts = append(opts, reminders.WithArtifactDelivery(
+			c.repos.Artifacts,
+			c.artifactStore,
+			&containerReminderFileSenderResolver{c: c},
+		))
+	}
 	return reminders.NewCompletionNotifier(
 		c.repos.Reminders,
 		&containerChannelResolver{c: c},
 		c.repos.AdminAudit,
 		c.Logger.With().Str("component", "reminders-notify").Logger(),
 		nil,
+		opts...,
 	)
 }

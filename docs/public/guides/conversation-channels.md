@@ -114,7 +114,9 @@ been allowed into.
 3. Subscribe the bot to the `app_mention`, `message.im`, and `message.channels`
    events.
 4. Under **OAuth & Permissions**, add the `app_mentions:read`, `chat:write`,
-   `im:history`, `im:read`, `channels:history`, and `commands` scopes.
+   `im:history`, `im:read`, `channels:history`, `files:read`, `files:write`,
+   and `commands` scopes. `files:read` lets vornik consume inbound attachments;
+   `files:write` lets it return reports and other task artifacts to Slack.
 5. Under **Slash Commands**, create `/vornik` and set its request URL to the
    same `/api/v1/slack/webhook` endpoint. Use `/vornik <prompt>` to start or
    continue the per-user channel session.
@@ -195,6 +197,9 @@ is what lets vornik reply.
 - Images posted to Slack are read: they go to the model directly when it can see
   images, and to the vision role when it cannot. Voice memos are transcribed when
   voice is configured.
+- Reports and other operator-facing task outputs can be uploaded back into the
+  originating Slack thread. This requires the `files:write` OAuth scope; after
+  adding it to an existing app, reinstall the app to the workspace.
 - Opening the app's **Home** tab shows what this deployment serves and how to
   reach it. Subscribe to the `app_home_opened` bot event to enable it; no extra
   OAuth scope is needed.

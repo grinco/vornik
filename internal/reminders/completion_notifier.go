@@ -6,7 +6,10 @@
 package reminders
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -26,14 +29,56 @@ type CompletionNotifier struct {
 	auditRepo persistence.AdminAuditRepository
 	logger    zerolog.Logger
 	clock     func() time.Time
+
+	artifactRepo   persistence.ArtifactRepository
+	artifactReader ReminderArtifactReader
+	fileResolver   ReminderFileSenderResolver
+}
+
+// ReminderArtifactReader is the backend-neutral read half of artifacts.Store.
+type ReminderArtifactReader interface {
+	Retrieve(ctx context.Context, artifactID string) ([]byte, error)
+}
+
+// ReminderFileSender is the same narrow stream contract used by dispatcher
+// file tools, repeated here to avoid coupling the reminders package back to the
+// dispatcher.
+type ReminderFileSender interface {
+	SendArtifactFile(ctx context.Context, fileName string, content io.Reader, caption string) error
+}
+
+// ReminderFileSenderResolver binds a durable reminder destination to its
+// channel-specific file sender.
+type ReminderFileSenderResolver interface {
+	ResolveReminderFileSender(channel, channelRef string) ReminderFileSender
+}
+
+// CompletionOption adds optional scheduled-output delivery without changing
+// the existing text-only constructor call sites.
+type CompletionOption func(*CompletionNotifier)
+
+// WithArtifactDelivery makes successful task-kind reminders forward every
+// OUTPUT artifact to the reminder's original channel destination.
+func WithArtifactDelivery(repo persistence.ArtifactRepository, reader ReminderArtifactReader, resolver ReminderFileSenderResolver) CompletionOption {
+	return func(n *CompletionNotifier) {
+		n.artifactRepo = repo
+		n.artifactReader = reader
+		n.fileResolver = resolver
+	}
 }
 
 // NewCompletionNotifier constructs the notifier. auditRepo may be nil.
-func NewCompletionNotifier(repo persistence.ReminderRepository, resolver ChannelResolver, auditRepo persistence.AdminAuditRepository, logger zerolog.Logger, clock func() time.Time) *CompletionNotifier {
+func NewCompletionNotifier(repo persistence.ReminderRepository, resolver ChannelResolver, auditRepo persistence.AdminAuditRepository, logger zerolog.Logger, clock func() time.Time, opts ...CompletionOption) *CompletionNotifier {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &CompletionNotifier{repo: repo, resolver: resolver, auditRepo: auditRepo, logger: logger, clock: clock}
+	n := &CompletionNotifier{repo: repo, resolver: resolver, auditRepo: auditRepo, logger: logger, clock: clock}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(n)
+		}
+	}
+	return n
 }
 
 // NotifyTaskCompleted implements executor.CompletionNotifier structurally.
@@ -61,6 +106,16 @@ func (n *CompletionNotifier) NotifyTaskCompleted(ctx context.Context, task *pers
 		return
 	}
 	body := scheduledUpdateBody(rem, task, success, message)
+	if success {
+		if err := n.deliverOutputArtifacts(ctx, rem, task); err != nil {
+			// The completion itself is still useful and must not get stranded in
+			// `firing` merely because a file upload failed. Tell the operator
+			// plainly so they can ask send_artifact to retry.
+			body += "\n\n⚠️ The report file could not be attached: " + firstLine(err.Error())
+			n.logger.Warn().Err(err).Str("reminder_id", rem.ID).Str("task_id", task.ID).
+				Msg("reminders: output artifact delivery failed")
+		}
+	}
 	if _, err := ch.Send(ctx, conversation.ChannelMessage{
 		SessionID: rem.ChannelRef, Text: body, Timestamp: n.clock(),
 	}); err != nil {
@@ -96,6 +151,37 @@ func (n *CompletionNotifier) NotifyTaskCompleted(ctx context.Context, task *pers
 			After: `{"task_id":"` + task.ID + `","success":` + boolLabel(success) + `}`,
 		})
 	}
+}
+
+// deliverOutputArtifacts forwards only operator-facing OUTPUT artifacts. Input
+// and intermediate files can contain raw uploads or scratch data and must never
+// leak merely because they share the completed task ID.
+func (n *CompletionNotifier) deliverOutputArtifacts(ctx context.Context, rem *persistence.Reminder, task *persistence.Task) error {
+	if n == nil || n.artifactRepo == nil || n.artifactReader == nil || n.fileResolver == nil || rem == nil || task == nil {
+		return nil
+	}
+	sender := n.fileResolver.ResolveReminderFileSender(rem.Channel, rem.ChannelRef)
+	if sender == nil {
+		return nil // channel has no attachment surface; preserve text-only behavior
+	}
+	taskID := task.ID
+	artifacts, err := n.artifactRepo.List(ctx, persistence.ArtifactFilter{TaskID: &taskID, PageSize: 100})
+	if err != nil {
+		return fmt.Errorf("list output artifacts: %w", err)
+	}
+	for _, artifact := range artifacts {
+		if artifact == nil || artifact.ArtifactClass != persistence.ArtifactClassOutput {
+			continue
+		}
+		data, err := n.artifactReader.Retrieve(ctx, artifact.ID)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", artifact.Name, err)
+		}
+		if err := sender.SendArtifactFile(ctx, artifact.Name, bytes.NewReader(data), "Scheduled report: "+artifact.Name); err != nil {
+			return fmt.Errorf("send %s: %w", artifact.Name, err)
+		}
+	}
+	return nil
 }
 
 // scheduledUpdateBody renders the delivery message. See design §4.4.

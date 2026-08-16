@@ -9,6 +9,7 @@ import (
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/conversation"
 	"vornik.io/vornik/internal/dispatcher"
+	"vornik.io/vornik/internal/slack"
 )
 
 // TestSlackSessionStore_LoadEmptyHistory — a fresh store returns an
@@ -29,6 +30,26 @@ func TestSlackSessionStore_LoadEmptyHistory(t *testing.T) {
 	}
 	if sess.ActiveProject != "project-x" {
 		t.Errorf("ActiveProject = %q, want project-x", sess.ActiveProject)
+	}
+}
+
+// TestSlackSessionStore_BindsFileSender pins the handoff from a Slack thread
+// into dispatcher.send_artifact/render_document. Before this, Slack loaded a
+// session with FileSender=nil and the model was truthfully told that artifact
+// sending was not configured.
+func TestSlackSessionStore_BindsFileSender(t *testing.T) {
+	store := newSlackSessionStore(nil, "janka")
+	store.SetChannel(&slack.Channel{})
+	sess, err := store.Load(context.Background(), conversation.ChannelMessage{
+		SessionID: "T123/D_JANKA#main",
+		Source:    "slack",
+		SpeakerID: "U_JANKA",
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if sess.FileSender == nil {
+		t.Fatal("Slack session FileSender is nil")
 	}
 }
 

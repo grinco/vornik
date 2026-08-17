@@ -72,6 +72,10 @@ the daemon** via config hot-reload — no restart:
   daemon-scope change needs an explicit `--ack-daemon`; apply is **refused
   while any task in scope is running** (retry in an idle window); the new
   content is parsed/validated **before** anything is written.
+- **Workflow edits are daemon-scope**: workflow definitions are shared registry
+  objects, even when one project's metrics motivated the proposal. Timeout
+  proposals therefore disclose their cross-project reach, require
+  `--ack-daemon`, and check every project for active tasks.
 - **Atomic + snapshotted**: the current file is snapshotted, the new file is
   written atomically, then reloaded. If the reload **rejects** the config (or
   times out), the daemon **auto-rolls-back** to the snapshot — it never runs a

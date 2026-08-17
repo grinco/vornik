@@ -19,7 +19,12 @@ steps:
     role: "lead"
     on_success: "delegated"
     on_fail: "failed"
-    timeout: "30s"
+    # A project-scoped Control Center proposal derived this shared workflow's
+    # timeout from vornik-marketing's 2s routing p95. It then killed assistant
+    # routes such as T-eca0 while they were still doing useful retrieval work.
+    # Five minutes is the pre-proposal baseline and applies safely across every
+    # project that selects this registry-global workflow.
+    timeout: "5m"
 terminals:
   delegated:
     status: "COMPLETED"

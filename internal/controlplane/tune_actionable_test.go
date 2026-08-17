@@ -63,6 +63,9 @@ func TestTune_LatencyBreachFilesApplyableStepTimeout(t *testing.T) {
 	if p.ApplyTarget != "configs/workflows/wf-a.md" || p.ApplyContent == "" {
 		t.Fatalf("proposal must be applyable: target=%q", p.ApplyTarget)
 	}
+	if p.BlastRadius != persistence.ProposalScopeDaemon {
+		t.Fatalf("shared workflow proposal blast radius = %q, want daemon", p.BlastRadius)
+	}
 	// suggested ceil(400*1.5)=600s=10m; cap max(5m, 2×300s=600s)=600s → 10m.
 	if !strings.Contains(p.ApplyContent, "10m") {
 		t.Fatalf("want 10m timeout in content:\n%s", p.ApplyContent)

@@ -194,9 +194,15 @@ func (a *Actionizer) RenderStepTimeout(workflowID, stepID string, suggested time
 	rc := &RenderedChange{
 		ApplyTarget:  rel,
 		ApplyContent: string(edited),
-		BlastRadius:  persistence.ProposalScopeProject,
-		Clamped:      clamped,
-		Summary:      fmt.Sprintf("steps[%s].timeout: %q → %q", stepID, formatDurationShort(current), newVal),
+		// Workflow files are registry-global: every project that selects this
+		// workflow observes the edit. T-eca0 was caused by labelling an
+		// adaptive.route timeout proposal as project-scoped even though a
+		// vornik-marketing-derived value also changed assistant. Daemon scope
+		// makes the UI disclose the real reach, requires the explicit daemon
+		// acknowledgement, and checks every project for active tasks at apply.
+		BlastRadius: persistence.ProposalScopeDaemon,
+		Clamped:     clamped,
+		Summary:     fmt.Sprintf("steps[%s].timeout: %q → %q", stepID, formatDurationShort(current), newVal),
 		Change: map[string]any{
 			"kind": "workflow_step_timeout", "workflow": workflowID, "step": stepID, "timeout": newVal,
 		},
@@ -259,9 +265,11 @@ func (a *Actionizer) RenderStepTimeoutReduction(workflowID, stepID string, sugge
 	rc := &RenderedChange{
 		ApplyTarget:  rel,
 		ApplyContent: string(edited),
-		BlastRadius:  persistence.ProposalScopeProject,
-		Clamped:      clamped,
-		Summary:      fmt.Sprintf("steps[%s].timeout: %q → %q", stepID, formatDurationShort(current), newVal),
+		// A workflow definition is shared registry state, not project state.
+		// See RenderStepTimeout for the T-eca0 blast-radius regression.
+		BlastRadius: persistence.ProposalScopeDaemon,
+		Clamped:     clamped,
+		Summary:     fmt.Sprintf("steps[%s].timeout: %q → %q", stepID, formatDurationShort(current), newVal),
 		Change: map[string]any{
 			"kind": "workflow_step_timeout", "workflow": workflowID, "step": stepID, "timeout": newVal,
 		},

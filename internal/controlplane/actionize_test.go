@@ -131,8 +131,23 @@ func TestRenderStepTimeout_Applyable(t *testing.T) {
 	if !rc.Clamped {
 		t.Fatal("clamp to 2×current must be reported")
 	}
-	if rc.BlastRadius != "project" {
-		t.Fatalf("blast radius: %s", rc.BlastRadius)
+	// Regression T-eca0: workflow definitions are registry-global. A proposal
+	// derived from vornik-marketing's 2s route p95 changed adaptive.route for
+	// assistant too, but was labelled project-scoped and required no daemon
+	// acknowledgement. Every workflow edit must disclose daemon scope.
+	if rc.BlastRadius != persistence.ProposalScopeDaemon {
+		t.Fatalf("blast radius: %s, want daemon for a shared workflow file", rc.BlastRadius)
+	}
+}
+
+func TestRenderStepTimeoutReduction_SharedWorkflowHasDaemonBlastRadius(t *testing.T) {
+	a := testActionizer(stdFiles())
+	rc, err := a.RenderStepTimeoutReduction("dev-pipeline", "implement", 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.BlastRadius != persistence.ProposalScopeDaemon {
+		t.Fatalf("blast radius: %s, want daemon for a shared workflow file", rc.BlastRadius)
 	}
 }
 

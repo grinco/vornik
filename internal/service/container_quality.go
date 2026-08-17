@@ -21,8 +21,9 @@ const (
 	// arrive slower than steps, so this floor gates minor/low-volume workflows
 	// out of the (Phase-2) proposal set, which is intended. Phase 2 will
 	// calibrate both against live task_llm_usage percentiles.
-	qualityStepMinSample = 20
-	qualityTaskMinSample = 20
+	qualityStepMinSample          = 20
+	qualityTaskMinSample          = 20
+	qualityScoreReconcileInterval = 30 * time.Second
 )
 
 // initQualityCollector builds the observe-only quality Service against the
@@ -30,6 +31,15 @@ const (
 // registry, or the DB is absent (e.g. degraded boot).
 func (c *Container) initQualityCollector() {
 	reg := c.observabilityRegistry()
+	if c.repos != nil && c.repos.ExecutionQualityScores != nil {
+		var scoreMetrics *quality.ExecutionScoreMetrics
+		if reg != nil {
+			scoreMetrics = quality.NewExecutionScoreMetrics(reg)
+		}
+		c.executionScorePublisher = quality.NewExecutionScorePublisher(c.repos.ExecutionQualityScores, time.Now, scoreMetrics)
+		go c.collectExecutionQualityScores()
+		c.Logger.Info().Msg("execution quality score publisher started")
+	}
 	if reg == nil || c.Registry == nil || c.DB == nil {
 		return
 	}
@@ -67,5 +77,46 @@ func (c *Container) refreshQualityMetrics() {
 	}
 	if _, err := c.qualityService.Refresh(ctx, time.Now().Add(-qualityWindow)); err != nil {
 		c.Logger.Warn().Err(err).Msg("quality metrics refresh failed")
+	}
+}
+
+// collectExecutionQualityScores is independent of Prometheus collection. The
+// durable score row is part of the execution read model, so disabling metrics
+// must not disable publication. It reconciles immediately at boot and then on
+// a bounded cadence; the terminal execution ledger remains authoritative.
+func (c *Container) collectExecutionQualityScores() {
+	ticker := time.NewTicker(qualityScoreReconcileInterval)
+	defer ticker.Stop()
+
+	for {
+		c.reconcileExecutionQualityScores()
+
+		var done <-chan struct{}
+		if ctx := c.collectorsCtx; ctx != nil {
+			done = ctx.Done()
+		}
+		select {
+		case <-ticker.C:
+		case <-done:
+			return
+		}
+	}
+}
+
+func (c *Container) reconcileExecutionQualityScores() {
+	if c.executionScorePublisher == nil {
+		return
+	}
+	ctx := context.Background()
+	if cc := c.collectorsCtx; cc != nil {
+		ctx = cc
+	}
+	result, err := c.executionScorePublisher.Reconcile(ctx, 100)
+	if err != nil {
+		c.Logger.Warn().Err(err).
+			Int("selected", result.Selected).
+			Int("published", result.Published).
+			Int("failed", result.Failed).
+			Msg("execution quality score reconciliation incomplete")
 	}
 }

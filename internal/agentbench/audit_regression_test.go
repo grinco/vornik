@@ -85,13 +85,16 @@ func TestPreRegistrationValidatesIndependentAxesAndPowerFields(t *testing.T) {
 
 func TestArmPartialRequiresIdentityBearingFields(t *testing.T) {
 	base := ArmFields{HarnessVersion: HarnessVersion, BinarySHA256: "b", ConfigSHA256: "c",
-		Models: map[string]string{"lead": "m"}, ContextPolicy: "p", TaskSetSHA256: "t", Probes: []string{"schema"}}
+		Models: map[string]string{"lead": "m"}, AgentImages: map[string]string{"lead": "sha256:a"},
+		ContextPolicy: "p", TaskSetSHA256: "t", TierPolicySHA256: "tiers", Probes: []string{"schema"}}
 	if base.Partial() {
 		t.Fatal("complete arm marked partial")
 	}
 	for _, broken := range []ArmFields{
 		func() ArmFields { x := base; x.HarnessVersion = ""; return x }(),
 		func() ArmFields { x := base; x.Models = nil; return x }(),
+		func() ArmFields { x := base; x.AgentImages = nil; return x }(),
+		func() ArmFields { x := base; x.TierPolicySHA256 = ""; return x }(),
 		func() ArmFields { x := base; x.ContextPolicy = ""; return x }(),
 		func() ArmFields { x := base; x.Probes = nil; return x }(),
 	} {

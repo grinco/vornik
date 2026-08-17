@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -99,6 +100,21 @@ func (s *SQLTraceStore) Executions(ctx context.Context, taskID string) ([]string
 	return out, rows.Err()
 }
 
+// StateSnapshot reads the append-only workflow evidence pinned to an
+// execution. A missing/unreadable row is a harness error, never an agent zero.
+func (s *SQLTraceStore) StateSnapshot(ctx context.Context, executionID string) ([]byte, error) {
+	if s == nil || s.DB == nil {
+		return nil, fmt.Errorf("trace store has no database")
+	}
+	var snapshot []byte
+	err := s.DB.QueryRowContext(ctx, fmt.Sprintf(`
+		SELECT state_snapshot FROM executions WHERE id = %s`, s.Dialect.arg(1)), executionID).Scan(&snapshot)
+	if err != nil {
+		return nil, fmt.Errorf("read state snapshot for %s: %w", executionID, err)
+	}
+	return snapshot, nil
+}
+
 // ObservedModels reports the role -> model map a run ACTUALLY used.
 //
 // OBSERVED, NOT DECLARED, and that distinction is the point. An arm names its
@@ -145,6 +161,55 @@ func (s *SQLTraceStore) ObservedModels(ctx context.Context, executionIDs []strin
 			return nil, err
 		}
 		_ = rows.Close()
+	}
+	return out, nil
+}
+
+// ObservedAgentImages reports role -> immutable image ID set from the ledger.
+// Multiple IDs for one role are retained in sorted order; the caller marks the
+// journal untrustworthy rather than choosing one and hiding mid-run drift.
+func (s *SQLTraceStore) ObservedAgentImages(ctx context.Context, executionIDs []string) (map[string]string, error) {
+	if s == nil || s.DB == nil {
+		return nil, fmt.Errorf("trace store has no database")
+	}
+	byRole := map[string]map[string]bool{}
+	for _, execID := range executionIDs {
+		rows, err := s.DB.QueryContext(ctx, fmt.Sprintf(`
+			SELECT role, agent_image_id FROM execution_step_outcomes
+			 WHERE execution_id = %s AND role <> ''`, s.Dialect.arg(1)), execID)
+		if err != nil {
+			return nil, fmt.Errorf("read agent images for %s: %w", execID, err)
+		}
+		for rows.Next() {
+			var role string
+			var imageID sql.NullString
+			if err := rows.Scan(&role, &imageID); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scan agent image: %w", err)
+			}
+			if !imageID.Valid || !strings.HasPrefix(imageID.String, "sha256:") || len(imageID.String) == len("sha256:") {
+				_ = rows.Close()
+				return nil, fmt.Errorf("role %q has missing or non-immutable agent image identity %q", role, imageID.String)
+			}
+			if byRole[role] == nil {
+				byRole[role] = map[string]bool{}
+			}
+			byRole[role][imageID.String] = true
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		_ = rows.Close()
+	}
+	out := make(map[string]string, len(byRole))
+	for role, set := range byRole {
+		ids := make([]string, 0, len(set))
+		for id := range set {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		out[role] = strings.Join(ids, "+")
 	}
 	return out, nil
 }

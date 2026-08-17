@@ -623,6 +623,7 @@ type agentBudgetStamp struct {
 	ComplexityTier      string // empty → NULL
 	EffectiveToolBudget *int   // nil → NULL
 	ToolCallsUsed       *int   // nil → NULL
+	AgentImageID        string // empty → NULL; immutable runtime-observed ID
 }
 
 // taintStamp carries the three migration-137 taint-lineage columns, populated
@@ -724,6 +725,7 @@ func (e *Executor) recordStepOutcomeWithSignalsAndBudget(
 		ComplexityTier:      budget.ComplexityTier,
 		EffectiveToolBudget: budget.EffectiveToolBudget,
 		ToolCallsUsed:       budget.ToolCallsUsed,
+		AgentImageID:        budget.AgentImageID,
 		// Migration-137 taint-lineage stamp — populated for agent steps only;
 		// non-agent steps leave these false/NULL via a zero taintStamp (§5.1).
 		UntrustedContentUsed: taint.UntrustedContentUsed,

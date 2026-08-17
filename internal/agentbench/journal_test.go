@@ -50,6 +50,29 @@ func TestPreRegistration_RefusesWhatCommitsToNothing(t *testing.T) {
 	}
 }
 
+func TestPreRegistration_ReleaseGateArtifactsAreAllOrNothingAndPrecommitted(t *testing.T) {
+	p := validPreReg()
+	p.Metric = PinnedCaseValidationMetric
+	p.IndependentAxes = []string{"binary_sha256", "agent_images"}
+	p.CalibrationSHA256 = strings.Repeat("a", 64)
+	p.NoiseFloorSHA256 = strings.Repeat("b", 64)
+	p.ReleaseGatePolicySHA256 = strings.Repeat("c", 64)
+	if err := p.Validate(); err != nil {
+		t.Fatalf("valid release pre-registration: %v", err)
+	}
+
+	missing := p
+	missing.NoiseFloorSHA256 = ""
+	if err := missing.Validate(); err == nil || !strings.Contains(err.Error(), "all three") {
+		t.Fatalf("partial release artifact set accepted: %v", err)
+	}
+	wrongAxes := p
+	wrongAxes.IndependentAxes = []string{"binary_sha256"}
+	if err := wrongAxes.Validate(); err == nil || !strings.Contains(err.Error(), "agent_images") {
+		t.Fatalf("release comparison without agent-image axis accepted: %v", err)
+	}
+}
+
 func TestPreRegistration_HashIsStable(t *testing.T) {
 	a, err := validPreReg().Hash()
 	if err != nil {

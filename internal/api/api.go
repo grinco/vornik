@@ -571,11 +571,12 @@ type Server struct {
 	// with "not configured" rather than returning an empty URL a client would hand a
 	// user. Same builder the chat tool uses, which collects NOTHING host-side — see
 	// companionToolReportProblem.
-	problemReports ProblemReportBuilder
-	taskRepo       persistence.TaskRepository
-	executionRepo  persistence.ExecutionRepository
-	artifactRepo   persistence.ArtifactRepository
-	artifactOpener ArtifactOpener
+	problemReports         ProblemReportBuilder
+	taskRepo               persistence.TaskRepository
+	executionRepo          persistence.ExecutionRepository
+	executionQualityScores persistence.ExecutionQualityScoreRepository
+	artifactRepo           persistence.ArtifactRepository
+	artifactOpener         ArtifactOpener
 	// forker backs POST /executions/{id}/fork-from-step (Feature
 	// #1 Phase B). nil → endpoint returns 503.
 	forker ForkExecutor
@@ -1393,6 +1394,14 @@ func WithTaskRepository(repo persistence.TaskRepository) ServerOption {
 func WithExecutionRepository(repo persistence.ExecutionRepository) ServerOption {
 	return func(s *Server) {
 		s.executionRepo = repo
+	}
+}
+
+// WithExecutionQualityScoreRepository wires the production per-execution
+// quality ledger and publication-backlog read surface.
+func WithExecutionQualityScoreRepository(repo persistence.ExecutionQualityScoreRepository) ServerOption {
+	return func(s *Server) {
+		s.executionQualityScores = repo
 	}
 }
 

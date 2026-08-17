@@ -62,6 +62,20 @@ func TestWorkflowSchema_DriftGuard(t *testing.T) {
 	}
 }
 
+func TestWorkflowSchema_ExposesTheCompleteQualityScoringContract(t *testing.T) {
+	paths := map[string]bool{}
+	for _, path := range WorkflowSchema().Paths() {
+		paths[path] = true
+	}
+	for _, want := range []string{
+		"qualityScoring.kind", "qualityScoring.producerStep", "qualityScoring.verifierStep",
+	} {
+		if !paths[want] {
+			t.Errorf("workflow editor omits %s", want)
+		}
+	}
+}
+
 // TestWorkflowSchema_NoBogusPaths — every schema/collection/item/deferred
 // path resolves to a real struct leaf.
 func TestWorkflowSchema_NoBogusPaths(t *testing.T) {

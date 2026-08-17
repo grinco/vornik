@@ -6,6 +6,7 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"math"
@@ -60,6 +61,21 @@ type ExecutionDetailData struct {
 	// so the operator can see WHICH workflow the lead picked
 	// without drilling into the child task.
 	Routing *RoutingDecision
+	// QualityScore is the durable deterministic score for this execution.
+	// QualityPublicationPending is distinct from nil/not-applicable: it means a
+	// terminal execution exists but its reconciled score row does not yet.
+	QualityScore              *ExecutionQualityView
+	QualityPublicationPending bool
+}
+
+// ExecutionQualityView is the execution-detail score card model.
+type ExecutionQualityView struct {
+	Status          string
+	ScorePercent    int
+	HasNumericScore bool
+	PassedCases     int
+	PinnedCases     int
+	Diagnostic      string
 }
 
 // RoutingDecision is the per-execution snapshot of the strict
@@ -183,6 +199,25 @@ func (s *Server) ExecutionDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		data.Execution = exec
 		data.Title = "Execution: " + executionID
+		if s.executionQualityRepo != nil && isTerminalExecutionForQuality(exec.Status) {
+			score, scoreErr := s.executionQualityRepo.GetByExecution(ctx, exec.ID)
+			switch {
+			case scoreErr == nil && score != nil:
+				view := &ExecutionQualityView{
+					Status: score.Status, PassedCases: score.PassedCaseCount,
+					PinnedCases: score.PinnedCaseCount, Diagnostic: score.Diagnostic,
+				}
+				if score.Score != nil {
+					view.HasNumericScore = true
+					view.ScorePercent = int(math.Round(*score.Score * 100))
+				}
+				data.QualityScore = view
+			case errors.Is(scoreErr, persistence.ErrNotFound):
+				data.QualityPublicationPending = true
+			case scoreErr != nil:
+				s.logger.Warn().Err(scoreErr).Str("execution_id", exec.ID).Msg("failed to load execution quality score for UI")
+			}
+		}
 
 		// Get associated task
 		if s.taskRepo != nil && exec.TaskID != "" {
@@ -319,6 +354,15 @@ func (s *Server) ExecutionDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.render(w, "execution.html", data)
+}
+
+func isTerminalExecutionForQuality(status persistence.ExecutionStatus) bool {
+	switch status {
+	case persistence.ExecutionStatusCompleted, persistence.ExecutionStatusFailed, persistence.ExecutionStatusCancelled:
+		return true
+	default:
+		return false
+	}
 }
 
 // parseHallucinationSignalsForUI decodes the JSONB blob carried

@@ -3,21 +3,65 @@ package agentbench
 import (
 	"strings"
 	"testing"
+
+	"vornik.io/vornik/internal/quality"
 )
+
+func TestScoringPolicyDigest_IsOrderIndependentAndChangesWithTheContract(t *testing.T) {
+	a := []TaskSpec{
+		{ID: "b", Scoring: pinnedPolicy()},
+		{ID: "a", Scoring: pinnedPolicy()},
+	}
+	b := []TaskSpec{a[1], a[0]}
+	if ScoringPolicyDigest(a) == "" || ScoringPolicyDigest(a) != ScoringPolicyDigest(b) {
+		t.Fatalf("policy digest was empty or order-dependent: %q vs %q", ScoringPolicyDigest(a), ScoringPolicyDigest(b))
+	}
+	b[0].Scoring = &quality.ScoringPolicy{Kind: quality.ScoreKindPinnedCaseValidation, ProducerStep: "plan", VerifierStep: "test"}
+	if ScoringPolicyDigest(a) == ScoringPolicyDigest(b) {
+		t.Fatal("a scoring-policy change did not split the arm")
+	}
+}
+
+func TestArmFields_ScoringPolicySplitsTheKey(t *testing.T) {
+	a := baseArm()
+	b := a
+	a.ScoringPolicySHA256 = "policy-a"
+	b.ScoringPolicySHA256 = "policy-b"
+	if a.Key() == b.Key() {
+		t.Fatal("different scoring contracts produced the same arm key")
+	}
+}
+
+func TestArmFields_AgentImageAndTierPolicySplitTheKey(t *testing.T) {
+	a := baseArm()
+	b := baseArm()
+	a.AgentImages = map[string]string{"coder": "sha256:aaa"}
+	b.AgentImages = map[string]string{"coder": "sha256:bbb"}
+	if a.Key() == b.Key() {
+		t.Fatal("different observed agent images produced the same arm key")
+	}
+	b.AgentImages = a.AgentImages
+	b.TierPolicySHA256 = "different"
+	if a.Key() == b.Key() {
+		t.Fatal("moving tasks between release tiers produced the same arm key")
+	}
+}
 
 func baseArm() ArmFields {
 	return ArmFields{
 		// The CONSTANT, not a literal: a version test that hardcodes the current
 		// value compares a number with itself and passes forever.
-		HarnessVersion: HarnessVersion,
-		Name:           "baseline",
-		BinarySHA256:   "aaaa",
-		ConfigSHA256:   "bbbb",
-		Models:         map[string]string{"lead": "gpt-oss:120b", "worker": "qwen3.6:35b"},
-		ContextPolicy:  "suppression=none;advert=gated",
-		TaskSetSHA256:  "cccc",
-		GoldSHA256:     "dddd",
-		Probes:         []string{"tool-grant", "schema-following"},
+		HarnessVersion:   HarnessVersion,
+		Name:             "baseline",
+		BinarySHA256:     "aaaa",
+		ConfigSHA256:     "bbbb",
+		Models:           map[string]string{"lead": "gpt-oss:120b", "worker": "qwen3.6:35b"},
+		AgentImages:      map[string]string{"lead": "sha256:111", "worker": "sha256:111"},
+		ContextPolicy:    "suppression=none;advert=gated",
+		TaskSetSHA256:    "cccc",
+		TierPolicySHA256: "tiers",
+		GoldSHA256:       "dddd",
+		Probes:           []string{"tool-grant", "schema-following"},
 	}
 }
 

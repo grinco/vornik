@@ -20,6 +20,10 @@ maxStepVisits: 12
 maxIterations: 50
 entrypoint: "analyze"
 maxWallClock: "2h"
+qualityScoring:
+  kind: "pinned_case_validation"
+  producerStep: "analyze"
+  verifierStep: "test"
 steps:
   analyze:
     type: "agent"
@@ -217,6 +221,11 @@ Your job:
    inflate it to "be safe" — over-provisioning is capped and
    audited, and autonomy tasks are held to a tighter ceiling. Use
    `standard` when unsure.
+7. In the response, include `test_case_ids` for the next unchecked
+   subtask in the same order they appear in its pinned `test_cases`
+   block. The list length MUST equal `test_cases_pinned`; these IDs are
+   the durable scoring contract the tester's `testing.cases[]` rows
+   are matched against.
 
 If `CURRENT_TASK.md` exists with unchecked subtasks AND each unchecked
 subtask already has a `test_cases` block, do NOT create a new feature —
@@ -225,7 +234,7 @@ LACK a `test_cases` block (older pre-TDD `CURRENT_TASK.md`), add the
 missing blocks before continuing.
 
 Respond with:
-`{"analysis":{"feature":"<name>","subtask":"<next unchecked>","test_cases_pinned":N,"ready":true,"complexity":"standard"}}`
+`{"analysis":{"feature":"<name>","subtask":"<next unchecked>","test_case_ids":["case_1","case_2"],"test_cases_pinned":2,"ready":true,"complexity":"standard"}}`
 
 ### implement
 

@@ -1897,13 +1897,16 @@ type TaskLLMUsageFilter struct {
 // finalization. This keeps the blame on the model that produced the
 // garbage, not on the model that tried to read it.
 type ExecutionStepOutcome struct {
-	ID                 string     `json:"id"`
-	ProjectID          string     `json:"project_id"`
-	TaskID             string     `json:"task_id"`
-	ExecutionID        string     `json:"execution_id"`
-	StepID             string     `json:"step_id"`
-	Role               string     `json:"role"`
-	Model              string     `json:"model"`
+	ID          string `json:"id"`
+	ProjectID   string `json:"project_id"`
+	TaskID      string `json:"task_id"`
+	ExecutionID string `json:"execution_id"`
+	StepID      string `json:"step_id"`
+	Role        string `json:"role"`
+	Model       string `json:"model"`
+	// AgentImageID is the immutable runtime-observed image identity for agent
+	// steps. Configured tags are not evidence because they can be retagged.
+	AgentImageID       string     `json:"agent_image_id,omitempty"`
 	Outcome            string     `json:"outcome"`
 	AttributedToStepID *string    `json:"attributed_to_step_id,omitempty"`
 	ErrorClass         string     `json:"error_class,omitempty"`

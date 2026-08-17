@@ -1,0 +1,10 @@
+{
+  "metric": "pinned_case_validation_score",
+  "maxScoreRegression": 0.05,
+  "maxStepNoOutputRateIncrease": 0.02,
+  "forbiddenNewErrorClasses": [
+    "context_overflow",
+    "degenerate_loop",
+    "iteration_cap"
+  ]
+}

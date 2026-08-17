@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,6 +18,7 @@ import (
 
 	"vornik.io/vornik/internal/agentbench"
 	"vornik.io/vornik/internal/membench"
+	"vornik.io/vornik/internal/quality"
 )
 
 // `vornikctl bench agent` — the agent-quality harness CLI
@@ -30,24 +33,32 @@ import (
 // so it can gate every commit.
 
 var (
-	benchAgentProject      string
-	benchAgentBenchProject string
-	benchAgentSwarm        string
-	benchAgentDatabase     string
-	benchAgentConfirmWipe  string
-	benchAgentRuns         int
-	benchAgentTaskSetHash  string
-	benchAgentGoldPath     string
-	benchAgentPreRegPath   string
-	benchAgentTaskSetPath  string
-	benchAgentJournalPath  string
-	benchAgentRunID        string
-	benchAgentArm          string
-	benchAgentRepeats      int
-	benchAgentContextPol   string
-	benchAgentDaemonBinary string
-	benchAgentDaemonConfig string
-	benchAgentJSON         bool
+	benchAgentProject            string
+	benchAgentBenchProject       string
+	benchAgentSwarm              string
+	benchAgentDatabase           string
+	benchAgentConfirmWipe        string
+	benchAgentRuns               int
+	benchAgentTaskSetHash        string
+	benchAgentGoldPath           string
+	benchAgentPreRegPath         string
+	benchAgentTaskSetPath        string
+	benchAgentJournalPath        string
+	benchAgentRunID              string
+	benchAgentArm                string
+	benchAgentRepeats            int
+	benchAgentContextPol         string
+	benchAgentDaemonBinary       string
+	benchAgentDaemonConfig       string
+	benchAgentJSON               bool
+	benchAgentCalibrationPath    string
+	benchAgentNoiseFloorPath     string
+	benchAgentGatePolicyPath     string
+	benchAgentCalibrationOutPath string
+	benchAgentNoiseFloorOutPath  string
+	benchAgentReleaseArms        []string
+	benchAgentReleaseRationale   string
+	benchAgentReleasePreRegOut   string
 
 	// benchAgentAllowUnreproducible accepts a harness whose build cannot be
 	// traced to a commit. Named rather than inferred: see
@@ -148,6 +159,33 @@ var benchAgentCompareCmd = &cobra.Command{
 	RunE:  runBenchAgentCompare,
 }
 
+var benchAgentCalibrateCmd = &cobra.Command{
+	Use:   "calibrate <journal>",
+	Short: "Build a task calibration artifact from a repeated journal",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runBenchAgentCalibrate,
+}
+
+var benchAgentNoiseFloorCmd = &cobra.Command{
+	Use:   "noise-floor <same-config-journal-a> <same-config-journal-b>",
+	Short: "Measure paired release-gate noise from two same-config arms",
+	Args:  cobra.ExactArgs(2),
+	RunE:  runBenchAgentNoiseFloor,
+}
+
+var benchAgentGateCmd = &cobra.Command{
+	Use:   "gate <baseline-journal> <candidate-journal>",
+	Short: "Evaluate the pre-registered agent benchmark release gate",
+	Args:  cobra.ExactArgs(2),
+	RunE:  runBenchAgentGate,
+}
+
+var benchAgentReleasePreRegCmd = &cobra.Command{
+	Use:   "release-preregistration",
+	Short: "Derive the shared release pre-registration from reviewed gate artifacts",
+	RunE:  runBenchAgentReleasePreRegistration,
+}
+
 func init() {
 	for _, c := range []*cobra.Command{benchAgentGoldCmd, benchAgentRunCmd} {
 		c.Flags().StringVar(&benchAgentProject, "project", "", "project to run in")
@@ -186,6 +224,12 @@ func init() {
 	benchAgentRunCmd.Flags().BoolVar(&benchAgentAllowUnreproducible, "i-know-this-is-unreproducible", false,
 		"score with a dirty or unstamped harness. The resulting figures cannot be "+
 			"regenerated from any commit and must not be published")
+	benchAgentRunCmd.Flags().StringVar(&benchAgentCalibrationPath, "calibration", "",
+		"release calibration artifact pinned by the pre-registration")
+	benchAgentRunCmd.Flags().StringVar(&benchAgentNoiseFloorPath, "noise-floor", "",
+		"release noise-floor artifact pinned by the pre-registration")
+	benchAgentRunCmd.Flags().StringVar(&benchAgentGatePolicyPath, "gate-policy", "",
+		"release gate policy pinned by the pre-registration")
 	for _, c := range []*cobra.Command{benchAgentGoldCmd, benchAgentRunCmd} {
 		c.Flags().StringVar(&benchAgentTaskSetPath, "tasks", "", "JSON task set to run")
 	}
@@ -196,7 +240,24 @@ func init() {
 
 	benchAgentCmd.AddCommand(benchAgentGoldCmd, benchAgentRunCmd, benchAgentReportCmd,
 		benchAgentRollupCmd, benchAgentCompareCmd, benchAgentTaskSetHashCmd,
-		benchAgentGoldMergeCmd, benchAgentRescoreCmd)
+		benchAgentGoldMergeCmd, benchAgentRescoreCmd, benchAgentCalibrateCmd,
+		benchAgentNoiseFloorCmd, benchAgentGateCmd, benchAgentReleasePreRegCmd)
+	benchAgentCalibrateCmd.Flags().StringVar(&benchAgentCalibrationOutPath, "out", "calibration.json",
+		"where to write the immutable calibration artifact")
+	benchAgentNoiseFloorCmd.Flags().StringVar(&benchAgentNoiseFloorOutPath, "out", "noise-floor.json",
+		"where to write the immutable noise-floor artifact")
+	for _, c := range []*cobra.Command{benchAgentGateCmd} {
+		c.Flags().StringVar(&benchAgentCalibrationPath, "calibration", "", "calibration artifact (required)")
+		c.Flags().StringVar(&benchAgentNoiseFloorPath, "noise-floor", "", "noise-floor artifact (required)")
+		c.Flags().StringVar(&benchAgentGatePolicyPath, "policy", "", "release gate policy (required)")
+		c.Flags().BoolVar(&benchAgentJSON, "json", false, "emit the complete decision as JSON")
+	}
+	benchAgentReleasePreRegCmd.Flags().StringVar(&benchAgentCalibrationPath, "calibration", "", "calibration artifact (required)")
+	benchAgentReleasePreRegCmd.Flags().StringVar(&benchAgentNoiseFloorPath, "noise-floor", "", "noise-floor artifact (required)")
+	benchAgentReleasePreRegCmd.Flags().StringVar(&benchAgentGatePolicyPath, "policy", "", "release gate policy (required)")
+	benchAgentReleasePreRegCmd.Flags().StringSliceVar(&benchAgentReleaseArms, "arms", nil, "baseline and candidate arm names (required)")
+	benchAgentReleasePreRegCmd.Flags().StringVar(&benchAgentReleaseRationale, "rationale", "", "why this release comparison is being run (required)")
+	benchAgentReleasePreRegCmd.Flags().StringVar(&benchAgentReleasePreRegOut, "out", "release-preregistration.json", "where to write the shared pre-registration")
 	benchAgentRescoreCmd.Flags().StringVar(&benchAgentJournalPath, "out", "",
 		"where to write the re-scored journal (required)")
 	benchAgentRescoreCmd.Flags().StringVar(&benchAgentGoldPath, "gold", "",
@@ -350,6 +411,13 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	arm, err := buildArm(tasks, gold)
+	if err != nil {
+		return err
+	}
+	if err := validateReleaseRunInputs(preReg, arm, tasks); err != nil {
+		return err
+	}
 	// Checked after the cheap declarative guards and before anything is built or
 	// spent. Ordering is deliberate: a run with no pre-registration has a more
 	// fundamental problem than an unreproducible scorer, and an operator sent
@@ -369,12 +437,16 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	power, err := agentbench.CheckPower(preReg.SigmaD, preReg.SigmaN, preReg.TargetDelta, len(tasks))
-	if err != nil {
-		return err
+	availablePairs := len(tasks)
+	if preReg.ReleaseGateEnabled() {
+		availablePairs = 0
+		for _, task := range tasks {
+			if task.Tier == agentbench.TaskTierGate {
+				availablePairs++
+			}
+		}
 	}
-
-	arm, err := buildArm(tasks, gold)
+	power, err := agentbench.CheckPower(preReg.SigmaD, preReg.SigmaN, preReg.TargetDelta, availablePairs)
 	if err != nil {
 		return err
 	}
@@ -403,6 +475,7 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 	}
 
 	stampObservedModels(cmd.Context(), store, &journal)
+	stampObservedAgentImages(cmd.Context(), store, &journal)
 
 	f, err := os.Create(filepath.Clean(benchAgentJournalPath))
 	if err != nil {
@@ -475,6 +548,44 @@ func stampObservedModels(ctx context.Context, store *agentbench.SQLTraceStore, j
 	journal.Manifest.ArmPartial = journal.Manifest.Arm.Partial()
 }
 
+// stampObservedAgentImages fills the arm from immutable runtime IDs persisted
+// by the executor. A role using more than one ID makes the run untrustworthy:
+// splitting after results would cherry-pick sub-arms, while selecting one would
+// hide an agent-loop change.
+func stampObservedAgentImages(ctx context.Context, store *agentbench.SQLTraceStore, journal *agentbench.Journal) {
+	var execIDs []string
+	for _, rec := range journal.Records {
+		if rec.ExecutionID != "" {
+			execIDs = append(execIDs, rec.ExecutionID)
+		}
+	}
+	observed, err := store.ObservedAgentImages(ctx, execIDs)
+	applyObservedAgentImages(journal, observed, err)
+}
+
+func applyObservedAgentImages(journal *agentbench.Journal, observed map[string]string, observationErr error) {
+	if observationErr != nil || len(observed) == 0 {
+		journal.Manifest.Untrustworthy = true
+		if observationErr != nil {
+			journal.Manifest.UntrustworthyReason = "AGENT_IMAGE_PROVENANCE_MISSING: " + observationErr.Error()
+		} else {
+			journal.Manifest.UntrustworthyReason = "AGENT_IMAGE_PROVENANCE_MISSING: no immutable runtime image IDs were journaled"
+		}
+		return
+	}
+	journal.Manifest.Arm.AgentImages = observed
+	for role, ids := range observed {
+		if strings.Contains(ids, "+sha256:") {
+			journal.Manifest.Untrustworthy = true
+			journal.Manifest.UntrustworthyReason = fmt.Sprintf(
+				"AGENT_IMAGE_DRIFT: role %q used multiple immutable image IDs in one run (%s)", role, ids)
+			break
+		}
+	}
+	journal.Manifest.ArmKey = journal.Manifest.Arm.Key()
+	journal.Manifest.ArmPartial = journal.Manifest.Arm.Partial()
+}
+
 // buildArm assembles the comparability key from everything knowable BEFORE the
 // run. Models are filled in afterwards from the ledger (see runBenchAgentRun).
 //
@@ -490,6 +601,9 @@ func buildArm(tasks []agentbench.TaskSpec, gold *agentbench.GoldManifest) (agent
 			"independent variable, and a run that does not say what policy it tested cannot be " +
 			"compared with one that does")
 	}
+	if err := agentbench.ValidateTaskTiers(tasks); err != nil {
+		return agentbench.ArmFields{}, err
+	}
 
 	ids := make([]string, 0, len(tasks))
 	bodies := make(map[string]string, len(tasks))
@@ -499,11 +613,13 @@ func buildArm(tasks []agentbench.TaskSpec, gold *agentbench.GoldManifest) (agent
 	}
 
 	arm := agentbench.ArmFields{
-		HarnessVersion: agentbench.HarnessVersion,
-		Name:           benchAgentArm,
-		ContextPolicy:  benchAgentContextPol,
-		TaskSetSHA256:  agentbench.TaskSetDigest(ids, bodies),
-		Probes:         probeNames(gold != nil),
+		HarnessVersion:      agentbench.HarnessVersion,
+		Name:                benchAgentArm,
+		ContextPolicy:       benchAgentContextPol,
+		TaskSetSHA256:       agentbench.TaskSetDigest(ids, bodies),
+		ScoringPolicySHA256: agentbench.ScoringPolicyDigest(tasks),
+		TierPolicySHA256:    agentbench.TierPolicyDigest(tasks),
+		Probes:              probeNames(gold != nil),
 	}
 	if gold != nil {
 		h, err := gold.SHA256()
@@ -839,23 +955,251 @@ func runBenchAgentCompare(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Refuse incomparable provenance before inspecting the metric. This keeps
+	// the arm-key safety boundary first even for legacy journals whose
+	// pre-registration did not yet name a supported metric.
+	if _, err := agentbench.CompareJournals(a, b, 0); err != nil {
+		return err
+	}
 
+	metricA := strings.TrimSpace(a.Manifest.PreRegistration.Metric)
+	metricB := strings.TrimSpace(b.Manifest.PreRegistration.Metric)
+	if metricA != metricB {
+		return fmt.Errorf("the two runs pre-registered different metrics (%q vs %q)", metricA, metricB)
+	}
 	ra, rb := a.Rollup(), b.Rollup()
-	observed := absDelta(ra.Accuracy.PathCoverage, rb.Accuracy.PathCoverage)
+	if metricA == agentbench.PinnedCaseValidationMetric {
+		comparison, err := agentbench.CompareTaskScores(a.TaskScores, b.TaskScores,
+			quality.ScoreKindPinnedCaseValidation)
+		if err != nil {
+			return err
+		}
+		verdict, err := agentbench.CompareJournals(a, b, comparison.MeanDelta)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s vs %s\n%s %s\n"+
+			"signed mean delta = %.4f; magnitude = %.4f; sigma_d = %.4f; pairs = %d\n",
+			ra.Arm, rb.Arm, metricA, verdict, comparison.MeanDelta, comparison.Magnitude,
+			comparison.SigmaD, comparison.PairCount)
+		return nil
+	}
+
+	observed, label, err := rollupMetricDelta(metricA, ra, rb)
+	if err != nil {
+		return err
+	}
 	verdict, err := agentbench.CompareJournals(a, b, observed)
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s vs %s\npath coverage %s\n",
-		ra.Arm, rb.Arm, verdict)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s vs %s\n%s %s\n", ra.Arm, rb.Arm, label, verdict)
 	return nil
 }
 
-func absDelta(a, b float64) float64 {
-	if a > b {
-		return a - b
+func runBenchAgentCalibrate(cmd *cobra.Command, args []string) error {
+	journal, err := loadJournal(args[0])
+	if err != nil {
+		return err
 	}
-	return b - a
+	journalHash, err := sha256File(args[0])
+	if err != nil {
+		return fmt.Errorf("hash calibration journal: %w", err)
+	}
+	artifact, err := agentbench.BuildCalibration(journal, journalHash)
+	if err != nil {
+		return err
+	}
+	if err := writeAgentBenchArtifact(benchAgentCalibrationOutPath, artifact); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\nsha256 %s\n", benchAgentCalibrationOutPath, artifact.SHA256())
+	return nil
+}
+
+func runBenchAgentNoiseFloor(cmd *cobra.Command, args []string) error {
+	a, err := loadJournal(args[0])
+	if err != nil {
+		return err
+	}
+	b, err := loadJournal(args[1])
+	if err != nil {
+		return err
+	}
+	shaA, err := sha256File(args[0])
+	if err != nil {
+		return fmt.Errorf("hash first noise-floor journal: %w", err)
+	}
+	shaB, err := sha256File(args[1])
+	if err != nil {
+		return fmt.Errorf("hash second noise-floor journal: %w", err)
+	}
+	artifact, err := agentbench.BuildNoiseFloor(a, b, shaA, shaB)
+	if err != nil {
+		return err
+	}
+	if err := writeAgentBenchArtifact(benchAgentNoiseFloorOutPath, artifact); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\nsha256 %s\n", benchAgentNoiseFloorOutPath, artifact.SHA256())
+	return nil
+}
+
+func runBenchAgentGate(cmd *cobra.Command, args []string) error {
+	if benchAgentCalibrationPath == "" || benchAgentNoiseFloorPath == "" || benchAgentGatePolicyPath == "" {
+		return fmt.Errorf("--calibration, --noise-floor, and --policy are required")
+	}
+	a, err := loadJournal(args[0])
+	if err != nil {
+		return err
+	}
+	b, err := loadJournal(args[1])
+	if err != nil {
+		return err
+	}
+	calibration, noise, policy, err := loadReleaseArtifacts()
+	if err != nil {
+		return err
+	}
+	decision := agentbench.EvaluateReleaseGate(a, b, calibration, noise, policy)
+	if benchAgentJSON {
+		blob, marshalErr := json.MarshalIndent(decision, "", "  ")
+		if marshalErr != nil {
+			return marshalErr
+		}
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", blob)
+	} else {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\nscore delta %.4f (floor %.4f, %d paired gate tasks)\n",
+			decision.Status, decision.Reason, decision.GateScore.MeanDelta,
+			decision.GateScore.ResolvableFloor, decision.GateScore.PairCount)
+	}
+	if decision.Status != agentbench.GateStatusPass {
+		return fmt.Errorf("release gate %s: %s", decision.Status, decision.Reason)
+	}
+	return nil
+}
+
+func runBenchAgentReleasePreRegistration(cmd *cobra.Command, _ []string) error {
+	if benchAgentCalibrationPath == "" || benchAgentNoiseFloorPath == "" || benchAgentGatePolicyPath == "" {
+		return fmt.Errorf("--calibration, --noise-floor, and --policy are required")
+	}
+	calibration, noise, policy, err := loadReleaseArtifacts()
+	if err != nil {
+		return err
+	}
+	pre, err := agentbench.BuildReleasePreRegistration(benchAgentReleaseArms,
+		benchAgentReleaseRationale, calibration, noise, policy)
+	if err != nil {
+		return err
+	}
+	if err := writeAgentBenchArtifact(benchAgentReleasePreRegOut, pre); err != nil {
+		return err
+	}
+	hash, err := pre.Hash()
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "wrote %s\nsha256 %s\nrequired paired gate tasks %d\n",
+		benchAgentReleasePreRegOut, hash, pre.ComputedPairs)
+	return nil
+}
+
+func validateReleaseRunInputs(pre agentbench.PreRegistration, arm agentbench.ArmFields, tasks []agentbench.TaskSpec) error {
+	pathsPresent := benchAgentCalibrationPath != "" || benchAgentNoiseFloorPath != "" || benchAgentGatePolicyPath != ""
+	if !pre.ReleaseGateEnabled() {
+		if pathsPresent {
+			return fmt.Errorf("release artifacts were supplied but the pre-registration does not pin them")
+		}
+		return nil
+	}
+	if benchAgentCalibrationPath == "" || benchAgentNoiseFloorPath == "" || benchAgentGatePolicyPath == "" {
+		return fmt.Errorf("release pre-registration requires --calibration, --noise-floor, and --gate-policy")
+	}
+	calibration, noise, policy, err := loadReleaseArtifacts()
+	if err != nil {
+		return err
+	}
+	tiers := make(map[string]agentbench.TaskTier, len(tasks))
+	for _, task := range tasks {
+		tiers[task.ID] = task.Tier
+	}
+	if err := agentbench.ValidateReleaseRunPlan(pre, arm, tiers, benchAgentRepeats, calibration, noise, policy); err != nil {
+		return fmt.Errorf("release run plan refused before execution: %w", err)
+	}
+	return nil
+}
+
+func loadReleaseArtifacts() (agentbench.CalibrationManifest, agentbench.NoiseFloorManifest, agentbench.ReleaseGatePolicy, error) {
+	var calibration agentbench.CalibrationManifest
+	if err := readAgentBenchArtifact(benchAgentCalibrationPath, &calibration); err != nil {
+		return calibration, agentbench.NoiseFloorManifest{}, agentbench.ReleaseGatePolicy{}, fmt.Errorf("load calibration: %w", err)
+	}
+	var noise agentbench.NoiseFloorManifest
+	if err := readAgentBenchArtifact(benchAgentNoiseFloorPath, &noise); err != nil {
+		return calibration, noise, agentbench.ReleaseGatePolicy{}, fmt.Errorf("load noise floor: %w", err)
+	}
+	var policy agentbench.ReleaseGatePolicy
+	if err := readAgentBenchArtifact(benchAgentGatePolicyPath, &policy); err != nil {
+		return calibration, noise, policy, fmt.Errorf("load release policy: %w", err)
+	}
+	return calibration, noise, policy, nil
+}
+
+func readAgentBenchArtifact(path string, out any) error {
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("artifact contains more than one JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func writeAgentBenchArtifact(path string, artifact any) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("--out is required")
+	}
+	blob, err := json.MarshalIndent(artifact, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode artifact: %w", err)
+	}
+	if err := os.WriteFile(filepath.Clean(path), append(blob, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
+func rollupMetricDelta(metric string, a, b agentbench.Rollup) (float64, string, error) {
+	switch metric {
+	case "path coverage", "path_coverage":
+		if !a.Accuracy.PathCoverageDefined || !b.Accuracy.PathCoverageDefined {
+			return 0, "", fmt.Errorf("path coverage is not defined in both journals")
+		}
+		return b.Accuracy.PathCoverage - a.Accuracy.PathCoverage, "path coverage", nil
+	case "schema_conformance":
+		if !a.Accuracy.SchemaConformanceDefined || !b.Accuracy.SchemaConformanceDefined {
+			return 0, "", fmt.Errorf("schema conformance is not defined in both journals")
+		}
+		return b.Accuracy.SchemaConformance - a.Accuracy.SchemaConformance, "schema conformance", nil
+	case "task_success_rate":
+		av, aok := a.Failures.TaskSuccessRate()
+		bv, bok := b.Failures.TaskSuccessRate()
+		if !aok || !bok {
+			return 0, "", fmt.Errorf("task success rate is not defined in both journals")
+		}
+		return bv - av, "task success rate", nil
+	default:
+		return 0, "", fmt.Errorf("unsupported pre-registered agent metric %q", metric)
+	}
 }
 
 func shortKey(k string) string {

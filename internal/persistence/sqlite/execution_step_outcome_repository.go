@@ -48,14 +48,14 @@ func (r *ExecutionStepOutcomeRepository) Record(ctx context.Context, o *persiste
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO execution_step_outcomes (
 			id, project_id, task_id, execution_id, step_id,
-			role, model, outcome, attributed_to_step_id,
+			role, model, agent_image_id, outcome, attributed_to_step_id,
 			error_class, error_detail, duration_ms,
 			finalized_at, recorded_at, hallucination_signals,
 			complexity_tier, effective_tool_budget, tool_calls_used,
 			untrusted_content_used, untrusted_sources, requires_review
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		o.ID, o.ProjectID, o.TaskID, o.ExecutionID, o.StepID,
-		o.Role, o.Model, o.Outcome, o.AttributedToStepID,
+		o.Role, o.Model, nullableString(o.AgentImageID), o.Outcome, o.AttributedToStepID,
 		o.ErrorClass, o.ErrorDetail, duration,
 		sqliteTimePtr(o.FinalizedAt), sqliteTime(o.RecordedAt),
 		nullableBlob(o.HallucinationSignals),
@@ -129,7 +129,7 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 	var b strings.Builder
 	b.WriteString(`
 		SELECT id, project_id, task_id, execution_id, step_id,
-		       role, model, outcome, attributed_to_step_id,
+		       role, model, agent_image_id, outcome, attributed_to_step_id,
 		       error_class, error_detail, duration_ms,
 		       finalized_at, recorded_at, hallucination_signals,
 		       complexity_tier, effective_tool_budget, tool_calls_used,
@@ -214,10 +214,11 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 			untrustedUsed       sql.NullBool
 			untrustedSources    sql.NullString
 			requiresReview      sql.NullBool
+			agentImageID        sql.NullString
 		)
 		if err := rows.Scan(
 			&o.ID, &o.ProjectID, &o.TaskID, &o.ExecutionID, &o.StepID,
-			&o.Role, &o.Model, &o.Outcome, &attributed,
+			&o.Role, &o.Model, &agentImageID, &o.Outcome, &attributed,
 			&o.ErrorClass, &o.ErrorDetail, &durationMS,
 			&finalizedAt, &recordedAt, &signals,
 			&complexityTier, &effectiveToolBudget, &toolCallsUsed,
@@ -226,6 +227,9 @@ func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence
 			return nil, err
 		}
 		o.UntrustedContentUsed = untrustedUsed.Valid && untrustedUsed.Bool
+		if agentImageID.Valid {
+			o.AgentImageID = agentImageID.String
+		}
 		if untrustedSources.Valid && untrustedSources.String != "" {
 			o.UntrustedSources = []byte(untrustedSources.String)
 		}

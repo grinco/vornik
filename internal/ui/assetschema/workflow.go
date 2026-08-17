@@ -54,6 +54,9 @@ func WorkflowSchema() AssetSchema {
 					// the binding belongs next to the publish toggle in the form — not
 					// deferred to raw YAML.
 					{Path: "a2a.projects", Label: "Publish under projects", Kind: KindStringList, Help: "Project IDs this workflow is published as an A2A agent under. Empty falls back to the project whose default workflow this is."},
+					{Path: "qualityScoring.kind", Label: "Quality score kind", Kind: KindString, Help: "Optional deterministic execution-quality contract. Currently supported: pinned_case_validation."},
+					{Path: "qualityScoring.producerStep", Label: "Quality producer step", Kind: KindString, Help: "Step that pins the validation case IDs before implementation."},
+					{Path: "qualityScoring.verifierStep", Label: "Quality verifier step", Kind: KindString, Help: "Later step that reports a result for each pinned case ID."},
 				},
 			},
 		},

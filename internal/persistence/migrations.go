@@ -6846,4 +6846,57 @@ DROP INDEX IF EXISTS idx_tasks_created_by_actor;
 ALTER TABLE tasks DROP COLUMN IF EXISTS created_by_actor;
 `,
 	},
+	{
+		Version: 163,
+		Name:    "execution_quality_scores",
+		// One deterministic verdict for every terminal execution. The row is
+		// keyed by execution_id so a fast-path writer and the completeness
+		// reconciler converge. Project/task/workflow identity is copied by an
+		// INSERT ... SELECT from executions, never trusted from an API caller.
+		Up: `
+CREATE TABLE IF NOT EXISTS execution_quality_scores (
+    execution_id       TEXT PRIMARY KEY REFERENCES executions(id) ON DELETE CASCADE,
+    project_id         TEXT NOT NULL,
+    task_id            TEXT NOT NULL,
+    workflow_id        TEXT NOT NULL,
+    workflow_revision  TEXT NOT NULL,
+    scorer_version     TEXT NOT NULL,
+    scoring_policy_sha TEXT NOT NULL DEFAULT '',
+    kind               TEXT NOT NULL DEFAULT '',
+    status             TEXT NOT NULL CHECK (status IN ('scored','missing_contract','invalid_evidence','not_applicable')),
+    score              DOUBLE PRECISION,
+    passed_case_count  INTEGER NOT NULL DEFAULT 0,
+    pinned_case_count  INTEGER NOT NULL DEFAULT 0,
+    diagnostic         TEXT NOT NULL DEFAULT '',
+    case_evidence      JSONB NOT NULL DEFAULT '[]'::jsonb,
+    recorded_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK ((status = 'not_applicable' AND score IS NULL) OR
+           (status <> 'not_applicable' AND score IS NOT NULL)),
+    CHECK (score IS NULL OR (score >= 0 AND score <= 1)),
+    CHECK (passed_case_count >= 0 AND pinned_case_count >= passed_case_count)
+);
+CREATE INDEX IF NOT EXISTS idx_execution_quality_scores_project_time
+    ON execution_quality_scores (project_id, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_execution_quality_scores_workflow_time
+    ON execution_quality_scores (workflow_id, recorded_at DESC);
+`,
+		Down: `
+DROP TABLE IF EXISTS execution_quality_scores;
+`,
+	},
+	{
+		Version: 164,
+		Name:    "execution_step_outcomes_agent_image_id",
+		// The configured image tag is mutable intent. Benchmark comparability
+		// needs the immutable ID of the container that actually produced each
+		// agent-step outcome, including warm and reattached containers.
+		Up: `
+ALTER TABLE execution_step_outcomes
+    ADD COLUMN IF NOT EXISTS agent_image_id TEXT;
+`,
+		Down: `
+ALTER TABLE execution_step_outcomes
+    DROP COLUMN IF EXISTS agent_image_id;
+`,
+	},
 }

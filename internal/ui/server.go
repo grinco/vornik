@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -180,9 +181,10 @@ type ArchiveLifecycleSnapshot struct {
 
 // Server handles HTTP requests for the web UI.
 type Server struct {
-	taskRepo     persistence.TaskRepository
-	execRepo     persistence.ExecutionRepository
-	artifactRepo persistence.ArtifactRepository
+	taskRepo             persistence.TaskRepository
+	execRepo             persistence.ExecutionRepository
+	executionQualityRepo persistence.ExecutionQualityScoreRepository
+	artifactRepo         persistence.ArtifactRepository
 	// artifactReader (optional) routes blob reads through the
 	// backend-aware Store. Nil falls back to the legacy direct-disk
 	// path — correct only on the filesystem backend.
@@ -799,6 +801,14 @@ func WithTaskRepository(repo persistence.TaskRepository) ServerOption {
 func WithExecutionRepository(repo persistence.ExecutionRepository) ServerOption {
 	return func(s *Server) {
 		s.execRepo = repo
+	}
+}
+
+// WithExecutionQualityScoreRepository wires the per-execution score card on
+// execution detail, including an explicit publication-pending state.
+func WithExecutionQualityScoreRepository(repo persistence.ExecutionQualityScoreRepository) ServerOption {
+	return func(s *Server) {
+		s.executionQualityRepo = repo
 	}
 }
 
@@ -2199,6 +2209,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/spend", s.Spend)
 	mux.HandleFunc("/insights/tool-budget", s.InsightsToolBudget)
 	mux.HandleFunc("/insights/trends", s.InsightsTrends)
+	mux.HandleFunc("/insights/quality", s.InsightsQuality)
 	mux.HandleFunc("/insights/adoption", s.InsightsAdoption)
 
 	// Trading dashboard — end-to-end trading overview (broker account
@@ -2830,6 +2841,12 @@ func uiFuncMap() template.FuncMap {
 				return nil
 			}
 			return m[name]
+		},
+		"scorePercent": func(v *float64) int {
+			if v == nil {
+				return 0
+			}
+			return int(math.Round(*v * 100))
 		},
 		// formValue looks up a submitted form value by parameter
 		// name. Like roleQuality above, a dedicated helper because

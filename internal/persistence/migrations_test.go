@@ -69,6 +69,38 @@ func TestDefaultMigrations(t *testing.T) {
 	}
 }
 
+func TestMigration163ExecutionQualityScores(t *testing.T) {
+	m := findMigrationForTest(t, 163)
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS execution_quality_scores",
+		"execution_id       TEXT PRIMARY KEY REFERENCES executions(id) ON DELETE CASCADE",
+		"status IN ('scored','missing_contract','invalid_evidence','not_applicable')",
+		"idx_execution_quality_scores_project_time",
+	} {
+		if !strings.Contains(m.Up, want) {
+			t.Errorf("migration 163 missing %q", want)
+		}
+	}
+}
+
+func TestMigration164ExecutionStepOutcomeAgentImageID(t *testing.T) {
+	m := findMigrationForTest(t, 164)
+	if !strings.Contains(m.Up, "ADD COLUMN IF NOT EXISTS agent_image_id TEXT") {
+		t.Errorf("migration 164 does not add immutable agent image provenance: %s", m.Up)
+	}
+}
+
+func findMigrationForTest(t *testing.T, version int) Migration {
+	t.Helper()
+	for _, m := range DefaultMigrations {
+		if m.Version == version {
+			return m
+		}
+	}
+	t.Fatalf("migration %d not found", version)
+	return Migration{}
+}
+
 // TestMigration83_WorkflowProposalsKind pins the §8.5 additive
 // `kind` column migration: present, additive (ADD COLUMN IF NOT
 // EXISTS), defaulted to the 'unspecified' sentinel (so existing rows

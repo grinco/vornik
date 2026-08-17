@@ -46,11 +46,17 @@ import (
 //	    read_many_files from one that granted file_read and grep. Operator
 //	    ruling; see equivalence.go for why run_shell is a member of every
 //	    CLI-expressible class.
+//	v4  2026-08-17. Binary task completion is replaced as the paired quality
+//	    metric by graded analyst-pinned case validation. Task repeats are
+//	    averaged before pairing and the scoring-policy digest is an arm axis.
+//	v5  2026-08-17. Release-gate tier semantics and the observed immutable
+//	    agent-image set become arm axes. Task outcomes are journaled at the
+//	    submitted-task/repeat unit for calibration.
 //
 // v1 was never bumped through any of those, which is the failure this comment
 // exists to prevent: the mechanism refused nothing because nobody moved the
 // number it keys on.
-const HarnessVersion = "3"
+const HarnessVersion = "5"
 
 // ArmFields enumerates every axis that makes two agent-benchmark runs
 // incomparable.
@@ -76,6 +82,10 @@ type ArmFields struct {
 	// Models is the (role → model) map, flattened deterministically. A model
 	// swap on one role changes cost and accuracy and must split the key.
 	Models map[string]string `json:"models"`
+	// AgentImages is the observed (role → immutable image IDs) map. Configured
+	// tags are intent and can be retagged; only the IDs reported by the runtime
+	// prove which agent loop executed the arm.
+	AgentImages map[string]string `json:"agentImages"`
 
 	// ContextPolicy is the thing under test: suppression set, advertisement
 	// gating, grant ceiling, compaction settings. Free-form because the policy
@@ -87,6 +97,12 @@ type ArmFields struct {
 	// exactly why §5.3 fences regeneration.
 	TaskSetSHA256 string `json:"taskSetSha256"`
 	GoldSHA256    string `json:"goldSha256,omitempty"`
+	// ScoringPolicySHA256 pins the task-level quality contract separately from
+	// the task body that the agents ran.
+	ScoringPolicySHA256 string `json:"scoringPolicySha256,omitempty"`
+	// TierPolicySHA256 pins which tasks are tripwires, scored gates, and
+	// exploratory diagnostics without changing the identity of what agents ran.
+	TierPolicySHA256 string `json:"tierPolicySha256"`
 
 	// Probes lists the probes that scored the run, sorted. A run scored by two
 	// probes is not a superset of one scored by three — the third may have
@@ -105,9 +121,12 @@ func (a ArmFields) fieldPairs() [][2]string {
 		{"binary_sha256", a.BinarySHA256},
 		{"config_sha256", a.ConfigSHA256},
 		{"models", flattenModels(a.Models)},
+		{"agent_images", flattenModels(a.AgentImages)},
 		{"context_policy", a.ContextPolicy},
 		{"task_set_sha256", a.TaskSetSHA256},
 		{"gold_sha256", a.GoldSHA256},
+		{"scoring_policy_sha256", a.ScoringPolicySHA256},
+		{"tier_policy_sha256", a.TierPolicySHA256},
 		{"probes", strings.Join(sortedCopy(a.Probes), ",")},
 	}
 }
@@ -178,8 +197,9 @@ func (a ArmFields) Key() string {
 // alike and compare clean.
 func (a ArmFields) Partial() bool {
 	return strings.TrimSpace(a.HarnessVersion) == "" || a.BinarySHA256 == "" ||
-		a.ConfigSHA256 == "" || len(a.Models) == 0 || strings.TrimSpace(a.ContextPolicy) == "" ||
-		a.TaskSetSHA256 == "" || len(a.Probes) == 0
+		a.ConfigSHA256 == "" || len(a.Models) == 0 || len(a.AgentImages) == 0 ||
+		strings.TrimSpace(a.ContextPolicy) == "" || a.TaskSetSHA256 == "" ||
+		a.TierPolicySHA256 == "" || len(a.Probes) == 0
 }
 
 // CheckComparable refuses a diff between runs that do not agree, naming every

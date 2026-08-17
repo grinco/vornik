@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"vornik.io/vornik/internal/membench"
+	"vornik.io/vornik/internal/quality"
 )
 
 type fakeTasks struct {
@@ -34,6 +35,15 @@ type fakeTraces struct {
 	execs      []string
 	execsErr   error
 	askedTasks []string
+	states     map[string][]byte
+	stateErr   error
+}
+
+func (f *fakeTraces) StateSnapshot(_ context.Context, executionID string) ([]byte, error) {
+	if f.stateErr != nil {
+		return nil, f.stateErr
+	}
+	return f.states[executionID], nil
 }
 
 func (f *fakeTraces) Executions(_ context.Context, taskID string) ([]string, error) {
@@ -119,6 +129,21 @@ func TestRunner_RefusesAnEmptyTaskSet(t *testing.T) {
 	}
 }
 
+func TestRunner_RefusesInvalidScoringPolicyBeforeSubmittingAnything(t *testing.T) {
+	tasks := &fakeTasks{}
+	r := &Runner{Tasks: tasks, Traces: &fakeTraces{}}
+	cfg := validConfig()
+	cfg.Tasks[0].Scoring = &quality.ScoringPolicy{
+		Kind: quality.ScoreKind("future"), ProducerStep: "analyze", VerifierStep: "test",
+	}
+	if _, err := r.Run(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("want unsupported scoring policy refusal, got %v", err)
+	}
+	if len(tasks.calls) != 0 {
+		t.Fatal("spent a benchmark task before validating its scoring contract")
+	}
+}
+
 // Verdicts are scored in-run and journaled, because tool_audit_log expires.
 func TestRunner_ScoresProbesInRunAndJournalsTheVerdicts(t *testing.T) {
 	traces := &fakeTraces{
@@ -154,6 +179,67 @@ func TestRunner_ScoresProbesInRunAndJournalsTheVerdicts(t *testing.T) {
 	}
 	if j.Manifest.PreRegistrationHash == "" {
 		t.Error("the pre-registration hash was not journaled")
+	}
+}
+
+func TestRunner_JournalsOneTaskScorePerRepeat(t *testing.T) {
+	traces := &fakeTraces{states: map[string][]byte{"t1-e1": pinnedSnapshot("passed", "failed")}}
+	r := &Runner{Tasks: &fakeTasks{}, Traces: traces}
+	cfg := validConfig()
+	cfg.Tasks[0].Scoring = pinnedPolicy()
+	cfg.Repeats = 2
+
+	j, err := r.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(j.TaskScores) != 2 || j.TaskScores[0].Repeat != 1 || j.TaskScores[1].Repeat != 2 {
+		t.Fatalf("task scores = %#v", j.TaskScores)
+	}
+	if j.TaskScores[0].Score != .5 {
+		t.Fatalf("score = %v, want .5", j.TaskScores[0].Score)
+	}
+}
+
+func TestRunner_ScoresTheNewestExecutionThatReachedTheVerifier(t *testing.T) {
+	traces := &fakeTraces{
+		execs: []string{"root-failed", "retry-verified"},
+		states: map[string][]byte{
+			"root-failed":    []byte(`{"stepResults":{}}`),
+			"retry-verified": pinnedSnapshot("passed", "manual"),
+		},
+	}
+	tasks := &fakeTasks{outcomes: map[string]TaskOutcome{
+		"t1": {TaskID: "ledger-t1", Succeeded: true},
+	}}
+	r := &Runner{Tasks: tasks, Traces: traces}
+	cfg := validConfig()
+	cfg.Tasks[0].Scoring = pinnedPolicy()
+
+	j, err := r.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(j.TaskScores) != 1 || j.TaskScores[0].Score != 1 {
+		t.Fatalf("task scores = %#v", j.TaskScores)
+	}
+	if got := j.TaskScores[0].ExecutionIDs; len(got) != 2 || got[0] != "root-failed" || got[1] != "retry-verified" {
+		t.Fatalf("execution provenance = %v", got)
+	}
+}
+
+func TestRunner_MarksUnreadableScoreSnapshotUntrustworthy(t *testing.T) {
+	traces := &fakeTraces{stateErr: errors.New("ledger unavailable")}
+	r := &Runner{Tasks: &fakeTasks{}, Traces: traces}
+	cfg := validConfig()
+	cfg.Tasks[0].Scoring = pinnedPolicy()
+
+	j, err := r.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !j.Manifest.Untrustworthy || !strings.Contains(j.Manifest.UntrustworthyReason, "ledger unavailable") {
+		t.Fatalf("corrupt score run remained publishable: %#v", j.Manifest)
 	}
 }
 
@@ -240,6 +326,10 @@ func TestRunner_TraceAssemblyFailureIsAHarnessFailure(t *testing.T) {
 		t.Errorf("classified as %q, want harness — counting our own failure against the "+
 			"agent inflates exactly the number this benchmark exists to report honestly", got)
 	}
+	if len(j.TaskRuns) != 1 || j.TaskRuns[0].Succeeded ||
+		ClassifyFailure(j.TaskRuns[0].Succeeded, j.TaskRuns[0].ErrorText) != FailureHarness {
+		t.Fatalf("task-level calibration evidence hid the trace failure: %+v", j.TaskRuns)
+	}
 }
 
 func TestRunner_SubmissionFailureIsAHarnessFailure(t *testing.T) {
@@ -298,6 +388,32 @@ func TestRunner_RepeatsEachTask(t *testing.T) {
 	}
 	if len(tasks.calls) != 3 {
 		t.Errorf("submitted %d times, want 3", len(tasks.calls))
+	}
+}
+
+func TestRunner_JournalsOneTaskRunPerRepeatRatherThanPerExecution(t *testing.T) {
+	tasks := &fakeTasks{outcomes: map[string]TaskOutcome{"t1": {
+		TaskID: "ledger-task", Succeeded: true, Executions: []string{"e1", "e2"},
+	}}}
+	r := &Runner{Tasks: tasks, Traces: &fakeTraces{}, Probes: []Probe{SchemaProbe{}}}
+	cfg := validConfig()
+	cfg.Tasks[0].Tier = TaskTierTripwire
+	cfg.Repeats = 2
+
+	j, err := r.Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(j.TaskRuns) != 2 {
+		t.Fatalf("task runs = %d, want 2 despite %d execution records", len(j.TaskRuns), len(j.Records))
+	}
+	for i, run := range j.TaskRuns {
+		if run.TaskID != "t1" || run.Repeat != i+1 || len(run.ExecutionIDs) != 2 {
+			t.Fatalf("task run %d = %+v", i, run)
+		}
+	}
+	if j.Manifest.TaskTiers["t1"] != TaskTierTripwire {
+		t.Fatalf("journal lost tier map: %+v", j.Manifest.TaskTiers)
 	}
 }
 

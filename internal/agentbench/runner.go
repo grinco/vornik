@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/membench"
+	"vornik.io/vornik/internal/quality"
 )
 
 // The run executor (§10 step 7).
@@ -22,10 +23,12 @@ import (
 
 // TaskSpec is one benchmark task to run.
 type TaskSpec struct {
-	ID       string
-	Name     string
-	Workflow string
-	Prompt   string
+	ID       string                 `json:"id"`
+	Name     string                 `json:"name"`
+	Workflow string                 `json:"workflow"`
+	Prompt   string                 `json:"prompt"`
+	Tier     TaskTier               `json:"tier"`
+	Scoring  *quality.ScoringPolicy `json:"scoring,omitempty"`
 }
 
 // TaskOutcome is what the daemon reported for a submitted task.
@@ -55,6 +58,11 @@ type TraceStore interface {
 	// execution ids, and a submitter that cannot name them would otherwise leave
 	// the run silently unmeasured.
 	Executions(ctx context.Context, taskID string) ([]string, error)
+}
+
+// ExecutionStateStore reads the pinned state evidence used by task scoring.
+type ExecutionStateStore interface {
+	StateSnapshot(ctx context.Context, executionID string) ([]byte, error)
 }
 
 // RunConfig is everything one arm's run needs.
@@ -110,6 +118,11 @@ func (r *Runner) Run(ctx context.Context, cfg RunConfig) (Journal, error) {
 		return Journal{}, fmt.Errorf("refusing to run an empty task set: a run with nothing " +
 			"in it would journal a clean sheet and report it as a pass")
 	}
+	for _, task := range cfg.Tasks {
+		if err := quality.ValidateScoringPolicy(task.Scoring); err != nil {
+			return Journal{}, fmt.Errorf("task %q scoring policy: %w", task.ID, err)
+		}
+	}
 
 	preRegHash, err := cfg.PreRegistration.Hash()
 	if err != nil {
@@ -126,6 +139,7 @@ func (r *Runner) Run(ctx context.Context, cfg RunConfig) (Journal, error) {
 		PreRegistrationHash: preRegHash,
 		PreRegistration:     cfg.PreRegistration,
 		Power:               cfg.Power,
+		TaskTiers:           taskTierMap(cfg.Tasks),
 	}}
 
 	repeats := cfg.Repeats
@@ -155,8 +169,18 @@ func (r *Runner) Run(ctx context.Context, cfg RunConfig) (Journal, error) {
 			continue
 		}
 		for i := 0; i < repeats; i++ {
-			records := r.runOnce(ctx, cfg, spec)
+			taskRun, records := r.runOnce(ctx, cfg, spec, i+1)
+			j.TaskRuns = append(j.TaskRuns, taskRun)
 			j.Records = append(j.Records, records...)
+			if spec.Scoring != nil {
+				taskScore, scoreErr := r.scoreTaskRepeat(ctx, spec, i+1, records)
+				if scoreErr != nil {
+					j.Manifest.Untrustworthy = true
+					j.Manifest.UntrustworthyReason = scoreErr.Error()
+					return j, nil
+				}
+				j.TaskScores = append(j.TaskScores, taskScore)
+			}
 			infraStreak = updateInfraStreak(infraStreak, records)
 			if infraStreak >= consecutiveInfraFailuresBeforeAbort {
 				break
@@ -184,18 +208,60 @@ func (r *Runner) Run(ctx context.Context, cfg RunConfig) (Journal, error) {
 	return j, nil
 }
 
+func (r *Runner) scoreTaskRepeat(ctx context.Context, spec TaskSpec, repeat int, records []ExecutionRecord) (TaskScore, error) {
+	stateStore, ok := r.Traces.(ExecutionStateStore)
+	if !ok {
+		return TaskScore{}, fmt.Errorf("score task %s repeat %d: trace store cannot read execution state snapshots", spec.ID, repeat)
+	}
+	executionIDs := make([]string, 0, len(records))
+	for _, rec := range records {
+		if rec.ExecutionID != "" {
+			executionIDs = append(executionIDs, rec.ExecutionID)
+		}
+	}
+	if len(executionIDs) == 0 {
+		return TaskScore{}, fmt.Errorf("score task %s repeat %d: no execution was recorded", spec.ID, repeat)
+	}
+	var snapshot []byte
+	for i, executionID := range executionIDs {
+		candidate, err := stateStore.StateSnapshot(ctx, executionID)
+		if err != nil {
+			return TaskScore{}, fmt.Errorf("score task %s repeat %d from execution %s: %w", spec.ID, repeat, executionID, err)
+		}
+		if i == 0 {
+			// If no execution reached the verifier, the oldest/root execution
+			// supplies the fail-closed missing-contract verdict.
+			snapshot = candidate
+		}
+		hasVerifier, err := snapshotHasStepResult(candidate, spec.Scoring.VerifierStep)
+		if err != nil {
+			return TaskScore{}, fmt.Errorf("score task %s repeat %d from execution %s: decode state snapshot: %w", spec.ID, repeat, executionID, err)
+		}
+		if hasVerifier {
+			// Executions are ledger-ordered oldest to newest. A retry/fork that
+			// reached verification supersedes an earlier failed attempt.
+			snapshot = candidate
+		}
+	}
+	return ScoreTask(spec.ID, repeat, spec.Scoring, executionIDs, snapshot)
+}
+
 // runOnce runs a task and returns one record per execution it produced.
-func (r *Runner) runOnce(ctx context.Context, cfg RunConfig, spec TaskSpec) []ExecutionRecord {
+func (r *Runner) runOnce(ctx context.Context, cfg RunConfig, spec TaskSpec, repeat int) (TaskRun, []ExecutionRecord) {
+	taskRun := TaskRun{TaskID: spec.ID, Repeat: repeat}
 	outcome, err := r.Tasks.Run(ctx, spec)
 	if err != nil {
 		// The harness could not get an answer. That is OUR failure, and
 		// ClassifyFailure files it as such rather than against the agent.
-		return []ExecutionRecord{{
+		taskRun.ErrorText = fmt.Sprintf("could not assemble trace: submitting %q failed: %v", spec.ID, err)
+		return taskRun, []ExecutionRecord{{
 			TaskID:    spec.ID,
 			Succeeded: false,
-			ErrorText: fmt.Sprintf("could not assemble trace: submitting %q failed: %v", spec.ID, err),
+			ErrorText: taskRun.ErrorText,
 		}}
 	}
+	taskRun.Succeeded = outcome.Succeeded
+	taskRun.ErrorText = outcome.ErrorText
 
 	// A submitter that can name its executions is believed; otherwise the ledger
 	// is asked. Falling through to "no executions" would journal a task as
@@ -212,31 +278,40 @@ func (r *Runner) runOnce(ctx context.Context, cfg RunConfig, spec TaskSpec) []Ex
 	if len(executions) == 0 {
 		found, err := r.Traces.Executions(ctx, ledgerTaskID)
 		if err != nil {
-			return []ExecutionRecord{{
+			taskRun.Succeeded = false
+			taskRun.ErrorText = fmt.Sprintf("could not assemble trace: listing executions for %q failed: %v", spec.ID, err)
+			return taskRun, []ExecutionRecord{{
 				TaskID:    spec.ID,
 				Succeeded: false,
-				ErrorText: fmt.Sprintf("could not assemble trace: listing executions for %q failed: %v", spec.ID, err),
+				ErrorText: taskRun.ErrorText,
 			}}
 		}
 		executions = found
 	}
 	if len(executions) == 0 {
-		return []ExecutionRecord{{
+		taskRun.Succeeded = false
+		taskRun.ErrorText = fmt.Sprintf("could not assemble trace: task %q produced no executions", spec.ID)
+		return taskRun, []ExecutionRecord{{
 			TaskID:    spec.ID,
 			Succeeded: false,
-			ErrorText: fmt.Sprintf("could not assemble trace: task %q produced no executions", spec.ID),
+			ErrorText: taskRun.ErrorText,
 		}}
 	}
+	taskRun.ExecutionIDs = append([]string(nil), executions...)
 
 	var out []ExecutionRecord
 	for _, execID := range executions {
 		rec, traces, err := r.Traces.Assemble(ctx, ledgerTaskID, execID)
 		if err != nil {
+			taskRun.Succeeded = false
+			if taskRun.ErrorText == "" {
+				taskRun.ErrorText = fmt.Sprintf("could not assemble trace for %s: %v", execID, err)
+			}
 			out = append(out, ExecutionRecord{
 				TaskID:      spec.ID,
 				ExecutionID: execID,
 				Succeeded:   false,
-				ErrorText:   fmt.Sprintf("could not assemble trace for %s: %v", execID, err),
+				ErrorText:   taskRun.ErrorText,
 			})
 			continue
 		}
@@ -252,6 +327,19 @@ func (r *Runner) runOnce(ctx context.Context, cfg RunConfig, spec TaskSpec) []Ex
 		}
 		rec.Verdicts = r.score(ctx, cfg, spec, traces)
 		out = append(out, rec)
+	}
+	return taskRun, out
+}
+
+func taskTierMap(tasks []TaskSpec) map[string]TaskTier {
+	out := make(map[string]TaskTier, len(tasks))
+	for _, task := range tasks {
+		if task.ID != "" && task.Tier != "" {
+			out[task.ID] = task.Tier
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

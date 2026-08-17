@@ -154,6 +154,38 @@
                 {{end}}
             </div>
 
+            {{if or .QualityScore .QualityPublicationPending}}
+            <div class="glass rounded-xl panel-primary overflow-hidden" {{if .QualityPublicationPending}}data-tone="amber"{{else if or (eq .QualityScore.Status "invalid_evidence") (eq .QualityScore.Status "missing_contract")}}data-tone="rose"{{end}}>
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-center justify-between">
+                    <h2 class="text-sm font-semibold text-ink-200">Execution quality</h2>
+                    {{if .QualityScore}}
+                    <span class="text-xs font-mono text-ink-400">{{.QualityScore.Status}}</span>
+                    {{end}}
+                </div>
+                <div class="px-5 py-4">
+                    {{if .QualityPublicationPending}}
+                    <p class="text-sm font-medium text-amber-700 dark:text-amber-300">Publication pending</p>
+                    <p class="mt-1 text-xs text-ink-400">This terminal execution has no score row yet. The completeness reconciler will retry it; a persistent state indicates a publication outage.</p>
+                    {{else if eq .QualityScore.Status "scored"}}
+                    <div class="flex items-baseline gap-3">
+                        <span class="text-3xl font-semibold tabular-nums text-ink-100">{{.QualityScore.ScorePercent}}%</span>
+                        <span class="text-sm text-ink-400">{{.QualityScore.PassedCases}} of {{.QualityScore.PinnedCases}} pinned cases</span>
+                    </div>
+                    <p class="mt-2 text-xs text-ink-500">Passed and manually validated cases receive credit. Failed, missing, and absent cases remain in the denominator.</p>
+                    {{else if eq .QualityScore.Status "invalid_evidence"}}
+                    <p class="text-sm font-medium text-rose-700 dark:text-rose-300">Invalid evidence</p>
+                    <p class="mt-1 text-xs font-mono text-ink-400">{{.QualityScore.Diagnostic}}</p>
+                    {{else if eq .QualityScore.Status "missing_contract"}}
+                    <p class="text-sm font-medium text-rose-700 dark:text-rose-300">Missing scoring contract</p>
+                    <p class="mt-1 text-xs font-mono text-ink-400">{{.QualityScore.Diagnostic}}</p>
+                    {{else if eq .QualityScore.Status "not_applicable"}}
+                    <p class="text-sm text-ink-300">Not applicable</p>
+                    <p class="mt-1 text-xs text-ink-500">This workflow does not declare a quality-scoring policy.</p>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+
             <!-- Step Progress -->
             {{if .Workflow}}
             <div class="glass rounded-xl border border-surface-600 overflow-hidden">

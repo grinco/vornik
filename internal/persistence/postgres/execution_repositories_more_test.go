@@ -245,7 +245,7 @@ func TestExecutionStepOutcomeRepositoryRecordFinalizeListAndCounts(t *testing.T)
 		ErrorClass: "none", DurationMS: &duration, FinalizedAt: &finalized, HallucinationSignals: []byte(`[{"kind":"url"}]`),
 	}
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO execution_step_outcomes")).
-		WithArgs(outcome.ID, outcome.ProjectID, outcome.TaskID, outcome.ExecutionID, outcome.StepID, outcome.Role, outcome.Model, outcome.Outcome, sqlmock.AnyArg(), outcome.ErrorClass, outcome.ErrorDetail, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs(outcome.ID, outcome.ProjectID, outcome.TaskID, outcome.ExecutionID, outcome.StepID, outcome.Role, outcome.Model, sqlmock.AnyArg(), outcome.Outcome, sqlmock.AnyArg(), outcome.ErrorClass, outcome.ErrorDetail, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := repo.Record(context.Background(), outcome); err != nil {
 		t.Fatalf("Record() error = %v", err)
@@ -279,12 +279,12 @@ func TestExecutionStepOutcomeRepositoryRecordFinalizeListAndCounts(t *testing.T)
 		WithArgs(projectID, stepID, 10).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "project_id", "task_id", "execution_id", "step_id",
-			"role", "model", "outcome", "attributed_to_step_id",
+			"role", "model", "agent_image_id", "outcome", "attributed_to_step_id",
 			"error_class", "error_detail", "duration_ms",
 			"finalized_at", "recorded_at", "hallucination_signals",
 			"complexity_tier", "effective_tool_budget", "tool_calls_used",
 			"untrusted_content_used", "untrusted_sources", "requires_review",
-		}).AddRow("out-1", projectID, "task-1", "exec-1", stepID, "coder", "gpt-test", "ok", attr, "", "", duration, finalized, finalized, []byte(`[{"kind":"url"}]`), nil, nil, nil, false, nil, false))
+		}).AddRow("out-1", projectID, "task-1", "exec-1", stepID, "coder", "gpt-test", nil, "ok", attr, "", "", duration, finalized, finalized, []byte(`[{"kind":"url"}]`), nil, nil, nil, false, nil, false))
 	list, err := repo.List(context.Background(), persistence.ExecutionStepOutcomeFilter{
 		ProjectID: &projectID, StepID: &stepID, PageSize: 10,
 	})

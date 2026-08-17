@@ -101,7 +101,7 @@ func TestIntegrationFreshInstallMigrations(t *testing.T) {
 		"tasks", "executions", "artifacts", "migrations",
 		// Audit + observability (migrations 3, 8, 10, 11, 18, 72, 74)
 		"tool_audit_log", "task_llm_usage", "execution_step_outcomes",
-		"task_judge_verdicts", "webhook_events",
+		"task_judge_verdicts", "execution_quality_scores", "webhook_events",
 		"memory_retrieval_audit", "memory_ingest_audit",
 		// Task lifecycle (migration 4 onward)
 		"task_watchers",

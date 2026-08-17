@@ -356,6 +356,10 @@ type Container struct {
 	mcpRegistry    *mcp.Registry
 	stateCollector *observability.StateCollector
 	qualityService *quality.Service
+	// executionScorePublisher is the terminal-execution completeness worker.
+	// It is separate from qualityService's aggregate read model: scoring rows
+	// must still reconcile when metrics/observability are disabled.
+	executionScorePublisher *quality.ExecutionScorePublisher
 
 	// webWriteRepo + webWriteTokenStore back the supervised web-write feature
 	// (LLD 2026-07-21-supervised-web-write-actions). Both are shared between the

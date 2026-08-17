@@ -50,6 +50,12 @@ type PreRegistration struct {
 	// Declared here, before the runs, on purpose: deciding afterwards which
 	// difference to forgive is how a comparison becomes a press release.
 	IndependentAxes []string `json:"independentAxes,omitempty"`
+	// Release-gate artifacts are all-or-nothing. Their canonical hashes bind
+	// calibration, measured paired sigma, and thresholds before either release
+	// arm is run.
+	CalibrationSHA256       string `json:"calibrationSha256,omitempty"`
+	NoiseFloorSHA256        string `json:"noiseFloorSha256,omitempty"`
+	ReleaseGatePolicySHA256 string `json:"releaseGatePolicySha256,omitempty"`
 }
 
 // Validate refuses a pre-registration that does not commit to anything.
@@ -101,7 +107,37 @@ func (p PreRegistration) Validate() error {
 		return fmt.Errorf("pre-registration has no rationale: one nobody had to think " +
 			"about registers nothing")
 	}
+	releaseHashes := []string{p.CalibrationSHA256, p.NoiseFloorSHA256, p.ReleaseGatePolicySHA256}
+	present := 0
+	for _, hash := range releaseHashes {
+		if hash != "" {
+			present++
+			if len(hash) != 64 {
+				return fmt.Errorf("release artifact sha256 must be 64 hex characters")
+			}
+			if _, err := hex.DecodeString(hash); err != nil {
+				return fmt.Errorf("release artifact sha256 is not hexadecimal: %w", err)
+			}
+		}
+	}
+	if present != 0 && present != len(releaseHashes) {
+		return fmt.Errorf("release pre-registration must pin all three artifacts: calibration, noise floor, and gate policy")
+	}
+	if present == len(releaseHashes) {
+		if p.Metric != PinnedCaseValidationMetric {
+			return fmt.Errorf("release gate must pre-register metric %q", PinnedCaseValidationMetric)
+		}
+		if !sameStrings(p.IndependentAxes, []string{"binary_sha256", "agent_images"}) {
+			return fmt.Errorf("release comparison independentAxes must be exactly binary_sha256 and agent_images")
+		}
+	}
 	return nil
+}
+
+// ReleaseGateEnabled reports whether this pre-registration pins the release
+// artifacts. Validate establishes that a partial set cannot reach this point.
+func (p PreRegistration) ReleaseGateEnabled() bool {
+	return p.CalibrationSHA256 != "" && p.NoiseFloorSHA256 != "" && p.ReleaseGatePolicySHA256 != ""
 }
 
 // Hash is the pre-registration's identity, printed beside every published
@@ -159,6 +195,10 @@ type RunManifest struct {
 	// the two revisions next to each other where that would have been obvious.
 	DaemonBuild string `json:"daemonBuild,omitempty"`
 
+	// TaskTiers is journaled because a gate must remain readable after the task
+	// file moves or disappears. Its digest is also an arm axis.
+	TaskTiers map[string]TaskTier `json:"taskTiers,omitempty"`
+
 	PreRegistrationHash string          `json:"preRegistrationHash"`
 	PreRegistration     PreRegistration `json:"preRegistration"`
 
@@ -175,8 +215,10 @@ type RunManifest struct {
 // Journal is a completed run: its manifest, its per-execution records, and the
 // probe verdicts scored while the traces still existed.
 type Journal struct {
-	Manifest RunManifest       `json:"manifest"`
-	Records  []ExecutionRecord `json:"records"`
+	Manifest   RunManifest       `json:"manifest"`
+	Records    []ExecutionRecord `json:"records"`
+	TaskScores []TaskScore       `json:"taskScores,omitempty"`
+	TaskRuns   []TaskRun         `json:"taskRuns,omitempty"`
 }
 
 // Write serialises the journal.
@@ -334,6 +376,7 @@ func MergeJournals(journals ...Journal) (Journal, error) {
 			"runs cannot establish that they measured the same system", out.Manifest.RunID)
 	}
 	out.Records = append([]ExecutionRecord(nil), out.Records...)
+	out.TaskScores = append([]TaskScore(nil), out.TaskScores...)
 
 	for _, j := range journals[1:] {
 		if j.Manifest.ArmPartial {
@@ -387,6 +430,8 @@ func MergeJournals(journals ...Journal) (Journal, error) {
 				j.Manifest.RunID, j.Manifest.UntrustworthyReason)
 		}
 		out.Records = append(out.Records, j.Records...)
+		out.TaskScores = append(out.TaskScores, j.TaskScores...)
+		out.TaskRuns = append(out.TaskRuns, j.TaskRuns...)
 	}
 	out.Manifest.RunID = fmt.Sprintf("%s+%d", journals[0].Manifest.RunID, len(journals)-1)
 	return out, nil

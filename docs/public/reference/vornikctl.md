@@ -50,6 +50,18 @@ Three probes, reported as vectors and never blended into one score:
 schema-following and tool-use need no gold set — their ground truth is
 configuration, not a recording — so they can gate before any gold pass.
 
+## vornikctl bench agent calibrate
+
+Build a task calibration artifact from a repeated journal
+
+```
+vornikctl bench agent calibrate <journal> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--out` | `calibration.json` | where to write the immutable calibration artifact |
+
 ## vornikctl bench agent compare
 
 Diff two runs, refusing incomparable arms
@@ -61,6 +73,21 @@ vornikctl bench agent compare <journal-a> <journal-b> [flags]
 | Flag | Default | Description |
 |---|---|---|
 | `--json` | `false` | emit JSON instead of a table |
+
+## vornikctl bench agent gate
+
+Evaluate the pre-registered agent benchmark release gate
+
+```
+vornikctl bench agent gate <baseline-journal> <candidate-journal> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--calibration` |  | calibration artifact (required) |
+| `--json` | `false` | emit the complete decision as JSON |
+| `--noise-floor` |  | noise-floor artifact (required) |
+| `--policy` |  | release gate policy (required) |
 
 ## vornikctl bench agent gold
 
@@ -110,6 +137,35 @@ vornikctl bench agent gold-merge <batch.json>... [flags]
 | Flag | Default | Description |
 |---|---|---|
 | `--out` | `gold.json` | where to write the merged manifest |
+
+## vornikctl bench agent noise-floor
+
+Measure paired release-gate noise from two same-config arms
+
+```
+vornikctl bench agent noise-floor <same-config-journal-a> <same-config-journal-b> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--out` | `noise-floor.json` | where to write the immutable noise-floor artifact |
+
+## vornikctl bench agent release-preregistration
+
+Derive the shared release pre-registration from reviewed gate artifacts
+
+```
+vornikctl bench agent release-preregistration [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--arms` | `[]` | baseline and candidate arm names (required) |
+| `--calibration` |  | calibration artifact (required) |
+| `--noise-floor` |  | noise-floor artifact (required) |
+| `--out` | `release-preregistration.json` | where to write the shared pre-registration |
+| `--policy` |  | release gate policy (required) |
+| `--rationale` |  | why this release comparison is being run (required) |
 
 ## vornikctl bench agent report
 
@@ -177,14 +233,17 @@ vornikctl bench agent run [flags]
 |---|---|---|
 | `--arm` |  | name of the arm being run |
 | `--benchmark-project` |  | the only project this deployment permits benchmarking in |
+| `--calibration` |  | release calibration artifact pinned by the pre-registration |
 | `--context-policy` |  | REQUIRED: names the policy under test (suppression set, advert gating, ceiling). It is the independent variable, so a run that does not name it cannot be compared |
 | `--daemon-binary` |  | path to the daemon binary under test; hashed into the arm key so a release change refuses comparison instead of silently producing one |
 | `--daemon-config` |  | path to the config the daemon reads; hashed into the arm key |
 | `--database` |  | target database |
+| `--gate-policy` |  | release gate policy pinned by the pre-registration |
 | `--gold` |  | pinned gold manifest; omit to run only the probes that need none |
 | `--i-know-this-is-unreproducible` | `false` | score with a dirty or unstamped harness. The resulting figures cannot be regenerated from any commit and must not be published |
 | `--i-know-this-wipes` |  | must equal --database; this run bulk-writes and clears it |
 | `--journal` | `journal.json` | where to write the run journal |
+| `--noise-floor` |  | release noise-floor artifact pinned by the pre-registration |
 | `--preregistration` |  | REQUIRED: committed manifest stating the arms, metric, intended delta and computed n |
 | `--project` |  | project to run in |
 | `--repeats` | `1` | runs per task; repeats shrink a task's contribution to sigma_d but add no pairs |

@@ -464,6 +464,7 @@ func NewRouter(server *Server, cfg *config.Config) *Router {
 		// See https://docs.vornik.io §"KG ingestion pipeline".
 		mux.HandleFunc("/api/v1/memory/regraph", server.MemoryRegraph)
 		mux.HandleFunc("/api/v1/executions/", server.apiV1ExecutionsHandler)
+		mux.HandleFunc("/api/v1/quality/executions", server.ExecutionQualityList)
 		mux.HandleFunc("/api/v1/projects/", server.apiV1ProjectsHandler)
 		mux.HandleFunc("/api/v1/projects", server.ListProjects) // unscoped list (no trailing slash)
 		// Project template gallery (2026.6.0 SaaS-readiness).

@@ -615,6 +615,7 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	if roleConfig.RuntimePolicy == "warm" && e.warmPool != nil && !isReplay {
 		cid, result, werr := e.executeWarmAgentStep(ctx, task, execution, plan, stepID, roleConfig, input, workspaceDir, timeout, stepStart, preStepArtifactSnapshot)
 		if werr == nil {
+			agentStamp.AgentImageID = e.observeAgentImageID(ctx, cid)
 			// Mirror the ephemeral path's post-exit persistence: tool
 			// audit log, LLM usage (cost+tokens), and the degenerate-
 			// loop detector. Without these, warm-pool runs were absent
@@ -796,6 +797,7 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 		// the snapshot from its in-memory state (which carries no in-flight).
 		e.markStepInFlight(ctx, execution, stepID, containerID, tempRoot)
 	}
+	agentStamp.AgentImageID = e.observeAgentImageID(ctx, containerID)
 
 	exitCode, err := e.waitForCompletion(ctx, containerID, timeout)
 	if err != nil {
@@ -1095,6 +1097,24 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	_ = e.runtime.RemoveContainer(context.Background(), containerID, false)
 
 	return containerID, resultBytes, nil
+}
+
+// observeAgentImageID reads the immutable image identity from the container
+// that actually runs the step. Configured tags are mutable intent and are
+// deliberately rejected as provenance.
+func (e *Executor) observeAgentImageID(ctx context.Context, containerID string) string {
+	if e == nil || e.runtime == nil || containerID == "" {
+		return ""
+	}
+	container, err := e.runtime.InspectContainer(ctx, containerID)
+	if err != nil || container == nil {
+		return ""
+	}
+	imageID := strings.TrimSpace(container.Image)
+	if !strings.HasPrefix(imageID, "sha256:") || len(imageID) == len("sha256:") {
+		return ""
+	}
+	return imageID
 }
 
 // extractProseFromResult pulls model-authored prose out of an

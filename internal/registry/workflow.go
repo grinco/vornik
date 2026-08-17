@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"vornik.io/vornik/internal/quality"
 )
 
 // jsonCanonical marshals v through encoding/json, which sorts map keys
@@ -76,6 +78,10 @@ type Workflow struct {
 	Steps map[string]WorkflowStep `yaml:"steps"`
 	// Terminals define end states for the workflow
 	Terminals map[string]WorkflowTerminal `yaml:"terminals"`
+	// QualityScoring declares an optional deterministic execution-quality
+	// contract. It is captured in WorkflowSnapshot at execution start, so a
+	// later config reload cannot reinterpret already-produced evidence.
+	QualityScoring *quality.ScoringPolicy `yaml:"qualityScoring,omitempty"`
 	// ResumeAfterChildren opts a custom workflow into the strict-adaptive
 	// resume guard: when a step delegates child task(s) (selected_workflow)
 	// and the parent pauses on WAITING_FOR_CHILDREN, the resumed execution
@@ -536,6 +542,9 @@ func (w *Workflow) Validate(filename string) error {
 	if len(w.Steps) == 0 && !w.IngestInputArtifacts {
 		return WorkflowValidationError{File: filename, Field: "steps", Message: "at least one step is required"}
 	}
+	if err := w.validateQualityScoring(filename); err != nil {
+		return err
+	}
 
 	// Validate entrypoint exists
 	if _, exists := w.Steps[w.Entrypoint]; !exists {
@@ -748,6 +757,44 @@ func (w *Workflow) Validate(filename string) error {
 		return err
 	}
 
+	return nil
+}
+
+func (w *Workflow) validateQualityScoring(filename string) error {
+	p := w.QualityScoring
+	if p == nil {
+		return nil
+	}
+	if p.Kind != quality.ScoreKindPinnedCaseValidation {
+		return WorkflowValidationError{
+			File: filename, Field: "qualityScoring.kind",
+			Message: fmt.Sprintf("unsupported quality scoring kind %q", p.Kind),
+		}
+	}
+	if strings.TrimSpace(p.ProducerStep) == "" {
+		return WorkflowValidationError{File: filename, Field: "qualityScoring.producerStep", Message: "producerStep is required"}
+	}
+	if _, ok := w.Steps[p.ProducerStep]; !ok {
+		return WorkflowValidationError{
+			File: filename, Field: "qualityScoring.producerStep",
+			Message: fmt.Sprintf("producerStep %q not found in steps", p.ProducerStep),
+		}
+	}
+	if strings.TrimSpace(p.VerifierStep) == "" {
+		return WorkflowValidationError{File: filename, Field: "qualityScoring.verifierStep", Message: "verifierStep is required"}
+	}
+	if _, ok := w.Steps[p.VerifierStep]; !ok {
+		return WorkflowValidationError{
+			File: filename, Field: "qualityScoring.verifierStep",
+			Message: fmt.Sprintf("verifierStep %q not found in steps", p.VerifierStep),
+		}
+	}
+	if p.ProducerStep == p.VerifierStep {
+		return WorkflowValidationError{
+			File: filename, Field: "qualityScoring",
+			Message: "producerStep and verifierStep must be distinct",
+		}
+	}
 	return nil
 }
 

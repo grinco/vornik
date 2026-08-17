@@ -122,6 +122,7 @@ func navModel() []navAreaDef {
 		{Key: "insight", Label: "Insight", Icon: "navIconInsight", Href: "/ui/spend", Dests: []navDest{
 			{Key: "spend", Label: "Spend", Href: "/ui/spend", Icon: "navIconSpend"},
 			{Key: "trends", Label: "Trends", Href: "/ui/insights/trends", Icon: "navIconInsight"},
+			{Key: "quality", Label: "Quality", Href: "/ui/insights/quality", Icon: "navIconGauge"},
 			{Key: "insights", Label: "Tool budget", Href: "/ui/insights/tool-budget", Icon: "navIconGauge"},
 			{Key: "adoption", Label: "Adoption", Href: "/ui/insights/adoption", Icon: "navIconAdoption"},
 			{Key: "trading", Label: "Trading", Href: "/ui/trading", Icon: "navIconTrading", Cap: "trading"},

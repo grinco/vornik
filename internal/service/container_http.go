@@ -116,6 +116,7 @@ func (c *Container) initHTTPServer() error {
 		api.WithLogger(c.Logger),
 		api.WithTaskRepository(c.repos.Tasks),
 		api.WithExecutionRepository(c.repos.Executions),
+		api.WithExecutionQualityScoreRepository(c.repos.ExecutionQualityScores),
 		// Failure-forensics fork primitive (Feature #1 Phase B).
 		// Adapter wraps a replay.Forker; the api package has its
 		// own narrow ForkExecutor interface to avoid an import on
@@ -1487,6 +1488,7 @@ func (c *Container) initHTTPServer() error {
 		// Metrics(nil) is a harmless no-op, same "TWO-PASS TRAP" contract.
 		ui.WithIntegrationsMetrics(c.integrationsMetrics),
 		ui.WithExecutionRepository(c.repos.Executions),
+		ui.WithExecutionQualityScoreRepository(c.repos.ExecutionQualityScores),
 		ui.WithArtifactRepository(c.repos.Artifacts),
 		ui.WithTaskCredentialRepository(c.repos.TaskCredentials),
 		// Route UI blob reads (changelog inline render +

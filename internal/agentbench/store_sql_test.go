@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"sort"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -33,7 +34,7 @@ func newLedgerDB(t *testing.T) *sql.DB {
 		`CREATE TABLE execution_step_outcomes (
 			execution_id TEXT, step_id TEXT, role TEXT, model TEXT, outcome TEXT,
 			error_class TEXT, effective_tool_budget INTEGER, tool_calls_used INTEGER,
-			duration_ms INTEGER, recorded_at TEXT)`,
+			duration_ms INTEGER, recorded_at TEXT, agent_image_id TEXT)`,
 	}
 	for _, stmt := range schema {
 		if _, err := db.Exec(stmt); err != nil {
@@ -67,11 +68,11 @@ func seedLedger(t *testing.T, db *sql.DB) {
 		('e1','s1','made_up','{"isError":true,"error":"unknown tool: made_up"}','2026-08-13T10:03:00Z')`)
 
 	exec(`INSERT INTO execution_step_outcomes VALUES
-		('e1','s1','lead','m','schema_violation','shape',20,7,1500,'2026-08-13T10:04:00Z')`)
+		('e1','s1','lead','m','schema_violation','shape',20,7,1500,'2026-08-13T10:04:00Z','sha256:aaa')`)
 	exec(`INSERT INTO execution_step_outcomes VALUES
-		('e1','s1','lead','m','ok','',20,7,2500,'2026-08-13T10:05:00Z')`)
+		('e1','s1','lead','m','ok','',20,7,2500,'2026-08-13T10:05:00Z','sha256:aaa')`)
 	exec(`INSERT INTO execution_step_outcomes VALUES
-		('e1','s2','worker','m','ok','',10,2,4000,'2026-08-13T10:06:00Z')`)
+		('e1','s2','worker','m','ok','',10,2,4000,'2026-08-13T10:06:00Z','sha256:bbb')`)
 }
 
 func assembleFixture(t *testing.T) (ExecutionRecord, []Trace) {
@@ -200,6 +201,46 @@ func TestSQLTraceStore_ReadsToolBudget(t *testing.T) {
 	}
 }
 
+func TestSQLTraceStore_ObservedAgentImagesUsesImmutableLedgerIDsAndRetainsDrift(t *testing.T) {
+	db := newLedgerDB(t)
+	seedLedger(t, db)
+	store := &SQLTraceStore{DB: db, Dialect: SQLite}
+
+	got, err := store.ObservedAgentImages(context.Background(), []string{"e1"})
+	if err != nil {
+		t.Fatalf("observed agent images: %v", err)
+	}
+	if got["lead"] != "sha256:aaa" || got["worker"] != "sha256:bbb" {
+		t.Fatalf("observed images = %+v", got)
+	}
+	if _, err := db.Exec(`INSERT INTO execution_step_outcomes
+		(execution_id,step_id,role,model,outcome,error_class,recorded_at,agent_image_id)
+		VALUES ('e1','s3','lead','m','ok','','2026-08-13T10:07:00Z','sha256:ccc')`); err != nil {
+		t.Fatal(err)
+	}
+	got, err = store.ObservedAgentImages(context.Background(), []string{"e1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["lead"] != "sha256:aaa+sha256:ccc" {
+		t.Fatalf("mid-run image drift was hidden: %+v", got)
+	}
+}
+
+func TestSQLTraceStore_ObservedAgentImagesRefusesMissingProvenance(t *testing.T) {
+	db := newLedgerDB(t)
+	if _, err := db.Exec(`INSERT INTO execution_step_outcomes
+		(execution_id,step_id,role,model,outcome,error_class,recorded_at)
+		VALUES ('e1','s1','worker','m','ok','','2026-08-13T10:07:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	store := &SQLTraceStore{DB: db, Dialect: SQLite}
+	if _, err := store.ObservedAgentImages(context.Background(), []string{"e1"}); err == nil ||
+		!strings.Contains(err.Error(), "missing") {
+		t.Fatalf("missing immutable image was presented as a complete arm: %v", err)
+	}
+}
+
 func TestSQLTraceStore_RefusesWithoutADatabase(t *testing.T) {
 	var s *SQLTraceStore
 	if _, _, err := s.Assemble(context.Background(), "t1", "e1"); err == nil {
@@ -273,6 +314,25 @@ func TestSQLTraceStore_ListsExecutionsForATask(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != "e1" || got[1] != "e2" {
 		t.Errorf("executions = %v, want [e1 e2] in creation order", got)
+	}
+}
+
+func TestSQLTraceStore_ReadsThePinnedExecutionStateSnapshot(t *testing.T) {
+	db := newLedgerDB(t)
+	if _, err := db.Exec(`CREATE TABLE executions (id TEXT, state_snapshot TEXT)`); err != nil {
+		t.Fatalf("create executions: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO executions VALUES ('exec-1', '{"stepResults":{}}')`); err != nil {
+		t.Fatalf("seed execution: %v", err)
+	}
+	store := &SQLTraceStore{DB: db, Dialect: SQLite}
+
+	got, err := store.StateSnapshot(context.Background(), "exec-1")
+	if err != nil {
+		t.Fatalf("StateSnapshot: %v", err)
+	}
+	if !strings.Contains(string(got), "stepResults") {
+		t.Fatalf("snapshot = %s", got)
 	}
 }
 

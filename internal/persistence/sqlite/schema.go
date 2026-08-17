@@ -643,6 +643,7 @@ CREATE TABLE IF NOT EXISTS execution_step_outcomes (
     step_id               TEXT NOT NULL,
     role                  TEXT NOT NULL DEFAULT '',
     model                 TEXT NOT NULL DEFAULT '',
+    agent_image_id        TEXT,
     outcome               TEXT NOT NULL,
     attributed_to_step_id TEXT,
     error_class           TEXT NOT NULL DEFAULT '',
@@ -1626,4 +1627,33 @@ CREATE TABLE IF NOT EXISTS execution_tool_grants (
 );
 CREATE INDEX IF NOT EXISTS idx_execution_tool_grants_lookup
     ON execution_tool_grants (execution_id, step_id, created_at DESC);
+
+-- execution_quality_scores — one deterministic quality verdict for every
+-- terminal execution. The publisher reconciles terminal executions missing a
+-- row, so execution_id is both identity and completeness boundary.
+CREATE TABLE IF NOT EXISTS execution_quality_scores (
+    execution_id       TEXT PRIMARY KEY REFERENCES executions(id) ON DELETE CASCADE,
+    project_id         TEXT NOT NULL,
+    task_id            TEXT NOT NULL,
+    workflow_id        TEXT NOT NULL,
+    workflow_revision  TEXT NOT NULL,
+    scorer_version     TEXT NOT NULL,
+    scoring_policy_sha TEXT NOT NULL DEFAULT '',
+    kind               TEXT NOT NULL DEFAULT '',
+    status             TEXT NOT NULL CHECK (status IN ('scored','missing_contract','invalid_evidence','not_applicable')),
+    score              REAL,
+    passed_case_count  INTEGER NOT NULL DEFAULT 0,
+    pinned_case_count  INTEGER NOT NULL DEFAULT 0,
+    diagnostic         TEXT NOT NULL DEFAULT '',
+    case_evidence      TEXT NOT NULL DEFAULT '[]',
+    recorded_at        TEXT NOT NULL,
+    CHECK ((status = 'not_applicable' AND score IS NULL) OR
+           (status <> 'not_applicable' AND score IS NOT NULL)),
+    CHECK (score IS NULL OR (score >= 0 AND score <= 1)),
+    CHECK (passed_case_count >= 0 AND pinned_case_count >= passed_case_count)
+);
+CREATE INDEX IF NOT EXISTS idx_execution_quality_scores_project_time
+    ON execution_quality_scores (project_id, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_execution_quality_scores_workflow_time
+    ON execution_quality_scores (workflow_id, recorded_at DESC);
 `

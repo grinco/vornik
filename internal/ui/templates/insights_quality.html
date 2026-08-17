@@ -1,0 +1,61 @@
+{{define "insights_quality.html"}}
+<!DOCTYPE html>
+<html lang="en">
+{{template "pageHead" .}}
+<body class="bg-surface-900 text-ink-100 min-h-screen flex flex-col">
+    {{template "nav" .}}
+    <main id="main" tabindex="-1" class="flex-1 max-w-7xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 shell-offset">
+        <div class="space-y-5">
+            <div class="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                    <h1 class="text-xl font-semibold text-ink-100">Execution quality</h1>
+                    <p class="mt-1 text-sm text-ink-400">Pinned-case scores by production execution · {{.WindowLabel}}</p>
+                </div>
+                {{if .AllowedProjects}}
+                <form method="get" action="/ui/insights/quality" class="flex items-center gap-2">
+                    <label for="quality-project" class="text-xs text-ink-500">Project</label>
+                    <select id="quality-project" name="projectId" onchange="this.form.submit()" class="px-2 py-1.5 text-xs rounded-lg bg-surface-700 border border-surface-600 text-ink-100">
+                        <option value="">All allowed projects</option>
+                        {{range .AllowedProjects}}<option value="{{.}}" {{if eq $.ProjectID .}}selected{{end}}>{{.}}</option>{{end}}
+                    </select>
+                </form>
+                {{end}}
+            </div>
+
+            {{if .Notice}}<div class="glass rounded-xl px-5 py-4 text-sm text-ink-400">{{.Notice}}</div>{{end}}
+
+            <div class="glass rounded-xl panel-primary overflow-hidden" {{if gt .Publication.Count 0}}data-tone="amber"{{end}}>
+                <div class="px-5 py-3.5 border-b border-surface-600/60"><h2 class="text-sm font-semibold text-ink-200">Publication health</h2></div>
+                <div class="px-5 py-4 flex items-baseline gap-3">
+                    <span class="text-3xl font-semibold tabular-nums">{{.Publication.Count}}</span>
+                    <span class="text-sm text-ink-400">Publication pending</span>
+                    {{if .Publication.OldestAt}}<span class="text-xs text-ink-500">oldest {{humanizeSince .Publication.OldestAt}}</span>{{end}}
+                </div>
+            </div>
+
+            {{if .Summaries}}
+            <div class="glass rounded-xl overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60"><h2 class="text-sm font-semibold text-ink-200">By workflow</h2></div>
+                <div class="overflow-x-auto"><table class="w-full text-sm">
+                    <thead class="bg-surface-900/40 text-xs uppercase text-ink-500"><tr><th class="px-4 py-2 text-left">Workflow</th><th class="px-4 py-2 text-right">Mean</th><th class="px-4 py-2 text-right">Scored</th><th class="px-4 py-2 text-right">Missing</th><th class="px-4 py-2 text-right">Invalid</th><th class="px-4 py-2 text-right">N/A</th></tr></thead>
+                    <tbody class="divide-y divide-surface-600/60">{{range .Summaries}}<tr><td class="px-4 py-2 font-mono">{{.WorkflowID}}</td><td class="px-4 py-2 text-right font-semibold tabular-nums">{{if gt .Scored 0}}{{.MeanPercent}}%{{else}}—{{end}}</td><td class="px-4 py-2 text-right">{{.Scored}}</td><td class="px-4 py-2 text-right">{{.MissingContract}}</td><td class="px-4 py-2 text-right">{{.InvalidEvidence}}</td><td class="px-4 py-2 text-right">{{.NotApplicable}}</td></tr>{{end}}</tbody>
+                </table></div>
+            </div>
+            {{end}}
+
+            {{if .Attention}}
+            <div class="glass rounded-xl panel-primary overflow-hidden" data-tone="rose">
+                <div class="px-5 py-3.5 border-b border-surface-600/60"><h2 class="text-sm font-semibold text-ink-200">Needs investigation</h2></div>
+                <div class="divide-y divide-surface-600/60">{{range .Attention}}
+                    <a href="/ui/executions/{{.ExecutionID}}" class="block px-5 py-3 hover:bg-surface-800/60">
+                        <div class="flex items-center justify-between gap-3"><span class="font-mono text-xs text-brand-400">{{.ExecutionID}}</span><span class="text-xs text-ink-400">{{.Status}}{{if .Score}} · {{scorePercent .Score}}%{{end}}</span></div>
+                        {{if .Diagnostic}}<p class="mt-1 text-xs font-mono text-rose-700 dark:text-rose-300">{{.Diagnostic}}</p>{{end}}
+                    </a>
+                {{end}}</div>
+            </div>
+            {{end}}
+        </div>
+    </main>
+</body>
+</html>
+{{end}}

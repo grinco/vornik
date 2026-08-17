@@ -43,10 +43,13 @@ type Repositories struct {
 	// ExecutionToolGrants stores per-execution tool grants — the lead narrowing which
 	// MCP tools a step is advertised (registry design §10.1-§10.4). Append-only.
 	ExecutionToolGrants persistence.ExecutionToolGrantRepository
-	RecoveryEvents      persistence.RecoveryEventRepository
-	Skills              persistence.SkillRepository
-	ExecInjectedSkills  persistence.ExecutionInjectedSkillRepository
-	Proposals           persistence.ProposalRepository
+	// ExecutionQualityScores is the one-row-per-terminal-execution quality
+	// ledger and completeness scan used by the production publisher.
+	ExecutionQualityScores persistence.ExecutionQualityScoreRepository
+	RecoveryEvents         persistence.RecoveryEventRepository
+	Skills                 persistence.SkillRepository
+	ExecInjectedSkills     persistence.ExecutionInjectedSkillRepository
+	Proposals              persistence.ProposalRepository
 	// CostTuningCanaries backs the cost/quality canary + regression
 	// auto-rollback guard (LLD 2026-07-24-cost-quality-canary-rollback §D).
 	CostTuningCanaries persistence.CostTuningCanaryRepository
@@ -350,6 +353,7 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		Watchers:                       sqlite.NewTaskWatcherRepository(db),
 		ToolAudit:                      sqlite.NewToolAuditRepository(db),
 		ExecutionToolGrants:            sqlite.NewExecutionToolGrantRepository(db),
+		ExecutionQualityScores:         sqlite.NewExecutionQualityScoreRepository(db),
 		RecoveryEvents:                 sqlite.NewRecoveryEventRepository(db),
 		Skills:                         sqlite.NewSkillRepository(db),
 		ExecInjectedSkills:             sqlite.NewExecutionInjectedSkillRepository(db),
@@ -466,6 +470,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		Watchers:                       postgres.NewTaskWatcherRepository(dbtx),
 		ToolAudit:                      postgres.NewToolAuditRepository(dbtx),
 		ExecutionToolGrants:            postgres.NewExecutionToolGrantRepository(dbtx),
+		ExecutionQualityScores:         postgres.NewExecutionQualityScoreRepository(dbtx),
 		RecoveryEvents:                 postgres.NewRecoveryEventRepository(dbtx),
 		Skills:                         postgres.NewSkillRepository(dbtx),
 		ExecInjectedSkills:             postgres.NewExecutionInjectedSkillRepository(dbtx),

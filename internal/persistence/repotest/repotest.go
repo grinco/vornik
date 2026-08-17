@@ -2129,6 +2129,7 @@ func RunExecutionStepOutcomeSuite(t *testing.T, repo persistence.ExecutionStepOu
 			ComplexityTier:      tier,
 			EffectiveToolBudget: &eff,
 			ToolCallsUsed:       &used,
+			AgentImageID:        "sha256:agent-image",
 		}); err != nil {
 			t.Fatalf("Record (budget set): %v", err)
 		}
@@ -2156,6 +2157,9 @@ func RunExecutionStepOutcomeSuite(t *testing.T, repo persistence.ExecutionStepOu
 		}
 		if got.ToolCallsUsed == nil || *got.ToolCallsUsed != used {
 			t.Errorf("ToolCallsUsed: got %v, want %d", got.ToolCallsUsed, used)
+		}
+		if got.AgentImageID != "sha256:agent-image" {
+			t.Errorf("AgentImageID: got %q", got.AgentImageID)
 		}
 	})
 

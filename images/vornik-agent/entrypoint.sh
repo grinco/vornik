@@ -397,6 +397,20 @@ if changed:
 PY
 }
 
+# in_recovery_hop reports whether this step is a lead RECOVERY hop — the
+# executor populates context.recovery when a prior step failed and the workflow
+# routed here to propose alternatives (agent_input_context.go).
+#
+# Used to suppress the missing-prerequisite bail: see its call site. Fails
+# CLOSED — a missing or unparseable input file reads as "ordinary step", so the
+# guard stays armed by default rather than being silently disabled.
+in_recovery_hop() {
+    [ -n "${INPUT_FILE:-}" ] && [ -f "$INPUT_FILE" ] || return 1
+    local rec
+    rec=$(jq -r '.context.recovery // empty' "$INPUT_FILE" 2>/dev/null) || return 1
+    [ -n "$rec" ]
+}
+
 write_result() {
     local status="$1" message="$2" response="$3" duration="$4" error="${5:-}"
 
@@ -508,15 +522,30 @@ write_result() {
     # Merge structured LLM response into result.json so workflow gates can
     # match fields like "review.approved == true". Handles pure JSON, JSON
     # wrapped in markdown code fences, and mixed text with embedded JSON.
-    if [ -n "$response" ]; then
+    #
+    # Reads "${response:-$message}", the SAME fallback the artifact write above
+    # uses. It was guarded on "$response" alone until 2026-08-19, and every
+    # early-exit path passes the model's text as MESSAGE with an empty RESPONSE
+    # (the prompt-token-budget stop and the tool-loop bail both do). On those
+    # paths the artifact captured the answer and result.json never did, so the
+    # daemon saw a result missing every field the role declared. Two symptoms,
+    # one cause: writer steps failing with "result.json is missing required
+    # keys" while <step>-response.md held them all, and the lead's recovery hop
+    # emitting a textbook decision checkpoint that the daemon still recorded as
+    # outcome="missing" — which failed every recovery attempt.
+    #
+    # The happy path passes both arguments, which is why this only ever bit the
+    # paths that were already unusual.
+    local merge_src="${response:-$message}"
+    if [ -n "$merge_src" ]; then
         local structured=""
         # Pass 1: pure JSON object
-        if printf '%s' "$response" | jq -e 'type == "object"' >/dev/null 2>&1; then
-            structured="$response"
+        if printf '%s' "$merge_src" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            structured="$merge_src"
         else
             # Pass 2: markdown code fences (```json ... ``` or ``` ... ```)
             local stripped
-            stripped=$(printf '%s' "$response" | sed -n '/^```/,/^```/{/^```/d;p;}')
+            stripped=$(printf '%s' "$merge_src" | sed -n '/^```/,/^```/{/^```/d;p;}')
             if [ -n "$stripped" ] && printf '%s' "$stripped" | jq -e 'type == "object"' >/dev/null 2>&1; then
                 structured="$stripped"
             fi
@@ -526,7 +555,14 @@ write_result() {
         if [ -z "$structured" ]; then
             local extracted
             # Collapse newlines so { ... } spans work across lines.
-            extracted=$(printf '%s' "$response" | tr '\n' ' ' | grep -o '{.*}' | tail -1)
+            # `|| true`: grep exits 1 when the text holds no braces at all, and
+            # under `set -o pipefail` that aborts the whole agent through the
+            # exit trap ("unexpected exit (code 1), writing emergency result").
+            # Latent while this block was reachable only for a non-empty
+            # RESPONSE that had already failed passes 1 and 2; reading $message
+            # as a fallback (2026-08-19) makes prose-only answers reach here,
+            # and prose-only is the common case for a bail path.
+            extracted=$(printf '%s' "$merge_src" | tr '\n' ' ' | grep -o '{.*}' | tail -1 || true)
             if [ -n "$extracted" ] && printf '%s' "$extracted" | jq -e 'type == "object"' >/dev/null 2>&1; then
                 structured="$extracted"
             fi
@@ -558,32 +594,44 @@ write_result() {
         fi
     fi
 
-    # Optional outcome override: the budget tripwire bails with status=
-    # COMPLETED so the workflow doesn't treat the bail as a failure
-    # transition, but the daemon needs the per-step quality signal to
-    # be budget_tripwire (not pending_validation, not ok). The
-    # BUDGET_TRIPWIRE_DETAIL global is set by the tripwire branch in the
-    # tool loop right before it calls write_result — this is the only
-    # place where status=COMPLETED carries an alternative outcome label.
+    # The AGENT's step-quality label, in `agentOutcome` — NOT `outcome`.
+    #
+    # These bails exit status=COMPLETED so the workflow does not take a failure
+    # transition, while the daemon's per-step quality row must still say
+    # budget_tripwire / prompt_token_budget / iteration_exhausted rather than
+    # being terminal-swept to ok. The detail globals are set by the branches in
+    # the tool loop right before they call write_result.
+    #
+    # WHY ITS OWN FIELD (2026-08-19). This used to write top-level `outcome`,
+    # which the LEAD also uses for something entirely different — its workflow
+    # decision (checkpoint / external_wait / closure_request), read by the
+    # daemon's ParseLeadOutcome. Two consumers, one field, disjoint
+    # vocabularies. Worse, this injection runs AFTER the structured merge, so
+    # whenever both applied the agent's label silently destroyed the lead's
+    # decision: a recovery hop that also hit its iteration cap emitted a
+    # textbook decision checkpoint, had it overwritten with
+    # `iteration_exhausted`, and the daemon recorded outcome="missing" and
+    # failed the recovery contract. The artifact looked perfect throughout,
+    # which is what made it so hard to see.
+    #
+    # `outcomeDetail` is kept in step with the new name for the same reason.
+    # The daemon reads agentOutcome first and falls back to outcome, so an older
+    # agent image keeps working against a newer daemon.
     if [ -n "${BUDGET_TRIPWIRE_DETAIL:-}" ]; then
         base_result=$(printf '%s' "$base_result" | jq \
             --arg outcome "budget_tripwire" \
             --arg detail "$BUDGET_TRIPWIRE_DETAIL" \
-            '. + {outcome: $outcome, outcomeDetail: $detail}')
+            '. + {agentOutcome: $outcome, agentOutcomeDetail: $detail}')
     elif [ -n "${PROMPT_TOKEN_BUDGET_DETAIL:-}" ]; then
         base_result=$(printf '%s' "$base_result" | jq \
             --arg outcome "prompt_token_budget" \
             --arg detail "$PROMPT_TOKEN_BUDGET_DETAIL" \
-            '. + {outcome: $outcome, outcomeDetail: $detail}')
+            '. + {agentOutcome: $outcome, agentOutcomeDetail: $detail}')
     elif [ -n "${ITERATION_CAP_DETAIL:-}" ]; then
-        # Same shape again: the step exhausted its tool budget but produced a
-        # real answer on the forced tool-free turn, so the workflow should not
-        # take a failure transition — while the quality row must still say
-        # iteration_exhausted rather than ok. Set by the cap branch below.
         base_result=$(printf '%s' "$base_result" | jq \
             --arg outcome "iteration_exhausted" \
             --arg detail "$ITERATION_CAP_DETAIL" \
-            '. + {outcome: $outcome, outcomeDetail: $detail}')
+            '. + {agentOutcome: $outcome, agentOutcomeDetail: $detail}')
     fi
 
     printf '%s\n' "$base_result" > "$OUTPUT_FILE"
@@ -3582,6 +3630,22 @@ ${previous_result}
             # consumer (or operator watching the task) sees the real
             # cause instead of a generic "degenerate loop" tripping
             # three iterations later.
+            if [ -n "$FILE_READ_REPEAT_MISS" ] && in_recovery_hop; then
+                # A RECOVERY hop is here BECAUSE a step failed, and the two
+                # dominant real triggers — plausibility_violation and
+                # verify_claims_failed, 57 and 29 of the ledger's recover hops —
+                # are both "the file is not there" shaped. Bailing would require
+                # the missing artifact to exist before the lead may propose what
+                # to do about it missing, which is circular. Measured on the
+                # recovery-probe fixture 2026-08-19: 5 of 15 recover hops died
+                # exactly this way.
+                #
+                # Cleared, not just skipped, so it cannot re-fire on the next
+                # iteration; logged so the suppression is visible rather than
+                # looking like the guard never triggered.
+                log "missing_prerequisite SUPPRESSED (recovery hop): file_read of $FILE_READ_REPEAT_MISS missed twice, but a missing artifact is the premise here — continuing so the lead can emit its decision"
+                FILE_READ_REPEAT_MISS=""
+            fi
             if [ -n "$FILE_READ_REPEAT_MISS" ]; then
                 log "ERROR: missing_prerequisite — file_read of $FILE_READ_REPEAT_MISS failed twice, aborting turn"
                 local last_content

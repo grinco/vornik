@@ -39,11 +39,17 @@ func (m *auditDocsRepo) Get(_ context.Context, _ string) (*persistence.Extracted
 	if m.getCalled != nil {
 		*m.getCalled = true
 	}
+	// A miss is (nil, persistence.ErrNotFound) at both backends — see
+	// internal/persistence/misscontract. A permissive double here would
+	// certify the caller's absent-row path without ever exercising it.
+	if m.getDoc == nil {
+		return nil, persistence.ErrNotFound
+	}
 	return m.getDoc, nil
 }
 
 func (m *auditDocsRepo) GetByArtifact(_ context.Context, _ string) (*persistence.ExtractedDocument, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 
 func (m *auditDocsRepo) ListByProject(_ context.Context, _ string, _ int) ([]*persistence.ExtractedDocument, error) {

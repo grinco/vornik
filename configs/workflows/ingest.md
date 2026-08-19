@@ -12,6 +12,16 @@ maxIterations: 6
 maxWallClock: "20m"
 cleanup_artifacts:
   - artifacts/out/ingestion.md
+# Scores this workflow's DECLARED output obligation — the
+# require_output_glob on the `ingest` step — as met/declared (2026-08-19).
+# Needed here specifically because this workflow HAS a recover hop: task
+# status would then measure "did recovery work", not "did we break ingest"
+# (coverage design 7.3). contract_satisfaction is unmet-or-met regardless of
+# which terminal the workflow reached. It measures DELIVERY, not correctness:
+# notes that are valid but substantively empty still score 1.0. See
+# https://docs.vornik.io
+qualityScoring:
+  kind: "contract_satisfaction"
 steps:
   ingest:
     type: "agent"

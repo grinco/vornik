@@ -89,7 +89,7 @@ func (s *Server) ExtractArtifact(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	art, err := s.artifactRepo.Get(ctx, artifactID)
-	if err != nil {
+	if err != nil && !errors.Is(err, persistence.ErrNotFound) {
 		respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to load artifact")
 		return
 	}

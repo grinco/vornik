@@ -20,8 +20,13 @@ type TaskMessageRepository interface {
 	List(ctx context.Context, filter TaskMessageFilter) ([]*TaskMessage, error)
 
 	// GetOpenCheckpoint returns the unresolved checkpoint message
-	// for a task, if any. Returns nil + nil error when no
-	// checkpoint is open.
+	// for a task, or (nil, ErrNotFound) when none is open — whether
+	// the task is unknown, carries no open checkpoint, or points at
+	// a message that has since been deleted. All three are absence.
+	// See internal/persistence/misscontract.
+	//
+	// "No open checkpoint" is a state callers switch on rather than a
+	// failure; steering.Answerer maps it to ErrNoOpenCheckpoint.
 	GetOpenCheckpoint(ctx context.Context, taskID string) (*TaskMessage, error)
 
 	// MarkCheckpointResolved flips a checkpoint's metadata.resolved

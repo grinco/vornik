@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -244,11 +245,13 @@ func (s *Searcher) GetEntity(ctx context.Context, projectID, entityID string) (*
 		return nil, nil, nil, fmt.Errorf("graph.GetEntity: projectID + entityID required")
 	}
 	ent, err := s.entities.Get(ctx, entityID)
-	if err != nil {
+	if err != nil && !errors.Is(err, persistence.ErrNotFound) {
 		return nil, nil, nil, fmt.Errorf("graph.GetEntity: %w", err)
 	}
 	// Not-found and cross-project both collapse to "nil entity" so a
-	// caller can't probe another project's id space for hits.
+	// caller can't probe another project's id space for hits. The collapse
+	// is the security property, so ErrNotFound must land here rather than
+	// propagate — an error path would distinguish the two cases.
 	if ent == nil || ent.ProjectID != projectID {
 		return nil, nil, nil, nil
 	}
@@ -297,7 +300,7 @@ func (s *Searcher) ChunksMentioning(ctx context.Context, projectID, entityID, re
 
 	// Confirm the entity is ours before trusting its mention rows.
 	ent, err := s.entities.Get(ctx, entityID)
-	if err != nil {
+	if err != nil && !errors.Is(err, persistence.ErrNotFound) {
 		return nil, fmt.Errorf("graph.ChunksMentioning entity: %w", err)
 	}
 	if ent == nil || ent.ProjectID != projectID {
@@ -381,7 +384,7 @@ func (s *Searcher) Subgraph(ctx context.Context, projectID string, seedIDs []str
 			continue
 		}
 		ent, err := s.entities.Get(ctx, id)
-		if err != nil {
+		if err != nil && !errors.Is(err, persistence.ErrNotFound) {
 			return nil, fmt.Errorf("graph.Subgraph seed %s: %w", id, err)
 		}
 		loaded[id] = struct{}{}
@@ -412,7 +415,7 @@ func (s *Searcher) Subgraph(ctx context.Context, projectID string, seedIDs []str
 						continue
 					}
 					ent, err := s.entities.Get(ctx, neighbour)
-					if err != nil {
+					if err != nil && !errors.Is(err, persistence.ErrNotFound) {
 						return nil, fmt.Errorf("graph.Subgraph neighbour %s: %w", neighbour, err)
 					}
 					loaded[neighbour] = struct{}{}

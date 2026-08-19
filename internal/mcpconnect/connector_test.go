@@ -18,6 +18,7 @@ import (
 
 	"vornik.io/vornik/internal/mcpauth"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/persistence/repotest"
 )
 
 // --- fakes -----------------------------------------------------------------
@@ -42,7 +43,22 @@ func (f *fakeTokens) key(p, s string) string { return p + "\x00" + s }
 func (f *fakeTokens) Get(_ context.Context, p, s string) (*persistence.MCPOAuthToken, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.rows[f.key(p, s)], nil
+	// A miss is (nil, persistence.ErrNotFound), matching both backends —
+	// see internal/persistence/misscontract. A double that answered (nil,
+	// nil) here would let every caller's absent-grant path go untested.
+	row, ok := f.rows[f.key(p, s)]
+	if !ok {
+		return nil, persistence.ErrNotFound
+	}
+	return row, nil
+}
+
+// Guard: the double must agree with production about what absence looks
+// like, or it certifies the callers' miss paths without exercising them.
+func TestFakeTokens_miss_obeys_the_contract(t *testing.T) {
+	repotest.AssertMiss(t, "MCPOAuthTokenRepository.Get", func() (*persistence.MCPOAuthToken, error) {
+		return newFakeTokens().Get(context.Background(), "no-project", "no-server")
+	})
 }
 
 func (f *fakeTokens) Upsert(_ context.Context, tok *persistence.MCPOAuthToken) error {
@@ -284,7 +300,7 @@ func TestBeginComplete_PersistsGrantAndRecordsConsent(t *testing.T) {
 	// Nothing is persisted until the callback: a half-finished consent must
 	// leave no grant behind.
 	pre, err := tokens.Get(context.Background(), "p1", "linear")
-	require.NoError(t, err)
+	require.ErrorIs(t, err, persistence.ErrNotFound)
 	assert.Nil(t, pre)
 
 	tok, err := c.Complete(context.Background(), begun.State, "the-code")
@@ -526,7 +542,7 @@ func TestDisconnect_DeletesAndRecords(t *testing.T) {
 	require.NoError(t, c.Disconnect(context.Background(), "p1", "linear", "bob"))
 
 	got, err := tokens.Get(context.Background(), "p1", "linear")
-	require.NoError(t, err)
+	require.ErrorIs(t, err, persistence.ErrNotFound)
 	assert.Nil(t, got)
 
 	require.Len(t, audit.entries, 1)

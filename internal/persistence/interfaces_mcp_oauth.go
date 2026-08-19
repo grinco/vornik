@@ -105,7 +105,12 @@ func (t *MCPOAuthToken) Refreshable() bool {
 // CONFLICT syntax) and on locking, which is why the shared repotest contract suite runs on both
 // backends — `go test ./...` is SQLite-only and would not catch a Postgres-side break.
 type MCPOAuthTokenRepository interface {
-	// Get returns the grant, or nil when the (project, server) pair has none.
+	// Get returns the grant, or (nil, ErrNotFound) when the (project, server)
+	// pair has none. See internal/persistence/misscontract.
+	//
+	// Absence is ordinary here — every wiring pass asks about every configured
+	// oauth server — so callers translate ErrNotFound rather than propagating
+	// it (mcpconnect.Connector.Grant, mcpconnect.AccessToken).
 	Get(ctx context.Context, projectID, serverName string) (*MCPOAuthToken, error)
 
 	// Upsert writes the grant, replacing any existing one for the pair. Used by the

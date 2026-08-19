@@ -336,7 +336,16 @@ type recordingScratchpadRepo struct {
 func (r *recordingScratchpadRepo) Get(_ context.Context, _ string) (*persistence.TaskScratchpad, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.existing, r.getErr
+	if r.getErr != nil {
+		return nil, r.getErr
+	}
+	// A miss is (nil, persistence.ErrNotFound) at both backends — see
+	// internal/persistence/misscontract. A permissive double here would
+	// certify the caller's absent-row path without ever exercising it.
+	if r.existing == nil {
+		return nil, persistence.ErrNotFound
+	}
+	return r.existing, nil
 }
 func (r *recordingScratchpadRepo) Upsert(_ context.Context, sp *persistence.TaskScratchpad) error {
 	r.mu.Lock()

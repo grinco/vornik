@@ -123,3 +123,78 @@ func (s nameSet) has(n string) bool { return s[n] }
 
 // Set is declared on Table returning map[string]bool; give it the helper.
 func (t *Table) setOf(kind Kind) nameSet { return nameSet(t.Set(kind)) }
+
+// CheckUngatedExemptionAgreement enforces that the shell's INLINE exemptions and
+// the UngatedByDesign registry name the same tools.
+//
+// UngatedByDesign's contract is that an exemption is a reviewed security
+// decision recorded as data with a reason. The execution gate undercuts that by
+// hardcoding the same names:
+//
+//	[ "$name" != "tool_search" ] && [ "$name" != "tool_result_read" ] && \
+//	  is_builtin_tool "$name" && ! builtin_tool_allowed "$name"
+//
+// With two copies and no comparison, adding a name to the map does not exempt it
+// at runtime, and removing one does not re-gate it. Both directions are bugs,
+// with opposite consequences:
+//
+//   - shell-only exemption → a tool bypasses the per-role allowlist with NO
+//     recorded reason and no review. This is the 2026.8.1 bypass class.
+//   - registry-only exemption → the runtime gates a tool the design says must
+//     stay reachable, so a role legitimately denied nothing loses a capability
+//     quietly.
+//
+// An empty extraction is itself a failure: if the parse breaks, comparing two
+// empty sets would read as agreement.
+func CheckUngatedExemptionAgreement(t *Table) []Finding {
+	const check = "ungated-exemption-agreement"
+	inline := t.Names(KindAgentToolInlineExempt)
+	if len(inline) == 0 {
+		return []Finding{{
+			Check: check,
+			Name:  "(none extracted)",
+			Detail: "no inline exemptions were extracted from the execution gate — the parse " +
+				"has broken, and comparing two empty sets would look like agreement",
+		}}
+	}
+
+	inShell := make(map[string]bool, len(inline))
+	for _, n := range inline {
+		inShell[n] = true
+	}
+
+	var out []Finding
+	for _, n := range inline {
+		if _, ok := UngatedByDesign[n]; !ok {
+			out = append(out, Finding{
+				Check: check,
+				Name:  n,
+				Detail: "exempted inline by the execution gate but absent from " +
+					"UngatedByDesign — an allowlist bypass with no recorded reason and no " +
+					"review. Add it to the registry with a reason, or stop exempting it.",
+				Sources: entrySources(t, KindAgentToolInlineExempt, n),
+			})
+		}
+	}
+	for n := range UngatedByDesign {
+		if !inShell[n] {
+			out = append(out, Finding{
+				Check: check,
+				Name:  n,
+				Detail: "listed in UngatedByDesign but NOT exempted by the execution gate — " +
+					"the runtime gates a tool the design says must stay reachable. Either " +
+					"exempt it in entrypoint.sh or drop it from the registry.",
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// entrySources returns an entry's source locations, or nil when absent.
+func entrySources(t *Table, kind Kind, name string) []string {
+	if e := t.Get(kind, name); e != nil {
+		return e.Sources
+	}
+	return nil
+}

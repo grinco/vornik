@@ -89,7 +89,13 @@ func TestScoreExecution_InvalidContractsFailClosed(t *testing.T) {
 		{"unknown id", []string{"a"}, 1, []PinnedCaseEvidence{{ID: "other", Status: "passed"}}, DiagnosticUnknownCaseID},
 		{"unknown status", []string{"a"}, 1, []PinnedCaseEvidence{{ID: "a", Status: "skipped"}}, DiagnosticUnknownCaseStatus},
 		{"duplicate analyst id", []string{"a", "a"}, 2, []PinnedCaseEvidence{{ID: "a", Status: "passed"}}, DiagnosticDuplicateAnalystCaseID},
-		{"count mismatch", []string{"a", "b"}, 3, []PinnedCaseEvidence{{ID: "a", Status: "passed"}}, DiagnosticPinnedCaseCountMismatch},
+		// "count mismatch" MOVED OUT of this fail-closed table 2026-08-19. It is
+		// deliberately no longer fatal: test_cases_pinned is a redundant count of
+		// test_case_ids ("Must equal the length of test_case_ids" per the analyst
+		// schema), so a miscount voids nothing the ids do not already answer. It
+		// now scores against the published ids and records the slip as a
+		// diagnostic — see TestScoreExecution_CountMismatchScoresAgainstThePublishedIDs
+		// in pinned_count_mismatch_test.go. Everything else here stays fatal.
 		{"no pinned cases", []string{}, 0, nil, DiagnosticNoPinnedCases},
 		{"conflicting duplicate verifier status", []string{"a"}, 1, []PinnedCaseEvidence{{ID: "a", Status: "passed"}, {ID: "a", Status: "failed"}}, DiagnosticConflictingCaseStatus},
 	}

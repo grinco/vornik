@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -374,7 +375,13 @@ func (te *ToolExecutor) rememberShared(ctx context.Context, channel, sessionID, 
 	now := time.Now()
 	fp := sharedWriteFingerprint(content)
 	rec, err := te.memoryConfirms.Get(ctx, channel, sessionID)
-	if err != nil {
+	if errors.Is(err, persistence.ErrNotFound) {
+		// No confirmation has been proposed for this conversation yet. That
+		// is the FIRST-proposal path — authorizeSharedWrite takes a nil
+		// record and proposes one. Reporting it as a failure would break
+		// every shared write that had not already been proposed.
+		rec = nil
+	} else if err != nil {
 		return ToolResult{Content: "I couldn't check the confirmation state for this " +
 			"conversation, so nothing was saved. Tell the user there was a temporary problem " +
 			"and to try again."}

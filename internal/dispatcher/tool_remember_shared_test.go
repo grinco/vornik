@@ -66,7 +66,10 @@ func (f *fakeConfirmRepo) Get(_ context.Context, channel, session string) (*pers
 	defer f.mu.Unlock()
 	row, ok := f.rows[confirmKey(channel, session)]
 	if !ok {
-		return nil, nil
+		// A miss is (nil, persistence.ErrNotFound) at both backends — see
+		// internal/persistence/misscontract. A permissive double here would
+		// certify the caller's absent-row path without ever exercising it.
+		return nil, persistence.ErrNotFound
 	}
 	cp := row
 	if row.AcknowledgedAt != nil {

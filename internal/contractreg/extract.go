@@ -42,6 +42,13 @@ var (
 	reCaseLabel = regexp.MustCompile(`^\s+([a-z0-9_]+(?:\|[a-z0-9_]+)*)\)(?:\s|$)`)
 	// Function openers we care about, e.g. `is_builtin_tool() {`.
 	reFuncOpen = regexp.MustCompile(`^([a-z_][a-z0-9_]*)\(\)\s*\{`)
+	// Inline exemptions on the execution gate:
+	//   [ "$name" != "tool_search" ] && [ "$name" != "tool_result_read" ] && …
+	// Matched per-occurrence rather than per-line so a gate carrying several
+	// exemptions yields all of them. Anchored on the `$name !=` comparison so an
+	// unrelated string test elsewhere in the file cannot be harvested as an
+	// exemption.
+	reInlineExempt = regexp.MustCompile(`"\$name"\s*!=\s*"([a-z0-9_]+)"`)
 )
 
 // AddEntrypointSurfaces parses the three agent-tool registries that live in
@@ -71,6 +78,16 @@ func (t *Table) AddEntrypointSurfaces(path string) error {
 		for _, n := range names {
 			t.Add(KindAgentToolAdvertised, n, path+":BUILTIN_TOOL_NAMES_JSON")
 		}
+	}
+
+	// Inline exemptions on the execution gate. Scanned over the WHOLE body
+	// rather than inside a function, because the gate is an `if` in the tool
+	// loop rather than a named function. Anchored on `"$name" != "..."` so only
+	// that comparison contributes.
+	for _, m := range reInlineExempt.FindAllStringSubmatchIndex(body, -1) {
+		name := body[m[2]:m[3]]
+		line := 1 + strings.Count(body[:m[0]], "\n")
+		t.Add(KindAgentToolInlineExempt, name, fmt.Sprintf("%s:%d", path, line))
 	}
 
 	// Walk line by line tracking which function we are inside, so case labels

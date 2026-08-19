@@ -26,6 +26,11 @@ import (
 //   - WithRefreshLock actually serialises.
 func RunMCPOAuthTokenSuite(t *testing.T, repo persistence.MCPOAuthTokenRepository) {
 	t.Helper()
+	t.Run("Get_miss_obeys_the_contract", func(t *testing.T) {
+		AssertMiss(t, "MCPOAuthTokenRepository.Get", func() (*persistence.MCPOAuthToken, error) {
+			return repo.Get(context.Background(), uniqueID("absent-proj"), uniqueID("absent-server"))
+		})
+	})
 	runMCPOAuthUpsertGet(t, repo)
 	runMCPOAuthDaemonScopeIsItsOwnKey(t, repo)
 	runMCPOAuthSwapRotationGuard(t, repo)
@@ -89,11 +94,12 @@ func runMCPOAuthUpsertGet(t *testing.T, repo persistence.MCPOAuthTokenRepository
 		t.Error("a freshly stored grant must not be flagged needs_reconnect")
 	}
 
-	// A missing pair is nil-nil, not an error: the injection path asks about
-	// every oauth server on every wiring pass.
+	// A missing pair is (nil, ErrNotFound) per the miss contract. The
+	// injection path asks about every oauth server on every wiring pass, so
+	// it tests for ErrNotFound rather than treating any error as fatal.
 	missing, err := repo.Get(ctx, "proj-upsert", "never-connected")
-	if err != nil {
-		t.Fatalf("Get(missing): %v", err)
+	if !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("Get(missing): want ErrNotFound, got %v", err)
 	}
 	if missing != nil {
 		t.Errorf("Get(missing) = %+v, want nil", missing)

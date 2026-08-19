@@ -48,7 +48,11 @@ func (r *ExtractedDocumentRepository) Upsert(ctx context.Context, doc *persisten
 	if outline == "" {
 		outline = "[]"
 	}
-	_, err := r.db.ExecContext(ctx, `
+	// RETURNING id + write-back — see the Postgres repository for why: ON CONFLICT
+	// DO UPDATE leaves `id` alone by design, so without this the caller keeps a
+	// minted ID that was never stored and any lookup by it fails (2026-08-19,
+	// document-ingest).
+	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO extracted_documents (
 			id, project_id, source_artifact_id, extractor_name, extractor_version,
 			mime_type, storage_path, metadata_blob, outline_blob,
@@ -67,12 +71,13 @@ func (r *ExtractedDocumentRepository) Upsert(ctx context.Context, doc *persisten
 			extraction_duration_ms = excluded.extraction_duration_ms,
 			status                 = excluded.status,
 			extracted_at           = excluded.extracted_at
+		RETURNING id
 	`,
 		doc.ID, doc.ProjectID, doc.SourceArtifactID, doc.ExtractorName, doc.ExtractorVersion,
 		doc.MimeType, doc.StoragePath, metadata, outline,
 		doc.SectionCount, doc.TotalTextBytes, doc.ExtractionDurationMS,
 		doc.Status, sqliteTime(doc.ExtractedAt),
-	)
+	).Scan(&doc.ID)
 	return err
 }
 
@@ -167,7 +172,7 @@ func scanExtractedDocumentSQLite(row sqliteScannable) (*persistence.ExtractedDoc
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, persistence.ErrNotFound
 		}
 		return nil, err
 	}

@@ -50,7 +50,13 @@ func (r *ExtractedDocumentRepository) Upsert(ctx context.Context, doc *persisten
 		outline = []byte("[]")
 	}
 
-	_, err := r.db.ExecContext(ctx, `
+	// RETURNING id + write-back: ON CONFLICT DO UPDATE deliberately leaves `id`
+	// alone so the pre-existing row keeps it (memory-chunk provenance pointers
+	// stay valid), which means the caller's freshly minted ID was never stored.
+	// Without the write-back the caller holds a phantom: extractor.Runner.Run
+	// returns this very struct, and rag.index looked that ID up and found
+	// nothing, failing every document-ingest run (2026-08-19).
+	err := r.db.QueryRowContext(ctx, `
 		INSERT INTO extracted_documents (
 			id, project_id, source_artifact_id, extractor_name, extractor_version,
 			mime_type, storage_path, metadata_blob, outline_blob,
@@ -74,12 +80,13 @@ func (r *ExtractedDocumentRepository) Upsert(ctx context.Context, doc *persisten
 			extraction_duration_ms = EXCLUDED.extraction_duration_ms,
 			status                 = EXCLUDED.status,
 			extracted_at           = EXCLUDED.extracted_at
+		RETURNING id
 	`,
 		doc.ID, doc.ProjectID, doc.SourceArtifactID, doc.ExtractorName, doc.ExtractorVersion,
 		doc.MimeType, doc.StoragePath, string(metadata), string(outline),
 		doc.SectionCount, doc.TotalTextBytes, doc.ExtractionDurationMS,
 		doc.Status, doc.ExtractedAt,
-	)
+	).Scan(&doc.ID)
 	if err != nil {
 		return mapDBError(err)
 	}
@@ -190,7 +197,7 @@ func scanExtractedDocument(row scannable) (*persistence.ExtractedDocument, error
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, persistence.ErrNotFound
 		}
 		return nil, mapDBError(err)
 	}

@@ -2,6 +2,7 @@ package repotest
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -26,6 +27,11 @@ func RunChatMemoryWriteConfirmationSuite(
 	audit persistence.ChatMemoryWriteAuditRepository,
 ) {
 	t.Helper()
+	t.Run("Get_miss_obeys_the_contract", func(t *testing.T) {
+		AssertMiss(t, "ChatMemoryWriteConfirmationRepository.Get", func() (*persistence.ChatMemoryWriteConfirmation, error) {
+			return confirms.Get(context.Background(), uniqueID("absent-chan"), uniqueID("absent-session"))
+		})
+	})
 	runConfirmProposeGet(t, confirms)
 	runConfirmAcknowledge(t, confirms)
 	runConfirmReplace(t, confirms)
@@ -44,10 +50,10 @@ func timesCloseToSecond(a, b time.Time) bool {
 func runConfirmProposeGet(t *testing.T, confirms persistence.ChatMemoryWriteConfirmationRepository) {
 	ctx := context.Background()
 
-	t.Run("Get returns nil for an unknown conversation", func(t *testing.T) {
+	t.Run("Get returns ErrNotFound for an unknown conversation", func(t *testing.T) {
 		got, err := confirms.Get(ctx, "slack", "never-proposed")
-		if err != nil {
-			t.Fatalf("Get: %v", err)
+		if !errors.Is(err, persistence.ErrNotFound) {
+			t.Fatalf("Get: want ErrNotFound, got %v", err)
 		}
 		if got != nil {
 			t.Errorf("an un-proposed conversation must return nil, got %+v", got)
@@ -195,8 +201,8 @@ func runConfirmDeleteAndSweep(t *testing.T, confirms persistence.ChatMemoryWrite
 			t.Fatalf("Delete: %v", err)
 		}
 		got, err := confirms.Get(ctx, "slack", "del-1")
-		if err != nil {
-			t.Fatalf("Get: %v", err)
+		if !errors.Is(err, persistence.ErrNotFound) {
+			t.Fatalf("Get after Delete: want ErrNotFound, got %v", err)
 		}
 		if got != nil {
 			t.Error("Delete must remove the pending row")
@@ -246,8 +252,8 @@ func runConfirmScoping(t *testing.T, confirms persistence.ChatMemoryWriteConfirm
 			t.Fatalf("Propose: %v", err)
 		}
 		got, err := confirms.Get(ctx, "telegram", "shared-id")
-		if err != nil {
-			t.Fatalf("Get: %v", err)
+		if !errors.Is(err, persistence.ErrNotFound) {
+			t.Fatalf("Get on a different channel: want ErrNotFound, got %v", err)
 		}
 		if got != nil {
 			t.Error("the same session id on a different channel must be independent")

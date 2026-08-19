@@ -78,7 +78,9 @@ type ChatMemoryWriteConfirmationRepository interface {
 	// superseded proposal unacknowledgeable rather than dormant.
 	Propose(ctx context.Context, c *ChatMemoryWriteConfirmation) error
 
-	// Get returns the pending confirmation, or nil when there is none.
+	// Get returns the pending confirmation, or (nil, ErrNotFound) when there is
+	// none. See internal/persistence/misscontract. A conversation with nothing pending is the common
+	// case — it is the FIRST-proposal path, not a failure.
 	Get(ctx context.Context, channel, sessionID string) (*ChatMemoryWriteConfirmation, error)
 
 	// Acknowledge stamps AcknowledgedAt for the given conversation, but ONLY when the row's

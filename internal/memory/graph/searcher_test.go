@@ -21,7 +21,15 @@ func (r *searcherEntityRepo) Get(_ context.Context, id string) (*persistence.Kno
 	if r.getErr != nil {
 		return nil, r.getErr
 	}
-	return r.byID[id], nil
+	// A miss is (nil, persistence.ErrNotFound) at both backends — see
+	// internal/persistence/misscontract. Answering (nil, nil) here made the
+	// searcher's "foreign / missing seed" paths look covered when they were
+	// never reached with the shape production produces.
+	ent, ok := r.byID[id]
+	if !ok {
+		return nil, persistence.ErrNotFound
+	}
+	return ent, nil
 }
 
 func (r *searcherEntityRepo) List(_ context.Context, f persistence.KnowledgeEntityFilter) ([]*persistence.KnowledgeEntity, error) {

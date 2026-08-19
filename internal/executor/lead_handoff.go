@@ -298,7 +298,12 @@ func (e *Executor) applyScratchpadUpdate(ctx context.Context, taskID, executionI
 	// when the row doesn't exist yet (first execution), treat as
 	// empty defaults.
 	existing, err := e.taskScratchpadRepo.Get(ctx, taskID)
-	if err != nil {
+	if errors.Is(err, persistence.ErrNotFound) {
+		// First execution for this task: there is no row yet, which is the
+		// case the empty defaults below exist for. Treating it as a read
+		// failure would skip the very first scratchpad write.
+		existing = nil
+	} else if err != nil {
 		e.logger.Warn().Err(err).Str("task_id", taskID).Msg("scratchpad read failed; skipping update")
 		return
 	}

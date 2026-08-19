@@ -498,8 +498,10 @@ type ExecutionRepository interface {
 // TaskScratchpadRepository persists the lead's running summary
 // for one task. One row per task. See LLD §4.2.
 type TaskScratchpadRepository interface {
-	// Get returns the scratchpad for a task, or nil + nil error
-	// when the task has none yet.
+	// Get returns the scratchpad for a task, or (nil, ErrNotFound)
+	// when the task has none yet. See internal/persistence/misscontract. The first execution
+	// of any task takes that path, so callers treat it as "start from
+	// empty defaults" rather than as a read failure.
 	Get(ctx context.Context, taskID string) (*TaskScratchpad, error)
 
 	// Upsert writes or replaces the scratchpad row.

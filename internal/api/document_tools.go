@@ -386,17 +386,20 @@ func (p *DocumentToolProvider) lookupDoc(ctx context.Context, projectID, artifac
 	// to the calling project. Without this an agent in project A
 	// could read extracted text from project B's books.
 	art, err := p.deps.ArtifactRepo.Get(ctx, artifactID)
-	if err != nil {
+	if err != nil && !errors.Is(err, persistence.ErrNotFound) {
 		return nil, fmt.Errorf("artifact lookup: %w", err)
 	}
 	if art == nil || art.ProjectID != projectID {
 		return nil, fmt.Errorf("artifact %q not found in project %q", artifactID, projectID)
 	}
 	doc, err := p.deps.Repo.GetByArtifact(ctx, artifactID)
-	if err != nil {
+	if err != nil && !errors.Is(err, persistence.ErrNotFound) {
 		return nil, fmt.Errorf("extracted-document lookup: %w", err)
 	}
 	if doc == nil {
+		// "Never extracted" is the common answer here and the caller is an
+		// agent, so the error has to say what to do next rather than just
+		// report the miss.
 		return nil, fmt.Errorf("no extracted document for artifact %q (try POST /api/v1/projects/%s/artifacts/%s/extract first)",
 			artifactID, projectID, artifactID)
 	}

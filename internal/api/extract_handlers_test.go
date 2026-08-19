@@ -31,7 +31,9 @@ func (s *stubArtifactRepo) Get(_ context.Context, id string) (*persistence.Artif
 	if s.art != nil && s.art.ID == id {
 		return s.art, nil
 	}
-	return nil, nil
+	// A miss is (nil, persistence.ErrNotFound) at both backends — see
+	// internal/persistence/misscontract.
+	return nil, persistence.ErrNotFound
 }
 func (s *stubArtifactRepo) GetByHash(context.Context, string) (*persistence.Artifact, error) {
 	return nil, nil
@@ -55,9 +57,14 @@ func (s *stubExtractedDocsRepo) Upsert(_ context.Context, d *persistence.Extract
 	return nil
 }
 func (s *stubExtractedDocsRepo) Get(context.Context, string) (*persistence.ExtractedDocument, error) {
-	return nil, nil
+	// A miss is (nil, persistence.ErrNotFound) at both backends — see
+	// internal/persistence/misscontract.
+	return nil, persistence.ErrNotFound
 }
 func (s *stubExtractedDocsRepo) GetByArtifact(context.Context, string) (*persistence.ExtractedDocument, error) {
+	if s.cached == nil {
+		return nil, persistence.ErrNotFound
+	}
 	return s.cached, nil
 }
 func (s *stubExtractedDocsRepo) ListByProject(context.Context, string, int) ([]*persistence.ExtractedDocument, error) {

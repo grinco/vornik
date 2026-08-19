@@ -18,11 +18,19 @@ type KnowledgeEntityRepository interface {
 	// when a match exists.
 	Insert(ctx context.Context, e *KnowledgeEntity) error
 
-	// Get returns one entity by id; nil + nil when not found.
+	// Get returns one entity by id, or (nil, ErrNotFound). See internal/persistence/misscontract.
+	//
+	// This method disagreed with itself across backends until 2026-08-19 —
+	// ErrNotFound on sqlite, (nil, nil) on postgres, with no suite case
+	// covering a miss. Every consumer was written for the postgres shape, so
+	// on sqlite a missing entity aborted graph.Subgraph instead of dropping
+	// the seed. Callers still collapse not-found and cross-project to a nil
+	// entity: distinguishing them would let a caller probe another project's
+	// id space.
 	Get(ctx context.Context, id string) (*KnowledgeEntity, error)
 
 	// GetByCanonical returns the entity with this (project, type,
-	// canonical_name) tuple, or nil + nil when not found.
+	// canonical_name) tuple, or (nil, ErrNotFound). See internal/persistence/misscontract.
 	// Powers the resolver's pre-LLM exact-match path.
 	GetByCanonical(ctx context.Context, projectID, entityType, canonicalName string) (*KnowledgeEntity, error)
 
@@ -57,7 +65,7 @@ type KnowledgeEdgeRepository interface {
 	// faithfulness take the max of old vs new.
 	UpsertEdge(ctx context.Context, e *KnowledgeEdge) error
 
-	// Get returns one edge by id; nil + nil when not found.
+	// Get returns one edge by id, or (nil, ErrNotFound). See internal/persistence/misscontract.
 	Get(ctx context.Context, id string) (*KnowledgeEdge, error)
 
 	// List returns edges matching the filter.

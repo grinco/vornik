@@ -74,7 +74,7 @@ func (r *ChatMemoryWriteConfirmationRepository) Get(ctx context.Context, channel
 	).Scan(&c.Channel, &c.SessionID, &c.ContentFingerprint, &c.Scope, &c.OperatorID,
 		&c.ProposedAt, &c.ExpiresAt, &ack)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, persistence.ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("postgres: chat_memory_write_confirmations get: %w", err)

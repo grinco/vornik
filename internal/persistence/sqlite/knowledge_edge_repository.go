@@ -345,7 +345,7 @@ func scanKnowledgeEdge(scanner interface{ Scan(dest ...any) error }) (*persisten
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, persistence.ErrNotFound
 		}
 		return nil, err
 	}

@@ -13,12 +13,14 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/extractor"
+	"vornik.io/vornik/internal/persistence"
 )
 
 // projectDocumentsListData backs templates/project_documents.html.
@@ -199,6 +201,12 @@ func (s *Server) ProjectDocumentDetail(w http.ResponseWriter, r *http.Request, p
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	doc, err := s.extractedDocsRepo.Get(ctx, docID)
+	if errors.Is(err, persistence.ErrNotFound) {
+		// An id that names no document is a 404, not a server fault — the
+		// operator can reach this URL from a stale link.
+		http.NotFound(w, r)
+		return
+	}
 	if err != nil {
 		s.logger.Error().Err(err).Str("doc_id", docID).Msg("ProjectDocumentDetail: get failed")
 		http.Error(w, "Failed to load document: "+err.Error(), http.StatusInternalServerError)

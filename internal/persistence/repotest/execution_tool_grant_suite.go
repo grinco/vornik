@@ -2,6 +2,7 @@ package repotest
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -22,8 +23,13 @@ import (
 //     bound audited cycles and a refused cycle costs the same write.
 func RunExecutionToolGrantSuite(t *testing.T, repo persistence.ExecutionToolGrantRepository) {
 	t.Helper()
+	t.Run("Current_miss_obeys_the_contract", func(t *testing.T) {
+		AssertMiss(t, "ExecutionToolGrantRepository.Current", func() (*persistence.ExecutionToolGrant, error) {
+			return repo.Current(context.Background(), uniqueID("absent-exec"), uniqueID("absent-step"))
+		})
+	})
 	t.Run("Record_then_Current_round_trips", func(t *testing.T) { grantRoundTrip(t, repo) })
-	t.Run("Current_is_nil_when_no_grant", func(t *testing.T) { grantNoneYet(t, repo) })
+	t.Run("Current_is_ErrNotFound_when_no_grant", func(t *testing.T) { grantNoneYet(t, repo) })
 	t.Run("Current_skips_refused_rows", func(t *testing.T) { grantRefusedNotCurrent(t, repo) })
 	t.Run("newest_accepted_supersedes_without_erasing", func(t *testing.T) { grantSupersede(t, repo) })
 	t.Run("EscalationCount_includes_refused", func(t *testing.T) { grantEscalationCount(t, repo) })
@@ -69,12 +75,12 @@ func grantRoundTrip(t *testing.T, repo persistence.ExecutionToolGrantRepository)
 
 func grantNoneYet(t *testing.T, repo persistence.ExecutionToolGrantRepository) {
 	got, err := repo.Current(context.Background(), "exec-none", "step")
-	if err != nil {
-		t.Fatalf("Current: %v", err)
+	if !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("Current: want ErrNotFound, got %v", err)
 	}
 	if got != nil {
-		t.Errorf("Current = %+v for a step with no grant; nil is what keeps the feature "+
-			"inert (ceiling-only) until a lead grants", got)
+		t.Errorf("Current = %+v for a step with no grant; a nil grant is what keeps the "+
+			"feature inert (ceiling-only) until a lead grants", got)
 	}
 }
 
@@ -93,8 +99,8 @@ func grantRefusedNotCurrent(t *testing.T, repo persistence.ExecutionToolGrantRep
 		t.Fatalf("Record: %v", err)
 	}
 	got, err := repo.Current(ctx, "exec-ref", "s")
-	if err != nil {
-		t.Fatalf("Current: %v", err)
+	if !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("Current: want ErrNotFound, got %v", err)
 	}
 	if got != nil {
 		t.Errorf("a REFUSED grant became the current grant (%v); a request naming one "+

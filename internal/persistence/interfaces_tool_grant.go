@@ -54,9 +54,10 @@ type ExecutionToolGrantRepository interface {
 	// Record appends one grant or escalation decision, accepted or refused.
 	Record(ctx context.Context, g *ExecutionToolGrant) error
 
-	// Current returns the newest ACCEPTED grant for a step, or nil when the step
-	// has none. Nil means "no narrowing" — the ceiling alone applies, which is the
-	// pre-feature behaviour and keeps the feature inert until a lead grants.
+	// Current returns the newest ACCEPTED grant for a step, or (nil, ErrNotFound)
+	// when the step has none. See internal/persistence/misscontract. No grant means "no narrowing" — the
+	// ceiling alone applies, which is the pre-feature behaviour and keeps the
+	// feature inert until a lead grants.
 	//
 	// Refused rows are deliberately skipped: a refused request must not narrow
 	// anything, or a hostile grant naming one invalid tool could starve a step.

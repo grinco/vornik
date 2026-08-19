@@ -901,13 +901,27 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 				}
 				return "", nil, completedSteps, err
 			}
-			sysResult, sysErr := handler.Execute(ctx, SystemStepInput{
+			// Behind a panic barrier: a handler bug must fail THIS step, not the
+			// daemon. rag.index's nil dereference crash-looped bench 28 times on
+			// 2026-08-19 (see runSystemHandlerSafely).
+			sysResult, sysErr := runSystemHandlerSafely(ctx, handler, step.Handler, SystemStepInput{
 				Task:       task,
 				Execution:  execution,
 				StepID:     currentStepID,
 				Step:       &step,
 				PrevResult: state.LastResult,
 			})
+			if sysErr != nil && strings.Contains(sysErr.Error(), "panicked") {
+				// Loud, with the stack, because a panic is a bug rather than a
+				// data condition and the operator-facing error deliberately
+				// carries no stack.
+				e.logger.Error().
+					Str("execution_id", execution.ID).
+					Str("step", currentStepID).
+					Str("handler", step.Handler).
+					Str("error", sysErr.Error()).
+					Msg("system handler panicked — step failed, daemon survived; this is a bug")
+			}
 			if sysErr != nil {
 				e.recordStepOutcome(ctx, task, execution, currentStepID, "system", step.Handler,
 					string(stepoutcome.GateFailed), "handler_failed", sysErr.Error(), nil, nil)

@@ -175,8 +175,9 @@ func ScoreExecution(policy *ScoringPolicy, stateSnapshot []byte) (ExecutionScore
 	}
 
 	ids, pinned, diagnostic := decodePinnedProducer(producerRaw)
-	if diagnostic != "" {
-		return scoreZero(policy.Kind, ScoreStatusInvalidEvidence, diagnostic, pinned), nil
+	fatal, softDiag := splitDiagnostic(diagnostic)
+	if fatal != "" {
+		return scoreZero(policy.Kind, ScoreStatusInvalidEvidence, fatal, pinned), nil
 	}
 	known, diagnostic := validatePinnedIDs(ids)
 	if diagnostic != "" {
@@ -191,6 +192,7 @@ func ScoreExecution(policy *ScoringPolicy, stateSnapshot []byte) (ExecutionScore
 		Kind:            policy.Kind,
 		Status:          ScoreStatusScored,
 		PinnedCaseCount: pinned,
+		Diagnostic:      softDiag,
 		CaseEvidence:    make([]NormalizedCaseEvidence, 0, pinned),
 	}
 	for _, id := range ids {
@@ -222,10 +224,38 @@ func decodePinnedProducer(raw json.RawMessage) ([]string, int, string) {
 	if pinned <= 0 || len(ids) == 0 {
 		return nil, 0, DiagnosticNoPinnedCases
 	}
+	// A mismatch does NOT void the evidence. `test_cases_pinned` is documented
+	// in the analyst schema as "How many cases you pinned. Must equal the length
+	// of test_case_ids" — a count of a list the scorer can already see, so it
+	// carries no information the ids do not, and only a failure mode. On
+	// 2026-08-19 one miscounted integer (7 ids declared as 8) floored an
+	// otherwise perfectly gradeable dev-pipeline run to invalid_evidence.
+	//
+	// The PUBLISHED ids are authoritative: a case the analyst did not publish
+	// cannot be validated by the tester, the scorer, or anyone else, whatever
+	// the count claims. So the denominator is len(ids), and the slip is returned
+	// as a SOFT diagnostic — recorded, because an analyst that cannot count its
+	// own list is worth knowing about, but not fatal.
 	if pinned != len(ids) {
-		return nil, pinned, DiagnosticPinnedCaseCountMismatch
+		return ids, len(ids), softDiagnostic(DiagnosticPinnedCaseCountMismatch)
 	}
 	return ids, pinned, ""
+}
+
+// softDiagnostic marks a diagnostic as recordable-but-not-fatal. Diagnostics are
+// plain strings on the wire; the prefix is stripped before the value is stored,
+// so nothing downstream sees it.
+func softDiagnostic(d string) string { return softDiagnosticPrefix + d }
+
+// softDiagnosticPrefix is internal to this file and never reaches a stored row.
+const softDiagnosticPrefix = "soft:"
+
+// splitDiagnostic separates a fatal diagnostic from a soft one.
+func splitDiagnostic(d string) (fatal, soft string) {
+	if rest, ok := strings.CutPrefix(d, softDiagnosticPrefix); ok {
+		return "", rest
+	}
+	return d, ""
 }
 
 func validatePinnedIDs(ids []string) (map[string]struct{}, string) {

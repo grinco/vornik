@@ -80,7 +80,10 @@ type fakeScratchpadRepo struct {
 }
 
 func (f *fakeScratchpadRepo) Get(_ context.Context, _ string) (*persistence.TaskScratchpad, error) {
-	return nil, nil
+	// A miss is (nil, persistence.ErrNotFound) at both backends — see
+	// internal/persistence/misscontract. A permissive double here would
+	// certify the caller's absent-row path without ever exercising it.
+	return nil, persistence.ErrNotFound
 }
 
 func (f *fakeScratchpadRepo) Upsert(_ context.Context, sp *persistence.TaskScratchpad) error {

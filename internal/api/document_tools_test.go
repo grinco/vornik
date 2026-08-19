@@ -25,10 +25,16 @@ type stubDocRepo struct {
 
 func (s *stubDocRepo) Upsert(context.Context, *persistence.ExtractedDocument) error { return nil }
 func (s *stubDocRepo) Get(context.Context, string) (*persistence.ExtractedDocument, error) {
-	return nil, nil
+	// A miss is (nil, persistence.ErrNotFound) at both backends — see
+	// internal/persistence/misscontract.
+	return nil, persistence.ErrNotFound
 }
 func (s *stubDocRepo) GetByArtifact(_ context.Context, id string) (*persistence.ExtractedDocument, error) {
-	return s.docs[id], nil
+	doc, ok := s.docs[id]
+	if !ok {
+		return nil, persistence.ErrNotFound
+	}
+	return doc, nil
 }
 func (s *stubDocRepo) ListByProject(context.Context, string, int) ([]*persistence.ExtractedDocument, error) {
 	return nil, nil

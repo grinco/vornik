@@ -20,7 +20,16 @@ type fakeCheckpointStore struct {
 }
 
 func (f *fakeCheckpointStore) GetOpenCheckpoint(_ context.Context, _ string) (*persistence.TaskMessage, error) {
-	return f.cp, f.getErr
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	// A miss is (nil, persistence.ErrNotFound) at both backends — see
+	// internal/persistence/misscontract. A permissive double here would
+	// certify the caller's absent-row path without ever exercising it.
+	if f.cp == nil {
+		return nil, persistence.ErrNotFound
+	}
+	return f.cp, nil
 }
 
 func (f *fakeCheckpointStore) Insert(_ context.Context, m *persistence.TaskMessage) error {

@@ -45,7 +45,7 @@ func (r *MCPOAuthTokenRepository) Get(ctx context.Context, projectID, serverName
 		projectID, serverName)
 	tok, err := scanMCPOAuthToken(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, persistence.ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("postgres: mcp_oauth_tokens get: %w", err)

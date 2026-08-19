@@ -145,8 +145,10 @@ func (r *TaskMessageRepository) List(ctx context.Context, filter persistence.Tas
 	return out, rows.Err()
 }
 
-// GetOpenCheckpoint returns the open checkpoint message for a task,
-// or (nil, nil) when none exists.
+// GetOpenCheckpoint returns the open checkpoint message for a task, or
+// (nil, persistence.ErrNotFound) when there is none — whether the task is
+// unknown, carries no open checkpoint, or points at a message that has since
+// been deleted. All three are absence; see internal/persistence/misscontract.
 func (r *TaskMessageRepository) GetOpenCheckpoint(ctx context.Context, taskID string) (*persistence.TaskMessage, error) {
 	if taskID == "" {
 		return nil, fmt.Errorf("TaskMessageRepository.GetOpenCheckpoint: task_id required")
@@ -157,12 +159,12 @@ func (r *TaskMessageRepository) GetOpenCheckpoint(ctx context.Context, taskID st
 		taskID,
 	).Scan(&ptr); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, persistence.ErrNotFound
 		}
 		return nil, err
 	}
 	if !ptr.Valid || ptr.String == "" {
-		return nil, nil
+		return nil, persistence.ErrNotFound
 	}
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, task_id, execution_id, parent_id,
@@ -171,9 +173,6 @@ func (r *TaskMessageRepository) GetOpenCheckpoint(ctx context.Context, taskID st
 		FROM task_messages WHERE id = ?`, ptr.String)
 	m, err := scanTaskMessage(row)
 	if err != nil {
-		if errors.Is(err, persistence.ErrNotFound) {
-			return nil, nil
-		}
 		return nil, err
 	}
 	return m, nil

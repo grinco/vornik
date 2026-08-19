@@ -91,8 +91,16 @@ MAX_PROMPT_TOKENS_ACTUAL=120
 PROMPT_TOKEN_BUDGET_DETAIL="test prompt budget detail"
 BUDGET_TRIPWIRE_DETAIL=""
 write_result "COMPLETED" "done" "" 0
-jq -e '.outcome == "prompt_token_budget"' "$OUTPUT_FILE" >/dev/null
-jq -e '.outcomeDetail == "test prompt budget detail"' "$OUTPUT_FILE" >/dev/null
+# agentOutcome, not outcome (renamed 2026-08-19): top-level `outcome` is the
+# LEAD's workflow decision (checkpoint / external_wait / closure_request). The
+# agent's quality label shared that field and, being injected after the
+# structured merge, silently overwrote a lead recovery decision — which failed
+# every recovery attempt. The daemon still accepts the legacy name from an older
+# image; the agent no longer writes it.
+jq -e '.agentOutcome == "prompt_token_budget"' "$OUTPUT_FILE" >/dev/null
+jq -e '.agentOutcomeDetail == "test prompt budget detail"' "$OUTPUT_FILE" >/dev/null
+# Guard the collision itself: the quality label must not reappear in `outcome`.
+jq -e '.outcome == null' "$OUTPUT_FILE" >/dev/null
 jq -e '.usage.prompt_tokens == 100' "$OUTPUT_FILE" >/dev/null
 jq -e '.usage.prompt_tokens_estimated_total == 250' "$OUTPUT_FILE" >/dev/null
 

@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -974,22 +975,23 @@ func TestTaskMessageRepository_ListAndCheckpoint(t *testing.T) {
 		t.Errorf("expected checkpoint, got %v", cp)
 	}
 
-	// Resolve it; GetOpenCheckpoint now returns (nil, nil).
+	// Resolve it; GetOpenCheckpoint now reports the absence as ErrNotFound
+	// (internal/persistence/misscontract).
 	if err := repo.MarkCheckpointResolved(ctx, "t1", cp.ID); err != nil {
 		t.Fatalf("MarkCheckpointResolved: %v", err)
 	}
 	cpAfter, err := repo.GetOpenCheckpoint(ctx, "t1")
-	if err != nil {
-		t.Fatalf("GetOpenCheckpoint after resolve: %v", err)
+	if !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("GetOpenCheckpoint after resolve: want ErrNotFound, got %v", err)
 	}
 	if cpAfter != nil {
 		t.Errorf("expected nil after resolve, got %v", cpAfter)
 	}
 
-	// Missing task: also returns (nil, nil).
+	// Missing task: also ErrNotFound.
 	cp2, err := repo.GetOpenCheckpoint(ctx, "missing-task")
-	if err != nil {
-		t.Fatalf("GetOpenCheckpoint missing: %v", err)
+	if !errors.Is(err, persistence.ErrNotFound) {
+		t.Fatalf("GetOpenCheckpoint missing: want ErrNotFound, got %v", err)
 	}
 	if cp2 != nil {
 		t.Error("expected nil for missing task")

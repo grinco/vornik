@@ -48,13 +48,22 @@ type ExtractedDocumentRepository interface {
 	// so existing memory-chunk provenance pointers remain valid.
 	Upsert(ctx context.Context, doc *ExtractedDocument) error
 
-	// Get retrieves an extracted document by ID.
+	// Get retrieves an extracted document by ID, or returns
+	// (nil, ErrNotFound) when the id names no row. See internal/persistence/misscontract.
+	//
+	// This method used to answer (nil, nil) for a miss while every test double
+	// returned an error, so no test reached the dereference that a nil document
+	// fed in rag.index — and the panic crash-looped the daemon 28 times in ten
+	// minutes on 2026-08-19 (7f0b5337).
 	Get(ctx context.Context, id string) (*ExtractedDocument, error)
 
 	// GetByArtifact returns the most-recent extraction for the given
-	// source artifact across all extractors. Returns nil when no
-	// extraction has been recorded; callers should not treat that as
-	// an error. When multiple extractor versions exist for the same
+	// source artifact across all extractors, or (nil, ErrNotFound)
+	// when no extraction has been recorded. See internal/persistence/misscontract. Callers for
+	// which "never extracted" is an ordinary answer translate that
+	// error rather than surfacing it — see api.documentTools, whose
+	// message tells the agent to run extract first.
+	// When multiple extractor versions exist for the same
 	// source, the highest-version row wins (semver-ish lexical sort).
 	GetByArtifact(ctx context.Context, sourceArtifactID string) (*ExtractedDocument, error)
 

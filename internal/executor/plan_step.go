@@ -690,11 +690,27 @@ func (e *Executor) runLeadPlanning(
 	if recoveryContext != nil {
 		opts.ResponseSchema = recoveryModeResponseSchema()
 		opts.ResponseFormat = "json_schema"
-		// Drop the result-emission tool variant — its schema would
-		// also need a recovery-mode flavour, and tool-call schemas
-		// land via a different gateway path. Forcing json_schema for
-		// recovery hops keeps the enforcement surface to one path
-		// the test pins.
+		// NO result-emission tool on a recovery hop. Enforcement is the
+		// response schema plus the prompt-level safeguards (recovery banner,
+		// pruned menu, corrective-hint retry).
+		//
+		// A recovery-mode emission tool was added and reverted on 2026-08-19.
+		// The reason it is not here is that it never demonstrably BOUND — its
+		// tool name appears in no log line from any run that offered it — while
+		// the thing that actually fixed recovery was the shape work in
+		// recoveryModeResponseSchema + ParseLeadOutcome's flat-checkpoint lift.
+		// An enforcement mechanism with no observable effect is not worth the
+		// second surface.
+		//
+		// CORRECTION, same day: the revert was first justified by claiming the
+		// tool caused `tool_call_wrapper` schema leakage (0 signals in 48 recover
+		// attempts before, 6 in 67 after). That comparison was CONFOUNDED and the
+		// claim was wrong. All such signals occur on ONE workflow — the
+		// recovery-probe harness fixture, which induces a 1s timeout and hands
+		// the lead a large container-error payload — and none at all on
+		// plan-and-write (31 recover attempts) or research (17). The signals
+		// tracked the fixture, which post-dates the tool, not the tool. Leakage
+		// continued after the revert.
 		opts.ResultEmissionTool = nil
 	}
 
@@ -1013,9 +1029,35 @@ func recoveryModeResponseSchema() map[string]any {
 				},
 				"description": "MUST be checkpoint, external_wait, or closure_request. The `continue` outcome is forbidden in recovery mode.",
 			},
+			// Described, not merely typed (2026-08-19). This was a bare
+			// permissive object, so nothing told the model that the nesting is
+			// load-bearing — and it consistently answered with a FLAT
+			// `checkpoint_kind` sibling instead, which
+			// recoveryContractViolated read as "no decision" and failed every
+			// recovery hop. ParseLeadOutcome now lifts the flat form as well,
+			// so this description is the belt to that braces: say what the
+			// shape is, rather than relying on tolerating its absence.
 			"checkpoint": map[string]any{
 				"type":                 "object",
 				"additionalProperties": true,
+				"description": "REQUIRED when outcome=checkpoint. A NESTED object: " +
+					"{\"kind\": \"decision\", \"question\": \"…\", \"options\": " +
+					"[{\"id\": \"…\", \"label\": \"…\"}, …]}. kind MUST be " +
+					"\"decision\" so the operator gets selectable options — a review or " +
+					"action_required checkpoint carries its alternatives as prose and is " +
+					"refused here. Put these fields INSIDE checkpoint, not beside it.",
+				"properties": map[string]any{
+					"kind": map[string]any{
+						"type":        "string",
+						"enum":        []string{string(CheckpointKindDecision)},
+						"description": "MUST be \"decision\" in recovery mode.",
+					},
+					"question": map[string]any{"type": "string"},
+					"options": map[string]any{
+						"type":        "array",
+						"description": "At least two alternatives, each with an id and a label.",
+					},
+				},
 			},
 			"external_wait": map[string]any{
 				"type":                 "object",

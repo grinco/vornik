@@ -169,6 +169,11 @@ func (a *Answerer) Answer(ctx context.Context, req AnswerRequest) (AnswerResult,
 		return AnswerResult{}, errors.New("steering: answerer not wired")
 	}
 	cp, err := a.msgs.GetOpenCheckpoint(ctx, req.TaskID)
+	if errors.Is(err, persistence.ErrNotFound) {
+		// "No open checkpoint" is a state callers switch on, not a storage
+		// failure — it must keep reaching them as the typed error.
+		return AnswerResult{}, ErrNoOpenCheckpoint
+	}
 	if err != nil {
 		return AnswerResult{}, fmt.Errorf("load open checkpoint: %w", err)
 	}

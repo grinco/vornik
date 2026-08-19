@@ -23,6 +23,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
@@ -150,4 +151,37 @@ func (r *SystemHandlerRegistry) Names() []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// runSystemHandlerSafely invokes a system-step handler behind a panic barrier,
+// converting a panic into an ordinary step error.
+//
+// It exists because on 2026-08-19 a nil dereference inside rag.index escaped the
+// step goroutine and killed the daemon — the bench instance crash-looped 28
+// times in ten minutes, and any production project running that workflow would
+// have done the same. The specific nil is guarded now, but one handler's latent
+// bug being able to stop every other project's work is the wrong blast radius.
+// A step handler's bug belongs to that step: it fails, on_fail routes, and the
+// daemon keeps serving.
+//
+// The error names the handler and says it panicked, so the failure is not
+// mistaken for an ordinary handler rejection during triage. The stack goes to
+// the log rather than into the error, which is operator-facing and ends up in
+// task records.
+//
+// Transparent otherwise: a handler's own result and error pass through untouched.
+func runSystemHandlerSafely(
+	ctx context.Context,
+	handler SystemHandler,
+	handlerName string,
+	in SystemStepInput,
+) (res SystemStepResult, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("system handler %q panicked: %v (this is a handler bug — "+
+				"the step failed instead of the daemon)", handlerName, r)
+			res = SystemStepResult{}
+		}
+	}()
+	return handler.Execute(ctx, in)
 }

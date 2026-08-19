@@ -765,6 +765,19 @@ Do NOT retry the failed step yourself, do NOT spawn role steps, do
 NOT write artifacts. The operator picks one option; the workflow
 retries the failed step against the chosen alternative.
 
+DECIDE FROM `context.recovery` ALONE. Do NOT read files, do NOT
+investigate the workspace, and do NOT go looking for the artifact
+the failed step was supposed to produce. It is missing — that is
+the PREMISE of this hop, not something for you to verify. The step
+has ALREADY FAILED and nothing you read can change that; you were
+routed here precisely because the work did not land.
+
+If a path appears in failure_reason, treat it as a fact about what
+is absent, not as an invitation to open it. Reading it costs your
+iteration budget and buys nothing: a missing file reads as missing
+however many times you ask. Propose the alternatives and emit the
+checkpoint on your FIRST turn.
+
 Per-failure-class playbook (pick the matching block):
 
 - failure_class = "verifier_block" (paywalled / captcha / 401/403):

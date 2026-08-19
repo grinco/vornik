@@ -90,7 +90,7 @@ func (r *ExecutionToolGrantRepository) Current(ctx context.Context, executionID,
 	err := row.Scan(&g.ID, &g.ExecutionID, &g.ProjectID, &g.StepID, &g.Role, &req, &g.Accepted,
 		&ref, &g.IsEscalation, &g.CeilingHash, &modified, &g.Actor, &g.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, persistence.ErrNotFound
 	}
 	if err != nil {
 		return nil, mapDBError(err)

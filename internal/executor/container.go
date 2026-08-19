@@ -897,11 +897,10 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	}
 	if len(resultBytes) > 0 {
 		var resultStatus struct {
-			Status        string `json:"status"`
-			Message       string `json:"message"`
-			Outcome       string `json:"outcome"`
-			OutcomeDetail string `json:"outcomeDetail"`
+			Status  string `json:"status"`
+			Message string `json:"message"`
 		}
+		agentOutcome, agentOutcomeDetail := agentQualityOutcome(resultBytes)
 		if json.Unmarshal(resultBytes, &resultStatus) == nil {
 			if agentError == "" && resultStatus.Status == "FAILED" {
 				agentError = "agent reported FAILED status: " + resultStatus.Message
@@ -910,14 +909,14 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 			// (status=COMPLETED), but the agent chose to stop early for
 			// a budget guard and the per-step quality row needs to
 			// reflect that instead of being terminal-swept to OK.
-			switch resultStatus.Outcome {
+			switch agentOutcome {
 			case string(stepoutcome.BudgetTripwire):
-				budgetTripwireDetail = resultStatus.OutcomeDetail
+				budgetTripwireDetail = agentOutcomeDetail
 				if budgetTripwireDetail == "" {
 					budgetTripwireDetail = "agent self-aborted on budget tripwire (no detail provided)"
 				}
 			case string(stepoutcome.PromptTokenBudget):
-				promptTokenBudgetDetail = resultStatus.OutcomeDetail
+				promptTokenBudgetDetail = agentOutcomeDetail
 				if promptTokenBudgetDetail == "" {
 					promptTokenBudgetDetail = "agent self-finalized on prompt-token budget (no detail provided)"
 				}
@@ -929,7 +928,7 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 				// exhaustion — 14 of 47 failed steps in the 2026-08-16 ctx32k
 				// arm were iteration caps, every one sitting exactly at its
 				// budget, and before this they produced nothing judgeable.
-				iterationCapDetail = resultStatus.OutcomeDetail
+				iterationCapDetail = agentOutcomeDetail
 				if iterationCapDetail == "" {
 					iterationCapDetail = "agent self-finalized on the tool iteration cap (no detail provided)"
 				}
@@ -1016,7 +1015,7 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 			// the secret. The actual container log isn't modified;
 			// only the bytes we surface to the operator.
 			logs = string(e.scanContainerLogsForSecrets(ctx, execution, stepID, []byte(logs)))
-			agentError += "\n\n--- Container Log (last 50 lines) ---\n" + logs
+			agentError += "\n\n--- Container Log (last 50 lines) ---\n" + capContainerLog(logs)
 		}
 		if rmErr := e.runtime.RemoveContainer(context.Background(), containerID, true); rmErr != nil {
 			e.logger.Warn().Err(rmErr).Str("container_id", containerID).Msg("failed to remove container after agent failure")
@@ -2484,4 +2483,79 @@ func (e *Executor) recordLearnedBudgetApplication(
 		e.instinctMetrics.ApplicationsTotal.WithLabelValues(
 			persistence.InstinctSurfaceToolBudget, persistence.InstinctResultIgnored).Inc()
 	}
+}
+
+// agentQualityOutcome extracts the AGENT's step-quality label from a
+// result.json — `iteration_exhausted`, `prompt_token_budget` or
+// `budget_tripwire` — and its detail.
+//
+// It reads `agentOutcome` first and falls back to `outcome`, which is where the
+// agent wrote this label before 2026-08-19. The fallback matters because the
+// daemon and the agent image are deployed separately, so a newer daemon
+// routinely runs against an older image.
+//
+// The fallback is SAFE ONLY BECAUSE it is whitelisted to the three agent labels.
+// The legacy `outcome` field is also where the LEAD emits its workflow decision
+// (checkpoint / external_wait / closure_request), and reading a `checkpoint`
+// here would record a lead decision as a budget bail. Sharing that one field is
+// exactly the collision this split exists to end: the agent's label was
+// injected after the structured merge and destroyed the lead's decision, which
+// failed every recovery attempt while the response artifact looked perfect.
+func agentQualityOutcome(resultBytes []byte) (outcome, detail string) {
+	var parsed struct {
+		AgentOutcome       string `json:"agentOutcome"`
+		AgentOutcomeDetail string `json:"agentOutcomeDetail"`
+		Outcome            string `json:"outcome"`
+		OutcomeDetail      string `json:"outcomeDetail"`
+	}
+	if json.Unmarshal(resultBytes, &parsed) != nil {
+		return "", ""
+	}
+	if parsed.AgentOutcome != "" {
+		return parsed.AgentOutcome, parsed.AgentOutcomeDetail
+	}
+	switch parsed.Outcome {
+	case string(stepoutcome.BudgetTripwire),
+		string(stepoutcome.PromptTokenBudget),
+		string(stepoutcome.IterationExhausted):
+		return parsed.Outcome, parsed.OutcomeDetail
+	}
+	return "", ""
+}
+
+// containerLogMaxBytes bounds the container-log tail appended to a step error.
+//
+// 16 KiB keeps the diagnostic value — the failure is in the last few lines, and
+// 16 KiB is far more than that — while bounding what can reach a downstream
+// PROMPT.
+const containerLogMaxBytes = 16 * 1024
+
+// capContainerLog bounds the container-log tail by BYTES, keeping the end.
+//
+// The append is bounded by 50 LINES, which is no bound at all: one line can be
+// arbitrarily long. Measured 2026-08-19 — the recovery-probe fixture's 1s
+// timeout produced a runtime error whose log tail turned the lead's recovery
+// context into a crash blob; the lead then generated ~1 MB responses over ~149s,
+// tripped the model-health circuit breaker, and failed 24 of 27 attempts with
+// MODEL_UNHEALTHY. Two measurements were invalidated before the cause was found.
+//
+// This matters beyond operator display: the error string is echoed into
+// context.recovery.failure_reason and becomes part of the NEXT agent's prompt.
+// An unbounded blob there is a correctness problem.
+//
+// Keeps the TAIL because that is where the failure is, and says it truncated so
+// a partial tail is not read as a whole log.
+func capContainerLog(logs string) string {
+	if len(logs) <= containerLogMaxBytes {
+		return logs
+	}
+	tail := logs[len(logs)-containerLogMaxBytes:]
+	// Start at a line boundary when one is close by, so the first retained line
+	// is not a fragment. Bounded search: a log with no newlines keeps the raw
+	// tail rather than scanning the whole string.
+	if idx := strings.IndexByte(tail, '\n'); idx >= 0 && idx < 1024 {
+		tail = tail[idx+1:]
+	}
+	return fmt.Sprintf("[... %d bytes truncated; showing the last %d bytes ...]\n%s",
+		len(logs)-len(tail), len(tail), tail)
 }

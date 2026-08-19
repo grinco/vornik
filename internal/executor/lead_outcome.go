@@ -246,6 +246,11 @@ func ParseLeadOutcome(data []byte) (*LeadOutcome, bool, error) {
 		out.Version = 1
 	}
 
+	// Lift a FLAT checkpoint into the nested payload the rest of the
+	// executor reads. Must run before validation and before option
+	// normalization, both of which look at out.Checkpoint.
+	liftFlatCheckpoint(data, &out)
+
 	// Fail-safe normalization (LLD §9): demote any invalid/unknown
 	// checkpoint-option action to a plain prose option (drop the
 	// action) BEFORE shape validation, so a malformed structured
@@ -327,4 +332,66 @@ func SerializeCheckpointMetadata(c *CheckpointPayload) ([]byte, error) {
 		return nil, fmt.Errorf("nil checkpoint")
 	}
 	return json.Marshal(c)
+}
+
+// liftFlatCheckpoint promotes a checkpoint expressed as FLAT siblings of
+// `outcome` into the nested `checkpoint` payload the executor reads.
+//
+// The model routinely answers like this:
+//
+//	{"outcome":"checkpoint","checkpoint_kind":"decision","question":"…","options":[…]}
+//
+// rather than nesting the fields under `checkpoint`. It is not wrong to:
+// recoveryModeResponseSchema keeps the nested payloads permissive
+// (additionalProperties: true), so nothing tells the model that the nesting is
+// load-bearing. Before this lift, `o.Checkpoint` stayed nil, validation rejected
+// the envelope with "outcome=checkpoint requires checkpoint payload", and
+// recoveryContractViolated therefore failed EVERY recovery hop — while the
+// step's response artifact held a perfectly good decision, which is what made
+// the fault so hard to place (2026-08-19).
+//
+// This mirrors a decision the codebase already made for gates: lookupJSONPath
+// accepts nested and flat keys alike because "LLMs frequently produce flat
+// keys". The recovery contract has no reason to be stricter about shape than the
+// gates are — it cares that the operator gets selectable options, not about
+// where in the JSON they sit.
+//
+// A nested payload always WINS: a model that nested was being explicit, so its
+// structure is authoritative and is left untouched. Only the kind and the fields
+// actually absent are taken from the flat form.
+func liftFlatCheckpoint(data []byte, o *LeadOutcome) {
+	if o == nil || o.Outcome != LeadOutcomeCheckpoint || o.Checkpoint != nil {
+		return
+	}
+	var flat struct {
+		Kind                CheckpointKind     `json:"checkpoint_kind"`
+		Question            string             `json:"question"`
+		Options             []CheckpointOption `json:"options"`
+		TaskForHuman        string             `json:"task_for_human"`
+		ExpectedFormat      string             `json:"expected_format"`
+		Draft               string             `json:"draft"`
+		ExpectedBy          *time.Time         `json:"expected_by"`
+		DefaultIfNoResponse string             `json:"default_if_no_response"`
+		DefaultReason       string             `json:"default_reason"`
+	}
+	if json.Unmarshal(data, &flat) != nil {
+		return
+	}
+	// Require at least a kind: without it there is nothing to lift and an empty
+	// payload would turn a clear "no checkpoint" error into a confusing
+	// "checkpoint with no kind" one.
+	if flat.Kind == "" {
+		return
+	}
+	o.Checkpoint = &CheckpointPayload{
+		Kind:                flat.Kind,
+		Question:            flat.Question,
+		Options:             flat.Options,
+		TaskForHuman:        flat.TaskForHuman,
+		ExpectedFormat:      flat.ExpectedFormat,
+		Draft:               flat.Draft,
+		ExpectedBy:          flat.ExpectedBy,
+		DefaultIfNoResponse: flat.DefaultIfNoResponse,
+		DefaultReason:       flat.DefaultReason,
+	}
 }

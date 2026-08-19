@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"regexp"
 	"testing"
 	"time"
@@ -130,8 +131,8 @@ func TestTaskScratchpadRepositoryGetAndUpsert(t *testing.T) {
 		WithArgs("missing").
 		WillReturnError(sql.ErrNoRows)
 	got, err := repo.Get(context.Background(), "missing")
-	if err != nil || got != nil {
-		t.Fatalf("Get(missing) = %#v, %v; want nil, nil", got, err)
+	if !errors.Is(err, persistence.ErrNotFound) || got != nil {
+		t.Fatalf("Get(missing) = %#v, %v; want nil, persistence.ErrNotFound", got, err)
 	}
 
 	phase := "build"

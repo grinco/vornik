@@ -33,6 +33,12 @@ func (s *scratchpadRepoStub) Get(_ context.Context, _ string) (*persistence.Task
 	if s.getErr != nil {
 		return nil, s.getErr
 	}
+	// A miss is (nil, persistence.ErrNotFound) at both backends — see
+	// internal/persistence/misscontract. A permissive double here would
+	// certify the caller's absent-row path without ever exercising it.
+	if s.existing == nil {
+		return nil, persistence.ErrNotFound
+	}
 	return s.existing, nil
 }
 

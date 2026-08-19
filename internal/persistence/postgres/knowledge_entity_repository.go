@@ -243,7 +243,7 @@ func scanKnowledgeEntity(scanner interface {
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, persistence.ErrNotFound
 		}
 		return nil, mapDBError(err)
 	}

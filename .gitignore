@@ -102,3 +102,12 @@ site/
 # Never committed: the comparability key pins the revision by dataset_sha256, so
 # the file is reproducible from its digest rather than from our history.
 bench/longmemeval/*.json
+
+# Benchmark run output: journals, manifests, results. Large, machine-generated,
+# and pinned by hash in the artifacts that reference them — never committed.
+# An untracked run directory also stamps vcs.modified=true on any binary built
+# afterwards, and `bench agent run` refuses a harness it cannot regenerate from
+# a commit, so leaving these unignored breaks the next benchmark pass.
+/bench-runs/
+/agentbench-runs/
+/membench-runs/

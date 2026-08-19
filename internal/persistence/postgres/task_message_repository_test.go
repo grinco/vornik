@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"regexp"
 	"testing"
 	"time"
@@ -100,8 +101,8 @@ func TestTaskMessageRepositoryListAndCheckpointFlow(t *testing.T) {
 		WithArgs("task-empty").
 		WillReturnRows(sqlmock.NewRows([]string{"open_checkpoint_id"}).AddRow(nil))
 	open, err := repo.GetOpenCheckpoint(context.Background(), "task-empty")
-	if err != nil || open != nil {
-		t.Fatalf("GetOpenCheckpoint(empty) = %#v, %v", open, err)
+	if !errors.Is(err, persistence.ErrNotFound) || open != nil {
+		t.Fatalf("GetOpenCheckpoint(empty) = %#v, %v; want nil, persistence.ErrNotFound", open, err)
 	}
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT open_checkpoint_id FROM tasks WHERE id = $1")).
@@ -132,8 +133,8 @@ func TestTaskMessageRepositoryListAndCheckpointFlow(t *testing.T) {
 		WithArgs("task-dangling").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	open, err = repo.GetOpenCheckpoint(context.Background(), "task-dangling")
-	if err != nil || open != nil {
-		t.Fatalf("GetOpenCheckpoint(dangling) = %#v, %v", open, err)
+	if !errors.Is(err, persistence.ErrNotFound) || open != nil {
+		t.Fatalf("GetOpenCheckpoint(dangling) = %#v, %v; want nil, persistence.ErrNotFound", open, err)
 	}
 
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE task_messages")).

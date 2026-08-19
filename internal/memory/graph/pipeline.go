@@ -545,6 +545,12 @@ func (p *Pipeline) insertEntityIdempotent(ctx context.Context, projectID string,
 	// (mention writes, edge upserts) still get a real entity to
 	// reference.
 	existing, gerr := p.Entities.GetByCanonical(ctx, projectID, c.Type, c.Name)
+	if errors.Is(gerr, persistence.ErrNotFound) {
+		// The row that caused the duplicate-key error is not findable by
+		// its canonical triple — the two disagree, which is a real
+		// inconsistency rather than a lookup failure. Say so.
+		return "", fmt.Errorf("duplicate-key on %q but no row matches its canonical triple", c.Name)
+	}
 	if gerr != nil {
 		return "", fmt.Errorf("duplicate-key recovery failed for %q: %w", c.Name, gerr)
 	}

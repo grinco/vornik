@@ -44,7 +44,7 @@ func (r *TaskScratchpadRepository) Get(ctx context.Context, taskID string) (*per
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, persistence.ErrNotFound
 		}
 		return nil, err
 	}

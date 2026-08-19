@@ -170,8 +170,17 @@ func (c *Connector) ResolveServer(projectID, serverName string) (ServerRef, bool
 
 // Grant returns the stored grant for a pair, or nil when there is none. Exposed for the status
 // endpoint and the control-plane row: it carries the token, so callers must never render it.
+//
+// "No grant" is an ordinary answer at this layer — the status endpoint asks about servers the
+// operator has never connected — so the repository's ErrNotFound is translated to a nil grant
+// here rather than propagated. The repository keeps the strict contract; this accessor states
+// the looser one it has always advertised.
 func (c *Connector) Grant(ctx context.Context, projectID, serverName string) (*persistence.MCPOAuthToken, error) {
-	return c.Tokens.Get(ctx, projectID, serverName)
+	tok, err := c.Tokens.Get(ctx, projectID, serverName)
+	if errors.Is(err, persistence.ErrNotFound) {
+		return nil, nil
+	}
+	return tok, err
 }
 
 // BeginResult is what the operator needs in order to consent.
@@ -349,7 +358,7 @@ func (c *Connector) Complete(ctx context.Context, state, code string) (*persiste
 // config change.
 func (c *Connector) Disconnect(ctx context.Context, projectID, serverName, actor string) error {
 	existing, err := c.Tokens.Get(ctx, projectID, serverName)
-	if err != nil {
+	if err != nil && !errors.Is(err, persistence.ErrNotFound) {
 		return err
 	}
 	if err := c.Tokens.Delete(ctx, projectID, serverName); err != nil {
@@ -543,7 +552,7 @@ func (c *Connector) configuredClient(ref ServerRef) (mcpauth.ClientCredentials, 
 // path is handled above.
 func (c *Connector) storedClient(ctx context.Context, ref ServerRef) (mcpauth.ClientCredentials, error) {
 	tok, err := c.Tokens.Get(ctx, ref.ProjectID, ref.ServerName)
-	if err != nil {
+	if err != nil && !errors.Is(err, persistence.ErrNotFound) {
 		return mcpauth.ClientCredentials{}, err
 	}
 	if tok != nil && tok.ClientID != "" {

@@ -132,6 +132,22 @@ func (h *IndexHandler) Execute(ctx context.Context, in executor.SystemStepInput)
 		if err != nil {
 			return executor.SystemStepResult{}, fmt.Errorf("rag.index: load extracted doc %s: %w", entry.ExtractedDocumentID, err)
 		}
+		// A missing row now arrives as persistence.ErrNotFound and is caught
+		// by the branch above (internal/persistence/misscontract). It used to
+		// arrive as (nil, nil), which fell through to the dereference below:
+		// the panic escaped the step goroutine and crash-looped the bench
+		// daemon 28 times in ten minutes on document-ingest's first run
+		// (2026-08-19). Every test missed it because the double returned an
+		// error where production returned (nil, nil).
+		//
+		// The guard stays as depth. It is unreachable through either backend
+		// today, and is cheap insurance against a future implementation that
+		// answers a miss with a bare nil.
+		if doc == nil {
+			return executor.SystemStepResult{}, fmt.Errorf(
+				"rag.index: extracted doc %s not found — the extract step recorded an id with no row behind it",
+				entry.ExtractedDocumentID)
+		}
 		if doc.StoragePath == "" {
 			return executor.SystemStepResult{}, fmt.Errorf("rag.index: extracted doc %s has empty storage_path", doc.ID)
 		}

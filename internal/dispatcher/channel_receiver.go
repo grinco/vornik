@@ -330,6 +330,12 @@ func (r *ChannelReceiver) maybeAcknowledgeMemoryWrite(ctx context.Context, msg c
 	}
 	channel := r.Channel.Name()
 	pending, err := r.MemoryWriteConfirmations.Get(ctx, channel, msg.SessionID)
+	if errors.Is(err, persistence.ErrNotFound) {
+		// Most messages are not acknowledgements, so most conversations have
+		// no pending row. That is the common case, not a lookup failure, and
+		// logging it would drown the channel log in warnings.
+		return
+	}
 	if err != nil {
 		r.logger().Warn().Err(err).Str("channel", channel).Str("session", msg.SessionID).
 			Msg("dispatcher: memory-write ack: pending lookup failed")

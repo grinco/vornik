@@ -39,6 +39,12 @@ var ErrNeedsReconnect = errors.New("mcp oauth grant needs operator reconnect")
 //     cleanly instead of clobbering the winner's rotated token.
 func (c *Connector) AccessToken(ctx context.Context, ref ServerRef) (string, error) {
 	tok, err := c.Tokens.Get(ctx, ref.ProjectID, ref.ServerName)
+	if errors.Is(err, persistence.ErrNotFound) {
+		// Every wiring pass asks about every configured oauth server,
+		// most of which the operator has never connected. That is not an
+		// error, and must not be reported as one.
+		return "", nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("mcpconnect: read grant: %w", err)
 	}
@@ -72,6 +78,9 @@ func (c *Connector) AccessToken(ctx context.Context, ref ServerRef) (string, err
 	var refreshed string
 	lockErr := c.Tokens.WithRefreshLock(ctx, ref.ProjectID, ref.ServerName, func(ctx context.Context) error {
 		current, err := c.Tokens.Get(ctx, ref.ProjectID, ref.ServerName)
+		if errors.Is(err, persistence.ErrNotFound) {
+			return fmt.Errorf("%w: %q (grant disappeared)", ErrNeedsReconnect, ref.ServerName)
+		}
 		if err != nil {
 			return fmt.Errorf("mcpconnect: re-read grant under lock: %w", err)
 		}

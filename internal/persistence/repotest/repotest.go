@@ -1516,10 +1516,14 @@ func RunTaskScratchpadSuite(t *testing.T, repo persistence.TaskScratchpadReposit
 	ctx := context.Background()
 	taskID := seedTaskRow(t, ctx, taskRepo)
 
-	t.Run("Get_unknown_returns_nil_nil", func(t *testing.T) {
+	t.Run("Get_miss_obeys_the_contract", func(t *testing.T) {
+		AssertMissRepo(t, "TaskScratchpadRepository.Get", repo.Get)
+	})
+
+	t.Run("Get_unknown_returns_ErrNotFound", func(t *testing.T) {
 		got, err := repo.Get(ctx, uniqueID("missing"))
-		if err != nil {
-			t.Fatalf("Get unknown: %v", err)
+		if !errors.Is(err, persistence.ErrNotFound) {
+			t.Fatalf("Get unknown: want ErrNotFound, got %v", err)
 		}
 		if got != nil {
 			t.Errorf("Get unknown should return nil scratchpad, got %+v", got)
@@ -2293,6 +2297,20 @@ func RunKnowledgeEntitySuite(t *testing.T, repo persistence.KnowledgeEntityRepos
 	t.Helper()
 	ctx := context.Background()
 	project := uniqueID("proj")
+
+	// Regression: 2026-08-19 audit. scanKnowledgeEntity returned ErrNotFound
+	// on sqlite and (nil, nil) on postgres — the same method disagreeing with
+	// itself across backends, with no suite case to catch it. All eight
+	// consumers were written for the postgres shape, so on sqlite a missing
+	// entity aborted graph.Subgraph instead of dropping the seed.
+	t.Run("Get_miss_obeys_the_contract", func(t *testing.T) {
+		AssertMissRepo(t, "KnowledgeEntityRepository.Get", repo.Get)
+	})
+	t.Run("GetByCanonical_miss_obeys_the_contract", func(t *testing.T) {
+		AssertMiss(t, "KnowledgeEntityRepository.GetByCanonical", func() (*persistence.KnowledgeEntity, error) {
+			return repo.GetByCanonical(ctx, project, "person", uniqueID("absent-name"))
+		})
+	})
 	name := "Vadim-" + uniqueID("")
 	ent := &persistence.KnowledgeEntity{
 		ProjectID:     project,
@@ -2364,6 +2382,10 @@ func RunKnowledgeEdgeSuite(t *testing.T, repo persistence.KnowledgeEdgeRepositor
 	t.Helper()
 	ctx := context.Background()
 	project := uniqueID("proj")
+
+	t.Run("Get_miss_obeys_the_contract", func(t *testing.T) {
+		AssertMissRepo(t, "KnowledgeEdgeRepository.Get", repo.Get)
+	})
 
 	// Seed the two entities the edge will reference.
 	entA := &persistence.KnowledgeEntity{
@@ -3160,6 +3182,19 @@ func RunExtractedDocumentSuite(t *testing.T, repo persistence.ExtractedDocumentR
 	t.Helper()
 	ctx := context.Background()
 
+	// Regression: 2026-08-19. Get returned (nil, nil) for an absent row while
+	// every test double returned an error, so no test reached the dereference
+	// in rag.index that the miss fed — and the panic crash-looped the daemon
+	// 28 times in ten minutes (7f0b5337).
+	t.Run("Get_miss_obeys_the_contract", func(t *testing.T) {
+		AssertMissRepo(t, "ExtractedDocumentRepository.Get", repo.Get)
+	})
+	t.Run("GetByArtifact_miss_obeys_the_contract", func(t *testing.T) {
+		AssertMiss(t, "ExtractedDocumentRepository.GetByArtifact", func() (*persistence.ExtractedDocument, error) {
+			return repo.GetByArtifact(ctx, uniqueID("absent-art"))
+		})
+	})
+
 	newDoc := func(projectID, artifactID, extName, extVersion string) *persistence.ExtractedDocument {
 		return &persistence.ExtractedDocument{
 			ID:               uniqueID("extdoc"),
@@ -3192,6 +3227,52 @@ func RunExtractedDocumentSuite(t *testing.T, repo persistence.ExtractedDocumentR
 		}
 		if got.SectionCount != 1 {
 			t.Errorf("section_count lost: %d", got.SectionCount)
+		}
+	})
+
+	// Regression: 2026-08-19. document-ingest failed every run with
+	// "rag.index: extracted doc <id> not found".
+	//
+	// ON CONFLICT ... DO UPDATE deliberately does NOT touch `id`, so the
+	// pre-existing row keeps it — that is the documented promise, so memory-chunk
+	// provenance pointers stay valid. But Upsert issued the statement with
+	// ExecContext and no RETURNING, so the caller's in-memory doc kept an ID that
+	// was never stored. extractor.Runner.Run returns exactly that struct, and
+	// rag.index then looked the phantom ID up and got nothing.
+	//
+	// It needed two things to line up, which is why it hid: the artifact had to
+	// have been extracted once already (the --attach upload path auto-extracts,
+	// so it always had been), and the caller had to trust the returned ID.
+	t.Run("Upsert_writes_the_persisted_ID_back_on_conflict", func(t *testing.T) {
+		artifactID := uniqueID("art")
+		first := newDoc("p1", artifactID, "vornik-extract-text", "0.1.0")
+		if err := repo.Upsert(ctx, first); err != nil {
+			t.Fatalf("first Upsert: %v", err)
+		}
+
+		// Same triple, fresh ID — exactly what the runner does on a re-extract.
+		second := newDoc("p1", artifactID, "vornik-extract-text", "0.1.0")
+		minted := second.ID
+		if minted == first.ID {
+			t.Fatal("test setup: the second doc must carry a different ID")
+		}
+		if err := repo.Upsert(ctx, second); err != nil {
+			t.Fatalf("second Upsert: %v", err)
+		}
+
+		if second.ID != first.ID {
+			t.Errorf("Upsert left the caller holding ID %q, but the stored row is %q — "+
+				"a caller that trusts the returned ID (extractor.Runner.Run does) then "+
+				"looks up a row that does not exist", second.ID, first.ID)
+		}
+		if got, err := repo.Get(ctx, second.ID); err != nil {
+			t.Fatalf("Get: %v", err)
+		} else if got == nil {
+			t.Fatalf("the ID Upsert left on the doc (%q) resolves to no row", second.ID)
+		}
+		if got, err := repo.Get(ctx, minted); err == nil && got != nil {
+			t.Errorf("the discarded minted ID %q must not resolve — two rows for one "+
+				"triple would mean the conflict target is wrong", minted)
 		}
 	})
 
@@ -3234,10 +3315,10 @@ func RunExtractedDocumentSuite(t *testing.T, repo persistence.ExtractedDocumentR
 		}
 	})
 
-	t.Run("GetByArtifact_nil_for_unknown_artifact", func(t *testing.T) {
+	t.Run("GetByArtifact_ErrNotFound_for_unknown_artifact", func(t *testing.T) {
 		got, err := repo.GetByArtifact(ctx, uniqueID("ghost"))
-		if err != nil {
-			t.Fatalf("GetByArtifact on unknown artifact must NOT error: %v", err)
+		if !errors.Is(err, persistence.ErrNotFound) {
+			t.Fatalf("GetByArtifact on unknown artifact: want ErrNotFound, got %v", err)
 		}
 		if got != nil {
 			t.Errorf("expected nil for missing artifact, got %+v", got)
@@ -3272,15 +3353,15 @@ func RunExtractedDocumentSuite(t *testing.T, repo persistence.ExtractedDocumentR
 		if err := repo.Delete(ctx, d.ID); err != nil {
 			t.Fatalf("Delete: %v", err)
 		}
-		// Contract: Get returns (nil, nil) on missing rows
-		// (unlike most other repos which return ErrNotFound) —
-		// pinned at both backends per scanExtractedDocument /
-		// scanExtractedDocumentSQLite. Operator-facing tools
-		// distinguish "no extraction yet" from "extraction failed"
-		// via this nil-check.
+		// Contract: an absent row is (nil, persistence.ErrNotFound) at both
+		// backends — see internal/persistence/misscontract. This case used to
+		// pin the opposite, which is how the permissive miss survived long
+		// enough to crash-loop the daemon through rag.index (7f0b5337).
+		// Operator-facing tools still distinguish "no extraction yet" from
+		// "extraction failed"; they test for ErrNotFound rather than nil.
 		got, err := repo.Get(ctx, d.ID)
-		if err != nil {
-			t.Fatalf("Get on deleted row should return (nil, nil), got err: %v", err)
+		if !errors.Is(err, persistence.ErrNotFound) {
+			t.Fatalf("Get on deleted row: want ErrNotFound, got err: %v", err)
 		}
 		if got != nil {
 			t.Fatalf("Get on deleted row should return nil, got: %+v", got)

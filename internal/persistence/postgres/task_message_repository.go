@@ -181,10 +181,15 @@ func (r *TaskMessageRepository) List(ctx context.Context, filter persistence.Tas
 	return out, rows.Err()
 }
 
-// GetOpenCheckpoint returns the unresolved checkpoint message, if
-// any. We read tasks.open_checkpoint_id (the cheap path) rather
-// than joining + filtering on metadata, because the pointer is
-// kept consistent by Insert + MarkCheckpointResolved.
+// GetOpenCheckpoint returns the unresolved checkpoint message, or
+// (nil, persistence.ErrNotFound) when there is none — whether the task is
+// unknown, carries no open checkpoint, or points at a message that has since
+// been deleted. All three are absence; see internal/persistence/misscontract.
+//
+// We read tasks.open_checkpoint_id (the cheap path) rather than joining +
+// filtering on metadata, because the pointer is kept consistent by Insert +
+// MarkCheckpointResolved. Unlike the sqlite backend this one also repairs a
+// dangling pointer as it reports the miss.
 func (r *TaskMessageRepository) GetOpenCheckpoint(ctx context.Context, taskID string) (*persistence.TaskMessage, error) {
 	if taskID == "" {
 		return nil, fmt.Errorf("TaskMessageRepository.GetOpenCheckpoint: task_id required")
@@ -195,12 +200,12 @@ func (r *TaskMessageRepository) GetOpenCheckpoint(ctx context.Context, taskID st
 		taskID,
 	).Scan(&ptr); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, persistence.ErrNotFound
 		}
 		return nil, mapDBError(err)
 	}
 	if !ptr.Valid || ptr.String == "" {
-		return nil, nil
+		return nil, persistence.ErrNotFound
 	}
 
 	var m persistence.TaskMessage
@@ -218,12 +223,13 @@ func (r *TaskMessageRepository) GetOpenCheckpoint(ctx context.Context, taskID st
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			// Pointer dangling — the message was deleted out of
-			// band. Clear the pointer + return no checkpoint so
-			// the task can advance.
+			// band. Clear the pointer so the task can advance, then
+			// report the absence as ErrNotFound like every other
+			// miss (internal/persistence/misscontract).
 			_, _ = r.db.ExecContext(ctx,
 				`UPDATE tasks SET open_checkpoint_id = NULL WHERE id = $1`,
 				taskID)
-			return nil, nil
+			return nil, persistence.ErrNotFound
 		}
 		return nil, mapDBError(err)
 	}

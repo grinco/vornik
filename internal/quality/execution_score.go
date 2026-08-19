@@ -29,7 +29,16 @@ const (
 
 // Score diagnostics are stable machine-readable reasons for non-clean verdicts.
 const (
-	DiagnosticMissingScoringContract  = "missing_scoring_contract"
+	DiagnosticMissingScoringContract = "missing_scoring_contract"
+	// DiagnosticMissingProducerStep / DiagnosticMissingVerifierStep split
+	// the old catch-all so a zero says WHICH half of the contract went
+	// missing. Producer-only evidence means the contract is live and the
+	// verifier failed — the state the operator surface has to make loud —
+	// while neither half means the workflow does not really carry it.
+	// Collapsing them (pre-2026-08-18) made the two indistinguishable in
+	// the journal and on the quality page.
+	DiagnosticMissingProducerStep     = "missing_producer_step"
+	DiagnosticMissingVerifierStep     = "missing_verifier_step"
 	DiagnosticMalformedEvidence       = "malformed_evidence"
 	DiagnosticUnknownCaseID           = "unknown_case_id"
 	DiagnosticUnknownCaseStatus       = "unknown_case_status"
@@ -76,6 +85,10 @@ type ExecutionScore struct {
 	PinnedCaseCount int                      `json:"pinnedCaseCount"`
 	Diagnostic      string                   `json:"diagnostic,omitempty"`
 	CaseEvidence    []NormalizedCaseEvidence `json:"caseEvidence,omitempty"`
+	// ObligationEvidence is the contract_satisfaction analogue of
+	// CaseEvidence: one entry per declared obligation. Empty for every other
+	// scoring kind.
+	ObligationEvidence []ObligationEvidence `json:"obligationEvidence,omitempty"`
 }
 
 type scoreState struct {
@@ -101,7 +114,13 @@ func ValidateScoringPolicy(policy *ScoringPolicy) error {
 	if policy == nil {
 		return nil
 	}
-	if policy.Kind != ScoreKindPinnedCaseValidation {
+	switch policy.Kind {
+	case ScoreKindPinnedCaseValidation:
+		// Producer/verifier pair required; checked below.
+	case ScoreKindContractSatisfaction:
+		// Reads the workflow's declared obligations, not a step pair.
+		return nil
+	default:
 		return fmt.Errorf("unsupported execution score kind %q", policy.Kind)
 	}
 	if strings.TrimSpace(policy.ProducerStep) == "" || strings.TrimSpace(policy.VerifierStep) == "" {
@@ -137,8 +156,22 @@ func ScoreExecution(policy *ScoringPolicy, stateSnapshot []byte) (ExecutionScore
 	}
 	producerRaw, producerOK := state.StepResults[policy.ProducerStep]
 	verifierRaw, verifierOK := state.StepResults[policy.VerifierStep]
-	if !producerOK || !verifierOK {
+	switch {
+	case !producerOK && !verifierOK:
 		return scoreZero(policy.Kind, ScoreStatusMissingContract, DiagnosticMissingScoringContract, 0), nil
+	case !producerOK:
+		return scoreZero(policy.Kind, ScoreStatusMissingContract, DiagnosticMissingProducerStep, 0), nil
+	case !verifierOK:
+		// Carry the producer's denominator when it is readable. A
+		// pinned count on a missing-verifier zero is the difference
+		// between "this workflow declares nothing" and "13 cases were
+		// pinned and the tester never reported against them". Evidence
+		// the producer did not publish stays 0 rather than guessed.
+		pinned := 0
+		if ids, count, diagnostic := decodePinnedProducer(producerRaw); diagnostic == "" && len(ids) > 0 {
+			pinned = count
+		}
+		return scoreZero(policy.Kind, ScoreStatusMissingContract, DiagnosticMissingVerifierStep, pinned), nil
 	}
 
 	ids, pinned, diagnostic := decodePinnedProducer(producerRaw)

@@ -340,6 +340,10 @@ func (c *Client) CompleteWithToolsStream(ctx context.Context, messages []Message
 	for _, k := range keys {
 		assembledToolCalls = append(assembledToolCalls, *toolCalls[k])
 	}
+	// Same repair as the non-streaming path: a provider that emits several
+	// invocations concatenated into one arguments string would otherwise be
+	// replayed as invalid JSON and rejected upstream.
+	assembledToolCalls = splitConcatenatedToolCallArgs(assembledToolCalls)
 
 	chatResp := &ChatResponse{
 		ID:    respID,

@@ -619,6 +619,17 @@ func TestExecutionNarrationRepository_PostgresContract(t *testing.T) {
 		NewExecutionRepository(db.DB), NewTaskRepository(db.DB))
 }
 
+// TestPendingOutcomeBackstop_PostgresContract — same contract as the SQLite
+// case. The dialects diverge on the sweep (NOW() + a bound cutoff vs RFC3339
+// TEXT comparison), which is exactly why both run it.
+func TestPendingOutcomeBackstop_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	repotest.RunPendingOutcomeBackstopSuite(t,
+		NewExecutionStepOutcomeRepository(db.DB),
+		NewExecutionRepository(db.DB),
+		NewTaskRepository(db.DB))
+}
+
 func TestStepLatency_PostgresContract(t *testing.T) {
 	db := newIntegrationDB(t)
 	repotest.RunStepLatencySuite(t,

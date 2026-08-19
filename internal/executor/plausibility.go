@@ -25,6 +25,24 @@ type PlausibilityViolation struct {
 	// WarnOnly carries the rule's WarnOnly flag through to the
 	// caller so it can decide whether to gate or log.
 	WarnOnly bool
+	// Field is the required key whose absence fired the rule. Carried
+	// so a caller holding independent ground truth about that key can
+	// decide the violation is advisory — see
+	// EvaluatePlausibilityWithGroundTruth.
+	Field string
+}
+
+// groundTruthFileFields are the result.json keys whose content is a claim
+// about files this step produced — the one thing require_output_glob
+// independently verifies against the real filesystem.
+//
+// Kept as an explicit set rather than a heuristic: demotion must apply only
+// where the glob genuinely speaks to the same proposition. A rule requiring an
+// explanatory field (planning.reason) asserts something no filesystem check can
+// confirm, and must keep gating.
+var groundTruthFileFields = map[string]bool{
+	"produced_files": true,
+	"modified_files": true,
 }
 
 // EvaluatePlausibility runs each rule against the parsed result.json.
@@ -63,6 +81,7 @@ func EvaluatePlausibility(resultBytes []byte, rules []registry.PlausibilityRule)
 					RuleName: ruleName(rule, i),
 					Detail:   formatViolationDetail(rule, field),
 					WarnOnly: rule.WarnOnly,
+					Field:    field,
 				})
 			}
 		}
@@ -217,4 +236,42 @@ func ruleName(rule registry.PlausibilityRule, idx int) string {
 		return rule.Name
 	}
 	return fmt.Sprintf("rule[%d]", idx)
+}
+
+// EvaluatePlausibilityWithGroundTruth is EvaluatePlausibility plus one rule:
+// when the step's require_output_glob was already satisfied against the real
+// filesystem, a violation about the model's SELF-REPORTED file list becomes
+// advisory instead of fatal.
+//
+// Why this exists. Both checks assert the same proposition — "this step
+// produced its declared output" — but one reads the filesystem and the other
+// reads the model's memory of it. runContainerStep runs the glob check first;
+// when it passes, failing the step twenty lines later because the model forgot
+// to name the same file lets the weaker check override the stronger one.
+//
+// Measured cost of not having this (bench, 2026-08-18/19): the assistant-swarm
+// planner emitted produced_files:[] with written:true in 62 of 76 attempts
+// while its plan file demonstrably existed; only 2 of 21 first-attempt failures
+// were rescued by the three-rung retry ladder, so most burned every rung and
+// failed anyway.
+//
+// The anti-hallucination direction is untouched. A model claiming a file it did
+// NOT write is still caught — by verifyClaimedFiles, which checks claims
+// against the filesystem, and by the glob check itself, which fails the step
+// before this code runs when nothing was written. Demotion can only happen when
+// the file is known to exist.
+//
+// Violations are still returned and still logged, so the bookkeeping gap stays
+// visible rather than being silently swallowed.
+func EvaluatePlausibilityWithGroundTruth(resultBytes []byte, rules []registry.PlausibilityRule, outputGlobSatisfied bool) []PlausibilityViolation {
+	violations := EvaluatePlausibility(resultBytes, rules)
+	if !outputGlobSatisfied {
+		return violations
+	}
+	for i := range violations {
+		if groundTruthFileFields[violations[i].Field] {
+			violations[i].WarnOnly = true
+		}
+	}
+	return violations
 }

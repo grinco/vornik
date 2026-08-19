@@ -475,6 +475,14 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 				Msg("artifact staging: could not prepare workspace staging dirs")
 		}
 	}
+	// Snapshot the upstream OUTPUT files after staging and before the agent
+	// runs. persistArtifacts uses the workspace:-prefixed fingerprints to
+	// distinguish unchanged handoff inputs from files this step created or
+	// revised. Without this, every downstream step re-registered all upstream
+	// files, producing lists such as 31 rows for 9 physical deliverables.
+	for name, hash := range e.SnapshotArtifactDir(filepath.Join(workspaceDir, "artifacts", "out")) {
+		preStepArtifactSnapshot["workspace:"+name] = hash
+	}
 
 	swarmID := ""
 	if plan.swarm != nil {
@@ -549,6 +557,11 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// the block told every role to call a tool most of them were forbidden, and
 	// they obediently tried (§12.6a of the agent-quality design).
 	opts.ToolGrantAvailable = e.toolGrantsWired && RoleMayGrantTools(plan.swarm, step.Role)
+	// Workspace-git guidance is injected only when the project really is a
+	// worktree — exactly the predicate startContainer uses to decide whether to
+	// bind-mount the main .git read-only, so the block can never describe a
+	// deployment it does not apply to.
+	opts.WorktreeGitReadOnly = plan != nil && projectRootFromWorktree(plan.worktreeDir) != ""
 	// Advisory guidance blocks this swarm's operator switched off (LLD 09
 	// §13.3.1). Read fresh from the plan's swarm on every step rather than
 	// cached on the executor, so a config reload takes effect on the next step
@@ -953,8 +966,15 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// task_20260712143854_429a3500d692d23c: 7 of 8 deep-research
 	// subtasks completed without writing their promised findings file
 	// and the parent chain "succeeded" into an empty publish.
+	// globVerified records that the filesystem — not the model — confirmed
+	// this step's declared output. It is handed to the plausibility pass
+	// below so a self-reported file list cannot fail a step whose output
+	// was already verified for real.
+	globVerified := false
 	if agentError == "" && step.RequireOutputGlob != "" {
-		if !outputGlobSatisfied(workspaceDir, effectiveProjectDir, step.RequireOutputGlob, stepStart) {
+		if outputGlobSatisfied(workspaceDir, effectiveProjectDir, step.RequireOutputGlob, stepStart) {
+			globVerified = true
+		} else {
 			agentError = fmt.Sprintf(
 				"schema violation: output contract for step %q not met — no file matching %q was written during this step. You MUST write the declared output file before finishing.",
 				stepID, step.RequireOutputGlob)
@@ -967,7 +987,7 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// usable downstream. WarnOnly rules emit a log line and don't
 	// gate; gate-mode rules fail the step with INVALID_OUTPUT.
 	if agentError == "" && len(roleConfig.PlausibilityRules) > 0 && len(resultBytes) > 0 {
-		violations := EvaluatePlausibility(resultBytes, roleConfig.PlausibilityRules)
+		violations := EvaluatePlausibilityWithGroundTruth(resultBytes, roleConfig.PlausibilityRules, globVerified)
 		var blocking []string
 		for _, v := range violations {
 			if v.WarnOnly {

@@ -57,9 +57,14 @@ steps:
   publish:
     type: "agent"
     role: "publisher"
+    # T-9d21: publishing is an outward delivery attempt, but the rendered HTML
+    # is itself a valuable deliverable. Persist it before calling PageDrop so a
+    # backend outage cannot erase the completed research/write work or force a
+    # full-workflow recovery loop.
+    require_output_glob: "artifacts/out/report.html"
     # Success routes through a GATE, never straight to `done` (T-1089).
     on_success: "confirm_published"
-    on_fail: "recover"
+    on_fail: "publish_failed"
     timeout: "15m"
     retry:
       on: ["container_non_zero_exit", "context_timeout"]
@@ -71,17 +76,16 @@ steps:
     # T-1089: a publisher returning `published.ok: false` is a schema-VALID
     # result, so the step SUCCEEDS and on_success fires — routing it to `done`
     # reported COMPLETED for research that was never shared. A declared failure
-    # lands on the same lead `recover` checkpoint as a hard publisher failure,
-    # preserving this workflow's existing recovery design. A gate rather than a
-    # retry: re-running the publisher risks a double-publish. on_success is
+    # lands on a FAILED terminal that preserves the rendered HTML artifact. A
+    # gate rather than a retry: re-running the publisher risks a double-publish. on_success is
     # intentionally UNSET so a malformed result carrying no `published.ok` key
     # cannot fall through to `done`.
     gates:
       - condition: "published.ok == true"
         target: "done"
       - condition: "published.ok == false"
-        target: "recover"
-    on_fail: "recover"
+        target: "publish_failed"
+    on_fail: "publish_failed"
   recover:
     type: "plan"
     role: "lead"
@@ -89,6 +93,9 @@ steps:
 terminals:
   done:
     status: "COMPLETED"
+  publish_failed:
+    status: "FAILED"
+    message: "PageDrop publication failed; rendered HTML is available in artifacts/out/report.html"
   failed:
     status: "FAILED"
     message: "Research-and-publish failed"
@@ -167,6 +174,8 @@ field carrying the 2-3 sentence summary.
 
 Read `artifacts/out/deliverable.md` — that fresh file is your SINGLE source of
 truth (do not search project memory/RAG). Render it into one self-contained,
-Vornik-themed HTML page per your role's rules and publish it with
+Vornik-themed HTML page per your role's rules. BEFORE calling PageDrop, write
+the complete HTML to `artifacts/out/report.html`; this durable artifact is
+mandatory even when PageDrop is unavailable. Then publish it with
 `mcp__pagedrop__pagedrop_publish_page`. Put the returned view link AND its
 password in your `message`, and set `published.url` (and `published.ok: true`).

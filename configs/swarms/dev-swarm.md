@@ -171,6 +171,25 @@ roles:
               enum: [trivial, standard, complex, open_ended]
               description: >-
                 Effort tier for the task you just spec'd, sizing the coder's budget. Rubric: trivial = one-line / single-file edit; standard = small multi-file change; complex = a real feature or bug fix touching several files or needing investigation; open_ended = large or ambiguous work needing broad exploration. When torn between two tiers, pick the HIGHER — under-calling starves the coder and it times out.
+            # Gate-metric producer contract (2026-08-17). The
+            # pinned_case_validation score reads analysis.test_case_ids +
+            # analysis.test_cases_pinned from THIS step's result.json
+            # (internal/quality/execution_score.go producerEnvelope). Until
+            # these existed the score was unsatisfiable by construction: the
+            # scorer demanded fields the schema never offered, so every gate
+            # task floored at 0.000/missing_contract and the tester's
+            # passed_requires_pinned_validation could never be met either —
+            # it validates against ids the analyst had no way to publish.
+            test_case_ids:
+              type: array
+              description: >-
+                Stable ids for the test cases you pinned for this task, one per case,
+                matching the ids you write into CURRENT_TASK.md. The tester reports
+                per-case status against exactly these ids.
+            test_cases_pinned:
+              type: integer
+              description: >-
+                How many cases you pinned. Must equal the length of test_case_ids.
     runtime:
       image: "localhost/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
@@ -315,7 +334,19 @@ roles:
       properties:
         testing:
           type: object
-          required: [passed]
+          # cases + pinned_cases_validated are REQUIRED, not optional
+          # (2026-08-19). role.OutputSchema.ToToolSpec feeds this schema
+          # straight through as the emit_tester_result tool's parameters, so
+          # this list is what binds at tool-call decoding time; naming a field
+          # in a plausibility `require:` does not. While cases was optional the
+          # tester emitted it in 4 of 50 measured attempts (8%) across the whole
+          # retry ladder — {"passed": true} was fully schema-conformant, so the
+          # model was doing exactly what the contract permitted, and the
+          # plausibility rule only caught it afterwards at the cost of a retry.
+          # Both are unconditionally emittable: the case status enum includes
+          # `missing` ("no test exists for it yet"), so a tester that ran
+          # nothing still has a truthful entry per pinned id.
+          required: [passed, cases, pinned_cases_validated]
           properties:
             passed: {type: bool}
             failures: {type: string}
@@ -330,6 +361,38 @@ roles:
             # status the tester observed.
             cases:
               type: array
+              description: >-
+                One entry per case the analyst pinned in
+                analysis.test_case_ids: exactly those ids, no extras and no
+                omissions. The scorer closes the id space, so a case id the
+                analyst did not pin makes the WHOLE report invalid evidence
+                and floors the task score at zero. Never invent, split,
+                renumber or append cases.
+              items:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                    description: >-
+                      The analyst's pinned case id, copied verbatim from
+                      analysis.test_case_ids / CURRENT_TASK.md.
+                  status:
+                    type: string
+                    enum: [passed, failed, manual, missing]
+                    description: >-
+                      passed = you ran it and it passed; failed = you ran it
+                      and it failed; manual = you verified it by inspection
+                      because it cannot be executed; missing = no test exists
+                      for it yet. passed and manual earn credit; failed and
+                      missing score zero for that case. Report what you
+                      observed: a false passed is the failure this metric
+                      exists to catch.
+                  evidence:
+                    type: string
+                    description: >-
+                      Test function name plus file:line and the observed
+                      result, so the reviewer can re-check the claim.
             pinned_cases_validated: {type: bool}
       plausibility:
         # When the model says tests failed, it must say what failed —

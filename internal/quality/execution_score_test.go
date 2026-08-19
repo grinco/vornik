@@ -138,3 +138,65 @@ func TestScoreExecution_MalformedStepBodiesAreInvalidEvidence(t *testing.T) {
 		})
 	}
 }
+
+// Regression, measured 2026-08-18 against a live bench execution
+// (exec_20260818134714_54764ae9f44c88dd): the analyst published 13 pinned ids
+// and the tester never landed, and the verdict was
+// missing_contract/missing_scoring_contract with PinnedCaseCount 0 — identical
+// to an execution where NEITHER half produced anything.
+//
+// That collapse matters because those two states call for opposite responses.
+// Neither half means the workflow does not really carry the contract; producer-
+// only means the contract is live and the VERIFIER is the thing that failed,
+// which is the state the operator asked the quality page to make loud. A single
+// diagnostic and a zeroed denominator hid the distinction in both the journal
+// and the UI.
+func TestScoreExecution_MissingContractNamesTheHalfThatIsMissing(t *testing.T) {
+	tests := []struct {
+		name       string
+		snapshot   string
+		wantDiag   string
+		wantPinned int
+	}{
+		{
+			name:     "neither step",
+			snapshot: `{"stepResults":{}}`,
+			wantDiag: DiagnosticMissingScoringContract,
+		},
+		{
+			name:     "producer missing",
+			snapshot: `{"stepResults":{"test":{"testing":{"cases":[{"id":"case_1","status":"passed"}]}}}}`,
+			wantDiag: DiagnosticMissingProducerStep,
+		},
+		{
+			name:       "verifier missing, producer pinned 13",
+			snapshot:   `{"stepResults":{"analyze":{"analysis":{"test_case_ids":["c1","c2","c3","c4","c5","c6","c7","c8","c9","c10","c11","c12","c13"],"test_cases_pinned":13}}}}`,
+			wantDiag:   DiagnosticMissingVerifierStep,
+			wantPinned: 13,
+		},
+		{
+			name:     "verifier missing and producer evidence unusable",
+			snapshot: `{"stepResults":{"analyze":{"analysis":{"complexity":"standard"}}}}`,
+			wantDiag: DiagnosticMissingVerifierStep,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ScoreExecution(pinnedPolicy(), []byte(tc.snapshot))
+			if err != nil {
+				t.Fatalf("score: %v", err)
+			}
+			if got.Status != ScoreStatusMissingContract || got.Score == nil || *got.Score != 0 {
+				t.Fatalf("got %+v, want a missing-contract zero", got)
+			}
+			if got.Diagnostic != tc.wantDiag {
+				t.Errorf("diagnostic = %q, want %q", got.Diagnostic, tc.wantDiag)
+			}
+			if got.PinnedCaseCount != tc.wantPinned {
+				t.Errorf("pinned = %d, want %d — the denominator the producer published "+
+					"is what tells an operator the contract is live",
+					got.PinnedCaseCount, tc.wantPinned)
+			}
+		})
+	}
+}

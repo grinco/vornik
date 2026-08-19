@@ -514,6 +514,37 @@ func TestGetTaskStatus_Happy(t *testing.T) {
 	}
 }
 
+// T-b093f: terminal status used to omit the artifact inventory entirely. The
+// dispatcher then compared the prompt's logical names (research.md) with no
+// harvested names (research-YYYYMMDD-XXXX.md) and invented a missing-output
+// failure even though the deliverables were durable and readable.
+func TestGetTaskStatus_CompletedIncludesHarvestedArtifacts(t *testing.T) {
+	task := &persistence.Task{ID: "t1", ProjectID: "snake", Status: persistence.TaskStatusCompleted}
+	repo := &mocks.MockTaskRepository{
+		GetFunc: func(_ context.Context, _ string) (*persistence.Task, error) { return task, nil },
+	}
+	sz := int64(5844)
+	artifacts := &mocks.MockArtifactRepository{
+		ListFunc: func(_ context.Context, f persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
+			if f.TaskID == nil || *f.TaskID != "t1" {
+				t.Fatalf("artifact filter task = %v, want t1", f.TaskID)
+			}
+			return []*persistence.Artifact{
+				{Name: "route-response-20260817-929c.md", ArtifactClass: persistence.ArtifactClassOutput},
+				{Name: "friday-date-night-2026-08-21-20260817-929c.md", ArtifactClass: persistence.ArtifactClassOutput, SizeBytes: &sz},
+			}, nil
+		},
+	}
+	te := newExecutor(withTaskRepo(repo), withExecRepo(&mocks.MockExecutionRepository{}), withArtifactRepo(artifacts))
+	res := te.getTaskStatus(context.Background(), `{"task_id":"t1"}`, nil)
+	if !strings.Contains(res.Content, "friday-date-night-2026-08-21-20260817-929c.md") {
+		t.Fatalf("terminal status omitted harvested deliverable: %q", res.Content)
+	}
+	if strings.Contains(res.Content, "route-response-20260817-929c.md") {
+		t.Fatalf("terminal status presented a step transcript as a deliverable: %q", res.Content)
+	}
+}
+
 // ---------- cancelTask / retryTask ----------
 
 func TestCancelTask_InvalidJSON(t *testing.T) {
@@ -824,6 +855,50 @@ func TestListArtifacts_HappyWithExecID(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "exec: exec-1") {
 		t.Errorf("missing exec annotation: %q", res.Content)
+	}
+}
+
+func TestListArtifacts_DeduplicatesRepeatedHarvestRows(t *testing.T) {
+	repo := &mocks.MockTaskRepository{
+		GetFunc: func(_ context.Context, _ string) (*persistence.Task, error) {
+			return &persistence.Task{ID: "t1", ProjectID: "snake"}, nil
+		},
+	}
+	execID := "exec-929c"
+	ar := &mocks.MockArtifactRepository{
+		ListFunc: func(_ context.Context, _ persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
+			return []*persistence.Artifact{
+				{ID: "a1", Name: "research-20260817-929c.md", ExecutionID: &execID, ArtifactClass: persistence.ArtifactClassOutput},
+				{ID: "a2", Name: "research-20260817-929c.md", ExecutionID: &execID, ArtifactClass: persistence.ArtifactClassOutput},
+				{ID: "a3", Name: "friday-date-night-2026-08-21-20260817-929c.md", ExecutionID: &execID, ArtifactClass: persistence.ArtifactClassOutput},
+			}, nil
+		},
+	}
+	te := newExecutor(withTaskRepo(repo), withArtifactRepo(ar))
+	res := te.listArtifacts(context.Background(), `{"task_id":"t1"}`, nil)
+	if !strings.Contains(res.Content, "Found 2 artifact(s)") {
+		t.Fatalf("duplicate registrations were exposed as distinct deliverables: %q", res.Content)
+	}
+	if strings.Count(res.Content, "research-20260817-929c.md") != 1 {
+		t.Fatalf("research artifact should appear once: %q", res.Content)
+	}
+}
+
+func TestListArtifacts_LabelsStepTranscriptsAsDiagnostics(t *testing.T) {
+	repo := &mocks.MockTaskRepository{
+		GetFunc: func(_ context.Context, _ string) (*persistence.Task, error) {
+			return &persistence.Task{ID: "t1", ProjectID: "snake"}, nil
+		},
+	}
+	ar := &mocks.MockArtifactRepository{
+		ListFunc: func(_ context.Context, _ persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
+			return []*persistence.Artifact{{Name: "publish-response-20260817-929c.md", ArtifactClass: persistence.ArtifactClassOutput}}, nil
+		},
+	}
+	te := newExecutor(withTaskRepo(repo), withArtifactRepo(ar))
+	res := te.listArtifacts(context.Background(), `{"task_id":"t1"}`, nil)
+	if !strings.Contains(res.Content, "step transcript; diagnostic, not a deliverable") {
+		t.Fatalf("transcript was not distinguished from a published deliverable: %q", res.Content)
 	}
 }
 

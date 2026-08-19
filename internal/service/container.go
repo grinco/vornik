@@ -846,8 +846,21 @@ func NewContainer(cfg *config.Config, configPath string, opts ...ContainerOption
 	// fireJudgeIfEnabled no-op for every terminal task. The
 	// verdict panel stayed empty for the entire lifetime of the
 	// feature until this reorder landed.
+	// FATAL, not a warning. initRegistry already tolerates what is survivable —
+	// it returns nil for a load that stripped invalid projects but still
+	// activated swarms and workflows. An error from it means the daemon has no
+	// usable registry, and "continuing" then means every task silently runs
+	// executor.resolveExecutionPlan's synthetic single-step "worker" workflow
+	// while the ledger records the workflow_id the task ASKED for.
+	//
+	// Observed twice on 2026-08-18/19: once from one bad role in one swarm, and
+	// again when a config declaring a new scoring kind was deployed ahead of the
+	// binary that understood it. Both times the daemon served, benchmark tasks
+	// reported COMPLETED having run "Process task <id>", and the measurement was
+	// silently worthless. The first fix made initRegistry RETURN the error; this
+	// is the caller that was throwing it away.
 	if err := c.initRegistry(); err != nil {
-		c.Logger.Warn().Err(err).Msg("registry initialization failed (continuing without project registry)")
+		return nil, fmt.Errorf("registry initialization failed: %w", err)
 	} else if c.Registry != nil {
 		c.Logger.Info().Int("project_count", len(c.Registry.ListProjects())).Msg("project registry initialized")
 		// Log per-role model configuration so operators can verify overrides.

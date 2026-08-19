@@ -236,6 +236,13 @@ func buildAgentContextMap(taskType, prompt string, timeContext currentDateTimeCo
 		// gate runs on every step of every deployment, so switching the block off
 		// would remove the warning and not the rule.
 		sp = composeSystemPromptWithClaimVerification(sp)
+		// Workspace-git states a runtime fact: when the project is a worktree
+		// its .git is mounted read-only, so git writes cannot land. Gated on
+		// the condition rather than suppressed(), for the same reason as
+		// reporting integrity — switching it off would remove the explanation
+		// and leave the failure. Gated at all because, unlike that block, this
+		// one is FALSE on a deployment that mounts no worktree.
+		sp = composeSystemPromptWithWorkspaceGit(sp, opts.WorktreeGitReadOnly)
 		contextMap["systemPrompt"] = sp
 	}
 	// Adaptive candidate list — the lead picks a value from this slice

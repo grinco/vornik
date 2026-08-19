@@ -422,6 +422,26 @@ func (e SwarmValidationError) Error() string {
 }
 
 // Validate validates a Swarm struct
+// declaredModalities holds the operator's chat.model_capabilities, consulted by
+// role-modality validation.
+//
+// Package-level because its lifetime matches the process: chat config is
+// boot-only (a reload re-reads the configs TREE, not config.yaml), and swarm
+// validation runs on every registry load including hot reloads. Threading it
+// through Validate would change a signature four layers deep to carry a value
+// that never varies within a run.
+//
+// Unset means "no declarations", which is what every caller saw before
+// 2026-08-19 — so a deployment that never calls SetDeclaredModalities behaves
+// exactly as it did.
+var declaredModalities map[string][]mediakind.Modality
+
+// SetDeclaredModalities installs the operator's declared model capabilities.
+// Called once at daemon start, before the first registry load.
+func SetDeclaredModalities(declared map[string][]mediakind.Modality) {
+	declaredModalities = declared
+}
+
 func (s *Swarm) Validate(filename string) error {
 	if s.ID == "" {
 		return SwarmValidationError{File: filename, Field: "swarmId", Message: "swarmId is required"}
@@ -460,7 +480,7 @@ func (s *Swarm) Validate(filename string) error {
 			}
 		}
 
-		if err := validateRoleModalities(filename, i, role); err != nil {
+		if err := validateRoleModalities(filename, i, role, declaredModalities); err != nil {
 			return err
 		}
 
@@ -621,7 +641,7 @@ func LoadSwarms(dir string) (map[string]*Swarm, error) {
 // unusable on inheriting roles rather than safer.
 //
 // see LLD § https://docs.vornik.io §4.5
-func validateRoleModalities(filename string, i int, role SwarmRole) error {
+func validateRoleModalities(filename string, i int, role SwarmRole, declared map[string][]mediakind.Modality) error {
 	if len(role.RequiredModalities) == 0 {
 		return nil
 	}
@@ -643,7 +663,14 @@ func validateRoleModalities(filename string, i int, role SwarmRole) error {
 		if spec.model == "" {
 			continue
 		}
-		caps := mediakind.Capabilities(spec.model, nil)
+		// `declared` is the operator's chat.model_capabilities map. Passing nil
+		// here (as this did until 2026-08-19) made the refusal below advise a
+		// remedy — "declare the model's modalities in chat.model_capabilities"
+		// — that the validator then ignored. On a host serving one local vLLM
+		// with every outward-facing provider disabled, that made a vision role
+		// undeclarable: the swarm failed to load and the daemon fell back to a
+		// synthetic workflow for every task.
+		caps := mediakind.Capabilities(spec.model, declared)
 		for _, m := range required {
 			if caps.Can(m) {
 				continue

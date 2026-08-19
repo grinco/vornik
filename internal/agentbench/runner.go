@@ -29,6 +29,28 @@ type TaskSpec struct {
 	Prompt   string                 `json:"prompt"`
 	Tier     TaskTier               `json:"tier"`
 	Scoring  *quality.ScoringPolicy `json:"scoring,omitempty"`
+	// Attachments are file paths staged as input artifacts on submission,
+	// resolved relative to the task-set file so a set can ship its fixtures
+	// beside it.
+	//
+	// Two shipped workflows are unreachable without this:
+	// companion-architectural-review and companion-doc-review both demand a
+	// STAGED INPUT ("Review the STAGED INPUT, not memory" — the artifact lands
+	// under /app/input/uploads/), and a spec carrying only a prompt could never
+	// give them one. The delegate tool has always accepted inputArtifacts; the
+	// benchmark simply had no way to express them.
+	Attachments []string `json:"attachments,omitempty"`
+	// attachmentBase is the directory Attachments resolve against — the task
+	// set's own directory. Unexported so a task-set file cannot set it and
+	// reach outside where it lives.
+	attachmentBase string
+}
+
+// WithAttachmentBase returns a copy whose relative attachments resolve against
+// dir. Callers that load a task set from disk set it to the set's directory.
+func (t TaskSpec) WithAttachmentBase(dir string) TaskSpec {
+	t.attachmentBase = dir
+	return t
 }
 
 // TaskOutcome is what the daemon reported for a submitted task.

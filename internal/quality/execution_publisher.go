@@ -18,10 +18,22 @@ import (
 const ExecutionScorerVersion = "1"
 
 // ExecutionScorePublisher materializes the score read model from terminal executions.
+// StepOutcomeReader is the narrow surface contract_satisfaction needs.
+//
+// A state snapshot cannot stand in for it: the snapshot records only steps that
+// SUCCEEDED, so it cannot distinguish a step that ran and failed from one never
+// reached — and for this metric those are opposite facts (a broken promise
+// versus a road not taken). Optional: nil simply means contract_satisfaction
+// cannot be scored, and it reports that rather than guessing.
+type StepOutcomeReader interface {
+	OutcomesByExecution(ctx context.Context, executionID string) (map[string]string, error)
+}
+
 type ExecutionScorePublisher struct {
-	repo    persistence.ExecutionQualityScoreRepository
-	now     func() time.Time
-	metrics *ExecutionScoreMetrics
+	repo     persistence.ExecutionQualityScoreRepository
+	outcomes StepOutcomeReader
+	now      func() time.Time
+	metrics  *ExecutionScoreMetrics
 }
 
 // ReconcileResult reports one bounded publication pass.
@@ -57,7 +69,7 @@ func (p *ExecutionScorePublisher) Publish(ctx context.Context, exec *persistence
 		return fmt.Errorf("execution %q is not terminal (status %s)", exec.ID, exec.Status)
 	}
 
-	policy, policySHA, verdict := scoringVerdict(exec.WorkflowSnapshot, exec.StateSnapshot)
+	policy, policySHA, verdict := p.verdictFor(ctx, exec)
 	if verdict.Kind == "" && policy != nil {
 		verdict.Kind = policy.Kind
 	}
@@ -125,6 +137,49 @@ func (p *ExecutionScorePublisher) Reconcile(ctx context.Context, limit int) (Rec
 	return result, errors.Join(failures...)
 }
 
+// WithStepOutcomes wires the reader contract_satisfaction needs. Chainable so
+// the daemon can opt in without changing the constructor's signature.
+func (p *ExecutionScorePublisher) WithStepOutcomes(r StepOutcomeReader) *ExecutionScorePublisher {
+	if p == nil {
+		return p
+	}
+	p.outcomes = r
+	return p
+}
+
+// verdictFor dispatches on the pinned policy's kind. pinned_case_validation
+// reads the state snapshot alone; contract_satisfaction additionally needs the
+// step outcomes, so it is scored only when a reader is wired.
+func (p *ExecutionScorePublisher) verdictFor(ctx context.Context, exec *persistence.Execution) (*ScoringPolicy, string, ExecutionScore) {
+	policy, policySHA, verdict := scoringVerdict(exec.WorkflowSnapshot, exec.StateSnapshot)
+	if policy == nil || policy.Kind != ScoreKindContractSatisfaction {
+		return policy, policySHA, verdict
+	}
+	if p.outcomes == nil {
+		// Declared but unscorable on this deployment. Say so rather than
+		// charging the measured system a zero for our missing wiring.
+		return policy, policySHA, ExecutionScore{
+			Kind: ScoreKindContractSatisfaction, Status: ScoreStatusNotApplicable,
+			Diagnostic: "step_outcome_reader_not_configured",
+		}
+	}
+	outcomes, err := p.outcomes.OutcomesByExecution(ctx, exec.ID)
+	if err != nil {
+		return policy, policySHA, invalidProductionVerdict(ScoreKindContractSatisfaction, DiagnosticMalformedEvidence)
+	}
+	contract, err := ScoreContractSatisfaction(ContractEvidence{
+		WorkflowSnapshot: exec.WorkflowSnapshot,
+		StepOutcomes:     outcomes,
+		TerminalStatus:   string(exec.Status),
+	})
+	if err != nil {
+		// Unreadable pinned evidence is a harness fault; production keeps a row
+		// so the execution is never silently absent (§12.11.6).
+		return policy, policySHA, invalidProductionVerdict(ScoreKindContractSatisfaction, DiagnosticCorruptWorkflowSnapshot)
+	}
+	return policy, policySHA, contract
+}
+
 func scoringVerdict(workflowSnapshot, stateSnapshot []byte) (*ScoringPolicy, string, ExecutionScore) {
 	if len(workflowSnapshot) == 0 {
 		verdict, _ := ScoreExecution(nil, stateSnapshot)
@@ -146,6 +201,10 @@ func scoringVerdict(workflowSnapshot, stateSnapshot []byte) (*ScoringPolicy, str
 	policySHA, err := scoringPolicyDigest(pinned.QualityScoring)
 	if err != nil {
 		return pinned.QualityScoring, "", invalidProductionVerdict(pinned.QualityScoring.Kind, DiagnosticUnsupportedScorePolicy)
+	}
+	if pinned.QualityScoring.Kind == ScoreKindContractSatisfaction {
+		// Scored by the caller, which has the step outcomes this kind needs.
+		return pinned.QualityScoring, policySHA, ExecutionScore{Kind: ScoreKindContractSatisfaction}
 	}
 	verdict, err := ScoreExecution(pinned.QualityScoring, stateSnapshot)
 	if err != nil {

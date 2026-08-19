@@ -53,6 +53,11 @@ var injectedBlocks = []injectedBlock{
 		Const: "claimVerificationSystemPromptBlock",
 		Text:  claimVerificationSystemPromptBlock,
 	},
+	{
+		Name:  promptblock.WorkspaceGit,
+		Const: "workspaceGitSystemPromptBlock",
+		Text:  workspaceGitSystemPromptBlock,
+	},
 }
 
 // injectedBlocksAggregateBytes is the total size of every static block, i.e. the

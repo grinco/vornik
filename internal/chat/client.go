@@ -971,6 +971,13 @@ func (c *Client) doComplete(ctx context.Context, req ChatRequest) (*ChatResponse
 		return nil, fmt.Errorf("%w: %v", ErrInvalidResponse, err)
 	}
 	normalizeCachedTokens(&chatResp)
+	// Repair providers that flatten several tool invocations into one
+	// arguments string. minimax-m3 does this; the concatenation is not
+	// valid JSON, so the next request is rejected upstream with
+	// "400 invalid tool call arguments" and the tool never runs.
+	for i := range chatResp.Choices {
+		chatResp.Choices[i].Message.ToolCalls = splitConcatenatedToolCallArgs(chatResp.Choices[i].Message.ToolCalls)
+	}
 
 	c.logger.Info().
 		Str("url", url).

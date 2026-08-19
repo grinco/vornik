@@ -77,6 +77,52 @@ type ExecutionRepository interface {
 	SupersedeOrphanPausedExecutions(ctx context.Context) (int64, error)
 }
 
+// StepOutcomeRepository is the narrow surface for the pending-outcome
+// backstop. Optional: when nil, that reconcile leg is skipped.
+//
+// The leg exists because SweepPending is scoped to the ONE execution its
+// caller is closing, and only three paths call it (executor handleSuccess /
+// handleFailure / handleCancelled). Every path that terminalises a task's
+// OTHER executions — cascadeOrphanExecutions, supersedeStaleExecutions and
+// this watchdog's own orphan-PAUSED sweep — leaves the outcome rows beneath
+// them at pending_validation forever. Measured 2026-08-18: 393 of adaptive's
+// 673 step outcomes over 30 days, every one the lead's delegating `route`
+// step, on executions that were CANCELLED while their task COMPLETED. Since
+// pending_validation counts as neither ok nor failure, the highest-volume
+// workflow in the fleet had no usable step-outcome record.
+//
+// Converging on the invariant here repairs rows already stranded, which no
+// call-site hook can, and covers crash recovery and future terminal paths.
+type StepOutcomeRepository interface {
+	// SweepPendingForTerminalExecutions relabels pending_validation rows whose
+	// execution is already terminal, oldest-first within a bounded batch, and
+	// returns how many it relabelled. Idempotent.
+	SweepPendingForTerminalExecutions(ctx context.Context, olderThan time.Duration, limit int) (int64, error)
+}
+
+// ParentUnblockSweeper re-checks parents stranded in WAITING_FOR_CHILDREN.
+// Optional: when nil, that reconcile leg is skipped.
+//
+// Audited 2026-08-18: four paths terminalise a CHILD task without driving the
+// parent-unblock hook — the UI's execution-cancel (ui/execution_actions.go
+// cancelOne), the chat cancel action (chat/parser.go, which holds no executor
+// reference at all), and this watchdog's own approval-timeout and stuck-fail
+// legs. executor.Cancel cascades orphan EXECUTIONS but likewise never calls the
+// hook. That is occurrences #3-#6 of a bug class already at #2 (#1: an
+// operator-CLOSED child never woke its parent, 2026-05-21; #2: child-cancel
+// across three entry points, 2026-06-07 / 3f1f3e76).
+//
+// The pre-existing backstop ran at DAEMON STARTUP ONLY, so a stranded parent
+// waited for a restart. Running the same idempotent sweep per tick contains
+// every one of those paths without touching their call sites, and can never
+// change a fate the startup sweep would not have reached anyway.
+type ParentUnblockSweeper interface {
+	// SweepStuckWaitingForChildren walks WAITING_FOR_CHILDREN parents and
+	// re-runs the unblock decision on each. Idempotent: a parent whose
+	// children are still in flight is left alone.
+	SweepStuckWaitingForChildren(ctx context.Context)
+}
+
 // TaskRepository is the watchdog's required surface on the task
 // table — used only when Action=fail to flip the task row terminal
 // alongside the execution row. The Get/Update pair mirrors what
@@ -167,6 +213,11 @@ type Metrics struct {
 	// reservationsSwept counts budget reservations settled by the
 	// terminal-and-stale sweep (terminal task, or older than the stale bound).
 	reservationsSwept prometheus.Counter
+	// pendingOutcomesSwept counts step-outcome rows relabelled from
+	// pending_validation by the terminal-execution backstop. A persistently
+	// non-zero rate means some terminal path is still not sweeping its own
+	// rows, which is the defect this backstop was added to contain.
+	pendingOutcomesSwept prometheus.Counter
 }
 
 // NewMetrics registers watchdog counters on the provided registry.
@@ -196,8 +247,12 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "vornik_watchdog_budget_reservations_swept_total",
 			Help: "Number of budget reservations settled by the terminal-and-stale sweep (terminal task or older than the stale bound).",
 		}),
+		pendingOutcomesSwept: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "vornik_watchdog_pending_outcomes_swept_total",
+			Help: "Number of step-outcome rows relabelled from pending_validation because their execution was already terminal.",
+		}),
 	}
-	reg.MustRegister(m.detected, m.failed, m.orphansSwept, m.approvalsExpired, m.reservationsSwept)
+	reg.MustRegister(m.detected, m.failed, m.orphansSwept, m.approvalsExpired, m.reservationsSwept, m.pendingOutcomesSwept)
 	return m
 }
 
@@ -205,12 +260,14 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 // Lifecycle mirrors scheduler.Scheduler: Start() spawns the loop,
 // Stop() cancels and waits for it to drain.
 type Watchdog struct {
-	cfg      Config
-	execRepo ExecutionRepository
-	taskRepo TaskRepository // optional; required only when Action=fail
-	logger   zerolog.Logger
-	metrics  *Metrics
-	now      func() time.Time
+	cfg           Config
+	execRepo      ExecutionRepository
+	taskRepo      TaskRepository        // optional; required only when Action=fail
+	outcomeRepo   StepOutcomeRepository // optional; nil skips the pending-outcome leg
+	parentSweeper ParentUnblockSweeper  // optional; nil skips the stuck-parent leg
+	logger        zerolog.Logger
+	metrics       *Metrics
+	now           func() time.Time
 	// leaderGate gates each scan on the elected leader so two
 	// daemons don't both detect + act on the same stuck row.
 	// Especially important when cfg.Action=fail — duplicate
@@ -413,6 +470,7 @@ func (w *Watchdog) scanOnce() {
 	// CLOSED / odd-cancel paths). Best-effort — a failure is logged, never
 	// fatal; the next tick retries.
 	w.reconcileOrphanPaused(ctx)
+	w.reconcilePendingOutcomes(ctx)
 
 	// Approval-timeout sweep: cancel tasks parked in AWAITING_APPROVAL past
 	// the configured timeout so the operator-action inbox doesn't accrue
@@ -424,6 +482,14 @@ func (w *Watchdog) scanOnce() {
 	// backstop that keeps a leaked reservation from blocking a hard cap
 	// forever. Best-effort; no-op when no sweeper is wired.
 	w.sweepBudgetReservations(ctx)
+
+	// Stranded-parent reconcile LAST, deliberately. Both of this scan's own
+	// terminalising legs — handleStuck (action=fail) above and
+	// sweepExpiredApprovals just now — can mark a CHILD task terminal without
+	// driving the parent-unblock hook, so running this after them means a
+	// parent stranded by THIS tick is recovered by THIS tick rather than
+	// waiting for the next one.
+	w.reconcileStuckParents(ctx)
 }
 
 // defaultReservationStaleAfter bounds an unsettled reservation's lifetime
@@ -524,6 +590,74 @@ func (w *Watchdog) reconcileOrphanPaused(ctx context.Context) {
 		w.logger.Info().Int64("orphans_swept", n).
 			Msg("watchdog: finalized orphan PAUSED executions (parent task already terminal)")
 	}
+}
+
+// pendingOutcomeSettleGrace is how long an execution must have been terminal
+// before its pending rows are considered stranded. The executor writes an
+// execution's terminal status around its own SweepPending call, so a shorter
+// grace would race that window and relabel a row the correct path was about
+// to finalize properly.
+const pendingOutcomeSettleGrace = 10 * time.Minute
+
+// pendingOutcomeBatchLimit bounds one tick's relabelling. Mirrors the score
+// reconciler: a bounded oldest-first batch keeps a large historical backlog
+// from monopolising a scan, and drains over successive ticks.
+const pendingOutcomeBatchLimit = 500
+
+// WithStepOutcomeRepository wires the pending-outcome backstop. Chainable so
+// the daemon can opt in without changing New's signature; returns the receiver
+// unchanged when w is nil so a disabled watchdog stays disabled.
+func (w *Watchdog) WithStepOutcomeRepository(repo StepOutcomeRepository) *Watchdog {
+	if w == nil {
+		return w
+	}
+	w.outcomeRepo = repo
+	return w
+}
+
+// reconcilePendingOutcomes relabels step-outcome rows left at
+// pending_validation under an already-terminal execution. Best-effort and
+// idempotent, exactly like reconcileOrphanPaused: a failure is logged and the
+// next tick retries, because this leg must never take down the scan that
+// detects stuck executions.
+func (w *Watchdog) reconcilePendingOutcomes(ctx context.Context) {
+	if w.outcomeRepo == nil {
+		return
+	}
+	n, err := w.outcomeRepo.SweepPendingForTerminalExecutions(ctx, pendingOutcomeSettleGrace, pendingOutcomeBatchLimit)
+	if err != nil {
+		w.logger.Warn().Err(err).
+			Msg("watchdog: pending-outcome reconcile failed; rows stay pending_validation until next tick")
+		return
+	}
+	if n > 0 {
+		if w.metrics != nil && w.metrics.pendingOutcomesSwept != nil {
+			w.metrics.pendingOutcomesSwept.Add(float64(n))
+		}
+		w.logger.Info().Int64("rows_swept", n).
+			Msg("watchdog: relabelled pending_validation outcomes under terminal executions")
+	}
+}
+
+// WithParentUnblockSweeper wires the stranded-parent backstop. Chainable so the
+// daemon can opt in without changing New's signature.
+func (w *Watchdog) WithParentUnblockSweeper(sweeper ParentUnblockSweeper) *Watchdog {
+	if w == nil {
+		return w
+	}
+	w.parentSweeper = sweeper
+	return w
+}
+
+// reconcileStuckParents re-runs the parent-unblock decision for every parent
+// still in WAITING_FOR_CHILDREN. Idempotent and best-effort, like the other
+// reconcile legs: the sweep short-circuits on any parent whose children are not
+// all terminal, so the worst case is a no-op per entry.
+func (w *Watchdog) reconcileStuckParents(ctx context.Context) {
+	if w.parentSweeper == nil {
+		return
+	}
+	w.parentSweeper.SweepStuckWaitingForChildren(ctx)
 }
 
 // handleStuck applies the configured action to a single stuck

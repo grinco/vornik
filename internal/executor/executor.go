@@ -1644,6 +1644,16 @@ func (e *Executor) Recover(ctx context.Context) error {
 // daemon was killed between transition and notify, the parent has
 // no other wake source. The CPC timeout scanner covers cross-project
 // timeouts; this covers in-project delegation parents.
+// SweepStuckWaitingForChildren is the exported wrapper the watchdog calls to
+// run this sweep on every tick rather than only at daemon startup. Four paths
+// terminalise a child task without driving the parent-unblock hook (audited
+// 2026-08-18: the UI's execution-cancel, the chat cancel action, and the
+// watchdog's own approval-timeout and stuck-fail legs), so a startup-only
+// backstop left a stranded parent waiting for a restart.
+func (e *Executor) SweepStuckWaitingForChildren(ctx context.Context) {
+	e.sweepStuckWaitingForChildren(ctx)
+}
+
 func (e *Executor) sweepStuckWaitingForChildren(ctx context.Context) {
 	if e == nil || e.persistTaskRepo == nil {
 		return

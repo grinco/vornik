@@ -69,6 +69,10 @@ type PromptCostFixture struct {
 	// ToolGrantAvailable mirrors whether grant_step_tools is advertised, which
 	// gates the tool-budget block.
 	ToolGrantAvailable bool `json:"toolGrantAvailable"`
+	// WorktreeGitReadOnly mirrors whether the project is mounted as a git
+	// worktree, whose main .git the runtime mounts read-only — the condition
+	// the workspace-git block describes.
+	WorktreeGitReadOnly bool `json:"worktreeGitReadOnly"`
 	// CanonicalContext is the resolved pre-load, supplied rather than read.
 	CanonicalContext CanonicalContext `json:"canonicalContext"`
 	// Skills is the resolved learned-skill index, supplied rather than queried.
@@ -124,6 +128,7 @@ func AttributePromptCost(f PromptCostFixture) PromptCost {
 		SystemPrompt:             f.RolePrompt,
 		SuppressedGuidanceBlocks: f.SuppressedGuidanceBlocks,
 		ToolGrantAvailable:       f.ToolGrantAvailable,
+		WorktreeGitReadOnly:      f.WorktreeGitReadOnly,
 	}
 	suppressed := opts.suppressesGuidanceBlock
 
@@ -158,6 +163,10 @@ func AttributePromptCost(f PromptCostFixture) PromptCost {
 	// gate runs on every step of every deployment, so suppressing the block
 	// would remove the warning and not the rule.
 	add(promptblock.ReportingIntegrity, composeSystemPromptWithClaimVerification(sp))
+	// Gated on the deployment fact, not on suppression — mirrors
+	// agent_input_context.go. A non-worktree project adds nothing here, so the
+	// attribution keeps summing to the composed prompt in both shapes.
+	add(promptblock.WorkspaceGit, composeSystemPromptWithWorkspaceGit(sp, f.WorktreeGitReadOnly))
 
 	cost.TotalBytes = len(sp)
 	return cost

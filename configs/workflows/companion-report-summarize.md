@@ -11,6 +11,16 @@ maxIterations: 6
 maxWallClock: "15m"
 cleanup_artifacts:
   - artifacts/out/summary.md
+# Scores this workflow's DECLARED output obligations — the
+# require_output_glob entries above — as met/declared (2026-08-18).
+# Chosen over pinned_case_validation because that kind needs the verifier to
+# emit testing.cases[], which the local benchmark model managed 15% of the
+# time against 100% for a 397B; "write the file you promised" is a contract a
+# small model can actually keep. It measures delivery, NOT correctness: a
+# workflow writing a valid but empty file scores 1.0. See
+# https://docs.vornik.io
+qualityScoring:
+  kind: "contract_satisfaction"
 steps:
   summarize:
     type: "agent"

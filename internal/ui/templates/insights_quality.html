@@ -9,7 +9,7 @@
             <div class="flex items-start justify-between gap-4 flex-wrap">
                 <div>
                     <h1 class="text-xl font-semibold text-ink-100">Execution quality</h1>
-                    <p class="mt-1 text-sm text-ink-400">Pinned-case scores by production execution · {{.WindowLabel}}</p>
+                    <p class="mt-1 text-sm text-ink-400">Pinned-case validation scores by execution · {{.WindowLabel}}</p>
                 </div>
                 {{if .AllowedProjects}}
                 <form method="get" action="/ui/insights/quality" class="flex items-center gap-2">
@@ -24,6 +24,86 @@
 
             {{if .Notice}}<div class="glass rounded-xl px-5 py-4 text-sm text-ink-400">{{.Notice}}</div>{{end}}
 
+            {{/* Coverage first: what this page can measure, before any number
+                 it reports. A mean over three executions is not a fact about
+                 production, and saying so up front is cheaper than an
+                 operator inferring it from a small sample count. */}}
+            <div class="glass rounded-xl overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60"><h2 class="text-sm font-semibold text-ink-200">Scoring coverage</h2></div>
+                <div class="px-5 py-4 grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    <div><div class="text-2xl font-semibold tabular-nums">{{.View.Coverage.Declaring}}<span class="text-sm text-ink-500">/{{.View.Coverage.Workflows}}</span></div><div class="text-xs text-ink-400">Workflows with a scoring policy</div></div>
+                    <div><div class="text-2xl font-semibold tabular-nums">{{.View.Coverage.Scored}}</div><div class="text-xs text-ink-400">Executions scored</div></div>
+                    <div><div class="text-2xl font-semibold tabular-nums {{if gt .View.Coverage.AwaitingEvidence 0}}text-rose-600 dark:text-rose-300{{end}}">{{.View.Coverage.AwaitingEvidence}}</div><div class="text-xs text-ink-400">Declared, no usable evidence</div></div>
+                    <div><div class="text-2xl font-semibold tabular-nums text-ink-400">{{.View.Coverage.NotApplicable}}</div><div class="text-xs text-ink-400">No policy declared</div></div>
+                </div>
+                <p class="px-5 pb-4 text-xs text-ink-500">
+                    Only workflows declaring <code class="font-mono">qualityScoring</code> are scorable; today that is
+                    <code class="font-mono">dev-pipeline</code>, whose analyst pins test-case ids and whose tester reports a status per id.
+                    This surface is therefore benchmark-first with a production tail, not a whole-fleet quality number.
+                    Executions with no policy are counted, never averaged.
+                </p>
+            </div>
+
+            {{/* State 1 — nothing in scope declares a policy. Named explicitly:
+                 an operator seeing an empty table otherwise reads it as
+                 missing data rather than as a configuration fact. */}}
+            {{if .View.NoPolicyInScope}}
+            <div class="glass rounded-xl panel-primary overflow-hidden" data-tone="amber">
+                <div class="px-5 py-3.5 border-b border-surface-600/60"><h2 class="text-sm font-semibold text-ink-200">No workflow in scope declares a scoring policy</h2></div>
+                <div class="px-5 py-4 text-sm text-ink-400">
+                    <p>Every terminal execution in this window was scored <span class="font-mono text-xs">not_applicable</span>. That is not missing data: the workflows that ran carry no pinned-case contract, so there is nothing to grade.</p>
+                    <p class="mt-2">Add a <code class="font-mono">qualityScoring</code> block to a workflow whose steps genuinely pin and verify test cases. Declaring one on a workflow with no verifiable contract manufactures a number rather than measuring one.</p>
+                </div>
+            </div>
+            {{end}}
+
+            {{/* State 3 — declared but unproven. Above the results table on
+                 purpose: a contract that produces no evidence is a defect,
+                 and it is invisible in a mean that simply has fewer samples. */}}
+            {{if .View.EvidenceGaps}}
+            <div class="glass rounded-xl panel-primary overflow-hidden" data-tone="rose">
+                <div class="px-5 py-3.5 border-b border-surface-600/60 flex items-baseline justify-between gap-3">
+                    <h2 class="text-sm font-semibold text-ink-200">Policy declared, evidence missing</h2>
+                    <span class="text-xs text-ink-500">{{.View.Coverage.AwaitingEvidence}} execution(s)</span>
+                </div>
+                <div class="px-5 py-4">
+                    <p class="text-sm text-ink-400">These executions ran under a scoring policy and produced nothing the scorer could grade. They are counted as zero, and the reason names which half of the contract failed.</p>
+                    <ul class="mt-3 space-y-1.5">
+                        {{range .View.EvidenceGaps}}
+                        <li class="flex items-baseline justify-between gap-3 text-sm">
+                            <span class="font-mono text-xs text-rose-700 dark:text-rose-300">{{.Diagnostic}}</span>
+                            <span class="tabular-nums text-ink-300">{{.Count}}</span>
+                        </li>
+                        {{end}}
+                    </ul>
+                </div>
+            </div>
+            {{end}}
+
+            {{/* State 2 — the numbers, for workflows that actually declare a policy. */}}
+            {{if .View.Declaring}}
+            <div class="glass rounded-xl overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60"><h2 class="text-sm font-semibold text-ink-200">Scored workflows</h2></div>
+                <div class="overflow-x-auto"><table class="w-full text-sm">
+                    <thead class="bg-surface-900/40 text-xs uppercase text-ink-500"><tr><th class="px-4 py-2 text-left">Workflow</th><th class="px-4 py-2 text-right">Mean</th><th class="px-4 py-2 text-right">Scored</th><th class="px-4 py-2 text-right">Awaiting evidence</th><th class="px-4 py-2 text-right">Missing</th><th class="px-4 py-2 text-right">Invalid</th><th class="px-4 py-2 text-right">N/A</th></tr></thead>
+                    <tbody class="divide-y divide-surface-600/60">{{range .View.Declaring}}<tr><td class="px-4 py-2 font-mono">{{.WorkflowID}}</td><td class="px-4 py-2 text-right font-semibold tabular-nums">{{if gt .Scored 0}}{{.MeanPercent}}%{{else}}—{{end}}</td><td class="px-4 py-2 text-right">{{.Scored}}</td><td class="px-4 py-2 text-right {{if gt .AwaitingEvidence 0}}text-rose-600 dark:text-rose-300{{end}}">{{.AwaitingEvidence}}</td><td class="px-4 py-2 text-right">{{.MissingContract}}</td><td class="px-4 py-2 text-right">{{.InvalidEvidence}}</td><td class="px-4 py-2 text-right text-ink-500">{{.NotApplicable}}</td></tr>{{end}}</tbody>
+                </table></div>
+                <p class="px-5 py-3 text-xs text-ink-500">Mean covers scored executions only. Awaiting-evidence runs are zeroes with a reason, not low scores, and are excluded from the mean so an unmeasured run cannot masquerade as a bad one.</p>
+            </div>
+            {{end}}
+
+            {{/* Workflows that ran but declare nothing. Listed rather than
+                 hidden so "why is my workflow not here" has an answer. */}}
+            {{if .View.Silent}}
+            <div class="glass rounded-xl overflow-hidden">
+                <div class="px-5 py-3.5 border-b border-surface-600/60"><h2 class="text-sm font-semibold text-ink-200">Ran, but declares no scoring policy</h2></div>
+                <div class="overflow-x-auto"><table class="w-full text-sm">
+                    <thead class="bg-surface-900/40 text-xs uppercase text-ink-500"><tr><th class="px-4 py-2 text-left">Workflow</th><th class="px-4 py-2 text-right">Executions</th></tr></thead>
+                    <tbody class="divide-y divide-surface-600/60">{{range .View.Silent}}<tr><td class="px-4 py-2 font-mono text-ink-400">{{.WorkflowID}}</td><td class="px-4 py-2 text-right tabular-nums text-ink-400">{{.NotApplicable}}</td></tr>{{end}}</tbody>
+                </table></div>
+            </div>
+            {{end}}
+
             <div class="glass rounded-xl panel-primary overflow-hidden" {{if gt .Publication.Count 0}}data-tone="amber"{{end}}>
                 <div class="px-5 py-3.5 border-b border-surface-600/60"><h2 class="text-sm font-semibold text-ink-200">Publication health</h2></div>
                 <div class="px-5 py-4 flex items-baseline gap-3">
@@ -33,23 +113,13 @@
                 </div>
             </div>
 
-            {{if .Summaries}}
-            <div class="glass rounded-xl overflow-hidden">
-                <div class="px-5 py-3.5 border-b border-surface-600/60"><h2 class="text-sm font-semibold text-ink-200">By workflow</h2></div>
-                <div class="overflow-x-auto"><table class="w-full text-sm">
-                    <thead class="bg-surface-900/40 text-xs uppercase text-ink-500"><tr><th class="px-4 py-2 text-left">Workflow</th><th class="px-4 py-2 text-right">Mean</th><th class="px-4 py-2 text-right">Scored</th><th class="px-4 py-2 text-right">Missing</th><th class="px-4 py-2 text-right">Invalid</th><th class="px-4 py-2 text-right">N/A</th></tr></thead>
-                    <tbody class="divide-y divide-surface-600/60">{{range .Summaries}}<tr><td class="px-4 py-2 font-mono">{{.WorkflowID}}</td><td class="px-4 py-2 text-right font-semibold tabular-nums">{{if gt .Scored 0}}{{.MeanPercent}}%{{else}}—{{end}}</td><td class="px-4 py-2 text-right">{{.Scored}}</td><td class="px-4 py-2 text-right">{{.MissingContract}}</td><td class="px-4 py-2 text-right">{{.InvalidEvidence}}</td><td class="px-4 py-2 text-right">{{.NotApplicable}}</td></tr>{{end}}</tbody>
-                </table></div>
-            </div>
-            {{end}}
-
-            {{if .Attention}}
+            {{if .View.Attention}}
             <div class="glass rounded-xl panel-primary overflow-hidden" data-tone="rose">
                 <div class="px-5 py-3.5 border-b border-surface-600/60"><h2 class="text-sm font-semibold text-ink-200">Needs investigation</h2></div>
-                <div class="divide-y divide-surface-600/60">{{range .Attention}}
+                <div class="divide-y divide-surface-600/60">{{range .View.Attention}}
                     <a href="/ui/executions/{{.ExecutionID}}" class="block px-5 py-3 hover:bg-surface-800/60">
                         <div class="flex items-center justify-between gap-3"><span class="font-mono text-xs text-brand-400">{{.ExecutionID}}</span><span class="text-xs text-ink-400">{{.Status}}{{if .Score}} · {{scorePercent .Score}}%{{end}}</span></div>
-                        {{if .Diagnostic}}<p class="mt-1 text-xs font-mono text-rose-700 dark:text-rose-300">{{.Diagnostic}}</p>{{end}}
+                        {{if .Diagnostic}}<p class="mt-1 text-xs font-mono text-rose-700 dark:text-rose-300">{{.Diagnostic}}{{if gt .PinnedCaseCount 0}} · {{.PassedCaseCount}}/{{.PinnedCaseCount}} pinned cases{{end}}</p>{{end}}
                     </a>
                 {{end}}</div>
             </div>

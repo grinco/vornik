@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 6076dc0ddaedb79e565ecc8ddd8ba374484baf8d651c5d0383964a38188d010f
+      sha256: 3a4c37d3d891a669ff6b5e482f300f21200a32615ea3b2519215fff5b5dabf5d
 ---
 # Release Notes
 
@@ -14,6 +14,58 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.8.7
+
+**Two roles were failing most of the time because we asked them to restate
+something the system already knew.** Both are fixed, and both were measured
+before and after on a benchmark deployment. Neither was a model limitation.
+
+**A tester could claim tests passed without listing what it checked.** The rule
+requiring the list of validated cases was enforced after the fact, but the
+machine-readable contract the model is decoded against marked that list
+optional — so the model was doing exactly what it was permitted to do, and the
+work was rejected afterwards at the cost of a retry. The list is now required
+where it binds. Measured on the same deployment: the failure went from 37 in 50
+attempts to none, and the retry ladder stopped being entered at all.
+
+**A step could fail for not mentioning a file it had just written.** Where a
+step declares an output file, the daemon verifies it against the real
+filesystem. That check passed — and then the step was failed anyway because the
+agent's own summary of what it produced was empty. A verified file now settles
+the question; the agent's omission is still recorded, but no longer fails the
+step. This does not weaken the opposite check: an agent claiming a file it never
+wrote is still caught. Measured: first-attempt success rose from 36% to 100%,
+and the work took one model call per step instead of 2.3.
+
+**Field descriptions in an output schema now reach the model.** They were
+dropped on the way to the prompt, so agents saw field names with no explanation
+of what belonged in them.
+
+**A daemon whose configuration fails to load now stops instead of serving.**
+Previously it kept running with a synthetic fallback, so a task naming a
+workflow that no longer existed could still report success — having never run
+that workflow. Relatedly, the `pedantic` setting now actually takes the strict
+path it describes.
+
+**Agents are told when their checkout is read-only.** They were looping on
+writes that could never succeed, which accounted for most of the stuck-agent
+reports.
+
+**New: output-contract scoring for workflows.** Workflows that declare an
+output file are now scored on whether they delivered it, across nine shipped
+workflows. This measures delivery, not correctness — a workflow that writes a
+valid but empty file scores full marks — so treat it as a regression guard for
+"this workflow stopped producing its output", not as a quality score.
+
+**Other fixes:** adaptive workflows now record a terminal outcome for each
+step; a parent task waiting on children no longer needs a restart to unstick; a
+tool call that a provider flattens into a single argument string is split back
+apart; a refused tool grant explains why; deduplicated deliverables are
+surfaced; published HTML is preserved when the page host fails; scheduled task
+attachments are delivered; and workflow timeout proposals are scoped globally.
 
 ---
 

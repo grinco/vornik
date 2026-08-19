@@ -260,6 +260,16 @@ func (e *Executor) persistArtifacts(ctx context.Context, executionID, projectID,
 					Msg("artifacts: refusing entry that escapes workspace")
 				continue
 			}
+			// Prior-step outputs are staged into this directory so the next
+			// role can read them. If the role left one byte-for-byte unchanged,
+			// it remains an input and must not be registered again as this
+			// step's output (T-b093f). A modified same-name file is a genuine
+			// new revision and passes through.
+			if prevHash, staged := preStepSnapshot["workspace:"+entry.Name()]; staged {
+				if curHash, hashErr := hashFile(safe); hashErr == nil && curHash == prevHash {
+					continue
+				}
+			}
 			files = append(files, harvestedFile{
 				name:       entry.Name(),
 				sourcePath: safe,
@@ -852,6 +862,40 @@ type auditEntryForDetection struct {
 // a coincidence.
 const degenerateLoopThreshold = 3
 
+// nearDegenerateLoopThreshold is the run length required when the calls match
+// only after digits are normalised away. Higher than the exact threshold
+// because a repeating SHAPE can be legitimate — paging through a large file is
+// the honest version of the same pattern — while byte-identical repeats never
+// are. Mirrors NEAR_MAX_REPEATS in images/vornik-agent/entrypoint.sh so the
+// label this classifier writes agrees with the decision the container made.
+const nearDegenerateLoopThreshold = 12
+
+// normaliseLoopInput collapses every run of digits to "#" so calls that differ
+// only in a number compare equal.
+//
+// Measured 2026-08-18: a coder walked a file with `sed -n '175,270p'`, then
+// '176,280p', then '177,290p', one line further per iteration. The exact
+// comparison never matched, so the step exhausted its 125-iteration budget and
+// was labelled iteration_exhausted — hiding a loop as a budget problem, and
+// with it the read-only-git root cause underneath.
+func normaliseLoopInput(in string) string {
+	var b strings.Builder
+	b.Grow(len(in))
+	inDigits := false
+	for _, r := range in {
+		if r >= '0' && r <= '9' {
+			if !inDigits {
+				b.WriteByte('#')
+				inDigits = true
+			}
+			continue
+		}
+		inDigits = false
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // detectDegenerateLoop scans audit entries for a run of N consecutive
 // identical (tool, input) calls. Returns a descriptive detail string
 // when a loop is found, else "". Non-consecutive repeats are not a
@@ -865,6 +909,9 @@ func detectDegenerateLoop(entries []auditEntryForDetection) string {
 	runLen := 1
 	runTool := entries[0].Tool
 	runInput := entries[0].Input
+	nearLen := 1
+	nearTool := entries[0].Tool
+	nearInput := normaliseLoopInput(entries[0].Input)
 	for i := 1; i < len(entries); i++ {
 		e := entries[i]
 		if e.Tool == runTool && e.Input == runInput {
@@ -881,6 +928,24 @@ func detectDegenerateLoop(entries []auditEntryForDetection) string {
 			runLen = 1
 			runTool = e.Tool
 			runInput = e.Input
+		}
+		// Near-run tracked independently: a sliding window never repeats
+		// exactly, so the exact counter above resets on every call while this
+		// one climbs.
+		if norm := normaliseLoopInput(e.Input); e.Tool == nearTool && norm == nearInput {
+			nearLen++
+			if nearLen >= nearDegenerateLoopThreshold {
+				preview := e.Input
+				if len(preview) > 200 {
+					preview = preview[:200] + "..."
+				}
+				return fmt.Sprintf("repeated %s call %d times with near-identical input (differing only in numbers): %s",
+					nearTool, nearLen, preview)
+			}
+		} else {
+			nearLen = 1
+			nearTool = e.Tool
+			nearInput = normaliseLoopInput(e.Input)
 		}
 	}
 	return ""

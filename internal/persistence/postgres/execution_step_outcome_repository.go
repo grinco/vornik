@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/stepoutcome"
 )
 
 // ExecutionStepOutcomeRepository implements
@@ -157,6 +158,43 @@ func (r *ExecutionStepOutcomeRepository) SweepPending(ctx context.Context, execu
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// SweepPendingForTerminalExecutions relabels pending rows under executions that
+// reached a terminal status without their own sweep running. See the interface
+// doc for why this is a reconciler and why the label is `superseded`.
+func (r *ExecutionStepOutcomeRepository) SweepPendingForTerminalExecutions(ctx context.Context, olderThan time.Duration, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().Add(-olderThan)
+	// Oldest-first inside a bounded batch so one large backlog cannot starve
+	// newer rows, and so a stuck batch is visible as a non-shrinking backlog
+	// rather than as silent progress.
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE execution_step_outcomes o
+		SET outcome = $1,
+		    finalized_at = NOW()
+		WHERE o.id IN (
+		    SELECT o2.id
+		    FROM execution_step_outcomes o2
+		    JOIN executions e ON e.id = o2.execution_id
+		    WHERE o2.outcome = 'pending_validation'
+		      AND e.status IN ('COMPLETED', 'FAILED', 'CANCELLED')
+		      AND COALESCE(e.completed_at, e.updated_at) < $2
+		    ORDER BY o2.recorded_at ASC
+		    LIMIT $3
+		)`,
+		string(stepoutcome.Superseded), cutoff, limit,
+	)
+	if err != nil {
+		return 0, mapDBError(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // List returns outcome rows matching the filter, newest first.

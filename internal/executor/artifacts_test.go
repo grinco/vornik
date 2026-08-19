@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -824,6 +825,44 @@ func TestPersistArtifacts_SnapshotRegistersModifiedFile(t *testing.T) {
 	require.Equal(t, deliverable, store.seenSources[0])
 }
 
+// T-b093f: upstream outputs are deliberately re-staged into the next step's
+// ephemeral artifacts/out directory. They are inputs to that step, not fresh
+// outputs, and must not be registered again when their bytes are unchanged.
+func TestPersistArtifacts_SnapshotSkipsUnchangedRestagedOutput(t *testing.T) {
+	workspace := t.TempDir()
+	outDir := filepath.Join(workspace, "artifacts", "out")
+	require.NoError(t, os.MkdirAll(outDir, 0o755))
+	research := []byte("# research from the upstream step\n")
+	require.NoError(t, os.WriteFile(filepath.Join(outDir, "research.md"), research, 0o644))
+
+	store := &recordingArtifactStore{}
+	e := &Executor{artifactStore: store, logger: zerolog.Nop()}
+	_, err := e.persistArtifacts(context.Background(), "exec-929c", "proj-1", "task-1",
+		workspace, "", time.Now().Add(-time.Minute), ArtifactDirSnapshot{
+			"workspace:research.md": sha256Hex(research),
+		})
+	require.NoError(t, err)
+	require.Empty(t, store.seenSources,
+		"unchanged re-staged upstream output is an input and must not become another artifact row")
+}
+
+func TestPersistArtifacts_SnapshotRegistersModifiedRestagedOutput(t *testing.T) {
+	workspace := t.TempDir()
+	outDir := filepath.Join(workspace, "artifacts", "out")
+	require.NoError(t, os.MkdirAll(outDir, 0o755))
+	old := []byte("draft\n")
+	require.NoError(t, os.WriteFile(filepath.Join(outDir, "research.md"), []byte("revised by this step\n"), 0o644))
+
+	store := &recordingArtifactStore{}
+	e := &Executor{artifactStore: store, logger: zerolog.Nop()}
+	_, err := e.persistArtifacts(context.Background(), "exec-929c", "proj-1", "task-1",
+		workspace, "", time.Now().Add(-time.Minute), ArtifactDirSnapshot{
+			"workspace:research.md": sha256Hex(old),
+		})
+	require.NoError(t, err)
+	require.Len(t, store.seenSources, 1, "a step that changes the staged file owns the revised output")
+}
+
 // TestSnapshotArtifactDir_HashesFilesAndSkipsDirs — pin the
 // snapshot helper's behaviour: every regular file gets a hex
 // SHA-256, directories are excluded, missing dirs return empty.
@@ -1126,4 +1165,73 @@ func (r *capturingArtifactRepoForOrigin) GetByHash(_ context.Context, _ string) 
 }
 func (r *capturingArtifactRepoForOrigin) List(_ context.Context, _ persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
 	return nil, nil
+}
+
+// Regression, measured 2026-08-18: the exact detector compares (tool, input)
+// byte-for-byte, so a call that varies one number evades it completely. A coder
+// walked a file with `sed -n '175,270p'`, then '176,280p', then '177,290p' — one
+// line further per iteration — never tripping the detector and burning the whole
+// 125-iteration budget, which then reported as iteration_exhausted rather than
+// as the loop it was. That mislabel is what kept the read-only-git root cause
+// underneath it invisible across five benchmark arms.
+func TestDetectDegenerateLoop_CatchesArgumentVaryingRepeats(t *testing.T) {
+	var sliding []auditEntryForDetection
+	for i := 0; i < nearDegenerateLoopThreshold; i++ {
+		sliding = append(sliding, auditEntryForDetection{
+			Tool:  "run_shell",
+			Input: fmt.Sprintf(`{"command":"sed -n '%d,%dp' file.go"}`, 175+i, 270+i*10),
+		})
+	}
+	got := detectDegenerateLoop(sliding)
+	if got == "" {
+		t.Fatal("a sliding-window repeat must be reported as a loop, not left to " +
+			"exhaust the iteration budget and report as a budget problem")
+	}
+	if !strings.Contains(got, "near-identical") {
+		t.Errorf("the detail must distinguish a near-repeat from an exact one so the "+
+			"operator knows which pathology they are looking at, got: %s", got)
+	}
+}
+
+// The looser threshold must not swallow legitimate work: a repeating SHAPE is
+// normal (paging a large file), which is exactly why the near threshold is 4x
+// the exact one and why the container's first response is advisory.
+func TestDetectDegenerateLoop_ToleratesShortShapeRuns(t *testing.T) {
+	var paging []auditEntryForDetection
+	for i := 0; i < nearDegenerateLoopThreshold-1; i++ {
+		paging = append(paging, auditEntryForDetection{
+			Tool:  "run_shell",
+			Input: fmt.Sprintf(`{"command":"sed -n '%d,%dp' file.go"}`, 1+i*100, 100+i*100),
+		})
+	}
+	if got := detectDegenerateLoop(paging); got != "" {
+		t.Errorf("a run below the near threshold must not be called a loop, got: %s", got)
+	}
+}
+
+// Exact repeats keep their own, much lower threshold — a byte-identical call is
+// never legitimate, and normalisation must not have raised the bar for it.
+func TestDetectDegenerateLoop_ExactRepeatsStillTripAtThree(t *testing.T) {
+	same := make([]auditEntryForDetection, degenerateLoopThreshold)
+	for i := range same {
+		same[i] = auditEntryForDetection{Tool: "run_shell", Input: `{"command":"git status"}`}
+	}
+	got := detectDegenerateLoop(same)
+	if got == "" {
+		t.Fatal("byte-identical repeats must still trip at the exact threshold")
+	}
+	if strings.Contains(got, "near-identical") {
+		t.Errorf("an exact repeat must not be reported as a near-repeat, got: %s", got)
+	}
+}
+
+func TestNormaliseLoopInput_CollapsesDigitRuns(t *testing.T) {
+	if got := normaliseLoopInput("sed -n '175,270p'"); got != "sed -n '#,#p'" {
+		t.Errorf("normaliseLoopInput = %q", got)
+	}
+	// Non-digit differences must survive, or unrelated commands would collapse
+	// into one another and the detector would fire on genuinely varied work.
+	if normaliseLoopInput("cat a.go") == normaliseLoopInput("cat b.go") {
+		t.Error("normalisation must only erase digits")
+	}
 }

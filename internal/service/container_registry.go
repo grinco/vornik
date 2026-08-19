@@ -65,10 +65,30 @@ func buildSecretsDetector(cfg config.SecretsConfig) (secrets.Detector, map[strin
 	return detector, actions, nil
 }
 
+// registryActivatedNothing reports whether a load left the registry unable to
+// run anything. Named and exported to the package (rather than inlined) so the
+// regression test asserts THIS predicate instead of a copy of it — a test that
+// re-implements the rule it is guarding passes while the rule drifts.
+func registryActivatedNothing(reg *registry.Registry) bool {
+	return len(reg.ListWorkflows()) == 0 || len(reg.ListSwarms()) == 0
+}
+
 func (c *Container) initRegistry() error {
 	configDir := resolveRegistryConfigDir(c.ConfigPath)
 	if configDir == "" {
 		return fmt.Errorf("no registry config directory found")
+	}
+
+	// Install the operator's chat.model_capabilities BEFORE the first load:
+	// swarm validation refuses a role whose required modality its model cannot
+	// serve, and until 2026-08-19 it read no declarations at all — so its own
+	// advice to "declare the model's modalities in chat.model_capabilities" was
+	// unfollowable, and a vision role on a host serving only a local model
+	// could not be declared at all.
+	if declared, err := c.Config.Chat.DeclaredModalities(); err == nil {
+		registry.SetDeclaredModalities(declared)
+	} else {
+		c.Logger.Warn().Err(err).Msg("chat.model_capabilities is unreadable; role-modality validation will use built-in patterns only")
 	}
 
 	reg := registry.New()
@@ -77,7 +97,36 @@ func (c *Container) initRegistry() error {
 		if !errors.As(err, &ve) {
 			return fmt.Errorf("failed to load registry from %s: %w", configDir, err)
 		}
-		c.Logger.Warn().Err(err).Str("config_dir", configDir).Msg("registry loaded with validation warnings; invalid projects skipped")
+		// A ValidationError has two very different origins, and only one of
+		// them is survivable.
+		//
+		// Load() is Stage → StripInvalidFromStaged → ActivateStaged. The
+		// tolerated case is the LAST one: staging and activation succeeded and
+		// some invalid PROJECTS were stripped, which is what this warning was
+		// written for. But a STAGE failure — a malformed swarm or workflow —
+		// returns before anything is activated, leaving a registry with no
+		// swarms and no workflows at all.
+		//
+		// Measured 2026-08-18 on the benchmark host: one bad role in one swarm
+		// failed staging, this branch logged a warning, the daemon served
+		// anyway, and executor.resolveExecutionPlan then silently substituted a
+		// synthetic single-step "worker" workflow for every task WHILE STILL
+		// recording the requested workflow_id in the ledger. Three benchmark
+		// tasks reported COMPLETED having run a "Process task <id>" prompt
+		// instead of the workflow they named. A measurement cannot survive
+		// that, and neither can an operator reading the ledger.
+		//
+		// So: tolerate stripped projects, refuse to serve with no workflows.
+		if registryActivatedNothing(reg) {
+			return fmt.Errorf("refusing to start: registry at %s activated no swarms/workflows "+
+				"(%d swarms, %d workflows) — serving would silently substitute a synthetic "+
+				"single-step workflow for every task: %w",
+				configDir, len(reg.ListSwarms()), len(reg.ListWorkflows()), err)
+		}
+		c.Logger.Warn().Err(err).Str("config_dir", configDir).
+			Int("swarms", len(reg.ListSwarms())).
+			Int("workflows", len(reg.ListWorkflows())).
+			Msg("registry loaded with validation warnings; invalid projects skipped")
 	}
 
 	c.Registry = reg

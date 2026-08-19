@@ -3,9 +3,12 @@ package agentbench
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -86,11 +89,22 @@ func (d *DaemonTaskRunner) Run(ctx context.Context, spec TaskSpec) (TaskOutcome,
 		TaskID string `json:"task_id"`
 		Status string `json:"status"`
 	}
-	if err := d.call(ctx, "delegate", map[string]any{
+	args := map[string]any{
 		"workflow": spec.Workflow,
 		"prompt":   spec.Prompt,
 		"project":  d.cfg.Project,
-	}, &submitted); err != nil {
+	}
+	// Only set the key when there is something to stage: delegate treats a
+	// present inputArtifacts as a staging attempt, and every prompt-only task
+	// must keep its existing wire shape.
+	if len(spec.Attachments) > 0 {
+		staged, err := stageAttachments(spec)
+		if err != nil {
+			return TaskOutcome{}, fmt.Errorf("submit %q: %w", spec.ID, err)
+		}
+		args["inputArtifacts"] = staged
+	}
+	if err := d.call(ctx, "delegate", args, &submitted); err != nil {
 		return TaskOutcome{}, fmt.Errorf("submit %q: %w", spec.ID, err)
 	}
 	if submitted.TaskID == "" {
@@ -212,4 +226,30 @@ func (d *DaemonTaskRunner) call(ctx context.Context, tool string, args map[strin
 		return fmt.Errorf("decode %s payload: %w", tool, err)
 	}
 	return nil
+}
+
+// stageAttachments reads a spec's attachment paths into the inline
+// {name, content} shape delegate expects, base64-encoding the bytes. The
+// basename becomes the filename the agent sees in its uploads directory.
+//
+// A missing or unreadable attachment is an ERROR rather than a skipped file:
+// silently submitting a review task with nothing staged would produce a run
+// that fails for a reason unrelated to the thing being measured.
+func stageAttachments(spec TaskSpec) ([]map[string]string, error) {
+	out := make([]map[string]string, 0, len(spec.Attachments))
+	for _, path := range spec.Attachments {
+		resolved := path
+		if spec.attachmentBase != "" && !filepath.IsAbs(path) {
+			resolved = filepath.Join(spec.attachmentBase, path)
+		}
+		data, err := os.ReadFile(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("attachment %q: %w", path, err)
+		}
+		out = append(out, map[string]string{
+			"name":    filepath.Base(resolved),
+			"content": base64.StdEncoding.EncodeToString(data),
+		})
+	}
+	return out, nil
 }

@@ -6899,4 +6899,35 @@ ALTER TABLE execution_step_outcomes
     DROP COLUMN IF EXISTS agent_image_id;
 `,
 	},
+	{
+		Version: 165,
+		Name:    "executions_workflow_snapshot",
+		// The workflow definition an execution actually ran under, pinned so a
+		// hot reload cannot reinterpret evidence produced by an older contract
+		// (agent-quality benchmark LLD §12.11.6).
+		//
+		// The column has existed in deployments/postgres/schema/001_initial.sql
+		// since it was introduced, added there by a retrofitted DO block, and
+		// in NO migration. So a database bootstrapped by the migration runner
+		// alone never had it — while its migrations table reported it fully
+		// migrated. Measured on the bench daemon 2026-08-18, sitting at
+		// version 164 like production: the quality reconciler logged
+		// `pq: column e.workflow_snapshot does not exist` every 30 seconds and
+		// no score row was ever published. Migration 163 shipped the reader;
+		// this ships the column it reads.
+		//
+		// IF NOT EXISTS makes it a no-op on every database bootstrapped from
+		// the SQL file, which is all of them today.
+		Up: `
+ALTER TABLE executions
+    ADD COLUMN IF NOT EXISTS workflow_snapshot BYTEA;
+
+COMMENT ON COLUMN executions.workflow_snapshot IS
+    'JSON-serialized workflow definition this execution ran under, pinned at dispatch.';
+`,
+		Down: `
+ALTER TABLE executions
+    DROP COLUMN IF EXISTS workflow_snapshot;
+`,
+	},
 }

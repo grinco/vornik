@@ -20,6 +20,46 @@ type QualityWorkflowSummary struct {
 	MissingContract int
 	InvalidEvidence int
 	NotApplicable   int
+	// AwaitingEvidence is MissingContract+InvalidEvidence: executions whose
+	// workflow DOES declare a scoring policy but whose agents produced no
+	// usable evidence for it. Kept out of MeanPercent on purpose — folding a
+	// contract failure into the mean reports a low quality score for runs
+	// that were never measured.
+	AwaitingEvidence int
+}
+
+// QualityDiagnosticCount is one evidence-gap reason and how often it occurred.
+type QualityDiagnosticCount struct {
+	Diagnostic string
+	Count      int
+}
+
+// QualityCoverage answers "what is this page actually able to measure" before
+// it shows any number.
+type QualityCoverage struct {
+	Workflows        int
+	Declaring        int
+	Scored           int
+	AwaitingEvidence int
+	NotApplicable    int
+}
+
+// QualityView is the computed read model behind the three page states.
+type QualityView struct {
+	Coverage QualityCoverage
+	// Declaring holds workflows that produced at least one row a scoring
+	// policy applied to; Silent holds the ones whose every row was
+	// not_applicable.
+	Declaring []QualityWorkflowSummary
+	Silent    []QualityWorkflowSummary
+	// EvidenceGaps counts the diagnostics behind AwaitingEvidence, commonest
+	// first. This is the actionable half of the page.
+	EvidenceGaps []QualityDiagnosticCount
+	Attention    []*persistence.ExecutionQualityScore
+	// NoPolicyInScope is true when rows exist and NONE of them was scorable.
+	// Distinct from "no rows": one is a configuration fact worth stating,
+	// the other is an empty window.
+	NoPolicyInScope bool
 }
 
 // QualityInsightsData is the operator quality-insights page model.
@@ -31,8 +71,7 @@ type QualityInsightsData struct {
 	AllAccess       bool
 	WindowLabel     string
 	Notice          string
-	Summaries       []QualityWorkflowSummary
-	Attention       []*persistence.ExecutionQualityScore
+	View            QualityView
 	Publication     persistence.ExecutionQualityPendingStats
 }
 
@@ -65,9 +104,9 @@ func (s *Server) InsightsQuality(w http.ResponseWriter, r *http.Request) {
 		s.render(w, "insights_quality.html", data)
 		return
 	}
-	data.Summaries, data.Attention = summarizeExecutionQuality(rows)
+	data.View = summarizeExecutionQuality(rows)
 	if len(rows) == 0 {
-		data.Notice = "No execution quality rows in the recent window yet."
+		data.Notice = "No terminal executions in the recent window yet."
 	}
 	if stats, statsErr := s.executionQualityRepo.PendingTerminalStats(ctx, queryIDs); statsErr == nil {
 		data.Publication = stats
@@ -80,9 +119,20 @@ type qualityAccumulator struct {
 	sum float64
 }
 
-func summarizeExecutionQuality(rows []*persistence.ExecutionQualityScore) ([]QualityWorkflowSummary, []*persistence.ExecutionQualityScore) {
+// summarizeExecutionQuality folds score rows into the three states the page
+// distinguishes: nothing in scope declares a scoring policy, executions were
+// scored, and a policy is declared but the evidence never arrived.
+//
+// Hiding the page when the numbers are empty was the failure mode this
+// replaces. On 2026-08-17 every one of 7599 rows was not_applicable and the
+// page said only "no rows" — a message that reads as missing data when the
+// truth was that no workflow declared a contract. The same silence would have
+// concealed the opposite problem, a declared contract producing nothing, which
+// is a defect rather than a configuration choice.
+func summarizeExecutionQuality(rows []*persistence.ExecutionQualityScore) QualityView {
 	byWorkflow := map[string]*qualityAccumulator{}
-	var attention []*persistence.ExecutionQualityScore
+	diagnostics := map[string]int{}
+	view := QualityView{}
 	for _, row := range rows {
 		if row == nil {
 			continue
@@ -102,29 +152,65 @@ func summarizeExecutionQuality(rows []*persistence.ExecutionQualityScore) ([]Qua
 				a.Scored++
 				a.sum += *row.Score
 				if *row.Score <= 0.5 {
-					attention = append(attention, row)
+					view.Attention = append(view.Attention, row)
 				}
 			}
 		case "missing_contract":
 			a.MissingContract++
-			attention = append(attention, row)
+			countDiagnostic(diagnostics, row.Diagnostic, "missing_contract")
+			view.Attention = append(view.Attention, row)
 		case "invalid_evidence":
 			a.InvalidEvidence++
-			attention = append(attention, row)
+			countDiagnostic(diagnostics, row.Diagnostic, "invalid_evidence")
+			view.Attention = append(view.Attention, row)
 		case "not_applicable":
 			a.NotApplicable++
 		}
 	}
-	out := make([]QualityWorkflowSummary, 0, len(byWorkflow))
+
 	for _, a := range byWorkflow {
 		if a.Scored > 0 {
 			a.MeanPercent = int(math.Round(a.sum / float64(a.Scored) * 100))
 		}
-		out = append(out, a.QualityWorkflowSummary)
+		a.AwaitingEvidence = a.MissingContract + a.InvalidEvidence
+		view.Coverage.Workflows++
+		view.Coverage.Scored += a.Scored
+		view.Coverage.AwaitingEvidence += a.AwaitingEvidence
+		view.Coverage.NotApplicable += a.NotApplicable
+		if a.Scored > 0 || a.AwaitingEvidence > 0 {
+			view.Coverage.Declaring++
+			view.Declaring = append(view.Declaring, a.QualityWorkflowSummary)
+			continue
+		}
+		view.Silent = append(view.Silent, a.QualityWorkflowSummary)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].WorkflowID < out[j].WorkflowID })
-	if len(attention) > 50 {
-		attention = attention[:50]
+	sort.Slice(view.Declaring, func(i, j int) bool { return view.Declaring[i].WorkflowID < view.Declaring[j].WorkflowID })
+	sort.Slice(view.Silent, func(i, j int) bool { return view.Silent[i].WorkflowID < view.Silent[j].WorkflowID })
+
+	for diagnostic, count := range diagnostics {
+		view.EvidenceGaps = append(view.EvidenceGaps, QualityDiagnosticCount{Diagnostic: diagnostic, Count: count})
 	}
-	return out, attention
+	// Commonest first, then by name so equal counts render deterministically.
+	sort.Slice(view.EvidenceGaps, func(i, j int) bool {
+		if view.EvidenceGaps[i].Count != view.EvidenceGaps[j].Count {
+			return view.EvidenceGaps[i].Count > view.EvidenceGaps[j].Count
+		}
+		return view.EvidenceGaps[i].Diagnostic < view.EvidenceGaps[j].Diagnostic
+	})
+
+	view.NoPolicyInScope = len(rows) > 0 && view.Coverage.Declaring == 0
+	if len(view.Attention) > 50 {
+		view.Attention = view.Attention[:50]
+	}
+	return view
+}
+
+// countDiagnostic buckets a row by its diagnostic, falling back to the status
+// when the scorer recorded none — a gap with no reason is still a gap, and
+// dropping it would understate the total the coverage panel reports.
+func countDiagnostic(into map[string]int, diagnostic, status string) {
+	if diagnostic == "" {
+		diagnostic = status
+	}
+	into[diagnostic]++
 }

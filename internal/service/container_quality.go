@@ -9,6 +9,7 @@ import (
 	"context"
 	"time"
 
+	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/persistence/postgres"
 	"vornik.io/vornik/internal/quality"
 )
@@ -37,6 +38,16 @@ func (c *Container) initQualityCollector() {
 			scoreMetrics = quality.NewExecutionScoreMetrics(reg)
 		}
 		c.executionScorePublisher = quality.NewExecutionScorePublisher(c.repos.ExecutionQualityScores, time.Now, scoreMetrics)
+		// contract_satisfaction scores a workflow's declared output obligations
+		// and needs the STEP OUTCOMES to do it: a state snapshot records only
+		// steps that succeeded, so it cannot tell a step that ran and failed
+		// from one never reached, and those are opposite facts for this metric.
+		// Without the reader the kind reports not_applicable rather than
+		// charging the measured system a zero for our missing wiring.
+		if c.repos.StepOutcomes != nil {
+			c.executionScorePublisher = c.executionScorePublisher.WithStepOutcomes(
+				stepOutcomeReader{repo: c.repos.StepOutcomes})
+		}
 		go c.collectExecutionQualityScores()
 		c.Logger.Info().Msg("execution quality score publisher started")
 	}
@@ -119,4 +130,31 @@ func (c *Container) reconcileExecutionQualityScores() {
 			Int("failed", result.Failed).
 			Msg("execution quality score reconciliation incomplete")
 	}
+}
+
+// stepOutcomeReader adapts the step-outcome repository to the narrow surface
+// the quality publisher declares, keeping internal/quality free of a
+// persistence-filter dependency it does not otherwise need.
+type stepOutcomeReader struct {
+	repo persistence.ExecutionStepOutcomeRepository
+}
+
+func (r stepOutcomeReader) OutcomesByExecution(ctx context.Context, executionID string) (map[string]string, error) {
+	rows, err := r.repo.List(ctx, persistence.ExecutionStepOutcomeFilter{ExecutionID: &executionID})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		// List returns newest first, so only record the FIRST sighting of a
+		// step: a step retried after a failure must count as its latest
+		// outcome, not its first attempt.
+		if _, seen := out[row.StepID]; !seen {
+			out[row.StepID] = row.Outcome
+		}
+	}
+	return out, nil
 }

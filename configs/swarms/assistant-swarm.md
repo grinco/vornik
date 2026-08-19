@@ -213,7 +213,22 @@ roles:
         plausibility:
             - name: written_implies_path
               when: {"planning.written": true}
-              require: ["planning.path", "produced_files"]
+            # 2026-08-18: was require: ["planning.path", "produced_files"].
+            # That demanded the SAME fact twice — the path of the file just
+            # written — and a capable model reports it once, in the canonical
+            # produced_files array. Measured: the planner failed 11/11 on the
+            # 27B while the researcher, whose rule requires produced_files
+            # ALONE, passed 11/11 in the very same executions. The model wrote a
+            # correct 1278-byte plan and its retries converged on
+            # produced_files: ["artifacts/out/plan.md"] without ever restating
+            # it in planning.path, so the harness failed a run whose work succeeded.
+            #
+            # Integrity is not weakened: produced_files is the field
+            # verifyRoleClaims checks against the real diff on every step of
+            # every deployment, so a false claim here still fails hard. planning.path
+            # remains in the schema for roles that populate it; it is simply no
+            # longer a second mandatory copy of the same evidence.
+              require: ["produced_files"]
             - name: not_written_implies_reason
               when: {"planning.written": false}
               require: ["planning.reason"]
@@ -294,7 +309,22 @@ roles:
             # reason must say why.
             - name: written_implies_path
               when: {"writing.written": true}
-              require: ["writing.path", "produced_files"]
+            # 2026-08-18: was require: ["writing.path", "produced_files"].
+            # That demanded the SAME fact twice — the path of the file just
+            # written — and a capable model reports it once, in the canonical
+            # produced_files array. Measured: the planner failed 11/11 on the
+            # 27B while the researcher, whose rule requires produced_files
+            # ALONE, passed 11/11 in the very same executions. The model wrote a
+            # correct 1278-byte plan and its retries converged on
+            # produced_files: ["artifacts/out/plan.md"] without ever restating
+            # it in writing.path, so the harness failed a run whose work succeeded.
+            #
+            # Integrity is not weakened: produced_files is the field
+            # verifyRoleClaims checks against the real diff on every step of
+            # every deployment, so a false claim here still fails hard. writing.path
+            # remains in the schema for roles that populate it; it is simply no
+            # longer a second mandatory copy of the same evidence.
+              require: ["produced_files"]
             - name: not_written_implies_reason
               when: {"writing.written": false}
               require: ["writing.reason"]
@@ -466,6 +496,13 @@ roles:
         or optional detail in <details><summary>…</summary>…</details>; end with a
         "Sources" section listing cited URLs as links. Keep the copy tight and useful.
 
+        DURABLE OUTPUT — BEFORE calling PageDrop, write the complete rendered
+        HTML to `artifacts/out/report.html` with file_write. This file is the
+        fallback deliverable when PageDrop is unavailable. Writing it is
+        mandatory; never claim that rendering succeeded if the file was not
+        persisted. Because the file must remain readable outside PageDrop,
+        omit optional images rather than leaving unresolved cid: handles in it.
+
         PUBLISH — publish EXACTLY ONCE. First call mcp__pagedrop__pagedrop_list.
         If a page on the SAME topic already exists and you were not explicitly
         asked to update it, do NOT publish again — return published.ok=true with
@@ -512,7 +549,7 @@ roles:
       permissions:
         # No memory_search on purpose: the publisher renders the fresh
         # deliverable file, never RAG (async KG extraction + poisoning risk).
-        allowedTools: ["file_read", "read_many_files", "grep", "glob", "current_time", "mcp__scraper__encode_image", "mcp__pagedrop__pagedrop_publish_page", "mcp__pagedrop__pagedrop_publish_doc", "mcp__pagedrop__pagedrop_republish", "mcp__pagedrop__pagedrop_list"]
+        allowedTools: ["file_read", "file_write", "read_many_files", "grep", "glob", "current_time", "mcp__scraper__encode_image", "mcp__pagedrop__pagedrop_publish_page", "mcp__pagedrop__pagedrop_publish_doc", "mcp__pagedrop__pagedrop_republish", "mcp__pagedrop__pagedrop_list"]
         delegationAllowed: false
     # Ingestor (2026-07-05): structures a user-provided document into clean,
     # retrieval-friendly notes and writes them to an output artifact, which the

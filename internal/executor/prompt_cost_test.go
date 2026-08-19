@@ -314,6 +314,10 @@ func fixtureAllBlocks() PromptCostFixture {
 		Role:               "lead",
 		RolePrompt:         "You are the lead.",
 		ToolGrantAvailable: true,
+		// The fixture is named "all blocks", and the completeness law below
+		// prices whatever it produces — so a block gated on a deployment fact
+		// has to have that fact set here or it silently escapes L1.
+		WorktreeGitReadOnly: true,
 		CanonicalContext: CanonicalContext{
 			ProjectContext: "project context body",
 			Source:         "dot_autonomy",

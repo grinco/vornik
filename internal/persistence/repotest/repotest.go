@@ -4358,6 +4358,161 @@ func assertNarrationRowsMatch(t *testing.T, rows []*persistence.ExecutionNarrati
 // the owning execution, durationless rows skipped (LLD 2026-07-11-control-
 // plane-actionable-proposals §4.4). Takes the execution + task repos because
 // the aggregation JOINs executions (and postgres enforces the task FK).
+// pendingOutcomeSweeper is the optional capability RunPendingOutcomeBackstopSuite
+// exercises. Declared here rather than on
+// persistence.ExecutionStepOutcomeRepository so one caller's backstop does not
+// force the method onto every test double in the tree.
+type pendingOutcomeSweeper interface {
+	SweepPendingForTerminalExecutions(ctx context.Context, olderThan time.Duration, limit int) (int64, error)
+}
+
+// RunPendingOutcomeBackstopSuite pins the contract of the pending-outcome
+// backstop on every backend that implements it.
+//
+// Regression, measured 2026-08-18: 393 of adaptive's 673 step outcomes over 30
+// days were stuck at pending_validation — documented as "never the final state"
+// — because SweepPending only covers the execution its caller closes, while
+// cascadeOrphanExecutions, supersedeStaleExecutions and the watchdog's
+// orphan-PAUSED sweep terminalise a task's OTHER executions without touching
+// the rows beneath them. pending_validation counts as neither ok nor failure,
+// so the fleet's highest-volume workflow had no usable step-outcome record.
+//
+// The four properties below are the whole contract, and each one is a way the
+// sweep could do damage if it were written carelessly.
+func RunPendingOutcomeBackstopSuite(t *testing.T, outcomes persistence.ExecutionStepOutcomeRepository, execs persistence.ExecutionRepository, tasks persistence.TaskRepository) {
+	t.Helper()
+	sweeper, ok := outcomes.(pendingOutcomeSweeper)
+	if !ok {
+		t.Skip("backend does not implement SweepPendingForTerminalExecutions")
+	}
+	h := newPendingOutcomeFixture(t, outcomes, execs, tasks)
+
+	// The stranded row: terminal execution, well past the settle grace.
+	stranded := h.seedExec(t, persistence.ExecutionStatusCancelled, time.Hour)
+	h.seedPending(t, stranded)
+	// Still running: its step may yet be finalized by a consumer.
+	live := h.seedExec(t, persistence.ExecutionStatusRunning, 0)
+	h.seedPending(t, live)
+	// Terminal but only just — inside the grace, where a terminal path is
+	// plausibly mid-sweep and would finalize this row correctly itself.
+	fresh := h.seedExec(t, persistence.ExecutionStatusCompleted, time.Minute)
+	h.seedPending(t, fresh)
+
+	n, err := sweeper.SweepPendingForTerminalExecutions(h.ctx, 10*time.Minute, 500)
+	if err != nil {
+		t.Fatalf("SweepPendingForTerminalExecutions: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("swept %d rows, want 1 (only the stranded one qualifies)", n)
+	}
+	if got := h.outcomeOf(t, stranded); got != "superseded" {
+		t.Errorf("stranded row = %q, want superseded — a row under a terminal execution "+
+			"must never stay pending_validation, which counts as neither ok nor failure", got)
+	}
+	if got := h.outcomeOf(t, live); got != "pending_validation" {
+		t.Errorf("row under a RUNNING execution = %q, want pending_validation left alone: "+
+			"its consumer may still finalize it properly", got)
+	}
+	if got := h.outcomeOf(t, fresh); got != "pending_validation" {
+		t.Errorf("row under a just-terminal execution = %q, want pending_validation: the "+
+			"settle grace exists so this sweep cannot race a terminal path mid-sweep", got)
+	}
+
+	runPendingOutcomeGuardCases(t, h, sweeper)
+}
+
+// runPendingOutcomeGuardCases covers the two ways a careless sweep does damage
+// beyond mislabelling: running twice, and being handed a non-positive batch.
+func runPendingOutcomeGuardCases(t *testing.T, h *pendingOutcomeFixture, sweeper pendingOutcomeSweeper) {
+	t.Helper()
+	// Idempotent: nothing left to do on a second pass.
+	again, err := sweeper.SweepPendingForTerminalExecutions(h.ctx, 10*time.Minute, 500)
+	if err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if again != 0 {
+		t.Errorf("second sweep relabelled %d rows, want 0 — the sweep must be idempotent", again)
+	}
+
+	// A non-positive limit is a no-op, not an unbounded sweep: a caller that
+	// computes its batch size must not accidentally relabel the whole table.
+	old := h.seedExec(t, persistence.ExecutionStatusFailed, time.Hour)
+	h.seedPending(t, old)
+	if zero, zerr := sweeper.SweepPendingForTerminalExecutions(h.ctx, 10*time.Minute, 0); zerr != nil || zero != 0 {
+		t.Errorf("limit=0 swept %d rows (err %v), want 0 and no error", zero, zerr)
+	}
+	if got := h.outcomeOf(t, old); got != "pending_validation" {
+		t.Errorf("limit=0 relabelled a row (%q) — a non-positive batch must be a no-op", got)
+	}
+}
+
+// pendingOutcomeFixture seeds executions and pending outcome rows for the
+// backstop suite.
+type pendingOutcomeFixture struct {
+	ctx      context.Context
+	project  string
+	outcomes persistence.ExecutionStepOutcomeRepository
+	execs    persistence.ExecutionRepository
+	tasks    persistence.TaskRepository
+}
+
+func newPendingOutcomeFixture(t *testing.T, outcomes persistence.ExecutionStepOutcomeRepository, execs persistence.ExecutionRepository, tasks persistence.TaskRepository) *pendingOutcomeFixture {
+	t.Helper()
+	return &pendingOutcomeFixture{
+		ctx: context.Background(), project: uniqueID("proj"),
+		outcomes: outcomes, execs: execs, tasks: tasks,
+	}
+}
+
+func (h *pendingOutcomeFixture) seedExec(t *testing.T, status persistence.ExecutionStatus, completedAgo time.Duration) string {
+	t.Helper()
+	task := newQueuedTask(h.project)
+	if err := h.tasks.Create(h.ctx, task); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	at := time.Now().UTC().Add(-completedAgo).Truncate(time.Millisecond)
+	e := &persistence.Execution{
+		ID: uniqueID("exec"), TaskID: task.ID, ProjectID: h.project,
+		WorkflowID: "wf", Status: status, CreatedAt: at, UpdatedAt: at,
+	}
+	if err := h.execs.Create(h.ctx, e); err != nil {
+		t.Fatalf("seed execution: %v", err)
+	}
+	return e.ID
+}
+
+// seedPending records one pending_validation row for the lead's `route` step —
+// the step that was actually stranded in production, and the only shape this
+// suite needs.
+func (h *pendingOutcomeFixture) seedPending(t *testing.T, execID string) {
+	const step = "route"
+	t.Helper()
+	if err := h.outcomes.Record(h.ctx, &persistence.ExecutionStepOutcome{
+		ID: uniqueID("oc"), ProjectID: h.project, TaskID: uniqueID("t"),
+		ExecutionID: execID, StepID: step, Role: "lead", Model: "m",
+		Outcome: "pending_validation", RecordedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+}
+
+// outcomeOf reads back the `route` row's outcome for one execution.
+func (h *pendingOutcomeFixture) outcomeOf(t *testing.T, execID string) string {
+	const step = "route"
+	t.Helper()
+	rows, err := h.outcomes.List(h.ctx, persistence.ExecutionStepOutcomeFilter{ExecutionID: &execID})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, r := range rows {
+		if r.StepID == step {
+			return r.Outcome
+		}
+	}
+	t.Fatalf("no outcome row for %s/%s", execID, step)
+	return ""
+}
+
 func RunStepLatencySuite(t *testing.T, outcomes persistence.ExecutionStepOutcomeRepository, execs persistence.ExecutionRepository, tasks persistence.TaskRepository) {
 	t.Helper()
 	ctx := context.Background()

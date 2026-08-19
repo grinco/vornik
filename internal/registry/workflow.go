@@ -765,7 +765,16 @@ func (w *Workflow) validateQualityScoring(filename string) error {
 	if p == nil {
 		return nil
 	}
-	if p.Kind != quality.ScoreKindPinnedCaseValidation {
+	switch p.Kind {
+	case quality.ScoreKindPinnedCaseValidation:
+		// Needs the producer/verifier pair validated below.
+	case quality.ScoreKindContractSatisfaction:
+		// Scores the workflow's DECLARED output obligations, so it names no
+		// producer or verifier step — there is no evidence-producing pair,
+		// just the globs the workflow already declares. Demanding steps it has
+		// no concept of would make the kind undeclarable.
+		return nil
+	default:
 		return WorkflowValidationError{
 			File: filename, Field: "qualityScoring.kind",
 			Message: fmt.Sprintf("unsupported quality scoring kind %q", p.Kind),

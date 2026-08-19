@@ -3,6 +3,7 @@ package registry
 import (
 	"path/filepath"
 	"testing"
+	"vornik.io/vornik/internal/quality"
 )
 
 // Output + outcome contracts of the SHIPPED workflows.
@@ -89,6 +90,7 @@ func TestShippedWorkflows_RequireOutputGlob(t *testing.T) {
 		"research-and-publish": {
 			"research": "artifacts/out/research.md",
 			"write":    "artifacts/out/deliverable.md",
+			"publish":  "artifacts/out/report.html",
 		},
 	}
 
@@ -111,6 +113,65 @@ func TestShippedWorkflows_RequireOutputGlob(t *testing.T) {
 			}
 		}
 	}
+}
+
+// T-9d21: PageDrop was offline and the recovery checkpoint offered a
+// writer-only HTML bypass that answering the checkpoint could not execute.
+// The answer merely re-queued the workflow at its research entrypoint. Make
+// the HTML file a publisher output contract instead, and make a declared
+// PageDrop failure terminal so infrastructure downtime cannot enter an
+// expensive, misleading recovery loop.
+func TestResearchAndPublish_PageDropFailureLeavesHTMLAndStops(t *testing.T) {
+	wf, ok := loadShippedWorkflows(t)["research-and-publish"]
+	if !ok {
+		t.Fatal("research-and-publish not found in the shipped tree")
+	}
+
+	publish := wf.Steps["publish"]
+	if publish.RequireOutputGlob != "artifacts/out/report.html" {
+		t.Fatalf("publish require_output_glob = %q, want durable report.html", publish.RequireOutputGlob)
+	}
+	if publish.OnFail != "publish_failed" {
+		t.Fatalf("publish hard-failure target = %q, want direct FAILED terminal", publish.OnFail)
+	}
+	gate := wf.Steps["confirm_published"]
+	for _, branch := range gate.Gates {
+		if normalizeCondition(branch.Condition) != "published.ok == false" {
+			continue
+		}
+		term, exists := wf.Terminals[branch.Target]
+		if !exists || term.Status != "FAILED" {
+			t.Fatalf("published.ok == false target = %q, want direct FAILED terminal", branch.Target)
+		}
+		if gate.OnFail != branch.Target {
+			t.Fatalf("malformed publish result target = %q, want %q", gate.OnFail, branch.Target)
+		}
+		return
+	}
+	t.Fatal("confirm_published has no published.ok == false branch")
+}
+
+func TestShippedPublisher_CanPersistOfflineHTML(t *testing.T) {
+	swarms, err := LoadSwarms("../../configs")
+	if err != nil {
+		t.Fatalf("LoadSwarms: %v", err)
+	}
+	swarm, ok := swarms["assistant-swarm"]
+	if !ok {
+		t.Fatal("assistant-swarm not found in the shipped tree")
+	}
+	for _, role := range swarm.Roles {
+		if role.Name != "publisher" {
+			continue
+		}
+		for _, tool := range role.Permissions.AllowedTools {
+			if tool == "file_write" {
+				return
+			}
+		}
+		t.Fatal("publisher must allow file_write so PageDrop failure still leaves report.html")
+	}
+	t.Fatal("assistant-swarm has no publisher role")
 }
 
 // TestShippedWorkflows_NoVacuousOutputGlob keeps the wildcard hazard out: a
@@ -187,5 +248,25 @@ func TestPlanAndWrite_GatesDeclinedOutcomes(t *testing.T) {
 		if step.OnFail != "recover" {
 			t.Errorf("%s: on_fail = %q, want recover", tc.step, step.OnFail)
 		}
+	}
+}
+
+// contract_satisfaction scores a workflow's DECLARED output obligations, so
+// unlike pinned_case_validation it names no producer or verifier step — there
+// is no evidence-producing pair, just the globs the workflow already declares.
+// Rejecting it, or demanding steps it has no concept of, would make the kind
+// undeclarable in shipped config.
+func TestValidateQualityScoring_AcceptsContractSatisfaction(t *testing.T) {
+	wf := &Workflow{
+		ID:         "wf",
+		Entrypoint: "gather",
+		Steps: map[string]WorkflowStep{
+			"gather": {Type: "agent", Role: "analyst", RequireOutputGlob: "artifacts/out/findings.md"},
+		},
+		Terminals:      map[string]WorkflowTerminal{"done": {Status: "COMPLETED"}},
+		QualityScoring: &quality.ScoringPolicy{Kind: quality.ScoreKindContractSatisfaction},
+	}
+	if err := wf.validateQualityScoring("wf.md"); err != nil {
+		t.Errorf("contract_satisfaction must be declarable without producer/verifier steps: %v", err)
 	}
 }

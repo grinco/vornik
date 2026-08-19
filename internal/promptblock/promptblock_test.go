@@ -65,7 +65,7 @@ func TestSuppressible(t *testing.T) {
 // operator who mistypes a block name is shown the full set, so a name missing
 // from Names() is a name they cannot discover from the failure.
 func TestNamesAreSortedAndComplete(t *testing.T) {
-	want := []string{CanonicalContext, ReportingIntegrity, ToolBudget}
+	want := []string{CanonicalContext, ReportingIntegrity, ToolBudget, WorkspaceGit}
 	if got := Names(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Names() = %v, want %v (sorted, complete)", got, want)
 	}

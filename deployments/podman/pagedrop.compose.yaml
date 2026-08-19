@@ -58,7 +58,8 @@ services:
       # PAGEDROP_K8S_BASE_URL at it: the unlock cookie is `Secure`, so
       # password-protected pages only work when the browser reaches the page
       # over HTTPS. The proxy forwards to this host:port.
-      - "192.0.2.10:8090:8080"
+      # 8888 avoids the benchmark daemon, which owns host port 8090.
+      - "192.0.2.10:8888:8080"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/healthz >/dev/null 2>&1 || exit 1"]
       interval: 15s

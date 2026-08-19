@@ -209,10 +209,19 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 			if step.OnFail == "" {
 				return "", nil, completedSteps, fmt.Errorf("step %s visited %d times (per-step max %d) and has no on_fail", currentStepID, visitCount[currentStepID], step.MaxVisits)
 			}
-			if err := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); err != nil {
+			onFail := step.OnFail
+			if resolvePedantic(task.Payload, plan.workflow, plan.project) {
+				if redirected, changed := pedanticOnFail(plan.workflow, onFail); changed {
+					e.logger.Info().Str("execution_id", execution.ID).Str("step", currentStepID).
+						Str("recovery_hop", onFail).Str("terminal", redirected).
+						Msg("pedantic: skipping recovery hop, routing to the failed terminal")
+					onFail = redirected
+				}
+			}
+			if err := e.saveCheckpoint(ctx, execution, onFail, completedSteps, state); err != nil {
 				return "", nil, completedSteps, err
 			}
-			currentStepID = step.OnFail
+			currentStepID = onFail
 			continue
 		}
 
@@ -292,7 +301,16 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 					Msg("resume: delegated child failed — routing to on_fail, NOT publishing")
 				completedSteps = append(completedSteps, currentStepID)
 				if step.OnFail != "" {
-					currentStepID = step.OnFail
+					next := step.OnFail
+					if resolvePedantic(task.Payload, plan.workflow, plan.project) {
+						if redirected, changed := pedanticOnFail(plan.workflow, next); changed {
+							e.logger.Info().Str("execution_id", execution.ID).Str("step", currentStepID).
+								Str("recovery_hop", next).Str("terminal", redirected).
+								Msg("pedantic: skipping recovery hop, routing to the failed terminal")
+							next = redirected
+						}
+					}
+					currentStepID = next
 					continue
 				}
 				return "", nil, completedSteps, fmt.Errorf("%w (step %q)", errDelegatedChildFailedTerminal, currentStepID)
@@ -403,7 +421,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
 					}
-					currentStepID = step.OnFail
+					currentStepID = e.effectiveOnFail(task, plan, execution, currentStepID, step.OnFail)
 					lastResultMessage = err.Error()
 					lastResultErr = err
 					continue
@@ -669,7 +687,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
 					}
-					currentStepID = step.OnFail
+					currentStepID = e.effectiveOnFail(task, plan, execution, currentStepID, step.OnFail)
 					lastResultMessage = err.Error()
 					lastResultErr = err
 					continue
@@ -716,7 +734,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
 					}
-					currentStepID = step.OnFail
+					currentStepID = e.effectiveOnFail(task, plan, execution, currentStepID, step.OnFail)
 					lastResultMessage = err.Error()
 					lastResultErr = err
 					continue
@@ -761,7 +779,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
 					}
-					currentStepID = step.OnFail
+					currentStepID = e.effectiveOnFail(task, plan, execution, currentStepID, step.OnFail)
 					lastResultMessage = err.Error()
 					lastResultErr = err
 					continue
@@ -828,7 +846,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
 					}
-					currentStepID = step.OnFail
+					currentStepID = e.effectiveOnFail(task, plan, execution, currentStepID, step.OnFail)
 					lastResultMessage = callErr.Error()
 					lastResultErr = callErr
 					continue
@@ -878,7 +896,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
 					}
-					currentStepID = step.OnFail
+					currentStepID = e.effectiveOnFail(task, plan, execution, currentStepID, step.OnFail)
 					continue
 				}
 				return "", nil, completedSteps, err
@@ -911,7 +929,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 					if saveErr := e.saveCheckpoint(ctx, execution, step.OnFail, completedSteps, state); saveErr != nil {
 						return "", nil, completedSteps, saveErr
 					}
-					currentStepID = step.OnFail
+					currentStepID = e.effectiveOnFail(task, plan, execution, currentStepID, step.OnFail)
 					continue
 				}
 				return "", nil, completedSteps, sysErr
@@ -2233,6 +2251,65 @@ func (e *Executor) prewarmStrategistContext(ctx context.Context, plan *execution
 		opts.WatchlistIndicatorsBlock = e.buildWatchlistIndicatorsBlock(ctx, plan.project)
 	}()
 	prewarmWg.Wait()
+}
+
+// effectiveOnFail is the uniform on_fail resolver for the plain
+// `currentStepID = e.effectiveOnFail(task, plan, execution, currentStepID, step.OnFail)` transitions. Two sites resolve it inline
+// instead, because they need the destination BEFORE the assignment (the
+// maxVisits path checkpoints it; the delegated-child path guards on emptiness).
+func (e *Executor) effectiveOnFail(task *persistence.Task, plan *executionPlan, execution *persistence.Execution, fromStep, onFail string) string {
+	if !resolvePedantic(task.Payload, plan.workflow, plan.project) {
+		return onFail
+	}
+	redirected, changed := pedanticOnFail(plan.workflow, onFail)
+	if !changed {
+		return onFail
+	}
+	e.logger.Info().
+		Str("execution_id", execution.ID).
+		Str("step", fromStep).
+		Str("recovery_hop", onFail).
+		Str("terminal", redirected).
+		Msg("pedantic: skipping recovery hop, routing to the failed terminal")
+	return redirected
+}
+
+// pedanticOnFail resolves a step's on_fail target under pedantic mode.
+//
+// Pedantic has always been DOCUMENTED as disabling recovery routing — the
+// daemon announces "on_fail goes straight to terminal" at every pedantic
+// execution start, dev-pipeline's config says "skip recovery population in the
+// executor and fall through", research.md says pedantic projects "skip this
+// hop", and publish.md says they "fall through to terminal fail". None of that
+// was implemented: the only thing pedantic did was make
+// buildStepFailureRecovery return nil, so the recovery STEP still ran, just
+// without the context.recovery it exists to read.
+//
+// Measured 2026-08-18: dev-pipeline under pedantic: true routed
+// test → recover-checkpoint → COMPLETED on all three runs with the contract
+// unmet, and a benchmark reading task status scored 3/3 for a workflow whose
+// verification step failed every attempt.
+//
+// This makes the documented behaviour real, and only where recovery routing is
+// what is happening: an on_fail naming a TERMINAL is untouched, so a workflow
+// that simply routes failures to its own failed terminal behaves identically.
+// An on_fail naming a STEP is a recovery hop, and under pedantic it goes to the
+// workflow's FAILED terminal instead. If the workflow declares no failed
+// terminal there is nothing honest to redirect to, so the hop is left alone
+// rather than inventing a terminal.
+func pedanticOnFail(wf *registry.Workflow, onFail string) (string, bool) {
+	if wf == nil || onFail == "" {
+		return onFail, false
+	}
+	if _, isStep := wf.Steps[onFail]; !isStep {
+		return onFail, false // already a terminal
+	}
+	for id, term := range wf.Terminals {
+		if strings.EqualFold(term.Status, "FAILED") {
+			return id, true
+		}
+	}
+	return onFail, false
 }
 
 // resolvePedantic computes whether pedantic mode is active for the

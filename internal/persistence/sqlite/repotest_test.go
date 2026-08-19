@@ -324,6 +324,18 @@ func TestExecutionNarrationRepository_Contract(t *testing.T) {
 		sqlite.NewExecutionRepository(db.DB), sqlite.NewTaskRepository(db.DB))
 }
 
+// TestPendingOutcomeBackstop_Contract — the pending_validation backstop
+// (2026-08-18): a row under an already-terminal execution must never stay
+// pending_validation, while a live or just-terminal execution's rows are left
+// for their own consumer/terminal path to finalize.
+func TestPendingOutcomeBackstop_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunPendingOutcomeBackstopSuite(t,
+		sqlite.NewExecutionStepOutcomeRepository(db.DB),
+		sqlite.NewExecutionRepository(db.DB),
+		sqlite.NewTaskRepository(db.DB))
+}
+
 func TestStepLatency_Contract(t *testing.T) {
 	db := newTestDB(t)
 	repotest.RunStepLatencySuite(t,

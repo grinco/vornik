@@ -1492,6 +1492,34 @@ func (c *Container) initWatchdog() error {
 	}
 
 	c.Watchdog = watchdog.New(cfg, c.repos.Executions, c.repos.Tasks, c.Logger, metrics)
+	// Stranded-parent backstop: the executor's own sweep ran at startup only,
+	// so a parent left in WAITING_FOR_CHILDREN by a child-terminal path that
+	// skips the unblock hook waited for a restart. Wired here so it runs per
+	// watchdog tick.
+	if c.Watchdog != nil && c.Executor != nil {
+		c.Watchdog = c.Watchdog.WithParentUnblockSweeper(c.Executor)
+	}
+	// Pending-outcome backstop: SweepPending only covers the execution its
+	// caller is closing, so every path that terminalises a task's OTHER
+	// executions leaves their step-outcome rows at pending_validation — which
+	// counts as neither ok nor failure and made adaptive's route step
+	// permanently unmeasurable (2026-08-18).
+	if c.Watchdog != nil && c.repos.StepOutcomes != nil {
+		// Capability assertion rather than a method on the wide repository
+		// interface: the backstop is needed by one caller and widening the
+		// shared interface would force it onto every test double. The
+		// assertion is LOGGED when it fails — a backstop that silently
+		// disables itself is the failure class this codebase keeps paying
+		// for, so a backend that has not implemented the sweep says so at
+		// startup instead of quietly leaving rows stranded.
+		if sweeper, ok := c.repos.StepOutcomes.(watchdog.StepOutcomeRepository); ok {
+			c.Watchdog = c.Watchdog.WithStepOutcomeRepository(sweeper)
+		} else {
+			c.Logger.Warn().
+				Msg("watchdog: step-outcome backend does not implement the pending-outcome sweep — " +
+					"rows left at pending_validation by a superseded execution will not be reconciled")
+		}
+	}
 	// Budget-reservation sweep backstop (trading-hardening §1): settle
 	// reservations whose task went terminal or that have gone stale, so a
 	// leaked reservation can't block a project's hard cap forever.

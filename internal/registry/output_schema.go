@@ -48,6 +48,18 @@ type OutputSchema struct {
 	// validateRequiredOutputKeys can assert it. Empty means "any
 	// non-null value", matching the legacy bare-key behaviour.
 	Type string `yaml:"type,omitempty"`
+	// Description is LLM-facing prose explaining what this node must
+	// contain. It is emitted into the provider JSON Schema (where
+	// every provider forwards it to the model) and rendered as a
+	// comment line above the property in the prompt skeleton.
+	//
+	// Before 2026-08-18 this field did not exist, so a `description:`
+	// written in a role YAML was silently dropped by the decoder and
+	// reached neither channel. Operators wrote contracts the model was
+	// never shown — the dev-swarm analyst's `test_case_ids` prose,
+	// added the previous day to make the graded gate metric
+	// satisfiable, was invisible for exactly that reason.
+	Description string `yaml:"description,omitempty"`
 	// Required is the list of property names that must exist on this
 	// object. Each entry maps to one (or more, for nested objects)
 	// derived RequiredOutputKeys path:type strings — see
@@ -275,6 +287,16 @@ func renderJSONSkeleton(b *strings.Builder, s *OutputSchema, indent string) {
 		child := s.Properties[name]
 		_, isRequired := requiredSet[name]
 
+		// A description rides ABOVE its property rather than trailing
+		// it: an object or array value spans several lines, so a
+		// trailing comment would land after the closing brace and
+		// read as belonging to the next key.
+		if desc := flattenDescription(child); desc != "" {
+			b.WriteString(childIndent)
+			b.WriteString("// ")
+			b.WriteString(desc)
+			b.WriteString("\n")
+		}
 		b.WriteString(childIndent)
 		fmt.Fprintf(b, "%q: ", name)
 		writeJSONSkeletonValue(b, child, childIndent, isRequired)
@@ -285,6 +307,17 @@ func renderJSONSkeleton(b *strings.Builder, s *OutputSchema, indent string) {
 	}
 	b.WriteString(indent)
 	b.WriteString("}")
+}
+
+// flattenDescription collapses a schema description to one line so it
+// can ride in a `//` comment. YAML folded scalars (`>-`) already
+// arrive folded, but a literal block (`|`) keeps its newlines and
+// would otherwise break the skeleton into uncommented lines.
+func flattenDescription(s *OutputSchema) string {
+	if s == nil || s.Description == "" {
+		return ""
+	}
+	return strings.Join(strings.Fields(s.Description), " ")
 }
 
 // writeJSONSkeletonValue writes one value placeholder, recursing for
@@ -466,6 +499,9 @@ func convertSchemaNode(s *OutputSchema) map[string]any {
 	}
 	if s.Items != nil {
 		out["items"] = convertSchemaNode(s.Items)
+	}
+	if s.Description != "" {
+		out["description"] = s.Description
 	}
 	if s.MinLength > 0 {
 		out["minLength"] = s.MinLength

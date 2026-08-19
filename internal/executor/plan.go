@@ -142,6 +142,10 @@ type agentInputOpts struct {
 	// to this step. Gates the tool-budget prompt block: telling an agent to call a
 	// tool it does not have wastes tokens and invites a hallucinated call.
 	ToolGrantAvailable bool
+	// WorktreeGitReadOnly is true when the project is mounted as a git
+	// worktree, whose main .git the runtime bind-mounts read-only — so git
+	// writes from inside it cannot land. Gates the workspace-git block.
+	WorktreeGitReadOnly bool
 	// SuppressedGuidanceBlocks carries the owning swarm's
 	// suppressedGuidanceBlocks list — the daemon-authored ADVISORY guidance
 	// blocks this swarm's operator has switched off (LLD 09 §13.3.1).

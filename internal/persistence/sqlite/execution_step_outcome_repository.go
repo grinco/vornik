@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/stepoutcome"
 )
 
 // ExecutionStepOutcomeRepository persists per-step outcome
@@ -123,6 +124,34 @@ func (r *ExecutionStepOutcomeRepository) SweepPending(ctx context.Context, execu
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// SweepPendingForTerminalExecutions relabels pending rows under executions that
+// reached a terminal status without their own sweep running. See the interface
+// doc for why this is a reconciler and why the label is `superseded`.
+func (r *ExecutionStepOutcomeRepository) SweepPendingForTerminalExecutions(ctx context.Context, olderThan time.Duration, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	cutoff := sqliteTime(time.Now().UTC().Add(-olderThan))
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE execution_step_outcomes
+		SET outcome = ?, finalized_at = ?
+		WHERE id IN (
+		    SELECT o2.id
+		    FROM execution_step_outcomes o2
+		    JOIN executions e ON e.id = o2.execution_id
+		    WHERE o2.outcome = 'pending_validation'
+		      AND e.status IN ('COMPLETED', 'FAILED', 'CANCELLED')
+		      AND COALESCE(e.completed_at, e.updated_at) < ?
+		    ORDER BY o2.recorded_at ASC
+		    LIMIT ?
+		)`,
+		string(stepoutcome.Superseded), sqliteTime(time.Now().UTC()), cutoff, limit)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (r *ExecutionStepOutcomeRepository) List(ctx context.Context, f persistence.ExecutionStepOutcomeFilter) ([]*persistence.ExecutionStepOutcome, error) {

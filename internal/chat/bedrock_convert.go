@@ -982,7 +982,10 @@ func bedrockOutputToChatResponse(out *bedrocktypes.ConverseOutputMemberMessage, 
 		// internal extraction-error marker to log the drop with a
 		// context-rich message.
 		calls, rescued, extractErr := extractToolCallsFromContent(out.Value.Content)
-		toolCalls = calls
+		// Same concatenated-arguments repair the OpenAI-compat paths apply:
+		// minimax runs on this route too, and a flattened multi-invocation
+		// arguments string is invalid JSON wherever it is replayed.
+		toolCalls = splitConcatenatedToolCallArgs(calls)
 		if extractErr != nil {
 			extractionWarning = extractErr.Error()
 		}

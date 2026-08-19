@@ -51,6 +51,7 @@ func SwarmSchema() AssetSchema {
 					"outputSchema.type", "outputSchema.version", "outputSchema.properties",
 					"outputSchema.required", "outputSchema.enum", "outputSchema.items",
 					"outputSchema.minLength", "outputSchema.plausibility",
+					"outputSchema.description",
 					"injectSchemaIntoPrompt",
 					// Conditional plausibility rule objects.
 					"plausibilityRules",

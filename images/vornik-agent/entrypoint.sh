@@ -1740,6 +1740,21 @@ exec_tool() {
                 # tail to filter at the source.
                 local shell_out
                 shell_out=$( (cd "$WORKSPACE" && timeout "$SHELL_TIMEOUT" sh -c "$cmd" 2>&1) || echo "(exit code: $?)" )
+                # A git write inside the project worktree CANNOT succeed: the
+                # runtime bind-mounts the main .git read-only, and a worktree
+                # keeps its index/HEAD/logs under that .git. The bare git error
+                # ("Read-only file system", an unwritable .lock) reads as a
+                # transient glitch, so agents retried it — 32 of this fleet's
+                # 108 degenerate-loop kills were a repeated git write, and
+                # another 64 were git reads whose output never changed
+                # (measured 2026-08-18). Naming the cause in the tool result is
+                # the one channel that reaches the model mid-step, and a result
+                # that CHANGES is what breaks the loop.
+                case "$shell_out" in
+                    *"Read-only file system"*|*"could not lock config file"*|*".lock"*"Permission denied"*|*"Unable to create"*".lock"*)
+                        shell_out=$(printf '%s\n\n[this failed because the workspace git metadata is READ-ONLY — git writes (add/commit/stash) cannot succeed here and retrying will fail identically. You do not need to commit: the harness commits everything left in the workspace when the step ends. Carry on with the actual task.]' "$shell_out")
+                        ;;
+                esac
                 local shell_len=${#shell_out}
                 if [ "$shell_len" -gt 200000 ]; then
                     printf '%.200000s\n\n[... truncated at 200KB, total %d bytes — pipe through grep/awk/tail to filter]' "$shell_out" "$shell_len"
@@ -2703,6 +2718,24 @@ ${previous_result}
     MAX_REPEATS=4
     DEGENERATE_NUDGE_AT=2
 
+    # NEAR-repeat detection. The exact detector above compares (tool, args)
+    # byte-for-byte, so a call that varies one number evades it completely.
+    # Observed 2026-08-18: a coder walked a file with `sed -n '175,270p'`, then
+    # '176,280p', then '177,290p' — one line further per iteration — never
+    # tripping the detector and burning the whole 125-iteration budget, which
+    # then reported as iteration_exhausted rather than as the loop it was.
+    #
+    # The near signature collapses every run of digits to '#', so that family
+    # of calls compares equal. Thresholds are deliberately looser than the
+    # exact ones because legitimate work does repeat a shape — paging through
+    # a large file is the honest version of exactly this pattern. So the first
+    # response is ADVISORY (the call still runs, its result carries a warning)
+    # and the kill sits at 3x the exact threshold.
+    local last_near_sig=""
+    local near_repeat_count=0
+    NEAR_MAX_REPEATS=12
+    NEAR_REPEAT_NUDGE_AT=5
+
     # Per-turn file_read cache. Two maps keyed by resolved absolute path:
     #   FILE_READ_CACHE[path] = "<iter>|<body>"   (successful reads)
     #   FILE_READ_MISSES[path] = "<iter>"          (file-not-found hits)
@@ -3324,6 +3357,9 @@ ${previous_result}
             # which discards array mutations).
             local tool_result=""
             local tc_cache_hit=0
+            # Per-call, not per-step: without the reset the first near-repeat
+            # would brand every later call's result with the advisory.
+            local near_repeat_warn=0
             if [ "$tc_name" = "file_read" ]; then
                 local rp_raw rp_abs
                 rp_raw=$(printf '%s' "$tc_args" | jq -r '.path // empty')
@@ -3409,6 +3445,29 @@ ${previous_result}
                     last_tool_sig="$tool_sig"
                     repeat_count=1
                 fi
+
+                # Near-repeat: same tool, arguments identical once digits are
+                # collapsed. Tracked independently of the exact counter — a
+                # sliding window never repeats exactly, so the exact counter
+                # stays at 1 throughout while this one climbs.
+                local near_sig
+                near_sig="${tc_name}:$(printf '%s' "$tc_args" | tr -s '0-9' '#')"
+                if [ "$near_sig" = "$last_near_sig" ]; then
+                    near_repeat_count=$((near_repeat_count + 1))
+                    if [ "$near_repeat_count" -ge "$NEAR_MAX_REPEATS" ]; then
+                        log "ERROR: degenerate loop detected — $tc_name called $NEAR_MAX_REPEATS times with near-identical args"
+                        local last_near_content
+                        last_near_content=$(jq -r 'map(select(.role=="assistant" and .content != null)) | last.content // "Agent entered degenerate loop"' "$msgs_file")
+                        write_result "FAILED" "Agent entered a degenerate loop (repeated $tc_name $NEAR_MAX_REPEATS times with near-identical arguments — the same command varying only in numbers, e.g. a line range advancing one step at a time). Vary your approach rather than your arguments: read the whole file with file_read, or accept what you have and answer." "$last_near_content" "$(get_duration)" "degenerate tool loop"
+                        return 1
+                    fi
+                    if [ "$near_repeat_count" -ge "$NEAR_REPEAT_NUDGE_AT" ]; then
+                        near_repeat_warn=1
+                    fi
+                else
+                    last_near_sig="$near_sig"
+                    near_repeat_count=1
+                fi
             fi
 
             # GNU date's %s%3N concatenates seconds with zero-padded
@@ -3420,6 +3479,14 @@ ${previous_result}
             if [ "$tc_cache_hit" = "0" ]; then
                 debug "tool: $tc_name (id=$tc_id)"
                 tool_result=$(exec_tool "$tc_name" "$tc_args" 2>&1 | head -c "$TOOL_RESULT_MAX_BYTES")
+                # Advisory near-repeat warning: the call RAN and its real
+                # result is preserved — only a note is appended. Unlike the
+                # exact-repeat nudge we cannot substitute the previous result,
+                # because the arguments genuinely differ and so may the answer.
+                if [ "${near_repeat_warn:-0}" = "1" ]; then
+                    log "near-repeat $near_repeat_count/$NEAR_MAX_REPEATS on $tc_name — appending advisory"
+                    tool_result=$(printf '%s\n\n[you have now called %s %s times with the same command varying only in numbers. That pattern usually means you are inching through something a single call could fetch — read the whole file with file_read, widen the range once, or answer with what you already have. The step will be stopped at %s such calls.]' "$tool_result" "$tc_name" "$near_repeat_count" "$NEAR_MAX_REPEATS")
+                fi
                 # Kept so an adjacent identical repeat can be answered with
                 # what this call produced instead of re-running it. Only the
                 # most recent executed result is retained — the degenerate

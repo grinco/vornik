@@ -3,7 +3,7 @@ sources:
     - path: internal/dispatcher/render_document.go
       sha256: 978d37b59d3584d28b5260865673db9fbb40bbf123ecff1d76a3eab1c49a27fe
     - path: internal/dispatcher/tools.go
-      sha256: 3ef38652510f1f1b750422469f7499fe75107272d430c4c8902c7ffe7115be4c
+      sha256: a49463c40ee4be1e11e6ff328e8300f3fe955b3b7fa22bdc6c25c19a65489d08
     - path: internal/dispatcher/agent.go
       sha256: ff020cda4cd00b1e312b17d5b2de737a8aac21f3fd7366b41412bdd031bc8310
     - path: internal/email/channel.go
@@ -71,6 +71,15 @@ Two safeguards are worth knowing:
 - **Only operator-facing outputs are eligible.** Selection is bounded to a
   task's published output artifacts; internal scratch and debug files can never
   be sent.
+
+The name shown after completion is the **harvested name**, not necessarily the
+literal path from the workflow prompt. For example, an agent writes
+`artifacts/out/research.md`, while the durable catalogue may expose
+`research-20260817-929c.md`; the date and execution suffix prevent collisions
+between runs. Terminal task status includes this harvested inventory so callers
+do not mistake the renamed file for a missing output. Raw `*-response-…md`
+step transcripts are diagnostics, not deliverables; explicit artifact listings
+label them accordingly.
 
 ## Where files go
 

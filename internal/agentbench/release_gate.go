@@ -706,15 +706,66 @@ func validateReleaseJournal(label string, journal Journal) error {
 	return nil
 }
 
+// tripwireContractUnmet reports whether a tripwire repeat declared a contract
+// and failed to meet it, with the reason.
+//
+// A tripwire asks "did we break this workflow outright", and TASK STATUS cannot
+// answer that for any workflow with a recovery path. Measured 2026-08-18:
+// dev-pipeline routes test's on_fail to recover-checkpoint, which parks the
+// work and exits via a COMPLETED terminal, so three repeats read 3/3 TRIPWIRE
+// OK while the scorer recorded missing_verifier_step (7 pinned cases) twice and
+// no_pinned_cases once. The workflow's verification step had failed every
+// attempt.
+//
+// Where the workflow declares a contract, the contract is the signal. Where it
+// declares none the score is not_applicable and task status remains the only
+// thing to assert — which is most tripwires, so this must not fail them.
+//
+// The tier is binary by construction (validateCalibrationTier demands
+// passed == attempts), so a partially met contract is not a pass either.
+func tripwireContractUnmet(j Journal, taskID string, repeat int) (string, bool) {
+	for _, score := range j.TaskScores {
+		if score.TaskID != taskID || score.Repeat != repeat {
+			continue
+		}
+		if score.Status == quality.ScoreStatusNotApplicable {
+			return "", false // nothing declared; task status is the signal
+		}
+		if score.Status == quality.ScoreStatusScored && score.Score >= 1 {
+			return "", false
+		}
+		reason := string(score.Status)
+		if score.Diagnostic != "" {
+			reason += " (" + score.Diagnostic + ")"
+		}
+		return reason, true
+	}
+	return "", false
+}
+
 func releaseTripwireDecision(baseline, candidate Journal, tripwireIDs map[string]bool) *ReleaseGateDecision {
 	for _, run := range baseline.TaskRuns {
-		if tripwireIDs[run.TaskID] && !run.Succeeded {
+		if !tripwireIDs[run.TaskID] {
+			continue
+		}
+		if !run.Succeeded {
 			return &ReleaseGateDecision{Status: GateStatusRefused,
 				Reason: fmt.Sprintf("baseline tripwire %q failed repeat %d; the comparison environment is not healthy", run.TaskID, run.Repeat)}
 		}
+		if why, unmet := tripwireContractUnmet(baseline, run.TaskID, run.Repeat); unmet {
+			return &ReleaseGateDecision{Status: GateStatusRefused,
+				Reason: fmt.Sprintf("baseline tripwire %q repeat %d reached a terminal but left its declared contract unmet: %s; the comparison environment is not healthy", run.TaskID, run.Repeat, why)}
+		}
 	}
 	for _, run := range candidate.TaskRuns {
-		if !tripwireIDs[run.TaskID] || run.Succeeded {
+		if !tripwireIDs[run.TaskID] {
+			continue
+		}
+		if run.Succeeded {
+			if why, unmet := tripwireContractUnmet(candidate, run.TaskID, run.Repeat); unmet {
+				return &ReleaseGateDecision{Status: GateStatusFail,
+					Reason: fmt.Sprintf("candidate tripwire %q repeat %d reached a terminal but left its declared contract unmet: %s", run.TaskID, run.Repeat, why)}
+			}
 			continue
 		}
 		class := ClassifyFailure(false, run.ErrorText)

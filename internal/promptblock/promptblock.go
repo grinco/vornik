@@ -45,6 +45,7 @@ const (
 	CanonicalContext   = "canonical-context"
 	ToolBudget         = "tool-budget"
 	ReportingIntegrity = "reporting-integrity"
+	WorkspaceGit       = "workspace-git"
 )
 
 // classByName is the declaration. internal/executor's registry pairs each of
@@ -54,6 +55,14 @@ var classByName = map[string]Class{
 	CanonicalContext:   Advisory,
 	ToolBudget:         Advisory,
 	ReportingIntegrity: Invariant,
+	// WorkspaceGit is INVARIANT because the condition it describes is set by
+	// the runtime, not the prompt: manager.go mounts the project's main .git
+	// read-only, so git writes from inside the worktree fail whatever an
+	// agent was told. Suppressing the block would remove the explanation and
+	// leave the failure — which is how 89% of this fleet's degenerate loops
+	// came to be agents retrying a git write that can never succeed
+	// (2026-08-18).
+	WorkspaceGit: Invariant,
 }
 
 // ClassOf returns a block's class, and whether the name is known at all.

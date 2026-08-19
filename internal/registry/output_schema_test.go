@@ -559,3 +559,65 @@ func TestSchemaVersionSurfaces(t *testing.T) {
 		}
 	})
 }
+
+// Regression, measured 2026-08-18: `description:` written inside an
+// outputSchema was silently discarded at load. OutputSchema had no such
+// field, so the YAML decoder dropped it without complaint and the prose
+// reached neither the provider JSON Schema nor the rendered prompt.
+//
+// The cost was concrete. The 2026-08-17 producer fix gave the dev-swarm
+// analyst `analysis.test_case_ids` with a description reading "matching the
+// ids you write into CURRENT_TASK.md — the tester reports per-case status
+// against exactly these ids". The model never saw a word of it: the render
+// printed `"test_case_ids": <array>` and the provider schema carried
+// `{"type":"array"}`. Every contract expressed as a schema description was
+// enforced in a place the agent was never told about — the same failure class
+// as the plausibility rules that shipped invisible two days earlier.
+func TestOutputSchemaDescriptionReachesTheModel(t *testing.T) {
+	s := &OutputSchema{
+		Type:     "object",
+		Required: []string{"testing"},
+		Properties: map[string]*OutputSchema{
+			"testing": {
+				Type:     "object",
+				Required: []string{"passed"},
+				Properties: map[string]*OutputSchema{
+					"passed": {Type: "bool"},
+					"cases": {
+						Type:        "array",
+						Description: "Exactly the analyst's pinned ids, no extras.",
+						Items: &OutputSchema{
+							Type:     "object",
+							Required: []string{"id", "status"},
+							Properties: map[string]*OutputSchema{
+								"id":     {Type: "string", Description: "The pinned case id, verbatim."},
+								"status": {Type: "string", Enum: []any{"passed", "failed"}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	body, err := json.Marshal(s.ToJSONSchema())
+	if err != nil {
+		t.Fatalf("marshal JSON schema: %v", err)
+	}
+	for _, want := range []string{
+		`"description":"Exactly the analyst's pinned ids, no extras."`,
+		`"description":"The pinned case id, verbatim."`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("JSON Schema is missing %s\ngot: %s", want, body)
+		}
+	}
+
+	rendered := s.RenderForPrompt()
+	if !strings.Contains(rendered, "Exactly the analyst's pinned ids, no extras.") {
+		t.Errorf("prompt render dropped the array description:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "The pinned case id, verbatim.") {
+		t.Errorf("prompt render dropped the item-property description:\n%s", rendered)
+	}
+}

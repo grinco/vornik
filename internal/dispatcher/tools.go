@@ -15,6 +15,7 @@ import (
 	"vornik.io/vornik/internal/budget"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
+	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/idfmt"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/memory/ned"
@@ -1185,8 +1186,82 @@ func (te *ToolExecutor) getTaskStatus(ctx context.Context, argsJSON string, allo
 	if err != nil {
 		return ToolResult{Content: fmt.Sprintf("Error: %v", err)}
 	}
+	// T-b093f: chat.ActionGetStatus describes execution state but carries no
+	// artifact inventory. On terminal tasks that made the dispatcher compare
+	// prompt-time logical names (research.md) against an empty catalogue and
+	// falsely report that downstream steps wrote nothing. Surface the durable,
+	// harvested names here; harvesting intentionally adds date/execution suffixes.
+	if task, getErr := te.taskRepo.Get(ctx, args.TaskID); getErr == nil && task != nil &&
+		(task.Status == persistence.TaskStatusCompleted || task.Status == persistence.TaskStatusFailed || task.Status == persistence.TaskStatusCancelled) {
+		result.Message += te.taskArtifactInventory(ctx, task.ID, 50)
+	}
 	// ThirdParty: result.Message can embed exec.ErrorMessage / agent-derived text (chat/parser.go:496) — must be injection-scanned.
 	return ToolResult{Content: result.Message, Provenance: outputguard.ProvenanceThirdParty}
+}
+
+// dedupeArtifactRows collapses repeated registrations of the same harvested
+// name within one execution. A multi-step workflow can re-stage an upstream
+// output under artifacts/out; older executors registered that unchanged file
+// again after every later step. Those rows are one logical deliverable, not
+// several. Keep same-named files from different executions distinct.
+func dedupeArtifactRows(rows []*persistence.Artifact) []*persistence.Artifact {
+	seen := make(map[string]struct{}, len(rows))
+	out := make([]*persistence.Artifact, 0, len(rows))
+	for _, a := range rows {
+		if a == nil {
+			continue
+		}
+		execID := ""
+		if a.ExecutionID != nil {
+			execID = *a.ExecutionID
+		}
+		key := execID + "\x00" + a.Name + "\x00" + string(a.ArtifactClass)
+		if execID == "" {
+			key = "no-exec\x00" + a.Name + "\x00" + string(a.ArtifactClass)
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, a)
+	}
+	return out
+}
+
+func operatorDeliverableRows(rows []*persistence.Artifact) []*persistence.Artifact {
+	deduped := dedupeArtifactRows(rows)
+	out := make([]*persistence.Artifact, 0, len(deduped))
+	for _, a := range deduped {
+		if a.ArtifactClass != persistence.ArtifactClassOutput || executor.IsTranscriptArtifact(a.Name) {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+func (te *ToolExecutor) taskArtifactInventory(ctx context.Context, taskID string, pageSize int) string {
+	if te.artifactRepo == nil {
+		return ""
+	}
+	rows, err := te.artifactRepo.List(ctx, persistence.ArtifactFilter{TaskID: &taskID, PageSize: pageSize})
+	if err != nil {
+		return ""
+	}
+	rows = operatorDeliverableRows(rows)
+	if len(rows) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "\nHarvested %d artifact(s) (stored names include date/execution suffixes):\n", len(rows))
+	for _, a := range rows {
+		fmt.Fprintf(&sb, "  - %s (%s", a.Name, a.ArtifactClass)
+		if a.SizeBytes != nil {
+			fmt.Fprintf(&sb, ", %d bytes", *a.SizeBytes)
+		}
+		sb.WriteString(")\n")
+	}
+	return sb.String()
 }
 
 // waitForTask polling cadence — exposed as package-level vars so
@@ -1308,6 +1383,7 @@ func (te *ToolExecutor) formatWaitResult(ctx context.Context, task *persistence.
 	if te.artifactRepo != nil {
 		filter := persistence.ArtifactFilter{TaskID: &task.ID, PageSize: 25}
 		if arts, err := te.artifactRepo.List(ctx, filter); err == nil && len(arts) > 0 {
+			arts = operatorDeliverableRows(arts)
 			fmt.Fprintf(&sb, "\nProduced %d artifact(s):\n", len(arts))
 			for _, a := range arts {
 				line := fmt.Sprintf("  - %s (%s", a.Name, a.ArtifactClass)
@@ -1442,6 +1518,10 @@ func (te *ToolExecutor) listArtifacts(ctx context.Context, argsJSON string, allo
 	if len(artifacts) == 0 {
 		return ToolResult{Content: "No artifacts found for this task."}
 	}
+	artifacts = dedupeArtifactRows(artifacts)
+	if len(artifacts) == 0 {
+		return ToolResult{Content: "No artifacts found for this task."}
+	}
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Found %d artifact(s) for task %s:\n", len(artifacts), args.TaskID)
@@ -1452,6 +1532,9 @@ func (te *ToolExecutor) listArtifacts(ctx context.Context, argsJSON string, allo
 		}
 		if a.ExecutionID != nil {
 			line += fmt.Sprintf(" [exec: %s]", *a.ExecutionID)
+		}
+		if executor.IsTranscriptArtifact(a.Name) {
+			line += " [step transcript; diagnostic, not a deliverable]"
 		}
 		sb.WriteString(line + "\n")
 	}

@@ -13,18 +13,10 @@ import (
 )
 
 func TestBuildInstallRequestContainsOnlyAllowlistedFields(t *testing.T) {
-	req, err := BuildRequest("https://telemetry.vornik.io/v1/collect.json",
-		InstallEvent("2026.7.4", SourceQuickstart))
+	req, err := BuildRequest(DefaultEndpoint, InstallEvent("2026.7.4", SourceQuickstart))
 	require.NoError(t, err)
 
-	q := req.URL.Query()
-	require.Equal(t, "install_succeeded", q.Get("e"))
-	require.Equal(t, "1", q.Get("sv"))
-	require.Equal(t, "2026.7.4", q.Get("v"))
-	require.NotEmpty(t, q.Get("os"))
-	require.NotEmpty(t, q.Get("arch"))
-	require.Equal(t, "quickstart", q.Get("source"))
-	require.Len(t, q, 6)
+	require.Empty(t, req.URL.RawQuery)
 
 	body, err := io.ReadAll(req.Body)
 	require.NoError(t, err)
@@ -38,7 +30,7 @@ func TestBuildInstallRequestContainsOnlyAllowlistedFields(t *testing.T) {
 func TestProjectEventNeverLeaksCustomValues(t *testing.T) {
 	event := ProjectEvent("bad version /home/alice", SourceCLITemplate,
 		"secret-project-name", false, true)
-	req, err := BuildRequest("https://telemetry.vornik.io/v1/collect.json", event)
+	req, err := BuildRequest(DefaultEndpoint, event)
 	require.NoError(t, err)
 	body, err := io.ReadAll(req.Body)
 	require.NoError(t, err)

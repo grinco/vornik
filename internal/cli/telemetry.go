@@ -2,8 +2,8 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -60,7 +60,7 @@ func runTelemetrySample(cmd *cobra.Command, _ []string) error {
 		return buildErr
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-		"Anonymous telemetry: %v (source: %s)\nPrivacy: docs/public/reference/telemetry-and-privacy.md\n\nInstall URL:\n%s\nInstall body:\n%s\n\nProject URL:\n%s\nProject body:\n%s\n",
+		"Anonymous lifecycle telemetry: %v (source: %s)\nPrivacy: docs/public/reference/telemetry-and-privacy.md\n\nInstall URL:\n%s\nInstall body:\n%s\n\nProject URL:\n%s\nProject body:\n%s\n",
 		enabled, source, installURL, installBody, projectURL, projectBody)
 	return nil
 }
@@ -82,7 +82,7 @@ func renderTelemetrySample(event telemetryclient.Event) (string, string, error) 
 	if err != nil {
 		return "", "", err
 	}
-	data, err := json.Marshal(event)
+	data, err := io.ReadAll(req.Body)
 	if err != nil {
 		return "", "", err
 	}

@@ -23,10 +23,10 @@ func TestRunTelemetrySampleDoesNotSendAndShowsBothEvents(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.SetOut(&out)
 	require.NoError(t, runTelemetrySample(cmd, nil))
-	require.Contains(t, out.String(), "Anonymous telemetry: false (source: config)")
+	require.Contains(t, out.String(), "Anonymous lifecycle telemetry: false (source: config)")
 	require.Contains(t, out.String(), "install_succeeded")
 	require.Contains(t, out.String(), "project_created")
-	require.Contains(t, out.String(), "telemetry.vornik.io")
+	require.Contains(t, out.String(), telemetryclient.DefaultEndpoint)
 }
 
 func TestRunTelemetryEmitInstallRespectsExplicitOptOut(t *testing.T) {

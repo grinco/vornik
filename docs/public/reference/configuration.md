@@ -38,7 +38,7 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 
 | Key | Type | Description |
 |---|---|---|
-| `telemetry` | struct | Anonymous install and project-creation telemetry. Enabled by default; set enabled=false to opt out. |
+| `telemetry` | struct | Anonymous individual install and project-creation events. Enabled by default; set enabled=false to opt out. |
 
 ## server
 
@@ -492,4 +492,3 @@ vornik reads its configuration from `config.yaml`. The keys below are the custom
 | Key | Type | Description |
 |---|---|---|
 | `taint_lineage.enforcement_mode` | string | Daemon-default taint-lineage enforcement for autonomous writes: off (record only, never park/refuse), advisory (default; record + flag, never park/refuse), enforce (park tainted forge writes for operator review, synchronously refuse tainted query_api writes). Per-project overridable. Audit is always recorded regardless. Never LLM-settable. |
-

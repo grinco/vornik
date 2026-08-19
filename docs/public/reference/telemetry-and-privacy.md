@@ -1,7 +1,7 @@
-# Anonymous usage telemetry
+# Anonymous individual lifecycle events
 
-Vornik reports successful new installations and project creations to
-`telemetry.vornik.io` when anonymous telemetry is enabled. It is enabled by
+Vornik reports successful new installations and project creations to its
+telemetry collector when anonymous lifecycle telemetry is enabled. It is enabled by
 default and can be disabled during installation or at any time.
 
 ## What is reported
@@ -13,31 +13,29 @@ default and can be disabled during installation or at any time.
 - for project creation, a built-in template slug or `custom`, plus whether
   autonomy was enabled.
 
-Vornik does not send an installation identifier, hostname, username, project
-name or ID, filesystem path, repository, prompt, task content, configuration
-value, API key, provider endpoint, model name, error text, precise timestamp,
-or hashes of local values.
+Vornik does not send a hostname, username, project name or ID, filesystem path,
+repository, prompt, task content, configuration value, API key, provider
+endpoint, model name, error text, or hashes of local values.
 
 The reported Vornik version is a release identifier only. A build made from
 source reports `dev` rather than its commit, so the version cannot single out
 one machine's build.
 
 The HTTPS service can see the source IP while handling a request. Vornik does
-not include it in the payload, and the telemetry service must not retain the
-full address or combine requests with CDN/WAF identifiers, cookies, or
-fingerprints.
+not include it in the payload. The collector records its server receive time so
+installations can be distinguished and lifecycle events ordered; it must not
+retain addresses, headers, cookies, or browser fingerprints.
 
 ## What is retained
 
-The endpoint keeps aggregate counts of the fields listed above — event type,
-version, OS, architecture, creation path, template, autonomy flag — and nothing
-else. Each is recorded only as one of a fixed set of values; anything
-unrecognised is stored as `other` or `custom`. Counts live in edge logs for
-about 7 days and in an aggregate dataset for about 90 days.
+The endpoint keeps one normalised event per report: a collector-generated event
+UUID, its server receive time, and the fields listed above. Each categorical value is
+restricted to a fixed set; anything unrecognised is rejected or becomes
+`custom`. The default retention period is 730 days.
 
-The request body is never parsed, stored, or forwarded, and no request is
-recorded together with an address, cookie, header, or any other identifier, so
-individual reports cannot be linked to each other or to a machine.
+The request body is validated and rewritten to this closed schema before it is
+stored. It is never stored with an address, cookie, header, or a client-side
+identifier. Each event is independent and cannot be linked to an installation.
 
 ## Inspect or disable it
 

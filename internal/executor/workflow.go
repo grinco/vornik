@@ -577,7 +577,14 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 						if e.shuttingDownOrCancelled(ctx) {
 							return "", nil, completedSteps, gateErr
 						}
-						nextStepID = step.OnFail
+						// Through effectiveOnFail, NOT raw: a gate failure is a
+						// failure, so pedantic must redirect its recovery hop to
+						// the failed terminal exactly as it does for the seven
+						// ordinary transitions. Assigning step.OnFail directly
+						// here is what let a pedantic dev-pipeline run
+						// recover-checkpoint and finish at the COMPLETED
+						// `checkpoint` terminal with its review contract unmet.
+						nextStepID = e.effectiveOnFail(task, plan, execution, currentStepID, step.OnFail)
 						lastResultMessage = gateErr.Error()
 						lastResultErr = gateErr
 					} else {
@@ -588,7 +595,9 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 			if nextStepID == "" {
 				// No on_success, no matching gates — try on_fail as last resort.
 				if step.OnFail != "" {
-					nextStepID = step.OnFail
+					// Same resolver as every other failure transition — see the
+					// gate-eval branch above.
+					nextStepID = e.effectiveOnFail(task, plan, execution, currentStepID, step.OnFail)
 					lastResultMessage = "no gate condition matched and no on_success defined"
 					// The producer ran fine; the workflow author just didn't
 					// wire a default. Leave pending for the terminal sweep.

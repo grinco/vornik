@@ -463,10 +463,28 @@ roles:
     model: "moonshotai.kimi-k2.5"
     modelFallback: "zai.glm-5"
     maxTokens: 8192
-    # outputSchema pins review.approved:bool because dev-pipeline
-    # gates on it (and on review.all_done — also pinned). Optional
-    # sibling fields appear for the model to fill alongside the
-    # required gate fields. See https://docs.vornik.io
+    # outputSchema pins review.approved AND review.all_done because
+    # dev-pipeline gates on BOTH. Two of its three gate conditions read
+    # all_done:
+    #   review.approved == true && review.all_done == true  -> report
+    #   review.approved == true && review.all_done == false -> checkpoint-report
+    #   review.approved == false                            -> implement
+    # so an approval that omits all_done matches NOTHING and the step is
+    # recorded downstream_rejected ("no gate condition matched").
+    #
+    # all_done was in `properties` but NOT in `required` until 2026-08-20,
+    # while this comment already claimed it was pinned. `required` is what
+    # binds at decode time — role.OutputSchema.ToToolSpec feeds it through as
+    # the emit_<role>_result tool's parameters — so the model omitted it and
+    # was doing exactly what the contract permitted. Measured in the 2026.8.8
+    # profiling arm: 83 of 97 review steps emitted {"review":{"approved":true,
+    # "feedback":"..."}} with no all_done, and the pipeline discarded every one
+    # of those approvals. Same defect as testing.passed/testing.cases
+    # (2026-08-19), whose identical fix moved violations 37/50 -> 0/6.
+    #
+    # RULE: every field a gate condition reads must be in `required`. Optional
+    # sibling fields appear for the model to fill alongside the required gate
+    # fields. See https://docs.vornik.io
     injectSchemaIntoPrompt: true
     outputSchema:
       type: object
@@ -474,7 +492,7 @@ roles:
       properties:
         review:
           type: object
-          required: [approved]
+          required: [approved, all_done]
           properties:
             approved: {type: bool}
             all_done: {type: bool}

@@ -88,6 +88,49 @@ type GoldManifest struct {
 	ReviewedBy string `json:"reviewedBy,omitempty"`
 }
 
+// Validate refuses a manifest whose task-set digest is not a digest.
+//
+// The field is compared against a real sha256 by the gold fence, so a
+// malformed value can only ever produce a refusal at use time — but it can be
+// WRITTEN, and on 2026-08-14 one was: dev-swarm-gold-v1.json shipped with
+// captured `vornikctl bench` help text in taskSetSha256, because the producing
+// script piped a help message through `awk '{print $1}'` and nobody looked at
+// the shape. That took the tool-grant probe dark for five days.
+//
+// Checked at construction and at merge rather than only at load, because the
+// cheapest place to reject ground truth that cannot be ground truth is before
+// it reaches a file somebody commits.
+func (m GoldManifest) Validate() error {
+	if err := validateTaskSetDigest(m.TaskSetSHA256); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateTaskSetDigest requires exactly 64 lowercase hex characters — the
+// shape hex.EncodeToString produces for a sha256, and nothing else. Lowercase
+// is required rather than folded: the fence compares digests by string
+// equality, so an uppercase copy of the right hash still refuses, and
+// accepting it here would move that surprise later.
+func validateTaskSetDigest(digest string) error {
+	if digest == "" {
+		return fmt.Errorf("gold manifest taskSetSha256 is empty: it must name the task set the gold was recorded from")
+	}
+	if len(digest) != 64 {
+		return fmt.Errorf("gold manifest taskSetSha256 is not a sha256: got %d characters, want 64 (value begins %q)",
+			len(digest), shortHash(digest))
+	}
+	for i := 0; i < len(digest); i++ {
+		c := digest[i]
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') {
+			continue
+		}
+		return fmt.Errorf("gold manifest taskSetSha256 is not a sha256: character %d is %q, want lowercase hex (value begins %q)",
+			i, string(c), shortHash(digest))
+	}
+	return nil
+}
+
 // SHA256 is the manifest's identity, used as the arm key's gold_sha256.
 func (m GoldManifest) SHA256() (string, error) {
 	blob, err := json.Marshal(m.canonical())
@@ -162,6 +205,11 @@ func BuildGold(taskSetSHA256 string, runs []UnrestrictedRun, runCount int) (Gold
 		return GoldManifest{}, fmt.Errorf("refusing to build gold with no task-set hash: " +
 			"the regeneration fence has nothing to compare against, so the gold could be " +
 			"silently rebuilt against a different task set")
+	}
+	// A digest that is not a digest fences against nothing either, and unlike
+	// an empty one it looks populated. See validateTaskSetDigest.
+	if err := validateTaskSetDigest(taskSetSHA256); err != nil {
+		return GoldManifest{}, fmt.Errorf("refusing to build gold: %w", err)
 	}
 
 	byTask := map[string][][]string{}
@@ -286,6 +334,9 @@ func MergeGold(manifests ...GoldManifest) (GoldManifest, error) {
 	for _, m := range manifests {
 		if m.TaskSetSHA256 == "" {
 			return GoldManifest{}, fmt.Errorf("refusing to merge a manifest with no task-set hash")
+		}
+		if err := m.Validate(); err != nil {
+			return GoldManifest{}, fmt.Errorf("refusing to merge a manifest: %w", err)
 		}
 		if out.TaskSetSHA256 == "" {
 			out.TaskSetSHA256 = m.TaskSetSHA256

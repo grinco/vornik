@@ -285,6 +285,26 @@ func stripInvalidProjects(cfg *ConfigSet) *ValidationError {
 							"project '%s' workflow '%s' step '%s' gate[%d] condition %q references path '%s' not declared in role '%s' outputSchema (role schema must list this path under properties so the gate can evaluate it)",
 							projectID, workflow.ID, stepID, gateIdx, gate.Condition, path, step.Role,
 						))
+						continue
+					}
+					// DECLARED is not enough. `properties` says the field MAY
+					// appear; `required` is what binds at decode time, because
+					// the schema becomes the emit_<role>_result tool's
+					// parameters. A gate reading a merely-declared path is a
+					// gate that silently fails to match whenever the model
+					// omits the field — and the model is then doing exactly
+					// what the contract permitted.
+					//
+					// dev-pipeline gated on review.all_done while it sat in
+					// properties only: 83 of 97 review steps in the 2026.8.8
+					// arm matched no condition and had their approval
+					// discarded. Same class as testing.cases (2026-08-19),
+					// 46 of 50 attempts. Refused at load time now.
+					if !role.OutputSchema.RequiresPath(path) {
+						projectErrs = append(projectErrs, fmt.Errorf(
+							"project '%s' workflow '%s' step '%s' gate[%d] condition %q reads path '%s' which role '%s' declares but does NOT require: add every segment of it to the enclosing `required` list, or the model may omit it and the gate will match nothing",
+							projectID, workflow.ID, stepID, gateIdx, gate.Condition, path, step.Role,
+						))
 					}
 				}
 			}

@@ -5,8 +5,18 @@ import (
 	"testing"
 )
 
+// testTaskSetDigest is a realistically SHAPED task-set digest: 64 lowercase
+// hex characters, like hex.EncodeToString(sha256(...)) produces.
+//
+// It replaced the literal "tset" on 2026-08-19. A four-character placeholder
+// exercised every code path that carries a digest around while exercising none
+// that cares what a digest looks like, which is why this suite was green
+// throughout the five days dev-swarm-gold-v1.json held captured help text in
+// that field.
+const testTaskSetDigest = "9b6fffe10fe0fdb6ead82e94bea62a48a9511a38ef2ef7cefe24a97797c98df9"
+
 func TestBuildGold_RecordsPerRunPathsNotAUnion(t *testing.T) {
-	m, err := BuildGold("tset", []UnrestrictedRun{
+	m, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
 		{TaskID: "t1", Passed: true, Invoked: []string{"a", "b"}},
 		{TaskID: "t1", Passed: true, Invoked: []string{"c", "d"}},
 	}, 2)
@@ -27,7 +37,7 @@ func TestBuildGold_RecordsPerRunPathsNotAUnion(t *testing.T) {
 // No ground truth exists for a task the unrestricted arm never passed, and we
 // cannot tell "the policy was too tight" from "the task is infeasible".
 func TestBuildGold_ExcludesATaskTheUnrestrictedArmNeverPassed(t *testing.T) {
-	m, err := BuildGold("tset", []UnrestrictedRun{
+	m, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
 		{TaskID: "t1", Passed: false},
 		{TaskID: "t1", Passed: false},
 	}, 2)
@@ -51,7 +61,7 @@ func TestBuildGold_ExcludesATaskTheUnrestrictedArmNeverPassed(t *testing.T) {
 // A task needing no tools cannot exercise a grant policy; scoring it would
 // report a perfect coverage nobody earned.
 func TestBuildGold_ExcludesATaskThatNeededNoTools(t *testing.T) {
-	m, err := BuildGold("tset", []UnrestrictedRun{
+	m, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
 		{TaskID: "t1", Passed: true, Invoked: nil},
 	}, 1)
 	if err != nil {
@@ -72,14 +82,14 @@ func TestBuildGold_RefusesWithoutATaskSetHash(t *testing.T) {
 // An equal gold set must hash alike regardless of the order runs arrived in, or
 // the arm key splits on noise and refuses every comparison.
 func TestGoldManifest_HashIsOrderIndependent(t *testing.T) {
-	a, err := BuildGold("tset", []UnrestrictedRun{
+	a, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
 		{TaskID: "t1", Passed: true, Invoked: []string{"b", "a"}},
 		{TaskID: "t2", Passed: true, Invoked: []string{"c"}},
 	}, 2)
 	if err != nil {
 		t.Fatalf("build gold: %v", err)
 	}
-	b, err := BuildGold("tset", []UnrestrictedRun{
+	b, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
 		{TaskID: "t2", Passed: true, Invoked: []string{"c"}},
 		{TaskID: "t1", Passed: true, Invoked: []string{"a", "b"}},
 	}, 2)
@@ -125,7 +135,7 @@ func TestCheckRegeneration_AllowsAChangedTaskSet(t *testing.T) {
 }
 
 func TestCheckRegeneration_AllowsTheFirstBuild(t *testing.T) {
-	if err := CheckRegeneration(nil, "tset"); err != nil {
+	if err := CheckRegeneration(nil, testTaskSetDigest); err != nil {
 		t.Fatalf("refused the first gold build: %v", err)
 	}
 }
@@ -158,7 +168,7 @@ func TestCheckRegeneration_ConfigOnlyChangeCannotRegenerateGold(t *testing.T) {
 // ground truth on the strength of our own dirty workspace — observed on the first
 // full gold pass.
 func TestBuildGold_DistinguishesHarnessFailuresFromTaskFailures(t *testing.T) {
-	m, err := BuildGold("tset", []UnrestrictedRun{
+	m, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
 		{TaskID: "ours", Passed: false,
 			ErrorText: "agent steps succeeded but changes could not be merged to master"},
 		{TaskID: "ours", Passed: false,
@@ -182,7 +192,7 @@ func TestBuildGold_DistinguishesHarnessFailuresFromTaskFailures(t *testing.T) {
 
 // A task that passed at least once is unaffected by an earlier harness failure.
 func TestBuildGold_APassOverridesAnEarlierHarnessFailure(t *testing.T) {
-	m, err := BuildGold("tset", []UnrestrictedRun{
+	m, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
 		{TaskID: "t1", Passed: false, ErrorText: "could not be merged to master"},
 		{TaskID: "t1", Passed: true, Invoked: []string{"a", "b"}},
 	}, 2)
@@ -198,8 +208,8 @@ func TestBuildGold_APassOverridesAnEarlierHarnessFailure(t *testing.T) {
 // works if the partial manifests combine into the single pinned gold the fence
 // and the arm key expect.
 func TestMergeGold_AccumulatesPathsAcrossBatches(t *testing.T) {
-	a, _ := BuildGold("tset", []UnrestrictedRun{{TaskID: "t1", Passed: true, Invoked: []string{"a"}}}, 1)
-	b, _ := BuildGold("tset", []UnrestrictedRun{{TaskID: "t1", Passed: true, Invoked: []string{"b"}}}, 1)
+	a, _ := BuildGold(testTaskSetDigest, []UnrestrictedRun{{TaskID: "t1", Passed: true, Invoked: []string{"a"}}}, 1)
+	b, _ := BuildGold(testTaskSetDigest, []UnrestrictedRun{{TaskID: "t1", Passed: true, Invoked: []string{"b"}}}, 1)
 
 	m, err := MergeGold(a, b)
 	if err != nil {
@@ -216,8 +226,8 @@ func TestMergeGold_AccumulatesPathsAcrossBatches(t *testing.T) {
 
 // A task excluded in one batch and passed in another WAS measurable.
 func TestMergeGold_APassAnywhereClearsAnExclusion(t *testing.T) {
-	excluded, _ := BuildGold("tset", []UnrestrictedRun{{TaskID: "t1", Passed: false, ErrorText: "criteria not met"}}, 1)
-	passed, _ := BuildGold("tset", []UnrestrictedRun{{TaskID: "t1", Passed: true, Invoked: []string{"a"}}}, 1)
+	excluded, _ := BuildGold(testTaskSetDigest, []UnrestrictedRun{{TaskID: "t1", Passed: false, ErrorText: "criteria not met"}}, 1)
+	passed, _ := BuildGold(testTaskSetDigest, []UnrestrictedRun{{TaskID: "t1", Passed: true, Invoked: []string{"a"}}}, 1)
 
 	for _, order := range [][]GoldManifest{{excluded, passed}, {passed, excluded}} {
 		m, err := MergeGold(order...)
@@ -241,8 +251,8 @@ func TestMergeGold_RefusesMismatchedTaskSets(t *testing.T) {
 }
 
 func TestMergeGold_KeepsAnExclusionNoBatchDisproved(t *testing.T) {
-	a, _ := BuildGold("tset", []UnrestrictedRun{{TaskID: "t1", Passed: false, ErrorText: "criteria not met"}}, 1)
-	b, _ := BuildGold("tset", []UnrestrictedRun{{TaskID: "t1", Passed: false, ErrorText: "criteria not met"}}, 1)
+	a, _ := BuildGold(testTaskSetDigest, []UnrestrictedRun{{TaskID: "t1", Passed: false, ErrorText: "criteria not met"}}, 1)
+	b, _ := BuildGold(testTaskSetDigest, []UnrestrictedRun{{TaskID: "t1", Passed: false, ErrorText: "criteria not met"}}, 1)
 
 	m, err := MergeGold(a, b)
 	if err != nil {
@@ -257,7 +267,7 @@ func TestMergeGold_KeepsAnExclusionNoBatchDisproved(t *testing.T) {
 // NEEDED makes coverage circular — a policy would be scored on whether it granted
 // the grant-decider. It appeared in 10 of 18 paths in the first real gold set.
 func TestBuildGold_ExcludesTheGrantToolItself(t *testing.T) {
-	m, err := BuildGold("tset", []UnrestrictedRun{
+	m, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
 		{TaskID: "t1", Passed: true, Invoked: []string{"file_read", "mcp__vornik__grant_step_tools", "run_shell"}},
 	}, 1)
 	if err != nil {
@@ -278,7 +288,7 @@ func TestBuildGold_ExcludesTheGrantToolItself(t *testing.T) {
 // dp-04-concurrency, whose prompt is "write a bounded worker pool in a new
 // scratch file" — a policy correctly refusing it would have been penalised.
 func TestBuildGold_ExcludesSideEffectingTools(t *testing.T) {
-	m, err := BuildGold("tset", []UnrestrictedRun{
+	m, err := BuildGold(testTaskSetDigest, []UnrestrictedRun{
 		{TaskID: "t1", Passed: true, Invoked: []string{"file_write", "backlog_deposit"}},
 	}, 1)
 	if err != nil {
@@ -295,7 +305,7 @@ func TestBuildGold_ExcludesSideEffectingTools(t *testing.T) {
 // Merging filters too, so gold produced before the rule existed is cleaned
 // without re-running the agents — the per-batch manifests stay the raw record.
 func TestMergeGold_FiltersExcludedToolsFromExistingBatches(t *testing.T) {
-	raw := GoldManifest{TaskSetSHA256: "tset", Runs: 1, Entries: []Gold{
+	raw := GoldManifest{TaskSetSHA256: testTaskSetDigest, Runs: 1, Entries: []Gold{
 		{TaskID: "t1", Paths: [][]string{{"file_read", "mcp__vornik__grant_step_tools", "backlog_deposit"}}},
 	}}
 	m, err := MergeGold(raw)
@@ -311,7 +321,7 @@ func TestMergeGold_FiltersExcludedToolsFromExistingBatches(t *testing.T) {
 // A path that was ONLY excluded tools is dropped rather than kept empty: an empty
 // path would score as trivially covered.
 func TestMergeGold_DropsAPathThatWasEntirelyExcluded(t *testing.T) {
-	raw := GoldManifest{TaskSetSHA256: "tset", Runs: 1, Entries: []Gold{
+	raw := GoldManifest{TaskSetSHA256: testTaskSetDigest, Runs: 1, Entries: []Gold{
 		{TaskID: "t1", Paths: [][]string{{"mcp__vornik__grant_step_tools"}, {"file_read"}}},
 	}}
 	m, err := MergeGold(raw)

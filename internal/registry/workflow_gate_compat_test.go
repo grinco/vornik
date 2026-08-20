@@ -89,9 +89,35 @@ defaultWorkflowId: "bad-pipeline"
 	}
 }
 
-// TestStripInvalidProjects_AcceptsDeclaredGatePath confirms the
-// happy path: a workflow gate referencing a path the schema does
-// declare loads cleanly.
+// TestStripInvalidProjects_AcceptsDeclaredGatePath confirms the happy path: a
+// workflow gate referencing a path the schema declares AND requires loads
+// cleanly.
+//
+// REVISED 2026-08-20. This test previously asserted that a merely-DECLARED
+// (optional) gate path was acceptable, on the reasoning that "the model can
+// still emit them; gate evaluation falls back to no-match when they are absent
+// at runtime, which is the intended semantics."
+//
+// Measurement contradicted that twice. `required` is what binds at decode time
+// — the schema becomes the emit_<role>_result tool's parameters — so an
+// optional field is one the model may legitimately omit, and it does:
+//
+//   - review.all_done, optional, gated on by two of dev-pipeline's three
+//     conditions: 83 of 97 review steps in the 2026.8.8 profiling arm emitted
+//     approved:true with no all_done, matched NO condition, and had their
+//     approval discarded (2026-08-20).
+//   - testing.cases, optional, similarly gated: emitted in 4 of 50 attempts
+//     (2026-08-19). Adding it to `required` moved violations 37/50 to 0/6.
+//
+// "Falls back to no-match" is only benign if the workflow routes absence
+// somewhere useful. dev-pipeline routed it to on_fail → recover-checkpoint →
+// a COMPLETED terminal, so a discarded approval looked like success. The
+// permissive rule made that reachable by omission rather than by design.
+//
+// A gate path must now be required at EVERY segment. The alternative
+// considered — keep optional paths but require the gate set to be exhaustive
+// over their absence — is better modelling and much harder to check; recorded
+// in the design as the option not taken.
 func TestStripInvalidProjects_AcceptsDeclaredGatePath(t *testing.T) {
 	tmp := t.TempDir()
 	mustWriteAll(t, tmp, map[string]string{
@@ -107,7 +133,7 @@ roles:
       properties:
         review:
           type: object
-          required: [approved]
+          required: [approved, all_done]
           properties:
             approved: { type: bool }
             all_done: { type: bool }
@@ -122,11 +148,10 @@ steps:
     role: "reviewer"
     prompt: "review the change"
     gates:
-      # Both paths are declared (approved is required, all_done is
-      # optional but listed under properties). The compat check
-      # accepts optional declared paths because the model can still
-      # emit them; gate evaluation falls back to "no match" when
-      # they're absent at runtime, which is the intended semantics.
+      # Both gate paths are declared AND required, so the model is
+      # obliged to emit them and every condition can be evaluated.
+      # An optional gate path is refused at load time — see the
+      # revision note above for the two measurements behind that.
       - condition: "review.approved == true && review.all_done == true"
         target: "complete"
       - condition: "review.approved == false"

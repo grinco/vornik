@@ -11,10 +11,7 @@ import (
 // runs them — ValidateTaskTiers is what a release gate calls, and a set that
 // fails it would be discovered at run time, hours into a sweep.
 func TestTripwireTaskSetsAreValid(t *testing.T) {
-	sets, err := filepath.Glob("tasksets/*-tripwire-*.json")
-	if err != nil || len(sets) == 0 {
-		t.Fatalf("no tripwire task sets found: %v", err)
-	}
+	sets := requireTaskSets(t, "tasksets/*-tripwire-*.json")
 	for _, path := range sets {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			raw, err := os.ReadFile(path)
@@ -65,7 +62,7 @@ func TestTripwireWorkflowsAreShipped(t *testing.T) {
 		shipped[name[:len(name)-len(".md")]] = true
 	}
 
-	sets, _ := filepath.Glob("tasksets/*-tripwire-*.json")
+	sets := requireTaskSets(t, "tasksets/*-tripwire-*.json")
 	covered := map[string]bool{}
 	for _, path := range sets {
 		raw, err := os.ReadFile(path)
@@ -93,7 +90,7 @@ func TestTripwireWorkflowsAreShipped(t *testing.T) {
 // the task fail on staging — a failure unrelated to the thing being measured,
 // and one that would read as "this workflow is broken".
 func TestTripwireAttachmentsExist(t *testing.T) {
-	sets, _ := filepath.Glob("tasksets/*-tripwire-*.json")
+	sets := requireTaskSets(t, "tasksets/*-tripwire-*.json")
 	checked := 0
 	for _, path := range sets {
 		raw, err := os.ReadFile(path)

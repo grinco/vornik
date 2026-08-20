@@ -1238,6 +1238,14 @@ func loadGoldIfPresent(path string) (*agentbench.GoldManifest, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parse gold manifest: %w", err)
 	}
+	// Reject a malformed manifest HERE, naming the field, rather than letting
+	// the regeneration fence report it as an ordinary task-set mismatch. A
+	// manifest whose taskSetSha256 is captured help text (2026-08-19) refuses
+	// against every task set, so the fence's message sends the reader looking
+	// for a task-set change that never happened.
+	if err := m.Validate(); err != nil {
+		return nil, fmt.Errorf("gold manifest %s is malformed: %w", path, err)
+	}
 	return &m, nil
 }
 

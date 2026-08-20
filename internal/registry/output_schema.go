@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -599,6 +600,45 @@ func (s *OutputSchema) DeclaresPath(path string) bool {
 	cur := s
 	for _, segment := range strings.Split(path, ".") {
 		if cur == nil {
+			return false
+		}
+		next, ok := cur.Properties[segment]
+		if !ok {
+			return false
+		}
+		cur = next
+	}
+	return true
+}
+
+// RequiresPath reports whether every segment of a dotted path is REQUIRED,
+// not merely declared.
+//
+// DeclaresPath walks `properties`, which is documentation: it says a field may
+// appear. `required` is what BINDS — OutputSchema feeds it through as the
+// emit_<role>_result tool's parameters, so a field absent from `required` is
+// one the model may legitimately omit, and omitting it is not a violation.
+//
+// Every segment must be required, not just the leaf. A required `all_done`
+// inside an optional `review` object is still omittable, because the model can
+// leave out `review` entirely.
+//
+// Gate conditions are evaluated against what the model actually emitted, so a
+// gate reading a merely-declared path is a gate that silently fails to match.
+// dev-pipeline gated on `review.all_done` while it sat in properties only:
+// 83 of 97 review steps in the 2026.8.8 arm matched no condition and had their
+// approval discarded (2026-08-20). The same class had already cost the tester
+// role 46 of 50 attempts via testing.cases (2026-08-19).
+func (s *OutputSchema) RequiresPath(path string) bool {
+	if s == nil {
+		return false
+	}
+	if path == "" {
+		return true
+	}
+	cur := s
+	for _, segment := range strings.Split(path, ".") {
+		if cur == nil || !slices.Contains(cur.Required, segment) {
 			return false
 		}
 		next, ok := cur.Properties[segment]

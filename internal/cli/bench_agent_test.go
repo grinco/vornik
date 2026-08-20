@@ -111,9 +111,14 @@ func TestBenchAgent_GoldRefusesAnUnchangedTaskSet(t *testing.T) {
 	benchAgentProject = "bench"
 	benchAgentBenchProject = "bench"
 	benchAgentSwarm = "bench"
-	benchAgentTaskSetHash = "abc123"
+	// A realistically SHAPED digest. It was "abc123" until 2026-08-19, which
+	// exercised the fence while exercising nothing that cares what a digest
+	// looks like — the blind spot that let captured help text ship in this
+	// field for five days.
+	const taskSet = "9b6fffe10fe0fdb6ead82e94bea62a48a9511a38ef2ef7cefe24a97797c98df9"
+	benchAgentTaskSetHash = taskSet
 	benchAgentGoldPath = writeAgentBenchJSON(t, dir, "gold.json", agentbench.GoldManifest{
-		TaskSetSHA256: "abc123",
+		TaskSetSHA256: taskSet,
 	})
 
 	err := runBenchAgentGold(benchAgentGoldCmd, nil)

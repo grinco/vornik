@@ -3,7 +3,6 @@ package agentbench
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"vornik.io/vornik/internal/registry"
@@ -39,10 +38,7 @@ func TestGateTaskProducerRolesCanSatisfyTheScorer(t *testing.T) {
 		t.Fatalf("load shipped swarms: %v", err)
 	}
 
-	tasksets, err := filepath.Glob("tasksets/*.json")
-	if err != nil || len(tasksets) == 0 {
-		t.Fatalf("no tasksets found: %v", err)
-	}
+	tasksets := requireTaskSets(t, "tasksets/*.json")
 
 	checked := 0
 	for _, path := range tasksets {

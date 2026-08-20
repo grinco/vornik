@@ -196,6 +196,18 @@ func (s *Server) companionToolSkillPropose(ctx context.Context, key *persistence
 		if target.ProjectID != key.ProjectID {
 			return "", errors.New("cannot supersede a skill from another project")
 		}
+		// A target sharing the candidate's natural key is not a supersede: it is
+		// the SAME skill. Performing both halves — Upsert updates that row in
+		// place, then SetMaturity retires it — destroys the skill and leaves the
+		// name unwritable, because the retired row still holds the UNIQUE key.
+		// That is how an operator-approved `rag-first` was lost on 2026-08-20.
+		if sameSkillIdentity(skill, target) {
+			return "", fmt.Errorf("supersedes %q names the same skill you are proposing "+
+				"(%s/%s): that is a new VERSION, not a replacement. Re-send without "+
+				"`supersedes` — an exact-key propose updates in place, bumps the version and "+
+				"resets to draft, archiving the prior body",
+				target.ID, skill.RepoScope, skill.Name)
+		}
 		skill.SupersedesID = target.ID
 	}
 

@@ -240,6 +240,15 @@ func findSkillDuplicates(candidate *persistence.Skill, existing []*persistence.S
 		if ex == nil || ex.ID == candidate.ID {
 			continue
 		}
+		// An exact natural-key match is the SAME skill being versioned, which
+		// §12.2 routes to the in-place archive-then-update path — not a
+		// near-duplicate to disambiguate. Blocking it offered only dispositions
+		// that describe it untruthfully (`supersedes` asserts a different
+		// skill; `confirm_distinct` asserts distinctness), and answering with
+		// the first destroyed an operator-approved skill on 2026-08-20.
+		if sameSkillIdentity(candidate, ex) {
+			continue
+		}
 		// An identical name under a different scope is a collision at any
 		// score: it produces two rows the injector cannot tell apart.
 		if strings.EqualFold(ex.Name, candidate.Name) && ex.RepoScope != candidate.RepoScope {
@@ -274,6 +283,15 @@ func findSkillDuplicates(candidate *persistence.Skill, existing []*persistence.S
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Score > out[j].Score })
 	return out
+}
+
+// sameSkillIdentity reports whether two rows share the natural key
+// (project, repo_scope, name) that UNIQUE constrains — i.e. they are one
+// skill, not two.
+func sameSkillIdentity(a, b *persistence.Skill) bool {
+	return a.ProjectID == b.ProjectID &&
+		a.RepoScope == b.RepoScope &&
+		strings.EqualFold(a.Name, b.Name)
 }
 
 func newSkillMatch(s *persistence.Skill, score float64, reason skillMatchReason) skillMatch {

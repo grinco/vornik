@@ -716,17 +716,19 @@ func (e *Executor) recordStepOutcomeWithSignalsAndBudget(
 		return
 	}
 	entry := &persistence.ExecutionStepOutcome{
-		ID:                   persistence.GenerateID("outc"),
-		ProjectID:            task.ProjectID,
-		TaskID:               task.ID,
-		ExecutionID:          execution.ID,
-		StepID:               stepID,
-		Role:                 role,
-		Model:                model,
-		Outcome:              outcome,
-		AttributedToStepID:   attributedToStepID,
-		ErrorClass:           errorClass,
-		ErrorDetail:          truncateStr(errorDetail, 2000),
+		ID:                 persistence.GenerateID("outc"),
+		ProjectID:          task.ProjectID,
+		TaskID:             task.ID,
+		ExecutionID:        execution.ID,
+		StepID:             stepID,
+		Role:               role,
+		Model:              model,
+		Outcome:            outcome,
+		AttributedToStepID: attributedToStepID,
+		ErrorClass:         errorClass,
+		// Both ends: the daemon's message is at the head, the container log's
+		// decisive last lines at the tail. See truncateDetailPreservingEnds.
+		ErrorDetail:          truncateDetailPreservingEnds(errorDetail, 2000),
 		DurationMS:           duration,
 		RecordedAt:           time.Now().UTC(),
 		HallucinationSignals: signals,
@@ -794,7 +796,7 @@ func (e *Executor) finalizePendingOutcome(
 	}
 	role, model, err := e.outcomeRepo.FinalizePending(
 		ctx, executionID, stepID, outcome, errorClass,
-		truncateStr(errorDetail, 2000), attributedToStepID,
+		truncateDetailPreservingEnds(errorDetail, 2000), attributedToStepID,
 	)
 	if err == persistence.ErrNotFound {
 		return

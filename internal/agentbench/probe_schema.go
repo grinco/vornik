@@ -24,6 +24,52 @@ import (
 // That is production telemetry over whatever traffic happened to arrive. This is
 // a controlled measurement over a fixed task set, per role, per arm — the two
 // answer different questions and neither replaces the other.
+//
+// KNOWN MISATTRIBUTION (measured 2026-08-20). Both this probe and that gauge
+// attribute a schema_violation to the MODEL, and a substantial share of them are
+// harness-side losses. Audit of all 198 "missing required keys" rungs in the
+// bench DB, classified by whether the step's OWN response artifact contained the
+// key the step was failed for:
+//
+//	48  valid JSON, key at top level          - the answer existed and was lost
+//	22  fenced JSON, merge Pass 2 recoverable  - ditto
+//	18  embedded {...}, merge Pass 3 recoverable - ditto
+//	29  key present only as prose              - model did not emit the contract
+//	81  key genuinely absent                   - model non-compliance
+//
+// RE-AUDITED on two markers (same day, after the first fix failed to hold). The
+// second marker is tool_calls_used: it comes from result.json's metrics block, so
+// a NULL means the whole result was lost rather than one field being dropped.
+// Across all 200 rows:
+//
+//	artifact had key + metrics NULL     90   the whole result was emptied
+//	artifact had key + metrics present    0   <- the telling zero
+//	key absent + metrics NULL             5   emptied, key not recoverable
+//	key absent + metrics present        105   genuine model non-compliance
+//
+// The ZERO is what identifies the stage. Metrics are assembled into base_result
+// BEFORE the structured merge runs, so a merge-stage failure would drop the answer
+// and keep the metrics — that row would be non-empty. It is empty in 200 rows, so
+// the merge was never the operative cause, and the loss is always the whole result
+// going away.
+//
+// Consequently merge_structured_result — written first, for a real but unobserved
+// mechanism — did not close this: bench arm 6 ran it and still produced a rung
+// with the artifact holding `analysis` and NULL metrics. The operative cause is
+// the unguarded jq chain in write_result's tail, where command substitution of a
+// failed jq yields "" and the next line writes it to result.json. Fixed by
+// guard_result_update; guarded by test-entrypoint-result-never-emptied.sh.
+//
+// So the harness-side share is 90/200 (45%) and model non-compliance is 105/200
+// (52.5%) — not the "up to 44%" an artifact-only audit suggested, and attributed
+// to a different stage than that audit concluded.
+//
+// CONSEQUENCE FOR COMPARISONS ACROSS THAT FIX. Runs before it under-report
+// schema conformance by up to the share above, so a conformance improvement
+// measured across the boundary is partly the harness being fixed rather than the
+// model improving. The 198 historical rows cannot be retro-labelled. Treat any
+// pre-fix schema-violation figure as an upper bound on model non-compliance, not
+// a measurement of it.
 
 // Step outcomes, mirroring the taxonomy owned by the migration that created
 // execution_step_outcomes. TestOutcomeConstants_MatchTheMigrationTaxonomy fails

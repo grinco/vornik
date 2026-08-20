@@ -54,18 +54,59 @@ const (
 	SourceAPITemplate = "api_template"
 )
 
-// ProductionEmissionEnabled records that every rollout-gate criterion in the
-// design's transport section has been verified for telemetry.vornik.io:
-// POST /v1/collect.json is accepted with query parameters and a body up to
-// 4 KiB, it answers 202 with the documented mock JSON, the allowlisted URL
-// dimensions are aggregated at the edge (Workers Logs plus an Analytics Engine
-// dataset — see deployments/telemetry-server/), no redirects/cookies/caching
-// are involved, and neither surface records the body or the client address.
+// ProductionEmissionEnabled is the compile-time gate on emitting from
+// default-configuration installs. The criterion it stands for is not that the
+// endpoint answers — it is that the receiving end actually RETAINS what the
+// privacy notice promises. See the history at the bottom for why that is the
+// distinction worth encoding.
 //
-// Emission was previously enabled while the "aggregateable edge logs"
-// criterion was not met — the endpoint accepted events and discarded them, so
-// nothing was countable anywhere. Do not set this true again unless the
-// receiving end actually retains the dimensions.
+// The collector behind telemetry.vornik.io moved from a Cloudflare Worker to
+// AWS on 2026-08-20 (grinco/vornik-infra). DefaultEndpoint's own comment
+// covers the transport; what matters here is what retains what:
+//
+//   - one bucketed line in CloudWatch Logs, ~7 days;
+//   - a DynamoDB COUNTER keyed by (day, dimensions), TTL pinned to the start of
+//     its own day, ~90 days.
+//
+// A counter rather than an event row, carrying no timestamp finer than the day
+// key, is what keeps the data anonymous rather than pseudonymous — a privacy
+// property, not a storage optimisation. Two identical events stay
+// indistinguishable afterwards, which is the whole point. The body is
+// size-checked and never parsed, stored, or forwarded.
+//
+// Both retention figures are published, so they are not tuning knobs: changing
+// one changes what users were told.
+//
+// This is now the ONLY backend. The Cloudflare Worker that implemented the same
+// contract was decommissioned 2026-08-20. Its source survives at
+// deployments/telemetry-server/ and is worth keeping — the response body, the
+// dimension vocabularies and the test cases were all ported from it, so it is
+// the provenance of shapes that look arbitrary otherwise — but it serves no
+// traffic. Read it as a reference implementation, not a second deployment.
+//
+// What that costs: while both existed, each was a cross-check on the other. Now
+// nothing independently corroborates that the collector does what the notice
+// says, and lambda/telemetry/handler.test.mjs is what is left of that check.
+//
+// Transport gate SATISFIED 2026-08-20, verified rather than assumed:
+// telemetry.vornik.io resolves to the API Gateway regional domain
+// (d-mwo17pkge4.execute-api.eu-central-1.amazonaws.com), presents a certificate
+// for telemetry.vornik.io that passes hostname verification, and routes both
+// declared paths to the Lambda — POST / and POST /v1/collect.json each answer
+// 415 without a content type, while POST /nope answers 404. The 415 rather than
+// a 403 is the part that matters: the gateway reached the function.
+//
+// Emission was once enabled while the "aggregateable edge logs" criterion was
+// not met — the endpoint accepted events and discarded them, so nothing was
+// countable anywhere. That is the failure this constant exists to prevent, and
+// it is not hypothetical: a delivery fault is invisible from inside the product,
+// because Emit treats every transport error as diagnostic and never changes the
+// user operation, and nothing in a build will tell you the collector stopped
+// retaining. So do not set this true unless the receiving end retains the
+// dimensions AND telemetry.vornik.io resolves to the API Gateway target rather
+// than to the Lambda's Function URL — a CNAME pointed straight at the Function
+// URL fails hostname verification and drops every event in silence, which is
+// exactly the state this endpoint was in earlier on 2026-08-20.
 const ProductionEmissionEnabled = true
 
 var safeVersion = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`)

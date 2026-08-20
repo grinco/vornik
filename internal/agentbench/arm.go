@@ -81,6 +81,31 @@ type ArmFields struct {
 
 	// Models is the (role → model) map, flattened deterministically. A model
 	// swap on one role changes cost and accuracy and must split the key.
+	//
+	// This is the model's IDENTITY, not the DEPLOYMENT serving it. GPU count,
+	// tensor-parallel width, memory headroom and batching limits are all absent,
+	// so two runs can share an identical arm key while one was served by a
+	// throughput-starved deployment and the other was not.
+	//
+	// Not fixed here, because the key cannot capture it: the harness has no way
+	// to observe a remote server's resource envelope — an OpenAI-compatible
+	// /v1/models reports ids and nothing else. Adding a field would mean hashing
+	// something unobservable.
+	//
+	// Resist the tempting simplification that "resources do not move logits, so
+	// quality stays comparable". The premise is true and the conclusion does not
+	// follow: faster inference fits MORE tool calls inside the same wall clock,
+	// so which LIMIT terminates a step can change — a step that used to die on a
+	// step timeout now runs long enough to exhaust its tool budget instead. The
+	// outcome taxonomy shifts without the model behaving differently. Latency is
+	// the obvious casualty; the outcome distribution is the subtle one.
+	//
+	// So it is an axis only an operator can attest to. Instance: 2026-08-20,
+	// arms validation-report-write-first-v2 and -v3 straddle a vLLM redeploy
+	// that changed resources only; the split is by arm NAME with the reason in
+	// agentbench-runs/validation5/PROVENANCE-NOTE.md. A latency comparison
+	// across arms should look for such a note and treat its absence as "unknown
+	// deployment" rather than "same deployment".
 	Models map[string]string `json:"models"`
 	// AgentImages is the observed (role → immutable image IDs) map. Configured
 	// tags are intent and can be retagged; only the IDs reported by the runtime

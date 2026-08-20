@@ -25,7 +25,10 @@ func ClassifyExecutionFailure(err error, hint string) string {
 	}
 	var text string
 	if err != nil {
-		text = err.Error()
+		// Classify on the daemon's message, not the container-log tail appended
+		// after it — otherwise a phrase the agent printed decides the error
+		// class. See containerLogDelimiter.
+		text = errorBeforeLogTail(err.Error())
 	}
 	if hint != "" {
 		// Hint + message increases signal density; merge with a newline

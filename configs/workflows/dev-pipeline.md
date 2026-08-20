@@ -361,21 +361,37 @@ just completed.
 
 1. Read `project/.autonomy/CURRENT_TASK.md` for the feature name and
    subtask list.
-2. Run: `cd project && git log --oneline --no-merges -20`
-   Identify all commits that belong to this feature (since the last
-   feature was completed).
-3. Write a human-readable changelog to `artifacts/out/CHANGELOG.md`:
+2. Write the changelog to `artifacts/out/CHANGELOG.md` NOW, from what
+   you just read. Do not look at git history first — step 1 already
+   gives you everything this file needs:
    - Feature name and one-line summary
    - What was implemented (bullet points per subtask)
-   - Files changed (summary, not full list)
    - Any known limitations or follow-up work
+   This file is this step's output contract. Write it before doing
+   anything else, so that a difficulty later in the step cannot cost
+   you the contract.
+3. Now enrich it. Run ONCE:
+   `cd project && git log --oneline --no-merges -20`
+   Append a "Files changed" summary and the commit list for this
+   feature. Do NOT go hunting for where the previous feature ended:
+   this history may have no tags, no merges and no feature
+   boundaries. Take the commits you can attribute confidently; if the
+   boundary is not obvious from this one output, use the single most
+   recent commit and say so in the changelog.
 4. Generate mailbox patches:
    Run: `cd project && git format-patch --output-directory /app/workspace/artifacts/out/ HEAD~N`
-   where N is the number of commits for this feature.
-   If unsure of the range, use the commits since the last tag or
-   merge.
+   where N is the number of commits you attributed in step 3, or 1 if
+   you could not attribute a range. Patches are best-effort — a
+   narrower range than the truth is fine and is better than another
+   history search.
 5. Clean up: delete `project/.autonomy/CURRENT_TASK.md` since the
    feature is done, and commit.
+
+Budget note: you have a bounded number of tool calls, and a step that
+spends them on history archaeology and never writes its declared file
+fails outright — that is exactly what happened before this prompt was
+reordered. At most two history commands. The changelog is not
+negotiable; the commit range is.
 
 Respond with:
 `{"analysis":{"changelog":"artifacts/out/CHANGELOG.md","patches":N,"feature_done":true}}`
@@ -394,15 +410,19 @@ subtasks that a follow-up task will pick up.
 1. Read `project/.autonomy/CURRENT_TASK.md` to identify the subtask
    just completed (the most recently flipped `[x]`) and the subtasks
    that remain (`[ ]` entries).
-2. Run: `cd project && git log --oneline --no-merges -10`
-   Identify the commits made during this session.
-3. Write a partial-progress note to
-   `artifacts/out/CHANGELOG-partial.md` with:
+2. Write the partial-progress note to
+   `artifacts/out/CHANGELOG-partial.md` NOW, from what you just
+   read — this is the step's output contract, and step 1 already
+   gives you all of it except the commit list:
    - Feature name
    - Subtask just completed (what landed this session)
-   - Commits in this session (hashes + messages)
    - Subtasks remaining (the `[ ]` entries from `CURRENT_TASK.md`)
    - Any blockers or context the next session should know
+3. Now add the commit list. Run ONCE:
+   `cd project && git log --oneline --no-merges -10`
+   Append the hashes + messages you can attribute to this session. Do
+   not search for a session boundary that the history may not record;
+   if it is unclear, append the most recent commit and say so.
 4. DO NOT delete `CURRENT_TASK.md`. DO NOT mark the feature
    "done" in the backlog. The unchecked subtasks remain in
    `CURRENT_TASK.md` so the next session resumes from the right

@@ -568,29 +568,13 @@ write_result() {
             fi
         fi
         if [ -n "$structured" ]; then
-            # Same ARG_MAX defence as the base_result construction
-            # above. A large LLM response (the strategist's full
-            # proposals + rationale block can exceed the kernel's
-            # ARG_MAX) lands fine via stdin pipe but base_result
-            # would also be on the command line if we kept the
-            # printf %s %s shape — go via temp files for both
-            # halves and guard against either being null (which
-            # historically crashed jq with "object × null cannot
-            # be multiplied" when the prior jq had already failed).
-            local base_f structured_f merged
-            base_f=$(mktemp)
-            structured_f=$(mktemp)
-            printf '%s' "$base_result" > "$base_f"
-            printf '%s' "$structured"  > "$structured_f"
-            merged=$(jq -s '
-                ((.[0] // {}) | if type == "object" then . else {} end) as $a
-                | ((.[1] // {}) | if type == "object" then . else {} end) as $b
-                | $a * $b
-            ' "$base_f" "$structured_f" 2>/dev/null)
-            if [ -n "$merged" ]; then
-                base_result="$merged"
-            fi
-            rm -f "$base_f" "$structured_f"
+            # merge_structured_result cannot return empty when $structured
+            # parses, so the answer can no longer be lost here. It handles the
+            # ARG_MAX concern the old inline version did (temp files, not
+            # argv), normalises a malformed or non-object envelope to {} rather
+            # than letting a parse error discard the merge, and falls back to the
+            # structured answer alone if the merge somehow still fails.
+            base_result=$(merge_structured_result "$base_result" "$structured")
         fi
     fi
 
@@ -617,21 +601,25 @@ write_result() {
     # `outcomeDetail` is kept in step with the new name for the same reason.
     # The daemon reads agentOutcome first and falls back to outcome, so an older
     # agent image keeps working against a newer daemon.
+    local _updated=""
     if [ -n "${BUDGET_TRIPWIRE_DETAIL:-}" ]; then
-        base_result=$(printf '%s' "$base_result" | jq \
+        _updated=$(printf '%s' "$base_result" | jq \
             --arg outcome "budget_tripwire" \
             --arg detail "$BUDGET_TRIPWIRE_DETAIL" \
             '. + {agentOutcome: $outcome, agentOutcomeDetail: $detail}')
+        base_result=$(guard_result_update "$_updated" "$base_result" "budget_tripwire injection")
     elif [ -n "${PROMPT_TOKEN_BUDGET_DETAIL:-}" ]; then
-        base_result=$(printf '%s' "$base_result" | jq \
+        _updated=$(printf '%s' "$base_result" | jq \
             --arg outcome "prompt_token_budget" \
             --arg detail "$PROMPT_TOKEN_BUDGET_DETAIL" \
             '. + {agentOutcome: $outcome, agentOutcomeDetail: $detail}')
+        base_result=$(guard_result_update "$_updated" "$base_result" "prompt_token_budget injection")
     elif [ -n "${ITERATION_CAP_DETAIL:-}" ]; then
-        base_result=$(printf '%s' "$base_result" | jq \
+        _updated=$(printf '%s' "$base_result" | jq \
             --arg outcome "iteration_exhausted" \
             --arg detail "$ITERATION_CAP_DETAIL" \
             '. + {agentOutcome: $outcome, agentOutcomeDetail: $detail}')
+        base_result=$(guard_result_update "$_updated" "$base_result" "iteration_exhausted injection")
     fi
 
     printf '%s\n' "$base_result" > "$OUTPUT_FILE"
@@ -739,7 +727,19 @@ build_llm_request_file() {
     # So the directive is omitted whenever tools are offered. The caller re-asks
     # TOOL-FREE for the structured answer once the tool phase is over, which is
     # the same shape as the existing prompt-budget finalization call.
-    local out_file="$1" msgs_file="$2" tools_file="$3" schema_name="$4" response_format="$5" response_schema_json="${6:-null}"
+    local out_file="$1" msgs_file="$2" tools_file="$3" schema_name="$4" response_format="$5" response_schema_json="${6:-null}" force_tool="${7:-}"
+    # force_tool names a tool the model MUST call on this turn. It is the one
+    # structured-output mechanism that composes with tools, because it IS a tool
+    # call: guided decoding and tool use are not competing for the same turn, and
+    # the provider validates the arguments against the declared JSON Schema
+    # before returning them. Bedrock and Anthropic already enforce schemas this
+    # way inside the chat adapters; this is the OpenAI-compatible equivalent, for
+    # the self-hosted path that had none.
+    #
+    # It deliberately does NOT bring response_format with it — the tools array is
+    # non-empty on a forced turn, so the guard below suppresses the directive
+    # exactly as it does during the tool phase. Sending both is the combination
+    # measured to yield finish_reason=stop and no call.
     jq -n --arg model "$LLM_MODEL" \
         --slurpfile msgs "$msgs_file" \
         --slurpfile tools "$tools_file" \
@@ -748,9 +748,13 @@ build_llm_request_file() {
         --arg response_format "$response_format" \
         --arg schema_name "$schema_name" \
         --argjson response_schema "$response_schema_json" \
+        --arg force_tool "$force_tool" \
         '{"model":$model,"messages":$msgs[0],"tools":$tools[0]}
          | if $max_tokens > 0 then . + {"max_tokens":$max_tokens} else . end
          | if $ctx_size > 0 then . + {"options":{"num_ctx":$ctx_size}} else . end
+         | if $force_tool != "" then
+             . + {"tool_choice":{"type":"function","function":{"name":$force_tool}}}
+           else . end
          | if ($tools[0] | length) > 0 then . else
              if $response_format == "json_schema" and ($response_schema != null) then
                . + {"response_format":{"type":"json_schema","json_schema":{"name":$schema_name,"schema":$response_schema,"strict":true}}}
@@ -760,6 +764,143 @@ build_llm_request_file() {
                . + {"response_format":{"type":$response_format}}
            else . end
            end' > "$out_file"
+}
+
+# guard_result_update accepts a proposed new result ($1) only if it is usable,
+# otherwise keeps the previous one ($2) and warns, naming the stage ($3).
+#
+# WHY THIS EXISTS AS A PRIMITIVE. Command substitution of a FAILED jq yields an
+# empty string, and write_result updates its result through a chain of them:
+#
+#   base_result=$(printf '%s' "$base_result" | jq '. + {...}')
+#
+# followed eventually by `printf '%s\n' "$base_result" > "$OUTPUT_FILE"`. One jq
+# error anywhere in that chain writes an EMPTY result.json.
+#
+# The consequence is not a missing field, it is a misattributed failure. The
+# per-step artifact is written BEFORE base_result is built, so an emptied result
+# leaves <step>-response.md holding the model's answer while result.json holds
+# nothing — and the daemon reports "role %q result.json is missing required keys",
+# which reads as the model's fault. Measured 2026-08-20: on every failing rung in
+# bench arms 4-6, tool_calls_used and effective_tool_budget were NULL while every
+# ok rung had values. Those come from result.json's metrics block; an empty result
+# loses the metrics and the role's keys together. One symptom, not two.
+#
+# Third instance of the class (after the structured merge and the base
+# construction), hence a shared primitive rather than a third point fix.
+#
+# It never prints nothing: with both halves unusable it emits a minimal object,
+# because an empty result.json is the failure being closed.
+guard_result_update() {
+    local new="$1" prev="$2" stage="$3"
+    if [ -n "$new" ] && printf '%s' "$new" | jq -e 'type == "object"' >/dev/null 2>&1; then
+        printf '%s' "$new"
+        return 0
+    fi
+    # >&2 because log() echoes to STDOUT and this function's stdout IS its
+    # return value — a warning on stdout would corrupt the result it protects.
+    log "WARN: $stage produced no usable result; keeping the previous one. Left unguarded this empties result.json, which the daemon reports as the ROLE's missing keys while the response artifact still holds the answer." >&2
+    if [ -n "$prev" ] && printf '%s' "$prev" | jq -e 'type == "object"' >/dev/null 2>&1; then
+        printf '%s' "$prev"
+        return 0
+    fi
+    log "WARN: $stage — the previous result is unusable too; emitting a minimal object so result.json is never empty." >&2
+    printf '%s' '{"status":"FAILED","message":"result assembly failed in the agent; see the container log"}'
+}
+
+# merge_structured_result merges the model's structured answer ($2) over our
+# result envelope ($1) and prints the result. It NEVER returns nothing when $2
+# parses as an object.
+#
+# That guarantee is the whole point. Measured 2026-08-20 across the bench DB: of
+# 198 "missing required keys" rungs, ~88 were failed for a key the model HAD
+# supplied — 48 as top-level JSON, 22 fenced, 18 embedded — all forms the
+# extraction passes parse. They died here, not in extraction: `jq -s` ran with
+# 2>/dev/null behind an `if [ -n "$merged" ]` test, and the filter's type guards
+# (`.[0] // {} | if type=="object"`) cannot save a PARSE error. A malformed
+# envelope killed jq before the filter ran and the merge was dropped in silence,
+# while the response artifact — written earlier from the same string — kept the
+# answer. Hence a step blamed for a contract it had met, with the proof on disk.
+#
+# Priority when something is broken: KEEP THE ANSWER. Our envelope is bookkeeping
+# (metrics, diagnostics) and losing it degrades observability; losing the answer
+# fails the step and misattributes it to the model. So a malformed envelope is
+# discarded in favour of the answer, not the other way round.
+#
+# The structured half also wins key conflicts, deliberately: it is what the step
+# was for, and the envelope's copies are stale by construction.
+merge_structured_result() {
+    local base="$1" structured="$2"
+
+    # Nothing to merge: hand the envelope back untouched.
+    if [ -z "$structured" ] || ! printf '%s' "$structured" | jq -e 'type == "object"' >/dev/null 2>&1; then
+        printf '%s' "$base"
+        return 0
+    fi
+
+    # Normalise the envelope to a mergeable object. A parse failure, a non-object
+    # (bare string/array/null) and an empty string all collapse to {} — each of
+    # which previously took the answer down with it.
+    local base_obj
+    base_obj=$(printf '%s' "$base" | jq -c 'if type == "object" then . else {} end' 2>/dev/null)
+    if [ -z "$base_obj" ]; then
+        base_obj='{}'
+        # >&2 is load-bearing: log() echoes to STDOUT, and this function's
+        # stdout IS its return value. Logging to stdout here would prepend the
+        # warning to the JSON and corrupt the very result we are rescuing.
+        log "WARN: result envelope did not parse; merging the model's structured answer into a bare object. Envelope metadata (metrics, diagnostics) is lost for this step; the ANSWER is not." >&2
+    fi
+
+    local base_f structured_f merged
+    base_f=$(mktemp)
+    structured_f=$(mktemp)
+    printf '%s' "$base_obj"   > "$base_f"
+    printf '%s' "$structured" > "$structured_f"
+    merged=$(jq -s '.[0] * .[1]' "$base_f" "$structured_f" 2>/dev/null)
+    rm -f "$base_f" "$structured_f"
+
+    if [ -n "$merged" ]; then
+        printf '%s' "$merged"
+        return 0
+    fi
+
+    # Both halves parsed and the merge still failed. Return the ANSWER rather
+    # than the envelope: a result carrying the role's required keys and no
+    # metrics is a step that passes its contract, which is the better failure.
+    log "WARN: merging the structured answer into the envelope failed even after normalisation; emitting the structured answer alone. Metrics and diagnostics are absent from result.json for this step." >&2
+    printf '%s' "$structured"
+}
+
+# read_emission_tool_config loads config.resultEmissionTool from task.json.
+#
+# The daemon has published this since the deterministic-output-schema work
+# (internal/executor/plan.go writes it as config.resultEmissionTool from
+# OutputSchema.ToToolSpec), calling it "the strongest portable enforcement" — and
+# nothing in this script ever read it. The enforcement that shipped instead was
+# response_format, which cannot be sent while tools are offered, so a tool-using
+# role's schema rested on a single tool-free re-ask.
+#
+# Empty when the role has no outputSchema, which is what keeps the forced path
+# opt-in per role rather than a global behaviour change.
+read_emission_tool_config() {
+    RESULT_EMISSION_TOOL=$(jq -c '.config.resultEmissionTool // empty' "$INPUT_FILE" 2>/dev/null)
+    EMIT_TOOL_NAME=$(printf '%s' "${RESULT_EMISSION_TOOL:-}" | jq -r '.name // empty' 2>/dev/null)
+    export RESULT_EMISSION_TOOL EMIT_TOOL_NAME
+}
+
+# emit_tool_definitions writes the forced turn's tools array: the emit tool
+# ALONE, wrapped in the OpenAI function shape.
+#
+# Alone on purpose. tool_choice names one tool, but leaving the work tools
+# alongside it invites a model to argue with the constraint, and the step's work
+# is already done by the time this turn happens. Offering only the emit tool also
+# keeps the request small, which matters on a turn that carries the whole
+# conversation.
+emit_tool_definitions() {
+    local out_file="$1"
+    printf '%s' "${RESULT_EMISSION_TOOL:-}" \
+        | jq -c '[{"type":"function","function":{name:.name,description:.description,parameters:.parameters}}]' \
+        > "$out_file"
 }
 
 # Build a tool definition JSON array for the LLM.
@@ -2564,6 +2705,11 @@ main() {
     # caching / debugging) defaults to "<role>_result" so different
     # roles produce distinct schemas in the gateway's tooling.
     response_schema=$(jq -c '.config.responseSchema // empty' "$INPUT_FILE")
+    # resultEmissionTool (item 9 of the same doc): the forced-tool alternative to
+    # response_format, and the only enforcement that composes with tools. Read
+    # HERE rather than at source time — the script is sourced by tests before
+    # task.json exists, so a top-level read makes sourcing order-dependent.
+    read_emission_tool_config
 
     debug "task=$task_id role=$role step=$STEP_ID"
     debug "prompt: $prompt"
@@ -3002,11 +3148,17 @@ ${previous_result}
         # step still owes a schema-shaped answer. Building tool-free is what
         # lets build_llm_request_file emit the response_format directive at all.
         local step_tools_file="$tools_file"
-        if [ "${SCHEMA_FINALIZE_PENDING:-0}" = "1" ]; then
+        local step_force_tool=""
+        if [ "${EMIT_FORCE_ACTIVE:-0}" = "1" ]; then
+            # Forced-emit finalization: keep the emit tool OFFERED (tools_file was
+            # swapped to it) and name it in tool_choice. Do NOT blank the tools
+            # array — tool_choice alone names a tool the model cannot see.
+            step_force_tool="$EMIT_TOOL_NAME"
+        elif [ "${SCHEMA_FINALIZE_PENDING:-0}" = "1" ]; then
             printf '[]\n' > "$WORKSPACE/.empty_tools.json"
             step_tools_file="$WORKSPACE/.empty_tools.json"
         fi
-        build_llm_request_file "$req_file" "$msgs_file" "$step_tools_file" "$schema_name" "$response_format" "${response_schema:-null}"
+        build_llm_request_file "$req_file" "$msgs_file" "$step_tools_file" "$schema_name" "$response_format" "${response_schema:-null}" "$step_force_tool"
         local request
         request=$(cat "$req_file")
 
@@ -3296,6 +3448,34 @@ ${previous_result}
                 continue
             fi
 
+            # Preferred finalization: force the result-emission tool.
+            #
+            # The tool-free variant below works only because response_format can
+            # then apply, and it asks the model to VOLUNTEER the role's required
+            # keys. A forced tool call constrains the decoder instead, which is
+            # why Bedrock and Anthropic enforce schemas this way. Measured
+            # 2026-08-20: every failing report rung in bench arm 4 wrote its
+            # declared file and still lost `analysis`, because nothing bound it.
+            #
+            # Opt-in (VORNIK_EMIT_TOOL_FINALIZE=1) until validated on the bench:
+            # it changes the shape of the final turn for every role carrying an
+            # outputSchema, and the fallback below is known-working.
+            if [ "${VORNIK_EMIT_TOOL_FINALIZE:-0}" = "1" ] && \
+               [ -n "${EMIT_TOOL_NAME:-}" ] && \
+               [ "${SCHEMA_FINALIZE_PENDING:-0}" = "0" ] && \
+               [ "${TOOL_PHASE_HAPPENED:-0}" = "1" ] && \
+               [ "$(jq 'length' "$tools_file" 2>/dev/null || echo 0)" -gt 0 ]; then
+                SCHEMA_FINALIZE_PENDING=1
+                EMIT_FORCE_ACTIVE=1
+                log "schema finalization: tool phase ended, forcing $EMIT_TOOL_NAME so the schema binds at decode time"
+                printf '%s' "$response" | jq -c '[.choices[0].message]' > "$WORKSPACE/.final_msg.json"
+                jq --slurpfile msg "$WORKSPACE/.final_msg.json" '. + $msg[0]' "$msgs_file" > "$msgs_file.tmp" \
+                    && mv "$msgs_file.tmp" "$msgs_file"
+                emit_tool_definitions "$WORKSPACE/.emit_tools.json"
+                tools_file="$WORKSPACE/.emit_tools.json"
+                continue
+            fi
+
             if [ -n "$response_format" ] && \
                [ "${SCHEMA_FINALIZE_PENDING:-0}" = "0" ] && \
                [ "${TOOL_PHASE_HAPPENED:-0}" = "1" ] && \
@@ -3306,6 +3486,19 @@ ${previous_result}
                 jq --slurpfile msg "$WORKSPACE/.final_msg.json" '. + $msg[0]' "$msgs_file" > "$msgs_file.tmp" \
                     && mv "$msgs_file.tmp" "$msgs_file"
                 continue
+            fi
+
+            # Neither finalization ran. Say so, and say WHY — a step that owed a
+            # schema-shaped answer and never got a turn in which to produce one
+            # is otherwise indistinguishable from one that produced a bad answer.
+            #
+            # Measured 2026-08-20 (bench arm 5): the failing `report` rungs'
+            # container logs contained only startup and per-iteration lines, with
+            # no finalization line at all, and diagnosing why cost a full pass
+            # over four conditions that all looked satisfiable from outside.
+            if [ "${SCHEMA_FINALIZE_PENDING:-0}" = "0" ] && \
+               [ "$(jq 'length' "$tools_file" 2>/dev/null || echo 0)" -gt 0 ]; then
+                log "no schema finalization: response_format='${response_format:-}' emit_tool='${EMIT_TOOL_NAME:-}' tool_phase=${TOOL_PHASE_HAPPENED:-0} — the step ends on its own last answer"
             fi
 
             # LAST CHANCE to satisfy a declared output-file contract.
@@ -3394,6 +3587,28 @@ ${previous_result}
             tc_id=$(printf '%s' "$tool_calls" | jq -r ".[$tc_idx].id")
             tc_name=$(printf '%s' "$tool_calls" | jq -r ".[$tc_idx].function.name")
             tc_args=$(printf '%s' "$tool_calls" | jq -r ".[$tc_idx].function.arguments")
+
+            # The result-emission tool is not executable: its ARGUMENTS are the
+            # result. Intercept before dispatch, because exec_tool has no handler
+            # for it and would report an unknown tool — turning the successful
+            # finalization into a failure.
+            #
+            # The arguments go in as write_result's `response` ($3), which is the
+            # structured-merge source; the model's own text is not available on a
+            # forced-tool turn, so the message is synthesised. Pass 1 of the merge
+            # accepts the arguments object directly.
+            if [ -n "${EMIT_TOOL_NAME:-}" ] && [ "$tc_name" = "$EMIT_TOOL_NAME" ]; then
+                if printf '%s' "$tc_args" | jq -e 'type == "object"' >/dev/null 2>&1; then
+                    log "emit tool: $tc_name returned the structured result; finalizing"
+                    write_result "COMPLETED" "Structured result emitted via $tc_name." \
+                        "$tc_args" "$(get_duration)"
+                    return 0
+                fi
+                # Non-object arguments cannot be merged. Fall through to the
+                # normal paths rather than writing a result the daemon will reject
+                # for a reason that names the wrong thing.
+                log "WARN: $tc_name returned non-object arguments; ignoring the forced turn"
+            fi
 
             # file_read cache lookup BEFORE the degenerate-loop detector.
             # When the model re-reads the same file, we short-circuit to

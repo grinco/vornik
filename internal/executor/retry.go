@@ -859,7 +859,11 @@ func classifyShapeFailure(err error) shapeFailureKind {
 	if err == nil {
 		return shapeFailureNone
 	}
-	msg := err.Error()
+	// Classify on the daemon's message only. A failed step's error carries the
+	// container-log tail appended after it, and an agent can print any phrase
+	// this switch keys on — including the corrective hint injected on the
+	// previous attempt. See containerLogDelimiter.
+	msg := errorBeforeLogTail(err.Error())
 	switch {
 	case strings.Contains(msg, "plausibility violation"):
 		return shapeFailurePlausibility

@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 3a4c37d3d891a669ff6b5e482f300f21200a32615ea3b2519215fff5b5dabf5d
+      sha256: 29b6f0b7b167141462fd4039c6801a2bcbb1d5f0bf7ebcdc2a5181057984817c
 ---
 # Release Notes
 
@@ -16,6 +16,69 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     new behavior; those are called out below.
 
 ---
+
+## 2026.8.8
+
+**Action required if you allowlist outbound URLs.** Anonymous telemetry now
+reports to `https://telemetry.vornik.io` instead of
+`https://telemetry.vornik.io/v1/collect.json`. The collector still accepts the
+old path, so an older release keeps reporting, but egress rules that match the
+full URL need updating. What is collected has not changed: aggregate counts of a
+fixed set of values, a request body that is never parsed or stored, and the same
+retention windows. See [Telemetry and privacy](../reference/telemetry-and-privacy.md).
+
+**`vornik telemetry sample` now shows you the real request.** It previously
+rebuilt the payload for display, which could in principle drift from what was
+actually sent; it now prints the request itself. Contributed by
+[@vmindru](https://github.com/vmindru).
+
+**A reporting step could fail after doing the work.** The step that writes a
+feature's changelog was asked to identify the relevant commits before writing the
+file. On a repository whose history offers no clear boundary — no tags, no merges
+— that search has no end, and the step could exhaust its tool budget without ever
+writing the file it was required to produce. It now writes the changelog first
+from information it already has, then enriches it with a bounded look at history.
+An inconclusive search can now cost detail in the changelog; it can no longer
+cost the step.
+
+**Agent steps could fail for work they had actually done correctly.** Before
+storing a step's result, the daemon scans it for anything that looks like a
+credential and masks what it finds. That masking was applied before the result was
+checked against the step's declared output fields — and because it replaces text
+without regard for the surrounding JSON, masking an identifier could leave the
+result unreadable. The step was then failed for "missing required fields" that
+were present all along, and its tool-call counts were recorded as blank.
+
+Ordinary output triggered it: test-case ids, commit hashes, generated
+identifiers. The check now runs on the result as the agent wrote it, while masking
+still governs everything that is stored, displayed or forwarded — no change to
+what counts as a credential or what is kept. Measured on a benchmark deployment,
+the affected failures went from 10 in 14 reporting steps to none, with masking
+still occurring on the steps that now pass.
+
+If you have historical step-failure data, treat "missing required fields" counts
+recorded before this release as an upper bound rather than a measurement.
+
+**Steps could be recorded under the wrong failure reason.** Two related issues:
+a step that exhausted its wall clock while stuck repeating itself was recorded as
+a timeout rather than as a stuck step, and text appearing in an agent's own log
+output could influence how a failure was categorised. Both are corrected. This
+matters if you act on failure categories — a stuck step is not fixed by granting
+it more time, which is what a timeout label implies.
+
+**A review decision could be ignored.** A workflow condition read a field that
+the agent was not actually required to produce, so the condition could never be
+satisfied and work was rejected downstream. The field is now required where it is
+read.
+
+**A failure that should have stopped a task could send it in a loop.** Two
+gate-failure paths did not honour the strict-failure setting and instead routed
+into recovery. They now terminate as configured.
+
+**Failed steps carry more diagnostic detail.** The log excerpt kept with a failed
+step previously retained only the beginning of the step's output, which is rarely
+where the problem is. It now keeps both the failure message and the end of the
+log.
 
 ## 2026.8.7
 

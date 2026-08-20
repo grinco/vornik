@@ -232,6 +232,31 @@ func refineAgentFailureOutcome(detail string) (stepoutcome.Outcome, string) {
 	}
 }
 
+// timeoutOutcomeAndClass decides the (outcome, errClass) pair for a step whose
+// wall clock ran out.
+//
+// A deadline says WHEN a step died, not WHY. A step can hit its timeout while
+// failing for a cause the agent named in result.json — a degenerate loop that
+// spins until the deadline being the common shape — and that cause is the more
+// useful of the two facts.
+//
+// It is also the actionable one. persistence.TimeoutStepOutcomes is documented
+// as "the degraded outcomes that mean TRUNCATION — the only ones a timeout raise
+// can address", so filing a degenerate loop under timeout tells that machinery
+// the remedy is more wall clock, which just buys the loop longer to spin. The
+// label selects a remediation, so a wrong label selects a wrong one.
+//
+// A genuine timeout — nothing named — keeps the timeout pair, because that is
+// the one case a timeout raise legitimately addresses. refineAgentFailureOutcome
+// signals "nothing recognised" with the generic ClassContainerNonZeroExit
+// fallback, which is what makes this distinguishable.
+func timeoutOutcomeAndClass(err error) (string, string) {
+	if refined, refinedClass := refineAgentFailureOutcome(errorBeforeLogTail(err.Error())); refinedClass != stepoutcome.ClassContainerNonZeroExit {
+		return string(refined), refinedClass
+	}
+	return string(stepoutcome.Timeout), stepoutcome.ClassContextTimeout
+}
+
 // classifyStepOutcome maps an agent step's (ctx, err) to the outcome label
 // used by vornik_executor_agent_step_outcomes_total. Context cancellation
 // wins over err — a cancelled run that incidentally also returns an error
@@ -248,7 +273,11 @@ func classifyStepOutcome(ctx context.Context, err error) string {
 	if err == nil {
 		return "success"
 	}
-	msg := err.Error()
+	// Strip the container-log tail before matching: this switch keys on the bare
+	// word "timeout", which an agent log contains routinely (`curl: (28)
+	// operation timeout`), so a step that merely exited non-zero would be
+	// recorded as a timeout. See containerLogDelimiter.
+	msg := errorBeforeLogTail(err.Error())
 	if strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "timed out") || strings.Contains(msg, "timeout") {
 		return "timeout"
 	}
@@ -339,8 +368,9 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 		if err != nil {
 			switch classifyStepOutcome(ctx, err) {
 			case "timeout":
-				outcome = string(stepoutcome.Timeout)
-				errClass = stepoutcome.ClassContextTimeout
+				// A named cause outranks the wall clock; see
+				// timeoutOutcomeAndClass.
+				outcome, errClass = timeoutOutcomeAndClass(err)
 			case "cancelled":
 				outcome = string(stepoutcome.Cancelled)
 				errClass = stepoutcome.ClassContextCancelled
@@ -358,7 +388,7 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 				// bucket because this was thrown away. Falls back to
 				// Failed/container_non_zero_exit for anything unrecognised,
 				// so the change is additive.
-				refinedOutcome, refinedClass := refineAgentFailureOutcome(err.Error())
+				refinedOutcome, refinedClass := refineAgentFailureOutcome(errorBeforeLogTail(err.Error()))
 				outcome = string(refinedOutcome)
 				errClass = refinedClass
 			}
@@ -865,21 +895,59 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// logs without modifying. Block-mode (Phase 2) returns a
 	// sentinel error so the step fails with SECRET_LEAK class
 	// while the redacted body still flows through audit.
+	// VALIDATE BEFORE REDACT. rawResultBytes is what the agent actually wrote;
+	// resultBytes is the redacted form. The split exists because redaction is a
+	// raw byte-span replacement (secrets.Redact) with no JSON awareness: a span
+	// covering a quoted token's quotes leaves a bare token where a string belongs
+	// and the payload stops parsing. Every structural read then fails at once —
+	// validateRequiredOutputKeys reports EVERY required key as missing because
+	// normalizedResultPayload errored, and the usage/tool-audit parsers give up
+	// too, landing tool_calls_used NULL.
+	//
+	// Measured 2026-08-20: all 10 of 10 schema violations in bench arm 7 had a
+	// result_json redaction recorded (historically 120 of 180). The control makes
+	// it causal rather than correlated — 6 of 9 PASSING rungs were also redacted,
+	// so redaction is fatal only when the splice lands where it breaks the JSON.
+	// The trigger is ordinary agent output: case ids, commit SHAs, generated
+	// identifiers. The failure was reported as the model's, on a metric named
+	// model_schema_violation_rate.
+	//
+	// WHICH BYTES GO WHERE, and why this costs no confidentiality:
+	//
+	//   rawResultBytes — reads whose output is structure or numbers, never
+	//     persisted content: validateRequiredOutputKeys (returns key NAMES from
+	//     the role config), recordLLMUsageFromResult (integers only), and
+	//     persistToolAuditFromResult (each entry is independently redacted by
+	//     scanToolAuditForSecrets before it is stored).
+	//
+	//   resultBytes — anything whose parsed value is persisted or forwarded.
+	//     Above all the agent's own `message`, which becomes agentError, reaches
+	//     the executions table, the dashboard, Telegram, and downstream prompts.
+	//     That must never be built from the raw bytes.
+	//
+	// Redaction is unchanged: same detector, same action resolution, same audit
+	// rows. Only the reads that cannot leak are moved ahead of it.
+	rawResultBytes := resultBytes
 	var secretLeakErr error
 	resultBytes, secretLeakErr = e.scanResultForSecrets(ctx, task, execution, stepID, resultBytes)
 
 	// Persist tool audit entries regardless of exit code. The degenerate-
 	// loop detail is captured into a closure variable that the defer
 	// reads — see the defer at the top of this function.
-	if len(resultBytes) > 0 {
+	// rawResultBytes here, not resultBytes: both of these parse structure that
+	// redaction can destroy, and neither persists unredacted content. Tool-audit
+	// entries are redacted individually by scanToolAuditForSecrets before
+	// storage, and the usage reader takes integers only. Parsing the redacted
+	// form is what nulled tool_calls_used on every corrupted result.
+	if len(rawResultBytes) > 0 {
 		var toolCount int
 		var stepTaint taintlineage.StepTaint
-		toolCount, degenerateLoopDetail, stepTaint = e.persistToolAuditFromResult(ctx, task, execution, stepID, resultBytes)
+		toolCount, degenerateLoopDetail, stepTaint = e.persistToolAuditFromResult(ctx, task, execution, stepID, rawResultBytes)
 		if toolCount > 0 {
 			agentStamp.ToolCallsUsed = &toolCount
 		}
 		taintStampVal = e.taintStampFromStep(stepTaint)
-		e.recordLLMUsageFromResult(ctx, task, execution, stepID, step.Role, effectiveModel, resultBytes)
+		e.recordLLMUsageFromResult(ctx, task, execution, stepID, step.Role, effectiveModel, rawResultBytes)
 	} else {
 		e.logger.Warn().Str("execution_id", execution.ID).Str("step", stepID).
 			Msg("audit: result.json is empty or missing — no audit entries")
@@ -951,8 +1019,14 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// task records. Fail loud here instead, with a message the
 	// failure classifier maps to INVALID_OUTPUT so S2 dashboards and
 	// retry policy see the correct class.
-	if agentError == "" && len(roleConfig.RequiredOutputKeys) > 0 && len(resultBytes) > 0 {
-		if missing := validateRequiredOutputKeys(resultBytes, roleConfig.RequiredOutputKeys); len(missing) > 0 {
+	// rawResultBytes: this is a STRUCTURAL check on what the agent wrote, and its
+	// output is the list of key names from the role's own config — no payload
+	// content is persisted by it. Running it on the redacted form made it report
+	// every required key missing whenever redaction broke the JSON, which is the
+	// misattribution documented at the scan above and pinned by
+	// TestValidateRequiredOutputKeys_rawPassesWhereRedactedFails.
+	if agentError == "" && len(roleConfig.RequiredOutputKeys) > 0 && len(rawResultBytes) > 0 {
+		if missing := validateRequiredOutputKeys(rawResultBytes, roleConfig.RequiredOutputKeys); len(missing) > 0 {
 			agentError = fmt.Sprintf("schema violation: role %q result.json is missing required keys: %v",
 				step.Role, missing)
 		}
@@ -985,8 +1059,14 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// "feedback") that passes shape validation but isn't actually
 	// usable downstream. WarnOnly rules emit a log line and don't
 	// gate; gate-mode rules fail the step with INVALID_OUTPUT.
-	if agentError == "" && len(roleConfig.PlausibilityRules) > 0 && len(resultBytes) > 0 {
-		violations := EvaluatePlausibilityWithGroundTruth(resultBytes, roleConfig.PlausibilityRules, globVerified)
+	// rawResultBytes for the same reason as the required-keys check: this is a
+	// structural evaluation, and a violation's Detail is built from the field name
+	// plus the rule's own `When` config (formatViolationDetail) — never from a
+	// payload value. So nothing here persists agent content, and evaluating the
+	// redacted form would report spurious violations on exactly the results
+	// redaction had corrupted, misattributing a third symptom of one cause.
+	if agentError == "" && len(roleConfig.PlausibilityRules) > 0 && len(rawResultBytes) > 0 {
+		violations := EvaluatePlausibilityWithGroundTruth(rawResultBytes, roleConfig.PlausibilityRules, globVerified)
 		var blocking []string
 		for _, v := range violations {
 			if v.WarnOnly {
@@ -1008,14 +1088,14 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	}
 
 	if agentError != "" {
-		if logs, logErr := e.runtime.Logs(ctx, containerID, 50); logErr == nil && logs != "" {
+		if logs, logErr := e.runtime.Logs(ctx, containerID, containerLogTailLines); logErr == nil && logs != "" {
 			// Container logs frequently include shell output that
 			// echoes env vars or curl auth headers — scan + redact
 			// at read time so the failed-task UI doesn't display
 			// the secret. The actual container log isn't modified;
 			// only the bytes we surface to the operator.
 			logs = string(e.scanContainerLogsForSecrets(ctx, execution, stepID, []byte(logs)))
-			agentError += "\n\n--- Container Log (last 50 lines) ---\n" + capContainerLog(logs)
+			agentError += containerLogSection(logs)
 		}
 		if rmErr := e.runtime.RemoveContainer(context.Background(), containerID, true); rmErr != nil {
 			e.logger.Warn().Err(rmErr).Str("container_id", containerID).Msg("failed to remove container after agent failure")
@@ -1567,7 +1647,7 @@ func (e *Executor) recordWarnViolationsOutcome(
 		StepID:      stepID,
 		Outcome:     string(stepoutcome.VerifierWarn),
 		ErrorClass:  "verifier_warn",
-		ErrorDetail: truncateStr(detail, 2000),
+		ErrorDetail: truncateDetailPreservingEnds(detail, 2000),
 		RecordedAt:  time.Now().UTC(),
 	}
 	finalized := time.Now().UTC()
@@ -2529,6 +2609,98 @@ func agentQualityOutcome(resultBytes []byte) (outcome, detail string) {
 // 16 KiB is far more than that — while bounding what can reach a downstream
 // PROMPT.
 const containerLogMaxBytes = 16 * 1024
+
+// containerLogTailLines is how many lines we ask the runtime for. The BYTE cap
+// above is the real bound; this only decides how deep a window we fetch before
+// that cap applies.
+//
+// Was 50, which measurement showed was too shallow to diagnose with: the agent
+// emits a preflight line and an iteration line per iteration, so any step with a
+// real tool phase fills 50 lines with its own bookkeeping and pushes the
+// step-end decisions out of the window. On the dev-pipeline report step
+// (2026-08-20) that cost the one line needed to tell two causes apart — whether
+// the tool-free schema finalization fired, or the no-tool nudge did — so a
+// failing step's log tail could show 40 iterations of preamble and nothing about
+// how it ended.
+//
+// Raising it is close to free precisely BECAUSE capContainerLog bounds bytes: a
+// deeper window cannot widen the blast radius the byte cap exists to contain, it
+// just stops the interesting lines being evicted before the cap ever runs.
+const containerLogTailLines = 400
+
+// containerLogSection renders the log tail appended to a step error: a header
+// naming the window actually requested, and the byte-capped body.
+//
+// The header text and the line count used to be independent literals — the
+// runtime was asked for 50 while the header said "last 50 lines" — so changing
+// one silently made the other lie. Deriving the text from the constant is what
+// keeps them honest.
+func containerLogSection(logs string) string {
+	return fmt.Sprintf("%slast %d lines) ---\n%s",
+		containerLogDelimiter, containerLogTailLines, capContainerLog(logs))
+}
+
+// truncateDetailPreservingEnds bounds a step's error_detail while keeping BOTH
+// ends, because the two useful parts sit at opposite ones: the daemon's own
+// message at the head, and the container log's last lines at the tail — where
+// the step decided what to do.
+//
+// A single-ended truncation cannot serve this field, and the head-keeping one
+// that used to (truncateStr, s[:max]) silently defeated capContainerLog. That
+// function keeps the log's TAIL on the explicit reasoning that "the failure is at
+// the end. Keeping the head would discard exactly the part worth reading" — and
+// then the 2000-byte head-truncation at the persistence boundary discarded it
+// again. Net effect: every stored detail was the daemon's message plus the
+// agent's startup and earliest iterations.
+//
+// Measured 2026-08-20: that is why raising containerLogTailLines from 50 to 400
+// changed nothing observable. The deeper tail was fetched and appended, then cut
+// off. Step-end lines — the schema finalization, the no-tool nudge, the iteration
+// cap — are beyond 2000 bytes by construction and could never be stored, so a
+// whole day's failures were diagnosed from evidence that structurally excluded
+// the answer.
+//
+// Split is 60/40 head/tail: the message is short and bounded, so most of the
+// budget goes to the log, but the head share must comfortably exceed the longest
+// daemon message or the reader loses what the step was even failed for.
+func truncateDetailPreservingEnds(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	const notice = "\n[… %d bytes elided …]\n"
+	headLen := limit * 6 / 10
+	tailLen := limit - headLen
+	elided := len(s) - headLen - tailLen
+	if headLen <= 0 || tailLen <= 0 || elided <= 0 {
+		// Cap too small to split meaningfully — keep the head, which at least
+		// names the failure.
+		return s[:limit]
+	}
+	return s[:headLen] + fmt.Sprintf(notice, elided) + s[len(s)-tailLen:]
+}
+
+// containerLogDelimiter opens the log section appended to a step error.
+//
+// It is the boundary between what the DAEMON concluded and what the CONTAINER
+// printed. Only the former is a machine contract: the retry ladder routes on
+// substrings of the error ("plausibility violation", "schema violation:",
+// "output contract for step"), and every one of those phrases is also printable
+// by an agent — most easily by echoing the corrective hint the ladder itself
+// injected on the previous attempt. Classifiers therefore cut here first, via
+// errorBeforeLogTail, so diagnostics can never steer control flow.
+const containerLogDelimiter = "\n\n--- Container Log ("
+
+// errorBeforeLogTail returns msg with any appended container-log section
+// removed, leaving only the daemon's own message.
+func errorBeforeLogTail(msg string) string {
+	if i := strings.Index(msg, containerLogDelimiter); i >= 0 {
+		return msg[:i]
+	}
+	return msg
+}
 
 // capContainerLog bounds the container-log tail by BYTES, keeping the end.
 //

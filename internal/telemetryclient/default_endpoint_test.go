@@ -62,3 +62,59 @@ func TestEndpointOnProjectDomain_rejectsWhatItMustReject(t *testing.T) {
 		}
 	}
 }
+
+// endpointPathIsServed reports whether raw's path is one the deployed collector
+// actually routes. `lambda/telemetry/handler.mjs` matches an explicit set —
+// PATHS = {"/", "/v1/collect.json"} — and answers anything else with a 404.
+//
+// The host check above deliberately ignores the path, so it cannot catch this.
+// A wrong path is the quietest possible failure: Emit treats every transport
+// error as diagnostic and never changes the result of the user operation, so a
+// 404 on every event looks exactly like healthy telemetry from inside the
+// product. Nothing would surface it until someone noticed the counters were
+// flat.
+func endpointPathIsServed(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	switch u.Path {
+	case "", "/", "/v1/collect.json":
+		return true
+	default:
+		return false
+	}
+}
+
+func TestDefaultEndpointPathIsOneTheCollectorServes(t *testing.T) {
+	if !endpointPathIsServed(DefaultEndpoint) {
+		t.Fatalf("DefaultEndpoint %q carries a path the collector does not route. "+
+			"handler.mjs serves only \"/\" and \"/v1/collect.json\"; anything else 404s "+
+			"and every event is lost without surfacing anywhere.", DefaultEndpoint)
+	}
+}
+
+func TestEndpointPathIsServed_rejectsUnroutedPaths(t *testing.T) {
+	for name, raw := range map[string]string{
+		"a plausible but unrouted collect path": "https://telemetry.vornik.io/collect",
+		"the v1 prefix without the file":        "https://telemetry.vornik.io/v1/",
+		"a trailing slash on the legacy path":   "https://telemetry.vornik.io/v1/collect.json/",
+		"an api-style path":                     "https://telemetry.vornik.io/api/v1/collect",
+	} {
+		if endpointPathIsServed(raw) {
+			t.Errorf("%s (%q) was accepted, but the collector would 404 it", name, raw)
+		}
+	}
+	// Query parameters are how the dimensions travel, so they must not affect
+	// the path decision — BuildRequest appends them to whatever this constant is.
+	for _, raw := range []string{
+		"https://telemetry.vornik.io",
+		"https://telemetry.vornik.io/",
+		"https://telemetry.vornik.io?event=install_succeeded",
+		"https://telemetry.vornik.io/v1/collect.json?event=install_succeeded",
+	} {
+		if !endpointPathIsServed(raw) {
+			t.Errorf("%q was rejected but the collector routes it", raw)
+		}
+	}
+}

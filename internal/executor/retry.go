@@ -53,6 +53,21 @@ const shapeRetryHint = "\n\n[CORRECTION: your previous attempt failed schema val
 // empty. Pointing at JSON formatting (as shapeRetryHint does) would
 // confuse the model; here we tell it the issue is logical
 // completeness, not syntax.
+// outputContractRetryHint is the corrective suffix for a require_output_glob
+// miss. The model's JSON parsed and satisfied its schema; what it did not do is
+// WRITE THE FILE the step declares. shapeRetryHint would tell it to fix its
+// JSON formatting — wrong advice for a filesystem failure, and measured as
+// unrecoverable across the whole retry ladder on 2026-08-20.
+//
+// The error text already carries the glob and the "You MUST write the declared
+// output file" clause, so %s does the naming; this template's job is to stop
+// the surrounding instruction from pointing somewhere else.
+const outputContractRetryHint = "\n\n[CORRECTION: your previous attempt failed its OUTPUT CONTRACT: %s. " +
+	"Your JSON was accepted — the problem is that the declared file was never written to disk. " +
+	"Write the file at the exact path named above using your file-write tool, verify it exists, " +
+	"and only then finish. Do not change your JSON output to work around this; the file itself is " +
+	"what the step is checked on.]"
+
 const plausibilityRetryHint = "\n\n[CORRECTION: your previous attempt failed plausibility validation: %s. " +
 	"Your JSON shape was correct but the field values were inconsistent or empty where they shouldn't be. " +
 	"Re-answer with values that match each other (e.g. if approved:false, populate feedback with the specific issue) " +
@@ -828,9 +843,10 @@ func isInfraFailure(err error) bool {
 type shapeFailureKind int
 
 const (
-	shapeFailureNone         shapeFailureKind = iota
-	shapeFailureJSON                          // bad JSON / missing required keys / unparseable plan
-	shapeFailurePlausibility                  // shape OK but field values inconsistent or empty
+	shapeFailureNone           shapeFailureKind = iota
+	shapeFailureJSON                            // bad JSON / missing required keys / unparseable plan
+	shapeFailurePlausibility                    // shape OK but field values inconsistent or empty
+	shapeFailureOutputContract                  // JSON fine; a declared output FILE was never written
 )
 
 // classifyShapeFailure returns the kind of shape failure (if any)
@@ -869,6 +885,14 @@ func classifyShapeFailure(err error) shapeFailureKind {
 	// shape failure, no corrective retry ran, and isModelShapedFailure skipped
 	// the fallback too. The agent never saw the "You MUST write the declared
 	// output file" hint that exists for exactly this case.
+	// BEFORE the broad "schema violation:" case below, which would otherwise
+	// swallow it. An unwritten output file is not a JSON problem: the model's
+	// JSON was fine, it just never wrote the artifact. Handing it the
+	// JSON-formatting hint is wrong advice, and the 2026.8.8 validation arm
+	// showed every rung of the ladder failing on `report` because of it. Same
+	// ordering discipline as plausibility being first.
+	case strings.Contains(msg, "output contract for step"):
+		return shapeFailureOutputContract
 	case strings.Contains(msg, "schema violation:"):
 		return shapeFailureJSON
 	case strings.Contains(msg, "is missing required keys"):
@@ -975,8 +999,11 @@ func extractMissingKeysFromError(err error) []string {
 // prompt. Caller is responsible for the append.
 func buildShapeRetryHint(err error, kind shapeFailureKind, priorResult []byte, roleHint string, role *registry.SwarmRole) string {
 	template := shapeRetryHint
-	if kind == shapeFailurePlausibility {
+	switch kind {
+	case shapeFailurePlausibility:
 		template = plausibilityRetryHint
+	case shapeFailureOutputContract:
+		template = outputContractRetryHint
 	}
 	hint := fmt.Sprintf(template, truncateForPrompt(err.Error(), 400))
 

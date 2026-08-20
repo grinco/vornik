@@ -13,7 +13,7 @@ import (
 )
 
 func TestBuildInstallRequestContainsOnlyAllowlistedFields(t *testing.T) {
-	req, err := BuildRequest("https://telemetry.vornik.io/v1/collect.json",
+	req, err := BuildRequest(DefaultEndpoint,
 		InstallEvent("2026.7.4", SourceQuickstart))
 	require.NoError(t, err)
 
@@ -38,7 +38,7 @@ func TestBuildInstallRequestContainsOnlyAllowlistedFields(t *testing.T) {
 func TestProjectEventNeverLeaksCustomValues(t *testing.T) {
 	event := ProjectEvent("bad version /home/alice", SourceCLITemplate,
 		"secret-project-name", false, true)
-	req, err := BuildRequest("https://telemetry.vornik.io/v1/collect.json", event)
+	req, err := BuildRequest(DefaultEndpoint, event)
 	require.NoError(t, err)
 	body, err := io.ReadAll(req.Body)
 	require.NoError(t, err)

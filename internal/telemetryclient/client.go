@@ -21,7 +21,26 @@ const (
 	// SchemaVersion is the initial anonymous lifecycle telemetry wire schema.
 	SchemaVersion = 1
 	// DefaultEndpoint is the fixed production lifecycle telemetry URL.
-	DefaultEndpoint = "https://telemetry.vornik.io/v1/collect.json"
+	//
+	// Path-less on purpose. The collector is reached through an API Gateway
+	// regional custom domain in eu-central-1 (grinco/vornik-infra
+	// `domain.tf`), and it accepts both `POST /` and `POST /v1/collect.json`,
+	// so naming the bare host is the simpler of two equally valid forms.
+	//
+	// A CNAME cannot point straight at a Lambda Function URL, which is why the
+	// custom domain exists: DNS-only, the Function URL serves a certificate for
+	// *.lambda-url.eu-central-1.on.aws and SNI verification fails; proxied with
+	// the original Host, Function URLs route on the Host they are addressed by
+	// and answer 403. API Gateway serves the vornik.io certificate itself and
+	// does not care about the Host — and no CDN sits in the request path, which
+	// is what lets the privacy notice keep promising that no request is recorded
+	// together with a CDN/WAF identifier.
+	//
+	// This constant must name a host the project controls; TestDefaultEndpoint-
+	// IsOnTheProjectDomain enforces it. grinco/vornik#8 proposed replacing it
+	// with a raw Function URL while telemetry stayed on by default, and nothing
+	// in the build objected.
+	DefaultEndpoint = "https://telemetry.vornik.io"
 
 	// SourceQuickstart identifies the Linux quickstart installer.
 	SourceQuickstart = "quickstart"

@@ -66,3 +66,24 @@ type cliTelemetryRoundTripFunc func(*http.Request) (*http.Response, error)
 func (f cliTelemetryRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
+
+// `vornik telemetry sample` must print the body BuildRequest actually built,
+// not a re-marshal of the event. The two agree today because both go through
+// Event.MarshalJSON, but they are separate paths and this command exists so an
+// operator can see exactly what leaves their machine — a reconstruction that
+// silently drifts would be worse than no command at all.
+func TestRenderTelemetrySampleShowsTheRealRequestBody(t *testing.T) {
+	event := telemetryclient.InstallEvent("2026.8.7", telemetryclient.SourceQuickstart)
+
+	gotURL, gotBody, err := renderTelemetrySample(event)
+	require.NoError(t, err)
+
+	req, err := telemetryclient.BuildRequest(telemetryclient.DefaultEndpoint, event)
+	require.NoError(t, err)
+	wantBody, err := io.ReadAll(req.Body)
+	require.NoError(t, err)
+
+	require.Equal(t, req.URL.String(), gotURL)
+	require.Equal(t, string(wantBody), gotBody,
+		"the printed body diverged from the request BuildRequest produces")
+}

@@ -2,8 +2,8 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -82,7 +82,13 @@ func renderTelemetrySample(event telemetryclient.Event) (string, string, error) 
 	if err != nil {
 		return "", "", err
 	}
-	data, err := json.Marshal(event)
+	// Read the body BuildRequest actually produced, rather than re-marshalling
+	// the event. Both paths go through Event.MarshalJSON today, so they agree —
+	// but they are two paths, and `vornik telemetry sample` exists so an
+	// operator can see what leaves their machine. Showing a reconstruction of
+	// that instead of the thing itself is the same class of mistake as trusting
+	// a self-report over ground truth. Adopted from grinco/vornik#8 (@vmindru).
+	data, err := io.ReadAll(req.Body)
 	if err != nil {
 		return "", "", err
 	}

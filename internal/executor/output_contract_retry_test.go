@@ -58,7 +58,14 @@ func outputContractErr(stepID, glob string) error {
 func TestClassifyShapeFailure_OutputContractIsShapeFailure_T1089(t *testing.T) {
 	err := outputContractErr("synthesize", "artifacts/out/deliverable.md")
 
-	assert.Equal(t, shapeFailureJSON, classifyShapeFailure(err),
+	// The kind was shapeFailureJSON until 2026-08-20, because JSON was the only
+	// non-plausibility kind available — incidental, not intended. This test's own
+	// message says what it guards: "must classify as A SHAPE FAILURE". It now
+	// carries its own kind so the corrective hint can tell the agent to write the
+	// file rather than to reformat its JSON, which is what made every rung of the
+	// ladder fail on dev-pipeline's `report` step. The three assertions below are
+	// the invariants T-1089 actually established, and they all still hold.
+	assert.Equal(t, shapeFailureOutputContract, classifyShapeFailure(err),
 		"require_output_glob violation must classify as a shape failure (T-1089)")
 	assert.True(t, isShapeFailure(err),
 		"isShapeFailure must be true or no corrective retry runs")

@@ -427,7 +427,11 @@ func TestClassifyShapeFailure_FabricationEarnsACorrectiveRetry(t *testing.T) {
 func TestClassifyShapeFailure_StillClassifiesRealFaults(t *testing.T) {
 	for msg, want := range map[string]shapeFailureKind{
 		"plausibility violation: role \"tester\" failed 1 rule(s)": shapeFailurePlausibility,
-		"schema violation: output contract for step \"x\" not met": shapeFailureJSON,
+		// Refined to its own kind 2026-08-20: an unwritten output FILE is not a
+		// JSON fault, and the JSON hint made the whole retry ladder unrecoverable
+		// on dev-pipeline's `report` step. Still a shape failure — that is what
+		// this test guards.
+		"schema violation: output contract for step \"x\" not met": shapeFailureOutputContract,
 		"something entirely unrelated":                             shapeFailureNone,
 	} {
 		if got := classifyShapeFailure(errors.New(msg)); got != want {

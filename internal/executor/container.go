@@ -918,7 +918,7 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	//     persisted content: validateRequiredOutputKeys (returns key NAMES from
 	//     the role config), recordLLMUsageFromResult (integers only), and
 	//     persistToolAuditFromResult (each entry is independently redacted by
-	//     scanToolAuditForSecrets before it is stored).
+	//     the auditredact repository decorator before it is stored).
 	//
 	//   resultBytes — anything whose parsed value is persisted or forwarded.
 	//     Above all the agent's own `message`, which becomes agentError, reaches
@@ -936,7 +936,7 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 	// reads — see the defer at the top of this function.
 	// rawResultBytes here, not resultBytes: both of these parse structure that
 	// redaction can destroy, and neither persists unredacted content. Tool-audit
-	// entries are redacted individually by scanToolAuditForSecrets before
+	// entries are redacted individually at the repository seam before
 	// storage, and the usage reader takes integers only. Parsing the redacted
 	// form is what nulled tool_calls_used on every corrupted result.
 	if len(rawResultBytes) > 0 {

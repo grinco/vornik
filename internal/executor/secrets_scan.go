@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
 
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/secrets"
@@ -45,25 +44,10 @@ func (e *Executor) recordRedactionEvents(ctx context.Context, projectID, taskID,
 	}
 }
 
-// isTrustedOutputTool reports whether tool's tool-audit OUTPUT is
-// provenance-trusted — i.e. its output is a daemon-proxied tool response the
-// agent cannot forge, so heuristic (generic_kv/entropy) findings there are
-// operator-facing values, not smuggled secrets. Prefix match against the
-// operator-configured secretsTrustedOutputTools (empty = nothing trusted).
-func (e *Executor) isTrustedOutputTool(tool string) bool {
-	for _, prefix := range e.secretsTrustedOutputTools {
-		if toolNameMatchesPrefix(tool, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
+// toolNameMatchesPrefix delegates to the shared matcher so the tool-audit
+// decorator and this package cannot drift on what "trusted tool" means.
 func toolNameMatchesPrefix(tool, prefix string) bool {
-	if prefix == "" {
-		return false
-	}
-	return tool == prefix || strings.HasPrefix(tool, prefix+"_")
+	return secrets.ToolNameMatchesPrefix(tool, prefix)
 }
 
 // dropHeuristicFindings removes the "weak" finding classes (generic_kv +
@@ -72,14 +56,7 @@ func toolNameMatchesPrefix(tool, prefix string) bool {
 // provenance-trusted tool's OUTPUT — so a real leaked credential still
 // redacts even there, and the exemption can't be abused as an exfil channel.
 func dropHeuristicFindings(findings []secrets.Finding) []secrets.Finding {
-	out := findings[:0]
-	for _, f := range findings {
-		if f.Type == secrets.FindingTypeGenericKV || f.Type == secrets.FindingTypeEntropy {
-			continue
-		}
-		out = append(out, f)
-	}
-	return out
+	return secrets.DropHeuristic(findings)
 }
 
 // urlRe matches an http(s) URL up to the first whitespace, quote, or angle
@@ -263,73 +240,6 @@ func (e *Executor) scanResultForSecrets(ctx context.Context, task *persistence.T
 	default: // ActionDetect
 		logEvent.Msg("secrets: result.json scanned — detect-only, body left intact")
 		return body, nil
-	}
-}
-
-// scanToolAuditForSecrets scans a single tool-audit entry's input
-// and output before persistence. Default action for this
-// checkpoint is Detect — the audit log's job is to record what the
-// agent actually did, and silent rewrites would mask the very
-// thing operators audit for. Operators can override to Redact via
-// secrets.yaml when they trust the detector enough to accept the
-// loss of audit fidelity.
-//
-// Returns the (possibly-redacted) input and output. Detect-mode
-// returns the originals plus a log line; Block degrades to
-// Redact (refusing to persist the audit row would lose more
-// signal than the redaction does).
-func (e *Executor) scanToolAuditForSecrets(execution *persistence.Execution, stepID, tool, input, output string) (string, string) {
-	if e.secretsDetector == nil {
-		return input, output
-	}
-	inputFindings := e.secretsDetector.Scan([]byte(input))
-	outputFindings := e.secretsDetector.Scan([]byte(output))
-	// Provenance exemption: for a trusted-output tool, the OUTPUT is the
-	// daemon-proxied tool response (the agent cannot forge it), so drop its
-	// HEURISTIC (generic_kv/entropy) findings — those are operator-facing
-	// values like a PageDrop viewing password, not smuggled secrets. Strong
-	// prefix-anchored credential patterns are retained (still redacted), and
-	// the agent-supplied INPUT is never exempt — so this cannot be used as a
-	// labeled-exfil channel. See secretsTrustedOutputTools.
-	if len(outputFindings) > 0 && e.isTrustedOutputTool(tool) {
-		outputFindings = dropHeuristicFindings(outputFindings)
-	}
-	if len(inputFindings) == 0 && len(outputFindings) == 0 {
-		return input, output
-	}
-	action := secrets.ResolveAction(secrets.CheckpointToolAudit, e.secretsActions)
-	combined := append([]secrets.Finding{}, inputFindings...)
-	combined = append(combined, outputFindings...)
-	counts := secrets.CountByType(combined)
-	logEvent := e.logger.Warn().
-		Str("execution_id", execution.ID).
-		Str("step", stepID).
-		Str("tool", tool).
-		Str("checkpoint", secrets.CheckpointToolAudit).
-		Str("action", string(action)).
-		Int("input_findings", len(inputFindings)).
-		Int("output_findings", len(outputFindings)).
-		Interface("by_type", counts)
-
-	switch action {
-	case secrets.ActionRedact:
-		logEvent.Msg("secrets: tool audit scanned — redacting before persist")
-		e.recordRedactionEvents(context.Background(), execution.ProjectID, execution.TaskID, execution.ID, secrets.CheckpointToolAudit, counts)
-		return string(secrets.Redact([]byte(input), inputFindings)),
-			string(secrets.Redact([]byte(output), outputFindings))
-	case secrets.ActionBlock:
-		// Block-on-audit degrades to Redact: dropping the audit
-		// row hurts observability more than redaction does, AND
-		// Phase 1 doesn't enforce block anywhere yet (Phase 2
-		// brings the SECRET_LEAK failure class). Make both
-		// degradations explicit in the log.
-		logEvent.Msg("secrets: tool audit — BLOCK ACTION NOT YET ENFORCED, degraded to redact")
-		e.recordRedactionEvents(context.Background(), execution.ProjectID, execution.TaskID, execution.ID, secrets.CheckpointToolAudit, counts)
-		return string(secrets.Redact([]byte(input), inputFindings)),
-			string(secrets.Redact([]byte(output), outputFindings))
-	default: // ActionDetect (default for this checkpoint)
-		logEvent.Msg("secrets: tool audit scanned — detect-only, raw input/output retained")
-		return input, output
 	}
 }
 

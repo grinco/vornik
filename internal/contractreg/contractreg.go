@@ -55,6 +55,12 @@ const (
 	// contractreg was introduced to end.
 	KindAgentToolInlineExempt Kind = "agent_tool_inline_exempt"
 
+	// KindAgentToolUngatedPrefix is entrypoint.sh's UNGATED_TOOL_PREFIXES_JSON —
+	// name prefixes the container deliberately does not gate because something
+	// else does. Compared against UngatedPrefixesByDesign; a prefix is a wider
+	// grant than a name, so it carries the same recorded-reason requirement.
+	KindAgentToolUngatedPrefix Kind = "agent_tool_ungated_prefix"
+
 	// KindAgentToolDispatch is entrypoint.sh's exec_tool case list: what can
 	// actually run. This is the authoritative set of implemented agent tools.
 	KindAgentToolDispatch Kind = "agent_tool_dispatch"

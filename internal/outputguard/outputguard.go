@@ -337,7 +337,17 @@ func ScanWithProvenance(content string, prov Provenance) Report {
 		return Report{}
 	}
 	var findings []Finding
-	for _, r := range rules {
+	// The base table plus the credential rules compiled from internal/secrets'
+	// corpus (see credential.go). Concatenating at scan time rather than at init
+	// keeps `rules` read-only while letting the credential set be configured at
+	// daemon boot.
+	active := rules
+	if cred := activeCredentialRules(); len(cred) > 0 {
+		active = make([]rulePattern, 0, len(rules)+len(cred))
+		active = append(active, rules...)
+		active = append(active, cred...)
+	}
+	for _, r := range active {
 		// Skip injection-class rules for first-party content.
 		// Secret-class rules (credential leakage, encoded
 		// payloads) run regardless of provenance.

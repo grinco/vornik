@@ -1067,7 +1067,14 @@ func (e *Executor) persistToolAuditFromResult(ctx context.Context, task *persist
 	e.recordToolCallCounts(task.ProjectID, detected)
 
 	for _, entry := range parsed.ToolAudit {
-		input, output := e.scanToolAuditForSecrets(execution, stepID, entry.Tool, entry.Input, entry.Output)
+		// Secret redaction for this sink moved to the repository seam
+		// (internal/auditredact) on 2026-08-20. Scanning here cleaned only
+		// THIS writer's row, and because the INSERT is ON CONFLICT (id) DO
+		// NOTHING and the agent's realtime stream shares the same audit_id,
+		// the unredacted realtime row usually won the race and this one was
+		// discarded. The decorator covers every writer, so scanning again here
+		// would be a second copy of the policy with no effect.
+		input, output := entry.Input, entry.Output
 		// Reuse the agent-supplied audit_id when present so the
 		// realtime stream (POST /api/v1/internal/tool-audit) and
 		// this post-step batch dedup cleanly via ON CONFLICT DO

@@ -599,6 +599,71 @@ func FilterAllowlisted(findings []Finding, allow [][]byte) []Finding {
 	return out
 }
 
+// IsHeuristicType reports whether a finding type (equivalently, a pattern name)
+// belongs to the WEAK detection class: high-recall, lower-precision rules that
+// can legitimately fire on innocent text.
+//
+// This split is a security boundary in three separate places, and it was
+// written out as the same inline pair of constants in each before becoming one
+// predicate:
+//
+//   - the per-call allowlist may suppress a heuristic finding, never a strong
+//     one (allowlistEligible, below);
+//   - a provenance-trusted tool OUTPUT may drop heuristic findings, never
+//     strong ones (executor.dropHeuristicFindings);
+//   - outputguard's read-back scan enforces ONLY strong patterns, because it
+//     redacts what the model sees and a false positive there corrupts the
+//     agent's working data (StrongPatterns, below).
+//
+// Unknown names are NOT heuristic. An unrecognised type is treated as strong,
+// so a pattern nobody classified cannot be quietly suppressed by an allowlist.
+func IsHeuristicType(name string) bool {
+	return name == FindingTypeGenericKV || name == FindingTypeEntropy
+}
+
+// StrongPatterns filters a pattern corpus down to the strong, prefix-anchored
+// rules. Callers pass the corpus they are entitled to — EffectivePatterns(...)
+// for anything operator-configurable — so a pattern the operator disabled stays
+// disabled here rather than reappearing through a second path.
+func StrongPatterns(patterns []Pattern) []Pattern {
+	out := make([]Pattern, 0, len(patterns))
+	for _, p := range patterns {
+		if IsHeuristicType(p.Name) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// DropHeuristic removes the weak finding classes (generic_kv + entropy) while
+// KEEPING every strong, prefix-anchored credential pattern. Used only for a
+// provenance-trusted tool's OUTPUT, so a real leaked credential still redacts
+// even there and the exemption cannot be abused as an exfil channel.
+//
+// Returns a new slice; the input is not modified.
+func DropHeuristic(findings []Finding) []Finding {
+	out := make([]Finding, 0, len(findings))
+	for _, f := range findings {
+		if IsHeuristicType(f.Type) {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// ToolNameMatchesPrefix reports whether a tool name is covered by an
+// operator-configured prefix. Exact match, or the prefix followed by "_" — so
+// "mcp__pagedrop__pagedrop_publish" covers "…_publish_page" but never a
+// look-alike like "…_publisher_evil".
+func ToolNameMatchesPrefix(tool, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	return tool == prefix || strings.HasPrefix(tool, prefix+"_")
+}
+
 // allowlistEligible reports whether a finding MAY be suppressed by the per-call
 // allowlist. Only heuristic findings (generic_kv / entropy) — the class a
 // tool-issued viewing password falls in — are eligible. A strong,
@@ -608,7 +673,7 @@ func FilterAllowlisted(findings []Finding, allow [][]byte) []Finding {
 // boundary: the allowlist can rescue a credential only from heuristic
 // redaction, never from strong-pattern redaction.
 func allowlistEligible(f Finding) bool {
-	return f.Type == FindingTypeGenericKV || f.Type == FindingTypeEntropy
+	return IsHeuristicType(f.Type)
 }
 
 // minAllowlistLen rejects trivially short allowlist entries, which would match

@@ -828,6 +828,10 @@ func NewContainer(cfg *config.Config, configPath string, opts ...ContainerOption
 		return nil, fmt.Errorf("log forwarding initialization: %w", err)
 	}
 
+	// Tool-audit secret redaction. Same ordering constraint as logship above:
+	// it must decorate the repo before any consumer captures it.
+	c.initToolAuditRedaction()
+
 	// Health + readiness probes are served by the API layer
 	// (api.Server.Healthz / Readyz). The Readyz handler does the
 	// DB ping via taskRepo.Ping plus any options-registered
@@ -1401,10 +1405,19 @@ func NewContainerWithObservability(cfg *config.Config, configPath string, obsCfg
 			if c.backend != nil && c.backend.Driver != "sqlite" {
 				c.repos = storage.Build(c.instrumentedDB())
 				// The rebuild replaced the audit repo handles with fresh
-				// (undecorated) ones; re-apply the logship audit taps so
+				// (undecorated) ones; re-apply EVERY repo decoration so
 				// consumers built after this point (the second
-				// initHTTPServer) still ship audit events.
+				// initHTTPServer) still get them.
+				//
+				// Both matter, for different reasons: without the logship taps
+				// those consumers stop shipping audit events, and without the
+				// redaction seam the realtime tool-audit handler goes back to
+				// writing plaintext credentials into tool_audit_log — the exact
+				// defect the seam exists to close, silently reintroduced by a
+				// rebuild that has nothing to do with secrets. Anything that
+				// replaces c.repos must re-apply both.
 				c.decorateAuditRepos()
+				c.initToolAuditRedaction()
 			}
 		}
 	}

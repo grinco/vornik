@@ -30,6 +30,7 @@ import (
 	"vornik.io/vornik/internal/hallucination"
 	"vornik.io/vornik/internal/memory"
 	"vornik.io/vornik/internal/memoryfirewall"
+	"vornik.io/vornik/internal/outputguard"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/ratelimit"
 	"vornik.io/vornik/internal/runtime"
@@ -570,6 +571,24 @@ func (c *Container) initScheduler() error {
 			c.Logger.Error().Err(err).Msg("secrets: detector failed to construct — continuing without secret-leak protection")
 		} else {
 			executorOpts = append(executorOpts, executor.WithSecrets(detector, actions))
+			// Feed the SAME corpus to outputguard's credential rules, so the
+			// read-back path enforces exactly what the operator configured —
+			// a disabled pattern is disabled in both places, a custom one is
+			// enforced in both. Strong patterns only: outputguard redacts what
+			// the model sees, and a heuristic false positive there corrupts the
+			// agent's working data (see internal/outputguard/credential.go).
+			custom := make([]secrets.Pattern, 0, len(c.Config.Secrets.Patterns.Custom))
+			for _, cp := range c.Config.Secrets.Patterns.Custom {
+				custom = append(custom, secrets.Pattern{Name: cp.Name, Regex: cp.Regex, Description: cp.Description})
+			}
+			strong := secrets.StrongPatterns(secrets.EffectivePatterns(c.Config.Secrets.Patterns.Disable, custom))
+			if err := outputguard.SetCredentialPatterns(strong); err != nil {
+				// Non-fatal, and loud: the built-in defaults stay in force, so
+				// the guard is never disarmed by a bad custom pattern.
+				c.Logger.Error().Err(err).Msg("secrets: outputguard credential patterns failed to compile — keeping built-in defaults")
+			} else {
+				c.Logger.Info().Int("credential_rules", len(strong)).Msg("secrets: outputguard credential rules loaded from the operator pattern corpus")
+			}
 			// Phase 3: durably record redaction events for the task-detail
 			// badge + scan-history CLI. Best-effort at the sinks; nil repo
 			// (SQLite branch may leave it unset) simply skips recording.

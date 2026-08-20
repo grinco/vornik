@@ -49,9 +49,11 @@ var secretsScanHistoryCmd = &cobra.Command{
 	Use:   "scan-history",
 	Short: "Retro-scan historical tool-audit rows for secret-shaped values",
 	Long: `Scan tool_audit_log rows for secret-shaped values and, with --apply, redact
-them in place. The tool_audit checkpoint defaults to DETECT mode, so historical
-rows written before an operator switched it to redact can still hold raw
-secrets — this is the retro-scan that cleans them.
+them in place. The tool_audit checkpoint defaults to REDACT, so a current daemon
+cleans rows as it writes them — but rows written before that default changed, or
+under an explicit checkpoints.tool_audit: detect override, or by a writer that
+predates the redaction seam, can still hold raw secrets. This is the retro-scan
+that cleans them.
 
 Other operational tables are NOT scanned: webhook_events stores only a payload
 HASH, task_llm_usage stores token COUNTS, and artifacts are redacted at write

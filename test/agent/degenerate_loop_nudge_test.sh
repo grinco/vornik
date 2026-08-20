@@ -64,7 +64,16 @@ else
 fi
 
 # 5. last_tool_result is captured from a real execution.
-if grep -A 8 'tool_result=\$(exec_tool' "$ENTRYPOINT" | grep -q 'last_tool_result="\$tool_result"'; then
+#    Checked by ORDER, not by proximity. This was a `grep -A 8` window until
+#    2026-08-20, when it went red without any behaviour changing: the advisory
+#    near-repeat block and its comments grew between the exec_tool call and the
+#    assignment, pushing them 13 lines apart. A test that fails because correct
+#    code got longer teaches the next person to widen the window, which is how
+#    an assertion quietly stops asserting. What actually matters is that the
+#    capture happens AFTER the call it captures.
+exec_line=$(grep -n 'tool_result=\$(exec_tool' "$ENTRYPOINT" | head -1 | cut -d: -f1)
+capture_line=$(grep -n 'last_tool_result="\$tool_result"' "$ENTRYPOINT" | head -1 | cut -d: -f1)
+if [ -n "$exec_line" ] && [ -n "$capture_line" ] && [ "$capture_line" -gt "$exec_line" ]; then
     ok "last_tool_result is populated after each executed tool call"
 else
     bad "last_tool_result must be set after exec_tool, or the nudge has nothing to return"

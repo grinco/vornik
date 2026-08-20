@@ -221,12 +221,20 @@ allowed_builtin_tools_json() {
         || printf '%s\n' '["current_time","file_read","file_write","run_shell"]'
 }
 
-# SECURITY (2026-08-06): this list IS the execution-time allowlist gate. The
-# caller in exec_tool refuses a tool only when
+# The declared builtin vocabulary. Since 2026-08-20 this list no longer DECIDES
+# anything on its own — tool_call_permitted() fails closed against the role's
+# allowlist — but it stays load-bearing in two ways: it separates "not allowed
+# for this role" from "unknown tool" in the refusal, and lint-lld-contracts
+# requires it to agree with the other three registries.
+#
+# The consequence of an omission is now INVERTED. Until 2026-08-20 the gate
+# refused only when
 #   is_builtin_tool "$name" && ! builtin_tool_allowed "$name"
-# so a name MISSING here makes the first conjunct false and the per-role
-# allowlist check is skipped entirely — the tool runs for every role regardless
-# of its allowedTools. The gate fails OPEN on omission.
+# so a name MISSING here made the first conjunct false, the allowlist check was
+# skipped entirely, and the tool ran for every role regardless of allowedTools —
+# the gate failed OPEN on omission. A name missing here now yields a tool that
+# is refused for every role and never advertised: a capability loss, visible,
+# rather than a silent privilege grant.
 #
 # memory_search, skill_fetch, get_conversation_window and summarize_thread were
 # each implemented with an exec_tool dispatch case and absent from this list,
@@ -262,6 +270,57 @@ BUILTIN_TOOL_NAMES_JSON='["file_read","file_write","run_shell","current_time","f
 builtin_tool_allowed() {
     local tool="$1"
     allowed_builtin_tools_json | jq -e --arg tool "$tool" 'index($tool) != null' >/dev/null 2>&1
+}
+
+# Exact tool names exempt from BOTH gates. Mirrors contractreg.UngatedByDesign;
+# lint-lld-contracts parses this JSON and fails the build if the two drift, so
+# an exemption stays a reviewed decision recorded with a reason rather than a
+# silent omission. Do not add a name here without adding it there.
+UNGATED_TOOL_NAMES_JSON='["tool_search","tool_result_read"]'
+
+# Name PREFIXES gated somewhere other than here. Mirrors
+# contractreg.UngatedPrefixesByDesign, checked the same way. A prefix is a wider
+# grant than a name, so it carries the same requirement.
+#
+# mcp__ is gated daemon-side by roleAllowsMCPTool. The container deliberately
+# does not reproduce that decision: it cannot see the daemon's
+# "role declared no allowedTools implies unrestricted" case (buildAgentInput
+# substitutes a default, so it arrives indistinguishable from a declared one),
+# and re-implementing the daemon's four-shape matcher in jq would put a second
+# copy of one security predicate in a second language — the anti-pattern that
+# produced the 2026.8.1 bypass. See agent runtime contract LLD section 7.1.
+UNGATED_TOOL_PREFIXES_JSON='["mcp__"]'
+
+tool_name_ungated() {
+    printf '%s' "$UNGATED_TOOL_NAMES_JSON" | jq -e --arg n "$1" 'index($n) != null' >/dev/null 2>&1
+}
+
+tool_prefix_ungated() {
+    printf '%s' "$UNGATED_TOOL_PREFIXES_JSON" | jq -e --arg n "$1" 'any(.[]; . as $p | $n | startswith($p))' >/dev/null 2>&1
+}
+
+# SECURITY: the permit predicate for both gates. It FAILS CLOSED — a name is
+# refused unless something explicitly permits it.
+#
+# The previous phrasing asked "is this a builtin?" and refused only on
+#   is_builtin_tool "$name" && ! builtin_tool_allowed "$name"
+# so a name absent from is_builtin_tool made the first conjunct false and the
+# per-role allowlist was never consulted. That is the mechanism behind the
+# 2026.8.1 bypass. The allowlist is now the only authority: registry drift can
+# no longer widen what a role may call, only narrow it, and an unregistered or
+# malformed name is refused before it reaches a dispatch case.
+#
+# Design of record: https://docs.vornik.io 7.1.
+# Cost note: three jq subprocesses per tool call. Left as three deliberately —
+# the tool loop already spawns jq many times per iteration, so this is noise
+# against it, and folding the checks into one expression would trade a security
+# predicate that reads exactly like its specification for a saving nobody has
+# measured a need for. Consolidate only with a profile in hand.
+tool_call_permitted() {
+    local name="$1"
+    tool_name_ungated "$name" && return 0
+    tool_prefix_ungated "$name" && return 0
+    builtin_tool_allowed "$name"
 }
 
 CANCELLED=0
@@ -1346,12 +1405,24 @@ API_EOF
         extras_gated=$(printf '%s' "$extras_gated" | jq --argjson tools "$api_query_tools" '. + $tools')
     fi
 
+    # FAILS CLOSED (2026-08-20): a base definition is advertised only when it is
+    # BOTH declared in BUILTIN_TOOL_NAMES_JSON and on the role's allowlist (or
+    # ungated by design). The previous filter kept a tool when
+    # `$builtin | index($name) | not` — absence from the registry SATISFIED it,
+    # so an unregistered tool went to every role's model regardless of
+    # allowedTools. Absence now means "never advertised", which is a visible
+    # capability loss rather than a silent privilege grant.
+    #
+    # $ungated is still appended unconditionally — a third path neither gate
+    # covers, tracked as its own backlog item. Do not read this filter as
+    # covering it.
     printf '%s' "$base_tools" | jq \
         --argjson ungated "$extras_ungated" \
         --argjson gated "$extras_gated" \
         --argjson allowed "$(allowed_builtin_tools_json)" \
         --argjson builtin "$BUILTIN_TOOL_NAMES_JSON" \
-        '([.[] | select(.function.name as $name | (($builtin | index($name) | not) or ($allowed | index($name) != null)))]) + $ungated + ($gated | map(select(.function.name as $name | $allowed | index($name) != null)))'
+        --argjson exempt "$UNGATED_TOOL_NAMES_JSON" \
+        '([.[] | select(.function.name as $name | ($exempt | index($name) != null) or (($builtin | index($name) != null) and ($allowed | index($name) != null)))]) + $ungated + ($gated | map(select(.function.name as $name | $allowed | index($name) != null)))'
 }
 
 tool_search_definition() {
@@ -1843,8 +1914,15 @@ PY
 # Execute a single tool call. Prints the result string.
 exec_tool() {
     local name="$1" arguments="$2"
-    if [ "$name" != "tool_search" ] && [ "$name" != "tool_result_read" ] && is_builtin_tool "$name" && ! builtin_tool_allowed "$name"; then
-        echo "ERROR: tool '$name' is not allowed for this role"
+    if ! tool_call_permitted "$name"; then
+        # Keep the two refusals distinguishable: a registered tool the role was
+        # not granted is an operator allowlist question, an unregistered name is
+        # a bug or a hallucinated/malformed identity.
+        if is_builtin_tool "$name"; then
+            echo "ERROR: tool '$name' is not allowed for this role"
+        else
+            echo "ERROR: unknown tool: $name"
+        fi
         return
     fi
     case "$name" in

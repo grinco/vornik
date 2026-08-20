@@ -26,6 +26,10 @@ var (
 	// BUILTIN_TOOL_NAMES_JSON='["a","b",...]' — a JSON array inside a
 	// single-quoted shell assignment.
 	reAdvertised = regexp.MustCompile(`BUILTIN_TOOL_NAMES_JSON='(\[[^']*\])'`)
+	// UNGATED_TOOL_NAMES_JSON / UNGATED_TOOL_PREFIXES_JSON — the shell's mirrors
+	// of UngatedByDesign and UngatedPrefixesByDesign, same single-quoted shape.
+	reUngatedNames    = regexp.MustCompile(`UNGATED_TOOL_NAMES_JSON='(\[[^']*\])'`)
+	reUngatedPrefixes = regexp.MustCompile(`UNGATED_TOOL_PREFIXES_JSON='(\[[^']*\])'`)
 	// A shell case label: leading indent, one or more |-separated bare words,
 	// a close paren, then either end-of-line or the body on the same line.
 	//
@@ -48,7 +52,10 @@ var (
 	// exemptions yields all of them. Anchored on the `$name !=` comparison so an
 	// unrelated string test elsewhere in the file cannot be harvested as an
 	// exemption.
-	reInlineExempt = regexp.MustCompile(`"\$name"\s*!=\s*"([a-z0-9_]+)"`)
+	// Matches both polarities. The gate was `!=` while it failed open; a
+	// fail-closed gate naturally invites the positive form, and a stray
+	// exemption written either way is equally outside the registry.
+	reInlineExempt = regexp.MustCompile(`"\$name"\s*(?:!=|=)\s*"([a-z0-9_]+)"`)
 )
 
 // AddEntrypointSurfaces parses the three agent-tool registries that live in
@@ -80,10 +87,36 @@ func (t *Table) AddEntrypointSurfaces(path string) error {
 		}
 	}
 
-	// Inline exemptions on the execution gate. Scanned over the WHOLE body
-	// rather than inside a function, because the gate is an `if` in the tool
-	// loop rather than a named function. Anchored on `"$name" != "..."` so only
-	// that comparison contributes.
+	// Exemptions. The registry itself is UNGATED_TOOL_NAMES_JSON — a parsed JSON
+	// array rather than a scrape of shell comparisons, which is why the gate was
+	// rewritten to read it: the exemption set is now one declaration the shell
+	// consumes and this parser reads, instead of literal string tests that had
+	// to be matched by regex and could drift silently.
+	if m := reUngatedNames.FindStringSubmatch(body); m != nil {
+		var names []string
+		if err := json.Unmarshal([]byte(m[1]), &names); err != nil {
+			return fmt.Errorf("parse UNGATED_TOOL_NAMES_JSON: %w", err)
+		}
+		for _, n := range names {
+			t.Add(KindAgentToolInlineExempt, n, path+":UNGATED_TOOL_NAMES_JSON")
+		}
+	}
+	if m := reUngatedPrefixes.FindStringSubmatch(body); m != nil {
+		var prefixes []string
+		if err := json.Unmarshal([]byte(m[1]), &prefixes); err != nil {
+			return fmt.Errorf("parse UNGATED_TOOL_PREFIXES_JSON: %w", err)
+		}
+		for _, p := range prefixes {
+			t.Add(KindAgentToolUngatedPrefix, p, path+":UNGATED_TOOL_PREFIXES_JSON")
+		}
+	}
+
+	// STRAY inline exemptions. Nothing should compare "$name" against a literal
+	// in the gate any more, but a future edit re-introducing one would be an
+	// exemption outside the registry — invisible to the JSON parse above and to
+	// review. Harvest any such comparison into the same kind so
+	// CheckUngatedExemptionAgreement reports it as unregistered. Unlike the
+	// registry parse, finding none here is the expected state.
 	for _, m := range reInlineExempt.FindAllStringSubmatchIndex(body, -1) {
 		name := body[m[2]:m[3]]
 		line := 1 + strings.Count(body[:m[0]], "\n")

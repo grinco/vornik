@@ -35,6 +35,8 @@ import (
 
 	"github.com/lib/pq"
 	"github.com/rs/zerolog"
+
+	"vornik.io/vornik/internal/graphsweep"
 )
 
 // Defaults for the retention windows, in days. Each per-project field
@@ -54,6 +56,11 @@ const (
 	// DefaultMemoryChunksDays is 0 — class TTL handles ordinary
 	// retention. Operator opt-in escape hatch.
 	DefaultMemoryChunksDays = 0
+	// DefaultGraphQuarantineDays is 30 — long enough that a misconfigured TTL
+	// noticed within a month is recoverable with UpdateLifecycle, short enough
+	// that derived personal data does not outlive the policy that expired its
+	// source indefinitely.
+	DefaultGraphQuarantineDays = 30
 	// DefaultMemoryIngestAuditDays bounds the memory_ingest_audit
 	// table (Path A + Path B deposit trail). Always-on at 90 days:
 	// without it the table grows forever (mitigation plan §7.3 / §10).
@@ -95,6 +102,11 @@ type Policy struct {
 	// when > 0. Zero means "no operator-level cap" — class TTL is
 	// the only mechanism.
 	MemoryChunksDays int
+	// GraphQuarantineDays bounds how long knowledge-graph rows parked by
+	// this sweeper survive before being hard-deleted. Always-on; zero → the
+	// compiled default. Parking bounds visibility, not retention — see
+	// graphsweep.PurgeQuarantined.
+	GraphQuarantineDays int
 	// MemoryIngestAuditDays prunes memory_ingest_audit by ingested_at.
 	// Always-on (default 90); the deposit trail otherwise grows
 	// unbounded. See mitigation plan §7.3.
@@ -203,6 +215,14 @@ func pickOptIn(perProject, defaults int) int {
 	return 0
 }
 
+// addQuarantined accumulates one chunk-prune's graph outcome. Both chunk paths
+// feed it, so a project swept by the TTL sweep and the operator ceiling in the
+// same cycle reports the sum rather than the last one.
+func (c *Counts) addQuarantined(q graphsweep.QuarantineCounts) {
+	c.MemoryGraphEdgesQuarantined += q.Edges
+	c.MemoryGraphEntitiesQuarantined += q.Entities
+}
+
 // Counts reports how many rows were (or would be) pruned in each table.
 // Used by both Sweep (actual) and Preview (dry-run).
 type Counts struct {
@@ -228,6 +248,21 @@ type Counts struct {
 	// horizon is actually deleted, not merely hidden by the retrieval
 	// filter. Class-agnostic — any class with a TTL benefits.
 	MemoryExpired int
+	// MemoryGraphEdgesQuarantined / MemoryGraphEntitiesQuarantined count the
+	// knowledge-graph rows a chunk prune left without evidence and PARKED —
+	// moved to lifecycle_state 'quarantined', which removes them from every
+	// retrieval path while keeping the row auditable and the move reversible.
+	//
+	// Reported because retention used to delete the chunks and leave these
+	// rows published, which is how production accumulated 3,795 entities whose
+	// source chunks were already gone. A sweep that silently fixes it would be
+	// the same invisibility with the sign flipped.
+	MemoryGraphEdgesQuarantined    int
+	MemoryGraphEntitiesQuarantined int
+	// MemoryGraphPurged counts parked graph rows hard-deleted once their
+	// quarantine horizon elapsed — the bound that keeps parking from becoming
+	// indefinite retention of derived personal data.
+	MemoryGraphPurged int
 	// MemoryIngestAudit is the count of rows pruned from
 	// memory_ingest_audit by the always-on window.
 	MemoryIngestAudit int
@@ -673,11 +708,8 @@ func (s *Sweeper) run(ctx context.Context, p Policy, previewOnly bool) (Counts, 
 	//    mechanism; this lets operators apply a hard ceiling on top
 	//    when their chunk table grows unbounded.
 	if p.MemoryChunksDays > 0 {
-		if n, err := s.pruneOlderThan(ctx,
-			"project_memory_chunks", "created_at",
-			"project_id = $2", p.ProjectID,
-			now.AddDate(0, 0, -p.MemoryChunksDays),
-			previewOnly,
+		if n, parked, err := s.pruneChunksOlderThan(ctx, p.ProjectID,
+			now.AddDate(0, 0, -p.MemoryChunksDays), previewOnly,
 		); err != nil {
 			s.warn("project_memory_chunks", err)
 			if firstErr == nil {
@@ -685,6 +717,7 @@ func (s *Sweeper) run(ctx context.Context, p Policy, previewOnly bool) (Counts, 
 			}
 		} else {
 			counts.MemoryChunks = n
+			counts.addQuarantined(parked)
 		}
 	}
 
@@ -699,13 +732,28 @@ func (s *Sweeper) run(ctx context.Context, p Policy, previewOnly bool) (Counts, 
 	//     cadence, container_autonomy.go initRetention). data_subject_links
 	//     do NOT cascade on chunk delete (polymorphic (table_name,row_id),
 	//     no FK), so pruneExpiredChunks removes the paired links first.
-	if n, err := s.pruneExpiredChunks(ctx, p.ProjectID, now, previewOnly); err != nil {
+	if n, parked, err := s.pruneExpiredChunks(ctx, p.ProjectID, now, previewOnly); err != nil {
 		s.warn("project_memory_chunks(expires_at)", err)
 		if firstErr == nil {
 			firstErr = err
 		}
 	} else {
 		counts.MemoryExpired = n
+		counts.addQuarantined(parked)
+	}
+
+	// 7c. The parked graph rows, once their grace has run out. Parking removes
+	//     a row from retrieval; it does not remove the personal data in it, and
+	//     the chunk's TTL already made the storage-limitation decision. Without
+	//     this the sweeper would trade one unbounded population (published
+	//     stranded rows) for another (parked ones).
+	if n, err := s.purgeQuarantinedGraph(ctx, p, now, previewOnly); err != nil {
+		s.warn("knowledge_graph(quarantined)", err)
+		if firstErr == nil {
+			firstErr = err
+		}
+	} else {
+		counts.MemoryGraphPurged = n
 	}
 
 	// 8. memory_ingest_audit — always-on (default 90d). Both ingest
@@ -817,55 +865,290 @@ func (s *Sweeper) pruneTaskMessages(ctx context.Context, projectID string, thres
 //     is never a link pointing at a chunk that is already gone.
 //
 // Runs even in preview (COUNT only) without touching either table.
-func (s *Sweeper) pruneExpiredChunks(ctx context.Context, projectID string, now time.Time, previewOnly bool) (int, error) {
+func (s *Sweeper) pruneExpiredChunks(
+	ctx context.Context, projectID string, now time.Time, previewOnly bool,
+) (int, graphsweep.QuarantineCounts, error) {
+	return s.pruneChunks(ctx, projectID,
+		`expires_at IS NOT NULL AND expires_at < $2`, now, previewOnly)
+}
+
+// pruneChunksOlderThan is the operator-level created_at ceiling.
+//
+// It routes through pruneChunks rather than the generic pruneOlderThan, which
+// is what it used to call. That divergence was a bug in two ways: the generic
+// helper deletes the chunk rows and nothing else, so this path left orphaned
+// data_subject_links (the fix for that landed on the expires_at sweep only,
+// review C2) AND left the knowledge graph stranded. One chunk-deletion path
+// means one set of consequences.
+func (s *Sweeper) pruneChunksOlderThan(
+	ctx context.Context, projectID string, threshold time.Time, previewOnly bool,
+) (int, graphsweep.QuarantineCounts, error) {
+	return s.pruneChunks(ctx, projectID, `created_at < $2`, threshold, previewOnly)
+}
+
+// pruneChunks hard-deletes the chunks matching `where` and settles everything
+// that pointed at them.
+//
+// $1 is the project id and $2 the timestamp, so `where` is a constant fragment
+// written at the two call sites above — never operator input.
+//
+// THREE consequences, in an order that is load-bearing:
+//
+//  1. data_subject_links go first. They are polymorphic ((table_name, row_id))
+//     with no foreign key, so nothing cascades them and a deleted chunk would
+//     leave a link asserting a person appears in a row that no longer exists.
+//  2. What the chunks derived is CAPTURED before they go: entity_mentions
+//     cascades with the chunk, so afterwards nothing can say which entities
+//     this deletion was responsible for.
+//  3. The graph is settled AFTER the delete, so the keep rule is evaluated
+//     against the state the deletion produced.
+//
+// The graph rows are QUARANTINED, not deleted — see graphsweep.Quarantine.
+// Retention removed a source because its TTL elapsed; that is not a subject's
+// erasure request, so the rows are parked (out of every retrieval path, still
+// auditable, still reversible) rather than destroyed.
+func (s *Sweeper) pruneChunks(
+	ctx context.Context, projectID, where string, threshold time.Time, previewOnly bool,
+) (int, graphsweep.QuarantineCounts, error) {
+	var parked graphsweep.QuarantineCounts
 	if projectID == "" {
-		return 0, nil
+		return 0, parked, nil
 	}
 	if previewOnly {
 		var n int
 		if err := s.db.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM project_memory_chunks
-			WHERE project_id = $1 AND expires_at IS NOT NULL AND expires_at < $2
-		`, projectID, now).Scan(&n); err != nil {
-			return 0, fmt.Errorf("count expired chunks: %w", err)
+			WHERE project_id = $1 AND `+where,
+			projectID, threshold).Scan(&n); err != nil {
+			return 0, parked, fmt.Errorf("count chunks for retention: %w", err)
+		}
+		return n, parked, nil
+	}
+
+	// BATCHED, one transaction per batch.
+	//
+	// The graph settlement locks every knowledge_edges row citing a deleted
+	// chunk and every candidate entity, and it holds those locks for the whole
+	// transaction. Sweeping a project in one go therefore scales the lock set
+	// with the project rather than with the work, and ingestion competes for
+	// exactly those rows.
+	//
+	// Measured on production 2026-08-21: only 16 chunks are past their TTL
+	// right now, so the always-on sweep is trivial in steady state. The case
+	// that is not trivial is a FIRST run — an operator setting
+	// MemoryChunksDays on the largest project (8,770 chunks) deletes thousands
+	// at once, and so does a TTL sweep after the daemon has been down or a
+	// class TTL has been shortened. Batching costs a few more transactions in
+	// the common case to bound the uncommon one.
+	//
+	// Partial progress is real progress and is returned even on failure: each
+	// batch commits on its own, so a mid-sweep error leaves the batches that
+	// succeeded applied, and the counts must say so.
+	total := 0
+	for round := 0; ; round++ {
+		if round > chunkSweepMaxRounds {
+			return total, parked, fmt.Errorf(
+				"chunk sweep still finding rows after %d batches of %d for project %q — "+
+					"refusing to loop further; %d chunk(s) were deleted, re-run to continue",
+				chunkSweepMaxRounds, chunkSweepBatchSize, projectID, total)
+		}
+		n, got, err := s.pruneChunkBatch(ctx, projectID, where, threshold)
+		total += n
+		parked.Edges += got.Edges
+		parked.Entities += got.Entities
+		if err != nil {
+			return total, parked, err
+		}
+		if n == 0 {
+			return total, parked, nil
+		}
+	}
+}
+
+const (
+	// chunkSweepBatchSize bounds how many chunks one transaction deletes, and
+	// with them how many graph rows it locks. Matches the orphaned-entity
+	// backfill's batch for the same reason.
+	chunkSweepBatchSize = 500
+	// chunkSweepMaxRounds backstops a pathological loop — a predicate that
+	// keeps matching rows the delete does not remove. 500 × 2000 is far beyond
+	// any real project.
+	chunkSweepMaxRounds = 2000
+)
+
+// pruneChunkBatch deletes up to chunkSweepBatchSize chunks and settles what
+// pointed at them, in one transaction.
+//
+// EVERYTHING IS KEYED BY THE IDS READ AT THE TOP, not by re-running the
+// predicate. That is a correctness fix as much as a batching mechanism: the
+// unbatched version evaluated the same `where` three times — once for the link
+// delete, once for the capture, once for the chunk delete — and under READ
+// COMMITTED each statement takes its own snapshot, so a chunk committed by an
+// ingest mid-transaction with an already-elapsed TTL could be deleted by the
+// third statement without having been captured by the second, stranding its
+// graph rows. Pinning the set closes that.
+//
+// Order within the batch is load-bearing: links first (polymorphic, no FK to
+// cascade them), then capture (entity_mentions cascades with the chunk, so
+// afterwards nothing can say which entities this deletion was responsible for),
+// then the delete, then the graph settlement against the state it produced.
+func (s *Sweeper) pruneChunkBatch(
+	ctx context.Context, projectID, where string, threshold time.Time,
+) (int, graphsweep.QuarantineCounts, error) {
+	var parked graphsweep.QuarantineCounts
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, parked, fmt.Errorf("begin chunk sweep: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// ORDER BY id so two sweeps racing on one project take the rows in the
+	// same order and queue rather than deadlock.
+	chunkIDs, err := scanIDs(ctx, tx, `
+		SELECT id FROM project_memory_chunks
+		WHERE project_id = $1 AND `+where+`
+		ORDER BY id
+		LIMIT $3`, projectID, threshold, chunkSweepBatchSize)
+	if err != nil {
+		return 0, parked, fmt.Errorf("collect chunks for retention: %w", err)
+	}
+	if len(chunkIDs) == 0 {
+		if err := tx.Commit(); err != nil {
+			return 0, parked, fmt.Errorf("commit empty chunk sweep: %w", err)
+		}
+		return 0, parked, nil
+	}
+	ids := pq.Array(chunkIDs)
+
+	// Links first — no FK cascade backs them (review C2).
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM data_subject_links
+		WHERE table_name = 'project_memory_chunks' AND row_id = ANY($1)`,
+		ids); err != nil {
+		return 0, parked, fmt.Errorf("delete pruned-chunk subject links: %w", err)
+	}
+
+	entityIDs, err := graphsweep.CaptureEntities(ctx, tx, chunkIDs)
+	if err != nil {
+		return 0, parked, err
+	}
+
+	// The predicate is RE-CHECKED here, and the delete RETURNS what it actually
+	// removed. Both halves matter:
+	//
+	//   - Re-checking means a chunk that stopped matching between the id read
+	//     and now (a TTL extended, a row restored) is not deleted on the
+	//     strength of a stale read. The id set can only NARROW.
+	//   - Returning the removed ids means the graph settlement runs on exactly
+	//     those. Passing the read-time set would prune a still-live chunk's id
+	//     out of its edges' source_chunks — destroying provenance for a chunk
+	//     that still exists, which is worse than the stranding this fixes.
+	// Parameter order is $1 project, $2 threshold, $3 ids — the `where`
+	// fragment is written against $2 and is shared with the id read above, so
+	// the threshold must keep that position in both statements.
+	deleted, err := scanIDs(ctx, tx, `
+		DELETE FROM project_memory_chunks
+		WHERE project_id = $1 AND id = ANY($3) AND `+where+`
+		RETURNING id`, projectID, threshold, ids)
+	if err != nil {
+		return 0, parked, fmt.Errorf("delete chunks for retention: %w", err)
+	}
+	if len(deleted) == 0 {
+		if err := tx.Commit(); err != nil {
+			return 0, parked, fmt.Errorf("commit chunk sweep: %w", err)
+		}
+		return 0, parked, nil
+	}
+
+	if parked, err = graphsweep.Quarantine(ctx, tx, deleted, entityIDs); err != nil {
+		return 0, parked, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, parked, fmt.Errorf("commit chunk sweep: %w", err)
+	}
+	return len(deleted), parked, nil
+}
+
+// purgeQuarantinedGraph hard-deletes graph rows parked longer than the horizon.
+//
+// Always-on with a compiled default, like the expires_at chunk sweep and for
+// the same reason: a TTL that only hides is a compliance gap rather than a
+// product knob, and a parked row that never expires is that gap one level down.
+func (s *Sweeper) purgeQuarantinedGraph(
+	ctx context.Context, p Policy, now time.Time, previewOnly bool,
+) (int, error) {
+	// Negative DISABLES the purge outright — the legal-hold escape hatch. An
+	// always-on default is the compliance-forward posture, but "preserve
+	// everything pending a dispute" is a real instruction and an operator who
+	// receives one needs a way to obey it that is not recompiling. Zero still
+	// means "use the default", matching every other always-on window here.
+	if p.GraphQuarantineDays < 0 {
+		return 0, nil
+	}
+	days := p.GraphQuarantineDays
+	if days == 0 {
+		days = DefaultGraphQuarantineDays
+	}
+	before := now.AddDate(0, 0, -days)
+
+	if previewOnly {
+		// The SAME predicates the purge applies, including the keep-rule
+		// re-check on entities and the evidence-less condition on edges.
+		// Counting every parked row past the horizon would overstate: rows
+		// that regained evidence while parked are not purged, and a preview
+		// that promises a bigger deletion than happens is a small lie about
+		// personal data.
+		var n int
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT
+			  (SELECT COUNT(*) FROM knowledge_entities ke
+			     WHERE ke.project_id = $1 AND ke.lifecycle_state = 'quarantined'
+			       AND ke.quarantined_at IS NOT NULL AND ke.quarantined_at < $2
+			       AND NOT (`+graphsweep.StillEvidenced+`))
+			+ (SELECT COUNT(*) FROM knowledge_edges
+			     WHERE project_id = $1 AND lifecycle_state = 'quarantined'
+			       AND quarantined_at IS NOT NULL AND quarantined_at < $2
+			       AND cardinality(source_chunks) = 0)
+		`, p.ProjectID, before).Scan(&n); err != nil {
+			return 0, fmt.Errorf("count quarantined graph rows: %w", err)
 		}
 		return n, nil
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("begin expired-chunk sweep: %w", err)
+		return 0, fmt.Errorf("begin quarantined-graph purge: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// Links first — no FK cascade backs them (review C2). Scoped to the
-	// exact set of chunks about to be deleted via the same predicate.
-	if _, err := tx.ExecContext(ctx, `
-		DELETE FROM data_subject_links
-		WHERE table_name = 'project_memory_chunks'
-		  AND row_id IN (
-			SELECT id FROM project_memory_chunks
-			WHERE project_id = $1 AND expires_at IS NOT NULL AND expires_at < $2
-		  )
-	`, projectID, now); err != nil {
-		return 0, fmt.Errorf("delete expired-chunk subject links: %w", err)
-	}
-
-	res, err := tx.ExecContext(ctx, `
-		DELETE FROM project_memory_chunks
-		WHERE project_id = $1 AND expires_at IS NOT NULL AND expires_at < $2
-	`, projectID, now)
+	counts, err := graphsweep.PurgeQuarantined(ctx, tx, p.ProjectID, before)
 	if err != nil {
-		return 0, fmt.Errorf("delete expired chunks: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("rows affected for expired chunks: %w", err)
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit expired-chunk sweep: %w", err)
+		return 0, fmt.Errorf("commit quarantined-graph purge: %w", err)
 	}
-	return int(n), nil
+	return counts.Total(), nil
+}
+
+// scanIDs reads a single-column id query into a slice.
+func scanIDs(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // pruneOlderThan runs a COUNT or DELETE on table rows older than threshold

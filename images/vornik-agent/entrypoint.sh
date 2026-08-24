@@ -1331,9 +1331,20 @@ TR_EOF
     # skill_fetch — progressive-disclosure knowledge skills (LLD
     # 2026-07-12-skill-progressive-disclosure-design). The system
     # prompt carries a compact LEARNED SKILLS index; this tool pulls a
-    # listed skill's full instructions on demand. Ungated (like
-    # memory_search): the index only appears when skills exist, and a
-    # fetch without an index entry just 404s harmlessly.
+    # listed skill's full instructions on demand.
+    #
+    # GATED, since 2026-08-22. It used to ride extras_ungated with the comment
+    # "Ungated (like memory_search)" — stale on the day it was written:
+    # memory_search was re-gated on 2026-08-16 exactly so advertisement would
+    # follow execution, and this was left behind. It looked harmless because
+    # agenttools.alwaysGranted puts skill_fetch on every role's effective
+    # allowlist, so advertisement matched execution BY ACCIDENT. That holds only
+    # for input the daemon built: allowed_builtin_tools_json falls back to
+    # file_read/file_write/run_shell/current_time when
+    # .config.permissions.allowedTools is absent, and in that state the tool was
+    # advertised and then refused — see-but-cannot-call, which is what the
+    # fail-closed flip exists to prevent. Gating it here costs nothing on the
+    # daemon path and makes the match a rule.
     if [ -n "${VORNIK_API_URL:-}" ]; then
         local skill_fetch_tool
         skill_fetch_tool=$(cat <<'SF_EOF'
@@ -1353,7 +1364,7 @@ TR_EOF
   }
 SF_EOF
 )
-        extras_ungated=$(printf '%s' "$extras_ungated" | jq --argjson tool "$skill_fetch_tool" '. + [$tool]')
+        extras_gated=$(printf '%s' "$extras_gated" | jq --argjson tool "$skill_fetch_tool" '. + [$tool]')
     fi
 
     # query_api / list_apis — authenticated third-party API access via the
@@ -1413,16 +1424,27 @@ API_EOF
     # allowedTools. Absence now means "never advertised", which is a visible
     # capability loss rather than a silent privilege grant.
     #
-    # $ungated is still appended unconditionally — a third path neither gate
-    # covers, tracked as its own backlog item. Do not read this filter as
-    # covering it.
+    # $ungated is filtered against UNGATED_TOOL_NAMES_JSON (2026-08-22). It used
+    # to be appended UNCONDITIONALLY — a third advertisement path neither gate
+    # covered, so anything appended to extras_ungated reached the model whatever
+    # the role's allowlist said, and whatever the registries said.
+    #
+    # Reusing the both-gates registry rather than declaring a second one is the
+    # point: an exemption from advertisement and an exemption from execution are
+    # ONE decision. The contract already says so — "an ungated tool is ungated in
+    # both, never one" (agent runtime contract LLD section 7.1) — and a separate
+    # advertisement registry would have made that sentence false by construction.
+    #
+    # An unregistered extra is now DROPPED rather than advertised: a visible
+    # capability loss instead of a silent bypass, which is the same direction
+    # every other gate here fails.
     printf '%s' "$base_tools" | jq \
         --argjson ungated "$extras_ungated" \
         --argjson gated "$extras_gated" \
         --argjson allowed "$(allowed_builtin_tools_json)" \
         --argjson builtin "$BUILTIN_TOOL_NAMES_JSON" \
         --argjson exempt "$UNGATED_TOOL_NAMES_JSON" \
-        '([.[] | select(.function.name as $name | ($exempt | index($name) != null) or (($builtin | index($name) != null) and ($allowed | index($name) != null)))]) + $ungated + ($gated | map(select(.function.name as $name | $allowed | index($name) != null)))'
+        '([.[] | select(.function.name as $name | ($exempt | index($name) != null) or (($builtin | index($name) != null) and ($allowed | index($name) != null)))]) + ($ungated | map(select(.function.name as $name | $exempt | index($name) != null))) + ($gated | map(select(.function.name as $name | $allowed | index($name) != null)))'
 }
 
 tool_search_definition() {

@@ -11,7 +11,7 @@ sources:
     - path: internal/slack/voice.go
       sha256: 74a85ffb02d275a6cdd24f40b43abdcb2c700d0a3923d23a1845b0df172c679f
     - path: internal/reminders/completion_notifier.go
-      sha256: ceb9ea63dbfc9f77d26ac20cb58f7ee31aa5d59a4107f02bc7c25736103a5f4b
+      sha256: 5f6fc7a55e4cda6c25cc13e1d3340dc185dff5e8af3118d7932faf9134f47efe
 ---
 # Artifacts & Outbound File Delivery
 
@@ -95,6 +95,14 @@ Task-kind scheduled updates use the same channel binding. When a successful
 scheduled task publishes OUTPUT artifacts, Vornik automatically attaches them
 to the original Telegram, Slack, or email destination before posting the
 completion summary. Scratch/intermediate files are never forwarded.
+
+Attachments are collected from the scheduled task **and any tasks it delegated
+to**. A scheduled prompt frequently runs a router workflow that hands the real
+work to a child task, and the deliverable is written there — collecting only
+the scheduled task's own artifacts would attach the router's bookkeeping and
+none of the report. Per-step agent transcripts (`<step>-response.md`) are
+excluded everywhere: they record how a step answered, not what the run
+produced.
 
 Email also enforces a per-message attachment size cap (configurable, below):
 over-cap attachments are **skipped and logged, but the reply is still sent** —

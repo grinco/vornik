@@ -32,7 +32,7 @@ func (f *auditFakeMsgRepo) List(context.Context, persistence.TaskMessageFilter) 
 	return nil, nil
 }
 func (f *auditFakeMsgRepo) GetOpenCheckpoint(context.Context, string) (*persistence.TaskMessage, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *auditFakeMsgRepo) MarkCheckpointResolved(context.Context, string, string) error {
 	return nil

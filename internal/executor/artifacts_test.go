@@ -542,7 +542,7 @@ func (s *stubArtifactRepo) Create(_ context.Context, a *persistence.Artifact) er
 	return nil
 }
 func (s *stubArtifactRepo) GetByHash(_ context.Context, _ string) (*persistence.Artifact, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (s *stubArtifactRepo) List(_ context.Context, _ persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
 	return s.rows, nil

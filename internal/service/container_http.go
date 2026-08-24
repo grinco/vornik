@@ -585,6 +585,14 @@ func (c *Container) initHTTPServer() error {
 		if c.agentWriteMetrics == nil {
 			c.agentWriteMetrics = api.NewAgentAPIWriteMetrics(reg)
 		}
+		// MCP fail-open census (vornik_mcp_gate_unrestricted_total). Same
+		// pass-2-only registry rule as the metrics above. Wired rather than
+		// merely constructed: the whole point is that an operator can see a
+		// deployment running MCP calls unrestricted, and a counter nothing
+		// serves answers nobody.
+		if c.mcpGateMetrics == nil {
+			c.mcpGateMetrics = api.NewMCPGateMetrics(reg)
+		}
 		// Taint-lineage tainted-write counter (taint-lineage-tracking §8). Same
 		// pass-2-only registry rule. Shared by BOTH surfaces: the query_api gate
 		// records directly via the api server; the forge park routes through
@@ -631,6 +639,7 @@ func (c *Container) initHTTPServer() error {
 		apiOpts = append(apiOpts, api.WithRateLimitMetrics(c.rateLimitMetrics))
 		apiOpts = append(apiOpts, api.WithDryRunMetrics(c.dryRunMetrics))
 		apiOpts = append(apiOpts, api.WithAgentAPIWriteMetrics(c.agentWriteMetrics))
+		apiOpts = append(apiOpts, api.WithMCPGateMetrics(c.mcpGateMetrics))
 		apiOpts = append(apiOpts, api.WithTaintWriteMetrics(c.taintWriteMetrics))
 		apiOpts = append(apiOpts, api.WithChainMetrics(c.chainMetrics))
 	}

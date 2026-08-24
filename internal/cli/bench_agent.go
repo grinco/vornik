@@ -306,6 +306,9 @@ func runBenchAgentGold(cmd *cobra.Command, _ []string) error {
 	if err := verifyDaemonTarget(cmd.Context(), runner); err != nil {
 		return err
 	}
+	if err := clearAgentBenchStore(cmd.Context()); err != nil {
+		return err
+	}
 
 	// The unrestricted-ceiling arm: no gold, and the grant probe deliberately
 	// absent — this pass RECORDS what an unconstrained agent needed, so scoring
@@ -431,6 +434,9 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 	}
 	defer closeDB()
 	if err := verifyDaemonTarget(cmd.Context(), daemon); err != nil {
+		return err
+	}
+	if err := clearAgentBenchStore(cmd.Context()); err != nil {
 		return err
 	}
 	if err := verifyModelWindow(cmd.Context(), cmd); err != nil {
@@ -670,6 +676,48 @@ func probeSet(haveGold bool) []agentbench.Probe {
 // what let a benchmark write production on 2026-08-12.
 func verifyDaemonTarget(ctx context.Context, daemon *agentbench.DaemonTaskRunner) error {
 	return membench.VerifyWriteTargetOf(ctx, "vornik daemon", daemon, benchAgentDatabase)
+}
+
+// clearAgentBenchStore resets the benchmark project's memory before a pass.
+//
+// WHY. memory_search is alwaysGranted, so every graded agent can query project
+// memory — correctly, since production agents can too. But this project's store
+// is never reset, so it accumulates the completion write-ups of previous graded
+// attempts at the SAME tasks. Measured on the 2026-08-21 gold pass: 865 chunks
+// accumulated, 118 retrievals during the pass and 118 of them returning hits,
+// and for dp-14-path-sandbox 24 of 70 retrieved chunks mentioned that task's
+// own prior solution. Gold then records retrieval, not capability.
+//
+// Not new: retrievals-with-hits were 190/190 on 2026-08-14, the date of the
+// published provisional arm.
+//
+// PROJECT-WIDE, not scope-prefixed: the contamination is this project's own
+// memory whatever scope it was written under, so a repo_scope predicate would
+// miss rows. Wholesale is right for a benchmark project and WRONG for
+// production — erasing one subject must not drop a project's graph, which is
+// tracked separately as a P0.
+//
+// Only after verifyDaemonTarget: that is what proves the daemon writes the
+// database --i-know-this-wipes authorised. Design §5.2a.
+func clearAgentBenchStore(ctx context.Context) error {
+	project := strings.TrimSpace(benchAgentProject)
+	if project == "" {
+		return fmt.Errorf("refusing to run: no benchmark project named, so the pre-run clear " +
+			"cannot know which store to reset")
+	}
+	db, err := openBenchDB()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	res, err := membench.ClearBenchmarkStore(ctx, db, project, "")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("cleared benchmark store for project %q: %d chunks, %d entities, %d edges, %d mentions\n",
+		project, res.Chunks, res.Entities, res.Edges, res.Mentions)
+	return nil
 }
 
 // buildRunnerParts constructs the daemon submitter and the ledger store.

@@ -25,7 +25,7 @@ type delayedExecLookup struct {
 
 func (d *delayedExecLookup) GetByTaskID(_ context.Context, _ string) (*persistence.Execution, error) {
 	if d.calls.Add(1) <= d.readyAfter {
-		return nil, nil
+		return nil, persistence.ErrNotFound
 	}
 	return d.exec, nil
 }

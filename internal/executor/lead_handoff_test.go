@@ -62,7 +62,7 @@ func (f *fakeMessageRepo) List(_ context.Context, _ persistence.TaskMessageFilte
 }
 
 func (f *fakeMessageRepo) GetOpenCheckpoint(_ context.Context, _ string) (*persistence.TaskMessage, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 
 func (f *fakeMessageRepo) MarkCheckpointResolved(_ context.Context, _, checkpointID string) error {

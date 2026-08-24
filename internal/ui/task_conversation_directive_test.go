@@ -28,7 +28,7 @@ func (f *fakeUIMessageRepo) List(context.Context, persistence.TaskMessageFilter)
 	return nil, nil
 }
 func (f *fakeUIMessageRepo) GetOpenCheckpoint(context.Context, string) (*persistence.TaskMessage, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *fakeUIMessageRepo) MarkCheckpointResolved(context.Context, string, string) error {
 	return nil

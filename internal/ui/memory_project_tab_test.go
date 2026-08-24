@@ -23,7 +23,7 @@ import (
 func TestResolveMemoryProjectTab_ExplicitTabsHonoured(t *testing.T) {
 	for _, name := range []string{"health", "search", "operate"} {
 		// Pile on a noisy state so the default would diverge.
-		assert.Equal(t, name, resolveMemoryProjectTab(name, 99, 99),
+		assert.Equal(t, name, resolveMemoryProjectTab(name, 99, 99, false),
 			"explicit ?tab=%s must win over the needs-attention default", name)
 	}
 }
@@ -33,8 +33,8 @@ func TestResolveMemoryProjectTab_ExplicitTabsHonoured(t *testing.T) {
 // resolver treats unknown values as "no preference" and runs the
 // default rule below.
 func TestResolveMemoryProjectTab_UnknownFallsThrough(t *testing.T) {
-	assert.Equal(t, "health", resolveMemoryProjectTab("garbage", 0, 0))
-	assert.Equal(t, "operate", resolveMemoryProjectTab("garbage", 1, 0))
+	assert.Equal(t, "health", resolveMemoryProjectTab("garbage", 0, 0, false))
+	assert.Equal(t, "operate", resolveMemoryProjectTab("garbage", 1, 0, false))
 }
 
 // TestResolveMemoryProjectTab_QuarantinePendingForcesOperate pins
@@ -42,7 +42,7 @@ func TestResolveMemoryProjectTab_UnknownFallsThrough(t *testing.T) {
 // for triage, so land them on Operate without forcing a click
 // through Health first.
 func TestResolveMemoryProjectTab_QuarantinePendingForcesOperate(t *testing.T) {
-	assert.Equal(t, "operate", resolveMemoryProjectTab("", 0, 1))
+	assert.Equal(t, "operate", resolveMemoryProjectTab("", 0, 1, false))
 }
 
 // TestResolveMemoryProjectTab_QueueDepthForcesOperate — pending
@@ -50,7 +50,7 @@ func TestResolveMemoryProjectTab_QuarantinePendingForcesOperate(t *testing.T) {
 // attention right now". Land on Operate so the rollback /
 // quarantine tables are first thing on screen.
 func TestResolveMemoryProjectTab_QueueDepthForcesOperate(t *testing.T) {
-	assert.Equal(t, "operate", resolveMemoryProjectTab("", 5, 0))
+	assert.Equal(t, "operate", resolveMemoryProjectTab("", 5, 0, false))
 }
 
 // TestResolveMemoryProjectTab_QuietDefaultsHealth — when both
@@ -58,7 +58,7 @@ func TestResolveMemoryProjectTab_QueueDepthForcesOperate(t *testing.T) {
 // timeline are the most useful at-a-glance signal for a project
 // that's running cleanly.
 func TestResolveMemoryProjectTab_QuietDefaultsHealth(t *testing.T) {
-	assert.Equal(t, "health", resolveMemoryProjectTab("", 0, 0))
+	assert.Equal(t, "health", resolveMemoryProjectTab("", 0, 0, false))
 }
 
 // TestResolveMemoryProjectTab_NegativeCountsTreatedAsZero —
@@ -67,6 +67,6 @@ func TestResolveMemoryProjectTab_QuietDefaultsHealth(t *testing.T) {
 // don't currently emit negatives, but the rule "any positive
 // signal means Operate" is the safe one to pin.
 func TestResolveMemoryProjectTab_NegativeCountsTreatedAsZero(t *testing.T) {
-	assert.Equal(t, "health", resolveMemoryProjectTab("", -1, -1),
+	assert.Equal(t, "health", resolveMemoryProjectTab("", -1, -1, false),
 		"negative counts are not a positive signal; must NOT force operate")
 }

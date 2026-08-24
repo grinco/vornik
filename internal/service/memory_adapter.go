@@ -945,15 +945,23 @@ func newMemoryEvictorAdapter(c *memory.Corrector, repo *memory.Repository) ui.Me
 	return &memoryEvictorAdapter{c: c, repo: repo}
 }
 
-func (a *memoryEvictorAdapter) HardEvict(ctx context.Context, projectID string, chunkIDs []string, reason, evictedBy string) (int, error) {
+func (a *memoryEvictorAdapter) HardEvict(
+	ctx context.Context, projectID string, chunkIDs []string, reason, evictedBy string,
+) (ui.MemoryEvictionResult, error) {
 	if a == nil || a.c == nil {
-		return 0, nil
+		return ui.MemoryEvictionResult{}, nil
 	}
-	rows, err := a.c.HardEvict(ctx, projectID, chunkIDs, reason, evictedBy)
+	res, err := a.c.HardEvict(ctx, projectID, chunkIDs, reason, evictedBy)
 	if err != nil {
-		return 0, err
+		return ui.MemoryEvictionResult{}, err
 	}
-	return len(rows), nil
+	return ui.MemoryEvictionResult{
+		ChunksEvicted:     res.Count(),
+		GraphEntities:     res.Derived.Entities,
+		GraphEdges:        res.Derived.Edges,
+		QuarantinedCopies: res.QuarantinedCopiesDeleted,
+		CachedEmbeddings:  res.EmbeddingCacheKeysDeleted,
+	}, nil
 }
 
 func (a *memoryEvictorAdapter) ListEvictionAudits(ctx context.Context, projectID string, limit int) ([]ui.MemoryEvictionAuditRow, error) {

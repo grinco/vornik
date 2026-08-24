@@ -283,6 +283,10 @@ func (s *Server) MemoryProject(w http.ResponseWriter, r *http.Request, projectID
 		// it the panel renders an "evict not enabled" placeholder.
 		EvictEnabled   bool
 		EvictionAudits []MemoryEvictionAuditRow
+
+		// EvictionNotice is the one-shot receipt for an eviction that just
+		// ran. Non-nil only when the redirect carried notice=evicted.
+		EvictionNotice *evictionNotice
 	}{
 		Title:           "Memory — " + projectID,
 		CurrentPage:     "memory",
@@ -351,6 +355,7 @@ func (s *Server) MemoryProject(w http.ResponseWriter, r *http.Request, projectID
 		// back to an empty table rather than blocking the whole
 		// page render — the operator can still POST a fresh
 		// eviction.
+		data.EvictionNotice = s.parseEvictionNotice(projectID, r.URL.Query(), time.Now())
 		if audits, err := s.memoryEvictor.ListEvictionAudits(ctx, projectID, data.EvictionLimit); err == nil {
 			data.EvictionAudits = audits
 		}
@@ -600,7 +605,8 @@ func (s *Server) MemoryProject(w http.ResponseWriter, r *http.Request, projectID
 	// tab logic would mis-route a busy project to "health" instead
 	// of "operate". Same lifetime-vs-pending fix family as the
 	// alert widget below; #7 keeps both surfaces consistent.
-	data.Tab = resolveMemoryProjectTab(r.URL.Query().Get("tab"), data.QueueDepth, data.Pipeline.QuarantinePending)
+	data.Tab = resolveMemoryProjectTab(r.URL.Query().Get("tab"), data.QueueDepth,
+		data.Pipeline.QuarantinePending, data.EvictionNotice != nil)
 
 	s.render(w, "memory_project.html", data)
 }
@@ -611,10 +617,18 @@ func (s *Server) MemoryProject(w http.ResponseWriter, r *http.Request, projectID
 // quarantined that needs attention, falling back to "health" on a
 // quiet project. Lifted out as a free function so the rule is
 // unit-testable without re-running the whole handler.
-func resolveMemoryProjectTab(requested string, queueDepth, quarantinePending int) string {
+func resolveMemoryProjectTab(requested string, queueDepth, quarantinePending int, justEvicted bool) string {
 	switch requested {
 	case "health", "search", "operate":
 		return requested
+	}
+	// An eviction redirects back here to show its receipt, and that receipt
+	// lives in the eviction panel under "operate". Landing on the default tab
+	// would hide it — the operator would press erase, be returned to a page
+	// that says nothing, and have no way to learn what the derived sweep
+	// removed, which is the whole reason the receipt exists.
+	if justEvicted {
+		return "operate"
 	}
 	if quarantinePending > 0 || queueDepth > 0 {
 		return "operate"
@@ -760,18 +774,48 @@ func (s *Server) MemoryEvictAction(w http.ResponseWriter, r *http.Request, proje
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	// operator identity stamped into the audit row. The UI today
-	// authenticates via static API key or Telegram user ID; the
-	// session middleware doesn't expose either as a "user name"
-	// yet. evictedBy="ui-operator" is a placeholder hook —
-	// upgrade once the auth middleware adds an operator-name
-	// surface (regulatory roadmap §GDPR Art 30 ROPA item).
-	_, err := s.memoryEvictor.HardEvict(ctx, projectID, chunkIDs, reason, "ui-operator")
+	// The operator identity stamped into the tombstone and the run header.
+	//
+	// This was the literal string "ui-operator" — a placeholder left when the
+	// panel shipped, on the grounds that the auth middleware exposed no
+	// operator name. It does: operatorIDForRequest resolves the api-key
+	// principal, or the single-tenant operator id for a session-authenticated
+	// browser caller, and the rest of the UI already uses it. So every
+	// eviction through this panel was recorded as having been performed by
+	// nobody in particular, which for a deletion of personal data is the one
+	// field that cannot be reconstructed later.
+	//
+	// Prefixed "ui:" so the surface is legible beside the CLI's "cli:<user>",
+	// and falling back only when the request carries no identity at all —
+	// which the middleware normally rejects before reaching a handler. An
+	// explicit "unidentified" is honest; an empty column reads as a bug.
+	evictedBy := "ui:" + s.operatorIDForRequest(r)
+	if strings.TrimSpace(s.operatorIDForRequest(r)) == "" {
+		evictedBy = "ui:unidentified"
+	}
+
+	res, err := s.memoryEvictor.HardEvict(ctx, projectID, chunkIDs, reason, evictedBy)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, "evict failed: "+err.Error())
 		return
 	}
-	http.Redirect(w, r, fmt.Sprintf("/ui/memory/%s", projectID), http.StatusSeeOther)
+	// The counts ride the redirect because nothing else can carry them: the
+	// memory_eviction_audit tombstones record the CHUNKS, and what those chunks
+	// derived is deleted and then recorded nowhere. This handler used to discard
+	// the result entirely, so an operator erasing on a privacy request saw no
+	// confirmation of any kind.
+	//
+	// SIGNED, because a plain-query receipt is forgeable and this surface names
+	// Article 17 in its own help — see memory_evict_receipt.go. Note the
+	// redirect is built from scratch and deliberately carries NO tab parameter,
+	// so the operator's tab preference cannot survive to hide the banner.
+	http.Redirect(w, r, s.evictionRedirect(projectID, evictionNotice{
+		Chunks:     res.ChunksEvicted,
+		Entities:   res.GraphEntities,
+		Edges:      res.GraphEdges,
+		Quarantine: res.QuarantinedCopies,
+		Cached:     res.CachedEmbeddings,
+	}, time.Now()), http.StatusSeeOther)
 }
 
 // parseEvictChunkIDs tokenises the chunks textarea. Operators paste

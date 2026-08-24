@@ -1394,6 +1394,20 @@ type RetentionConfig struct {
 	// regardless of class. Default 0 → forever; class TTL only.
 	// SaaS-readiness design § 3.13.
 	MemoryChunksDays int `yaml:"memory_chunks_days"`
+	// GraphQuarantineDays bounds how long knowledge-graph rows PARKED by
+	// retention survive before they are hard-deleted. Always-on; zero → the
+	// compiled default of 30 days.
+	//
+	// Retention parks the entities and edges built from a chunk whose TTL
+	// deleted it, rather than deleting them outright — that is reversible and
+	// auditable, and a TTL expiring is not a subject's erasure request. But
+	// parking bounds VISIBILITY, not RETENTION: the row still holds a
+	// canonical name, aliases, a description and an embedding derived from
+	// content whose retention policy has already expired. Art 5(1)(e) storage
+	// limitation is independent of Art 17, so this horizon is what keeps the
+	// parked population bounded. The window is a grace period for operator
+	// error, not for the data.
+	GraphQuarantineDays int `yaml:"graph_quarantine_days"`
 	// MemoryIngestAuditDays bounds the memory_ingest_audit table (both
 	// companion + agent deposit trails). Always-on; zero → compiled
 	// default of 90 days. Without a sweep the table grows unbounded.

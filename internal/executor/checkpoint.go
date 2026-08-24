@@ -152,12 +152,12 @@ func (e *Executor) countCheckpointDepth(ctx context.Context, t *persistence.Task
 	guard := maxCheckpointDepth*2 + 1
 	for cursor != nil && cursor.ParentTaskID != nil && guard > 0 {
 		guard--
-		parent, err := e.taskRepo.Get(ctx, *cursor.ParentTaskID)
+		parent, err := e.ancestorOrEnd(ctx, *cursor.ParentTaskID)
 		if err != nil {
 			return depth, err
 		}
 		if parent == nil {
-			return depth, nil
+			return depth, nil // ancestor row is gone; the chain ends here
 		}
 		if parent.CreationSource != persistence.TaskCreationSourceCheckpoint {
 			return depth, nil

@@ -34,7 +34,7 @@ func (s *stubExtractedDocsRepo) Upsert(_ context.Context, d *persistence.Extract
 	return nil
 }
 func (s *stubExtractedDocsRepo) Get(context.Context, string) (*persistence.ExtractedDocument, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (s *stubExtractedDocsRepo) GetByArtifact(context.Context, string) (*persistence.ExtractedDocument, error) {
 	return s.cached, nil

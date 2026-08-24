@@ -1472,6 +1472,47 @@
 
             <!-- Hard eviction (GDPR Art 17) -->
             {{if .EvictEnabled}}
+            {{with .EvictionNotice}}
+            <!--
+              One-shot receipt for the eviction that just ran. It exists because
+              the tombstone table below accounts for the CHUNKS only — what they
+              derived is deleted and then recorded nowhere, so this is the last
+              moment anyone can be told. Every number is an integer re-parsed
+              from the redirect; all wording is fixed here.
+            -->
+            <div class="glass rounded-xl border border-emerald-900/40 overflow-hidden mb-4">
+                <div class="px-5 py-4 flex items-start gap-3">
+                    <svg class="h-4 w-4 mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-300" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                    <div class="text-xs">
+                        <p class="text-emerald-700 dark:text-emerald-200 font-medium">
+                            Erased {{.Chunks}} chunk{{if ne .Chunks 1}}s{{end}}
+                            <span class="font-normal text-gray-400">at {{.At.Format "15:04:05 MST"}}</span>.
+                        </p>
+                        {{if .Derived}}
+                        <p class="mt-1 text-gray-400">
+                            Derived data removed with them:
+                            <span class="text-gray-300">{{.Entities}}</span> knowledge entit{{if eq .Entities 1}}y{{else}}ies{{end}},
+                            <span class="text-gray-300">{{.Edges}}</span> graph edge{{if ne .Edges 1}}s{{end}},
+                            <span class="text-gray-300">{{.Quarantine}}</span> quarantined pre-ingest cop{{if eq .Quarantine 1}}y{{else}}ies{{end}},
+                            <span class="text-gray-300">{{.Cached}}</span> cached embedding{{if ne .Cached 1}}s{{end}}.
+                        </p>
+                        <p class="mt-1 text-gray-500">
+                            The tombstone table below records the chunks. These derived rows are recorded nowhere else — note them now if this erasure answers a request.
+                        </p>
+                        {{else}}
+                        <p class="mt-1 text-gray-500">
+                            Nothing was derived from {{if eq .Chunks 1}}it{{else}}them{{end}}, so no graph rows, quarantined copies or cached embeddings were removed.
+                        </p>
+                        {{end}}
+                        {{if eq .Chunks 0}}
+                        <p class="mt-1 text-amber-600 dark:text-amber-300">
+                            No chunks matched — the IDs were stale, already evicted, or belong to another project.
+                        </p>
+                        {{end}}
+                    </div>
+                </div>
+            </div>
+            {{end}}
             <div class="glass rounded-xl border border-rose-900/40 overflow-hidden">
                 <div class="px-5 py-4 border-b border-rose-900/40 bg-rose-900/10">
                     <h2 class="text-sm font-medium text-rose-600 dark:text-rose-200 flex items-center gap-2">
@@ -1481,7 +1522,9 @@
                     <p class="mt-1 text-xs text-gray-400">
                         Permanently delete chunks from <code class="text-rose-700 dark:text-rose-300">project_memory_chunks</code> with a
                         <code class="text-rose-700 dark:text-rose-300">memory_eviction_audit</code> tombstone. Cascades through embed-queue, dlq, and entity-mentions
-                        automatically. <strong>Irreversible.</strong>
+                        automatically, and also removes what those chunks <em>derived</em>: knowledge-graph entities and edges left without
+                        evidence, the quarantined pre-ingest copy of the text, and the cached embedding. An entity a surviving chunk still
+                        reaches is kept. <strong>Irreversible.</strong>
                         Use for GDPR Art 17 erasure requests or cleanup of confirmed-bad records that the soft-refute path
                         (<a href="https://example.invalid" class="text-brand-300 underline-offset-2 hover:underline">memory_correct</a> tool) leaves cluttering search.
                     </p>

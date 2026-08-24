@@ -103,7 +103,16 @@ models:
   "kimi-k3":               { input: 3.00, output: 15.00, cache_read: 0.30 }
   "deepseek-v3.1:671b":    { input: 0.25, output: 0.95 } # openrouter.ai/deepseek/deepseek-chat-v3.1
   "deepseek-v3.2":         { input: 0.62, output: 1.85 } # matches deepseek.v3.2 (Bedrock)
-  "deepseek-v4-flash":     { input: 0.10, output: 0.20 } # openrouter.ai/deepseek/deepseek-v4-flash
+  # deepseek-v4-flash — operator-supplied vendor rates (2026-08-22), replacing
+  # the OpenRouter estimate (0.10/0.20). Lookup is EXACT-MATCH with no prefix
+  # fallback (internal/pricing.Table.Lookup), and Ollama Cloud serves this
+  # model under TAGGED ids — so the bare key alone would let a role naming
+  # "deepseek-v4-flash:0731" record the default rate while looking priced.
+  # Every tag the cloud advertises is listed for that reason.
+  "deepseek-v4-flash":         { input: 0.065, output: 0.18 }
+  "deepseek-v4-flash:0731":    { input: 0.065, output: 0.18 }
+  "deepseek-v4-flash:preview": { input: 0.065, output: 0.18 }
+  "deepseek-v4-flash:cloud":   { input: 0.065, output: 0.18 } # :cloud suffix form, as glm-5.2:cloud uses
   "deepseek-v4-pro":       { input: 0.44, output: 0.87 } # openrouter.ai/deepseek/deepseek-v4-pro
   "devstral-2:123b":       { input: 0.40, output: 2.00 } # openrouter.ai/mistralai/devstral-2512
   "devstral-small-2:24b":  { input: 0.10, output: 0.30 } # openrouter.ai (Devstral Small 2)

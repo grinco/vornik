@@ -91,6 +91,7 @@ type mcpOAuthBeginResp struct {
 	Resource         string   `json:"resource"`
 	Scopes           []string `json:"scopes"`
 	RedirectURI      string   `json:"redirect_uri"`
+	DroppedScopes    []string `json:"dropped_scopes,omitempty"`
 }
 
 type mcpOAuthStatusResp struct {
@@ -125,6 +126,17 @@ func runMCPConnect(_ *cobra.Command, args []string) error {
 	fmt.Printf("  Resource:     %s\n", begun.Resource)
 	fmt.Printf("  Scopes:       %s\n", mcpScopeList(begun.Scopes))
 	fmt.Printf("  Redirect URI: %s\n", begun.RedirectURI)
+	if len(begun.DroppedScopes) > 0 {
+		// The ask was NARROWED. Printing only the final list is what let a
+		// read-only Atlassian grant read as "the vendor has no write tools"
+		// (2026-08-22) — the consent screen can only offer what we requested.
+		fmt.Printf("\n  WITHHELD:     %s\n", mcpScopeList(begun.DroppedScopes))
+		fmt.Printf("                The server advertises these; this request does NOT ask for them,\n")
+		fmt.Printf("                because a daemon-scope grant may not inherit write access.\n")
+		fmt.Printf("                To grant them, either name them in auth.scopes for %q in\n", server)
+		fmt.Printf("                config.yaml (all projects), or re-run with --project <id>\n")
+		fmt.Printf("                to confine the grant to one project.\n")
+	}
 	if mcpProject == "" {
 		fmt.Printf("\n  NOTE: a daemon-level grant is usable by EVERY project on this daemon.\n")
 	}

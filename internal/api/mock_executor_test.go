@@ -53,6 +53,8 @@ func (m *mockPauseResumeExecutor) RetryFromStep(_ context.Context, executionID, 
 // that assert on the parent-unblock notification.
 func (m *mockPauseResumeExecutor) NotifyChildTerminal(_ context.Context, _ string) {}
 
+func (m *mockPauseResumeExecutor) CancelIfActive(string) (bool, error) { return false, nil }
+
 func (m *mockPauseResumeExecutor) CancelChildren(_ context.Context, _ string) {}
 
 var _ ExecutorInterface = (*mockPauseResumeExecutor)(nil)

@@ -205,6 +205,7 @@ func (c *Container) reminderCompletionNotifier() executor.CompletionNotifier {
 			c.repos.Artifacts,
 			c.artifactStore,
 			&containerReminderFileSenderResolver{c: c},
+			c.repos.Tasks,
 		))
 	}
 	return reminders.NewCompletionNotifier(

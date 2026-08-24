@@ -38,6 +38,7 @@ package watchdog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -713,14 +714,29 @@ func (w *Watchdog) markFailed(ctx context.Context, exec *persistence.Execution, 
 		return nil
 	}
 	task, err := w.taskRepo.Get(ctx, exec.TaskID)
+	// The task vanished between the scan and this Get — deleted with its
+	// project, or pruned. There is nothing left to flip, and the execution row
+	// is already marked, so this is a clean finish and NOT an error.
+	//
+	// It used to be one. The short-circuit was written as `task == nil`, which
+	// TaskRepository.Get never returns: it is MissErrNotFound. So a vanished
+	// task took the error path, and that path is expensive — handleStuck logs
+	// "row left as-is" (false: RecordFailure above already flipped it), skips
+	// markSeen so the same execution is re-reported and re-flipped on every
+	// sweep, and never increments the detected/failed counters, so the stuck
+	// count under-reports. Found 2026-08-22 by tightening the package's task
+	// double, which had been answering a miss with (nil, nil).
+	if errors.Is(err, persistence.ErrNotFound) {
+		return nil
+	}
 	if err != nil {
-		// Best-effort task-side update; an execution row marked
-		// FAILED with a still-RUNNING task row will surface as a
+		// A real lookup failure. Best-effort task-side update; an execution row
+		// marked FAILED with a still-RUNNING task row will surface as a
 		// discrepancy in the UI which an operator can investigate.
 		return fmt.Errorf("task Get: %w", err)
 	}
 	if task == nil {
-		return nil
+		return nil // depth: a future backend that answers a miss with a bare nil
 	}
 	// Defensive: if the task is already in a terminal state, don't
 	// regress it. Watchdog only runs on RUNNING executions, but a

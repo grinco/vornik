@@ -27,11 +27,27 @@ var memoryEvictCmd = &cobra.Command{
 	Short: "Permanently delete memory chunks (GDPR-style hard eviction)",
 	Long: `Permanently delete the named project_memory_chunks rows. Cascades
 through memory_embed_queue + memory_embed_dlq + entity_mentions (FK
-ON DELETE CASCADE) and nulls out project_memory_quarantine.
-released_chunk_id where it pointed at the evicted chunk. A per-chunk
-tombstone row lands in memory_eviction_audit so the deletion itself
-is auditable (the GDPR compliance hook — deletion without record of
-the deletion is itself non-compliant).
+ON DELETE CASCADE). A per-chunk tombstone row lands in
+memory_eviction_audit so the deletion itself is auditable (the GDPR
+compliance hook — deletion without record of the deletion is itself
+non-compliant).
+
+It also removes what the evicted chunks DERIVED, which it did not
+until 2026-08-21: knowledge_entities and knowledge_edges have no
+foreign key to chunks, so the entities and edges built from an
+evicted chunk used to survive it and stay queryable — this command
+lists GDPR requests as a use case, so that was a privacy request
+answered with a partial deletion. An entity a SURVIVING chunk still
+reaches is kept; only what loses its last evidence goes.
+
+The quarantined pre-ingest copy is DELETED, not detached. The
+foreign key on project_memory_quarantine.released_chunk_id is
+ON DELETE SET NULL, so evicting a chunk used to null the pointer and
+keep the text — and that table holds content an ingest gate
+REJECTED, which is disproportionately likely to be the sensitive
+kind. The FK rule is unchanged (quarantine rows outlive their chunk
+by design); what changed is that a deletion meant to be permanent
+removes them explicitly.
 
 Eviction is DESTRUCTIVE and IRREVERSIBLE. For "this record is wrong,
 demote it in search" use the soft-refute path (vornikctl via
@@ -154,15 +170,23 @@ func runMemoryEvict(cmd *cobra.Command, args []string) error {
 	// doesn't search — it works on explicit chunk IDs.
 	corrector := memory.NewCorrector(repo, nil)
 
-	audit, err := corrector.HardEvict(ctx, memoryEvictProject, chunkIDs, memoryEvictReason, currentOperatorIdentity())
+	res, err := corrector.HardEvict(ctx, memoryEvictProject, chunkIDs, memoryEvictReason, currentOperatorIdentity())
 	if err != nil {
 		return fmt.Errorf("evict: %w", err)
 	}
+	audit := res.Audit
 
 	fmt.Printf("evicted %d of %d requested chunks under project %q\n", len(audit), len(chunkIDs), memoryEvictProject)
 	if len(audit) < len(chunkIDs) {
 		fmt.Println("(non-deleted IDs were stale, wrong-project, or already evicted)")
 	}
+	// Printed unconditionally, zeros included. These rows outlived evictions
+	// reported as complete until 2026-08-21; the eviction tombstones record the
+	// chunks, and this line is the only place the derived rows are accounted for.
+	fmt.Printf("derived data: %d knowledge entit(ies), %d graph edge(s), %d quarantined "+
+		"pre-ingest cop(ies), %d cached embedding(s)\n",
+		res.Derived.Entities, res.Derived.Edges, res.QuarantinedCopiesDeleted,
+		res.EmbeddingCacheKeysDeleted)
 	for _, row := range audit {
 		hashShort := row.ContentHash
 		if len(hashShort) > 12 {

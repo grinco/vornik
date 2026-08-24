@@ -61,6 +61,18 @@ const (
 	// grant than a name, so it carries the same recorded-reason requirement.
 	KindAgentToolUngatedPrefix Kind = "agent_tool_ungated_prefix"
 
+	// KindAgentToolAdvertisementFilter records that tool_definitions()'s
+	// $extras_ungated append is filtered against the exemption registry rather
+	// than concatenated unconditionally.
+	//
+	// A presence marker, not a vocabulary: the thing worth asserting is that the
+	// THIRD PATH is closed. Until 2026-08-22 the append was unconditional, so a
+	// definition added to extras_ungated reached every role's model whatever the
+	// allowlist said and whatever the registries said — a bypass that no amount
+	// of registry agreement would have caught, because it went around the
+	// registries rather than disagreeing with them.
+	KindAgentToolAdvertisementFilter Kind = "agent_tool_advertisement_filter"
+
 	// KindAgentToolDispatch is entrypoint.sh's exec_tool case list: what can
 	// actually run. This is the authoritative set of implemented agent tools.
 	KindAgentToolDispatch Kind = "agent_tool_dispatch"

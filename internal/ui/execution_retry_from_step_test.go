@@ -63,6 +63,8 @@ func (e *retryFromStepFakeExecutor) ResumeTask(_ string) error {
 // parent-child fixture.
 func (e *retryFromStepFakeExecutor) NotifyChildTerminal(_ context.Context, _ string) {}
 
+func (e *retryFromStepFakeExecutor) CancelIfActive(string) (bool, error) { return false, nil }
+
 func (e *retryFromStepFakeExecutor) CancelChildren(_ context.Context, _ string) {}
 
 // retryFromStepFakeOutcomeRepo records SupersedeAfter invocations

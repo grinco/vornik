@@ -50,7 +50,7 @@ func (s *stubArtifactRepoForTools) Get(_ context.Context, id string) (*persisten
 	return s.arts[id], nil
 }
 func (s *stubArtifactRepoForTools) GetByHash(context.Context, string) (*persistence.Artifact, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (s *stubArtifactRepoForTools) List(context.Context, persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
 	return nil, nil

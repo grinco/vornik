@@ -10,11 +10,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/conversation"
+	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -33,6 +35,13 @@ type CompletionNotifier struct {
 	artifactRepo   persistence.ArtifactRepository
 	artifactReader ReminderArtifactReader
 	fileResolver   ReminderFileSenderResolver
+	childLister    ReminderChildTaskLister
+}
+
+// ReminderChildTaskLister walks one level of the task tree. Satisfied by
+// persistence.TaskRepository, which already carries GetChildren.
+type ReminderChildTaskLister interface {
+	GetChildren(ctx context.Context, parentTaskID string) ([]*persistence.Task, error)
 }
 
 // ReminderArtifactReader is the backend-neutral read half of artifacts.Store.
@@ -57,13 +66,20 @@ type ReminderFileSenderResolver interface {
 // the existing text-only constructor call sites.
 type CompletionOption func(*CompletionNotifier)
 
-// WithArtifactDelivery makes successful task-kind reminders forward every
-// OUTPUT artifact to the reminder's original channel destination.
-func WithArtifactDelivery(repo persistence.ArtifactRepository, reader ReminderArtifactReader, resolver ReminderFileSenderResolver) CompletionOption {
+// WithArtifactDelivery makes successful task-kind reminders forward the
+// deliverable OUTPUT artifacts to the reminder's original channel destination.
+//
+// The child lister is REQUIRED rather than optional, and that is the fix for
+// the defect this option shipped with: the reminder's own task is frequently a
+// router that DELEGATES, so the thing the operator asked for lives on a
+// descendant. Passing the lister at the wiring point makes it impossible to
+// enable artifact delivery and quietly keep looking at one task.
+func WithArtifactDelivery(repo persistence.ArtifactRepository, reader ReminderArtifactReader, resolver ReminderFileSenderResolver, children ReminderChildTaskLister) CompletionOption {
 	return func(n *CompletionNotifier) {
 		n.artifactRepo = repo
 		n.artifactReader = reader
 		n.fileResolver = resolver
+		n.childLister = children
 	}
 }
 
@@ -153,26 +169,42 @@ func (n *CompletionNotifier) NotifyTaskCompleted(ctx context.Context, task *pers
 	}
 }
 
-// deliverOutputArtifacts forwards only operator-facing OUTPUT artifacts. Input
-// and intermediate files can contain raw uploads or scratch data and must never
-// leak merely because they share the completed task ID.
+// deliverOutputArtifacts forwards the operator-facing OUTPUT artifacts produced
+// anywhere in the fired task's tree.
+//
+// ACROSS THE TREE, not just the reminder's own task. The design assumed "one
+// fire spawns exactly one task", which is true of the FIRE and false of the
+// work: the spawned task routinely runs a router workflow that delegates, and
+// the deliverable is written by the child. Filtering artifacts to the
+// reminder's task alone delivered the router's own scaffolding and never the
+// briefing the operator asked for — measured 2026-08-22, where the parent held
+// two route-response transcripts (886 B) and the child held the 3.9 KB morning
+// briefing.
+//
+// TRANSCRIPTS ARE EXCLUDED via executor.IsTranscriptArtifact, the same
+// classifier memory-ingest and the companion result() inliner use. Its
+// docstring already says presentation and ingest must not drift on what counts
+// as a transcript, and this is a presentation surface. Without it, widening to
+// the tree would have made the problem worse — today's digest would have
+// shipped nine files instead of two.
+//
+// Input and intermediate artifacts stay private to the task; only OUTPUT is
+// ever forwarded.
 func (n *CompletionNotifier) deliverOutputArtifacts(ctx context.Context, rem *persistence.Reminder, task *persistence.Task) error {
 	if n == nil || n.artifactRepo == nil || n.artifactReader == nil || n.fileResolver == nil || rem == nil || task == nil {
 		return nil
 	}
 	sender := n.fileResolver.ResolveReminderFileSender(rem.Channel, rem.ChannelRef)
 	if sender == nil {
-		return nil // channel has no attachment surface; preserve text-only behavior
+		// Not an error — a channel may have no attachment surface — but it is
+		// not nothing either. The operator gets the text body and never learns
+		// the report existed, so say so where an operator can find it.
+		n.logger.Info().Str("reminder_id", rem.ID).Str("channel", rem.Channel).
+			Msg("reminders: channel has no file sender; scheduled report not attached")
+		return nil
 	}
-	taskID := task.ID
-	artifacts, err := n.artifactRepo.List(ctx, persistence.ArtifactFilter{TaskID: &taskID, PageSize: 100})
-	if err != nil {
-		return fmt.Errorf("list output artifacts: %w", err)
-	}
-	for _, artifact := range artifacts {
-		if artifact == nil || artifact.ArtifactClass != persistence.ArtifactClassOutput {
-			continue
-		}
+
+	for _, artifact := range n.collectTreeOutputs(ctx, task) {
 		data, err := n.artifactReader.Retrieve(ctx, artifact.ID)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", artifact.Name, err)
@@ -182,6 +214,74 @@ func (n *CompletionNotifier) deliverOutputArtifacts(ctx context.Context, rem *pe
 		}
 	}
 	return nil
+}
+
+// maxReminderTreeTasks bounds the descendant walk. A reminder that fans out
+// past this has a delivery problem no attachment list will fix, and the cap
+// keeps one bad schedule from walking an unbounded tree on every fire.
+const maxReminderTreeTasks = 64
+
+// collectTreeOutputs gathers deliverable OUTPUT artifacts from the task and its
+// descendants, oldest first, de-duplicated.
+//
+// Best-effort by design: a failure to walk the tree or to list one task's
+// artifacts must not strand the completion notice, which is the useful part.
+// Anything skipped is logged rather than silently dropped.
+func (n *CompletionNotifier) collectTreeOutputs(ctx context.Context, root *persistence.Task) []*persistence.Artifact {
+	var out []*persistence.Artifact
+	seenArtifact := map[string]bool{}
+	seenTask := map[string]bool{}
+
+	queue := []*persistence.Task{root}
+	for len(queue) > 0 && len(seenTask) < maxReminderTreeTasks {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur == nil || seenTask[cur.ID] {
+			continue // cycle guard: parentage should be acyclic, data heals imperfectly
+		}
+		seenTask[cur.ID] = true
+
+		taskID := cur.ID
+		artifacts, err := n.artifactRepo.List(ctx, persistence.ArtifactFilter{TaskID: &taskID, PageSize: 100})
+		if err != nil {
+			n.logger.Warn().Err(err).Str("task_id", taskID).
+				Msg("reminders: listing output artifacts failed; continuing with the rest of the tree")
+		}
+		for _, a := range artifacts {
+			if a == nil || a.ArtifactClass != persistence.ArtifactClassOutput {
+				continue
+			}
+			if executor.IsTranscriptArtifact(a.Name) {
+				continue // per-step agent transcript, not a deliverable
+			}
+			if seenArtifact[a.ID] {
+				continue
+			}
+			seenArtifact[a.ID] = true
+			out = append(out, a)
+		}
+
+		if n.childLister == nil {
+			continue
+		}
+		children, err := n.childLister.GetChildren(ctx, taskID)
+		if err != nil {
+			n.logger.Warn().Err(err).Str("task_id", taskID).
+				Msg("reminders: listing child tasks failed; deliverables below this task are not attached")
+			continue
+		}
+		queue = append(queue, children...)
+	}
+
+	// Oldest first, then by name: delivery order should reflect how the work
+	// was produced and must not vary between two identical runs.
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
 }
 
 // scheduledUpdateBody renders the delivery message. See design §4.4.

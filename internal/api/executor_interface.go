@@ -27,5 +27,14 @@ type ExecutorInterface interface {
 	// cancelled parent doesn't leave its route/delegation/checkpoint
 	// children RUNNING/QUEUED. Idempotent + race-safe; cross-project
 	// callees are handled separately via the CPC ledger.
+	// CancelIfActive tears down a live execution for taskID if the executor
+	// is running one, reporting whether it was. This — not the task's status
+	// — is what decides whether a cancelled task needs its container
+	// stopped: a status read before the transition can be stale, and a task
+	// that reached RUNNING in that window had its row cancelled and its
+	// container left alive (05-scheduler.md §4.7). (false, nil) means
+	// nothing to stop, which is routine; (true, err) means a container is
+	// still running and could not be stopped.
+	CancelIfActive(taskID string) (bool, error)
 	CancelChildren(ctx context.Context, parentTaskID string)
 }

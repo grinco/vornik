@@ -194,9 +194,12 @@ var UncoveredTable = map[string]string{
 		"embeds, ON DELETE CASCADE from project_memory_chunks. Holds the chunk id and the last error, no content.",
 
 	"embedding_cache": "Owed erasure under Art 17(1) but NOT via a link: keyed by (content_hash, model) with " +
-		"no subject or project column, so it is erased by content hash through EmbedCache.Evict/EvictAll. " +
-		"NOT AN EXEMPTION AND NOT YET DISCHARGED — the erasure paths are not wired to those calls (see " +
-		"https://docs.vornik.io), so this is an open gap recorded here so it cannot be mistaken for a closed one.",
+		"no subject or project column, so it is erased by content hash rather than by row identity. " +
+		"NOT AN EXEMPTION. Discharged on the erasure paths as of 2026-08-21: DeleteByArtifact, " +
+		"DeleteByExtractedDocument, the slice-5c redaction transaction and Repository.HardEvict all collect " +
+		"the chunk's cache keys before the delete and evict them in the same transaction. One gap REMAINS and " +
+		"is filed rather than implied here — deleting a whole PROJECT does not reach it, because " +
+		"ProjectDataTables is project-scoped and this table has no project column.",
 
 	"memory_retrieval_audit": "Art 17(3)(b) accountability + Art 32(1) security record of what was retrieved " +
 		"and by whom. The `query` column holds search text that routinely names a person, so this is retained " +
@@ -208,6 +211,12 @@ var UncoveredTable = map[string]string{
 	"memory_eviction_audit": "Art 17(3)(b) accountability record that a chunk WAS removed, including by an " +
 		"erasure. Erasing it on request would destroy the evidence that the erasure happened. Holds a content " +
 		"hash, not content.",
+
+	"memory_eviction_runs": "Art 17(3)(b) accountability record, same ground as memory_eviction_audit and " +
+		"added with it (2026-08-21): the per-operation header recording what an eviction removed BEYOND the " +
+		"chunks — knowledge-graph entities and edges, quarantined pre-ingest copies, cached embeddings. " +
+		"Erasing it would destroy the only evidence that the derived data was covered. Holds counts, an " +
+		"operator identifier and the operator's free-text reason; no content.",
 
 	"data_subjects": "The subject axis itself. Pinned by data_subject_requests.subject_id ON DELETE RESTRICT, " +
 		"so it cannot be deleted while any request references it — deliberately: the request ledger is the " +

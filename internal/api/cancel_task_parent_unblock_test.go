@@ -26,6 +26,8 @@ func (s *cancelNotifySpy) NotifyChildTerminal(_ context.Context, childTaskID str
 	s.notifyCalls = append(s.notifyCalls, childTaskID)
 }
 
+func (s *cancelNotifySpy) CancelIfActive(string) (bool, error) { return false, nil }
+
 func (s *cancelNotifySpy) CancelChildren(_ context.Context, parentTaskID string) {
 	s.cascadeCalls = append(s.cascadeCalls, parentTaskID)
 }

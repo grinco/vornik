@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"vornik.io/vornik/internal/persistence"
@@ -174,8 +175,57 @@ func (e *Executor) saveCheckpoint(ctx context.Context, execution *persistence.Ex
 	return e.saveExecutionState(ctx, execution, state)
 }
 
+// sanitizeCheckpointBytes replaces any step result that is not valid JSON with a
+// diagnostic that is, and reports which slots it repaired.
+//
+// THE GUARD BELONGS HERE. Step results are opaque bytes the executor did not
+// encode — an agent's result.json, a plan step's output, a system handler's
+// envelope — stored into json.RawMessage fields and marshalled later. Invalid
+// bytes therefore do not fail where they were produced; they fail at the next
+// checkpoint and take the whole execution with them, several steps from the
+// cause. That was fixed once at ONE producer (70aafb58, step error text) and
+// went on killing executions through the pass-through sites — 7 of them in the
+// 36 hours journald still held on 2026-08-22 (see stepResultJSON for the
+// measurement).
+// Asking at each producer means asking again for every producer added later, so
+// the last thing before the marshal asks too.
+//
+// StepResults is a map and so is repaired in the CALLER's state as well as in
+// this copy — deliberately: the workflow loop keeps interpolating
+// ${outputs.<step>.<field>} from it for the rest of the run, and repairing only
+// what is written would leave the live copy unusable. LastResult is a value
+// field and is repaired for the write only; the loop reassigns it every step.
+func sanitizeCheckpointBytes(state *executionState) []string {
+	if state == nil {
+		return nil
+	}
+	var repaired []string
+	if len(state.LastResult) > 0 && !json.Valid(state.LastResult) {
+		state.LastResult = stepResultJSON(state.LastResult)
+		repaired = append(repaired, "lastResult")
+	}
+	for id, raw := range state.StepResults {
+		if len(raw) == 0 || json.Valid(raw) {
+			continue
+		}
+		state.StepResults[id] = stepResultJSON(raw)
+		repaired = append(repaired, "stepResults."+id)
+	}
+	sort.Strings(repaired) // map order is random; the log line should not be
+	return repaired
+}
+
 // saveExecutionState marshals the state and writes it to the repository.
 func (e *Executor) saveExecutionState(ctx context.Context, execution *persistence.Execution, state executionState) error {
+	if repaired := sanitizeCheckpointBytes(&state); len(repaired) > 0 {
+		// Warn, not fail: the execution is recoverable and the alternative is
+		// the fatal marshal this guard exists to prevent. Named slots so the
+		// producer is identifiable without reading the snapshot.
+		e.logger.Warn().
+			Str("execution_id", execution.ID).
+			Strs("repaired", repaired).
+			Msg("workflow: step result was not valid JSON; stored it as text so the checkpoint survives")
+	}
 	snapshot, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf("failed to marshal execution checkpoint: %w", err)
@@ -288,7 +338,10 @@ func (e *Executor) pauseWithReason(taskID, reason string) (*PauseStatus, error) 
 	e.mu.Unlock()
 
 	if !exists {
-		return nil, fmt.Errorf("no active execution for task %s", taskID)
+		// Same sentinel Cancel uses: callers distinguish "nothing to act on"
+		// (benign) from a real failure with errors.Is rather than by matching
+		// the message.
+		return nil, fmt.Errorf("%w: task %s", ErrNoActiveExecution, taskID)
 	}
 
 	// Stop the container gracefully (SIGTERM), then BLOCK on its exit

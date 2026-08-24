@@ -2098,6 +2098,14 @@ func (e *Executor) runExecution(ctx context.Context, task *persistence.Task, exe
 		if spec, ok := forgeCheckoutSpec(task.Payload); ok {
 			// Keep vornik-internal bookkeeping (.autonomy/, CURRENT_TASK.md, …)
 			// out of the customer's repo for every forge task (parent + child).
+			//
+			// FORGE-ONLY IS LOAD-BEARING. Its sibling excludeEphemeralArtifactOutputs
+			// runs from ensureGitRepo for every project; this one must not, and
+			// "tidying" it to match would silently stop committing the autonomy
+			// backlog marker — the durable state the checkpoint commit exists to
+			// preserve. The two project shapes have different paramount invariants:
+			// isolation from customer artifacts here, durable-state continuity
+			// there. See workspace-state-hygiene-rollback-design §4.4a.
 			excludeVornikInternalPaths(projectDir, e.logger)
 			hasChildren := false
 			if e.taskRepo != nil {
@@ -2480,7 +2488,7 @@ func (e *Executor) Cancel(taskID string) error {
 	handle, exists := e.activeExecutions[taskID]
 	if !exists {
 		e.mu.Unlock()
-		return fmt.Errorf("no active execution for task %s", taskID)
+		return fmt.Errorf("%w: task %s", ErrNoActiveExecution, taskID)
 	}
 	containerID := handle.containerID
 	cancelFn := handle.cancel
@@ -2520,10 +2528,21 @@ func (e *Executor) Cancel(taskID string) error {
 		e.mu.Unlock()
 	}
 
+	var stopErr error
 	if containerID != "" {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_ = e.runtime.StopContainer(stopCtx, containerID, true)
+		// The result used to be discarded outright. A container we asked to
+		// stop and could not is still running and still billing while its row
+		// says CANCELLED — the quiet version of the very bug §4.7 is about —
+		// so it is now reported to the caller and logged here.
+		stopErr = e.runtime.StopContainer(stopCtx, containerID, true)
 		stopCancel()
+		if stopErr != nil {
+			e.logger.Warn().Err(stopErr).
+				Str("task_id", taskID).
+				Str("container_id", containerID).
+				Msg("cancel: container did not stop — it may still be running and billing")
+		}
 	}
 
 	if e.metrics != nil {
@@ -2531,7 +2550,57 @@ func (e *Executor) Cancel(taskID string) error {
 		e.metrics.RecordCancelled(projectID, duration)
 	}
 
-	return nil
+	return stopErr
+}
+
+// ErrNoActiveExecution reports that the executor is not running the named task.
+// It is the ordinary answer for a queued or already-finished task, NOT a
+// failure — callers distinguish it with errors.Is rather than by matching the
+// message, so the wording stays free to change.
+var ErrNoActiveExecution = errors.New("no active execution")
+
+// CancelIfActive tears down a live execution for taskID if the executor is
+// running one, and reports whether it was.
+//
+// This is the ONLY correct way to decide whether a cancelled task needs its
+// container stopped. `activeExecutions` is written by the goroutine that owns
+// the container, under e.mu, so it is the authoritative and race-free answer;
+// a `tasks.status` value is a snapshot of a row the cancel path is itself about
+// to change. Four call sites used to gate teardown on that snapshot, and the
+// transitions they gate accept PENDING/QUEUED/LEASED/RUNNING/
+// WAITING_FOR_CHILDREN — so a task observed as LEASED that reached RUNNING
+// before the conditional write had its row flipped and its container left
+// alive, claimed by no row and sought by no reaper (reported 2026-08-20).
+//
+// Deliberately takes no context: teardown must not be abandoned because the
+// HTTP request that asked for it went away. Cancel builds its own detached,
+// deadline-bound contexts for exactly that reason.
+//
+// The two false cases must stay distinguishable, which is why this is not a
+// bare bool: (false, nil) is "nothing to stop", routine for a queued task,
+// while (true, err) is a container still running that we failed to stop.
+//
+// Design of record: https://docs.vornik.io §4.7.
+func (e *Executor) CancelIfActive(taskID string) (hadExecution bool, err error) {
+	if e == nil || taskID == "" {
+		return false, nil
+	}
+	e.mu.Lock()
+	_, exists := e.activeExecutions[taskID]
+	e.mu.Unlock()
+	if !exists {
+		return false, nil
+	}
+	// Cancel re-resolves the handle under the lock; a concurrent completion
+	// between our check and its own is reported as "no active execution",
+	// which for our purposes is the same routine outcome.
+	if cerr := e.Cancel(taskID); cerr != nil {
+		if errors.Is(cerr, ErrNoActiveExecution) {
+			return false, nil
+		}
+		return true, cerr
+	}
+	return true, nil
 }
 
 // Stop cancels all in-flight executions and waits for their goroutines to

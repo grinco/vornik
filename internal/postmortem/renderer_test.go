@@ -30,7 +30,7 @@ func (s *rendererTaskRepo) Get(_ context.Context, _ string) (*persistence.Task, 
 		return nil, s.err
 	}
 	if s.wantNil {
-		return nil, nil
+		return nil, persistence.ErrNotFound
 	}
 	return s.task, nil
 }

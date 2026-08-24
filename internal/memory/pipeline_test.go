@@ -34,7 +34,7 @@ func (f *fakeQuarantine) ListPending(context.Context, string, int) ([]*persisten
 	return nil, nil
 }
 func (f *fakeQuarantine) Get(context.Context, string) (*persistence.MemoryQuarantineItem, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *fakeQuarantine) MarkReleased(context.Context, string, string) error { return nil }
 func (f *fakeQuarantine) MarkDropped(context.Context, string) error          { return nil }
@@ -76,7 +76,7 @@ func (f *fakeEpochs) ListEpochs(context.Context, string, int) ([]*persistence.Co
 	return nil, nil
 }
 func (f *fakeEpochs) GetEpoch(context.Context, string) (*persistence.CorpusEpoch, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *fakeEpochs) RollbackTo(context.Context, string, string, string, string) (int, int, int, error) {
 	return 0, 0, 0, nil

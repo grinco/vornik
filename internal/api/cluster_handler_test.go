@@ -34,7 +34,7 @@ func (s stubLeaderLocks) Renew(context.Context, string, string, time.Time, time.
 }
 func (s stubLeaderLocks) Release(context.Context, string, string) error { return nil }
 func (s stubLeaderLocks) Get(context.Context, string) (*persistence.DaemonLeaderLock, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (s stubLeaderLocks) List(context.Context) ([]*persistence.DaemonLeaderLock, error) {
 	return s.locks, nil

@@ -106,8 +106,15 @@ type PipelineMetrics struct {
 	EntitiesMatched   int
 	EntitiesAmbiguous int
 	MentionsWritten   int
-	EdgesUpserted     int
-	EdgesDropped      int
+	// MentionsWithoutSpan counts mentions recorded with no usable offsets —
+	// the model omitted them or returned a range validateCandidates rejected.
+	// Separated from MentionsWritten because these used to be DROPPED, and a
+	// deployment where the number is large has an extractor that is not
+	// returning offsets, which is worth seeing rather than inferring from a
+	// gap between entity and mention counts.
+	MentionsWithoutSpan int
+	EdgesUpserted       int
+	EdgesDropped        int
 }
 
 // chunkInput is the minimal slice of memory.MemoryChunk the
@@ -237,19 +244,58 @@ func (p *Pipeline) RunChunk(ctx context.Context, chunk ChunkInput) (*PipelineMet
 			metrics.EntitiesAmbiguous++
 		}
 
-		// Mention row — only when the candidate carries a valid
-		// span. Out-of-range offsets were already zeroed by the
-		// extractor's validateCandidates.
-		if entityIDByCand[i] != "" && (c.CharEnd > c.CharStart) {
+		// Mention row — ALWAYS, whether or not the candidate carried a
+		// usable span.
+		//
+		// This used to be written only when `c.CharEnd > c.CharStart`, so an
+		// entity whose offsets the model omitted or got out of range (zeroed
+		// by validateCandidates) got no mention row for its entire life. The
+		// span is a highlighting convenience; the ROW is the only record that
+		// this chunk is where the entity came from, and dropping it silently
+		// severed the link the design calls the point of the table — §3.3 of
+		// the knowledge-graph LLD spells char_start as "nullable when
+		// extractor doesn't return offsets", i.e. a span-less mention was
+		// always meant to be recorded.
+		//
+		// The cost was not cosmetic. Deletion paths decide whether an entity
+		// still belongs to a surviving chunk by asking whether a mention
+		// exists, so a missing row makes a live entity look stranded:
+		// production 2026-08-21 held 3,796 entities with no mention, 522 of
+		// them still reachable through an edge citing a live chunk. It causes
+		// over-deletion too — erasing or evicting a DIFFERENT chunk that did
+		// mention the entity destroys a row the survivor legitimately
+		// produced, because nothing links the survivor to it.
+		//
+		// The offsets stay nullable rather than fabricated: char_start is 0
+		// (the column is NOT NULL DEFAULT 0 and part of the primary key, so
+		// it cannot be null), char_end is NULL, and surface is empty. A
+		// consumer can tell "mentioned here, position unknown" from
+		// "mentioned at 12..19", which a fabricated 0..0 span would not
+		// convey. Repeated span-less mentions of the same entity in the same
+		// chunk collapse on the primary key, which the repository already
+		// handles with ON CONFLICT DO NOTHING.
+		if entityIDByCand[i] != "" {
 			mention := &persistence.EntityMention{
 				ChunkID: chunk.ID, EntityID: entityIDByCand[i],
-				CharStart: c.CharStart, Surface: c.Surface,
 			}
-			ce := c.CharEnd
-			mention.CharEnd = &ce
-			if err := p.Mentions.Insert(ctx, mention); err == nil {
-				metrics.MentionsWritten++
+			if c.CharEnd > c.CharStart {
+				ce := c.CharEnd
+				mention.CharStart, mention.CharEnd, mention.Surface = c.CharStart, &ce, c.Surface
+			} else {
+				metrics.MentionsWithoutSpan++
 			}
+			// The error is RETURNED, not discarded. It was swallowed with
+			// `if err == nil`, so a failed insert was indistinguishable from a
+			// candidate that never had one — the same silent severing, from
+			// the other direction. An entity insert failure already fails the
+			// chunk here, and losing the mention now has the same
+			// consequences, so it is treated the same. The chunk keeps
+			// needs_graph_extraction = TRUE and the pass is re-runnable.
+			if err := p.Mentions.Insert(ctx, mention); err != nil {
+				return metrics, fmt.Errorf("insert mention for entity %q in chunk %s: %w",
+					c.Name, chunk.ID, err)
+			}
+			metrics.MentionsWritten++
 		}
 
 		// Build the relationship-stage entity list, deduped.

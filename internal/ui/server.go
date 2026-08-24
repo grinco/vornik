@@ -116,6 +116,15 @@ type ExecutorInterface interface {
 	// cancelled parent doesn't leave its route/delegation/checkpoint
 	// children RUNNING/QUEUED. Idempotent + race-safe; cross-project
 	// callees are handled separately via the CPC ledger.
+	// CancelIfActive tears down a live execution for taskID if the executor
+	// is running one, reporting whether it was. This — not the task's status
+	// — is what decides whether a cancelled task needs its container
+	// stopped: a status read before the transition can be stale, and a task
+	// that reached RUNNING in that window had its row cancelled and its
+	// container left alive (05-scheduler.md §4.7). (false, nil) means
+	// nothing to stop, which is routine; (true, err) means a container is
+	// still running and could not be stopped.
+	CancelIfActive(taskID string) (bool, error)
 	CancelChildren(ctx context.Context, parentTaskID string)
 }
 
@@ -181,6 +190,12 @@ type ArchiveLifecycleSnapshot struct {
 
 // Server handles HTTP requests for the web UI.
 type Server struct {
+	// receiptSigningKey signs the post-eviction receipt so a crafted link
+	// cannot fabricate one. Per-process and random — see
+	// memory_evict_receipt.go for why that is the right lifetime.
+	receiptSigningKey []byte
+	receiptKeyOnce    sync.Once
+
 	taskRepo             persistence.TaskRepository
 	execRepo             persistence.ExecutionRepository
 	executionQualityRepo persistence.ExecutionQualityScoreRepository
@@ -1230,6 +1245,22 @@ func (c RetentionPreviewCounts) Total() int {
 }
 
 // MemoryEvictor is the narrow interface the UI uses for hard-
+// MemoryEvictionResult is what one eviction removed.
+//
+// The eviction tombstones in memory_eviction_audit account for the CHUNKS. They
+// say nothing about what those chunks had derived — knowledge-graph entities and
+// edges, the quarantined pre-ingest copy, the cached embedding — all of which an
+// eviction now also deletes. Once those rows are gone nothing else records that
+// they were covered, so the operator who pressed the button is the last person
+// who can be told.
+type MemoryEvictionResult struct {
+	ChunksEvicted     int
+	GraphEntities     int
+	GraphEdges        int
+	QuarantinedCopies int
+	CachedEmbeddings  int
+}
+
 // eviction operations + the eviction audit log. Implemented by an
 // adapter in the service container that wraps memory.Corrector +
 // memory.Repository. Defined here so the ui package doesn't import
@@ -1237,9 +1268,10 @@ func (c RetentionPreviewCounts) Total() int {
 type MemoryEvictor interface {
 	// HardEvict permanently deletes the named chunks under
 	// projectID, writes one memory_eviction_audit row per
-	// deleted chunk, and returns the number actually deleted
-	// (may be shorter than chunkIDs when some are stale).
-	HardEvict(ctx context.Context, projectID string, chunkIDs []string, reason, evictedBy string) (int, error)
+	// deleted chunk, and reports what was removed — including
+	// the rows DERIVED from those chunks, which the tombstones
+	// do not cover.
+	HardEvict(ctx context.Context, projectID string, chunkIDs []string, reason, evictedBy string) (MemoryEvictionResult, error)
 	// ListEvictionAudits returns recent tombstones for the
 	// project, newest first. Powers the audit panel under
 	// /ui/memory/<project>.

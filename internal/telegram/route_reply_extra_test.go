@@ -197,7 +197,7 @@ func (f *failingInsertMsgRepo) Insert(_ context.Context, _ *persistence.TaskMess
 	return errors.New("db write failed")
 }
 func (f *failingInsertMsgRepo) GetOpenCheckpoint(context.Context, string) (*persistence.TaskMessage, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *failingInsertMsgRepo) MarkCheckpointResolved(context.Context, string, string) error {
 	return nil

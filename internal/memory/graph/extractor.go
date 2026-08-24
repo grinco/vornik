@@ -337,10 +337,11 @@ func validateCandidates(in []Candidate, content string) []Candidate {
 			continue
 		}
 		if c.CharStart < 0 || c.CharEnd < c.CharStart || c.CharEnd > contentLen {
-			// Out-of-range offsets — keep the entity but drop the
-			// span. Mention insertion is offset-keyed; the
-			// orchestrator will skip mention writes for entries
-			// without a valid span.
+			// Out-of-range offsets — keep the entity and drop the span. The
+			// orchestrator still writes the mention row; only the offsets go.
+			// It used to skip the write entirely for these, which severed the
+			// entity→chunk link that deletion paths rely on to tell a live
+			// entity from a stranded one.
 			c.CharStart = 0
 			c.CharEnd = 0
 			c.Surface = ""

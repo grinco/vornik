@@ -94,11 +94,14 @@ func (f *fakeExtractedDocRepo) Get(_ context.Context, id string) (*persistence.E
 	if r, ok := f.byID[id]; ok {
 		return r, nil
 	}
-	return nil, errors.New("not found")
+	// The SENTINEL, not a bare error: callers test with errors.Is, and a
+	// look-alike here is what let the nil-deref crash of 2026-08-19 ship — the
+	// double was STRICTER than production in a way no caller could distinguish.
+	return nil, persistence.ErrNotFound
 }
 
 func (f *fakeExtractedDocRepo) GetByArtifact(_ context.Context, _ string) (*persistence.ExtractedDocument, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *fakeExtractedDocRepo) ListByProject(_ context.Context, _ string, _ int) ([]*persistence.ExtractedDocument, error) {
 	return nil, nil

@@ -1167,6 +1167,55 @@ vornikctl memory audit [flags]
 | `-n`, `--limit` | `100` | Max rows (1-500) |
 | `-p`, `--project` |  | Project ID (required) |
 
+## vornikctl memory backfill-entity-mentions
+
+Reconstruct entity→chunk links the extractor failed to record (dry-run by default)
+
+Restore entity_mentions rows that the graph pipeline never wrote.
+
+WHY THEY ARE MISSING. Until 2026-08-21 the pipeline wrote a mention row only
+when the entity extractor returned a usable character span, and it discarded the
+error when the insert failed. An entity whose offsets the model omitted, or got
+out of range, therefore had no mention row for its entire life — while being
+perfectly live data.
+
+WHY THAT MATTERS. entity_mentions is how every deletion path decides whether an
+entity still belongs to a surviving chunk. An entity with no mention reads as
+stranded even when a live chunk produced it, which cuts both ways: it can be
+pruned as an orphan, and erasing or evicting a DIFFERENT chunk that did mention
+it destroys a row the survivor legitimately produced.
+
+WHY IT IS REPAIRABLE. knowledge_edges.source_chunks records which chunks
+evidenced an edge, and the relationship stage builds edges only from entities
+resolved in that chunk. An edge citing a chunk that still exists is therefore
+direct evidence that the chunk mentioned both endpoints. The link is
+reconstructed from what the pipeline DID record, not invented.
+
+The offsets are not reconstructable and are not guessed: rows land with
+char_start 0 and char_end NULL — exactly what the fixed pipeline writes when the
+extractor returns no span.
+
+Additive only. It inserts rows and deletes nothing, so the worst case if the
+reasoning is wrong is a link that keeps an entity alive rather than one that
+removes it. Idempotent; safe to re-run.
+
+Scoped to entities with NO mention at all. An entity missing one mention among
+several still reads as live to every consumer, so repairing it would change
+nothing and widen a targeted repair into a rewrite of the table.
+
+Examples:
+  vornikctl memory backfill-entity-mentions
+  vornikctl memory backfill-entity-mentions --project assistant --execute
+
+```
+vornikctl memory backfill-entity-mentions [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--execute` | `false` | actually write the rows; without it this is a read-only preview |
+| `--project` |  | limit to one project (default: every project) |
+
 ## vornikctl memory backfill-titles
 
 Generate LLM topic labels for chunks with NULL content_title
@@ -1272,11 +1321,27 @@ Permanently delete memory chunks (GDPR-style hard eviction)
 
 Permanently delete the named project_memory_chunks rows. Cascades
 through memory_embed_queue + memory_embed_dlq + entity_mentions (FK
-ON DELETE CASCADE) and nulls out project_memory_quarantine.
-released_chunk_id where it pointed at the evicted chunk. A per-chunk
-tombstone row lands in memory_eviction_audit so the deletion itself
-is auditable (the GDPR compliance hook — deletion without record of
-the deletion is itself non-compliant).
+ON DELETE CASCADE). A per-chunk tombstone row lands in
+memory_eviction_audit so the deletion itself is auditable (the GDPR
+compliance hook — deletion without record of the deletion is itself
+non-compliant).
+
+It also removes what the evicted chunks DERIVED, which it did not
+until 2026-08-21: knowledge_entities and knowledge_edges have no
+foreign key to chunks, so the entities and edges built from an
+evicted chunk used to survive it and stay queryable — this command
+lists GDPR requests as a use case, so that was a privacy request
+answered with a partial deletion. An entity a SURVIVING chunk still
+reaches is kept; only what loses its last evidence goes.
+
+The quarantined pre-ingest copy is DELETED, not detached. The
+foreign key on project_memory_quarantine.released_chunk_id is
+ON DELETE SET NULL, so evicting a chunk used to null the pointer and
+keep the text — and that table holds content an ingest gate
+REJECTED, which is disproportionately likely to be the sensitive
+kind. The FK rule is unchanged (quarantine rows outlive their chunk
+by design); what changed is that a deletion meant to be permanent
+removes them explicitly.
 
 Eviction is DESTRUCTIVE and IRREVERSIBLE. For "this record is wrong,
 demote it in search" use the soft-refute path (vornikctl via
@@ -1539,6 +1604,67 @@ vornikctl memory prune-candidates [flags]
 | `--limit` | `100` | Max candidates to return |
 | `--since` | `720h0m0s` | Retrieval lookback window (default 30d) |
 | `-p`, `--project` |  | Project ID (required) |
+
+## vornikctl memory prune-orphaned-entities
+
+Delete knowledge-graph entities left behind by past deletions (dry-run by default)
+
+Remove knowledge_entities that no chunk mentions any more.
+
+WHY THESE EXIST. Deleting a memory chunk cascades entity_mentions by foreign
+key and stops. knowledge_entities and knowledge_edges have no foreign key to
+chunks at all, so every deletion that has ever run — retention pruning,
+evictions, and Article 17 erasures before 2026-08-21 — left the entities and
+edges derived from those chunks in place. Measured on production 2026-08-21:
+3,795 stranded entities, 456 of type PERSON and 254 VENDOR, all carrying an
+embedding and therefore all still reachable by semantic search.
+
+Erasure now removes what it derives, but a prospective fix does not clean a
+spill that already happened. This command is that cleanup.
+
+WHY A COMMAND AND NOT A MIGRATION. A migration that deletes personal data
+leaves no operator decision and no audit trail, and "the upgrade did it" is not
+an answer to a regulator. So this is deliberate, previewable and audited:
+--execute writes an admin_audit row naming the operator and the scope.
+
+WHY NOT PART OF AN ERASURE. An erasure removes what THAT request derived. These
+rows cannot be attributed to any request — some may predate mention tracking, or
+have been created by the entity resolver without mentions — so sweeping them
+under a subject's request would put a false claim in the audit trail.
+
+Dry-run by DEFAULT. It deletes personal data, and the operator sees the count
+and its composition before anything happens.
+
+Deletes in batches. The row lock this needs is the same one an ingest takes to
+record a mention, so locking a project's whole stranded population at once would
+stall ingestion for the length of the run. Candidates another transaction holds
+are skipped rather than waited on — a locked row is one something is actively
+referencing — and a re-run picks up anything skipped. Partial progress is real
+progress: a run that fails part-way still audits what it removed.
+
+An entity is "stranded" only when NO surviving chunk reaches it — neither
+through entity_mentions nor through a knowledge_edge citing a chunk that still
+exists. The second route matters: the graph pipeline writes a mention only when
+an extracted candidate carries a valid character span, so live entities can and
+do exist with no mention row. Measured on production 2026-08-21, 522 of 3,796
+mention-less entities were still reachable through a live edge.
+
+Deleting an entity also removes its edges by foreign key cascade; the count is
+reported.
+
+Examples:
+  vornikctl memory prune-orphaned-entities
+  vornikctl memory prune-orphaned-entities --project assistant
+  vornikctl memory prune-orphaned-entities --execute
+
+```
+vornikctl memory prune-orphaned-entities [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--execute` | `false` | actually delete; without it this is a read-only preview |
+| `--project` |  | limit to one project (default: every project) |
 
 ## vornikctl memory purge-producer-failed
 

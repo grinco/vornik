@@ -21,10 +21,10 @@ type mockTaskRepository struct {
 func (m *mockTaskRepository) Ping(ctx context.Context) error                           { return nil }
 func (m *mockTaskRepository) Create(ctx context.Context, task *persistence.Task) error { return nil }
 func (m *mockTaskRepository) Get(ctx context.Context, id string) (*persistence.Task, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (m *mockTaskRepository) GetByIdempotencyKey(ctx context.Context, projectID, idempotencyKey string) (*persistence.Task, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (m *mockTaskRepository) Update(ctx context.Context, task *persistence.Task) error { return nil }
 func (m *mockTaskRepository) Delete(ctx context.Context, id string) error              { return nil }

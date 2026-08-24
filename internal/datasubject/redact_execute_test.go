@@ -99,7 +99,9 @@ func (r *recordingDeleter) DeleteRow(_ context.Context, _ LinkableTable, id stri
 
 type noArtifacts struct{}
 
-func (noArtifacts) EraseArtifact(context.Context, string) (int, error) { return 0, nil }
+func (noArtifacts) EraseArtifact(context.Context, string) (ArtifactErasureCounts, error) {
+	return ArtifactErasureCounts{}, nil
+}
 
 // redactPlan builds a verified plan with the given chunks marked for redaction.
 func redactPlan(chunkIDs ...string) *ErasurePlan {

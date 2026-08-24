@@ -85,6 +85,18 @@ type Service struct {
 	// deleting the wrong tree.
 	ArtifactRoot string
 
+	// Derived removes what the erased chunks DERIVED: knowledge-graph entities
+	// and edges, and the pre-ingest copies in project_memory_quarantine. Nil for
+	// retention callers, which prune rather than erase and must not hard-delete
+	// graph rows — see RequestID.
+	Derived DerivedStore
+
+	// RequestID is the Art 17 request authorising the hard deletes. Required
+	// whenever Derived is set: these are the only legitimate graph deletions in
+	// the system, so the authorisation travels as a value rather than as a
+	// convention.
+	RequestID string
+
 	// removeAll is os.RemoveAll unless a test injects a failure.
 	removeAll func(string) error
 }
@@ -141,6 +153,13 @@ type Result struct {
 	// ArtifactRowDeleted records whether the artifacts row itself went. False
 	// after a plain Erase, which deliberately retains it.
 	ArtifactRowDeleted bool
+
+	// Derived counts rows removed BEYOND the chunks — graph entities, graph
+	// edges, and quarantined pre-ingest copies. Reported because once they are
+	// gone the report is the only evidence the erasure covered them, and an
+	// erasure that silently omitted derived rows is how 3,795 entities
+	// accumulated in production unnoticed.
+	Derived DerivedCounts
 }
 
 // Plan collects everything an erasure would touch, without touching it.
@@ -211,6 +230,22 @@ func (s *Service) Erase(ctx context.Context, artifactID string) (*Result, error)
 		res.DirectoriesRemoved++
 	}
 
+	// Capture what the chunks derived BEFORE any of them goes. Deleting a chunk
+	// cascades entity_mentions, so afterwards there is nothing left to compute
+	// this from — the same collect-first shape DeleteByExtractedDocument
+	// already uses for the embedding cache.
+	docIDs := make([]string, 0, len(plan.Documents))
+	for _, d := range plan.Documents {
+		docIDs = append(docIDs, d.ID)
+	}
+	var captured Derivation
+	if s.Derived != nil {
+		captured, err = s.Derived.CaptureDerivation(ctx, artifactID, docIDs)
+		if err != nil {
+			return nil, fmt.Errorf("erasure: capture derived data for %s: %w — NOTHING has been deleted from the database, so the erasure can be retried safely", artifactID, err)
+		}
+	}
+
 	// Rows only after the bytes are gone.
 	for _, d := range plan.Documents {
 		n, err := s.Chunks.DeleteByExtractedDocument(ctx, d.ID)
@@ -229,6 +264,15 @@ func (s *Service) Erase(ctx context.Context, artifactID string) (*Result, error)
 		return nil, fmt.Errorf("erasure: delete chunks linked to artifact %s: %w", artifactID, err)
 	}
 	res.ChunksDeleted += n
+
+	// Derived data last: the entity sweep's keep-or-delete decision is made
+	// against the state AFTER the chunks are gone, re-checked inside the store's
+	// own transaction so a concurrently-ingested mention is seen.
+	derived, err := eraseDerived(ctx, s.Derived, s.RequestID, artifactID, captured, res.ChunksDeleted)
+	if err != nil {
+		return nil, err
+	}
+	res.Derived = derived
 	return res, nil
 }
 

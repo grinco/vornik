@@ -65,9 +65,17 @@ func (v *VornikSystem) Name() string { return "vornik" }
 // runner treats both systems identically.
 func (v *VornikSystem) Prepare(_ context.Context, _ string) error { return nil }
 
-// Teardown is likewise a no-op here. Scope cleanup happens once per run at the
-// database level (the destructive-run guard in §5.8 is what makes that safe),
-// not per item — 500 per-item deletions would dominate the run.
+// Teardown is likewise a no-op, and deliberately stays one. The per-run clear is
+// database-level and happens ONCE before the first ingest
+// (membench.ClearBenchmarkStore), not per scope — 500 per-item deletions would
+// dominate the run.
+//
+// This comment previously asserted that cleanup "happens once per run at the
+// database level". It did not: nothing deleted anything, and this comment was
+// one of four statements agreeing that a wipe existed (the others being §5.8,
+// the --i-know-this-wipes flag name, and CheckDestructiveTarget's own refusal
+// text). A comment describing a mechanism that does not exist is worse than
+// silence, because it stops the next person looking.
 func (v *VornikSystem) Teardown(_ context.Context, _ string) error { return nil }
 
 // Config reports the effective configuration for the comparability key. Only
@@ -421,6 +429,17 @@ func (v *VornikSystem) EmbeddingReadiness(ctx context.Context) (float64, error) 
 	return *reply.EmbeddingReadiness, nil
 }
 
+// WriteTargetProject reports the project the companion key is bound to, for the
+// per-run clear. Same source and same reasoning as WriteTargetDatabase: the
+// daemon is asked, never told.
+func (v *VornikSystem) WriteTargetProject(ctx context.Context) (string, error) {
+	var reply whoamiReply
+	if err := v.call(ctx, "whoami", map[string]any{}, &reply); err != nil {
+		return "", fmt.Errorf("whoami: %w", err)
+	}
+	return reply.Project, nil
+}
+
 func (v *VornikSystem) WriteTargetDatabase(ctx context.Context) (string, error) {
 	var reply whoamiReply
 	if err := v.call(ctx, "whoami", map[string]any{}, &reply); err != nil {
@@ -436,7 +455,18 @@ func (v *VornikSystem) WriteTargetDatabase(ctx context.Context) (string, error) 
 // embedded unless absence has its own representation. Treating absence as ready is
 // how a cold corpus came to be scored as warm.
 type whoamiReply struct {
-	Database           string   `json:"database"`
+	Database string `json:"database"`
+	// Project is the project the companion key is bound to. Parsed for the
+	// per-run clear, which needs to know WHICH project's store to reset and
+	// must learn it from the daemon rather than from a flag an operator could
+	// mistype — the same reasoning that makes VerifyWriteTarget ask rather
+	// than trust the typed database name.
+	// The daemon's whoami emits "project_id", NOT "project". Getting this tag
+	// wrong is silent — encoding/json leaves the field empty rather than
+	// erroring — and it surfaced only as the clear refusing every run with
+	// "the daemon reported an EMPTY project". Verified against a live whoami
+	// payload 2026-08-21.
+	Project            string   `json:"project_id"`
 	EmbeddingReadiness *float64 `json:"embedding_readiness"`
 	ChunksTotal        int64    `json:"memory_chunks_total"`
 	ChunksEmbedded     int64    `json:"memory_chunks_embedded"`

@@ -186,6 +186,48 @@ tools=$(tool_definitions)
 assert_contains "current_time is always advertised" "$tools" '"name": "current_time"'
 teardown
 
+# ---------- the third advertisement path (2026-08-22) ----------
+#
+# tool_definitions() appended $extras_ungated UNCONDITIONALLY, bypassing the
+# advertisement filter entirely — a third path beside the builtin definition
+# list and $extras_gated. skill_fetch rode it, commented "Ungated (like
+# memory_search)"; memory_search had been re-gated on 2026-08-16 precisely so
+# advertisement would follow execution, and skill_fetch was left behind.
+#
+# It was described as harmless because agenttools.alwaysGranted puts skill_fetch
+# on every role's effective allowlist. That holds only for input the daemon
+# built. allowed_builtin_tools_json falls back to
+# ["file_read","file_write","run_shell","current_time"] when
+# .config.permissions.allowedTools is absent, and that fallback has no
+# skill_fetch — so in exactly that state the tool was ADVERTISED and REFUSED,
+# which is the see-but-cannot-call the fail-closed flip exists to prevent.
+
+# skill_fetch is advertised when the role's effective allowlist carries it,
+# which on the daemon path it always does (withAlwaysGrantedTools).
+setup '["file_read","skill_fetch","current_time"]'
+export VORNIK_API_URL="http://daemon.invalid"
+tools=$(tool_definitions)
+assert_contains "skill_fetch advertised when granted" "$tools" '"name": "skill_fetch"'
+teardown
+
+# ...and NOT advertised when it is absent from the allowlist, which is the state
+# the container's own fallback produces. Advertisement must follow execution.
+setup '["file_read","current_time"]'
+export VORNIK_API_URL="http://daemon.invalid"
+tools=$(tool_definitions)
+assert_not_contains "skill_fetch NOT advertised when ungranted" "$tools" '"name": "skill_fetch"'
+teardown
+
+# The ungated append is filtered against the registry. An extra that is not in
+# UNGATED_TOOL_NAMES_JSON must not reach the model just because it was appended
+# to extras_ungated — that is the bypass, independent of which tool rides it.
+setup '["file_read","current_time"]'
+export VORNIK_API_URL="http://daemon.invalid"
+UNGATED_TOOL_NAMES_JSON='["tool_search"]'
+tools=$(tool_definitions)
+assert_not_contains "unregistered ungated extra is NOT advertised" "$tools" '"name": "tool_result_read"'
+teardown
+
 # ---------- summary ----------
 echo ""
 echo "================================"

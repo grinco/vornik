@@ -83,12 +83,16 @@ func (e *Executor) RetryFromStep(ctx context.Context, executionID, stepID string
 		ctx = context.Background()
 	}
 
+	// ErrNotFound and a nil row are the same event with two spellings:
+	// ExecutionRepository.Get is MissErrNotFound, so production only ever takes
+	// the first. Both route to the specific message rather than the generic
+	// wrap, because "this id does not exist" is what the caller needs to read.
 	exec, err := e.execRepo.Get(ctx, executionID)
+	if errors.Is(err, persistence.ErrNotFound) || (err == nil && exec == nil) {
+		return fmt.Errorf("retry-from-step: execution %s not found", executionID)
+	}
 	if err != nil {
 		return fmt.Errorf("retry-from-step: load execution %s: %w", executionID, err)
-	}
-	if exec == nil {
-		return fmt.Errorf("retry-from-step: execution %s not found", executionID)
 	}
 
 	switch exec.Status {
@@ -121,12 +125,15 @@ func (e *Executor) RetryFromStep(ctx context.Context, executionID, stepID string
 	}
 	e.mu.Unlock()
 
+	// Same again: an execution row pointing at a deleted task is an ORPHAN, and
+	// saying so — with both ids — is the actionable diagnostic. Wrapping a bare
+	// "not found" loses which execution was orphaned.
 	task, err := e.taskRepo.Get(ctx, exec.TaskID)
+	if errors.Is(err, persistence.ErrNotFound) || (err == nil && task == nil) {
+		return fmt.Errorf("retry-from-step: task %s not found for execution %s", exec.TaskID, executionID)
+	}
 	if err != nil {
 		return fmt.Errorf("retry-from-step: load task %s: %w", exec.TaskID, err)
-	}
-	if task == nil {
-		return fmt.Errorf("retry-from-step: task %s not found for execution %s", exec.TaskID, executionID)
 	}
 
 	// Compute the supersede cutoff BEFORE we mutate state. The cutoff

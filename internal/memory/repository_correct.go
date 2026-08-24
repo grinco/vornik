@@ -6,6 +6,11 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
+
+	"vornik.io/vornik/internal/graphsweep"
+	"vornik.io/vornik/internal/persistence"
 )
 
 // ListChunkIDsByFailedProducer returns the IDs of every chunk in projectID
@@ -201,14 +206,66 @@ type EvictionAuditRow struct {
 	ProducerRole string
 }
 
+// EvictionResult is what one hard eviction removed.
+//
+// The derived counts are here for the same reason they are on the Article 17
+// erasure result: once these rows are gone, the report is the only evidence the
+// eviction covered them. An eviction that listed chunks and said nothing about
+// what those chunks had derived is how 3,795 knowledge-graph entities
+// accumulated in production behind deletions reported as complete.
+type EvictionResult struct {
+	// Audit is one row per chunk actually deleted. May be shorter than the
+	// requested set when ids were stale, wrong-project, or already evicted.
+	Audit []EvictionAuditRow
+	// Derived counts knowledge entities and edges removed with the chunks.
+	Derived graphsweep.Counts
+	// QuarantinedCopiesDeleted counts project_memory_quarantine rows removed —
+	// the pre-ingest copy of the chunk's full text.
+	QuarantinedCopiesDeleted int
+	// EmbeddingCacheKeysDeleted counts embedding_cache rows removed: the vector
+	// derived from the evicted text, keyed by that text's hash.
+	EmbeddingCacheKeysDeleted int
+	// RunID identifies the memory_eviction_runs row this eviction wrote — the
+	// DURABLE record of everything above. The per-chunk tombstones account for
+	// the chunks; until 2026-08-21 nothing recorded what those chunks derived.
+	RunID string
+}
+
+// Count is how many chunks were evicted.
+func (r *EvictionResult) Count() int {
+	if r == nil {
+		return 0
+	}
+	return len(r.Audit)
+}
+
 // HardEvict permanently deletes chunkIDs from project_memory_chunks,
 // cascading through memory_embed_queue + memory_embed_dlq +
-// entity_mentions (all FK ON DELETE CASCADE) and nulling out
-// project_memory_quarantine.released_chunk_id where it pointed at
-// the evicted chunk. memory_retrieval_audit.chunk_ids is an array
+// entity_mentions (all FK ON DELETE CASCADE).
+// memory_retrieval_audit.chunk_ids is an array
 // column with no FK, so historical retrieval rows retain the
 // original chunk_id — correct: the audit trail should NOT pretend
 // the chunk never existed.
+//
+// IT ALSO REMOVES WHAT THE CHUNKS DERIVED, which it did not until 2026-08-21.
+// A chunk delete cascades entity_mentions and stops: knowledge_entities and
+// knowledge_edges have no foreign key to chunks, so the entities and edges
+// built from an evicted chunk survived it. This command's own help names
+// "GDPR / privacy-driven 'forget this' requests" as a use case, so an eviction
+// that left the derived rows queryable was answering a privacy request with a
+// partial deletion. The sweep is shared with the Article 17 path
+// (internal/graphsweep) rather than reimplemented — the keep rule is subtle
+// enough that two copies would agree until they didn't.
+//
+// The quarantined pre-ingest copy is DELETED, not detached. The foreign key on
+// project_memory_quarantine.released_chunk_id is ON DELETE SET NULL, so before
+// this change an eviction nulled the pointer and kept the text — and the text
+// in that table is content an ingest gate REJECTED, which is
+// disproportionately likely to be the sensitive kind. The FK rule stays SET
+// NULL, because quarantine rows outlive their chunk by design; what changes is
+// that a deletion meant to be permanent removes them explicitly. This happens
+// BEFORE the chunk delete, since that delete would otherwise null the only
+// handle onto those rows.
 //
 // One memory_eviction_audit row is written per evicted chunk,
 // carrying a denormalised snapshot of the chunk's content_hash /
@@ -227,12 +284,9 @@ type EvictionAuditRow struct {
 // back — the chunk row survives so the operator can retry. If the
 // DELETE fails, the audit rows roll back too — no "we evicted X"
 // audit ghost for a chunk that's still there.
-func (r *Repository) HardEvict(ctx context.Context, projectID string, chunkIDs []string, reason, evictedBy string) ([]EvictionAuditRow, error) {
-	if r == nil || r.db == nil {
-		return nil, fmt.Errorf("memory repo: not configured")
-	}
-	if projectID == "" {
-		return nil, fmt.Errorf("memory repo: project id required")
+func (r *Repository) HardEvict(ctx context.Context, projectID string, chunkIDs []string, reason, evictedBy string) (*EvictionResult, error) {
+	if err := r.checkEvictArgs(projectID); err != nil {
+		return nil, err
 	}
 	if len(chunkIDs) == 0 {
 		return nil, nil
@@ -249,12 +303,100 @@ func (r *Repository) HardEvict(ctx context.Context, projectID string, chunkIDs [
 		}
 	}()
 
-	// Snapshot the chunks we're about to delete so the audit row
-	// gets denormalised values. SELECT ... FOR UPDATE locks the
-	// rows against concurrent edits between this read and the
-	// DELETE below — important because validation_status flips
-	// (refuted, superseded) racing the eviction would otherwise
-	// silently lose the snapshot.
+	// The run header is written FIRST because the tombstones foreign-key to it
+	// and the FK is not deferred — a child naming a parent that does not exist
+	// yet is rejected immediately. Its outcome counts are filled in at the end,
+	// when they are known; both statements share this transaction, so a failure
+	// leaves neither.
+	runID := persistence.GenerateID("evrun")
+	if err := openEvictionRun(ctx, tx, runID, projectID, len(chunkIDs), reason, evictedBy); err != nil {
+		return nil, err
+	}
+
+	audit, err := snapshotChunksForEviction(ctx, tx, projectID, chunkIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(audit) == 0 {
+		// Nothing to delete — every ID was stale or wrong-project. Commit
+		// anyway: the transaction releases its (empty) lock, and the run header
+		// written above is KEPT deliberately. An operator asking to erase ids
+		// that no longer exist is still an action on personal data worth
+		// recording, and the row reads truthfully — chunks_requested set, every
+		// outcome count zero.
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("memory repo: commit empty eviction: %w", err)
+		}
+		committed = true
+		return &EvictionResult{}, nil
+	}
+
+	if err := writeEvictionAudits(ctx, tx, projectID, runID, audit, reason, evictedBy); err != nil {
+		return nil, err
+	}
+
+	auditedIDs := make([]string, 0, len(audit))
+	for _, row := range audit {
+		auditedIDs = append(auditedIDs, row.ChunkID)
+	}
+
+	capturedEntities, cacheKeys, quarantined, err :=
+		collectAndPurgePreChunkDelete(ctx, tx, projectID, auditedIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := deleteEvictedChunks(ctx, tx, projectID, auditedIDs); err != nil {
+		return nil, err
+	}
+
+	if err := deleteCachedVectors(ctx, tx, cacheKeys); err != nil {
+		return nil, err
+	}
+
+	// Derived rows last, so the keep rule is evaluated against the state AFTER
+	// the chunks are gone. Same transaction: a partial eviction that removed
+	// chunks and left their entities is the condition being fixed, so it must
+	// not be reachable through a failure either.
+	derived, err := graphsweep.Sweep(ctx, tx, auditedIDs, capturedEntities)
+	if err != nil {
+		return nil, fmt.Errorf("memory repo: %w", err)
+	}
+
+	res := &EvictionResult{
+		Audit:                     audit,
+		Derived:                   derived,
+		QuarantinedCopiesDeleted:  quarantined,
+		EmbeddingCacheKeysDeleted: len(cacheKeys),
+		RunID:                     runID,
+	}
+	if err := closeEvictionRun(ctx, tx, runID, res); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("memory repo: commit eviction: %w", err)
+	}
+	committed = true
+	return res, nil
+}
+
+// snapshotChunksForEviction reads the denormalised values the audit rows carry,
+// and LOCKS the chunks against concurrent edits between this read and the
+// delete — a validation_status flip (refuted, superseded) racing the eviction
+// would otherwise silently lose the snapshot.
+//
+// ORDER BY id is not cosmetic. Two evictions whose chunk sets overlap would
+// otherwise lock those rows in whatever order the IN-list gave them and could
+// deadlock on each other; ordering makes them queue. The sweep orders its
+// entity lock for the same reason, and both paths take chunks before entities,
+// so the two tables are always acquired in one direction.
+//
+// Rows that come back are the ones that exist AND belong to projectID: the
+// project filter is the IDOR guard, so a chunk id from another project is never
+// touched. The returned slice may therefore be shorter than chunkIDs.
+func snapshotChunksForEviction(
+	ctx context.Context, tx *sql.Tx, projectID string, chunkIDs []string,
+) ([]EvictionAuditRow, error) {
 	placeholders := make([]string, len(chunkIDs))
 	args := make([]any, 0, len(chunkIDs)+1)
 	args = append(args, projectID)
@@ -262,15 +404,15 @@ func (r *Repository) HardEvict(ctx context.Context, projectID string, chunkIDs [
 		placeholders[i] = fmt.Sprintf("$%d", i+2)
 		args = append(args, id)
 	}
-	snapshotQuery := fmt.Sprintf(`
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
 		SELECT id, COALESCE(content_hash, ''), COALESCE(source_name, ''),
 		       COALESCE(content_class, ''), COALESCE(producer_role, '')
 		FROM project_memory_chunks
 		WHERE project_id = $1
 		  AND id IN (%s)
+		ORDER BY id
 		FOR UPDATE
-	`, strings.Join(placeholders, ","))
-	rows, err := tx.QueryContext(ctx, snapshotQuery, args...)
+	`, strings.Join(placeholders, ",")), args...)
 	if err != nil {
 		return nil, fmt.Errorf("memory repo: snapshot chunks: %w", err)
 	}
@@ -290,64 +432,180 @@ func (r *Repository) HardEvict(ctx context.Context, projectID string, chunkIDs [
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("memory repo: snapshot iteration: %w", err)
 	}
-	if len(audit) == 0 {
-		// Nothing to delete — every ID was stale or wrong-project.
-		// Commit the empty transaction to release the (empty) lock.
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("memory repo: commit empty eviction: %w", err)
-		}
-		committed = true
-		return nil, nil
-	}
+	return audit, nil
+}
 
-	// Write audit rows BEFORE the DELETE. If the audit insert fails
-	// the chunk survives, and the operator can retry. (If we wrote
-	// the audit AFTER, a panic between DELETE and INSERT would lose
-	// the audit trail entirely.)
-	for _, row := range audit {
-		auditID := fmt.Sprintf("evict_%d_%s", time.Now().UnixNano(), row.ChunkID)
-		const insertAudit = `
-INSERT INTO memory_eviction_audit
-    (id, project_id, chunk_id, content_hash, source_name,
-     content_class, producer_role, reason, evicted_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-`
-		if _, err := tx.ExecContext(ctx, insertAudit,
-			auditID, projectID, row.ChunkID, row.ContentHash, row.SourceName,
-			row.ContentClass, row.ProducerRole, reason, evictedBy,
-		); err != nil {
-			return nil, fmt.Errorf("memory repo: insert eviction audit: %w", err)
+// evictionCacheKeys collects the embedding_cache keys for the chunks about to
+// be evicted, BEFORE they go — the key is the CONTEXTUALISED embed input's
+// hash, which is unreadable once the row is gone.
+//
+// The cached vector is derived from the very text the operator asked to
+// destroy, and nothing else removes it: the retention sweeper prunes
+// embedding_cache by last_hit_at age and only when
+// retention.embedding_cache_days is set, which is cold-entry pruning, not
+// deletion. DeleteByArtifact and DeleteByExtractedDocument have cleaned it
+// since slice 5c; eviction is the third path and was not wired to it, so a
+// deletion documented as permanent left the vector behind.
+func evictionCacheKeys(
+	ctx context.Context, tx *sql.Tx, projectID string, chunkIDs []string,
+) ([]string, error) {
+	keys, err := chunkCacheKeys(ctx, tx, `
+		SELECT embed_input_hash, source_name, content, content_hash
+		FROM project_memory_chunks
+		WHERE project_id = $1 AND id = ANY($2)`, projectID, pq.Array(chunkIDs))
+	if err != nil {
+		return nil, fmt.Errorf("memory repo: read chunk cache keys for eviction: %w", err)
+	}
+	return keys, nil
+}
+
+// deleteCachedVectors removes the collected embedding_cache rows, in the same
+// transaction as the chunk delete: the chunk and its vector go together or
+// neither goes.
+func deleteCachedVectors(ctx context.Context, tx *sql.Tx, keys []string) error {
+	for _, h := range keys {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM embedding_cache WHERE content_hash = $1`, h); err != nil {
+			return fmt.Errorf("memory repo: evict embedding cache: %w", err)
 		}
 	}
+	return nil
+}
 
-	// Now delete the chunks. FK CASCADE handles memory_embed_queue,
-	// memory_embed_dlq, entity_mentions; project_memory_quarantine
-	// gets released_chunk_id nulled where it referenced these.
-	auditedIDs := make([]string, 0, len(audit))
-	for _, row := range audit {
-		auditedIDs = append(auditedIDs, row.ChunkID)
+// checkEvictArgs refuses an eviction that cannot be scoped. The project filter
+// is the IDOR guard, so an absent project id would widen the delete, not narrow
+// it.
+func (r *Repository) checkEvictArgs(projectID string) error {
+	if r == nil || r.db == nil {
+		return fmt.Errorf("memory repo: not configured")
 	}
-	delPlaceholders := make([]string, len(auditedIDs))
-	delArgs := make([]any, 0, len(auditedIDs)+1)
-	delArgs = append(delArgs, projectID)
-	for i, id := range auditedIDs {
-		delPlaceholders[i] = fmt.Sprintf("$%d", i+2)
-		delArgs = append(delArgs, id)
+	if projectID == "" {
+		return fmt.Errorf("memory repo: project id required")
 	}
-	deleteQuery := fmt.Sprintf(`
+	return nil
+}
+
+// collectAndPurgePreChunkDelete does the three things that MUST happen while
+// the chunks still exist: capture the entities they mention (entity_mentions
+// cascades with the chunk, so afterwards nothing can say which entities this
+// eviction was responsible for), read the embedding-cache keys (the key is the
+// contextualised embed input's hash, unreadable once the row is gone), and
+// delete the quarantined copies (whose only pointer the chunk delete nulls).
+//
+// Grouped because they share that one constraint. Anything moved out of here to
+// after the chunk delete stops working SILENTLY rather than failing, which is
+// how each of them came to be missing in the first place.
+func collectAndPurgePreChunkDelete(
+	ctx context.Context, tx *sql.Tx, projectID string, chunkIDs []string,
+) (entities, cacheKeys []string, quarantined int, err error) {
+	entities, err = graphsweep.CaptureEntities(ctx, tx, chunkIDs)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("memory repo: %w", err)
+	}
+	cacheKeys, err = evictionCacheKeys(ctx, tx, projectID, chunkIDs)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	quarantined, err = graphsweep.DeleteQuarantinedForChunks(ctx, tx, chunkIDs)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("memory repo: %w", err)
+	}
+	return entities, cacheKeys, quarantined, nil
+}
+
+// openEvictionRun writes the run header at the START of an eviction, because
+// the tombstones foreign-key to it. Outcome counts land in closeEvictionRun.
+func openEvictionRun(
+	ctx context.Context, tx *sql.Tx, runID, projectID string,
+	requested int, reason, evictedBy string,
+) error {
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO memory_eviction_runs
+    (id, project_id, chunks_requested, reason, evicted_by)
+VALUES ($1, $2, $3, $4, $5)
+`, runID, projectID, requested, reason, evictedBy); err != nil {
+		return fmt.Errorf("memory repo: open eviction run: %w", err)
+	}
+	return nil
+}
+
+// closeEvictionRun records what the operation actually removed, including what
+// it removed BEYOND the chunks.
+//
+// In the SAME transaction as the deletes, and that is the point: a deletion of
+// personal data with no record of the deletion is itself non-compliant, and a
+// record of a deletion that did not happen is a false claim. Neither is
+// reachable if they commit together.
+//
+// A run header rather than columns on each tombstone, because the derived sweep
+// runs once over the union of the evicted chunks — repeating a per-operation
+// count on per-chunk rows would be durable and wrong, reporting the derived
+// rows twice when summed.
+func closeEvictionRun(ctx context.Context, tx *sql.Tx, runID string, res *EvictionResult) error {
+	if _, err := tx.ExecContext(ctx, `
+UPDATE memory_eviction_runs
+SET chunks_evicted             = $2,
+    graph_entities_deleted     = $3,
+    graph_edges_deleted        = $4,
+    quarantined_copies_deleted = $5,
+    cached_embeddings_deleted  = $6
+WHERE id = $1
+`, runID, len(res.Audit), res.Derived.Entities, res.Derived.Edges,
+		res.QuarantinedCopiesDeleted, res.EmbeddingCacheKeysDeleted); err != nil {
+		return fmt.Errorf("memory repo: close eviction run: %w", err)
+	}
+	return nil
+}
+
+// deleteEvictedChunks removes the chunks themselves. FK CASCADE handles
+// memory_embed_queue, memory_embed_dlq and entity_mentions; the caller has
+// already captured what those mentions pointed at, because they do not survive
+// this statement.
+func deleteEvictedChunks(
+	ctx context.Context, tx *sql.Tx, projectID string, chunkIDs []string,
+) error {
+	placeholders := make([]string, len(chunkIDs))
+	args := make([]any, 0, len(chunkIDs)+1)
+	args = append(args, projectID)
+	for i, id := range chunkIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		args = append(args, id)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		DELETE FROM project_memory_chunks
 		WHERE project_id = $1
 		  AND id IN (%s)
-	`, strings.Join(delPlaceholders, ","))
-	if _, err := tx.ExecContext(ctx, deleteQuery, delArgs...); err != nil {
-		return nil, fmt.Errorf("memory repo: delete chunks: %w", err)
+	`, strings.Join(placeholders, ",")), args...); err != nil {
+		return fmt.Errorf("memory repo: delete chunks: %w", err)
 	}
+	return nil
+}
 
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("memory repo: commit eviction: %w", err)
+// writeEvictionAudits records the tombstones BEFORE the delete. If the audit
+// insert fails the chunk survives and the operator can retry; writing the audit
+// afterwards would let a crash between DELETE and INSERT lose the trail
+// entirely, and a deletion with no record of the deletion is itself
+// non-compliant.
+func writeEvictionAudits(
+	ctx context.Context, tx *sql.Tx, projectID, runID string,
+	audit []EvictionAuditRow, reason, evictedBy string,
+) error {
+	const insertAudit = `
+INSERT INTO memory_eviction_audit
+    (id, project_id, chunk_id, content_hash, source_name,
+     content_class, producer_role, reason, evicted_by, run_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+`
+	for _, row := range audit {
+		auditID := fmt.Sprintf("evict_%d_%s", time.Now().UnixNano(), row.ChunkID)
+		if _, err := tx.ExecContext(ctx, insertAudit,
+			auditID, projectID, row.ChunkID, row.ContentHash, row.SourceName,
+			row.ContentClass, row.ProducerRole, reason, evictedBy, runID,
+		); err != nil {
+			return fmt.Errorf("memory repo: insert eviction audit: %w", err)
+		}
 	}
-	committed = true
-	return audit, nil
+	return nil
 }
 
 // EvictionAuditEntry mirrors a single memory_eviction_audit row for

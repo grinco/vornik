@@ -192,7 +192,40 @@ type BeginResult struct {
 	// review round-2 N1 — the CLI is a verifier, not a success light).
 	Resource string
 	Scopes   []string
-	State    string
+	// DroppedScopes are scopes the vendor advertises that this request
+	// deliberately did NOT ask for, because a daemon-scope server may not
+	// inherit write access implicitly (§12.2). Empty on every other path.
+	//
+	// It exists because the rule was invisible. The CLI prints the FINAL scope
+	// list, so a downgraded ask looked exactly like a vendor that offers only
+	// reads — an operator connected Atlassian on 2026-08-22, received a
+	// read-only grant, and concluded the vendor had no createJiraIssue when in
+	// fact we had declined to ask for it. A withheld capability has to say so.
+	DroppedScopes []string
+	State         string
+}
+
+// ScopesDowngraded reports whether this request asked for less than the vendor
+// advertises because of the daemon-scope rule.
+func (r BeginResult) ScopesDowngraded() bool { return len(r.DroppedScopes) > 0 }
+
+// DroppedScopeNotice is the operator-facing explanation for a downgraded ask,
+// or "" when nothing was withheld.
+//
+// It names both remedies deliberately. Telling someone that two scopes were
+// withheld, without telling them the two ways to get them, converts a silent
+// failure into a visible dead end — which is barely an improvement.
+func DroppedScopeNotice(server string, dropped []string) string {
+	if len(dropped) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"NOTE: %d scope(s) the server advertises were NOT requested: %s.\n"+
+			"      A daemon-scope grant is reachable from EVERY project, so write scopes\n"+
+			"      are never inherited from the vendor's default list. To grant them:\n"+
+			"        - name them in auth.scopes for %q in config.yaml (all projects), or\n"+
+			"        - connect this server for one project: --project <id>  (confined)\n",
+		len(dropped), strings.Join(dropped, ", "), server)
 }
 
 // RedirectURI is the single redirect URI for this deployment.
@@ -253,12 +286,15 @@ func (c *Connector) Begin(ctx context.Context, ref ServerRef, connectedBy string
 		// so an over-broad grant is visible rather than implicit.
 		scopes = md.ScopesSupported
 	}
+	var dropped []string
 	if ref.ProjectID == "" {
 		// §12.2, hardened from "warning only": a daemon-scope token is
 		// reachable from EVERY project, so write scopes there must be named
 		// explicitly in config rather than inherited from the PRM default.
 		if len(ref.Auth.Scopes) == 0 {
 			scopes = readOnlyScopes(md.ScopesSupported)
+			// Record what was withheld. The rule stays; the silence does not.
+			dropped = missingScopes(md.ScopesSupported, scopes)
 		}
 	}
 
@@ -292,10 +328,24 @@ func (c *Connector) Begin(ctx context.Context, ref ServerRef, connectedBy string
 	}
 	c.mu.Unlock()
 
+	if len(dropped) > 0 {
+		// Warn as well as return it: the CLI is one consumer, and a control-plane
+		// or UI flow that forgets to render DroppedScopes would restore exactly
+		// the silence this exists to end.
+		c.Logger.Warn().
+			Str("server", ref.ServerName).
+			Strs("withheld_scopes", dropped).
+			Strs("requested_scopes", scopes).
+			Msg("mcp oauth: daemon-scope request withheld advertised scopes — write scopes are " +
+				"never inherited on a daemon-scope server (auth design §12.2). Name them in " +
+				"auth.scopes, or connect the server for a single project.")
+	}
+
 	return BeginResult{
 		AuthorizationURL: authURL,
 		Resource:         md.Resource,
 		Scopes:           scopes,
+		DroppedScopes:    dropped,
 		State:            state,
 	}, nil
 }
@@ -632,6 +682,22 @@ func (c *Connector) reapExpiredLocked() {
 //
 // The filter is deliberately conservative — it keeps a scope only when it clearly reads — so an
 // unrecognised scope is DROPPED rather than assumed harmless. An operator who needs it names it.
+// missingScopes returns the entries of advertised that kept does not contain,
+// preserving the vendor's order so the notice reads the way the PRM lists them.
+func missingScopes(advertised, kept []string) []string {
+	have := make(map[string]bool, len(kept))
+	for _, s := range kept {
+		have[s] = true
+	}
+	var out []string
+	for _, s := range advertised {
+		if s != "" && !have[s] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func readOnlyScopes(scopes []string) []string {
 	var out []string
 	for _, s := range scopes {

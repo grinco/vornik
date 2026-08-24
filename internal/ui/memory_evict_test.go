@@ -57,19 +57,24 @@ type stubMemoryEvictor struct {
 	lastReason  string
 	lastBy      string
 	deleted     int
+	derived     MemoryEvictionResult
 	hardErr     error
 	auditRows   []MemoryEvictionAuditRow
 }
 
-func (s *stubMemoryEvictor) HardEvict(_ context.Context, projectID string, chunkIDs []string, reason, evictedBy string) (int, error) {
+func (s *stubMemoryEvictor) HardEvict(
+	_ context.Context, projectID string, chunkIDs []string, reason, evictedBy string,
+) (MemoryEvictionResult, error) {
 	s.lastProject = projectID
 	s.lastIDs = chunkIDs
 	s.lastReason = reason
 	s.lastBy = evictedBy
 	if s.hardErr != nil {
-		return 0, s.hardErr
+		return MemoryEvictionResult{}, s.hardErr
 	}
-	return s.deleted, nil
+	out := s.derived
+	out.ChunksEvicted = s.deleted
+	return out, nil
 }
 
 func (s *stubMemoryEvictor) ListEvictionAudits(_ context.Context, _ string, _ int) ([]MemoryEvictionAuditRow, error) {

@@ -24,7 +24,7 @@ func (f *fakeProposals) List(context.Context, persistence.ProposalListFilter) ([
 	return nil, nil
 }
 func (f *fakeProposals) GetByID(context.Context, string) (*persistence.ControlPlaneProposal, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *fakeProposals) SetStatus(context.Context, string, string, string) error          { return nil }
 func (f *fakeProposals) MarkApplied(context.Context, string, string, string) error        { return nil }

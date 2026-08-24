@@ -94,11 +94,11 @@ func (fakeMetricsBuilder) Snapshot(context.Context) (string, error) { return "# 
 type fakeJudgeBuilder struct{}
 
 func (fakeJudgeBuilder) GetByTask(context.Context, string) (*persistence.TaskJudgeVerdict, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 
 type fakePMBuilder struct{}
 
 func (fakePMBuilder) Get(context.Context, string) (*persistence.TaskPostMortem, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }

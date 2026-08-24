@@ -41,7 +41,7 @@ func (s *stubMsgRepo) List(_ context.Context, _ persistence.TaskMessageFilter) (
 }
 
 func (s *stubMsgRepo) GetOpenCheckpoint(_ context.Context, _ string) (*persistence.TaskMessage, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 
 func (s *stubMsgRepo) MarkCheckpointResolved(_ context.Context, _, _ string) error { return nil }

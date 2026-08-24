@@ -25,7 +25,7 @@ type listingArtifactRepo struct {
 
 func (s *listingArtifactRepo) Create(_ context.Context, _ *persistence.Artifact) error { return nil }
 func (s *listingArtifactRepo) GetByHash(_ context.Context, _ string) (*persistence.Artifact, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (s *listingArtifactRepo) List(_ context.Context, _ persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
 	s.mu.Lock()

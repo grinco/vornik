@@ -123,12 +123,19 @@ type cascadeEraser struct {
 	svc *erasure.Service
 }
 
-func (c cascadeEraser) EraseArtifact(ctx context.Context, artifactID string) (int, error) {
+func (c cascadeEraser) EraseArtifact(
+	ctx context.Context, artifactID string,
+) (datasubject.ArtifactErasureCounts, error) {
 	res, err := c.svc.EraseIncludingArtifact(ctx, artifactID)
 	if err != nil {
-		return 0, err
+		return datasubject.ArtifactErasureCounts{}, err
 	}
-	return res.ChunksDeleted, nil
+	return datasubject.ArtifactErasureCounts{
+		ChunksDeleted:            res.ChunksDeleted,
+		GraphEntitiesDeleted:     res.Derived.Entities,
+		GraphEdgesDeleted:        res.Derived.Edges,
+		QuarantinedCopiesDeleted: res.Derived.Quarantined,
+	}, nil
 }
 
 func runSubjectErase(_ *cobra.Command, args []string) error {
@@ -175,7 +182,7 @@ func runSubjectErase(_ *cobra.Command, args []string) error {
 		}
 	}
 
-	exec, err := newSubjectExecutor(deps)
+	exec, err := newSubjectExecutor(deps, req.ID)
 	if err != nil {
 		return err
 	}
@@ -226,6 +233,12 @@ func shortHash(h string) string {
 func printErasureResult(r *datasubject.ErasureResult) {
 	fmt.Printf("\nErased: %d row(s), %d artifact(s), %d derived memory chunk(s).\n",
 		r.RowsDeleted, r.ArtifactsErased, r.DerivedChunksDeleted)
+	// Always printed, including the zeros. These rows survived erasures we
+	// reported as complete until 2026-08-21, so silence about them is the one
+	// thing this line cannot do.
+	fmt.Printf("Derived data: %d knowledge entit(ies), %d graph edge(s), "+
+		"%d quarantined pre-ingest cop(ies).\n",
+		r.DerivedGraphEntitiesDeleted, r.DerivedGraphEdgesDeleted, r.QuarantinedCopiesDeleted)
 	if len(r.Redacted) > 0 {
 		fmt.Printf("Redacted: %d shared record(s) rewritten to remove this subject while "+
 			"preserving other people's data.\n", len(r.Redacted))
@@ -356,7 +369,7 @@ func openErasureDeps(ctx context.Context) (*erasureDeps, func(), error) {
 // cascade also removes the extraction rows, the derived memory chunks, the
 // extraction storage directories, and the uploaded file itself. A plain row
 // delete would orphan every one of those while reporting success.
-func newSubjectExecutor(d *erasureDeps) (*datasubject.Executor, error) {
+func newSubjectExecutor(d *erasureDeps, requestID string) (*datasubject.Executor, error) {
 	redact, err := newRedactDeps(d.Cfg, d)
 	if err != nil {
 		// Configured but broken. Refuse rather than degrade every shared record to a
@@ -372,9 +385,16 @@ func newSubjectExecutor(d *erasureDeps) (*datasubject.Executor, error) {
 		Redact: redact,
 		Rows:   d.Repo,
 		Artifacts: cascadeEraser{svc: &erasure.Service{
-			Docs:         postgres.NewExtractedDocumentRepository(d.DB),
-			Chunks:       memory.NewRepository(d.DB),
-			Artifacts:    artifactRowStore{repo: postgres.NewArtifactRepository(d.DB)},
+			Docs:      postgres.NewExtractedDocumentRepository(d.DB),
+			Chunks:    memory.NewRepository(d.DB),
+			Artifacts: artifactRowStore{repo: postgres.NewArtifactRepository(d.DB)},
+			// Derived is what makes this an Art 17 erasure rather than retention
+			// pruning: entities and edges built from the erased chunks are hard
+			// DELETED, and the quarantined pre-ingest copy of the text goes with
+			// them. RequestID authorises those deletes and appears in no other
+			// path (design §4.14).
+			Derived:      postgres.NewErasureDerivedRepository(d.DB),
+			RequestID:    requestID,
 			ArtifactRoot: d.Root,
 		}},
 	}, nil

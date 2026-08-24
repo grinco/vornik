@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"vornik.io/vornik/internal/persistence"
+	"vornik.io/vornik/internal/persistence/repotest"
 )
 
 // stubReservationSweeper records every SweepTerminalAndStale call so
@@ -549,9 +550,15 @@ func TestMarkFailed_TaskUpdateErrorSurfaces(t *testing.T) {
 	assert.Len(t, exec.failures(), 1, "execution row was flipped before the Update error")
 }
 
-// TestMarkFailed_NilTaskShortCircuits — Get returning (nil, nil) (task
-// vanished between scan and Get) must short-circuit cleanly: execution
-// flipped, no Update attempted, no error.
+// TestMarkFailed_NilTaskShortCircuits — a task that vanished between the scan
+// and the Get must short-circuit cleanly: execution flipped, no Update
+// attempted, no error.
+//
+// The double used to model that race as (nil, nil), which TaskRepository.Get
+// never returns — it is MissErrNotFound. So this test certified a branch
+// production could not reach, while the real one returned an error and cost
+// handleStuck its markSeen and its metrics (see markFailed). Corrected
+// 2026-08-22; the double now answers the way Postgres does.
 func TestMarkFailed_NilTaskShortCircuits(t *testing.T) {
 	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
 	exec := &stubExecRepo{}
@@ -624,11 +631,12 @@ func (r *errOnUpdateTaskRepo) Update(_ context.Context, _ *persistence.Task) err
 	return errors.New("update failed")
 }
 
-// nilGetTaskRepo returns (nil, nil) from Get — the vanished-task race.
+// nilGetTaskRepo answers Get the way production does when the task vanished
+// between the scan and the lookup: persistence.ErrNotFound.
 type nilGetTaskRepo struct{ *stubTaskRepo }
 
 func (r *nilGetTaskRepo) Get(_ context.Context, _ string) (*persistence.Task, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 
 // errOnUpdateStatusTaskRepo fails UpdateStatus for one specific id and
@@ -652,4 +660,13 @@ func readCounter(t *testing.T, c prometheus.Counter) float64 {
 	var m dto.Metric
 	require.NoError(t, c.Write(&m))
 	return m.GetCounter().GetValue()
+}
+
+// The double must agree with production about absence, or the short-circuit it
+// exercises is not the one that runs. See
+// https://docs.vornik.io
+func TestNilGetTaskRepo_ObeysTheMissContract(t *testing.T) {
+	repotest.AssertMiss(t, "TaskRepository.Get", func() (*persistence.Task, error) {
+		return (&nilGetTaskRepo{stubTaskRepo: newStubTaskRepo()}).Get(context.Background(), "t-absent")
+	})
 }

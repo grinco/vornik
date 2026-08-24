@@ -39,7 +39,7 @@ func (s *stubInstinctRepo) RecomputeConfidence(ctx context.Context, id string, s
 	return nil
 }
 func (s *stubInstinctRepo) Get(ctx context.Context, id string) (*persistence.Instinct, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (s *stubInstinctRepo) List(ctx context.Context, f persistence.InstinctFilter) ([]*persistence.Instinct, error) {
 	return nil, nil

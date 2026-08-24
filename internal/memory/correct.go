@@ -263,10 +263,12 @@ func (c *Corrector) ForgetByID(ctx context.Context, projectID, chunkID string) (
 //
 // Returns the audit rows for the chunks actually deleted (may be
 // shorter than chunkIDs if some IDs were stale / wrong-project) so
-// the caller can surface "I evicted these" back to the operator.
+// the caller can surface "I evicted these" back to the operator,
+// alongside the counts of knowledge-graph rows and quarantined
+// pre-ingest copies the eviction removed with them.
 // reason + evictedBy land in the memory_eviction_audit row — pass
 // non-empty values; the audit table is the GDPR compliance hook.
-func (c *Corrector) HardEvict(ctx context.Context, projectID string, chunkIDs []string, reason, evictedBy string) ([]EvictionAuditRow, error) {
+func (c *Corrector) HardEvict(ctx context.Context, projectID string, chunkIDs []string, reason, evictedBy string) (*EvictionResult, error) {
 	if c == nil || c.Repo == nil {
 		return nil, fmt.Errorf("memory corrector: not configured")
 	}
@@ -274,7 +276,7 @@ func (c *Corrector) HardEvict(ctx context.Context, projectID string, chunkIDs []
 		return nil, fmt.Errorf("memory corrector: project id required")
 	}
 	if len(chunkIDs) == 0 {
-		return nil, nil
+		return &EvictionResult{}, nil
 	}
 	return c.Repo.HardEvict(ctx, projectID, chunkIDs, reason, evictedBy)
 }

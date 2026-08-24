@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 29b6f0b7b167141462fd4039c6801a2bcbb1d5f0bf7ebcdc2a5181057984817c
+      sha256: d9d1ed0bf881fc2141427b5c390cfe18c355af64d131ac80694cfdd44f215a3e
 ---
 # Release Notes
 
@@ -14,6 +14,58 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.8.9
+
+**A stuck execution no longer dies at an unrelated step.** A step result that
+was not valid JSON was stored as-is and failed at the *next* checkpoint, so an
+execution died several steps away from the cause with a confusing
+`failed to marshal execution checkpoint` error. Such a result is now stored as a
+readable diagnostic that keeps the original text, and the execution continues.
+
+**Delegations and checkpoints survive a deleted ancestor task.** If a parent
+task had been pruned by retention or removed with its project, the lineage walk
+failed instead of stopping — surfacing as
+`delegation cycle check failed: not found`. A missing ancestor now simply ends
+the chain.
+
+**The watchdog no longer re-reports the same stuck execution every sweep** when
+its task has already been deleted, and the stuck-execution counters now include
+those cases instead of under-counting them.
+
+**Scheduled reports deliver the work, not the routing.** A scheduled task that
+delegates to a child produced its output on the child, and delivery only looked
+at the parent — so the attached files could be internal routing transcripts
+rather than the report. Delivery now collects the whole task tree and leaves
+per-step transcripts out.
+
+**`vornikctl mcp connect` tells you when it asks for fewer scopes than the
+server offers.** A daemon-level connection deliberately does not inherit write
+scopes — that is unchanged — but it now prints a `WITHHELD:` block listing what
+was not requested and the two ways to grant it. Previously the narrowed request
+was invisible, which made a read-only grant look like a server with no write
+tools.
+
+**New metric: `vornik_mcp_gate_unrestricted_total{path,reason}`.** Counts MCP
+calls that applied no role allowlist, with the reason named
+(`no_task_id`, `deps_unwired`, `role_not_found`, `role_declares_none`, and
+others). These calls were always permitted by design; they were simply not
+visible. A rising number means roles are not resolving — not that something was
+blocked.
+
+**Right-to-erasure now removes derived data.** Erasing a subject's content
+previously deleted the stored chunks and left the knowledge-graph entities,
+edges and quarantined pre-ingest copies derived from them — all of which are on
+the retrieval path. Erasure now settles those too and records what it removed.
+Retention, which is a separate legal basis, parks that graph data instead of
+deleting it, with a horizon you can disable for a legal hold
+(`retention.graph_quarantine_days: -1`).
+
+**Agent tool advertisement follows execution on every path.** A third
+advertisement path could offer a tool to a role's model that the execution gate
+would refuse. Roles now see only what they can call.
 
 ---
 

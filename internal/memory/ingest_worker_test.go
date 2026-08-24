@@ -186,7 +186,7 @@ func (f *fakeArtifactRepo) Get(ctx context.Context, id string) (*persistence.Art
 	if a, ok := f.artifacts[id]; ok {
 		return a, nil
 	}
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 
 // fakeIndexer captures the IngestText calls so tests can assert

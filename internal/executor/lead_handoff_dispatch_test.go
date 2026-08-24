@@ -118,7 +118,7 @@ type fakeArtifactRepo struct {
 
 func (f *fakeArtifactRepo) Create(_ context.Context, a *persistence.Artifact) error { return nil }
 func (f *fakeArtifactRepo) GetByHash(_ context.Context, _ string) (*persistence.Artifact, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *fakeArtifactRepo) List(_ context.Context, filter persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
 	f.mu.Lock()

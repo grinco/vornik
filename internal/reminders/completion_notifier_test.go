@@ -35,6 +35,15 @@ func (s *captureReminderFileSender) SendArtifactFile(_ context.Context, name str
 	return nil
 }
 
+// stubChildLister returns a fixed child map, so a test can build a task tree
+// without a database. A nil map means "no children", which is the shape of a
+// reminder whose task did not delegate.
+type stubChildLister map[string][]*persistence.Task
+
+func (s stubChildLister) GetChildren(_ context.Context, parentTaskID string) ([]*persistence.Task, error) {
+	return s[parentTaskID], nil
+}
+
 type stubReminderFileResolver struct{ sender ReminderFileSender }
 
 func (r stubReminderFileResolver) ResolveReminderFileSender(_, _ string) ReminderFileSender {
@@ -115,6 +124,7 @@ func TestCompletionNotifierDeliversOutputArtifacts(t *testing.T) {
 			artifactRepo,
 			stubReminderArtifactReader{"a_pdf": []byte("pdf bytes")},
 			stubReminderFileResolver{sender: files},
+			stubChildLister(nil),
 		),
 	)
 

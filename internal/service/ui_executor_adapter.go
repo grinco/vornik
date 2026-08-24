@@ -52,6 +52,13 @@ func (a uiExecutorAdapter) NotifyChildTerminal(ctx context.Context, childTaskID 
 	a.e.NotifyChildTerminal(ctx, childTaskID)
 }
 
+// CancelIfActive forwards to the executor's live-map teardown — the
+// authoritative answer to whether a cancelled task still has a container to
+// stop (05-scheduler.md §4.7).
+func (a uiExecutorAdapter) CancelIfActive(taskID string) (bool, error) {
+	return a.e.CancelIfActive(taskID)
+}
+
 func (a uiExecutorAdapter) CancelChildren(ctx context.Context, parentTaskID string) {
 	a.e.CancelChildren(ctx, parentTaskID)
 }

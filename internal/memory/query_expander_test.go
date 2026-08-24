@@ -26,7 +26,7 @@ func (f *fakeEntityRepo) Get(_ context.Context, id string) (*persistence.Knowled
 	return f.byID[id], nil
 }
 func (f *fakeEntityRepo) GetByCanonical(context.Context, string, string, string) (*persistence.KnowledgeEntity, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *fakeEntityRepo) List(_ context.Context, filter persistence.KnowledgeEntityFilter) ([]*persistence.KnowledgeEntity, error) {
 	if f.listErr != nil {
@@ -47,7 +47,7 @@ type fakeEdgeRepo struct {
 
 func (f *fakeEdgeRepo) UpsertEdge(context.Context, *persistence.KnowledgeEdge) error { return nil }
 func (f *fakeEdgeRepo) Get(context.Context, string) (*persistence.KnowledgeEdge, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *fakeEdgeRepo) List(context.Context, persistence.KnowledgeEdgeFilter) ([]*persistence.KnowledgeEdge, error) {
 	return nil, nil

@@ -384,6 +384,8 @@ func (s *closeNotifySpy) ResumeTask(string) error   { return nil }
 func (s *closeNotifySpy) NotifyChildTerminal(_ context.Context, childTaskID string) {
 	s.calls = append(s.calls, childTaskID)
 }
+func (s *closeNotifySpy) CancelIfActive(string) (bool, error) { return false, nil }
+
 func (s *closeNotifySpy) CancelChildren(_ context.Context, parentTaskID string) {
 	s.cascadeCalls = append(s.cascadeCalls, parentTaskID)
 }

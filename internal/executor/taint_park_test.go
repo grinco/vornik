@@ -75,7 +75,7 @@ func (m *taintMsgRepo) List(_ context.Context, _ persistence.TaskMessageFilter) 
 }
 func (m *taintMsgRepo) Insert(context.Context, *persistence.TaskMessage) error { return nil }
 func (m *taintMsgRepo) GetOpenCheckpoint(context.Context, string) (*persistence.TaskMessage, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (m *taintMsgRepo) MarkCheckpointResolved(context.Context, string, string) error { return nil }
 

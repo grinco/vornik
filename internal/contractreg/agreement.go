@@ -279,3 +279,45 @@ func entrySources(t *Table, kind Kind, name string) []string {
 	}
 	return nil
 }
+
+// CheckAdvertisementPathsGated enforces that every path by which a tool
+// definition reaches the model passes a gate.
+//
+// There are three: the builtin definition list, `$extras_gated`, and
+// `$extras_ungated`. The first two are filtered by the same predicate as the
+// execution gate, so advertisement follows execution for them. The third was
+// concatenated UNCONDITIONALLY until 2026-08-22, which made it a bypass of a
+// different kind from the ones the other checks catch: it did not DISAGREE with
+// a registry, it went around every registry. `skill_fetch` rode it, and looked
+// harmless only because agenttools.alwaysGranted put it on every role's
+// effective allowlist — advertisement matching execution by accident. In the
+// state where the container falls back to its own default allowlist (task.json
+// without config.permissions.allowedTools) the accident does not hold, and the
+// tool was advertised and then refused.
+//
+// The registry it is filtered against is UngatedByDesign — the SAME one the
+// execution gate uses, deliberately. An exemption from advertisement and an
+// exemption from execution are one decision, which is what the agent runtime
+// contract means by "an ungated tool is ungated in both, never one" (§7.1). A
+// second, advertisement-only registry would have made that sentence false by
+// construction and re-created the third path as data.
+//
+// Absence of the marker is the finding: it means the filter was removed, or the
+// extraction that looks for it has broken. Both deserve the build failure.
+func CheckAdvertisementPathsGated(t *Table) []Finding {
+	const check = "advertisement-path-ungated"
+	if t.setOf(KindAgentToolAdvertisementFilter).has("ungated-append") {
+		return nil
+	}
+	return []Finding{{
+		Check: check,
+		Name:  "extras_ungated",
+		Detail: "tool_definitions() appends $extras_ungated without filtering it against " +
+			"UNGATED_TOOL_NAMES_JSON — a third advertisement path covered by neither gate, " +
+			"so any definition appended there is offered to every role's model regardless of " +
+			"allowedTools and regardless of the registries. Filter the append " +
+			"(`$ungated | map(select(.function.name as $name | $exempt | index($name) != null))`), " +
+			"or, if the tool is universally callable, register it in UngatedByDesign and its " +
+			"shell mirror so the exemption is a reviewed decision rather than a coincidence.",
+	}}
+}

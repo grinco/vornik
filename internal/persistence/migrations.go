@@ -6930,4 +6930,129 @@ ALTER TABLE executions
     DROP COLUMN IF EXISTS workflow_snapshot;
 `,
 	},
+	{
+		Version: 166,
+		Name:    "memory_eviction_runs",
+		// A durable record of what an eviction removed BEYOND the chunks.
+		//
+		// memory_eviction_audit is one tombstone per chunk and says nothing
+		// about the knowledge-graph entities and edges, the quarantined
+		// pre-ingest copy, or the cached embedding that went with them — all of
+		// which eviction started deleting on 2026-08-21. Every surface REPORTS
+		// those counts (both CLIs, the UI receipt) and nothing stored them, so
+		// they survived exactly as long as terminal scrollback or a 15-minute
+		// browser banner. This design has argued throughout that once the rows
+		// are gone the report is the only evidence they were covered; a report
+		// nobody kept is not evidence.
+		//
+		// A RUN HEADER, not columns on the tombstones. The derived sweep runs
+		// once over the union of the evicted chunks, so the counts are
+		// per-operation. Repeating them on each chunk row would be durable and
+		// WRONG: summing across two tombstones from one run would report four
+		// entities deleted when four were deleted in total.
+		//
+		// run_id back-links the tombstones. Nullable because every row written
+		// before this migration has no run — and ON DELETE RESTRICT, not SET
+		// NULL, so a tombstone always keeps resolving to the operation that
+		// removed it.
+		//
+		// SET NULL was the first cut and is an escape hatch dressed as
+		// tolerance: deleting a run row would silently orphan its tombstones and
+		// take the derived counts with them, which is precisely the evidence
+		// this migration exists to preserve. RESTRICT turns that into a refusal,
+		// so any future retention sweep has to decide what happens to the
+		// tombstones instead of discovering it later.
+		//
+		// The same reasoning already pins data_subjects: RESTRICT-held by
+		// data_subject_requests because the ledger "must keep resolving to a
+		// subject" (datasubject.UncoveredTable). A tombstone that no longer
+		// resolves to its run is the same failure one level down.
+		//
+		// Consequence, now load-bearing rather than defensive:
+		// persistence.ProjectDataTables must delete memory_eviction_audit
+		// BEFORE memory_eviction_runs, or the wipe fails on the constraint.
+		Up: `
+CREATE TABLE IF NOT EXISTS memory_eviction_runs (
+    id                         TEXT PRIMARY KEY,
+    project_id                 TEXT NOT NULL,
+    chunks_requested           INT  NOT NULL DEFAULT 0,
+    chunks_evicted             INT  NOT NULL DEFAULT 0,
+    graph_entities_deleted     INT  NOT NULL DEFAULT 0,
+    graph_edges_deleted        INT  NOT NULL DEFAULT 0,
+    quarantined_copies_deleted INT  NOT NULL DEFAULT 0,
+    cached_embeddings_deleted  INT  NOT NULL DEFAULT 0,
+    reason                     TEXT NOT NULL DEFAULT '',
+    evicted_by                 TEXT NOT NULL DEFAULT '',
+    evicted_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_eviction_runs_project_time
+    ON memory_eviction_runs (project_id, evicted_at DESC);
+
+ALTER TABLE memory_eviction_audit
+    ADD COLUMN IF NOT EXISTS run_id TEXT
+        REFERENCES memory_eviction_runs(id) ON DELETE RESTRICT;
+
+CREATE INDEX IF NOT EXISTS idx_memory_eviction_audit_run
+    ON memory_eviction_audit (run_id);
+
+COMMENT ON TABLE memory_eviction_runs IS
+    'One row per hard-eviction operation: what it removed beyond the chunks (knowledge-graph entities and edges, quarantined pre-ingest copies, cached embeddings). The per-chunk tombstones in memory_eviction_audit account for the chunks and cannot carry per-operation counts without double-counting on aggregation.';
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_memory_eviction_audit_run;
+ALTER TABLE memory_eviction_audit DROP COLUMN IF EXISTS run_id;
+DROP INDEX IF EXISTS idx_memory_eviction_runs_project_time;
+DROP TABLE IF EXISTS memory_eviction_runs;
+`,
+	},
+	{
+		Version: 167,
+		Name:    "graph_quarantined_at",
+		// When a chunk's TTL deletes it, the knowledge-graph rows built from it
+		// are PARKED (lifecycle_state 'quarantined') rather than deleted —
+		// retention removed a source, which is not a subject's erasure request,
+		// and parking stays auditable and reversible.
+		//
+		// Parking bounds VISIBILITY, not RETENTION, and that is only half an
+		// answer. A quarantined entity still holds canonical_name, aliases,
+		// description, properties and an embedding, all derived from content
+		// whose retention policy has already expired. Art 5(1)(e) storage
+		// limitation is independent of Art 17: the chunk's TTL WAS the
+		// storage-limitation decision, so keeping its derived rows for ever
+		// defeats the policy that deleted the chunk. Hidden from retrieval is
+		// not deleted — a stored row remains processing under Art 4(2).
+		//
+		// So parking gets a clock. quarantined_at is when the row was parked,
+		// and a sweep hard-deletes rows parked longer than the configured
+		// horizon. The window exists for operator error — a misconfigured TTL
+		// caught within the horizon is recoverable by UpdateLifecycle — and
+		// then the row goes.
+		//
+		// Nullable: rows parked before this migration have no timestamp. The
+		// sweep ignores them rather than guessing an age, and they are visible
+		// to an operator as quarantined-with-no-clock.
+		Up: `
+ALTER TABLE knowledge_entities
+    ADD COLUMN IF NOT EXISTS quarantined_at TIMESTAMPTZ;
+ALTER TABLE knowledge_edges
+    ADD COLUMN IF NOT EXISTS quarantined_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_entities_quarantined_at
+    ON knowledge_entities (quarantined_at)
+    WHERE lifecycle_state = 'quarantined' AND quarantined_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_knowledge_edges_quarantined_at
+    ON knowledge_edges (quarantined_at)
+    WHERE lifecycle_state = 'quarantined' AND quarantined_at IS NOT NULL;
+
+COMMENT ON COLUMN knowledge_entities.quarantined_at IS
+    'When retention parked this row after its source chunks were deleted. NULL for rows parked before migration 167 or by a path that does not set it; the quarantine sweep ignores those rather than guessing an age.';
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_knowledge_edges_quarantined_at;
+DROP INDEX IF EXISTS idx_knowledge_entities_quarantined_at;
+ALTER TABLE knowledge_edges DROP COLUMN IF EXISTS quarantined_at;
+ALTER TABLE knowledge_entities DROP COLUMN IF EXISTS quarantined_at;
+`,
+	},
 }

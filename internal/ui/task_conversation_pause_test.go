@@ -84,6 +84,8 @@ func (p *pauseSpy) NotifyChildTerminal(_ context.Context, childTaskID string) {
 	p.notifies = append(p.notifies, childTaskID)
 }
 
+func (p *pauseSpy) CancelIfActive(string) (bool, error) { return false, nil }
+
 func (p *pauseSpy) CancelChildren(_ context.Context, _ string) {}
 
 // fakeTaskMessageRepo: minimal stub matching
@@ -96,7 +98,7 @@ func (f *fakeTaskMessageRepo) List(_ context.Context, _ persistence.TaskMessageF
 	return nil, nil
 }
 func (f *fakeTaskMessageRepo) GetOpenCheckpoint(_ context.Context, _ string) (*persistence.TaskMessage, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *fakeTaskMessageRepo) MarkCheckpointResolved(_ context.Context, _, _ string) error {
 	return nil

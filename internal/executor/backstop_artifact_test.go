@@ -229,7 +229,7 @@ func (c *capturingArtifactRepo) List(_ context.Context, _ persistence.ArtifactFi
 	return nil, nil
 }
 func (c *capturingArtifactRepo) GetByHash(_ context.Context, _ string) (*persistence.Artifact, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 
 func TestPersistStubArtifact_WritesFileAndCreatesRow(t *testing.T) {

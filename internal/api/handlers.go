@@ -863,8 +863,6 @@ func (s *Server) CancelTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wasRunning := task.Status == persistence.TaskStatusRunning
-
 	// Atomic conditional transition. The legacy code did
 	// read-status → check → write-CANCELLED in three steps; if a
 	// task COMPLETED between the read and write, the third step
@@ -889,13 +887,21 @@ func (s *Server) CancelTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Transition succeeded — best-effort tear down the running
-	// execution. A failure here is logged but not surfaced: the
-	// canonical state is the DB row, which is now CANCELLED. The
-	// scheduler/executor reaper picks up the orphaned process.
-	if wasRunning && s.executor != nil {
-		if err := s.executor.Cancel(taskID); err != nil {
-			s.logger.Error().Err(err).Str("taskId", taskID).Msg("failed to cancel execution")
+	// Transition succeeded — tear down the execution if the executor has one.
+	// Asked unconditionally, and answered by the executor's live map rather
+	// than by `task.Status` read at handler entry: that read is a snapshot,
+	// the transition above accepts LEASED and QUEUED too, and a task that
+	// reached RUNNING in between had its row cancelled with its container
+	// left alive — claimed by no row and sought by no reaper
+	// (05-scheduler.md §4.7). A failure is logged, not surfaced: the
+	// canonical state is the DB row, which is now CANCELLED.
+	tornDown := false
+	if s.executor != nil {
+		had, cerr := s.executor.CancelIfActive(taskID)
+		tornDown = had && cerr == nil
+		if cerr != nil {
+			s.logger.Error().Err(cerr).Str("taskId", taskID).
+				Msg("cancel: container did not stop — it may still be running")
 		}
 	}
 
@@ -922,9 +928,12 @@ func (s *Server) CancelTask(w http.ResponseWriter, r *http.Request) {
 
 	// Build response
 	resp := CancelTaskResponse{
-		TaskID:      taskID,
-		Status:      string(persistence.TaskStatusCancelled),
-		WasRunning:  wasRunning,
+		TaskID: taskID,
+		Status: string(persistence.TaskStatusCancelled),
+		// Reports what actually happened — a live execution was torn down —
+		// rather than what the row said before we changed it. The two differ
+		// exactly inside the race window §4.7 describes.
+		WasRunning:  tornDown,
 		CancelledAt: time.Now().Format(time.RFC3339),
 	}
 
@@ -1571,7 +1580,13 @@ func (s *Server) ListMCPTools(w http.ResponseWriter, r *http.Request) {
 	// list and turns it into the tool schemas sent to the model on EVERY iteration,
 	// so an unneeded tool here is a recurring cost, not a one-off. Callers with no
 	// task context (vornikctl, the UI) resolve to no allowlist and see everything.
-	ceiling := s.roleToolAllowlist(r.Context(), mcpCallerTaskID(r))
+	ceiling, ceilingGap := s.roleToolAllowlistReason(r.Context(), mcpCallerTaskID(r))
+	if len(ceiling) == 0 {
+		// The advertise path shares this resolution, so a gap here costs a WIDE
+		// PROMPT as well as a wide grant — every MCP schema re-sent on every
+		// iteration. Counted separately from the call path for that reason.
+		s.recordMCPGap("advertise", ceilingGap)
+	}
 	// advertised = project ∩ ceiling ∩ grant (§10.4). The grant is recomputed here on
 	// every call rather than stored resolved, so a ceiling tightened by hot reload
 	// takes effect immediately and a stale grant cannot outlive it. /mcp/call enforces
@@ -1756,16 +1771,21 @@ func (s *Server) CallMCPTool(w http.ResponseWriter, r *http.Request) {
 // authored in swarm config, falling back to the bare tool segment so an
 // operator can allowlist either shape.
 func (s *Server) roleAllowsMCPTool(ctx context.Context, taskID, qualifiedName string) bool {
-	allowed := s.roleToolAllowlist(ctx, taskID)
+	allowed, reason := s.roleToolAllowlistReason(ctx, taskID)
 	// No resolvable allowlist → unrestricted (preserve pre-B2 behavior).
 	if len(allowed) == 0 {
+		// Counted, not refused. The fail-open is deliberate; what it lacked was
+		// visibility — a deployment running every MCP call unrestricted read
+		// exactly like one whose roles all resolve. See MCPGateMetrics.
+		s.recordMCPGap("call", reason)
 		return true
 	}
 	return mcpRoleToolAllowed(allowed, qualifiedName)
 }
 
-// roleToolAllowlist resolves the calling task's current role and returns that
-// role's declared allowedTools, or nil when there is no allowlist to apply.
+// roleToolAllowlistReason resolves the calling task's current role and returns
+// that role's declared allowedTools, or nil AND THE REASON when there is no
+// allowlist to apply.
 //
 // Nil covers every resolution gap AND the "role declares none" case, because both
 // mean the same thing to callers: do not narrow. FAIL-OPEN by design — the project
@@ -1775,32 +1795,50 @@ func (s *Server) roleAllowsMCPTool(ctx context.Context, taskID, qualifiedName st
 // invoke-time gate resolve the role through exactly one path. Two paths could
 // drift, and the dangerous direction is advertising a tool /mcp/call then refuses:
 // the agent spends an iteration to earn a guaranteed 403.
-func (s *Server) roleToolAllowlist(ctx context.Context, taskID string) []string {
-	if taskID == "" || s.executionRepo == nil || s.projectRegistry == nil {
-		return nil
+//
+// THE REASON, added 2026-08-22. Every early return below is a fail-open, and they
+// all used to return an indistinguishable bare nil — so "nothing is wired" (a dev
+// deployment behaving as designed), "this role is missing from the swarm" (a
+// misconfigured production one) and "this role deliberately declares no tools" (an
+// operator's decision) were one observation, and so was a healthy resolve. The
+// reason is what lets the census in MCPGateMetrics answer a question rather than
+// count a mood.
+//
+// The behaviour is unchanged: same gaps, same nil, same fail-open.
+func (s *Server) roleToolAllowlistReason(ctx context.Context, taskID string) ([]string, mcpGapReason) {
+	if taskID == "" {
+		return nil, mcpGapNoTaskID
+	}
+	if s.executionRepo == nil || s.projectRegistry == nil {
+		return nil, mcpGapDepsUnwired
 	}
 	exec, err := s.executionRepo.GetByTaskID(ctx, taskID)
 	if err != nil || exec == nil || exec.CurrentStepID == nil || *exec.CurrentStepID == "" {
-		return nil
+		return nil, mcpGapNoExecution
 	}
 	project, workflow, err := s.projectRegistry.GetProjectWithWorkflow(exec.ProjectID)
 	if err != nil || project == nil || workflow == nil {
-		return nil
+		return nil, mcpGapNoWorkflow
 	}
 	step, ok := workflow.Steps[*exec.CurrentStepID]
 	if !ok || step.Role == "" {
-		return nil
+		return nil, mcpGapNoStepRole
 	}
 	_, swarm, err := s.projectRegistry.GetProjectWithSwarm(exec.ProjectID)
 	if err != nil || swarm == nil {
-		return nil
+		return nil, mcpGapNoSwarm
 	}
 	for i := range swarm.Roles {
 		if swarm.Roles[i].Name == step.Role {
-			return swarm.Roles[i].Permissions.AllowedTools
+			if len(swarm.Roles[i].Permissions.AllowedTools) == 0 {
+				// Resolved fine and declared nothing. Not a failure — the rule
+				// buildAgentInput now states explicitly as mcpUnrestricted.
+				return nil, mcpGapRoleDeclaresNone
+			}
+			return swarm.Roles[i].Permissions.AllowedTools, mcpGapNone
 		}
 	}
-	return nil
+	return nil, mcpGapRoleNotFound
 }
 
 // advertisedTools narrows a project's tool catalog to what one role may invoke.

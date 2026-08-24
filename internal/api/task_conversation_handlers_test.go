@@ -56,7 +56,7 @@ func (s *tcStubMessageRepo) GetOpenCheckpoint(ctx context.Context, taskID string
 	if s.getOpenFn != nil {
 		return s.getOpenFn(ctx, taskID)
 	}
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 
 func (s *tcStubMessageRepo) MarkCheckpointResolved(ctx context.Context, taskID, checkpointID string) error {

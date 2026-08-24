@@ -127,21 +127,48 @@ func TestPruneExpiredChunks_DeletesLinksThenChunks(t *testing.T) {
 	s := New(db, zerolog.Nop())
 	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 
+	// BATCHED: the ids are read first and everything else is keyed by them, so
+	// a chunk committed mid-sweep cannot be deleted without having been
+	// captured. The batch is bounded so the graph locks scale with the work
+	// rather than with the project.
 	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM project_memory_chunks")).
+		WithArgs("proj-a", now, chunkSweepBatchSize).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("c1").AddRow("c2").AddRow("c3"))
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM data_subject_links")).
-		WithArgs("proj-a", now).
 		WillReturnResult(sqlmock.NewResult(0, 2))
-	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM project_memory_chunks")).
-		WithArgs("proj-a", now).
-		WillReturnResult(sqlmock.NewResult(0, 3))
+	// entity_mentions cascades with the chunk, so the entities it mentions are
+	// captured while it still exists.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT DISTINCT em.entity_id")).
+		WillReturnRows(sqlmock.NewRows([]string{"entity_id"}).AddRow("e1"))
+	mock.ExpectQuery(regexp.QuoteMeta("DELETE FROM project_memory_chunks")).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("c1").AddRow("c2").AddRow("c3"))
+	// Then the graph is settled: source_chunks pruned, evidence-less edges and
+	// unreachable entities QUARANTINED rather than deleted.
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE knowledge_edges e")).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(regexp.QuoteMeta("SET lifecycle_state = 'quarantined'")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE knowledge_entities ke")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	// The loop asks for another batch and stops when one comes back empty.
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM project_memory_chunks")).
+		WithArgs("proj-a", now, chunkSweepBatchSize).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectCommit()
 
-	n, err := s.pruneExpiredChunks(context.Background(), "proj-a", now, false)
+	n, parked, err := s.pruneExpiredChunks(context.Background(), "proj-a", now, false)
 	if err != nil {
 		t.Fatalf("pruneExpiredChunks error = %v", err)
 	}
 	if n != 3 {
 		t.Fatalf("pruneExpiredChunks() = %d, want 3 (chunk rows)", n)
+	}
+	if parked.Edges != 1 || parked.Entities != 1 {
+		t.Errorf("parked = %+v, want 1 edge and 1 entity quarantined — retention used "+
+			"to delete the chunks and leave these rows published", parked)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -164,7 +191,7 @@ func TestPruneExpiredChunks_PreviewCountsOnly(t *testing.T) {
 		WithArgs("proj-a", now).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
 
-	n, err := s.pruneExpiredChunks(context.Background(), "proj-a", now, true)
+	n, _, err := s.pruneExpiredChunks(context.Background(), "proj-a", now, true)
 	if err != nil {
 		t.Fatalf("pruneExpiredChunks(preview) error = %v", err)
 	}
@@ -571,6 +598,9 @@ func TestSweep_OptInFieldsOffSkipsExtraQueries(t *testing.T) {
 	// with MemoryChunksDays==0 project_memory_chunks IS queried — by expires_at,
 	// not by the created_at operator cap (which stays off).
 	mock.ExpectQuery("SELECT COUNT.*FROM project_memory_chunks.*expires_at").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	// … then the always-on quarantine horizon (step 7c): parking graph rows
+	// bounds their visibility, and this bounds their retention.
+	mock.ExpectQuery("FROM knowledge_entities").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	// memory_ingest_audit is always-on (default 90d) → always queried.
 	mock.ExpectQuery("SELECT COUNT.*FROM memory_ingest_audit").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	// memory_policy_evaluations is always-on (allow + block split) → two queries.
@@ -611,6 +641,9 @@ func TestSweep_OptInFieldsOnIssuesExtraQueries(t *testing.T) {
 	mock.ExpectQuery("SELECT COUNT.*FROM project_memory_chunks.*created_at").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(99))
 	// … then the always-on expires_at sweep (step 7b, §6.4).
 	mock.ExpectQuery("SELECT COUNT.*FROM project_memory_chunks.*expires_at").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	// … then the always-on quarantine horizon (step 7c): parking graph rows
+	// bounds their visibility, and this bounds their retention.
+	mock.ExpectQuery("FROM knowledge_entities").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	// memory_ingest_audit is always-on (default 90d) → always queried.
 	mock.ExpectQuery("SELECT COUNT.*FROM memory_ingest_audit").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
 	// memory_policy_evaluations is always-on (allow + block split) → two queries.
@@ -1052,5 +1085,226 @@ func TestEvidenceTablesAreNeverPrunable(t *testing.T) {
 	// table is in scope for a future DELETE.
 	if _, err := s.pruneOlderThan(context.Background(), "channel_disclosure_log", "served_at", "TRUE", "", time.Now(), true); err == nil {
 		t.Error("preview must refuse the evidence table as well")
+	}
+}
+
+// The chunk sweep runs in bounded batches.
+//
+// The graph settlement locks every knowledge_edges row citing a deleted chunk
+// and holds those locks for the whole transaction, so an unbatched sweep scales
+// the lock set with the PROJECT rather than with the work — and ingestion
+// competes for exactly those rows. Measured on production 2026-08-21: 16 chunks
+// are past their TTL, so steady state is trivial; the largest project holds
+// 8,770 chunks, which is what a first MemoryChunksDays run would delete at once.
+func TestPruneChunks_BatchesAndAccumulates(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	s := New(db, zerolog.Nop())
+	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	batch := func(ids []string, chunkRows, edges, entities int64) {
+		mock.ExpectBegin()
+		rows := sqlmock.NewRows([]string{"id"})
+		for _, id := range ids {
+			rows = rows.AddRow(id)
+		}
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM project_memory_chunks")).
+			WithArgs("proj-a", now, chunkSweepBatchSize).WillReturnRows(rows)
+		if len(ids) == 0 {
+			mock.ExpectCommit()
+			return
+		}
+		mock.ExpectExec(regexp.QuoteMeta("DELETE FROM data_subject_links")).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectQuery(regexp.QuoteMeta("SELECT DISTINCT em.entity_id")).
+			WillReturnRows(sqlmock.NewRows([]string{"entity_id"}).AddRow("e1"))
+		rows2 := sqlmock.NewRows([]string{"id"})
+		for i := int64(0); i < chunkRows; i++ {
+			rows2 = rows2.AddRow(ids[i])
+		}
+		mock.ExpectQuery(regexp.QuoteMeta("DELETE FROM project_memory_chunks")).
+			WillReturnRows(rows2)
+		mock.ExpectExec(regexp.QuoteMeta("UPDATE knowledge_edges e")).
+			WillReturnResult(sqlmock.NewResult(0, 0))
+		mock.ExpectExec(regexp.QuoteMeta("SET lifecycle_state = 'quarantined'")).
+			WillReturnResult(sqlmock.NewResult(0, edges))
+		mock.ExpectExec(regexp.QuoteMeta("UPDATE knowledge_entities ke")).
+			WillReturnResult(sqlmock.NewResult(0, entities))
+		mock.ExpectCommit()
+	}
+
+	batch([]string{"c1", "c2"}, 2, 3, 1)
+	batch([]string{"c3"}, 1, 1, 2)
+	batch(nil, 0, 0, 0) // drained
+
+	n, parked, err := s.pruneExpiredChunks(context.Background(), "proj-a", now, false)
+	if err != nil {
+		t.Fatalf("pruneExpiredChunks: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("chunks = %d, want 3 summed across batches", n)
+	}
+	if parked.Edges != 4 || parked.Entities != 3 {
+		t.Errorf("parked = %+v, want 4 edges and 3 entities summed across batches", parked)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("the sweep must keep asking until a batch comes back empty: %v", err)
+	}
+}
+
+// Each batch commits on its own, so a failure mid-sweep leaves the earlier
+// batches applied — and the counts must SAY so. Reporting zero would understate
+// a deletion that really happened, which for personal data is the wrong
+// direction to be wrong in.
+func TestPruneChunks_ReportsPartialProgressOnFailure(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	s := New(db, zerolog.Nop())
+	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	// Batch one succeeds.
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM project_memory_chunks")).
+		WithArgs("proj-a", now, chunkSweepBatchSize).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("c1"))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM data_subject_links")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT DISTINCT em.entity_id")).
+		WillReturnRows(sqlmock.NewRows([]string{"entity_id"}).AddRow("e1"))
+	mock.ExpectQuery(regexp.QuoteMeta("DELETE FROM project_memory_chunks")).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("c1"))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE knowledge_edges e")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("SET lifecycle_state = 'quarantined'")).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE knowledge_entities ke")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	// Batch two fails.
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM project_memory_chunks")).
+		WillReturnError(errors.New("connection reset"))
+	mock.ExpectRollback()
+
+	n, parked, err := s.pruneExpiredChunks(context.Background(), "proj-a", now, false)
+	if err == nil {
+		t.Fatal("a failed batch must surface")
+	}
+	if n != 1 {
+		t.Errorf("chunks = %d, want 1 — the committed batch is not undone by a later failure", n)
+	}
+	if parked.Edges != 2 || parked.Entities != 1 {
+		t.Errorf("parked = %+v, want the first batch's counts retained", parked)
+	}
+}
+
+// Everything after the id read is keyed BY THOSE IDS, never by re-running the
+// predicate.
+//
+// This is a correctness property, not only a batching mechanism. The unbatched
+// version evaluated the same predicate three times — link delete, capture,
+// chunk delete — and under READ COMMITTED each statement takes its own
+// snapshot, so a chunk committed by an ingest mid-transaction with an
+// already-elapsed TTL could be deleted by the third statement without having
+// been captured by the second, stranding its graph rows. That is the exact
+// capture/delete gap this work has been closing elsewhere.
+func TestPruneChunks_OperatesOnThePinnedIDSet(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	s := New(db, zerolog.Nop())
+	now := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM project_memory_chunks")).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("c1"))
+	// Keyed by the id array, not by table_name + the predicate subquery.
+	mock.ExpectExec(regexp.QuoteMeta("row_id = ANY($1)")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT DISTINCT em.entity_id")).
+		WillReturnRows(sqlmock.NewRows([]string{"entity_id"}))
+	// Same: the delete names the ids, so it cannot take a row the capture
+	// never saw.
+	mock.ExpectQuery(regexp.QuoteMeta("id = ANY($3)")).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("c1"))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE knowledge_edges e")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM project_memory_chunks")).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectCommit()
+
+	if _, _, err := s.pruneExpiredChunks(context.Background(), "proj-a", now, false); err != nil {
+		t.Fatalf("pruneExpiredChunks: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("every statement after the id read must be keyed by those ids: %v", err)
+	}
+}
+
+// A negative horizon DISABLES the purge — the legal-hold escape hatch.
+//
+// An always-on default is the compliance-forward posture, but "preserve
+// everything pending a dispute" is a real instruction, and an operator who
+// receives one needs a way to obey it that is not recompiling.
+func TestPurgeQuarantinedGraph_NegativeHorizonDisablesIt(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	s := New(db, zerolog.Nop())
+	// No expectations: issuing ANY statement fails the test.
+	n, err := s.purgeQuarantinedGraph(context.Background(),
+		Policy{ProjectID: "proj-a", GraphQuarantineDays: -1},
+		time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), false)
+	if err != nil {
+		t.Fatalf("purgeQuarantinedGraph: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("a disabled purge must report nothing, got %d", n)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("a disabled purge must touch the database at all: %v", err)
+	}
+}
+
+// Zero still means "use the compiled default", matching every other always-on
+// window in this sweeper. Only a NEGATIVE value disables.
+func TestPurgeQuarantinedGraph_ZeroUsesTheDefault(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	s := New(db, zerolog.Nop())
+	mock.ExpectQuery("FROM knowledge_entities").
+		WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(7))
+
+	n, err := s.purgeQuarantinedGraph(context.Background(),
+		Policy{ProjectID: "proj-a", GraphQuarantineDays: 0},
+		time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), true)
+	if err != nil {
+		t.Fatalf("purgeQuarantinedGraph: %v", err)
+	}
+	if n != 7 {
+		t.Errorf("preview = %d, want 7", n)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("zero must run the purge with the default horizon: %v", err)
 	}
 }

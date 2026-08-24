@@ -30,6 +30,12 @@ var (
 	// of UngatedByDesign and UngatedPrefixesByDesign, same single-quoted shape.
 	reUngatedNames    = regexp.MustCompile(`UNGATED_TOOL_NAMES_JSON='(\[[^']*\])'`)
 	reUngatedPrefixes = regexp.MustCompile(`UNGATED_TOOL_PREFIXES_JSON='(\[[^']*\])'`)
+
+	// tool_definitions()'s ungated append, filtered against the exemption
+	// registry. Matched loosely on purpose — what must hold is that $ungated
+	// passes through a map(select(...)) mentioning $exempt, not that the jq is
+	// spelled a particular way.
+	reUngatedAppendFiltered = regexp.MustCompile(`\$ungated \| map\(select\([^)]*\$exempt`)
 	// A shell case label: leading indent, one or more |-separated bare words,
 	// a close paren, then either end-of-line or the body on the same line.
 	//
@@ -109,6 +115,12 @@ func (t *Table) AddEntrypointSurfaces(path string) error {
 		for _, p := range prefixes {
 			t.Add(KindAgentToolUngatedPrefix, p, path+":UNGATED_TOOL_PREFIXES_JSON")
 		}
+	}
+
+	// Is the ungated advertisement append filtered? Recorded as a marker so the
+	// check can report its ABSENCE; see KindAgentToolAdvertisementFilter.
+	if reUngatedAppendFiltered.MatchString(body) {
+		t.Add(KindAgentToolAdvertisementFilter, "ungated-append", path+":tool_definitions")
 	}
 
 	// STRAY inline exemptions. Nothing should compare "$name" against a literal

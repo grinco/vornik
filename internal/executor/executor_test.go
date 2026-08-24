@@ -340,7 +340,7 @@ func (m *MockExecRepo) Get(ctx context.Context, id string) (*persistence.Executi
 	defer m.mu.Unlock()
 	e := m.execs[id]
 	if e == nil {
-		return nil, nil
+		return nil, persistence.ErrNotFound
 	}
 	cp := *e
 	cp.CompletedSteps = append([]string{}, e.CompletedSteps...)
@@ -508,7 +508,7 @@ type MockArtifactRepo struct{}
 func NewMockArtifactRepo() *MockArtifactRepo                                          { return &MockArtifactRepo{} }
 func (m *MockArtifactRepo) Create(ctx context.Context, a *persistence.Artifact) error { return nil }
 func (m *MockArtifactRepo) GetByHash(ctx context.Context, h string) (*persistence.Artifact, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (m *MockArtifactRepo) List(ctx context.Context, filter persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
 	return nil, nil
@@ -529,7 +529,7 @@ func (m *MockTaskRepo) Get(ctx context.Context, id string) (*persistence.Task, e
 	}
 	t := m.tasks[id]
 	if t == nil {
-		return nil, nil
+		return nil, persistence.ErrNotFound
 	}
 	cp := *t
 	return &cp, nil

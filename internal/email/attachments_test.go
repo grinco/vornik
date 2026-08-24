@@ -29,10 +29,10 @@ func (f *fakeArtifactRepo) Create(_ context.Context, a *persistence.Artifact) er
 }
 
 func (f *fakeArtifactRepo) Get(_ context.Context, _ string) (*persistence.Artifact, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *fakeArtifactRepo) GetByHash(_ context.Context, _ string) (*persistence.Artifact, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *fakeArtifactRepo) List(_ context.Context, _ persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
 	return nil, nil

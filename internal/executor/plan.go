@@ -473,10 +473,27 @@ func buildAgentInput(task *persistence.Task, executionID, workflowID, swarmID, s
 
 	delegationAllowed := false
 	allowedTools := []string{"file_read", "file_write", "run_shell", "current_time"}
+	// mcpUnrestricted records that the ROLE DECLARED NO allowedTools, which the
+	// daemon reads as "apply no MCP narrowing" (Server.roleToolAllowlist returns
+	// nil, and roleAllowsMCPTool permits everything).
+	//
+	// It exists because that rule was invisible downstream. The substitution
+	// below replaces a declared-nothing role's list with the default four, so
+	// "declared nothing" and "declared exactly those four" arrived at the
+	// container IDENTICALLY — and the container therefore could not gate MCP
+	// itself without silently stripping MCP from the roles in the first state
+	// (dispatcher in assistant-swarm and in easeit-companion-swarm are both in
+	// it). Saying what is meant is the first half of closing that gap; whether
+	// the container then enforces it is a separate decision that wants the
+	// fail-open counts first. See agent runtime contract LLD section 7.1.
+	//
+	// Additive: an older agent image ignores the field, and nothing reads it yet.
+	mcpUnrestricted := true
 	if opts != nil && opts.Permissions != nil {
 		delegationAllowed = opts.Permissions.DelegationAllowed
 		if len(opts.Permissions.AllowedTools) > 0 {
 			allowedTools = opts.Permissions.AllowedTools
+			mcpUnrestricted = false
 		}
 	}
 	// The universal read-only baseline is added AFTER the role's list, so a
@@ -503,6 +520,8 @@ func buildAgentInput(task *persistence.Task, executionID, workflowID, swarmID, s
 			"permissions": map[string]any{
 				"delegationAllowed": delegationAllowed,
 				"allowedTools":      allowedTools,
+				// NOT derivable from allowedTools above — that is the point.
+				"mcpUnrestricted": mcpUnrestricted,
 			},
 			// responseFormat is the role-level JSON-mode directive. Empty means a
 			// free-form request; "json_object" tells the gateway to enforce a
@@ -1161,12 +1180,12 @@ func (e *Executor) countRouteDepth(ctx context.Context, t *persistence.Task) (in
 	guard := maxRouteDepth*2 + 1
 	for cursor != nil && cursor.ParentTaskID != nil && guard > 0 {
 		guard--
-		parent, err := e.taskRepo.Get(ctx, *cursor.ParentTaskID)
+		parent, err := e.ancestorOrEnd(ctx, *cursor.ParentTaskID)
 		if err != nil {
 			return depth, err
 		}
 		if parent == nil {
-			return depth, nil
+			return depth, nil // ancestor row is gone; the chain ends here
 		}
 		if parent.CreationSource != persistence.TaskCreationSourceRoute {
 			return depth, nil
@@ -1262,12 +1281,12 @@ func (e *Executor) countDelegationDepth(ctx context.Context, parent *persistence
 	guard := e.delegationDepthLimit()*2 + 2
 	for cursor != nil && cursor.ParentTaskID != nil && guard > 0 {
 		guard--
-		anc, err := e.taskRepo.Get(ctx, *cursor.ParentTaskID)
+		anc, err := e.ancestorOrEnd(ctx, *cursor.ParentTaskID)
 		if err != nil {
 			return depth, err
 		}
 		if anc == nil {
-			return depth, nil
+			return depth, nil // ancestor row is gone; the chain ends here
 		}
 		if anc.CreationSource == persistence.TaskCreationSourceDelegation {
 			depth++
@@ -1298,12 +1317,12 @@ func (e *Executor) ancestorIDs(ctx context.Context, parent *persistence.Task) (m
 			}
 		}
 		seen[pid] = struct{}{}
-		anc, err := e.taskRepo.Get(ctx, pid)
+		anc, err := e.ancestorOrEnd(ctx, pid)
 		if err != nil {
 			return seen, err
 		}
 		if anc == nil {
-			return seen, nil
+			return seen, nil // ancestor row is gone; the chain ends here
 		}
 		cursor = anc
 	}

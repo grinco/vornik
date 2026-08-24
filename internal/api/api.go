@@ -1070,6 +1070,11 @@ type Server struct {
 	// {mode, creation_source, outcome}. nil disables (same contract as the
 	// other api metrics); production wires it from the shared registry.
 	agentWriteMetrics *AgentAPIWriteMetrics
+
+	// mcpGateMetrics counts MCP role-gate resolutions that applied no allowlist,
+	// by {path, reason}. A fail-open census: the gaps are deliberate (Finding
+	// B2) and this makes them visible rather than merely permitted. nil disables.
+	mcpGateMetrics *MCPGateMetrics
 	// taintDefaultMode is the daemon-default taint-lineage enforcement mode
 	// (off|advisory|enforce) governing tainted autonomous writes
 	// (taint-lineage-tracking §7). Empty ≡ advisory. Per-project overrides
@@ -2100,6 +2105,14 @@ func WithAgentWritesMode(mode string) ServerOption {
 func WithAgentAPIWriteMetrics(m *AgentAPIWriteMetrics) ServerOption {
 	return func(s *Server) {
 		s.agentWriteMetrics = m
+	}
+}
+
+// WithMCPGateMetrics wires the MCP fail-open census
+// (vornik_mcp_gate_unrestricted_total). nil leaves it disabled.
+func WithMCPGateMetrics(m *MCPGateMetrics) ServerOption {
+	return func(s *Server) {
+		s.mcpGateMetrics = m
 	}
 }
 

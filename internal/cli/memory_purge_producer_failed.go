@@ -121,15 +121,19 @@ func runMemoryPurgeProducerFailed(_ *cobra.Command, _ []string) error {
 	// memory_eviction_audit). Searcher is nil — purge works on explicit IDs.
 	corrector := memory.NewCorrector(repo, nil)
 	reason := "producer-failed retro-clean (RAG-ingest producer-success gate §5)"
-	audit, err := corrector.HardEvict(ctx, purgeProducerProject, chunkIDs, reason, currentOperatorIdentity())
+	res, err := corrector.HardEvict(ctx, purgeProducerProject, chunkIDs, reason, currentOperatorIdentity())
 	if err != nil {
 		return fmt.Errorf("purge: %w", err)
 	}
 
-	fmt.Printf("purged %d of %d chunk(s) under project %q\n", len(audit), len(chunkIDs), purgeProducerProject)
-	if len(audit) < len(chunkIDs) {
+	fmt.Printf("purged %d of %d chunk(s) under project %q\n", res.Count(), len(chunkIDs), purgeProducerProject)
+	if res.Count() < len(chunkIDs) {
 		fmt.Println("(non-deleted IDs were stale or already evicted)")
 	}
+	fmt.Printf("derived data: %d knowledge entit(ies), %d graph edge(s), %d quarantined "+
+		"pre-ingest cop(ies), %d cached embedding(s)\n",
+		res.Derived.Entities, res.Derived.Edges, res.QuarantinedCopiesDeleted,
+		res.EmbeddingCacheKeysDeleted)
 	return nil
 }
 

@@ -28,7 +28,7 @@ func (r *pollingTaskRepo) Get(_ context.Context, _ string) (*persistence.Task, e
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.transcript) == 0 {
-		return nil, nil
+		return nil, persistence.ErrNotFound
 	}
 	if r.idx >= len(r.transcript) {
 		t := r.transcript[len(r.transcript)-1]

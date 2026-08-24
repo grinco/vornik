@@ -33,7 +33,7 @@ func (s *uiStubInstinctRepo) RecomputeConfidence(context.Context, string, persis
 	return nil
 }
 func (s *uiStubInstinctRepo) Get(context.Context, string) (*persistence.Instinct, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (s *uiStubInstinctRepo) List(_ context.Context, filter persistence.InstinctFilter) ([]*persistence.Instinct, error) {
 	var out []*persistence.Instinct

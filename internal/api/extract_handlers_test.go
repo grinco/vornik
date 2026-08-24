@@ -36,7 +36,7 @@ func (s *stubArtifactRepo) Get(_ context.Context, id string) (*persistence.Artif
 	return nil, persistence.ErrNotFound
 }
 func (s *stubArtifactRepo) GetByHash(context.Context, string) (*persistence.Artifact, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (s *stubArtifactRepo) List(context.Context, persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
 	return nil, nil

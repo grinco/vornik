@@ -32,17 +32,20 @@ func (f *fakeRowDeleter) DeleteRow(_ context.Context, table LinkableTable, rowID
 }
 
 type fakeArtifactEraser struct {
-	erased []string
-	chunks int
-	err    error
+	erased  []string
+	chunks  int
+	derived ArtifactErasureCounts
+	err     error
 }
 
-func (f *fakeArtifactEraser) EraseArtifact(_ context.Context, artifactID string) (int, error) {
+func (f *fakeArtifactEraser) EraseArtifact(_ context.Context, artifactID string) (ArtifactErasureCounts, error) {
 	if f.err != nil {
-		return 0, f.err
+		return ArtifactErasureCounts{}, f.err
 	}
 	f.erased = append(f.erased, artifactID)
-	return f.chunks, nil
+	out := f.derived
+	out.ChunksDeleted = f.chunks
+	return out, nil
 }
 
 func planFor(t *testing.T, ground ErasureGround, items []Item) *ErasurePlan {
@@ -282,5 +285,43 @@ func TestExecuteErasure_ResultCarriesRequestIdentity(t *testing.T) {
 	}
 	if res.RequestID != "req-1" || res.SubjectID != "subj-1" {
 		t.Errorf("result identity = %s/%s, want req-1/subj-1", res.RequestID, res.SubjectID)
+	}
+}
+
+// The derived-graph counts must reach the erasure result.
+//
+// An erasure report that lists chunks and silently omits what those chunks
+// DERIVED is how 3,795 knowledge-graph entities accumulated in production
+// behind erasures reported as complete (design §4.14). Once the rows are gone
+// the report is the only evidence they were covered, so a count that stops at
+// the executor is the defect one level along.
+func TestExecute_reportsDerivedGraphCounts(t *testing.T) {
+	eraser := &fakeArtifactEraser{
+		chunks: 7,
+		derived: ArtifactErasureCounts{
+			GraphEntitiesDeleted:     4,
+			GraphEdgesDeleted:        6,
+			QuarantinedCopiesDeleted: 2,
+		},
+	}
+	plan := planFor(t, GroundConsentWithdrawn, []Item{
+		{Table: TableArtifacts, RowID: "artifact-1", Exclusivity: ExclusiveRow},
+	})
+	exec := &Executor{Rows: &fakeRowDeleter{}, Artifacts: eraser}
+
+	res, err := exec.Execute(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.DerivedGraphEntitiesDeleted != 4 {
+		t.Errorf("DerivedGraphEntitiesDeleted = %d, want 4", res.DerivedGraphEntitiesDeleted)
+	}
+	if res.DerivedGraphEdgesDeleted != 6 {
+		t.Errorf("DerivedGraphEdgesDeleted = %d, want 6", res.DerivedGraphEdgesDeleted)
+	}
+	if res.QuarantinedCopiesDeleted != 2 {
+		t.Errorf("QuarantinedCopiesDeleted = %d, want 2 — the quarantine table holds the "+
+			"chunk's full text and its FK is SET NULL, so it outlives a chunk-only erasure",
+			res.QuarantinedCopiesDeleted)
 	}
 }

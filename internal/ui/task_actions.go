@@ -53,8 +53,14 @@ func (s *Server) cancelOne(ctx context.Context, r *http.Request, taskID string) 
 	default:
 		return false
 	}
-	if task.Status == persistence.TaskStatusRunning && s.executor != nil {
-		_ = s.executor.Cancel(taskID)
+	// Ask the executor, not task.Status — that read predates the status write
+	// below, and a task that reached RUNNING in between would keep a live
+	// container while its row said CANCELLED (05-scheduler.md §4.7).
+	if s.executor != nil {
+		if _, cerr := s.executor.CancelIfActive(taskID); cerr != nil {
+			s.logger.Warn().Err(cerr).Str("task_id", taskID).
+				Msg("cancel: container did not stop — it may still be running")
+		}
 	}
 	_ = s.taskRepo.UpdateStatus(ctx, taskID, persistence.TaskStatusCancelled)
 	// CANCELLED is terminal, so drive the parent-unblock sweep —

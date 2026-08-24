@@ -611,7 +611,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 				// which steps' output was actually consumed mid-run.
 				e.finalizePendingOutcome(ctx, execution.ID, currentStepID, string(stepoutcome.OK), "", "", nil)
 			}
-			state.LastResult = append(json.RawMessage(nil), resultBytes...)
+			state.LastResult = stepResultJSON(resultBytes)
 			// Phase D — per-step result mirror for the
 			// ${outputs.<step>.<field>} interpolator. Stored
 			// alongside LastResult so the same checkpoint write
@@ -619,7 +619,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 			if state.StepResults == nil {
 				state.StepResults = map[string]json.RawMessage{}
 			}
-			state.StepResults[currentStepID] = append(json.RawMessage(nil), resultBytes...)
+			state.StepResults[currentStepID] = stepResultJSON(resultBytes)
 			state.ApprovalPendingStep = ""
 			state.ApprovalGrantedStep = ""
 			if err := e.saveCheckpoint(ctx, execution, nextStepID, completedSteps, state); err != nil {
@@ -708,7 +708,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 			completedSteps = append(completedSteps, currentStepID)
 			state.PlanSteps = nil
 			state.PlanIndex = 0
-			state.LastResult = append(json.RawMessage(nil), result...)
+			state.LastResult = stepResultJSON(result)
 			state.ApprovalPendingStep = ""
 			state.ApprovalGrantedStep = ""
 			if err := e.saveCheckpoint(ctx, execution, nextStepID, completedSteps, state); err != nil {
@@ -972,7 +972,7 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 				Msg("workflow: system step succeeded")
 			completedSteps = append(completedSteps, currentStepID)
 			if len(sysResult.Result) > 0 {
-				state.LastResult = append(json.RawMessage(nil), sysResult.Result...)
+				state.LastResult = stepResultJSON(sysResult.Result)
 			} else {
 				state.LastResult = []byte(`{}`)
 			}
@@ -4069,10 +4069,14 @@ func (e *Executor) cancelDescendants(ctx context.Context, parentTaskID string, s
 			e.logger.Warn().Err(terr).Str("child_task_id", child.ID).
 				Msg("cancel cascade: failed to cancel child")
 		}
-		if moved && child.Status == persistence.TaskStatusRunning {
-			if cerr := e.Cancel(child.ID); cerr != nil {
+		if moved {
+			// Ask the executor, not the row we just read. child.Status is a
+			// snapshot from GetChildren; the transition above accepts LEASED
+			// too, so a child that reached RUNNING in between would have had
+			// its row cancelled and its container left alive (§4.7).
+			if _, cerr := e.CancelIfActive(child.ID); cerr != nil {
 				e.logger.Warn().Err(cerr).Str("child_task_id", child.ID).
-					Msg("cancel cascade: failed to tear down running child")
+					Msg("cancel cascade: child container did not stop — it may still be running")
 			}
 		}
 		// Recurse regardless of whether this child transitioned: it may
@@ -4125,11 +4129,11 @@ func (e *Executor) cancelBlockedDependents(ctx context.Context, taskID, reason s
 				Str("dependent_task_id", dep.ID).
 				Str("blocked_on_task_id", taskID).
 				Msg("dependent cancel: cancelled subtask blocked on a failed upstream sibling")
-			if dep.Status == persistence.TaskStatusRunning {
-				if cerr := e.Cancel(dep.ID); cerr != nil {
-					e.logger.Warn().Err(cerr).Str("dependent_task_id", dep.ID).
-						Msg("dependent cancel: failed to tear down running dependent")
-				}
+			// Same rule as the child cascade: the executor's live map decides,
+			// not dep.Status from the GetDependents read (§4.7).
+			if _, cerr := e.CancelIfActive(dep.ID); cerr != nil {
+				e.logger.Warn().Err(cerr).Str("dependent_task_id", dep.ID).
+					Msg("dependent cancel: dependent container did not stop — it may still be running")
 			}
 		}
 		// Recurse: cancelling this dependent unblocks-by-cancellation its own
@@ -4159,6 +4163,63 @@ func errorResultJSON(err error) json.RawMessage {
 		msg = err.Error()
 	}
 	return resultJSON(map[string]any{"error": msg})
+}
+
+// maxPreservedResultBytes caps how much of an unparseable step result the
+// diagnostic keeps. The wrap exists to preserve evidence, not to move an
+// arbitrarily large blob into the state_snapshot column — and a producer
+// emitting megabytes of non-JSON is already the pathological case.
+const maxPreservedResultBytes = 32 << 10
+
+// stepResultJSON is the guard for bytes this executor did not encode itself.
+//
+// Everything a step PRODUCES arrives as opaque bytes — an agent's result.json, a
+// plan step's output, a system handler's envelope — and the pass-through
+// assignments used to store them into a json.RawMessage verbatim. Nothing
+// between the producer and the snapshot column asked whether they were JSON, so
+// invalid bytes did not fail where they were produced. They failed at the NEXT
+// checkpoint, killing the whole execution several steps away:
+//
+//	failed to marshal execution checkpoint: json: error calling MarshalJSON for
+//	type json.RawMessage: invalid character '[' in string escape code
+//
+// 70aafb58 fixed this for step ERROR text (see errorResultJSON) and left the
+// pass-throughs alone. Measured from journald 2026-08-22, which retains back to
+// 2026-08-21 19:45: 7 executions across 6 tasks killed in that 36-hour window,
+// every one the agent benchmark's dev-pipeline dying on the checkpoint written
+// straight after its `review` step, always on `[` — an agent result.json
+// carrying a backslash-bracket. A floor rather than a total; the journal rotates.
+// So the question is asked once, here, and again at the store — see
+// sanitizeCheckpointBytes.
+//
+// The producer's text is PRESERVED rather than replaced by a bare error: those
+// bytes are the only evidence of what the step actually said, and a diagnostic
+// that throws the evidence away just relocates the debugging problem.
+//
+// Empty stays empty. Empty bytes marshal as null and callers already guard on
+// len(), so wrapping them would invent a defect where there is none.
+func stepResultJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	if json.Valid(raw) {
+		// Copied: callers store this into long-lived state, and the source is
+		// usually a buffer the step machinery reuses.
+		return append(json.RawMessage(nil), raw...)
+	}
+
+	text, truncated := string(raw), false
+	if len(text) > maxPreservedResultBytes {
+		// Cutting mid-rune is fine — json.Marshal replaces the broken tail with
+		// U+FFFD, which is still valid JSON and still readable.
+		text, truncated = text[:maxPreservedResultBytes], true
+	}
+	return resultJSON(map[string]any{
+		"error": "step result was not valid JSON and was stored as text so the " +
+			"checkpoint could be written; the raw output is under \"raw\"",
+		"raw":           text,
+		"raw_truncated": truncated,
+	})
 }
 
 // resultJSON marshals a step result, falling back to a valid diagnostic rather

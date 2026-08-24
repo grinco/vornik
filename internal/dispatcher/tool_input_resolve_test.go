@@ -32,7 +32,7 @@ func (s *stubArtifactRepoForResolve) Get(_ context.Context, id string) (*persist
 	return nil, persistence.ErrNotFound
 }
 func (s *stubArtifactRepoForResolve) GetByHash(_ context.Context, _ string) (*persistence.Artifact, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (s *stubArtifactRepoForResolve) List(_ context.Context, _ persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
 	return nil, nil

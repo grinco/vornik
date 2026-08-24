@@ -52,10 +52,10 @@ func (f *dispatchFakeRepo) Upsert(_ context.Context, d *persistence.ExtractedDoc
 	return nil
 }
 func (*dispatchFakeRepo) Get(context.Context, string) (*persistence.ExtractedDocument, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (*dispatchFakeRepo) GetByArtifact(context.Context, string) (*persistence.ExtractedDocument, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (*dispatchFakeRepo) ListByProject(context.Context, string, int) ([]*persistence.ExtractedDocument, error) {
 	return nil, nil

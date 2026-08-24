@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -265,6 +266,19 @@ func runBenchMemory(cmd *cobra.Command, _ []string) error {
 	// zero tables. This asks the system where its writes actually land, and fails
 	// closed when it cannot say.
 	if err := membench.VerifyWriteTarget(cmd.Context(), sys, benchDatabase); err != nil {
+		return err
+	}
+
+	// The clear the flag has always promised. ONLY here — after both guards
+	// have proved the target is neither production nor a database the operator
+	// did not name. Before them this would be the most dangerous call in the
+	// package; after them it is the one --i-know-this-wipes authorised.
+	//
+	// Without it the store accumulates and the run dedups itself: admitted
+	// deposits fell 426 -> 426 -> 209 over three runs of the same 120 items
+	// until two items lost their whole haystack, and accuracy moved
+	// 0.692 -> 0.750 on a manual wipe. See design §5.8.
+	if err := clearBenchStore(cmd.Context(), sys, "membench/%"); err != nil {
 		return err
 	}
 
@@ -646,4 +660,55 @@ func loadResult(runDir string) (membench.Result, error) {
 		return res, fmt.Errorf("parse results in %s: %w", runDir, err)
 	}
 	return res, nil
+}
+
+// clearBenchStore resets the benchmark project's retrievable memory before a run.
+//
+// The project is read from the daemon (companion whoami) rather than taken from
+// a flag: the harness already refuses to trust a typed database name, and a
+// typed PROJECT name would be the same hole one field over — a clear pointed at
+// the wrong project is worse than no clear.
+//
+// The DSN is VORNIK_BENCH_DSN, the same variable `bench agent` already requires,
+// and it is read HERE rather than at startup so it is only needed by a run that
+// has already passed both guards. Its database must match the verified target;
+// a DSN pointing elsewhere is the 2026-08-12 incident with an extra step.
+func clearBenchStore(ctx context.Context, sys membench.MemorySystem, scopePrefix string) error {
+	reporter, ok := sys.(interface {
+		WriteTargetProject(context.Context) (string, error)
+	})
+	if !ok {
+		return fmt.Errorf("refusing to run: the %q system cannot report its project, so the "+
+			"per-run clear cannot know which store to reset. An uncleared store dedups the "+
+			"run against itself and the score drifts silently", sys.Name())
+	}
+	project, err := reporter.WriteTargetProject(ctx)
+	if err != nil {
+		return fmt.Errorf("refusing to run: could not establish which project to clear (%w)", err)
+	}
+	if strings.TrimSpace(project) == "" {
+		return fmt.Errorf("refusing to run: the daemon reported an EMPTY project, which names " +
+			"no store to clear. Treating empty as 'nothing to do' is how the absent clear " +
+			"stayed invisible")
+	}
+
+	dsn := strings.TrimSpace(os.Getenv("VORNIK_BENCH_DSN"))
+	if dsn == "" {
+		return fmt.Errorf("refusing to run: VORNIK_BENCH_DSN is required so the run can clear " +
+			"the benchmark store before it starts. Without the clear the store accumulates " +
+			"across runs and the run dedups against itself (design §5.8)")
+	}
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return fmt.Errorf("clear: open %s: %w", benchDatabase, err)
+	}
+	defer func() { _ = db.Close() }()
+
+	res, err := membench.ClearBenchmarkStore(ctx, db, project, scopePrefix)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("cleared benchmark store for project %q: %d chunks, %d entities, %d edges, %d mentions\n",
+		project, res.Chunks, res.Entities, res.Edges, res.Mentions)
+	return nil
 }

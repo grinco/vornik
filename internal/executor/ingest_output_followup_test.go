@@ -33,7 +33,7 @@ func (r *inMemArtifactRepo) Create(_ context.Context, a *persistence.Artifact) e
 	return nil
 }
 func (r *inMemArtifactRepo) GetByHash(_ context.Context, _ string) (*persistence.Artifact, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (r *inMemArtifactRepo) List(_ context.Context, f persistence.ArtifactFilter) ([]*persistence.Artifact, error) {
 	r.mu.Lock()

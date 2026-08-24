@@ -33,7 +33,7 @@ func (f *fakeMsgRepoForRoute) List(context.Context, persistence.TaskMessageFilte
 	return nil, nil
 }
 func (f *fakeMsgRepoForRoute) GetOpenCheckpoint(context.Context, string) (*persistence.TaskMessage, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (f *fakeMsgRepoForRoute) MarkCheckpointResolved(context.Context, string, string) error {
 	return nil

@@ -77,6 +77,12 @@ type mcpOAuthBeginResponse struct {
 	// RedirectURI is echoed so an operator debugging a vendor-side
 	// "redirect_uri mismatch" can see exactly what was sent.
 	RedirectURI string `json:"redirect_uri"`
+	// DroppedScopes are advertised scopes this request deliberately did not ask
+	// for (daemon-scope servers may not inherit write access — auth design
+	// §12.2). Carried on the wire because the CLI shows the operator the ask,
+	// and an ask that was narrowed without saying so is how a read-only grant
+	// gets mistaken for a vendor that offers no writes.
+	DroppedScopes []string `json:"dropped_scopes,omitempty"`
 }
 
 // mcpOAuthStatusResponse is the poll shape. It carries NO token — the CLI is a verifier of the
@@ -162,6 +168,7 @@ func (s *Server) MCPOAuthBegin(w http.ResponseWriter, r *http.Request) {
 		Resource:         begun.Resource,
 		Scopes:           begun.Scopes,
 		RedirectURI:      redirectURI,
+		DroppedScopes:    begun.DroppedScopes,
 	})
 }
 

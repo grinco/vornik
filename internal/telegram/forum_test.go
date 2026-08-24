@@ -527,7 +527,7 @@ func (s *stubTaskMessageRepo) GetOpenCheckpoint(_ context.Context, taskID string
 	if m, ok := s.openByTask[taskID]; ok {
 		return m, nil
 	}
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 
 func (s *stubTaskMessageRepo) MarkCheckpointResolved(_ context.Context, _, _ string) error {

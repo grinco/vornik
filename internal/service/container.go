@@ -657,6 +657,7 @@ type Container struct {
 	dryRunMetrics        *api.DryRunMetrics
 	configMirrorMetrics  *configrecon.Metrics
 	agentWriteMetrics    *api.AgentAPIWriteMetrics
+	mcpGateMetrics       *api.MCPGateMetrics
 	agentWritesAllWarned bool
 	taintWriteMetrics    *api.TaintWriteMetrics
 	chainMetrics         *api.AuthChainMetrics

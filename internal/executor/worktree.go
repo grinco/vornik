@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -818,27 +819,143 @@ func autoCommitLeftoverChanges(ctx context.Context, worktreeDir, taskID string, 
 // -u` is the load-bearing difference vs autoCommitLeftoverChanges: it stages
 // modifications/deletions of already-tracked paths only (untracked
 // .worktrees/ stays out).
+// untrackedVornikInternalPaths returns the vornik-written workspace-root files
+// that are currently UNTRACKED, so they can be staged by name rather than by a
+// blanket `git add -A`.
+//
+// `git ls-files --others --exclude-standard -- <names>` is the right primitive
+// here, and each flag is load-bearing:
+//
+//   - `--others` lists untracked files only — exactly the set `git add -u`
+//     cannot reach, which is the whole defect;
+//   - `--exclude-standard` honours .gitignore and .git/info/exclude, so on a
+//     forge clone (where excludeVornikInternalPaths has listed these names)
+//     nothing comes back, nothing is staged, and `git add` is never asked to
+//     force an ignored pathspec — it would error. Nothing vornik-internal
+//     reaches a customer's change request (incident 2026-06-13);
+//   - the trailing pathspecs scope the walk to our own names. `git status
+//     --untracked-files=all` would answer the same question but enumerate every
+//     file under `.worktrees/` — entire checkouts — on every merge;
+//   - `-z` emits raw NUL-separated paths. Plain output QUOTES any path with a
+//     space or a non-ASCII byte (`"my file.md"`, `"caf\303\251.md"`), and an
+//     operator-configured backlogFilePath can contain either. A quoted path
+//     would silently fail the match and go on blocking every merge.
+//
+// A pathspec that matches nothing is simply absent from the output, so a
+// subdirectory backlog path and a never-created COVERAGE_REPORT.md both cost
+// nothing.
+//
+// `.autonomy/` is deliberately NOT queried even though it is in
+// vornikInternalPaths: workspaceDirty already filters it, so it cannot block a
+// merge, and committing an agent scratch directory would be churn.
+func untrackedVornikInternalPaths(ctx context.Context, dir, backlogRel string) []string {
+	names := make([]string, 0, len(vornikInternalPaths)+1)
+	seen := make(map[string]bool, len(vornikInternalPaths)+1)
+	for _, p := range vornikInternalPaths {
+		if strings.HasSuffix(p, "/") {
+			continue // directory entries (.autonomy/) — see doc comment
+		}
+		if !seen[p] {
+			seen[p] = true
+			names = append(names, p)
+		}
+	}
+	if backlogRel != "" && !seen[backlogRel] {
+		// The configured backlogFilePath may differ from the default name, and
+		// may sit in a subdirectory.
+		names = append(names, backlogRel)
+	}
+	if len(names) == 0 {
+		return nil
+	}
+
+	args := append([]string{"-C", dir, "ls-files", "--others", "--exclude-standard", "-z", "--"}, names...)
+	out, err := gitExec.output(ctx, args...)
+	if err != nil {
+		return nil
+	}
+
+	var found []string
+	for _, entry := range strings.Split(string(out), "\x00") {
+		if entry == "" {
+			continue
+		}
+		found = append(found, filepath.ToSlash(entry))
+	}
+	sort.Strings(found)
+	return found
+}
+
+// stageUntrackedVornikInternal stages the given vornik-written paths by name.
+// Best-effort like every other step in the prelude: a failure is logged and the
+// merge still attempts, because refusing to proceed would strand the task's
+// work for a bookkeeping file.
+func stageUntrackedVornikInternal(ctx context.Context, dir, taskID string, paths []string, logger zerolog.Logger) {
+	if len(paths) == 0 {
+		return
+	}
+	args := append([]string{"-C", dir, "add", "--"}, paths...)
+	out, err := gitExec.combined(ctx, args...)
+	if err != nil {
+		logger.Warn().
+			Str("task_id", taskID).
+			Str("dir", dir).
+			Strs("paths", paths).
+			Str("output", strings.TrimSpace(string(out))).
+			Err(err).
+			Msg("workspace-prelude auto-commit: could not stage untracked vornik-internal files — they will block the merge")
+		return
+	}
+	logger.Info().
+		Str("task_id", taskID).
+		Strs("paths", paths).
+		Msg("workspace-prelude auto-commit: staging untracked vornik-internal file(s) for checkpoint")
+}
+
 func autoCommitTrackedChangesOnly(ctx context.Context, dir, taskID, backlogFile string, logger zerolog.Logger) {
 	if dir == "" || !isGitRepo(dir) {
 		return
 	}
 
-	// Quick check: if there's no tracked change either staged or in the
-	// working tree, return without attempting to commit. Avoids a no-op
-	// commit attempt surfacing as a confusing "nothing to commit" warn.
-	if _, headDirty := gitExec.combined(ctx, "-C", dir, "diff", "--quiet", "HEAD"); headDirty == nil {
-		if _, cachedDirty := gitExec.combined(ctx, "-C", dir, "diff", "--cached", "--quiet"); cachedDirty == nil {
-			return
-		}
-	}
-
-	// Resolve the backlog file to a repo-relative path for classification.
+	// Resolve the backlog file to a repo-relative path. Needed for
+	// classification below AND to recognise it among untracked entries, so it
+	// is computed before the early return rather than after.
 	var backlogRel string
 	if backlogFile != "" {
 		if rel, err := filepath.Rel(dir, backlogFile); err == nil && !strings.HasPrefix(rel, "..") {
 			backlogRel = filepath.ToSlash(rel)
 		}
 	}
+
+	// vornik's OWN workspace-root files that git has never seen. `git add -u`
+	// below is tracked-only by design (it must never pick up `.worktrees/`),
+	// and -u cannot stage a path with no history — so on its first write such a
+	// file was never committed, `workspaceDirty` saw it, and mergeWorktree
+	// refused for that task AND every task after it. A standing block, not a
+	// race: the per-project workspace lock has serialised merges since
+	// d2491e9a. Observed as an untracked BACKLOG.md failing 9 benchmark tasks
+	// in one evening, 2026-08-14.
+	//
+	// Design: https://docs.vornik.io §4.4a.
+	untrackedInternal := untrackedVornikInternalPaths(ctx, dir, backlogRel)
+
+	// Quick check: if there's no tracked change either staged or in the
+	// working tree, and nothing of ours is untracked, return without
+	// attempting to commit. Avoids a no-op commit attempt surfacing as a
+	// confusing "nothing to commit" warn.
+	if len(untrackedInternal) == 0 {
+		if _, headDirty := gitExec.combined(ctx, "-C", dir, "diff", "--quiet", "HEAD"); headDirty == nil {
+			if _, cachedDirty := gitExec.combined(ctx, "-C", dir, "diff", "--cached", "--quiet"); cachedDirty == nil {
+				return
+			}
+		}
+	}
+
+	// Stage them BY NAME — never `git add -A`, which would absorb the
+	// operator's own untracked work and `.worktrees/`. This runs before
+	// `git add -u` and before the classification read below, because that read
+	// is of the INDEX: anything staged after it lands in the wrong commit.
+	stageUntrackedVornikInternal(ctx, dir, taskID, untrackedInternal, logger)
 
 	checkpointMsg := "backlog: marker checkpoint before " + taskID
 	rescueMsg := "rescue: stranded tracked changes before " + taskID

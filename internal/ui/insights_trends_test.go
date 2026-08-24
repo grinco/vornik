@@ -110,7 +110,7 @@ type stubVerdictRepo struct {
 
 func (s *stubVerdictRepo) Record(context.Context, *persistence.TaskJudgeVerdict) error { return nil }
 func (s *stubVerdictRepo) GetByTask(context.Context, string) (*persistence.TaskJudgeVerdict, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (s *stubVerdictRepo) ListRecentSince(ctx context.Context, projectID string, _ time.Time, limit int) ([]*persistence.TaskJudgeVerdict, error) {
 	return s.ListRecent(ctx, projectID, limit)

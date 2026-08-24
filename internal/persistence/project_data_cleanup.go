@@ -74,6 +74,12 @@ var ProjectDataTables = []string{
 	"memory_embed_queue",
 	"memory_embed_dlq",
 	"memory_eviction_audit",
+	// The run headers those tombstones back-link to. AFTER the tombstones and
+	// LOAD-BEARING: the FK is ON DELETE RESTRICT, so deleting a header while
+	// its tombstones exist fails the whole wipe. Order is the contract here,
+	// not tidiness — TestProjectDataTables_EvictionTombstonesPrecedeRuns pins
+	// it.
+	"memory_eviction_runs",
 	"project_memory_quarantine",
 	"project_memory_chunks",
 	"project_ingest_queue",

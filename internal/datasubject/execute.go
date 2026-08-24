@@ -37,7 +37,28 @@ type RowDeleter interface {
 // let anyone find it later. internal/erasure exists for exactly this and has the
 // containment and filesystem-before-rows properties already tested.
 type ArtifactEraser interface {
-	EraseArtifact(ctx context.Context, artifactID string) (chunksDeleted int, err error)
+	EraseArtifact(ctx context.Context, artifactID string) (ArtifactErasureCounts, error)
+}
+
+// ArtifactErasureCounts is what one artifact's cascade removed.
+//
+// It carries the DERIVED-graph counts alongside the chunk count because an
+// erasure report that lists chunks and silently omits what those chunks derived
+// is how 3,795 knowledge-graph entities accumulated in production behind
+// erasures reported as complete. Once those rows are gone the report is the only
+// evidence they were covered, so the subject-facing report has to be able to
+// state them.
+type ArtifactErasureCounts struct {
+	ChunksDeleted int
+	// GraphEntitiesDeleted are knowledge_entities no surviving chunk mentions.
+	GraphEntitiesDeleted int
+	// GraphEdgesDeleted are knowledge_edges left without evidence, plus those
+	// removed with their entity by foreign key.
+	GraphEdgesDeleted int
+	// QuarantinedCopiesDeleted are project_memory_quarantine rows: the chunk's
+	// full text, held because an ingest gate REJECTED it. Its foreign key is
+	// ON DELETE SET NULL, so erasing the chunk alone left this copy behind.
+	QuarantinedCopiesDeleted int
 }
 
 // Executor performs a decided erasure plan.
@@ -90,6 +111,15 @@ type ErasureResult struct {
 	ArtifactsErased int `json:"artifacts_erased"`
 	// DerivedChunksDeleted counts memory chunks the cascade removed.
 	DerivedChunksDeleted int `json:"derived_chunks_deleted"`
+	// DerivedGraphRowsDeleted counts what those chunks had DERIVED: knowledge
+	// entities and edges, and the pre-ingest copies in the quarantine table.
+	// Separate from the chunk count because they are a different claim — the
+	// chunks were the data, these are what the system built out of it, and an
+	// erasure that removed one and not the other was still reported as
+	// complete until 2026-08-21.
+	DerivedGraphEntitiesDeleted int `json:"derived_graph_entities_deleted"`
+	DerivedGraphEdgesDeleted    int `json:"derived_graph_edges_deleted"`
+	QuarantinedCopiesDeleted    int `json:"quarantined_copies_deleted"`
 
 	// Redacted are shared rows rewritten to remove the subject while preserving
 	// the other subjects the row concerns.
@@ -227,13 +257,16 @@ func (e *Executor) Execute(ctx context.Context, plan *ErasurePlan) (*ErasureResu
 // applyDelete routes one delete to the right store and records the outcome.
 func (e *Executor) applyDelete(ctx context.Context, a Action, res *ErasureResult) {
 	if a.Table == TableArtifacts {
-		chunks, err := e.Artifacts.EraseArtifact(ctx, a.RowID)
+		counts, err := e.Artifacts.EraseArtifact(ctx, a.RowID)
 		if err != nil {
 			res.Failed = append(res.Failed, FailedAction{Table: a.Table, RowID: a.RowID, Err: err.Error()})
 			return
 		}
 		res.ArtifactsErased++
-		res.DerivedChunksDeleted += chunks
+		res.DerivedChunksDeleted += counts.ChunksDeleted
+		res.DerivedGraphEntitiesDeleted += counts.GraphEntitiesDeleted
+		res.DerivedGraphEdgesDeleted += counts.GraphEdgesDeleted
+		res.QuarantinedCopiesDeleted += counts.QuarantinedCopiesDeleted
 		res.Deleted = append(res.Deleted, DeletedRecord{Table: a.Table, RowID: a.RowID})
 		return
 	}

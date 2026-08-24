@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/budget"
+	"vornik.io/vornik/internal/executor"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/scheduler"
 	"vornik.io/vornik/internal/taintlineage"
@@ -899,7 +900,7 @@ func (s *Server) simpleStatusFlip(
 			// finished between our load and here) — fall through
 			// to the DB transition. Anything else is a real
 			// failure: surface it.
-			if !strings.Contains(err.Error(), "no active execution") {
+			if !errors.Is(err, executor.ErrNoActiveExecution) {
 				s.logger.Error().Err(err).Str("taskId", taskID).Msg("pause: executor.Pause failed")
 				respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to pause executor: "+err.Error())
 				return

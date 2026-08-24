@@ -41,7 +41,7 @@ func (s *stubInstinctRepo) RecomputeConfidence(context.Context, string, persiste
 	return nil
 }
 func (s *stubInstinctRepo) Get(context.Context, string) (*persistence.Instinct, error) {
-	return nil, nil
+	return nil, persistence.ErrNotFound
 }
 func (s *stubInstinctRepo) List(_ context.Context, filter persistence.InstinctFilter) ([]*persistence.Instinct, error) {
 	// Return only rows matching the requested status so the overlay's

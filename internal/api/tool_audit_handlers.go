@@ -60,6 +60,15 @@ type toolAuditStreamRequest struct {
 	ToolInput   string `json:"tool_input"`
 	ToolOutput  string `json:"tool_output"`
 	DurationMS  int64  `json:"duration_ms"`
+	// Outcome / OutcomeClass are the AGENT's own view of how the call ended.
+	//
+	// Optional, and used only as a FALLBACK: for a tool the daemon executed
+	// itself (every MCP call) the daemon's own observation wins, because an
+	// agent that mis-narrates a connector failure is precisely the failure
+	// mode this typing exists to catch. They matter for container-local tools,
+	// which the daemon never sees. See tool_outcome_buffer.go.
+	Outcome      string `json:"outcome"`
+	OutcomeClass string `json:"outcome_class"`
 }
 
 // IngestToolAudit handles POST /api/v1/internal/tool-audit.
@@ -163,17 +172,26 @@ func (s *Server) IngestToolAudit(w http.ResponseWriter, r *http.Request) {
 			Int64("clamped_to", clampedMs).
 			Msg("tool audit ingest: duration_ms outside sane range — clamping (likely agent ms_now() drift)")
 	}
+	// Typed outcome (migration 168). The daemon's own observation of this call
+	// wins over the agent's report; the agent's is used only where the daemon
+	// has none, which means a tool it did not execute.
+	outcome, outcomeClass := req.Outcome, req.OutcomeClass
+	if observed, class, ok := s.toolOutcomes.Claim(req.ExecutionID, req.ToolName); ok {
+		outcome, outcomeClass = observed, string(class)
+	}
 	entry := &persistence.ToolAuditEntry{
-		ID:          req.AuditID,
-		ProjectID:   req.ProjectID,
-		TaskID:      req.TaskID,
-		ExecutionID: req.ExecutionID,
-		StepID:      req.StepID,
-		ToolName:    req.ToolName,
-		ToolInput:   req.ToolInput,
-		ToolOutput:  out,
-		DurationMs:  clampedMs,
-		CreatedAt:   time.Now().UTC(),
+		ID:           req.AuditID,
+		ProjectID:    req.ProjectID,
+		TaskID:       req.TaskID,
+		ExecutionID:  req.ExecutionID,
+		StepID:       req.StepID,
+		ToolName:     req.ToolName,
+		ToolInput:    req.ToolInput,
+		ToolOutput:   out,
+		DurationMs:   clampedMs,
+		Outcome:      outcome,
+		OutcomeClass: outcomeClass,
+		CreatedAt:    time.Now().UTC(),
 	}
 	if err := s.toolAuditRepo.Log(r.Context(), entry); err != nil {
 		s.logger.Warn().

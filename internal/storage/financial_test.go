@@ -229,7 +229,10 @@ func TestToolAudit_LogIncrementsMetrics(t *testing.T) {
 	repos := Build(h.wrapped)
 	h.mock.ExpectExec("INSERT INTO tool_audit_log").
 		WithArgs("audit-1", "proj-fin", "task-1", "exec-1", "step-1",
-			"place_order", `{"symbol":"AAPL"}`, `{"order_id":"x"}`, int64(250), sqlmock.AnyArg()).
+			"place_order", `{"symbol":"AAPL"}`, `{"order_id":"x"}`, int64(250),
+			// outcome / outcome_class (migration 168). "ok" here; a row with
+			// no class reads as UNKNOWN, never as success.
+			"ok", "", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	err := repos.ToolAudit.Log(context.Background(), &persistence.ToolAuditEntry{
@@ -242,6 +245,7 @@ func TestToolAudit_LogIncrementsMetrics(t *testing.T) {
 		ToolInput:   `{"symbol":"AAPL"}`,
 		ToolOutput:  `{"order_id":"x"}`,
 		DurationMs:  250,
+		Outcome:     "ok",
 		CreatedAt:   time.Now().UTC(),
 	})
 	if err != nil {

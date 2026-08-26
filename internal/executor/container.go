@@ -1054,6 +1054,30 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 		}
 	}
 
+	// Tool contract: an auth-class tool failure fails the step (no opt-in),
+	// and a step declaring require_tools must have completed each of them.
+	//
+	// Runs AFTER the output-file contract and BEFORE plausibility, because a
+	// connector rejection explains a missing file and a thin result far better
+	// than either explains itself. Incident 2026-08-25: a connector lost auth,
+	// the agent narrated the 401 correctly in its own payload, and the task
+	// completed — nothing between the tool call and the task's status could
+	// name what had happened. See tool_contract.go.
+	if agentError == "" {
+		if v := e.evaluateToolContract(ctx, execution, task, &step, stepID); v != nil {
+			agentError = v.Message
+			if v.AuthClass {
+				e.logger.Error().
+					Str("execution_id", execution.ID).
+					Str("task_id", task.ID).
+					Str("project_id", task.ProjectID).
+					Str("step", stepID).
+					Str("outcome_class", "auth").
+					Msg("step failed: a connector rejected the credential — " + v.Message)
+			}
+		}
+	}
+
 	// Plausibility rules: layered on top of RequiredOutputKeys to
 	// catch the half-honest output ("approved":true with empty
 	// "feedback") that passes shape validation but isn't actually

@@ -879,16 +879,33 @@ func ClampToolAuditDurationMs(ms int64) int64 {
 // range before INSERT (ClampToolAuditDurationMs above) so a buggy
 // agent can't pollute the audit with absolute timestamps.
 type ToolAuditEntry struct {
-	ID          string    `json:"id"`
-	ProjectID   string    `json:"project_id"`
-	TaskID      string    `json:"task_id"`
-	ExecutionID string    `json:"execution_id"`
-	StepID      string    `json:"step_id,omitempty"`
-	ToolName    string    `json:"tool_name"`
-	ToolInput   string    `json:"tool_input,omitempty"`
-	ToolOutput  string    `json:"tool_output,omitempty"`
-	DurationMs  int64     `json:"duration_ms,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string `json:"id"`
+	ProjectID   string `json:"project_id"`
+	TaskID      string `json:"task_id"`
+	ExecutionID string `json:"execution_id"`
+	StepID      string `json:"step_id,omitempty"`
+	ToolName    string `json:"tool_name"`
+	ToolInput   string `json:"tool_input,omitempty"`
+	ToolOutput  string `json:"tool_output,omitempty"`
+	DurationMs  int64  `json:"duration_ms,omitempty"`
+	// Outcome is "ok", "error", or "" for UNKNOWN.
+	//
+	// Empty is not a synonym for success. It means the row predates migration
+	// 168 or was written by a path that does not classify, and every consumer
+	// must treat it as "we do not know" — reading it as ok would declare the
+	// ~51 hours of 401s that motivated this column a success. Match a class
+	// positively; never infer one from absence.
+	Outcome string `json:"outcome,omitempty"`
+	// OutcomeClass is the mcp.FailureClass of a failed call ("auth",
+	// "rate_limit", "transport", "server", "not_found", "invalid_request"),
+	// empty when the call succeeded or the class is unknown.
+	//
+	// Derived from the TRANSPORT — an HTTP status or a typed sentinel from the
+	// credential layer — never from message text. It is what lets a doctor
+	// check count auth failures per connector and a workflow step refuse to
+	// report success after one (design §3.2, §3.3).
+	OutcomeClass string    `json:"outcome_class,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // ToolAuditFilter defines filtering options for tool audit queries.

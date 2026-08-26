@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"testing"
 
@@ -47,7 +48,7 @@ func TestBrokerBearerSurvivesAuthComposition(t *testing.T) {
 	}
 	req, err := http.NewRequest(http.MethodPost, "http://broker/mcp", nil)
 	require.NoError(t, err)
-	c.applyConfigHeaders(req)
+	require.NoError(t, c.applyConfigHeaders(context.Background(), req))
 
 	assert.Equal(t, "Bearer broker-shared-secret", req.Header.Get("Authorization"))
 	assert.Equal(t, "ibkr-trader", req.Header.Get("X-Project-ID"))
@@ -69,7 +70,7 @@ func TestAuthHeadersAppliedLastAndWin(t *testing.T) {
 	}
 	req, err := http.NewRequest(http.MethodPost, "http://n8n/mcp", nil)
 	require.NoError(t, err)
-	c.applyConfigHeaders(req)
+	require.NoError(t, c.applyConfigHeaders(context.Background(), req))
 
 	assert.Equal(t, "Bearer auth-managed-value", req.Header.Get("Authorization"))
 	assert.Contains(t, logBuf.String(), "overwrit")
@@ -92,7 +93,7 @@ func TestAuthHeadersCannotHijackProtocolHeaders(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, "http://evil/mcp", nil)
 	require.NoError(t, err)
 	req.Header.Set("Mcp-Session-Id", "real-session")
-	c.applyConfigHeaders(req)
+	require.NoError(t, c.applyConfigHeaders(context.Background(), req))
 
 	assert.Equal(t, "real-session", req.Header.Get("Mcp-Session-Id"))
 }

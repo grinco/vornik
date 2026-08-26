@@ -5,6 +5,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 )
@@ -57,6 +58,50 @@ type ServerConfig struct {
 	// MCP discovery API. Populated by the wiring layer; empty for every
 	// server with no auth block.
 	AuthHeaders map[string]string `yaml:"-" json:"-"`
+	// AuthHeaderProvider, when non-nil, is consulted on EVERY request and its
+	// result is applied INSTEAD of AuthHeaders.
+	//
+	// It exists because a credential derived from an OAuth GRANT expires,
+	// while one derived from CONFIG does not. AuthHeaders is resolved by the
+	// wiring layer, and the wiring layer runs only at boot, on config reload,
+	// and on consent — so a bearer frozen there is valid for the vendor's
+	// access-token lifetime and dead for however long the daemon runs after
+	// that. Measured on the production deployment 2026-08-25: an 8-hour
+	// Atlassian token, a 58h41m gap between rewires, and ~51 hours during
+	// which every call 401'd while every status surface reported the grant
+	// healthy. See
+	// https://docs.vornik.io §3.1.
+	//
+	// Must be cheap on the common path — this is on every tool call. The
+	// implementation (mcpconnect.Connector.AccessToken behind a token cache)
+	// does no I/O until the token is within its refresh skew of expiry.
+	//
+	// A nil map with a nil error means "no credential", which is NOT an error:
+	// an oauth-mode server the operator has never connected registers and
+	// calls unauthenticated, so its tools stay visible and the operator can
+	// see what needs connecting (auth design §8).
+	//
+	// A non-nil error is FATAL to the call. Degrading to an unauthenticated
+	// request is exactly the silent failure this design removes.
+	//
+	// Never serialized, for the same reason as AuthHeaders.
+	AuthHeaderProvider func(ctx context.Context) (map[string]string, error) `yaml:"-" json:"-"`
+	// AuthInvalidator, when non-nil, discards whatever credential
+	// AuthHeaderProvider last returned, so the next call re-resolves it from
+	// the authoritative store instead of a cache.
+	//
+	// Called on exactly one condition: the vendor answered 401/403 to a
+	// credential the daemon believed was valid. That belief comes from the
+	// grant's stored expires_at, which is the VENDOR's advertised lifetime and
+	// is not binding on the vendor — a grant revoked in the Atlassian console,
+	// or reset by a scope change, dies before its stated expiry with nothing
+	// to tell us. The 401 is the only authoritative signal, so it is the
+	// trigger.
+	//
+	// Exactly one retry follows, never a loop (auth design §8). A server with
+	// no invalidator has nothing to refresh — a static credential that 401s is
+	// a config error, not a stale token — and is not retried at all.
+	AuthInvalidator func(ctx context.Context) `yaml:"-" json:"-"`
 	// AuthEnv carries credentials resolved from an `auth: {mode: env}`
 	// block into a stdio subprocess's environment — the Plane 2 case where
 	// the MCP server holds its OWN upstream app credentials (YouTube,

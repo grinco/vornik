@@ -17,6 +17,13 @@ packaging is different.
 - A `delegate` skill that teaches Codex when to recall, delegate, attach files
   with `inputArtifacts`, and pull results.
 - A `knowledge` skill for the daemon-owned knowledge-skill store.
+- A `backlog-deposit` skill + the shipped `scripts/vornik-backlog-deposit.sh`
+  it drives — capture an off-scope finding into the repository's own backlog
+  without derailing the current task, with dedup against every existing item
+  and a secret scan over content that is about to be committed. Client-side by
+  design: the daemon must not write your checkout, and the daemon-side tool
+  flattens an item to a single 600-character line. Byte-identical to the
+  Claude Code copy; a parity test fails the build on drift.
 - The operator lifecycle skills, mirrored from the Claude Code bundle:
   `vornik-docs` (where the documentation lives, with the real site map, and
   `vornikctl --help` ahead of recall so Codex quotes flags that exist),

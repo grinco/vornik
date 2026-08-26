@@ -98,11 +98,18 @@ func isSentenceBoundary(b byte) bool {
 // knowledge (e.g., a prompt that named the URL the agent should
 // summarise) and the rule must not fire.
 //
-// Implementation note: the case-insensitive comparison matches
-// extractURLs's lowercase canonical form. URL fragments and
-// trailing slashes are normalised by trimming so a model that
-// quotes "https://Example.com" and an audit entry of
-// "https://example.com/" both ground the claim correctly.
+// Implementation note: both the prose claim and the audited fetch
+// go through normalizeURLForMatch (url_match.go) — percent-decoded,
+// lowercased, fragment / trailing slash / leading "www." dropped —
+// and are then compared segment-wise, with an elision marker in the
+// claim standing for one or more path segments. Scheme and host must
+// match exactly.
+//
+// Severity is Warn, not High. It shipped at High without the soak the
+// design requires, and its first observed production firing was a
+// false positive that discarded a correct briefing and had the lead
+// narrate the verdict as fact (2026-08-23). See LLD §4a for what
+// re-promotion would take.
 func urlNotFetchedRule(text string, gc *GroundingContext) []Signal {
 	if gc == nil {
 		return nil
@@ -120,8 +127,13 @@ func urlNotFetchedRule(text string, gc *GroundingContext) []Signal {
 
 	var out []Signal
 	for _, raw := range extractURLs(text) {
-		key := strings.ToLower(strings.TrimRight(raw, "/"))
-		if matchesFetchedURL(key, gc.FetchedURLs) {
+		// Normalise the CLAIM exactly as the audited fetches were
+		// normalised when GroundingContext was built. The two sides
+		// must go through the same function or the comparison is
+		// asymmetric — which is how a percent-decoded, token-elided
+		// citation of a URL the agent really did fetch came to be
+		// reported as a fabrication (LLD §4a).
+		if matchesFetchedURL(normalizeURLForMatch(raw), gc.FetchedURLs) {
 			continue
 		}
 		// Find the position so we can pull a sentence. Search the
@@ -130,7 +142,13 @@ func urlNotFetchedRule(text string, gc *GroundingContext) []Signal {
 		idx := strings.Index(text, raw)
 		out = append(out, NewSignal(
 			"url_not_fetched",
-			SeverityHigh,
+			// Warn, not High: a High signal BLOCKS the step and is
+			// read downstream as evidence, so a false positive here
+			// manufactures a false incident rather than merely
+			// wasting a run. The rule also cannot see content
+			// fabrication at all, so blocking on a URL *string*
+			// difference inverts severity against actual harm.
+			SeverityWarn,
 			"url",
 			raw,
 			findSentence(text, idx),
@@ -164,24 +182,7 @@ func isFetchTool(name string) bool {
 	return false
 }
 
-// matchesFetchedURL is a forgiving membership check. Treats two
-// URLs as matching if either is a prefix of the other, after
-// trim of trailing slash. Catches the common case of a model
-// quoting "https://example.com/jobs" while the audit shows
-// "https://example.com/jobs/12345" (or vice versa) — both
-// indicate the agent actually fetched something on the host.
-func matchesFetchedURL(claim string, fetched map[string]struct{}) bool {
-	if _, ok := fetched[claim]; ok {
-		return true
-	}
-	for f := range fetched {
-		ft := strings.TrimRight(f, "/")
-		if strings.HasPrefix(ft, claim) || strings.HasPrefix(claim, ft) {
-			return true
-		}
-	}
-	return false
-}
+// matchesFetchedURL and its normalisation live in url_match.go.
 
 // taskIDNotFoundRule emits SeverityHigh when the agent's prose
 // references a task ID that's neither (a) the agent's own task,

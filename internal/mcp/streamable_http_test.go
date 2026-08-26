@@ -78,7 +78,14 @@ func TestCallStreamableHTTP_500IsStatusError(t *testing.T) {
 	}
 	_, err := c.callStreamableHTTP(context.Background(), "tools/list", map[string]any{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "streamable-http server returned 500")
+	// Typed since the 2026-08-26 connector-auth design: a caller gates on the
+	// CLASS, not on the message text.
+	var ce *CallError
+	require.True(t, errors.As(err, &ce), "expected *CallError, got %T: %v", err, err)
+	assert.Equal(t, 500, ce.Status)
+	assert.Equal(t, FailureServer, ce.Class)
+	assert.Equal(t, "ha", ce.Server)
+	assert.Contains(t, err.Error(), "500")
 	// The untrusted upstream body must NOT leak into the returned error.
 	assert.NotContains(t, err.Error(), "upstream boom")
 }

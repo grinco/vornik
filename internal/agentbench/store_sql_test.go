@@ -30,7 +30,9 @@ func newLedgerDB(t *testing.T) *sql.DB {
 			execution_id TEXT, step_id TEXT, role TEXT, requested_tools TEXT,
 			accepted INTEGER, refused_tools TEXT, is_escalation INTEGER, created_at TEXT)`,
 		`CREATE TABLE tool_audit_log (
-			execution_id TEXT, step_id TEXT, tool_name TEXT, tool_output TEXT, created_at TEXT)`,
+			execution_id TEXT, step_id TEXT, tool_name TEXT, tool_output TEXT,
+			outcome TEXT NOT NULL DEFAULT '', outcome_class TEXT NOT NULL DEFAULT '',
+			created_at TEXT)`,
 		`CREATE TABLE execution_step_outcomes (
 			execution_id TEXT, step_id TEXT, role TEXT, model TEXT, outcome TEXT,
 			error_class TEXT, effective_tool_budget INTEGER, tool_calls_used INTEGER,
@@ -63,9 +65,14 @@ func seedLedger(t *testing.T, db *sql.DB) {
 	exec(`INSERT INTO execution_tool_grants VALUES
 		('e1','s1','lead','["c"]',1,'[]',1,'2026-08-13T10:01:00Z')`)
 
-	exec(`INSERT INTO tool_audit_log VALUES ('e1','s1','a','{"result":"ok"}','2026-08-13T10:02:00Z')`)
-	exec(`INSERT INTO tool_audit_log VALUES
-		('e1','s1','made_up','{"isError":true,"error":"unknown tool: made_up"}','2026-08-13T10:03:00Z')`)
+	// Deliberately column-named and outcome-less: these rows are the
+	// PRE-MIGRATION shape, so they keep exercising callOutcome's legacy
+	// text-sniffing fallback. New rows carry a typed outcome — see
+	// TestCallOutcome_PrefersTheTypedOutcome.
+	exec(`INSERT INTO tool_audit_log (execution_id, step_id, tool_name, tool_output, created_at)
+		VALUES ('e1','s1','a','{"result":"ok"}','2026-08-13T10:02:00Z')`)
+	exec(`INSERT INTO tool_audit_log (execution_id, step_id, tool_name, tool_output, created_at)
+		VALUES ('e1','s1','made_up','{"isError":true,"error":"unknown tool: made_up"}','2026-08-13T10:03:00Z')`)
 
 	exec(`INSERT INTO execution_step_outcomes VALUES
 		('e1','s1','lead','m','schema_violation','shape',20,7,1500,'2026-08-13T10:04:00Z','sha256:aaa')`)
@@ -280,9 +287,9 @@ func TestCallFailure_OnlyTreatsExplicitErrorsAsFailures(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, _ := callFailure(c.output)
+			got, _ := callOutcome("", "", c.output)
 			if got != c.want {
-				t.Errorf("callFailure(%q) = %v, want %v", c.output, got, c.want)
+				t.Errorf("callOutcome(\"\", \"\", %q) = %v, want %v", c.output, got, c.want)
 			}
 		})
 	}
@@ -381,5 +388,71 @@ func TestSQLTraceStore_SumsStepDurationsIntoTheExecutionRecord(t *testing.T) {
 	}
 	if seen != 3 {
 		t.Errorf("step outcomes carrying a duration = %d, want 3", seen)
+	}
+}
+
+// Migration 168: the typed outcome is authoritative, and the text is not
+// consulted when one is present.
+//
+// This is the fix for gap 1 of the 2026-08-25 P0. Before it, a 401 whose output
+// did not happen to serialise as {"isError":true} was scored as a SUCCESSFUL
+// call, so nothing could count, alert on, or gate against a class of failure it
+// could not name.
+func TestCallOutcome_PrefersTheTypedOutcome(t *testing.T) {
+	cases := []struct {
+		name         string
+		outcome      string
+		outcomeClass string
+		output       string
+		wantFailed   bool
+		wantText     string
+	}{
+		{
+			name:         "auth failure with innocuous-looking output",
+			outcome:      "error",
+			outcomeClass: "auth",
+			// Exactly the shape that used to score as a success: prose, no
+			// isError flag, no error field.
+			output:     `{"content":[{"type":"text","text":"Re-authenticate the Atlassian connection"}]}`,
+			wantFailed: true,
+			wantText:   "auth",
+		},
+		{
+			name:       "typed ok wins over alarming-looking output",
+			outcome:    "ok",
+			output:     `{"content":[{"type":"text","text":"error: 401 unauthorized appears in this document"}]}`,
+			wantFailed: false,
+		},
+		{
+			name:       "typed error with no class falls back to the text",
+			outcome:    "error",
+			output:     `{"isError":true,"error":"boom"}`,
+			wantFailed: true,
+			wantText:   "boom",
+		},
+		{
+			name:       "pre-migration row is sniffed, not assumed ok",
+			outcome:    "",
+			output:     `{"isError":true,"error":"unknown tool: made_up"}`,
+			wantFailed: true,
+			wantText:   "unknown tool: made_up",
+		},
+		{
+			name:       "pre-migration success stays a success",
+			outcome:    "",
+			output:     `{"result":"ok"}`,
+			wantFailed: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			failed, text := callOutcome(c.outcome, c.outcomeClass, c.output)
+			if failed != c.wantFailed {
+				t.Errorf("failed = %v, want %v", failed, c.wantFailed)
+			}
+			if c.wantText != "" && text != c.wantText {
+				t.Errorf("text = %q, want %q", text, c.wantText)
+			}
+		})
 	}
 }

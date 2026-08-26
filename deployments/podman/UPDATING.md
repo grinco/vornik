@@ -11,6 +11,30 @@ this updates.
 > takes a DB dump + binary/config backup first and prints exact rollback
 > commands — use it for upgrades so you always have a way back.
 
+## Container images are part of the update
+
+Agent-side product code ships **inside** the agent image, not in the daemon
+binary: `cmd/mcp-bridge`, `cmd/agent-helper` and
+`images/vornik-agent/entrypoint.sh` are baked in at build time. An update that
+swaps only the binary therefore delivers **half** of any release that changed
+both sides.
+
+That is not hypothetical. Commit `356e74cd` ("four agent tools bypassed the
+per-role allowlist") changed `internal/agenttools` **and** the agent
+entrypoint. Between 2026-07-13 and 2026-08-25 `vornik-update.sh` treated the
+image rebuild as opt-in, so installs updated through the documented path
+received the daemon half only and kept the bypass reachable.
+
+Since 2026-08-25 **images are rebuilt by default**, and only images whose build
+revision differs from the target commit are rebuilt — a release that touched no
+image inputs costs one label read per image, not a build. `vornikctl doctor`'s
+`image_freshness` check reports any image that has drifted from the running
+daemon.
+
+If you are updating an install that predates this change, the first update
+rebuilds every image once, because no deployed image carries a revision label
+yet. Expect it to take longer than usual; that is the catch-up pass, not a hang.
+
 ## What it assumes (the quickstart layout — all env-overridable)
 
 | Thing | Default | Override |
@@ -36,7 +60,7 @@ cd ~/vornik/deployments/podman
 ./vornik-update.sh --ref 2026.8.0     # pin a specific tag or commit
 ./vornik-update.sh --ref origin/main  # track the tip of main
 ./vornik-update.sh --yes        # skip the confirmation prompt (automation)
-./vornik-update.sh --rebuild-agent    # also rebuild localhost/vornik-agent:latest
+./vornik-update.sh --no-rebuild-images  # skip the image rebuild (see caveat below)
 ./vornik-update.sh --force      # rebuild+reinstall even if the checkout already matches
 ./vornik-update.sh --help
 ```
@@ -50,6 +74,11 @@ cd ~/vornik/deployments/podman
    (pre-upgrade commit + DB migration version).
 3. **Checkout + rebuild** — checks out the target ref and rebuilds CE binaries
    in the golang container, version-stamped via `-ldflags`.
+3b. **Rebuild drifted images** — rebuilds every image this host's deployment
+   uses whose build revision differs from the target commit, stamping the new
+   commit into each. This runs **before** the cutover and is **fatal** on
+   failure, so a failed image build leaves the running install completely
+   untouched rather than pairing a new daemon with an old image.
 4. **Smoke check** — runs the new binary's `-version` before touching the
    service; a binary that can't start is caught before any swap.
 5. **Cutover** — stops the service, installs the new binaries, starts it.
@@ -60,6 +89,14 @@ cd ~/vornik/deployments/podman
 
 If a running/leased task is in flight, the script warns before the cutover
 (the restart interrupts it) — pass `--yes` to proceed anyway in automation.
+
+### `--no-rebuild-images`
+
+The flag is honoured, but while images are stale `vornikctl doctor` reports a
+WARNING on every run. That is deliberate: the warning **confirms the pin is
+intentional**, it is not a fault to be silenced. There is no per-image
+suppression, because a switch that hides drift would restore exactly the
+silent-staleness this change removed.
 
 ### Why this is safe for the DB
 

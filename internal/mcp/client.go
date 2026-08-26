@@ -255,6 +255,24 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 	}
 	params := toolCallParams{Name: name, Arguments: args}
 	resp, err := c.call(ctx, "tools/call", params)
+	if err != nil && c.shouldRefreshAndRetry(err) {
+		// The vendor rejected a credential the daemon believed was valid.
+		// Discard it, re-resolve from the store, and replay ONCE. See
+		// ServerConfig.AuthInvalidator for why the 401 is the trigger rather
+		// than the stored expiry.
+		c.logger.Warn().
+			Str("server", c.config.Name).
+			Str("tool", name).
+			Msg("mcp: credential rejected — refreshing the grant and retrying once")
+		c.config.AuthInvalidator(ctx)
+		resp, err = c.call(ctx, "tools/call", params)
+		if err != nil {
+			c.logger.Error().Err(err).
+				Str("server", c.config.Name).
+				Str("tool", name).
+				Msg("mcp: credential still rejected after a refresh — the grant needs an operator reconnect")
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -264,6 +282,17 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 		return nil, fmt.Errorf("failed to parse tools/call result: %w", err)
 	}
 	return &result, nil
+}
+
+// shouldRefreshAndRetry reports whether err is a vendor credential rejection
+// that a refresh could plausibly cure.
+//
+// Requires an invalidator: without one there is no cached credential to
+// discard, so a replay would present the identical header and fail identically.
+// Requires the AUTH class specifically: a 5xx must not be replayed, because
+// doubling the load on a server already in trouble is not a recovery strategy.
+func (c *Client) shouldRefreshAndRetry(err error) bool {
+	return c.config.AuthInvalidator != nil && IsAuthFailure(err)
 }
 
 // Close shuts down the connection.
@@ -636,7 +665,16 @@ func (c *Client) notify(method string, params any) error {
 		if err != nil {
 			return err
 		}
-		c.setStreamableHeaders(ctx, httpReq)
+		if err := c.setStreamableHeaders(ctx, httpReq); err != nil {
+			// Fire-and-forget, like the Do error below: a lifecycle
+			// notification that cannot be credentialed must not fail
+			// Connect. The tool calls that follow resolve the same
+			// credential and DO fail on it, which is where the operator
+			// needs the error raised.
+			c.logger.Debug().Str("server", c.config.Name).Err(err).
+				Msg("mcp: streamable-http notify skipped — credential unavailable")
+			return nil
+		}
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
 			// Fire-and-forget: a missing ack must not fail Connect.
@@ -744,7 +782,9 @@ func (c *Client) callSSE(ctx context.Context, method string, params any) (json.R
 	// each project's clients — e.g. X-Project-ID and
 	// X-Project-Caps for the broker MCP). Loop instead of
 	// MaybeSetHeaders so a nil/empty map is a no-op.
-	c.applyConfigHeaders(httpReq)
+	if err := c.applyConfigHeaders(ctx, httpReq); err != nil {
+		return nil, err
+	}
 	// Per-call request-scoped headers forwarded from the agent
 	// container via context. The daemon's tool-call HTTP handler
 	// extracts X-Task-ID / X-Execution-ID from the agent's MCP
@@ -837,7 +877,7 @@ var reservedMCPHeaders = map[string]struct{}{
 // a protocol-owned header (reservedMCPHeaders). A collision is logged once
 // per call at Warn so the operator sees the dropped override rather than a
 // silent session-id hijack.
-func (c *Client) applyConfigHeaders(httpReq *http.Request) {
+func (c *Client) applyConfigHeaders(ctx context.Context, httpReq *http.Request) error {
 	for k, v := range c.config.Headers {
 		if _, reserved := reservedMCPHeaders[strings.ToLower(strings.TrimSpace(k))]; reserved {
 			c.logger.Warn().
@@ -848,7 +888,7 @@ func (c *Client) applyConfigHeaders(httpReq *http.Request) {
 		}
 		httpReq.Header.Set(k, v)
 	}
-	c.applyAuthHeaders(httpReq)
+	return c.applyAuthHeaders(ctx, httpReq)
 }
 
 // applyAuthHeaders applies credentials resolved from the server's `auth:` block
@@ -860,8 +900,12 @@ func (c *Client) applyConfigHeaders(httpReq *http.Request) {
 //
 // Never logs a header VALUE — these are real credentials, and a Warn line is
 // exactly the kind of place one leaks from.
-func (c *Client) applyAuthHeaders(httpReq *http.Request) {
-	for k, v := range c.config.AuthHeaders {
+func (c *Client) applyAuthHeaders(ctx context.Context, httpReq *http.Request) error {
+	headers, err := c.resolveAuthHeaders(ctx)
+	if err != nil {
+		return err
+	}
+	for k, v := range headers {
 		if _, reserved := reservedMCPHeaders[strings.ToLower(strings.TrimSpace(k))]; reserved {
 			c.logger.Warn().
 				Str("server", c.config.Name).
@@ -877,13 +921,35 @@ func (c *Client) applyAuthHeaders(httpReq *http.Request) {
 		}
 		httpReq.Header.Set(k, v)
 	}
+	return nil
+}
+
+// resolveAuthHeaders returns the credential headers to attach to THIS request.
+//
+// A grant-derived credential comes from AuthHeaderProvider and is resolved per
+// call, because it expires; a config-derived one comes from the static
+// AuthHeaders map, because config only changes through a reload that rewires
+// anyway. See ServerConfig.AuthHeaderProvider for the incident that forced the
+// distinction.
+//
+// The provider's error is returned unwrapped-in-context so callers can match
+// mcpconnect.ErrNeedsReconnect with errors.Is through the chain.
+func (c *Client) resolveAuthHeaders(ctx context.Context) (map[string]string, error) {
+	if c.config.AuthHeaderProvider == nil {
+		return c.config.AuthHeaders, nil
+	}
+	headers, err := c.config.AuthHeaderProvider(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mcp: %q credential could not be resolved: %w", c.config.Name, err)
+	}
+	return headers, nil
 }
 
 // setStreamableHeaders applies the headers common to every streamable-http
 // request: content negotiation, protocol version, the session id (when
 // assigned), the per-server configured headers (Bearer auth etc.), and the
 // ctx-forwarded task/execution attribution headers.
-func (c *Client) setStreamableHeaders(ctx context.Context, httpReq *http.Request) {
+func (c *Client) setStreamableHeaders(ctx context.Context, httpReq *http.Request) error {
 	c.setBaseHeaders(httpReq)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
@@ -891,13 +957,16 @@ func (c *Client) setStreamableHeaders(ctx context.Context, httpReq *http.Request
 	if sid, _ := c.sessionID.Load().(string); sid != "" {
 		httpReq.Header.Set("Mcp-Session-Id", sid)
 	}
-	c.applyConfigHeaders(httpReq)
+	if err := c.applyConfigHeaders(ctx, httpReq); err != nil {
+		return err
+	}
 	if v, ok := ctx.Value(TaskIDHeaderKey{}).(string); ok && v != "" {
 		httpReq.Header.Set("X-Task-ID", v)
 	}
 	if v, ok := ctx.Value(ExecutionIDHeaderKey{}).(string); ok && v != "" {
 		httpReq.Header.Set("X-Execution-ID", v)
 	}
+	return nil
 }
 
 // mcpHTTPStatusError maps a >=400 streamable-http response to an error,
@@ -919,7 +988,15 @@ func (c *Client) mcpHTTPStatusError(resp *http.Response, body []byte, method str
 	c.logger.Warn().Str("server", c.config.Name).Str("tool", method).
 		Int("status", resp.StatusCode).Str("body", logBody).
 		Msg("mcp: streamable-http server returned error status")
-	return fmt.Errorf("streamable-http server returned %d", resp.StatusCode)
+	// Typed, so a caller can gate on the CLASS of failure rather than sniff
+	// the message. The untrusted body is logged truncated above and never
+	// carried into the error (design §3.2).
+	return &CallError{
+		Server: c.config.Name,
+		Tool:   method,
+		Status: resp.StatusCode,
+		Class:  ClassifyHTTPStatus(resp.StatusCode),
+	}
 }
 
 // callStreamableHTTP POSTs a JSON-RPC request to the single MCP endpoint and
@@ -935,7 +1012,9 @@ func (c *Client) callStreamableHTTP(ctx context.Context, method string, params a
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	c.setStreamableHeaders(ctx, httpReq)
+	if err := c.setStreamableHeaders(ctx, httpReq); err != nil {
+		return nil, err
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

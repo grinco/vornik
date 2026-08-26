@@ -15,6 +15,7 @@ import (
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/featuredoctor"
+	"vornik.io/vornik/internal/imagemanifest"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/pricing"
 	"vornik.io/vornik/internal/registry"
@@ -195,6 +196,22 @@ type DoctorHandlers struct {
 	// subuidProvisioned; tests inject a fake so they never touch the
 	// filesystem or PATH.
 	subuidOKFunc func() bool
+
+	// The three seams below back checkImageFreshness (see
+	// doctor_image_freshness.go). Each is nil-safe and defaults to the
+	// real host implementation; tests inject fakes so the check never
+	// shells out to podman or systemctl, and so its verdicts are
+	// assertable on a machine with no images at all.
+	//
+	// imageProber resolves manifest conditions (which optional stacks
+	// this host intends to run). Nil ⇒ hostProber.
+	imageProber imagemanifest.Prober
+	// imageRevisionFunc reads an image's build-revision label, reporting
+	// whether the label was present. Nil ⇒ realImageRevision.
+	imageRevisionFunc func(ctx context.Context, image string) (revision string, labelled bool, err error)
+	// daemonRevisionFunc reports the commit this daemon was built from.
+	// Nil ⇒ version.BuildRevision with the -dirty suffix applied.
+	daemonRevisionFunc func() (string, bool)
 }
 
 // SetAPIMetrics wires the registered APIMetrics so the
@@ -412,6 +429,7 @@ func (h *DoctorHandlers) RunReportReadOnly(ctx context.Context) DoctorReport {
 	report.Checks = append(report.Checks, h.checkModelCallsLive())
 	report.Checks = append(report.Checks, h.checkModelCircuits())
 	report.Checks = append(report.Checks, h.checkAgentModelCircuits())
+	report.Checks = append(report.Checks, h.checkConnectorAuth(ctx))
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
 	report.Checks = append(report.Checks, h.checkRetentionEnabled())
 	report.Checks = append(report.Checks, h.checkBreachDeadlines(ctx))
@@ -470,6 +488,7 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkAgentLLMTopology())
 	report.Checks = append(report.Checks, h.checkAgentLLMAPIKey(ctx))
 	report.Checks = append(report.Checks, h.checkAgentImageUID(ctx))
+	report.Checks = append(report.Checks, h.checkImageFreshness(ctx))
 	report.Checks = append(report.Checks, h.checkAPISecurityPosture())
 	report.Checks = append(report.Checks, h.checkAPIKeyStrength())
 	report.Checks = append(report.Checks, h.checkPricingCoverage())
@@ -486,6 +505,7 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkModelCallsLive())
 	report.Checks = append(report.Checks, h.checkModelCircuits())
 	report.Checks = append(report.Checks, h.checkAgentModelCircuits())
+	report.Checks = append(report.Checks, h.checkConnectorAuth(ctx))
 	report.Checks = append(report.Checks, h.checkConfigCRLF(fix))
 	report.Checks = append(report.Checks, h.checkRetentionEnabled())
 	report.Checks = append(report.Checks, h.checkBreachDeadlines(ctx))

@@ -145,6 +145,80 @@ func RunToolAuditSuite(t *testing.T, repo persistence.ToolAuditRepository) {
 		}
 	})
 
+	// Migration 168: the typed outcome must survive a round trip on BOTH
+	// backends. `go test ./...` is SQLite-only, so a Postgres-side column or
+	// scan-order mistake would ship undetected — the shape of the break that
+	// took grinco/vornik CI down on 2026-07-24.
+	//
+	// Design: https://docs.vornik.io §3.2
+	t.Run("Outcome_class_round_trips", func(t *testing.T) {
+		failed := &persistence.ToolAuditEntry{
+			ID:           uniqueID("aud"),
+			ProjectID:    "proj-outcome",
+			TaskID:       "task-outcome",
+			ExecutionID:  "exec-outcome",
+			StepID:       "step-outcome",
+			ToolName:     "mcp__atlassian__searchJiraIssuesUsingJql",
+			ToolOutput:   "",
+			Outcome:      "error",
+			OutcomeClass: "auth",
+			CreatedAt:    time.Now().UTC().Truncate(time.Millisecond),
+		}
+		if err := repo.Log(ctx, failed); err != nil {
+			t.Fatalf("Log: %v", err)
+		}
+		project := "proj-outcome"
+		got, err := repo.List(ctx, persistence.ToolAuditFilter{ProjectID: &project})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		var seen *persistence.ToolAuditEntry
+		for _, e := range got {
+			if e.ID == failed.ID {
+				seen = e
+			}
+		}
+		if seen == nil {
+			t.Fatalf("row %s not returned", failed.ID)
+		}
+		if seen.Outcome != "error" || seen.OutcomeClass != "auth" {
+			t.Errorf("typed outcome lost in round trip: outcome=%q class=%q", seen.Outcome, seen.OutcomeClass)
+		}
+	})
+
+	// A row written WITHOUT a class must read back as UNKNOWN, never as ok.
+	// Reading empty as success would declare every pre-migration call a
+	// success — including the ~51 hours of 401s that motivated the column.
+	t.Run("Unclassified_row_reads_as_unknown_not_ok", func(t *testing.T) {
+		entry := &persistence.ToolAuditEntry{
+			ID:          uniqueID("aud"),
+			ProjectID:   "proj-unknown",
+			TaskID:      "task-unknown",
+			ExecutionID: "exec-unknown",
+			ToolName:    "shell",
+			CreatedAt:   time.Now().UTC().Truncate(time.Millisecond),
+		}
+		if err := repo.Log(ctx, entry); err != nil {
+			t.Fatalf("Log: %v", err)
+		}
+		project := "proj-unknown"
+		got, err := repo.List(ctx, persistence.ToolAuditFilter{ProjectID: &project})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		for _, e := range got {
+			if e.ID != entry.ID {
+				continue
+			}
+			if e.Outcome != "" {
+				t.Errorf("an unclassified row must read back as \"\" (unknown), got %q", e.Outcome)
+			}
+			if e.OutcomeClass != "" {
+				t.Errorf("an unclassified row must have no class, got %q", e.OutcomeClass)
+			}
+		}
+	})
+
 	t.Run("Log_is_idempotent_on_duplicate_id", func(t *testing.T) {
 		entry := &persistence.ToolAuditEntry{
 			ID:          uniqueID("aud"),

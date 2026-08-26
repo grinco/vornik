@@ -29,10 +29,11 @@ func TestToolAuditRepositoryLogListAndCount(t *testing.T) {
 	created := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 	entry := &persistence.ToolAuditEntry{
 		ID: "audit-1", ProjectID: "proj-a", TaskID: "task-1", ExecutionID: "exec-1", StepID: "step-1",
-		ToolName: "shell", ToolInput: "go test ./...", ToolOutput: "ok", DurationMs: 42, CreatedAt: created,
+		ToolName: "shell", ToolInput: "go test ./...", ToolOutput: "ok", DurationMs: 42,
+		Outcome: "ok", CreatedAt: created,
 	}
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO tool_audit_log")).
-		WithArgs(entry.ID, entry.ProjectID, entry.TaskID, entry.ExecutionID, entry.StepID, entry.ToolName, entry.ToolInput, entry.ToolOutput, entry.DurationMs, entry.CreatedAt).
+		WithArgs(entry.ID, entry.ProjectID, entry.TaskID, entry.ExecutionID, entry.StepID, entry.ToolName, entry.ToolInput, entry.ToolOutput, entry.DurationMs, entry.Outcome, entry.OutcomeClass, entry.CreatedAt).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	if err := repo.Log(context.Background(), entry); err != nil {
@@ -44,8 +45,9 @@ func TestToolAuditRepositoryLogListAndCount(t *testing.T) {
 		WithArgs(projectID, taskID, executionID, toolName, 10, 5).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "project_id", "task_id", "execution_id", "step_id",
-			"tool_name", "tool_input", "tool_output", "duration_ms", "created_at",
-		}).AddRow(entry.ID, entry.ProjectID, entry.TaskID, entry.ExecutionID, entry.StepID, entry.ToolName, entry.ToolInput, entry.ToolOutput, entry.DurationMs, entry.CreatedAt))
+			"tool_name", "tool_input", "tool_output", "duration_ms",
+			"outcome", "outcome_class", "created_at",
+		}).AddRow(entry.ID, entry.ProjectID, entry.TaskID, entry.ExecutionID, entry.StepID, entry.ToolName, entry.ToolInput, entry.ToolOutput, entry.DurationMs, entry.Outcome, entry.OutcomeClass, entry.CreatedAt))
 
 	entries, err := repo.List(context.Background(), persistence.ToolAuditFilter{
 		ProjectID: &projectID, TaskID: &taskID, ExecutionID: &executionID, ToolName: &toolName,

@@ -1738,7 +1738,24 @@ func (s *Server) CallMCPTool(w http.ResponseWriter, r *http.Request) {
 	}
 
 	text, err := s.mcpExecutor.Execute(ctx, projectID, req.Name, args)
+	// Record what the DAEMON observed, before the agent gets a chance to
+	// narrate it. The agent's audit row is stamped from this; where the two
+	// disagree, this wins. It is the whole reason a connector that loses auth
+	// can no longer produce a success-shaped task (2026-08-25 P0).
+	s.toolOutcomes.Record(executionID, req.Name, err)
 	if err != nil {
+		if mcp.IsAuthFailure(err) {
+			// Named at Error, with the fix in the line, because this is the
+			// condition that used to be legible only inside a task's result
+			// payload. The connector-health check and the operator alert read
+			// the same class from the audit row.
+			s.logger.Error().
+				Str("project", projectID).
+				Str("tool", req.Name).
+				Str("task_id", taskID).
+				Str("outcome_class", string(mcp.FailureAuth)).
+				Msg("MCP: a tool call was rejected for authentication — the connector's grant needs an operator reconnect (run: vornikctl mcp connect)")
+		}
 		// Include err text so agents can surface the root cause (e.g.
 		// "tool not in allowed_tools" or "MCP server not connected") —
 		// these aren't sensitive and are essential for debugging.

@@ -533,9 +533,17 @@ fi
 #    non-interactively, so an unqualified ref fails every job at start.
 # ---------------------------------------------------------------------------
 log "Building the agent image localhost/vornik-agent:latest (first run ~1-2 min)..."
+# VORNIK_REVISION stamps the image with the commit it was built from. It is
+# what makes staleness detectable later: `vornikctl doctor` compares this
+# against the daemon's own build revision, and vornik-update.sh reads it to
+# skip rebuilding an image that is already current.
+QUICKSTART_REV="$(git -C "$DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+QUICKSTART_VER="$(git -C "$DIR" describe --tags --always 2>/dev/null || echo dev)"
 if podman build -f "$DIR/images/vornik-agent/Containerfile" \
      --build-arg VORNIK_UID="$(id -u)" \
      --build-arg VORNIK_GID="$(id -g)" \
+     --build-arg VORNIK_REVISION="$QUICKSTART_REV" \
+     --build-arg VORNIK_VERSION="$QUICKSTART_VER" \
      -t localhost/vornik-agent:latest "$DIR"; then
   ok "Agent image built: localhost/vornik-agent:latest"
 else

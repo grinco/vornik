@@ -16,11 +16,20 @@ plugs in without any vornik-side change.
   `recent_memory`, `list_scopes`, `memory_correct`; and the knowledge-skill set
   `skill_propose`, `skill_search`, `skill_get`, `skill_list`, `skill_approve`,
   `skill_reject`, `skill_set_global`.
-- **18 slash commands** — every tool above that is worth a one-liner, exposed
+- **19 slash commands** — every tool above that is worth a one-liner, exposed
   under the plugin namespace: `/vornik-companion:delegate`,
   `:peek`, `:status`, `:result`, `:review`, `:whoami`, `:recall <query>`,
-  `:remember <note>`, `:upload`, `:rag-ingest`, `:memory-correct`, and the
-  `:skill-*` set. Run `/help` for the current list — it is authoritative.
+  `:remember <note>`, `:upload`, `:rag-ingest`, `:memory-correct`,
+  `:backlog-deposit`, and the `:skill-*` set. Run `/help` for the current list
+  — it is authoritative.
+- **`/backlog-deposit`** — file an off-scope finding into **this repository's
+  own** backlog without derailing the task in hand, with dedup against every
+  existing item and a secret scan over what you are about to commit. Runs
+  entirely client-side (`scripts/vornik-backlog-deposit.sh`): the daemon must
+  not write your checkout, and the daemon-side `backlog_deposit` tool renders
+  one flattened line capped at 600 characters, which is the wrong shape for a
+  backlog whose items carry tables and code references. Body arrives on stdin,
+  so structure survives.
 - **SessionStart hook** — pulls every task that completed since your
   last session ended **and** the most recently-touched RAG entries in
   the project. The host LLM opens each session knowing what the swarm

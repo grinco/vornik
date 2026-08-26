@@ -259,6 +259,11 @@ func (s *MemoryIngestSubsystem) Start(ctx context.Context) error {
 	// Control-plane self-healing (leader-gated, opt-in). On a sustained
 	// failed-rate breach it auto-diagnoses + files a review-only incident.
 	c.startSelfHealWorker(ctx)
+	// Connector-auth alerting (leader-gated, always on). Pushes when an MCP
+	// connector starts failing authentication, because the doctor check that
+	// reports the same condition is only run by someone who already suspects
+	// a problem — and the 2026-08-25 P0 ran ~51 hours before anyone did.
+	c.startConnectorAuthWorker(ctx)
 	// Control-plane cost/quality prompt-token-budget detector (opt-in,
 	// default off). Files review-only DRAFT budget proposals; never mutates.
 	c.startCostQualityWorker(ctx)

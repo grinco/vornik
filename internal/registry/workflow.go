@@ -247,6 +247,49 @@ type WorkflowStep struct {
 	// chain "succeeded" all the way to a publisher holding no deliverable.
 	RequireOutputGlob string `yaml:"require_output_glob,omitempty"`
 
+	// RequireTools declares a TOOL contract for an agent step: after an
+	// otherwise-successful run, each named tool must have at least one
+	// SUCCESSFUL call recorded in this step's tool_audit_log, or the step
+	// fails with a "schema violation:" error (which the shape-retry layer
+	// corrects once before giving up).
+	//
+	// The sibling of RequireOutputGlob, and it exists for the same reason at
+	// one remove. On 2026-08-25 an outreach agent on vornik-marketing was told
+	// in PROSE that its Jira duplicate check was mandatory. The Atlassian
+	// connector had lost auth, so the check 401'd; the agent correctly refused
+	// to file without it, wrote a draft, said what a human must do — and the
+	// task reported success. The workflow had no way to say the tool was
+	// mandatory, so prose-mandatory was the only kind available, and
+	// prose-mandatory is not mandatory.
+	//
+	// Names match the fully-qualified `mcp__server__tool` form, falling back
+	// to the bare tool segment — the same two-shape rule the role allowlist
+	// uses, so an author writes what they already write in allowedTools.
+	//
+	// Design: https://docs.vornik.io §3.3
+	RequireTools []string `yaml:"require_tools,omitempty"`
+
+	// AuthFailureMode decides whether an AUTH-class tool failure fails this
+	// step. "fail" (the default, and the value for every step that does not
+	// set it) or "continue".
+	//
+	// The default is deliberately not opt-in. A connector that loses auth
+	// degrades every workflow that touches it, and none of them were going to
+	// be edited for a failure nobody knew was happening — so an auth-class
+	// failure fails its step with no config change required.
+	//
+	// "continue" exists for the one shape that legitimately absorbs a
+	// credential rejection: a step that deliberately degrades across
+	// connectors — try Slack, fall back to email; enrich from two sources and
+	// proceed on whichever answers. The default rule cannot see that a
+	// DIFFERENT tool covered for the failed one, so those steps say so.
+	//
+	// It opts out of ROUTING ONLY. The failure is still recorded with
+	// outcome_class 'auth', still counted by the connector_auth doctor check,
+	// and still raises the operator alert. There is no way to make a
+	// connector failure invisible.
+	AuthFailureMode string `yaml:"auth_failure_mode,omitempty"`
+
 	// StageChildArtifacts, when true on the step that runs AFTER a
 	// `delegatedTasks` fan-out (a resume_after_children consumer step),
 	// makes the executor deterministically gather this step's delegated
@@ -565,6 +608,21 @@ func (w *Workflow) Validate(filename string) error {
 				File:    filename,
 				Field:   fmt.Sprintf("steps.%s.type", stepID),
 				Message: "step type is required",
+			}
+		}
+
+		// auth_failure_mode is validated rather than compared raw, so a typo
+		// fails at LOAD time instead of silently selecting the default. A
+		// misspelled "continue" that quietly meant "fail" would be merely
+		// annoying; the reverse — a value that quietly meant "continue" —
+		// would reinstate the silent degradation this field exists to bound.
+		// Review round 2 of the connector-auth design asked for exactly this.
+		if _, ok := NormalizeAuthFailureMode(step.AuthFailureMode); !ok {
+			return WorkflowValidationError{
+				File:  filename,
+				Field: fmt.Sprintf("steps.%s.auth_failure_mode", stepID),
+				Message: fmt.Sprintf("auth_failure_mode must be %q or %q (got %q)",
+					AuthFailureModeFail, AuthFailureModeContinue, step.AuthFailureMode),
 			}
 		}
 
@@ -1311,4 +1369,47 @@ func LoadWorkflows(dir string) (map[string]*Workflow, error) {
 	}
 
 	return workflows, nil
+}
+
+// Auth-failure routing modes for WorkflowStep.AuthFailureMode.
+const (
+	// AuthFailureModeFail — an auth-class tool failure fails the step. The
+	// default, and the behaviour of every step that says nothing.
+	AuthFailureModeFail = "fail"
+	// AuthFailureModeContinue — an auth-class tool failure is recorded and
+	// alerted on, but does not fail the step. For steps that deliberately
+	// degrade across connectors.
+	AuthFailureModeContinue = "continue"
+)
+
+// NormalizeAuthFailureMode canonicalises a step's auth_failure_mode and reports
+// whether it was a legal value.
+//
+// Empty means "not set" and normalises to the default. Case and surrounding
+// space are forgiven — "Continue" and " continue " are what an operator types —
+// but an unrecognised word is REJECTED rather than defaulted, so a typo cannot
+// silently choose a routing policy the author did not write.
+func NormalizeAuthFailureMode(mode string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "":
+		return AuthFailureModeFail, true
+	case AuthFailureModeFail:
+		return AuthFailureModeFail, true
+	case AuthFailureModeContinue:
+		return AuthFailureModeContinue, true
+	default:
+		return "", false
+	}
+}
+
+// FailsOnAuthError reports whether an auth-class tool failure must fail this
+// step. An unparseable mode fails closed — load-time validation rejects it, so
+// reaching here with one means a step was constructed in code, and "fail" is
+// the safe reading.
+func (s *WorkflowStep) FailsOnAuthError() bool {
+	if s == nil {
+		return true
+	}
+	mode, ok := NormalizeAuthFailureMode(s.AuthFailureMode)
+	return !ok || mode == AuthFailureModeFail
 }

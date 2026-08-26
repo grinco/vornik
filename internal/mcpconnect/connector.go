@@ -114,6 +114,11 @@ type Connector struct {
 
 	mu      sync.Mutex
 	pending map[string]*pendingAuth
+
+	// tokenCache is the read-through credential cache described in cache.go.
+	// Zero value is usable, so the wiring layer keeps building Connector as a
+	// struct literal.
+	tokenCache tokenCacheMap
 }
 
 // pendingAuth is one in-flight authorization attempt, keyed by its state parameter.
@@ -399,6 +404,10 @@ func (c *Connector) Complete(ctx context.Context, state, code string) (*persiste
 	if err := c.Tokens.Upsert(ctx, tok); err != nil {
 		return nil, fmt.Errorf("mcpconnect: persist grant: %w", err)
 	}
+	// Cache coherence rule 2: a freshly consented credential is served from
+	// cache immediately rather than costing one extra read on the first tool
+	// call after the operator connects.
+	c.primeCachedToken(tok.ProjectID, tok.ServerName, tok)
 	c.recordGrant(ctx, "mcp.oauth.connect", tok)
 	c.notifyGranted(tok.ProjectID, tok.ServerName)
 	return tok, nil
@@ -407,6 +416,11 @@ func (c *Connector) Complete(ctx context.Context, state, code string) (*persiste
 // Disconnect deletes a grant and records it. Config is untouched, so reconnecting needs no
 // config change.
 func (c *Connector) Disconnect(ctx context.Context, projectID, serverName, actor string) error {
+	// Evict FIRST and unconditionally: a disconnect whose delete succeeds but
+	// whose cache entry survives would keep presenting a credential the
+	// operator has explicitly withdrawn. Eviction is idempotent and costs
+	// nothing when there was nothing cached.
+	c.InvalidateToken(projectID, serverName)
 	existing, err := c.Tokens.Get(ctx, projectID, serverName)
 	if err != nil && !errors.Is(err, persistence.ErrNotFound) {
 		return err

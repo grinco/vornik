@@ -31,11 +31,13 @@ func (r *ToolAuditRepository) Log(ctx context.Context, entry *persistence.ToolAu
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO tool_audit_log (
 			id, project_id, task_id, execution_id, step_id,
-			tool_name, tool_input, tool_output, duration_ms, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			tool_name, tool_input, tool_output, duration_ms,
+			outcome, outcome_class, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (id) DO NOTHING`,
 		entry.ID, entry.ProjectID, entry.TaskID, entry.ExecutionID, entry.StepID,
-		entry.ToolName, entry.ToolInput, entry.ToolOutput, entry.DurationMs, entry.CreatedAt,
+		entry.ToolName, entry.ToolInput, entry.ToolOutput, entry.DurationMs,
+		entry.Outcome, entry.OutcomeClass, entry.CreatedAt,
 	)
 	return mapDBError(err)
 }
@@ -44,7 +46,8 @@ func (r *ToolAuditRepository) Log(ctx context.Context, entry *persistence.ToolAu
 func (r *ToolAuditRepository) List(ctx context.Context, filter persistence.ToolAuditFilter) ([]*persistence.ToolAuditEntry, error) {
 	query := `
 		SELECT id, project_id, task_id, execution_id, step_id,
-		       tool_name, tool_input, tool_output, duration_ms, created_at
+		       tool_name, tool_input, tool_output, duration_ms,
+		       COALESCE(outcome, ''), COALESCE(outcome_class, ''), created_at
 		FROM tool_audit_log WHERE 1=1`
 	args := make([]any, 0, 5)
 	argPos := 1
@@ -97,7 +100,8 @@ func (r *ToolAuditRepository) List(ctx context.Context, filter persistence.ToolA
 		var e persistence.ToolAuditEntry
 		if err := rows.Scan(
 			&e.ID, &e.ProjectID, &e.TaskID, &e.ExecutionID, &e.StepID,
-			&e.ToolName, &e.ToolInput, &e.ToolOutput, &e.DurationMs, &e.CreatedAt,
+			&e.ToolName, &e.ToolInput, &e.ToolOutput, &e.DurationMs,
+			&e.Outcome, &e.OutcomeClass, &e.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

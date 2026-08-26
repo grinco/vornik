@@ -133,15 +133,18 @@ func BuildForStep(ctx context.Context, audits AuditLister, artifacts ArtifactLis
 			}
 			// Pull URLs out of input/output. URLs in input are
 			// "claimed to fetch"; URLs in output are "actually
-			// returned" — both ground a claim. Lower-case both
-			// because URL hostname comparison is case-insensitive
-			// and we don't want spurious mismatches on capital
-			// letters.
+			// returned" — both ground a claim.
+			//
+			// Stored in the SAME normalised form the matcher
+			// compares in (normalizeURLForMatch): percent-decoded,
+			// lowercased, fragment and trailing slash dropped.
+			// Normalising only one side is what made the original
+			// comparison asymmetric — see url_match.go and LLD §4a.
 			for _, u := range extractURLs(e.ToolInput) {
-				gc.FetchedURLs[strings.ToLower(u)] = struct{}{}
+				gc.FetchedURLs[normalizeURLForMatch(u)] = struct{}{}
 			}
 			for _, u := range extractURLs(e.ToolOutput) {
-				gc.FetchedURLs[strings.ToLower(u)] = struct{}{}
+				gc.FetchedURLs[normalizeURLForMatch(u)] = struct{}{}
 			}
 		}
 		gc.ToolOutputs = sb.String()

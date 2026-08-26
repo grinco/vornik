@@ -19,10 +19,26 @@ import (
 // operator opening the file in an editor.
 const FormatHeader = "<!-- vornik backlog v1 — markers: [ ] pending | [?] proposed | [~] in-flight | [x] done | [!] failed -->"
 
-// itemRE matches any of the five marker states. It is a superset of
-// the autonomy package's backlogPendingRE (which matches only the
-// pending `[ ]` box) — that regex MUST remain compatible with this
-// grammar; see internal/autonomy/manager.go's backlogPendingRE.
+// itemRE matches any of the five marker states.
+//
+// WIDENING THIS IS A DISPATCH CHANGE, NOT A PARSING CHANGE. PeekNext below
+// returns the first item whose marker is pending (' '), and the autonomy tick
+// calls PeekNext to decide what to BUILD NEXT for a `mode: backlog` project.
+// So anything itemRE starts matching becomes executable work, for every
+// project, at once.
+//
+// Concretely: this project's own https://docs.vornik.io keeps its 48 real items as
+// `## [ ]` H2 headings and uses `- [ ]` only for sub-notes inside them, so
+// widening itemRE to accept headings would hand the autonomy loop 48 items it
+// was never meant to run. That is why the 2026-08-26 companion-backlog-deposit
+// design normalises heading items to bullets on IMPORT, with its own parser,
+// rather than touching this one. See
+// https://docs.vornik.io §4.
+//
+// (This comment previously pointed at internal/autonomy/manager.go's
+// backlogPendingRE as the constraint to stay compatible with. That symbol was
+// deleted; selection moved here, into PeekNext. The constraint outlived its
+// name — corrected 2026-08-26.)
 //
 // The `~` (in-flight) marker was added 2026-07-12 (LLD 2026-07-12-backlog-
 // success-terminal-stamp): dispatch stamps `[~]`, and the reconciler flips

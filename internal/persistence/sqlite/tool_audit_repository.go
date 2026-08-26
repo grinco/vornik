@@ -32,10 +32,12 @@ func (r *ToolAuditRepository) Log(ctx context.Context, entry *persistence.ToolAu
 	_, err := r.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO tool_audit_log (
 			id, project_id, task_id, execution_id, step_id,
-			tool_name, tool_input, tool_output, duration_ms, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			tool_name, tool_input, tool_output, duration_ms,
+			outcome, outcome_class, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.ID, entry.ProjectID, entry.TaskID, entry.ExecutionID, entry.StepID,
 		entry.ToolName, entry.ToolInput, entry.ToolOutput, entry.DurationMs,
+		entry.Outcome, entry.OutcomeClass,
 		sqliteTime(createdAt),
 	)
 	return err
@@ -46,7 +48,8 @@ func (r *ToolAuditRepository) List(ctx context.Context, filter persistence.ToolA
 	var b strings.Builder
 	b.WriteString(`
 		SELECT id, project_id, task_id, execution_id, step_id,
-		       tool_name, tool_input, tool_output, duration_ms, created_at
+		       tool_name, tool_input, tool_output, duration_ms,
+		       COALESCE(outcome, ''), COALESCE(outcome_class, ''), created_at
 		FROM tool_audit_log WHERE 1=1`)
 	args := make([]any, 0, 5)
 
@@ -95,7 +98,8 @@ func (r *ToolAuditRepository) List(ctx context.Context, filter persistence.ToolA
 		)
 		if err := rows.Scan(
 			&e.ID, &e.ProjectID, &e.TaskID, &e.ExecutionID, &e.StepID,
-			&e.ToolName, &e.ToolInput, &e.ToolOutput, &e.DurationMs, &createdAt,
+			&e.ToolName, &e.ToolInput, &e.ToolOutput, &e.DurationMs,
+			&e.Outcome, &e.OutcomeClass, &createdAt,
 		); err != nil {
 			return nil, err
 		}

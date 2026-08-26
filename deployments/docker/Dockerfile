@@ -65,6 +65,17 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="" -o /out/vornik        ./cmd/vo
 # can probe the /livez liveness endpoint without curl or any heavy client.
 # -----------------------------------------------------------------------
 FROM docker.io/library/debian:12-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df AS thin
+# Build provenance (2026-08-25). The revision label is what makes image
+# staleness detectable at all: doctor's image_freshness check compares it
+# against the daemon's own build revision, and vornik-update.sh reads it to
+# skip rebuilding an image that is already current. Re-declared after FROM
+# because build args do not cross stage boundaries. A value of `unknown` means
+# the image was built by hand without passing them.
+ARG VORNIK_REVISION=unknown
+ARG VORNIK_VERSION=dev
+LABEL org.opencontainers.image.revision="${VORNIK_REVISION}" \
+      org.opencontainers.image.version="${VORNIK_VERSION}" \
+      org.opencontainers.image.source="https://github.com/grinco/vornik"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     VORNIK_CONFIG=/etc/vornik/config.yaml \
@@ -106,6 +117,17 @@ CMD ["vornik"]
 # (no --target) produces the full image — back-compat with Helm + existing CI.
 # -----------------------------------------------------------------------
 FROM docker.io/library/ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS full
+# Build provenance (2026-08-25). The revision label is what makes image
+# staleness detectable at all: doctor's image_freshness check compares it
+# against the daemon's own build revision, and vornik-update.sh reads it to
+# skip rebuilding an image that is already current. Re-declared after FROM
+# because build args do not cross stage boundaries. A value of `unknown` means
+# the image was built by hand without passing them.
+ARG VORNIK_REVISION=unknown
+ARG VORNIK_VERSION=dev
+LABEL org.opencontainers.image.revision="${VORNIK_REVISION}" \
+      org.opencontainers.image.version="${VORNIK_VERSION}" \
+      org.opencontainers.image.source="https://github.com/grinco/vornik"
 
 ENV DEBIAN_FRONTEND=noninteractive \
     VORNIK_CONFIG=/etc/vornik/config.yaml \

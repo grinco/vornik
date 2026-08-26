@@ -1129,6 +1129,10 @@ type Server struct {
 	// the key-scoped CheckKey surface is available.
 	tradingRateLimiter *ratelimit.Limiter
 	mcpExecutor        MCPExecutor
+	// toolOutcomes carries the daemon's own observation of how each MCP tool
+	// call ended, from CallMCPTool to IngestToolAudit. See
+	// tool_outcome_buffer.go for why the agent's report is not the authority.
+	toolOutcomes *toolOutcomeBuffer
 	// toolGrants reads per-execution tool grants for the advertise path (registry
 	// design §10.1). Nil leaves the ceiling as the only narrowing.
 	toolGrants persistence.ExecutionToolGrantRepository
@@ -2730,6 +2734,10 @@ func WithMCPRegistry(r MCPRegistrySource) ServerOption {
 func NewServer(opts ...ServerOption) *Server {
 	s := &Server{
 		logger: zerolog.Nop(),
+		// Always present: CallMCPTool records into it unconditionally, and a
+		// nil buffer would make every MCP outcome fall back to the agent's own
+		// report — silently reintroducing the untyped path this replaces.
+		toolOutcomes: newToolOutcomeBuffer(),
 	}
 	for _, opt := range opts {
 		opt(s)

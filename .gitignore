@@ -11,6 +11,7 @@
 # named "vornik" elsewhere in the tree (e.g. deployments/helm/vornik/).
 /vornik
 /vornikctl
+/vornik-images
 
 # Build output directory
 /bin/

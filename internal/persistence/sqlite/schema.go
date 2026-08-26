@@ -173,6 +173,11 @@ CREATE TABLE IF NOT EXISTS tool_audit_log (
     tool_input          TEXT NOT NULL DEFAULT '',
     tool_output         TEXT NOT NULL DEFAULT '',
     duration_ms         INTEGER NOT NULL DEFAULT 0,
+    -- Typed outcome (migration 168). Both default to '' = UNKNOWN, never 'ok':
+    -- a pre-migration row must not read as a success. See
+    -- https://docs.vornik.io §3.2
+    outcome             TEXT NOT NULL DEFAULT '',
+    outcome_class       TEXT NOT NULL DEFAULT '',
     created_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tool_audit_project   ON tool_audit_log(project_id);
@@ -180,6 +185,7 @@ CREATE INDEX IF NOT EXISTS idx_tool_audit_task      ON tool_audit_log(task_id);
 CREATE INDEX IF NOT EXISTS idx_tool_audit_execution ON tool_audit_log(execution_id);
 CREATE INDEX IF NOT EXISTS idx_tool_audit_tool_name ON tool_audit_log(tool_name);
 CREATE INDEX IF NOT EXISTS idx_tool_audit_created   ON tool_audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tool_audit_outcome_class ON tool_audit_log(outcome_class, created_at DESC);
 
 -- ============================================================
 -- task_watchers

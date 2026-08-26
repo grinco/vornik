@@ -7055,4 +7055,59 @@ ALTER TABLE knowledge_edges DROP COLUMN IF EXISTS quarantined_at;
 ALTER TABLE knowledge_entities DROP COLUMN IF EXISTS quarantined_at;
 `,
 	},
+	{
+		Version: 168,
+		Name:    "tool_audit_outcome_class",
+		// Type a tool call's OUTCOME, so a failure class can be counted,
+		// alerted on, and gated against.
+		//
+		// tool_audit_log stored the tool's output verbatim with no status, so a
+		// 401 was just text in a blob. agentbench.callFailure inferred failure
+		// by sniffing that text and said so itself: "That is lossy." The
+		// consequence was the 2026-08-25 P0 — a connector lost auth, an
+		// outreach task ran 174s, reported no error, and completed, with the
+		// 401 legible only inside the task's own result payload.
+		//
+		// Two columns rather than one, because "did it fail" and "why" are
+		// different questions and only the first has a stable answer for a
+		// tool the daemon did not execute:
+		//   outcome       — 'ok' | 'error'
+		//   outcome_class — mcp.FailureClass ('auth', 'rate_limit', 'transport',
+		//                   'server', 'not_found', 'invalid_request'); '' when
+		//                   the outcome is ok or the class is unknown.
+		//
+		// BOTH DEFAULT TO ''. Every pre-migration row therefore reads as
+		// "unknown", never as "ok". That distinction is load-bearing: a
+		// backfill to 'ok' would silently declare every historical call a
+		// success, including the ~51 hours of 401s this migration exists
+		// because of. Queries in this design match a class POSITIVELY
+		// (= 'auth') and never infer success from its absence (<> 'ok').
+		//
+		// Partial index on the failure classes only: the table is large, the
+		// overwhelming majority of rows are 'ok', and every query this feeds
+		// (the connector_auth doctor check, the alert scan) filters to a
+		// non-empty class within a recent window.
+		//
+		// Design: https://docs.vornik.io §3.2
+		Up: `
+ALTER TABLE tool_audit_log
+    ADD COLUMN IF NOT EXISTS outcome TEXT NOT NULL DEFAULT '';
+ALTER TABLE tool_audit_log
+    ADD COLUMN IF NOT EXISTS outcome_class TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_tool_audit_log_outcome_class
+    ON tool_audit_log (outcome_class, created_at DESC)
+    WHERE outcome_class <> '';
+
+COMMENT ON COLUMN tool_audit_log.outcome IS
+    'ok | error | empty. Empty means UNKNOWN (row predates migration 168 or was written by a path that does not classify) and must never be read as success.';
+COMMENT ON COLUMN tool_audit_log.outcome_class IS
+    'mcp.FailureClass for a failed call: auth, rate_limit, transport, server, not_found, invalid_request. Empty when the call succeeded or the class is unknown.';
+`,
+		Down: `
+DROP INDEX IF EXISTS idx_tool_audit_log_outcome_class;
+ALTER TABLE tool_audit_log DROP COLUMN IF EXISTS outcome_class;
+ALTER TABLE tool_audit_log DROP COLUMN IF EXISTS outcome;
+`,
+	},
 }

@@ -348,7 +348,8 @@ func (s *SQLTraceStore) loadGrants(ctx context.Context, executionID string, step
 // loadCalls reads the invocation log.
 func (s *SQLTraceStore) loadCalls(ctx context.Context, executionID string, step func(string, string) *Trace, rec *ExecutionRecord) error {
 	rows, err := s.DB.QueryContext(ctx, fmt.Sprintf(`
-		SELECT step_id, tool_name, tool_output
+		SELECT step_id, tool_name, tool_output,
+		       COALESCE(outcome, ''), COALESCE(outcome_class, '')
 		  FROM tool_audit_log
 		 WHERE execution_id = %s
 		 ORDER BY created_at ASC`, s.Dialect.arg(1)), executionID)
@@ -358,12 +359,12 @@ func (s *SQLTraceStore) loadCalls(ctx context.Context, executionID string, step 
 	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
-		var stepID, toolName, output string
-		if err := rows.Scan(&stepID, &toolName, &output); err != nil {
+		var stepID, toolName, output, outcome, outcomeClass string
+		if err := rows.Scan(&stepID, &toolName, &output, &outcome, &outcomeClass); err != nil {
 			return fmt.Errorf("scan tool call: %w", err)
 		}
 		t := step(stepID, "")
-		failed, errText := callFailure(output)
+		failed, errText := callOutcome(outcome, outcomeClass, output)
 		t.Calls = append(t.Calls, ToolCall{
 			Name: toolName, Role: t.Role, Failed: failed, ErrorText: errText,
 		})
@@ -433,13 +434,46 @@ func (s *SQLTraceStore) loadOutcomes(ctx context.Context, executionID string, st
 	return rows.Err()
 }
 
-// callFailure reads a recorded tool output for evidence the call failed.
+// callOutcome reports whether a recorded tool call failed, and why.
 //
-// tool_audit_log stores the output verbatim rather than a status, so failure is
-// inferred from the text. That is lossy, and deliberately biased toward NOT
-// blaming the agent: an output that merely mentions an error is not scored as a
-// failed call, because inflating the invalid-call rate would make the tool-use
-// probe report a problem that is really our parsing.
+// It prefers the TYPED outcome that migration 168 added. Before that column
+// existed there was no status at all, so failure had to be inferred from the
+// output text — this file's own comment called that lossy, and it was: an auth
+// failure that did not happen to serialise as {"isError":true} scored as a
+// SUCCESSFUL call. That is gap 1 of the 2026-08-25 P0 (a connector that lost
+// auth degraded into a success-shaped task) and the reason the column exists.
+//
+// The text path survives for exactly one case: rows written BEFORE the
+// migration, whose outcome is ”. Those are genuinely unknown, and sniffing
+// them is still the best available answer for history — but it is history
+// only, and no new row reaches it.
+//
+// Design: https://docs.vornik.io §3.2
+func callOutcome(outcome, outcomeClass, output string) (bool, string) {
+	switch outcome {
+	case "ok":
+		return false, ""
+	case "error":
+		// A class is a far better error label than a scraped message, and it
+		// is the one the doctor check and the step contract gate on.
+		if outcomeClass != "" {
+			return true, outcomeClass
+		}
+		_, errText := callFailure(output)
+		return true, errText
+	}
+	// outcome == "": pre-migration history. Unknown, not ok.
+	return callFailure(output)
+}
+
+// callFailure infers failure from a recorded tool output.
+//
+// LEGACY: reachable only for rows written before migration 168, which carry no
+// typed outcome. Deliberately biased toward NOT blaming the agent — an output
+// that merely mentions an error is not scored as a failed call, because
+// inflating the invalid-call rate would make the tool-use probe report a
+// problem that is really our parsing. Do not extend it; classify at the source
+// instead (mcp.ClassifyHTTPStatus).
 func callFailure(output string) (bool, string) {
 	if output == "" {
 		return false, ""

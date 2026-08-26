@@ -31,9 +31,26 @@
 #   ./vornik-update.sh --ref origin/main  # track the tip of main instead of the newest tag
 #   ./vornik-update.sh --yes              # skip the confirmation prompt (automation)
 #   ./vornik-update.sh --no-build         # reuse binaries already in <repo>/.bin
-#   ./vornik-update.sh --rebuild-agent    # also rebuild the localhost/vornik-agent image
+#   ./vornik-update.sh --no-rebuild-images  # skip the image rebuild (see below)
 #   ./vornik-update.sh --force            # rebuild+reinstall even if the checkout already matches
 #   ./vornik-update.sh --check            # only report current vs. available version, then exit
+#
+# CONTAINER IMAGES ARE REBUILT BY DEFAULT.
+#   Agent-side product code ships INSIDE the agent image — cmd/mcp-bridge,
+#   cmd/agent-helper and images/vornik-agent/entrypoint.sh are baked in — so an
+#   update that swaps only the daemon binary delivers half of any release that
+#   changed both. That is not hypothetical: commit 356e74cd ("four agent tools
+#   bypassed the per-role allowlist") changed internal/agenttools AND the agent
+#   entrypoint, and every install updated with the old opt-in default got the
+#   daemon half only, leaving the bypass reachable.
+#
+#   Only images whose build revision already matches the target commit are
+#   skipped, so a release that touched no image inputs costs one label read per
+#   image rather than a rebuild.
+#
+#   --no-rebuild-images is honoured, but while images are stale `vornikctl
+#   doctor` will report a WARNING on every run. That warning confirms the pin is
+#   intentional; it is not a fault to be silenced.
 #
 # Tunables (env) — defaults match the quickstart:
 #   VORNIK_DIR           source checkout            (default: $HOME/vornik)
@@ -70,7 +87,10 @@ ASSUME_YES=0
 DO_BUILD=1
 CHECK_ONLY=0
 FORCE=0
-REBUILD_AGENT=0
+# Rebuilding images is what this script DOES, not an extra it can be asked for.
+# The previous default (REBUILD_AGENT=0, opt-in via --rebuild-agent) is the
+# defect this inversion fixes.
+REBUILD_IMAGES=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ref)          TARGET_REF="${2:-}"; shift 2 ;;
@@ -79,11 +99,16 @@ while [[ $# -gt 0 ]]; do
     --no-build)     DO_BUILD=0; shift ;;
     --check)        CHECK_ONLY=1; shift ;;
     --force)        FORCE=1; shift ;;
-    --rebuild-agent) REBUILD_AGENT=1; shift ;;
+    --no-rebuild-images) REBUILD_IMAGES=0; shift ;;
+    # Retained so cron wrappers and timers carrying the old flag keep working.
+    # It is now the default, so the flag is a no-op with a nudge.
+    --rebuild-agent) REBUILD_AGENT_DEPRECATED=1; shift ;;
     -h|--help)      grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+
+REBUILD_AGENT_DEPRECATED="${REBUILD_AGENT_DEPRECATED:-0}"
 
 c_blue=$'\033[1;36m'; c_yellow=$'\033[1;33m'; c_red=$'\033[1;31m'; c_off=$'\033[0m'
 log()  { printf '%s==>%s %s\n' "$c_blue"   "$c_off" "$*"; }
@@ -187,12 +212,92 @@ if [[ "$DO_BUILD" == 1 ]]; then
     -w /src \
     -e CGO_ENABLED=0 -e GOFLAGS=-buildvcs=false \
     "$GO_IMAGE" \
-    sh -c "go build -ldflags=\"$LDFLAGS\" -o /out/vornik ./cmd/vornik && go build -ldflags=\"$LDFLAGS\" -o /out/vornikctl ./cmd/vornikctl" \
+    sh -c "go build -ldflags=\"$LDFLAGS\" -o /out/vornik ./cmd/vornik && go build -ldflags=\"$LDFLAGS\" -o /out/vornikctl ./cmd/vornikctl && go build -o /out/vornik-images ./cmd/vornik-images" \
     || die "build failed (nothing swapped). Retry, or build on a host with Go: (cd $REPO_DIR && go build -o $BIN_DIR/vornik ./cmd/vornik)"
 else
   log "--no-build: reusing existing binaries in $REPO_DIR/.bin"
   [[ -x "$REPO_DIR/.bin/vornik" && -x "$REPO_DIR/.bin/vornikctl" ]] \
     || die "$REPO_DIR/.bin/vornik{,ctl} missing; drop --no-build"
+fi
+
+# ---------------------------------------------------------------------------
+# 3b. Rebuild container images that drifted from the target commit.
+#
+#     BEFORE the cutover, and FATAL on failure. The original script rebuilt the
+#     agent AFTER installing the new binaries and merely warn()ed, so a failed
+#     rebuild left a NEW daemon running an OLD image — manufacturing exactly the
+#     half-applied state a rebuild is meant to prevent. Everything that can fail
+#     must fail while the old install is still intact.
+#
+#     Which images get rebuilt comes from the manifest (internal/imagemanifest,
+#     emitted by cmd/vornik-images), never a list maintained here: a hardcoded
+#     list is how the cluster tags ended up with no builder at all, and how the
+#     scraper and broker images ended up covered by no update path.
+# ---------------------------------------------------------------------------
+IMAGE_REVISION_LABEL="org.opencontainers.image.revision"
+
+# deployed_image_revision <tag> — prints the commit an image was built from,
+# or nothing when the image is absent or predates provenance labelling.
+deployed_image_revision() {
+  local tag="$1" rev
+  podman image exists "$tag" 2>/dev/null || { printf ''; return 0; }
+  rev="$(podman image inspect "$tag" --format "{{index .Labels \"$IMAGE_REVISION_LABEL\"}}" 2>/dev/null || true)"
+  [[ "$rev" == "<no value>" ]] && rev=""
+  printf '%s' "$rev"
+}
+
+rebuild_images() {
+  local emitter="$REPO_DIR/.bin/vornik-images"
+  [[ -x "$emitter" ]] || die "image manifest emitter missing at $emitter (re-run without --no-build)"
+
+  local target_rev built=0 skipped=0
+  target_rev="$(git -C "$REPO_DIR" rev-parse HEAD)"
+
+  local tag containerfile target context condition current
+  while IFS=$'\t' read -r tag containerfile target context condition; do
+    [[ -n "$tag" ]] || continue
+
+    current="$(deployed_image_revision "$tag")"
+    if [[ -n "$current" && "$current" == "$target_rev" ]]; then
+      log "  $tag — already at $(printf '%.12s' "$current")"
+      skipped=$((skipped + 1))
+      continue
+    fi
+
+    log "  $tag — rebuilding (condition: $condition)"
+    local -a build_args=(
+      build -f "$REPO_DIR/$containerfile"
+      --build-arg "VORNIK_REVISION=$target_rev"
+      --build-arg "VORNIK_VERSION=$VERSION"
+      --build-arg "VORNIK_UID=$(id -u)"
+      --build-arg "VORNIK_GID=$(id -g)"
+      -t "$tag"
+    )
+    [[ -n "$target" ]] && build_args+=(--target "$target")
+    build_args+=("$REPO_DIR/$context")
+
+    podman "${build_args[@]}" \
+      || die "image build failed for $tag — nothing swapped, the running install is untouched"
+    built=$((built + 1))
+  done < <("$emitter")
+
+  log "Images: $built rebuilt, $skipped already current"
+}
+
+if [[ "$REBUILD_IMAGES" == 1 ]]; then
+  log "Rebuilding container images that drifted from $TARGET_REF"
+  if [[ "$REBUILD_AGENT_DEPRECATED" == 1 ]]; then
+    warn "--rebuild-agent is deprecated: rebuilding is now the default. Drop the"
+    warn "  flag from wrapper scripts at your next maintenance window."
+  fi
+  rebuild_images
+else
+  warn "--no-rebuild-images: container images are NOT being rebuilt."
+  warn "  Agent-side code (mcp-bridge, agent-helper, the agent entrypoint) ships"
+  warn "  INSIDE those images, so this install may end up running a different"
+  warn "  release than its daemon. While they are stale, 'vornikctl doctor'"
+  warn "  reports a WARNING on every run — that confirms the pin is intentional,"
+  warn "  it is not a fault to be silenced."
 fi
 
 # ---------------------------------------------------------------------------
@@ -212,14 +317,6 @@ systemctl --user stop "$SERVICE"
 log "Installing new binaries into $BIN_DIR"
 install -m 0755 "$REPO_DIR/.bin/vornik"    "$BIN_DIR/vornik"
 install -m 0755 "$REPO_DIR/.bin/vornikctl" "$BIN_DIR/vornikctl"
-
-if [[ "$REBUILD_AGENT" == 1 ]]; then
-  log "Rebuilding the agent image localhost/vornik-agent:latest"
-  podman build -f "$REPO_DIR/images/vornik-agent/Containerfile" \
-    --build-arg VORNIK_UID="$(id -u)" --build-arg VORNIK_GID="$(id -g)" \
-    -t localhost/vornik-agent:latest "$REPO_DIR" \
-    || warn "agent image rebuild failed — jobs may fail until it is rebuilt manually"
-fi
 
 log "Starting $SERVICE (auto-applies additive migrations)"
 systemctl --user start "$SERVICE"

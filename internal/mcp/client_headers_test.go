@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
@@ -39,7 +40,9 @@ func TestApplyConfigHeaders_ReservedNotOverridable(t *testing.T) {
 	req.Header.Set("MCP-Protocol-Version", "2024-11-05")
 	req.Header.Set("Mcp-Session-Id", "real-session")
 
-	c.applyConfigHeaders(req)
+	if err := c.applyConfigHeaders(context.Background(), req); err != nil {
+		t.Fatalf("applyConfigHeaders: %v", err)
+	}
 
 	// Reserved headers must retain their protocol values.
 	if got := req.Header.Get("Mcp-Session-Id"); got != "real-session" {
@@ -69,7 +72,9 @@ func TestApplyConfigHeaders_NilMapNoOp(t *testing.T) {
 	c := &Client{logger: zerolog.Nop(), config: ServerConfig{Name: "s"}}
 	req, _ := http.NewRequest(http.MethodPost, "http://example/message", nil)
 	req.Header.Set("Mcp-Session-Id", "real-session")
-	c.applyConfigHeaders(req)
+	if err := c.applyConfigHeaders(context.Background(), req); err != nil {
+		t.Fatalf("applyConfigHeaders: %v", err)
+	}
 	if got := req.Header.Get("Mcp-Session-Id"); got != "real-session" {
 		t.Errorf("nil Headers map must be a no-op; got %q", got)
 	}

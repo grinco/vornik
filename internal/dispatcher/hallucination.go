@@ -55,7 +55,10 @@ func (a *Agent) buildChatGroundingContext(ctx context.Context, msgs []chat.Messa
 		// the executor-side BuildForStep behaviour. Lower-cased
 		// so the rule's membership check works.
 		for _, u := range extractURLsFromText(m.Content) {
-			gc.FetchedURLs[strings.ToLower(u)] = struct{}{}
+			// Same normalised form the matcher compares in — the
+			// dispatcher path must not diverge from the executor
+			// path here (LLD §4a).
+			gc.FetchedURLs[hallucination.NormalizeURLForMatch(u)] = struct{}{}
 		}
 	}
 	gc.ToolOutputs = toolOuts.String()

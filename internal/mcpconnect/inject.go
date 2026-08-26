@@ -38,21 +38,32 @@ var ErrNeedsReconnect = errors.New("mcp oauth grant needs operator reconnect")
 //  3. Persist with the conditional swap, so even without the lock a concurrent refresh loses
 //     cleanly instead of clobbering the winner's rotated token.
 func (c *Connector) AccessToken(ctx context.Context, ref ServerRef) (string, error) {
+	token, _, err := c.resolveAccessToken(ctx, ref)
+	return token, err
+}
+
+// resolveAccessToken is AccessToken plus the resolved token's expiry.
+//
+// The expiry is threaded out rather than re-read because the read-through
+// cache (cache.go) needs it to apply coherence rule 1, and a second
+// Tokens.Get would put two database round trips on the cold path of every
+// tool call — half the cost the cache exists to remove.
+func (c *Connector) resolveAccessToken(ctx context.Context, ref ServerRef) (string, *time.Time, error) {
 	tok, err := c.Tokens.Get(ctx, ref.ProjectID, ref.ServerName)
 	if errors.Is(err, persistence.ErrNotFound) {
 		// Every wiring pass asks about every configured oauth server,
 		// most of which the operator has never connected. That is not an
 		// error, and must not be reported as one.
-		return "", nil
+		return "", nil, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("mcpconnect: read grant: %w", err)
+		return "", nil, fmt.Errorf("mcpconnect: read grant: %w", err)
 	}
 	if tok == nil {
-		return "", nil
+		return "", nil, nil
 	}
 	if tok.NeedsReconnect {
-		return "", fmt.Errorf("%w: %q", ErrNeedsReconnect, ref.ServerName)
+		return "", nil, fmt.Errorf("%w: %q", ErrNeedsReconnect, ref.ServerName)
 	}
 	// F5, enforced at use rather than trusted from config: a token issued for
 	// one resource must never be presented to another. Two products sharing an
@@ -60,10 +71,10 @@ func (c *Connector) AccessToken(ctx context.Context, ref ServerRef) (string, err
 	// repoints a server's URL must invalidate the grant rather than silently
 	// reuse it against a new audience.
 	if err := c.assertResourceMatches(ctx, ref, tok); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if tok.Usable(time.Now(), refreshSkew) {
-		return tok.AccessToken, nil
+		return tok.AccessToken, tok.ExpiresAt, nil
 	}
 	if !tok.Refreshable() {
 		// Expired with no refresh token is needs_reconnect by definition
@@ -72,10 +83,11 @@ func (c *Connector) AccessToken(ctx context.Context, ref ServerRef) (string, err
 			c.Logger.Error().Err(markErr).Str("server", ref.ServerName).
 				Msg("mcp oauth: could not flag the grant as needing reconnect")
 		}
-		return "", fmt.Errorf("%w: %q (expired with no refresh token)", ErrNeedsReconnect, ref.ServerName)
+		return "", nil, fmt.Errorf("%w: %q (expired with no refresh token)", ErrNeedsReconnect, ref.ServerName)
 	}
 
 	var refreshed string
+	var refreshedExpiry *time.Time
 	lockErr := c.Tokens.WithRefreshLock(ctx, ref.ProjectID, ref.ServerName, func(ctx context.Context) error {
 		current, err := c.Tokens.Get(ctx, ref.ProjectID, ref.ServerName)
 		if errors.Is(err, persistence.ErrNotFound) {
@@ -91,29 +103,31 @@ func (c *Connector) AccessToken(ctx context.Context, ref ServerRef) (string, err
 		// waited for the lock, in which case there is nothing to do.
 		if current.Usable(time.Now(), refreshSkew) {
 			refreshed = current.AccessToken
+			refreshedExpiry = current.ExpiresAt
 			return nil
 		}
 		if !current.Refreshable() {
 			return fmt.Errorf("%w: %q", ErrNeedsReconnect, ref.ServerName)
 		}
-		next, err := c.refreshLocked(ctx, ref, current)
+		next, nextExpiry, err := c.refreshLocked(ctx, ref, current)
 		if err != nil {
 			return err
 		}
 		refreshed = next
+		refreshedExpiry = nextExpiry
 		return nil
 	})
 	if lockErr != nil {
-		return "", lockErr
+		return "", nil, lockErr
 	}
-	return refreshed, nil
+	return refreshed, refreshedExpiry, nil
 }
 
 // refreshLocked performs the token refresh and persists it. Called with the grant's lock held.
-func (c *Connector) refreshLocked(ctx context.Context, ref ServerRef, current *persistence.MCPOAuthToken) (string, error) {
+func (c *Connector) refreshLocked(ctx context.Context, ref ServerRef, current *persistence.MCPOAuthToken) (string, *time.Time, error) {
 	md, err := c.resolveMetadata(ctx, ref)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	// The resource the token was ISSUED for, not whatever discovery says now:
 	// refreshing must not silently re-audience a grant.
@@ -121,7 +135,7 @@ func (c *Connector) refreshLocked(ctx context.Context, ref ServerRef, current *p
 
 	creds, err := c.configuredClient(ref)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if creds.ID == "" {
 		creds.ID = current.ClientID
@@ -140,10 +154,10 @@ func (c *Connector) refreshLocked(ctx context.Context, ref ServerRef, current *p
 			}
 			c.Logger.Warn().Str("server", ref.ServerName).Str("project", ref.ProjectID).
 				Msg("mcp oauth: the authorization server rejected the refresh token — a human must reconnect")
-			return "", fmt.Errorf("%w: %q (the authorization server rejected the refresh token)",
+			return "", nil, fmt.Errorf("%w: %q (the authorization server rejected the refresh token)",
 				ErrNeedsReconnect, ref.ServerName)
 		}
-		return "", err
+		return "", nil, err
 	}
 
 	next := &persistence.MCPOAuthToken{
@@ -167,20 +181,20 @@ func (c *Connector) refreshLocked(ctx context.Context, ref ServerRef, current *p
 
 	won, err := c.Tokens.SwapRefreshToken(ctx, current.RefreshToken, next)
 	if err != nil {
-		return "", fmt.Errorf("mcpconnect: persist refreshed grant: %w", err)
+		return "", nil, fmt.Errorf("mcpconnect: persist refreshed grant: %w", err)
 	}
 	if !won {
 		// Another process rotated the token under us. Its value is the live
 		// one; ours is already spent, so reload rather than overwrite.
 		reloaded, err := c.Tokens.Get(ctx, ref.ProjectID, ref.ServerName)
 		if err != nil || reloaded == nil {
-			return "", fmt.Errorf("mcpconnect: lost the refresh race and could not reload the grant: %w", err)
+			return "", nil, fmt.Errorf("mcpconnect: lost the refresh race and could not reload the grant: %w", err)
 		}
-		return reloaded.AccessToken, nil
+		return reloaded.AccessToken, reloaded.ExpiresAt, nil
 	}
 	c.Logger.Debug().Str("server", ref.ServerName).Str("project", ref.ProjectID).
 		Msg("mcp oauth: access token refreshed")
-	return next.AccessToken, nil
+	return next.AccessToken, next.ExpiresAt, nil
 }
 
 // assertResourceMatches refuses to present a token whose audience no longer matches the server it

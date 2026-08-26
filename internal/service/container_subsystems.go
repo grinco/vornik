@@ -947,31 +947,68 @@ func (c *Container) applyMCPOAuthToken(cfg *mcp.ServerConfig, projectID, scope s
 		return true
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), mcpOAuthHTTPTimeout)
+	// LATE BINDING. The credential is NOT resolved here; a provider is
+	// installed and consulted on every request instead.
+	//
+	// Resolving it here is what caused the 2026-08-25 P0. This function runs
+	// only inside initMCP — at boot, on config reload, and on consent — so a
+	// bearer written into cfg.AuthHeaders here is valid for the vendor's
+	// access-token lifetime and dead for however long the daemon runs after
+	// that, with nothing to notice. Measured on this deployment: an 8-hour
+	// Atlassian token, 58h41m between two rewires, and ~51 hours during which
+	// every call 401'd while `vornikctl mcp oauth-status` reported the grant
+	// connected and healthy.
+	//
+	// See https://docs.vornik.io §3.1.
+	cfg.AuthHeaderProvider = func(ctx context.Context) (map[string]string, error) {
+		ctx, cancel := context.WithTimeout(ctx, mcpOAuthHTTPTimeout)
+		defer cancel()
+		token, err := conn.CachedAccessToken(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		if token == "" {
+			// Never consented. The server stays registered and calls
+			// unauthenticated, so its tools remain visible and the operator
+			// can see what needs connecting (auth design §8).
+			return nil, nil
+		}
+		return map[string]string{"Authorization": "Bearer " + token}, nil
+	}
+	// The eviction half of the one-shot retry: a 401 means the vendor
+	// disagrees with our stored expiry, and only the vendor is authoritative.
+	cfg.AuthInvalidator = func(context.Context) {
+		conn.InvalidateToken(ref.ProjectID, ref.ServerName)
+	}
+
+	// Probe ONCE at wiring time — not to bind the credential, but to say
+	// something useful in the log about a server the operator is about to see
+	// in the catalog. The outcome never withholds the server: a grant that
+	// needs reconnect now may be reconnected in a minute, and the provider
+	// will pick that up without another rewire.
+	probeCtx, cancel := context.WithTimeout(context.Background(), mcpOAuthHTTPTimeout)
 	defer cancel()
-	token, err := conn.AccessToken(ctx, ref)
-	switch {
+	switch token, err := conn.CachedAccessToken(probeCtx, ref); {
 	case errors.Is(err, mcpconnect.ErrNeedsReconnect):
 		c.Logger.Warn().
 			Str("server", cfg.Name).
 			Str("scope", scope).
-			Msg("MCP: the stored OAuth grant needs an operator reconnect — connecting unauthenticated (run: vornikctl mcp connect)")
-		return true
+			Msg("MCP: the stored OAuth grant needs an operator reconnect — its tool calls will FAIL until it is reconnected (run: vornikctl mcp connect)")
 	case err != nil:
+		// Not fatal any more. The read may be a transient database blip, and
+		// the provider re-reads on the next call; withholding the server here
+		// would make its tools vanish from every agent's catalog for a
+		// condition that may already have cleared.
 		c.Logger.Error().Err(err).
 			Str("server", cfg.Name).
 			Str("scope", scope).
-			Msg("MCP: refusing to register server — its OAuth grant could not be read")
-		return false
-	}
-	if token == "" {
+			Msg("MCP: could not read the OAuth grant at wiring time — the credential will be resolved per call")
+	case token == "":
 		c.Logger.Info().
 			Str("server", cfg.Name).
 			Str("scope", scope).
 			Msg("MCP: auth mode oauth is configured but this server is not connected yet — connecting unauthenticated (run: vornikctl mcp connect)")
-		return true
 	}
-	cfg.AuthHeaders = map[string]string{"Authorization": "Bearer " + token}
 	return true
 }
 

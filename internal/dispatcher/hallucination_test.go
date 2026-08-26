@@ -49,6 +49,9 @@ func TestBuildChatGroundingContext_PullsToolCallsAndProjects(t *testing.T) {
 // the model can correct or remove them. A retry prompt that
 // just says "you hallucinated" is no better than the original.
 func TestFormatHallucinationRetryPrompt_NamesRejectedClaims(t *testing.T) {
+	// Severities here are synthetic fixtures for the FORMATTER, which does not
+	// read them. url_not_fetched is Warn in production since 2026-08-26 (LLD
+	// §4a); this pairing is not a claim about the rule.
 	signals := []hallucination.Signal{
 		hallucination.NewSignal("url_not_fetched", hallucination.SeverityHigh, "url",
 			"https://x.example", "We fetched https://x.example.", "tool_audit", "URL not in audit"),

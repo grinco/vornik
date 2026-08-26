@@ -17,16 +17,29 @@ func ctxWithFetched(urls []string) *GroundingContext {
 		ToolCallNames:      []string{"web_fetch"},
 	}
 	for _, u := range urls {
-		gc.FetchedURLs[u] = struct{}{}
+		// Seed in the SAME normalised form production uses
+		// (BuildForStep and the dispatcher both call
+		// normalizeURLForMatch). A fixture that disagrees with
+		// production about the stored shape certifies a path that
+		// does not exist.
+		gc.FetchedURLs[normalizeURLForMatch(u)] = struct{}{}
 	}
 	return gc
 }
 
 // TestUrlNotFetched_FlagsHallucinatedURL — the headline case
 // the rule exists for: a worker writes "see https://x.com" but
-// no tool ever fetched x.com. Must surface as High because the
-// executor blocks on High and this is the strongest signal of
-// fabrication we have.
+// no tool ever fetched x.com. Still detected; no longer blocking.
+//
+// Severity changed High -> Warn on 2026-08-26. The rule shipped at
+// High without the soak window the design requires, and its first
+// observed production firing was a FALSE positive
+// (task_20260823100022_bd4345a67e59cebe) that discarded a correct
+// briefing, had the lead narrate the verdict as established fact,
+// and cost a 2.5h re-run for zero defect. The detector also cannot
+// see content fabrication at all, so blocking on a URL *string*
+// difference inverted severity against actual harm. See LLD §4a for
+// what re-promotion would take.
 func TestUrlNotFetched_FlagsHallucinatedURL(t *testing.T) {
 	gc := ctxWithFetched([]string{"https://example.com/jobs/123"})
 	text := "I scraped the listings from https://hallucinated.example.org/feed and scored them."
@@ -34,9 +47,10 @@ func TestUrlNotFetched_FlagsHallucinatedURL(t *testing.T) {
 	sigs := d.Scan(text, gc)
 	require.Len(t, sigs, 1)
 	assert.Equal(t, "url_not_fetched", sigs[0].Detector)
-	assert.Equal(t, SeverityHigh, sigs[0].Severity)
+	assert.Equal(t, SeverityWarn, sigs[0].Severity)
 	assert.Equal(t, "https://hallucinated.example.org/feed", sigs[0].ClaimValue)
-	assert.True(t, d.ShouldBlock(sigs), "high-severity url claim must block the step")
+	assert.False(t, d.ShouldBlock(sigs),
+		"url_not_fetched must NOT block: it is recorded and surfaced, not gating")
 }
 
 // TestUrlNotFetched_PrefixMatchClearsClaim — a model that says

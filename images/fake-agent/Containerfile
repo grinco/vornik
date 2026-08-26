@@ -3,6 +3,17 @@
 # Used for testing the vornik runtime contract
 
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+# Build provenance (2026-08-25). The revision label is what makes image
+# staleness detectable at all: doctor's image_freshness check compares it
+# against the daemon's own build revision, and vornik-update.sh reads it to
+# skip rebuilding an image that is already current. Re-declared after FROM
+# because build args do not cross stage boundaries. A value of `unknown` means
+# the image was built by hand without passing them.
+ARG VORNIK_REVISION=unknown
+ARG VORNIK_VERSION=dev
+LABEL org.opencontainers.image.revision="${VORNIK_REVISION}" \
+      org.opencontainers.image.version="${VORNIK_VERSION}" \
+      org.opencontainers.image.source="https://github.com/grinco/vornik"
 
 # Install jq for JSON processing
 RUN apk add --no-cache jq

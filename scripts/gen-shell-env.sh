@@ -49,6 +49,46 @@ secrets_dir="${CONFIG_DIR}/secrets"
 # never hardcoded in shipped source. Used only to DENY it as a benchmark target.
 resolved_db="$(sed -n 's/^[[:space:]]*name:[[:space:]]*\(.*\)$/\1/p' "$resolved_config" 2>/dev/null | head -1 | tr -d '"'"'"' ')"
 
+# config.yaml's `name:` is frequently a ${VAR} PLACEHOLDER, not a literal — the
+# shipped deployments/podman/config/vornik.host.yaml ships
+# `name: "${POSTGRES_DB}"`. Emitting that verbatim produced a fragment whose
+# deny-list line referenced a variable the fragment itself only defines further
+# down (in the secrets loop), so it expanded to the empty string and the
+# deployment's own database was never actually denied — the exact protection the
+# block below claims to provide, silently absent on every placeholder-based
+# install. Resolve it HERE instead, in a subshell that loads the same sources the
+# daemon does, so the emitted value is a literal name and cannot depend on
+# ordering inside the generated file.
+# shellcheck disable=SC2016 # intentional: matching the LITERAL text "${...}"
+case "$resolved_db" in
+  '${'*'}')
+    _dbvar="${resolved_db#\$\{}"; _dbvar="${_dbvar%\}}"
+    resolved_db=""
+    if [[ "$_dbvar" =~ ^[A-Za-z_][A-Za-z_0-9]*$ ]]; then
+      # Indirect expansion only — never eval config-derived text.
+      resolved_db="$(
+        set -a
+        # The unit's EnvironmentFile= list (e.g. vornik.env), then the secrets
+        # glob the daemon's loader auto-sources. Same precedence as the daemon.
+        if command -v systemctl >/dev/null 2>&1; then
+          while read -r _ef; do
+            _ef="${_ef%% (*}"                       # strip " (ignore_errors=yes)"
+            # shellcheck disable=SC1090 # runtime path, intentionally dynamic
+            [ -n "$_ef" ] && [ -r "$_ef" ] && . "$_ef"
+          done < <(systemctl --user show vornik.service --property=EnvironmentFiles --value 2>/dev/null | tr ' ' '\n' | grep '^/' || true)
+        fi
+        for _f in "${secrets_dir}"/env "${secrets_dir}"/*.env; do
+          # shellcheck disable=SC1090 # runtime path, intentionally dynamic
+          [ -r "$_f" ] && . "$_f"
+        done
+        set +a
+        printf '%s' "${!_dbvar}"
+      )"
+    fi
+    unset _dbvar
+    ;;
+esac
+
 mkdir -p "$(dirname "$OUT")"
 cat >"$OUT" <<EOF
 # shellcheck shell=sh

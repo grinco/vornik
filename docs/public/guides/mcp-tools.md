@@ -3,7 +3,7 @@ sources:
     - path: internal/registry/project.go
       sha256: 0050bcd2dc23bc8050c197f4ccecaf76b0b7460ea2b080a585b758146c6dd30b
     - path: internal/mcp/client.go
-      sha256: 9c1d50358c550b25e6188ca253742f829213904f59e04f10bdf81e6a7b07b99f
+      sha256: f73d74f91615b04461455c8b986189c9f6d7fe6f09139ce122ca826b25f1a3bc
     - path: internal/mcp/ratelimit.go
       sha256: 19ad0c64e2abd9d25e95971e1ba5e3cfe91f34852edeca6e4f9c70825b2e901d
     - path: internal/cli/mcp.go
@@ -252,12 +252,39 @@ vendor issued a secret. **Servers with no discovery at all** (Intercom) need
 `authorization_endpoint` and `token_endpoint` set explicitly. Vornik tells you
 which case you are in rather than failing generically.
 
-**Refresh and reconnect.** Access tokens refresh automatically, shortly before
-expiry, and rotated refresh tokens are handled. If the vendor revokes the grant,
-the server is flagged `needs_reconnect`: its calls stop rather than retrying
-forever, `mcp oauth-status` says so, and `mcp connect` fixes it. Disconnecting
-in Vornik does **not** revoke the authorization at the vendor — do that in their
-console too if you want it withdrawn there.
+**Refresh and reconnect.** The credential is resolved **per request**, so an
+access token refreshes shortly before it expires no matter how long the daemon
+has been running, and rotated refresh tokens are handled. If the vendor rejects
+a token Vornik still believes in — a grant revoked in their console, say — the
+call is retried **once** after a forced refresh, and no more than once. If the
+vendor revokes the grant outright, the server is flagged `needs_reconnect`: its
+calls fail rather than retrying forever, `mcp oauth-status` says so, and
+`mcp connect` fixes it. Disconnecting in Vornik does **not** revoke the
+authorization at the vendor — do that in their console too if you want it
+withdrawn there.
+
+> **Changed in 2026.8.10.** Before this, the credential was resolved when the
+> MCP client was *wired* — at boot, on config reload, and on consent — and
+> frozen into that client's headers. A daemon that ran longer than the vendor's
+> access-token lifetime therefore presented a dead bearer until something
+> happened to trigger a reload, and every status surface reported the grant
+> healthy throughout. If you are on an older build, reload config on a schedule
+> or upgrade.
+
+**When a connector loses auth, you are told.** A rejected credential is no
+longer something you have to go looking for:
+
+- The step that hit it **fails**, naming the connector and the
+  `vornikctl mcp connect` line that fixes it — rather than the agent narrating
+  a 401 into its output while the task reports success. A step that
+  deliberately degrades across connectors can opt out of the failure with
+  `auth_failure_mode: continue`; it stays visible in the two surfaces below
+  either way.
+- `vornikctl doctor` gains a **`connector_auth`** check. It reads the stored
+  grant *and* recent authentication failures, so a connector that is failing
+  right now is reported as an error even when its stored grant looks perfect.
+- The operator alert channel gets a **push** the first time a connector starts
+  failing, rate-limited to one message an hour per connector.
 
 **If you change a server's `url`, reconnect it.** Vornik refuses to present a
 grant whose origin no longer matches the configured URL, so moving a server to a

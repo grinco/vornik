@@ -174,6 +174,7 @@ func ValidateSwarmSkillMarkdown(content []byte, filename string) *SwarmSkillVali
 	checkSkillVornikPayload(skill, report)
 	checkSkillWorkflowSymmetry(skill, report)
 	checkSkillRoleCoverage(skill, report)
+	appendSwarmSchemaFindings(report, content, filename)
 
 	return report
 }
@@ -384,4 +385,34 @@ func sluggifyName(s string) string {
 	}
 	out := b.String()
 	return strings.TrimRight(out, "-")
+}
+
+// appendSwarmSchemaFindings runs the LOADER over the same bytes and reports
+// anything it rejects as an ERROR finding.
+//
+// Until 2026-08-27 this validator checked only the SKILL.md envelope — name,
+// description, version, author, license — and never called ParseSwarmMarkdown.
+// A role whose permissions block carried `allowed_tools` instead of
+// `allowedTools` validated with zero errors while loading with an EMPTY
+// allowlist, which the MCP gate reads as unrestricted. The tool an operator
+// would reach for to check said the file was fine.
+//
+// It calls the loader rather than re-implementing its rules, so the two cannot
+// drift — the same requirement appendWorkflowSchemaFindings documents for
+// workflows, and asserted for both by TestLoaderValidatorAgreement.
+//
+// SCOPE: the DECODE only — hence decodeSwarmFrontmatter rather than
+// ParseSwarmMarkdown. Calling the full parser was tried and turned every
+// partial skill fixture into an error, because it also enforces that each
+// `### role` prompt section matches a declared role — a legitimate
+// intermediate state during a skill import, and not a schema question. Same
+// cascade the workflow design hit and rejected.
+func appendSwarmSchemaFindings(report *SwarmSkillValidationReport, content []byte, filename string) {
+	if _, _, err := decodeSwarmFrontmatter(content, filename); err != nil {
+		report.Findings = append(report.Findings, WorkflowMDFinding{
+			Severity: SeverityError,
+			Code:     "swarm_schema",
+			Message:  err.Error(),
+		})
+	}
 }

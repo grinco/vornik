@@ -191,26 +191,63 @@ func TestChatReplyEgress_NotDisableable_RealCorpus(t *testing.T) {
 	assert.Contains(t, wire, "[REDACTED:openai_key]")
 }
 
-// TestChatReplyEgress_AWSDocsPlaceholderAllowlisted — characterizes a
-// deliberate non-redaction: the canonical AWS docs key
-// AKIAIOSFODNN7EXAMPLE matches the aws_access_key regex but is
-// suppressed by DefaultAllowlist()'s "example" rule, so it passes
-// through to the wire. This is by design (it is a documented
-// placeholder, not a live credential); the test pins the behaviour
-// so a future allowlist change that would start redacting it — or,
-// worse, one that broadens "example" suppression to swallow real
-// keys — surfaces as a deliberate decision rather than a silent
-// drift. A REAL key (covered above) still redacts.
-func TestChatReplyEgress_AWSDocsPlaceholderAllowlisted(t *testing.T) {
+// TestChatReplyEgress_AWSDocsPlaceholderNowRedacts — THE DELIBERATE DECISION
+// this test was written to force.
+//
+// It previously asserted the opposite: the canonical AWS docs key
+// AKIAIOSFODNN7EXAMPLE matched aws_access_key but was suppressed by
+// DefaultAllowlist()'s "example" rule and reached the wire unredacted. That
+// version pinned the behaviour so that a change which "broadens 'example'
+// suppression to swallow real keys — surfaces as a deliberate decision rather
+// than a silent drift".
+//
+// The drift had already happened, and not by broadening anything: the SHIPPED
+// `<[^>]+>` disjunct in the same allowlist entry matches any substring, so a
+// connection_string whose password contained angle brackets produced zero
+// findings and travelled this same egress path verbatim (measured 2026-08-27).
+//
+// The fix keys suppression of a STRONG finding on whether the allowlist entry
+// matches the WHOLE value. "example" appears inside this key rather than being
+// it, so the key now redacts. Losing a documentation placeholder from a chat
+// message costs nothing; the substring rule that hid it was deleting live
+// credentials. An operator who wants ONE specific key excused can still name it
+// in full — see TestScan_AllowlistSuppressesRegexFinding.
+//
+// Design: https://docs.vornik.io
+func TestChatReplyEgress_AWSDocsPlaceholderNowRedacts(t *testing.T) {
 	b, ct := realDetectorBot(t)
 	const placeholder = "AKIAIOSFODNN7EXAMPLE"
 	require.NoError(t, b.sendMessageWithMarkup(context.Background(), 1,
 		"sample config: "+placeholder, nil))
 	wire := ct.onWire()
-	assert.Contains(t, wire, placeholder,
-		"the AWS docs placeholder is allowlisted and intentionally not redacted")
-	assert.NotContains(t, wire, "[REDACTED",
-		"no redaction marker — the allowlist suppressed the only finding")
+	assert.NotContains(t, wire, placeholder,
+		"a substring allowlist entry must not rescue a strong prefix-anchored finding")
+	assert.Contains(t, wire, "[REDACTED:aws_access_key]",
+		"the finding must be redacted with its type, not silently dropped")
+}
+
+// TestChatReplyEgress_WholeValueAllowlistStillSuppresses — the other side of
+// the same rule, on the path that actually leaves the deployment: an entry
+// naming the entire value still excuses it. Without this, the fix above reads
+// as "strong findings are never allowlistable", which is not what shipped.
+func TestChatReplyEgress_WholeValueAllowlistStillSuppresses(t *testing.T) {
+	det, err := secrets.NewMultiDetector(secrets.Config{
+		Patterns:  secrets.DefaultPatterns(),
+		Allowlist: []string{"AKIAQWERTYUIOPASDFGH"},
+	})
+	require.NoError(t, err)
+	ct := &captureTransport{}
+	b := &Bot{
+		baseURL:         "https://api.telegram.org/botTEST",
+		httpClient:      &http.Client{Transport: ct},
+		logger:          zerolog.Nop(),
+		secretsDetector: det,
+		forumChatID:     999,
+	}
+	require.NoError(t, b.sendMessageWithMarkup(context.Background(), 1,
+		"known-safe fixture key AKIAQWERTYUIOPASDFGH in config", nil))
+	assert.Contains(t, ct.onWire(), "AKIAQWERTYUIOPASDFGH",
+		"an operator entry naming the whole value must still suppress")
 }
 
 // TestChatReplyEgress_CleanMessageUntouched — the common path: a

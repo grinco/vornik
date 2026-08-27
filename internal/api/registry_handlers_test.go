@@ -132,7 +132,7 @@ defaultWorkflowId: wf-1
 defaultPriority: 50
 maxConcurrentTasks: 10
 budget:
-  dailySoftUSD: 100
+  daily_soft_usd: 100
 autonomy:
   enabled: false
 `), 0o644))

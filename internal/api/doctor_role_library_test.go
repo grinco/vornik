@@ -59,7 +59,7 @@ Implement {{.task}}.
 
 func TestCheckRoleLibraryNoConfigDir(t *testing.T) {
 	h := &DoctorHandlers{}
-	if got := h.checkRoleLibrary(); got.Status != "OK" {
+	if got := h.checkRoleLibrary(); got.Status != "SKIPPED" {
 		t.Errorf("no config dir: status = %q, want OK", got.Status)
 	}
 }

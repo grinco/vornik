@@ -120,7 +120,7 @@ func (h *DoctorHandlers) SetAgentHealthReporter(r chat.ModelHealthReporter) {
 func (h *DoctorHandlers) checkModelCircuits() DoctorCheck {
 	const name = "model_circuits"
 	if h.modelCircuits == nil {
-		return DoctorCheck{Name: name, Status: "OK", Message: "chat health-gate not wired; skipping live circuit check"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "chat health-gate not wired; skipping live circuit check"}
 	}
 	snaps := h.modelCircuits()
 	if len(snaps) == 0 {
@@ -171,7 +171,7 @@ func (h *DoctorHandlers) checkModelCircuits() DoctorCheck {
 func (h *DoctorHandlers) checkAgentModelCircuits() DoctorCheck {
 	const name = "agent_model_circuits"
 	if h.agentCircuits == nil {
-		return DoctorCheck{Name: name, Status: "OK", Message: "agent health-gate not wired; skipping live agent circuit check"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "agent health-gate not wired; skipping live agent circuit check"}
 	}
 	snaps := h.agentCircuits()
 	if len(snaps) == 0 {
@@ -228,13 +228,13 @@ func circuitSeverity(state string) int {
 func (h *DoctorHandlers) checkModelHealth(ctx context.Context) DoctorCheck {
 	name := "model_health"
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config dir; skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config dir; skipping"}
 	}
 
 	source := h.modelHealthSource
 	if source == nil {
 		if h.db == nil {
-			return DoctorCheck{Name: name, Status: "OK", Message: "no health data source wired; skipping"}
+			return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no health data source wired; skipping"}
 		}
 		source = h.queryModelHealthStats
 	}
@@ -246,6 +246,11 @@ func (h *DoctorHandlers) checkModelHealth(ctx context.Context) DoctorCheck {
 
 	referenced, fallbacks := collectModelFallbacks(reg.ListSwarms())
 	if len(referenced) == 0 {
+		// doctor-vacuous: OK is correct here, not SKIPPED. The check RAN —
+		// collectModelFallbacks walked every swarm and found no role pins. An
+		// empty set is a true pass, not an unevaluated one, and reporting it as
+		// SKIPPED would hide a deployment that genuinely pins no models behind
+		// the same label as one where the check could not run.
 		return DoctorCheck{Name: name, Status: "OK", Message: "no role-pinned models to evaluate"}
 	}
 

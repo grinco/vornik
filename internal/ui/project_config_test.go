@@ -168,7 +168,6 @@ func writeUIRegistryFixture(t *testing.T) string {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "workflows"), 0o755))
 
 	require.NoError(t, os.WriteFile(filepath.Join(root, "projects", "project-1.yaml"), []byte(`
-id: project-1
 projectId: project-1
 displayName: Project One
 swarmId: swarm-1

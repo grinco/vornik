@@ -505,10 +505,43 @@ func (d *MultiDetector) Scan(text []byte) []Finding {
 	// Allowlist suppression. Apply after the regex+entropy passes
 	// so operators can write narrow allow rules ("this specific
 	// token is fine") without having to disable whole patterns.
+	//
+	// A STRONG finding may be suppressed only by an entry matching
+	// the WHOLE matched value; a heuristic one still yields to a
+	// substring match.
+	//
+	// Until 2026-08-27 every class yielded to a substring, which let
+	// a SHIPPED DefaultAllowlist() entry delete a real credential:
+	// the `<[^>]+>` documentation-placeholder disjunct matches any
+	// substring, so a connection_string whose password contained
+	// angle brackets produced ZERO findings and was stored — and
+	// sent over the Telegram egress path — verbatim, with no marker
+	// and no secret_redaction_audit row.
+	//
+	// The test is how SPECIFIC the allowlist entry is — not the
+	// finding's class, and not who wrote the entry. (There is no
+	// field for this; the rule is entirely in allowedWhole below.)
+	// Heuristic-only (the first fix attempted) would
+	// have deleted a capability a previous author built on purpose:
+	// an operator naming ONE known-safe key shape without disabling
+	// the whole pattern (TestScan_AllowlistSuppressesRegexFinding).
+	// The replacement for that, secrets.patterns.disable, is
+	// rule-level, so it would cost detection of every real key of
+	// that type. Specificity separates the two motivating cases
+	// exactly — a literal key names its own finding; `<[^>]+>` can
+	// only ever appear inside one — and it disarms an operator's own
+	// over-broad entry as well as a shipped one.
+	//
+	// Design: https://docs.vornik.io
 	if len(d.allowlist) > 0 && len(findings) > 0 {
 		filtered := findings[:0]
 		for _, f := range findings {
-			if d.allowed(text[f.Start:f.End]) {
+			match := text[f.Start:f.End]
+			suppressed := d.allowed(match)
+			if !allowlistEligible(f) {
+				suppressed = d.allowedWhole(match)
+			}
+			if suppressed {
 				continue
 			}
 			filtered = append(filtered, f)
@@ -553,6 +586,39 @@ func (d *MultiDetector) Scan(text []byte) []Finding {
 func (d *MultiDetector) allowed(match []byte) bool {
 	for _, re := range d.allowlist {
 		if re.Match(match) {
+			return true
+		}
+	}
+	return false
+}
+
+// allowedWhole reports whether some allowlist entry NAMES this exact
+// value: the entry matches exactly one literal string, and that
+// string is the whole match. This is the gate for suppressing a
+// strong, prefix-anchored finding.
+//
+// "This specific key is known-safe" is a precise operator statement
+// and stays expressible. "Anything containing <...>" is how a live
+// credential disappears, and stops being.
+//
+// WHY LiteralPrefix AND NOT A WHOLE-MATCH TEST. Asking whether the
+// regex happens to span the value (FindIndex loc == [0, len]) looks
+// equivalent and is not: `.*` and `.*QWERTY.*` span it too, so an
+// operator who wrapped a substring rule in .* would silently restore
+// the exact behaviour this fix removes — measured 2026-08-27, both
+// suppressed a strong finding under that formulation. complete=true
+// from LiteralPrefix means the pattern can match nothing BUT that
+// one string, which is the actual intent and is a property of the
+// pattern rather than of one input. It also sidesteps RE2 leftmost
+// semantics entirely: `AKIA|AKIAQWERTY…` returns its short branch
+// from FindIndex, so a whole-match test would answer differently
+// depending on branch order.
+//
+// Both operator spellings survive: the bare literal and the anchored
+// ^literal$ form both report complete=true.
+func (d *MultiDetector) allowedWhole(match []byte) bool {
+	for _, re := range d.allowlist {
+		if literal, complete := re.LiteralPrefix(); complete && literal == string(match) {
 			return true
 		}
 	}

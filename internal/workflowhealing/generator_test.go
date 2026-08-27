@@ -85,8 +85,8 @@ steps:
     type: "agent"
     role: "coder"
     on_success: "review"
-    retryPolicy:
-      maxRetries: 4
+    retry:
+      max_attempts: 4
   review:
     type: "agent"
     role: "reviewer"
@@ -196,12 +196,12 @@ func TestBuildRetryBudgetCandidate_LowersOffendingStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-parse candidate genome: %v", err)
 	}
-	if got := cw.Steps["impl"].RetryPolicy.MaxRetries; got != 2 {
-		t.Errorf("impl maxRetries = %d, want 2 (lowered from 4)", got)
+	if got := cw.Steps["impl"].Retry.MaxAttempts; got != 2 {
+		t.Errorf("impl max_attempts = %d, want 2 (lowered from 4)", got)
 	}
 	// review (not the offending step) must be untouched.
-	if got := cw.Steps["review"].RetryPolicy.MaxRetries; got != 0 {
-		t.Errorf("review maxRetries = %d, want 0 (untouched)", got)
+	if got := cw.Steps["review"].Retry.MaxAttempts; got != 0 {
+		t.Errorf("review max_attempts = %d, want 0 (untouched)", got)
 	}
 }
 

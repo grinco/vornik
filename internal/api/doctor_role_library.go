@@ -42,7 +42,7 @@ func (h *DoctorHandlers) SetSystemHandlerNames(names []string) {
 func (h *DoctorHandlers) checkRoleLibrary() DoctorCheck {
 	const name = "role_library"
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config dir; skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config dir; skipping"}
 	}
 	// LoadWithFindings enumerates every malformed file as a finding instead of
 	// aborting on the first, so the report shows the WHOLE library in one pass

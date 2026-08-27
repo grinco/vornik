@@ -39,7 +39,7 @@ func (s *stubLockRepo) List(_ context.Context) ([]*persistence.DaemonLeaderLock,
 func TestCheckLeaderLocksHealth_UnwiredReturnsOK(t *testing.T) {
 	h := &DoctorHandlers{}
 	got := h.checkLeaderLocksHealth()
-	if got.Status != "OK" {
+	if got.Status != "SKIPPED" {
 		t.Errorf("status = %q, want OK", got.Status)
 	}
 	if !strings.Contains(got.Message, "not wired") {

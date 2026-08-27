@@ -4,7 +4,7 @@ import "reflect"
 
 // workflowChangeIsStructural reports whether the change between two versions of
 // the same workflow goes BEYOND runtime-tuning scalars. A change limited to the
-// tuning whitelist (per-step Timeout & RetryPolicy; workflow MaxWallClock,
+// tuning whitelist (per-step Timeout & Retry; workflow MaxWallClock,
 // MaxStepVisits, MaxIterations) is execution-safe and may apply live even while
 // in-flight work references the workflow (design 2026-07-23 §A). Anything else
 // — topology, roles, prompts, gates, terminals, flags — is structural.
@@ -31,7 +31,7 @@ func neutralizeTuning(w *Workflow) *Workflow {
 		steps := make(map[string]WorkflowStep, len(w.Steps))
 		for id, st := range w.Steps {
 			st.Timeout = ""
-			st.RetryPolicy = WorkflowRetryPolicy{}
+			st.Retry = WorkflowStepRetry{}
 			steps[id] = st
 		}
 		c.Steps = steps

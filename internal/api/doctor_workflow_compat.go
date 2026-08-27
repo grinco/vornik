@@ -28,7 +28,7 @@ import (
 func (h *DoctorHandlers) checkWorkflowSwarmCompat() DoctorCheck {
 	const name = "workflow_swarm_compat"
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config directory configured, skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config directory configured, skipping"}
 	}
 
 	reg := registry.New()

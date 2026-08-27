@@ -254,6 +254,54 @@ func (s *workflowMDFrontmatterShape) allowLargeFile() bool {
 // workflow schema are orthogonal concerns and conflating them
 // would make a clear violation of one rule look like a generic
 // "validation failed" string from the other.
+// appendWorkflowSchemaFindings runs the LOADER's decode and validation over
+// the same bytes and reports anything it rejects as an ERROR finding.
+//
+// Until 2026-08-27 this function validated only the SKILL.md envelope — name,
+// description, version, author, license, metadata — and never parsed `steps:`
+// at all. A workflow whose step carried an invented key AND a dead `retry:`
+// block validated with zero errors, while the daemon would have refused it.
+//
+// That matters because `vornikctl workflow validate` is the pre-deploy gate: a
+// gate blind to what the loader rejects passes, and the daemon then fails at
+// boot. It is also why the ten inert `retry:` blocks survived — the tool an
+// operator would reach for to check them said they were fine.
+//
+// It calls the loader rather than re-implementing its rules, so the two cannot
+// drift.
+func appendWorkflowSchemaFindings(report *WorkflowMDValidationReport, content []byte, filename string) {
+	wf, err := ParseWorkflowMarkdown(content, filename)
+	if err != nil {
+		report.Findings = append(report.Findings, WorkflowMDFinding{
+			Severity: SeverityError,
+			Code:     "workflow_schema",
+			Message:  err.Error(),
+		})
+		return
+	}
+	// SCOPE, chosen deliberately: the schema checks the loader performs that
+	// this validator otherwise cannot see — strict unknown-key decoding above,
+	// and the retry-class vocabulary below.
+	//
+	// NOT the whole of Workflow.Validate. That enforces workflowId, entrypoint
+	// and transition reachability, which is a different contract: this
+	// function also backs the doctor's workflow_md_shape check, whose job is
+	// the SKILL.md envelope. Folding full validation in here was tried and
+	// turned every partial fixture in the tree into an error — a good sign it
+	// was changing a contract rather than closing a gap.
+	//
+	// The gate's requirement is that the validator sees what the loader
+	// REJECTS FOR SCHEMA REASONS, and that is exactly this pair. A file
+	// missing workflowId already fails elsewhere and always has.
+	if err := wf.validateRetryClasses(filename); err != nil {
+		report.Findings = append(report.Findings, WorkflowMDFinding{
+			Severity: SeverityError,
+			Code:     "workflow_invalid",
+			Message:  err.Error(),
+		})
+	}
+}
+
 func ValidateWorkflowMarkdown(content []byte, filename string) *WorkflowMDValidationReport {
 	report := &WorkflowMDValidationReport{Filename: filename}
 
@@ -493,6 +541,11 @@ func ValidateWorkflowMarkdown(content []byte, filename string) *WorkflowMDValida
 			Hint:     fmt.Sprintf("### %s\n\n<prompt body>", stepID),
 		})
 	}
+
+	// Everything above validates the SKILL.md envelope. This validates the
+	// WORKFLOW itself, through the loader, so the gate sees what the daemon
+	// would reject.
+	appendWorkflowSchemaFindings(report, content, filename)
 
 	return report
 }

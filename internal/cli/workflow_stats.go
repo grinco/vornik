@@ -68,6 +68,8 @@ type workflowStatsResponse struct {
 	HallucinationRate        float64                     `json:"hallucination_rate"`
 	OperatorInterventionRate float64                     `json:"operator_intervention_rate"`
 	TopFailureClasses        []workflowStatsFailureClass `json:"top_failure_classes"`
+	ClassifiedStepFailures   int                         `json:"classified_step_failures"`
+	UnclassifiedStepFailures int                         `json:"unclassified_step_failures"`
 }
 
 type workflowStatsStep struct {
@@ -178,7 +180,30 @@ func renderWorkflowStats(out *os.File, r *workflowStatsResponse) error {
 			_, _ = fmt.Fprintf(out, "  %d  %s\n", fc.Count, fc.ErrorClass)
 		}
 	}
+	if line := renderUnclassifiedShare(r); line != "" {
+		_, _ = fmt.Fprint(out, line)
+	}
 	return nil
+}
+
+// renderUnclassifiedShare reports the residual bucket as a SHARE of classified
+// step failures rather than a bare count.
+//
+// A bare count misleads in exactly the way that started this work: "104
+// container_non_zero_exit" was read as a fleet total when it was one workflow
+// over 30 days, and the real figure was 3,027 — 52% of every classified
+// failure. The denominator is the fact that makes the numerator mean anything.
+//
+// Returns "" when the window holds no classified failures: that is an absence
+// of evidence, and printing "0.0% unclassified" would assert coverage that was
+// never measured.
+func renderUnclassifiedShare(r *workflowStatsResponse) string {
+	if r.ClassifiedStepFailures <= 0 {
+		return ""
+	}
+	share := float64(r.UnclassifiedStepFailures) / float64(r.ClassifiedStepFailures) * 100
+	return fmt.Sprintf("\nUnclassified: %d of %d classified step failures (%.1f%%)\n",
+		r.UnclassifiedStepFailures, r.ClassifiedStepFailures, share)
 }
 
 // renderOutcomeDist formats a {outcome: count} map as

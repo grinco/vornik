@@ -127,7 +127,7 @@ func writeModelHealthSwarm(t *testing.T, model, fallback string) string {
 func TestCheckModelHealth_NoSourceSkips(t *testing.T) {
 	h := &DoctorHandlers{configDir: "testdata"}
 	got := h.checkModelHealth(context.Background())
-	if got.Status != "OK" {
+	if got.Status != "SKIPPED" {
 		t.Errorf("status = %q, want OK (skip); msg=%q", got.Status, got.Message)
 	}
 }
@@ -218,7 +218,7 @@ func TestCheckModelHealth_Integration(t *testing.T) {
 func TestCheckModelCircuits_NotWiredSkips(t *testing.T) {
 	h := &DoctorHandlers{}
 	got := h.checkModelCircuits()
-	if got.Status != "OK" || !strings.Contains(got.Message, "not wired") {
+	if got.Status != "SKIPPED" || !strings.Contains(got.Message, "not wired") {
 		t.Errorf("unwired circuits should skip; got %q / %q", got.Status, got.Message)
 	}
 }
@@ -281,7 +281,7 @@ func TestSetChatProvider_WiresReporter(t *testing.T) {
 func TestCheckAgentModelCircuits_NotWiredSkips(t *testing.T) {
 	h := &DoctorHandlers{}
 	got := h.checkAgentModelCircuits()
-	if got.Status != "OK" || !strings.Contains(got.Message, "not wired") {
+	if got.Status != "SKIPPED" || !strings.Contains(got.Message, "not wired") {
 		t.Errorf("unwired agent circuits should skip; got %q / %q", got.Status, got.Message)
 	}
 }

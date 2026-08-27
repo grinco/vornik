@@ -245,7 +245,7 @@ func TestExecutionStepOutcomeRepositoryRecordFinalizeListAndCounts(t *testing.T)
 		ErrorClass: "none", DurationMS: &duration, FinalizedAt: &finalized, HallucinationSignals: []byte(`[{"kind":"url"}]`),
 	}
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO execution_step_outcomes")).
-		WithArgs(outcome.ID, outcome.ProjectID, outcome.TaskID, outcome.ExecutionID, outcome.StepID, outcome.Role, outcome.Model, sqlmock.AnyArg(), outcome.Outcome, sqlmock.AnyArg(), outcome.ErrorClass, outcome.ErrorDetail, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs(outcome.ID, outcome.ProjectID, outcome.TaskID, outcome.ExecutionID, outcome.StepID, outcome.Role, outcome.Model, sqlmock.AnyArg(), outcome.Outcome, sqlmock.AnyArg(), outcome.ErrorClass, outcome.ErrorDetail, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := repo.Record(context.Background(), outcome); err != nil {
 		t.Fatalf("Record() error = %v", err)
@@ -284,7 +284,8 @@ func TestExecutionStepOutcomeRepositoryRecordFinalizeListAndCounts(t *testing.T)
 			"finalized_at", "recorded_at", "hallucination_signals",
 			"complexity_tier", "effective_tool_budget", "tool_calls_used",
 			"untrusted_content_used", "untrusted_sources", "requires_review",
-		}).AddRow("out-1", projectID, "task-1", "exec-1", stepID, "coder", "gpt-test", nil, "ok", attr, "", "", duration, finalized, finalized, []byte(`[{"kind":"url"}]`), nil, nil, nil, false, nil, false))
+			"container_exit_code",
+		}).AddRow("out-1", projectID, "task-1", "exec-1", stepID, "coder", "gpt-test", nil, "ok", attr, "", "", duration, finalized, finalized, []byte(`[{"kind":"url"}]`), nil, nil, nil, false, nil, false, nil))
 	list, err := repo.List(context.Background(), persistence.ExecutionStepOutcomeFilter{
 		ProjectID: &projectID, StepID: &stepID, PageSize: 10,
 	})

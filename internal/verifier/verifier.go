@@ -23,6 +23,7 @@ import (
 	"math"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"vornik.io/vornik/internal/persistence"
@@ -820,6 +821,86 @@ type blockReport struct {
 	blocked bool
 }
 
+// truncatedStatusRE / truncatedFinalURLRE / truncatedBlockReasonRE salvage the
+// scraper envelope out of a tool_output that was CUT MID-JSON.
+//
+// tool_output is capped at 4096 chars, and until 2026-08-26 the cut was a blind
+// slice — so a scraper result whose page body overran the budget was stored as
+// invalid JSON. classifyAuditEntry's unmarshal then failed, the marker scan
+// found nothing anchored, and the entry returned (zero, false): it did not
+// contribute to the denominator AT ALL. A successful fetch became invisible
+// rather than counted, and `min_successful_fetches` was evaluated against
+// evidence it could not see. Measured on production `assistant` rows: 2,651 of
+// 4,481 web_fetch entries unparseable.
+//
+// The agent now truncates structurally (entrypoint.sh), so NEW rows parse. This
+// path exists for the rows already written.
+//
+// It is NOT the prose-sniffing removed from the tool-audit path elsewhere. It
+// matches NAMED JSON KEYS in a document whose schema we defined — recovering a
+// field whose name we chose, not guessing intent from English. The anchored
+// `"key":` form is what keeps it honest: ordinary text mentioning a status does
+// not match.
+//
+// TEMPORARY. The exit condition is structured columns on tool_audit_log
+// (status / final_url / block_reason as their own fields), filed in
+// https://docs.vornik.io. Delete this when they land. Note migration 168's
+// outcome/outcome_class do NOT supersede it: those record whether the CALL
+// succeeded, not the scraper's per-fetch HTTP status.
+//
+// See https://docs.vornik.io §3b.
+var (
+	truncatedStatusRE      = regexp.MustCompile(`"status"\s*:\s*(\d{3})`)
+	truncatedFinalURLRE    = regexp.MustCompile(`"final_url"\s*:\s*"([^"]+)"`)
+	truncatedBlockReasonRE = regexp.MustCompile(`"block_reason"\s*:\s*"([^"]*)"`)
+)
+
+// salvageScraperOutput recovers what it can from a mid-JSON cut.
+//
+// Returns ok=false when neither anchor key survives — the cut landed before
+// them, and there is nothing to recover. Measured recovery on the production
+// backlog of unparseable rows: 81%.
+//
+// BLOCKEDNESS COMES FROM status, NOT block_reason. The scraper emits
+// block_reason AFTER the page body, so the cut almost always takes it: it
+// survives in 5% of unparseable rows against 81% for status. A salvage keyed on
+// block_reason would have recovered 5% and looked like it worked. A recovered
+// status < 400 with no surviving block signal is a SUCCESS — a fetch that was
+// blocked would not have returned 200 — and >= 400 is blocked. When
+// block_reason does survive it wins, matching the intact path exactly.
+func salvageScraperOutput(body string) (scraperOutput, bool) {
+	var out scraperOutput
+	if m := truncatedStatusRE.FindStringSubmatch(body); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			out.Status = n
+		}
+	}
+	if m := truncatedFinalURLRE.FindStringSubmatch(body); m != nil {
+		out.FinalURL = m[1]
+	}
+	// BOTH anchors required, not either. A single `"status": 200` appears in
+	// ordinary prose — a file_read of a document describing an API will match
+	// it — and salvaging that would classify a document read as a fetch,
+	// inflating the very denominator this exists to correct.
+	//
+	// Requiring both is not a guess: measured on the production backlog,
+	// `"status"` and `"final_url"` each survive in exactly 2,135 of 2,651
+	// unparseable rows. The identical count is the point — they co-occur,
+	// because they are adjacent in the envelope the scraper emits. So demanding
+	// both costs nothing in recovery and removes the prose case entirely.
+	if out.Status == 0 || out.FinalURL == "" {
+		return scraperOutput{}, false
+	}
+	if m := truncatedBlockReasonRE.FindStringSubmatch(body); m != nil {
+		out.BlockReason = m[1]
+	} else if out.Status >= 400 {
+		// No surviving block signal, but the transport says it failed. Name the
+		// status rather than inventing a reason string.
+		out.BlockReason = "http_" + strconv.Itoa(out.Status)
+	}
+	return out, true
+}
+
 // classifyAuditEntry runs the two-mode classification described
 // in verifyNoStatus429's docstring against a single audit row.
 // Returns (report, true) when the entry contributes to the
@@ -845,6 +926,19 @@ func classifyAuditEntry(e *persistence.ToolAuditEntry) (blockReport, bool) {
 			!strings.EqualFold(out.BlockReason, "none")
 		return rep, true
 	}
+	// Salvage path: the row was cut mid-JSON, so the unmarshal above failed.
+	// Recover the envelope's named keys before falling through to the marker
+	// scan, which cannot see them. See salvageScraperOutput.
+	if len(e.ToolOutput) > 0 {
+		if sal, ok := salvageScraperOutput(e.ToolOutput); ok {
+			rep.url = scraperURL(e, sal)
+			rep.reason = sal.BlockReason
+			rep.blocked = strings.TrimSpace(sal.BlockReason) != "" &&
+				!strings.EqualFold(sal.BlockReason, "none")
+			return rep, true
+		}
+	}
+
 	// Marker scan: tightened list — bare "captcha" / "blocked" are
 	// out, only anchored forms survive.
 	body := strings.ToLower(e.ToolOutput + "\n" + e.ToolInput)

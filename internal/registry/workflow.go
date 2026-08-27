@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"vornik.io/vornik/internal/quality"
+	"vornik.io/vornik/internal/stepoutcome"
 )
 
 // jsonCanonical marshals v through encoding/json, which sorts map keys
@@ -58,6 +61,7 @@ const WorkflowDescriptionMaxLen = 1024
 
 // Workflow represents a workflow definition loaded from workflows/*.yaml
 type Workflow struct {
+
 	// ID is the unique identifier for the workflow (required)
 	ID string `yaml:"workflowId"`
 	// DisplayName is a human-readable name for the workflow
@@ -207,8 +211,17 @@ type WorkflowStep struct {
 	Gates []WorkflowGate `yaml:"gates"`
 	// Timeout for this step (e.g., "30m")
 	Timeout string `yaml:"timeout"`
-	// RetryPolicy defines retry behavior
-	RetryPolicy WorkflowRetryPolicy `yaml:"retryPolicy"`
+	// Retry configures this step's retry ladder. Optional: a zero value
+	// reproduces the executor's built-in behaviour exactly, so omitting it
+	// changes nothing.
+	//
+	// Replaces `retryPolicy:` (WorkflowRetryPolicy), which parsed but was
+	// never read by the executor — `grep -rn RetryPolicy internal/executor/`
+	// returned nothing. Both spellings were dead; this is the one ten deployed
+	// configs already used, it carries the error-class filter the hardcoded
+	// ladder cannot express, and it matches the snake_case of every other step
+	// key.
+	Retry WorkflowStepRetry `yaml:"retry"`
 
 	// Handler is the SystemHandler name for `system`-typed steps.
 	// Looked up at dispatch in the executor's handler registry
@@ -521,12 +534,37 @@ type WorkflowGate struct {
 	Target string `yaml:"target"`
 }
 
-// WorkflowRetryPolicy defines retry behavior for a step
-type WorkflowRetryPolicy struct {
-	// MaxRetries is the maximum number of retry attempts
-	MaxRetries int `yaml:"maxRetries"`
-	// Backoff is the delay between retries (e.g., "1m", "exponential")
+// RetryBackoffExponential is the only implemented backoff strategy. Named so
+// the validator and any future strategy share one spelling.
+const RetryBackoffExponential = "exponential"
+
+// WorkflowStepRetry configures a step's retry ladder.
+//
+// EVERY ZERO VALUE MAPS TO THE EXECUTOR'S CURRENT CONSTANT, so a step with no
+// `retry:` block — or one that omits a field — behaves byte-identically to
+// before this existed. The constants remain the single statement of the
+// default; this struct only overrides them.
+type WorkflowStepRetry struct {
+	// On lists step error classes worth retrying, as stepoutcome.Class*
+	// values. Validated against that vocabulary at load time.
+	//
+	// WIDENS, never narrows. Empty means the executor's existing predicate
+	// (isInfraFailure); non-empty means that PLUS these classes. A config
+	// cannot switch off a retry that happens today, because that would let a
+	// config edit make the fleet less resilient in a way nobody measured.
+	// Narrowing is a real want and is tracked separately.
+	On []string `yaml:"on"`
+	// MaxAttempts caps attempts. 0 = the executor's infraRetryMaxAttempts.
+	MaxAttempts int `yaml:"max_attempts"`
+	// Backoff is the growth strategy. "" means the default, and
+	// RetryBackoffExponential is the only implemented value — validation
+	// REJECTS anything else rather than accepting a knob that does nothing,
+	// which is the defect this whole type exists to close. When a second
+	// strategy lands, widen the validator and the executor together.
 	Backoff string `yaml:"backoff"`
+	// InitialDelay is the first sleep, as a Go duration. "" = the executor's
+	// infraRetryBaseDelay.
+	InitialDelay string `yaml:"initial_delay"`
 }
 
 // WorkflowTerminal defines an end state for the workflow
@@ -586,6 +624,9 @@ func (w *Workflow) Validate(filename string) error {
 		return WorkflowValidationError{File: filename, Field: "steps", Message: "at least one step is required"}
 	}
 	if err := w.validateQualityScoring(filename); err != nil {
+		return err
+	}
+	if err := w.validateRetryClasses(filename); err != nil {
 		return err
 	}
 
@@ -1412,4 +1453,74 @@ func (s *WorkflowStep) FailsOnAuthError() bool {
 	}
 	mode, ok := NormalizeAuthFailureMode(s.AuthFailureMode)
 	return !ok || mode == AuthFailureModeFail
+}
+
+// validateRetryClasses checks every step's `retry.on` against the step-outcome
+// vocabulary.
+//
+// Without this, a class the executor can never emit would sit in a config
+// matching nothing — a retry policy that reads as configured and never fires,
+// which is the exact defect this whole change exists to close. It is not
+// hypothetical: the ten deployed configs that motivated the change all name
+// `container_non_zero_exit`, which migration 170 removed, so wiring `retry.on`
+// without this check would have recreated the defect one layer down on the
+// same day it was fixed.
+//
+// The valid set is read from internal/stepoutcome's declarations rather than a
+// second hand-kept list. internal/playbook/vocabulary_test.go already derives
+// the same constants via go/ast and fails the build when one lacks a playbook
+// entry, so the list is proven complete by a test rather than by convention.
+func (w *Workflow) validateRetryClasses(filename string) error {
+	for _, stepID := range sortedStepIDs(w.Steps) {
+		step := w.Steps[stepID]
+		if d := step.Retry.InitialDelay; d != "" {
+			// A duration that does not parse would fall back to the default at
+			// runtime and produce no signal — `initial_delay: "30"` accepted,
+			// ignored, and nobody the wiser. That is the defect this whole
+			// change closes, so it fails here instead.
+			if parsed, err := time.ParseDuration(d); err != nil || parsed <= 0 {
+				return WorkflowValidationError{
+					File:  filename,
+					Field: fmt.Sprintf("steps.%s.retry.initial_delay", stepID),
+					Message: fmt.Sprintf(
+						"%q is not a positive Go duration (e.g. \"30s\", \"1m500ms\")", d),
+				}
+			}
+		}
+		// Only one strategy is implemented. Accepting others would be a field
+		// that reads as configuration and changes nothing — see above.
+		if b := step.Retry.Backoff; b != "" && b != RetryBackoffExponential {
+			return WorkflowValidationError{
+				File:  filename,
+				Field: fmt.Sprintf("steps.%s.retry.backoff", stepID),
+				Message: fmt.Sprintf(
+					"unsupported backoff %q; the only implemented strategy is %q (empty means the same)",
+					b, RetryBackoffExponential),
+			}
+		}
+		for _, class := range step.Retry.On {
+			if stepoutcome.IsErrorClass(class) {
+				continue
+			}
+			return WorkflowValidationError{
+				File:  filename,
+				Field: fmt.Sprintf("steps.%s.retry.on", stepID),
+				Message: fmt.Sprintf(
+					"unknown step error class %q; valid classes are: %s",
+					class, strings.Join(stepoutcome.ErrorClasses(), ", ")),
+			}
+		}
+	}
+	return nil
+}
+
+// sortedStepIDs gives validation a deterministic order, so a workflow with two
+// bad steps always reports the same one first.
+func sortedStepIDs(steps map[string]WorkflowStep) []string {
+	out := make([]string, 0, len(steps))
+	for id := range steps {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }

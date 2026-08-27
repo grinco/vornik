@@ -80,7 +80,7 @@ func TestCheckWorkspaceCanonical_MixedEscalatesToError(t *testing.T) {
 func TestCheckWorkspaceCanonical_NoRoot(t *testing.T) {
 	h := &DoctorHandlers{}
 	got := h.checkWorkspaceCanonical()
-	if got.Status != "OK" {
+	if got.Status != "SKIPPED" {
 		t.Errorf("no-root should be OK; got %q", got.Status)
 	}
 }

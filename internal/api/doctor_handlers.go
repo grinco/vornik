@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"vornik.io/vornik/internal/auditredact"
 	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/config"
 	"vornik.io/vornik/internal/featuredoctor"
@@ -109,6 +110,13 @@ type DoctorHandlers struct {
 	// which redefines the package-global `--config` flag and panics
 	// on the second doctor call.
 	secretFields map[string]string
+
+	// how the container wired the tool-audit redaction seam, captured at
+	// boot by SetToolAuditRedaction. Known=false means the snapshot was
+	// never taken, which the check reports as SKIPPED rather than OK.
+	toolAuditRedactionKnown  bool
+	toolAuditRedactionReason auditredact.Reason
+	toolAuditRedactionAction string
 
 	// dispatcherProjectID is telegram.dispatcher_project_id at boot.
 	// When non-empty, checkDispatcherRole validates the chosen
@@ -209,6 +217,10 @@ type DoctorHandlers struct {
 	// imageRevisionFunc reads an image's build-revision label, reporting
 	// whether the label was present. Nil ⇒ realImageRevision.
 	imageRevisionFunc func(ctx context.Context, image string) (revision string, labelled bool, err error)
+	// imageRecordFunc loads the release image record — what this release
+	// DECLARES its images to be. Injected so the six-scenario truth table
+	// (design §10) is unit-testable without a packaged host.
+	imageRecordFunc func() (*imagemanifest.ReleaseRecord, error)
 	// daemonRevisionFunc reports the commit this daemon was built from.
 	// Nil ⇒ version.BuildRevision with the -dirty suffix applied.
 	daemonRevisionFunc func() (string, bool)
@@ -437,6 +449,7 @@ func (h *DoctorHandlers) RunReportReadOnly(ctx context.Context) DoctorReport {
 	report.Checks = append(report.Checks, h.checkScraperProfileFreshness(ctx, fix))
 	report.Checks = append(report.Checks, h.checkGatewayHealthy(ctx, fix))
 	report.Checks = append(report.Checks, h.checkWebWritesInsecure(ctx, fix))
+	report.Checks = append(report.Checks, h.checkUnclassifiedShare(ctx))
 	issues := 0
 	for _, c := range report.Checks {
 		if c.Status != "OK" && c.Status != "SKIPPED" {
@@ -497,6 +510,7 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkOrphanWorktrees(fix))
 	report.Checks = append(report.Checks, h.checkSecretsPermissions(fix))
 	report.Checks = append(report.Checks, h.checkConfigSecretHygiene())
+	report.Checks = append(report.Checks, h.checkToolAuditRedaction())
 	report.Checks = append(report.Checks, h.checkDispatcherRole(fix))
 	report.Checks = append(report.Checks, h.checkWorkspaceCanonical())
 	report.Checks = append(report.Checks, h.checkCostAttribution())
@@ -513,6 +527,7 @@ func (h *DoctorHandlers) RunDoctor(w http.ResponseWriter, r *http.Request) {
 	report.Checks = append(report.Checks, h.checkScraperProfileFreshness(ctx, fix))
 	report.Checks = append(report.Checks, h.checkGatewayHealthy(ctx, fix))
 	report.Checks = append(report.Checks, h.checkWebWritesInsecure(ctx, fix))
+	report.Checks = append(report.Checks, h.checkUnclassifiedShare(ctx))
 
 	issues := 0
 	fixed := 0
@@ -798,7 +813,7 @@ func (h *DoctorHandlers) checkTaskStateAudit(ctx context.Context, fix bool) Doct
 func (h *DoctorHandlers) checkConfigValidation() DoctorCheck {
 	name := "config_validation"
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config directory configured, skipping validation"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config directory configured, skipping validation"}
 	}
 
 	reg := &registry.Registry{}
@@ -969,7 +984,7 @@ func (h *DoctorHandlers) checkAgentImages(ctx context.Context) DoctorCheck {
 	name := "agent_images"
 
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config directory configured, skipping image check"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config directory configured, skipping image check"}
 	}
 
 	swarms, err := registry.LoadSwarms(h.configDir)
@@ -1169,7 +1184,7 @@ func (h *DoctorHandlers) checkOrphanFKRows(ctx context.Context, fix bool) Doctor
 func (h *DoctorHandlers) checkAPISecurityPosture() DoctorCheck {
 	name := "api_security_posture"
 	if h.serverAddress == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "server address not captured; skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "server address not captured; skipping"}
 	}
 	// serverAddress is host:port. Split defensively.
 	host := h.serverAddress
@@ -1241,7 +1256,7 @@ func (h *DoctorHandlers) checkAPIKeyStrength() DoctorCheck {
 func (h *DoctorHandlers) checkPricingCoverage() DoctorCheck {
 	name := "pricing_coverage"
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config dir; skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config dir; skipping"}
 	}
 	reg := registry.New()
 	if err := reg.Load(h.configDir); err != nil {
@@ -1290,7 +1305,7 @@ func (h *DoctorHandlers) checkPricingCoverage() DoctorCheck {
 func (h *DoctorHandlers) checkAutonomyBudgetGuard() DoctorCheck {
 	name := "autonomy_budget_guard"
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config dir; skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config dir; skipping"}
 	}
 	reg := registry.New()
 	if err := reg.Load(h.configDir); err != nil {
@@ -1324,7 +1339,7 @@ func (h *DoctorHandlers) checkAutonomyBudgetGuard() DoctorCheck {
 func (h *DoctorHandlers) checkBudgetUtilisation(ctx context.Context) DoctorCheck {
 	name := "budget_utilisation"
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config dir; skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config dir; skipping"}
 	}
 	reg := registry.New()
 	if err := reg.Load(h.configDir); err != nil {
@@ -1393,7 +1408,7 @@ type orphanWorktreeFinding struct {
 func (h *DoctorHandlers) checkOrphanWorktrees(fix bool) DoctorCheck {
 	name := "orphan_worktrees"
 	if h.workspacesRoot == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no workspaces root configured; skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no workspaces root configured; skipping"}
 	}
 	findings, projectsChecked, err := scanOrphanWorktrees(h.workspacesRoot, func(taskID string) (string, error) {
 		var status string
@@ -1403,7 +1418,7 @@ func (h *DoctorHandlers) checkOrphanWorktrees(fix bool) DoctorCheck {
 		return status, err
 	})
 	if err != nil {
-		return DoctorCheck{Name: name, Status: "OK", Message: fmt.Sprintf("workspaces root not readable: %v; skipping", err)}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: fmt.Sprintf("workspaces root not readable: %v; skipping", err)}
 	}
 	if len(findings) == 0 {
 		return DoctorCheck{Name: name, Status: "OK", Message: fmt.Sprintf("no orphan worktree dirs across %d project(s)", projectsChecked)}

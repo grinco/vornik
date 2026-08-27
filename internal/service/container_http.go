@@ -593,6 +593,15 @@ func (c *Container) initHTTPServer() error {
 		if c.mcpGateMetrics == nil {
 			c.mcpGateMetrics = api.NewMCPGateMetrics(reg)
 		}
+		// Tool-audit coverage census (vornik_tool_audit_rows_total). Same
+		// pass-2-only registry rule as the metrics above, and for this one the
+		// rule is load-bearing twice over: the holder is created back at
+		// container.go:834 where no registry exists yet, and it is shared by
+		// BOTH live decorator instances (the scheduler/dispatcher's and the
+		// rebuild's), so Attach must happen here — after observability, on
+		// EVERY backend, including sqlite, which never re-runs the postgres-only
+		// repo rebuild. Attach is idempotent; this block runs twice.
+		c.auditRedactMetrics.Attach(reg, &c.Logger)
 		// Taint-lineage tainted-write counter (taint-lineage-tracking §8). Same
 		// pass-2-only registry rule. Shared by BOTH surfaces: the query_api gate
 		// records directly via the api server; the forge park routes through
@@ -1414,6 +1423,12 @@ func (c *Container) initHTTPServer() error {
 			dh.SetConfigDir(c.Registry.GetConfigDir())
 		}
 		dh.SetServerConfig(c.Config)
+		// How the tool-audit redaction seam was actually wired — the operator-
+		// facing half of the fail-open census. Reads the live decorator rather
+		// than the config, because "the operator asked for scanning" and "the
+		// daemon is scanning" are exactly the two things this check exists to
+		// tell apart.
+		dh.SetToolAuditRedaction(c.toolAuditRedactionState())
 		dh.SetConfigPath(c.ConfigPath)
 		dh.SetPricingPath(resolvePricingPath(c.ConfigPath))
 		// Live model-call outcomes for model_calls_live. initChat (container.go:843)

@@ -111,11 +111,13 @@ steps:
     # a synthesize that wrote no file "succeeded", publish had nothing to
     # publish, and the task reported COMPLETED with no deliverable.
     require_output_glob: "artifacts/out/deliverable.md"
+    # Retry these classes. Attempts/backoff/delay are deliberately
+    # OMITTED so they inherit the executor defaults: this block never
+    # executed before 2026-08-27, so its former "max_attempts: 5" was
+    # never in force (the real behaviour was infraRetryMaxAttempts=6).
+    # Writing 5 here would be a silent retune disguised as a fix.
     retry:
-      on: ["container_non_zero_exit", "context_timeout"]
-      max_attempts: 5
-      backoff: "exponential"
-      initial_delay: "30s"
+      on: ["unclassified", "llm_call_failed", "container_start_failed", "container_wait_failed", "container_killed", "context_timeout"]
     prompt: |
       Every research subtask has run; the executor has staged each one's findings
       file into `artifacts/in/` (one file per sub-question). Your job is to
@@ -149,11 +151,13 @@ steps:
     on_success: "confirm_published"
     on_fail: "failed"
     timeout: "15m"
+    # Retry these classes. Attempts/backoff/delay are deliberately
+    # OMITTED so they inherit the executor defaults: this block never
+    # executed before 2026-08-27, so its former "max_attempts: 5" was
+    # never in force (the real behaviour was infraRetryMaxAttempts=6).
+    # Writing 5 here would be a silent retune disguised as a fix.
     retry:
-      on: ["container_non_zero_exit", "context_timeout"]
-      max_attempts: 3
-      backoff: "exponential"
-      initial_delay: "20s"
+      on: ["unclassified", "llm_call_failed", "container_start_failed", "container_wait_failed", "container_killed", "context_timeout"]
     prompt: |
       Read `artifacts/out/deliverable.md` — the synthesized deep-research report.
       Publish it as a shareable page with PageDrop (it is Markdown, so use

@@ -61,9 +61,18 @@ containing only autonomy-off projects — a daemon that loads a production proje
 against a throwaway database will happily start doing that project's real work.
 
 **Item selection is deterministic:** the first N items of the named category, in
-dataset file order. Every published row lists the question ids it scored, so a
-reproduction can confirm it measured the same questions rather than inferring it from
-a count.
+dataset file order — or, for a run spanning every ability, the first N of *each*
+category. The six-item rows list the question ids they scored, so a reproduction can
+confirm it measured the same questions rather than inferring it from a count. The
+120-item row does not list 120 ids; its selection rule is exact instead
+(`--max-items-per-category 20`, no `--category` filter), and the ids it actually
+scored are in that run's journal.
+
+**Warm and cold are different experiments.** Until 2026-08-21 the harness did not
+perform the store clear its own flag promised, so repeated runs accumulated a corpus.
+It now clears before every run, unconditionally. Rows taken before that date are warm
+and are marked closed; the tracked axis is cold. `bench memory aggregate` and the
+comparability key both refuse to mix the two.
 
 `scripts/bench-reproduce.sh` pins every axis that changes a result and prints the
 comparability key it produced. If your key differs from a published one, the runs are

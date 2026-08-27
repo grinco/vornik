@@ -2707,6 +2707,17 @@ func WithExternalAPIBillingProjectID(projectID string) ServerOption {
 func WithMCPExecutor(m MCPExecutor) ServerOption {
 	return func(s *Server) {
 		s.mcpExecutor = m
+		// Wire the ingress guard over MCP tool results (detect-only; see
+		// mcp_result_guard.go). Done HERE rather than at the executor's
+		// construction site because the sink needs APIMetrics, which does not
+		// exist until Routes() runs — so the closure reads s.apiMetrics at
+		// CALL time, not now. Same late-binding shape the doctor handlers use
+		// for the same reason.
+		if composed, ok := m.(*ComposedMCPExecutor); ok && composed != nil {
+			composed.GuardSink = func(o guardObservation) {
+				s.apiMetrics.RecordMCPResultGuard(o.tool, o.report, o.duration)
+			}
+		}
 	}
 }
 

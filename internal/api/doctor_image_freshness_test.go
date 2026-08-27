@@ -129,14 +129,19 @@ func TestImageFreshnessUnstampedDaemonIsOK(t *testing.T) {
 // benchmark host runs localhost/vornik-agent:bench precisely so a bench
 // rebuild cannot reach production's agents; that tag is not in the manifest,
 // so the check must never look at it and must never warn about it.
+const manifestWalkSHA = "e2c94d1a47bf24e85300db77f2a6a834d3354a60"
+
 func TestImageFreshnessWalksOnlyManifestImages(t *testing.T) {
 	var inspected []string
 	h := &DoctorHandlers{
-		imageProber:        bareHostProbe{},
-		daemonRevisionFunc: func() (string, bool) { return "abc123", true },
+		imageProber: bareHostProbe{},
+		// Realistic shapes: the daemon reports git's 12-char short form,
+		// the image label carries the full SHA. A placeholder shorter than a
+		// short-sha is not evidence of a commit and revisionsMatch refuses it.
+		daemonRevisionFunc: func() (string, bool) { return manifestWalkSHA[:12], true },
 		imageRevisionFunc: func(_ context.Context, image string) (string, bool, error) {
 			inspected = append(inspected, image)
-			return "abc123", true, nil
+			return manifestWalkSHA, true, nil
 		},
 	}
 
@@ -191,5 +196,65 @@ func TestShortRevKeepsShortRevisionsIntact(t *testing.T) {
 	}
 	if got := shortRev("0123456789abcdef"); got != "0123456789ab" {
 		t.Errorf("shortRev truncated to %q, want 0123456789ab", got)
+	}
+}
+
+// REGRESSION, found on the 2026-08-27 deploy: this check could never pass.
+//
+// version.BuildRevision truncates to 12 characters (git's short-sha length),
+// while the image label carries the full 40-character SHA, so `rev != daemonRev`
+// was true for every image on every run. The check fired on a host where the
+// daemon and every image had just been built from the same commit.
+//
+// The existing tests missed it because they pass the SAME 12-char string as
+// both the daemon and the image revision — a shape that never occurs in
+// production, where the two sides come from different sources with different
+// lengths. A fixture that cannot reproduce the real inputs cannot catch a real
+// bug.
+//
+// The operator-visible symptom was the tell: the finding rendered as
+// "image e2c94d1a47bf, daemon e2c94d1a47bf" — two identical strings reported
+// as different, because the message shortens both for display.
+func TestImageFreshnessShortDaemonRevisionMatchesFullImageLabel(t *testing.T) {
+	const fullSHA = "e2c94d1a47bf24e85300db77f2a6a834d3354a60"
+	shortRevision := fullSHA[:12]
+
+	h := freshnessHandlers(shortRevision, map[string]string{imagemanifest.AgentImageTag: fullSHA}, nil, nil)
+
+	got := h.checkImageFreshness(context.Background())
+	if got.Status != "OK" {
+		t.Fatalf("a 12-char daemon revision must match the full-SHA image label it is a prefix of; "+
+			"got %q: %s items=%v", got.Status, got.Message, got.Items)
+	}
+}
+
+// The check must still catch what it exists to catch: a genuinely different
+// commit, where the daemon's short revision is NOT a prefix of the label.
+func TestImageFreshnessShortRevisionStillCatchesRealDrift(t *testing.T) {
+	h := freshnessHandlers("e2c94d1a47bf",
+		map[string]string{imagemanifest.AgentImageTag: "0000000000000000000000000000000000000000"}, nil, nil)
+
+	got := h.checkImageFreshness(context.Background())
+	if got.Status == "OK" {
+		t.Fatal("an image from a different commit must still be reported")
+	}
+}
+
+// A dirty daemon build is not the same as a stale image, and must not be
+// reported as one — the operator's fix differs (commit vs rebuild).
+func TestImageFreshnessDirtyDaemonIsNotReportedAsDrift(t *testing.T) {
+	const fullSHA = "e2c94d1a47bf24e85300db77f2a6a834d3354a60"
+	h := freshnessHandlers(fullSHA[:12]+"-dirty",
+		map[string]string{imagemanifest.AgentImageTag: fullSHA}, nil, nil)
+
+	got := h.checkImageFreshness(context.Background())
+	if got.Status == "OK" {
+		t.Skip("a dirty daemon may legitimately be flagged; this test pins only that " +
+			"it is not mislabelled as a commit mismatch")
+	}
+	for _, item := range got.Items {
+		if strings.Contains(item, "different commit") {
+			t.Errorf("a dirty build is not a different commit: %q", item)
+		}
 	}
 }

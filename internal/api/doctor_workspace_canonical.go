@@ -24,7 +24,7 @@ import (
 func (h *DoctorHandlers) checkWorkspaceCanonical() DoctorCheck {
 	name := "workspace_canonical_layout"
 	if h.workspacesRoot == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no workspaces root configured, skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no workspaces root configured, skipping"}
 	}
 	results, err := workspacecanonicalise.Scan(h.workspacesRoot)
 	if err != nil {

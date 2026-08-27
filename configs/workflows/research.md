@@ -58,16 +58,13 @@ steps:
     # (1.0x) reference; smaller tasks scale it down, open_ended up. See
     # https://docs.vornik.io
     timeout: "45m"
-    # Encode the observed recovery pattern where container_non_zero_exit
-    # failures self-resolve on retry (confidence 0.61 in production). This
-    # captures the implicit infrastructure retry behavior shown in telemetry.
-    # Increase attempts from 3 to 5 to reduce residual failure volume while
-    # maintaining fast failure detection.
+    # Retry these classes. Attempts/backoff/delay are deliberately
+    # OMITTED so they inherit the executor defaults: this block never
+    # executed before 2026-08-27, so its former "max_attempts: 5" was
+    # never in force (the real behaviour was infraRetryMaxAttempts=6).
+    # Writing 5 here would be a silent retune disguised as a fix.
     retry:
-      on: ["container_non_zero_exit", "context_timeout"]
-      max_attempts: 5
-      backoff: "exponential"
-      initial_delay: "30s"
+      on: ["unclassified", "llm_call_failed", "container_start_failed", "container_wait_failed", "container_killed", "context_timeout"]
   write:
     type: "agent"
     # Output contract (customer report 2026-08-03): the role schema permits a
@@ -84,15 +81,14 @@ steps:
     # pedantic-mode opt-out applies.
     on_fail: "recover"
     timeout: "15m"
-    # Explicit retry policy for container_non_zero_exit (confidence 0.57),
-    # matching observed self-resolution pattern in write step.
-    # Increase attempts from 3 to 5 given the high frequency of container_non_zero_exit
     # failures (51 total) and the clear self-resolution pattern.
+    # Retry these classes. Attempts/backoff/delay are deliberately
+    # OMITTED so they inherit the executor defaults: this block never
+    # executed before 2026-08-27, so its former "max_attempts: 5" was
+    # never in force (the real behaviour was infraRetryMaxAttempts=6).
+    # Writing 5 here would be a silent retune disguised as a fix.
     retry:
-      on: ["container_non_zero_exit", "context_timeout"]
-      max_attempts: 5
-      backoff: "exponential"
-      initial_delay: "15s"
+      on: ["unclassified", "llm_call_failed", "container_start_failed", "container_wait_failed", "container_killed", "context_timeout"]
   recover:
     # type:plan routes through executePlanStep which recognises the
     # lead's checkpoint outcome envelope and transitions the task

@@ -38,8 +38,8 @@ steps:
     on_success: "review"
     on_fail: "failed"
     timeout: "60m"
-    retryPolicy:
-      maxRetries: 2
+    retry:
+      max_attempts: 2
       backoff: "exponential"
   review:
     type: "agent"

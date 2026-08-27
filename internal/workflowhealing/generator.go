@@ -133,14 +133,14 @@ func BuildRetryBudgetCandidate(baseline *registry.Workflow, trigger *persistence
 		return nil, nil, ErrNoRecipeApplies
 	}
 	step, exists := baseline.Steps[stepID]
-	if !exists || step.RetryPolicy.MaxRetries <= 0 {
+	if !exists || step.Retry.MaxAttempts <= 0 {
 		// No step or nothing to lower — defer to the architect.
 		return nil, nil, ErrNoRecipeApplies
 	}
 
 	// Halve the budget (lower-only; 1 → 0). The recipe re-clamps and refuses
 	// to raise, so this is safe even if the genome shifts under us.
-	newBudget := step.RetryPolicy.MaxRetries / 2
+	newBudget := step.Retry.MaxAttempts / 2
 	// Ensure an exhausted retry routes somewhere terminal. Only supply a
 	// target when the step lacks an on_fail; the recipe never overwrites an
 	// existing one.

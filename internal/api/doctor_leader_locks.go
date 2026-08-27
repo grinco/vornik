@@ -44,7 +44,7 @@ var leaderLockStaleAfter = leaderelection.DefaultTTL
 func (h *DoctorHandlers) checkLeaderLocksHealth() DoctorCheck {
 	name := "daemon_leader_locks_health"
 	if h.leaderLockRepo == nil {
-		return DoctorCheck{Name: name, Status: "OK", Message: "leader-election repo not wired (single-process or pre-migration-57 deployment)"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "leader-election repo not wired (single-process or pre-migration-57 deployment)"}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

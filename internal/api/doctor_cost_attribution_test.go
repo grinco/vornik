@@ -13,7 +13,7 @@ import (
 func TestCheckCostAttribution_MetricsUnwiredOK(t *testing.T) {
 	h := &DoctorHandlers{}
 	got := h.checkCostAttribution()
-	if got.Status != "OK" {
+	if got.Status != "SKIPPED" {
 		t.Errorf("status = %q, want OK", got.Status)
 	}
 	if !strings.Contains(got.Message, "not wired") {

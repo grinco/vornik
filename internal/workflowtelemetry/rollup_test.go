@@ -77,11 +77,15 @@ func TestForWorkflow_NoRunsReturnsEmptyRollup(t *testing.T) {
 	}
 }
 
-// TestForWorkflow_AggregatesAcrossSixQueries pins the contract that
-// every load-bearing query runs in the populated-data branch. Six
-// queries today; if a future refactor reorders or skips one this
-// test fails loudly.
-func TestForWorkflow_AggregatesAcrossSixQueries(t *testing.T) {
+// TestForWorkflow_AggregatesAcrossEveryStageQuery pins the contract that
+// every load-bearing query runs in the populated-data branch. If a
+// future refactor reorders or skips one, this test fails loudly.
+//
+// Deliberately not named for a COUNT of queries: it was
+// AggregatesAcrossSixQueries until fillUnclassifiedShare made it seven, and a
+// name that has to be edited whenever a stage is added is a name that will
+// eventually lie.
+func TestForWorkflow_AggregatesAcrossEveryStageQuery(t *testing.T) {
 	svc, mock, cleanup := newMockServiceRegex(t)
 	defer cleanup()
 
@@ -116,6 +120,13 @@ func TestForWorkflow_AggregatesAcrossSixQueries(t *testing.T) {
 		WithArgs("wf-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"step_id", "role", "model", "error_class"}).
 			AddRow("review", "reviewer", "gpt-oss-20b", "schema_violation"))
+	// 3d. Unclassified share — the TRUE denominator, unlimited. Must precede
+	// the capped top-failure-classes query, matching fillUnclassifiedShare's
+	// call order in ForWorkflow.
+	mock.ExpectQuery(`FILTER \(WHERE so\.error_class = 'unclassified'\)`).
+		WithArgs("wf-a", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"unclassified", "classified"}).
+			AddRow(1, 2))
 	// 4. Top failure classes.
 	mock.ExpectQuery(`LIMIT 10`).
 		WithArgs("wf-a", sqlmock.AnyArg()).

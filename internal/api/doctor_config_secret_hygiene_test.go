@@ -15,7 +15,7 @@ func TestDoctorConfigSecretHygiene_NoSecretFields(t *testing.T) {
 	// the check should return OK with a skip message.
 	got := h.checkConfigSecretHygiene()
 	assert.Equal(t, "config_secret_hygiene", got.Name)
-	assert.Equal(t, "OK", got.Status)
+	assert.Equal(t, "SKIPPED", got.Status)
 	assert.Contains(t, got.Message, "skipping")
 }
 

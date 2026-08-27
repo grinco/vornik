@@ -28,6 +28,14 @@ type ComposedMCPExecutor struct {
 	// step is advertised (registry design §10.1). Nil leaves the ceiling as the only
 	// narrowing, which is the pre-feature behaviour.
 	Grants *ToolGrantProvider
+
+	// GuardSink receives one observation per scanned tool result. Nil disables
+	// ingress scanning entirely (lean deployments and most tests).
+	//
+	// The scan is the ONLY outputguard coverage MCP tool results have — see
+	// mcp_result_guard.go for why that mattered and what phase 1 does and does
+	// not do.
+	GuardSink guardSink
 }
 
 // Tools returns the union of external MCP server tools and the built-in
@@ -55,18 +63,36 @@ func (c *ComposedMCPExecutor) Tools(projectID string) []chat.Tool {
 // MCP server with the same name).
 func (c *ComposedMCPExecutor) Execute(ctx context.Context, projectID, qualifiedName, argsJSON string) (string, error) {
 	if c.Builtin != nil && c.Builtin.Owns(qualifiedName) {
-		return c.Builtin.Execute(ctx, projectID, qualifiedName, argsJSON)
+		body, err := c.Builtin.Execute(ctx, projectID, qualifiedName, argsJSON)
+		return c.scanned(qualifiedName, body, err)
 	}
 	if c.Consult != nil && c.Consult.Owns(qualifiedName) {
-		return c.Consult.Execute(ctx, projectID, qualifiedName, argsJSON)
+		body, err := c.Consult.Execute(ctx, projectID, qualifiedName, argsJSON)
+		return c.scanned(qualifiedName, body, err)
 	}
 	if c.Grants != nil && c.Grants.Owns(qualifiedName) {
-		return c.Grants.Execute(ctx, projectID, qualifiedName, argsJSON)
+		body, err := c.Grants.Execute(ctx, projectID, qualifiedName, argsJSON)
+		return c.scanned(qualifiedName, body, err)
 	}
 	if c.External == nil {
 		return "", errBuiltinNoExternal(qualifiedName)
 	}
-	return c.External.Execute(ctx, projectID, qualifiedName, argsJSON)
+	body, err := c.External.Execute(ctx, projectID, qualifiedName, argsJSON)
+	return c.scanned(qualifiedName, body, err)
+}
+
+// scanned runs the ingress guard over a successful tool result and passes the
+// body through unchanged (phase 1 is detect-only).
+//
+// An errored call is returned untouched and NOT scanned: there is no body, and
+// deriving a finding from an error string would be exactly the text-sniffing
+// this codebase removed from the tool-audit path.
+func (c *ComposedMCPExecutor) scanned(qualifiedName, body string, err error) (string, error) {
+	if err != nil {
+		return body, err
+	}
+	c.scanResult(qualifiedName, body)
+	return body, nil
 }
 
 func errBuiltinNoExternal(qualifiedName string) error {

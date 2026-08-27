@@ -302,8 +302,8 @@ terminals:
 	}
 }
 
-// TestWorkflowWithRetryPolicy tests workflow steps with retry policy.
-func TestWorkflowWithRetryPolicy(t *testing.T) {
+// TestWorkflowWithStepRetry tests workflow steps with a retry block.
+func TestWorkflowWithStepRetry(t *testing.T) {
 	yaml := `workflowId: "test"
 entrypoint: "start"
 steps:
@@ -312,8 +312,8 @@ steps:
     prompt: "do work"
     role: "coder"
     timeout: "30m"
-    retryPolicy:
-      maxRetries: 3
+    retry:
+      max_attempts: 3
       backoff: "exponential"
 terminals:
   done:
@@ -348,8 +348,8 @@ terminals:
 	if step.Timeout != "30m" {
 		t.Errorf("expected timeout '30m', got '%s'", step.Timeout)
 	}
-	if step.RetryPolicy.MaxRetries != 3 {
-		t.Errorf("expected max retries 3, got %d", step.RetryPolicy.MaxRetries)
+	if step.Retry.MaxAttempts != 3 {
+		t.Errorf("expected max attempts 3, got %d", step.Retry.MaxAttempts)
 	}
 }
 
@@ -363,7 +363,7 @@ steps:
     prompt: "do work"
     role: "coder"
     on_success: "success"
-    on_failure: "failure"
+    on_fail: "failure"
 terminals:
   success:
     status: "COMPLETED"

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"text/tabwriter"
 	"time"
 
@@ -22,6 +23,8 @@ var (
 	secretsScanSince   string
 	secretsScanApply   bool
 	secretsScanJSON    bool
+	secretsScanRules   string
+	secretsScanSample  int
 	secretsPatternJSON bool
 )
 
@@ -66,10 +69,28 @@ operator + scope. Re-running --apply is safe: already-redacted rows no longer
 match, so a second pass is a no-op (though it writes a fresh admin_audit row —
 run dry-run first). Postgres-only.
 
+WHICH RULES GET REDACTED. --rules defaults to "strong": the typed,
+prefix-anchored credential patterns only. The heuristic rules (entropy,
+generic_kv) are high-recall and fire on hashes, opaque ids and base64 that in an
+audit table are frequently the substance of the record rather than a secret in
+it — and the rewrite is irreversible. Counting and reporting always cover every
+rule; only the write-back set narrows. --rules all restores the historical
+behaviour of redacting everything.
+
+DECIDING ABOUT A HEURISTIC RULE. --sample N prints up to N masked examples per
+rule so you can see what a rule actually matched before you rewrite it. The
+matched bytes are NEVER printed: each example carries the value's length, a
+correlation token salted per run (so an archived sample cannot later be used to
+confirm whether a given secret was present), and the surrounding text with every
+overlapping finding masked. Sampling reads raw historical secrets, so like
+--apply it writes an admin_audit row.
+
 Examples:
   vornikctl secrets scan-history                          # dry-run, all projects
   vornikctl secrets scan-history --project janka --since 30d
-  vornikctl secrets scan-history --project janka --apply  # redact in place
+  vornikctl secrets scan-history --sample 20 --rules entropy   # what does entropy match?
+  vornikctl secrets scan-history --project janka --apply  # redact the strong rules
+  vornikctl secrets scan-history --project janka --apply --rules all  # everything
 `,
 	RunE: runSecretsScanHistory,
 }
@@ -80,6 +101,10 @@ func init() {
 	secretsScanHistoryCmd.Flags().StringVar(&secretsScanSince, "since", "", "only scan rows newer than this (e.g. 30d, 720h); default: all history")
 	secretsScanHistoryCmd.Flags().BoolVar(&secretsScanApply, "apply", false, "redact matching rows in place (default: dry-run)")
 	secretsScanHistoryCmd.Flags().BoolVar(&secretsScanJSON, "json", false, "emit machine-readable JSON")
+	secretsScanHistoryCmd.Flags().StringVar(&secretsScanRules, "rules", ruleSpecStrong,
+		`which rules to REDACT: "strong" (typed credential patterns only; default), "all", or a comma-separated list of rule names`)
+	secretsScanHistoryCmd.Flags().IntVar(&secretsScanSample, "sample", 0,
+		"print up to N masked examples per rule (matched values are never printed); this is a privileged read and is recorded to admin_audit")
 	secretsCmd.AddCommand(secretsListPatternsCmd)
 	secretsCmd.AddCommand(secretsScanHistoryCmd)
 	rootCmd.AddCommand(secretsCmd)
@@ -124,11 +149,21 @@ func runSecretsListPatterns(_ *cobra.Command, _ []string) error {
 }
 
 // scanHistoryResult is the per-run summary (dry-run and apply).
+//
+// CountsByType covers EVERY finding; SelectedByType and ExcludedByType split it
+// by the --rules selection. Both halves are always reported: a scoped run that
+// printed only its selection would let "nothing was redacted" render
+// identically to "nothing was found", which is the coverage-boundary defect
+// retired elsewhere in this codebase on 2026-08-27.
 type scanHistoryResult struct {
-	RowsScanned  int            `json:"rows_scanned"`
-	RowsMatched  int            `json:"rows_matched"`
-	Applied      bool           `json:"applied"`
-	CountsByType map[string]int `json:"counts_by_type"`
+	RowsScanned    int            `json:"rows_scanned"`
+	RowsMatched    int            `json:"rows_matched"`
+	Applied        bool           `json:"applied"`
+	Rules          string         `json:"rules"`
+	CountsByType   map[string]int `json:"counts_by_type"`
+	SelectedByType map[string]int `json:"selected_by_type"`
+	ExcludedByType map[string]int `json:"excluded_by_type"`
+	Samples        []string       `json:"samples,omitempty"`
 }
 
 func runSecretsScanHistory(_ *cobra.Command, _ []string) error {
@@ -153,8 +188,16 @@ func runSecretsScanHistory(_ *cobra.Command, _ []string) error {
 	for _, c := range cfg.Secrets.Patterns.Custom {
 		custom = append(custom, secrets.Pattern{Name: c.Name, Regex: c.Regex, Description: c.Description})
 	}
+	corpus := secrets.EffectivePatterns(cfg.Secrets.Patterns.Disable, custom)
+	selection, err := parseRuleSelection(secretsScanRules, corpus)
+	if err != nil {
+		return err
+	}
+	if secretsScanSample < 0 {
+		return fmt.Errorf("--sample must be >= 0, got %d", secretsScanSample)
+	}
 	detector, err := secrets.NewMultiDetector(secrets.Config{
-		Patterns:        secrets.EffectivePatterns(cfg.Secrets.Patterns.Disable, custom),
+		Patterns:        corpus,
 		Allowlist:       append(secrets.DefaultAllowlist(), cfg.Secrets.Allowlist...),
 		EntropyDisabled: cfg.Secrets.Entropy.Disabled,
 		EntropyMinLen:   cfg.Secrets.Entropy.MinLen,
@@ -177,9 +220,25 @@ func runSecretsScanHistory(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
-	result, err := scanToolAuditHistory(ctx, db, detector, secretsScanProject, since, secretsScanApply)
+	result, err := scanToolAuditHistory(ctx, db, detector, secretsScanProject, since, secretsScanApply, selection, secretsScanSample)
 	if err != nil {
 		return err
+	}
+
+	if secretsScanSample > 0 {
+		// Sampling READS raw historical secrets. The Phase-3 design rested its
+		// accountability on --apply being the only path that does; adding a
+		// look-but-do-not-touch surface without extending the record would give
+		// the control a hole while leaving it looking unchanged.
+		audit := postgres.NewAdminAuditRepository(db)
+		_ = audit.Insert(ctx, &persistence.AdminAuditEntry{
+			Principal: cliPrincipal(),
+			Source:    "cli",
+			Action:    "secrets.scan-history.sample",
+			Target:    secretsScanProject,
+			After: fmt.Sprintf(`{"rules":%q,"sample":%d,"rows_scanned":%d,"rows_matched":%d}`,
+				selection.spec, secretsScanSample, result.RowsScanned, result.RowsMatched),
+		})
 	}
 
 	if secretsScanApply && result.RowsMatched > 0 {
@@ -192,8 +251,11 @@ func runSecretsScanHistory(_ *cobra.Command, _ []string) error {
 			Source:    "cli",
 			Action:    "secrets.scan-history.apply",
 			Target:    secretsScanProject,
-			After: fmt.Sprintf(`{"rows_scanned":%d,"rows_matched":%d}`,
-				result.RowsScanned, result.RowsMatched),
+			// The rule scope belongs in the record: without it a later reader
+			// cannot tell a scoped purge from a full one, and that difference
+			// is exactly what --rules introduces.
+			After: fmt.Sprintf(`{"rows_scanned":%d,"rows_matched":%d,"rules":%q}`,
+				result.RowsScanned, result.RowsMatched, selection.spec),
 		})
 	}
 
@@ -202,26 +264,63 @@ func runSecretsScanHistory(_ *cobra.Command, _ []string) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(result)
 	}
-	mode := "DRY-RUN (nothing changed; re-run with --apply to redact)"
+	mode := fmt.Sprintf("DRY-RUN (nothing changed; re-run with --apply to redact the %s rules)", selection.spec)
 	if result.Applied {
-		mode = "APPLIED (matching rows redacted in place)"
+		mode = fmt.Sprintf("APPLIED (rows redacted in place under --rules %s)", selection.spec)
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "tool_audit_log: scanned %d row(s), %d contained secret-shaped value(s)\n",
 		result.RowsScanned, result.RowsMatched)
-	for ft, n := range result.CountsByType {
-		_, _ = fmt.Fprintf(os.Stdout, "  %-18s %d\n", ft, n)
+
+	_, _ = fmt.Fprintf(os.Stdout, "  selected (--rules %s):\n", selection.spec)
+	printCounts(result.SelectedByType, "    none\n")
+	if len(result.ExcludedByType) > 0 {
+		_, _ = fmt.Fprintf(os.Stdout, "  NOT selected (add --rules all to include):\n")
+		printCounts(result.ExcludedByType, "")
+	}
+	if len(result.Samples) > 0 {
+		_, _ = fmt.Fprintf(os.Stdout, "\nsamples (matched values are never printed; tok= is salted per run):\n")
+		for _, line := range result.Samples {
+			_, _ = fmt.Fprintln(os.Stdout, line)
+		}
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "%s\n", mode)
 	return nil
 }
 
+// printCounts renders a finding-type histogram in a stable order. emptyNote is
+// printed when there is nothing — never silence, so an empty selection cannot
+// read like a clean table.
+func printCounts(counts map[string]int, emptyNote string) {
+	if len(counts) == 0 {
+		if emptyNote != "" {
+			_, _ = fmt.Fprint(os.Stdout, emptyNote)
+		}
+		return
+	}
+	types := make([]string, 0, len(counts))
+	for ft := range counts {
+		types = append(types, ft)
+	}
+	sort.Strings(types)
+	for _, ft := range types {
+		_, _ = fmt.Fprintf(os.Stdout, "    %-18s %d\n", ft, counts[ft])
+	}
+}
+
 // scanToolAuditHistory scans (and with apply=true redacts) tool_input +
 // tool_output on tool_audit_log. Each redacted row records its per-type
 // counts to secret_redaction_audit with source="scan".
-func scanToolAuditHistory(ctx context.Context, db *sql.DB, detector secrets.Detector, project string, since time.Time, apply bool) (scanHistoryResult, error) {
-	res := scanHistoryResult{Applied: apply, CountsByType: map[string]int{}}
+func scanToolAuditHistory(ctx context.Context, db *sql.DB, detector secrets.Detector, project string, since time.Time, apply bool, sel ruleSelection, sampleN int) (scanHistoryResult, error) {
+	res := scanHistoryResult{
+		Applied: apply, Rules: sel.spec,
+		CountsByType: map[string]int{}, SelectedByType: map[string]int{}, ExcludedByType: map[string]int{},
+	}
+	// The salt lives only for this call, so the sample it renders stops being a
+	// confirmation oracle the moment the process exits.
+	salt := newRunSalt()
+	sampled := map[string]int{}
 
-	q := `SELECT id, project_id, task_id, execution_id, tool_input, tool_output FROM tool_audit_log WHERE 1=1`
+	q := `SELECT id, project_id, task_id, execution_id, tool_name, tool_input, tool_output FROM tool_audit_log WHERE 1=1`
 	args := []any{}
 	if project != "" {
 		args = append(args, project)
@@ -241,8 +340,8 @@ func scanToolAuditHistory(ctx context.Context, db *sql.DB, detector secrets.Dete
 
 	var hits []toolAuditHit
 	for rows.Next() {
-		var id, projectID, taskID, execID, in, out string
-		if err := rows.Scan(&id, &projectID, &taskID, &execID, &in, &out); err != nil {
+		var id, projectID, taskID, execID, tool, in, out string
+		if err := rows.Scan(&id, &projectID, &taskID, &execID, &tool, &in, &out); err != nil {
 			return res, fmt.Errorf("scan row: %w", err)
 		}
 		res.RowsScanned++
@@ -252,20 +351,14 @@ func scanToolAuditHistory(ctx context.Context, db *sql.DB, detector secrets.Dete
 			continue
 		}
 		res.RowsMatched++
-		h := toolAuditHit{id: id, projectID: projectID, taskID: taskID, execID: execID, counts: map[string]int{}}
-		for ft, n := range secrets.CountByType(append(append([]secrets.Finding{}, inF...), outF...)) {
-			res.CountsByType[ft] += n
-			h.counts[ft] += n
+		countBySelection(&res, sel, inF, outF)
+		if sampleN > 0 {
+			collectSamples(&res, salt, sampled, sampleN, sel, id, tool, in, inF)
+			collectSamples(&res, salt, sampled, sampleN, sel, id, tool, out, outF)
 		}
-		if len(inF) > 0 {
-			h.newInput = string(secrets.Redact([]byte(in), inF))
-			h.rewriteInput = true
+		if h, ok := hitForSelection(sel, id, projectID, taskID, execID, in, out, inF, outF); ok {
+			hits = append(hits, h)
 		}
-		if len(outF) > 0 {
-			h.newOutput = string(secrets.Redact([]byte(out), outF))
-			h.rewriteOutput = true
-		}
-		hits = append(hits, h)
 	}
 	if err := rows.Err(); err != nil {
 		return res, err
@@ -277,6 +370,57 @@ func scanToolAuditHistory(ctx context.Context, db *sql.DB, detector secrets.Dete
 		return res, err
 	}
 	return res, nil
+}
+
+// countBySelection records every finding, split by whether the --rules
+// selection will write it back. Both halves are reported, so a scoped run
+// cannot let "nothing redacted" read like "nothing found".
+func countBySelection(res *scanHistoryResult, sel ruleSelection, inF, outF []secrets.Finding) {
+	for ft, n := range secrets.CountByType(append(append([]secrets.Finding{}, inF...), outF...)) {
+		res.CountsByType[ft] += n
+		if sel.selects(ft) {
+			res.SelectedByType[ft] += n
+		} else {
+			res.ExcludedByType[ft] += n
+		}
+	}
+}
+
+// hitForSelection builds the queued rewrite for one row, redacting ONLY the
+// selected findings. A row that matched but has nothing selected is not queued:
+// rewriting it would be a no-op UPDATE and a misleading audit row.
+func hitForSelection(sel ruleSelection, id, projectID, taskID, execID, in, out string, inF, outF []secrets.Finding) (toolAuditHit, bool) {
+	selIn := selectFindings(inF, sel)
+	selOut := selectFindings(outF, sel)
+	if len(selIn) == 0 && len(selOut) == 0 {
+		return toolAuditHit{}, false
+	}
+	h := toolAuditHit{id: id, projectID: projectID, taskID: taskID, execID: execID, counts: map[string]int{}}
+	for ft, n := range secrets.CountByType(append(append([]secrets.Finding{}, selIn...), selOut...)) {
+		h.counts[ft] += n
+	}
+	if len(selIn) > 0 {
+		h.newInput = string(secrets.Redact([]byte(in), selIn))
+		h.rewriteInput = true
+	}
+	if len(selOut) > 0 {
+		h.newOutput = string(secrets.Redact([]byte(out), selOut))
+		h.rewriteOutput = true
+	}
+	return h, true
+}
+
+// collectSamples renders up to sampleN masked examples per rule. It samples the
+// SELECTED rules — the operator is deciding whether to apply them — and never
+// emits a matched byte; see maskedContext.
+func collectSamples(res *scanHistoryResult, salt []byte, sampled map[string]int, sampleN int, sel ruleSelection, rowID, tool, text string, findings []secrets.Finding) {
+	for _, f := range findings {
+		if !sel.selects(f.Type) || sampled[f.Type] >= sampleN {
+			continue
+		}
+		sampled[f.Type]++
+		res.Samples = append(res.Samples, sampleLine(salt, rowID, tool, text, findings, f))
+	}
 }
 
 // toolAuditHit is one matched tool_audit_log row queued for redaction.

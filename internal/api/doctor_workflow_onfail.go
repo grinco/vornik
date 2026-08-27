@@ -30,7 +30,7 @@ import (
 func (h *DoctorHandlers) checkWorkflowOnFailMasking() DoctorCheck {
 	const name = "workflow_onfail_masking"
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config directory configured, skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config directory configured, skipping"}
 	}
 
 	reg := registry.New()

@@ -196,7 +196,7 @@ func TestCheckConfigValidation_NoConfigDir(t *testing.T) {
 	h := &DoctorHandlers{}
 	got := h.checkConfigValidation()
 	assert.Equal(t, "config_validation", got.Name)
-	assert.Equal(t, "OK", got.Status)
+	assert.Equal(t, "SKIPPED", got.Status)
 	assert.Contains(t, got.Message, "no config directory")
 }
 
@@ -246,7 +246,7 @@ func TestCheckConfigValidation_ValidConfigs(t *testing.T) {
 func TestCheckPricingCoverage_NoConfigDir(t *testing.T) {
 	h := &DoctorHandlers{}
 	got := h.checkPricingCoverage()
-	assert.Equal(t, "OK", got.Status)
+	assert.Equal(t, "SKIPPED", got.Status)
 	assert.Contains(t, got.Message, "no config dir")
 }
 
@@ -357,7 +357,7 @@ defaultWorkflowId: "w"
 func TestCheckAutonomyBudgetGuard_NoConfigDir(t *testing.T) {
 	h := &DoctorHandlers{}
 	got := h.checkAutonomyBudgetGuard()
-	assert.Equal(t, "OK", got.Status)
+	assert.Equal(t, "SKIPPED", got.Status)
 	assert.Contains(t, got.Message, "no config dir")
 }
 
@@ -407,7 +407,7 @@ budget:
 func TestCheckBudgetUtilisation_NoConfigDir(t *testing.T) {
 	h := &DoctorHandlers{}
 	got := h.checkBudgetUtilisation(t.Context())
-	assert.Equal(t, "OK", got.Status)
+	assert.Equal(t, "SKIPPED", got.Status)
 	assert.Contains(t, got.Message, "no config dir")
 }
 
@@ -444,7 +444,7 @@ budget:
 func TestCheckOrphanWorktrees_NoWorkspacesRoot(t *testing.T) {
 	h := &DoctorHandlers{}
 	got := h.checkOrphanWorktrees(false)
-	assert.Equal(t, "OK", got.Status)
+	assert.Equal(t, "SKIPPED", got.Status)
 	assert.Contains(t, got.Message, "no workspaces root")
 }
 
@@ -455,7 +455,7 @@ func TestCheckOrphanWorktrees_RootNotReadable(t *testing.T) {
 	// hasn't created any worktrees yet, not a real defect).
 	h := &DoctorHandlers{workspacesRoot: "/nonexistent/vornik/workspaces"}
 	got := h.checkOrphanWorktrees(false)
-	assert.Equal(t, "OK", got.Status)
+	assert.Equal(t, "SKIPPED", got.Status)
 	assert.Contains(t, got.Message, "not readable")
 }
 
@@ -502,7 +502,7 @@ func TestCheckAgentImages_NoConfigDir(t *testing.T) {
 	h := &DoctorHandlers{}
 	got := h.checkAgentImages(t.Context())
 	assert.Equal(t, "agent_images", got.Name)
-	assert.Equal(t, "OK", got.Status)
+	assert.Equal(t, "SKIPPED", got.Status)
 	assert.Contains(t, got.Message, "skipping image check")
 }
 

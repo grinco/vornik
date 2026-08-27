@@ -164,6 +164,54 @@ sum_before="$(cksum < "$f")"
 run "$f" --title "Would be deposited" --dry-run >/dev/null
 [ "$(cksum < "$f")" = "$sum_before" ] && ok "file unchanged" || bad "dry-run modified the file"
 
+# --- dedup must not false-positive on a SHORT existing title ----------------
+# Regression, 2026-08-26: `- [ ] **/doctor** — surface the offline daemon health
+# check in chat.` normalises to just "doctor", and the containment branch
+# guarded only the length of the NEW title — so any new item mentioning a
+# doctor check was refused as a duplicate of it. Caught by the author using the
+# script an hour after shipping it.
+echo "--- a short existing title must not swallow a longer unrelated one ---"
+f="$TMP/shorttitle.md"
+mkdir -p "$TMP"
+cat > "$f" <<'EOF'
+# Backlog
+
+---
+
+## [ ] P2 — An existing item (2026-08-01)
+
+- [ ] **`/doctor`** — surface the offline daemon health check in chat.
+
+---
+
+## Trailing prose
+EOF
+out="$(run "$f" --title "Retire the silent-control class: 30 doctor checks report OK without running")"; rc=$?
+if [ $rc -eq 0 ]; then
+  ok "a long distinct title is not swallowed by the short bullet 'doctor'"
+else
+  bad "rc=$rc — short-title containment false-positive is back: $out"
+fi
+
+# The genuine short-title duplicate must STILL be caught.
+echo "--- an actual restatement of a short title is still a duplicate ---"
+f2="$TMP/shorttitle2.md"
+cat > "$f2" <<'EOF'
+# Backlog
+
+---
+
+## [ ] P2 — Surface the offline daemon health check in chat (2026-08-01)
+
+detail
+
+---
+
+## Trailing prose
+EOF
+out="$(run "$f2" --title "Surface the offline daemon health check in chat")"; rc=$?
+[ $rc -eq 3 ] && ok "exact-match dedup still fires" || bad "rc=$rc, want 3"
+
 echo "---"
 echo "PASS: $pass passed, $fail failed"
 [ "$fail" -eq 0 ] || exit 1

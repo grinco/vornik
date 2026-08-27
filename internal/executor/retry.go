@@ -688,14 +688,17 @@ func (e *Executor) executeAgentStepWithInfraRetry(
 	timeout time.Duration,
 	opts *agentInputOpts,
 ) (string, []byte, error) {
-	delay := infraRetryBaseDelay
+	// Per-step ladder settings with defaults applied. A step with no `retry:`
+	// block resolves to exactly the constants this loop used to read directly.
+	cfg := resolveStepRetry(step)
+	delay := cfg.BaseDelay
 	var lastCID string
 	var lastResult []byte
 	var lastErr error
 	timeoutFailures := 0
 	attemptsMade := 0
 
-	for attempt := 1; attempt <= infraRetryMaxAttempts; attempt++ {
+	for attempt := 1; attempt <= cfg.MaxAttempts; attempt++ {
 		attemptsMade = attempt
 		// Per-attempt step ID (attempt > 1) so the audit log and
 		// step-outcome rows distinguish the retries from the original.
@@ -734,10 +737,14 @@ func (e *Executor) executeAgentStepWithInfraRetry(
 			return cid, result, err
 		}
 
-		if !isInfraFailure(err) {
-			// Non-infra error — kick it back to the caller (shape
-			// retry layer or the workflow loop) without burning more
-			// retry budget on a problem that won't fix itself.
+		if !cfg.shouldRetry(err) {
+			// Not retryable — kick it back to the caller (shape retry layer
+			// or the workflow loop) without burning more retry budget on a
+			// problem that won't fix itself.
+			//
+			// cfg.shouldRetry is isInfraFailure PLUS whatever the step's
+			// `retry.on` names; it can only ever widen, so nothing that
+			// retried before this was configurable stops retrying now.
 			return cid, result, err
 		}
 		if high, reason := retryPromptPressureHigh(result, infraRetrySuppressPressureRatio); high {

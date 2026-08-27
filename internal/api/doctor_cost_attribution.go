@@ -42,7 +42,7 @@ const costAttributionMinTotal = 10
 func (h *DoctorHandlers) checkCostAttribution() DoctorCheck {
 	name := "cost_attribution_source_mix"
 	if h.apiMetrics == nil || h.apiMetrics.CostAttributionTotal == nil {
-		return DoctorCheck{Name: name, Status: "OK", Message: "API metrics not wired, skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "API metrics not wired, skipping"}
 	}
 	counts := readCostAttributionCounts(h.apiMetrics)
 	total := counts.total()

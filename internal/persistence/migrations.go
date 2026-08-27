@@ -7110,4 +7110,180 @@ ALTER TABLE tool_audit_log DROP COLUMN IF EXISTS outcome_class;
 ALTER TABLE tool_audit_log DROP COLUMN IF EXISTS outcome;
 `,
 	},
+	{
+		Version: 169,
+		Name:    "step_outcome_container_exit_code",
+		// Make the residual failure bucket diagnosable.
+		//
+		// Measured 2026-08-26 on the production database: `container_non_zero_exit` held
+		// 3,027 of 5,791 classified step failures — 52.3%, the largest class in
+		// the fleet — and the container's exit code was present in error_detail
+		// for ELEVEN of them (0.4%). It only ever reached error_detail through
+		// the `container exited with code %d` fallback, which fires when
+		// result.json did NOT declare FAILED, i.e. the uncommon path. 817 of
+		// those rows (27%) carried no container log tail either.
+		//
+		// So the bucket that means "we could not classify this" carried almost
+		// nothing to classify it WITH. A typed column rather than more
+		// error_detail prose because the point is to GROUP: 137 (OOM-killed)
+		// reads differently from 125 (podman refused to start), and finding the
+		// next pattern means aggregating, not regexing a free-text field —
+		// which is the salvage-parsing the scraper-envelope item exists to
+		// delete.
+		//
+		// NULLABLE, and NULL is load-bearing: it means no container ran, which
+		// is NOT the same as exiting 0. A container can exit 0 and still fail
+		// the step on a verifier rejection, so `*int` is the only shape that
+		// keeps "exited 0" and "no container" apart. A NOT NULL DEFAULT 0 would
+		// declare every pre-migration row and every non-agent step a clean
+		// container exit.
+		//
+		// Design: https://docs.vornik.io §3 D2
+		Up: `
+ALTER TABLE execution_step_outcomes
+    ADD COLUMN IF NOT EXISTS container_exit_code INTEGER;
+`,
+		Down: `
+ALTER TABLE execution_step_outcomes
+    DROP COLUMN IF EXISTS container_exit_code;
+`,
+	},
+	{
+		Version: 170,
+		Name:    "step_outcome_reclassify_residual",
+		// Reclassify the residual failure bucket, then name what is left.
+		//
+		// `container_non_zero_exit` was 3,027 of 5,791 classified step
+		// failures on the production database 2026-08-26 — 52.3%, the largest class in the
+		// fleet — and it was NOT residual noise: 87.6% of it was nameable, and
+		// its single largest slice (1,374 rows, 45.4%) was LLM/provider call
+		// failures, which had no step class at all.
+		//
+		// So this does not merely rename. A rename alone would have kept the
+		// series continuous and WRONG. It applies the same patterns
+		// refineAgentFailureOutcome now applies to live steps, then relabels
+		// the genuine remainder `unclassified` — a name that cannot be
+		// mistaken for a diagnosis, which the old one could.
+		//
+		// ORDER IS THE SPECIFICATION. Each statement only touches rows that
+		// still hold the old value, so an earlier statement claims its rows
+		// first. Two orderings are load-bearing:
+		//   - `signal: killed` BEFORE `podman wait failed`. The killed rows are
+		//     a strict SUBSET (the literal reads "podman wait failed: signal:
+		//     killed"), so the generic arm would otherwise swallow all 47.
+		//   - The four pre-existing refiner arms first, preserving the
+		//     precedence they were given against two documented misreadings.
+		//
+		// MATCH BEFORE THE LOG TAIL. error_detail carries up to 400 lines of
+		// container log, and matching the whole field lets the tail decide the
+		// class — the exact trap that once made an analysis report "iteration
+		// cap: zero rows" when the true figure was 4. split_part cuts at the
+		// delimiter, mirroring errorBeforeLogTail.
+		//
+		// Two patterns here have NO refiner arm, deliberately: schema
+		// violations and missing declared outputs are routed by
+		// classifyStepOutcome before the refiner ever runs. The rows are here
+		// only because they predate that routing.
+		//
+		// Postgres only. The migration runner is constructed solely by
+		// postgres/db.go; SQLite takes its shape from sqlite/schema.go as a
+		// fresh CREATE TABLE and therefore has no historical rows to carry.
+		//
+		// IDEMPOTENT: after this runs no row matches the old value, so a
+		// replay is inert. Bounded by one column and one predicate, never a
+		// wipe — the target IS the production database. At 20 MB and ~3k affected rows a
+		// single statement each completes in milliseconds; batching would add
+		// failure modes to buy nothing. Revisit if the table passes ~1 GB.
+		//
+		// Design: https://docs.vornik.io §3 D1/D4
+		Up: `
+UPDATE execution_step_outcomes SET error_class = 'plausibility_violation'
+ WHERE error_class = 'container_non_zero_exit'
+   AND split_part(error_detail, '--- Container Log', 1) ILIKE '%plausibility violation%';
+
+UPDATE execution_step_outcomes SET error_class = 'degenerate_loop'
+ WHERE error_class = 'container_non_zero_exit'
+   AND split_part(error_detail, '--- Container Log', 1) ILIKE '%degenerate loop%';
+
+UPDATE execution_step_outcomes SET error_class = 'iteration_cap'
+ WHERE error_class = 'container_non_zero_exit'
+   AND split_part(error_detail, '--- Container Log', 1) ILIKE '%tool iteration limit%';
+
+UPDATE execution_step_outcomes SET error_class = 'context_overflow'
+ WHERE error_class = 'container_non_zero_exit'
+   AND split_part(error_detail, '--- Container Log', 1) ILIKE '%context window%';
+
+UPDATE execution_step_outcomes SET error_class = 'llm_call_failed'
+ WHERE error_class = 'container_non_zero_exit'
+   AND split_part(error_detail, '--- Container Log', 1) ILIKE '%llm call failed%';
+
+UPDATE execution_step_outcomes SET error_class = 'missing_prerequisite'
+ WHERE error_class = 'container_non_zero_exit'
+   AND split_part(error_detail, '--- Container Log', 1) ILIKE '%missing prerequisite%';
+
+-- Before the generic podman-wait match: these rows are a subset of it.
+UPDATE execution_step_outcomes SET error_class = 'container_killed'
+ WHERE error_class = 'container_non_zero_exit'
+   AND split_part(error_detail, '--- Container Log', 1) ILIKE '%signal: killed%';
+
+UPDATE execution_step_outcomes SET error_class = 'container_wait_failed'
+ WHERE error_class = 'container_non_zero_exit'
+   AND split_part(error_detail, '--- Container Log', 1) ILIKE '%podman wait failed%';
+
+UPDATE execution_step_outcomes SET error_class = 'container_start_failed'
+ WHERE error_class = 'container_non_zero_exit'
+   AND (split_part(error_detail, '--- Container Log', 1) ILIKE '%failed to start container%'
+     OR split_part(error_detail, '--- Container Log', 1) ILIKE '%podman run failed%');
+
+-- No refiner arm: classifyStepOutcome routes these before the refiner runs.
+-- These rows predate that routing.
+UPDATE execution_step_outcomes SET error_class = 'verify_claims_failed'
+ WHERE error_class = 'container_non_zero_exit'
+   AND (split_part(error_detail, '--- Container Log', 1) ILIKE '%schema violation%'
+     OR split_part(error_detail, '--- Container Log', 1) ILIKE '%is missing required keys%');
+
+UPDATE execution_step_outcomes SET error_class = 'missing_declared_output'
+ WHERE error_class = 'container_non_zero_exit'
+   AND (split_part(error_detail, '--- Container Log', 1) ILIKE '%produced_files%'
+     OR split_part(error_detail, '--- Container Log', 1) ILIKE '%but verification failed%');
+
+-- Whatever is left is genuinely unclassified, and now says so.
+UPDATE execution_step_outcomes SET error_class = 'unclassified'
+ WHERE error_class = 'container_non_zero_exit';
+`,
+		// Restores the old value for every class this migration could have
+		// introduced, bounded by WHEN UP ACTUALLY RAN.
+		//
+		// The bound has to mean "rows that existed when the migration ran".
+		// The first cut froze a literal timestamp at authoring time, on the
+		// reasoning that a computed bound would widen under replay. That was
+		// wrong in the more likely direction: a migration authored one day and
+		// deployed the next under-reverts everything recorded in between, and
+		// a literal pinned to midnight under-reverts rows written later on the
+		// authoring day itself. Caught by
+		// TestMigration170_DownRestoresWhatUpChanged, which the literal failed.
+		//
+		// `migrations.applied_at` is the exact answer and is readable here:
+		// Rollback executes Down BEFORE deleting the migrations row, in the
+		// same transaction. COALESCE keeps Down runnable standalone (a test,
+		// or a hand-run repair) when no row is recorded.
+		//
+		// KNOWN LIMIT, accepted deliberately. Up → live traffic → Up again →
+		// Down would over-revert, because the second applied_at postdates rows
+		// the live refiner classified correctly on its own. Recording which
+		// rows Up touched is the only complete fix and needs a side table,
+		// which is not worth carrying for a break-glass path. This is the
+		// realistic usage — a Down runs once, immediately after a bad Up, not
+		// after days of traffic — and over-reverting live rows is the worse
+		// failure of the two, so the bound is chosen to make the common case
+		// exact rather than the pathological case safe.
+		Down: `
+UPDATE execution_step_outcomes SET error_class = 'container_non_zero_exit'
+ WHERE error_class IN ('unclassified', 'llm_call_failed', 'missing_prerequisite',
+                       'container_killed', 'container_wait_failed', 'container_start_failed')
+   AND recorded_at <= COALESCE(
+       (SELECT applied_at FROM migrations WHERE version = 170),
+       now());
+`,
+	},
 }

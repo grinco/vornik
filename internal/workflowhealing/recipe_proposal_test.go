@@ -27,11 +27,11 @@ func retryRecipeFixture(t *testing.T) *RecipeResult {
 		Entrypoint:  "impl",
 		Steps: map[string]registry.WorkflowStep{
 			"impl": {
-				Type:        "agent",
-				Role:        "coder",
-				Prompt:      "do the work",
-				OnSuccess:   "done",
-				RetryPolicy: registry.WorkflowRetryPolicy{MaxRetries: 3},
+				Type:      "agent",
+				Role:      "coder",
+				Prompt:    "do the work",
+				OnSuccess: "done",
+				Retry:     registry.WorkflowStepRetry{MaxAttempts: 3},
 			},
 		},
 		Terminals: map[string]registry.WorkflowTerminal{

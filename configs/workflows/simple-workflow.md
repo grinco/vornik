@@ -25,8 +25,8 @@ steps:
     on_success: "review"
     on_fail: "failed"
     timeout: "60m"
-    retryPolicy:
-      maxRetries: 2
+    retry:
+      max_attempts: 2
       backoff: "exponential"
   review:
     type: "agent"
@@ -73,6 +73,6 @@ requirements.
 
 ## Error handling
 
-`implement` retries up to `retryPolicy.maxRetries=2` on transient
+`implement` retries up to `retry.max_attempts=2` on transient
 failures. Reviewer rejections route back to `implement` up to
 `maxStepVisits=3` times before the workflow terminates as `failed`.

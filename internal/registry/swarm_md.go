@@ -57,14 +57,9 @@ const roleSectionHeading = "Role prompts"
 // frontmatter — that empty string is treated as "intentionally
 // blank" rather than "missing".
 func ParseSwarmMarkdown(content []byte, filename string) (*Swarm, error) {
-	frontmatter, body, err := splitFrontmatter(content, swarmKindLabel, filename)
+	sw, body, err := decodeSwarmFrontmatter(content, filename)
 	if err != nil {
 		return nil, err
-	}
-
-	var sw Swarm
-	if err := yaml.Unmarshal(frontmatter, &sw); err != nil {
-		return nil, fmt.Errorf("%s %s: yaml frontmatter parse: %w", swarmKindLabel, filename, err)
 	}
 
 	prompts, err := extractSections(body, roleSectionHeading, swarmKindLabel, filename)
@@ -72,11 +67,34 @@ func ParseSwarmMarkdown(content []byte, filename string) (*Swarm, error) {
 		return nil, err
 	}
 
-	if err := applyRolePrompts(&sw, prompts, filename); err != nil {
+	if err := applyRolePrompts(sw, prompts, filename); err != nil {
 		return nil, err
 	}
 
-	return &sw, nil
+	return sw, nil
+}
+
+// decodeSwarmFrontmatter is the DECODE half of ParseSwarmMarkdown, split out so
+// the validator can report what the loader rejects for SCHEMA reasons without
+// also reporting its body/frontmatter agreement rules.
+//
+// That distinction is not pedantry. ValidateSwarmSkillMarkdown also backs a
+// doctor check whose contract is the SKILL.md envelope, and calling the whole
+// of ParseSwarmMarkdown from it turned every partial skill fixture in the tree
+// into an error — a `## Role prompts` subsection for a role the frontmatter
+// does not declare is a legitimate intermediate state during a skill import.
+// The workflow design hit the same cascade and drew the same line; this is that
+// line, made explicit rather than implied by which function gets called.
+func decodeSwarmFrontmatter(content []byte, filename string) (*Swarm, []byte, error) {
+	frontmatter, body, err := splitFrontmatter(content, swarmKindLabel, filename)
+	if err != nil {
+		return nil, nil, err
+	}
+	var sw Swarm
+	if err := yaml.Unmarshal(frontmatter, &sw); err != nil {
+		return nil, nil, fmt.Errorf("%s %s: yaml frontmatter parse: %w", swarmKindLabel, filename, err)
+	}
+	return &sw, body, nil
 }
 
 // applyRolePrompts fills each role's SystemPrompt from the body

@@ -14,6 +14,8 @@
 // cost-per-LLM-roundtrip.
 package stepoutcome
 
+import "sort"
+
 // Outcome is the string form stored in execution_step_outcomes.outcome.
 // Kept as a typed string rather than an int enum so DB values remain
 // human-readable in ad-hoc queries.
@@ -133,7 +135,20 @@ const (
 // separate error_detail column. Keep these short — they're meant for
 // dashboard grouping.
 const (
-	ClassContainerNonZeroExit = "container_non_zero_exit"
+	// ClassUnclassified — the refiner recognised nothing. THE RESIDUAL, and
+	// the name says so: it was called container_non_zero_exit until
+	// 2026-08-26, which named the mechanism by which the step arrived here
+	// rather than any cause, and read like a diagnosis while carrying none.
+	//
+	// It is a sentinel for ABSENCE and is load-bearing as one:
+	// timeoutOutcomeAndClass compares against it to mean "nothing recognised".
+	// Its only writer is the default arm of refineAgentFailureOutcome.
+	//
+	// Measured before the wave-2 arms landed it was 3,027 of 5,791 classified
+	// step failures — 52.3% — of which only 12.4% was genuinely unrecognisable.
+	// A classifier whose modal output is "unknown" is the finding, not the
+	// baseline: treat the size of this bucket as a metric.
+	ClassUnclassified         = "unclassified"
 	ClassContainerFAILEDState = "container_failed_state"
 	ClassParseInvalidJSON     = "parse_invalid_json"
 	ClassParsePlanNoSteps     = "parse_plan_no_steps"
@@ -187,6 +202,44 @@ const (
 	// guard the step would silently advance and a downstream consumer would
 	// fail on an empty diff. Incident task_20260709102613_79c570a868fefedb.
 	ClassEmptyDelegation = "empty_delegation"
+
+	// --- wave-2 classes: what the residual bucket was actually made of ---
+	//
+	// Each was measured over the whole bucket on the production database 2026-08-26. They
+	// are not speculative categories; they are the shapes that were already
+	// there with nowhere to go.
+
+	// ClassLLMCallFailed — the agent's call to the model provider failed:
+	// transport, gateway, or an upstream error. 1,374 rows, 45.4% of the
+	// residual and its single largest slice, 175 of them in the trailing 30
+	// days. The fleet's most common failure was an upstream provider error
+	// with no step class, hidden inside a container-shaped name.
+	//
+	// Deliberately ONE class, not one per provider: the provider and status
+	// live in error_detail, and splitting the class per provider would mirror
+	// a registry we do not own.
+	ClassLLMCallFailed = "llm_call_failed"
+	// ClassMissingPrerequisite — the agent stopped because an input it needed
+	// was absent (typically a file an upstream step was meant to produce).
+	// 183 rows. Distinct from missing_declared_output, which catches the
+	// PRODUCER lying; this is the consumer finding nothing.
+	ClassMissingPrerequisite = "missing_prerequisite"
+	// ClassContainerKilled — the container was killed by a signal, most often
+	// the OOM killer. 47 rows.
+	//
+	// PRECEDENCE: these rows are a strict SUBSET of ClassContainerWaitFailed's
+	// (the literal reads "podman wait failed: signal: killed"), so this must be
+	// matched FIRST or every kill disappears into the generic wait bucket.
+	// Pinned by test, not by comment.
+	ClassContainerKilled = "container_killed"
+	// ClassContainerWaitFailed — the runtime failed while waiting for the
+	// container to finish. 107 rows once the killed subset above is taken out
+	// of the 154 that match the literal.
+	ClassContainerWaitFailed = "container_wait_failed"
+	// ClassContainerStartFailed — the container never started: image, mount or
+	// runtime configuration. 61 rows. Sub-second and deterministic, which is
+	// the signature of a fallback rung that has never once worked.
+	ClassContainerStartFailed = "container_start_failed"
 )
 
 // IsTerminal reports whether an outcome value is final — i.e., not
@@ -198,3 +251,57 @@ func (o Outcome) IsTerminal() bool {
 
 // String returns the outcome's string form. Safe to call on zero values.
 func (o Outcome) String() string { return string(o) }
+
+// errorClasses is the closed set of error-class values this package declares.
+//
+// Kept beside the constants so the two cannot drift: anything consuming the
+// vocabulary at runtime (workflow `retry.on` validation) reads this rather
+// than keeping its own copy. internal/playbook/vocabulary_test.go derives the
+// same set independently via go/ast and fails the build when a declared
+// constant lacks a playbook entry, so completeness is enforced by test rather
+// than by remembering to update a list.
+var errorClasses = []string{
+	ClassUnclassified,
+	ClassContainerFAILEDState,
+	ClassParseInvalidJSON,
+	ClassParsePlanNoSteps,
+	ClassParsePlanRefused,
+	ClassGateInvalidJSON,
+	ClassGateEvalFailed,
+	ClassIterationCap,
+	ClassDegenerateLoop,
+	ClassVerifyFailed,
+	ClassMissingOutput,
+	ClassContextCancelled,
+	ClassContextTimeout,
+	ClassHallucinated,
+	ClassBudgetTripwire,
+	ClassPromptTokenBudget,
+	ClassContextOverflow,
+	ClassPlausibilityViolation,
+	ClassEmptyDelegation,
+	ClassLLMCallFailed,
+	ClassMissingPrerequisite,
+	ClassContainerKilled,
+	ClassContainerWaitFailed,
+	ClassContainerStartFailed,
+}
+
+// ErrorClasses returns every declared error class, sorted, for operator-facing
+// messages. Returns a copy so a caller cannot mutate the vocabulary.
+func ErrorClasses() []string {
+	out := make([]string, len(errorClasses))
+	copy(out, errorClasses)
+	sort.Strings(out)
+	return out
+}
+
+// IsErrorClass reports whether s is a declared error class.
+func IsErrorClass(s string) bool {
+	for _, c := range errorClasses {
+		if c == s {
+			return true
+		}
+	}
+	return false
+}

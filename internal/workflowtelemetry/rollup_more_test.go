@@ -52,6 +52,11 @@ func expectEmptyStepAndTail(mock sqlmock.Sqlmock, wf string) {
 	mock.ExpectQuery(`DISTINCT ON \(so\.step_id, so\.role, so\.model\)`).
 		WithArgs(wf, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"step_id", "role", "model", "error_class"}))
+	// Unclassified share — unlimited, and queried before the capped
+	// top-failure-classes list. See fillUnclassifiedShare.
+	mock.ExpectQuery(`FILTER \(WHERE so\.error_class = 'unclassified'\)`).
+		WithArgs(wf, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"unclassified", "classified"}).AddRow(0, 0))
 	mock.ExpectQuery(`LIMIT 10`).
 		WithArgs(wf, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"error_class", "count"}))
@@ -208,6 +213,11 @@ func TestForWorkflow_MultiStepOrderingAndComposition(t *testing.T) {
 		WithArgs("wf-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"step_id", "role", "model", "error_class"}).
 			AddRow("review", "reviewer", "m2", "timeout"))
+	// Unclassified share — unlimited, and queried before the capped
+	// top-failure-classes list. See fillUnclassifiedShare.
+	mock.ExpectQuery(`FILTER \(WHERE so\.error_class = 'unclassified'\)`).
+		WithArgs("wf-a", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"unclassified", "classified"}).AddRow(0, 0))
 	mock.ExpectQuery(`LIMIT 10`).
 		WithArgs("wf-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"error_class", "count"}))
@@ -278,6 +288,11 @@ func TestForWorkflow_StepCostRowWithoutMatchingStep(t *testing.T) {
 		WithArgs("wf-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"step_id", "role", "model", "error_class"}).
 			AddRow("ghost", "x", "z", "phantom_err"))
+	// Unclassified share — unlimited, and queried before the capped
+	// top-failure-classes list. See fillUnclassifiedShare.
+	mock.ExpectQuery(`FILTER \(WHERE so\.error_class = 'unclassified'\)`).
+		WithArgs("wf-a", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"unclassified", "classified"}).AddRow(0, 0))
 	mock.ExpectQuery(`LIMIT 10`).
 		WithArgs("wf-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"error_class", "count"}))
@@ -323,6 +338,11 @@ func TestForWorkflow_TopFailureClassesOrderPreserved(t *testing.T) {
 	mock.ExpectQuery(`DISTINCT ON \(so\.step_id, so\.role, so\.model\)`).
 		WithArgs("wf-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"step_id", "role", "model", "error_class"}))
+	// Unclassified share — unlimited, and queried before the capped
+	// top-failure-classes list. See fillUnclassifiedShare.
+	mock.ExpectQuery(`FILTER \(WHERE so\.error_class = 'unclassified'\)`).
+		WithArgs("wf-a", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"unclassified", "classified"}).AddRow(0, 0))
 	mock.ExpectQuery(`LIMIT 10`).
 		WithArgs("wf-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"error_class", "count"}).
@@ -374,6 +394,11 @@ func TestForWorkflow_QualityRatesAreFractionsOfRunCount(t *testing.T) {
 	mock.ExpectQuery(`DISTINCT ON \(so\.step_id, so\.role, so\.model\)`).
 		WithArgs("wf-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"step_id", "role", "model", "error_class"}))
+	// Unclassified share — unlimited, and queried before the capped
+	// top-failure-classes list. See fillUnclassifiedShare.
+	mock.ExpectQuery(`FILTER \(WHERE so\.error_class = 'unclassified'\)`).
+		WithArgs("wf-a", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"unclassified", "classified"}).AddRow(0, 0))
 	mock.ExpectQuery(`LIMIT 10`).
 		WithArgs("wf-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"error_class", "count"}))
@@ -451,6 +476,11 @@ func TestForWorkflow_JudgeVerdictsStageError(t *testing.T) {
 	mock.ExpectQuery(`DISTINCT ON \(so\.step_id, so\.role, so\.model\)`).
 		WithArgs("wf-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"step_id", "role", "model", "error_class"}))
+	// Unclassified share — unlimited, and queried before the capped
+	// top-failure-classes list. See fillUnclassifiedShare.
+	mock.ExpectQuery(`FILTER \(WHERE so\.error_class = 'unclassified'\)`).
+		WithArgs("wf-a", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"unclassified", "classified"}).AddRow(0, 0))
 	mock.ExpectQuery(`LIMIT 10`).
 		WithArgs("wf-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"error_class", "count"}))
@@ -481,6 +511,11 @@ func TestForWorkflow_QualityRatesStageError(t *testing.T) {
 	mock.ExpectQuery(`DISTINCT ON \(so\.step_id, so\.role, so\.model\)`).
 		WithArgs("wf-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"step_id", "role", "model", "error_class"}))
+	// Unclassified share — unlimited, and queried before the capped
+	// top-failure-classes list. See fillUnclassifiedShare.
+	mock.ExpectQuery(`FILTER \(WHERE so\.error_class = 'unclassified'\)`).
+		WithArgs("wf-a", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"unclassified", "classified"}).AddRow(0, 0))
 	mock.ExpectQuery(`LIMIT 10`).
 		WithArgs("wf-a", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"error_class", "count"}))

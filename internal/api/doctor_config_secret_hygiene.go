@@ -30,7 +30,7 @@ func (h *DoctorHandlers) checkConfigSecretHygiene() DoctorCheck {
 	if h.secretFields == nil {
 		// Container hasn't wired the snapshot — happens in direct
 		// handler tests. Skip quietly rather than emit a false-positive.
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config snapshot captured, skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config snapshot captured, skipping"}
 	}
 
 	var items []string

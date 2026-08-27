@@ -59,9 +59,9 @@ func ParseWorkflowMarkdown(content []byte, filename string) (*Workflow, error) {
 		return nil, err
 	}
 
-	var wf Workflow
-	if err := yaml.Unmarshal(frontmatter, &wf); err != nil {
-		return nil, fmt.Errorf("%s %s: yaml frontmatter parse: %w", workflowKindLabel, filename, err)
+	wf, err := decodeWorkflowFrontmatter(frontmatter, filename)
+	if err != nil {
+		return nil, err
 	}
 
 	prompts, err := extractSections(body, promptsSectionHeading, workflowKindLabel, filename)
@@ -113,4 +113,28 @@ func applyWorkflowPrompts(wf *Workflow, prompts map[string]string, filename stri
 	}
 	wf.Steps = updated
 	return nil
+}
+
+// decodeWorkflowFrontmatter is THE decode path for a workflow's frontmatter —
+// used by both the loader and the validator, deliberately.
+//
+// Strictness lives on WorkflowStep.UnmarshalYAML, not here. Deliberately: the
+// frontmatter carries the SKILL.md envelope (name, author, license, metadata)
+// AND keys owned by other subsystems that appear in fixtures and templates, so
+// a document-level KnownFields would reject files that are fine. STEPS are
+// where the demonstrated harm is — ten shipped workflows carried a per-step
+// `retry:` block matching no field, and lenient decoding meant the daemon, the
+// validator and the operator all agreed it was fine while it did nothing.
+//
+// Sharing one function with ValidateWorkflowMarkdown is a correctness
+// requirement, not tidiness: `vornikctl workflow validate` is the pre-deploy
+// gate, and a gate whose parser differs from the loader's will eventually pass
+// something the daemon then refuses at boot.
+func decodeWorkflowFrontmatter(frontmatter []byte, filename string) (Workflow, error) {
+	var wf Workflow
+	if err := yaml.Unmarshal(frontmatter, &wf); err != nil {
+		return Workflow{}, fmt.Errorf("%s %s: yaml frontmatter parse: %w",
+			workflowKindLabel, filename, err)
+	}
+	return wf, nil
 }

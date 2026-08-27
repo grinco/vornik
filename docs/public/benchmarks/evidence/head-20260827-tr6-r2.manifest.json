@@ -1,0 +1,28 @@
+{
+  "system": "vornik",
+  "dataset_name": "longmemeval",
+  "dataset_sha256": "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c",
+  "comparability_key": "e865104e995958d0e4b7307bc8aebfb4cb02a1bba504cb20721b09f20d0743e5",
+  "comparability_partial": true,
+  "comparability_fields": {
+    "harness_version": "4",
+    "dataset_name": "longmemeval",
+    "dataset_sha256": "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c",
+    "item_selection": "category=temporal-reasoning;max_items=6;max_per_category=0",
+    "our_extraction_model": "",
+    "answer_model": "",
+    "judge_model": "",
+    "recall_params": "max_tokens=4096;method=context-assembly",
+    "observed_recall_method": "context-assembly",
+    "retrieval_path_unverified": true,
+    "answer_prompt_sha256": "010a81906b421beabdfa086d38244a353b678db9854a653c0e09a70b2f6b4f4f",
+    "judge_prompt_sha256": "d9ffa4271cea4285657fedf446d161093e9591e015456c96d2b72b9caee1c863",
+    "tier2_only": true,
+    "single_system": true
+  },
+  "trust": {
+    "trustworthy": true
+  },
+  "embedding_readiness": 1,
+  "finished_at": "2026-08-27T21:31:00Z"
+}

@@ -25,8 +25,8 @@ steps:
     type: "agent"
     role: "writer"
     on_success: "review"
-    retryPolicy:
-      maxRetries: 5
+    retry:
+      max_attempts: 5
   review:
     type: "agent"
     role: "reviewer"
@@ -82,8 +82,8 @@ func TestRetryBudgetRecipe_LowersBudgetAndKeepsValid(t *testing.T) {
 	if !res.Valid {
 		t.Fatalf("candidate should be valid; findings: %v", res.ValidationFindings)
 	}
-	if got := res.CandidateWorkflow.Steps["write"].RetryPolicy.MaxRetries; got != 1 {
-		t.Errorf("maxRetries = %d, want 1", got)
+	if got := res.CandidateWorkflow.Steps["write"].Retry.MaxAttempts; got != 1 {
+		t.Errorf("max_attempts = %d, want 1", got)
 	}
 	// on_fail should now be set (write had none).
 	if got := res.CandidateWorkflow.Steps["write"].OnFail; got != "failed" {
@@ -99,7 +99,7 @@ func TestRetryBudgetRecipe_LowersBudgetAndKeepsValid(t *testing.T) {
 		t.Errorf("evidence len = %d, want 3", len(res.EvidenceExecutionIDs))
 	}
 	// The baseline must be untouched (recipe operates on a clone).
-	if base.Steps["write"].RetryPolicy.MaxRetries != 5 {
+	if base.Steps["write"].Retry.MaxAttempts != 5 {
 		t.Error("recipe mutated the baseline workflow")
 	}
 	// The serialized diff must round-trip back to the candidate hash.
@@ -120,8 +120,8 @@ func TestRetryBudgetRecipe_LowerOnlyClamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RetryBudgetRecipe: %v", err)
 	}
-	if got := res.CandidateWorkflow.Steps["write"].RetryPolicy.MaxRetries; got != 5 {
-		t.Errorf("maxRetries = %d, want clamped to 5 (never raised)", got)
+	if got := res.CandidateWorkflow.Steps["write"].Retry.MaxAttempts; got != 5 {
+		t.Errorf("max_attempts = %d, want clamped to 5 (never raised)", got)
 	}
 }
 
@@ -255,8 +255,8 @@ func TestRecipe_InvalidGenomeRecordsFindings(t *testing.T) {
 	// serialized candidate trips description_missing.
 	wf.Steps["plan"] = registry.WorkflowStep{
 		Type: "agent", Role: "lead", OnSuccess: "complete", OnFail: "failed",
-		Prompt:      "Plan the work and hand off.",
-		RetryPolicy: registry.WorkflowRetryPolicy{MaxRetries: 3},
+		Prompt: "Plan the work and hand off.",
+		Retry:  registry.WorkflowStepRetry{MaxAttempts: 3},
 	}
 	res, err := RetryBudgetRecipe(wf, "plan", 0, "", nil)
 	if err != nil {

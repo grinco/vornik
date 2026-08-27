@@ -28,7 +28,7 @@ import (
 func (h *DoctorHandlers) checkWorkflowMdShape() DoctorCheck {
 	name := "workflow_md_shape"
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config dir; skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config dir; skipping"}
 	}
 	workflows, err := registry.LoadWorkflows(h.configDir)
 	if err != nil {

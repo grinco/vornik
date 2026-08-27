@@ -38,7 +38,7 @@ import (
 func (h *DoctorHandlers) checkRolePromptSanity() DoctorCheck {
 	const name = "role_prompt_sanity"
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config directory configured, skipping lint"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config directory configured, skipping lint"}
 	}
 
 	// Load a fresh isolated registry — this handler runs separately

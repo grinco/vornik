@@ -73,8 +73,8 @@ func TestW3HealRetryBudgetRecipeNegativeBudgetFloorsAtZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RetryBudgetRecipe: %v", err)
 	}
-	if got := res.CandidateWorkflow.Steps["write"].RetryPolicy.MaxRetries; got != 0 {
-		t.Errorf("maxRetries = %d, want clamped to 0 (floor), never negative", got)
+	if got := res.CandidateWorkflow.Steps["write"].Retry.MaxAttempts; got != 0 {
+		t.Errorf("max_attempts = %d, want clamped to 0 (floor), never negative", got)
 	}
 }
 
@@ -139,11 +139,11 @@ func w3RetryBaselineWithUpperTerminals() *registry.Workflow {
 		Entrypoint:  "impl",
 		Steps: map[string]registry.WorkflowStep{
 			"impl": {
-				Type:        "agent",
-				Role:        "coder",
-				Prompt:      "do the work",
-				OnSuccess:   "done",
-				RetryPolicy: registry.WorkflowRetryPolicy{MaxRetries: 4},
+				Type:      "agent",
+				Role:      "coder",
+				Prompt:    "do the work",
+				OnSuccess: "done",
+				Retry:     registry.WorkflowStepRetry{MaxAttempts: 4},
 			},
 		},
 		Terminals: map[string]registry.WorkflowTerminal{
@@ -174,8 +174,8 @@ func TestW3HealBuildRetryBudgetUsesFirstFailedTerminalFallback(t *testing.T) {
 	if got := cw.Steps["impl"].OnFail; got != "failed" {
 		t.Errorf("impl.on_fail = %q, want failed (firstFailedTerminal fallback)", got)
 	}
-	if got := cw.Steps["impl"].RetryPolicy.MaxRetries; got != 2 {
-		t.Errorf("impl maxRetries = %d, want 2 (4 halved)", got)
+	if got := cw.Steps["impl"].Retry.MaxAttempts; got != 2 {
+		t.Errorf("impl max_attempts = %d, want 2 (4 halved)", got)
 	}
 }
 

@@ -138,6 +138,13 @@ func (h *DoctorHandlers) checkAgentLLMAPIKey(ctx context.Context) DoctorCheck {
 	// always 401s regardless of key validity, so skip the live probe and
 	// fall back to the presence+placeholder check already done above.
 	if isNativeAnthropicEndpoint(h.chatEndpoint) {
+		// doctor-vacuous: OK is correct here, not SKIPPED. The presence +
+		// placeholder check above DID run and passed; only the live probe is
+		// skipped, and deliberately — this endpoint always 401s the
+		// OpenAI-shaped probe regardless of key validity, so running it would
+		// produce a false ERROR rather than a real answer. The message states
+		// the limitation ("presence check only") so the operator is not misled
+		// about what was verified.
 		return DoctorCheck{Name: name, Status: "OK", Message: "upstream key present; skipped live probe for native Anthropic endpoint (presence check only)"}
 	}
 	probe := h.probeFunc
@@ -147,7 +154,7 @@ func (h *DoctorHandlers) checkAgentLLMAPIKey(ctx context.Context) DoctorCheck {
 	code, err := probe(ctx, h.chatEndpoint, h.chatAPIKey)
 	switch {
 	case err != nil:
-		return DoctorCheck{Name: name, Status: "OK", Message: "upstream key present; live probe skipped (" + err.Error() + ")"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "upstream key present; live probe skipped (" + err.Error() + ")"}
 	case code == 401 || code == 403:
 		return DoctorCheck{Name: name, Status: "ERROR", Message: "upstream rejected chat.api_key (HTTP " + http.StatusText(code) + ") against chat.endpoint"}
 	default:

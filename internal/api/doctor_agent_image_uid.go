@@ -93,7 +93,7 @@ func (h *DoctorHandlers) checkAgentImageUID(ctx context.Context) DoctorCheck {
 	}
 
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config directory, skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config directory, skipping"}
 	}
 
 	// Image resolution runs unconditionally — in production AND in tests —

@@ -2,6 +2,7 @@
 package registry
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path"
@@ -2121,8 +2122,28 @@ func LoadProjects(dir string) (map[string]*Project, error) {
 			return nil, fmt.Errorf("failed to read project file %s: %w", name, err)
 		}
 
+		// STRICT: a key matching no field is an error, not a silent drop.
+		//
+		// The hazard is measured and specific. This schema declares the SAME
+		// concept under two spellings — `allowed_tools` narrows one MCP
+		// server's tools (:1781), `allowedTools` is the agent permission
+		// (:1806) — so there is no convention to infer, only two facts to
+		// remember. Under lenient decoding, using the wrong one dropped the
+		// key and left an EMPTY allowlist, which the MCP gate reads as
+		// unrestricted. All 10 shipped configs decode strictly clean, so this
+		// costs nothing today.
+		//
+		// Note what strictness composes with here: a rejected file is SKIPPED,
+		// so a typo now removes the whole project rather than silently
+		// widening one role's permissions. That is the fail-CLOSED direction
+		// and is deliberate — a missing project fails its tasks loudly, while
+		// an over-permissive one fails nothing and says nothing.
+		//
+		// Design: https://docs.vornik.io
 		var project Project
-		if err := yaml.Unmarshal(data, &project); err != nil {
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		if err := dec.Decode(&project); err != nil {
 			// Skip files with syntax errors rather than failing the entire
 			// registry. A corrupted or hand-edited file should not prevent
 			// other projects from loading. The error is printed to stderr so

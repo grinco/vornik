@@ -174,7 +174,14 @@ if not allowdup:
             continue
         # Exact normalised match, or one title fully containing the other —
         # the restatement case ("fix X" vs "fix X in the parser").
-        if norm == want or (len(want) > 20 and (want in norm or norm in want)):
+        #
+        # BOTH sides must be substantial. Guarding only the new title lets a
+        # very SHORT existing one swallow anything containing it: the bullet
+        # `- [ ] **/doctor** ...` normalises to just "doctor", which is a
+        # substring of any title mentioning a doctor check. Hit for real on
+        # 2026-08-26, the day this script shipped, by the script's own author.
+        shorter = min(len(want), len(norm))
+        if norm == want or (shorter > 20 and (want in norm or norm in want)):
             state = {" ": "open", "?": "proposed", "~": "in-flight",
                      "x": "done", "!": "failed"}.get(marker, marker)
             sys.stderr.write(

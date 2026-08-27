@@ -69,10 +69,12 @@ import (
 	editionpkg "vornik.io/vornik/internal/version"
 
 	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/rs/zerolog"
 	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/api"
 	"vornik.io/vornik/internal/artifacts"
+	"vornik.io/vornik/internal/auditredact"
 	"vornik.io/vornik/internal/autonomy"
 	"vornik.io/vornik/internal/backlogfile"
 	"vornik.io/vornik/internal/budget"
@@ -650,14 +652,19 @@ type Container struct {
 	// the chat client wasn't available). Stored so wireComponentMetrics
 	// can attach a Prometheus sink after observability is initialised
 	// without rebuilding the runner or the executor that holds it.
-	judgeRunner          *hallucination.JudgeRunner
-	rateLimiter          ratelimit.ProjectLimiter
-	apiKeyLimiter        *ratelimit.APIKeyLimiter
-	rateLimitMetrics     *ratelimit.Metrics
-	dryRunMetrics        *api.DryRunMetrics
-	configMirrorMetrics  *configrecon.Metrics
-	agentWriteMetrics    *api.AgentAPIWriteMetrics
-	mcpGateMetrics       *api.MCPGateMetrics
+	judgeRunner         *hallucination.JudgeRunner
+	rateLimiter         ratelimit.ProjectLimiter
+	apiKeyLimiter       *ratelimit.APIKeyLimiter
+	rateLimitMetrics    *ratelimit.Metrics
+	dryRunMetrics       *api.DryRunMetrics
+	configMirrorMetrics *configrecon.Metrics
+	agentWriteMetrics   *api.AgentAPIWriteMetrics
+	mcpGateMetrics      *api.MCPGateMetrics
+	// auditRedactMetrics is the SHARED tool-audit census holder. One per
+	// container, injected into every auditredact.Repo — the rebuild below
+	// leaves two live instances and a per-instance counter would publish a
+	// denominator over half the rows. See auditredact.Metrics.
+	auditRedactMetrics   *auditredact.Metrics
 	agentWritesAllWarned bool
 	taintWriteMetrics    *api.TaintWriteMetrics
 	chainMetrics         *api.AuthChainMetrics

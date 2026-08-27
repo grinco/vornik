@@ -1988,6 +1988,20 @@ type ExecutionStepOutcome struct {
 	// is High (the STORED flag; Unknown does NOT set it — the write
 	// gate escalates Unknown only in enforce mode, D8). Migration 137.
 	RequiresReview bool `json:"requires_review,omitempty"`
+
+	// ContainerExitCode is the container's exit status for a step that ran
+	// one. NULL means the step never ran a container — NOT that it exited 0,
+	// which is a distinct and real value (a container can exit 0 and still
+	// fail the step on a verifier rejection). Migration 169.
+	//
+	// Exists because the residual failure bucket was not diagnosable: on
+	// 2026-08-26 `container_non_zero_exit` held 3,027 of 5,791 classified
+	// step failures and the exit code appeared in error_detail for 11 of
+	// them, reaching it only via the uncommon `container exited with code %d`
+	// fallback. A typed column so the bucket can be GROUPed — 137 (OOM) and
+	// 125 (podman refused to start) are different findings, and a regex over
+	// free text is the salvage-parsing we are trying to delete.
+	ContainerExitCode *int `json:"container_exit_code,omitempty"`
 }
 
 // TaintedStepRow is one untrusted-content step row returned by

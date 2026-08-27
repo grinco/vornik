@@ -1933,6 +1933,117 @@ print(resolved)
 PY
 }
 
+# canonical_tool_guess — recover the intended tool from a MALFORMED name.
+#
+# Measured 2026-08-26: 22 production calls carried a real tool name with
+# something welded on — an argument name (`file_writepath`), function-call
+# syntax (`file_read(path="…")`), or a chat-template token that leaked out of
+# the model's own scaffolding (`file_write<tool_call>path`,
+# `file_write</think>allowed_paths`). Also the transposed `write_file`.
+#
+# Echoes the canonical name when the malformed string unambiguously contains
+# one, else nothing. This does NOT widen what may execute — exec_tool still
+# gates on tool_call_permitted. It only lets the refusal say what was probably
+# meant, so the model corrects in one iteration instead of dying in four.
+canonical_tool_guess() {
+    local raw="$1" t
+    # Transposition: write_file -> file_write. Checked first because
+    # `write_file` does not carry a canonical prefix.
+    case "$raw" in
+        write_file|write_file*) printf 'file_write'; return ;;
+        read_file|read_file*)   printf 'file_read';  return ;;
+    esac
+    # Prefix match, longest first so file_write wins over file_read's shorter
+    # cousins and `file_edit` is not shadowed.
+    for t in file_write file_read file_edit run_shell memory_search query_api \
+             backlog_deposit skill_fetch tool_result_read list_apis; do
+        case "$raw" in
+            "$t") return ;;          # exact — not malformed, nothing to guess
+            "$t"*) printf '%s' "$t"; return ;;
+        esac
+    done
+}
+
+# unknown_tool_refusal — the message a model gets when it names a tool that
+# does not exist.
+#
+# It must be ACTIONABLE. A bare "ERROR: unknown tool: glob" gives the model
+# nothing to correct with, so it retries the same name or invents another until
+# the degenerate-loop detector kills the step — 9.1% of production tool calls
+# named a non-existent tool, and that cascade is what turned them into failed
+# executions rather than one wasted iteration.
+#
+# One line, deliberately: this rides in the context on every subsequent
+# iteration, so a paragraph would cost more than it buys.
+unknown_tool_refusal() {
+    local name="$1" guess avail
+    guess="$(canonical_tool_guess "$name")"
+    avail="$(jq -r '[.[].function.name] | join(", ")' "${TOOLS_FILE:-$WORKSPACE/.tools.json}" 2>/dev/null)"
+    if [ -n "$guess" ]; then
+        printf "ERROR: unknown tool: %s. Did you mean '%s'? Available: %s" "$name" "$guess" "${avail:-<none advertised>}"
+    else
+        printf "ERROR: unknown tool: %s. Available: %s" "$name" "${avail:-<none advertised>}"
+    fi
+}
+
+# truncate_tool_output_for_audit — shorten a tool result to the audit budget
+# WITHOUT destroying its structure.
+#
+# The cut used to be `printf '%.4096s'`, a blind slice. For a JSON result that
+# produces INVALID JSON, and internal/verifier's classifyAuditEntry parses the
+# row to read the scraper's status / final_url / block_reason convention. The
+# unmarshal failed, the entry fell through to a marker scan that found nothing,
+# and it returned (zero,false) — contributing NOTHING to the denominator. A
+# successful fetch became invisible rather than counted, and
+# `min_successful_fetches` was evaluated against evidence it could not see.
+# Measured on production rows: 2,651 of 4,481 web_fetch entries unparseable.
+#
+# So: if the result is a JSON OBJECT, shorten its LARGEST STRING FIELD and
+# re-emit valid JSON. Schema-agnostic on purpose — we do not name `content` or
+# `body`, because the field that blew the budget IS the large one, and a rule
+# that shortens whichever is largest is correct for a tool this script has
+# never heard of. Every small field (status, final_url, block_reason, and
+# whatever a future tool calls its metadata) survives untouched.
+#
+# Anything that is not a JSON object keeps the blind cut. Nothing parses those.
+#
+# BUDGET has headroom below the daemon's own 4096 cap
+# (internal/api/tool_audit_handlers.go). That cap is a blind slice and remains
+# one, as a backstop against a future path streaming larger blobs — so a
+# structurally-truncated row must never reach it, or the careful truncation
+# would be cut right back into invalid JSON.
+#
+# See https://docs.vornik.io §3b.
+AUDIT_OUTPUT_BUDGET="${VORNIK_AUDIT_OUTPUT_BUDGET:-3900}"
+
+truncate_tool_output_for_audit() {
+    local body="$1" budget="${AUDIT_OUTPUT_BUDGET:-3900}" out
+    if [ "${#body}" -le "$budget" ]; then
+        printf '%s' "$body"
+        return
+    fi
+    # jq exits non-zero for non-object input, which is the fallback signal.
+    out=$(printf '%s' "$body" | jq -c --argjson budget "$budget" '
+        if type == "object" then
+          ( [ to_entries[] | select(.value | type == "string") ]
+            | sort_by(.value | length) | reverse | .[0].key ) as $k
+          | if $k == null then . else
+              ( (. | del(.[$k]) | tojson | length) ) as $rest
+              | ( $budget - $rest - 16 ) as $room
+              | if $room > 0
+                then .[$k] = (.[$k][0:$room] + "…")
+                else .[$k] = "…" end
+            end
+        else empty end' 2>/dev/null) || out=""
+    if [ -n "$out" ] && [ "${#out}" -le "$budget" ]; then
+        printf '%s' "$out"
+        return
+    fi
+    # Not a JSON object, or the structural attempt could not fit — blind cut,
+    # exactly as before.
+    printf '%.*s' "$budget" "$body"
+}
+
 # Execute a single tool call. Prints the result string.
 exec_tool() {
     local name="$1" arguments="$2"
@@ -1943,7 +2054,11 @@ exec_tool() {
         if is_builtin_tool "$name"; then
             echo "ERROR: tool '$name' is not allowed for this role"
         else
-            echo "ERROR: unknown tool: $name"
+            # Actionable: name the catalogue, and the likely intent when the
+            # name is a malformed variant of a real tool. See
+            # unknown_tool_refusal for the measurement that forced this.
+            unknown_tool_refusal "$name"
+            echo
         fi
         return
     fi
@@ -3975,7 +4090,7 @@ ${previous_result}
             local tc_audit_id="ta_${tc_start_ms}_${tc_id}"
             local tc_audit_file="$WORKSPACE/.tool_audit/${tc_audit_id}.json"
             local tc_output_truncated
-            tc_output_truncated=$(printf '%.4096s' "$tool_result")
+            tc_output_truncated=$(truncate_tool_output_for_audit "$tool_result")
             jq -nc \
                 --arg id "$tc_audit_id" \
                 --arg name "$tc_name" \

@@ -33,7 +33,7 @@ func writeCRLFTestTree(t *testing.T) (dir, taintedPath, cleanPath string) {
 func TestCheckConfigCRLF_NoConfigDirOK(t *testing.T) {
 	h := &DoctorHandlers{}
 	got := h.checkConfigCRLF(false)
-	if got.Status != "OK" {
+	if got.Status != "SKIPPED" {
 		t.Errorf("status = %q, want OK", got.Status)
 	}
 }

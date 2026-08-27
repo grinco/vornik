@@ -227,8 +227,29 @@ func refineAgentFailureOutcome(detail string) (stepoutcome.Outcome, string) {
 		// Reached only after the degenerate-loop case above has claimed the
 		// messages that merely mention the window.
 		return stepoutcome.Failed, stepoutcome.ClassContextOverflow
+
+	// --- wave-2 arms. APPENDED, never interleaved: the four arms above are
+	// ordered against two documented misreadings and that ordering is pinned
+	// by test. A message matching both an old and a new arm takes the old one,
+	// which is correct — the old arms are the more specific reading (a
+	// provider error that mentions the context window IS a context overflow).
+	case strings.Contains(lowered, "llm call failed"):
+		return stepoutcome.Failed, stepoutcome.ClassLLMCallFailed
+	case strings.Contains(lowered, "missing prerequisite"):
+		return stepoutcome.Failed, stepoutcome.ClassMissingPrerequisite
+	// `signal: killed` BEFORE `podman wait failed`: the killed rows are a
+	// strict subset of the wait rows (the literal contains both), so the
+	// generic arm would otherwise swallow every kill.
+	case strings.Contains(lowered, "signal: killed"):
+		return stepoutcome.Failed, stepoutcome.ClassContainerKilled
+	case strings.Contains(lowered, "podman wait failed"):
+		return stepoutcome.Failed, stepoutcome.ClassContainerWaitFailed
+	case strings.Contains(lowered, "failed to start container"),
+		strings.Contains(lowered, "podman run failed"):
+		return stepoutcome.Failed, stepoutcome.ClassContainerStartFailed
+
 	default:
-		return stepoutcome.Failed, stepoutcome.ClassContainerNonZeroExit
+		return stepoutcome.Failed, stepoutcome.ClassUnclassified
 	}
 }
 
@@ -248,10 +269,10 @@ func refineAgentFailureOutcome(detail string) (stepoutcome.Outcome, string) {
 //
 // A genuine timeout — nothing named — keeps the timeout pair, because that is
 // the one case a timeout raise legitimately addresses. refineAgentFailureOutcome
-// signals "nothing recognised" with the generic ClassContainerNonZeroExit
+// signals "nothing recognised" with the ClassUnclassified
 // fallback, which is what makes this distinguishable.
 func timeoutOutcomeAndClass(err error) (string, string) {
-	if refined, refinedClass := refineAgentFailureOutcome(errorBeforeLogTail(err.Error())); refinedClass != stepoutcome.ClassContainerNonZeroExit {
+	if refined, refinedClass := refineAgentFailureOutcome(errorBeforeLogTail(err.Error())); refinedClass != stepoutcome.ClassUnclassified {
 		return string(refined), refinedClass
 	}
 	return string(stepoutcome.Timeout), stepoutcome.ClassContextTimeout
@@ -436,6 +457,10 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 			errDetail = promptTokenBudgetDetail
 		}
 		durMS := time.Since(stepStartedAt).Milliseconds()
+		// Carry the container's exit status onto the row. nil when the step
+		// did not fail in a container, which stays NULL rather than claiming
+		// a clean exit — see migration 169 and containerExitCodeFromError.
+		agentStamp.ContainerExitCode = containerExitCodeFromError(err)
 		e.recordStepOutcomeWithSignalsAndBudget(ctx, task, execution, stepID, step.Role, effectiveModel, outcome, errClass, errDetail, nil, &durMS, hallucinationSignalsBlob, agentStamp, taintStampVal)
 	}()
 
@@ -1124,7 +1149,7 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 		if rmErr := e.runtime.RemoveContainer(context.Background(), containerID, true); rmErr != nil {
 			e.logger.Warn().Err(rmErr).Str("container_id", containerID).Msg("failed to remove container after agent failure")
 		}
-		return "", nil, errors.New(agentError)
+		return "", nil, newContainerExitError(exitCode, agentError)
 	}
 
 	// Verify file claims (modified_files, outputArtifacts paths,
@@ -2716,6 +2741,56 @@ func truncateDetailPreservingEnds(s string, limit int) string {
 // injected on the previous attempt. Classifiers therefore cut here first, via
 // errorBeforeLogTail, so diagnostics can never steer control flow.
 const containerLogDelimiter = "\n\n--- Container Log ("
+
+// containerExitError carries a container's exit status alongside the failure
+// message, so the step-outcome row can record the code instead of leaving the
+// residual bucket undiagnosable.
+//
+// Measured 2026-08-26: `container_non_zero_exit` was 52.3% of classified step
+// failures and only 0.4% of those rows held an exit code, because the code
+// reached error_detail only through the uncommon `container exited with code
+// %d` fallback. The value was known here all along and simply never travelled.
+//
+// A typed error rather than an extra return value: the failure crosses several
+// wrappers before it is recorded, and this is the shape the codebase already
+// uses for the same problem — ClassifyExecutionFailure lifts a
+// `FailureClass() string` off the error the same way.
+//
+// Error() returns the message VERBATIM. Both classifiers on this path
+// (ClassifyExecutionFailure and refineAgentFailureOutcome) match on message
+// text, so decorating it here would silently reclassify every container
+// failure.
+type containerExitError struct {
+	exitCode int
+	msg      string
+}
+
+func newContainerExitError(exitCode int, msg string) *containerExitError {
+	return &containerExitError{exitCode: exitCode, msg: msg}
+}
+
+func (e *containerExitError) Error() string { return e.msg }
+
+// ContainerExitCode reports the container's exit status. Zero is a real value
+// — a container can exit 0 and still fail the step on a verifier rejection —
+// so callers must distinguish it from "no container ran", which is the absence
+// of this interface, not a zero from it.
+func (e *containerExitError) ContainerExitCode() int { return e.exitCode }
+
+// containerExitCodeFromError lifts a container exit status out of an error
+// chain, or nil when the error did not come from a container. nil means "no
+// container ran" and is NOT interchangeable with a zero code.
+func containerExitCodeFromError(err error) *int {
+	if err == nil {
+		return nil
+	}
+	var coded interface{ ContainerExitCode() int }
+	if errors.As(err, &coded) {
+		code := coded.ContainerExitCode()
+		return &code
+	}
+	return nil
+}
 
 // errorBeforeLogTail returns msg with any appended container-log section
 // removed, leaving only the daemon's own message.

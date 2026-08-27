@@ -26,7 +26,7 @@ import (
 func (h *DoctorHandlers) checkSchemaGateDrift() DoctorCheck {
 	const name = "schema_gate_drift"
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config directory configured, skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config directory configured, skipping"}
 	}
 
 	// Stage without activating so we can capture stripInvalidProjects'

@@ -74,7 +74,7 @@ func TestWorkflowShapeIssue_Nil(t *testing.T) {
 func TestCheckWorkflowMdShape_NoConfigDir(t *testing.T) {
 	h := &DoctorHandlers{}
 	check := h.checkWorkflowMdShape()
-	if check.Status != "OK" {
+	if check.Status != "SKIPPED" {
 		t.Errorf("status = %q, want OK skip", check.Status)
 	}
 }

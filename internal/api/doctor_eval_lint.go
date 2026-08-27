@@ -59,7 +59,7 @@ func (h *DoctorHandlers) checkEvalSuiteLint() DoctorCheck {
 		}
 	}
 	if evalsDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no eval suites directory found, skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no eval suites directory found, skipping"}
 	}
 
 	entries, err := os.ReadDir(evalsDir)

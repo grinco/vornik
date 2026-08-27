@@ -32,53 +32,15 @@ func TestLookup_UnknownClassReturnsFallback(t *testing.T) {
 	assert.NotEmpty(t, got.Suggestions)
 }
 
-// TestPlaybookCoversAllFailureClasses — every TaskFailureClass*
-// constant in persistence/models.go should have a corpus entry.
-// Adding a new class without a corresponding playbook entry would
-// silently fall through to the "unknown class" fallback, which is
-// fine UX-wise but defeats the purpose of the playbook. Locking
-// this in tests forces the author to write the entry.
-func TestPlaybookCoversAllFailureClasses(t *testing.T) {
-	classes := []string{
-		persistence.TaskFailureClassLLMError,
-		persistence.TaskFailureClassTimeout,
-		persistence.TaskFailureClassToolError,
-		persistence.TaskFailureClassInvalidOutput,
-		persistence.TaskFailureClassMergeFailed,
-		persistence.TaskFailureClassGateFailed,
-		persistence.TaskFailureClassBudgetBlocked,
-		persistence.TaskFailureClassRateLimited,
-		persistence.TaskFailureClassWorkflowRole,
-		persistence.TaskFailureClassWorkflowCfg,
-		persistence.TaskFailureClassOrphaned,
-		persistence.TaskFailureClassCancelled,
-		persistence.TaskFailureClassRuntimeError,
-		persistence.TaskFailureClassUnknown,
-		persistence.TaskFailureClassLeaseExpired,
-		persistence.TaskFailureClassWorkflowDrift,
-		persistence.TaskFailureClassStuckExecution,
-		persistence.TaskFailureClassToolIterationLimit,
-		persistence.TaskFailureClassSecretLeak,
-	}
-	for _, c := range classes {
-		t.Run(c, func(t *testing.T) {
-			entry, ok := corpus[c]
-			if !ok {
-				t.Fatalf("playbook corpus missing entry for failure class %q", c)
-			}
-			assert.Equal(t, c, entry.Class, "entry.Class must match its key")
-			assert.NotEmpty(t, strings.TrimSpace(entry.Cause), "Cause is required")
-			assert.NotEmpty(t, entry.Suggestions, "at least one Suggestion required")
-			// 2026.6.0 SaaS-readiness: every shipped class must
-			// carry a HumanMessage so the end-user-facing UI
-			// has a non-jargon explanation. Falling back to Cause
-			// works but is operator-tone, which is what we're
-			// avoiding for the SaaS surface.
-			assert.NotEmpty(t, strings.TrimSpace(entry.HumanMessage),
-				"HumanMessage is required for the end-user-facing failed-task surface; class %q must have a non-jargon one-line explanation", c)
-		})
-	}
-}
+// The hand-kept TestPlaybookCoversAllFailureClasses used to live here. It
+// listed its classes in a Go slice and therefore mirrored the registry it was
+// meant to protect — it named 19 of 23 task classes and knew nothing of the 19
+// step classes at all, which is how the fleet's largest failure class came to
+// answer "Unrecognised failure class" (Finding B, 2026-08-26).
+//
+// Replaced by vocabulary_test.go, which derives both vocabularies from the
+// declarations with go/ast. Deleted rather than extended: extending it would
+// have reproduced the defect.
 
 // TestHumanFriendly_PrefersHumanMessageOverCause anchors the
 // fallback contract: HumanMessage wins when set, Cause is the

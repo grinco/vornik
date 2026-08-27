@@ -51,8 +51,8 @@ steps:
     type: "agent"
     role: "coder"
     on_success: "review"
-    retryPolicy:
-      maxRetries: 4
+    retry:
+      max_attempts: 4
   review:
     type: "agent"
     role: "reviewer"

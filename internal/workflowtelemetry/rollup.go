@@ -71,6 +71,18 @@ type Rollup struct {
 	// classes that might warrant a structural change (e.g. adding a
 	// verifier step before a step that keeps emitting schema_violation).
 	TopFailureClasses []FailureClassCount `json:"top_failure_classes"`
+
+	// ClassifiedStepFailures is the TOTAL count of step outcomes carrying an
+	// error class in the window, and UnclassifiedStepFailures the subset
+	// carrying `unclassified`. Both are queried without a LIMIT deliberately:
+	// TopFailureClasses is capped at 10, so summing it as a denominator would
+	// silently under-report on any workflow with more distinct classes — the
+	// truncated-coverage defect this pair exists to expose.
+	//
+	// Finding D, docs/audits/2026-08-26-silent-controls-audit.md: a control
+	// with a coverage boundary must publish a denominator.
+	ClassifiedStepFailures   int `json:"classified_step_failures"`
+	UnclassifiedStepFailures int `json:"unclassified_step_failures"`
 }
 
 // StepRollup carries per-step metrics aggregated across every run
@@ -163,6 +175,9 @@ func (s *Service) ForWorkflow(ctx context.Context, workflowID string, since time
 	}
 
 	// 4. Top failure classes across all steps.
+	if err := s.fillUnclassifiedShare(ctx, out, workflowID, since); err != nil {
+		return nil, err
+	}
 	if err := s.fillTopFailureClasses(ctx, out, workflowID, since); err != nil {
 		return nil, fmt.Errorf("failure classes: %w", err)
 	}
@@ -376,6 +391,20 @@ func (s *Service) fillStepRollups(ctx context.Context, out *Rollup, workflowID s
 		}
 	}
 	return eRows.Err()
+}
+
+// fillUnclassifiedShare populates the numerator and denominator behind the
+// residual failure bucket. Unlimited by design — see the field comments.
+func (s *Service) fillUnclassifiedShare(ctx context.Context, out *Rollup, workflowID string, since time.Time) error {
+	return s.db.QueryRowContext(ctx, `
+		SELECT count(*) FILTER (WHERE so.error_class = 'unclassified'),
+		       count(*)
+		FROM execution_step_outcomes so
+		JOIN executions e ON e.id = so.execution_id
+		WHERE e.workflow_id = $1
+		  AND e.created_at >= $2
+		  AND so.error_class != ''`, workflowID, since,
+	).Scan(&out.UnclassifiedStepFailures, &out.ClassifiedStepFailures)
 }
 
 // fillTopFailureClasses populates Rollup.TopFailureClasses — the

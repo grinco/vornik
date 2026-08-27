@@ -84,6 +84,16 @@ type toolAuditStreamRequest struct {
 // startup. The handler intentionally does no further authorization
 // — anyone with the key can write rows. That's the same trust
 // boundary the chat-completions proxy uses.
+//
+// ORDERING: rows written here are counted on the tool-audit coverage census
+// (vornik_tool_audit_rows_total), whose collectors are registered in
+// initHTTPServer's pass-2 block — after the observability registry exists. That
+// is safe TODAY only because this handler is HTTP-fed and the listener starts
+// after that phase. A writer added on a NON-HTTP path (a migration, a batch
+// CLI, a background consumer) could reach the seam earlier; its rows are still
+// counted and flushed at Attach, and the daemon WARNs naming pre_attach_rows so
+// the broken assumption is visible rather than papered over. See
+// https://docs.vornik.io D3.
 func (s *Server) IngestToolAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -153,10 +163,23 @@ func (s *Server) IngestToolAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Truncate output to keep DB rows bounded — the agent's
-	// entrypoint already trims to ~4096 chars but we apply a
-	// defensive cap here too in case a future agent path streams
-	// larger blobs.
+	// Truncate output to keep DB rows bounded. BACKSTOP ONLY — the agent
+	// truncates first, and since 2026-08-26 it does so STRUCTURALLY
+	// (truncate_tool_output_for_audit in entrypoint.sh): a JSON result has its
+	// largest string field shortened and is re-emitted as valid JSON, so the
+	// scraper envelope the verifier parses survives.
+	//
+	// This cut is a BLIND slice and must therefore never fire on such a row —
+	// it would cut valid JSON straight back into invalid JSON and silently undo
+	// the fix. The agent targets a budget with headroom (3900) precisely so it
+	// cannot reach this ceiling. Raising the agent's budget to 4096 would
+	// reintroduce the bug at the boundary.
+	//
+	// Kept because its stated purpose still holds: a future agent path that
+	// streams a larger blob must not write an unbounded row. If that path
+	// appears, make this structural too rather than widening the cap.
+	//
+	// See https://docs.vornik.io §3b.
 	out := req.ToolOutput
 	if len(out) > 4096 {
 		out = out[:4096] + "…"

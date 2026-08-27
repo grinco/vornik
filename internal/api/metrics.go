@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"vornik.io/vornik/internal/outputguard"
 )
 
 // APIMetrics holds Prometheus metrics for the HTTP API.
@@ -25,6 +27,25 @@ type APIMetrics struct {
 	// the legacy header / fallback / anonymous paths — drives
 	// the per-project-API-key migration backlog.
 	CostAttributionTotal *prometheus.CounterVec
+
+	// MCPResultGuardFindingsTotal counts outputguard findings on MCP tool
+	// RESULTS, labelled by tool, severity and kind.
+	//
+	// Phase 1 of the ingress scan is detect-only, so this counter IS the
+	// deliverable: it is the soak signal that decides whether phase 2 redacts,
+	// and per `kind` rather than globally. A finding here is not yet an
+	// incident — it is evidence about the false-positive rate of a rule class
+	// on real third-party content.
+	MCPResultGuardFindingsTotal *prometheus.CounterVec
+
+	// MCPResultGuardScanSeconds is the per-call scan latency.
+	//
+	// Observed on EVERY scan, including clean ones: a no-finding scan still
+	// runs the full rule set, and the latency floor is the number that
+	// confirms or refutes the design's dev-host microbenchmark (~3 MB/s,
+	// ~22ms for a 64KiB body). Putting this scan on the MCP path is the
+	// decision the histogram exists to validate.
+	MCPResultGuardScanSeconds *prometheus.HistogramVec
 
 	// ExecutionsStuck is the current count of executions detected
 	// stuck in RUNNING/PENDING past the watchdog threshold, labelled
@@ -102,6 +123,19 @@ func NewAPIMetrics(reg *prometheus.Registry) *APIMetrics {
 			Name:      "cost_attribution_total",
 			Help:      "External-API cost rows grouped by attribution source. source labels: key-bound (DB-backed key, trustworthy), header (legacy X-Vornik-Project-ID — client-supplied, not trustworthy), fallback (daemon-wide pin), anonymous (_external sentinel). The key-bound fraction is the migration KPI — drive it to 100% to retire the legacy paths.",
 		}, []string{"source"}),
+		MCPResultGuardFindingsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "vornik",
+			Subsystem: "api",
+			Name:      "mcp_result_guard_findings_total",
+			Help:      "outputguard findings on MCP tool RESULTS (ingress), by tool, severity and kind. Phase 1 is DETECT-ONLY — a finding here did not alter the body the agent received. This is the soak signal for the phase-2 redaction decision, which is taken per kind: a class with a high false-positive rate on real third-party content must not be flipped to redact. Zero rows for a busy deployment means the scan is not wired, not that nothing was found.",
+		}, []string{"tool", "severity", "kind"}),
+		MCPResultGuardScanSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "vornik",
+			Subsystem: "api",
+			Name:      "mcp_result_guard_scan_seconds",
+			Help:      "Per-call outputguard scan latency over MCP tool results, observed on every scan including clean ones. The scan is linear in body size at roughly 3 MB/s (dev-host benchmark 2026-08-26: ~22ms for 64KiB), and this histogram is what turns that microbenchmark into a real distribution before the scan becomes load-bearing.",
+			Buckets:   []float64{0.0005, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 1},
+		}, []string{"tool"}),
 		ExecutionsStuck: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: "vornik",
 			Subsystem: "",
@@ -140,7 +174,7 @@ func NewAPIMetrics(reg *prometheus.Registry) *APIMetrics {
 			Help:      "backlog-deposit endpoint outcomes, by project and outcome (accepted/duplicate/secret/cap/cooldown/invalid).",
 		}, []string{"project", "outcome"}),
 	}
-	reg.MustRegister(m.RequestsTotal, m.RequestDuration, m.ActiveRequests, m.CostAttributionTotal, m.ExecutionsStuck, m.ApprovalsTotal, m.WebhookRelayReceivedTotal, m.NodeHeartbeatReceivedTotal, m.SupportReportGeneratedTotal, m.SupportReportBytesTotal, m.BacklogDepositsTotal)
+	reg.MustRegister(m.RequestsTotal, m.RequestDuration, m.ActiveRequests, m.CostAttributionTotal, m.ExecutionsStuck, m.ApprovalsTotal, m.WebhookRelayReceivedTotal, m.NodeHeartbeatReceivedTotal, m.SupportReportGeneratedTotal, m.SupportReportBytesTotal, m.BacklogDepositsTotal, m.MCPResultGuardFindingsTotal, m.MCPResultGuardScanSeconds)
 	return m
 }
 
@@ -311,4 +345,31 @@ func stripPrefix(s, prefix string) (string, bool) {
 		return s[len(prefix):], true
 	}
 	return "", false
+}
+
+// RecordMCPResultGuard records one ingress scan of an MCP tool result.
+//
+// Nil-safe: the metrics registry is optional and the scan must still run (and
+// still be harmless) without it.
+//
+// Every scan contributes a duration; only findings contribute counts. That
+// asymmetry is deliberate — the latency question ("what does this cost on the
+// real fleet?") needs the clean scans, and the false-positive question ("should
+// phase 2 redact this kind?") needs only the findings.
+func (m *APIMetrics) RecordMCPResultGuard(tool string, rep outputguard.Report, d time.Duration) {
+	if m == nil {
+		return
+	}
+	if tool == "" {
+		tool = "unknown"
+	}
+	if m.MCPResultGuardScanSeconds != nil {
+		m.MCPResultGuardScanSeconds.WithLabelValues(tool).Observe(d.Seconds())
+	}
+	if m.MCPResultGuardFindingsTotal == nil {
+		return
+	}
+	for _, f := range rep.Findings {
+		m.MCPResultGuardFindingsTotal.WithLabelValues(tool, string(f.Severity), string(f.Kind)).Inc()
+	}
 }

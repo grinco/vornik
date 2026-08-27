@@ -117,8 +117,10 @@ func workflowStepItemSchema() AssetSchema {
 				Title:    "Retry",
 				Advanced: true,
 				Fields: []Field{
-					{Path: "retryPolicy.maxRetries", Label: "Max retries", Kind: KindInt},
-					{Path: "retryPolicy.backoff", Label: "Backoff", Kind: KindString, Help: `e.g. "5s", "exponential".`},
+					{Path: "retry.on", Label: "Retry on", Kind: KindStringList, Help: `Step error classes worth retrying, e.g. "llm_call_failed". Empty keeps the built-in predicate; entries WIDEN it, never narrow.`},
+					{Path: "retry.max_attempts", Label: "Max attempts", Kind: KindInt, Help: `0 inherits the executor default.`},
+					{Path: "retry.backoff", Label: "Backoff", Kind: KindString, Help: `e.g. "5s", "exponential". Empty inherits the default.`},
+					{Path: "retry.initial_delay", Label: "Initial delay", Kind: KindString, Help: `e.g. "30s". Empty inherits the default.`},
 				},
 			},
 			{

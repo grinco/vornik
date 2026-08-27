@@ -73,13 +73,13 @@ func TestRefineAgentFailureOutcome(t *testing.T) {
 			name:      "unrecognised keeps today's behaviour",
 			detail:    "agent reported FAILED status: some novel failure nobody has classified",
 			wantOut:   stepoutcome.Failed,
-			wantClass: stepoutcome.ClassContainerNonZeroExit,
+			wantClass: stepoutcome.ClassUnclassified,
 		},
 		{
 			name:      "empty detail keeps today's behaviour",
 			detail:    "",
 			wantOut:   stepoutcome.Failed,
-			wantClass: stepoutcome.ClassContainerNonZeroExit,
+			wantClass: stepoutcome.ClassUnclassified,
 		},
 	}
 

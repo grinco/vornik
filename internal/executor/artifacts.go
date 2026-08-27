@@ -634,6 +634,10 @@ type agentBudgetStamp struct {
 	EffectiveToolBudget *int   // nil → NULL
 	ToolCallsUsed       *int   // nil → NULL
 	AgentImageID        string // empty → NULL; immutable runtime-observed ID
+	// ContainerExitCode is the container's exit status (migration 169).
+	// nil → NULL, meaning no container ran — which is NOT the same as a
+	// container that exited 0, so this is never defaulted.
+	ContainerExitCode *int
 }
 
 // taintStamp carries the three migration-137 taint-lineage columns, populated
@@ -738,6 +742,10 @@ func (e *Executor) recordStepOutcomeWithSignalsAndBudget(
 		EffectiveToolBudget: budget.EffectiveToolBudget,
 		ToolCallsUsed:       budget.ToolCallsUsed,
 		AgentImageID:        budget.AgentImageID,
+		// Migration-169: the container's exit status, so the residual
+		// failure bucket can be grouped by exit code instead of regexed
+		// out of error_detail.
+		ContainerExitCode: budget.ContainerExitCode,
 		// Migration-137 taint-lineage stamp — populated for agent steps only;
 		// non-agent steps leave these false/NULL via a zero taintStamp (§5.1).
 		UntrustedContentUsed: taint.UntrustedContentUsed,

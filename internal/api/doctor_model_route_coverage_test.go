@@ -130,7 +130,7 @@ func TestCheckModelRouteCoverage_Integration(t *testing.T) {
 func TestCheckModelRouteCoverage_NoRoutesSkips(t *testing.T) {
 	h := &DoctorHandlers{configDir: "testdata"}
 	got := h.checkModelRouteCoverage()
-	if got.Status != "OK" {
+	if got.Status != "SKIPPED" {
 		t.Errorf("status = %q, want OK (skip); msg=%q", got.Status, got.Message)
 	}
 }

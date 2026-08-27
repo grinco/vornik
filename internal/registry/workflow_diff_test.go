@@ -15,7 +15,7 @@ func baseWF() *Workflow {
 			"scout": {
 				Type: "agent", Role: "researcher", Prompt: "go",
 				OnSuccess: "write", Timeout: "30m",
-				RetryPolicy: WorkflowRetryPolicy{MaxRetries: 2, Backoff: "1m"},
+				Retry: WorkflowStepRetry{MaxAttempts: 2, Backoff: "1m"},
 			},
 		},
 	}
@@ -41,7 +41,7 @@ func TestWorkflowChangeIsStructural_TuningFields(t *testing.T) {
 		func(w *Workflow) { w.MaxIterations = 40 },
 		func(w *Workflow) {
 			st := w.Steps["scout"]
-			st.RetryPolicy = WorkflowRetryPolicy{MaxRetries: 9, Backoff: "5m"}
+			st.Retry = WorkflowStepRetry{MaxAttempts: 9, Backoff: "5m"}
 			w.Steps["scout"] = st
 		},
 	} {

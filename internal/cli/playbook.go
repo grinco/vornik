@@ -16,7 +16,13 @@ import (
 // playbookEntryCLI mirrors playbook.Entry. Kept private so the daemon
 // owns the wire shape.
 type playbookEntryCLI struct {
-	Class       string   `json:"class"`
+	Class string `json:"class"`
+	// Scope names which vocabulary Class belongs to — "task" for a whole
+	// task's failure class, "step" for one step of one execution. Added
+	// 2026-08-26 when the step vocabulary joined the corpus: without it
+	// `playbook list` is 42 rows with no indication of which lifetime each
+	// describes. Optional on the wire so an older daemon still renders.
+	Scope       string   `json:"scope,omitempty"`
 	Cause       string   `json:"cause"`
 	Suggestions []string `json:"suggestions"`
 	References  []string `json:"references"`
@@ -64,6 +70,15 @@ func init() {
 	rootCmd.AddCommand(playbookCmd)
 }
 
+// playbookListRow renders one tab-separated index row. Split out so the
+// column contract is testable without a daemon: the scope column sits between
+// class and cause, and the cause is trimmed to its first line because the
+// index view is a table and the full text belongs to `playbook show`.
+func playbookListRow(e playbookEntryCLI) string {
+	cause := strings.SplitN(e.Cause, "\n", 2)[0]
+	return fmt.Sprintf("%s\t%s\t%s", e.Class, e.Scope, cause)
+}
+
 func runPlaybookList(cmd *cobra.Command, args []string) error {
 	client := ClientFromEnv()
 	resp, err := client.Get("/api/v1/playbook")
@@ -90,12 +105,9 @@ func runPlaybookList(cmd *cobra.Command, args []string) error {
 	}
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "CLASS\tCAUSE")
+	_, _ = fmt.Fprintln(tw, "CLASS\tSCOPE\tCAUSE")
 	for _, e := range list.Entries {
-		// Trim cause to one line for the index view; the full text
-		// is available via `playbook show`.
-		cause := strings.SplitN(e.Cause, "\n", 2)[0]
-		_, _ = fmt.Fprintf(tw, "%s\t%s\n", e.Class, cause)
+		_, _ = fmt.Fprintln(tw, playbookListRow(e))
 	}
 	_ = tw.Flush()
 	fmt.Println("\nUse `vornikctl playbook show <CLASS>` for the full entry.")

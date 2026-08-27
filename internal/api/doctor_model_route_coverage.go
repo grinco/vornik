@@ -34,10 +34,10 @@ type modelRef struct {
 func (h *DoctorHandlers) checkModelRouteCoverage() DoctorCheck {
 	name := "model_route_coverage"
 	if h.configDir == "" {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config dir; skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config dir; skipping"}
 	}
 	if len(h.chatRoutePrefixes) == 0 {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no chat model_route prefixes configured; skipping (router not in use)"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no chat model_route prefixes configured; skipping (router not in use)"}
 	}
 
 	reg := registry.New()

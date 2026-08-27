@@ -177,12 +177,12 @@ func TestRecordStepOutcome(t *testing.T) {
 		repo := newStubStepOutcomeRepo()
 		e := &Executor{outcomeRepo: repo, logger: zerolog.Nop()}
 		e.recordStepOutcome(context.Background(), task, exec, "step_0", "coder", "qwen-coder",
-			string(stepoutcome.Failed), stepoutcome.ClassContainerNonZeroExit, "boom", nil, nil)
+			string(stepoutcome.Failed), stepoutcome.ClassUnclassified, "boom", nil, nil)
 
 		require.Len(t, repo.rows, 1)
 		row := repo.rows[0]
 		assert.Equal(t, string(stepoutcome.Failed), row.Outcome)
-		assert.Equal(t, stepoutcome.ClassContainerNonZeroExit, row.ErrorClass)
+		assert.Equal(t, stepoutcome.ClassUnclassified, row.ErrorClass)
 		assert.Equal(t, "boom", row.ErrorDetail)
 		assert.NotNil(t, row.FinalizedAt)
 	})
@@ -671,7 +671,7 @@ func TestStepOutcome_PublishesOutcomeRecordedLiveEvent(t *testing.T) {
 
 		e.recordStepOutcome(context.Background(), task, exec, "research_infra_retry1",
 			"researcher", "m", string(stepoutcome.Failed),
-			stepoutcome.ClassContainerNonZeroExit, "boom", nil, nil)
+			stepoutcome.ClassUnclassified, "boom", nil, nil)
 
 		got := drainOutcomes(ch)
 		require.Len(t, got, 1)

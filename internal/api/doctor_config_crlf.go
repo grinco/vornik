@@ -43,7 +43,7 @@ func (h *DoctorHandlers) checkConfigCRLF(fix bool) DoctorCheck {
 
 	files := h.collectCRLFScanFiles()
 	if len(files) == 0 {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no config files to scan (config dir/path not wired)"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no config files to scan (config dir/path not wired)"}
 	}
 
 	var tainted []string

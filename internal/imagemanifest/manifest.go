@@ -133,6 +133,23 @@ var baseImages = []Image{
 // Assembled from baseImages so the enterprise file can append without either
 // side needing a build tag — the edition boundary is which FILES ship, which is
 // the boundary the export already enforces.
+//
+// WHY NOT BUILD TAGS. A `//go:build enterprise` pair would give the same file
+// boundary AND catch a mis-filed image at COMPILE time rather than at export
+// time, which is earlier. It was not chosen because it needs a second build
+// configuration and the discipline to keep the tags mutually exclusive, while
+// the export is already the enforcement point and already prunes by file. That
+// is a real trade, not an obvious win: if EE ever builds CE artifacts directly
+// (without the export), revisit it, because then nothing would catch a mis-file
+// until export time.
+//
+// EXACTLY ONE init() MAY EXIST IN THIS PACKAGE, and it is the append in
+// manifest_enterprise.go. Go does not specify init() ordering within a package
+// beyond the order files are presented to the compiler, so a SECOND init() that
+// READS `manifest` could observe it before or after the enterprise rows are
+// appended — a silent, build-dependent correctness bug. If this package ever
+// needs another init(), give `manifest` an explicit accessor that assembles on
+// first use instead.
 var manifest = append([]Image(nil), baseImages...)
 
 // excluded lists Containerfiles IN THIS TREE that are deliberately not built

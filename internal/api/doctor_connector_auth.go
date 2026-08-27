@@ -69,7 +69,7 @@ type connectorGrantState struct {
 func (h *DoctorHandlers) checkConnectorAuth(ctx context.Context) DoctorCheck {
 	const name = "connector_auth"
 	if h == nil || h.db == nil {
-		return DoctorCheck{Name: name, Status: "OK", Message: "no database; skipping"}
+		return DoctorCheck{Name: name, Status: "SKIPPED", Message: "no database; skipping"}
 	}
 
 	grants, err := h.queryConnectorGrants(ctx)

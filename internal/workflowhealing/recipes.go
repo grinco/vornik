@@ -120,12 +120,12 @@ func RetryBudgetRecipe(baseline *registry.Workflow, stepID string, newBudget int
 	if target < retryBudgetFloor {
 		target = retryBudgetFloor
 	}
-	if target > cstep.RetryPolicy.MaxRetries {
-		target = cstep.RetryPolicy.MaxRetries
+	if target > cstep.Retry.MaxAttempts {
+		target = cstep.Retry.MaxAttempts
 	}
 
-	changedBudget := target != cstep.RetryPolicy.MaxRetries
-	cstep.RetryPolicy.MaxRetries = target
+	changedBudget := target != cstep.Retry.MaxAttempts
+	cstep.Retry.MaxAttempts = target
 
 	// Ensure a failure transition exists so an exhausted retry routes
 	// cleanly. Only set it when the step lacks one and the caller named
@@ -148,7 +148,7 @@ func RetryBudgetRecipe(baseline *registry.Workflow, stepID string, newBudget int
 
 	motivation := fmt.Sprintf(
 		"Step %q showed a retry-loop regression. Lowering its retry budget from %d to %d caps the wasted reattempts; ",
-		stepID, step.RetryPolicy.MaxRetries, target)
+		stepID, step.Retry.MaxAttempts, target)
 	if changedTransition {
 		motivation += fmt.Sprintf("routing exhausted retries to %q via on_fail surfaces the failure to the recovery path instead of silently re-looping.", onFailTarget)
 	} else {

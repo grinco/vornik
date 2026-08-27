@@ -44,11 +44,13 @@ steps:
     # path; a subtask that "completed" without writing findings then reached
     # synthesize as a silent gap (the original 2026-07-12 failure class).
     require_output_glob: "artifacts/out/findings.md"
+    # Retry these classes. Attempts/backoff/delay are deliberately
+    # OMITTED so they inherit the executor defaults: this block never
+    # executed before 2026-08-27, so its former "max_attempts: 5" was
+    # never in force (the real behaviour was infraRetryMaxAttempts=6).
+    # Writing 5 here would be a silent retune disguised as a fix.
     retry:
-      on: ["container_non_zero_exit", "context_timeout"]
-      max_attempts: 5
-      backoff: "exponential"
-      initial_delay: "30s"
+      on: ["unclassified", "llm_call_failed", "container_start_failed", "container_wait_failed", "container_killed", "context_timeout"]
     prompt: |
       Your task input is ONE self-contained research sub-question. Research it
       thoroughly using your tools, then write your findings to exactly this file:

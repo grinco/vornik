@@ -22,11 +22,13 @@ steps:
     # rather than routing to a lead checkpoint that would paper over it.
     # The retry list is deliberately narrow: transport-shaped failures only.
     timeout: "12m"
+    # Retry these classes. Attempts/backoff/delay are deliberately
+    # OMITTED so they inherit the executor defaults: this block never
+    # executed before 2026-08-27, so its former "max_attempts: 5" was
+    # never in force (the real behaviour was infraRetryMaxAttempts=6).
+    # Writing 5 here would be a silent retune disguised as a fix.
     retry:
-      on: ["container_non_zero_exit", "context_timeout"]
-      max_attempts: 2
-      backoff: "exponential"
-      initial_delay: "15s"
+      on: ["unclassified", "llm_call_failed", "container_start_failed", "container_wait_failed", "container_killed", "context_timeout"]
 terminals:
   done:
     status: "COMPLETED"

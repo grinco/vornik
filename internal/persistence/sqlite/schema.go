@@ -665,7 +665,10 @@ CREATE TABLE IF NOT EXISTS execution_step_outcomes (
     -- migration 137 parity: taint-lineage tracking columns
     untrusted_content_used BOOLEAN NOT NULL DEFAULT 0,
     untrusted_sources      BLOB,
-    requires_review        BOOLEAN NOT NULL DEFAULT 0
+    requires_review        BOOLEAN NOT NULL DEFAULT 0,
+    -- migration 169 parity: the container's exit status. NULL = no container
+    -- ran, which is NOT the same as exiting 0.
+    container_exit_code    INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_step_outcomes_execution ON execution_step_outcomes(execution_id);
 CREATE INDEX IF NOT EXISTS idx_step_outcomes_project_time ON execution_step_outcomes(project_id, recorded_at DESC);

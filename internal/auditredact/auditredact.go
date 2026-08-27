@@ -37,6 +37,13 @@ type Repo struct {
 	audit        persistence.SecretRedactionAuditRepository
 	trustedTools []string
 	logger       *zerolog.Logger
+
+	// bypassReason is non-empty only on a Repo built by NewBypassed: a
+	// deliberate fail-open that delegates verbatim and says so on the counter.
+	bypassReason Reason
+	// metrics is the SHARED census holder. Nil is safe — CE paths and direct
+	// construction never attach one.
+	metrics *Metrics
 }
 
 // New wraps inner. A nil detector makes the decorator a pass-through, so CE
@@ -67,13 +74,72 @@ func New(
 	}
 }
 
+// NewBypassed returns a decorator that scans nothing and counts every row it
+// passes through, labelled with why.
+//
+// WHY A BYPASS DECORATOR RATHER THAN NO DECORATOR. Until 2026-08-27 the
+// container simply skipped the wrap when secrets were disabled or the detector
+// failed to construct, so the object that could have counted the fail-open was
+// never built and the bypass announced itself exactly once, in a boot log.
+// Boot logs scroll: a deployment that had been writing raw rows for a month
+// looked identical to one that had never had a secret to redact (Finding C of
+// docs/audits/2026-08-26-silent-controls-audit.md). Making the bypass an
+// object makes it countable.
+//
+// It delegates byte-identically. Nothing about what is stored changes.
+func NewBypassed(inner persistence.ToolAuditRepository, reason Reason, logger *zerolog.Logger) *Repo {
+	return &Repo{inner: inner, bypassReason: reason, logger: logger}
+}
+
+// SetMetrics injects the shared census holder. Called by the container for
+// EVERY Repo it builds — see the Metrics doc comment for why one holder is
+// shared rather than one counter per instance.
+func (r *Repo) SetMetrics(m *Metrics) { r.metrics = m }
+
+// Actions returns the configured per-checkpoint action map, so the container
+// can report the resolved action on the doctor check without re-deriving it.
+func (r *Repo) Actions() map[string]secrets.Action { return r.actions }
+
+// Inner returns the repository this decorator wraps, so a bypass can be
+// REPLACED rather than nested when the container upgrades it. Nesting would
+// count every row twice — once skipped by the inner bypass, once scanned by the
+// outer seam — and quietly corrupt the denominator it exists to publish.
+func (r *Repo) Inner() persistence.ToolAuditRepository { return r.inner }
+
+// Metrics returns the shared census holder this decorator counts into, so the
+// container can assert that every live instance shares one.
+func (r *Repo) Metrics() *Metrics { return r.metrics }
+
+// BypassReason reports why this decorator scans nothing, or ReasonNone when it
+// does. The container's idempotency guard uses it to tell a real seam from a
+// pass-through it should upgrade.
+func (r *Repo) BypassReason() Reason {
+	if r == nil {
+		return ReasonNone
+	}
+	return r.bypassReason
+}
+
 // Log scans the entry and stores the cleaned copy.
 //
 // The caller's struct is never mutated: the batch path reuses its parsed
 // entries for other bookkeeping, and a redaction visible there would be a
 // surprise at a distance.
 func (r *Repo) Log(ctx context.Context, entry *persistence.ToolAuditEntry) error {
-	if r.detector == nil || entry == nil {
+	if entry == nil {
+		// Not a row, so not part of the denominator. Counting it would inflate
+		// the coverage number with writes that never happened — the same
+		// species of wrong the census exists to fix.
+		return r.inner.Log(ctx, entry)
+	}
+	if r.detector == nil {
+		// The fail-open, counted. A Repo built by New with a nil detector
+		// reports detector_nil; NewBypassed carries the container's reason.
+		reason := r.bypassReason
+		if reason == ReasonNone {
+			reason = ReasonDetectorNil
+		}
+		r.metrics.record(StatusSkipped, reason)
 		return r.inner.Log(ctx, entry)
 	}
 
@@ -83,6 +149,10 @@ func (r *Repo) Log(ctx context.Context, entry *persistence.ToolAuditEntry) error
 		outputFindings = secrets.DropHeuristic(outputFindings)
 	}
 	if len(inputFindings) == 0 && len(outputFindings) == 0 {
+		// Examined and clean. Counted so that "no findings" is distinguishable
+		// from "nothing was examined" (Finding D): the sum over statuses is the
+		// coverage denominator.
+		r.metrics.record(StatusScanned, ReasonNone)
 		return r.inner.Log(ctx, entry)
 	}
 
@@ -100,6 +170,7 @@ func (r *Repo) Log(ctx context.Context, entry *persistence.ToolAuditEntry) error
 		// findings are still recorded above, so choosing detect costs the
 		// redaction, not the signal.
 		r.log(entry, action, counts, "secrets: tool audit scanned — detect-only, row stored intact")
+		r.metrics.record(StatusDetectOnly, ReasonNone)
 		return r.inner.Log(ctx, entry)
 	default:
 		// Redact, and Block degrades to it: refusing to persist the row would
@@ -116,6 +187,7 @@ func (r *Repo) Log(ctx context.Context, entry *persistence.ToolAuditEntry) error
 		clean := *entry
 		clean.ToolInput = string(secrets.Redact([]byte(entry.ToolInput), inputFindings))
 		clean.ToolOutput = string(secrets.Redact([]byte(entry.ToolOutput), outputFindings))
+		r.metrics.record(StatusRedacted, ReasonNone)
 		return r.inner.Log(ctx, &clean)
 	}
 }

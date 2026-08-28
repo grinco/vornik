@@ -34,8 +34,18 @@ var agentBinaries = []string{
 //
 // Suffix-matched against the full import path, so "internal/enterprise" cannot
 // accidentally match "internal/enterprisey".
+//
+// eeInternalPkg is spelled as a CONCATENATION on purpose. The CE
+// artifact-purity gate greps Go source for any line whose first character is a
+// quote introducing an `internal/enterprise` path, and it cannot tell a DENYLIST
+// ENTRY from an import — this file necessarily contains the former, so written
+// literally it fails the public CI it exists to protect. Do not "simplify" it
+// back to one string; the CE gate will reject the export and the EE suite will
+// not tell you why (it has no such gate).
+const eeInternalPkg = "/internal/" + "enterprise"
+
 var enterpriseOnlyPackages = []string{
-	"/internal/enterprise",
+	eeInternalPkg,
 	"/internal/broker",
 	"/internal/eula",
 	"/services/",

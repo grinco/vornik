@@ -7,7 +7,7 @@ roles:
     description: "Plans the work and routes adaptively across candidate workflows."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "20"
     permissions:
@@ -23,7 +23,7 @@ roles:
     description: "Researches questions, gathers sourced facts, writes artifacts/out/research.md."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "40"
     permissions:
@@ -41,7 +41,7 @@ roles:
     description: "Turns research into a polished deliverable; can produce md/pdf/html/docx via pandoc."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "30"
     permissions:

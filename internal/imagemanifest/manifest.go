@@ -46,7 +46,21 @@ const (
 // AgentImageTag is the image every install runs agents from. Named because
 // several consumers special-case it and a string literal in each is how the
 // swarmd->vornik rename left configs pointing at an unbuilt short name.
-const AgentImageTag = "localhost/vornik-agent:latest"
+//
+// ONE NAME, ONLINE OR NOT (2026-08-28). This is a registry reference, but an
+// air-gapped host does NOT need the registry: it builds the image locally and
+// tags it with this same name. The reference is then identical everywhere and
+// only the provenance differs — built locally versus pulled — which is what the
+// release record (record.go) distinguishes. Two names for one image was the
+// alternative, and it would have meant every config, template and doc carrying
+// a conditional nobody could test both halves of.
+//
+// This works offline because podman's default pull policy is "missing" (podman
+// 5.8.4, verified on the reference host) and the daemon sets no --pull flag, so
+// a locally present image is used without touching the network. An explicit
+// --pull=always anywhere in the run path would silently break air-gapped
+// installs; see 2026-08-28-packaged-image-provenance-design.md §3.1.1.
+const AgentImageTag = "ghcr.io/grinco/vornik-agent:latest"
 
 // Image is one buildable container image.
 type Image struct {

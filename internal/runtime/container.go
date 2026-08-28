@@ -278,10 +278,15 @@ func sanitizeNamePart(s string) string {
 	return result
 }
 
-// QualifyAgentImage prepends the local registry to an UNQUALIFIED vornik agent
-// image, e.g. "vornik-agent:latest" → "localhost/vornik-agent:latest". Rootless
+// agentRegistry is the registry path a bare agent image qualifies to. It is the
+// prefix of imagemanifest.AgentImageTag; kept as a literal here because
+// internal/runtime must not import imagemanifest (which reaches host probes).
+const agentRegistry = "ghcr.io/grinco/"
+
+// QualifyAgentImage prepends the agent registry to an UNQUALIFIED vornik agent
+// image, e.g. "vornik-agent:latest" → "ghcr.io/grinco/vornik-agent:latest". Rootless
 // podman refuses to resolve a bare short-name headless, and the daemon builds
-// the agent image as localhost/vornik-agent:latest — but config round-trips
+// the agent image as ghcr.io/grinco/vornik-agent:latest — but config round-trips
 // (control-plane applies mirroring a swarm file drafted against a bare-image
 // tree) have repeatedly re-introduced the unqualified form. This is the single
 // fail-safe primitive that keeps a bare name from ever failing a spawn,
@@ -298,7 +303,12 @@ func QualifyAgentImage(image string) string {
 		return image // already qualified (localhost/…, registry host, etc.)
 	}
 	if image == "vornik-agent" || strings.HasPrefix(image, "vornik-agent:") || strings.HasPrefix(image, "vornik-agent@") {
-		return "localhost/" + image
+		// agentRegistry, not "localhost/": since 2026-08-28 the agent image
+		// carries ONE name whether it was pulled or built locally, so
+		// qualifying to localhost/ here would resolve a bare name to an image
+		// no host has any more — turning this fail-safe into the failure it
+		// exists to prevent.
+		return agentRegistry + image
 	}
 	return image
 }

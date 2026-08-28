@@ -7,7 +7,7 @@ roles:
     description: "Routes ad-hoc tasks through the adaptive workflow."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "40"
     permissions:
@@ -26,7 +26,7 @@ roles:
     description: "Handles chat conversations for this project and uses the attached MCP tools."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "40"
     permissions:

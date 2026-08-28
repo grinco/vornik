@@ -64,7 +64,7 @@ func TestMirrorOneFile_NormalizesBareAgentImageBeforeSourceWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), `image: "localhost/vornik-agent:latest"`) {
+	if !strings.Contains(string(got), `image: "ghcr.io/grinco/vornik-agent:latest"`) {
 		t.Errorf("source write must carry the QUALIFIED image line:\n%s", got)
 	}
 	if strings.Contains(string(got), `image: "vornik-agent:latest"`) {
@@ -181,7 +181,7 @@ func TestNewProposalMirror_CommitTrailerOnNormalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(got), `image: "localhost/vornik-agent:latest"`) {
+	if !strings.Contains(string(got), `image: "ghcr.io/grinco/vornik-agent:latest"`) {
 		t.Errorf("committed source must carry the qualified image:\n%s", got)
 	}
 	msg := lastCommitMessage(t, sourceConfigsDir)

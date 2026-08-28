@@ -26,7 +26,7 @@ roles:
       maxTokens: 4096
       requiredOutputKeys: ["plan"]
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "2"
         memory: "4Gi"
         envVars:
@@ -72,7 +72,7 @@ roles:
               when: {"feasibility.feasible": false}
               require: ["feasibility.blockers"]
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -101,7 +101,7 @@ roles:
             analysis:
                 type: object
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -132,7 +132,7 @@ roles:
             implementation:
                 type: object
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "2"
         memory: "4Gi"
         envVars:
@@ -200,7 +200,7 @@ roles:
               when: {"testing.passed": false}
               require: ["testing.failures"]
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "2"
         memory: "4Gi"
         envVars:
@@ -244,7 +244,7 @@ roles:
               when: {"review.approved": false}
               require: ["review.feedback"]
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -289,7 +289,7 @@ roles:
               when: {"scout.project_context_written": false}
               require: ["scout.reason"]
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -333,7 +333,7 @@ roles:
               when: {"architect.committed": false}
               require: ["architect.reason"]
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:

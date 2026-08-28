@@ -61,7 +61,7 @@ xdg-open http://localhost:8080/ui
 cd deployments/podman
 cp .env.example .env                                    # postgres creds/ports for compose
 podman compose -f deps.compose.yaml up -d               # postgres (+ scraper.compose.yaml on EE)
-make build-agent                                        # localhost/vornik-agent:latest
+make build-agent                                        # ghcr.io/grinco/vornik-agent:latest
 go build -o ~/.local/bin/vornik    ./cmd/vornik         # or use the ephemeral-build one-liner
 go build -o ~/.local/bin/vornikctl ./cmd/vornikctl
 cp config/vornik.host.yaml ~/.config/vornik/config.yaml

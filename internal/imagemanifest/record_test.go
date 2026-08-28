@@ -18,7 +18,7 @@ func writeRecord(t *testing.T, body string) string {
 }
 
 const goodRecord = `{"version":1,"count":1,"images":[
-  {"tag":"localhost/vornik-agent:latest",
+  {"tag":"ghcr.io/grinco/vornik-agent:latest",
    "digest":"sha256:8b41a998f6080f06462866a2ae50ad40c1ca9bc11ae06f991044e5a6e6d24393",
    "source_commit":"4b343821000000000000000000000000000000ab"}]}`
 
@@ -66,7 +66,7 @@ func TestLoadReleaseRecord_TruncatedJSONIsCorrupt(t *testing.T) {
 // validation this parses cleanly and compares false against everything.
 func TestLoadReleaseRecord_ShortDigestIsCorruptNotAbsent(t *testing.T) {
 	body := `{"version":1,"count":1,"images":[
-	  {"tag":"localhost/vornik-agent:latest","digest":"sha256:ab12",
+	  {"tag":"ghcr.io/grinco/vornik-agent:latest","digest":"sha256:ab12",
 	   "source_commit":"4b343821000000000000000000000000000000ab"}]}`
 	_, err := LoadReleaseRecord(writeRecord(t, body))
 	if !IsCorrupt(err) {
@@ -139,7 +139,7 @@ func TestLoadReleaseRecord_UnknownVersionIsCorrupt(t *testing.T) {
 // comparing against nothing in particular.
 func TestLoadReleaseRecord_MixedSourceCommitsIsCorrupt(t *testing.T) {
 	body := `{"version":1,"count":2,"images":[
-	  {"tag":"localhost/vornik-agent:latest",
+	  {"tag":"ghcr.io/grinco/vornik-agent:latest",
 	   "digest":"sha256:8b41a998f6080f06462866a2ae50ad40c1ca9bc11ae06f991044e5a6e6d24393",
 	   "source_commit":"4b343821000000000000000000000000000000ab"},
 	  {"tag":"localhost/vornik-broker:latest",

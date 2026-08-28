@@ -171,3 +171,59 @@ func TestImageFreshness_AggregateIsNeverGreenerThanWorstRow(t *testing.T) {
 		t.Errorf("the aggregate line must state the warning count; got: %s", got.Message)
 	}
 }
+
+// THE CROSS-EDITION CASE, and the one that makes Stage 2 usable at all.
+//
+// An image PULLED from GHCR was built in the public CE repo, so its
+// org.opencontainers.image.revision label is a CE commit — while the release
+// record shipped in the EE package declares an EE commit. Those can never
+// match, because the export maps one tree onto the other.
+//
+// A digest needs no such mapping. When the image's digest IS the digest this
+// release declares, that is the strongest statement available and the commit
+// label is irrelevant. Without this, every pulled image warns forever and the
+// registry path is unusable.
+func TestImageFreshness_DigestMatchWinsOverForeignCommitLabel(t *testing.T) {
+	const ceCommit = "1111111111111111111111111111111111111111"
+	h := &DoctorHandlers{
+		imageProber:        onlyAgentProber{},
+		daemonRevisionFunc: func() (string, bool) { return commitN, true },
+		imageRecordFunc:    recordFor(commitN),
+		// The label is the CE commit — deliberately NOT the record's commit.
+		imageRevisionFunc: func(_ context.Context, _ string) (string, bool, error) {
+			return ceCommit, true, nil
+		},
+		// The digest is exactly what the release declares.
+		imageDigestFunc: func(_ context.Context, _ string) (string, error) {
+			return digestN, nil
+		},
+	}
+	got := h.checkImageFreshness(context.Background())
+	if got.Status != "OK" {
+		t.Fatalf("a digest-exact image must be OK regardless of its commit label, got %q\n%s\n%v",
+			got.Status, got.Message, got.Items)
+	}
+}
+
+// A digest MISMATCH must not be silently forgiven by the commit falling back to
+// a match — the fallback exists for local rebuilds, not for a wrong artifact.
+func TestImageFreshness_DigestMismatchStillFallsBackToCommit(t *testing.T) {
+	h := &DoctorHandlers{
+		imageProber:        onlyAgentProber{},
+		daemonRevisionFunc: func() (string, bool) { return commitN, true },
+		imageRecordFunc:    recordFor(commitN),
+		// Same commit as the record — a legitimate local rebuild.
+		imageRevisionFunc: func(_ context.Context, _ string) (string, bool, error) {
+			return commitN, true, nil
+		},
+		// Different digest, because a rebuild is not bit-reproducible.
+		imageDigestFunc: func(_ context.Context, _ string) (string, error) {
+			return "sha256:" + strings.Repeat("f", 64), nil
+		},
+	}
+	got := h.checkImageFreshness(context.Background())
+	if got.Status != "OK" {
+		t.Fatalf("a local rebuild of the declared commit must stay OK, got %q: %s",
+			got.Status, got.Message)
+	}
+}

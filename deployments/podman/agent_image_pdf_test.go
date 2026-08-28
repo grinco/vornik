@@ -155,7 +155,7 @@ func TestAgentImageRendersRealPDF(t *testing.T) {
 	}
 	image := os.Getenv("VORNIK_AGENT_IMAGE")
 	if image == "" {
-		image = "localhost/vornik-agent:latest"
+		image = "ghcr.io/grinco/vornik-agent:latest"
 	}
 
 	const script = `set -e

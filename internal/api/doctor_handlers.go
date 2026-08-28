@@ -221,6 +221,10 @@ type DoctorHandlers struct {
 	// DECLARES its images to be. Injected so the six-scenario truth table
 	// (design §10) is unit-testable without a packaged host.
 	imageRecordFunc func() (*imagemanifest.ReleaseRecord, error)
+	// imageDigestFunc reads an image's manifest digest. Separate from
+	// imageRevisionFunc because the two answer different questions: the label
+	// says which SOURCE an image came from, the digest says which BUILD.
+	imageDigestFunc func(ctx context.Context, image string) (string, error)
 	// daemonRevisionFunc reports the commit this daemon was built from.
 	// Nil ⇒ version.BuildRevision with the -dirty suffix applied.
 	daemonRevisionFunc func() (string, bool)

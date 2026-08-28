@@ -234,7 +234,7 @@ services:
       AGENT_LLM_ENDPOINT: ${AGENT_LLM_ENDPOINT:-}
       AGENT_LLM_MODEL:    ${AGENT_LLM_MODEL:-}
 
-      AGENT_IMAGE: ${AGENT_IMAGE:-localhost/vornik-agent:latest}
+      AGENT_IMAGE: ${AGENT_IMAGE:-ghcr.io/grinco/vornik-agent:latest}
     volumes:
       - ./config/worker.yaml:/etc/vornik/config.yaml:ro,Z
       - ../../configs:/etc/vornik/configs:ro,Z

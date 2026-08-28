@@ -7,7 +7,7 @@ roles:
     description: "Handles recovery checkpoints when a collection or write step fails."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "20"
     permissions:
@@ -22,7 +22,7 @@ roles:
     description: "Collects fresh items from every configured source into artifacts/out/collected.md."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "60"
     permissions:
@@ -39,7 +39,7 @@ roles:
     description: "Turns collected items into the report at artifacts/out/report.md."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "30"
     permissions:

@@ -7,7 +7,7 @@ roles:
     description: "Routes ad-hoc (non-review) tasks and recovery checkpoints."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "30"
     permissions:
@@ -24,7 +24,7 @@ roles:
     description: "Reviews pull-request diffs via the github-review workflow."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "60"
     permissions:

@@ -7,7 +7,7 @@ roles:
     description: "Single general-purpose role the wizard shapes with add-ons."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "40"
     permissions:

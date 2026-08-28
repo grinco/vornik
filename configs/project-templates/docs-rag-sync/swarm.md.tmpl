@@ -7,7 +7,7 @@ roles:
     description: "Handles recovery checkpoints when a fetch or distill step fails."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "20"
     permissions:
@@ -22,7 +22,7 @@ roles:
     description: "Fetches new/changed documentation into artifacts/out/fetched-docs.md."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "60"
     permissions:
@@ -40,7 +40,7 @@ roles:
     description: "Distills fetched docs into memory-ready sections and an ingest summary."
     model: "{{.llmModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "30"
     permissions:

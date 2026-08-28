@@ -79,6 +79,27 @@ func realImageRevision(ctx context.Context, image string) (string, bool, error) 
 // production's agents — and an ERROR would fail a correct setup. There is no
 // per-image suppression: a flag that silences drift would recreate exactly the
 // affirmative all-clear this check was written to remove.
+// realImageDigest reads an image's manifest digest.
+//
+// podman computes one for a LOCALLY BUILT, never-pushed image and records it in
+// RepoDigests — Docker does not, leaving RepoDigests empty until push. That
+// difference is why a digest is usable on the packaged path at all, and it was
+// verified on the reference host before the design relied on it.
+func realImageDigest(ctx context.Context, image string) (string, error) {
+	podmanPath, err := exec.LookPath("podman")
+	if err != nil {
+		return "", err
+	}
+	inspectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(inspectCtx, podmanPath, "image", "inspect", image,
+		"--format", "{{.Digest}}").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // checkImageFreshness reports whether the images this deployment uses are the
 // ones this release declares, AND whether the running daemon is that release.
 //
@@ -146,6 +167,10 @@ func (h *DoctorHandlers) checkImageFreshness(ctx context.Context) DoctorCheck {
 	if readRevision == nil {
 		readRevision = realImageRevision
 	}
+	readDigest := h.imageDigestFunc
+	if readDigest == nil {
+		readDigest = realImageDigest
+	}
 
 	var okCount int
 	var warn []string
@@ -169,6 +194,22 @@ func (h *DoctorHandlers) checkImageFreshness(ctx context.Context) DoctorCheck {
 			warn = append(warn, fmt.Sprintf(
 				"%s: not declared by this release, so it cannot be verified", img.Tag))
 			continue
+		}
+
+		// DIGEST FIRST. An image pulled from the registry was built in the
+		// public CE tree, so its revision label is a CE commit while the
+		// record declares an EE one — they can never match, because the export
+		// maps one tree onto the other. A digest needs no such mapping, so an
+		// exact digest is both the strongest statement available and the only
+		// one that works across that boundary.
+		if readDigest != nil && declared.Digest != "" {
+			if got, dErr := readDigest(ctx, img.Tag); dErr == nil && got == declared.Digest {
+				okCount++
+				continue
+			}
+			// A digest that differs is NOT a verdict on its own: container
+			// builds are not bit-reproducible, so a legitimate local rebuild
+			// of the declared commit differs here. Fall through to the commit.
 		}
 
 		rev, labelled, readErr := readRevision(ctx, img.Tag)

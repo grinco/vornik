@@ -532,7 +532,7 @@ fi
 #    localhost/ ref is required: podman refuses bare short-names
 #    non-interactively, so an unqualified ref fails every job at start.
 # ---------------------------------------------------------------------------
-log "Building the agent image localhost/vornik-agent:latest (first run ~1-2 min)..."
+log "Building the agent image ghcr.io/grinco/vornik-agent:latest (first run ~1-2 min)..."
 # VORNIK_REVISION stamps the image with the commit it was built from. It is
 # what makes staleness detectable later: `vornikctl doctor` compares this
 # against the daemon's own build revision, and vornik-update.sh reads it to
@@ -544,11 +544,11 @@ if podman build -f "$DIR/images/vornik-agent/Containerfile" \
      --build-arg VORNIK_GID="$(id -g)" \
      --build-arg VORNIK_REVISION="$QUICKSTART_REV" \
      --build-arg VORNIK_VERSION="$QUICKSTART_VER" \
-     -t localhost/vornik-agent:latest "$DIR"; then
-  ok "Agent image built: localhost/vornik-agent:latest"
+     -t ghcr.io/grinco/vornik-agent:latest "$DIR"; then
+  ok "Agent image built: ghcr.io/grinco/vornik-agent:latest"
 else
   warn "Agent image build failed — jobs will fail at container start until it exists."
-  warn "  retry: podman build -f $DIR/images/vornik-agent/Containerfile -t localhost/vornik-agent:latest $DIR"
+  warn "  retry: podman build -f $DIR/images/vornik-agent/Containerfile -t ghcr.io/grinco/vornik-agent:latest $DIR"
 fi
 
 # ---------------------------------------------------------------------------

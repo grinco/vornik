@@ -34,7 +34,7 @@ roles:
     modelFallback: "moonshotai.kimi-k2.5"
     maxTokens: 8192
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -105,7 +105,7 @@ roles:
           when: {"feasibility.feasible": false}
           require: ["feasibility.blockers"]
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -191,7 +191,7 @@ roles:
               description: >-
                 How many cases you pinned. Must equal the length of test_case_ids.
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -261,7 +261,7 @@ roles:
         implementation:
           type: object
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -407,7 +407,7 @@ roles:
           when: {"testing.passed": true}
           require: ["testing.pinned_cases_validated", "testing.cases"]
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -507,7 +507,7 @@ roles:
           when: {"review.approved": false}
           require: ["review.feedback"]
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -597,7 +597,7 @@ roles:
           when: {"scout.project_context_written": false}
           require: ["scout.reason"]
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -663,7 +663,7 @@ roles:
           when: {"architect.committed": false}
           require: ["architect.reason"]
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       # dev-swarm runs real builds/tests via run_shell (pip install,
       # go mod download, npm, git fetch) → needs internet egress, so it
       # opts out of the daemon-only default with isolated egress
@@ -719,7 +719,7 @@ roles:
             draft: {type: bool}
         selected_workflow: {type: string}
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       # Needs GitHub egress for `gh` + `git fetch/push`.
       network: "egress"
       cpu: "1"

@@ -17,7 +17,7 @@ roles:
     description: "Read-only code, doc, and test-coverage reviewer. Produces structured critiques in artifacts/out/review.md."
     model: "{{.defaultModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "40"
     permissions:
@@ -33,7 +33,7 @@ roles:
     description: "Data validation and research gathering. Reads inputs, queries memory, emits structured findings."
     model: "{{.defaultModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "40"
     permissions:
@@ -50,7 +50,7 @@ roles:
     description: "Distills long inputs into operator-readable summaries. The sole writer role in companion swarms."
     model: "{{.defaultModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         VORNIK_MAX_TOOL_ITERATIONS: "20"
     permissions:
@@ -69,7 +69,7 @@ roles:
       - "doc_ingester"
     model: "{{.defaultModel}}"
     runtime:
-      image: "localhost/vornik-agent:latest"
+      image: "ghcr.io/grinco/vornik-agent:latest"
       envVars:
         # Bounded by the input list — one run_shell cp per file + the
         # manifest write. 60 covers ~50 files comfortably.

@@ -55,7 +55,7 @@ roles:
       modelFallback: "glm-5.2"
       maxTokens: 4096
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -138,7 +138,7 @@ roles:
               when: {"research.written": false}
               require: ["research.reason"]
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -233,7 +233,7 @@ roles:
               when: {"planning.written": false}
               require: ["planning.reason"]
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -329,7 +329,7 @@ roles:
               when: {"writing.written": false}
               require: ["writing.reason"]
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -376,7 +376,7 @@ roles:
       requiredModalities: ["vision"]
       maxTokens: 4096
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -541,7 +541,7 @@ roles:
               when: {"published.ok": false}
               require: ["published.reason"]
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:
@@ -620,7 +620,7 @@ roles:
               when: {"ingested.ok": false}
               require: ["ingested.reason"]
       runtime:
-        image: "localhost/vornik-agent:latest"
+        image: "ghcr.io/grinco/vornik-agent:latest"
         cpu: "1"
         memory: "2Gi"
         envVars:

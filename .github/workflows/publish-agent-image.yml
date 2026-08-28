@@ -1,0 +1,148 @@
+# Vornik Community Edition — publish the agent image to GHCR.
+# Injected into the public repo at export time by scripts/export-public-ce.sh.
+#
+# WHY THIS LIVES IN THE PUBLIC REPO. The agent image is a CE image (it is in
+# imagemanifest's baseImages, not manifest_enterprise), and the public repo has
+# free runner minutes where the Enterprise fork's Actions are disabled. The
+# workflow is authored and reviewed in the Enterprise tree and injected here, so
+# it executes where the minutes are without leaving EE review.
+#
+# WHY BOTH EDITIONS PULL THE SAME IMAGE. The agent image carries no Enterprise
+# code — cmd/mcp-bridge and cmd/agent-helper reach no EE package — so one build
+# serves both. The publish-gate job below is what keeps that true; see its
+# comment.
+#
+# AIR-GAPPED HOSTS DO NOT NEED THIS. They build the image locally and tag it
+# with the same ghcr.io/... name. The reference is identical either way; only
+# the provenance differs. Nothing here is a runtime dependency.
+#
+# Actions are pinned to commit SHAs (supply-chain hygiene); the trailing comment
+# records the human-readable version — bump both together.
+name: publish-agent-image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+# NOT on pull_request, deliberately. A PR from a fork must never be able to
+# publish an image, and `packages: write` on a PR-triggered workflow is how that
+# happens.
+
+permissions:
+  contents: read
+
+concurrency:
+  # One publish at a time per ref: two concurrent runs racing to move :latest
+  # would leave it pointing at whichever finished last, not whichever is newer.
+  group: publish-agent-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # THE GATE. Publishing the agent image to a PUBLIC registry is safe only
+  # because its binaries reach no Enterprise package — a property of the import
+  # graph, held by nothing else. internal/chat and internal/mcp carry no edition
+  # markers and give a contributor no reason to treat them as sensitive, so the
+  # first EE import added there would publish proprietary code to the world, and
+  # a public publish cannot be recalled.
+  #
+  # It runs HERE rather than being inherited from the ci workflow on purpose: a
+  # publish that trusts another workflow's result is a publish with no gate on
+  # the day someone edits that workflow.
+  publish-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+      # TestAgentBinariesAreEditionNeutral. Its companion detector test is
+      # Enterprise-only and skips here (there is no EE code in this tree to
+      # detect), which is why the gate is proven in the Enterprise repo and
+      # merely enforced here.
+      - name: Agent binaries must reach no Enterprise package
+        run: go test ./internal/imagemanifest/ -run TestAgentBinariesAreEditionNeutral -v
+
+  publish:
+    needs: [publish-gate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write       # push to ghcr.io
+      id-token: write       # OIDC, required by the attestation action
+      attestations: write   # store build provenance
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Resolve tags
+        id: meta
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/vornik-agent"
+          # Lowercase: GHCR rejects an uppercase path, and a GitHub owner may
+          # legitimately contain capitals.
+          image="$(printf '%s' "$image" | tr '[:upper:]' '[:lower:]')"
+          sha="${GITHUB_SHA::12}"
+          # An immutable tag ALWAYS, so a mutable :latest is never the only way
+          # to name a build. :latest moves; sha-<commit> does not.
+          tags="${image}:sha-${sha}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tags="${tags},${image}:${GITHUB_REF_NAME},${image}:latest"
+          else
+            tags="${tags},${image}:latest"
+          fi
+          {
+            echo "image=${image}"
+            echo "tags=${tags}"
+            echo "sha=${sha}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # VORNIK_REVISION is what stamps org.opencontainers.image.revision, which
+      # the daemon's image_freshness check reads. It must be the real commit:
+      # an unstamped image cannot be placed against any release, and the check
+      # reports exactly that rather than guessing.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: images/vornik-agent/Containerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VORNIK_REVISION=${{ github.sha }}
+            VORNIK_VERSION=${{ github.ref_type == 'tag' && github.ref_name || format('main-{0}', steps.meta.outputs.sha) }}
+          # Digest-pinned public bases are already in the Containerfile, which
+          # is F3's requirement; provenance below is F2's.
+          provenance: true
+          sbom: true
+
+      # SLSA build provenance over the pushed image, matching what ci.yaml
+      # already does for the CE binaries.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-name: ${{ steps.meta.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # The digest is what a release record pins and what a host verifies
+      # against, so it must be readable without digging through job logs.
+      - name: Report the published digest
+        run: |
+          echo "### Agent image published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| field | value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| digest | \`${{ steps.build.outputs.digest }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| revision | \`${{ github.sha }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| tags | \`${{ steps.meta.outputs.tags }}\` |" >> "$GITHUB_STEP_SUMMARY"

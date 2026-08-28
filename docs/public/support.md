@@ -12,12 +12,11 @@ redacted), and steps to reproduce.
 > **Before public release:** Issues and Discussions are enabled on the public
 > repo so these links resolve.
 
-## Commercial support & SaaS (Enterprise)
+## Commercial support (Enterprise)
 
-The **Enterprise Edition** is offered with commercial support and as a hosted
-SaaS by **EaseIT Labs**:
+The **Enterprise Edition** is offered with commercial support by
+**EaseIT Labs**:
 
-- Hosted SaaS: <https://vornik.cloud>
 - Enterprise support & licensing: **enterprise@vornik.io**
 
 See [Editions](editions.md) for what Enterprise adds over Community.

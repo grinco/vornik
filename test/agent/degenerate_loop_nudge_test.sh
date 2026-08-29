@@ -102,7 +102,50 @@ else
 fi
 
 echo
+# --- LLD 09 8.3: a kill must not destroy a satisfied output contract ----------
+#
+# Observed 2026-08-28: an analyst wrote and enriched its declared CHANGELOG.md,
+# then looped on git reads that ALL SUCCEEDED, and the unconditional FAILED
+# threw the finished changelog away and failed the whole pipeline.
+#
+# Whole-file greps on distinctive constructs rather than -A windows off the
+# kill: the first attempt anchored on the ERROR log and used -A 30, but the
+# guard sits 41 lines below it, so every assertion passed vacuously-inverted.
+# A window that has to be tuned to the code it checks is a test that breaks
+# when the code moves for unrelated reasons.
+
+if grep -q 'if \[ -n "${REQUIRE_OUTPUT_GLOB:-}" \] && output_contract_satisfied; then' "$ENTRYPOINT"; then
+    ok "8.3: the kill consults the output contract, guarded on a NON-EMPTY glob"
+else
+    bad "8.3: no contract-satisfied path guarded on a non-empty glob — either the work is discarded, or (if the guard is missing) every contract-free step passes its loops"
+fi
+
+# NOT A SILENT PASS: the loop must still reach the quality row, via the same
+# agentOutcome channel iteration_exhausted uses.
+if grep -q 'DEGENERATE_LOOP_DETAIL=' "$ENTRYPOINT" \
+   && grep -A 14 'DEGENERATE_LOOP_DETAIL:-' "$ENTRYPOINT" | grep -q 'agentOutcome'; then
+    ok "8.3: a finalised loop still records agentOutcome=degenerate_loop"
+else
+    bad "8.3: a finalised loop does not record degenerate_loop — that IS a silent pass"
+fi
+
+# The contract-unmet / undeclared path must still FAIL, unchanged.
+if grep -q 'write_result "FAILED" "$_loop_msg"' "$ENTRYPOINT"; then
+    ok "8.3: the contract-unmet path still fails the step"
+else
+    bad "8.3: the FAILED path is gone — a loop that produced nothing would now pass"
+fi
+
+# The finalise path must COMPLETE, or the workflow takes a failure transition
+# anyway and the fix does nothing.
+if grep -q 'write_result "COMPLETED" "$_loop_msg"' "$ENTRYPOINT"; then
+    ok "8.3: the contract-satisfied path completes the step"
+else
+    bad "8.3: no COMPLETED path — the work is still discarded"
+fi
+
 echo "passed: $PASS, failed: $FAIL"
+
 if [ "$FAIL" -gt 0 ]; then
     printf '  - %s\n' "${FAILURES[@]}"
     exit 1

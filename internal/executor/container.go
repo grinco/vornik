@@ -1259,10 +1259,39 @@ func (e *Executor) observeAgentImageID(ctx context.Context, containerID string) 
 		return ""
 	}
 	imageID := strings.TrimSpace(container.Image)
-	if !strings.HasPrefix(imageID, "sha256:") || len(imageID) == len("sha256:") {
+
+	// PODMAN RETURNS A BARE 64-HEX ID, not a "sha256:"-prefixed one — verified
+	// on podman 5.8.4, 2026-08-29. Requiring the prefix therefore discarded a
+	// good id on EVERY container: a full 30-task arm produced 162 outcome rows
+	// with no image id, every arm key was PARTIAL, and `bench agent rollup`
+	// refused to merge a completed run. The provenance axis had never worked.
+	//
+	// Both forms are accepted and normalised to the prefixed one, because the
+	// stored value is compared across runs and two spellings of the same id
+	// would read as two different images.
+	imageID = strings.TrimPrefix(imageID, "sha256:")
+	if !isHexImageID(imageID) {
+		// A tag ("ghcr.io/...:bench") is mutable intent, not provenance, and a
+		// short hex string is not an id. Neither is evidence.
 		return ""
 	}
-	return imageID
+	return "sha256:" + imageID
+}
+
+// isHexImageID reports whether s is a full-length hex container image id.
+//
+// Length is checked, not just the alphabet: "abc123" is hex and is not an image
+// id, and padding or accepting it would invent provenance from a fragment.
+func isHexImageID(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // extractProseFromResult pulls model-authored prose out of an

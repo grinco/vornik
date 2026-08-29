@@ -383,10 +383,16 @@ func MergeJournals(journals ...Journal) (Journal, error) {
 			return Journal{}, fmt.Errorf("journal %q has a PARTIAL arm key; merging unverified "+
 				"runs cannot establish that they measured the same system", j.Manifest.RunID)
 		}
-		if err := CheckComparable(out.Manifest.Arm, j.Manifest.Arm); err != nil {
+		// CheckMergeable, not CheckComparable: batches of ONE arm observe only
+		// the roles their own tasks invoked, so role COVERAGE differs while
+		// values must not. See arm.go.
+		if err := CheckMergeable(out.Manifest.Arm, j.Manifest.Arm); err != nil {
 			return Journal{}, fmt.Errorf("refusing to merge %q into %q: %w",
 				j.Manifest.RunID, out.Manifest.RunID, err)
 		}
+		// The merged arm describes every role that actually ran, not just those
+		// the first batch happened to exercise.
+		out.Manifest.Arm = unionObservedRoles(out.Manifest.Arm, j.Manifest.Arm)
 		// The pre-registration is part of what a figure means. Two batches run
 		// against different registered comparisons are not one experiment.
 		if j.Manifest.PreRegistrationHash != out.Manifest.PreRegistrationHash {

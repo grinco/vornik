@@ -43,6 +43,7 @@ var (
 	benchAgentGoldPath           string
 	benchAgentPreRegPath         string
 	benchAgentTaskSetPath        string
+	benchAgentTaskSetFull        string
 	benchAgentJournalPath        string
 	benchAgentRunID              string
 	benchAgentArm                string
@@ -205,6 +206,11 @@ func init() {
 
 	benchAgentRunCmd.Flags().StringVar(&benchAgentGoldPath, "gold", "",
 		"pinned gold manifest; omit to run only the probes that need none")
+	benchAgentRunCmd.Flags().StringVar(&benchAgentTaskSetFull, "task-set-full", "",
+		"the WHOLE task set this run is one batch of. The arm's task-derived axes "+
+			"describe this file rather than --tasks, so batches of one arm merge instead "+
+			"of being refused as disagreeing arms. Takes a FILE, never a digest: a hash "+
+			"typed by hand can be wrong in a way nothing detects, a file cannot")
 	benchAgentRunCmd.Flags().StringVar(&benchAgentPreRegPath, "preregistration", "",
 		"REQUIRED: committed manifest stating the arms, metric, intended delta and computed n")
 	benchAgentRunCmd.Flags().StringVar(&benchAgentJournalPath, "journal", "journal.json",
@@ -414,7 +420,16 @@ func runBenchAgentRun(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	arm, err := buildArm(tasks, gold)
+	// When this run is one batch of a larger set, the arm's axes describe the
+	// WHOLE set so the batches merge. See buildArmOver.
+	var axisTasks []agentbench.TaskSpec
+	if p := strings.TrimSpace(benchAgentTaskSetFull); p != "" {
+		axisTasks, err = loadTaskSet(p)
+		if err != nil {
+			return fmt.Errorf("--task-set-full: %w", err)
+		}
+	}
+	arm, err := buildArmOver(tasks, axisTasks, gold)
 	if err != nil {
 		return err
 	}
@@ -601,7 +616,23 @@ func applyObservedAgentImages(journal *agentbench.Journal, observed map[string]s
 // the mechanism was fully tested and fed nothing. Release-over-release
 // comparison needs the binary, the config, the task set, the gold set, the probe
 // set and the policy, or "apples to apples" is an assertion rather than a check.
-func buildArm(tasks []agentbench.TaskSpec, gold *agentbench.GoldManifest) (agentbench.ArmFields, error) {
+// buildArmOver describes an arm that RAN `tasks` but whose task-derived axes
+// describe `axisTasks` — the whole set — when one is given.
+//
+// This is what lets a long arm run in task batches and still merge. `bench
+// agent rollup` refuses journals whose arms disagree, which is correct: the
+// batches are one experiment or they are not a pass. Without this, every batch
+// would describe only its own slice and the merge would be refused, which is
+// why a 7-hour arm could not be resumed at all (design §12.13).
+//
+// ALL THREE task-derived axes are overridden together, not just the task-set
+// digest. Scoring policy and tier policy are computed from the same slice, so
+// overriding one and not the others would produce an arm that agrees on what it
+// ran and disagrees on how it was scored — the subtler half of the same bug.
+//
+// A nil axisTasks means "describe what you ran", which is every existing
+// caller and is unchanged.
+func buildArmOver(tasks, axisTasks []agentbench.TaskSpec, gold *agentbench.GoldManifest) (agentbench.ArmFields, error) {
 	if strings.TrimSpace(benchAgentContextPol) == "" {
 		return agentbench.ArmFields{}, fmt.Errorf("--context-policy is required: it names the " +
 			"independent variable, and a run that does not say what policy it tested cannot be " +
@@ -611,9 +642,15 @@ func buildArm(tasks []agentbench.TaskSpec, gold *agentbench.GoldManifest) (agent
 		return agentbench.ArmFields{}, err
 	}
 
-	ids := make([]string, 0, len(tasks))
-	bodies := make(map[string]string, len(tasks))
-	for _, t := range tasks {
+	// The axes describe the whole set when batching, the run itself otherwise.
+	axis := axisTasks
+	if axis == nil {
+		axis = tasks
+	}
+
+	ids := make([]string, 0, len(axis))
+	bodies := make(map[string]string, len(axis))
+	for _, t := range axis {
 		ids = append(ids, t.ID)
 		bodies[t.ID] = t.Workflow + "\x00" + t.Prompt
 	}
@@ -623,8 +660,8 @@ func buildArm(tasks []agentbench.TaskSpec, gold *agentbench.GoldManifest) (agent
 		Name:                benchAgentArm,
 		ContextPolicy:       benchAgentContextPol,
 		TaskSetSHA256:       agentbench.TaskSetDigest(ids, bodies),
-		ScoringPolicySHA256: agentbench.ScoringPolicyDigest(tasks),
-		TierPolicySHA256:    agentbench.TierPolicyDigest(tasks),
+		ScoringPolicySHA256: agentbench.ScoringPolicyDigest(axis),
+		TierPolicySHA256:    agentbench.TierPolicyDigest(axis),
 		Probes:              probeNames(gold != nil),
 	}
 	if gold != nil {

@@ -679,6 +679,17 @@ write_result() {
             --arg detail "$ITERATION_CAP_DETAIL" \
             '. + {agentOutcome: $outcome, agentOutcomeDetail: $detail}')
         base_result=$(guard_result_update "$_updated" "$base_result" "iteration_exhausted injection")
+    elif [ -n "${DEGENERATE_LOOP_DETAIL:-}" ]; then
+        # A degenerate loop over an ALREADY-SATISFIED output contract. The step
+        # completes so the workflow advances with the work the agent finished
+        # before it started repeating itself, and the quality row still says
+        # degenerate_loop. Same shape as iteration_exhausted above, and NOT a
+        # silent pass — see LLD 09 8.3.
+        _updated=$(printf '%s' "$base_result" | jq \
+            --arg outcome "degenerate_loop" \
+            --arg detail "$DEGENERATE_LOOP_DETAIL" \
+            '. + {agentOutcome: $outcome, agentOutcomeDetail: $detail}')
+        base_result=$(guard_result_update "$_updated" "$base_result" "degenerate_loop injection")
     fi
 
     printf '%s\n' "$base_result" > "$OUTPUT_FILE"
@@ -3916,7 +3927,29 @@ ${previous_result}
                         else
                             _ctx_note="Context utilisation unknown."
                         fi
-                        write_result "FAILED" "Agent entered a degenerate loop (repeated $tc_name $MAX_REPEATS times with the same arguments). ${_ctx_note}" "$last_content" "$(get_duration)" "degenerate tool loop"
+                        # THE WORK MAY ALREADY BE DONE. The detector fires on
+                        # the model repeating itself, which is not the same as
+                        # the step having produced nothing: observed 2026-08-28,
+                        # an analyst wrote and enriched its declared CHANGELOG.md
+                        # and only THEN looped on git reads that all succeeded —
+                        # and the unconditional FAILED below threw the finished
+                        # changelog away and failed the whole pipeline.
+                        #
+                        # So if the step's declared contract is already
+                        # satisfied, finalise with the work and record the loop,
+                        # exactly as the iteration cap does (8.1). The glob must
+                        # be NON-EMPTY: output_contract_satisfied returns true
+                        # when nothing is declared, and without this guard every
+                        # contract-free step would start passing its loops, which
+                        # is the silent pass 8.3 forbids.
+                        local _loop_msg="Agent entered a degenerate loop (repeated $tc_name $MAX_REPEATS times with the same arguments). ${_ctx_note}"
+                        if [ -n "${REQUIRE_OUTPUT_GLOB:-}" ] && output_contract_satisfied; then
+                            log "degenerate loop, but the output contract ($REQUIRE_OUTPUT_GLOB) is satisfied — finalising with the work instead of discarding it"
+                            DEGENERATE_LOOP_DETAIL="$_loop_msg"
+                            write_result "COMPLETED" "$_loop_msg" "$last_content" "$(get_duration)"
+                            return 0
+                        fi
+                        write_result "FAILED" "$_loop_msg" "$last_content" "$(get_duration)" "degenerate tool loop"
                         return 1
                     fi
                 else

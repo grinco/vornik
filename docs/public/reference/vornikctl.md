@@ -249,6 +249,7 @@ vornikctl bench agent run [flags]
 | `--repeats` | `1` | runs per task; repeats shrink a task's contribution to sigma_d but add no pairs |
 | `--run-id` |  | identifier for this run |
 | `--swarm` |  | swarm whose roles execute the tasks |
+| `--task-set-full` |  | the WHOLE task set this run is one batch of. The arm's task-derived axes describe this file rather than --tasks, so batches of one arm merge instead of being refused as disagreeing arms. Takes a FILE, never a digest: a hash typed by hand can be wrong in a way nothing detects, a file cannot |
 | `--tasks` |  | JSON task set to run |
 
 ## vornikctl bench agent taskset-hash

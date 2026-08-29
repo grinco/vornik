@@ -1,10 +1,21 @@
 # Benchmarks
 
-Vornik's memory subsystem is measured, not asserted. This section states what we
-measure, how to reproduce it, and where Vornik loses.
+Vornik is measured, not asserted. This section states what we measure, how to
+reproduce it, and where Vornik loses.
 
-Every number here is produced by `vornikctl bench memory`, which ships with the
-product. Nothing is hand-transcribed from a spreadsheet, and every result carries a
+Two benchmarks, answering different questions:
+
+- **Memory / retrieval** — how well the memory subsystem finds what matters,
+  against a public dataset. Most of this page. Independently reproducible.
+- **Agent quality** — the decisions the control logic makes: what the lead
+  granted, whether roles followed their output schemas, whether agents called
+  tools correctly. Reported in
+  [Results by release](results.md#agent-quality--202690-first-scored-arm).
+  **Not independently reproducible** — its task set and answer key are not
+  published — so it is reported with that limitation stated rather than implied.
+
+Every number here is produced by `vornikctl bench memory` or `vornikctl bench
+agent`, which ship with the product. Nothing is hand-transcribed from a spreadsheet, and every result carries a
 **comparability key** — a digest of the dataset revision, the models involved, the
 retrieval budget and the prompts — so two numbers that are not comparable refuse to
 be compared.
@@ -29,7 +40,14 @@ auditor can re-run it.
 
 ## Current results
 
-See [Results by release](results.md) for the tracked history.
+See [Results by release](results.md) for the tracked history — the LongMemEval
+retrieval rows, and the agent-quality arm.
+
+**The agent figures name their model on purpose.** They are measured on a
+self-hosted 27B open-weight model on a single machine, which is what a
+self-hosting user actually runs, rather than on a large hosted model that would
+report a smoother number. The gap between the two is stated alongside the
+result.
 
 ## Reproducing a result
 

@@ -581,3 +581,72 @@ func TestBenchAgent_ShippedTaskSetLoads(t *testing.T) {
 		t.Errorf("total tasks across both sets = %d, want 40", len(seen))
 	}
 }
+
+// A scored arm that runs ONE BATCH of the task set must still describe the
+// WHOLE set on every axis, or `bench agent rollup` refuses to merge the
+// batches — it rejects journals whose arms disagree, which is correct and is
+// exactly what made a 7-hour arm unresumable (design §12.13).
+//
+// All THREE task-derived axes matter, not just the task-set digest: scoring
+// policy and tier policy are computed from the same slice, so a batch would
+// differ on all three.
+func TestBuildArm_BatchDescribesTheWholeTaskSet(t *testing.T) {
+	full := []agentbench.TaskSpec{
+		{ID: "a", Workflow: "simple-workflow", Prompt: "one", Tier: "exploratory"},
+		{ID: "b", Workflow: "simple-workflow", Prompt: "two", Tier: "exploratory"},
+		{ID: "c", Workflow: "simple-workflow", Prompt: "three", Tier: "exploratory"},
+	}
+	batch := full[:1] // the first batch only
+
+	prevPol, prevArm := benchAgentContextPol, benchAgentArm
+	benchAgentContextPol, benchAgentArm = "suppression=none;advert=gated", "test-arm"
+	t.Cleanup(func() { benchAgentContextPol, benchAgentArm = prevPol, prevArm })
+
+	whole, err := buildArmOver(full, full, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	batched, err := buildArmOver(batch, full, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if batched.TaskSetSHA256 != whole.TaskSetSHA256 {
+		t.Errorf("task-set digest differs: batch %s, whole %s",
+			batched.TaskSetSHA256, whole.TaskSetSHA256)
+	}
+	if batched.ScoringPolicySHA256 != whole.ScoringPolicySHA256 {
+		t.Errorf("scoring-policy digest differs: batch %s, whole %s",
+			batched.ScoringPolicySHA256, whole.ScoringPolicySHA256)
+	}
+	if batched.TierPolicySHA256 != whole.TierPolicySHA256 {
+		t.Errorf("tier-policy digest differs: batch %s, whole %s",
+			batched.TierPolicySHA256, whole.TierPolicySHA256)
+	}
+}
+
+// Without an axis set, the arm describes exactly the tasks it ran. This is the
+// unbatched path every existing caller uses, and it must not change.
+func TestBuildArm_UnbatchedDescribesWhatItRan(t *testing.T) {
+	tasks := []agentbench.TaskSpec{
+		{ID: "a", Workflow: "simple-workflow", Prompt: "one", Tier: "exploratory"},
+		{ID: "b", Workflow: "simple-workflow", Prompt: "two", Tier: "exploratory"},
+	}
+	prevPol, prevArm := benchAgentContextPol, benchAgentArm
+	benchAgentContextPol, benchAgentArm = "suppression=none;advert=gated", "test-arm"
+	t.Cleanup(func() { benchAgentContextPol, benchAgentArm = prevPol, prevArm })
+
+	// nil axis set => axes come from the tasks themselves.
+	got, err := buildArmOver(tasks, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := buildArmOver(tasks, tasks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TaskSetSHA256 != want.TaskSetSHA256 {
+		t.Errorf("nil axis set must equal self-described: %s vs %s",
+			got.TaskSetSHA256, want.TaskSetSHA256)
+	}
+}

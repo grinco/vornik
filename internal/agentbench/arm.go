@@ -227,6 +227,88 @@ func (a ArmFields) Partial() bool {
 		a.TierPolicySHA256 == "" || len(a.Probes) == 0
 }
 
+// CheckMergeable is CheckComparable for BATCHES OF ONE ARM.
+//
+// Models and AgentImages are OBSERVED — a batch records only the roles its own
+// tasks invoked — so batches of one arm legitimately differ in role COVERAGE.
+// Observed 2026-08-29: a completed 30-task arm refused to merge because batch 0
+// never ran analyst or tester while batch 1 did, though every shared role held
+// an identical value. Unlike the task-derived axes, these cannot be made
+// whole-set at build time: nothing knows which roles a task will invoke until
+// it runs.
+//
+// So coverage may differ and VALUES may not. A role present in both must agree;
+// roles present in one are unioned by the caller. Every other axis is compared
+// exactly as CheckComparable does — the tolerance is confined to the two
+// observed maps and must not leak into the axes that define the experiment.
+//
+// This is deliberately NOT a relaxation of CheckComparable, which still governs
+// diffing two independent arms, where a differing model set is a different
+// experiment and must refuse.
+func CheckMergeable(a, b ArmFields) error {
+	if err := sharedRolesAgree("models", a.Models, b.Models); err != nil {
+		return err
+	}
+	if err := sharedRolesAgree("agent_images", a.AgentImages, b.AgentImages); err != nil {
+		return err
+	}
+	// Compare every other axis with the observed maps restricted to the roles
+	// both saw, so coverage cannot mask a real difference elsewhere.
+	an, bn := a, b
+	an.Models, bn.Models = restrictToShared(a.Models, b.Models)
+	an.AgentImages, bn.AgentImages = restrictToShared(a.AgentImages, b.AgentImages)
+	return CheckComparable(an, bn)
+}
+
+// sharedRolesAgree refuses when a role observed in BOTH maps holds different
+// values — a model swapped mid-arm, or one batch run against another image.
+func sharedRolesAgree(axis string, a, b map[string]string) error {
+	for role, av := range a {
+		if bv, ok := b[role]; ok && av != bv {
+			return fmt.Errorf("arms disagree on %s for role %q (%q vs %q); "+
+				"batches of one arm must have measured the same system",
+				axis, role, av, bv)
+		}
+	}
+	return nil
+}
+
+// restrictToShared returns both maps reduced to the keys they have in common.
+func restrictToShared(a, b map[string]string) (map[string]string, map[string]string) {
+	ra := make(map[string]string, len(a))
+	rb := make(map[string]string, len(b))
+	for k, v := range a {
+		if bv, ok := b[k]; ok {
+			ra[k] = v
+			rb[k] = bv
+		}
+	}
+	return ra, rb
+}
+
+// unionObservedRoles merges the observed role maps of two mergeable arms.
+//
+// The merged arm must describe every role that actually ran, or a rolled-up
+// figure would silently cover fewer roles than the pass exercised. Safe only
+// after CheckMergeable, which has already refused any shared-role disagreement.
+func unionObservedRoles(a, b ArmFields) ArmFields {
+	out := a
+	out.Models = unionMaps(a.Models, b.Models)
+	out.AgentImages = unionMaps(a.AgentImages, b.AgentImages)
+	return out
+}
+
+func unionMaps(a, b map[string]string) map[string]string {
+	out := make(map[string]string, len(a)+len(b))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
+}
+
 // CheckComparable refuses a diff between runs that do not agree, naming every
 // differing axis rather than the first — an operator who fixes one difference
 // and re-runs only to hit the next has been sent round a loop.

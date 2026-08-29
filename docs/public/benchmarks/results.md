@@ -195,6 +195,72 @@ right documents and pads the set.
   CI gate, which wants the reranker off and the RRF path proven.
 - n=3 on 120 items. Enough for a spread, not enough to resolve a sub-point move.
 
+## Agent quality — 2026.9.0 (first scored arm)
+
+A different benchmark from the LongMemEval rows above, measuring a different
+thing: not retrieval, but **the decisions the control logic makes** — what the
+lead granted, whether roles followed their output schemas, and whether agents
+called tools correctly. It runs 30 software tasks through a multi-agent
+`dev-pipeline` swarm against an operator-reviewed answer key.
+
+| Release | Tasks | Task success | Schema conformance | Tool-call validity | Steps with no output | Cost/task |
+|---|---|---|---|---|---|---|
+| `2026.8.9-70-g5d247f72` (shipped as **2026.9.0**) | 30 | 100.0% | 0.985 | 1.000 | 9.7% | $0.74 |
+
+Efficiency, same arm: 667,801 tokens and 62.4 tool calls per task, 0 escalations,
+0 schema retries. Total spend $25.23.
+
+**Read both layers, because the first one alone flatters us.** Task success is
+100%, and underneath it **14 of 144 terminal steps (9.7%) produced no output at
+all** — 8 hit the iteration cap, 4 entered a degenerate tool loop, 2 failed
+outright. Recovery absorbs those, which is the system working as designed, but a
+headline "100%" without the step figure would describe a smoother product than
+exists.
+
+### The model is part of the result, not a footnote
+
+**Model: `Qwen/Qwen3.8-27B-FP8`, self-hosted, one box.** Every figure above is
+that model's behaviour as much as the control logic's, and the difference is
+large enough to change how the numbers read.
+
+Measured over ~244,000 tool calls across two deployments: this model enters
+identical-repeat tool loops **26x more often** than the mix of larger hosted
+models (0.52% of calls against 0.02%), and once nudged out of one it changes
+approach **36%** of the time against **82%**.
+
+That is deliberate and it is the point. **A self-hosted 27B on a single machine
+is what someone running this at home actually has.** An organisation putting a
+large hosted model behind the same control logic sees the lower rate; these
+figures describe the harder case rather than the flattering one. The comparability
+key pins the model identity, so a future arm on a different model refuses to
+compare against this row rather than quietly superseding it.
+
+### What this row does NOT establish
+
+- **No pass or fail.** `bench agent gate` **refused a verdict**, correctly:
+  resolving a 5-point effect at the inherited σ=0.0604 needs 12 paired tasks and
+  this arm has 5, which can only resolve 7.6 points. A smaller movement must be
+  reported as inconclusive with that floor, never as "no change".
+- **No trend.** It is the first scored arm; there is nothing to compare it
+  against. The releases before it have no agent row at all.
+- **No noise floor for this task set.** The σ above is inherited from an earlier
+  3-task measurement and describes a different set. The honest σ for these 30
+  tasks does not exist yet, which is why the gate refuses.
+- **Not independently reproducible.** Unlike the LongMemEval rows, which run
+  against a public dataset anyone can fetch, the agent task set and its answer
+  key are not published. An external reader can see the method and the figures
+  and cannot re-run them. That is a real limitation of this row and is stated
+  rather than left to be discovered.
+
+### Provenance
+
+Both the daemon binary and the agent image are recorded by content digest in the
+run's arm key, and the run refuses to merge batches that disagree on any axis.
+**Arms recorded before 2026-08-29 carry no agent-image identity at all** — the
+executor discarded every image ID it observed, so those runs are marked
+untrustworthy and cannot serve as a baseline. This is the first arm whose image
+provenance is real.
+
 ## Releases with no row, and why
 
 The policy in `RELEASE.md` requires a row per release from `2026.8.4`. It was not
@@ -208,7 +274,8 @@ each is stated:
 | `2026.8.6` | none | As above. |
 | `2026.8.7` | none | No run. The reason was recorded at the time in the 2026.8.7 release notes: every outward-facing provider was disabled and all roles moved to a locally served model during that cycle, so a run could not be pinned to the baseline row's axes. |
 | `2026.8.8` | **yes** | Both axes above. The warm row was measured at `0e450f9c`; the cold row at `2698eb67`. |
-| `2026.8.9` | none *at the tag* | No run was taken at `2026.8.9` itself. The tree 50 commits past it (`2026.8.9-50-g4b343821`) is measured on both axes above. |
+| `2026.8.9` | none *at the tag* | No run was taken at `2026.8.9` itself. The tree past it is measured on both memory axes above. |
+| `2026.9.0` | **agent row only** | The agent arm above was taken on the release candidate (`2026.8.9-70-g5d247f72`). No LongMemEval row: the memory axes were measured 50 commits earlier in the same cycle and nothing in the intervening work touches the retrieval path. Stated rather than left as a silent gap. |
 
 A missing row stated as missing is honest. An absent row is not — which is the whole
 reason this section exists.

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -208,6 +209,59 @@ func TestDiscover_SendsTheVornikUserAgent(t *testing.T) {
 	for _, ua := range seen {
 		assert.True(t, strings.HasPrefix(ua, "Vornik/"), "User-Agent = %q", ua)
 	}
+}
+
+func TestDiscover_RejectsInsecureAuthorizationServerEndpoints(t *testing.T) {
+	var as *httptest.Server
+	as = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/.well-known/") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 as.URL,
+				"authorization_endpoint": "http://authorization.example/authorize",
+				"token_endpoint":         "http://authorization.example/token",
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer as.Close()
+
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource") {
+			_, _ = w.Write([]byte(prmBody("http://"+r.Host+"/mcp", as.URL)))
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="mcp"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer mcp.Close()
+
+	_, err := Discover(context.Background(), mcp.Client(), mcp.URL+"/mcp")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "https")
+}
+
+func TestDiscover_DoesNotFollowCrossOriginMetadataRedirect(t *testing.T) {
+	var targetHits atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits.Add(1)
+		_, _ = w.Write([]byte(`{"authorization_servers":["https://auth.example"]}`))
+	}))
+	defer target.Close()
+
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource") {
+			http.Redirect(w, r, target.URL+"/metadata", http.StatusTemporaryRedirect)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="mcp"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer mcp.Close()
+
+	_, err := Discover(context.Background(), mcp.Client(), mcp.URL+"/mcp")
+	require.Error(t, err)
+	assert.Zero(t, targetHits.Load(), "metadata fetch must not cross origins through redirects")
 }
 
 func TestParseChallenge(t *testing.T) {

@@ -775,7 +775,7 @@ func (e *Executor) executeAgentStepWithInfraRetry(
 				break
 			}
 		}
-		if attempt == infraRetryMaxAttempts {
+		if retryAttemptLimitReached(attempt, cfg) {
 			break
 		}
 
@@ -788,7 +788,7 @@ func (e *Executor) executeAgentStepWithInfraRetry(
 			Str("execution_id", execution.ID).
 			Str("step", stepIDForAttempt).
 			Int("attempt", attempt).
-			Int("max", infraRetryMaxAttempts).
+			Int("max", cfg.MaxAttempts).
 			Dur("backoff", delay).
 			Str("error", truncateForPrompt(err.Error(), 200)).
 			Msg("infra retry: transient failure detected, retrying after backoff")

@@ -10,7 +10,7 @@ Two benchmarks, answering different questions:
 - **Agent quality** — the decisions the control logic makes: what the lead
   granted, whether roles followed their output schemas, whether agents called
   tools correctly. Reported in
-  [Results by release](results.md#agent-quality--202690-first-scored-arm).
+  [Results by release](results.md#agent-quality-202690-first-scored-arm).
   **Not independently reproducible** — its task set and answer key are not
   published — so it is reported with that limitation stated rather than implied.
 

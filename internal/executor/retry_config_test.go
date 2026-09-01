@@ -42,6 +42,17 @@ func TestResolveStepRetry_PartialBlockKeepsOtherDefaults(t *testing.T) {
 	}
 }
 
+func TestConfiguredAttemptLimitIsNotCutOffAtLegacyDefault(t *testing.T) {
+	cfg := resolvedRetry{MaxAttempts: infraRetryMaxAttempts + 2}
+	if retryAttemptLimitReached(infraRetryMaxAttempts, cfg) {
+		t.Fatalf("configured max_attempts=%d was cut off at legacy default=%d",
+			cfg.MaxAttempts, infraRetryMaxAttempts)
+	}
+	if !retryAttemptLimitReached(cfg.MaxAttempts, cfg) {
+		t.Fatalf("attempt %d must exhaust configured max_attempts", cfg.MaxAttempts)
+	}
+}
+
 func TestResolveStepRetry_InitialDelayParsed(t *testing.T) {
 	got := resolveStepRetry(registry.WorkflowStep{
 		Retry: registry.WorkflowStepRetry{InitialDelay: "30s"},

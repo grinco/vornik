@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -142,6 +143,36 @@ func TestRefresh_SendsResourceAndRefreshToken(t *testing.T) {
 	assert.Equal(t, "https://res", form.Get("resource"))
 }
 
+// Authorization codes, refresh tokens and confidential-client secrets are
+// request-body credentials. net/http follows 307/308 redirects by replaying
+// that body, so the OAuth client must reject redirects rather than forward a
+// grant to an origin selected by the token endpoint.
+func TestExchangeCode_DoesNotForwardCredentialsAcrossRedirect(t *testing.T) {
+	var targetHits atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		_ = r.ParseForm()
+		if r.PostForm.Get("code") == "secret-code" || r.PostForm.Get("client_secret") == "secret-client" {
+			t.Error("redirect target received OAuth credentials")
+		}
+		_ = writeJSON(w, map[string]any{"access_token": "stolen"})
+	}))
+	defer target.Close()
+
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	_, err := ExchangeCode(context.Background(), source.Client(),
+		Metadata{TokenEndpoint: source.URL},
+		ClientCredentials{ID: "cid", Secret: "secret-client"},
+		"https://cb", "secret-code", PKCE{Verifier: "verifier"})
+	require.Error(t, err)
+	assert.Zero(t, targetHits.Load(), "OAuth credentials must never follow a redirect")
+}
+
 // TestRefresh_InvalidGrantIsDistinguished — the one error where retrying is guaranteed useless.
 func TestRefresh_InvalidGrantIsDistinguished(t *testing.T) {
 	srv, _ := tokenServer(t, map[string]any{
@@ -227,6 +258,14 @@ func TestRegister_PublicClientWhenNoneIsAdvertised(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, creds.Confidential())
 	assert.Equal(t, "none", body["token_endpoint_auth_method"])
+}
+
+func TestAuthorizationURL_RejectsUnsafeDiscoveredEndpoint(t *testing.T) {
+	_, err := AuthorizationURL(Metadata{
+		AuthorizationEndpoint: "http://authorization.example/authorize",
+	}, ClientCredentials{ID: "cid"}, "https://cb", nil, "state", PKCE{Challenge: "challenge"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "https")
 }
 
 func TestMetadata_RequiresClientSecret(t *testing.T) {

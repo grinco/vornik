@@ -69,6 +69,49 @@ func TestEveryManifestContainerfileExists(t *testing.T) {
 	}
 }
 
+// skipWalkDir decides whether the parity walk should descend into a directory.
+//
+// Build artifacts and vendored trees carry copies of the repo's own
+// Containerfiles; walking them would report every image twice.
+//
+// The root is NEVER skipped, however it is named. The export tree IS
+// `.vornik-export`, and `go test ./internal/imagemanifest/` runs inside it as
+// the CE publish gate ("manifest paths exist in the exported tree") — so
+// matching the root on its basename skipped the entire walk on the first
+// callback and reported "no Containerfiles" from a tree that had them. That
+// made the publish gate fail for a reason unrelated to what it gates
+// (regression from 22ff9ab8, caught at the 2026.9.0 release gate). A
+// verify-only export to any other path passed, which is what hid it.
+func skipWalkDir(path, root, name string) bool {
+	if path == root {
+		return false
+	}
+	switch name {
+	case ".git", "node_modules", ".vornik-export", ".vornik-public-clone":
+		return true
+	}
+	return false
+}
+
+// TestSkipWalkDir_NeverSkipsTheRoot is the regression guard for the above.
+func TestSkipWalkDir_NeverSkipsTheRoot(t *testing.T) {
+	const root = "/x/.vornik-export"
+	if skipWalkDir(root, root, ".vornik-export") {
+		t.Fatal("the walk root was skipped by its own basename: the parity walk " +
+			"reports an empty tree, and the CE publish gate fails for an unrelated reason")
+	}
+	if skipWalkDir("/x/.vornik-public-clone", "/x/.vornik-public-clone", ".vornik-public-clone") {
+		t.Fatal("same defect for the clone directory")
+	}
+	// Nested copies must still be skipped, or every image is counted twice.
+	if !skipWalkDir(root+"/.vornik-export", root, ".vornik-export") {
+		t.Fatal("a NESTED export tree must still be skipped")
+	}
+	if !skipWalkDir(root+"/.git", root, ".git") {
+		t.Fatal(".git must still be skipped")
+	}
+}
+
 // TestManifestParity is contract C4: every Containerfile in the repo appears
 // in the manifest or on the explicit exclusion list.
 //
@@ -93,11 +136,7 @@ func TestManifestParity(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			// Build artifacts and vendored trees carry copies of the
-			// repo's own Containerfiles; walking them would report every
-			// image twice.
-			switch d.Name() {
-			case ".git", "node_modules", ".vornik-export", ".vornik-public-clone":
+			if skipWalkDir(path, root, d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil

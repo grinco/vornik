@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: d9d1ed0bf881fc2141427b5c390cfe18c355af64d131ac80694cfdd44f215a3e
+      sha256: b6d8ce642428cec4b898293b84800136fee8dbdc2eccd98fd06909a6b54a6dec
 ---
 # Release Notes
 
@@ -16,6 +16,76 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     new behavior; those are called out below.
 
 ---
+
+## 2026.9.0
+
+**`vornikctl doctor` no longer reports OK for a check it never ran.** Thirty
+checks returned `OK` from paths that meant *not evaluated* — no database, no
+config directory, metrics not wired. They now report `SKIPPED`. If your doctor
+output gets less green after upgrading, nothing broke: those checks were never
+running.
+
+**Step `retry:` blocks now work.** If you have workflows with a `retry:` block
+(`on`, `max_attempts`, `backoff`, `initial_delay`), it was being silently
+dropped and the executor used three fixed values instead. It now takes effect —
+so **review any `retry:` you have configured before upgrading**, because this
+release is the first time it will actually run. Defaults are unchanged for steps
+with no block. The `retryPolicy:` spelling never worked and has been removed;
+`vornikctl workflow validate` will now tell you if you have it, along with any
+other unknown key in a step — those used to be dropped in silence.
+
+**Check your role permission keys.** A role written `permissions.allowed_tools`
+instead of `allowedTools` used to parse cleanly and produce an *empty* tool
+allowlist, which the MCP gate treats as "unrestricted". That misspelling is now
+a load error. If a swarm fails to load after upgrading, this is likely why — and
+that role has been running without its tool restriction.
+
+**MCP tool results are now scanned for injection attempts and credential
+leakage.** Detect-only in this release. Content from Jira, Sentry, scrapers and
+other MCP servers was previously not scanned at all; only the daemon's own fetch
+tool and the chat path were.
+
+**MCP connectors that lose OAuth authentication now fail visibly.** A connector
+whose token expired could 401 for hours while its tasks reported COMPLETED, with
+the error visible only inside the task's result payload. Tokens are also now
+refreshed per call rather than frozen at connection time. Additional hardening:
+secrets are no longer replayed on redirects, insecure OAuth endpoints are
+refused, and a grant issued for one resource path is no longer presented to a
+sibling path on the same host — if you use a server whose audience is
+path-scoped, reconnect it after changing its URL path.
+
+**The documented update path now rebuilds container images by default.** If you
+have been following `UPDATING.md`, you may not have received an updated agent
+image for some time — the rebuild was opt-in. Parts of each release ship inside
+that image, so an update that swapped only the daemon delivered half of it.
+
+**Packaged installs can verify their images.** A release now records the images
+it declares, and the daemon compares what it is running against that record —
+in both directions, so a package upgrade that has not been restarted yet is
+reported rather than passing silently. The `image_freshness` check also now
+works at all; it previously compared two different SHA formats and could never
+pass.
+
+**The agent image is published to GHCR**, so hosts pull it rather than building
+it. Air-gapped hosts continue to build locally under the same name.
+
+**New doctor check: `unclassified_step_failures`**, reporting the share of step
+failures with no named cause over a trailing 30 days and warning above 15%.
+Counts of fail-open events in the secret-redaction path are now published too,
+so "no findings" can be distinguished from "never scanned".
+
+**Agents recover better from two common failure modes.** A step killed for
+looping now keeps its output if it had already satisfied its contract, instead
+of discarding the work and failing the pipeline. And a call to a tool that does
+not exist now returns the available tools and the nearest match instead of a
+bare error.
+
+**Benchmarks:** this release publishes the first scored agent-quality figures
+(30 tasks, 100% task success, $0.74/task — with the 9.7% of steps that produced
+no output stated alongside it), and restores the memory-benchmark track record
+with an explanation of the axis change that broke it. See
+[Benchmarks](../benchmarks/results.md).
+
 
 ## 2026.8.9
 

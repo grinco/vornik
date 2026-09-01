@@ -31,6 +31,13 @@ type Manager struct {
 	// caller. Keyed independently of `clients` because it must outlive the
 	// entry it guards (the re-dial replaces that entry).
 	redialLocks sync.Map
+	// generation counts catalog swaps. SyncProjects bumps it under mu on every
+	// swap; StartForProject snapshots it before dialling and refuses to install
+	// a client built against a catalog a reload has since replaced. A plain
+	// "is the project still present?" check cannot serve here the way it does
+	// in redial: StartForProject is also how a project gets its FIRST clients,
+	// so absence is its normal input, not evidence of removal.
+	generation uint64
 	// blockNotifier, when set, gets a post-hook on every successful tool
 	// result to push an operator Telegram alert for a solvable scraper block
 	// on a curated portal. Nil (default) → no notification. See block_notify.go.
@@ -62,6 +69,14 @@ var connectFn = Connect
 // stream that won't terminate) without a real transport.
 var closeFn = (*Client).Close
 
+// dialResult owns one attempted connection. client==nil means the dial failed
+// and is omitted from the replacement catalog.
+type dialResult struct {
+	projectID string
+	name      string
+	client    *Client
+}
+
 // SyncProjects reconciles the manager to exactly the desired
 // per-project server sets. It replaces the previous reload pattern of
 // Close()-then-StartForProject, which wiped every client and then
@@ -80,14 +95,6 @@ var closeFn = (*Client).Close
 // partial-success convention, a server that fails to dial is logged
 // and skipped.
 func (m *Manager) SyncProjects(ctx context.Context, desired map[string][]ServerConfig) {
-	// One dial result per server. client==nil means the dial failed (or was
-	// abandoned) — it's simply omitted from the new catalog.
-	type dialResult struct {
-		projectID string
-		name      string
-		client    *Client
-	}
-
 	fresh := make(map[string]map[string]*Client, len(desired))
 	total := 0
 	for projectID, servers := range desired {
@@ -152,10 +159,19 @@ collect:
 			break collect
 		}
 	}
+	if pending > 0 {
+		// Dials whose transports ignore cancellation can still succeed after the
+		// reload budget expires. The buffered result channel keeps their send from
+		// blocking, but without a receiver the resulting clients (including stdio
+		// subprocesses) would be orphaned forever. Reap exactly the abandoned
+		// results out of band so the reload itself remains bounded.
+		go closeLateDialResults(results, pending, closeFn)
+	}
 
 	m.mu.Lock()
 	displaced := m.clients
 	m.clients = fresh
+	m.generation++
 	m.mu.Unlock()
 
 	// Close the displaced (old-catalog) clients OUT OF BAND. The new catalog is
@@ -186,6 +202,15 @@ collect:
 	}
 }
 
+func closeLateDialResults(results <-chan dialResult, remaining int, closer func(*Client) error) {
+	for range remaining {
+		r := <-results
+		if r.client != nil {
+			_ = closer(r.client)
+		}
+	}
+}
+
 // StartForProject connects to all MCP servers declared by a single project
 // and records the resulting clients under that project's ID. Safe to call
 // multiple times for the same projectID — new servers are added; existing
@@ -198,6 +223,14 @@ func (m *Manager) StartForProject(ctx context.Context, projectID string, servers
 		m.logger.Error().Msg("mcp: StartForProject called with empty projectID — ignored")
 		return
 	}
+	// Snapshot the catalog generation BEFORE any dial. Each dial below is
+	// bounded at 30s and runs outside mu, and this call holds no reloadMu — the
+	// admin refresh path (adminMCPRefresher.RefreshAll) does not take it — so a
+	// config reload can complete its whole swap inside that window.
+	m.mu.RLock()
+	startGen := m.generation
+	m.mu.RUnlock()
+
 	for _, cfg := range servers {
 		connectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		client, err := connectFn(connectCtx, cfg, m.logger.With().Str("project", projectID).Logger())
@@ -211,6 +244,23 @@ func (m *Manager) StartForProject(ctx context.Context, projectID string, servers
 			continue
 		}
 		m.mu.Lock()
+		if m.generation != startGen {
+			// A reload swapped the catalog while we dialled. Installing now
+			// would resurrect servers the reload removed and leave them live
+			// until the next one. The set we were handed is stale in full, so
+			// abandon the remaining servers too — the reload dialled the
+			// authoritative set itself.
+			m.mu.Unlock()
+			// Detached, and closeFn pinned, for the same reasons as the
+			// displaced closes in SyncProjects: a stdio Close can block.
+			closer := closeFn
+			go func(c *Client) { _ = closer(c) }(client)
+			m.logger.Info().
+				Str("project", projectID).
+				Str("server", cfg.Name).
+				Msg("mcp: config reloaded during connect; discarding stale client")
+			return
+		}
 		if _, ok := m.clients[projectID]; !ok {
 			m.clients[projectID] = make(map[string]*Client)
 		}
@@ -424,13 +474,24 @@ func (m *Manager) redial(projectID, serverName string) error {
 	closer := closeFn
 
 	m.mu.Lock()
-	byServer, stillThere := m.clients[projectID]
-	if !stillThere {
+	byServer, projectStillThere := m.clients[projectID]
+	currentAtSwap, serverStillThere := byServer[serverName]
+	if !projectStillThere || !serverStillThere || currentAtSwap != current {
 		// The project was dropped by a reload while we dialled. Don't
-		// resurrect it — close what we just built.
+		// resurrect it — and likewise do not resurrect a removed server or
+		// overwrite a newer client installed by the reload.
 		m.mu.Unlock()
 		go func() { _ = closer(fresh) }()
-		return fmt.Errorf("project %q was removed while re-dialling %q", projectID, serverName)
+		switch {
+		case !projectStillThere:
+			return fmt.Errorf("project %q was removed while re-dialling %q", projectID, serverName)
+		case !serverStillThere:
+			return fmt.Errorf("server %q was removed from project %q while re-dialling", serverName, projectID)
+		default:
+			// A reload already installed another client. It is live, so the
+			// caller may retry its tool call against that winner.
+			return nil
+		}
 	}
 	displaced := byServer[serverName]
 	byServer[serverName] = fresh

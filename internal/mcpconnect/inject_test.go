@@ -289,9 +289,51 @@ func TestAccessToken_PathDifferencesAreNotAnOriginChange(t *testing.T) {
 	assert.Equal(t, "at-stored", got)
 }
 
+// A host can expose multiple independently-authorized MCP resources. A grant
+// for /service-a must not be attached after config repoints the same server
+// name to sibling /service-b merely because scheme+host still match.
+func TestAccessToken_RefusesSiblingResourceOnSameOrigin(t *testing.T) {
+	v := newRefreshVendor(t)
+	tokens := newFakeTokens()
+	tok := storedGrant(v.URL, time.Hour, "rt-1")
+	tok.Resource = v.URL + "/service-a"
+	require.NoError(t, tokens.Upsert(context.Background(), tok))
+	c := newConnector(t, tokens, &fakeAudit{}, "https://x.example.com")
+
+	ref := injectRef(v.URL)
+	ref.URL = v.URL + "/service-b"
+	_, err := c.AccessToken(context.Background(), ref)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNeedsReconnect)
+}
+
 func TestSameOrigin(t *testing.T) {
 	assert.True(t, sameOrigin("https://a.example/mcp", "https://a.example/mcp/v1"))
 	assert.True(t, sameOrigin("https://A.Example/x", "https://a.example/y"))
 	assert.False(t, sameOrigin("https://a.example/x", "https://b.example/x"))
 	assert.False(t, sameOrigin("https://a.example/x", "http://a.example/x"))
+}
+
+// Dot segments must not walk out of the granted audience. url.Parse does NOT
+// resolve "..", so an unnormalised prefix comparison reads /service-a/../service-b
+// as a path UNDER the /service-a grant and attaches that grant to a sibling
+// resource — the very substitution TestAccessToken_RefusesSiblingResourceOnSameOrigin
+// exists to prevent, spelled differently.
+func TestSameResourceAudience_DotSegmentsCannotEscapeTheGrant(t *testing.T) {
+	const grant = "https://h.example/service-a"
+	assert.False(t, sameResourceAudience(grant, "https://h.example/service-a/../service-b"),
+		"a dot segment must not smuggle a sibling resource past the audience check")
+	assert.False(t, sameResourceAudience(grant, "https://h.example/service-a/./../service-b"),
+		"mixed dot segments must normalise before comparison")
+
+	// Normalisation must not break the cases that are legitimately in-audience.
+	assert.True(t, sameResourceAudience(grant, "https://h.example/service-a"))
+	assert.True(t, sameResourceAudience(grant, "https://h.example/service-a/"))
+	assert.True(t, sameResourceAudience(grant, "https://h.example/service-a/v1"))
+	assert.True(t, sameResourceAudience(grant, "https://h.example/service-a/v1/../v2"),
+		"a dot segment that stays inside the grant is still in-audience")
+	assert.False(t, sameResourceAudience(grant, "https://h.example/service-ab"),
+		"prefix confusion must stay closed")
+	// An origin-wide grant stays origin-wide.
+	assert.True(t, sameResourceAudience("https://h.example", "https://h.example/anything"))
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -201,7 +203,7 @@ func (c *Connector) refreshLocked(ctx context.Context, ref ServerRef, current *p
 // would be sent to.
 //
 // Cheap and config-only: it compares the stored resource with the server's configured URL, and
-// only when the configured URL is a prefix-incompatible different origin. Discovery is NOT re-run
+// only when the configured URL is outside the stored resource audience. Discovery is NOT re-run
 // here — that would put an HTTP round trip on every tool call — so this catches the case that
 // actually happens (an operator repoints a server's url and forgets to reconnect) without
 // pretending to be a full audience check.
@@ -210,7 +212,7 @@ func (c *Connector) assertResourceMatches(ctx context.Context, ref ServerRef, to
 	if tok.Resource == "" || ref.URL == "" {
 		return nil
 	}
-	if sameOrigin(tok.Resource, ref.URL) {
+	if sameResourceAudience(tok.Resource, ref.URL) {
 		return nil
 	}
 	c.Logger.Warn().
@@ -218,9 +220,47 @@ func (c *Connector) assertResourceMatches(ctx context.Context, ref ServerRef, to
 		Str("project", ref.ProjectID).
 		Str("grant_resource", tok.Resource).
 		Str("configured_url", ref.URL).
-		Msg("mcp oauth: the stored grant was issued for a different origin than this server's configured url — refusing to present it")
-	return fmt.Errorf("%w: %q was reconfigured to a different origin than its grant was issued for; reconnect it",
+		Msg("mcp oauth: the stored grant was issued for a different origin or resource audience than this server's configured url — refusing to present it")
+	return fmt.Errorf("%w: %q was reconfigured to a different origin or resource audience than its grant was issued for; reconnect it",
 		ErrNeedsReconnect, ref.ServerName)
+}
+
+// sameResourceAudience accepts an origin-wide resource and URLs at or below a
+// path-scoped resource. It deliberately rejects sibling paths on the same host:
+// RFC 8707 uses the full resource URI as the token audience, not only its
+// scheme and authority.
+func sameResourceAudience(resource, configured string) bool {
+	if !sameOrigin(resource, configured) {
+		return false
+	}
+	grant, err := url.Parse(strings.TrimSpace(resource))
+	if err != nil {
+		return false
+	}
+	target, err := url.Parse(strings.TrimSpace(configured))
+	if err != nil {
+		return false
+	}
+	grantPath := cleanAudiencePath(grant.EscapedPath())
+	targetPath := cleanAudiencePath(target.EscapedPath())
+	if grantPath == "" {
+		return true
+	}
+	return targetPath == grantPath || strings.HasPrefix(targetPath, grantPath+"/")
+}
+
+// cleanAudiencePath normalises a URL path for the audience comparison above.
+// url.Parse does NOT resolve dot segments, so without this
+// "https://h/service-a/../service-b" compares as a path UNDER a grant for
+// "https://h/service-a" — attaching that grant to a sibling resource, which is
+// exactly the substitution the path scoping exists to refuse. Cleaning the
+// ESCAPED path is deliberate: a percent-encoded "%2e%2e" is a literal segment
+// name, not traversal, and must not be collapsed into one.
+func cleanAudiencePath(p string) string {
+	if p == "" || p == "/" {
+		return ""
+	}
+	return strings.TrimSuffix(path.Clean(p), "/")
 }
 
 // sameOrigin compares scheme+host of two URLs, tolerating path differences: the RFC 8707 resource

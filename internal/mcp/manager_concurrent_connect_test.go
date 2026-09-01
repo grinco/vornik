@@ -122,6 +122,48 @@ func TestSyncProjects_HangingDialDoesNotStallBatch(t *testing.T) {
 	connectsDone.Wait() // join both goroutines before the deferred connectFn restore
 }
 
+// A dial that ignores cancellation can still succeed after the overall
+// reconnect budget has expired. That client never enters the swapped catalog;
+// it must be drained and closed or every reload leaks a transport/subprocess.
+func TestSyncProjects_ClosesClientThatConnectsAfterBudget(t *testing.T) {
+	origConnect, origClose := connectFn, closeFn
+	defer func() { connectFn, closeFn = origConnect, origClose }()
+
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+	lateClient := newFakeClient(ServerConfig{Name: "late"}, []Tool{{Name: "ping"}})
+	connectFn = func(_ context.Context, _ ServerConfig, _ zerolog.Logger) (*Client, error) {
+		close(dialStarted)
+		<-releaseDial // deliberately ignore ctx
+		return lateClient, nil
+	}
+	closed := make(chan *Client, 1)
+	closeFn = func(c *Client) error {
+		closed <- c
+		return nil
+	}
+
+	mgr := NewManager(zerolog.Nop())
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		mgr.SyncProjects(ctx, map[string][]ServerConfig{"p1": {{Name: "late"}}})
+		close(done)
+	}()
+	<-dialStarted
+	<-done
+	require.Zero(t, mgr.ServerCount(), "a post-budget dial must not enter the live catalog")
+
+	close(releaseDial)
+	select {
+	case got := <-closed:
+		require.Same(t, lateClient, got)
+	case <-time.After(time.Second):
+		t.Fatal("post-budget client leaked instead of being closed")
+	}
+}
+
 // TestSyncProjects_BlockingDisplacedCloseDoesNotStall is the ACTUAL 2026-07-08
 // activator-hang regression. Tearing down a displaced (old-catalog) client can
 // block — Client.Close() for a stdio server does Process.Kill + cmd.Wait, and a
@@ -167,4 +209,58 @@ func TestSyncProjects_BlockingDisplacedCloseDoesNotStall(t *testing.T) {
 
 	close(blockClose) // release the hung displaced Close
 	closeDone.Wait()  // join the detached close goroutine before the deferred closeFn restore
+}
+
+// TestStartForProject_DoesNotResurrectProjectRemovedByReload closes the sibling
+// of the 2026-08-30 redial-resurrection fix.
+//
+// A project refresh (adminMCPRefresher.RefreshAll → StartForProject, see
+// internal/service/container_admin.go) holds NO reloadMu, while SyncProjects
+// runs inside the reload activator that does. The two therefore overlap.
+// StartForProject dials OUTSIDE m.mu — up to 30s per server — and pre-fix
+// installed the result unconditionally. A reload landing in that window did its
+// wholesale catalog swap first, and the late install then put the removed
+// project's servers back, LIVE, until the next reload: exactly the outcome the
+// redial CAS exists to prevent, reached by the path that fix did not cover.
+func TestStartForProject_DoesNotResurrectProjectRemovedByReload(t *testing.T) {
+	origConnect, origClose := connectFn, closeFn
+	defer func() { connectFn, closeFn = origConnect, origClose }()
+
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+	stale := newFakeClient(ServerConfig{Name: "gws"}, []Tool{{Name: "ping"}})
+	connectFn = func(_ context.Context, _ ServerConfig, _ zerolog.Logger) (*Client, error) {
+		close(dialStarted)
+		<-releaseDial // the operator-triggered refresh is still dialling
+		return stale, nil
+	}
+	closed := make(chan *Client, 1)
+	closeFn = func(c *Client) error {
+		closed <- c
+		return nil
+	}
+
+	mgr := NewManager(zerolog.Nop())
+	done := make(chan struct{})
+	go func() {
+		mgr.StartForProject(context.Background(), "proj", []ServerConfig{{Name: "gws"}})
+		close(done)
+	}()
+
+	<-dialStarted
+	// The config reload lands mid-dial and removes the project entirely.
+	mgr.SyncProjects(context.Background(), map[string][]ServerConfig{})
+	close(releaseDial)
+	<-done
+
+	require.Zero(t, mgr.ServerCount(),
+		"a reload removed this project; a late dial must not put it back")
+	require.Empty(t, mgr.Tools("proj"),
+		"resurrected tools stay callable until the next reload")
+	select {
+	case got := <-closed:
+		require.Same(t, stale, got, "the abandoned client must be the one closed")
+	case <-time.After(time.Second):
+		t.Fatal("the abandoned client leaked instead of being closed")
+	}
 }

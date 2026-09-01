@@ -201,7 +201,7 @@ func probeUnauthenticated(ctx context.Context, client *http.Client, serverURL st
 	req.Header.Set("MCP-Protocol-Version", "2024-11-05")
 	setUserAgent(req)
 
-	resp, err := client.Do(req)
+	resp, err := doSameOrigin(client, req)
 	if err != nil {
 		return "", 0, fmt.Errorf("mcpauth: discovery probe: %w", err)
 	}
@@ -279,6 +279,10 @@ func fetchASMetadata(ctx context.Context, client *http.Client, servers []string)
 	var lastErr error
 	for _, issuer := range servers {
 		issuer = strings.TrimSuffix(issuer, "/")
+		if _, err := secureOAuthURL(issuer, "authorization server"); err != nil {
+			lastErr = err
+			continue
+		}
 		for _, suffix := range []string{
 			"/.well-known/oauth-authorization-server",
 			"/.well-known/openid-configuration",
@@ -289,6 +293,10 @@ func fetchASMetadata(ctx context.Context, client *http.Client, servers []string)
 				continue
 			}
 			if doc != nil && doc.TokenEndpoint != "" {
+				if err := validateASDocument(doc); err != nil {
+					lastErr = err
+					continue
+				}
 				return doc, nil
 			}
 		}
@@ -299,9 +307,31 @@ func fetchASMetadata(ctx context.Context, client *http.Client, servers []string)
 	return nil, fmt.Errorf("%w: the protected-resource metadata names no reachable authorization server", ErrNoDiscovery)
 }
 
+func validateASDocument(doc *asDocument) error {
+	for _, endpoint := range []struct {
+		name string
+		url  string
+	}{
+		{"authorization endpoint", doc.AuthorizationEndpoint},
+		{"token endpoint", doc.TokenEndpoint},
+		{"registration endpoint", doc.RegistrationEndpoint},
+	} {
+		if endpoint.url == "" {
+			continue
+		}
+		if _, err := secureOAuthURL(endpoint.url, endpoint.name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // fetchJSON GETs a JSON document. Bounded read: these are small metadata documents, and an
 // unbounded read from an untrusted host is an easy denial of service.
 func fetchJSON[T any](ctx context.Context, client *http.Client, rawURL string) (*T, error) {
+	if _, err := secureOAuthURL(rawURL, "metadata endpoint"); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
@@ -309,7 +339,7 @@ func fetchJSON[T any](ctx context.Context, client *http.Client, rawURL string) (
 	req.Header.Set("Accept", "application/json")
 	setUserAgent(req)
 
-	resp, err := client.Do(req)
+	resp, err := doSameOrigin(client, req)
 	if err != nil {
 		return nil, err
 	}

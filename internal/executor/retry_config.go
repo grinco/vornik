@@ -70,3 +70,10 @@ func (r resolvedRetry) shouldRetry(err error) bool {
 	_, class := refineAgentFailureOutcome(errorBeforeLogTail(err.Error()))
 	return r.On[class]
 }
+
+// retryAttemptLimitReached is the single attempt-budget check used by the
+// executor loop. Keeping it on the resolved config prevents the historical
+// hard-coded default from silently truncating an explicit max_attempts value.
+func retryAttemptLimitReached(attempt int, r resolvedRetry) bool {
+	return attempt >= r.MaxAttempts
+}

@@ -36,7 +36,7 @@ measured the same questions rather than inferring it from a count.
 already-ingested store. Since `98037e34` (2026-08-21) the harness clears the store
 before every run, unconditionally, so a warm repeat can no longer be produced. The
 table is kept because a shipped row is history; it is not extended. The open axis is
-[all six abilities, cold](#longmemeval--retrieval-all-six-abilities-tier-2-cold-corpus).
+[all six abilities, cold](#longmemeval-retrieval-all-six-abilities-tier-2-cold-corpus).
 
 | Release | Items | Ability | Context recall | Context precision | MRR | Runs | Key |
 |---|---|---|---|---|---|---|---|

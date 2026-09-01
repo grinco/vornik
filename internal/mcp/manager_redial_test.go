@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/require"
@@ -117,6 +118,51 @@ func TestExecute_ConcurrentCallsAgainstADeadServerRedialOnce(t *testing.T) {
 
 	require.Equal(t, int64(1), dials.Load(),
 		"25 concurrent callers must produce ONE new subprocess, not one each")
+}
+
+// A redial races config reload in production: the tool call notices the old
+// client is dead while SyncProjects is building and swapping the new catalog.
+// If the reload removes only this server (but keeps the project), the redial
+// must not put the stale server -- and its stale credentials -- back into the
+// newly activated catalog.
+func TestExecute_RedialDoesNotResurrectServerRemovedByReload(t *testing.T) {
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+	closedFresh := make(chan struct{}, 1)
+	swapDialSeams(t, func(_ context.Context, cfg ServerConfig, _ zerolog.Logger) (*Client, error) {
+		close(dialStarted)
+		<-releaseDial
+		return healthyClient(t, cfg.Name, "healed"), nil
+	})
+	closeFn = func(*Client) error {
+		closedFresh <- struct{}{}
+		return nil
+	}
+
+	mgr := NewManager(zerolog.Nop())
+	mgr.clients["proj"] = map[string]*Client{"gws": deadStdioClient("gws")}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.Execute(context.Background(), "proj", "mcp__gws__drive_search", `{}`)
+		done <- err
+	}()
+
+	<-dialStarted
+	// Simulate the atomic catalog swap performed by a reload that keeps the
+	// project but removes this one server.
+	mgr.mu.Lock()
+	mgr.clients["proj"] = map[string]*Client{}
+	mgr.mu.Unlock()
+	close(releaseDial)
+
+	require.Error(t, <-done, "the call must observe that the server was removed")
+	require.Empty(t, mgr.Tools("proj"), "a stale redial must not resurrect removed tools")
+	select {
+	case <-closedFresh:
+	case <-time.After(time.Second):
+		t.Fatal("the stale client built by the losing redial was not closed")
+	}
 }
 
 // A failure that is NOT a dead connection must never trigger a re-dial —

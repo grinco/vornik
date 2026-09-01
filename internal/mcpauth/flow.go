@@ -99,6 +99,9 @@ func Register(ctx context.Context, client *http.Client, md Metadata, redirectURI
 	if client == nil {
 		client = http.DefaultClient
 	}
+	if _, err := secureOAuthURL(md.RegistrationEndpoint, "registration endpoint"); err != nil {
+		return ClientCredentials{}, err
+	}
 
 	authMethod := "none"
 	if md.RequiresClientSecret() {
@@ -125,7 +128,7 @@ func Register(ctx context.Context, client *http.Client, md Metadata, redirectURI
 	req.Header.Set("Accept", "application/json")
 	setUserAgent(req)
 
-	resp, err := client.Do(req)
+	resp, err := doSensitivePOST(client, req)
 	if err != nil {
 		return ClientCredentials{}, fmt.Errorf("mcpauth: dynamic client registration: %w", err)
 	}
@@ -161,9 +164,9 @@ func AuthorizationURL(md Metadata, creds ClientCredentials, redirectURI string, 
 	if md.AuthorizationEndpoint == "" {
 		return "", errors.New("mcpauth: no authorization endpoint")
 	}
-	u, err := url.Parse(md.AuthorizationEndpoint)
+	u, err := secureOAuthURL(md.AuthorizationEndpoint, "authorization endpoint")
 	if err != nil {
-		return "", fmt.Errorf("mcpauth: parse authorization endpoint: %w", err)
+		return "", err
 	}
 	q := u.Query()
 	q.Set("response_type", "code")
@@ -230,6 +233,9 @@ func postToken(ctx context.Context, client *http.Client, endpoint string, creds 
 	if endpoint == "" {
 		return TokenResponse{}, errors.New("mcpauth: no token endpoint")
 	}
+	if _, err := secureOAuthURL(endpoint, "token endpoint"); err != nil {
+		return TokenResponse{}, err
+	}
 	if creds.Confidential() {
 		form.Set("client_secret", creds.Secret)
 	}
@@ -242,7 +248,7 @@ func postToken(ctx context.Context, client *http.Client, endpoint string, creds 
 	req.Header.Set("Accept", "application/json")
 	setUserAgent(req)
 
-	resp, err := client.Do(req)
+	resp, err := doSensitivePOST(client, req)
 	if err != nil {
 		return TokenResponse{}, fmt.Errorf("mcpauth: token request: %w", err)
 	}

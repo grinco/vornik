@@ -734,8 +734,17 @@ func (c *Container) initScheduler() error {
 		// each reach a human outside the channel chokepoint, so both carry the
 		// Art 50(1) notice (G6 findings A and C).
 		sysHandlers.Register(forgeh.NewOpenChangeRequestHandler(forgeResolver, forgeSrc, c.artifactStore, c.newTaintReviewer(), c.AIDisclosure))
-		sysHandlers.Register(forgeh.NewPostReviewHandler(forgeResolver, c.AIDisclosure))
-		sysHandlers.Register(forgeh.NewFetchDiffHandler(forgeResolver))
+		// The review-state store carries two things: the ABSORBING → CLOSING
+		// transition at the diff fetch (a review's comparison point, after
+		// which it must stop absorbing pushes), and the incremental baseline
+		// advanced once a review has actually posted. Unwired, the transition
+		// never fires and every review is a full one.
+		var forgeReviewState persistence.ForgePRReviewStateRepository
+		if c.repos != nil {
+			forgeReviewState = c.repos.ForgePRReviewState
+		}
+		sysHandlers.Register(forgeh.NewPostReviewHandler(forgeResolver, c.AIDisclosure).WithReviewState(forgeReviewState))
+		sysHandlers.Register(forgeh.NewFetchDiffHandler(forgeResolver).WithReviewState(forgeReviewState))
 		c.Logger.Info().Msg("forge system handlers registered (forge.open_change_request, forge.post_review, forge.fetch_diff)")
 		// Boot-time push-permission check for every forge-configured project
 		// (channel + generic-webhook paths). Non-blocking: a network probe per

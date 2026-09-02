@@ -60,6 +60,11 @@ type Repositories struct {
 	// ChannelDisclosure is the EU AI Act Art 50 disclosure record —
 	// per-session state AND the Art 99 evidence trail.
 	ChannelDisclosure persistence.ChannelDisclosureRepository
+
+	// ForgePRReviewState is the per-PR re-review state behind the Forge
+	// coalescing rules (migration 171).
+	// https://docs.vornik.io
+	ForgePRReviewState persistence.ForgePRReviewStateRepository
 	// ChatMemoryWriteConfirmations backs the shared-scope memory-write
 	// confirmation two-step (chat memory-write design §5.3, migration
 	// 146). ChatMemoryWriteAudit is its append-only evidence companion,
@@ -364,6 +369,7 @@ func buildSQLiteRepositories(db *sql.DB) *Repositories {
 		TaskCredentials:                sqlite.NewTaskCredentialRepository(db),
 		ChatAudit:                      sqlite.NewChatAuditRepository(db),
 		ChannelDisclosure:              sqlite.NewChannelDisclosureRepository(db),
+		ForgePRReviewState:             sqlite.NewForgePRReviewStateRepository(db),
 		ChatMemoryWriteConfirmations:   sqlite.NewChatMemoryWriteConfirmationRepository(db),
 		MCPOAuthTokens:                 sqlite.NewMCPOAuthTokenRepository(db),
 		ChatMemoryWriteAudit:           sqlite.NewChatMemoryWriteAuditRepository(db),
@@ -481,6 +487,7 @@ func Build(dbtx persistence.DBTX) *Repositories {
 		TaskCredentials:                postgres.NewTaskCredentialRepository(dbtx),
 		ChatAudit:                      postgres.NewChatAuditRepository(dbtx),
 		ChannelDisclosure:              postgres.NewChannelDisclosureRepository(dbtx),
+		ForgePRReviewState:             postgres.NewForgePRReviewStateRepository(dbtx),
 		ChatMemoryWriteConfirmations:   postgres.NewChatMemoryWriteConfirmationRepository(dbtx),
 		MCPOAuthTokens:                 postgres.NewMCPOAuthTokenRepository(dbtx),
 		ChatMemoryWriteAudit:           postgres.NewChatMemoryWriteAuditRepository(dbtx),

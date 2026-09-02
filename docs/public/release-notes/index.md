@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: b6d8ce642428cec4b898293b84800136fee8dbdc2eccd98fd06909a6b54a6dec
+      sha256: 0e6fe60bc7935b08bfc396e8556a33cd642236a21ebac2403bc4477aaeef360c
 ---
 # Release Notes
 
@@ -59,12 +59,20 @@ have been following `UPDATING.md`, you may not have received an updated agent
 image for some time — the rebuild was opt-in. Parts of each release ship inside
 that image, so an update that swapped only the daemon delivered half of it.
 
-**Packaged installs can verify their images.** A release now records the images
-it declares, and the daemon compares what it is running against that record —
-in both directions, so a package upgrade that has not been restarted yet is
-reported rather than passing silently. The `image_freshness` check also now
-works at all; it previously compared two different SHA formats and could never
-pass.
+**The `image_freshness` check now works at all.** It previously compared two
+different SHA formats and could never pass, on any host. It now reports honestly
+whether your images and daemon were built from the same commit — and compares in
+both directions, so a package upgrade you have not restarted into yet is
+reported rather than passing silently.
+
+*Correction, 2026-09-01:* this entry originally also said packaged (rpm/deb)
+installs can verify their images against a record shipped in the package. They
+cannot — the EE package does not ship that record, and did not in this release.
+The record is built from images that exist on the machine doing the build, which
+a cross-architecture package build does not have. On a packaged host the check
+reports that it cannot verify, rather than reporting a pass. Hosts that build
+their images locally (the quickstart and `make install-enterprise` paths) are
+unaffected and get the full check.
 
 **The agent image is published to GHCR**, so hosts pull it rather than building
 it. Air-gapped hosts continue to build locally under the same name.

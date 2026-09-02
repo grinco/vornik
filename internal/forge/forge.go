@@ -50,6 +50,59 @@ type ForgeJob struct {
 	// instead of the base/default branch (incident 2026-06-13: the reviewer
 	// "couldn't locate any new files" because the tree was reset to default).
 	HeadRef string `json:"head_ref,omitempty"`
+
+	// HeadSHA is the head COMMIT this job's review covers, as distinct from
+	// HeadRef's branch name. A branch name moves; the review has to name the
+	// commit it actually read, or the recorded baseline means nothing.
+	HeadSHA string `json:"head_sha,omitempty"`
+
+	// FullReview asks for the whole change request, ignoring any incremental
+	// baseline. Set by the explicit "full review" command.
+	FullReview bool `json:"full_review,omitempty"`
+
+	// OnDemand marks a job a HUMAN explicitly asked for rather than one an
+	// event produced. Never paused away and never coalesced away: asking a
+	// second time is asking for a fresh answer.
+	OnDemand bool `json:"on_demand,omitempty"`
+
+	// Command names the explicit instruction behind an on-demand job ("review",
+	// "full review", "pause", "resume"). Empty for event-driven jobs. Carried so
+	// the ingress can act on pause/resume without re-parsing the comment.
+	Command string `json:"command,omitempty"`
+
+	// CommentBody and CommentAuthor carry the request a review is ANSWERING, so
+	// the posted review can quote it.
+	//
+	// Without them a review triggered by a comment is orphaned from its request:
+	// a reader sees a verdict with no idea what was asked, and if the comment is
+	// later edited or deleted the context is gone for good. Empty for
+	// event-driven jobs, which have no request to quote.
+	CommentBody   string `json:"comment_body,omitempty"`
+	CommentAuthor string `json:"comment_author,omitempty"`
+
+	// AuthorIsTrusted reports that the comment behind this job came from someone
+	// entitled to spend the project's review budget.
+	//
+	// SET BY THE PROVIDER, like AuthorIsBot and for the same reason: the signal
+	// is provider-specific while the rule is not. A review is real model spend
+	// and on a PUBLIC repository anyone can comment, so an ungated command is a
+	// denial-of-wallet primitive. Callers MUST refuse a command whose job does
+	// not carry this.
+	//
+	// Deliberately fails CLOSED: an unrecognised or absent signal is untrusted.
+	// The cost of that is a maintainer occasionally having to re-run a review by
+	// hand; the cost of the opposite is a stranger draining the budget.
+	AuthorIsTrusted bool `json:"author_is_trusted,omitempty"`
+
+	// AuthorIsBot reports that the comment behind this job was written by a bot
+	// rather than a person.
+	//
+	// SET BY THE PROVIDER, because detection is provider-specific — GitHub has
+	// user.type == "Bot", GitLab does not. The RULE it serves is neutral and
+	// belongs to every provider: the review this system posts is itself a
+	// comment, so a bot-authored command would let a review trigger another
+	// review. Callers must refuse to act on a job with this set.
+	AuthorIsBot bool `json:"author_is_bot,omitempty"`
 	// Title and Body are the issue/CR text, carried so the agent can be given a
 	// clean spec (not the raw webhook JSON) and the change request gets a
 	// meaningful title/body instead of a bare "Fix #N".
@@ -105,6 +158,16 @@ type ForgeProvider interface {
 	// FetchDiff returns the unified diff for a change request, daemon-side, so the
 	// reviewer agent never needs forge CLI access.
 	FetchDiff(ctx context.Context, repo string, number int) ([]byte, error)
+	// CompareDiff returns the unified diff between two commits, so a re-review
+	// can look at what CHANGED since the last one rather than re-reading the
+	// whole change request.
+	//
+	// It MUST return an error when base is not an ancestor of head — after a
+	// force-push the recorded baseline can be unreachable, and the caller
+	// treats that error as "fall back to the full diff". Returning an empty or
+	// partial diff there would silently narrow a review, which is the failure
+	// this whole feature exists to prevent.
+	CompareDiff(ctx context.Context, repo, base, head string) ([]byte, error)
 	// PushBranch publishes branch at sha to the forge, pushing from the daemon's
 	// local clone at gitDir (every supported forge is git-backed, so a local git
 	// dir is provider-neutral). It MUST be idempotent — a no-op when the remote

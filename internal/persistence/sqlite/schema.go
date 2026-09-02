@@ -1039,6 +1039,20 @@ CREATE TABLE IF NOT EXISTS channel_disclosure_log (
 CREATE INDEX IF NOT EXISTS idx_channel_disclosure_served_at
     ON channel_disclosure_log (served_at);
 
+CREATE TABLE IF NOT EXISTS forge_pr_review_state (
+    project_id             TEXT    NOT NULL,
+    repo                   TEXT    NOT NULL,
+    number                 INTEGER NOT NULL,
+    task_id                TEXT    NOT NULL DEFAULT '',
+    pending_head_sha       TEXT    NOT NULL DEFAULT '',
+    reviewing_head_sha     TEXT    NOT NULL DEFAULT '',
+    last_reviewed_head_sha TEXT    NOT NULL DEFAULT '',
+    last_reviewed_at       TEXT,
+    auto_review_paused     INTEGER NOT NULL DEFAULT 0,
+    updated_at             TEXT    NOT NULL,
+    PRIMARY KEY (project_id, repo, number)
+);
+
 CREATE TABLE IF NOT EXISTS chat_audit_log (
     id                  TEXT PRIMARY KEY,
     ts                  TEXT NOT NULL,

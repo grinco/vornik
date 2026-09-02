@@ -653,6 +653,17 @@ func TestChannelDisclosureRepository_PostgresContract(t *testing.T) {
 	repotest.RunChannelDisclosureSuite(t, NewChannelDisclosureRepository(db.DB))
 }
 
+// TestForgePRReviewStateRepository_PostgresContract — per-PR re-review state
+// (migration 171), the store behind the Forge coalescing rules. The same shared
+// suite runs on SQLite; both backends must agree, because the coalescing
+// correctness argument in the design has no per-backend clause.
+func TestForgePRReviewStateRepository_PostgresContract(t *testing.T) {
+	db := newIntegrationDB(t)
+	// Fixed fixture PR numbers, same class as the suites above.
+	resetSuiteTables(t, db, "forge_pr_review_state")
+	repotest.RunForgePRReviewStateSuite(t, NewForgePRReviewStateRepository(db.DB))
+}
+
 // TestChatMemoryWriteConfirmationRepository_PostgresContract — the shared-scope memory-write
 // confirmation two-step (chat memory-write design §5.3, migration 146), the same suite that
 // runs against SQLite. The dialects diverge (TIMESTAMPTZ vs RFC3339 TEXT, NULL acknowledged_at,

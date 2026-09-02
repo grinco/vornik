@@ -7286,4 +7286,70 @@ UPDATE execution_step_outcomes SET error_class = 'container_non_zero_exit'
        now());
 `,
 	},
+	{
+		Version: 171,
+		Name:    "forge_pr_review_state",
+		// Per-PR state for Forge re-review triggers.
+		// https://docs.vornik.io
+		//
+		// NOTE THE ABSENT COLUMN. There is deliberately no `absorbing` boolean
+		// and no foreign key on task_id. Whether a review is in flight is
+		// DERIVED by loading the task named here and asking whether it is still
+		// non-terminal — a stored boolean could outlive its task and then
+		// absorb every subsequent push into a corpse, leaving the PR unreviewed
+		// until a daemon restart. A stale pointer degrades to "load it, see
+		// terminal, enqueue" instead, which is the safe direction.
+		//
+		// No FK for a second reason: this schema RETAINS terminal task rows for
+		// audit, so ON DELETE CASCADE would essentially never fire and would be
+		// a second cleanup mechanism to keep in step with the first.
+		//
+		// last_reviewed_head_sha is unused until phase 4 (incremental scope).
+		// It lands now so one migration serves both phases rather than altering
+		// this table twice in one release.
+		Up: `
+CREATE TABLE IF NOT EXISTS forge_pr_review_state (
+    project_id             TEXT    NOT NULL,
+    repo                   TEXT    NOT NULL,
+    number                 INTEGER NOT NULL,
+    task_id                TEXT    NOT NULL DEFAULT '',
+    pending_head_sha       TEXT    NOT NULL DEFAULT '',
+    last_reviewed_head_sha TEXT    NOT NULL DEFAULT '',
+    last_reviewed_at       TIMESTAMPTZ,
+    auto_review_paused     BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, repo, number)
+);
+`,
+		Down: `
+DROP TABLE IF EXISTS forge_pr_review_state;
+`,
+	},
+	{
+		Version: 172,
+		Name:    "forge_pr_review_state_reviewing_head",
+		// The head a review actually FETCHED, as distinct from the newest head
+		// observed (pending_head_sha, which keeps moving while the review runs).
+		// The baseline advances to THIS when the review posts; advancing to
+		// pending would claim commits as reviewed that landed after the fetch
+		// and were never looked at.
+		//
+		// A SEPARATE MIGRATION rather than an edit to 171, even though 171 has
+		// not shipped in a release. It has already been APPLIED — on CI
+		// databases and on any dev box that ran it — and `CREATE TABLE IF NOT
+		// EXISTS` is a no-op there, so editing 171 silently leaves those
+		// databases without the column. Found exactly that way: the integration
+		// suite failed with `column "reviewing_head_sha" does not exist` against
+		// a database where 171 was already applied. Migrations are append-only
+		// from the moment they can have run anywhere, not from the moment they
+		// ship.
+		Up: `
+ALTER TABLE forge_pr_review_state
+    ADD COLUMN IF NOT EXISTS reviewing_head_sha TEXT NOT NULL DEFAULT '';
+`,
+		Down: `
+ALTER TABLE forge_pr_review_state
+    DROP COLUMN IF EXISTS reviewing_head_sha;
+`,
+	},
 }

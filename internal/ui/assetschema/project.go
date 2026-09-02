@@ -198,6 +198,10 @@ var ProjectDeferredPaths = []string{
 	"github_app.api_base_url", "github_app.webhook_secret_env", "github_app.repo_allowlist",
 	"github_app.task_labels", "github_app.pr_review_labels", "github_app.sender_allowlist",
 	"github_app.reply_workflow_id", "github_app.pr_review_workflow_id",
+	// PR re-review triggers (2026-09-01). YAML-only alongside the rest of the
+	// github_app block; both are per-installation review-policy switches rather
+	// than anything the project form edits.
+	"github_app.auto_review_on_push", "github_app.review_draft_prs",
 	"github.app_id", "github.installation_id", "github.private_key_path", "github.api_base_url",
 	"github.repo",
 	// Forge automation.

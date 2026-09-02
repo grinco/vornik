@@ -59,18 +59,23 @@ func (b MissBehavior) String() string {
 // build when a lookup is in neither, so the table cannot rot as interfaces
 // grow.
 var Contract = map[string]MissBehavior{
-	"A2APushConfigRepository.Get":                    MissErrNotFound, // *A2APushConfig
-	"APIKeyRepository.LookupActiveByHash":            MissErrNotFound, // *APIKey
-	"ArtifactRepository.Get":                         MissErrNotFound, // *Artifact
-	"ArtifactRepository.GetByHash":                   MissErrNotFound, // *Artifact
-	"ChannelSessionRepository.Load":                  MissErrNotFound, // *ChannelSession
-	"ChatAuditRepository.GetByID":                    MissErrNotFound, // *ChatAuditEntry
-	"ChatMemoryWriteConfirmationRepository.Get":      MissErrNotFound, // *ChatMemoryWriteConfirmation
-	"CorpusEpochRepository.GetEpoch":                 MissErrNotFound, // *CorpusEpoch
-	"CostTuningCanaryRepository.GetByProposalID":     MissErrNotFound, // *CostTuningCanary
-	"CrossProjectCallRepository.GetByCalleeTaskID":   MissErrNotFound, // *CrossProjectCall
-	"CrossProjectCallRepository.Get":                 MissErrNotFound, // *CrossProjectCall
-	"DaemonLeaderLockRepository.Get":                 MissErrNotFound, // *DaemonLeaderLock
+	"A2APushConfigRepository.Get":                  MissErrNotFound, // *A2APushConfig
+	"APIKeyRepository.LookupActiveByHash":          MissErrNotFound, // *APIKey
+	"ArtifactRepository.Get":                       MissErrNotFound, // *Artifact
+	"ArtifactRepository.GetByHash":                 MissErrNotFound, // *Artifact
+	"ChannelSessionRepository.Load":                MissErrNotFound, // *ChannelSession
+	"ChatAuditRepository.GetByID":                  MissErrNotFound, // *ChatAuditEntry
+	"ChatMemoryWriteConfirmationRepository.Get":    MissErrNotFound, // *ChatMemoryWriteConfirmation
+	"CorpusEpochRepository.GetEpoch":               MissErrNotFound, // *CorpusEpoch
+	"CostTuningCanaryRepository.GetByProposalID":   MissErrNotFound, // *CostTuningCanary
+	"CrossProjectCallRepository.GetByCalleeTaskID": MissErrNotFound, // *CrossProjectCall
+	"CrossProjectCallRepository.Get":               MissErrNotFound, // *CrossProjectCall
+	"DaemonLeaderLockRepository.Get":               MissErrNotFound, // *DaemonLeaderLock
+	// (nil, nil): a PR with no review state is the ORDINARY first-delivery
+	// case, and callers read it as "never reviewed, nothing in flight" — the
+	// fail-toward-more-review direction. ErrNotFound here would make every
+	// first push look like a failure at the one moment it is most normal.
+	"ForgePRReviewStateRepository.Get":               MissNilNil,      // *ForgePRReviewState
 	"ExecutionQualityScoreRepository.GetByExecution": MissErrNotFound, // *ExecutionQualityScore
 	"ExecutionRepository.GetByTaskID":                MissErrNotFound, // *Execution
 	"ExecutionRepository.Get":                        MissErrNotFound, // *Execution

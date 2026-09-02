@@ -17,6 +17,7 @@ import (
 
 	"vornik.io/vornik/internal/actor"
 	"vornik.io/vornik/internal/budget"
+	"vornik.io/vornik/internal/forge"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
 	"vornik.io/vornik/internal/secrets"
@@ -226,6 +227,18 @@ func (s *Server) enqueueVerifiedWebhook(ctx context.Context, w http.ResponseWrit
 		}
 	}
 
+	// FORGE REVIEW RULES (design §13.3). The pause gate, the loop guard and the
+	// coalescing decision are shared with the GitHub App channel through one
+	// coordinator, so a rule change cannot reach one ingress and miss the other.
+	if len(forgeJob) > 0 {
+		var job forge.ForgeJob
+		if json.Unmarshal(forgeJob, &job) == nil && job.IsChangeRequest {
+			if done := s.applyForgeReviewRules(ctx, w, project, source, body, deliveryID, event, job); done {
+				return
+			}
+		}
+	}
+
 	// require_forge_event: a source that must act only on actionable forge events
 	// drops anything the classifier didn't recognise (issues.closed, PR
 	// synchronize, an unlabeled issue) rather than creating a forge_job-less task.
@@ -262,6 +275,15 @@ func (s *Server) enqueueVerifiedWebhook(ctx context.Context, w http.ResponseWrit
 		s.recordWebhookEvent(ctx, projectID, sourceName, eventID, body, persistence.WebhookEventStatusRejected, nil, "create_task_failed", err.Error())
 		respondError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to create task")
 		return
+	}
+	// Take the review claim so the pushes that follow coalesce onto this task.
+	// AFTER the create, never before: a claim naming a task that failed to
+	// insert would absorb every later push into something that does not exist.
+	if s.forgeReview != nil && len(forgeJob) > 0 {
+		var job forge.ForgeJob
+		if json.Unmarshal(forgeJob, &job) == nil && job.IsChangeRequest {
+			s.forgeReview.Claim(ctx, project.ID, job, task.ID)
+		}
 	}
 	s.recordWebhookEvent(ctx, projectID, sourceName, eventID, body, persistence.WebhookEventStatusAccepted, &task.ID, "", "")
 	s.logger.Info().
@@ -812,4 +834,88 @@ func hashWebhookBody(body []byte) string {
 func fullWebhookBodyHash(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
+}
+
+// applyForgeReviewRules enforces the shared review rules on the generic webhook
+// path and reports whether it has already answered the request.
+//
+// Three rules, in an order that matters:
+//
+//  1. THE LOOP GUARD FIRST. The review this system posts is itself a comment, so
+//     a bot-authored command must never start a review — otherwise a review
+//     triggers another review. The provider sets AuthorIsBot because detection is
+//     provider-specific; the rule is not.
+//  2. pause / resume are STATE operations, not tasks. They must not create one.
+//  3. The coalescing decision, which is where a push burst collapses into a
+//     single review.
+//
+// Every arm acks 200: these are deliberate non-actions, and a non-2xx would make
+// the provider retry a delivery we have consciously declined.
+func (s *Server) applyForgeReviewRules(
+	ctx context.Context,
+	w http.ResponseWriter,
+	project *registry.Project,
+	source registry.ProjectWebhookSource,
+	body []byte,
+	deliveryID string,
+	event map[string]any,
+	job forge.ForgeJob,
+) bool {
+	eventID := webhookEventID(event, source.EventIDPath, deliveryID, body)
+
+	if job.AuthorIsBot {
+		s.logger.Debug().
+			Str("project_id", project.ID).Str("repo", job.Repo).Int("number", job.Number).
+			Msg("webhook: forge command authored by a bot; ignoring before acting")
+		s.recordWebhookEvent(ctx, project.ID, source.Name, eventID, body, persistence.WebhookEventStatusFiltered, nil, "bot_authored", "")
+		respondJSON(w, http.StatusOK, map[string]string{"status": "filtered", "reason": "bot_authored"})
+		return true
+	}
+
+	// AUTHOR TRUST, before any command acts (design §7.1). A review is real
+	// model spend, and this ingress has NO sender allowlist of its own — unlike
+	// the GitHub App channel, which checks resolveSpeakerForInstallation. On a
+	// public repository an ungated command is therefore a denial-of-wallet
+	// primitive: anyone who can comment could drain the budget.
+	//
+	// Applies to COMMANDS ONLY. A push carries no author standing, and gating it
+	// would stop reviewing pull requests altogether.
+	if job.OnDemand && !job.AuthorIsTrusted {
+		s.logger.Warn().
+			Str("project_id", project.ID).Str("repo", job.Repo).Int("number", job.Number).
+			Str("command", job.Command).
+			Msg("webhook: forge command from an author without repository standing; refusing")
+		s.recordWebhookEvent(ctx, project.ID, source.Name, eventID, body, persistence.WebhookEventStatusFiltered, nil, "author_untrusted", "")
+		respondJSON(w, http.StatusOK, map[string]string{"status": "filtered", "reason": "author_untrusted"})
+		return true
+	}
+
+	switch job.Command {
+	case "pause", "resume":
+		if s.forgeReview == nil {
+			s.logger.Warn().
+				Str("project_id", project.ID).Str("repo", job.Repo).Int("number", job.Number).
+				Msg("webhook: pause/resume requested but this deployment cannot record it")
+			respondJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "review_state_unavailable"})
+			return true
+		}
+		if err := s.forgeReview.SetPaused(ctx, project.ID, job.Repo, job.Number, job.Command == "pause"); err != nil {
+			s.logger.Warn().Err(err).
+				Str("project_id", project.ID).Str("repo", job.Repo).Int("number", job.Number).
+				Msg("webhook: could not record the pause state")
+		}
+		s.recordWebhookEvent(ctx, project.ID, source.Name, eventID, body, persistence.WebhookEventStatusFiltered, nil, "review_"+job.Command, "")
+		respondJSON(w, http.StatusOK, map[string]string{"status": "ok", "reason": "review_" + job.Command})
+		return true
+	}
+
+	if s.forgeReview == nil {
+		return false // no coordinator: degrade to always-enqueue, never to silence
+	}
+	if d := s.forgeReview.Decide(ctx, project.ID, job, job.OnDemand); d.Skip {
+		s.recordWebhookEvent(ctx, project.ID, source.Name, eventID, body, persistence.WebhookEventStatusFiltered, nil, d.Reason, "")
+		respondJSON(w, http.StatusOK, map[string]string{"status": "filtered", "reason": d.Reason})
+		return true
+	}
+	return false
 }

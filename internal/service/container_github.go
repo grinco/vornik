@@ -8,6 +8,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"vornik.io/vornik/internal/forgereview"
 	"vornik.io/vornik/internal/github"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
@@ -54,6 +55,7 @@ func buildGitHubChannel(projects []*registry.Project, logger zerolog.Logger) (*g
 // aren't met so the channel falls back to its no-op log path.
 func taskCreatorFromRepo(
 	taskRepo persistence.TaskRepository,
+	review *forgereview.Coordinator,
 	labelMap map[string]string,
 	logger zerolog.Logger,
 ) func(*registry.Project) github.TaskCreator {
@@ -61,7 +63,12 @@ func taskCreatorFromRepo(
 		if taskRepo == nil || p == nil {
 			return nil
 		}
-		return newGitHubTaskCreator(taskRepo, p, labelMap, logger)
+		g := newGitHubTaskCreator(taskRepo, p, labelMap, logger)
+		// The SAME coordinator instance the generic webhook ingress uses, so
+		// the two paths cannot diverge on the pause or coalescing rules. May be
+		// nil, in which case both degrade to always-enqueue.
+		g.review = review
+		return g
 	}
 }
 
@@ -193,6 +200,9 @@ func installationConfigFromConfig(projectID string, cfg github.Config) github.In
 		TaskLabels:      cfg.TaskLabels,
 		PRReviewLabels:  cfg.PRReviewLabels,
 		SenderAllowlist: cfg.SenderAllowlist,
+
+		AutoReviewOnPush: cfg.AutoReviewOnPush,
+		ReviewDraftPRs:   cfg.ReviewDraftPRs,
 		// TaskCreator wired separately by the service container —
 		// each installation gets its own per-project adapter.
 		TaskCreator: nil,
@@ -228,6 +238,9 @@ func resolveGitHubAppConfig(p registry.ProjectGitHubApp) (github.Config, error) 
 		TaskLabels:      p.TaskLabels,
 		PRReviewLabels:  p.PRReviewLabels,
 		SenderAllowlist: p.SenderAllowlist,
+
+		AutoReviewOnPush: p.AutoReviewOnPush,
+		ReviewDraftPRs:   p.ReviewDraftPRs,
 	}
 
 	if strings.TrimSpace(p.PrivateKeyPath) != "" {

@@ -12,6 +12,9 @@ type fakeProvider struct{ name string }
 func (f fakeProvider) Name() string                                           { return f.name }
 func (f fakeProvider) ClassifyEvent(http.Header, []byte) (ForgeJob, bool)     { return ForgeJob{}, false }
 func (f fakeProvider) FetchDiff(context.Context, string, int) ([]byte, error) { return nil, nil }
+func (f fakeProvider) CompareDiff(context.Context, string, string, string) ([]byte, error) {
+	return nil, nil
+}
 func (f fakeProvider) PushBranch(context.Context, string, string, string, string) error {
 	return nil
 }

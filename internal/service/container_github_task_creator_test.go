@@ -45,6 +45,10 @@ func signedGitHubRequest(secret, event, delivery string, body []byte) *http.Requ
 // behaviour the adapter exercises:
 //
 //   - GetByIdempotencyKey looks up the in-memory map.
+//   - Get resolves a task id against the created slice, which the Forge
+//     coalescing path needs: it decides ABSORBING by loading the task a
+//     review claim names and reading its status. Without a real Get every
+//     claim would read as "task missing" and coalescing would never engage.
 //   - Create rejects duplicate idempotency keys so the adapter's
 //     race-recovery branch can be tested.
 //   - createCalls is a public counter for assertion convenience.
@@ -63,7 +67,21 @@ func newRecordingTaskRepo() *recordingTaskRepo {
 	}
 	r.CreateFunc = r.create
 	r.GetByIdempotencyKeyFunc = r.getByIdempotencyKey
+	r.GetFunc = r.get
 	return r
+}
+
+// get resolves a task id against the recorded slice, returning (nil, nil) for
+// an unknown id so callers exercise the "claim names a task that is gone" path.
+func (r *recordingTaskRepo) get(_ context.Context, id string) (*persistence.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, t := range r.tasks {
+		if t.ID == id {
+			return t, nil
+		}
+	}
+	return nil, nil
 }
 
 func (r *recordingTaskRepo) create(_ context.Context, t *persistence.Task) error {
@@ -590,7 +608,7 @@ func TestGitHubTaskCreator_ImplementsInterface(t *testing.T) {
 // when the container hasn't wired a task repo yet, the closure
 // returns nil so the channel logs "TaskCreator not wired".
 func TestTaskCreatorFromRepo_NilRepoReturnsNilCreator(t *testing.T) {
-	factory := taskCreatorFromRepo(nil, nil, zerolog.Nop())
+	factory := taskCreatorFromRepo(nil, nil, nil, zerolog.Nop())
 	if tc := factory(projectForTaskCreator("p-1")); tc != nil {
 		t.Errorf("factory(p) = %v with nil repo, want nil", tc)
 	}
@@ -599,7 +617,7 @@ func TestTaskCreatorFromRepo_NilRepoReturnsNilCreator(t *testing.T) {
 // TestTaskCreatorFromRepo_NilProjectReturnsNilCreator — same
 // for an unpinned project.
 func TestTaskCreatorFromRepo_NilProjectReturnsNilCreator(t *testing.T) {
-	factory := taskCreatorFromRepo(newRecordingTaskRepo(), nil, zerolog.Nop())
+	factory := taskCreatorFromRepo(newRecordingTaskRepo(), nil, nil, zerolog.Nop())
 	if tc := factory(nil); tc != nil {
 		t.Errorf("factory(nil) = %v, want nil", tc)
 	}
@@ -609,7 +627,7 @@ func TestTaskCreatorFromRepo_NilProjectReturnsNilCreator(t *testing.T) {
 // both repo + project present produces a working adapter.
 func TestTaskCreatorFromRepo_BuildsRealCreator(t *testing.T) {
 	repo := newRecordingTaskRepo()
-	factory := taskCreatorFromRepo(repo, nil, zerolog.Nop())
+	factory := taskCreatorFromRepo(repo, nil, nil, zerolog.Nop())
 	tc := factory(projectForTaskCreator("p-1"))
 	if tc == nil {
 		t.Fatal("factory returned nil for fully wired input")
@@ -641,7 +659,7 @@ func TestBuildGitHubChannelWithTaskCreator_WiresIntoChannel(t *testing.T) {
 
 	ch, picked, err := buildGitHubChannelWithTaskCreator(
 		[]*registry.Project{proj},
-		taskCreatorFromRepo(repo, nil, zerolog.Nop()),
+		taskCreatorFromRepo(repo, nil, nil, zerolog.Nop()),
 		zerolog.Nop(),
 	)
 	if err != nil {
@@ -687,7 +705,7 @@ func TestBuildGitHubChannelWithTaskCreator_PRPath(t *testing.T) {
 
 	ch, _, err := buildGitHubChannelWithTaskCreator(
 		[]*registry.Project{proj},
-		taskCreatorFromRepo(repo, nil, zerolog.Nop()),
+		taskCreatorFromRepo(repo, nil, nil, zerolog.Nop()),
 		zerolog.Nop(),
 	)
 	if err != nil {
@@ -729,7 +747,7 @@ func TestBuildGitHubChannelWithTaskCreator_IdempotentRetry(t *testing.T) {
 
 	ch, _, err := buildGitHubChannelWithTaskCreator(
 		[]*registry.Project{proj},
-		taskCreatorFromRepo(repo, nil, zerolog.Nop()),
+		taskCreatorFromRepo(repo, nil, nil, zerolog.Nop()),
 		zerolog.Nop(),
 	)
 	if err != nil {

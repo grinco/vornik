@@ -690,6 +690,20 @@ type ProjectGitHubApp struct {
 	// installations.
 	APIBaseURL string `yaml:"api_base_url"`
 
+	// AutoReviewOnPush controls whether a new commit pushed to a PR
+	// branch (pull_request.synchronize) triggers a fresh review.
+	//
+	// A *bool because the zero value must NOT mean off: unset resolves to
+	// true, which is the behaviour docs/public/features/forge.md documents.
+	// Set false for the pre-2026.9 quiet behaviour; per-PR there is also the
+	// pause command.
+	AutoReviewOnPush *bool `yaml:"auto_review_on_push"`
+
+	// ReviewDraftPRs opts INTO auto-reviewing draft pull requests. Default
+	// false: a draft is work in progress and ready_for_review is the
+	// transition that starts review.
+	ReviewDraftPRs bool `yaml:"review_draft_prs"`
+
 	// WebhookSecretEnv names an environment variable holding the
 	// HMAC secret GitHub uses to sign every delivery. Required for
 	// the inbound webhook handler (the channel rejects every

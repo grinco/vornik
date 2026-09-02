@@ -25,6 +25,8 @@ import (
 	"vornik.io/vornik/internal/executor/livepubsub"
 	"vornik.io/vornik/internal/extractor"
 	"vornik.io/vornik/internal/featuredoctor"
+	"vornik.io/vornik/internal/forge"
+	"vornik.io/vornik/internal/forgereview"
 	"vornik.io/vornik/internal/llmspend"
 	"vornik.io/vornik/internal/mcp"
 	"vornik.io/vornik/internal/mediahandles"
@@ -794,6 +796,7 @@ type Server struct {
 	// system steps run without parsing free text. Nil → no forge_job stamped
 	// (back-compat). Runs on the job tier (where the provider config lives).
 	forgeClassifier ForgeClassifier
+	forgeReview     ForgeReviewCoordinator
 	// adminAuditRepo backs GET /api/v1/admin/audit (admin-only).
 	// Nil makes the endpoint return 503 — same fail-soft contract
 	// every other optional surface uses.
@@ -2799,6 +2802,25 @@ type ForgeClassifier interface {
 // path. Job-tier only (the DMZ relay node forwards before task creation).
 func WithForgeClassifier(c ForgeClassifier) ServerOption {
 	return func(s *Server) { s.forgeClassifier = c }
+}
+
+// ForgeReviewCoordinator is the pause + coalescing decision the generic webhook
+// path shares with the GitHub App channel.
+//
+// An interface here rather than a concrete *forgereview.Coordinator so the api
+// package does not depend on it, matching how ForgeClassifier is wired. Nil is
+// supported and degrades to always-enqueue: coalescing is a cost optimisation,
+// and failing closed would stop reviewing pull requests entirely.
+type ForgeReviewCoordinator interface {
+	Decide(ctx context.Context, projectID string, job forge.ForgeJob, onDemand bool) forgereview.Decision
+	Claim(ctx context.Context, projectID string, job forge.ForgeJob, taskID string)
+	SetPaused(ctx context.Context, projectID, repo string, number int, paused bool) error
+}
+
+// WithForgeReviewCoordinator wires the shared review coordinator. Job-tier only,
+// for the same reason as the classifier.
+func WithForgeReviewCoordinator(c ForgeReviewCoordinator) ServerOption {
+	return func(s *Server) { s.forgeReview = c }
 }
 
 // SetWebhookRelay is the test-friendly setter mirroring WithWebhookRelay.

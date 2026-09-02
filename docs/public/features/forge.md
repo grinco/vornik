@@ -1,9 +1,9 @@
 ---
 sources:
     - path: internal/forge/forge.go
-      sha256: 4b649b77cea4f293f3302762624d1205c59820576aa73ac2330ffc671dabcfd6
+      sha256: ea94efec75e13324c1377118a9f67a924532f41f4ad93bcdd876518678842eba
     - path: internal/forge/github/github.go
-      sha256: 929ff0572327d1f0bfbe07704a0c0f7a6929a21de6dcbb8575b2d4d6840851b8
+      sha256: e63da4e64d7de29cac06193d40704348143823a11830aec7e61c2ee64cfd0646
 ---
 # Forge — GitHub automation
 
@@ -28,11 +28,60 @@ what to do) and drives two main flows:
   way the daemon opens the PR (titled `Fix #<n>: …` or `Implement #<n>: …`,
   closing the issue). **Every automated PR is opened as a draft** — a human marks
   it ready.
-- **Pull request opened → review.** When a PR is opened, reopened, or marked
-  ready for review, the daemon fetches the diff, a reviewer agent reads it, and
+- **Pull request opened → review.** When a PR is opened, reopened, marked ready
+  for review, or **updated with new commits**, the daemon fetches the diff, a
+  reviewer agent reads it, and
   the daemon posts the review back through GitHub's review API.
 
 A bare issue with no label is ignored — only a *labelled* issue is actionable.
+
+**Draft pull requests are not reviewed automatically.** A draft is work in
+progress; marking it ready for review is what starts the review. An explicit
+request (below) still reviews a draft — asking is consent.
+
+### Re-review: new commits, and asking for one
+
+A pull request is reviewed again when you push to it. Two things keep that from
+becoming noise:
+
+- **A burst of pushes produces one review, not one per push.** While a review is
+  running, further pushes update what it will look at rather than queueing more
+  reviews.
+- **A re-review looks at what changed** since the last review it posted, not the
+  whole pull request again — so it does not repeat findings you have already
+  read. If the baseline is unavailable for any reason, including a force-push
+  that rewrote it, the review falls back to the complete diff rather than
+  reviewing less than it should.
+
+You can also ask directly, by mentioning the bot in a comment on the pull
+request:
+
+| Comment | Effect |
+|---|---|
+| `@vornik review` | review now, covering what changed since the last one |
+| `@vornik full review` | review the whole pull request, ignoring the baseline |
+| `@vornik pause` | stop reviewing this PR automatically; commands still work |
+| `@vornik resume` | resume automatic review of this PR |
+
+**Only people with standing in the repository can run these** — its owner,
+organisation members, and invited collaborators. A review is model spend, so on
+a public repository an ungated command would let any passer-by spend your
+budget. Note that a *contributor* — someone who has had a pull request merged —
+does not qualify: that describes the past, not permission to trigger spend at
+will. Anything the forge does not vouch for is refused, so an unfamiliar payload
+fails closed.
+
+A review posted in answer to a comment **quotes the request it is answering**, so
+the review says what it was asked. Without that a reader sees a verdict with no
+idea which question produced it — and comments can be edited or deleted, taking
+the context with them, while the review itself stays.
+
+A mention that isn't one of these commands gets a conversational reply, exactly
+as before.
+
+To turn automatic review-on-push off for a whole project rather than one PR, set
+`github_app.auto_review_on_push: false`. Automatic review of drafts can be turned
+on with `github_app.review_draft_prs: true`.
 
 ## Backlog-origin pull requests
 

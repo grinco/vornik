@@ -77,7 +77,14 @@ func TestClassifyEvent(t *testing.T) {
 		},
 		{name: "issue closed ignored", event: "issues", body: `{"action":"closed","repository":{"full_name":"o/r"},"issue":{"number":7}}`, wantOK: false},
 		{name: "issue opened ignored (label required)", event: "issues", body: `{"action":"opened","repository":{"full_name":"o/r","default_branch":"main"},"issue":{"number":7}}`, wantOK: false},
-		{name: "pr synchronize ignored", event: "pull_request", body: `{"action":"synchronize","repository":{"full_name":"o/r"},"pull_request":{"number":3}}`, wantOK: false},
+		// synchronize is ACTIONABLE as of 2026-09-02. This case asserted the
+		// opposite until then, which was correct while nothing could coalesce a
+		// push burst — one review per push was the alternative. The re-review
+		// design builds coalescing and incremental scope precisely so this can
+		// be reversed; see §2 and §13 of
+		// https://docs.vornik.io
+		{name: "pr synchronize is a review trigger", event: "pull_request", body: `{"action":"synchronize","repository":{"full_name":"o/r","default_branch":"main"},"pull_request":{"number":3}}`, wantOK: true, wantNum: 3, wantCR: true, wantHead: "refs/pull/3/head"},
+		{name: "pr closed ignored", event: "pull_request", body: `{"action":"closed","repository":{"full_name":"o/r"},"pull_request":{"number":3}}`, wantOK: false},
 		{name: "push ignored", event: "push", body: `{"repository":{"full_name":"o/r"}}`, wantOK: false},
 		{name: "no repo ignored", event: "issues", body: `{"action":"opened","issue":{"number":1}}`, wantOK: false},
 		{name: "malformed ignored", event: "issues", body: `not json`, wantOK: false},

@@ -405,6 +405,13 @@ func (c *Container) initHTTPServer() error {
 		if fc := c.newForgeClassifier(); fc != nil {
 			apiOpts = append(apiOpts, api.WithForgeClassifier(fc))
 		}
+		// The generic webhook path obeys the same pause and coalescing rules as
+		// the GitHub App channel, from the SAME coordinator instance the
+		// channel's task creator gets below (design §13.3). Without this,
+		// re-review works on an ingress this deployment does not use.
+		if rc := c.forgeReviewCoordinator(); rc != nil {
+			apiOpts = append(apiOpts, api.WithForgeReviewCoordinator(rc))
+		}
 	}
 	// A2A protocol surface — opt-in per workflow via the
 	// `a2a.publish: true` frontmatter field. The handler reads
@@ -1243,9 +1250,18 @@ func (c *Container) initHTTPServer() error {
 	if c.repos != nil {
 		ghTaskRepo = c.repos.Tasks
 	}
+	// ONE coordinator, handed to BOTH forge ingresses (design §13.3): the
+	// GitHub App channel via taskCreatorFromRepo below, and the generic webhook
+	// path via api.WithForgeReviewCoordinator. Sharing the instance is what
+	// stops the two paths drifting on the pause and coalescing rules — the
+	// failure that let this feature work on an ingress nobody uses.
+	//
+	// Nil when there is no repo set (early boot, tests): both paths then
+	// degrade to always-enqueue rather than to silence.
+	ghReview := c.forgeReviewCoordinator()
 	ghChannel, ghEnabledProjects, err := buildGitHubChannelWithTaskCreator(
 		ghProjects,
-		taskCreatorFromRepo(ghTaskRepo, nil, c.Logger.With().Str("component", "github_task_creator").Logger()),
+		taskCreatorFromRepo(ghTaskRepo, ghReview, nil, c.Logger.With().Str("component", "github_task_creator").Logger()),
 		c.Logger,
 	)
 	if err != nil {

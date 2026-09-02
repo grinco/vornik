@@ -29,6 +29,10 @@ type fakeProvider struct {
 	gotReview                          forgeapi.ReviewSpec
 	gotRepo                            string
 	gotNumber                          int
+
+	compareDiff                    []byte
+	compareErr                     error
+	gotCompareBase, gotCompareHead string
 }
 
 func (f *fakeProvider) Name() string { return "fake" }
@@ -36,6 +40,19 @@ func (f *fakeProvider) ClassifyEvent(http.Header, []byte) (forgeapi.ForgeJob, bo
 	return forgeapi.ForgeJob{}, false
 }
 func (f *fakeProvider) FetchDiff(context.Context, string, int) ([]byte, error) {
+	return f.diff, f.diffErr
+}
+
+// CompareDiff records the range it was asked for, so tests can assert that an
+// incremental review actually asked for base..head and not the whole PR.
+func (f *fakeProvider) CompareDiff(_ context.Context, _, base, head string) ([]byte, error) {
+	f.gotCompareBase, f.gotCompareHead = base, head
+	if f.compareErr != nil {
+		return nil, f.compareErr
+	}
+	if f.compareDiff != nil {
+		return f.compareDiff, nil
+	}
 	return f.diff, f.diffErr
 }
 func (f *fakeProvider) PushBranch(_ context.Context, dir, _ /*repo*/, branch, sha string) error {

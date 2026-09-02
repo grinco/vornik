@@ -172,6 +172,9 @@ func names(in []struct {
 // The remaining ForgeProvider methods are not under test here (they are the
 // provider's REST surface); satisfy the interface with no-ops.
 func (c classifyProvider) FetchDiff(context.Context, string, int) ([]byte, error) { return nil, nil }
+func (c classifyProvider) CompareDiff(context.Context, string, string, string) ([]byte, error) {
+	return nil, nil
+}
 func (c classifyProvider) PushBranch(context.Context, string, string, string, string) error {
 	return nil
 }

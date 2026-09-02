@@ -6,10 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/rs/zerolog"
 
 	"vornik.io/vornik/internal/aidisclosure"
 	"vornik.io/vornik/internal/executor"
 	forgeapi "vornik.io/vornik/internal/forge"
+	"vornik.io/vornik/internal/persistence"
 )
 
 // Discloser supplies the EU AI Act Art 50(1) notice for authored artifacts.
@@ -25,6 +29,20 @@ type Discloser interface {
 type PostReviewHandler struct {
 	resolver   ProviderResolver
 	disclosure Discloser
+
+	// reviewState advances the incremental baseline once a review has actually
+	// posted (design §6). Optional: nil simply means no baseline is recorded,
+	// and the next review is a full one.
+	reviewState persistence.ForgePRReviewStateRepository
+}
+
+// WithReviewState attaches the PR review-state store so a posted review
+// advances the incremental baseline.
+func (h *PostReviewHandler) WithReviewState(s persistence.ForgePRReviewStateRepository) *PostReviewHandler {
+	if h != nil {
+		h.reviewState = s
+	}
+	return h
 }
 
 // NewPostReviewHandler wires the handler.
@@ -259,10 +277,96 @@ func (h *PostReviewHandler) Execute(ctx context.Context, in executor.SystemStepI
 	if err != nil {
 		return executor.SystemStepResult{}, fmt.Errorf("%s: resolve provider: %w", name, err)
 	}
+	body = withRequestQuote(body, job)
 	body = withDisclosure(body, h.disclosure.PublicationNotice())
 	if err := provider.PostReview(ctx, job.Repo, job.Number, forgeapi.ReviewSpec{Body: body, Event: event}); err != nil {
 		return executor.SystemStepResult{}, fmt.Errorf("%s: post review: %w", name, err)
 	}
+	// ADVANCE THE BASELINE, AND ONLY NOW (design §6). The review is on the pull
+	// request; the commits it covered are genuinely reviewed. Advancing when a
+	// review merely STARTED would let a crashed or failed run mark commits as
+	// reviewed that no human ever saw — silently losing coverage, which is the
+	// failure this whole feature exists to prevent.
+	//
+	// Best-effort: the review is already published and cannot be unposted, so
+	// failing the step here would report a failure for work that succeeded. The
+	// cost of a missed advance is one wider review next time, which is the safe
+	// direction.
+	if h.reviewState != nil {
+		// The head the review actually FETCHED, not the one that created the
+		// task: a push absorbed before the fetch is covered by this review and
+		// must be marked as such. Falls back to the job's SHA when the state is
+		// unreadable, and marks nothing at all when neither is known — never a
+		// guess, because a wrong baseline silently skips commits.
+		head := job.HeadSHA
+		if st, gerr := h.reviewState.Get(ctx, in.Task.ProjectID, job.Repo, job.Number); gerr == nil && st != nil && st.ReviewingHeadSHA != "" {
+			head = st.ReviewingHeadSHA
+		}
+		if head == "" {
+			return finishPostReview(job, event)
+		}
+		if err := h.reviewState.MarkReviewed(ctx, in.Task.ProjectID, job.Repo, job.Number, head, time.Now()); err != nil {
+			log := zerolog.Ctx(ctx)
+			log.Warn().Err(err).
+				Str("repo", job.Repo).Int("number", job.Number).Str("head_sha", head).
+				Msg("forge.post_review: review posted but the baseline was not advanced; the next review will be wider")
+		}
+	}
+
+	return finishPostReview(job, event)
+}
+
+// finishPostReview builds the step result. Extracted so the baseline-advance
+// block above can return early without duplicating it.
+func finishPostReview(job *forgeapi.ForgeJob, event forgeapi.ReviewEvent) (executor.SystemStepResult, error) {
 	out, _ := json.Marshal(map[string]any{"posted": true, "number": job.Number, "event": string(event)})
 	return executor.SystemStepResult{Result: out}, nil
+}
+
+// maxQuotedRequestChars bounds the quoted request so a long comment cannot push
+// the review itself out of view. Generous enough for a normal multi-point ask.
+const maxQuotedRequestChars = 600
+
+// withRequestQuote prefixes a review with the request it is answering.
+//
+// A review posted in reply to a comment is otherwise orphaned from that comment:
+// the reader sees a verdict with no idea which question produced it. Worse, a
+// comment can be edited or deleted afterwards — which happened on the very first
+// pull request this feature reviewed, leaving three reviews and no trace of what
+// two of them were asked. Quoting puts the request inside the durable artifact.
+//
+// Event-driven reviews get NOTHING added: a push has no request to quote, and a
+// header invented for it would be noise on every single review.
+func withRequestQuote(body string, job *forgeapi.ForgeJob) string {
+	if job == nil || !job.OnDemand {
+		return body
+	}
+	req := strings.TrimSpace(job.CommentBody)
+	if req == "" {
+		return body
+	}
+	if len(req) > maxQuotedRequestChars {
+		// Cut on a rune boundary so a multi-byte character is never split.
+		req = strings.ToValidUTF8(req[:maxQuotedRequestChars], "") + "…"
+	}
+
+	who := strings.TrimSpace(job.CommentAuthor)
+	if who == "" {
+		who = "A maintainer"
+	} else {
+		who = "@" + who
+	}
+
+	var b strings.Builder
+	b.WriteString("*Requested by ")
+	b.WriteString(who)
+	b.WriteString(":*\n\n")
+	for _, line := range strings.Split(req, "\n") {
+		b.WriteString("> ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n---\n\n")
+	b.WriteString(body)
+	return b.String()
 }

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/forge"
+	"vornik.io/vornik/internal/forgereview"
 	ghapp "vornik.io/vornik/internal/github"
 )
 
@@ -127,6 +128,11 @@ func (p *Provider) ClassifyEvent(h http.Header, body []byte) (forge.ForgeJob, bo
 		// from the payload shape. A pull_request object means a PR event; an
 		// issue object means an issues event.
 		switch {
+		case pl.Comment != nil && pl.Issue != nil:
+			// Ordered BEFORE the issue arm: an issue_comment payload carries
+			// both an issue and a comment, and testing `Issue != nil` first
+			// would classify every comment as an issues event.
+			event = "issue_comment"
 		case pl.PullRequest != nil:
 			event = "pull_request"
 		case pl.Issue != nil:
@@ -154,10 +160,20 @@ func (p *Provider) ClassifyEvent(h http.Header, body []byte) (forge.ForgeJob, bo
 		job.IsChangeRequest = false
 		return job, true
 	case "pull_request":
-		if pl.PullRequest == nil ||
-			(pl.Action != "opened" && pl.Action != "reopened" && pl.Action != "ready_for_review") {
+		if pl.PullRequest == nil || !isReviewAction(pl.Action) {
 			return forge.ForgeJob{}, false
 		}
+		// A draft is work in progress: reviewing it spends budget on code
+		// nobody has said is ready. ready_for_review is EXEMPT because it is
+		// the action that ENDS draft state — GitHub still reports draft:true on
+		// some deliveries of it, and suppressing it there would swallow the
+		// very transition that starts the review.
+		if pl.PullRequest.Draft && pl.Action != "ready_for_review" {
+			return forge.ForgeJob{}, false
+		}
+		// Without this the incremental range has no upper bound and every
+		// review on this path silently falls back to the full diff.
+		job.HeadSHA = pl.PullRequest.Head.SHA
 		job.Number = pl.PullRequest.Number
 		job.Labels = labelNames(pl.PullRequest.Labels)
 		job.Title = pl.PullRequest.Title
@@ -167,8 +183,70 @@ func (p *Provider) ClassifyEvent(h http.Header, body []byte) (forge.ForgeJob, bo
 		// repo even when the PR comes from a fork, and needs only the number.
 		job.HeadRef = fmt.Sprintf("refs/pull/%d/head", pl.PullRequest.Number)
 		return job, true
+	case "issue_comment":
+		// A command on a PR thread. issue.pull_request is what distinguishes a
+		// pull request from a plain issue; there is nothing to review on the
+		// latter.
+		if pl.Comment == nil || pl.Issue == nil || pl.Issue.PullRequest == nil {
+			return forge.ForgeJob{}, false
+		}
+		cmd := forgereview.ParseCommand(pl.Comment.Body)
+		if cmd == forgereview.CmdNone {
+			// A mention that asks for none of the commands is not a forge
+			// event. It stays a conversational message on the paths that have
+			// one, and a non-event here.
+			return forge.ForgeJob{}, false
+		}
+		job.Number = pl.Issue.Number
+		job.Title = pl.Issue.Title
+		job.IsChangeRequest = true
+		job.OnDemand = true
+		job.FullReview = cmd == forgereview.CmdFullReview
+		job.Action = "comment_command"
+		job.Command = cmd.String()
+		// The provider sets this; the caller enforces the rule. Our own review
+		// is posted as a comment, so acting on a bot-authored command lets a
+		// review trigger another review.
+		job.AuthorIsBot = strings.EqualFold(strings.TrimSpace(pl.Comment.User.Type), "Bot")
+		job.AuthorIsTrusted = isTrustedAssociation(pl.Comment.AuthorAssociation)
+		job.CommentBody = pl.Comment.Body
+		job.CommentAuthor = pl.Comment.User.Login
+		job.HeadRef = fmt.Sprintf("refs/pull/%d/head", pl.Issue.Number)
+		return job, true
 	default:
 		return forge.ForgeJob{}, false
+	}
+}
+
+// isTrustedAssociation reports whether a commenter may spend the project's
+// review budget.
+//
+// Only people with standing in the repository qualify. CONTRIBUTOR is
+// deliberately EXCLUDED: on GitHub it means "has had a pull request merged
+// here", which is a statement about the past, not permission to trigger model
+// spend at will. Anything unrecognised or absent is untrusted, so a payload
+// shape we do not know about fails closed rather than open.
+func isTrustedAssociation(assoc string) bool {
+	switch strings.ToUpper(strings.TrimSpace(assoc)) {
+	case "OWNER", "MEMBER", "COLLABORATOR":
+		return true
+	default:
+		return false
+	}
+}
+
+// isReviewAction reports whether a pull_request action means "there is (new)
+// code here worth reviewing".
+//
+// synchronize is the one that matters: it fires on every push and was excluded
+// until 2026-09-02, so a pull request could never be re-reviewed after its
+// first review on this path.
+func isReviewAction(action string) bool {
+	switch action {
+	case "opened", "reopened", "ready_for_review", "synchronize":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -191,6 +269,34 @@ func (p *Provider) FetchDiff(ctx context.Context, repo string, number int) ([]by
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("forge/github: fetch diff HTTP %d: %s", resp.StatusCode, excerpt(body))
+	}
+	return body, nil
+}
+
+// CompareDiff returns the diff between base and head via GitHub's compare API.
+//
+// GitHub answers 404 when either ref is unknown and 404/422 when the two are
+// not comparable, which is exactly the force-push case: the recorded baseline
+// has been rewritten out of the branch. Both surface as an error so the caller
+// falls back to a FULL review — the fail-toward-more-review direction the
+// design requires. A narrowed or empty diff would silently drop coverage.
+func (p *Provider) CompareDiff(ctx context.Context, repo, base, head string) ([]byte, error) {
+	tok, err := p.token(ctx)
+	if err != nil {
+		return nil, err
+	}
+	url := fmt.Sprintf("%s/repos/%s/compare/%s...%s", p.apiBaseURL, repo, base, head)
+	req, err := p.newReq(ctx, http.MethodGet, url, nil, tok)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3.diff")
+	resp, body, err := p.do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("forge/github: compare %s...%s HTTP %d: %s", base, head, resp.StatusCode, excerpt(body))
 	}
 	return body, nil
 }
@@ -412,13 +518,37 @@ type ghEventPayload struct {
 		Title  string    `json:"title"`
 		Body   string    `json:"body"`
 		Labels []ghLabel `json:"labels"`
+		// PullRequest is present ONLY when this issue is really a pull
+		// request. GitHub delivers PR-thread comments as issue_comment, so
+		// this is what separates "comment on a PR" from "comment on an issue".
+		PullRequest *struct {
+			URL string `json:"url"`
+		} `json:"pull_request,omitempty"`
 	} `json:"issue,omitempty"`
 	PullRequest *struct {
 		Number int       `json:"number"`
 		Title  string    `json:"title"`
 		Body   string    `json:"body"`
 		Labels []ghLabel `json:"labels"`
+		Draft  bool      `json:"draft"`
+		Head   struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
 	} `json:"pull_request,omitempty"`
+	// Comment is populated on issue_comment. A comment on a PR thread is how a
+	// human asks for a review on demand.
+	Comment *struct {
+		Body string `json:"body"`
+		// AuthorAssociation is GitHub's own statement of how this commenter
+		// relates to the repository (OWNER / MEMBER / COLLABORATOR /
+		// CONTRIBUTOR / NONE). It is the trust signal for commands, and it
+		// costs no extra API call.
+		AuthorAssociation string `json:"author_association"`
+		User              struct {
+			Login string `json:"login"`
+			Type  string `json:"type"`
+		} `json:"user"`
+	} `json:"comment,omitempty"`
 }
 
 type ghLabel struct {

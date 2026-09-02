@@ -40,6 +40,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"vornik.io/vornik/internal/conversation"
+	"vornik.io/vornik/internal/forgereview"
 )
 
 const channelName = "github-app"
@@ -143,6 +144,14 @@ type Config struct {
 	// Single-installation mode only.
 	PRReviewLabels []string
 
+	// AutoReviewOnPush / ReviewDraftPRs are the single-installation forms
+	// of the identically-named InstallationConfig fields; see there for
+	// the semantics and for why one is a pointer and the other is not.
+	//
+	// Single-installation mode only.
+	AutoReviewOnPush *bool
+	ReviewDraftPRs   bool
+
 	// SenderAllowlist lists GitHub login names allowed to trigger
 	// the @vornik reply path via issue_comment.created. Empty allows
 	// all logins (dev-mode pass-through, matching Telegram's
@@ -215,6 +224,21 @@ type InstallationConfig struct {
 	// installation accepts events from. Required (defensive
 	// deny-all default).
 	RepoAllowlist []string
+
+	// AutoReviewOnPush controls whether pull_request.synchronize (a new
+	// commit pushed to the PR branch) triggers a review.
+	//
+	// A *bool because the zero value must not mean "off": nil is UNSET and
+	// resolves to true, which is the behaviour docs/public/features/forge.md
+	// already documents. An operator who wants quiet pushes sets it false
+	// explicitly; per-PR there is also the pause command (phase 3).
+	AutoReviewOnPush *bool
+
+	// ReviewDraftPRs opts INTO auto-reviewing draft pull requests. Default
+	// false: a draft is work in progress, and ready_for_review is the
+	// transition that starts review. An explicit on-demand command still
+	// reviews a draft — asking is consent.
+	ReviewDraftPRs bool
 
 	// TaskLabels lists labels that, when applied to an issue, fire
 	// this installation's task-creation path. Empty disables that
@@ -297,6 +321,23 @@ type TaskCreationEvent struct {
 	// the pre-work rebase target. Empty when the payload omitted it.
 	DefaultBranch string
 
+	// OnDemand marks an event a HUMAN explicitly asked for, rather than one a
+	// push produced. Such events are never coalesced away: someone asking a
+	// second time is asking for a fresh answer, and silently absorbing that
+	// request looks broken (design §5).
+	OnDemand bool
+
+	// FullReview asks for the whole diff, ignoring any incremental baseline.
+	// Set by the explicit "full review" command; consumed by phase 4.
+	FullReview bool
+
+	// HeadSHA is the pull request's head commit at the moment this delivery
+	// was produced. It is what a review COVERS, so coalescing records it as
+	// the newest observed head for the PR, and phase 4 uses it as the upper
+	// bound of the incremental range. Empty for issue events, which have no
+	// head commit.
+	HeadSHA string
+
 	// InstallationID is the GitHub App installation that received
 	// the event.
 	InstallationID int64
@@ -365,6 +406,12 @@ type installation struct {
 	sendersRaw       []string
 
 	taskCreator TaskCreator
+
+	// autoReviewOnPush / reviewDraftPRs are the resolved forms of the
+	// same-named InstallationConfig fields (see there for why one is a
+	// pointer and this one is not).
+	autoReviewOnPush bool
+	reviewDraftPRs   bool
 
 	// tokenMu guards the installation-access-token cache. Held
 	// across the JWT exchange so two concurrent Sends after expiry
@@ -456,6 +503,10 @@ func resolveInstallations(cfg Config) ([]*installation, error) {
 			PRReviewLabels:  cfg.PRReviewLabels,
 			SenderAllowlist: cfg.SenderAllowlist,
 			TaskCreator:     cfg.TaskCreator,
+			// Single-installation mode mirrors the per-installation
+			// knobs, so the two modes cannot drift in what they gate.
+			AutoReviewOnPush: cfg.AutoReviewOnPush,
+			ReviewDraftPRs:   cfg.ReviewDraftPRs,
 		})
 		return []*installation{inst}, nil
 	}
@@ -496,6 +547,9 @@ func buildInstallation(ic InstallationConfig) *installation {
 		prLabelsRaw:      append([]string(nil), ic.PRReviewLabels...),
 		sendersRaw:       append([]string(nil), ic.SenderAllowlist...),
 		taskCreator:      ic.TaskCreator,
+		// nil == unset == ON. See InstallationConfig.AutoReviewOnPush.
+		autoReviewOnPush: ic.AutoReviewOnPush == nil || *ic.AutoReviewOnPush,
+		reviewDraftPRs:   ic.ReviewDraftPRs,
 	}
 }
 
@@ -874,8 +928,14 @@ func (c *Channel) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 			c.handleIssueComment(r.Context(), event, delivery, payload, inst)
 		}
 	case "pull_request":
-		if payload.Action == "opened" {
-			c.handlePullRequestOpened(r.Context(), event, delivery, payload, inst)
+		// Every action that means "there is (new) code here worth
+		// reviewing". Until 2026-09-01 this matched `opened` alone, so a
+		// PR could never be re-reviewed after its first review and the
+		// code sat behind forge.md's published claim. The per-action
+		// gating (draft, auto-review-on-push) lives in the handler, not
+		// here, so one place decides whether a review actually fires.
+		if kind, ok := reviewKindForAction(payload.Action); ok {
+			c.handlePullRequestReview(r.Context(), event, delivery, payload, inst, kind)
 		}
 	default:
 		c.logger.Debug().Str("event", event).Str("action", payload.Action).
@@ -960,6 +1020,10 @@ type eventPayload struct {
 		User struct {
 			Login string `json:"login"`
 			ID    int64  `json:"id"`
+			// Type is "Bot" for App and Action authors. Load-bearing: the
+			// review this system posts is itself a comment, so without this
+			// a command could trigger itself (design §7.1).
+			Type string `json:"type"`
 		} `json:"user"`
 	} `json:"comment,omitempty"`
 
@@ -972,6 +1036,17 @@ type eventPayload struct {
 			Name string `json:"name"`
 		} `json:"labels"`
 		DiffURL string `json:"diff_url"`
+		// Draft gates the automatic triggers: a draft PR is explicitly
+		// not ready to be looked at, so reviewing it spends budget on
+		// work in progress. ready_for_review is the transition that
+		// starts review.
+		Draft bool `json:"draft"`
+		// Head.SHA identifies WHICH commit a review covers. Carried from
+		// phase 1 so the reviewer can name it, and required by the
+		// incremental scope work in phase 4.
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
 	} `json:"pull_request,omitempty"`
 }
 
@@ -1048,6 +1123,16 @@ func (c *Channel) handleIssueComment(ctx context.Context, event, delivery string
 	if !mentionsVornik(p.Comment.Body) {
 		return // quiet discard; not all comments are for us
 	}
+	// LOOP GUARD, BEFORE ANYTHING ELSE (design §7.1). The review this system
+	// posts is itself a pull-request comment; if a bot-authored comment could
+	// reach the command parser, a review would trigger another review.
+	if isBotAuthor(p.Comment.User.Type) {
+		c.logger.Debug().
+			Str("delivery", delivery).
+			Str("sender", p.Comment.User.Login).
+			Msg("github-app: mention authored by a bot; ignoring before parsing")
+		return
+	}
 	if _, err := c.resolveSpeakerForInstallation(inst, p.Comment.User.Login); err != nil {
 		c.logger.Warn().
 			Str("event", event).
@@ -1063,7 +1148,25 @@ func (c *Channel) handleIssueComment(ctx context.Context, event, delivery string
 	if title == "" && p.Issue.PullRequest != nil {
 		title = fmt.Sprintf("PR #%d", p.Issue.Number)
 	}
+	// Recorded BEFORE the command dispatch below, not after. A command is
+	// still activity on this thread, and returning early without recording it
+	// would drop the PR out of ListSessions — caught by
+	// TestChannel_PRComment_TitleFallback, whose body happens to be a command.
 	c.recordSession(msg.SessionID, title, p.Comment.User.Login, time.Now(), inst)
+
+	// COMMAND PATH, in front of the chat path rather than replacing it. A
+	// mention matching no command falls through below and still gets a
+	// conversational reply, so an unrecognised phrasing degrades to "a human
+	// gets an answer", never to silence.
+	//
+	// Commands only apply to PULL REQUESTS: issue.pull_request is what
+	// distinguishes a PR thread from a plain issue, and there is nothing to
+	// review on the latter.
+	if p.Issue.PullRequest != nil {
+		if handled := c.handleReviewCommand(ctx, event, delivery, p, inst); handled {
+			return
+		}
+	}
 	c.recvMu.RLock()
 	recv := c.recv
 	c.recvMu.RUnlock()
@@ -1080,8 +1183,52 @@ func (c *Channel) handleIssueComment(ctx context.Context, event, delivery string
 // the installation's PRReviewLabels — when non-empty, the PR's
 // labels must intersect. Empty PRReviewLabels means every opened
 // PR fires.
-func (c *Channel) handlePullRequestOpened(ctx context.Context, event, delivery string, p eventPayload, inst *installation) {
+// reviewKindForAction maps a pull_request action to the TaskCreationEvent kind
+// its review runs under, and reports whether the action is a review trigger at
+// all. The kind is preserved per action rather than collapsed onto
+// "pull_request.opened": the task creator routes on it and the reviewer prompt
+// reads it, so flattening would lose the distinction between a first review and
+// a re-review.
+func reviewKindForAction(action string) (string, bool) {
+	switch action {
+	case "opened", "reopened", "ready_for_review", "synchronize":
+		return "pull_request." + action, true
+	default:
+		return "", false
+	}
+}
+
+// handlePullRequestReview dispatches a review for one of the actions
+// reviewKindForAction accepts. Design:
+// https://docs.vornik.io §4.
+func (c *Channel) handlePullRequestReview(ctx context.Context, event, delivery string, p eventPayload, inst *installation, kind string) {
 	if p.PullRequest == nil {
+		return
+	}
+	// The push trigger is the only one an operator can switch off, because it
+	// is the only one that fires repeatedly on a single PR. Deliberately does
+	// NOT suppress opened/reopened/ready_for_review: someone who wants quiet
+	// pushes must not silently lose first review as well.
+	if kind == "pull_request.synchronize" && !inst.autoReviewOnPush {
+		c.logger.Debug().
+			Str("event", event).
+			Str("delivery", delivery).
+			Str("repo", p.Repository.FullName).
+			Int("pr", p.PullRequest.Number).
+			Msg("github-app: auto_review_on_push disabled; not reviewing this push")
+		return
+	}
+	// A draft is work in progress. ready_for_review is EXEMPT because it is
+	// the action that ends draft state — GitHub still reports draft:true on
+	// some deliveries of it, and suppressing it there would swallow the very
+	// transition that is supposed to start the review.
+	if p.PullRequest.Draft && !inst.reviewDraftPRs && kind != "pull_request.ready_for_review" {
+		c.logger.Debug().
+			Str("event", event).
+			Str("delivery", delivery).
+			Str("repo", p.Repository.FullName).
+			Int("pr", p.PullRequest.Number).
+			Msg("github-app: draft PR; not auto-reviewing until ready for review")
 		return
 	}
 	if len(inst.prLabels) > 0 {
@@ -1118,7 +1265,7 @@ func (c *Channel) handlePullRequestOpened(ctx context.Context, event, delivery s
 		labels = append(labels, l.Name)
 	}
 	ev := TaskCreationEvent{
-		Kind:           "pull_request.opened",
+		Kind:           kind,
 		SessionID:      sessionID,
 		Title:          p.PullRequest.Title,
 		Body:           p.PullRequest.Body,
@@ -1127,6 +1274,7 @@ func (c *Channel) handlePullRequestOpened(ctx context.Context, event, delivery s
 		Repo:           p.Repository.FullName,
 		Number:         p.PullRequest.Number,
 		DefaultBranch:  p.Repository.DefaultBranch,
+		HeadSHA:        p.PullRequest.Head.SHA,
 		InstallationID: p.Installation.ID,
 		IdempotencyKey: "github-app:" + delivery,
 	}
@@ -1219,3 +1367,91 @@ func isMentionWordChar(b byte) bool {
 // Channel contract. Does NOT yet satisfy StreamingChannel —
 // GitHub comments are atomic.
 var _ conversation.Channel = (*Channel)(nil)
+
+// isBotAuthor reports whether a comment was written by a bot rather than a
+// person, using GitHub's own signal.
+//
+// The DETECTION is provider-specific and correctly lives here, in the GitHub
+// channel; the RULE it serves — never let a bot comment reach the command
+// parser, because the review this system posts is itself a comment — is neutral
+// and lives with the grammar in internal/forgereview. The generic path gets the
+// same rule from ForgeJob.AuthorIsBot, which its provider sets (design §13.4).
+func isBotAuthor(userType string) bool {
+	return strings.EqualFold(strings.TrimSpace(userType), "Bot")
+}
+
+// ReviewController is the optional capability a TaskCreator may implement to
+// carry the per-PR pause switch (design §7).
+//
+// A SEPARATE, OPTIONAL interface rather than a method on TaskCreator: pause and
+// resume are state operations, not task creation, and every existing TaskCreator
+// implementation would otherwise have to grow a method it does not use. The
+// channel type-asserts for it — the same shape the dispatcher uses for
+// StreamingChannel.
+type ReviewController interface {
+	SetAutoReviewPaused(ctx context.Context, repo string, number int, paused bool) error
+}
+
+// handleReviewCommand runs an explicit command from a pull-request comment and
+// reports whether it consumed the delivery. False means "not a command" and the
+// caller falls through to the conversational path.
+//
+// The sender allowlist and the bot guard have BOTH already been applied by the
+// caller — this function must never be reachable without them, because on a
+// public repository a command is real model spend and the review it starts
+// cannot be recalled once posted.
+func (c *Channel) handleReviewCommand(ctx context.Context, event, delivery string, p eventPayload, inst *installation) bool {
+	cmd := forgereview.ParseCommand(p.Comment.Body)
+	if cmd == forgereview.CmdNone {
+		return false
+	}
+
+	log := c.logger.With().
+		Str("event", event).
+		Str("delivery", delivery).
+		Str("repo", p.Repository.FullName).
+		Int("pr", p.Issue.Number).
+		Str("sender", p.Comment.User.Login).
+		Str("command", cmd.String()).
+		Logger()
+
+	switch cmd {
+	case forgereview.CmdPause, forgereview.CmdResume:
+		ctrl, ok := inst.taskCreator.(ReviewController)
+		if !ok || ctrl == nil {
+			log.Warn().Msg("github-app: pause/resume requested but this deployment cannot record it; ignoring")
+			return true
+		}
+		if err := ctrl.SetAutoReviewPaused(ctx, p.Repository.FullName, p.Issue.Number, cmd == forgereview.CmdPause); err != nil {
+			log.Warn().Err(err).Msg("github-app: could not record the pause state")
+			return true
+		}
+		log.Info().Msg("github-app: automatic review suppression updated for this PR")
+		return true
+	}
+
+	if inst.taskCreator == nil {
+		log.Info().Msg("github-app: review command received but TaskCreator not wired; discarding")
+		return true
+	}
+	ev := TaskCreationEvent{
+		Kind:        "pull_request.comment_command",
+		SessionID:   fmt.Sprintf("%s#pulls/%d", p.Repository.FullName, p.Issue.Number),
+		Title:       p.Issue.Title,
+		SenderLogin: p.Comment.User.Login,
+		Repo:        p.Repository.FullName,
+		Number:      p.Issue.Number,
+		// A human asked; never coalesce it away.
+		OnDemand:       true,
+		FullReview:     cmd == forgereview.CmdFullReview,
+		DefaultBranch:  p.Repository.DefaultBranch,
+		InstallationID: p.Installation.ID,
+		IdempotencyKey: "github-app:" + delivery,
+	}
+	if err := inst.taskCreator.Create(ctx, ev); err != nil {
+		log.Warn().Err(err).Msg("github-app: review command task creation failed")
+		return true
+	}
+	log.Info().Msg("github-app: review requested from a PR comment")
+	return true
+}

@@ -36,6 +36,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"vornik.io/vornik/internal/forge"
+	"vornik.io/vornik/internal/forgereview"
 	"vornik.io/vornik/internal/github"
 	"vornik.io/vornik/internal/persistence"
 	"vornik.io/vornik/internal/registry"
@@ -67,6 +68,14 @@ type githubTaskCreator struct {
 	project   *registry.Project
 	taskLabel map[string]string // optional label→task_type mapping, empty falls back to label name
 	logger    zerolog.Logger
+
+	// review carries the pause gate and the coalescing decision. The SAME
+	// coordinator serves the generic webhook ingress (design §13.3), so a rule
+	// change cannot reach one path and miss the other — which is exactly how
+	// this feature came to work on one ingress and not the one in use.
+	//
+	// NIL IS SUPPORTED and degrades to always-enqueue rather than to silence.
+	review *forgereview.Coordinator
 }
 
 // newGitHubTaskCreator builds an adapter pinned to a single
@@ -133,11 +142,22 @@ func (g *githubTaskCreator) Create(ctx context.Context, ev github.TaskCreationEv
 	// the project default when not separately configured.
 	// See https://docs.vornik.io (Config Surface).
 	var workflowID string
-	if ev.Kind == "pull_request.opened" {
+	if isPullRequestReviewKind(ev.Kind) {
 		workflowID = g.project.GitHubApp.EffectivePRReviewWorkflowID(g.project.DefaultWorkflowID)
 	} else {
 		workflowID = g.project.GitHubApp.EffectiveReplyWorkflowID(g.project.DefaultWorkflowID)
 	}
+	// PAUSE + COALESCING, from the shared coordinator (§13.3).
+	if isPullRequestReviewKind(ev.Kind) {
+		if d := g.review.Decide(ctx, g.project.ID, *forgeJobFromEvent(ev), ev.OnDemand); d.Skip {
+			g.logger.Info().
+				Str("repo", ev.Repo).Int("number", ev.Number).
+				Str("kind", ev.Kind).Str("reason", d.Reason).
+				Msg("github task creator: not enqueueing this delivery")
+			return nil
+		}
+	}
+
 	payload, err := marshalGitHubTaskPayload(ev, taskType, priority, workflowID)
 	if err != nil {
 		return fmt.Errorf("marshal github task payload: %w", err)
@@ -185,6 +205,10 @@ func (g *githubTaskCreator) Create(ctx context.Context, ev github.TaskCreationEv
 		return fmt.Errorf("create github task: %w", err)
 	}
 
+	if isPullRequestReviewKind(ev.Kind) {
+		g.review.Claim(ctx, g.project.ID, *forgeJobFromEvent(ev), task.ID)
+	}
+
 	g.logger.Info().
 		Str("project_id", g.project.ID).
 		Str("task_id", task.ID).
@@ -204,13 +228,42 @@ func (g *githubTaskCreator) Create(ctx context.Context, ev github.TaskCreationEv
 //     event (the matched label, per the
 //     channel's issueLabels helper)
 //
+// isPullRequestReviewKind reports whether a TaskCreationEvent kind means "review
+// this pull request". It is the SINGLE definition consulted by both the task-type
+// resolution and the workflow routing below, deliberately.
+//
+// Those two were separate literal comparisons against "pull_request.opened"
+// until 2026-09-01, and the else-branch of the routing one is the REPLY
+// workflow. So adding a re-review trigger to the GitHub channel without
+// touching this file would not have failed loudly — it would have routed a code
+// review into the conversational workflow and produced a chat answer on the PR.
+// One predicate means a new trigger cannot be half-wired.
+// https://docs.vornik.io §1.3.
+func isPullRequestReviewKind(kind string) bool {
+	switch kind {
+	case "pull_request.opened",
+		"pull_request.reopened",
+		"pull_request.ready_for_review",
+		"pull_request.synchronize",
+		// An explicit request from a PR comment. Listed here so it routes to
+		// the REVIEW workflow: omitted, it would fall to the else-branch and
+		// be answered conversationally — a chat reply where the human asked
+		// for a code review.
+		"pull_request.comment_command":
+		return true
+	default:
+		return false
+	}
+}
+
 // Returns an error when the event carries neither a usable label
 // nor a mapping. The channel logs the error; HTTP response stays
 // 200 (handled upstream).
 func (g *githubTaskCreator) resolveTaskType(ev github.TaskCreationEvent) (string, error) {
-	switch ev.Kind {
-	case "pull_request.opened":
+	if isPullRequestReviewKind(ev.Kind) {
 		return pullRequestReviewTaskType, nil
+	}
+	switch ev.Kind {
 	case "issues.labeled":
 		if len(ev.Labels) == 0 {
 			return "", errors.New("issues.labeled event has no labels")
@@ -304,11 +357,19 @@ func marshalGitHubTaskPayload(ev github.TaskCreationEvent, taskType string, prio
 func forgeJobFromEvent(ev github.TaskCreationEvent) *forge.ForgeJob {
 	action := ""
 	isCR := false
-	switch ev.Kind {
-	case "issues.labeled":
+	switch {
+	case ev.Kind == "issues.labeled":
 		action = "labeled"
-	case "pull_request.opened":
-		action = "opened"
+	case isPullRequestReviewKind(ev.Kind):
+		// EVERY review kind is a change request, not just "opened". This read
+		// `case "pull_request.opened"` until 2026-09-01, so each re-review
+		// trigger built a job with IsChangeRequest=false and an empty action --
+		// and the forge handlers read both. A synchronize review would have run
+		// against a job that did not describe a pull request at all.
+		//
+		// The action is the kind's suffix, so a new trigger cannot arrive here
+		// with an empty action the way the previous switch allowed.
+		action = strings.TrimPrefix(ev.Kind, "pull_request.")
 		isCR = true
 	}
 	return &forge.ForgeJob{
@@ -321,6 +382,11 @@ func forgeJobFromEvent(ev github.TaskCreationEvent) *forge.ForgeJob {
 		IsChangeRequest: isCR,
 		Title:           ev.Title,
 		Body:            ev.Body,
+		// Both carried so the diff fetch can scope the review: HeadSHA is what
+		// a review COVERS and becomes the next baseline; FullReview is the
+		// explicit command asking to ignore that baseline.
+		HeadSHA:    ev.HeadSHA,
+		FullReview: ev.FullReview,
 	}
 }
 
@@ -354,3 +420,16 @@ func buildGitHubPrompt(ev github.TaskCreationEvent) string {
 // TaskCreator contract. Catches API drift on either side at build
 // time rather than the first delivery.
 var _ github.TaskCreator = (*githubTaskCreator)(nil)
+
+// SetAutoReviewPaused implements github.ReviewController: the per-PR pause
+// switch behind the `@vornik pause` / `@vornik resume` commands (design §7).
+//
+// Per-PR rather than per-project on purpose. Silencing one noisy pull request
+// should not require editing project config, and should not silence every other
+// PR in the repository.
+func (g *githubTaskCreator) SetAutoReviewPaused(ctx context.Context, repo string, number int, paused bool) error {
+	if g == nil || g.project == nil {
+		return errors.New("github task creator: no project pinned")
+	}
+	return g.review.SetPaused(ctx, g.project.ID, repo, number, paused)
+}

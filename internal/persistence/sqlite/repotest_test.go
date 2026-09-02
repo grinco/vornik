@@ -354,6 +354,16 @@ func TestChannelDisclosureRepository_Contract(t *testing.T) {
 	repotest.RunChannelDisclosureSuite(t, sqlite.NewChannelDisclosureRepository(db.DB))
 }
 
+// TestForgePRReviewStateRepository_Contract — per-PR re-review state
+// (migration 171). Durable on SQLite, not a stub: the ABSORBING claim is what
+// stops a push burst enqueueing one review per push, so a no-op here would
+// silently restore the cost multiplier on every single-node deployment. The
+// shared suite runs against Postgres too.
+func TestForgePRReviewStateRepository_Contract(t *testing.T) {
+	db := newTestDB(t)
+	repotest.RunForgePRReviewStateSuite(t, sqlite.NewForgePRReviewStateRepository(db.DB))
+}
+
 // TestChatMemoryWriteConfirmationRepository_Contract — the shared-scope memory-write
 // confirmation two-step (chat memory-write design §5.3). Real durable implementations on
 // SQLite, not stubs: a shared write cannot authorize without a persisted acknowledgement. The

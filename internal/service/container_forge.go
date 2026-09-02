@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"vornik.io/vornik/internal/forgereview"
 
 	"vornik.io/vornik/internal/forge"
 	_ "vornik.io/vornik/internal/forge/github" // registers the "github" forge provider via init()
@@ -183,4 +185,40 @@ func (c *Container) newForgeClassifier() *forgeWebhookClassifier {
 		return nil
 	}
 	return &forgeWebhookClassifier{resolver: r}
+}
+
+// forgeReviewCoordinator builds the shared pause + coalescing coordinator, or
+// returns nil when this node has no repositories (a DMZ relay node, early boot,
+// tests). Both forge ingresses take the SAME instance.
+func (c *Container) forgeReviewCoordinator() *forgereview.Coordinator {
+	if c == nil || c.repos == nil || c.repos.ForgePRReviewState == nil || c.repos.Tasks == nil {
+		return nil
+	}
+	return forgereview.New(
+		c.repos.ForgePRReviewState,
+		taskStatusReader{tasks: c.repos.Tasks},
+		c.Logger.With().Str("component", "forge_review").Logger(),
+	)
+}
+
+// taskStatusReader adapts the task repository to the one question the coalescing
+// rule asks of it. Narrow on purpose: forgereview must be able to READ a task's
+// status to derive whether a claim is live, but has no business creating or
+// cancelling tasks.
+type taskStatusReader struct{ tasks persistence.TaskRepository }
+
+func (t taskStatusReader) TaskStatus(ctx context.Context, taskID string) (persistence.TaskStatus, bool, error) {
+	task, err := t.tasks.Get(ctx, taskID)
+	if err != nil {
+		// A miss is reported as not-found rather than an error so the caller
+		// takes the "claim names a task that is gone" path, which enqueues.
+		if errors.Is(err, persistence.ErrNotFound) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if task == nil {
+		return "", false, nil
+	}
+	return task.Status, true, nil
 }

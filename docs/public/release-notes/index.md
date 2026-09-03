@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 24a3492903b90adcc0d8c1ff6573eceb4019b6e282b51815af91d285e1462522
+      sha256: e814b233895a0968e92fb45aa20a5d6306d577e9640c3a1d40466ff15f213285
 ---
 # Release Notes
 
@@ -119,9 +119,12 @@ to decide redaction but not enough to triage a false positive. The metric gains 
 **The agent container image is published for arm64.** It was being built for the
 release runner's architecture only, while arm64 packages were shipping — so an
 arm64 install named an image it could not pull and discovered it at the first
-agent run. Packaged installs also carry an image provenance record again, with
-per-architecture digests for registry images and a source commit for images built
-on your own host.
+agent run.
+
+*Correction, 2026-09-03:* this section originally also said packaged installs
+carry an image provenance record again. The record's schema shipped, but the
+packaging step that writes it aborted every build, so **2026.9.1 produced no
+packages and no record**. Fixed after the release; the next release carries it.
 
 **MCP audience checks accept equivalent spellings of the same URL.** Host case, a
 longhand default port (`:443` on https), a trailing dot, and the Unicode form of

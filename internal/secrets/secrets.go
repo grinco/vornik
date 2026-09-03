@@ -679,7 +679,12 @@ func FilterAllowlisted(findings []Finding, allow [][]byte) []Finding {
 //     strong ones (executor.dropHeuristicFindings);
 //   - outputguard's read-back scan enforces ONLY strong patterns, because it
 //     redacts what the model sees and a false positive there corrupts the
-//     agent's working data (StrongPatterns, below).
+//     agent's working data (StrongPatterns, below);
+//   - the artifact store rewrites ONLY strong findings, because a stored
+//     artifact is read by a HUMAN and the rewrite is one-way — so a false
+//     positive there destroys evidence permanently and, worse, reads as though
+//     a secret had been caught (internal/artifacts/store.go, added 2026-09-02
+//     on ~7,000 findings with zero true positives).
 //
 // Unknown names are NOT heuristic. An unrecognised type is treated as strong,
 // so a pattern nobody classified cannot be quietly suppressed by an allowlist.
@@ -764,6 +769,14 @@ func findingAllowlisted(match string, allow [][]byte) bool {
 	return false
 }
 
+// Redact replaces each finding's span with a typed [REDACTED:<type>] marker and
+// returns the rewritten bytes. One-way: the original bytes are not retained.
+//
+// CONTRACT: findings must be in ASCENDING OFFSET ORDER and non-overlapping —
+// the detector produces them that way, and the filters that narrow a finding set
+// (DropHeuristic, StrongPatterns, the CLI's rule selection) all preserve source
+// order rather than re-sorting. Passing an unordered set corrupts the output
+// silently, which is why every caller filters rather than rebuilds.
 func Redact(text []byte, findings []Finding) []byte {
 	if len(findings) == 0 {
 		return text

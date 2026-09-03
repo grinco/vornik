@@ -867,8 +867,8 @@ func TestGenerateArtifactID(t *testing.T) {
 
 func TestExecutor_StartContainer(t *testing.T) {
 	e, _, _, _, _ := setup()
-	role := &registry.SwarmRole{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}
-	id, err := e.startContainer(context.Background(), &persistence.Task{ID: "t1", ProjectID: "p1"}, "e1", "fake-agent:latest", "worker", "/tmp/in", "/tmp/out", "/tmp/work", role, "", e.config.DefaultTimeout, nil)
+	role := &registry.SwarmRole{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}
+	id, err := e.startContainer(context.Background(), &persistence.Task{ID: "t1", ProjectID: "p1"}, "e1", "test-image:latest", "worker", "/tmp/in", "/tmp/out", "/tmp/work", role, "", e.config.DefaultTimeout, nil)
 	assert.NoError(t, err)
 	assert.Contains(t, id, "container-")
 }
@@ -876,8 +876,8 @@ func TestExecutor_StartContainer(t *testing.T) {
 func TestExecutor_StartContainer_Error(t *testing.T) {
 	e, rt, _, _, _ := setup()
 	rt.startErr = errors.New("fail")
-	role := &registry.SwarmRole{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}
-	_, err := e.startContainer(context.Background(), &persistence.Task{ID: "t1"}, "e1", "fake-agent:latest", "worker", "/tmp/in", "/tmp/out", "/tmp/work", role, "", e.config.DefaultTimeout, nil)
+	role := &registry.SwarmRole{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}
+	_, err := e.startContainer(context.Background(), &persistence.Task{ID: "t1"}, "e1", "test-image:latest", "worker", "/tmp/in", "/tmp/out", "/tmp/work", role, "", e.config.DefaultTimeout, nil)
 	assert.Error(t, err)
 }
 
@@ -891,10 +891,10 @@ func TestExecutor_StartContainer_ModelOverride(t *testing.T) {
 		Name:  "coder",
 		Model: "claude-sonnet-4-20250514",
 		Runtime: registry.SwarmRoleRuntime{
-			Image: "fake-agent:latest",
+			Image: "test-image:latest",
 		},
 	}
-	_, err := e.startContainer(context.Background(), &persistence.Task{ID: "t1", ProjectID: "p1"}, "e1", "fake-agent:latest", "coder", "/tmp/in", "/tmp/out", "/tmp/work", role, "", e.config.DefaultTimeout, nil)
+	_, err := e.startContainer(context.Background(), &persistence.Task{ID: "t1", ProjectID: "p1"}, "e1", "test-image:latest", "coder", "/tmp/in", "/tmp/out", "/tmp/work", role, "", e.config.DefaultTimeout, nil)
 	assert.NoError(t, err)
 	// Verify the container was started with the overridden model
 	rt.mu.Lock()
@@ -1092,7 +1092,7 @@ func TestExecutor_GateWorkflow(t *testing.T) {
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
 		},
 		swarms: map[string]*registry.Swarm{
-			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 		},
 		workflows: map[string]*registry.Workflow{
 			"wf1": {
@@ -1145,7 +1145,7 @@ func TestExecutor_TaskTransitionsToRunning(t *testing.T) {
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
 		},
 		swarms: map[string]*registry.Swarm{
-			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 		},
 		workflows: map[string]*registry.Workflow{
 			"wf1": {
@@ -1221,7 +1221,7 @@ func TestExecutor_RetryResetsVisitCounterAcrossAttempts(t *testing.T) {
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf-tight-loop"},
 		},
 		swarms: map[string]*registry.Swarm{
-			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 		},
 		workflows: map[string]*registry.Workflow{
 			"wf-tight-loop": {
@@ -1292,7 +1292,7 @@ func TestExecutor_RetryMetricMatchesActualRetries(t *testing.T) {
 					"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
 				},
 				swarms: map[string]*registry.Swarm{
-					"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+					"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 				},
 				workflows: map[string]*registry.Workflow{
 					"wf1": {
@@ -1335,7 +1335,7 @@ func TestExecutor_ApprovalWorkflowPauseAndResume(t *testing.T) {
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
 		},
 		swarms: map[string]*registry.Swarm{
-			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 		},
 		workflows: map[string]*registry.Workflow{
 			"wf1": {
@@ -1414,7 +1414,7 @@ func TestExecutor_ResumeGoroutineIsTrackedByStop(t *testing.T) {
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
 		},
 		swarms: map[string]*registry.Swarm{
-			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 		},
 		workflows: map[string]*registry.Workflow{
 			"wf1": {
@@ -1458,7 +1458,7 @@ func TestExecutor_RecoverRunningExecution(t *testing.T) {
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
 		},
 		swarms: map[string]*registry.Swarm{
-			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 		},
 		workflows: map[string]*registry.Workflow{
 			"wf1": {

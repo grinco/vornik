@@ -249,7 +249,7 @@ func TestMintAndRevoke_StartContainerFailureStillRevokes(t *testing.T) {
 	}
 
 	task := &persistence.Task{ID: "task-order-test", ProjectID: "proj-order"}
-	role := &registry.SwarmRole{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}
+	role := &registry.SwarmRole{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}
 
 	runStep := func() {
 		extraEnv := make(map[string]string)

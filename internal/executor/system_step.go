@@ -185,3 +185,62 @@ func runSystemHandlerSafely(
 	}()
 	return handler.Execute(ctx, in)
 }
+
+// systemResultMaxBytes caps the handler output injected into the next agent's
+// prompt.
+//
+// An agent's message is bounded by the model's output limit; a system handler's
+// is bounded by nothing — a large PR diff is megabytes. The in-tree precedent is
+// canonicalContextMaxBytes (16 KiB, canonical_context.go), whose comment states
+// the same concern: it "would otherwise balloon task.json and push the LLM's
+// context budget".
+//
+// 256 KiB rather than 16 KiB because that cap is per pre-loaded FILE and this is
+// one payload: 16 KiB would truncate nearly every real PR diff, making the fix
+// useless for the case that motivated it. 256 KiB is roughly 64k tokens, which
+// fits alongside a system prompt and workspace reads in the models configured
+// here (128k+ context), and a diff larger than that is not reviewable in one
+// pass anyway — at which point the truncation marker is the honest signal.
+//
+// Deliberately STATIC, not context-window-aware: the executor does not know the
+// model's window at input-assembly time, and a lookup to derive one number is
+// more moving parts than the number is worth.
+const systemResultMaxBytes = 256 * 1024
+
+// systemResultTruncationMarker is appended when the cap engages. It goes IN the
+// injected text, not just the log: an agent that cannot tell it is holding part
+// of a payload will review the visible half and report on the whole — the same
+// class of defect this whole path exists to fix.
+const systemResultTruncationMarker = "\n\n[... truncated: the previous step's output exceeded " +
+	"the context budget. You are seeing the FIRST part only — do not treat it as complete, " +
+	"and read the underlying files if you need the remainder.]"
+
+// systemResultMessage extracts the agent-facing rendering from a system
+// handler's result envelope, capped.
+//
+// `message` is the established convention across every handler: the
+// human/agent-facing text, with the other keys carrying structured detail. A
+// handler that returns only structured detail yields "", which leaves
+// previousStepResult absent exactly as before — so this can only ever ADD
+// context, never remove it.
+//
+// CONSTRAINT ON HANDLER AUTHORS: `message` is REFERENCE MATERIAL for the next
+// agent — a diff, a fetched document, a scope marker — and must never carry
+// instructions. A step that follows one is told to treat this as context to
+// consult, not directives to obey; a handler smuggling a prompt in here would be
+// injecting instructions the workflow author never wrote.
+func systemResultMessage(result json.RawMessage) string {
+	if len(result) == 0 {
+		return ""
+	}
+	var env struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(result, &env); err != nil {
+		return ""
+	}
+	if len(env.Message) <= systemResultMaxBytes {
+		return env.Message
+	}
+	return env.Message[:systemResultMaxBytes] + systemResultTruncationMarker
+}

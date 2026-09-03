@@ -731,7 +731,7 @@ swarmId: swarm-1
 roles:
   - name: worker
     runtime:
-      image: fake-agent
+      image: test-image
 ---
 `), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "workflows", "wf.md"), []byte(`---
@@ -2295,13 +2295,13 @@ swarmId: swarm-1
 roles:
   - name: quoter
     runtime:
-      image: fake-agent
+      image: test-image
     permissions:
       allowedTools:
         - mcp__broker__get_quote
   - name: coder
     runtime:
-      image: fake-agent
+      image: test-image
 ---
 `), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "workflows", "wf.md"), []byte(`---
@@ -2449,7 +2449,7 @@ swarmId: swarm-1
 roles:
   - name: worker
     runtime:
-      image: fake-agent
+      image: test-image
 ---
 `), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "workflows", "wf.md"), []byte(`---

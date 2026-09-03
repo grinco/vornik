@@ -17,9 +17,9 @@ func writeRecord(t *testing.T, body string) string {
 	return p
 }
 
-const goodRecord = `{"version":1,"count":1,"images":[
+const goodRecord = `{"version":2,"record_source":"registry","count":1,"images":[
   {"tag":"ghcr.io/grinco/vornik-agent:latest",
-   "digest":"sha256:8b41a998f6080f06462866a2ae50ad40c1ca9bc11ae06f991044e5a6e6d24393",
+   "digests":{"amd64":"sha256:8b41a998f6080f06462866a2ae50ad40c1ca9bc11ae06f991044e5a6e6d24393"},
    "source_commit":"4b343821000000000000000000000000000000ab"}]}`
 
 // Step 1 of the ordering: a missing file is ABSENT, which is the correct and
@@ -65,8 +65,8 @@ func TestLoadReleaseRecord_TruncatedJSONIsCorrupt(t *testing.T) {
 // leaves SYNTACTICALLY VALID JSON carrying a half-written digest. Without field
 // validation this parses cleanly and compares false against everything.
 func TestLoadReleaseRecord_ShortDigestIsCorruptNotAbsent(t *testing.T) {
-	body := `{"version":1,"count":1,"images":[
-	  {"tag":"ghcr.io/grinco/vornik-agent:latest","digest":"sha256:ab12",
+	body := `{"version":2,"record_source":"registry","count":1,"images":[
+	  {"tag":"ghcr.io/grinco/vornik-agent:latest","digests":{"amd64":"sha256:ab12"},
 	   "source_commit":"4b343821000000000000000000000000000000ab"}]}`
 	_, err := LoadReleaseRecord(writeRecord(t, body))
 	if !IsCorrupt(err) {
@@ -117,7 +117,7 @@ func TestLoadReleaseRecord_CountMismatchIsCorrupt(t *testing.T) {
 // An EMPTY record is a legitimately different statement from a missing one:
 // "this release declares no images". It must parse, not error.
 func TestLoadReleaseRecord_EmptyRecordIsValidNotAbsent(t *testing.T) {
-	rec, err := LoadReleaseRecord(writeRecord(t, `{"version":1,"count":0,"images":[]}`))
+	rec, err := LoadReleaseRecord(writeRecord(t, `{"version":2,"record_source":"registry","count":0,"images":[]}`))
 	if err != nil {
 		t.Fatalf("an empty record is valid, got %v", err)
 	}
@@ -127,7 +127,7 @@ func TestLoadReleaseRecord_EmptyRecordIsValidNotAbsent(t *testing.T) {
 }
 
 func TestLoadReleaseRecord_UnknownVersionIsCorrupt(t *testing.T) {
-	body := strings.Replace(goodRecord, `"version":1`, `"version":99`, 1)
+	body := strings.Replace(goodRecord, `"version":2,"record_source":"registry"`, `"version":99`, 1)
 	if _, err := LoadReleaseRecord(writeRecord(t, body)); !IsCorrupt(err) {
 		t.Fatalf("an unknown schema version must be corrupt, got %v", err)
 	}
@@ -138,12 +138,12 @@ func TestLoadReleaseRecord_UnknownVersionIsCorrupt(t *testing.T) {
 // release declares" undefined — so a record↔daemon comparison would be
 // comparing against nothing in particular.
 func TestLoadReleaseRecord_MixedSourceCommitsIsCorrupt(t *testing.T) {
-	body := `{"version":1,"count":2,"images":[
+	body := `{"version":2,"record_source":"registry","count":2,"images":[
 	  {"tag":"ghcr.io/grinco/vornik-agent:latest",
-	   "digest":"sha256:8b41a998f6080f06462866a2ae50ad40c1ca9bc11ae06f991044e5a6e6d24393",
+	   "digests":{"amd64":"sha256:8b41a998f6080f06462866a2ae50ad40c1ca9bc11ae06f991044e5a6e6d24393"},
 	   "source_commit":"4b343821000000000000000000000000000000ab"},
 	  {"tag":"localhost/vornik-broker:latest",
-	   "digest":"sha256:f8893b9d93093e9f5f7f97bf6ff17ff837cb4c1e6a4fabd27486f4febadbe266",
+	   "digests":{"amd64":"sha256:f8893b9d93093e9f5f7f97bf6ff17ff837cb4c1e6a4fabd27486f4febadbe266"},
 	   "source_commit":"9f3c1a2000000000000000000000000000000cd0"}]}`
 	_, err := LoadReleaseRecord(writeRecord(t, body))
 	if !IsCorrupt(err) {
@@ -160,7 +160,7 @@ func TestReleaseRecord_SourceCommit(t *testing.T) {
 	if !ok || got != "4b343821000000000000000000000000000000ab" {
 		t.Fatalf("SourceCommit = %q,%v", got, ok)
 	}
-	empty, err := LoadReleaseRecord(writeRecord(t, `{"version":1,"count":0,"images":[]}`))
+	empty, err := LoadReleaseRecord(writeRecord(t, `{"version":2,"record_source":"registry","count":0,"images":[]}`))
 	if err != nil {
 		t.Fatal(err)
 	}

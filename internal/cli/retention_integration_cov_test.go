@@ -36,7 +36,7 @@ func retentionWriteConfigs(t *testing.T, projectID string) {
 	mustWrite(t, filepath.Join(root, "projects", projectID+".yaml"),
 		"projectId: "+projectID+"\ndisplayName: "+projectID+"\nswarmId: "+swarmID+"\ndefaultWorkflowId: "+wfID+"\n")
 	mustWrite(t, filepath.Join(root, "swarms", swarmID+".md"),
-		"---\nswarmId: "+swarmID+"\nroles:\n  - name: worker\n    runtime:\n      image: fake-agent\n---\n")
+		"---\nswarmId: "+swarmID+"\nroles:\n  - name: worker\n    runtime:\n      image: test-image\n---\n")
 	mustWrite(t, filepath.Join(root, "workflows", wfID+".md"),
 		"---\nworkflowId: "+wfID+"\nentrypoint: run\nsteps:\n  run:\n    type: agent\n    role: worker\n    prompt: \"do work\"\n    on_success: done\nterminals:\n  done:\n    status: COMPLETED\n---\n")
 	t.Setenv("VORNIK_CONFIGS_DIR", root)

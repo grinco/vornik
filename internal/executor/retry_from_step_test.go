@@ -118,7 +118,7 @@ func TestRetryFromStep_TruncatesAndResetsState(t *testing.T) {
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
 		},
 		swarms: map[string]*registry.Swarm{
-			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 		},
 		workflows: map[string]*registry.Workflow{
 			"wf1": {
@@ -216,7 +216,7 @@ func TestRetryFromStep_RetryAtEntrypointWipesAllOutcomes(t *testing.T) {
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
 		},
 		swarms: map[string]*registry.Swarm{
-			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 		},
 		workflows: map[string]*registry.Workflow{
 			"wf1": {
@@ -277,7 +277,7 @@ func TestRetryFromStep_PreservesUpstreamOutcomes(t *testing.T) {
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
 		},
 		swarms: map[string]*registry.Swarm{
-			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 		},
 		workflows: map[string]*registry.Workflow{
 			"wf1": {

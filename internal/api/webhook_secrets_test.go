@@ -47,7 +47,7 @@ swarmId: swarm-1
 roles:
   - name: worker
     runtime:
-      image: fake-agent
+      image: test-image
 ---
 `), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "workflows", "wf.md"), []byte(`---

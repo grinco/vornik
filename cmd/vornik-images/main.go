@@ -17,12 +17,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"vornik.io/vornik/internal/imagemanifest"
@@ -30,9 +32,18 @@ import (
 
 func main() {
 	all := flag.Bool("all", false, "print every manifest row, ignoring host conditions")
-	record := flag.String("record", "", "write the release image record (digest + source commit per image) to this path")
+	record := flag.String("record", "", "write the release image record from LOCAL images to this path (dev boxes)")
+	recordRegistry := flag.String("record-from-registry", "", "write the release image record from PUBLISHED manifests to this path (releases)")
+	commit := flag.String("commit", "", "source commit for -record-from-registry (40 hex chars); defaults to git HEAD")
 	flag.Parse()
 
+	if *recordRegistry != "" {
+		if err := writeRegistryRecord(*recordRegistry, *commit); err != nil {
+			fmt.Fprintf(os.Stderr, "vornik-images: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *record != "" {
 		if err := writeRecord(*record); err != nil {
 			fmt.Fprintf(os.Stderr, "vornik-images: %v\n", err)
@@ -100,8 +111,9 @@ func writeRecord(path string) error {
 
 	images := imagemanifest.All()
 	rec := imagemanifest.ReleaseRecord{
-		Version: imagemanifest.RecordVersion,
-		Images:  make([]imagemanifest.ImageRecord, 0, len(images)),
+		Version:      imagemanifest.RecordVersion,
+		RecordSource: imagemanifest.RecordSourceLocal,
+		Images:       make([]imagemanifest.ImageRecord, 0, len(images)),
 	}
 	for _, img := range images {
 		digest, err := imageDigest(img.Tag)
@@ -117,9 +129,17 @@ func writeRecord(path string) error {
 		// Recorded per image on purpose. If one image is stale the commits
 		// disagree, and LoadReleaseRecord refuses the whole record rather than
 		// letting a release ship a mixed set described as one build.
-		rec.Images = append(rec.Images, imagemanifest.ImageRecord{
-			Tag: img.Tag, Digest: digest, SourceCommit: rev,
-		})
+		// A host-built image gets NO digest: it is built on each machine, so a
+		// digest recorded here could never match one and would produce a check
+		// that always fails. Registry images carry this machine's architecture
+		// only — the local mode cannot know what other platforms were
+		// published, which is precisely why the registry mode exists and is
+		// the one used for packaged releases.
+		entry := imagemanifest.ImageRecord{Tag: img.Tag, SourceCommit: rev}
+		if entry.IsRegistryPinned() {
+			entry.Digests = map[string]string{runtime.GOARCH: digest}
+		}
+		rec.Images = append(rec.Images, entry)
 	}
 	rec.Count = len(rec.Images)
 
@@ -167,4 +187,51 @@ func imageRevision(tag string) (string, error) {
 			"rebuild it so its provenance is recordable")
 	}
 	return rev, nil
+}
+
+// writeRegistryRecord builds the record from PUBLISHED manifests and writes it.
+//
+// This is the mode releases use. The local mode (-record) reads images on the
+// machine and refuses to write when they are absent, which is right for a dev
+// box and useless for a CI runner that builds packages without ever building
+// images — the reason no package has ever carried a record.
+func writeRegistryRecord(path, commit string) error {
+	if strings.TrimSpace(commit) == "" {
+		out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+		if err != nil {
+			return fmt.Errorf("no -commit given and git HEAD is unreadable: %w", err)
+		}
+		commit = strings.TrimSpace(string(out))
+	}
+
+	idx := imagemanifest.SkopeoIndexReader{
+		Run: func(args ...string) ([]byte, error) {
+			out, err := exec.Command("skopeo", args...).Output()
+			if err != nil {
+				// skopeo puts the useful part on stderr; surface it rather
+				// than the bare "exit status 1" a caller cannot act on.
+				var ee *exec.ExitError
+				if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+					return nil, fmt.Errorf("skopeo %s: %s", strings.Join(args, " "), strings.TrimSpace(string(ee.Stderr)))
+				}
+				return nil, fmt.Errorf("skopeo %s: %w", strings.Join(args, " "), err)
+			}
+			return out, nil
+		},
+	}
+
+	rec, err := imagemanifest.BuildRegistryRecord(idx, imagemanifest.All(), commit)
+	if err != nil {
+		return err
+	}
+	body, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return err
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("cannot create %s: %w", dir, err)
+		}
+	}
+	return os.WriteFile(path, append(body, '\n'), 0o644)
 }

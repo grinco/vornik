@@ -98,8 +98,8 @@ func TestArtifactHandoff_E2E_ResearcherToWriter_e9a5(t *testing.T) {
 		},
 		swarms: map[string]*registry.Swarm{
 			"s1": {ID: "s1", Roles: []registry.SwarmRole{
-				{Name: "researcher", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
-				{Name: "writer", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
+				{Name: "researcher", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
+				{Name: "writer", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
 			}},
 		},
 		workflows: map[string]*registry.Workflow{
@@ -211,8 +211,8 @@ func TestArtifactHandoff_StagesIntoArtifactsOut_e9a5(t *testing.T) {
 		},
 		swarms: map[string]*registry.Swarm{
 			"s1": {ID: "s1", Roles: []registry.SwarmRole{
-				{Name: "researcher", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
-				{Name: "writer", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
+				{Name: "researcher", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
+				{Name: "writer", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
 			}},
 		},
 		workflows: map[string]*registry.Workflow{
@@ -311,9 +311,9 @@ func TestArtifactHandoff_ModelFallbackUsesFallbackOutputs(t *testing.T) {
 					Name:          "researcher",
 					Model:         "primary-model",
 					ModelFallback: "backup-model",
-					Runtime:       registry.SwarmRoleRuntime{Image: "fake-agent:latest"},
+					Runtime:       registry.SwarmRoleRuntime{Image: "test-image:latest"},
 				},
-				{Name: "writer", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
+				{Name: "writer", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
 			}},
 		},
 		workflows: map[string]*registry.Workflow{

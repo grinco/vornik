@@ -41,8 +41,8 @@ func (r *catchAllWorkflowResolver) GetSwarm(string) *registry.Swarm {
 	return &registry.Swarm{
 		ID: "test-swarm",
 		Roles: []registry.SwarmRole{
-			{Name: "lead", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
-			{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
+			{Name: "lead", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
+			{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
 		},
 	}
 }

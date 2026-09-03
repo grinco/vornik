@@ -973,6 +973,23 @@ func (e *Executor) executeWorkflowAttempt(ctx context.Context, task *persistence
 			completedSteps = append(completedSteps, currentStepID)
 			if len(sysResult.Result) > 0 {
 				state.LastResult = stepResultJSON(sysResult.Result)
+				// Carry the handler's own rendering to the NEXT agent step, the
+				// same way an agent step's message is carried (see the agent
+				// success path above).
+				//
+				// CUSTOMER-REPORTED 2026-09-03: this assignment did not exist, so
+				// every agent step following a successful system step received an
+				// empty previousStepResult — in every workflow. forge.fetch_diff
+				// returned the whole diff and the review agent never saw it; told
+				// by its prompt that the diff "was provided as your input", it
+				// improvised from memory_search and posted fabricated reviews.
+				//
+				// The asymmetry that gives the game away: the FAILURE paths below
+				// DO set lastResultMessage. The executor reported a system step's
+				// failure to the next agent and stayed silent about its success.
+				//
+				// Design: https://docs.vornik.io
+				lastResultMessage = systemResultMessage(sysResult.Result)
 			} else {
 				state.LastResult = []byte(`{}`)
 			}
@@ -3417,6 +3434,14 @@ func (e *Executor) handleFailure(ctx context.Context, task *persistence.Task, ex
 	// both this finaliser and the scheduler treat it as terminal now.
 	// (The manual retry path clears the stale children first, so this
 	// only bites the autonomous bubble-up loop.)
+	//
+	// NOTE: this FAKES budget exhaustion because, when it was written, there
+	// was no way to say "this failure cannot succeed, skip the budget". There
+	// is now — persistence.IsTerminalFailureClass / TaskShouldRetry. Left as-is
+	// deliberately: it reaches the same end state and replacing it is a
+	// behaviour change that deserves its own measurement, not a drive-by.
+	// Whoever picks that up: the candidate is a terminal class for
+	// errDelegatedChildFailedTerminal.
 	if errors.Is(err, errDelegatedChildFailedTerminal) && task.MaxAttempts > 0 && task.Attempt < task.MaxAttempts {
 		e.logger.Warn().
 			Str("task_id", task.ID).
@@ -3521,7 +3546,7 @@ func (e *Executor) handleFailure(ctx context.Context, task *persistence.Task, ex
 	}
 
 	// Notify watchers — only when the TASK is in its terminal state.
-	// task.MaxAttempts > 0 && task.Attempt < task.MaxAttempts means the
+	// persistence.TaskShouldRetry reporting true means the
 	// scheduler will re-queue this task for another execution attempt
 	// (see scheduler.TaskCompleted). Firing the Telegram notification
 	// from a non-final execution would (a) send a misleading "task
@@ -3561,15 +3586,24 @@ func (e *Executor) handleFailure(ctx context.Context, task *persistence.Task, ex
 
 // taskWillRetry reports whether the scheduler is going to re-queue this
 // task for another execution attempt after the current one fails.
-// Mirrors the predicate in scheduler.TaskCompleted (task.Attempt <
-// task.MaxAttempts) so the notification gating here stays in sync with
-// the actual retry decision. MaxAttempts == 0 means retries are
-// disabled — treat as "this is the only attempt".
+//
+// This used to be a HAND-COPIED mirror of scheduler.TaskCompleted's predicate,
+// kept in sync by comment. It gates whether the failure notification fires,
+// whether the circuit breaker trips, and alerting — so the moment the two
+// drifted, the executor would suppress a notification ("it'll retry") for a
+// task the scheduler had just failed terminally, and the operator would hear
+// nothing at all. Both now call the same function, so they cannot drift.
+//
+// MaxAttempts == 0 means retries are disabled — the only attempt.
 func (e *Executor) taskWillRetry(task *persistence.Task) bool {
-	if task == nil || task.MaxAttempts <= 0 {
+	if task == nil {
 		return false
 	}
-	return task.Attempt < task.MaxAttempts
+	class := ""
+	if task.LastErrorClass != nil {
+		class = *task.LastErrorClass
+	}
+	return persistence.TaskShouldRetry(task.Attempt, task.MaxAttempts, class)
 }
 
 func (e *Executor) handleCancelled(ctx context.Context, task *persistence.Task, execution *persistence.Execution) {
@@ -3959,7 +3993,14 @@ func (e *Executor) bubbleUpChildFailure(ctx context.Context, parent *persistence
 	// The fix mirrors handleFailure: stamp last_error +
 	// last_error_class on the SAME conditional UPDATE as the
 	// status flip.
-	retryBudgetRemaining := parent.MaxAttempts > 0 && parent.Attempt < parent.MaxAttempts
+	// CHILD_FAILED is deliberately NOT a terminal class: a child's permanent
+	// failure is flattened into it here, and the parent's own re-run may well
+	// succeed with a different child. Inheriting the child's permanence would
+	// strand a recoverable parent. So this reads as "budget only" in practice,
+	// which is correct — it goes through the shared predicate so it cannot
+	// drift from the scheduler's answer.
+	retryBudgetRemaining := persistence.TaskShouldRetry(
+		parent.Attempt, parent.MaxAttempts, string(persistence.TaskFailureClassChildFailed))
 	errMsg := fmt.Sprintf("child task(s) failed: %v", failedChildIDs)
 	if msgOverride != nil {
 		errMsg = *msgOverride

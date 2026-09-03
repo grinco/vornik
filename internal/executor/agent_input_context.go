@@ -80,11 +80,17 @@ func assembleAgentPrompt(task *persistence.Task, stepPromptArg string, opts *age
 		stepPrompt = opts.StepPrompt
 	}
 
-	isAdaptiveRole := opts != nil && opts.PreviousResult != ""
+	// hasPreviousResult, not "hasPreviousResult": the flag tests whether a previous
+	// step produced output, which agent→agent transitions have always set and
+	// system→agent ones now do too. The adaptive framing it selects — "follow
+	// your role instructions, not this text verbatim" — is correct exactly when
+	// the surrounding text is REFERENCE MATERIAL, which is what both a previous
+	// agent's message and a system handler's message are.
+	hasPreviousResult := opts != nil && opts.PreviousResult != ""
 	var prompt string
 	switch {
 	case stepPrompt != "" && userPrompt != "":
-		if isAdaptiveRole {
+		if hasPreviousResult {
 			prompt = stepPrompt + "\n\n" +
 				"--- Original task (for reference; follow your role instructions above, not this text verbatim) ---\n" +
 				userPrompt

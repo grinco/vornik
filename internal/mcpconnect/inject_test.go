@@ -337,3 +337,67 @@ func TestSameResourceAudience_DotSegmentsCannotEscapeTheGrant(t *testing.T) {
 	// An origin-wide grant stays origin-wide.
 	assert.True(t, sameResourceAudience("https://h.example", "https://h.example/anything"))
 }
+
+// Host normalisation for the RFC 8707 audience check (backlog P3, 2026-09-01).
+//
+// These all FAIL CLOSED today — a grant is refused where it should match — so
+// the risk is operator friction rather than substitution. That is why it was P3
+// and not urgent. But every one of them is a case where an operator writes the
+// same server two defensible ways and the daemon disagrees with itself, and the
+// symptom (ErrNeedsReconnect on a URL that looks identical) is baffling.
+func TestSameOrigin_HostNormalisation(t *testing.T) {
+	for _, tc := range []struct {
+		name, a, b string
+		want       bool
+	}{
+		{"identical", "https://h.example/mcp", "https://h.example/mcp", true},
+		{"host case", "https://H.Example/mcp", "https://h.example/mcp", true},
+		{"scheme case", "HTTPS://h.example/mcp", "https://h.example/mcp", true},
+
+		// A default port is the same endpoint written longhand.
+		{"https default port", "https://h.example:443/mcp", "https://h.example/mcp", true},
+		{"http default port", "http://h.example:80/mcp", "http://h.example/mcp", true},
+		// A NON-default port is a different endpoint and must stay different.
+		{"non-default port", "https://h.example:8443/mcp", "https://h.example/mcp", false},
+		// The default port of the OTHER scheme is not interchangeable.
+		{"cross-scheme default port", "https://h.example:80/mcp", "https://h.example/mcp", false},
+
+		// A trailing dot is the fully-qualified spelling of the same host.
+		{"trailing dot", "https://h.example./mcp", "https://h.example/mcp", true},
+
+		// Different hosts stay different, however they are spelled.
+		{"different host", "https://other.example/mcp", "https://h.example/mcp", false},
+		{"subdomain is not the parent", "https://a.h.example/mcp", "https://h.example/mcp", false},
+		{"scheme matters", "http://h.example/mcp", "https://h.example/mcp", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameOrigin(tc.a, tc.b); got != tc.want {
+				t.Errorf("sameOrigin(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
+// IDNA: the punycode and Unicode spellings are the same host, and an operator
+// may reasonably write either.
+func TestSameOrigin_IDNA(t *testing.T) {
+	if !sameOrigin("https://münchen.example/mcp", "https://xn--mnchen-3ya.example/mcp") {
+		t.Error("the Unicode and punycode spellings of one host did not match")
+	}
+	// Normalisation must not collapse genuinely different hosts.
+	if sameOrigin("https://münchen.example/mcp", "https://muenchen.example/mcp") {
+		t.Error("two different hosts were treated as one")
+	}
+}
+
+// Credentials and fragments are not part of the origin, and must not defeat the
+// comparison — nor smuggle a different host past it.
+func TestSameOrigin_IgnoresUserinfoButNotHost(t *testing.T) {
+	if !sameOrigin("https://user@h.example/mcp", "https://h.example/mcp") {
+		t.Error("userinfo defeated an otherwise identical origin")
+	}
+	// The classic confusion: the real host is what follows the @.
+	if sameOrigin("https://h.example@evil.example/mcp", "https://h.example/mcp") {
+		t.Error("a userinfo-disguised host matched the wrong origin")
+	}
+}

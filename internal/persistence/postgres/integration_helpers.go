@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -169,4 +170,37 @@ func quoteIdent(name string) (string, error) {
 		}
 	}
 	return `"` + name + `"`, nil
+}
+
+// integrationOptOutEnv names the variable that downgrades an unreachable
+// integration database from a failure to a skip.
+const integrationOptOutEnv = "VORNIK_INTEGRATION_OPTIONAL"
+
+// integrationUnavailableIsFatal decides what an unreachable database means for a
+// run that explicitly asked for -tags=integration.
+//
+// IT IS FATAL BY DEFAULT, and that is a deliberate reversal. Every test used to
+// t.Skip on a connect failure, so Go reported PASS and the run exited 0 — the
+// lane RELEASE.md names as the gate for persistence changes reported success
+// having verified nothing. Only its 0.013s runtime distinguished a real pass
+// from a total no-op, and it nearly hid a live migration bug on 2026-09-01.
+//
+// Asking for the integration build tag is asking to run integration tests. If
+// they cannot run, the honest exit code is non-zero. A host that genuinely wants
+// the soft behaviour says so out loud via the opt-out, which is the same shape
+// as CE_PARITY_SKIP on the Art 50 parity gate.
+//
+// The opt-out is matched EXACTLY against "1"/"true" rather than "is it
+// non-empty": a gate that any stray value can disable is not a gate.
+func integrationUnavailableIsFatal(optOut string) (bool, string) {
+	switch strings.ToLower(strings.TrimSpace(optOut)) {
+	case "1", "true":
+		return false, ""
+	}
+	return true, "integration tests were requested (-tags=integration) but the database is unreachable, " +
+		"so NOTHING was verified. This lane is the gate for persistence changes, and a skip here reads as a pass.\n" +
+		"  Credentials default to vornik/vornik; this host uses different ones — try " +
+		"POSTGRES_USER=<user> POSTGRES_PASSWORD=<pass> (POSTGRES_HOST/PORT/DB also honoured).\n" +
+		"  Deliberately running without a database? Set " + integrationOptOutEnv + "=1, which says out loud " +
+		"that this run verified nothing."
 }

@@ -346,6 +346,21 @@ var corpus = map[string]Entry{
 	// TestPlaybookCoversAllFailureClasses listed its classes by hand and
 	// stopped at 19 of 23. Three of the four are emitted in production today.
 
+	persistence.TaskFailureClassForgeTargetUnavailable: {
+		Class:        persistence.TaskFailureClassForgeTargetUnavailable,
+		Scope:        ScopeTask,
+		HumanMessage: "The pull request, repository or branch this task needed is not there — or Vornik is no longer allowed to see it.",
+		Cause: "A forge call (GitHub/GitLab) returned a status that can never succeed as issued: the target does not exist, " +
+			"the App's access was revoked, or the request was malformed. This class SKIPS the retry budget on purpose — " +
+			"retrying cannot make a missing PR exist, and each attempt spends real forge API rate limit.",
+		Suggestions: []string{
+			"Open the PR/repo the error names. If it 404s for you too, the invocation pointed at something that does not exist (a deleted PR, a typo'd number, a renamed repo) — fix the caller, not Vornik.",
+			"If the target DOES exist, this is access: check the GitHub App is still installed on that repo and its permissions cover it (Settings → Developer settings → GitHub Apps → Install App).",
+			"A 422 means the request itself was rejected as malformed — that is a Vornik-side bug worth reporting with this task ID.",
+			"Before re-driving a task that WRITES (a review comment, a branch), check whether the write partly landed: a permanent status can follow a side effect that already happened.",
+			"This task did NOT exhaust its attempts — it stopped after one deliberately. Re-drive it once the cause is cleared and it gets a full budget again.",
+		},
+	},
 	persistence.TaskFailureClassChildFailed: {
 		Class:        persistence.TaskFailureClassChildFailed,
 		Scope:        ScopeTask,
@@ -642,6 +657,20 @@ var corpus = map[string]Entry{
 			"Check the container runtime's own health (`podman ps`, the runtime's journal) around the step's recorded_at.",
 			"Distinct from container_killed, which is a deliberate signal, and from container_start_failed, which never ran at all.",
 			"Recurring on one host is a host problem; scattered across hosts, suspect the runtime version or resource pressure.",
+		},
+	},
+	stepoutcome.ClassModelUnhealthy: {
+		Class:        stepoutcome.ClassModelUnhealthy,
+		Scope:        ScopeStep,
+		HumanMessage: "The model this step wanted was temporarily marked unhealthy, so the call was refused before it was made.",
+		Cause: "A circuit-open fast-reject: the (route, model) breaker was OPEN, so the request never reached the model and never started a container. " +
+			"These rows are ~4ms with no container exit code. It is NOT a failure of the step, the agent, or the prompt — and it is not terminal: " +
+			"the executor treats it as a model-fallback trigger and the fallback hop is what carries the traffic while the breaker is open.",
+		Suggestions: []string{
+			"Check whether the breaker is still open: `vornikctl doctor` → `agent_model_circuits`. If every circuit is closed, this already recovered and the step's own fallback most likely completed the work.",
+			"The error detail names the model, the route, and the time the circuit opened. A breaker open for hours or days is the real finding — it means a model has been failing long enough to be taken out of rotation, and nothing else reports that.",
+			"If the FALLBACK also returned this, the workflow parks to AWAITING_INPUT rather than being discarded — look for the recovery checkpoint, not a failed task.",
+			"Retrying by hand does not help while the circuit is open, and the ladder deliberately does not: it fast-rejects and fails over instead.",
 		},
 	},
 	stepoutcome.ClassContainerStartFailed: {

@@ -925,6 +925,21 @@ func (c *Container) startTuneWorker(ctx context.Context) {
 		// breaches (actionable-proposals §4.4). CE-inclusive by design §6.1.
 		Actionize: c.newActionizer(),
 		Logger:    c.Logger.With().Str("component", "control-plane").Str("worker", "tune").Logger(),
+		// Never escalate the control plane's own project — it would diagnose
+		// itself into a loop.
+		SystemProjectID: c.Config.ControlPlane.SystemProjectID,
+	}
+	// Latency escalation: when a breach's slow step is not timeout-bound, ask
+	// the diagnoser which model to run the role on and file an APPLYABLE
+	// proposal instead of prose. EE-gated on the same provider flag as
+	// self-heal (ControlPlaneDiagnosis) — it is the same LLM call — and nil
+	// when the diagnoser is unwired, which leaves today's informational
+	// proposal as the outcome.
+	// See https://docs.vornik.io
+	if c.providers.ControlPlaneDiagnosis {
+		if diag := c.newDiagnoser(); diag != nil {
+			w.Diagnose = diag
+		}
 	}
 	// The instinct tool-timeout scan belongs to the EE Instinct subsystem
 	// (actionable-proposals §6.3): without it, disable via the shipped

@@ -40,7 +40,7 @@ swarmId: swarm-1
 roles:
   - name: worker
     runtime:
-      image: fake-agent
+      image: test-image
 ---
 `), 0o644); err != nil {
 		t.Fatalf("write swarm: %v", err)

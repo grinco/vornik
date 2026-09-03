@@ -12,6 +12,10 @@ import (
 // be recognised here or it never reaches the daemon at all — which is how phases
 // 1-4 came to work only on the channel.
 
+// The handle the default configuration answers to. Written once here so the
+// table below stays about classification rather than about naming.
+const botMention = "@" + "vornik-companion"
+
 func classify(t *testing.T, body string) (forgeapi.ForgeJob, bool) {
 	t.Helper()
 	// Empty header on purpose: this is the relay-forwarded shape.
@@ -97,7 +101,7 @@ func commentPayload(body, userType string, isPR bool) string {
 // The comment arm did not exist at all, so a command could never reach the
 // review pipeline on this path.
 func TestClassify_CommentCommand(t *testing.T) {
-	job, ok := classify(t, commentPayload("@vornik review", "User", true))
+	job, ok := classify(t, commentPayload(botMention+" review", "User", true))
 	if !ok {
 		t.Fatal("a review command on a PR was not classified")
 	}
@@ -113,7 +117,7 @@ func TestClassify_CommentCommand(t *testing.T) {
 }
 
 func TestClassify_FullReviewCommand(t *testing.T) {
-	job, ok := classify(t, commentPayload("@vornik full review", "User", true))
+	job, ok := classify(t, commentPayload(botMention+" full review", "User", true))
 	if !ok {
 		t.Fatal("full review was not classified")
 	}
@@ -125,7 +129,7 @@ func TestClassify_FullReviewCommand(t *testing.T) {
 // THE LOOP GUARD, provider-side. Our own review is posted as a comment; if a
 // bot-authored comment classified as a command, a review would trigger another.
 func TestClassify_BotComment_FlaggedNotActedOn(t *testing.T) {
-	job, ok := classify(t, commentPayload("@vornik review", "Bot", true))
+	job, ok := classify(t, commentPayload(botMention+" review", "Bot", true))
 	if ok && !job.AuthorIsBot {
 		t.Fatal("a bot-authored command was classified without the bot flag — the self-trigger loop is open")
 	}
@@ -134,10 +138,10 @@ func TestClassify_BotComment_FlaggedNotActedOn(t *testing.T) {
 // A comment that is not a command, and a command on a plain issue, are both
 // non-events for the review pipeline.
 func TestClassify_NonCommandAndIssueComments(t *testing.T) {
-	if _, ok := classify(t, commentPayload("@vornik what do you think?", "User", true)); ok {
+	if _, ok := classify(t, commentPayload(botMention+" what do you think?", "User", true)); ok {
 		t.Error("an ordinary mention classified as a forge job")
 	}
-	if _, ok := classify(t, commentPayload("@vornik review", "User", false)); ok {
+	if _, ok := classify(t, commentPayload(botMention+" review", "User", false)); ok {
 		t.Error("a review command on a plain ISSUE classified as a change request")
 	}
 }
@@ -172,7 +176,7 @@ func TestClassify_CommandAuthorTrust(t *testing.T) {
 		{"", false},
 	} {
 		t.Run(tc.assoc, func(t *testing.T) {
-			job, ok := classify(t, commentPayloadAssoc("@vornik review", "User", tc.assoc))
+			job, ok := classify(t, commentPayloadAssoc(botMention+" review", "User", tc.assoc))
 			if !ok {
 				t.Fatal("the command was not classified at all")
 			}

@@ -29,7 +29,15 @@ type APIMetrics struct {
 	CostAttributionTotal *prometheus.CounterVec
 
 	// MCPResultGuardFindingsTotal counts outputguard findings on MCP tool
-	// RESULTS, labelled by tool, severity and kind.
+	// RESULTS, labelled by tool, severity, kind and RULE.
+	//
+	// `rule` names the pattern; `kind` names only its class, and kinds are not
+	// unique — two patterns produce adversarial_url and two produce
+	// encoded_payload. Without `rule` the soak below can say a class fired and
+	// never which pattern did, which is exactly the question the deferred
+	// prefilter work has to answer. Cardinality is the rule table plus this
+	// deployment's configured credential corpus; the value never contains
+	// matched content, so no user data reaches a label.
 	//
 	// Phase 1 of the ingress scan is detect-only, so this counter IS the
 	// deliverable: it is the soak signal that decides whether phase 2 redacts,
@@ -127,8 +135,8 @@ func NewAPIMetrics(reg *prometheus.Registry) *APIMetrics {
 			Namespace: "vornik",
 			Subsystem: "api",
 			Name:      "mcp_result_guard_findings_total",
-			Help:      "outputguard findings on MCP tool RESULTS (ingress), by tool, severity and kind. Phase 1 is DETECT-ONLY — a finding here did not alter the body the agent received. This is the soak signal for the phase-2 redaction decision, which is taken per kind: a class with a high false-positive rate on real third-party content must not be flipped to redact. Zero rows for a busy deployment means the scan is not wired, not that nothing was found.",
-		}, []string{"tool", "severity", "kind"}),
+			Help:      "outputguard findings on MCP tool RESULTS (ingress), by tool, severity, kind and rule. Phase 1 is DETECT-ONLY — a finding here did not alter the body the agent received. This is the soak signal for the phase-2 redaction decision, which is taken per kind: a class with a high false-positive rate on real third-party content must not be flipped to redact. The rule label names the individual pattern, since kinds are shared by more than one — it is what tells you WHICH pattern is noisy, and it is the input to the prefilter decision. Zero rows for a busy deployment means the scan is not wired, not that nothing was found.",
+		}, []string{"tool", "severity", "kind", "rule"}),
 		MCPResultGuardScanSeconds: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "vornik",
 			Subsystem: "api",
@@ -370,6 +378,13 @@ func (m *APIMetrics) RecordMCPResultGuard(tool string, rep outputguard.Report, d
 		return
 	}
 	for _, f := range rep.Findings {
-		m.MCPResultGuardFindingsTotal.WithLabelValues(tool, string(f.Severity), string(f.Kind)).Inc()
+		// A Finding built before the Rule field existed carries the zero value.
+		// Label it explicitly rather than emitting an empty label, which reads
+		// as a scrape bug rather than as an unattributed finding.
+		rule := f.Rule
+		if rule == "" {
+			rule = "unattributed"
+		}
+		m.MCPResultGuardFindingsTotal.WithLabelValues(tool, string(f.Severity), string(f.Kind), rule).Inc()
 	}
 }

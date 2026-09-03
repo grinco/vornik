@@ -80,7 +80,7 @@ func TestLifecycle_FullHappyPath(t *testing.T) {
 		},
 		swarms: map[string]*registry.Swarm{
 			"s1": {ID: "s1", Roles: []registry.SwarmRole{
-				{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
+				{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
 			}},
 		},
 		workflows: map[string]*registry.Workflow{

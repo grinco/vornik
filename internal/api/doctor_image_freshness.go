@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -202,8 +203,17 @@ func (h *DoctorHandlers) checkImageFreshness(ctx context.Context) DoctorCheck {
 		// maps one tree onto the other. A digest needs no such mapping, so an
 		// exact digest is both the strongest statement available and the only
 		// one that works across that boundary.
-		if readDigest != nil && declared.Digest != "" {
-			if got, dErr := readDigest(ctx, img.Tag); dErr == nil && got == declared.Digest {
+		// The digest compared is THIS HOST'S ARCHITECTURE. A release publishes
+		// one manifest per platform, and a host observes its own — comparing
+		// against another architecture's digest, or against the manifest-list
+		// digest, fails on every host forever.
+		//
+		// A host-built image has no digest by design (it builds its own, so no
+		// recorded value could match) and falls straight through to the commit
+		// comparison, which is the only cross-machine statement available for it.
+		declaredDigest, haveDigest := declared.DigestForArch(runtime.GOARCH)
+		if readDigest != nil && haveDigest {
+			if got, dErr := readDigest(ctx, img.Tag); dErr == nil && got == declaredDigest {
 				okCount++
 				continue
 			}

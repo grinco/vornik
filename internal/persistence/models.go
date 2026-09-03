@@ -380,6 +380,20 @@ const (
 	// LLM_ERROR / TOOL_ERROR (the parent ran fine) and from ORPHANED
 	// (the parent's own infrastructure is intact).
 	TaskFailureClassChildFailed = "CHILD_FAILED"
+
+	// TaskFailureClassForgeTargetUnavailable is a forge (GitHub/GitLab) call
+	// that can never succeed as issued: the PR or repo does not exist, the
+	// installation was revoked, or the request was malformed. Distinct from
+	// TOOL_ERROR (an agent's tool call broke — no agent is involved here, the
+	// failure is in a system step before any model ran), RUNTIME_ERROR (the
+	// container runtime) and LLM_ERROR (the chat provider). RATE_LIMITED would
+	// be backwards: a forge 429 is TRANSIENT and keeps retrying.
+	//
+	// The only class in terminalFailureClasses — it skips the retry budget
+	// entirely rather than burning it on calls that cannot come good.
+	// Decided by forge.PermanentError, a typed signal at the source, never by
+	// matching "HTTP 404" in a message.
+	TaskFailureClassForgeTargetUnavailable = "FORGE_TARGET_UNAVAILABLE"
 	// TaskFailureClassInvalidOutputLoop fires when a single role keeps
 	// emitting result.json that fails schema validation across the
 	// shape-retry + model-fallback budget. Distinct from INVALID_OUTPUT

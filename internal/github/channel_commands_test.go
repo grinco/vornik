@@ -9,7 +9,7 @@ import (
 // Phase 3 of https://docs.vornik.io:
 // on-demand review from a PR comment (§7).
 //
-// Before this, an @vornik mention on a PR routed to Receiver.Receive — the
+// Before this, an @vornik-companion mention on a PR routed to Receiver.Receive — the
 // conversational path — so it could never reach the review pipeline. The
 // customer asked for exactly this: a way to re-run the review after addressing
 // feedback.
@@ -58,7 +58,7 @@ func dispatchComment(t *testing.T, cfg Config, body, login, userType string, isP
 
 // The headline behaviour the customer asked for.
 func TestCommand_ReviewOnAPullRequest_CreatesAReviewTask(t *testing.T) {
-	tc, _ := dispatchComment(t, validConfig(), "@vornik review", "alice", "User", true, "d-cmd-review")
+	tc, _ := dispatchComment(t, validConfig(), "@vornik-companion review", "alice", "User", true, "d-cmd-review")
 	got := tc.copyEvents()
 	if len(got) != 1 {
 		t.Fatalf("TaskCreator saw %d events, want 1 — the command did not reach the review pipeline", len(got))
@@ -77,7 +77,7 @@ func TestCommand_ReviewOnAPullRequest_CreatesAReviewTask(t *testing.T) {
 // "full review" must be distinguishable, because phase 4 uses it to ignore the
 // incremental baseline.
 func TestCommand_FullReview_SetsTheFullFlag(t *testing.T) {
-	tc, _ := dispatchComment(t, validConfig(), "@vornik full review", "alice", "User", true, "d-cmd-full")
+	tc, _ := dispatchComment(t, validConfig(), "@vornik-companion full review", "alice", "User", true, "d-cmd-full")
 	got := tc.copyEvents()
 	if len(got) != 1 {
 		t.Fatalf("events = %d, want 1", len(got))
@@ -92,7 +92,7 @@ func TestCommand_FullReview_SetsTheFullFlag(t *testing.T) {
 func TestCommand_FromNonAllowlistedSender_CreatesNoTask(t *testing.T) {
 	cfg := validConfig()
 	cfg.SenderAllowlist = []string{"alice"} // mallory is not on it
-	tc, rx := dispatchComment(t, cfg, "@vornik review", "mallory", "User", true, "d-cmd-mallory")
+	tc, rx := dispatchComment(t, cfg, "@vornik-companion review", "mallory", "User", true, "d-cmd-mallory")
 	if got := tc.copyEvents(); len(got) != 0 {
 		t.Fatalf("a non-allowlisted sender triggered %d review task(s)", len(got))
 	}
@@ -104,7 +104,7 @@ func TestCommand_FromNonAllowlistedSender_CreatesNoTask(t *testing.T) {
 // THE LOOP GUARD. The review this system posts is itself a PR comment. If a
 // bot-authored comment could match a command, the system triggers itself.
 func TestCommand_FromABot_IsIgnoredBeforeParsing(t *testing.T) {
-	tc, rx := dispatchComment(t, validConfig(), "@vornik review", "vornik[bot]", "Bot", true, "d-cmd-bot")
+	tc, rx := dispatchComment(t, validConfig(), "@vornik-companion review", "vornik[bot]", "Bot", true, "d-cmd-bot")
 	if got := tc.copyEvents(); len(got) != 0 {
 		t.Fatalf("a bot comment triggered %d review task(s) — this is the self-trigger loop", len(got))
 	}
@@ -115,7 +115,7 @@ func TestCommand_FromABot_IsIgnoredBeforeParsing(t *testing.T) {
 
 // A command on a plain ISSUE is not a review request — there is no PR to review.
 func TestCommand_OnAnIssueNotAPR_FallsBackToChat(t *testing.T) {
-	tc, rx := dispatchComment(t, validConfig(), "@vornik review", "alice", "User", false, "d-cmd-issue")
+	tc, rx := dispatchComment(t, validConfig(), "@vornik-companion review", "alice", "User", false, "d-cmd-issue")
 	if got := tc.copyEvents(); len(got) != 0 {
 		t.Fatalf("a command on a plain issue created %d review task(s)", len(got))
 	}
@@ -128,7 +128,7 @@ func TestCommand_OnAnIssueNotAPR_FallsBackToChat(t *testing.T) {
 // adds a command path in front of the chat path; it does not replace it, so an
 // unrecognised phrasing degrades to "a human gets an answer", never to silence.
 func TestCommand_UnrecognisedMention_StillReachesTheReceiver(t *testing.T) {
-	tc, rx := dispatchComment(t, validConfig(), "@vornik what do you think of this?", "alice", "User", true, "d-cmd-chat")
+	tc, rx := dispatchComment(t, validConfig(), "@vornik-companion what do you think of this?", "alice", "User", true, "d-cmd-chat")
 	if got := tc.copyEvents(); len(got) != 0 {
 		t.Fatalf("an ordinary mention created %d review task(s)", len(got))
 	}
@@ -139,7 +139,7 @@ func TestCommand_UnrecognisedMention_StillReachesTheReceiver(t *testing.T) {
 
 // pause / resume are state operations, not tasks.
 func TestCommand_PauseAndResume_DoNotCreateTasks(t *testing.T) {
-	for _, body := range []string{"@vornik pause", "@vornik resume"} {
+	for _, body := range []string{"@vornik-companion pause", "@vornik-companion resume"} {
 		t.Run(body, func(t *testing.T) {
 			tc, _ := dispatchComment(t, validConfig(), body, "alice", "User", true, "d-cmd-"+body)
 			if got := tc.copyEvents(); len(got) != 0 {

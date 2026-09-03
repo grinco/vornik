@@ -290,7 +290,7 @@ func TestHandleProject_NoActiveSendsPickerSuppressesText(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "projects", "p.yaml"),
 		[]byte("projectId: my-asst\ndisplayName: My Assistant\nswarmId: swarm-1\ndefaultWorkflowId: wf-1\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "swarms", "s.md"),
-		[]byte("---\nswarmId: swarm-1\nroles:\n  - name: worker\n    runtime:\n      image: fake-agent\n---\n"), 0o644))
+		[]byte("---\nswarmId: swarm-1\nroles:\n  - name: worker\n    runtime:\n      image: test-image\n---\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "workflows", "wf.md"),
 		[]byte("---\nworkflowId: wf-1\nentrypoint: run\nsteps:\n  run:\n    type: agent\n    role: worker\n    prompt: \"do work\"\n    on_success: done\nterminals:\n  done:\n    status: COMPLETED\n---\n"), 0o644))
 	reg := registry.New()
@@ -366,7 +366,7 @@ func TestHandleProject_PickerSendFailureFallsBackToProse(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "projects", "p.yaml"),
 		[]byte("projectId: alpha\nswarmId: swarm-1\ndefaultWorkflowId: wf-1\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "swarms", "s.md"),
-		[]byte("---\nswarmId: swarm-1\nroles:\n  - name: worker\n    runtime:\n      image: fake-agent\n---\n"), 0o644))
+		[]byte("---\nswarmId: swarm-1\nroles:\n  - name: worker\n    runtime:\n      image: test-image\n---\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "workflows", "wf.md"),
 		[]byte("---\nworkflowId: wf-1\nentrypoint: run\nsteps:\n  run:\n    type: agent\n    role: worker\n    prompt: \"do work\"\n    on_success: done\nterminals:\n  done:\n    status: COMPLETED\n---\n"), 0o644))
 	reg := registry.New()

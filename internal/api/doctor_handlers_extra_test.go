@@ -351,7 +351,14 @@ defaultWorkflowId: "w"
 	h := &DoctorHandlers{configDir: dir, pricingPath: pricingPath}
 	got := h.checkPricingCoverage()
 	assert.Equal(t, "OK", got.Status)
-	assert.Contains(t, got.Message, "pricing entries")
+	// Was `assert.Contains(t, got.Message, "pricing entries")`, matching the old
+	// message "all N models have pricing entries". That wording WAS the defect —
+	// it claimed every model while the check read only role.Model — so the
+	// assertion is updated to the property that replaced it: the message states
+	// the surfaces it examined. See
+	// https://docs.vornik.io
+	assert.Contains(t, got.Message, "priced across")
+	assert.NotContains(t, got.Message, "all models have")
 }
 
 func TestCheckAutonomyBudgetGuard_NoConfigDir(t *testing.T) {

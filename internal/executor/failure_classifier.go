@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"vornik.io/vornik/internal/forge"
 	"vornik.io/vornik/internal/persistence"
 )
 
@@ -46,6 +47,16 @@ func ClassifyExecutionFailure(err error, hint string) string {
 		if c := classed.FailureClass(); c != "" {
 			return c
 		}
+	}
+
+	// A forge that judged its own HTTP status is authoritative for the same
+	// reason: permanence was decided where the status code was in hand, not
+	// inferred from a rendered sentence. This is the mapping that lets a
+	// GitHub 404 stop the retry ladder instead of burning the whole budget on
+	// a PR that does not exist. The class constant lives in persistence and is
+	// referenced here rather than duplicated into internal/forge.
+	if _, permanent := forge.AsPermanent(err); permanent {
+		return persistence.TaskFailureClassForgeTargetUnavailable
 	}
 
 	// Structural classes first — context cancellation / deadline are

@@ -7352,4 +7352,57 @@ ALTER TABLE forge_pr_review_state
     DROP COLUMN IF EXISTS reviewing_head_sha;
 `,
 	},
+	{
+		Version: 173,
+		Name:    "step_outcome_reclassify_model_unhealthy",
+		// Companion to the live classification shipped 2026-09-02: MODEL_UNHEALTHY
+		// (a circuit-open fast-reject) now classifies as `model_unhealthy` instead
+		// of falling to `unclassified`. That change applies to NEW rows only, and
+		// history is what the doctor's unclassified-share check reads.
+		//
+		// WHY IT IS NEEDED, found by verifying the deploy rather than assuming it.
+		// After restarting on the new binary the check went from quiet to warning:
+		//
+		//     240 of 1257 classified step failures (19.1%) are unclassified
+		//     over 30 days; threshold 5%
+		//
+		// 233 of those 240 are historical MODEL_UNHEALTHY rows from the
+		// 2026-08-28..31 episode when glm-5.2's agent circuit was open. The
+		// remaining 7 are the genuine residual (agent-fabrication detections,
+		// filed separately). Without this migration the check fires for ~26 days
+		// until those rows age out of the window — and a control that warns for a
+		// month is a control that gets muted, which is the failure the whole
+		// unclassified-share exercise exists to prevent.
+		//
+		// Same shape as migration 170, deliberately: apply to history the exact
+		// predicate the live path now applies. MATCH BEFORE THE LOG TAIL —
+		// error_detail carries up to 400 lines of container log, and matching the
+		// whole field lets the tail decide the class. split_part mirrors
+		// errorBeforeLogTail, as 170 does.
+		//
+		// The pattern is a CONTAINS, mirroring chat.IsModelUnhealthyFailure's
+		// strings.Contains rather than a prefix match: the marker arrives at the
+		// start of the daemon-side error but mid-string when the agent surfaces
+		// the chat proxy's 503 through result.json.
+		//
+		// Postgres only (the runner is constructed solely by postgres/db.go;
+		// SQLite takes its shape from a fresh CREATE TABLE and has no history).
+		// IDEMPOTENT: after this runs no row matches the predicate, so a replay is
+		// inert. Bounded to one column and one predicate — never a wipe, and the
+		// target IS the production database.
+		//
+		// Design: https://docs.vornik.io
+		Up: `
+UPDATE execution_step_outcomes SET error_class = 'model_unhealthy'
+ WHERE error_class = 'unclassified'
+   AND split_part(error_detail, '--- Container Log', 1) LIKE '%MODEL_UNHEALTHY%';
+`,
+		// Reversing to 'unclassified' restores the pre-migration state exactly:
+		// every row this touched held that value, and the live classifier is what
+		// would put them back here.
+		Down: `
+UPDATE execution_step_outcomes SET error_class = 'unclassified'
+ WHERE error_class = 'model_unhealthy';
+`,
+	},
 }

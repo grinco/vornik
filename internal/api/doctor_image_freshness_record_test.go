@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -31,7 +32,7 @@ func recordFor(commit string) func() (*imagemanifest.ReleaseRecord, error) {
 			Count:   1,
 			Images: []imagemanifest.ImageRecord{{
 				Tag:          imagemanifest.AgentImageTag,
-				Digest:       digestN,
+				Digests:      map[string]string{runtime.GOARCH: digestN},
 				SourceCommit: commit,
 			}},
 		}, nil
@@ -154,7 +155,8 @@ func TestImageFreshness_AggregateIsNeverGreenerThanWorstRow(t *testing.T) {
 			return &imagemanifest.ReleaseRecord{
 				Version: imagemanifest.RecordVersion, Count: 1,
 				Images: []imagemanifest.ImageRecord{{
-					Tag: imagemanifest.AgentImageTag, Digest: digestN, SourceCommit: commitN,
+					Tag: imagemanifest.AgentImageTag, SourceCommit: commitN,
+					Digests: map[string]string{runtime.GOARCH: digestN},
 				}},
 			}, nil
 		},

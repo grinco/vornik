@@ -71,6 +71,11 @@ func SetCredentialPatterns(patterns []secrets.Pattern) error {
 			return fmt.Errorf("compile credential pattern %q: %w", p.Name, err)
 		}
 		compiled = append(compiled, rulePattern{
+			// PREFIXED so a credential rule can never collide with a base rule.
+			// An operator may name a custom pattern anything, including
+			// "injection_chat_template"; without the prefix that would merge
+			// two unrelated rules into one metric series silently.
+			name:     "credential." + p.Name,
 			kind:     Kind(p.Name),
 			severity: SeverityHigh,
 			class:    classSecret,

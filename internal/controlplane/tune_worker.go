@@ -191,6 +191,25 @@ type TuneWorker struct {
 	// brake). Nil = false = today's behaviour.
 	SkipFailedRate func() bool
 
+	// Diagnose escalates a sustained latency breach whose step TIMEOUT is not
+	// the binding constraint — the "the model is slow" case, which no threshold
+	// can render a fix for. Nil disables the escalation entirely and the
+	// informational proposal remains the outcome, exactly as before.
+	//
+	// Called with propose=FALSE. The Diagnoser's own filing path generates a
+	// title from the model's root-cause prose, and the applyable-upgrade
+	// mechanism this design depends on matches on tuneLatencyTitle(project) —
+	// so we take the verdict and file it ourselves under the stable title.
+	// See https://docs.vornik.io D1/D4.
+	Diagnose IncidentDiagnoser
+	// MaxLatencyDiagnosesPerHour caps LLM spend on the escalation (default 3).
+	// Counts ATTEMPTS, not successes: a failed call still cost money, so a
+	// persistently broken LLM must not bill without bound.
+	MaxLatencyDiagnosesPerHour int
+	// SystemProjectID is never escalated — the daemon must not diagnose its own
+	// project into a loop. "" disables the exclusion.
+	SystemProjectID string
+
 	// Actionize renders concrete applyable changes for the latency +
 	// tool-timeout signals (actionable-proposals §4.4). Nil → every
 	// proposal stays informational (prior behaviour).
@@ -239,6 +258,8 @@ type TuneWorker struct {
 	// per-signal consecutive-breach counters. failed/latency are keyed by
 	// project; tool by the (project, tool) composite (typed, no string join);
 	// reclaim by the (workflow, step) composite.
+	latencyDiagnoses []time.Time // rolling attempt timestamps for the per-hour cap
+
 	failedBreaches  map[string]int
 	latencyBreaches map[string]int
 	toolBreaches    map[ProjectToolKey]int
@@ -686,6 +707,13 @@ func (w *TuneWorker) proposeLatency(ctx context.Context, project string, s Laten
 	if w.tryActionableLatency(ctx, project, s, slow, stepEvidence) {
 		return
 	}
+	// The timeout is not the binding constraint, so no threshold can render the
+	// fix — the question is which MODEL, which is a judgement. Escalate to the
+	// diagnoser; it files the applyable proposal or reports false and we fall
+	// through to the informational floor below.
+	if w.tryDiagnosedLatency(ctx, project, s, slow, stepEvidence) {
+		return
+	}
 	// Timeout absent / not binding / render declined: informational, but
 	// naming the slow step + model dimension explicitly (design §4.4).
 	rationale := fmt.Sprintf("Execution p95 latency %.0fs (n=%d), sustained for %d consecutive scans — above the %.0fs threshold. Slowest step is %q (workflow %s, role %s, model %s) at p95 %.0fs; its timeout is not the binding constraint. Consider a faster model for role %s — run Diagnose for a specific recommendation.",
@@ -727,6 +755,107 @@ func (w *TuneWorker) tryActionableLatency(ctx context.Context, project string, s
 		slow.Step, slow.Role, slow.Model, slow.P95Seconds, w.bindingThreshold()*100, formatDurationShort(current), rc.Summary, clampNote)
 	w.fileRendered(ctx, project, tuneLatencyTitle(project), rationale, stepEvidence, "tune-detector", rc)
 	return true
+}
+
+// tryDiagnosedLatency escalates a latency breach the timeout path could not
+// fix: it asks the diagnoser which model to run the slow role on, renders that
+// swap, and files it as an APPLYABLE proposal. Reports whether it filed;
+// false → the caller files the informational one.
+//
+// WHY AN LLM AND NOT A THRESHOLD. StepLatencies reports p95 per (project,
+// workflow, step, role, model), so this could pick the fastest model on the
+// fleet from numbers alone. It deliberately does not: the fastest model is
+// usually the smallest, so swapping a reviewer onto it trades output quality
+// nobody is measuring for a latency number everybody is — and the regression
+// would be invisible in exactly the metric that triggered the change. A model
+// choice is a quality/cost/latency judgement, and this is the path that makes
+// judgements.
+//
+// The daemon keeps the veto throughout: the verdict names a model, and
+// RenderRoleModel refuses one outside the configured universe, a role that does
+// not exist, and a no-op. NOTHING the model wrote as prose reaches the ledger —
+// the title is tuneLatencyTitle(project), the rationale is written from metrics
+// here, and only the structured model id is taken from the verdict. That is why
+// this path needs no equivalent of maybeFileProposal's URL/secret output gate:
+// it has no model free-text to screen.
+//
+// See https://docs.vornik.io
+func (w *TuneWorker) tryDiagnosedLatency(ctx context.Context, project string, s LatencySample, slow StepLatencySample, stepEvidence string) bool {
+	if w.Diagnose == nil || w.Actionize == nil {
+		return false
+	}
+	// Loop safety, checked BEFORE the call so the exclusion costs nothing.
+	if w.SystemProjectID != "" && project == w.SystemProjectID {
+		return false
+	}
+	if !w.underLatencyDiagnosisCap() {
+		w.Logger.Warn().Str("project", project).
+			Int("cap_per_hour", w.maxLatencyDiagnosesPerHour()).
+			Msg("tune: latency diagnosis rate-capped; filing informational")
+		return false
+	}
+	// Counted here, not on success: the spend happens whether or not the
+	// verdict turns out to be renderable.
+	w.recordLatencyDiagnosis()
+
+	verdict, _, err := w.Diagnose.Diagnose(ctx, project, false)
+	if err != nil {
+		w.Logger.Warn().Err(err).Str("project", project).
+			Msg("tune: latency diagnosis failed; filing informational")
+		return false
+	}
+	if verdict == nil || verdict.ConfigChange == nil {
+		return false
+	}
+	cc := verdict.ConfigChange
+	if cc.Kind != "swarm_role_model" {
+		// The diagnoser may legitimately conclude the fix is a timeout or an
+		// MCP change. Those are the timeout path's business or nobody's; this
+		// escalation exists for the model question only.
+		return false
+	}
+	rc, rerr := w.Actionize.RenderRoleModel(cc.Swarm, cc.Role, cc.Model)
+	if rerr != nil {
+		if !errors.Is(rerr, ErrChangeNotUseful) {
+			w.Logger.Warn().Err(rerr).Str("project", project).Str("swarm", cc.Swarm).
+				Str("role", cc.Role).Str("model", cc.Model).
+				Msg("tune: role-model render refused; filing informational")
+		}
+		return false
+	}
+	rationale := fmt.Sprintf("Execution p95 latency %.0fs (n=%d), sustained for %d consecutive scans — above the %.0fs threshold. Slowest step is %q (workflow %s, role %s, model %s) at p95 %.0fs, and its timeout is NOT the binding constraint — so the model is the cost, not the budget. Proposed: %s. Review the trade-off before applying: this is chosen for latency, and a faster model may produce weaker output for this role.",
+		s.P95Seconds, s.Count, w.breachesToPropose(), w.latencyThreshold(),
+		slow.Step, slow.Workflow, slow.Role, slow.Model, slow.P95Seconds, rc.Summary)
+	// tuneLatencyTitle(project) — the SAME title the informational and
+	// timeout paths use. That is what lets fileRendered supersede a stale
+	// informational DRAFT instead of filing beside it.
+	w.fileRendered(ctx, project, tuneLatencyTitle(project), rationale, stepEvidence, "tune-detector", rc)
+	return true
+}
+
+func (w *TuneWorker) maxLatencyDiagnosesPerHour() int {
+	if w.MaxLatencyDiagnosesPerHour > 0 {
+		return w.MaxLatencyDiagnosesPerHour
+	}
+	return 3
+}
+
+// underLatencyDiagnosisCap reports whether another diagnosis may be attempted
+// this hour, pruning the rolling window as it goes.
+func (w *TuneWorker) underLatencyDiagnosisCap() bool {
+	cutoff := time.Now().Add(-time.Hour)
+	kept := w.latencyDiagnoses[:0]
+	for _, t := range w.latencyDiagnoses {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	w.latencyDiagnoses = kept
+	return len(w.latencyDiagnoses) < w.maxLatencyDiagnosesPerHour()
+}
+
+func (w *TuneWorker) recordLatencyDiagnosis() {
+	w.latencyDiagnoses = append(w.latencyDiagnoses, time.Now())
 }
 
 // slowestStep picks the breaching project's slowest attributed step with

@@ -25,7 +25,7 @@ swarmId: swarm-`+id+`
 roles:
   - name: worker
     runtime:
-      image: fake-agent
+      image: test-image
 ---
 
 ## Role prompts

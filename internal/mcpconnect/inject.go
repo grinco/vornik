@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+
+	"golang.org/x/net/idna"
 	"path"
 	"strings"
 	"time"
@@ -269,12 +271,55 @@ func sameOrigin(a, b string) bool {
 	return originOf(a) == originOf(b)
 }
 
+// originOf reduces a URL to a canonical scheme+host+port.
+//
+// NORMALISATION IS THE POINT. An operator can write the same endpoint several
+// defensible ways, and before 2026-09-02 the daemon disagreed with itself about
+// them: a default port written out, a fully-qualified trailing dot, or the
+// Unicode spelling of an internationalised host each produced a MISMATCH, and
+// the symptom was ErrNeedsReconnect on a URL that looked identical to the one
+// in the config. Every case failed CLOSED, so this was friction rather than a
+// substitution risk — but baffling friction.
+//
+// What is deliberately NOT normalised away: a non-default port, the other
+// scheme's default port, and the host itself. Those distinguish genuinely
+// different endpoints, and collapsing them would turn friction into a real
+// audience-confusion bug.
 func originOf(raw string) string {
 	s := strings.TrimSpace(raw)
-	scheme, rest, ok := strings.Cut(s, "://")
-	if !ok {
-		return s
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		// Not a URL we can reason about. Return it lowercased and unchanged
+		// rather than guessing: an unparseable value must not accidentally
+		// equal some other unparseable value.
+		return strings.ToLower(s)
 	}
-	host, _, _ := strings.Cut(rest, "/")
-	return strings.ToLower(scheme + "://" + host)
+	scheme := strings.ToLower(u.Scheme)
+
+	host := strings.ToLower(u.Hostname())
+	// A trailing dot is the fully-qualified spelling of the same name. Keep a
+	// bare "." (the root) as-is; stripping it would empty the host.
+	if len(host) > 1 {
+		host = strings.TrimSuffix(host, ".")
+	}
+	// Punycode and Unicode are two spellings of one host. ToASCII is the
+	// canonical direction; on failure keep what we had rather than inventing a
+	// host that was never written.
+	if ascii, ierr := idna.Lookup.ToASCII(host); ierr == nil && ascii != "" {
+		host = ascii
+	}
+
+	// A default port is the same endpoint written longhand. The OTHER scheme's
+	// default is not: https://h:80 is not https://h.
+	port := u.Port()
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		port = ""
+	}
+	if port != "" {
+		host = host + ":" + port
+	}
+	// Userinfo is credentials, not identity, and is excluded entirely — note
+	// u.Hostname() already discards it, which is also what stops
+	// "https://h.example@evil.example" reading as h.example.
+	return scheme + "://" + host
 }

@@ -1325,15 +1325,30 @@ func (c *Channel) buildCommentChannelMessage(p eventPayload, delivery string) co
 // case-insensitively. Word-boundary aware so `@vornik-deploy`
 // doesn't trigger.
 func mentionsVornik(body string) bool {
+	return mentionsHandle(body, forgereview.DefaultHandle)
+}
+
+// mentionsHandle reports whether body @-mentions handle as a whole word.
+//
+// The handle is a parameter because it is deployment-specific: a CE customer
+// installs their own GitHub App under their own name, and a handle that happens
+// to be a real account (as "@vornik" is — github.com/vornik has existed since
+// 2013) notifies a stranger every time the bot is addressed.
+func mentionsHandle(body, handle string) bool {
+	handle = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(handle), "@"))
+	if handle == "" {
+		return false
+	}
+	needle := "@" + strings.ToLower(handle)
 	lower := strings.ToLower(body)
 	idx := 0
 	for {
-		hit := strings.Index(lower[idx:], "@vornik")
+		hit := strings.Index(lower[idx:], needle)
 		if hit < 0 {
 			return false
 		}
 		pos := idx + hit
-		end := pos + len("@vornik")
+		end := pos + len(needle)
 		// Must be word-end: end-of-string, whitespace, or punctuation.
 		if end >= len(lower) {
 			return true
@@ -1401,7 +1416,7 @@ type ReviewController interface {
 // public repository a command is real model spend and the review it starts
 // cannot be recalled once posted.
 func (c *Channel) handleReviewCommand(ctx context.Context, event, delivery string, p eventPayload, inst *installation) bool {
-	cmd := forgereview.ParseCommand(p.Comment.Body)
+	cmd := forgereview.ParseCommandFor(forgereview.DefaultHandle, p.Comment.Body)
 	if cmd == forgereview.CmdNone {
 		return false
 	}

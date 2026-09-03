@@ -41,8 +41,15 @@ func TestMain(m *testing.M) {
 	// special-case "database does not exist" on first run.
 	if err := ensureIntegrationDB(); err != nil {
 		fmt.Fprintf(os.Stderr, "integration db bootstrap failed: %v\n", err)
-		// Fall through — tests will Skip via their own connect-failure
-		// path. Skipping here would mask a misconfigured CI image.
+		// FAIL THE RUN. Falling through used to leave every test to Skip on
+		// its own connect failure, which Go reports as PASS with exit 0 — the
+		// gate for persistence changes announcing success having verified
+		// nothing. The old comment here claimed falling through avoided
+		// "masking a misconfigured CI image"; it did the opposite.
+		if fatal, msg := integrationUnavailableIsFatal(os.Getenv(integrationOptOutEnv)); fatal {
+			fmt.Fprintln(os.Stderr, msg)
+			os.Exit(1)
+		}
 	}
 	code := m.Run()
 	if err := purgeRepotestLeftovers(); err != nil {
@@ -286,7 +293,14 @@ func newIntegrationDB(t *testing.T) *DB {
 	ctx := context.Background()
 	db, err := Connect(ctx, cfg)
 	if err != nil {
-		t.Skipf("postgres unavailable for integration tests: %v", err)
+		// Fatal, not Skip: a skipped integration test is indistinguishable
+		// from a passing one in the exit code, and this lane exists to be
+		// believed. The opt-out is for hosts that deliberately run without a
+		// database and are willing to say so.
+		if fatal, msg := integrationUnavailableIsFatal(os.Getenv(integrationOptOutEnv)); fatal {
+			t.Fatalf("postgres unavailable for integration tests: %v\n%s", err, msg)
+		}
+		t.Skipf("postgres unavailable for integration tests (%s set): %v", integrationOptOutEnv, err)
 	}
 	if err := db.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)

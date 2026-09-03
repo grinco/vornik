@@ -3,6 +3,7 @@ package forgereview
 import (
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // Command is an instruction addressed to the bot in a change-request comment.
@@ -49,31 +50,67 @@ func (c Command) String() string {
 	}
 }
 
-// commandRe matches the mention followed by one of the verbs.
+// commandVerbs is the alternation of recognised verbs.
 //
-// The verb must FOLLOW the mention, which is why this is a single anchored
-// pattern rather than two independent "contains" checks. "reviewing @vornik"
-// mentions the bot and contains the word review, but it is not asking for one;
-// treating it as a command would run a review — real model spend — off a
-// sentence that never requested it.
-//
-// `full review` is listed before `review` because Go's regexp alternation is
-// leftmost-first: with the order reversed, "full review" would match the
-// `review` arm and silently downgrade an explicit full-review request to an
-// incremental one.
-var commandRe = regexp.MustCompile(`(?i)@vornik\s+(full\s+review|review|pause|resume)\b`)
+// `full review` precedes `review` because Go regexp is leftmost-first: with the
+// order reversed, "full review" matches the `review` arm and silently downgrades
+// an explicit full-review request to an incremental one.
+const commandVerbs = `(full\s+review|review|pause|resume)\b`
 
-// ParseCommand extracts the command from a comment body.
+// DefaultHandle is used when a deployment has not configured one.
 //
-// Case-insensitive and whitespace-tolerant because this is prose typed by a
-// human in a web form, not a CLI.
-func ParseCommand(body string) Command {
-	m := commandRe.FindStringSubmatch(body)
+// NOT "vornik": github.com/vornik is a real user account registered in 2013, so
+// that handle notified a stranger on every command and made any legitimate
+// mention of them look like an instruction to us.
+//
+// This is the App's own slug, which is the only handle guaranteed not to belong
+// to somebody else — GitHub reserves it for the App. Other deployments configure
+// their own, because a CE customer installs their own GitHub App under their own
+// name and this default will not match it.
+const DefaultHandle = "vornik-companion"
+
+var (
+	handleReMu sync.Mutex
+	handleRe   = map[string]*regexp.Regexp{}
+)
+
+// commandReFor builds (and caches) the matcher for one handle.
+//
+// The handle is regexp-QUOTED: it comes from configuration, and a dot or bracket
+// in it must be a literal character rather than pattern syntax.
+func commandReFor(handle string) *regexp.Regexp {
+	handleReMu.Lock()
+	defer handleReMu.Unlock()
+	if re, ok := handleRe[handle]; ok {
+		return re
+	}
+	// \b after the handle so a handle is not matched inside a LONGER one —
+	// "@vornik" must not fire on "@vornik-development-companion".
+	re := regexp.MustCompile(`(?i)@` + regexp.QuoteMeta(handle) + `\b\s+` + commandVerbs)
+	handleRe[handle] = re
+	return re
+}
+
+// ParseCommandFor extracts the command addressed to a specific handle.
+//
+// The verb must FOLLOW the mention, in one anchored pattern rather than two
+// independent "contains" checks: "reviewing @handle" mentions the bot and
+// contains the word review, but it is not asking for one, and treating it as a
+// command would spend real money on a sentence that never requested it.
+//
+// An empty handle never matches. Falling back to some default there would act on
+// a name the operator did not choose — which is the entire bug this exists to
+// fix.
+func ParseCommandFor(handle, body string) Command {
+	handle = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(handle), "@"))
+	if handle == "" {
+		return CmdNone
+	}
+	m := commandReFor(strings.ToLower(handle)).FindStringSubmatch(body)
 	if m == nil {
 		return CmdNone
 	}
-	verb := strings.ToLower(strings.Join(strings.Fields(m[1]), " "))
-	switch verb {
+	switch strings.ToLower(strings.Join(strings.Fields(m[1]), " ")) {
 	case "full review":
 		return CmdFullReview
 	case "review":

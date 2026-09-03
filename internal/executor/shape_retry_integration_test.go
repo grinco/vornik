@@ -66,7 +66,7 @@ func TestShapeRetry_RescuesMissingKey(t *testing.T) {
 		swarms: map[string]*registry.Swarm{
 			"s1": {ID: "s1", Roles: []registry.SwarmRole{{
 				Name:               "writer",
-				Runtime:            registry.SwarmRoleRuntime{Image: "fake-agent:latest"},
+				Runtime:            registry.SwarmRoleRuntime{Image: "test-image:latest"},
 				RequiredOutputKeys: []string{"message", "writing"},
 			}}},
 		},
@@ -155,7 +155,7 @@ func TestShapeRetry_RecordsFailedOutcomeOnBothAttemptsBad(t *testing.T) {
 		swarms: map[string]*registry.Swarm{
 			"s1": {ID: "s1", Roles: []registry.SwarmRole{{
 				Name:               "writer",
-				Runtime:            registry.SwarmRoleRuntime{Image: "fake-agent:latest"},
+				Runtime:            registry.SwarmRoleRuntime{Image: "test-image:latest"},
 				RequiredOutputKeys: []string{"message", "writing"},
 			}}},
 		},

@@ -71,7 +71,7 @@ func TestBuildGitHubChannel_MultiInstall_RoutesSessions(t *testing.T) {
 		t.Fatalf("ch=%v enabled=%v, want non-nil + 2 projects", ch, enabled)
 	}
 
-	// Fire two issue_comment.created webhooks @vornik to seed
+	// Fire two issue_comment.created webhooks mentioning the bot to seed
 	// sessions on each installation. The channel needs a Receiver
 	// to actually dispatch — but we just want recordSession to
 	// fire, so a no-op receiver is enough.
@@ -86,7 +86,7 @@ func TestBuildGitHubChannel_MultiInstall_RoutesSessions(t *testing.T) {
 		"sender": {"login": "vadim"},
 		"installation": {"id": 100},
 		"issue": {"number": 5, "title": "issue A"},
-		"comment": {"id": 1, "body": "@vornik hi", "user": {"login": "vadim"}}
+		"comment": {"id": 1, "body": "@vornik-companion hi", "user": {"login": "vadim"}}
 	}`)
 	ch.HandleWebhook(httptest.NewRecorder(), signedReq("shhh", "issue_comment", "d-A", bodyA))
 
@@ -96,7 +96,7 @@ func TestBuildGitHubChannel_MultiInstall_RoutesSessions(t *testing.T) {
 		"sender": {"login": "alice"},
 		"installation": {"id": 200},
 		"issue": {"number": 7, "title": "issue B"},
-		"comment": {"id": 2, "body": "@vornik hi", "user": {"login": "alice"}}
+		"comment": {"id": 2, "body": "@vornik-companion hi", "user": {"login": "alice"}}
 	}`)
 	ch.HandleWebhook(httptest.NewRecorder(), signedReq("shhh", "issue_comment", "d-B", bodyB))
 

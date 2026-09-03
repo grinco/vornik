@@ -628,6 +628,29 @@ func (s *Store) scanForBackend(srcPath, mimeType, projectID, taskID, name string
 		if len(findings) > 0 {
 			action := secrets.ResolveAction(secrets.CheckpointArtifacts, s.secretsActions)
 			counts := secrets.CountByType(findings)
+
+			// DETECTION IS UNCHANGED; only the WRITE-BACK narrows. Every
+			// finding above is still found, counted and logged — what the
+			// strong-only set governs is which spans get rewritten.
+			//
+			// The heuristic rules (entropy, generic_kv) are dropped here for
+			// the same reason the executor's tool-output path, outputguard's
+			// read-back, the per-call allowlist and `secrets scan-history
+			// --apply` all drop them — this is the FOURTH consumer of one
+			// predicate, not a fourth spelling of the split.
+			//
+			// It is the last of those consumers to be narrowed and the one
+			// where over-redaction costs most: a stored artifact is read by a
+			// HUMAN, Redact is one-way, and `[REDACTED:entropy]` reads as "a
+			// secret was caught here", so a false positive does not merely
+			// dirty the record — it actively misinforms. Measured: ~7,000
+			// entropy findings across two production surfaces (test
+			// identifiers in review artifacts, hashed filenames in shell
+			// output) with ZERO true positives.
+			//
+			// See https://docs.vornik.io
+			strong := secrets.DropHeuristic(findings)
+
 			logEvent := s.logger.Warn().
 				Str("project_id", projectID).
 				Str("task_id", taskID).
@@ -636,11 +659,16 @@ func (s *Store) scanForBackend(srcPath, mimeType, projectID, taskID, name string
 				Str("checkpoint", secrets.CheckpointArtifacts).
 				Str("action", string(action)).
 				Int("findings", len(findings)).
+				// `redacted` is what makes "found but deliberately not
+				// rewritten" distinguishable from "nothing found" — without it
+				// the two render identically and nobody can ever measure
+				// whether entropy earns its place back on this surface.
+				Int("redacted", len(strong)).
 				Interface("by_type", counts)
 			switch action {
 			case secrets.ActionRedact:
-				logEvent.Msg("artifacts: scanned — redacting findings before storage")
-				body = secrets.Redact(body, findings)
+				logEvent.Msg("artifacts: scanned — redacting strong findings before storage")
+				body = secrets.Redact(body, strong)
 			case secrets.ActionBlock:
 				// Block-on-artifacts degrades to Redact. The artifact
 				// pipeline doesn't have a clean failure-class wire-up
@@ -651,7 +679,7 @@ func (s *Store) scanForBackend(srcPath, mimeType, projectID, taskID, name string
 				// SECRET_LEAK ships we can promote this to a real
 				// refusal.
 				logEvent.Msg("artifacts: BLOCK ACTION NOT YET ENFORCED, degraded to redact")
-				body = secrets.Redact(body, findings)
+				body = secrets.Redact(body, strong)
 			default: // ActionDetect
 				logEvent.Msg("artifacts: scanned — detect-only, content stored unchanged")
 			}

@@ -3,7 +3,7 @@ sources:
     - path: internal/forge/forge.go
       sha256: ea94efec75e13324c1377118a9f67a924532f41f4ad93bcdd876518678842eba
     - path: internal/forge/github/github.go
-      sha256: e63da4e64d7de29cac06193d40704348143823a11830aec7e61c2ee64cfd0646
+      sha256: 5d7d025b9abf2a1854c0a444288d6f164db8759017606355ed97600f909d2341
 ---
 # Forge — GitHub automation
 
@@ -54,14 +54,17 @@ becoming noise:
   reviewing less than it should.
 
 You can also ask directly, by mentioning the bot in a comment on the pull
-request:
+request. **`<bot>` is your GitHub App's own handle** — its slug, e.g.
+`@vornik-companion`. It is configurable (`mention_handle`), and it
+should be a handle you own: a handle that happens to be someone else's account
+notifies a stranger every time anyone addresses the bot.
 
 | Comment | Effect |
 |---|---|
-| `@vornik review` | review now, covering what changed since the last one |
-| `@vornik full review` | review the whole pull request, ignoring the baseline |
-| `@vornik pause` | stop reviewing this PR automatically; commands still work |
-| `@vornik resume` | resume automatic review of this PR |
+| `@<bot> review` | review now, covering what changed since the last one |
+| `@<bot> full review` | review the whole pull request, ignoring the baseline |
+| `@<bot> pause` | stop reviewing this PR automatically; commands still work |
+| `@<bot> resume` | resume automatic review of this PR |
 
 **Only people with standing in the repository can run these** — its owner,
 organisation members, and invited collaborators. A review is model spend, so on
@@ -138,8 +141,8 @@ write credentials, because it never has them.
 1. **Create a GitHub App** and download its private key (PEM). Note the App ID.
 2. **Grant permissions:** Contents (read & write — verified at daemon startup),
    Issues (read & write), Pull requests (read & write), and Metadata (read).
-3. **Subscribe to webhook events:** `issues`, `pull_request`, and (for `@vornik`
-   mention replies) `issue_comment`.
+3. **Subscribe to webhook events:** `issues`, `pull_request`, and (for PR review
+   commands and `@<bot>` mention replies) `issue_comment`.
 4. **Point the webhook** at your daemon's signed webhook endpoint,
    `POST /api/v1/webhooks/{projectId}/{source}`, and set a webhook secret. Forge
    verifies every delivery's `X-Hub-Signature-256` HMAC; the secret is supplied
@@ -184,10 +187,34 @@ verdict into a real GitHub APPROVE / REQUEST_CHANGES. (A review that would
 approve the App's *own* PR is automatically downgraded to a comment, since GitHub
 won't let an author approve their own pull request.)
 
+## When the target is gone
+
+A review needs the pull request it was asked about. If the forge says that PR is
+not there — it was deleted, the number never existed, the repository was renamed
+— **the task fails immediately rather than retrying.**
+
+That is deliberate. Retrying cannot make a missing pull request exist, and each
+attempt spends real forge API rate limit that your other reviews need. Before
+this, a review aimed at a non-existent PR would quietly burn its whole retry
+budget in a few seconds and then tell you to "try again".
+
+The failure is reported as `FORGE_TARGET_UNAVAILABLE`, and
+`vornikctl playbook show FORGE_TARGET_UNAVAILABLE` says what to check. In
+practice it is one of two things:
+
+- **The target really is gone or was never there** — the invocation pointed at
+  the wrong number or a renamed repo. Fix the caller; nothing is wrong with
+  Vornik.
+- **The target exists but Vornik can no longer see it** — the App was uninstalled
+  from that repository, or its permissions no longer cover it.
+
+Rate limits and GitHub outages are *not* treated this way: a 429 or a 5xx is
+temporary, so those keep their full retry budget exactly as before.
+
 ## Conversational replies
 
-A separate GitHub App *channel* handles `@vornik` mentions in issue comments:
-an allowlisted user mentioning `@vornik` routes through vornik and gets a reply
+A separate GitHub App *channel* handles `@<bot>` mentions in issue comments:
+an allowlisted user mentioning the bot routes through vornik and gets a reply
 posted as an issue comment. This is the chat surface; the deterministic flows
 above are the automation surface.
 

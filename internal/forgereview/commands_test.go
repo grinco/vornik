@@ -2,8 +2,10 @@ package forgereview
 
 import "testing"
 
-// The grammar itself, isolated from the webhook plumbing.
-func TestParseCommand(t *testing.T) {
+// The grammar itself, isolated from the webhook plumbing AND from whatever
+// handle a deployment configures: "vornik" is passed explicitly here so the
+// table stays about parsing rather than about the default.
+func TestParseCommandGrammar(t *testing.T) {
 	for _, tc := range []struct {
 		body string
 		want Command
@@ -26,8 +28,8 @@ func TestParseCommand(t *testing.T) {
 		{"reviewing @vornik", CmdNone}, // the word review must follow the mention
 	} {
 		t.Run(tc.body, func(t *testing.T) {
-			if got := ParseCommand(tc.body); got != tc.want {
-				t.Errorf("ParseCommand(%q) = %v, want %v", tc.body, got, tc.want)
+			if got := ParseCommandFor("vornik", tc.body); got != tc.want {
+				t.Errorf("ParseCommandFor(%q) = %v, want %v", tc.body, got, tc.want)
 			}
 		})
 	}

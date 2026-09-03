@@ -131,8 +131,18 @@ type Config struct {
 	// tasks with numerically smaller priorities when set above zero.
 	PriorityFloor int
 
-	// RuntimeImage is the Podman image used for task execution.
-	RuntimeImage string
+	// NOTE (2026-09-02): a `RuntimeImage string` lived here and was DELETED.
+	// It was written twice — DefaultConfig and the constructor's empty-check —
+	// and read NOWHERE; a repo-wide grep across Go, YAML, JSON and config keys
+	// found no reader, no getter, no test stub. Its default was the
+	// `test-image:latest` test fixture, so every running daemon held a
+	// scheduler config naming an image the release does not ship.
+	//
+	// The scheduler does not choose the image: the executor does, from its own
+	// Config.RuntimeImage (internal/executor/executor.go), read at plan.go.
+	// Do not re-add a field here "because the scheduler obviously needs to know
+	// its runtime image" — that is the assumption the dead field encoded.
+	// See https://docs.vornik.io §11.2.
 
 	// ArtifactStoragePath is the base path used for artifact persistence.
 	ArtifactStoragePath string
@@ -151,7 +161,6 @@ func DefaultConfig() *Config {
 		RecoveryBatchSize:    100,
 		RecoveryIdleGrace:    90 * time.Second,
 		PriorityFloor:        0,
-		RuntimeImage:         "fake-agent:latest",
 		ArtifactStoragePath:  "/var/lib/vornik/artifacts",
 		ExecutionTimeout:     30 * time.Minute,
 	}
@@ -318,9 +327,6 @@ func NewWithOptions(repo TaskRepository, config *Config, opts ...Option) *Schedu
 		opt(s)
 	}
 
-	if s.config.RuntimeImage == "" {
-		s.config.RuntimeImage = "fake-agent:latest"
-	}
 	if s.config.LeaseDurationSeconds <= 0 {
 		s.config.LeaseDurationSeconds = 300
 	}
@@ -1007,7 +1013,8 @@ func (s *Scheduler) recoverExpiredLeases() {
 
 // TaskCompleted should be called when a task finishes execution.
 // This decrements the running count and updates the task status.
-// Failed tasks are re-queued if attempts remain (Attempt < MaxAttempts).
+// Failed tasks are re-queued if persistence.TaskShouldRetry allows it — attempts
+// remain AND the failure class is not one that can never succeed on a re-run.
 func (s *Scheduler) TaskCompleted(taskID, leaseID string, success bool, errorMsg string) error {
 	s.decrementRunning()
 
@@ -1033,7 +1040,18 @@ func (s *Scheduler) TaskCompleted(taskID, leaseID string, success bool, errorMsg
 	if attempt <= 0 {
 		attempt = 1
 	}
-	if attempt < maxAttempts {
+	// Classify BEFORE deciding, not only on the terminal branch. Pre-fix this
+	// asked only about the budget, so a permanent failure — a GitHub 404 on a
+	// PR that does not exist — burned every attempt before anything looked at
+	// what had actually gone wrong.
+	class := classifySchedulerFailure(task, errorMsg)
+	if class == "" && task.LastErrorClass != nil {
+		// classifySchedulerFailure returns "" to mean "a precise class is
+		// already on the row" — read it, since that is the class the executor
+		// stamped and the one the retry decision must honour.
+		class = *task.LastErrorClass
+	}
+	if persistence.TaskShouldRetry(attempt, maxAttempts, class) {
 		return s.repo.ReleaseLease(s.baseContext(), taskID, leaseID, persistence.TaskStatusQueued, persistence.ReleaseOptions{
 			Attempt:     attempt + 1,
 			MaxAttempts: maxAttempts,
@@ -1065,7 +1083,11 @@ func (s *Scheduler) completeTask(task *persistence.Task, success bool, errorMsg 
 		if attempt <= 0 {
 			attempt = 1
 		}
-		if attempt < maxAttempts {
+		class := classifySchedulerFailure(task, errorMsg)
+		if class == "" && task.LastErrorClass != nil {
+			class = *task.LastErrorClass
+		}
+		if persistence.TaskShouldRetry(attempt, maxAttempts, class) {
 			status = persistence.TaskStatusQueued
 			opts.Attempt = attempt + 1
 			opts.MaxAttempts = maxAttempts

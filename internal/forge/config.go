@@ -20,7 +20,19 @@ const (
 // package — no change to callers.
 type Config struct {
 	Provider string
-	GitHub   GitHubConfig
+
+	// MentionHandle is the bot handle commands are addressed to, WITHOUT the
+	// leading @ ("vornik-companion"). Empty falls back to
+	// forgereview.DefaultHandle.
+	//
+	// Configurable because it is deployment-specific in two ways: every CE
+	// customer installs their own GitHub App under their own name, whose slug a
+	// hardcoded handle would never match; and a handle that happens to be a real
+	// account notifies a stranger on every command. Use the App's own slug
+	// unless you own the handle you pick.
+	MentionHandle string
+
+	GitHub GitHubConfig
 	// GitLab GitLabConfig // future sibling
 	// Gitea  GiteaConfig  // future sibling
 }

@@ -67,7 +67,7 @@ func (r resolvedRetry) shouldRetry(err error) bool {
 	// sees in `error_class` is exactly what they write in `on:`. The class
 	// strings are internal/stepoutcome's vocabulary, validated against it at
 	// load time by Workflow.validateRetryClasses.
-	_, class := refineAgentFailureOutcome(errorBeforeLogTail(err.Error()))
+	_, class := refineAgentFailureOutcomeErr(err)
 	return r.On[class]
 }
 

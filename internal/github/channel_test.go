@@ -144,7 +144,7 @@ func TestChannel_ListSessions_PopulatedAfterEvents(t *testing.T) {
 	}`)
 	ch.HandleWebhook(httptest.NewRecorder(), signedRequest("shhh", "pull_request", "d-pr", prBody))
 
-	// 3) @vornik mention on the same issue as #1 — should NOT
+	// 3) @vornik-companion mention on the same issue as #1 — should NOT
 	// create a duplicate session; LastActivity updates instead.
 	rx := &recordingReceiver{}
 	ch.recvMu.Lock()
@@ -156,7 +156,7 @@ func TestChannel_ListSessions_PopulatedAfterEvents(t *testing.T) {
 		"sender": {"login": "alice"},
 		"installation": {"id": 1},
 		"issue": {"number": 5, "title": "label-titled bug"},
-		"comment": {"id": 100, "body": "@vornik ping", "user": {"login": "alice"}}
+		"comment": {"id": 100, "body": "@vornik-companion ping", "user": {"login": "alice"}}
 	}`)
 	ch.HandleWebhook(httptest.NewRecorder(), signedRequest("shhh", "issue_comment", "d-mention", mentionBody))
 
@@ -240,7 +240,7 @@ func TestChannel_PRComment_TitleFallback(t *testing.T) {
 		"sender": {"login": "alice"},
 		"installation": {"id": 1},
 		"issue": {"number": 42, "title": "", "pull_request": {"url": "https://api.github.com/repos/acme/api/pulls/42"}},
-		"comment": {"id": 1, "body": "@vornik review", "user": {"login": "alice"}}
+		"comment": {"id": 1, "body": "@vornik-companion review", "user": {"login": "alice"}}
 	}`)
 	ch.HandleWebhook(httptest.NewRecorder(), signedRequest("shhh", "issue_comment", "d-pr-notitle", body))
 
@@ -635,7 +635,7 @@ func TestHandleWebhook_BodyTooLarge(t *testing.T) {
 }
 
 // TestHandleWebhook_IssueComment_MentionDispatchesToReceiver — the
-// happy path for the @vornik reply flow.
+// happy path for the @vornik-companion reply flow.
 func TestHandleWebhook_IssueComment_MentionDispatchesToReceiver(t *testing.T) {
 	ch, _ := New(validConfig())
 	rx := &recordingReceiver{}
@@ -649,7 +649,7 @@ func TestHandleWebhook_IssueComment_MentionDispatchesToReceiver(t *testing.T) {
 		"sender": {"login": "vadim", "id": 42},
 		"installation": {"id": 9999},
 		"issue": {"number": 7, "title": "bug"},
-		"comment": {"id": 555, "body": "hey @vornik please look at this", "user": {"login": "vadim", "id": 42}}
+		"comment": {"id": 555, "body": "hey @vornik-companion please look at this", "user": {"login": "vadim", "id": 42}}
 	}`)
 	r := signedRequest("shhh", "issue_comment", "d-mention", body)
 	w := httptest.NewRecorder()
@@ -704,7 +704,7 @@ func TestHandleWebhook_PRComment_MentionDispatchesToReceiver(t *testing.T) {
 		"sender": {"login": "alice"},
 		"installation": {"id": 1},
 		"issue": {"number": 42, "title": "PR title", "pull_request": {"url": "https://api.github.com/repos/acme/api/pulls/42"}},
-		"comment": {"id": 1000, "body": "@vornik test plz", "user": {"login": "alice"}}
+		"comment": {"id": 1000, "body": "@vornik-companion test plz", "user": {"login": "alice"}}
 	}`)
 	r := signedRequest("shhh", "issue_comment", "d-pr", body)
 	w := httptest.NewRecorder()
@@ -720,7 +720,7 @@ func TestHandleWebhook_PRComment_MentionDispatchesToReceiver(t *testing.T) {
 }
 
 // TestHandleWebhook_IssueComment_NoMention_Discards — comments
-// without @vornik never reach the Receiver.
+// without @vornik-companion never reach the Receiver.
 func TestHandleWebhook_IssueComment_NoMention_Discards(t *testing.T) {
 	ch, _ := New(validConfig())
 	rx := &recordingReceiver{}
@@ -749,7 +749,7 @@ func TestHandleWebhook_IssueComment_NoMention_Discards(t *testing.T) {
 }
 
 // TestHandleWebhook_IssueComment_DisallowedSender_Discards — the
-// @vornik mention from a sender not on the allowlist is dropped
+// @vornik-companion mention from a sender not on the allowlist is dropped
 // without reaching the Receiver.
 func TestHandleWebhook_IssueComment_DisallowedSender_Discards(t *testing.T) {
 	cfg := validConfig()
@@ -766,7 +766,7 @@ func TestHandleWebhook_IssueComment_DisallowedSender_Discards(t *testing.T) {
 		"sender": {"login": "stranger"},
 		"installation": {"id": 1},
 		"issue": {"number": 1},
-		"comment": {"id": 1, "body": "@vornik help", "user": {"login": "stranger"}}
+		"comment": {"id": 1, "body": "@vornik-companion help", "user": {"login": "stranger"}}
 	}`)
 	r := signedRequest("shhh", "issue_comment", "d-stranger", body)
 	w := httptest.NewRecorder()
@@ -791,7 +791,7 @@ func TestHandleWebhook_IssueComment_NoReceiver_Logs(t *testing.T) {
 		"sender": {"login": "vadim"},
 		"installation": {"id": 1},
 		"issue": {"number": 1},
-		"comment": {"id": 1, "body": "@vornik hello", "user": {"login": "vadim"}}
+		"comment": {"id": 1, "body": "@vornik-companion hello", "user": {"login": "vadim"}}
 	}`)
 	r := signedRequest("shhh", "issue_comment", "d-noreceiver", body)
 	w := httptest.NewRecorder()
@@ -816,7 +816,7 @@ func TestHandleWebhook_IssueComment_ReceiverErrorSwallowed(t *testing.T) {
 		"sender": {"login": "vadim"},
 		"installation": {"id": 1},
 		"issue": {"number": 1},
-		"comment": {"id": 1, "body": "@vornik hi", "user": {"login": "vadim"}}
+		"comment": {"id": 1, "body": "@vornik-companion hi", "user": {"login": "vadim"}}
 	}`)
 	r := signedRequest("shhh", "issue_comment", "d-rxerr", body)
 	w := httptest.NewRecorder()
@@ -1009,16 +1009,16 @@ func TestMentionsVornik_Cases(t *testing.T) {
 		body string
 		want bool
 	}{
-		{"hey @vornik please", true},
-		{"@vornik", true},
-		{"@Vornik help", true}, // case-insensitive
-		{"go @vornik!", true},
-		{"@vornik-deploy", false}, // word-boundary: not a mention
-		{"@vornik_bot", false},
-		{"@vornik123", false},
+		{"hey @vornik-companion please", true},
+		{"@vornik-companion", true},
+		{"@Vornik-Companion help", true}, // case-insensitive
+		{"go @vornik-companion!", true},
+		{"@vornik-companion-deploy", false}, // word-boundary: not a mention
+		{"@vornik-companion_bot", false},
+		{"@vornik-companion123", false},
 		{"nothing here", false},
 		{"@swarm", false},
-		{"@vornikoesthing", false},
+		{"@vornik-companionoesthing", false},
 	}
 	for _, c := range cases {
 		if got := mentionsVornik(c.body); got != c.want {
@@ -1044,7 +1044,7 @@ func TestSessionIDFormat(t *testing.T) {
 			"sender": {"login": "vadim"},
 			"installation": {"id": 1},
 			"issue": {"number": 100},
-			"comment": {"id": %d, "body": "@vornik #%d", "user": {"login": "vadim"}}
+			"comment": {"id": %d, "body": "@vornik-companion #%d", "user": {"login": "vadim"}}
 		}`, i+1, i))
 		r := signedRequest("shhh", "issue_comment", fmt.Sprintf("d-%d", i), body)
 		w := httptest.NewRecorder()

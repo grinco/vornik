@@ -31,7 +31,7 @@ func layerHelper(t *testing.T, root, projectID, swarmID, workflowID string) {
 		"projectId: "+projectID+"\ndisplayName: "+projectID+"\nswarmId: "+swarmID+"\ndefaultWorkflowId: "+workflowID+"\n",
 	), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "swarms", swarmID+".md"), []byte(
-		"---\nswarmId: "+swarmID+"\nroles:\n  - name: worker\n    runtime:\n      image: fake-agent\n---\n",
+		"---\nswarmId: "+swarmID+"\nroles:\n  - name: worker\n    runtime:\n      image: test-image\n---\n",
 	), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "workflows", workflowID+".md"), []byte(
 		"---\nworkflowId: "+workflowID+"\nentrypoint: run\nsteps:\n  run:\n    type: agent\n    role: worker\n    prompt: \"do work\"\n    on_success: done\nterminals:\n  done:\n    status: COMPLETED\n---\n",

@@ -32,7 +32,12 @@ const (
 
 func init() {
 	forge.Register(forge.ProviderGitHub, func(cfg forge.Config) (forge.ForgeProvider, error) {
-		return New(cfg.GitHub)
+		p, err := New(cfg.GitHub)
+		if err != nil {
+			return nil, err
+		}
+		p.mention = cfg.MentionHandle
+		return p, nil
 	})
 }
 
@@ -51,6 +56,7 @@ type Provider struct {
 	key            *rsa.PrivateKey
 	apiBaseURL     string
 	httpClient     *http.Client
+	mention        string // bot handle for comment commands; empty = package default
 
 	mu          sync.Mutex
 	cachedToken string
@@ -190,7 +196,7 @@ func (p *Provider) ClassifyEvent(h http.Header, body []byte) (forge.ForgeJob, bo
 		if pl.Comment == nil || pl.Issue == nil || pl.Issue.PullRequest == nil {
 			return forge.ForgeJob{}, false
 		}
-		cmd := forgereview.ParseCommand(pl.Comment.Body)
+		cmd := forgereview.ParseCommandFor(p.mentionHandle(), pl.Comment.Body)
 		if cmd == forgereview.CmdNone {
 			// A mention that asks for none of the commands is not a forge
 			// event. It stays a conversational message on the paths that have
@@ -268,7 +274,7 @@ func (p *Provider) FetchDiff(ctx context.Context, repo string, number int) ([]by
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("forge/github: fetch diff HTTP %d: %s", resp.StatusCode, excerpt(body))
+		return nil, forge.NewStatusError("forge/github: fetch diff", resp.StatusCode, resp.Header, excerpt(body))
 	}
 	return body, nil
 }
@@ -296,7 +302,7 @@ func (p *Provider) CompareDiff(ctx context.Context, repo, base, head string) ([]
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("forge/github: compare %s...%s HTTP %d: %s", base, head, resp.StatusCode, excerpt(body))
+		return nil, forge.NewStatusError(fmt.Sprintf("forge/github: compare %s...%s", base, head), resp.StatusCode, resp.Header, excerpt(body))
 	}
 	return body, nil
 }
@@ -348,7 +354,7 @@ func (p *Provider) OpenChangeRequest(ctx context.Context, s forge.ChangeRequestS
 		return "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("forge/github: list PRs HTTP %d: %s", resp.StatusCode, excerpt(body))
+		return "", forge.NewStatusError("forge/github: list PRs", resp.StatusCode, resp.Header, excerpt(body))
 	}
 	var existing []prResponse
 	if err := json.Unmarshal(body, &existing); err != nil {
@@ -373,7 +379,7 @@ func (p *Provider) OpenChangeRequest(ctx context.Context, s forge.ChangeRequestS
 		return "", err
 	}
 	if resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("forge/github: open PR HTTP %d: %s", resp.StatusCode, excerpt(body))
+		return "", forge.NewStatusError("forge/github: open PR", resp.StatusCode, resp.Header, excerpt(body))
 	}
 	var created prResponse
 	if err := json.Unmarshal(body, &created); err != nil {
@@ -425,11 +431,11 @@ func (p *Provider) PostReview(ctx context.Context, repo string, number int, r fo
 				return cErr
 			}
 			if cResp.StatusCode != http.StatusOK && cResp.StatusCode != http.StatusCreated {
-				return fmt.Errorf("forge/github: post review (COMMENT fallback after self-approve 422) HTTP %d: %s", cResp.StatusCode, excerpt(cBody))
+				return forge.NewStatusError("forge/github: post review (COMMENT fallback after self-approve 422)", cResp.StatusCode, cResp.Header, excerpt(cBody))
 			}
 			return nil
 		}
-		return fmt.Errorf("forge/github: post review HTTP %d: %s", resp.StatusCode, excerpt(body))
+		return forge.NewStatusError("forge/github: post review", resp.StatusCode, resp.Header, excerpt(body))
 	}
 	return nil
 }
@@ -579,4 +585,13 @@ func excerpt(b []byte) string {
 		return s[:errBodyExcerpt] + "..."
 	}
 	return s
+}
+
+// mentionHandle returns the configured bot handle, or the package default when
+// a deployment has not set one.
+func (p *Provider) mentionHandle() string {
+	if p == nil || strings.TrimSpace(p.mention) == "" {
+		return forgereview.DefaultHandle
+	}
+	return p.mention
 }

@@ -40,6 +40,19 @@ type DoctorReport struct {
 
 // DoctorHandlers provides the /api/v1/doctor endpoint.
 type DoctorHandlers struct {
+	// modelRefs maps a daemon-scope config SURFACE to the model id it names —
+	// "chat.model" → "glm-5.2" and so on. Snapshotted at boot beside
+	// secretFields and retentionWindows, and for the same reason
+	// SetServerConfig gives: the handler must not hold a live *config.Config,
+	// because config.Load() calls flag.Parse() and panics on every request past
+	// the first.
+	//
+	// Backs checkPricingCoverage, which could otherwise only see swarm role
+	// models — 11 of the 28 ids this deployment references — while reporting
+	// "all N models have pricing entries". Boot-time, so a hot-reloaded model
+	// change is not seen until restart; the check's message says so.
+	modelRefs map[string]string
+
 	// callStats is the live per-(model, call_site) outcome tally backing
 	// checkModelCallsLive. Optional: nil means the check reports "nothing to
 	// assess" rather than failing. See doctor_model_calls.go for why this exists.
@@ -329,6 +342,24 @@ func (h *DoctorHandlers) SetServerConfig(cfg *config.Config) {
 		if days > 0 {
 			h.retentionWindows[key] = days
 		}
+	}
+
+	// Snapshot every daemon-scope model id for checkPricingCoverage. Surface
+	// names are the yaml paths an operator would edit, so a finding tells them
+	// where to go. An empty value is an unconfigured surface and is skipped at
+	// check time rather than filtered here — the distinction between "unset"
+	// and "set to something unpriced" is the check's to make.
+	h.modelRefs = map[string]string{
+		"chat.model":                     cfg.Chat.Model,
+		"chat.wizard_model":              cfg.Chat.WizardModel,
+		"chat.fixit_model":               cfg.Chat.FixItModel,
+		"chat.router.http.model":         cfg.Chat.Router.HTTP.Model,
+		"chat.router.bedrock.model":      cfg.Chat.Router.Bedrock.Model,
+		"chat.router.vertex.model":       cfg.Chat.Router.Vertex.Model,
+		"chat.router.openrouter.model":   cfg.Chat.Router.OpenRouter.Model,
+		"chat.router.ollama_cloud.model": cfg.Chat.Router.OllamaCloud.Model,
+		"memory.embedding_model":         cfg.Memory.EmbeddingModel,
+		"narrator.model":                 cfg.Narrator.Model,
 	}
 
 	// Snapshot secret-bearing fields for checkConfigSecretHygiene.
@@ -1276,28 +1307,64 @@ func (h *DoctorHandlers) checkPricingCoverage() DoctorCheck {
 		return DoctorCheck{Name: name, Status: "ERROR", Message: fmt.Sprintf("load pricing table: %v", err)}
 	}
 
-	seen := make(map[string]bool)
-	var missing []string
+	// Every model id the deployment references, with the SURFACE that named it
+	// so a finding says where to go. Deduped by id: a model used as both a role
+	// model and a daemon default is one gap, not two.
+	//
+	// Pre-2026-09-02 this walked role.Model alone — 11 ids of the 28 this
+	// deployment references — and then reported "all N models have pricing
+	// entries". An unpriced id does not fail; it silently inherits
+	// default{1.00, 3.00}, so the check that exists to catch a fabricated rate
+	// was reporting OK. See
+	// https://docs.vornik.io
+	refs := map[string][]string{} // model id → surfaces naming it
+	add := func(model, surface string) {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			return // an unconfigured surface is not a gap
+		}
+		refs[model] = append(refs[model], surface)
+	}
 	for _, swarm := range reg.ListSwarms() {
 		for _, role := range swarm.Roles {
-			model := strings.TrimSpace(role.Model)
-			if model == "" || seen[model] {
-				continue
-			}
-			seen[model] = true
-			if _, known := table.Lookup(model); !known {
-				missing = append(missing, fmt.Sprintf("%s → %s (role %q in swarm %q)", swarm.ID, model, role.Name, swarm.ID))
-			}
+			add(role.Model, fmt.Sprintf("swarm %q role %q model", swarm.ID, role.Name))
+			add(role.ModelFallback, fmt.Sprintf("swarm %q role %q modelFallback", swarm.ID, role.Name))
 		}
 	}
+	for _, project := range reg.ListProjects() {
+		add(project.HallucinationJudge.Model, fmt.Sprintf("project %q hallucinationJudge.model", project.ID))
+	}
+	for surface, model := range h.modelRefs {
+		add(model, surface)
+	}
+
+	var missing []string
+	for model, surfaces := range refs {
+		if _, known := table.Lookup(model); known {
+			continue
+		}
+		sort.Strings(surfaces)
+		missing = append(missing, fmt.Sprintf("%s — referenced by %s; bills at the default rate, which is fabricated",
+			model, strings.Join(surfaces, ", ")))
+	}
+	sort.Strings(missing) // deterministic output
+
+	// The message states WHAT WAS EXAMINED. "all N models" was the original
+	// defect: it counted role models and claimed everything.
+	scope := "swarm role models and fallbacks, project judges, and daemon chat/router/memory/narrator models (boot-time snapshot)"
 	if len(missing) == 0 {
-		return DoctorCheck{Name: name, Status: "OK", Message: fmt.Sprintf("all %d models have pricing entries", len(seen))}
+		return DoctorCheck{
+			Name:    name,
+			Status:  "OK",
+			Message: fmt.Sprintf("%d model id(s) priced across %s", len(refs), scope),
+		}
 	}
 	return DoctorCheck{
-		Name:    name,
-		Status:  "WARNING",
-		Message: fmt.Sprintf("%d model(s) in swarm configs missing from pricing.yaml — cost metrics use default rate", len(missing)),
-		Items:   missing,
+		Name:   name,
+		Status: "WARNING",
+		Message: fmt.Sprintf("%d of %d model id(s) missing from pricing.yaml — cost metrics for them use the default rate. Checked %s",
+			len(missing), len(refs), scope),
+		Items: missing,
 	}
 }
 

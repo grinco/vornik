@@ -2435,7 +2435,7 @@ retryLoop:
 	// drifted away from task.Attempt on every internal-retry loop
 	// iteration: a fresh task.Attempt=1 task that ran 3 internal
 	// tries would still have task.Attempt=1 in the DB, so
-	// handleFailure's taskWillRetry check (task.Attempt < MaxAttempts
+	// handleFailure's taskWillRetry check (persistence.TaskShouldRetry
 	// → 1 < 3 → true) wrongly concluded "more retries available"
 	// even though the budget was already spent. Without this sync,
 	// the conditional-FAILED logic in handleFailure leaves the task
@@ -2883,7 +2883,11 @@ func (e *Executor) releaseRecoveredTask(taskID string) {
 	if task.LastError != nil {
 		releaseOpts.Error = *task.LastError
 	}
-	if attempt < maxAttempts {
+	class := ""
+	if task.LastErrorClass != nil {
+		class = *task.LastErrorClass
+	}
+	if persistence.TaskShouldRetry(attempt, maxAttempts, class) {
 		newStatus = persistence.TaskStatusQueued
 		releaseOpts.Attempt = attempt + 1
 	}

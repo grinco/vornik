@@ -146,7 +146,7 @@ func TestToolBudget_EndToEnd_ExtraEnvOverridesStatic(t *testing.T) {
 	role := &registry.SwarmRole{
 		Name: "coder",
 		Runtime: registry.SwarmRoleRuntime{
-			Image:   "fake-agent:latest",
+			Image:   "test-image:latest",
 			EnvVars: map[string]string{"VORNIK_MAX_TOOL_ITERATIONS": "250"},
 		},
 	}
@@ -160,7 +160,7 @@ func TestToolBudget_EndToEnd_ExtraEnvOverridesStatic(t *testing.T) {
 	extraEnv := map[string]string{"VORNIK_MAX_TOOL_ITERATIONS": strconv.Itoa(eff)}
 
 	_, err := e.startContainer(context.Background(),
-		&persistence.Task{ID: "t1", ProjectID: "p1"}, "e1", "fake-agent:latest",
+		&persistence.Task{ID: "t1", ProjectID: "p1"}, "e1", "test-image:latest",
 		"coder", "/tmp/in", "/tmp/out", "/tmp/work", role, "", e.config.DefaultTimeout, extraEnv)
 	assert.NoError(t, err)
 
@@ -178,7 +178,7 @@ func TestToolBudget_EndToEnd_DisabledKeepsStatic(t *testing.T) {
 	role := &registry.SwarmRole{
 		Name: "coder",
 		Runtime: registry.SwarmRoleRuntime{
-			Image:   "fake-agent:latest",
+			Image:   "test-image:latest",
 			EnvVars: map[string]string{"VORNIK_MAX_TOOL_ITERATIONS": "250"},
 		},
 	}
@@ -190,7 +190,7 @@ func TestToolBudget_EndToEnd_DisabledKeepsStatic(t *testing.T) {
 
 	// With no injection, extraEnv carries no budget override.
 	_, err := e.startContainer(context.Background(),
-		&persistence.Task{ID: "t1", ProjectID: "p1"}, "e1", "fake-agent:latest",
+		&persistence.Task{ID: "t1", ProjectID: "p1"}, "e1", "test-image:latest",
 		"coder", "/tmp/in", "/tmp/out", "/tmp/work", role, "", e.config.DefaultTimeout, nil)
 	assert.NoError(t, err)
 

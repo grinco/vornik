@@ -113,6 +113,20 @@ type Finding struct {
 	// Evidence is the matched substring, truncated to
 	// 200 chars for the audit / banner display.
 	Evidence string
+	// Rule NAMES the pattern that produced this finding, where Kind names only
+	// its class. Kinds are not unique — two patterns produce
+	// KindAdversarialURL and two produce KindEncodedPayload — so a finding
+	// could be attributed to a class and never to a rule, which is enough to
+	// decide redaction per kind and NOT enough to tune, triage a false
+	// positive, or decide which patterns are worth prescanning for.
+	//
+	// Safe as a metric label: the value comes from the rule table, never from
+	// matched content, so no user data can reach a Prometheus label through it.
+	//
+	// Additive and zero-value safe — a Finding built without it behaves
+	// identically in Redact, HasFinding and MaxSeverity.
+	// See https://docs.vornik.io
+	Rule string
 }
 
 // Report bundles every finding from one Scan call.
@@ -199,6 +213,14 @@ const (
 // payload rules to skip URL-context hits (long query strings on
 // scraper requests are not adversarial encoded blobs).
 type rulePattern struct {
+	// name is this rule's stable identifier, unique across the active table
+	// (base rules plus credential rules). It is what Finding.Rule carries.
+	//
+	// NAMES ARE STABLE IDENTIFIERS AND A RENAME BREAKS METRIC CONTINUITY.
+	// Renaming one silently splits a time series in two: the dashboard shows a
+	// rule that stopped firing beside one that appeared from nowhere, with
+	// nothing to connect them. Tidy the comment, not the name.
+	name     string
 	kind     Kind
 	severity Severity
 	class    ruleClass
@@ -235,12 +257,14 @@ func encodedPayloadIsRealBlob(content string, start, end int) bool {
 // the input is huge and the rule wouldn't have matched.
 var rules = []rulePattern{
 	{
+		name:     "ignore_previous_instructions",
 		kind:     KindInjectionInstruction,
 		severity: SeverityHigh,
 		class:    classInjection,
 		re:       regexp.MustCompile(`(?i)\b(ignore|disregard|forget)\s+(?:the\s+|all\s+|any\s+)?(previous|prior|earlier|above)\s+(instructions?|prompts?|context|messages?)`),
 	},
 	{
+		name:     "new_instructions_header",
 		kind:     KindInjectionInstruction,
 		severity: SeverityHigh,
 		class:    classInjection,
@@ -265,30 +289,35 @@ var rules = []rulePattern{
 		// `roleplay\s+as`) are left unchanged: they are syntactically
 		// more specific and their benign-use rate in first-party
 		// document content is much lower.
+		name:     "role_swap_directive",
 		kind:     KindInjectionRoleSwap,
 		severity: SeverityHigh,
 		class:    classInjection,
 		re:       regexp.MustCompile(`(?i)\b(you\s+are\s+now|act\s+as\s+(?:an?\s+|the\s+)?(?:ai|a\.i\.|assistant|chat\s?bot|language\s+model|llm|model|dan|system|developer\s+mode|unrestricted|jailbro?ken|uncensored)|pretend\s+to\s+be|roleplay\s+as)\b`),
 	},
 	{
+		name:     "chat_template_marker",
 		kind:     KindInjectionChatTemplate,
 		severity: SeverityHigh,
 		class:    classInjection,
 		re:       regexp.MustCompile(`<\|(im_start|im_end|system|user|assistant|tool|chat_start|chat_end)\|>`),
 	},
 	{
+		name:     "system_line_marker",
 		kind:     KindInjectionSystemMarker,
 		severity: SeverityWarn,
 		class:    classInjection,
 		re:       regexp.MustCompile(`(?i)(^|\n)\s*(system|\[system\]|<system>)\s*:`),
 	},
 	{
+		name:     "url_credential_query",
 		kind:     KindAdversarialURL,
 		severity: SeverityWarn,
 		class:    classSecret,
 		re:       regexp.MustCompile(`(?i)https?://[^\s"'<>]+[?&](token|api[_-]?key|password|secret|auth)=`),
 	},
 	{
+		name:     "data_uri_payload",
 		kind:     KindAdversarialURL,
 		severity: SeverityHigh,
 		class:    classSecret,
@@ -300,6 +329,7 @@ var rules = []rulePattern{
 		// 200+ "encoded_payload" footer on long scraper URLs);
 		// the verify hook filters those out when the match is part
 		// of an http(s) URL token.
+		name:     "long_base64_blob",
 		kind:     KindEncodedPayload,
 		severity: SeverityInfo,
 		class:    classSecret,
@@ -316,6 +346,7 @@ var rules = []rulePattern{
 		// caught long capital-letter runs (e.g. all-A base64
 		// FPs) that the base64 rule's verify hook had just
 		// dropped.
+		name:     "long_hex_blob",
 		kind:     KindEncodedPayload,
 		severity: SeverityInfo,
 		class:    classSecret,
@@ -370,6 +401,7 @@ func ScanWithProvenance(content string, prov Provenance) Report {
 				Start:    start,
 				End:      end,
 				Evidence: evidence,
+				Rule:     r.name,
 			})
 		}
 	}

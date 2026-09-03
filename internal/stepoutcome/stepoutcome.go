@@ -240,6 +240,24 @@ const (
 	// runtime configuration. 61 rows. Sub-second and deterministic, which is
 	// the signature of a fallback rung that has never once worked.
 	ClassContainerStartFailed = "container_start_failed"
+
+	// ClassModelUnhealthy is a circuit-open fast-reject: the (route, model)
+	// breaker is OPEN, so the call never reached the model — and never started
+	// a container, which is why these rows carry no container_exit_code and
+	// complete in ~4ms.
+	//
+	// Named because it was 85.6% of the unclassified population (387 of 452
+	// measured 2026-09-02). A typed, daemon-generated condition with a stable
+	// prefix has no business in the catch-all: it made the doctor's
+	// unclassified-share check largely a measure of one nameable thing, and
+	// left an operator with no surface saying a breaker had been open for three
+	// days.
+	//
+	// NOT a terminal failure class, deliberately. An open circuit is permanent
+	// only WHILE open, and MODEL_UNHEALTHY is already a model-fallback trigger —
+	// the fallback hop is what carries the traffic. See
+	// https://docs.vornik.io
+	ClassModelUnhealthy = "model_unhealthy"
 )
 
 // IsTerminal reports whether an outcome value is final — i.e., not

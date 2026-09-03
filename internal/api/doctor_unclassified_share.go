@@ -19,12 +19,37 @@ const unclassifiedShareWindowDays = 30
 // rather than solved half-way here for one check.
 //
 // NOT zero, which would warn permanently: some residual is expected and
-// healthy. Measured on the production database 2026-08-26 with migration 170's classes
-// applied, the residual is 5.2% all-time, 9.9% over 30 days and 0.4% over 7.
-// 15% sits above the 30-day steady state with real headroom, so the check is
-// quiet today and fires when classification actually degrades — which is the
-// only signal worth having here.
-const unclassifiedShareThreshold = 0.15
+// healthy.
+//
+// RE-DERIVED 2026-09-02, and the old value was measuring something that no
+// longer exists. The 2026-08-26 calibration (5.2% all-time, 9.9% over 30 days,
+// 0.4% over 7 → threshold 15%) was taken when MODEL_UNHEALTHY was still
+// unclassified — and that ONE condition was 387 of the 452 unclassified rows,
+// 85.6% of the population the threshold was fitted to. Classifying it
+// (2026-09-02-model-unhealthy-classification-design.md) removed five-sixths of
+// the denominator, leaving 15% roughly 23-80x above the real baseline: a check
+// that could never fire, silently.
+//
+// Re-measured on the production database after classification, all three
+// windows the design asked for:
+//
+//	all-time:  65 / 19,681  = 0.33%
+//	30 days:    7 /  3,944  = 0.18%
+//	 7 days:    7 /  1,055  = 0.66%
+//
+// The 30d/7d spread is denominator arithmetic, not a rate disagreement: it is
+// the SAME 7 rows, all recorded in the last two days, over different spans.
+//
+// 5% sits ~8x above the highest observed window with headroom for a quiet
+// period to swing the ratio on small counts, and ~23x below the old value. The
+// check is quiet today and can actually fire when a new unnamed failure class
+// appears at volume — which is the only signal worth having here.
+//
+// NOT removed, though the population is small. Its purpose is to notice the
+// NEXT unnamed class, and it is doing that already: the 65 remaining rows are
+// dominated by "agent fabrication detected", which is nameable and is filed as
+// follow-up work. A check whose residual is small is a check that is working.
+const unclassifiedShareThreshold = 0.05
 
 // checkUnclassifiedShare publishes the denominator behind the residual failure
 // bucket.

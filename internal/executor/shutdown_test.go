@@ -41,7 +41,7 @@ func TestRecover_AutoResumesShutdownPaused(t *testing.T) {
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
 		},
 		swarms: map[string]*registry.Swarm{
-			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 		},
 		workflows: map[string]*registry.Workflow{
 			"wf1": {
@@ -242,7 +242,7 @@ func TestRunExecution_ShutdownBailoutDoesNotMarkFailed(t *testing.T) {
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
 		},
 		swarms: map[string]*registry.Swarm{
-			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 		},
 		workflows: map[string]*registry.Workflow{
 			"wf1": {
@@ -346,7 +346,7 @@ func TestShutdown_DrainsInFlightExecutionToPausedForResume(t *testing.T) {
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
 		},
 		swarms: map[string]*registry.Swarm{
-			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 		},
 		workflows: map[string]*registry.Workflow{
 			"wf1": {
@@ -440,7 +440,7 @@ func sharedWorkflowResolver() *MockWorkflowResolver {
 			"p1": {ID: "p1", SwarmID: "s1", DefaultWorkflowID: "wf1"},
 		},
 		swarms: map[string]*registry.Swarm{
-			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}}}},
+			"s1": {ID: "s1", Roles: []registry.SwarmRole{{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}}}},
 		},
 		workflows: map[string]*registry.Workflow{
 			"wf1": {
@@ -651,7 +651,7 @@ func TestShutdown_OnFailStepDoesNotMarkFailedOnShutdown(t *testing.T) {
 		},
 		swarms: map[string]*registry.Swarm{
 			"s1": {ID: "s1", Roles: []registry.SwarmRole{
-				{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
+				{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
 			}},
 		},
 		workflows: map[string]*registry.Workflow{
@@ -796,7 +796,7 @@ func TestShutdown_SystemStepOnFailDoesNotMarkFailedOnShutdown(t *testing.T) {
 		},
 		swarms: map[string]*registry.Swarm{
 			"s1": {ID: "s1", Roles: []registry.SwarmRole{
-				{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
+				{Name: "worker", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
 			}},
 		},
 		workflows: map[string]*registry.Workflow{

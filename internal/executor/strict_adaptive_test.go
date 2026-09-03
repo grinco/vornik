@@ -93,7 +93,7 @@ func TestStrictAdaptive_RoutePausesParent(t *testing.T) {
 		swarms: map[string]*registry.Swarm{
 			"s1": {ID: "s1", Roles: []registry.SwarmRole{{
 				Name:    "lead",
-				Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"},
+				Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"},
 			}}},
 		},
 		workflows: map[string]*registry.Workflow{
@@ -291,7 +291,7 @@ func strictAdaptiveResolver(candidates []string) *MockWorkflowResolver {
 		swarms: map[string]*registry.Swarm{
 			"s1": {ID: "s1", Roles: []registry.SwarmRole{{
 				Name:    "lead",
-				Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"},
+				Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"},
 			}}},
 		},
 		workflows: map[string]*registry.Workflow{
@@ -418,8 +418,8 @@ func issueFixResolver() *MockWorkflowResolver {
 		},
 		swarms: map[string]*registry.Swarm{
 			"s1": {ID: "s1", Roles: []registry.SwarmRole{
-				{Name: "lead", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
-				{Name: "reviewer", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
+				{Name: "lead", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
+				{Name: "reviewer", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
 			}},
 		},
 		workflows: map[string]*registry.Workflow{

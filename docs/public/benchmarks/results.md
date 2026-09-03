@@ -276,6 +276,7 @@ each is stated:
 | `2026.8.8` | **yes** | Both axes above. The warm row was measured at `0e450f9c`; the cold row at `2698eb67`. |
 | `2026.8.9` | none *at the tag* | No run was taken at `2026.8.9` itself. The tree past it is measured on both memory axes above. |
 | `2026.9.0` | **agent row only** | The agent arm above was taken on the release candidate (`2026.8.9-70-g5d247f72`). No LongMemEval row: the memory axes were measured 50 commits earlier in the same cycle and nothing in the intervening work touches the retrieval path. Stated rather than left as a silent gap. |
+| `2026.9.1` | none | No run was taken. The cycle is bug fixes and the forge re-review feature; nothing in it touches ingestion, embedding, retrieval or the agent harness, so the axes stand where `2026.8.9-50-g4b343821` (memory, both axes) and `2026.8.9-70-g5d247f72` (agent arm) left them. A row measured on an unchanged path would add a data point without adding evidence, and the cost of a 120-item n=3 run is not free. Stated rather than left as a silent gap. |
 
 A missing row stated as missing is honest. An absent row is not — which is the whole
 reason this section exists.

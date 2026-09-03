@@ -132,12 +132,6 @@ var baseImages = []Image{
 		Context:       ".",
 		Condition:     ConditionComposePrefix + "cluster",
 	},
-	{
-		Tag:           "fake-agent:latest",
-		Containerfile: "images/fake-agent/Containerfile",
-		Context:       "images/fake-agent",
-		Condition:     ConditionTest,
-	},
 }
 
 // manifest is the authoritative list for THIS build. Adding an image here (or
@@ -177,6 +171,22 @@ var manifest = append([]Image(nil), baseImages...)
 // from the upstream Dockerfile, so the file never lands in this repo and the
 // walk never sees it. Adding a row for it would have been dead config masking
 // a real future file.
+//
+// EMPTY as of 2026-09-02, and that is the honest state rather than a dormant
+// mechanism. Its only entry was images/fake-agent/Containerfile, added earlier
+// the same day on the belief that https://docs.vornik.io's manual walkthrough
+// still needed the fixture. It did not: the walkthrough has been unrunnable
+// since 39f85103 dropped bare-YAML swarm configs, so the fixture and the entry
+// were deleted together (design 2026-08-25-image-freshness-...-design.md §11).
+//
+// The map stays because the parity walk needs somewhere to put a vendored
+// Containerfile that is deliberately not a release image — the pagedrop case
+// §4 describes. Deleting a working escape hatch because it is momentarily
+// unused would mean re-deriving it the next time one lands.
+//
+// INVARIANT (§11.5a): no entry here, and no manifest row, may name a path that
+// does not exist. An exclusion pointing at a deleted file is dead config
+// masking a real future file — the same defect as a row pointing at one.
 var excluded = map[string]string{}
 
 // isExcluded reports whether a repo-relative Containerfile path is

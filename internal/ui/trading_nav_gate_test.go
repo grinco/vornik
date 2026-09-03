@@ -43,7 +43,7 @@ func navTradingRegistry(t *testing.T, dir string, broker bool) *registry.Registr
 	if err := os.MkdirAll(filepath.Join(dir, "swarms"), 0o755); err != nil {
 		t.Fatalf("mkdir swarms: %v", err)
 	}
-	swarm := "---\nswarmId: swarm-1\nroles:\n  - name: worker\n    runtime:\n      image: fake-agent\n---\n"
+	swarm := "---\nswarmId: swarm-1\nroles:\n  - name: worker\n    runtime:\n      image: test-image\n---\n"
 	if err := os.WriteFile(filepath.Join(dir, "swarms", "swarm.md"), []byte(swarm), 0o644); err != nil {
 		t.Fatalf("write swarm: %v", err)
 	}

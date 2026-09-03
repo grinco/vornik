@@ -1,7 +1,7 @@
 ---
 sources:
     - path: docs/release-notes
-      sha256: 0e6fe60bc7935b08bfc396e8556a33cd642236a21ebac2403bc4477aaeef360c
+      sha256: 24a3492903b90adcc0d8c1ff6573eceb4019b6e282b51815af91d285e1462522
 ---
 # Release Notes
 
@@ -14,6 +14,121 @@ behavior changes, and notable fixes. Internal-only changes are omitted.
     so upgrades generally require no config changes. Always take a backup
     before upgrading. A few releases ask you to restart the daemon to pick up
     new behavior; those are called out below.
+
+---
+
+## 2026.9.1
+
+**A workflow's system step now hands its output to the next agent.** This is a
+customer-reported bug and it is the reason for this release. When a workflow ran
+a system step (for example `forge.fetch_diff`) and the next step was an agent,
+the agent received *empty* previous-step context — in every workflow, for every
+system step that succeeded. The failure path already reported itself; only
+success was silent. If you have an agent prompt that says "the previous step
+provided X", it now actually has X. Injected output is capped at 256 KiB, and a
+truncation says so inside the text the agent reads.
+
+**Pull requests get reviewed again after you push.** Previously only
+`pull_request.opened` triggered a review, so there was no way to get a fresh one
+after addressing feedback. Reviews now also fire on **new commits, reopen and
+ready-for-review**, and you can ask for one directly:
+
+| Comment | Effect |
+|---|---|
+| `@<bot> review` | review now, covering what changed since the last review |
+| `@<bot> full review` | review the whole pull request |
+| `@<bot> pause` | stop reviewing this pull request automatically |
+| `@<bot> resume` | resume automatic review |
+
+A comment that mentions the bot without matching a command still gets an ordinary
+conversational reply.
+
+Three things keep the cost sane: a push burst **coalesces into one review** of
+the final state, a re-review reads only **what changed since the last one**, and
+drafts are not auto-reviewed. Every uncertainty resolves toward *more* review —
+a missing baseline, a force-push that rewrote it, or an unreadable state row all
+fall back to the complete diff, because a wrongly narrowed review silently omits
+code nobody will look at again.
+
+**Two things to set before you upgrade if you use the forge reviewer:**
+
+- **Set your mention handle.** `mention_handle` defaults to this project's own
+  App slug. You install your **own** GitHub App under your own name, so set it to
+  *your* App's slug or commands will not match. An empty value matches nothing,
+  deliberately — a handle that happens to be somebody's real account notifies a
+  stranger every time anyone addresses the bot, which is a bug this release
+  fixes rather than a naming preference.
+- **Review volume goes up on active repositories.** On a project configured with
+  `github_app:`, `github_app.auto_review_on_push: false` restores the previous
+  first-review-only behaviour. On the generic `webhooks.sources` ingress that
+  key does not exist yet; use the per-pull-request `pause` command.
+
+**Only people with standing in the repository can run review commands** — the
+owner, organisation members, and invited collaborators. A review is real model
+spend, so on a public repository an unguarded command is a way for a stranger to
+run up your bill. Outside contributors are deliberately excluded.
+
+**A permanent forge failure no longer burns the retry budget.** A pull request
+that does not exist, a deleted one, a renamed repository or a revoked
+installation used to consume all three attempts on identical 404s and then report
+`UNKNOWN`, whose guidance is "try again". Those now fail immediately with a
+class that says what happened. Rate limits and outages are unchanged — a 429 or a
+5xx keeps its full retry budget.
+
+**A review quotes the request it is answering.** Comments get deleted; reviews
+are durable. A comment-triggered review now opens with an attributed quote of what
+was asked.
+
+**`vornikctl doctor` tells you more than it could before.**
+
+- `pricing_coverage` used to report "all N models have pricing entries" while
+  examining only swarm role models. It now also reads role fallbacks, project
+  judge models, chat and router models, the embedding model, the narrator, wizard
+  and fixit — and it reports **what it examined** instead of "all models". It may
+  now surface gaps it previously could not see; an unpriced model was always
+  silently inheriting the default rate.
+- Model-circuit failures are classified as `MODEL_UNHEALTHY` instead of landing
+  in the unclassified bucket, where they were the large majority of it. The
+  `unclassified_step_failures` threshold is re-calibrated from 15% to 5% as a
+  result — the old value could not fire once those failures were named. A
+  migration reclassifies historical rows so the check is not stuck warning for a
+  month while they age out.
+
+**A sustained latency breach now proposes a change you can apply**, instead of an
+observation telling you to go run Diagnose yourself. The proposal names a
+specific model for a specific role and validates it against your configured model
+universe before offering it. It deliberately does **not** pick the model from
+latency data alone: the fastest model on a fleet is usually the smallest, and
+that trade would swap output quality nobody is measuring for a number everybody
+is. The rationale says so, so you read the trade-off before approving.
+
+**Stored artifacts are no longer rewritten by heuristic secret rules.** The two
+heuristic rules (entropy and generic key/value) could replace ordinary text —
+test identifiers, hashed filenames — with `[REDACTED:…]` markers, and redaction
+is one-way, so the original bytes were gone. Across two production surfaces those
+rules produced roughly 7,000 findings and zero true positives. Detection is
+unchanged; every finding is still found, counted and logged. Only the rewrite
+narrows, and the log now distinguishes "found but not rewritten" from "nothing
+found".
+
+**Output-guard findings name the rule that produced them**, not just the
+category — two different patterns can produce the same category, which was enough
+to decide redaction but not enough to triage a false positive. The metric gains a
+`rule` label.
+
+**The agent container image is published for arm64.** It was being built for the
+release runner's architecture only, while arm64 packages were shipping — so an
+arm64 install named an image it could not pull and discovered it at the first
+agent run. Packaged installs also carry an image provenance record again, with
+per-architecture digests for registry images and a source commit for images built
+on your own host.
+
+**MCP audience checks accept equivalent spellings of the same URL.** Host case, a
+longhand default port (`:443` on https), a trailing dot, and the Unicode form of
+an internationalised host all used to mismatch, so a correctly configured
+endpoint could be refused with "needs reconnect". Genuinely different endpoints —
+a non-default port, the other scheme's default port, a different host — are still
+different, and credentials embedded in a URL never count as the host.
 
 ---
 

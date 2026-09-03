@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"vornik.io/vornik/internal/budget"
+	"vornik.io/vornik/internal/chat"
 	"vornik.io/vornik/internal/counterfactual"
 	"vornik.io/vornik/internal/hallucination"
 	"vornik.io/vornik/internal/persistence"
@@ -214,6 +215,30 @@ func (e *Executor) effectiveRoleModelForTask(task *persistence.Task, roleConfig 
 // harmonise the two.
 //
 // Unrecognised text returns today's values, so this is purely additive.
+// refineAgentFailureOutcomeErr is refineAgentFailureOutcome with the TYPED
+// checks that need the error itself rather than its rendered message.
+//
+// Callers that hold an error use this one. The string form stays for the
+// message-only paths and for the ordered arms below, which are pinned by test.
+func refineAgentFailureOutcomeErr(err error) (stepoutcome.Outcome, string) {
+	if err == nil {
+		return stepoutcome.Failed, stepoutcome.ClassUnclassified
+	}
+	// A circuit-open fast-reject, recognised from the TYPED predicate the retry
+	// ladder already trusts to change control flow — never by prefix-matching
+	// error_detail. A condition the daemon GENERATES is not recovered by
+	// parsing the sentence the daemon wrote about it.
+	//
+	// chat.IsModelUnhealthyFailure covers both routes: the typed
+	// chat.ModelUnhealthyError from in-daemon callers, and the agent-emitted
+	// "MODEL_UNHEALTHY" marker that arrives via the chat proxy's 503 in
+	// result.json.
+	if chat.IsModelUnhealthyFailure(err) {
+		return stepoutcome.Failed, stepoutcome.ClassModelUnhealthy
+	}
+	return refineAgentFailureOutcome(errorBeforeLogTail(err.Error()))
+}
+
 func refineAgentFailureOutcome(detail string) (stepoutcome.Outcome, string) {
 	lowered := strings.ToLower(detail)
 	switch {
@@ -272,7 +297,7 @@ func refineAgentFailureOutcome(detail string) (stepoutcome.Outcome, string) {
 // signals "nothing recognised" with the ClassUnclassified
 // fallback, which is what makes this distinguishable.
 func timeoutOutcomeAndClass(err error) (string, string) {
-	if refined, refinedClass := refineAgentFailureOutcome(errorBeforeLogTail(err.Error())); refinedClass != stepoutcome.ClassUnclassified {
+	if refined, refinedClass := refineAgentFailureOutcomeErr(err); refinedClass != stepoutcome.ClassUnclassified {
 		return string(refined), refinedClass
 	}
 	return string(stepoutcome.Timeout), stepoutcome.ClassContextTimeout
@@ -409,7 +434,7 @@ func (e *Executor) executeAgentStep(ctx context.Context, task *persistence.Task,
 				// bucket because this was thrown away. Falls back to
 				// Failed/container_non_zero_exit for anything unrecognised,
 				// so the change is additive.
-				refinedOutcome, refinedClass := refineAgentFailureOutcome(errorBeforeLogTail(err.Error()))
+				refinedOutcome, refinedClass := refineAgentFailureOutcomeErr(err)
 				outcome = string(refinedOutcome)
 				errClass = refinedClass
 			}

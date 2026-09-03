@@ -54,7 +54,7 @@ func TestStepCoverage_DeceptionDetectionFiresEndToEnd(t *testing.T) {
 		swarms: map[string]*registry.Swarm{
 			"s1": {ID: "s1", Roles: []registry.SwarmRole{{
 				Name:    "tester",
-				Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"},
+				Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"},
 				// Use the same outputSchema shape the migrated tester
 				// roles ship today, so the test exercises the actual
 				// production schema path — derived RequiredOutputKeys
@@ -154,7 +154,7 @@ func TestStepCoverage_DeceptionDetectionAllowsHonestPass(t *testing.T) {
 		swarms: map[string]*registry.Swarm{
 			"s1": {ID: "s1", Roles: []registry.SwarmRole{{
 				Name:    "tester",
-				Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"},
+				Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"},
 				OutputSchema: &registry.OutputSchema{
 					Type:     "object",
 					Required: []string{"testing"},

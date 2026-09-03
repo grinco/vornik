@@ -24,7 +24,7 @@ swarmId: swarm-1
 roles:
   - name: worker
     runtime:
-      image: fake-agent
+      image: test-image
 ---
 `), 0o644))
 
@@ -105,7 +105,7 @@ swarmId: swarm-1
 roles:
   - name: worker
     runtime:
-      image: fake-agent
+      image: test-image
 ---
 `), 0o644))
 
@@ -227,10 +227,10 @@ leadRole: lead
 roles:
   - name: lead
     runtime:
-      image: fake-agent
+      image: test-image
   - name: worker
     runtime:
-      image: fake-agent
+      image: test-image
 ---
 `), 0o644))
 
@@ -278,7 +278,7 @@ displayName: Swarm One
 roles:
   - name: worker
     runtime:
-      image: fake-agent
+      image: test-image
 ---
 `), 0o644))
 

@@ -1,7 +1,7 @@
 ---
 sources:
     - path: README.md
-      sha256: 31edbc73bb392131d73c6294c0eea34a09d801c518d48b55b1246c14aaf4232c
+      sha256: dccccaf42b78d96ccc047cfe83b828e458d05c550efbd8c6bc3bf8f2129280bd
 ---
 # Getting Started
 

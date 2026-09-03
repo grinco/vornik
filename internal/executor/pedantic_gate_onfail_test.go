@@ -51,8 +51,8 @@ func gatedResolver(pedantic *bool) *MockWorkflowResolver {
 		},
 		swarms: map[string]*registry.Swarm{
 			"s1": {ID: "s1", Roles: []registry.SwarmRole{
-				{Name: "researcher", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
-				{Name: "lead", Runtime: registry.SwarmRoleRuntime{Image: "fake-agent:latest"}},
+				{Name: "researcher", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
+				{Name: "lead", Runtime: registry.SwarmRoleRuntime{Image: "test-image:latest"}},
 			}},
 		},
 		workflows: map[string]*registry.Workflow{

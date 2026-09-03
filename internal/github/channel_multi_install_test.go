@@ -229,7 +229,7 @@ func TestMultiInstall_IsolationOfSessions(t *testing.T) {
 		"sender": {"login": "vadim"},
 		"installation": {"id": 100},
 		"issue": {"number": 5, "title": "A"},
-		"comment": {"id": 1, "body": "@vornik hi from A", "user": {"login": "vadim"}}
+		"comment": {"id": 1, "body": "@vornik-companion hi from A", "user": {"login": "vadim"}}
 	}`)
 	ch.HandleWebhook(httptest.NewRecorder(), signedRequest("shhh", "issue_comment", "d-cA", bodyA))
 
@@ -239,7 +239,7 @@ func TestMultiInstall_IsolationOfSessions(t *testing.T) {
 		"sender": {"login": "alice"},
 		"installation": {"id": 200},
 		"issue": {"number": 7, "title": "B"},
-		"comment": {"id": 2, "body": "@vornik hi from B", "user": {"login": "alice"}}
+		"comment": {"id": 2, "body": "@vornik-companion hi from B", "user": {"login": "alice"}}
 	}`)
 	ch.HandleWebhook(httptest.NewRecorder(), signedRequest("shhh", "issue_comment", "d-cB", bodyB))
 
@@ -382,7 +382,7 @@ func TestMultiInstall_SenderAllowlist_PerInstallation(t *testing.T) {
 	ch.recv = rx
 	ch.recvMu.Unlock()
 
-	// Alice mentions @vornik on project-A's repo — A's allowlist
+	// Alice mentions @vornik-companion on project-A's repo — A's allowlist
 	// doesn't include alice → dropped.
 	bodyA := []byte(`{
 		"action": "created",
@@ -390,7 +390,7 @@ func TestMultiInstall_SenderAllowlist_PerInstallation(t *testing.T) {
 		"sender": {"login": "alice"},
 		"installation": {"id": 100},
 		"issue": {"number": 1, "title": "x"},
-		"comment": {"id": 1, "body": "@vornik hi", "user": {"login": "alice"}}
+		"comment": {"id": 1, "body": "@vornik-companion hi", "user": {"login": "alice"}}
 	}`)
 	ch.HandleWebhook(httptest.NewRecorder(), signedRequest("shhh", "issue_comment", "d-A-alice", bodyA))
 
@@ -402,7 +402,7 @@ func TestMultiInstall_SenderAllowlist_PerInstallation(t *testing.T) {
 		"sender": {"login": "alice"},
 		"installation": {"id": 200},
 		"issue": {"number": 1, "title": "y"},
-		"comment": {"id": 2, "body": "@vornik hi", "user": {"login": "alice"}}
+		"comment": {"id": 2, "body": "@vornik-companion hi", "user": {"login": "alice"}}
 	}`)
 	ch.HandleWebhook(httptest.NewRecorder(), signedRequest("shhh", "issue_comment", "d-B-alice", bodyB))
 

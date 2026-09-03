@@ -32,10 +32,10 @@ leadRole: worker
 roles:
   - name: worker
     runtime:
-      image: fake-agent
+      image: test-image
   - name: reviewer
     runtime:
-      image: fake-agent
+      image: test-image
 ---
 `), 0o644))
 

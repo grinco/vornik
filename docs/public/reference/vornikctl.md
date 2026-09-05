@@ -674,6 +674,44 @@ Manage executions
 
 Inspect and list workflow executions in the vornik control plane.
 
+## vornikctl execution exchanges
+
+List a step's recorded model exchanges, or export them as a replay recording
+
+List every model request/response pair the chat proxy recorded for the step —
+seq, iteration, model, tokens, duration, how many secrets were redacted, and
+the finish reason. Recorded only for projects with recording.llm_exchanges
+set; a step of any other project prints nothing. With --export the same rows
+are written as the JSONL recording the replay server consumes, so a test can
+replay the step's model without the model.
+
+```
+vornikctl execution exchanges <executionId> <stepId> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--export` |  | Write the step's exchanges as a JSONL recording to this path instead of printing the table |
+
+## vornikctl execution input
+
+Print the task.json the executor handed the step's container
+
+Print the step's input file as the daemon stored it — the task.json the
+executor wrote for the container, redacted at write (step-I/O persistence design
+§5). A [REDACTED:type] marker stands where the container saw a value; do not read
+the stored file as what the container saw where one appears. Bare JSON on stdout
+so it pipes into jq; --export writes it 0600. Empty for a step run before the
+daemon persisted boundary files, and for a step no container ran.
+
+```
+vornikctl execution input <executionId> <stepId> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--export` |  | Write the file to this path (0600) instead of printing it |
+
 ## vornikctl execution inspect
 
 Inspect an execution
@@ -723,6 +761,24 @@ vornikctl execution prompt <executionId> <stepId> [flags]
 | Flag | Default | Description |
 |---|---|---|
 | `--part` |  | Print one part only: system, user or tools |
+
+## vornikctl execution result
+
+Print the result.json the step's container handed back
+
+Print the step's result file as the daemon read it back — whole, after the
+result_json secrets checkpoint, even when it did not parse (that is the case
+where keeping it has value). Bare JSON on stdout so it pipes into jq; --export
+writes it 0600, which is how a replay fixture's expected_result.json is taken
+from the production run rather than from the first replay.
+
+```
+vornikctl execution result <executionId> <stepId> [flags]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--export` |  | Write the file to this path (0600) instead of printing it |
 
 ## vornikctl init
 

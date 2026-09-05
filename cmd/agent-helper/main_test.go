@@ -492,8 +492,15 @@ func TestDurationSeconds(t *testing.T) {
 
 func TestNowMillis(t *testing.T) {
 	// Test Exported behavior: now-ms command line subcommand.
-	// Both commands should report timestamps within reasonable tolerance of Unix time.
+	// The reported instant must fall between a clock read taken BEFORE the
+	// helper ran and one taken AFTER, with a second of slack on each side.
+	// The previous form compared against a single read taken after the run
+	// with ±1s of tolerance, which a CI runner that took 1.07s to spawn the
+	// process exceeded (2026-09-05, run 33987220327) — a false failure about
+	// the runner's speed, not the helper's clock.
+	before := time.Now()
 	stdout, stderr, code := runHelperMain(t, "now-ms")
+	after := time.Now()
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%q", code, stderr)
 	}
@@ -502,10 +509,8 @@ func TestNowMillis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stdout %q is not milliseconds: %v", got, err)
 	}
-	seconds := time.Now().Unix()
-	// Milliseconds should be seconds * 1000 + fraction
-	if ms < seconds*1000-1000 || ms > seconds*1000+1000 {
-		t.Fatalf("ms %d not near seconds*1000 (%d)", ms, seconds*1000)
+	if ms < before.UnixMilli()-1000 || ms > after.UnixMilli()+1000 {
+		t.Fatalf("ms %d not within [%d, %d] (the clock reads around the run, ±1s)", ms, before.UnixMilli(), after.UnixMilli())
 	}
 	if stderr != "" {
 		t.Fatalf("unexpected stderr: %q", stderr)

@@ -408,7 +408,7 @@ var executionExchangesCmd = &cobra.Command{
 seq, iteration, model, tokens, duration, how many secrets were redacted, and
 the finish reason. Recorded only for projects with recording.llm_exchanges
 set; a step of any other project prints nothing. With --export the same rows
-are written as the JSONL recording internal/llmreplay serves, so a test can
+are written as the JSONL recording the replay server consumes, so a test can
 replay the step's model without the model.`,
 	Args: cobra.ExactArgs(2),
 	RunE: runExecutionExchanges,

@@ -30,6 +30,11 @@
 
 # Code coverage profiles and other test artifacts
 *.out
+# ...but NOT the agent-tool dispatch goldens, which are recorded tool OUTPUT
+# and end in .out. This rule swallowed all 64 of them for a week (2026-09-05):
+# the golden passed on the recording machine and CI had no fixtures at all.
+# test/agent/fixtures_tracked_test.go fails if a fixture is ever ignored again.
+!test/agent/fixtures/**/*.out
 coverage.*
 *.coverprofile
 profile.cov

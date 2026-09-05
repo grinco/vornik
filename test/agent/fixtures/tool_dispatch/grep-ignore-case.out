@@ -1,0 +1,4 @@
+sub/one.txt:1:needle one
+sub/one.txt:3:Needle two
+sub/two.md:2:needle in markdown
+sub/deep/three.txt:1:deep needle

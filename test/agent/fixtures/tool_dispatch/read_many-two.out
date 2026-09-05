@@ -1,0 +1,8 @@
+===== FILE: sub/one.txt =====
+needle one
+hay
+Needle two
+
+===== FILE: sub/two.md =====
+# two
+needle in markdown

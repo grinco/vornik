@@ -261,6 +261,13 @@ func walkDirs(root string, visit func(dir string, files []string) bool) {
 		if err != nil {
 			return true
 		}
+		// Lexical, not directory order (D5, 2026-09-05). Directory order is a
+		// property of the filesystem, not of the tool: the goldens recorded on
+		// the reference host's filesystem listed sub/two.md before sub/one.txt,
+		// and CI's ext4 listed them the other way, so four grep fixtures could
+		// not pass on both. python's os.walk had the same non-determinism; the
+		// model never depended on it, and a golden cannot tolerate it.
+		sort.Strings(names)
 		var dirs, files []string
 		for _, n := range names {
 			full := filepath.Join(dir, n)
@@ -428,5 +435,6 @@ func listDir(dir string) []string {
 	}
 	names, _ := d.Readdirnames(-1)
 	_ = d.Close()
+	sort.Strings(names) // D5: lexical, see walkDirs
 	return names
 }

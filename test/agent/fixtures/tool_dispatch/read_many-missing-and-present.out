@@ -1,0 +1,5 @@
+===== FILE: nope.txt =====
+ERROR: file not found
+===== FILE: sub/two.md =====
+# two
+needle in markdown

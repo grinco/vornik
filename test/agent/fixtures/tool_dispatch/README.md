@@ -34,3 +34,13 @@ preserved rather than replaced by U+FFFD), `grep-invalid-regex.out` and
 rejected pattern), `git_diff-D4-wide-truncated.out` (D4: the cut and the
 total are bytes). The other sixty compare equal to the bash recording.
 
+## Re-recorded 2026-09-05, D5: lexical walk order
+
+Four grep fixtures — `grep-files.out`, `grep-content.out`,
+`grep-ignore-case.out`, `grep-head-limit.out` — were re-recorded when the
+walk was made lexical (design §3.1, D5). They had been recorded in the
+reference host's DIRECTORY order (`sub/two.md` before `sub/one.txt`), which
+CI's filesystem does not share, so the golden could pass on one machine and
+fail on another. Under lexical order the outputs are the same on every
+filesystem; nothing else changed in them.
+

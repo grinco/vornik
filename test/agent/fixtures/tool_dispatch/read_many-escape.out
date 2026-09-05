@@ -1,0 +1,4 @@
+===== ERROR: path escapes workspace: ../outside/dir/x.txt =====
+===== FILE: notes.txt =====
+HELLO
+world

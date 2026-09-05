@@ -1,0 +1,7 @@
+diff --git a/s.txt b/s.txt
+new file mode 100644
+index 0000000..19d9cc8
+--- /dev/null
++++ b/s.txt
+@@ -0,0 +1 @@
++staged

@@ -1,0 +1,19 @@
+{
+  "branch": "main",
+  "ahead": 0,
+  "behind": 0,
+  "files": [
+    {
+      "path": "a.txt",
+      "status": " M"
+    },
+    {
+      "path": "s.txt",
+      "status": "A "
+    },
+    {
+      "path": "wide.txt",
+      "status": " M"
+    }
+  ]
+}

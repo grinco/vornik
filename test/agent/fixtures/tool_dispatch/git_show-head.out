@@ -1,0 +1,13 @@
+commit 186bb9e7e4416c03885881a690e96b536389c89c
+Author: Golden <golden@example.test>
+Date:   Tue Sep 1 11:00:00 2026 +0000
+
+    two: extend a.txt
+
+diff --git a/a.txt b/a.txt
+index 9c59e24..66a52ee 100644
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1,2 @@
+ first
++second
